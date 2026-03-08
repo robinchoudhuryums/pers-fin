@@ -42,6 +42,7 @@ const plaidConfig = new Configuration({
   },
 });
 const plaidClient = new PlaidApi(plaidConfig);
+console.log(`Plaid environment: ${plaidEnv} | client_id: ${process.env.PLAID_CLIENT_ID ? process.env.PLAID_CLIENT_ID.slice(0, 6) + "..." : "MISSING"} | secret: ${(plaidEnv === "development" ? process.env.PLAID_SECRET_DEV : process.env.PLAID_SECRET_SANDBOX) ? "set" : "MISSING"}`);
 
 // ---------------------------------------------------------------------------
 // Neon Postgres pool — use the pgBouncer pooled connection string
