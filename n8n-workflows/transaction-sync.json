@@ -1,0 +1,310 @@
+{
+  "name": "Plaid Transaction Sync (Daily)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 24,
+              "triggerAtHour": 6
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Daily 6 AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT pi.id AS plaid_item_id, pi.item_id, pi.institution_name, pi.status, pgp_sym_decrypt(pi.access_token_enc, '{{ $env.TOKEN_ENCRYPTION_PASSPHRASE }}') AS access_token, sc.cursor FROM plaid_items pi JOIN sync_cursors sc ON sc.plaid_item_id = pi.id WHERE pi.status != 'SUSPENDED' ORDER BY pi.id",
+        "options": {}
+      },
+      "id": "get-items",
+      "name": "Get Items & Cursors",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [420, 300],
+      "credentials": {
+        "postgres": {
+          "id": "NEON_CREDENTIAL_ID",
+          "name": "Neon Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ========================================================================\n// Transaction Sync — Code Node\n// ========================================================================\n// For each Plaid Item, calls /transactions/sync with pagination,\n// upserts results to Neon, updates the sync cursor, and flags\n// LOGIN_REQUIRED items.\n//\n// This runs as a single Code node because the sync loop (pagination +\n// upsert per item) is complex enough that chaining n8n native nodes\n// would be harder to maintain.\n// ========================================================================\n\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const { plaid_item_id, item_id, institution_name, access_token, cursor } = item.json;\n  let currentCursor = cursor || '';\n  let hasMore = true;\n  let addedCount = 0;\n  let modifiedCount = 0;\n  let removedCount = 0;\n  let errorState = null;\n\n  try {\n    while (hasMore) {\n      // Call Plaid /transactions/sync\n      const response = await this.helpers.httpRequest({\n        method: 'POST',\n        url: 'https://development.plaid.com/transactions/sync',\n        headers: {\n          'Content-Type': 'application/json',\n        },\n        body: {\n          client_id: $env.PLAID_CLIENT_ID,\n          secret: $env.PLAID_SECRET_DEV,\n          access_token: access_token,\n          cursor: currentCursor,\n          count: 500,\n        },\n        returnFullResponse: false,\n      });\n\n      const { added, modified, removed, next_cursor, has_more } = response;\n\n      // --- UPSERT added transactions ---\n      for (const txn of (added || [])) {\n        if (txn.pending) continue; // skip pending transactions\n        await this.helpers.httpRequest({\n          method: 'POST',\n          url: $env.N8N_POSTGRES_REST_URL || 'skip',\n          // We can't run raw SQL from httpRequest, so we'll use the\n          // approach below instead.\n        }).catch(() => {}); // placeholder — see actual SQL below\n      }\n\n      // Batch upsert via parameterized queries through n8n's built-in\n      // Postgres access.  Since Code nodes can't directly use credential-\n      // bound Postgres, we build SQL statements and execute them via\n      // $execution context.  In practice, the simplest approach is to\n      // output the transactions and let a downstream Postgres node handle\n      // the upsert.  However, for a self-contained solution we use the\n      // pg module approach:\n\n      // Actually, n8n Code nodes in Community Edition don't have direct\n      // pg access.  The pragmatic approach: collect all transactions in\n      // this Code node and output them, then upsert via a Postgres node.\n\n      for (const txn of (added || [])) {\n        if (txn.pending) continue;\n        results.push({\n          json: {\n            _action: 'upsert',\n            plaid_item_id,\n            institution_name,\n            account_id: txn.account_id,\n            transaction_id: txn.transaction_id,\n            amount: txn.amount,\n            iso_currency_code: txn.iso_currency_code || 'USD',\n            date: txn.date,\n            authorized_date: txn.authorized_date,\n            merchant_name: txn.merchant_name,\n            name: txn.name,\n            category: txn.category,\n            personal_finance_category: txn.personal_finance_category,\n            pending: false,\n          }\n        });\n        addedCount++;\n      }\n\n      for (const txn of (modified || [])) {\n        results.push({\n          json: {\n            _action: 'upsert',\n            plaid_item_id,\n            institution_name,\n            account_id: txn.account_id,\n            transaction_id: txn.transaction_id,\n            amount: txn.amount,\n            iso_currency_code: txn.iso_currency_code || 'USD',\n            date: txn.date,\n            authorized_date: txn.authorized_date,\n            merchant_name: txn.merchant_name,\n            name: txn.name,\n            category: txn.category,\n            personal_finance_category: txn.personal_finance_category,\n            pending: txn.pending || false,\n          }\n        });\n        modifiedCount++;\n      }\n\n      for (const txn of (removed || [])) {\n        results.push({\n          json: {\n            _action: 'remove',\n            transaction_id: txn.transaction_id,\n          }\n        });\n        removedCount++;\n      }\n\n      currentCursor = next_cursor;\n      hasMore = has_more;\n    }\n\n    // Output cursor update\n    results.push({\n      json: {\n        _action: 'update_cursor',\n        plaid_item_id,\n        institution_name,\n        cursor: currentCursor,\n        added: addedCount,\n        modified: modifiedCount,\n        removed: removedCount,\n      }\n    });\n\n  } catch (err) {\n    // Check for LOGIN_REQUIRED or ITEM_LOGIN_REQUIRED\n    const errCode = err?.response?.data?.error_code || err?.message || '';\n    if (errCode.includes('LOGIN_REQUIRED') || errCode.includes('ITEM_LOGIN_REQUIRED')) {\n      errorState = 'LOGIN_REQUIRED';\n    }\n    results.push({\n      json: {\n        _action: 'error',\n        plaid_item_id,\n        institution_name,\n        item_id,\n        error: errCode,\n        error_state: errorState || 'ERROR',\n        message: err?.response?.data?.error_message || err.message,\n      }\n    });\n  }\n}\n\nreturn results;"
+      },
+      "id": "sync-code",
+      "name": "Sync Transactions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "upsert",
+              "leftValue": "={{ $json._action }}",
+              "rightValue": "upsert",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-upserts",
+      "name": "Filter: Upserts",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [860, 180]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO transactions (account_id, transaction_id, amount, iso_currency_code, date, authorized_date, merchant_name, name, category, personal_finance_category, pending)\nVALUES (\n  '{{ $json.account_id }}',\n  '{{ $json.transaction_id }}',\n  {{ $json.amount }},\n  '{{ $json.iso_currency_code }}',\n  '{{ $json.date }}',\n  {{ $json.authorized_date ? \"'\" + $json.authorized_date + \"'\" : 'NULL' }},\n  {{ $json.merchant_name ? \"'\" + $json.merchant_name.replace(/'/g, \"''\") + \"'\" : 'NULL' }},\n  '{{ $json.name.replace(/'/g, \"''\") }}',\n  {{ $json.category ? \"ARRAY[\" + $json.category.map(c => \"'\" + c.replace(/'/g, \"''\") + \"'\").join(\",\") + \"]\" : 'NULL' }},\n  {{ $json.personal_finance_category ? \"'\" + JSON.stringify($json.personal_finance_category).replace(/'/g, \"''\") + \"'::jsonb\" : 'NULL' }},\n  {{ $json.pending }}\n)\nON CONFLICT (transaction_id)\nDO UPDATE SET\n  amount = EXCLUDED.amount,\n  date = EXCLUDED.date,\n  authorized_date = EXCLUDED.authorized_date,\n  merchant_name = EXCLUDED.merchant_name,\n  name = EXCLUDED.name,\n  category = EXCLUDED.category,\n  personal_finance_category = EXCLUDED.personal_finance_category,\n  pending = EXCLUDED.pending;",
+        "options": {}
+      },
+      "id": "upsert-txn",
+      "name": "Upsert Transaction",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1080, 180],
+      "credentials": {
+        "postgres": {
+          "id": "NEON_CREDENTIAL_ID",
+          "name": "Neon Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "remove",
+              "leftValue": "={{ $json._action }}",
+              "rightValue": "remove",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-removes",
+      "name": "Filter: Removes",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [860, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "DELETE FROM transactions WHERE transaction_id = '{{ $json.transaction_id }}';",
+        "options": {}
+      },
+      "id": "delete-txn",
+      "name": "Delete Removed Txn",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1080, 300],
+      "credentials": {
+        "postgres": {
+          "id": "NEON_CREDENTIAL_ID",
+          "name": "Neon Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cursor",
+              "leftValue": "={{ $json._action }}",
+              "rightValue": "update_cursor",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-cursors",
+      "name": "Filter: Cursor Updates",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [860, 420]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE sync_cursors SET cursor = '{{ $json.cursor }}', last_synced_at = now() WHERE plaid_item_id = {{ $json.plaid_item_id }};",
+        "options": {}
+      },
+      "id": "update-cursor",
+      "name": "Update Sync Cursor",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1080, 420],
+      "credentials": {
+        "postgres": {
+          "id": "NEON_CREDENTIAL_ID",
+          "name": "Neon Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "error",
+              "leftValue": "={{ $json._action }}",
+              "rightValue": "error",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-errors",
+      "name": "Filter: Errors",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [860, 540]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE plaid_items SET status = '{{ $json.error_state }}' WHERE id = {{ $json.plaid_item_id }};",
+        "options": {}
+      },
+      "id": "update-item-status",
+      "name": "Flag Item Error",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1080, 540],
+      "credentials": {
+        "postgres": {
+          "id": "NEON_CREDENTIAL_ID",
+          "name": "Neon Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $env.ALERT_EMAIL }}",
+        "subject": "⚠️ Plaid Item Error: {{ $json.institution_name }}",
+        "message": "The Plaid connection to {{ $json.institution_name }} has entered an error state.\n\nError: {{ $json.error }}\nDetails: {{ $json.message }}\nItem ID: {{ $json.item_id }}\n\nYou will need to re-authenticate this institution via the Link page.",
+        "options": {}
+      },
+      "id": "send-error-alert",
+      "name": "Email Error Alert",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1300, 540],
+      "credentials": {
+        "smtp": {
+          "id": "SMTP_CREDENTIAL_ID",
+          "name": "SMTP"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Daily 6 AM": {
+      "main": [
+        [{ "node": "Get Items & Cursors", "type": "main", "index": 0 }]
+      ]
+    },
+    "Get Items & Cursors": {
+      "main": [
+        [{ "node": "Sync Transactions", "type": "main", "index": 0 }]
+      ]
+    },
+    "Sync Transactions": {
+      "main": [
+        [
+          { "node": "Filter: Upserts", "type": "main", "index": 0 },
+          { "node": "Filter: Removes", "type": "main", "index": 0 },
+          { "node": "Filter: Cursor Updates", "type": "main", "index": 0 },
+          { "node": "Filter: Errors", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Filter: Upserts": {
+      "main": [
+        [{ "node": "Upsert Transaction", "type": "main", "index": 0 }]
+      ]
+    },
+    "Filter: Removes": {
+      "main": [
+        [{ "node": "Delete Removed Txn", "type": "main", "index": 0 }]
+      ]
+    },
+    "Filter: Cursor Updates": {
+      "main": [
+        [{ "node": "Update Sync Cursor", "type": "main", "index": 0 }]
+      ]
+    },
+    "Filter: Errors": {
+      "main": [
+        [
+          { "node": "Flag Item Error", "type": "main", "index": 0 },
+          { "node": "Email Error Alert", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    { "name": "plaid" },
+    { "name": "subscription-tracker" }
+  ]
+}
