@@ -1,0 +1,146 @@
+{
+  "name": "Weekly Subscription Digest (Monday)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 1"
+            }
+          ]
+        }
+      },
+      "id": "weekly-trigger",
+      "name": "Every Monday 8 AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ========================================================================\n// Step 1: Run subscription detection\n// ========================================================================\n// This calls the detection logic inline (same algorithm as\n// scripts/detect-subscriptions.js) via Plaid transactions already synced\n// in Neon.  We do the detection first, then query the results.\n//\n// Since n8n Code nodes can't import external modules on Community Edition,\n// we call the detection script via the Execute Command node instead.\n// This Code node just returns a passthrough signal.\n// ========================================================================\nreturn [{ json: { trigger: 'digest' } }];"
+      },
+      "id": "passthrough",
+      "name": "Trigger Signal",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 300]
+    },
+    {
+      "parameters": {
+        "command": "cd /home/user/pers-fin && node scripts/detect-subscriptions.js"
+      },
+      "id": "run-detection",
+      "name": "Run Detection Script",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT merchant_key, display_name, amount, prior_amount, cadence_days, first_seen, last_charged, next_expected, is_active, is_new, amount_changed FROM detected_subscriptions WHERE is_active = true ORDER BY next_expected ASC;",
+        "options": {}
+      },
+      "id": "get-subscriptions",
+      "name": "Get Active Subscriptions",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [860, 300],
+      "credentials": {
+        "postgres": {
+          "id": "NEON_CREDENTIAL_ID",
+          "name": "Neon Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ========================================================================\n// Build the weekly digest email body\n// ========================================================================\nconst subs = $input.all().map(i => i.json);\n\nif (subs.length === 0) {\n  return [{ json: { subject: 'Subscription Digest — No Active Subscriptions', body: '<p>No recurring subscriptions detected yet. Transactions may still be syncing.</p>' } }];\n}\n\n// Calculate estimated monthly cost\nlet monthlyTotal = 0;\nfor (const s of subs) {\n  const amt = parseFloat(s.amount);\n  if (s.cadence_days <= 35) monthlyTotal += amt;          // ~monthly\n  else if (s.cadence_days <= 65) monthlyTotal += amt / 2; // ~bimonthly\n  else if (s.cadence_days <= 95) monthlyTotal += amt / 3; // ~quarterly\n  else monthlyTotal += amt / (s.cadence_days / 30);       // other\n}\n\nconst newSubs = subs.filter(s => s.is_new);\nconst changedSubs = subs.filter(s => s.amount_changed);\n\n// Format currency\nconst fmt = (n) => '$' + parseFloat(n).toFixed(2);\nconst fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';\n\n// Build HTML\nlet html = `<div style=\"font-family: system-ui, sans-serif; max-width: 600px;\">`;\nhtml += `<h2>Weekly Subscription Digest</h2>`;\nhtml += `<p style=\"font-size: 18px;\">Estimated monthly cost: <strong>${fmt(monthlyTotal)}</strong></p>`;\n\n// New subscriptions callout\nif (newSubs.length > 0) {\n  html += `<div style=\"background: #e8f5e9; padding: 12px; border-radius: 6px; margin: 16px 0;\">`;\n  html += `<strong>🆕 New this week:</strong><ul>`;\n  for (const s of newSubs) {\n    html += `<li>${s.display_name} — ${fmt(s.amount)} every ${s.cadence_days} days</li>`;\n  }\n  html += `</ul></div>`;\n}\n\n// Amount changes callout\nif (changedSubs.length > 0) {\n  html += `<div style=\"background: #fff3e0; padding: 12px; border-radius: 6px; margin: 16px 0;\">`;\n  html += `<strong>💰 Price changes:</strong><ul>`;\n  for (const s of changedSubs) {\n    const delta = parseFloat(s.amount) - parseFloat(s.prior_amount);\n    const arrow = delta > 0 ? '↑' : '↓';\n    html += `<li>${s.display_name}: ${fmt(s.prior_amount)} → ${fmt(s.amount)} (${arrow}${fmt(Math.abs(delta))})</li>`;\n  }\n  html += `</ul></div>`;\n}\n\n// Full table\nhtml += `<table style=\"width: 100%; border-collapse: collapse; margin-top: 16px;\">`;\nhtml += `<tr style=\"background: #f5f5f5;\"><th style=\"text-align: left; padding: 8px;\">Subscription</th><th style=\"padding: 8px;\">Amount</th><th style=\"padding: 8px;\">Cycle</th><th style=\"padding: 8px;\">Next Charge</th></tr>`;\nfor (const s of subs) {\n  const cadenceLabel = s.cadence_days <= 35 ? 'Monthly' : s.cadence_days <= 65 ? 'Bi-monthly' : 'Quarterly';\n  html += `<tr style=\"border-bottom: 1px solid #eee;\">`;\n  html += `<td style=\"padding: 8px;\">${s.display_name}</td>`;\n  html += `<td style=\"padding: 8px; text-align: center;\">${fmt(s.amount)}</td>`;\n  html += `<td style=\"padding: 8px; text-align: center;\">${cadenceLabel}</td>`;\n  html += `<td style=\"padding: 8px; text-align: center;\">${fmtDate(s.next_expected)}</td>`;\n  html += `</tr>`;\n}\nhtml += `</table>`;\nhtml += `<p style=\"color: #888; font-size: 12px; margin-top: 24px;\">Generated by your personal subscription tracker. ${subs.length} active subscription(s) tracked.</p>`;\nhtml += `</div>`;\n\n// Reset is_new and amount_changed flags after digest\n// (We output SQL to run in the next node)\nconst resetSql = `UPDATE detected_subscriptions SET is_new = false, amount_changed = false WHERE is_active = true;`;\n\nreturn [{ json: {\n  subject: `Subscription Digest — ${subs.length} active, ${fmt(monthlyTotal)}/mo`,\n  body: html,\n  resetSql,\n  subCount: subs.length,\n  monthlyTotal: monthlyTotal.toFixed(2),\n} }];"
+      },
+      "id": "build-digest",
+      "name": "Build Digest Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1080, 300]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $env.ALERT_EMAIL }}",
+        "subject": "={{ $json.subject }}",
+        "message": "={{ $json.body }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "send-digest",
+      "name": "Send Digest Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1300, 240],
+      "credentials": {
+        "smtp": {
+          "id": "SMTP_CREDENTIAL_ID",
+          "name": "SMTP"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.resetSql }}",
+        "options": {}
+      },
+      "id": "reset-flags",
+      "name": "Reset New/Changed Flags",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1300, 400],
+      "credentials": {
+        "postgres": {
+          "id": "NEON_CREDENTIAL_ID",
+          "name": "Neon Postgres"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every Monday 8 AM": {
+      "main": [
+        [{ "node": "Trigger Signal", "type": "main", "index": 0 }]
+      ]
+    },
+    "Trigger Signal": {
+      "main": [
+        [{ "node": "Run Detection Script", "type": "main", "index": 0 }]
+      ]
+    },
+    "Run Detection Script": {
+      "main": [
+        [{ "node": "Get Active Subscriptions", "type": "main", "index": 0 }]
+      ]
+    },
+    "Get Active Subscriptions": {
+      "main": [
+        [{ "node": "Build Digest Email", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build Digest Email": {
+      "main": [
+        [
+          { "node": "Send Digest Email", "type": "main", "index": 0 },
+          { "node": "Reset New/Changed Flags", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    { "name": "digest" },
+    { "name": "subscription-tracker" }
+  ]
+}

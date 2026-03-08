@@ -1,0 +1,15 @@
+{
+  "name": "pers-fin-plaid-link",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lightweight Plaid Link server for personal subscription tracker",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "pg": "^8.13.0",
+    "plaid": "^28.0.0"
+  }
+}
