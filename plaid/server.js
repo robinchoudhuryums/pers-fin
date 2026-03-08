@@ -22,20 +22,22 @@ const app = express();
 app.use(express.json());
 
 // ---------------------------------------------------------------------------
-// Plaid client setup (Development environment)
+// Plaid client setup
 // ---------------------------------------------------------------------------
-// PLAID DEV NOTE: Development gives you up to 100 Items, each with up to 500
-// live transactions.  Auth, Transactions, and Identity products are available.
-// Credentials use Plaid's sandbox-style test credentials — but data comes from
-// REAL institutions via credential-based login (no OAuth in Dev for most banks).
-// Capital One specifically may require OAuth even in Dev; watch for redirect
-// URI requirements.
+// Set PLAID_ENV=development in .env to use Development (requires Plaid
+// approval).  Defaults to sandbox, which is free and needs no approval.
+// Sandbox test credentials:  user_good / pass_good
+const plaidEnv = (process.env.PLAID_ENV || "sandbox").toLowerCase();
 const plaidConfig = new Configuration({
-  basePath: PlaidEnvironments.development,
+  basePath: plaidEnv === "development"
+    ? PlaidEnvironments.development
+    : PlaidEnvironments.sandbox,
   baseOptions: {
     headers: {
       "PLAID-CLIENT-ID": process.env.PLAID_CLIENT_ID,
-      "PLAID-SECRET": process.env.PLAID_SECRET_DEV,
+      "PLAID-SECRET": plaidEnv === "development"
+        ? process.env.PLAID_SECRET_DEV
+        : process.env.PLAID_SECRET_SANDBOX,
     },
   },
 });
