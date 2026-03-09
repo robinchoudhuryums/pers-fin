@@ -1,0 +1,8 @@
+node_modules
+plaid/node_modules
+.env
+.git
+.gitignore
+*.md
+plan.md
+tests/

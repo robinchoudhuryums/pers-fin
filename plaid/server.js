@@ -23,6 +23,13 @@ const multer = require("multer");
 const { parse } = require("csv-parse/sync");
 const { detectSubscriptions } = require("../scripts/detect-subscriptions");
 
+let sheetsSync;
+try {
+  sheetsSync = require("../scripts/sheets-sync");
+} catch {
+  sheetsSync = null; // googleapis not installed — Sheets sync disabled
+}
+
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 const app = express();
@@ -661,6 +668,61 @@ app.post("/api/detect", async (_req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// POST /api/sheets/sync — sync transactions + subscriptions to Google Sheets
+// ---------------------------------------------------------------------------
+app.post("/api/sheets/sync", async (_req, res) => {
+  if (!sheetsSync) {
+    return res.status(501).json({ error: "Google Sheets integration not available. Install googleapis: npm install googleapis" });
+  }
+  if (!process.env.GOOGLE_SHEETS_ID || !process.env.GOOGLE_SERVICE_ACCOUNT_KEY) {
+    return res.status(400).json({ error: "Set GOOGLE_SHEETS_ID and GOOGLE_SERVICE_ACCOUNT_KEY in .env" });
+  }
+  try {
+    const result = await sheetsSync.syncAll();
+    res.json(result);
+  } catch (err) {
+    console.error("Sheets sync error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/sheets/dashboard — rebuild dashboard sheet only
+// ---------------------------------------------------------------------------
+app.post("/api/sheets/dashboard", async (_req, res) => {
+  if (!sheetsSync) {
+    return res.status(501).json({ error: "Google Sheets integration not available. Install googleapis: npm install googleapis" });
+  }
+  try {
+    const result = await sheetsSync.syncDashboardOnly();
+    res.json(result);
+  } catch (err) {
+    console.error("Dashboard rebuild error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/cleanup — manual retention cleanup
+// ---------------------------------------------------------------------------
+app.post("/api/cleanup", async (_req, res) => {
+  try {
+    const txnResult = await pool.query(
+      `DELETE FROM transactions WHERE date < (CURRENT_DATE - INTERVAL '18 months') RETURNING transaction_id`
+    );
+    const subResult = await pool.query(
+      `DELETE FROM detected_subscriptions WHERE is_active = false AND updated_at < (CURRENT_DATE - INTERVAL '6 months') RETURNING merchant_key`
+    );
+    res.json({
+      transactions_pruned: txnResult.rowCount,
+      subscriptions_pruned: subResult.rowCount,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // GET /dashboard — subscription dashboard page
 // ---------------------------------------------------------------------------
 app.get("/dashboard", (_req, res) => {
@@ -752,6 +814,7 @@ app.get("/dashboard", (_req, res) => {
   <div class="actions">
     <button class="primary" id="detect-btn" onclick="runDetection()">Run Detection</button>
     <button id="add-btn" onclick="toggleManualForm()">+ Add Manual</button>
+    <button id="sheets-btn" onclick="syncSheets()" title="Sync to Google Sheets">Sync to Sheets</button>
     <select id="filter-select" onchange="loadSubscriptions()">
       <option value="active">Active</option>
       <option value="dismissed">Dismissed</option>
@@ -946,6 +1009,23 @@ app.get("/dashboard", (_req, res) => {
     async function uncancelSub(id) {
       await fetch('/api/subscriptions/' + id + '/uncancel', { method: 'PATCH' });
       loadSubscriptions();
+    }
+
+    async function syncSheets() {
+      const btn = document.getElementById('sheets-btn');
+      btn.disabled = true;
+      btn.textContent = 'Syncing...';
+      try {
+        const res = await fetch('/api/sheets/sync', { method: 'POST' });
+        const data = await res.json();
+        if (res.ok) {
+          showMsg('Synced to Google Sheets: ' + data.transactions_synced + ' transactions, ' + data.subscriptions_synced + ' subscriptions.', true);
+        } else {
+          showMsg('Sheets sync error: ' + data.error, false);
+        }
+      } catch (e) { showMsg('Network error: ' + e.message, false); }
+      btn.disabled = false;
+      btn.textContent = 'Sync to Sheets';
     }
 
     loadSubscriptions();

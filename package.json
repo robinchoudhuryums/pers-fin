@@ -1,5 +1,14 @@
 {
+  "name": "pers-fin",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "start": "node plaid/server.js",
+    "detect": "node scripts/detect-subscriptions.js",
+    "sheets-sync": "node scripts/sheets-sync.js"
+  },
   "dependencies": {
+    "googleapis": "^144.0.0",
     "pg": "^8.20.0"
   }
 }

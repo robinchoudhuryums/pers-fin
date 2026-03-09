@@ -1,0 +1,95 @@
+{
+  "name": "Weekly Retention Cleanup (Sunday)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 3 * * 0"
+            }
+          ]
+        }
+      },
+      "id": "cleanup-trigger",
+      "name": "Every Sunday 3 AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "DELETE FROM transactions WHERE date < (CURRENT_DATE - INTERVAL '18 months') RETURNING transaction_id;",
+        "options": {}
+      },
+      "id": "cleanup-transactions",
+      "name": "Prune Old Transactions",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [420, 240],
+      "credentials": {
+        "postgres": {
+          "id": "NEON_CREDENTIAL_ID",
+          "name": "Neon Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "DELETE FROM detected_subscriptions WHERE is_active = false AND updated_at < (CURRENT_DATE - INTERVAL '6 months') RETURNING merchant_key;",
+        "options": {}
+      },
+      "id": "cleanup-subscriptions",
+      "name": "Prune Inactive Subscriptions",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [420, 400],
+      "credentials": {
+        "postgres": {
+          "id": "NEON_CREDENTIAL_ID",
+          "name": "Neon Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const txnResults = $('Prune Old Transactions').all();\nconst subResults = $('Prune Inactive Subscriptions').all();\n\nconst txnCount = txnResults.length;\nconst subCount = subResults.length;\n\nreturn [{ json: {\n  transactions_pruned: txnCount,\n  subscriptions_pruned: subCount,\n  timestamp: new Date().toISOString(),\n  summary: `Retention cleanup: ${txnCount} old transactions, ${subCount} inactive subscriptions removed.`\n} }];"
+      },
+      "id": "summarize",
+      "name": "Build Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    }
+  ],
+  "connections": {
+    "Every Sunday 3 AM": {
+      "main": [
+        [
+          { "node": "Prune Old Transactions", "type": "main", "index": 0 },
+          { "node": "Prune Inactive Subscriptions", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Prune Old Transactions": {
+      "main": [
+        [{ "node": "Build Summary", "type": "main", "index": 0 }]
+      ]
+    },
+    "Prune Inactive Subscriptions": {
+      "main": [
+        [{ "node": "Build Summary", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    { "name": "cleanup" },
+    { "name": "subscription-tracker" }
+  ]
+}
