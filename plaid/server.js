@@ -18,8 +18,10 @@ const express = require("express");
 const crypto = require("crypto");
 const { Pool } = require("pg");
 const { Configuration, PlaidApi, PlaidEnvironments, Products, CountryCode } = require("plaid");
+const path = require("path");
 const multer = require("multer");
 const { parse } = require("csv-parse/sync");
+const { detectSubscriptions } = require("../scripts/detect-subscriptions");
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -431,6 +433,528 @@ app.get("/api/csv-imports", async (_req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Cancellation URLs for common subscription services
+// ---------------------------------------------------------------------------
+const CANCEL_URLS = {
+  "netflix": "https://www.netflix.com/cancelplan",
+  "spotify": "https://www.spotify.com/account/subscription/",
+  "hulu": "https://secure.hulu.com/account",
+  "disney+": "https://www.disneyplus.com/account",
+  "disney plus": "https://www.disneyplus.com/account",
+  "hbo max": "https://www.max.com/account",
+  "max": "https://www.max.com/account",
+  "amazon prime": "https://www.amazon.com/mc/pipelines/cancelPrime",
+  "prime video": "https://www.amazon.com/mc/pipelines/cancelPrime",
+  "apple tv": "https://support.apple.com/en-us/HT202039",
+  "apple music": "https://support.apple.com/en-us/HT202039",
+  "apple one": "https://support.apple.com/en-us/HT202039",
+  "icloud": "https://support.apple.com/en-us/HT202039",
+  "youtube premium": "https://www.youtube.com/paid_memberships",
+  "youtube music": "https://www.youtube.com/paid_memberships",
+  "google one": "https://one.google.com/settings",
+  "adobe": "https://account.adobe.com/plans",
+  "creative cloud": "https://account.adobe.com/plans",
+  "microsoft 365": "https://account.microsoft.com/services/",
+  "xbox game pass": "https://account.microsoft.com/services/",
+  "playstation plus": "https://store.playstation.com/subscriptions",
+  "ps plus": "https://store.playstation.com/subscriptions",
+  "dropbox": "https://www.dropbox.com/account/plan",
+  "chatgpt": "https://chat.openai.com/settings/subscription",
+  "openai": "https://chat.openai.com/settings/subscription",
+  "slack": "https://slack.com/account/settings",
+  "zoom": "https://zoom.us/account",
+  "nordvpn": "https://my.nordaccount.com/dashboard/nordvpn/",
+  "expressvpn": "https://www.expressvpn.com/subscriptions",
+  "paramount+": "https://www.paramountplus.com/account/",
+  "paramount plus": "https://www.paramountplus.com/account/",
+  "peacock": "https://www.peacocktv.com/account/subscription",
+  "crunchyroll": "https://www.crunchyroll.com/account/subscription",
+  "audible": "https://www.audible.com/account/prefs",
+  "kindle unlimited": "https://www.amazon.com/kindle-dbs/hz/subscribe/ku",
+  "nytimes": "https://myaccount.nytimes.com/seg/subscription",
+  "new york times": "https://myaccount.nytimes.com/seg/subscription",
+  "wall street journal": "https://customercenter.wsj.com/",
+  "wsj": "https://customercenter.wsj.com/",
+  "linkedin premium": "https://www.linkedin.com/mypreferences/d/manage-subscription",
+  "grammarly": "https://account.grammarly.com/subscription",
+  "dashlane": "https://app.dashlane.com/account/subscriptions",
+  "1password": "https://my.1password.com/settings/billing",
+  "github": "https://github.com/settings/billing",
+  "notion": "https://www.notion.so/my-account",
+  "figma": "https://www.figma.com/settings",
+  "canva": "https://www.canva.com/settings/billing-and-plans",
+};
+
+function findCancelUrl(merchantName) {
+  if (!merchantName) return null;
+  const lower = merchantName.toLowerCase();
+  for (const [key, url] of Object.entries(CANCEL_URLS)) {
+    if (lower.includes(key)) return url;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/subscriptions — list all detected subscriptions
+// ---------------------------------------------------------------------------
+app.get("/api/subscriptions", async (req, res) => {
+  const filter = req.query.filter || "active"; // active | dismissed | cancelled | all
+  try {
+    let where;
+    switch (filter) {
+      case "dismissed": where = "WHERE ds.is_dismissed = true AND ds.cancelled_at IS NULL"; break;
+      case "cancelled": where = "WHERE ds.cancelled_at IS NOT NULL"; break;
+      case "all": where = ""; break;
+      default: where = "WHERE ds.is_active = true AND ds.is_dismissed = false AND ds.cancelled_at IS NULL";
+    }
+    const result = await pool.query(`
+      SELECT ds.*,
+        CASE WHEN ds.cadence_days > 0
+          THEN ROUND(ds.amount * (30.0 / ds.cadence_days), 2)
+          ELSE ds.amount
+        END AS monthly_cost
+      FROM detected_subscriptions ds
+      ${where}
+      ORDER BY ds.amount DESC
+    `);
+
+    // Attach cancellation links
+    const subs = result.rows.map(s => ({
+      ...s,
+      cancel_url: findCancelUrl(s.display_name) || findCancelUrl(s.merchant_key),
+    }));
+
+    // Summary
+    const active = subs.filter(s => !s.is_dismissed && !s.cancelled_at);
+    const monthlyCost = active.reduce((sum, s) => sum + parseFloat(s.monthly_cost || 0), 0);
+    const yearlyCost = monthlyCost * 12;
+
+    res.json({
+      subscriptions: subs,
+      summary: {
+        total_active: active.length,
+        monthly_cost: Math.round(monthlyCost * 100) / 100,
+        yearly_cost: Math.round(yearlyCost * 100) / 100,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/subscriptions — manually add a subscription
+// ---------------------------------------------------------------------------
+app.post("/api/subscriptions", async (req, res) => {
+  const { name, amount, cadence_days, notes } = req.body;
+  if (!name || !amount || !cadence_days) {
+    return res.status(400).json({ error: "name, amount, and cadence_days are required" });
+  }
+  try {
+    const merchantKey = `manual_${name.toLowerCase().replace(/[^a-z0-9]+/g, "_")}`;
+    const today = new Date().toISOString().slice(0, 10);
+    const nextExpected = new Date(Date.now() + cadence_days * 86400000).toISOString().slice(0, 10);
+
+    const result = await pool.query(
+      `INSERT INTO detected_subscriptions
+         (merchant_key, display_name, amount, cadence_days, first_seen, last_charged,
+          next_expected, is_active, is_new, source, notes)
+       VALUES ($1, $2, $3, $4, $5, $5, $6, true, false, 'manual', $7)
+       ON CONFLICT (merchant_key, cadence_days)
+       DO UPDATE SET
+         display_name = EXCLUDED.display_name,
+         amount = EXCLUDED.amount,
+         notes = EXCLUDED.notes,
+         is_active = true,
+         cancelled_at = NULL,
+         updated_at = now()
+       RETURNING *`,
+      [merchantKey, name, amount, cadence_days, today, nextExpected, notes || null]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// PATCH /api/subscriptions/:id/dismiss — hide a false positive
+// ---------------------------------------------------------------------------
+app.patch("/api/subscriptions/:id/dismiss", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `UPDATE detected_subscriptions SET is_dismissed = true, updated_at = now()
+       WHERE id = $1 RETURNING *`,
+      [req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "Not found" });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// PATCH /api/subscriptions/:id/undismiss — restore a dismissed subscription
+// ---------------------------------------------------------------------------
+app.patch("/api/subscriptions/:id/undismiss", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `UPDATE detected_subscriptions SET is_dismissed = false, updated_at = now()
+       WHERE id = $1 RETURNING *`,
+      [req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "Not found" });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// PATCH /api/subscriptions/:id/cancel — mark subscription as cancelled
+// ---------------------------------------------------------------------------
+app.patch("/api/subscriptions/:id/cancel", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `UPDATE detected_subscriptions
+       SET cancelled_at = now(), cancel_confirmed = true, is_active = false, updated_at = now()
+       WHERE id = $1 RETURNING *`,
+      [req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "Not found" });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// PATCH /api/subscriptions/:id/uncancel — undo a cancellation mark
+// ---------------------------------------------------------------------------
+app.patch("/api/subscriptions/:id/uncancel", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `UPDATE detected_subscriptions
+       SET cancelled_at = NULL, cancel_confirmed = false, is_active = true, updated_at = now()
+       WHERE id = $1 RETURNING *`,
+      [req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "Not found" });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/detect — trigger subscription detection on demand
+// ---------------------------------------------------------------------------
+app.post("/api/detect", async (_req, res) => {
+  try {
+    const detected = await detectSubscriptions();
+    res.json({ detected_count: detected.length, subscriptions: detected });
+  } catch (err) {
+    console.error("On-demand detection error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /dashboard — subscription dashboard page
+// ---------------------------------------------------------------------------
+app.get("/dashboard", (_req, res) => {
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Subscription Dashboard</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; color: #1a1a1a; }
+    a { color: #0052ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    h1 { margin-bottom: 4px; }
+    .subtitle { color: #666; margin-bottom: 24px; font-size: 14px; }
+
+    /* Summary cards */
+    .summary { display: flex; gap: 16px; margin-bottom: 28px; flex-wrap: wrap; }
+    .card { flex: 1; min-width: 140px; padding: 16px; border-radius: 8px; background: #f8f9fa; border: 1px solid #e9ecef; }
+    .card .label { font-size: 12px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
+    .card .value { font-size: 28px; font-weight: 700; margin-top: 4px; }
+    .card .value.cost { color: #d63031; }
+    .card .value.count { color: #0052ff; }
+
+    /* Action bar */
+    .actions { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
+    .actions button, .actions select {
+      padding: 8px 16px; font-size: 14px; border: 1px solid #ccc; border-radius: 6px;
+      cursor: pointer; background: #fff;
+    }
+    .actions button.primary { background: #0052ff; color: #fff; border-color: #0052ff; }
+    .actions button.primary:disabled { opacity: 0.6; cursor: not-allowed; }
+    .actions button:hover:not(:disabled) { opacity: 0.9; }
+
+    /* Subscription table */
+    table { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
+    th { text-align: left; padding: 10px 8px; border-bottom: 2px solid #dee2e6; font-size: 13px;
+         color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
+    td { padding: 10px 8px; border-bottom: 1px solid #f0f0f0; font-size: 14px; }
+    tr:hover { background: #f8f9fa; }
+    .amount { font-weight: 600; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+    .badge-new { background: #d4edda; color: #155724; }
+    .badge-price { background: #fff3cd; color: #856404; }
+    .badge-manual { background: #e0e7ff; color: #3730a3; }
+    .badge-dismissed { background: #f0f0f0; color: #666; }
+    .badge-cancelled { background: #fce4e4; color: #c0392b; }
+    .btn-sm { padding: 4px 10px; font-size: 12px; border: 1px solid #ccc; border-radius: 4px;
+              cursor: pointer; background: #fff; margin-right: 4px; }
+    .btn-sm:hover { background: #f0f0f0; }
+    .btn-sm.cancel { border-color: #e74c3c; color: #e74c3c; }
+    .btn-sm.cancel:hover { background: #fce4e4; }
+    .btn-sm.restore { border-color: #27ae60; color: #27ae60; }
+    .btn-sm.restore:hover { background: #e6f9e6; }
+    .cancel-link { font-size: 12px; }
+    .next-date { font-size: 13px; color: #666; }
+    .next-date.overdue { color: #e74c3c; font-weight: 600; }
+
+    /* Manual add form */
+    .manual-form { background: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 24px; display: none; }
+    .manual-form h3 { margin-bottom: 12px; }
+    .manual-form .fields { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; }
+    .manual-form .field { display: flex; flex-direction: column; gap: 4px; }
+    .manual-form label { font-size: 12px; font-weight: 600; color: #666; }
+    .manual-form input, .manual-form select { padding: 8px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; }
+    .manual-form input[name="name"] { width: 200px; }
+    .manual-form input[name="amount"] { width: 100px; }
+    .manual-form input[name="notes"] { width: 200px; }
+
+    .status-msg { padding: 10px; border-radius: 6px; margin-bottom: 16px; display: none; }
+    .status-msg.success { background: #e6f9e6; border: 1px solid #4caf50; display: block; }
+    .status-msg.error { background: #fce4e4; border: 1px solid #f44336; display: block; }
+    .empty { text-align: center; padding: 40px; color: #999; }
+    nav { margin-bottom: 20px; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <nav><a href="/">Link Accounts / CSV Import</a></nav>
+  <h1>Subscriptions</h1>
+  <p class="subtitle">Detected recurring charges and manually tracked subscriptions</p>
+
+  <div class="summary">
+    <div class="card"><div class="label">Monthly Cost</div><div class="value cost" id="monthly-cost">--</div></div>
+    <div class="card"><div class="label">Yearly Cost</div><div class="value cost" id="yearly-cost">--</div></div>
+    <div class="card"><div class="label">Active</div><div class="value count" id="active-count">--</div></div>
+  </div>
+
+  <div class="actions">
+    <button class="primary" id="detect-btn" onclick="runDetection()">Run Detection</button>
+    <button id="add-btn" onclick="toggleManualForm()">+ Add Manual</button>
+    <select id="filter-select" onchange="loadSubscriptions()">
+      <option value="active">Active</option>
+      <option value="dismissed">Dismissed</option>
+      <option value="cancelled">Cancelled</option>
+      <option value="all">All</option>
+    </select>
+  </div>
+
+  <div id="status-msg" class="status-msg"></div>
+
+  <div class="manual-form" id="manual-form">
+    <h3>Add Subscription Manually</h3>
+    <div class="fields">
+      <div class="field"><label>Service Name</label><input name="name" placeholder="e.g. Netflix"></div>
+      <div class="field"><label>Amount ($)</label><input name="amount" type="number" step="0.01" placeholder="15.99"></div>
+      <div class="field">
+        <label>Billing Cycle</label>
+        <select name="cadence">
+          <option value="30">Monthly</option>
+          <option value="90">Quarterly</option>
+          <option value="365">Yearly</option>
+          <option value="60">Every 2 months</option>
+        </select>
+      </div>
+      <div class="field"><label>Notes (optional)</label><input name="notes" placeholder="Family plan, etc."></div>
+      <div class="field"><label>&nbsp;</label><button class="primary" onclick="addManual()">Add</button></div>
+    </div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Subscription</th>
+        <th>Amount</th>
+        <th>/month</th>
+        <th>Cycle</th>
+        <th>Next Charge</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody id="subs-body">
+      <tr><td colspan="6" class="empty">Loading...</td></tr>
+    </tbody>
+  </table>
+
+  <script>
+    const tbody = document.getElementById('subs-body');
+    const statusMsg = document.getElementById('status-msg');
+
+    function showMsg(text, ok) {
+      statusMsg.textContent = text;
+      statusMsg.className = 'status-msg ' + (ok ? 'success' : 'error');
+      setTimeout(() => { statusMsg.style.display = 'none'; statusMsg.className = 'status-msg'; }, 4000);
+    }
+
+    function cadenceLabel(days) {
+      if (days === 30) return 'Monthly';
+      if (days === 60) return 'Bimonthly';
+      if (days === 90) return 'Quarterly';
+      if (days === 365) return 'Yearly';
+      return days + 'd';
+    }
+
+    function isOverdue(dateStr) {
+      return new Date(dateStr) < new Date();
+    }
+
+    async function loadSubscriptions() {
+      const filter = document.getElementById('filter-select').value;
+      try {
+        const res = await fetch('/api/subscriptions?filter=' + filter);
+        const data = await res.json();
+
+        document.getElementById('monthly-cost').textContent = '$' + data.summary.monthly_cost.toFixed(2);
+        document.getElementById('yearly-cost').textContent = '$' + data.summary.yearly_cost.toFixed(2);
+        document.getElementById('active-count').textContent = data.summary.total_active;
+
+        if (!data.subscriptions.length) {
+          tbody.innerHTML = '<tr><td colspan="6" class="empty">No subscriptions found. Import transactions or add manually.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = data.subscriptions.map(s => {
+          const badges = [];
+          if (s.is_new) badges.push('<span class="badge badge-new">NEW</span>');
+          if (s.amount_changed) badges.push('<span class="badge badge-price">PRICE CHANGE</span>');
+          if (s.source === 'manual') badges.push('<span class="badge badge-manual">MANUAL</span>');
+          if (s.is_dismissed) badges.push('<span class="badge badge-dismissed">DISMISSED</span>');
+          if (s.cancelled_at) badges.push('<span class="badge badge-cancelled">CANCELLED</span>');
+
+          const overdue = !s.cancelled_at && isOverdue(s.next_expected);
+          const nextClass = overdue ? 'next-date overdue' : 'next-date';
+          const nextLabel = s.cancelled_at ? 'Cancelled ' + new Date(s.cancelled_at).toLocaleDateString() : new Date(s.next_expected).toLocaleDateString();
+
+          let actions = '';
+          if (s.cancelled_at) {
+            actions = '<button class="btn-sm restore" onclick="uncancelSub(' + s.id + ')">Restore</button>';
+          } else if (s.is_dismissed) {
+            actions = '<button class="btn-sm restore" onclick="undismissSub(' + s.id + ')">Restore</button>';
+          } else {
+            actions += '<button class="btn-sm" onclick="dismissSub(' + s.id + ')">Dismiss</button>';
+            if (s.cancel_url) {
+              actions += '<a class="btn-sm cancel" href="' + s.cancel_url + '" target="_blank" rel="noopener" onclick="event.stopPropagation()">Cancel&rarr;</a>';
+              actions += '<button class="btn-sm cancel" onclick="markCancelled(' + s.id + ')" title="Mark as cancelled after completing cancellation">Done</button>';
+            } else {
+              actions += '<button class="btn-sm cancel" onclick="markCancelled(' + s.id + ')">Cancel</button>';
+            }
+          }
+
+          const notesHtml = s.notes ? '<div style="font-size:12px;color:#888;">' + s.notes + '</div>' : '';
+
+          return '<tr>' +
+            '<td><strong>' + s.display_name + '</strong> ' + badges.join(' ') + notesHtml + '</td>' +
+            '<td class="amount">$' + parseFloat(s.amount).toFixed(2) + '</td>' +
+            '<td class="amount">$' + parseFloat(s.monthly_cost).toFixed(2) + '</td>' +
+            '<td>' + cadenceLabel(s.cadence_days) + '</td>' +
+            '<td><span class="' + nextClass + '">' + nextLabel + '</span></td>' +
+            '<td>' + actions + '</td>' +
+            '</tr>';
+        }).join('');
+      } catch (e) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty">Error loading subscriptions: ' + e.message + '</td></tr>';
+      }
+    }
+
+    async function runDetection() {
+      const btn = document.getElementById('detect-btn');
+      btn.disabled = true;
+      btn.textContent = 'Detecting...';
+      try {
+        const res = await fetch('/api/detect', { method: 'POST' });
+        const data = await res.json();
+        if (res.ok) {
+          showMsg('Detection complete: ' + data.detected_count + ' subscriptions found.', true);
+          loadSubscriptions();
+        } else {
+          showMsg('Detection error: ' + data.error, false);
+        }
+      } catch (e) { showMsg('Network error: ' + e.message, false); }
+      btn.disabled = false;
+      btn.textContent = 'Run Detection';
+    }
+
+    function toggleManualForm() {
+      const form = document.getElementById('manual-form');
+      form.style.display = form.style.display === 'none' ? 'block' : 'none';
+    }
+
+    async function addManual() {
+      const name = document.querySelector('.manual-form input[name="name"]').value.trim();
+      const amount = parseFloat(document.querySelector('.manual-form input[name="amount"]').value);
+      const cadence_days = parseInt(document.querySelector('.manual-form select[name="cadence"]').value);
+      const notes = document.querySelector('.manual-form input[name="notes"]').value.trim();
+      if (!name || !amount) { showMsg('Name and amount are required.', false); return; }
+
+      try {
+        const res = await fetch('/api/subscriptions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, amount, cadence_days, notes: notes || undefined }),
+        });
+        if (res.ok) {
+          showMsg('Added ' + name + ' ($' + amount.toFixed(2) + '/' + cadenceLabel(cadence_days).toLowerCase() + ')', true);
+          document.querySelector('.manual-form input[name="name"]').value = '';
+          document.querySelector('.manual-form input[name="amount"]').value = '';
+          document.querySelector('.manual-form input[name="notes"]').value = '';
+          loadSubscriptions();
+        } else {
+          const data = await res.json();
+          showMsg('Error: ' + data.error, false);
+        }
+      } catch (e) { showMsg('Network error: ' + e.message, false); }
+    }
+
+    async function dismissSub(id) {
+      await fetch('/api/subscriptions/' + id + '/dismiss', { method: 'PATCH' });
+      loadSubscriptions();
+    }
+
+    async function undismissSub(id) {
+      await fetch('/api/subscriptions/' + id + '/undismiss', { method: 'PATCH' });
+      loadSubscriptions();
+    }
+
+    async function markCancelled(id) {
+      if (!confirm('Mark this subscription as cancelled?')) return;
+      await fetch('/api/subscriptions/' + id + '/cancel', { method: 'PATCH' });
+      showMsg('Subscription marked as cancelled.', true);
+      loadSubscriptions();
+    }
+
+    async function uncancelSub(id) {
+      await fetch('/api/subscriptions/' + id + '/uncancel', { method: 'PATCH' });
+      loadSubscriptions();
+    }
+
+    loadSubscriptions();
+  </script>
+</body>
+</html>`);
+});
+
+// ---------------------------------------------------------------------------
 // GET / — minimal HTML page with Plaid Link
 // ---------------------------------------------------------------------------
 app.get("/", (_req, res) => {
@@ -463,6 +987,7 @@ app.get("/", (_req, res) => {
   </style>
 </head>
 <body>
+  <nav style="margin-bottom:20px;font-size:14px;"><a href="/dashboard">View Dashboard</a></nav>
   <h1>Subscription Tracker</h1>
   <p>Link a financial institution to start tracking recurring charges.</p>
   <button id="link-btn" disabled>Loading…</button>
