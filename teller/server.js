@@ -9,6 +9,8 @@
 //   POST /api/enroll           — store access token from Teller Connect
 //   POST /api/sync             — pull transactions for all enrollments
 //   GET  /api/items            — list linked institutions
+//   GET  /api/transactions     — list transactions (query: months, limit, offset)
+//   GET  /api/subscriptions    — list detected subscriptions
 //   GET  /                     — Teller Connect + CSV import UI
 //   GET  /dashboard            — subscription dashboard
 //
@@ -796,6 +798,57 @@ app.patch("/api/subscriptions/:id/uncancel", async (req, res) => {
     );
     if (!result.rows.length) return res.status(404).json({ error: "Not found" });
     res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/transactions — list transactions with optional filters
+// ---------------------------------------------------------------------------
+app.get("/api/transactions", async (req, res) => {
+  const months = parseInt(req.query.months) || 6;
+  const limit = Math.min(parseInt(req.query.limit) || 10000, 50000);
+  const offset = parseInt(req.query.offset) || 0;
+
+  try {
+    const result = await pool.query(`
+      SELECT
+        t.transaction_id,
+        t.date,
+        COALESCE(t.merchant_name, t.name) AS merchant,
+        t.amount,
+        la.name AS account_name,
+        la.type AS account_type,
+        COALESCE(pi.institution_name, te.institution_name, 'CSV Import') AS institution_name,
+        t.category[1] AS category,
+        t.personal_finance_category->>'primary' AS pfc_primary,
+        t.personal_finance_category->>'detailed' AS pfc_detailed,
+        t.pending
+      FROM transactions t
+      JOIN linked_accounts la ON la.account_id = t.account_id
+      LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
+      LEFT JOIN teller_enrollments te ON te.id = la.teller_enrollment_id
+      WHERE t.pending = false
+        AND t.date >= CURRENT_DATE - make_interval(months => $1)
+      ORDER BY t.date DESC
+      LIMIT $2 OFFSET $3
+    `, [months, limit, offset]);
+
+    const countResult = await pool.query(`
+      SELECT COUNT(*) AS total
+      FROM transactions
+      WHERE pending = false
+        AND date >= CURRENT_DATE - make_interval(months => $1)
+    `, [months]);
+
+    res.json({
+      transactions: result.rows,
+      total: parseInt(countResult.rows[0].total),
+      months,
+      limit,
+      offset,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

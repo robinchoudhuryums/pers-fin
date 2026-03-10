@@ -42,10 +42,11 @@ const CONFIG = {
   SHEET_IMPORT_LOG: "Import Log",
   SHEET_SYNC_LOG: "Sync Log",
   // Detection parameters (matches Teller server's detect-subscriptions.js)
-  CADENCES: [30, 60, 90],
+  CADENCES: [30, 60, 90, 365],
   TOLERANCE: 0.25,          // ±25% timing tolerance
   AMOUNT_TOLERANCE: 0.10,   // ±10% amount tolerance
   MIN_OCCURRENCES: 3,
+  MIN_OCCURRENCES_YEARLY: 2, // yearly subs only need 2 charges
 };
 
 // ---------------------------------------------------------------------------
@@ -449,9 +450,9 @@ function detectSubscriptions() {
   const txnData = txnSheet.getDataRange().getValues();
   const headers = txnData[0];
 
-  // Build transaction list from last 12 months
+  // Build transaction list from last 36 months (needed for yearly cadence detection)
   const cutoff = new Date();
-  cutoff.setMonth(cutoff.getMonth() - 12);
+  cutoff.setMonth(cutoff.getMonth() - 36);
 
   const txns = [];
   for (let i = 1; i < txnData.length; i++) {
@@ -483,11 +484,12 @@ function detectSubscriptions() {
   const detected = [];
 
   for (const [merchantKey, merchantTxns] of Object.entries(groups)) {
-    if (merchantTxns.length < CONFIG.MIN_OCCURRENCES) continue;
+    if (merchantTxns.length < CONFIG.MIN_OCCURRENCES_YEARLY) continue;
 
     merchantTxns.sort((a, b) => a.date - b.date);
 
     for (const targetCadence of CONFIG.CADENCES) {
+      const minOcc = targetCadence >= 365 ? CONFIG.MIN_OCCURRENCES_YEARLY : CONFIG.MIN_OCCURRENCES;
       const minGap = targetCadence * (1 - CONFIG.TOLERANCE);
       const maxGap = targetCadence * (1 + CONFIG.TOLERANCE);
 
@@ -500,7 +502,7 @@ function detectSubscriptions() {
       const filtered = merchantTxns.filter(t =>
         Math.abs(t.amount - modeAmount) / Math.max(modeAmount, 0.01) <= CONFIG.AMOUNT_TOLERANCE
       );
-      if (filtered.length < CONFIG.MIN_OCCURRENCES) continue;
+      if (filtered.length < minOcc) continue;
 
       // Compute inter-charge gaps
       const gaps = [];
@@ -511,7 +513,9 @@ function detectSubscriptions() {
 
       const matchingGaps = gaps.filter(g => g >= minGap && g <= maxGap);
 
-      if (matchingGaps.length >= Math.floor(gaps.length * 0.5) && matchingGaps.length >= 2) {
+      // For yearly cadence, a single matching gap (2 charges ~365 days apart) is sufficient
+      const minMatchingGaps = targetCadence >= 365 ? 1 : 2;
+      if (matchingGaps.length >= Math.floor(gaps.length * 0.5) && matchingGaps.length >= minMatchingGaps) {
         const lastTxn = filtered[filtered.length - 1];
         const firstTxn = filtered[0];
         const latestAmount = lastTxn.amount;
@@ -970,24 +974,68 @@ function syncSubscriptionsFromServer_(ss) {
 }
 
 /**
- * Pull recent transactions from the server and merge into the Transactions sheet.
- * Server transactions use Transaction ID for deduplication against CSV imports.
+ * Pull recent transactions from the server's /api/transactions endpoint
+ * and merge into the Transactions sheet, deduplicating by transaction ID.
  */
 function syncTransactionsFromServer_(ss) {
-  const res = UrlFetchApp.fetch(CONFIG.SERVER_URL + "/api/subscriptions", { muteHttpExceptions: true });
-  // We need a transactions endpoint — use the dashboard's data source
-  // The server doesn't expose a raw transactions list endpoint, so we fetch
-  // subscriptions (already done) and rely on the Sheets sync endpoint if available.
-
-  // Try the sheets sync endpoint which pushes data directly
-  const syncRes = UrlFetchApp.fetch(CONFIG.SERVER_URL + "/api/sheets/sync", { method: "post", muteHttpExceptions: true });
-  if (syncRes.getResponseCode() === 200) {
-    const data = JSON.parse(syncRes.getContentText());
-    return data.transactions_synced || 0;
+  const res = UrlFetchApp.fetch(CONFIG.SERVER_URL + "/api/transactions?months=6", { muteHttpExceptions: true });
+  if (res.getResponseCode() !== 200) {
+    // Fallback: try sheets sync endpoint
+    const syncRes = UrlFetchApp.fetch(CONFIG.SERVER_URL + "/api/sheets/sync", { method: "post", muteHttpExceptions: true });
+    if (syncRes.getResponseCode() === 200) {
+      return JSON.parse(syncRes.getContentText()).transactions_synced || 0;
+    }
+    return 0;
   }
 
-  // If sheets sync isn't configured on the server, return 0 (subscriptions already synced)
-  return 0;
+  const data = JSON.parse(res.getContentText());
+  const serverTxns = data.transactions || [];
+  if (serverTxns.length === 0) return 0;
+
+  const txnSheet = ss.getSheetByName(CONFIG.SHEET_TRANSACTIONS) || ensureSheet_(ss, CONFIG.SHEET_TRANSACTIONS, ["Date", "Merchant", "Amount", "Category", "Institution", "Account", "Import ID", "Transaction ID"]);
+
+  // Load existing transaction IDs for deduplication
+  const existingIds = new Set();
+  if (txnSheet.getLastRow() > 1) {
+    const txnData = txnSheet.getDataRange().getValues();
+    for (let i = 1; i < txnData.length; i++) {
+      if (txnData[i][7]) existingIds.add(txnData[i][7]);
+    }
+  }
+
+  // Build rows for new transactions
+  const newRows = [];
+  for (const txn of serverTxns) {
+    const txnId = txn.transaction_id || "";
+    if (existingIds.has(txnId)) continue;
+
+    const date = parseDate_(txn.date);
+    if (!date) continue;
+
+    const amount = parseFloat(txn.amount);
+    if (isNaN(amount) || amount <= 0) continue;
+
+    newRows.push([
+      date,
+      txn.merchant || "",
+      amount,
+      txn.pfc_primary || txn.category || "",
+      txn.institution_name || "",
+      txn.account_name || "",
+      "server",
+      txnId,
+    ]);
+  }
+
+  if (newRows.length > 0) {
+    txnSheet.getRange(txnSheet.getLastRow() + 1, 1, newRows.length, 8).setValues(newRows);
+    // Sort by date descending
+    if (txnSheet.getLastRow() > 1) {
+      txnSheet.getRange(2, 1, txnSheet.getLastRow() - 1, 8).sort({ column: 1, ascending: false });
+    }
+  }
+
+  return newRows.length;
 }
 
 function logSync_(ss, source, txnCount, subCount, status) {
