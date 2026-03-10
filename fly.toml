@@ -1,0 +1,41 @@
+# Fly.io deployment config for pers-fin subscription tracker
+# Deploy: fly launch --name pers-fin-tracker && fly deploy
+#
+# Setup secrets:
+#   fly secrets set NEON_DATABASE_URL="postgres://..."
+#   fly secrets set TOKEN_ENCRYPTION_PASSPHRASE="..."
+#   fly secrets set TELLER_APPLICATION_ID="app_pplg2et45b7bl1scna000"
+#   fly secrets set TELLER_ENV="development"
+#   fly secrets set TELLER_CERT=$(base64 < certificate.pem)
+#   fly secrets set TELLER_KEY=$(base64 < private_key.pem)
+
+app = "pers-fin-tracker"
+primary_region = "ewr"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "3000"
+  TELLER_CERT_PATH = "/app/certificate.pem"
+  TELLER_KEY_PATH = "/app/private_key.pem"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[files]]
+  guest_path = "/app/certificate.pem"
+  secret_name = "TELLER_CERT"
+
+[[files]]
+  guest_path = "/app/private_key.pem"
+  secret_name = "TELLER_KEY"
+
+[[vm]]
+  memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1

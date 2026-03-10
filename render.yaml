@@ -1,0 +1,33 @@
+# Render deployment blueprint for pers-fin subscription tracker
+# Deploy: Connect GitHub repo in Render dashboard, or `render blueprint apply`
+#
+# After deploy, add Secret Files in the dashboard:
+#   /etc/secrets/certificate.pem  → paste certificate.pem content
+#   /etc/secrets/private_key.pem  → paste private_key.pem content
+
+services:
+  - type: web
+    name: pers-fin-tracker
+    runtime: node
+    plan: free
+    buildCommand: cd teller && npm install && cd .. && npm install
+    startCommand: node teller/server.js
+    envVars:
+      - key: PORT
+        value: 3000
+      - key: TELLER_CERT_PATH
+        value: /etc/secrets/certificate.pem
+      - key: TELLER_KEY_PATH
+        value: /etc/secrets/private_key.pem
+      - key: TELLER_ENV
+        value: development
+      - key: TELLER_APPLICATION_ID
+        sync: false  # set manually in dashboard
+      - key: NEON_DATABASE_URL
+        sync: false
+      - key: TOKEN_ENCRYPTION_PASSPHRASE
+        sync: false
+      - key: GOOGLE_SHEETS_ID
+        sync: false
+      - key: GOOGLE_SERVICE_ACCOUNT_KEY
+        sync: false
