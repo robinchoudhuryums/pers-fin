@@ -2,7 +2,7 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Install root deps (pg for scripts)
+# Install root deps (pg, googleapis for scripts)
 COPY package.json package-lock.json* ./
 RUN npm install --production
 
@@ -21,7 +21,11 @@ COPY plaid/ ./plaid/
 COPY db/ ./db/
 COPY n8n-workflows/ ./n8n-workflows/
 COPY apps-script/ ./apps-script/
+COPY docker-entrypoint.sh ./
+
+RUN chmod +x docker-entrypoint.sh
 
 EXPOSE 3000
 
+ENTRYPOINT ["./docker-entrypoint.sh"]
 CMD ["node", "teller/server.js"]

@@ -42,7 +42,7 @@ async function detectSubscriptions() {
       FROM transactions
       WHERE pending = false
         AND amount > 0
-        AND date >= CURRENT_DATE - INTERVAL '12 months'
+        AND date >= CURRENT_DATE - INTERVAL '36 months'
       ORDER BY merchant_key, date
     `);
 
@@ -60,21 +60,23 @@ async function detectSubscriptions() {
     // ------------------------------------------------------------------
     // 3. Analyze each group for recurring patterns
     // ------------------------------------------------------------------
-    const CADENCES = [30, 60, 90]; // target intervals in days
+    const CADENCES = [30, 60, 90, 365]; // target intervals in days
     const TOLERANCE = 0.25;        // ±25% tolerance on interval (e.g. 30 ± 7.5 days)
     const AMOUNT_TOLERANCE = 0.10; // ±10% for "similar amount" (catches price creep)
     const MIN_OCCURRENCES = 3;     // need at least 3 charges to call it recurring
+    const MIN_OCCURRENCES_YEARLY = 2; // yearly subs only need 2 charges
 
     const detected = [];
 
     for (const [merchantKey, merchantTxns] of Object.entries(groups)) {
-      if (merchantTxns.length < MIN_OCCURRENCES) continue;
+      if (merchantTxns.length < MIN_OCCURRENCES_YEARLY) continue;
 
       // Sort by date ascending
       merchantTxns.sort((a, b) => new Date(a.date) - new Date(b.date));
 
       // Try each cadence
       for (const targetCadence of CADENCES) {
+        const minOcc = targetCadence >= 365 ? MIN_OCCURRENCES_YEARLY : MIN_OCCURRENCES;
         const minGap = targetCadence * (1 - TOLERANCE);
         const maxGap = targetCadence * (1 + TOLERANCE);
 
@@ -89,7 +91,7 @@ async function detectSubscriptions() {
           return Math.abs(amt - modeAmount) / modeAmount <= AMOUNT_TOLERANCE;
         });
 
-        if (filtered.length < MIN_OCCURRENCES) continue;
+        if (filtered.length < minOcc) continue;
 
         // Compute inter-charge gaps
         const gaps = [];
@@ -104,7 +106,9 @@ async function detectSubscriptions() {
         const matchingGaps = gaps.filter((g) => g >= minGap && g <= maxGap);
 
         // If >50% of gaps match this cadence, it's recurring
-        if (matchingGaps.length >= Math.floor(gaps.length * 0.5) && matchingGaps.length >= 2) {
+        // For yearly cadence, a single matching gap (2 charges ~365 days apart) is sufficient
+        const minMatchingGaps = targetCadence >= 365 ? 1 : 2;
+        if (matchingGaps.length >= Math.floor(gaps.length * 0.5) && matchingGaps.length >= minMatchingGaps) {
           const lastTxn = filtered[filtered.length - 1];
           const firstTxn = filtered[0];
           const latestAmount = parseFloat(lastTxn.amount);

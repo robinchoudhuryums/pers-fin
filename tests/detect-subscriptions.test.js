@@ -40,16 +40,18 @@ function addDays(date, days) {
 
 // Detection logic extracted for testing without DB
 function analyzeGroup(merchantTxns, opts = {}) {
-  const CADENCES = opts.cadences || [30, 60, 90];
+  const CADENCES = opts.cadences || [30, 60, 90, 365];
   const TOLERANCE = opts.tolerance || 0.25;
   const AMOUNT_TOLERANCE = opts.amountTolerance || 0.10;
   const MIN_OCCURRENCES = opts.minOccurrences || 3;
+  const MIN_OCCURRENCES_YEARLY = opts.minOccurrencesYearly || 2;
 
-  if (merchantTxns.length < MIN_OCCURRENCES) return null;
+  if (merchantTxns.length < MIN_OCCURRENCES_YEARLY) return null;
 
   merchantTxns.sort((a, b) => new Date(a.date) - new Date(b.date));
 
   for (const targetCadence of CADENCES) {
+    const minOcc = targetCadence >= 365 ? MIN_OCCURRENCES_YEARLY : MIN_OCCURRENCES;
     const minGap = targetCadence * (1 - TOLERANCE);
     const maxGap = targetCadence * (1 + TOLERANCE);
 
@@ -62,7 +64,7 @@ function analyzeGroup(merchantTxns, opts = {}) {
       return Math.abs(amt - modeAmount) / modeAmount <= AMOUNT_TOLERANCE;
     });
 
-    if (filtered.length < MIN_OCCURRENCES) continue;
+    if (filtered.length < minOcc) continue;
 
     const gaps = [];
     for (let i = 1; i < filtered.length; i++) {
@@ -74,7 +76,8 @@ function analyzeGroup(merchantTxns, opts = {}) {
 
     const matchingGaps = gaps.filter((g) => g >= minGap && g <= maxGap);
 
-    if (matchingGaps.length >= Math.floor(gaps.length * 0.5) && matchingGaps.length >= 2) {
+    const minMatchingGaps = targetCadence >= 365 ? 1 : 2;
+    if (matchingGaps.length >= Math.floor(gaps.length * 0.5) && matchingGaps.length >= minMatchingGaps) {
       const lastTxn = filtered[filtered.length - 1];
       const firstTxn = filtered[0];
       const latestAmount = parseFloat(lastTxn.amount);
@@ -246,6 +249,46 @@ describe("analyzeGroup", () => {
     const result = analyzeGroup(shuffled);
     assert.ok(result, "Should handle unsorted transactions");
     assert.equal(result.cadence_days, 30);
+  });
+
+  it("detects a yearly subscription (2 charges ~365 days apart)", () => {
+    const start = new Date("2024-01-15");
+    const txns = [0, 365].map((offset) => ({
+      merchant_key: "yearly_svc",
+      display_name: "Domain Renewal",
+      amount: 12.99,
+      date: addDays(start, offset).toISOString().split("T")[0],
+    }));
+    const result = analyzeGroup(txns);
+    assert.ok(result, "Should detect yearly subscription with 2 charges");
+    assert.equal(result.cadence_days, 365);
+    assert.equal(result.amount, 12.99);
+  });
+
+  it("detects a yearly subscription with 3 charges", () => {
+    const start = new Date("2023-03-01");
+    const txns = [0, 365, 730].map((offset) => ({
+      merchant_key: "yearly3",
+      display_name: "Annual License",
+      amount: 99.00,
+      date: addDays(start, offset).toISOString().split("T")[0],
+    }));
+    const result = analyzeGroup(txns);
+    assert.ok(result, "Should detect yearly subscription with 3 charges");
+    assert.equal(result.cadence_days, 365);
+  });
+
+  it("does not detect yearly from 2 charges with wrong gap", () => {
+    const start = new Date("2024-01-15");
+    // 200 days apart — not yearly
+    const txns = [0, 200].map((offset) => ({
+      merchant_key: "not_yearly",
+      display_name: "Not Yearly",
+      amount: 50.00,
+      date: addDays(start, offset).toISOString().split("T")[0],
+    }));
+    const result = analyzeGroup(txns);
+    assert.equal(result, null, "Should not detect yearly with wrong gap");
   });
 });
 

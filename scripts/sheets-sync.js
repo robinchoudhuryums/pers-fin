@@ -101,13 +101,14 @@ async function syncTransactions(sheets, pool) {
       t.amount,
       la.name AS account_name,
       la.type AS account_type,
-      pi.institution_name,
+      COALESCE(pi.institution_name, te.institution_name, 'CSV Import') AS institution_name,
       t.category[1] AS category,
       t.personal_finance_category->>'primary' AS pfc_primary,
       t.personal_finance_category->>'detailed' AS pfc_detailed
     FROM transactions t
     JOIN linked_accounts la ON la.account_id = t.account_id
-    JOIN plaid_items pi ON pi.id = la.plaid_item_id
+    LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
+    LEFT JOIN teller_enrollments te ON te.id = la.teller_enrollment_id
     WHERE t.pending = false
     ORDER BY t.date DESC
   `);
