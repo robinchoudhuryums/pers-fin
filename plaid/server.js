@@ -38,20 +38,31 @@ app.use(express.json());
 // ---------------------------------------------------------------------------
 // Plaid client setup
 // ---------------------------------------------------------------------------
-// Set PLAID_ENV=development in .env to use Development (requires Plaid
-// approval).  Defaults to sandbox, which is free and needs no approval.
-// Sandbox test credentials:  user_good / pass_good
+// Set PLAID_ENV in .env:
+//   sandbox     — free, no approval needed (test credentials: user_good / pass_good)
+//   development — requires Plaid approval
+//   production  — Limited Production works for non-OAuth institutions
+//                  (Chase, Wells Fargo, Discover, Schwab). Capital One requires
+//                  full Production with OAuth.
 const plaidEnv = (process.env.PLAID_ENV || "sandbox").toLowerCase();
+const plaidBasePath = {
+  production: PlaidEnvironments.production,
+  development: PlaidEnvironments.development,
+  sandbox: PlaidEnvironments.sandbox,
+}[plaidEnv] || PlaidEnvironments.sandbox;
+
+const plaidSecret = {
+  production: process.env.PLAID_SECRET_PROD,
+  development: process.env.PLAID_SECRET_DEV,
+  sandbox: process.env.PLAID_SECRET_SANDBOX,
+}[plaidEnv] || process.env.PLAID_SECRET_SANDBOX;
+
 const plaidConfig = new Configuration({
-  basePath: plaidEnv === "development"
-    ? PlaidEnvironments.development
-    : PlaidEnvironments.sandbox,
+  basePath: plaidBasePath,
   baseOptions: {
     headers: {
       "PLAID-CLIENT-ID": process.env.PLAID_CLIENT_ID,
-      "PLAID-SECRET": plaidEnv === "development"
-        ? process.env.PLAID_SECRET_DEV
-        : process.env.PLAID_SECRET_SANDBOX,
+      "PLAID-SECRET": plaidSecret,
     },
   },
 });
