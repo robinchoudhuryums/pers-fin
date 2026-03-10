@@ -2,8 +2,8 @@
 # Deploy: Connect GitHub repo in Render dashboard, or `render blueprint apply`
 #
 # After deploy, add Secret Files in the dashboard:
-#   /etc/secrets/certificate.pem  → paste certificate.pem content
-#   /etc/secrets/private_key.pem  → paste private_key.pem content
+#   certificate.pem  → paste certificate.pem content
+#   private_key.pem  → paste private_key.pem content
 
 services:
   - type: web
@@ -16,9 +16,9 @@ services:
       - key: PORT
         value: 3000
       - key: TELLER_CERT_PATH
-        value: /etc/secrets/certificate.pem
+        value: certificate.pem
       - key: TELLER_KEY_PATH
-        value: /etc/secrets/private_key.pem
+        value: private_key.pem
       - key: TELLER_ENV
         value: development
       - key: TELLER_APPLICATION_ID
