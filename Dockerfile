@@ -6,16 +6,22 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install --production
 
-# Install server deps
+# Install Teller server deps
+COPY teller/package.json teller/package-lock.json* ./teller/
+RUN cd teller && npm install --production
+
+# Install Plaid server deps (kept for optional use)
 COPY plaid/package.json plaid/package-lock.json* ./plaid/
 RUN cd plaid && npm install --production
 
 # Copy source
 COPY scripts/ ./scripts/
+COPY teller/ ./teller/
 COPY plaid/ ./plaid/
 COPY db/ ./db/
 COPY n8n-workflows/ ./n8n-workflows/
+COPY apps-script/ ./apps-script/
 
 EXPOSE 3000
 
-CMD ["node", "plaid/server.js"]
+CMD ["node", "teller/server.js"]

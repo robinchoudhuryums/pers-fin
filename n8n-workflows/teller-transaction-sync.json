@@ -1,0 +1,236 @@
+{
+  "name": "Teller Transaction Sync (Daily)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 24,
+              "triggerAtHour": 6
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Daily 6 AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT te.id AS enrollment_id, te.enrollment_id AS teller_enrollment_id, te.institution_name, te.status, pgp_sym_decrypt(te.access_token_enc, '{{ $env.TOKEN_ENCRYPTION_PASSPHRASE }}') AS access_token, te.last_synced_txn_date, json_agg(la.account_id) AS account_ids FROM teller_enrollments te JOIN linked_accounts la ON la.teller_enrollment_id = te.id WHERE te.status != 'SUSPENDED' GROUP BY te.id ORDER BY te.id",
+        "options": {}
+      },
+      "id": "get-enrollments",
+      "name": "Get Teller Enrollments",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [420, 300],
+      "credentials": {
+        "postgres": {
+          "id": "NEON_CREDENTIAL_ID",
+          "name": "Neon Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ========================================================================\n// Teller Transaction Sync — Code Node\n// ========================================================================\n// For each Teller enrollment, fetches transactions for all linked accounts\n// using the Teller API with mTLS + Basic Auth.\n//\n// Requires n8n environment variables:\n//   TELLER_CERT_PATH, TELLER_KEY_PATH (mTLS certificate)\n//   TOKEN_ENCRYPTION_PASSPHRASE (for decrypting stored access tokens)\n// ========================================================================\n\nconst fs = require('fs');\nconst https = require('https');\n\nconst enrollments = $input.all();\nconst results = [];\n\nconst certPath = $env.TELLER_CERT_PATH || './certificate.pem';\nconst keyPath = $env.TELLER_KEY_PATH || './private_key.pem';\n\nfor (const enrollment of enrollments) {\n  const { enrollment_id, teller_enrollment_id, institution_name, access_token, last_synced_txn_date, account_ids } = enrollment.json;\n  let addedCount = 0;\n  let errorState = null;\n\n  try {\n    const accounts = typeof account_ids === 'string' ? JSON.parse(account_ids) : account_ids;\n\n    for (const accountId of accounts) {\n      // Fetch transactions from Teller API\n      const response = await this.helpers.httpRequest({\n        method: 'GET',\n        url: `https://api.teller.io/accounts/${accountId}/transactions`,\n        headers: {\n          'Authorization': 'Basic ' + Buffer.from(access_token + ':').toString('base64'),\n        },\n        // Note: mTLS cert must be configured in n8n's HTTP Request node settings\n        // or via environment-level TLS configuration\n        returnFullResponse: false,\n      });\n\n      const txns = Array.isArray(response) ? response : [];\n\n      for (const txn of txns) {\n        if (txn.status === 'pending') continue;\n\n        // Skip if older than last sync\n        if (last_synced_txn_date && new Date(txn.date) <= new Date(last_synced_txn_date)) continue;\n\n        // Normalize amount: Teller uses negative for debits, we store positive for debits\n        const rawAmount = parseFloat(txn.amount);\n        const normalizedAmount = rawAmount < 0 ? Math.abs(rawAmount) : -rawAmount;\n\n        results.push({\n          json: {\n            _action: 'upsert',\n            enrollment_id,\n            institution_name,\n            account_id: accountId,\n            transaction_id: txn.id,\n            amount: normalizedAmount,\n            iso_currency_code: 'USD',\n            date: txn.date,\n            merchant_name: txn.details?.counterparty?.name || txn.description || null,\n            name: txn.description || '',\n            category: txn.details?.category || null,\n            pending: false,\n          }\n        });\n        addedCount++;\n      }\n    }\n\n    // Output sync summary\n    results.push({\n      json: {\n        _action: 'update_sync_date',\n        enrollment_id,\n        institution_name,\n        added: addedCount,\n        sync_date: new Date().toISOString().split('T')[0],\n      }\n    });\n\n  } catch (err) {\n    const status = err?.response?.status || err?.statusCode || 0;\n    if (status === 401 || status === 403) {\n      errorState = 'DISCONNECTED';\n    }\n    results.push({\n      json: {\n        _action: 'error',\n        enrollment_id,\n        institution_name,\n        teller_enrollment_id,\n        error: err.message,\n        error_state: errorState || 'ERROR',\n      }\n    });\n  }\n}\n\nreturn results;"
+      },
+      "id": "sync-code",
+      "name": "Sync Transactions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "upsert",
+              "leftValue": "={{ $json._action }}",
+              "rightValue": "upsert",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-upserts",
+      "name": "Filter: Upserts",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [860, 180]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO transactions (account_id, transaction_id, amount, iso_currency_code, date, merchant_name, name, category, pending)\nVALUES (\n  '{{ $json.account_id }}',\n  '{{ $json.transaction_id }}',\n  {{ $json.amount }},\n  '{{ $json.iso_currency_code }}',\n  '{{ $json.date }}',\n  {{ $json.merchant_name ? \"'\" + $json.merchant_name.replace(/'/g, \"''\") + \"'\" : 'NULL' }},\n  '{{ $json.name.replace(/'/g, \"''\") }}',\n  {{ $json.category ? \"ARRAY['\" + $json.category.replace(/'/g, \"''\") + \"']\" : 'NULL' }},\n  {{ $json.pending }}\n)\nON CONFLICT (transaction_id)\nDO UPDATE SET\n  amount = EXCLUDED.amount,\n  date = EXCLUDED.date,\n  merchant_name = EXCLUDED.merchant_name,\n  name = EXCLUDED.name,\n  category = EXCLUDED.category,\n  pending = EXCLUDED.pending;",
+        "options": {}
+      },
+      "id": "upsert-txn",
+      "name": "Upsert Transaction",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1080, 180],
+      "credentials": {
+        "postgres": {
+          "id": "NEON_CREDENTIAL_ID",
+          "name": "Neon Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "sync_date",
+              "leftValue": "={{ $json._action }}",
+              "rightValue": "update_sync_date",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-sync-dates",
+      "name": "Filter: Sync Date Updates",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [860, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE teller_enrollments SET last_synced_txn_date = '{{ $json.sync_date }}', updated_at = now() WHERE id = {{ $json.enrollment_id }};",
+        "options": {}
+      },
+      "id": "update-sync-date",
+      "name": "Update Sync Date",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1080, 300],
+      "credentials": {
+        "postgres": {
+          "id": "NEON_CREDENTIAL_ID",
+          "name": "Neon Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "error",
+              "leftValue": "={{ $json._action }}",
+              "rightValue": "error",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-errors",
+      "name": "Filter: Errors",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [860, 420]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE teller_enrollments SET status = '{{ $json.error_state }}' WHERE id = {{ $json.enrollment_id }};",
+        "options": {}
+      },
+      "id": "update-enrollment-status",
+      "name": "Flag Enrollment Error",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1080, 420],
+      "credentials": {
+        "postgres": {
+          "id": "NEON_CREDENTIAL_ID",
+          "name": "Neon Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $env.ALERT_EMAIL }}",
+        "subject": "Teller Enrollment Error: {{ $json.institution_name }}",
+        "message": "The Teller connection to {{ $json.institution_name }} has entered an error state.\n\nError: {{ $json.error }}\nEnrollment ID: {{ $json.teller_enrollment_id }}\n\nYou may need to re-authenticate this institution via the Link page.",
+        "options": {}
+      },
+      "id": "send-error-alert",
+      "name": "Email Error Alert",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1300, 420],
+      "credentials": {
+        "smtp": {
+          "id": "SMTP_CREDENTIAL_ID",
+          "name": "SMTP"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Daily 6 AM": {
+      "main": [
+        [{ "node": "Get Teller Enrollments", "type": "main", "index": 0 }]
+      ]
+    },
+    "Get Teller Enrollments": {
+      "main": [
+        [{ "node": "Sync Transactions", "type": "main", "index": 0 }]
+      ]
+    },
+    "Sync Transactions": {
+      "main": [
+        [
+          { "node": "Filter: Upserts", "type": "main", "index": 0 },
+          { "node": "Filter: Sync Date Updates", "type": "main", "index": 0 },
+          { "node": "Filter: Errors", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Filter: Upserts": {
+      "main": [
+        [{ "node": "Upsert Transaction", "type": "main", "index": 0 }]
+      ]
+    },
+    "Filter: Sync Date Updates": {
+      "main": [
+        [{ "node": "Update Sync Date", "type": "main", "index": 0 }]
+      ]
+    },
+    "Filter: Errors": {
+      "main": [
+        [
+          { "node": "Flag Enrollment Error", "type": "main", "index": 0 },
+          { "node": "Email Error Alert", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    { "name": "teller" },
+    { "name": "subscription-tracker" }
+  ]
+}

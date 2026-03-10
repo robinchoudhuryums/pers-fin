@@ -3,7 +3,8 @@
   "private": true,
   "scripts": {
     "test": "node --test tests/*.test.js",
-    "start": "node plaid/server.js",
+    "start": "node teller/server.js",
+    "start:plaid": "node plaid/server.js",
     "detect": "node scripts/detect-subscriptions.js",
     "sheets-sync": "node scripts/sheets-sync.js",
     "import-csv": "node scripts/import-csv-cli.js"
