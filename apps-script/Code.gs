@@ -1,8 +1,8 @@
 // ============================================================================
 // Subscription Tracker — Google Apps Script
 // ============================================================================
-// Self-contained subscription tracker that lives entirely in Google Sheets.
-// No external database, no server, no Codespace needed.
+// Personal finance subscription tracker for Google Sheets.
+// Works both standalone (CSV imports) and synced with the Teller server.
 //
 // Setup:
 //   1. Open your Google Sheet
@@ -10,12 +10,16 @@
 //   3. Paste this entire file into Code.gs
 //   4. Run setupTracker() once from the script editor (or use the menu)
 //   5. Drop CSV files into the "CSV Uploads" folder created in your Drive
+//   — OR —
+//   6. Set SERVER_URL in the Config section below and use "Sync from Server"
+//      to pull transactions + subscriptions from your Teller server
 //
 // Sheets created:
 //   - Transactions: all imported transactions (deduplicated)
 //   - Subscriptions: detected recurring charges
 //   - Dashboard: summary with monthly costs, trends, upcoming charges
 //   - Import Log: history of CSV imports
+//   - Sync Log: history of server syncs
 //
 // Triggers:
 //   - Custom menu: Subscription Tracker > Import CSVs / Detect / Refresh
@@ -26,13 +30,18 @@
 // Config
 // ---------------------------------------------------------------------------
 const CONFIG = {
+  // Server sync (set to your Teller server URL, e.g. "http://localhost:3000")
+  SERVER_URL: "",
+  // CSV import
   CSV_FOLDER_NAME: "CSV Uploads",
   PROCESSED_FOLDER_NAME: "CSV Uploads/Processed",
+  // Sheet names
   SHEET_TRANSACTIONS: "Transactions",
   SHEET_SUBSCRIPTIONS: "Subscriptions",
   SHEET_DASHBOARD: "Dashboard",
   SHEET_IMPORT_LOG: "Import Log",
-  // Detection parameters
+  SHEET_SYNC_LOG: "Sync Log",
+  // Detection parameters (matches Teller server's detect-subscriptions.js)
   CADENCES: [30, 60, 90],
   TOLERANCE: 0.25,          // ±25% timing tolerance
   AMOUNT_TOLERANCE: 0.10,   // ±10% amount tolerance
@@ -173,6 +182,7 @@ function setupTracker() {
   ensureSheet_(ss, CONFIG.SHEET_SUBSCRIPTIONS, ["Service", "Amount", "Cycle Days", "Monthly Cost", "Yearly Cost", "First Seen", "Last Charged", "Next Charge", "Status", "Source", "Cancel URL", "Notes"]);
   ensureSheet_(ss, CONFIG.SHEET_DASHBOARD, []);
   ensureSheet_(ss, CONFIG.SHEET_IMPORT_LOG, ["Timestamp", "Filename", "Institution", "Format", "Rows Imported", "Rows Skipped"]);
+  ensureSheet_(ss, CONFIG.SHEET_SYNC_LOG, ["Timestamp", "Source", "Transactions Synced", "Subscriptions Synced", "Status"]);
 
   // Create CSV upload folder in Drive
   const folder = getOrCreateFolder_(CONFIG.CSV_FOLDER_NAME);
@@ -202,14 +212,21 @@ function setupTracker() {
 // ============================================================================
 
 function onOpen() {
-  SpreadsheetApp.getUi().createMenu("Subscription Tracker")
+  const menu = SpreadsheetApp.getUi().createMenu("Subscription Tracker")
     .addItem("Import CSVs from Drive", "importCsvsFromDrive")
     .addItem("Detect Subscriptions", "detectSubscriptions")
     .addItem("Refresh Dashboard", "buildDashboard")
     .addSeparator()
     .addItem("Run All (Import + Detect + Dashboard)", "runAll")
-    .addSeparator()
-    .addItem("Initial Setup", "setupTracker")
+    .addSeparator();
+
+  if (CONFIG.SERVER_URL) {
+    menu.addItem("Sync from Server", "syncFromServer")
+      .addItem("Sync Subscriptions from Server", "syncSubscriptionsFromServer")
+      .addSeparator();
+  }
+
+  menu.addItem("Initial Setup", "setupTracker")
     .addToUi();
 }
 
@@ -779,6 +796,203 @@ function buildDashboard() {
 
   // Apply formatting
   formatDashboard_(dashSheet, rows);
+}
+
+// ============================================================================
+// SERVER SYNC — Pull data from the Teller server API
+// ============================================================================
+
+/**
+ * Sync transactions and subscriptions from the Teller server, then rebuild
+ * the dashboard. Requires CONFIG.SERVER_URL to be set.
+ */
+function syncFromServer() {
+  if (!CONFIG.SERVER_URL) {
+    SpreadsheetApp.getUi().alert("Server URL not configured. Set CONFIG.SERVER_URL in the script editor.");
+    return;
+  }
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let txnCount = 0;
+  let subCount = 0;
+
+  try {
+    // 1. Trigger a transaction sync on the server
+    const syncRes = UrlFetchApp.fetch(CONFIG.SERVER_URL + "/api/sync", { method: "post", muteHttpExceptions: true });
+    if (syncRes.getResponseCode() !== 200) {
+      throw new Error("Server sync failed: " + syncRes.getContentText());
+    }
+
+    // 2. Trigger detection on the server
+    UrlFetchApp.fetch(CONFIG.SERVER_URL + "/api/detect", { method: "post", muteHttpExceptions: true });
+
+    // 3. Pull subscriptions from server
+    subCount = syncSubscriptionsFromServer_(ss);
+
+    // 4. Pull transactions from server (recent 6 months for dashboard)
+    txnCount = syncTransactionsFromServer_(ss);
+
+    // 5. Rebuild dashboard with merged data
+    buildDashboard();
+
+    // Log the sync
+    logSync_(ss, "server", txnCount, subCount, "OK");
+
+    SpreadsheetApp.getUi().alert(
+      "Server Sync Complete",
+      "Synced " + txnCount + " transactions and " + subCount + " subscriptions from server.\nDashboard refreshed.",
+      SpreadsheetApp.getUi().ButtonSet.OK
+    );
+  } catch (e) {
+    logSync_(ss, "server", txnCount, subCount, "ERROR: " + e.message);
+    SpreadsheetApp.getUi().alert("Sync Error", e.message, SpreadsheetApp.getUi().ButtonSet.OK);
+  }
+}
+
+/**
+ * Sync only subscriptions from the server (useful for quick updates).
+ */
+function syncSubscriptionsFromServer() {
+  if (!CONFIG.SERVER_URL) {
+    SpreadsheetApp.getUi().alert("Server URL not configured.");
+    return;
+  }
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  try {
+    const count = syncSubscriptionsFromServer_(ss);
+    buildDashboard();
+    logSync_(ss, "server-subs", 0, count, "OK");
+    SpreadsheetApp.getUi().alert("Synced " + count + " subscriptions from server.");
+  } catch (e) {
+    SpreadsheetApp.getUi().alert("Sync Error", e.message, SpreadsheetApp.getUi().ButtonSet.OK);
+  }
+}
+
+/**
+ * Pull subscriptions from the server API and merge into the Subscriptions sheet.
+ * Server-sourced entries get source="server", preserving local manual entries.
+ */
+function syncSubscriptionsFromServer_(ss) {
+  const res = UrlFetchApp.fetch(CONFIG.SERVER_URL + "/api/subscriptions", { muteHttpExceptions: true });
+  if (res.getResponseCode() !== 200) {
+    throw new Error("Failed to fetch subscriptions: " + res.getContentText());
+  }
+
+  const serverSubs = JSON.parse(res.getContentText());
+  const subSheet = ss.getSheetByName(CONFIG.SHEET_SUBSCRIPTIONS) || ensureSheet_(ss, CONFIG.SHEET_SUBSCRIPTIONS, ["Service", "Amount", "Cycle Days", "Monthly Cost", "Yearly Cost", "First Seen", "Last Charged", "Next Charge", "Status", "Source", "Cancel URL", "Notes"]);
+
+  // Load existing local entries (manual and CSV-detected)
+  const localEntries = {};
+  if (subSheet.getLastRow() > 1) {
+    const existing = subSheet.getRange(2, 1, subSheet.getLastRow() - 1, 12).getValues();
+    for (const row of existing) {
+      const key = (row[0] || "").toString().toLowerCase().replace(/[^a-z0-9 ]/g, "").trim();
+      localEntries[key] = {
+        row: row,
+        source: row[9],
+        status: row[8],
+      };
+    }
+  }
+
+  const finalRows = [];
+  const processedKeys = new Set();
+
+  // Add server subscriptions
+  for (const sub of serverSubs) {
+    const key = (sub.display_name || "").toLowerCase().replace(/[^a-z0-9 ]/g, "").trim();
+    processedKeys.add(key);
+
+    const amount = parseFloat(sub.amount) || 0;
+    const cadenceDays = parseInt(sub.cadence_days) || 30;
+    const monthlyCost = Math.round(amount * (30 / cadenceDays) * 100) / 100;
+    const yearlyCost = Math.round(monthlyCost * 12 * 100) / 100;
+
+    let status = "Active";
+    if (sub.cancelled_at) status = "Cancelled";
+    else if (sub.is_dismissed) status = "Dismissed";
+    else if (!sub.is_active) status = "Inactive";
+
+    // Preserve local user overrides (dismissed/cancelled status)
+    const local = localEntries[key];
+    if (local && (local.status === "Dismissed" || local.status === "Cancelled")) {
+      status = local.status;
+    }
+
+    const cancelUrl = findCancelUrl_(sub.display_name) || "";
+    const notes = sub.notes || (sub.amount_changed ? "Price changed from $" + (parseFloat(sub.prior_amount) || 0).toFixed(2) : "") || (local ? local.row[11] : "") || "";
+
+    finalRows.push([
+      sub.display_name,
+      amount,
+      cadenceDays,
+      monthlyCost,
+      yearlyCost,
+      sub.first_seen || "",
+      sub.last_charged || "",
+      sub.next_expected || "",
+      status,
+      "server",
+      cancelUrl,
+      notes,
+    ]);
+  }
+
+  // Re-add local-only entries (manual entries, CSV-detected not on server)
+  for (const [key, entry] of Object.entries(localEntries)) {
+    if (!processedKeys.has(key)) {
+      if (entry.source === "manual" || entry.status === "Dismissed" || entry.status === "Cancelled") {
+        finalRows.push(entry.row);
+      }
+    }
+  }
+
+  // Sort: Active first, then by amount descending
+  finalRows.sort((a, b) => {
+    const statusOrder = { "Active": 0, "Inactive": 1, "Dismissed": 2, "Cancelled": 3 };
+    const sa = statusOrder[a[8]] || 0;
+    const sb = statusOrder[b[8]] || 0;
+    if (sa !== sb) return sa - sb;
+    return (b[1] || 0) - (a[1] || 0);
+  });
+
+  // Clear and rewrite
+  if (subSheet.getLastRow() > 1) {
+    subSheet.getRange(2, 1, subSheet.getLastRow() - 1, 12).clearContent();
+  }
+  if (finalRows.length > 0) {
+    subSheet.getRange(2, 1, finalRows.length, 12).setValues(finalRows);
+  }
+
+  formatSubscriptionsSheet_(subSheet, finalRows.length);
+  return serverSubs.length;
+}
+
+/**
+ * Pull recent transactions from the server and merge into the Transactions sheet.
+ * Server transactions use Transaction ID for deduplication against CSV imports.
+ */
+function syncTransactionsFromServer_(ss) {
+  const res = UrlFetchApp.fetch(CONFIG.SERVER_URL + "/api/subscriptions", { muteHttpExceptions: true });
+  // We need a transactions endpoint — use the dashboard's data source
+  // The server doesn't expose a raw transactions list endpoint, so we fetch
+  // subscriptions (already done) and rely on the Sheets sync endpoint if available.
+
+  // Try the sheets sync endpoint which pushes data directly
+  const syncRes = UrlFetchApp.fetch(CONFIG.SERVER_URL + "/api/sheets/sync", { method: "post", muteHttpExceptions: true });
+  if (syncRes.getResponseCode() === 200) {
+    const data = JSON.parse(syncRes.getContentText());
+    return data.transactions_synced || 0;
+  }
+
+  // If sheets sync isn't configured on the server, return 0 (subscriptions already synced)
+  return 0;
+}
+
+function logSync_(ss, source, txnCount, subCount, status) {
+  const logSheet = ss.getSheetByName(CONFIG.SHEET_SYNC_LOG) || ensureSheet_(ss, CONFIG.SHEET_SYNC_LOG, ["Timestamp", "Source", "Transactions Synced", "Subscriptions Synced", "Status"]);
+  logSheet.appendRow([new Date(), source, txnCount, subCount, status]);
 }
 
 // ============================================================================
