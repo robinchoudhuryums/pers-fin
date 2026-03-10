@@ -5,7 +5,8 @@
     "test": "node --test tests/*.test.js",
     "start": "node plaid/server.js",
     "detect": "node scripts/detect-subscriptions.js",
-    "sheets-sync": "node scripts/sheets-sync.js"
+    "sheets-sync": "node scripts/sheets-sync.js",
+    "import-csv": "node scripts/import-csv-cli.js"
   },
   "dependencies": {
     "googleapis": "^144.0.0",

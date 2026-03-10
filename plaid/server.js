@@ -265,6 +265,24 @@ const CSV_FORMATS = {
       category: row["Category"] || null,
     }),
   },
+  discover: {
+    detect: (headers) => headers.includes("Trans. Date") && headers.includes("Post Date") && headers.includes("Description") && headers.includes("Amount"),
+    parse: (row) => ({
+      date: row["Trans. Date"],
+      merchant_name: row["Description"],
+      amount: Math.abs(parseFloat(row["Amount"])),
+      category: row["Category"] || null,
+    }),
+  },
+  schwab: {
+    detect: (headers) => headers.includes("Date") && headers.includes("Description") && (headers.includes("Withdrawal") || headers.includes("Amount")),
+    parse: (row) => ({
+      date: row["Date"],
+      merchant_name: row["Description"],
+      amount: Math.abs(parseFloat(row["Withdrawal"] || row["Amount"] || "0")),
+      category: row["Type"] || null,
+    }),
+  },
   generic: {
     detect: () => true,  // fallback
     parse: (row) => {

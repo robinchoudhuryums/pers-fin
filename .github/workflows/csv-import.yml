@@ -1,0 +1,50 @@
+name: CSV Import
+
+on:
+  push:
+    paths:
+      - 'csv-uploads/*.csv'
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Import CSV files
+        env:
+          NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+          TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.TOKEN_ENCRYPTION_PASSPHRASE }}
+        run: node scripts/import-csv-cli.js csv-uploads/
+
+      - name: Sync to Google Sheets
+        if: success()
+        env:
+          NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+          TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.TOKEN_ENCRYPTION_PASSPHRASE }}
+          GOOGLE_SHEETS_ID: ${{ secrets.GOOGLE_SHEETS_ID }}
+          GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
+        run: node scripts/sheets-sync.js
+        continue-on-error: true
+
+      - name: Archive processed CSVs
+        run: |
+          mkdir -p csv-uploads/processed
+          for f in csv-uploads/*.csv; do
+            [ -f "$f" ] && mv "$f" "csv-uploads/processed/$(date +%Y%m%d)_$(basename "$f")"
+          done
+
+      - name: Commit cleanup
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add csv-uploads/
+          git diff --cached --quiet || git commit -m "Auto-import: move processed CSVs to archive"
+          git push
