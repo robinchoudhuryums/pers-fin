@@ -23,6 +23,12 @@ Uses **Teller API** (primary) and Plaid (legacy) for bank account linking via mT
 - Server runs and responds correctly on localhost
 - Apps Script supports both CSV import and server sync modes
 - Yearly subscription detection (365-day cadence, 2 occurrences minimum)
+- **Password protection**: Set `SESSION_PASSWORD` env var to enable login screen (configurable timeout)
+- **Settings page**: `/settings` — theme, session timeout, dashboard range, AI insights toggle, data export
+- **Dark/Light theme**: Toggle in Settings, persisted to DB + localStorage
+- **Dashboard charts**: Monthly spending trend (line) and category breakdown (doughnut) via Chart.js
+- **AI Insights**: Optional financial analysis via Claude API (`ANTHROPIC_API_KEY`) with persistent long-term memory (running summary), reset/rebuild controls, usage history, model selector (Haiku/Sonnet/Opus with `-latest` aliases), and configurable cadence (weekly to quarterly)
+- **PWA**: Installable as home screen app on iPhone/Android (manifest.json + service worker)
 - **Blocker**: Codespace port forwarding doesn't work — deploy to Render/Fly.io or run locally
 
 ## Deployment Options
@@ -76,6 +82,8 @@ cd teller && npm install && node server.js
 - `apps-script/Code.gs` — Google Sheets Apps Script (standalone + server sync)
 - `db/001_schema.sql` — core schema
 - `db/003_teller.sql` — Teller-specific migrations
+- `db/005_settings.sql` — user settings + financial insights tables
+- `db/006_insights_memory.sql` — long-term AI insights memory column
 - `Dockerfile` / `docker-entrypoint.sh` — container deployment
 - `fly.toml` — Fly.io config
 - `render.yaml` — Render blueprint
@@ -94,9 +102,28 @@ POST /api/sync            # pull transactions for all enrollments
 POST /api/detect          # run subscription detection
 GET  /api/transactions    # list transactions (query: months, limit, offset)
 GET  /api/subscriptions   # list detected subscriptions
-GET  /dashboard           # subscription dashboard UI
+GET  /dashboard           # subscription dashboard UI (with charts)
+GET  /settings            # settings page
+GET  /login               # password login (if SESSION_PASSWORD set)
+POST /api/login           # authenticate session
+POST /api/logout          # end session
+GET  /api/settings        # retrieve user settings
+PATCH /api/settings       # update user settings
+GET  /api/insights        # stored AI insights
+POST /api/insights        # generate new AI insights
+GET  /api/insights/status # AI API config check + usage stats
+GET  /api/insights/usage  # historical usage breakdown
+POST /api/insights/reset  # clear long-term AI context
+POST /api/insights/rebuild # rebuild context from all history
 POST /api/sheets/sync     # sync to Google Sheets
+GET  /manifest.json       # PWA manifest
+GET  /sw.js               # service worker
 ```
+
+## Environment Variables (new)
+- `SESSION_PASSWORD` — password for login screen (omit to disable auth)
+- `SESSION_SECRET` — session cookie secret (auto-generated if not set)
+- `ANTHROPIC_API_KEY` — enables AI financial insights via Claude
 
 ## Git
 - Branch: `claude/subscription-tracker-plaid-WeQTA`
