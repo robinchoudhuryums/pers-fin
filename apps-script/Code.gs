@@ -1219,9 +1219,21 @@ function ensureSheet_(ss, name, headers) {
   if (!sheet) {
     sheet = ss.insertSheet(name);
     if (headers.length > 0) {
-      sheet.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight("bold");
+      sheet.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight("bold")
+        .setBackground("#161b22").setFontColor("#d4a574").setFontSize(9)
+        .setFontFamily("Inter,system-ui,sans-serif");
       sheet.setFrozenRows(1);
     }
+    // Apply dark theme base to entire sheet
+    sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns())
+      .setBackground("#0d1117").setFontColor("#e6dfd6")
+      .setFontFamily("Inter,system-ui,sans-serif").setFontSize(11);
+    // Re-apply header formatting (overwritten by the full-sheet styling above)
+    if (headers.length > 0) {
+      sheet.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight("bold")
+        .setBackground("#161b22").setFontColor("#d4a574").setFontSize(9);
+    }
+    sheet.setHiddenGridlines(true);
   }
   return sheet;
 }
@@ -1300,69 +1312,109 @@ function findCancelUrl_(merchantName) {
 function formatSubscriptionsSheet_(sheet, dataRows) {
   if (dataRows === 0) return;
 
+  const BG_DARK = "#0d1117";
+  const BG_SURFACE = "#161b22";
+  const TEXT_PRIMARY = "#e6dfd6";
+  const TEXT_MUTED = "#8b949e";
+  const WARM = "#d4a574";
+  const TEAL = "#5a8f8f";
+  const RED_BG = "#2d1518";
+  const YELLOW_BG = "#2d2815";
+
+  // Full sheet dark background
+  const totalRows = Math.max(dataRows + 1, 50);
+  sheet.getRange(1, 1, totalRows, 12).setBackground(BG_DARK).setFontColor(TEXT_PRIMARY)
+    .setFontFamily("Inter,system-ui,sans-serif").setFontSize(11).setFontWeight("normal");
+
   // Currency format for Amount, Monthly Cost, Yearly Cost (cols B, D, E)
-  const range = sheet.getRange(2, 2, dataRows, 1);
-  range.setNumberFormat("$#,##0.00");
+  sheet.getRange(2, 2, dataRows, 1).setNumberFormat("$#,##0.00");
   sheet.getRange(2, 4, dataRows, 2).setNumberFormat("$#,##0.00");
 
   // Date format for First Seen, Last Charged, Next Charge (cols F, G, H)
-  sheet.getRange(2, 6, dataRows, 3).setNumberFormat("yyyy-mm-dd");
+  sheet.getRange(2, 6, dataRows, 3).setNumberFormat("yyyy-mm-dd").setFontColor(TEXT_MUTED);
 
-  // Conditional formatting: red for Cancelled, yellow for Dismissed
-  const rules = sheet.getConditionalFormatRules();
-
+  // Conditional formatting: dark red for Cancelled, dark amber for Dismissed
   const cancelledRule = SpreadsheetApp.newConditionalFormatRule()
     .whenFormulaSatisfied('=$I2="Cancelled"')
-    .setBackground("#fce4e4")
+    .setBackground(RED_BG).setFontColor("#eb6b6b")
     .setRanges([sheet.getRange(2, 1, dataRows, 12)])
     .build();
 
   const dismissedRule = SpreadsheetApp.newConditionalFormatRule()
     .whenFormulaSatisfied('=$I2="Dismissed"')
-    .setBackground("#fff3cd")
+    .setBackground(YELLOW_BG).setFontColor(TEXT_MUTED)
     .setRanges([sheet.getRange(2, 1, dataRows, 12)])
     .build();
 
   sheet.setConditionalFormatRules([cancelledRule, dismissedRule]);
 
-  // Header styling
+  // Header styling — warm accent on dark
   const headerRange = sheet.getRange(1, 1, 1, 12);
-  headerRange.setBackground("#2d5f46").setFontColor("white").setFontWeight("bold");
+  headerRange.setBackground(BG_SURFACE).setFontColor(WARM).setFontWeight("bold")
+    .setFontSize(9);
 
-  // Auto-resize
+  // Alternating row tints
+  for (let r = 0; r < dataRows; r++) {
+    if (r % 2 === 0) {
+      sheet.getRange(r + 2, 1, 1, 12).setBackground(BG_SURFACE);
+    }
+  }
+
+  // Auto-resize and tab color
   for (let i = 1; i <= 12; i++) sheet.autoResizeColumn(i);
+  sheet.setHiddenGridlines(true);
+  sheet.setTabColor(TEAL);
 }
 
 function formatDashboard_(sheet, rows) {
-  // Title
+  // Dark aurora-inspired palette for Google Sheets
+  // (Sheets doesn't support true dark mode, so we use a deep navy base)
+  const BG_DARK = "#0d1117";
+  const BG_SURFACE = "#161b22";
+  const BG_SURFACE2 = "#1c2129";
+  const TEXT_PRIMARY = "#e6dfd6";
+  const TEXT_MUTED = "#8b949e";
+  const WARM = "#d4a574";
+  const WARM_GLOW = "#c8856c";
+  const TEAL = "#5a8f8f";
+  const SECTION_BG = "#1a2030";
+
+  // Full sheet dark background
+  const totalRows = Math.max(rows.length, 50);
+  sheet.getRange(1, 1, totalRows, 6).setBackground(BG_DARK).setFontColor(TEXT_PRIMARY)
+    .setFontFamily("Inter,system-ui,sans-serif").setFontSize(11).setFontWeight("normal");
+
+  // Title — large, light weight
   sheet.getRange(1, 1, 1, 6).merge()
-    .setFontSize(18).setFontWeight("bold").setFontColor("#263f73");
+    .setFontSize(22).setFontWeight("normal").setFontColor(TEXT_PRIMARY);
 
   // Subtitle
   sheet.getRange(2, 1, 1, 6).merge()
-    .setFontSize(10).setFontStyle("italic").setFontColor("#888888");
+    .setFontSize(10).setFontStyle("italic").setFontColor(TEXT_MUTED);
 
-  // Summary card labels
+  // Summary card labels — warm accent bar
   sheet.getRange(4, 1, 1, 6)
-    .setBackground("#334d80").setFontColor("white").setFontWeight("bold")
-    .setFontSize(10).setHorizontalAlignment("center");
+    .setBackground(BG_SURFACE).setFontColor(WARM).setFontWeight("bold")
+    .setFontSize(9).setHorizontalAlignment("center");
 
   // Summary card values
   sheet.getRange(5, 1, 1, 6)
-    .setBackground("#edeef4").setFontWeight("bold").setFontSize(16)
-    .setHorizontalAlignment("center").setNumberFormat("$#,##0.00");
-  sheet.getRange(5, 4).setNumberFormat("0"); // Active count is not currency
+    .setBackground(BG_SURFACE2).setFontWeight("bold").setFontSize(16)
+    .setFontColor(WARM_GLOW).setHorizontalAlignment("center").setNumberFormat("$#,##0.00");
+  sheet.getRange(5, 4).setNumberFormat("0").setFontColor(TEAL); // Active count
 
   // Section headers
   const sectionKeywords = ["MONTHLY SPENDING TREND", "SPENDING BY CATEGORY", "TOP MERCHANTS", "UPCOMING SUBSCRIPTION CHARGES"];
   for (let r = 0; r < rows.length; r++) {
     if (rows[r][0] && sectionKeywords.includes(rows[r][0])) {
       sheet.getRange(r + 1, 1, 1, 6)
-        .setFontSize(13).setFontWeight("bold").setFontColor("#263f73");
+        .setFontSize(12).setFontWeight("bold").setFontColor(WARM)
+        .setBackground(BG_DARK);
       // Column headers (row after section title)
       if (r + 1 < rows.length) {
         sheet.getRange(r + 2, 1, 1, 6)
-          .setBackground("#e6e8ec").setFontWeight("bold").setFontSize(10);
+          .setBackground(SECTION_BG).setFontWeight("bold").setFontSize(9)
+          .setFontColor(TEXT_MUTED);
       }
     }
     // Currency formatting for data rows
@@ -1372,11 +1424,19 @@ function formatDashboard_(sheet, rows) {
     if (typeof rows[r][3] === "number" && r > 5) {
       sheet.getRange(r + 1, 4).setNumberFormat("$#,##0.00");
     }
+    // Alternating row tint for data rows
+    if (r > 5 && rows[r][0] && !sectionKeywords.includes(rows[r][0]) && rows[r][0] !== "") {
+      const isEvenData = r % 2 === 0;
+      if (isEvenData) {
+        sheet.getRange(r + 1, 1, 1, 6).setBackground(BG_SURFACE);
+      }
+    }
   }
 
   // Column widths
-  [180, 140, 140, 160, 140, 140].forEach((px, i) => sheet.setColumnWidth(i + 1, px));
+  [200, 150, 150, 170, 150, 150].forEach((px, i) => sheet.setColumnWidth(i + 1, px));
 
-  // Hide gridlines
+  // Hide gridlines and set tab color
   sheet.setHiddenGridlines(true);
+  sheet.setTabColor(WARM);
 }
