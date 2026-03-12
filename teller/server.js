@@ -27,6 +27,9 @@ const crypto = require("crypto");
 const { Pool } = require("pg");
 const path = require("path");
 const multer = require("multer");
+const helmet = require("helmet");
+const cors = require("cors");
+const rateLimit = require("express-rate-limit");
 const { parse } = require("csv-parse/sync");
 const { detectSubscriptions } = require("../scripts/detect-subscriptions");
 
@@ -41,6 +44,68 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 
 const app = express();
 app.use(express.json());
+
+// ---------------------------------------------------------------------------
+// Security middleware
+// ---------------------------------------------------------------------------
+// Helmet — sets security headers (CSP, X-Frame-Options, HSTS, etc.)
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.teller.io"],
+      connectSrc: ["'self'", "https://api.teller.io"],
+      frameSrc: ["https://cdn.teller.io"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+    },
+  },
+}));
+
+// CORS — restrict to allowed origins
+const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(",").map(s => s.trim())
+  : [];
+app.use(cors({
+  origin: (origin, cb) => {
+    // Allow requests with no origin (server-to-server, curl, mobile apps)
+    if (!origin || ALLOWED_ORIGINS.length === 0 || ALLOWED_ORIGINS.includes(origin)) {
+      return cb(null, true);
+    }
+    cb(new Error("Not allowed by CORS"));
+  },
+  credentials: true,
+}));
+
+// Rate limiting — general + tight limits for expensive operations
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100,
+  message: { error: "Too many requests, please try again later." },
+});
+const tightLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 5,
+  message: { error: "Too many requests, please try again later." },
+});
+app.use("/api/", generalLimiter);
+app.use("/api/sync", tightLimiter);
+app.use("/api/detect", tightLimiter);
+app.use("/api/cleanup", tightLimiter);
+app.use("/api/enroll", tightLimiter);
+
+// API key authentication — protects all /api/* routes
+// Set API_KEY env var to enable. Browser pages (/, /dashboard) remain open.
+const API_KEY = process.env.API_KEY;
+app.use("/api", (req, res, next) => {
+  if (!API_KEY) return next(); // no key configured = open (dev mode)
+  const provided = req.headers["x-api-key"] || req.query.api_key;
+  const providedBuf = Buffer.from(provided || "");
+  const keyBuf = Buffer.from(API_KEY);
+  if (!provided || providedBuf.length !== keyBuf.length || !crypto.timingSafeEqual(providedBuf, keyBuf)) {
+    return res.status(401).json({ error: "Unauthorized: invalid or missing API key" });
+  }
+  next();
+});
 
 // ---------------------------------------------------------------------------
 // Teller API config
@@ -148,7 +213,7 @@ async function tellerRequest(endpoint, accessToken, options = {}) {
 // ---------------------------------------------------------------------------
 const pool = new Pool({
   connectionString: process.env.NEON_DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
+  ssl: { rejectUnauthorized: true },
   max: 5,
   connectionTimeoutMillis: 10000,
 });
@@ -223,7 +288,7 @@ app.post("/api/enroll", async (req, res) => {
   } catch (err) {
     await client.query("ROLLBACK");
     console.error("Enrollment error:", err.message);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   } finally {
     client.release();
   }
@@ -280,7 +345,7 @@ app.post("/api/sync", async (req, res) => {
     });
   } catch (err) {
     console.error("Sync error:", err.message);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -422,7 +487,7 @@ app.get("/api/items", async (_req, res) => {
     res.json(result.rows);
   } catch (err) {
     console.error("list items error:", err.message);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -454,7 +519,7 @@ app.delete("/api/enrollments/:id", async (req, res) => {
 
     res.json({ deleted: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -640,7 +705,7 @@ app.post("/api/import-csv", upload.single("file"), async (req, res) => {
     }
   } catch (err) {
     console.error("CSV import error:", err.message);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -651,7 +716,7 @@ app.get("/api/csv-imports", async (_req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -755,7 +820,7 @@ app.get("/api/subscriptions", async (req, res) => {
       },
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -787,7 +852,7 @@ app.post("/api/subscriptions", async (req, res) => {
     );
     res.json(result.rows[0]);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -801,7 +866,7 @@ app.patch("/api/subscriptions/:id/dismiss", async (req, res) => {
     if (!result.rows.length) return res.status(404).json({ error: "Not found" });
     res.json(result.rows[0]);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -815,7 +880,7 @@ app.patch("/api/subscriptions/:id/undismiss", async (req, res) => {
     if (!result.rows.length) return res.status(404).json({ error: "Not found" });
     res.json(result.rows[0]);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -830,7 +895,7 @@ app.patch("/api/subscriptions/:id/cancel", async (req, res) => {
     if (!result.rows.length) return res.status(404).json({ error: "Not found" });
     res.json(result.rows[0]);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -845,7 +910,7 @@ app.patch("/api/subscriptions/:id/uncancel", async (req, res) => {
     if (!result.rows.length) return res.status(404).json({ error: "Not found" });
     res.json(result.rows[0]);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -896,7 +961,7 @@ app.get("/api/transactions", async (req, res) => {
       offset,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -909,7 +974,7 @@ app.post("/api/detect", async (_req, res) => {
     res.json({ detected_count: detected.length, subscriptions: detected });
   } catch (err) {
     console.error("Detection error:", err.message);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -928,7 +993,7 @@ app.post("/api/sheets/sync", async (_req, res) => {
     res.json(result);
   } catch (err) {
     console.error("Sheets sync error:", err.message);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -940,7 +1005,7 @@ app.post("/api/sheets/dashboard", async (_req, res) => {
     const result = await sheetsSync.syncDashboardOnly();
     res.json(result);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -960,14 +1025,15 @@ app.post("/api/cleanup", async (_req, res) => {
       subscriptions_pruned: subResult.rowCount,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
 // ---------------------------------------------------------------------------
 // GET /dashboard — subscription dashboard page
 // ---------------------------------------------------------------------------
-app.get("/dashboard", (_req, res) => {
+app.get("/dashboard", (req, res) => {
+  const apiKey = API_KEY || "";
   res.send(`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1095,6 +1161,13 @@ app.get("/dashboard", (_req, res) => {
   </table>
 
   <script>
+    const _apiKey = "${apiKey}";
+    function apiFetch(url, opts = {}) {
+      if (_apiKey) {
+        opts.headers = { ...opts.headers, 'x-api-key': _apiKey };
+      }
+      return fetch(url, opts);
+    }
     const tbody = document.getElementById('subs-body');
     const statusMsg = document.getElementById('status-msg');
 
@@ -1117,7 +1190,7 @@ app.get("/dashboard", (_req, res) => {
     async function loadSubscriptions() {
       const filter = document.getElementById('filter-select').value;
       try {
-        const res = await fetch('/api/subscriptions?filter=' + filter);
+        const res = await apiFetch('/api/subscriptions?filter=' + filter);
         const data = await res.json();
         document.getElementById('monthly-cost').textContent = '$' + data.summary.monthly_cost.toFixed(2);
         document.getElementById('yearly-cost').textContent = '$' + data.summary.yearly_cost.toFixed(2);
@@ -1168,7 +1241,7 @@ app.get("/dashboard", (_req, res) => {
       const btn = document.getElementById('sync-btn');
       btn.disabled = true; btn.textContent = 'Syncing...';
       try {
-        const res = await fetch('/api/sync', { method: 'POST' });
+        const res = await apiFetch('/api/sync', { method: 'POST' });
         const data = await res.json();
         if (res.ok) showMsg('Synced ' + data.transactions_added + ' transactions from ' + data.enrollments_synced + ' institution(s).', true);
         else showMsg('Sync error: ' + data.error, false);
@@ -1180,7 +1253,7 @@ app.get("/dashboard", (_req, res) => {
       const btn = document.getElementById('detect-btn');
       btn.disabled = true; btn.textContent = 'Detecting...';
       try {
-        const res = await fetch('/api/detect', { method: 'POST' });
+        const res = await apiFetch('/api/detect', { method: 'POST' });
         const data = await res.json();
         if (res.ok) { showMsg('Detection complete: ' + data.detected_count + ' subscriptions found.', true); loadSubscriptions(); }
         else showMsg('Detection error: ' + data.error, false);
@@ -1200,7 +1273,7 @@ app.get("/dashboard", (_req, res) => {
       const notes = document.querySelector('.manual-form input[name="notes"]').value.trim();
       if (!name || !amount) { showMsg('Name and amount are required.', false); return; }
       try {
-        const res = await fetch('/api/subscriptions', {
+        const res = await apiFetch('/api/subscriptions', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name, amount, cadence_days, notes: notes || undefined }),
         });
@@ -1214,20 +1287,20 @@ app.get("/dashboard", (_req, res) => {
       } catch (e) { showMsg('Network error: ' + e.message, false); }
     }
 
-    async function dismissSub(id) { await fetch('/api/subscriptions/' + id + '/dismiss', { method: 'PATCH' }); loadSubscriptions(); }
-    async function undismissSub(id) { await fetch('/api/subscriptions/' + id + '/undismiss', { method: 'PATCH' }); loadSubscriptions(); }
+    async function dismissSub(id) { await apiFetch('/api/subscriptions/' + id + '/dismiss', { method: 'PATCH' }); loadSubscriptions(); }
+    async function undismissSub(id) { await apiFetch('/api/subscriptions/' + id + '/undismiss', { method: 'PATCH' }); loadSubscriptions(); }
     async function markCancelled(id) {
       if (!confirm('Mark this subscription as cancelled?')) return;
-      await fetch('/api/subscriptions/' + id + '/cancel', { method: 'PATCH' });
+      await apiFetch('/api/subscriptions/' + id + '/cancel', { method: 'PATCH' });
       showMsg('Subscription marked as cancelled.', true); loadSubscriptions();
     }
-    async function uncancelSub(id) { await fetch('/api/subscriptions/' + id + '/uncancel', { method: 'PATCH' }); loadSubscriptions(); }
+    async function uncancelSub(id) { await apiFetch('/api/subscriptions/' + id + '/uncancel', { method: 'PATCH' }); loadSubscriptions(); }
 
     async function syncSheets() {
       const btn = document.getElementById('sheets-btn');
       btn.disabled = true; btn.textContent = 'Syncing...';
       try {
-        const res = await fetch('/api/sheets/sync', { method: 'POST' });
+        const res = await apiFetch('/api/sheets/sync', { method: 'POST' });
         const data = await res.json();
         if (res.ok) showMsg('Synced to Sheets: ' + data.transactions_synced + ' txns, ' + data.subscriptions_synced + ' subs.', true);
         else showMsg('Sheets sync error: ' + data.error, false);
@@ -1244,8 +1317,9 @@ app.get("/dashboard", (_req, res) => {
 // ---------------------------------------------------------------------------
 // GET / — Teller Connect enrollment + CSV import page
 // ---------------------------------------------------------------------------
-app.get("/", (_req, res) => {
+app.get("/", (req, res) => {
   const tellerEnv = TELLER_ENV === "production" ? "production" : TELLER_ENV === "development" ? "development" : "sandbox";
+  const apiKey = API_KEY || "";
 
   res.send(`<!DOCTYPE html>
 <html lang="en">
@@ -1316,6 +1390,13 @@ app.get("/", (_req, res) => {
   </div>
 
   <script>
+    const _apiKey = "${apiKey}";
+    function apiFetch(url, opts = {}) {
+      if (_apiKey) {
+        opts.headers = { ...opts.headers, 'x-api-key': _apiKey };
+      }
+      return fetch(url, opts);
+    }
     const statusEl  = document.getElementById('status');
     const itemsList = document.getElementById('items-list');
 
@@ -1327,7 +1408,7 @@ app.get("/", (_req, res) => {
 
     async function loadItems() {
       try {
-        const res = await fetch('/api/items');
+        const res = await apiFetch('/api/items');
         const items = await res.json();
         if (!items.length) { itemsList.textContent = 'No institutions linked yet.'; return; }
         itemsList.innerHTML = items.map(i =>
@@ -1346,7 +1427,7 @@ app.get("/", (_req, res) => {
         onSuccess: async function(enrollment) {
           showStatus('Enrolling...', true);
           try {
-            const res = await fetch('/api/enroll', {
+            const res = await apiFetch('/api/enroll', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -1405,7 +1486,7 @@ app.get("/", (_req, res) => {
       document.getElementById('csv-upload-btn').disabled = true;
       showCsvStatus('Importing...', true);
       try {
-        const resp = await fetch('/api/import-csv', { method: 'POST', body: formData });
+        const resp = await apiFetch('/api/import-csv', { method: 'POST', body: formData });
         const data = await resp.json();
         if (resp.ok) {
           showCsvStatus('Imported ' + data.rows_imported + ' transactions (' + data.rows_skipped +
@@ -1419,7 +1500,7 @@ app.get("/", (_req, res) => {
     async function loadCsvImports() {
       const list = document.getElementById('csv-imports-list');
       try {
-        const res = await fetch('/api/csv-imports');
+        const res = await apiFetch('/api/csv-imports');
         const imports = await res.json();
         if (!imports.length) { list.textContent = 'No CSV imports yet.'; return; }
         list.innerHTML = imports.map(i =>
