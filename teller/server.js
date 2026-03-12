@@ -1065,66 +1065,135 @@ app.get("/dashboard", (req, res) => {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Subscription Dashboard</title>
   <style>
+    :root {
+      --bg: #0f1117; --surface: #1a1d27; --surface-2: #252836;
+      --border: #2e3140; --text: #e4e4e7; --text-muted: #9ca3af;
+      --accent: #6366f1; --accent-hover: #818cf8;
+      --green: #22c55e; --green-bg: rgba(34,197,94,0.12);
+      --red: #ef4444; --red-bg: rgba(239,68,68,0.12);
+      --yellow: #eab308; --yellow-bg: rgba(234,179,8,0.12);
+      --blue: #3b82f6; --blue-bg: rgba(59,130,246,0.12);
+      --radius: 12px;
+    }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; color: #1a1a1a; }
-    a { color: #0052ff; text-decoration: none; }
+    body { font-family: 'Inter', system-ui, -apple-system, sans-serif; background: var(--bg);
+           color: var(--text); min-height: 100vh; }
+    .container { max-width: 960px; margin: 0 auto; padding: 24px 20px; }
+    a { color: var(--accent-hover); text-decoration: none; }
     a:hover { text-decoration: underline; }
-    h1 { margin-bottom: 4px; }
-    .subtitle { color: #666; margin-bottom: 24px; font-size: 14px; }
-    .summary { display: flex; gap: 16px; margin-bottom: 28px; flex-wrap: wrap; }
-    .card { flex: 1; min-width: 140px; padding: 16px; border-radius: 8px; background: #f8f9fa; border: 1px solid #e9ecef; }
-    .card .label { font-size: 12px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
-    .card .value { font-size: 28px; font-weight: 700; margin-top: 4px; }
-    .card .value.cost { color: #d63031; }
-    .card .value.count { color: #0052ff; }
+
+    /* Nav */
+    .topnav { display: flex; align-items: center; justify-content: space-between;
+              padding: 16px 0; margin-bottom: 8px; border-bottom: 1px solid var(--border); }
+    .topnav .logo { font-weight: 700; font-size: 16px; color: var(--text); display: flex; align-items: center; gap: 8px; }
+    .topnav .logo span { color: var(--accent-hover); }
+    .topnav .nav-links { display: flex; gap: 20px; font-size: 14px; }
+
+    h1 { font-size: 24px; font-weight: 700; margin-bottom: 4px; }
+    .subtitle { color: var(--text-muted); margin-bottom: 28px; font-size: 14px; }
+
+    /* Summary Cards */
+    .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+               gap: 16px; margin-bottom: 28px; }
+    .card { padding: 20px; border-radius: var(--radius); background: var(--surface);
+            border: 1px solid var(--border); transition: border-color 0.2s; }
+    .card:hover { border-color: var(--accent); }
+    .card .label { font-size: 11px; color: var(--text-muted); text-transform: uppercase;
+                   letter-spacing: 1px; font-weight: 500; }
+    .card .value { font-size: 28px; font-weight: 700; margin-top: 6px;
+                   font-variant-numeric: tabular-nums; }
+    .card .value.cost { color: var(--red); }
+    .card .value.count { color: var(--accent-hover); }
+
+    /* Action bar */
     .actions { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
     .actions button, .actions select {
-      padding: 8px 16px; font-size: 14px; border: 1px solid #ccc; border-radius: 6px;
-      cursor: pointer; background: #fff;
+      padding: 8px 16px; font-size: 13px; font-weight: 500; border: 1px solid var(--border);
+      border-radius: 8px; cursor: pointer; background: var(--surface); color: var(--text);
+      transition: all 0.15s;
     }
-    .actions button.primary { background: #0052ff; color: #fff; border-color: #0052ff; }
-    .actions button.primary:disabled { opacity: 0.6; cursor: not-allowed; }
-    .actions button:hover:not(:disabled) { opacity: 0.9; }
+    .actions button:hover:not(:disabled) { border-color: var(--accent); background: var(--surface-2); }
+    .actions button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .actions button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+    .actions button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .actions select { appearance: none; padding-right: 28px;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239ca3af' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+      background-repeat: no-repeat; background-position: right 10px center; }
+
+    /* Table */
     table { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
-    th { text-align: left; padding: 10px 8px; border-bottom: 2px solid #dee2e6; font-size: 13px;
-         color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
-    td { padding: 10px 8px; border-bottom: 1px solid #f0f0f0; font-size: 14px; }
-    tr:hover { background: #f8f9fa; }
-    .amount { font-weight: 600; }
-    .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
-    .badge-new { background: #d4edda; color: #155724; }
-    .badge-price { background: #fff3cd; color: #856404; }
-    .badge-manual { background: #e0e7ff; color: #3730a3; }
-    .badge-dismissed { background: #f0f0f0; color: #666; }
-    .badge-cancelled { background: #fce4e4; color: #c0392b; }
-    .btn-sm { padding: 4px 10px; font-size: 12px; border: 1px solid #ccc; border-radius: 4px;
-              cursor: pointer; background: #fff; margin-right: 4px; }
-    .btn-sm:hover { background: #f0f0f0; }
-    .btn-sm.cancel { border-color: #e74c3c; color: #e74c3c; }
-    .btn-sm.cancel:hover { background: #fce4e4; }
-    .btn-sm.restore { border-color: #27ae60; color: #27ae60; }
-    .btn-sm.restore:hover { background: #e6f9e6; }
-    .cancel-link { font-size: 12px; }
-    .next-date { font-size: 13px; color: #666; }
-    .next-date.overdue { color: #e74c3c; font-weight: 600; }
-    .manual-form { background: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 24px; display: none; }
-    .manual-form h3 { margin-bottom: 12px; }
+    th { text-align: left; padding: 10px 12px; font-size: 11px; color: var(--text-muted);
+         text-transform: uppercase; letter-spacing: 1px; font-weight: 500;
+         border-bottom: 1px solid var(--border); }
+    td { padding: 12px; border-bottom: 1px solid var(--border); font-size: 14px; }
+    tr { transition: background 0.1s; }
+    tr:hover { background: var(--surface); }
+    .amount { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+    /* Badges */
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 10px;
+             font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase; }
+    .badge-new { background: var(--green-bg); color: var(--green); }
+    .badge-price { background: var(--yellow-bg); color: var(--yellow); }
+    .badge-manual { background: var(--blue-bg); color: var(--blue); }
+    .badge-dismissed { background: var(--surface-2); color: var(--text-muted); }
+    .badge-cancelled { background: var(--red-bg); color: var(--red); }
+    .badge-category { background: var(--surface-2); color: var(--text-muted); font-weight: 500; }
+
+    /* Action buttons */
+    .btn-sm { padding: 4px 10px; font-size: 11px; font-weight: 500; border: 1px solid var(--border);
+              border-radius: 6px; cursor: pointer; background: var(--surface); color: var(--text-muted);
+              margin-right: 4px; transition: all 0.15s; }
+    .btn-sm:hover { border-color: var(--text-muted); color: var(--text); }
+    .btn-sm.cancel { border-color: rgba(239,68,68,0.3); color: var(--red); }
+    .btn-sm.cancel:hover { background: var(--red-bg); }
+    .btn-sm.restore { border-color: rgba(34,197,94,0.3); color: var(--green); }
+    .btn-sm.restore:hover { background: var(--green-bg); }
+
+    .next-date { font-size: 13px; color: var(--text-muted); }
+    .next-date.overdue { color: var(--red); font-weight: 600; }
+
+    /* Manual form */
+    .manual-form { background: var(--surface); padding: 24px; border-radius: var(--radius);
+                   border: 1px solid var(--border); margin-bottom: 24px; display: none; }
+    .manual-form h3 { margin-bottom: 16px; font-size: 16px; }
     .manual-form .fields { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; }
-    .manual-form .field { display: flex; flex-direction: column; gap: 4px; }
-    .manual-form label { font-size: 12px; font-weight: 600; color: #666; }
-    .manual-form input, .manual-form select { padding: 8px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; }
+    .manual-form .field { display: flex; flex-direction: column; gap: 6px; }
+    .manual-form label { font-size: 11px; font-weight: 600; color: var(--text-muted);
+                         text-transform: uppercase; letter-spacing: 0.5px; }
+    .manual-form input, .manual-form select {
+      padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px;
+      background: var(--surface-2); color: var(--text); }
+    .manual-form input:focus, .manual-form select:focus { outline: none; border-color: var(--accent); }
     .manual-form input[name="name"] { width: 200px; }
     .manual-form input[name="amount"] { width: 100px; }
     .manual-form input[name="notes"] { width: 200px; }
-    .status-msg { padding: 10px; border-radius: 6px; margin-bottom: 16px; display: none; }
-    .status-msg.success { background: #e6f9e6; border: 1px solid #4caf50; display: block; }
-    .status-msg.error { background: #fce4e4; border: 1px solid #f44336; display: block; }
-    .empty { text-align: center; padding: 40px; color: #999; }
-    nav { margin-bottom: 20px; font-size: 14px; }
+
+    /* Status messages */
+    .status-msg { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; display: none;
+                  font-size: 14px; font-weight: 500; }
+    .status-msg.success { background: var(--green-bg); border: 1px solid rgba(34,197,94,0.2);
+                          color: var(--green); display: block; }
+    .status-msg.error { background: var(--red-bg); border: 1px solid rgba(239,68,68,0.2);
+                        color: var(--red); display: block; }
+    .empty { text-align: center; padding: 48px; color: var(--text-muted); }
+
+    /* Export link */
+    .export-link { font-size: 12px; color: var(--text-muted); margin-left: auto; }
+    .export-link:hover { color: var(--accent-hover); }
   </style>
 </head>
 <body>
-  <nav><a href="/">Link Accounts / CSV Import</a></nav>
+  <div class="container">
+  <nav class="topnav">
+    <div class="logo"><span>$</span> Subscription Tracker</div>
+    <div class="nav-links">
+      <a href="/">Accounts</a>
+      <a href="/dashboard">Dashboard</a>
+      <a href="/api/export?type=subscriptions&api_key=${apiKey}" class="export-link">Export CSV</a>
+    </div>
+  </nav>
+
   <h1>Subscriptions</h1>
   <p class="subtitle">Detected recurring charges and manually tracked subscriptions</p>
 
@@ -1138,7 +1207,7 @@ app.get("/dashboard", (req, res) => {
     <button class="primary" id="sync-btn" onclick="syncTransactions()">Sync Transactions</button>
     <button class="primary" id="detect-btn" onclick="runDetection()">Run Detection</button>
     <button id="add-btn" onclick="toggleManualForm()">+ Add Manual</button>
-    <button id="sheets-btn" onclick="syncSheets()" title="Sync to Google Sheets">Sync to Sheets</button>
+    <button id="sheets-btn" onclick="syncSheets()">Sync to Sheets</button>
     <select id="filter-select" onchange="loadSubscriptions()">
       <option value="active">Active</option>
       <option value="dismissed">Dismissed</option>
@@ -1183,6 +1252,7 @@ app.get("/dashboard", (req, res) => {
       <tr><td colspan="6" class="empty">Loading...</td></tr>
     </tbody>
   </table>
+  </div>
 
   <script>
     const _apiKey = "${apiKey}";
@@ -1228,6 +1298,7 @@ app.get("/dashboard", (req, res) => {
           if (s.is_new) badges.push('<span class="badge badge-new">NEW</span>');
           if (s.amount_changed) badges.push('<span class="badge badge-price">PRICE CHANGE</span>');
           if (s.source === 'manual') badges.push('<span class="badge badge-manual">MANUAL</span>');
+          if (s.category && s.category !== 'other') badges.push('<span class="badge badge-category">' + s.category + '</span>');
           if (s.is_dismissed) badges.push('<span class="badge badge-dismissed">DISMISSED</span>');
           if (s.cancelled_at) badges.push('<span class="badge badge-cancelled">CANCELLED</span>');
           const overdue = !s.cancelled_at && isOverdue(s.next_expected);
@@ -1353,64 +1424,117 @@ app.get("/", (req, res) => {
   <title>Subscription Tracker — Link Account</title>
   <script src="https://cdn.teller.io/connect/connect.js"></script>
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 600px; margin: 60px auto; padding: 0 20px; }
-    button { padding: 12px 24px; font-size: 16px; cursor: pointer; border: none;
-             background: #0052ff; color: #fff; border-radius: 6px; }
+    :root {
+      --bg: #0f1117; --surface: #1a1d27; --surface-2: #252836;
+      --border: #2e3140; --text: #e4e4e7; --text-muted: #9ca3af;
+      --accent: #6366f1; --accent-hover: #818cf8;
+      --green: #22c55e; --green-bg: rgba(34,197,94,0.12);
+      --red: #ef4444; --red-bg: rgba(239,68,68,0.12);
+      --radius: 12px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Inter', system-ui, -apple-system, sans-serif; background: var(--bg);
+           color: var(--text); min-height: 100vh; }
+    .container { max-width: 640px; margin: 0 auto; padding: 24px 20px; }
+    a { color: var(--accent-hover); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .topnav { display: flex; align-items: center; justify-content: space-between;
+              padding: 16px 0; margin-bottom: 32px; border-bottom: 1px solid var(--border); }
+    .topnav .logo { font-weight: 700; font-size: 16px; color: var(--text); display: flex; align-items: center; gap: 8px; }
+    .topnav .logo span { color: var(--accent-hover); }
+    .topnav .nav-links { display: flex; gap: 20px; font-size: 14px; }
+
+    h1 { font-size: 24px; font-weight: 700; margin-bottom: 6px; }
+    h2 { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
+    h3 { font-size: 15px; font-weight: 600; margin-bottom: 8px; color: var(--text-muted); }
+    p { color: var(--text-muted); font-size: 14px; line-height: 1.5; margin-bottom: 20px; }
+
+    button { padding: 10px 20px; font-size: 14px; font-weight: 500; cursor: pointer; border: none;
+             background: var(--accent); color: #fff; border-radius: 8px; transition: all 0.15s; }
+    button:hover { background: var(--accent-hover); }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
-    #status { margin-top: 20px; padding: 12px; border-radius: 6px; display: none; }
-    .success { background: #e6f9e6; border: 1px solid #4caf50; }
-    .error   { background: #fce4e4; border: 1px solid #f44336; }
-    #items   { margin-top: 30px; }
-    .item    { padding: 10px; margin: 8px 0; background: #f5f5f5; border-radius: 4px; }
-    .divider { margin: 40px 0; border-top: 1px solid #ddd; }
-    .csv-section { margin-top: 20px; }
-    .csv-form { display: flex; flex-direction: column; gap: 12px; max-width: 400px; }
-    .csv-form label { font-weight: 600; font-size: 14px; }
+
+    #status { margin-top: 16px; padding: 12px 16px; border-radius: 8px; display: none; font-size: 14px; }
+    .success { background: var(--green-bg); border: 1px solid rgba(34,197,94,0.2); color: var(--green); }
+    .error   { background: var(--red-bg); border: 1px solid rgba(239,68,68,0.2); color: var(--red); }
+
+    #items { margin-top: 28px; }
+    .item { padding: 14px 16px; margin: 8px 0; background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius); font-size: 14px; transition: border-color 0.15s; }
+    .item:hover { border-color: var(--accent); }
+
+    .section-divider { margin: 40px 0; border: none; border-top: 1px solid var(--border); }
+
+    .csv-section { margin-top: 8px; }
+    .csv-form { display: flex; flex-direction: column; gap: 16px; max-width: 420px; }
+    .csv-form label { font-weight: 600; font-size: 11px; color: var(--text-muted);
+                      text-transform: uppercase; letter-spacing: 0.5px; }
     .csv-form select, .csv-form input[type="text"] {
-      padding: 8px 12px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px; }
-    .csv-form input[type="file"] { font-size: 14px; }
-    .csv-imports { margin-top: 16px; }
-    .csv-import-entry { padding: 8px; margin: 4px 0; background: #f0f4ff; border-radius: 4px; font-size: 14px; }
+      padding: 10px 14px; font-size: 14px; border: 1px solid var(--border); border-radius: 8px;
+      background: var(--surface-2); color: var(--text); width: 100%; }
+    .csv-form select:focus, .csv-form input:focus { outline: none; border-color: var(--accent); }
+    .csv-form input[type="file"] { font-size: 14px; color: var(--text-muted); }
+    .csv-form .field { display: flex; flex-direction: column; gap: 6px; }
+
+    .csv-imports { margin-top: 24px; }
+    .csv-import-entry { padding: 12px 16px; margin: 6px 0; background: var(--surface);
+                        border: 1px solid var(--border); border-radius: var(--radius); font-size: 13px; }
   </style>
 </head>
 <body>
-  <nav style="margin-bottom:20px;font-size:14px;"><a href="/dashboard">View Dashboard</a></nav>
-  <h1>Subscription Tracker</h1>
-  <p>Link a financial institution to start tracking recurring charges.</p>
+  <div class="container">
+  <nav class="topnav">
+    <div class="logo"><span>$</span> Subscription Tracker</div>
+    <div class="nav-links">
+      <a href="/">Accounts</a>
+      <a href="/dashboard">Dashboard</a>
+    </div>
+  </nav>
+
+  <h1>Link Accounts</h1>
+  <p>Connect a financial institution to start tracking recurring charges automatically.</p>
   <button id="link-btn" onclick="startLink()">Link an Account</button>
   <div id="status"></div>
-  <div id="items"><h3>Linked Institutions</h3><div id="items-list">Loading...</div></div>
+  <div id="items"><h3>Linked Institutions</h3><div id="items-list" style="color:var(--text-muted);font-size:14px;">Loading...</div></div>
 
-  <div class="divider"></div>
+  <hr class="section-divider">
 
   <div class="csv-section">
     <h2>Import from CSV</h2>
     <p>Upload a CSV export from your bank. Supports Chase, Wells Fargo, Capital One, Discover, Schwab, and generic formats.</p>
     <div class="csv-form">
-      <label for="csv-institution">Bank / Institution</label>
-      <select id="csv-institution">
-        <option value="Chase">Chase</option>
-        <option value="Wells Fargo">Wells Fargo</option>
-        <option value="Capital One">Capital One</option>
-        <option value="Discover">Discover</option>
-        <option value="Charles Schwab">Charles Schwab</option>
-        <option value="Other">Other</option>
-      </select>
+      <div class="field">
+        <label for="csv-institution">Bank / Institution</label>
+        <select id="csv-institution">
+          <option value="Chase">Chase</option>
+          <option value="Wells Fargo">Wells Fargo</option>
+          <option value="Capital One">Capital One</option>
+          <option value="Discover">Discover</option>
+          <option value="Charles Schwab">Charles Schwab</option>
+          <option value="Other">Other</option>
+        </select>
+      </div>
       <input type="text" id="csv-custom-institution" placeholder="Institution name" style="display:none">
 
-      <label for="csv-account-label">Account Label</label>
-      <input type="text" id="csv-account-label" placeholder="e.g. Chase Checking, WF Visa">
+      <div class="field">
+        <label for="csv-account-label">Account Label</label>
+        <input type="text" id="csv-account-label" placeholder="e.g. Chase Checking, WF Visa">
+      </div>
 
-      <label for="csv-file">CSV File</label>
-      <input type="file" id="csv-file" accept=".csv">
+      <div class="field">
+        <label for="csv-file">CSV File</label>
+        <input type="file" id="csv-file" accept=".csv">
+      </div>
 
       <button id="csv-upload-btn" onclick="uploadCsv()">Upload & Import</button>
     </div>
-    <div id="csv-status" style="margin-top:12px;padding:12px;border-radius:6px;display:none"></div>
+    <div id="csv-status" style="margin-top:12px;padding:12px;border-radius:8px;display:none"></div>
     <div class="csv-imports">
       <h3>Import History</h3>
-      <div id="csv-imports-list">Loading...</div>
+      <div id="csv-imports-list" style="color:var(--text-muted);font-size:14px;">Loading...</div>
     </div>
+  </div>
   </div>
 
   <script>
