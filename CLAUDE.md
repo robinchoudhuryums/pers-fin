@@ -91,6 +91,7 @@ cd teller && npm install && node server.js
 - `apps-script/Code.gs` — Google Sheets Apps Script (standalone + server sync)
 - `db/001_schema.sql` — core schema
 - `db/003_teller.sql` — Teller-specific migrations
+- `db/004_balances.sql` — account balances table
 - `db/005_settings.sql` — user settings + financial insights tables
 - `db/006_insights_memory.sql` — long-term AI insights memory column
 - `Dockerfile` / `docker-entrypoint.sh` — container deployment

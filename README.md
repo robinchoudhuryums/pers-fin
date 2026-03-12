@@ -1,50 +1,50 @@
 # Personal Subscription Tracker
 
-Detect recurring charges across your bank accounts using **Teller API** (primary) or Plaid (legacy), with Neon Postgres. Features a web dashboard with spending charts, dark/light theme, password-protected sessions, optional AI financial insights, and installable as a mobile home-screen app (PWA).
+Detect recurring charges across your bank accounts using **Teller API** (primary) or Plaid (legacy), with Neon Postgres. Features a web dashboard with spending charts, dark/light theme, PIN/password-protected sessions, optional AI financial insights, and installable as a mobile home-screen app (PWA).
 
 ## Architecture
 
 ```
-┌─────────────┐     ┌──────────────────┐     ┌──────────────┐
-│ Plaid Link  │────>│  Express Server  │────>│ Neon Postgres│
-│  (browser)  │     │  (token exchange)│     │  (pgBouncer) │
-└─────────────┘     └──────────────────┘     └──────┬───────┘
-                                                     │
-                    ┌──────────────────┐              │
-                    │   n8n Workflows  │──────────────┘
-                    │  • Daily sync    │
-                    │  • Weekly digest │
-                    │  • Retention     │
-                    └──────────────────┘
-                                                     │
-                    ┌──────────────────┐              │
-                    │  Google Sheets   │<─────────────┘
-                    │  • Transactions  │
-                    │  • Subscriptions │
-                    │  • Dashboard     │
-                    └──────────────────┘
+┌──────────────┐     ┌──────────────────┐     ┌──────────────┐
+│Teller Connect│────>│  Express Server  │────>│ Neon Postgres│
+│  (browser)   │     │  (mTLS + API)    │     │  (pgBouncer) │
+└──────────────┘     └──────────────────┘     └──────┬───────┘
+                              │                       │
+                     ┌────────┴────────┐              │
+                     │  Claude API     │              │
+                     │  (AI Insights)  │              │
+                     └─────────────────┘              │
+                                                      │
+                     ┌──────────────────┐             │
+                     │  Google Sheets   │<────────────┘
+                     │  • Transactions  │
+                     │  • Subscriptions │
+                     │  • Dashboard     │
+                     └──────────────────┘
 ```
 
 ## Files
 
 | Path | Description |
 |------|-------------|
-| `db/001_schema.sql` | Postgres schema — run this first |
+| `teller/server.js` | Main Express server (Teller API + dashboard + settings) |
+| `teller/package.json` | Server dependencies |
+| `plaid/server.js` | Legacy Plaid server (still functional) |
+| `db/001_schema.sql` | Core Postgres schema |
 | `db/002_csv_import.sql` | CSV import tracking table |
-| `db/003_dashboard_features.sql` | Dashboard feature columns |
+| `db/003_teller.sql` | Teller-specific migrations |
 | `db/005_settings.sql` | User settings + AI insights tables |
 | `db/006_insights_memory.sql` | Long-term AI insights memory column |
-| `plaid/server.js` | Express server for Plaid Link + API |
-| `plaid/package.json` | Server dependencies |
 | `scripts/detect-subscriptions.js` | Recurring charge detection algorithm |
 | `scripts/sheets-sync.js` | Google Sheets sync + dashboard builder |
 | `scripts/retention-cleanup.sql` | Data retention queries |
-| `n8n-workflows/transaction-sync.json` | n8n workflow: daily Plaid sync |
-| `n8n-workflows/weekly-digest.json` | n8n workflow: Monday email digest |
-| `n8n-workflows/retention-cleanup.json` | n8n workflow: weekly data pruning |
-| `tests/` | Test suite (node:test) |
+| `apps-script/Code.gs` | Google Sheets Apps Script (standalone + server sync) |
+| `n8n-workflows/` | n8n automation workflows |
+| `tests/` | Test suite (node:test, 60 tests) |
 | `Dockerfile` | Container build |
-| `docker-compose.yml` | Docker Compose config |
+| `render.yaml` | Render deployment blueprint |
+| `fly.toml` | Fly.io deployment config |
+| `manifest.json` | PWA manifest |
 
 ## Setup
 
@@ -52,71 +52,38 @@ Detect recurring charges across your bank accounts using **Teller API** (primary
 
 ```bash
 cp .env.example .env
-# Fill in your Plaid, Neon, email, and Google Sheets credentials
+# Fill in Teller, Neon, and optional credentials (Anthropic, Google Sheets)
 ```
 
 ### 2. Database
 
-The server runs **auto-migration on startup** — it creates all required tables and columns if they don't exist. No manual SQL execution needed.
+The server runs **auto-migration on startup** — all required tables and columns are created automatically. No manual SQL execution needed.
 
-The core schema (`db/001_schema.sql` and `db/003_teller.sql`) must be run once manually since they create the base tables:
-
-```bash
-psql "$NEON_DATABASE_URL" -f db/001_schema.sql
-psql "$NEON_DATABASE_URL" -f db/003_teller.sql
-```
-
-All other migrations (settings, balances, insights, etc.) are handled automatically by the server.
-
-### 3. Plaid Link Server
+### 3. Teller Server (Primary)
 
 ```bash
-cd plaid
-npm install
-npm start
-# Open http://localhost:3000 to link your institutions
+cd teller && npm install && node server.js
+# Open http://localhost:3000
 ```
 
-Link each institution one at a time: Capital One, Chase, Schwab, Discover, Wells Fargo.
+Requires Teller mTLS certificate files (`certificate.pem`, `private_key.pem`) in the project root.
 
-### 4. n8n Workflows
-
-1. Open your n8n instance
-2. Create a **Postgres credential** named "Neon Postgres" using your pgBouncer connection string
-3. Create an **SMTP credential** for email sending
-4. Import `n8n-workflows/transaction-sync.json` — update credential IDs
-5. Import `n8n-workflows/weekly-digest.json` — update credential IDs and the script path in "Run Detection Script"
-6. Import `n8n-workflows/retention-cleanup.json` — update credential IDs
-7. Set these n8n environment variables: `PLAID_CLIENT_ID`, `PLAID_SECRET_DEV`, `TOKEN_ENCRYPTION_PASSPHRASE`, `ALERT_EMAIL`, `NEON_DATABASE_URL`
-8. Activate all three workflows
-
-### 5. Google Sheets Integration
+### 4. Google Sheets Integration (Optional)
 
 1. Create a Google Cloud project and enable the **Google Sheets API**
 2. Create a **Service Account** and download the JSON key file
 3. Share your spreadsheet with the service account email (as Editor)
 4. Set `GOOGLE_SHEETS_ID` and `GOOGLE_SERVICE_ACCOUNT_KEY` in `.env`
 
-The sync creates three sheets:
-- **Transactions** — all transactions with formatting, filters, and alternating row colors
-- **Subscriptions** — detected + manual subscriptions with status, cost breakdowns, and conditional formatting
-- **Dashboard** — polished summary with monthly trends, category breakdown, top merchants, and upcoming charges
+The sync creates three sheets: **Transactions**, **Subscriptions**, and **Dashboard**.
 
-Trigger a sync from the dashboard UI ("Sync to Sheets" button) or via API:
+### 5. Deployment
 
-```bash
-curl -X POST http://localhost:3000/api/sheets/sync
-```
+**Render (free):** See `render.yaml` — add PEM files as Secret Files, set env vars in dashboard.
 
-Or run standalone:
+**Fly.io (~$2/mo):** See `fly.toml` — set secrets via `fly secrets set`.
 
-```bash
-node scripts/sheets-sync.js           # full sync
-node scripts/sheets-sync.js --dashboard  # rebuild dashboard only
-```
-
-### 6. Docker
-
+**Docker:**
 ```bash
 docker compose up --build
 ```
@@ -133,40 +100,38 @@ Tests cover the detection algorithm, CSV parsing, date handling, API logic, and 
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/create_link_token` | Generate Plaid Link token |
-| `POST` | `/api/exchange_token` | Exchange public token for access token |
-| `GET` | `/api/items` | List linked institutions |
-| `POST` | `/api/import-csv` | Import bank CSV export |
-| `GET` | `/api/csv-imports` | List CSV import history |
+| `POST` | `/api/enroll` | Store Teller access token after Connect |
+| `POST` | `/api/sync` | Pull transactions for all enrollments |
+| `POST` | `/api/detect` | Run subscription detection |
+| `GET` | `/api/transactions` | List transactions (query: months, limit, offset) |
 | `GET` | `/api/subscriptions` | List subscriptions (filter: active/dismissed/cancelled/all) |
 | `POST` | `/api/subscriptions` | Add manual subscription |
 | `PATCH` | `/api/subscriptions/:id/dismiss` | Dismiss a subscription |
 | `PATCH` | `/api/subscriptions/:id/undismiss` | Restore dismissed |
 | `PATCH` | `/api/subscriptions/:id/cancel` | Mark as cancelled |
 | `PATCH` | `/api/subscriptions/:id/uncancel` | Undo cancellation |
-| `POST` | `/api/detect` | Trigger subscription detection |
+| `POST` | `/api/import-csv` | Import bank CSV export |
 | `POST` | `/api/sheets/sync` | Sync all data to Google Sheets |
-| `POST` | `/api/sheets/dashboard` | Rebuild Sheets dashboard only |
-| `POST` | `/api/cleanup` | Manual retention cleanup |
-| `GET` | `/` | Plaid Link + CSV import UI |
 | `GET` | `/dashboard` | Subscription dashboard (with charts) |
 | `GET` | `/settings` | Settings page |
-| `GET` | `/login` | Password login screen |
+| `GET` | `/login` | PIN pad or password login |
 | `POST` | `/api/login` | Authenticate session |
 | `POST` | `/api/logout` | End session |
 | `GET` | `/api/settings` | Retrieve user settings |
 | `PATCH` | `/api/settings` | Update user settings |
 | `GET` | `/api/insights` | Stored AI financial insights |
 | `POST` | `/api/insights` | Generate new AI insights via Claude |
-| `GET` | `/api/insights/status` | AI API configuration and usage status |
-| `GET` | `/api/insights/usage` | Historical API usage breakdown |
+| `GET` | `/api/insights/status` | AI API config + usage stats |
+| `GET` | `/api/insights/usage` | Historical usage breakdown |
 | `POST` | `/api/insights/reset` | Clear long-term AI context memory |
-| `POST` | `/api/insights/rebuild` | Rebuild AI context from all historical analyses |
+| `POST` | `/api/insights/rebuild` | Rebuild AI context from all history |
+| `GET` | `/manifest.json` | PWA manifest |
+| `GET` | `/sw.js` | Service worker |
 
 ## Features
 
 ### Authentication
-Two login modes available — set one in your environment variables:
+Two login modes — set one in your environment variables:
 - **`SESSION_PASSWORD`** — text password, shows a standard password input
 - **`SESSION_PIN`** — numeric PIN (any length), shows a PIN pad with dot indicators
 
@@ -176,19 +141,18 @@ Sessions expire after a configurable timeout (default 15 minutes, adjustable in 
 Toggle between Night Mode (default) and Day Mode in Settings. Preference is stored in the database and persisted via localStorage.
 
 ### Dashboard Charts
-The dashboard includes two interactive charts (Chart.js):
+Two interactive charts (Chart.js):
 - **Monthly Spending Trend** — line chart of total spending over the last 6 months
 - **Spending by Category** — doughnut chart of top 8 spending categories
 
 ### AI Financial Insights
 Set `ANTHROPIC_API_KEY` in `.env` to enable AI-powered financial analysis via Claude.
 
-The AI maintains a **persistent running summary** across analyses — a cumulative memory of your spending baselines, trends, and progress on past recommendations. This means insights improve over time as the AI tracks changes month-to-month.
+The AI maintains a **persistent running summary** across analyses — a cumulative memory of your spending baselines, trends, and progress on past recommendations. Insights improve over time as the AI tracks changes month-to-month.
 
-- **Model selector**: Choose between Haiku (~$0.005/run), Sonnet (~$0.02/run), or Opus (~$0.10/run). Always uses the latest version automatically.
-- **Cadence**: Weekly, biweekly, monthly, every 2 months, or quarterly — adjustable in Settings
-- **Reset**: Clear the long-term memory to start fresh (Settings → Reset AI Context)
-- **Rebuild**: Regenerate the memory from all historical analyses (Settings → Rebuild AI Context) — useful if context feels stale or after clearing
+- **Model selector**: Haiku (~$0.005/run), Sonnet (~$0.02/run), or Opus (~$0.10/run) — always uses the latest version
+- **Cadence**: Weekly, biweekly, monthly, every 2 months, or quarterly
+- **Reset/Rebuild**: Clear or regenerate long-term memory from Settings
 
 ### Mobile App (PWA)
 Installable as a home screen icon:
@@ -199,21 +163,22 @@ Installable as a home screen icon:
 
 1. Pulls all non-pending debit transactions from the last 12 months
 2. Groups by `merchant_name` (falls back to normalized `name` when null)
-3. For each merchant, checks if 3+ charges appear at ~30, ~60, or ~90 day intervals
+3. For each merchant, checks if 3+ charges appear at ~30, ~60, ~90, or ~365 day intervals
 4. Allows ±25% tolerance on timing and ±10% on amount (catches price creep)
 5. Upserts results into `detected_subscriptions` with next expected date
 
-## Neon Free Tier Notes
+## Environment Variables
 
-The `transactions` table is the only unbounded-growth table. At Plaid Development limits (~500 txns/Item), storage stays well under 0.5 GB. The retention cleanup runs automatically via n8n every Sunday at 3 AM, pruning transactions older than 18 months and inactive subscriptions older than 6 months.
-
-## Plaid Development Environment Notes
-
-**Important considerations for your 5 institutions:**
-
-- **Item limit**: Dev supports up to 100 Items (you need 5 — no issue)
-- **Transaction depth**: Each Item gets up to 500 live transactions. For high-activity accounts this may not cover the full 12-month lookback the detection algorithm prefers. If detection seems to miss subscriptions, this is likely why
-- **Capital One**: May require OAuth redirect URI configuration in the Plaid dashboard, even in Development. If Link fails for Cap One, register `http://localhost:3000/oauth-callback` as a redirect URI and uncomment `PLAID_REDIRECT_URI` in `.env`
-- **Connection stability**: Capital One and some other institutions can drop connections periodically. The sync workflow catches `LOGIN_REQUIRED` errors and sends you an email alert so you can re-link
-- **Rate limits**: Development has generous rate limits for personal use. The daily sync schedule won't come close
-- **No production data concerns**: Dev environment uses real credentials but is not subject to Plaid's production compliance requirements. Fine for personal use; not suitable if you ever share this tool
+| Variable | Description |
+|----------|-------------|
+| `NEON_DATABASE_URL` | Neon PostgreSQL connection string |
+| `TOKEN_ENCRYPTION_PASSPHRASE` | Encrypts stored access tokens |
+| `TELLER_APPLICATION_ID` | Teller app ID for Connect widget |
+| `TELLER_ENV` | Teller environment (development/production) |
+| `SESSION_PASSWORD` | Text password for login (optional) |
+| `SESSION_PIN` | Numeric PIN for PIN pad login (optional) |
+| `SESSION_SECRET` | Session cookie secret (auto-generated if not set) |
+| `ANTHROPIC_API_KEY` | Enables AI financial insights via Claude (optional) |
+| `INSIGHTS_MONTHLY_BUDGET_CENTS` | Monthly API spending cap, default 50 = $0.50 |
+| `GOOGLE_SHEETS_ID` | Google Sheets spreadsheet ID (optional) |
+| `GOOGLE_SERVICE_ACCOUNT_KEY` | Google service account JSON key (optional) |
