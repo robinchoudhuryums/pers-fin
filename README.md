@@ -1,6 +1,6 @@
 # Personal Subscription Tracker
 
-Detect recurring charges across your bank accounts using Plaid, n8n, and Neon Postgres. Get a weekly email digest of all your subscriptions. Sync transactions to Google Sheets with a polished finance dashboard.
+Detect recurring charges across your bank accounts using **Teller API** (primary) or Plaid (legacy), with Neon Postgres. Features a web dashboard with spending charts, dark/light theme, password-protected sessions, optional AI financial insights, and installable as a mobile home-screen app (PWA).
 
 ## Architecture
 
@@ -32,6 +32,7 @@ Detect recurring charges across your bank accounts using Plaid, n8n, and Neon Po
 | `db/001_schema.sql` | Postgres schema — run this first |
 | `db/002_csv_import.sql` | CSV import tracking table |
 | `db/003_dashboard_features.sql` | Dashboard feature columns |
+| `db/005_settings.sql` | User settings + AI insights tables |
 | `plaid/server.js` | Express server for Plaid Link + API |
 | `plaid/package.json` | Server dependencies |
 | `scripts/detect-subscriptions.js` | Recurring charge detection algorithm |
@@ -61,6 +62,7 @@ Run the schemas against your Neon database:
 psql "$NEON_DATABASE_URL" -f db/001_schema.sql
 psql "$NEON_DATABASE_URL" -f db/002_csv_import.sql
 psql "$NEON_DATABASE_URL" -f db/003_dashboard_features.sql
+psql "$NEON_DATABASE_URL" -f db/005_settings.sql
 ```
 
 ### 3. Plaid Link Server
@@ -144,7 +146,36 @@ Tests cover the detection algorithm, CSV parsing, date handling, API logic, and 
 | `POST` | `/api/sheets/dashboard` | Rebuild Sheets dashboard only |
 | `POST` | `/api/cleanup` | Manual retention cleanup |
 | `GET` | `/` | Plaid Link + CSV import UI |
-| `GET` | `/dashboard` | Subscription dashboard |
+| `GET` | `/dashboard` | Subscription dashboard (with charts) |
+| `GET` | `/settings` | Settings page |
+| `GET` | `/login` | Password login screen |
+| `POST` | `/api/login` | Authenticate session |
+| `POST` | `/api/logout` | End session |
+| `GET` | `/api/settings` | Retrieve user settings |
+| `PATCH` | `/api/settings` | Update user settings |
+| `GET` | `/api/insights` | Stored AI financial insights |
+| `POST` | `/api/insights` | Generate new AI insights via Claude |
+
+## Features
+
+### Password Protection
+Set `SESSION_PASSWORD` in `.env` to enable a login screen. Sessions expire after a configurable timeout (default 15 minutes, adjustable in Settings from 1–1440 minutes).
+
+### Dark/Light Theme
+Toggle between Night Mode (default) and Day Mode in Settings. Preference is stored in the database and persisted via localStorage.
+
+### Dashboard Charts
+The dashboard includes two interactive charts (Chart.js):
+- **Monthly Spending Trend** — line chart of total spending over the last 6 months
+- **Spending by Category** — doughnut chart of top 8 spending categories
+
+### AI Financial Insights
+Set `ANTHROPIC_API_KEY` in `.env` to enable AI-powered financial analysis via Claude. Cost: ~**$0.02/month**.
+
+### Mobile App (PWA)
+Installable as a home screen icon:
+- **iPhone**: Open in Safari → Share → "Add to Home Screen"
+- **Android**: Chrome → Menu → "Install app"
 
 ## How Detection Works
 

@@ -31,6 +31,7 @@ const multer = require("multer");
 const helmet = require("helmet");
 const cors = require("cors");
 const rateLimit = require("express-rate-limit");
+const session = require("express-session");
 const { parse } = require("csv-parse/sync");
 const { detectSubscriptions } = require("../scripts/detect-subscriptions");
 
@@ -41,10 +42,53 @@ try {
   sheetsSync = null;
 }
 
+let Anthropic;
+try {
+  Anthropic = require("@anthropic-ai/sdk").default || require("@anthropic-ai/sdk");
+} catch {
+  Anthropic = null;
+}
+
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+
+const SESSION_PASSWORD = process.env.SESSION_PASSWORD;
+const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
 
 const app = express();
 app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
+
+// ---------------------------------------------------------------------------
+// Session middleware
+// ---------------------------------------------------------------------------
+app.use(session({
+  secret: SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+  },
+}));
+
+function requireAuth(req, res, next) {
+  if (!SESSION_PASSWORD) return next();
+  if (["/login", "/api/login", "/manifest.json", "/sw.js"].includes(req.path)) return next();
+  if (req.session && req.session.authenticated) {
+    const timeout = (req.session.timeoutMinutes || 15) * 60 * 1000;
+    if (Date.now() - req.session.lastActivity < timeout) {
+      req.session.lastActivity = Date.now();
+      return next();
+    }
+    req.session.authenticated = false;
+  }
+  if (req.path.startsWith("/api/")) {
+    return res.status(401).json({ error: "Session expired. Please log in." });
+  }
+  return res.redirect("/login");
+}
+app.use(requireAuth);
 
 // ---------------------------------------------------------------------------
 // Security middleware
@@ -54,10 +98,11 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.teller.io"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.teller.io", "https://cdn.jsdelivr.net"],
       connectSrc: ["'self'", "https://api.teller.io"],
       frameSrc: ["https://cdn.teller.io"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com"],
     },
   },
 }));
@@ -1207,6 +1252,10 @@ app.get("/dashboard", (req, res) => {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Dashboard — Perfin</title>
+  <link rel="manifest" href="/manifest.json">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#080b12">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <style>
@@ -1220,6 +1269,16 @@ app.get("/dashboard", (req, res) => {
       --yellow: #f0c36d; --yellow-bg: rgba(240,195,109,0.1);
       --blue: #7fb5e6; --blue-bg: rgba(127,181,230,0.1);
       --radius: 12px;
+    }
+    [data-theme="light"] {
+      --bg: #f5f2ed; --surface: rgba(0,0,0,0.03); --surface-2: rgba(0,0,0,0.06);
+      --border: rgba(0,0,0,0.10); --border-hover: rgba(0,0,0,0.20);
+      --text: #1a1a2e; --text-muted: rgba(26,26,46,0.5);
+      --warm: #b07a4a; --warm-glow: #a0684c; --teal: #3d7272;
+      --green: #2d9f5f; --green-bg: rgba(45,159,95,0.1);
+      --red: #c94444; --red-bg: rgba(201,68,68,0.1);
+      --yellow: #c49a2a; --yellow-bg: rgba(196,154,42,0.1);
+      --blue: #4a8abf; --blue-bg: rgba(74,138,191,0.1);
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -1235,6 +1294,12 @@ app.get("/dashboard", (req, res) => {
       content: ''; position: fixed; bottom: -20%; left: -15%; width: 80vw; height: 70vh;
       background: radial-gradient(ellipse at 40% 60%, rgba(90,143,143,0.20) 0%, rgba(212,165,116,0.10) 35%, rgba(160,100,80,0.05) 60%, transparent 80%);
       pointer-events: none; z-index: 0; filter: blur(60px);
+    }
+    [data-theme="light"] body::before {
+      background: radial-gradient(ellipse at 50% 30%, rgba(200,133,108,0.12) 0%, rgba(90,143,143,0.06) 50%, transparent 75%);
+    }
+    [data-theme="light"] body::after {
+      background: radial-gradient(ellipse at 40% 60%, rgba(90,143,143,0.10) 0%, rgba(212,165,116,0.05) 35%, transparent 80%);
     }
     @keyframes spin { to { transform: rotate(360deg); } }
     .btn-loading { position: relative; color: transparent !important; pointer-events: none; }
@@ -1333,7 +1398,17 @@ app.get("/dashboard", (req, res) => {
     .bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
 
     .empty-msg { text-align: center; padding: 40px; color: var(--text-muted); font-weight: 300; font-size: 14px; }
+
+    /* Charts */
+    .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 28px; }
+    .chart-card { padding: 20px; border-radius: var(--radius); background: var(--surface);
+                  border: 1px solid var(--border); backdrop-filter: blur(12px); }
+    .chart-card h3 { font-size: 10px; font-weight: 500; color: var(--text-muted); text-transform: uppercase;
+                     letter-spacing: 1.5px; margin-bottom: 16px; }
+    .chart-card canvas { max-height: 240px; }
+    @media (max-width: 640px) { .charts-grid { grid-template-columns: 1fr; } }
   </style>
+  <script>document.documentElement.setAttribute('data-theme', localStorage.getItem('perfin-theme') || 'dark');</script>
 </head>
 <body>
   <div class="container">
@@ -1343,11 +1418,24 @@ app.get("/dashboard", (req, res) => {
       <a href="/dashboard" class="active">Dashboard</a>
       <a href="/subscriptions">Subscriptions</a>
       <a href="/">Accounts</a>
+      <a href="/settings">Settings</a>
     </div>
   </nav>
 
   <h1>Dashboard</h1>
   <p class="subtitle">Personal finance overview</p>
+
+  <!-- Charts -->
+  <div class="charts-grid">
+    <div class="chart-card">
+      <h3>Monthly Spending Trend</h3>
+      <canvas id="trend-chart"></canvas>
+    </div>
+    <div class="chart-card">
+      <h3>Spending by Category</h3>
+      <canvas id="category-chart"></canvas>
+    </div>
+  </div>
 
   <div class="actions">
     <button class="primary" id="sync-btn" onclick="syncTransactions()">Sync Transactions</button>
@@ -1629,6 +1717,88 @@ app.get("/dashboard", (req, res) => {
     // Initialize
     loadAccounts();
     loadSpendingSummary();
+
+    // PWA
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+
+    // Charts
+    const chartScript = document.createElement('script');
+    chartScript.src = 'https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js';
+    chartScript.onload = loadCharts;
+    document.head.appendChild(chartScript);
+
+    async function loadCharts() {
+      const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
+      const gridColor = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)';
+      const textColor = isDark ? 'rgba(240,235,227,0.5)' : 'rgba(26,26,46,0.5)';
+      Chart.defaults.color = textColor;
+      Chart.defaults.borderColor = gridColor;
+      try {
+        const txRes = await apiFetch('/api/transactions?months=6');
+        const txData = await txRes.json();
+        const monthlyMap = {};
+        (txData.transactions || []).forEach(t => {
+          if (t.amount > 0) {
+            const m = t.date.slice(0, 7);
+            monthlyMap[m] = (monthlyMap[m] || 0) + parseFloat(t.amount);
+          }
+        });
+        const months = Object.keys(monthlyMap).sort();
+        const amounts = months.map(m => monthlyMap[m]);
+        const trendCtx = document.getElementById('trend-chart');
+        if (trendCtx && months.length > 0) {
+          new Chart(trendCtx, {
+            type: 'line',
+            data: {
+              labels: months.map(m => { const d = new Date(m + '-01'); return d.toLocaleString('default', { month: 'short', year: '2-digit' }); }),
+              datasets: [{
+                label: 'Spending',
+                data: amounts,
+                borderColor: '#d4a574',
+                backgroundColor: 'rgba(212,165,116,0.1)',
+                fill: true, tension: 0.4, pointRadius: 4,
+                pointBackgroundColor: '#d4a574',
+              }]
+            },
+            options: {
+              responsive: true, maintainAspectRatio: true,
+              plugins: { legend: { display: false } },
+              scales: {
+                y: { beginAtZero: true, ticks: { callback: v => '$' + v.toLocaleString() }, grid: { color: gridColor } },
+                x: { grid: { display: false } }
+              }
+            }
+          });
+        }
+        // Category doughnut
+        const catMap = {};
+        (txData.transactions || []).forEach(t => {
+          if (t.amount > 0) {
+            const cat = (t.personal_finance_category && t.personal_finance_category.primary) || t.category || 'Other';
+            catMap[cat] = (catMap[cat] || 0) + parseFloat(t.amount);
+          }
+        });
+        const cats = Object.entries(catMap).sort((a, b) => b[1] - a[1]).slice(0, 8);
+        const pieColors = ['#d4a574', '#5a8f8f', '#c8856c', '#6fcf97', '#7fb5e6', '#f0c36d', '#eb6b6b', '#b08ed6'];
+        const catCtx = document.getElementById('category-chart');
+        if (catCtx && cats.length > 0) {
+          new Chart(catCtx, {
+            type: 'doughnut',
+            data: {
+              labels: cats.map(c => c[0]),
+              datasets: [{ data: cats.map(c => c[1].toFixed(2)), backgroundColor: pieColors.slice(0, cats.length), borderWidth: 0 }]
+            },
+            options: {
+              responsive: true, maintainAspectRatio: true, cutout: '60%',
+              plugins: {
+                legend: { position: 'right', labels: { boxWidth: 12, padding: 10, font: { size: 11 } } },
+                tooltip: { callbacks: { label: ctx => ctx.label + ': $' + parseFloat(ctx.raw).toLocaleString() } }
+              }
+            }
+          });
+        }
+      } catch (e) { console.warn('Charts load error:', e); }
+    }
   </script>
 </body>
 </html>`);
@@ -1658,6 +1828,16 @@ app.get("/subscriptions", (req, res) => {
       --yellow: #f0c36d; --yellow-bg: rgba(240,195,109,0.1);
       --blue: #7fb5e6; --blue-bg: rgba(127,181,230,0.1);
       --radius: 12px;
+    }
+    [data-theme="light"] {
+      --bg: #f5f2ed; --surface: rgba(0,0,0,0.03); --surface-2: rgba(0,0,0,0.06);
+      --border: rgba(0,0,0,0.10); --border-hover: rgba(0,0,0,0.20);
+      --text: #1a1a2e; --text-muted: rgba(26,26,46,0.5);
+      --warm: #b07a4a; --warm-glow: #a0684c; --teal: #3d7272;
+      --green: #2d9f5f; --green-bg: rgba(45,159,95,0.1);
+      --red: #c94444; --red-bg: rgba(201,68,68,0.1);
+      --yellow: #c49a2a; --yellow-bg: rgba(196,154,42,0.1);
+      --blue: #4a8abf; --blue-bg: rgba(74,138,191,0.1);
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -1798,6 +1978,7 @@ app.get("/subscriptions", (req, res) => {
       border-radius: 50%; animation: spin 0.6s linear infinite;
     }
   </style>
+  <script>document.documentElement.setAttribute('data-theme', localStorage.getItem('perfin-theme') || 'dark');</script>
 </head>
 <body>
   <div class="container">
@@ -1805,8 +1986,9 @@ app.get("/subscriptions", (req, res) => {
     <div class="logo">Perfin</div>
     <div class="nav-links">
       <a href="/dashboard">Dashboard</a>
-      <a href="/subscriptions">Subscriptions</a>
+      <a href="/subscriptions" class="active">Subscriptions</a>
       <a href="/">Accounts</a>
+      <a href="/settings">Settings</a>
       <a href="/api/export?type=subscriptions&api_key=${apiKey}" class="export-link">Export</a>
     </div>
   </nav>
@@ -2080,6 +2262,14 @@ app.get("/", (req, res) => {
       --red: #eb6b6b; --red-bg: rgba(235,107,107,0.1);
       --radius: 12px;
     }
+    [data-theme="light"] {
+      --bg: #f5f2ed; --surface: rgba(0,0,0,0.03); --surface-2: rgba(0,0,0,0.06);
+      --border: rgba(0,0,0,0.10); --border-hover: rgba(0,0,0,0.20);
+      --text: #1a1a2e; --text-muted: rgba(26,26,46,0.5);
+      --warm: #b07a4a; --warm-glow: #a0684c; --teal: #3d7272;
+      --green: #2d9f5f; --green-bg: rgba(45,159,95,0.1);
+      --red: #c94444; --red-bg: rgba(201,68,68,0.1);
+    }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: 'Inter', system-ui, sans-serif; background: var(--bg);
@@ -2170,6 +2360,7 @@ app.get("/", (req, res) => {
                   transition: all 0.2s; }
     .btn-unlink:hover { background: var(--red-bg); }
   </style>
+  <script>document.documentElement.setAttribute('data-theme', localStorage.getItem('perfin-theme') || 'dark');</script>
 </head>
 <body>
   <div class="container">
@@ -2178,7 +2369,8 @@ app.get("/", (req, res) => {
     <div class="nav-links">
       <a href="/dashboard">Dashboard</a>
       <a href="/subscriptions">Subscriptions</a>
-      <a href="/">Accounts</a>
+      <a href="/" class="active">Accounts</a>
+      <a href="/settings">Settings</a>
     </div>
   </nav>
 
@@ -2393,6 +2585,475 @@ app.get("/", (req, res) => {
   </script>
 </body>
 </html>`);
+});
+
+// ---------------------------------------------------------------------------
+// GET /login — login page
+// ---------------------------------------------------------------------------
+app.get("/login", (_req, res) => {
+  if (!SESSION_PASSWORD) return res.redirect("/dashboard");
+  res.send(`<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Login — Perfin</title>
+  <link rel="manifest" href="/manifest.json">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#080b12">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root { --bg: #080b12; --surface: rgba(255,255,255,0.04); --border: rgba(255,255,255,0.08);
+      --text: #f0ebe3; --text-muted: rgba(240,235,227,0.5); --warm: #d4a574; --warm-glow: #c8856c;
+      --red: #eb6b6b; --red-bg: rgba(235,107,107,0.1); }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg); color: var(--text);
+           min-height: 100vh; display: flex; align-items: center; justify-content: center;
+           position: relative; overflow: hidden; }
+    body::before { content: ''; position: fixed; top: -30%; right: -20%; width: 90vw; height: 90vh;
+      background: radial-gradient(ellipse at 50% 30%, rgba(200,133,108,0.28) 0%, rgba(180,120,100,0.15) 25%, rgba(90,143,143,0.12) 50%, transparent 75%);
+      pointer-events: none; z-index: 0; filter: blur(50px); }
+    body::after { content: ''; position: fixed; bottom: -20%; left: -15%; width: 80vw; height: 70vh;
+      background: radial-gradient(ellipse at 40% 60%, rgba(90,143,143,0.20) 0%, rgba(212,165,116,0.10) 35%, transparent 80%);
+      pointer-events: none; z-index: 0; filter: blur(60px); }
+    .login-card { position: relative; z-index: 1; width: 100%; max-width: 360px; padding: 44px 32px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
+      backdrop-filter: blur(16px); text-align: center; }
+    .logo { font-weight: 300; font-size: 13px; letter-spacing: 2px; text-transform: uppercase;
+            color: var(--text-muted); margin-bottom: 28px; }
+    h1 { font-size: 26px; font-weight: 300; letter-spacing: -0.3px; margin-bottom: 6px; }
+    p { color: var(--text-muted); font-size: 14px; font-weight: 300; margin-bottom: 24px; }
+    input[type="password"] { width: 100%; padding: 12px 16px; font-size: 14px; font-weight: 300;
+      border: 1px solid var(--border); border-radius: 8px; background: transparent;
+      color: var(--text); font-family: inherit; }
+    input:focus { outline: none; border-color: var(--warm); }
+    button { width: 100%; margin-top: 14px; padding: 12px; font-size: 13px; font-weight: 500;
+      border: 1px solid var(--warm); border-radius: 8px; cursor: pointer;
+      background: transparent; color: var(--warm); text-transform: uppercase;
+      letter-spacing: 1px; font-family: inherit; transition: all 0.2s; }
+    button:hover { background: rgba(212,165,116,0.1); color: var(--text); }
+    .error-msg { margin-top: 14px; padding: 10px; border-radius: 6px;
+      background: var(--red-bg); color: var(--red); font-size: 13px; display: none; }
+  </style>
+</head><body>
+  <div class="login-card">
+    <div class="logo">Perfin</div>
+    <h1>Welcome back</h1>
+    <p>Enter your password to continue</p>
+    <form id="login-form">
+      <input type="password" id="password" placeholder="Password" autofocus required>
+      <button type="submit">Sign In</button>
+    </form>
+    <div id="error" class="error-msg"></div>
+  </div>
+  <script>
+    document.getElementById('login-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const errEl = document.getElementById('error');
+      try {
+        const res = await fetch('/api/login', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: document.getElementById('password').value }),
+        });
+        const data = await res.json();
+        if (res.ok) window.location.href = '/dashboard';
+        else { errEl.textContent = data.error || 'Invalid password'; errEl.style.display = 'block'; }
+      } catch { errEl.textContent = 'Connection error'; errEl.style.display = 'block'; }
+    });
+  </script>
+</body></html>`);
+});
+
+// POST /api/login
+app.post("/api/login", (req, res) => {
+  if (!SESSION_PASSWORD) return res.json({ ok: true });
+  const { password } = req.body;
+  if (!password) return res.status(400).json({ error: "Password required" });
+  const providedBuf = Buffer.from(password);
+  const expectedBuf = Buffer.from(SESSION_PASSWORD);
+  if (providedBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(providedBuf, expectedBuf)) {
+    return res.status(401).json({ error: "Invalid password" });
+  }
+  req.session.authenticated = true;
+  req.session.lastActivity = Date.now();
+  req.session.timeoutMinutes = 15;
+  res.json({ ok: true });
+});
+
+// POST /api/logout
+app.post("/api/logout", (req, res) => {
+  req.session.destroy(() => res.json({ ok: true }));
+});
+
+// GET /api/settings
+app.get("/api/settings", async (_req, res) => {
+  try {
+    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run FROM user_settings WHERE id = 1");
+    res.json(result.rows[0] || { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null });
+  } catch {
+    res.json({ session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null });
+  }
+});
+
+// PATCH /api/settings
+app.patch("/api/settings", async (req, res) => {
+  const { session_timeout_minutes, theme, dashboard_months, insights_enabled } = req.body;
+  try {
+    const updates = []; const values = []; let idx = 1;
+    if (session_timeout_minutes !== undefined) {
+      updates.push("session_timeout_minutes = $" + idx++);
+      values.push(Math.max(1, Math.min(parseInt(session_timeout_minutes) || 15, 1440)));
+      if (req.session) req.session.timeoutMinutes = values[values.length - 1];
+    }
+    if (theme !== undefined && ["dark", "light"].includes(theme)) {
+      updates.push("theme = $" + idx++); values.push(theme);
+    }
+    if (dashboard_months !== undefined) {
+      updates.push("dashboard_months = $" + idx++);
+      values.push(Math.max(1, Math.min(parseInt(dashboard_months) || 6, 24)));
+    }
+    if (insights_enabled !== undefined) {
+      updates.push("insights_enabled = $" + idx++); values.push(!!insights_enabled);
+    }
+    if (!updates.length) return res.status(400).json({ error: "No valid settings" });
+    updates.push("updated_at = now()");
+    await pool.query("INSERT INTO user_settings (id) VALUES (1) ON CONFLICT DO NOTHING");
+    const result = await pool.query("UPDATE user_settings SET " + updates.join(", ") + " WHERE id = 1 RETURNING *", values);
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("settings error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// GET /api/insights
+app.get("/api/insights", async (_req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM financial_insights ORDER BY created_at DESC LIMIT 5");
+    res.json(result.rows);
+  } catch { res.json([]); }
+});
+
+// POST /api/insights — generate via Claude
+app.post("/api/insights", async (_req, res) => {
+  if (!Anthropic || !process.env.ANTHROPIC_API_KEY) {
+    return res.status(501).json({ error: "Set ANTHROPIC_API_KEY in .env to enable AI insights." });
+  }
+  try {
+    const [monthlyData, subData] = await Promise.all([
+      pool.query(
+        "SELECT TO_CHAR(date, 'YYYY-MM') AS month, SUM(amount) AS total, COUNT(*) AS txns " +
+        "FROM transactions WHERE amount > 0 AND date >= CURRENT_DATE - INTERVAL '6 months' " +
+        "GROUP BY TO_CHAR(date, 'YYYY-MM') ORDER BY month"
+      ),
+      pool.query(
+        "SELECT display_name, amount, cadence_days FROM detected_subscriptions " +
+        "WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL ORDER BY amount DESC"
+      ),
+    ]);
+    const subTotal = subData.rows.reduce((s, r) => s + parseFloat(r.amount) * 30 / r.cadence_days, 0);
+    const prompt = "You are a personal finance advisor. Analyze this data and give 3-5 concise, actionable insights with specific dollar amounts. Use markdown bullet points.\n\n" +
+      "Monthly Spending (6mo):\n" + monthlyData.rows.map(r => r.month + ": $" + parseFloat(r.total).toFixed(2) + " (" + r.txns + " txns)").join("\n") +
+      "\n\nActive Subscriptions (" + subData.rows.length + " total, $" + subTotal.toFixed(2) + "/mo):\n" +
+      subData.rows.map(r => r.display_name + ": $" + parseFloat(r.amount).toFixed(2) + " every " + r.cadence_days + " days").join("\n");
+    const client = new Anthropic();
+    const message = await client.messages.create({
+      model: "claude-sonnet-4-20250514", max_tokens: 1024,
+      messages: [{ role: "user", content: prompt }],
+    });
+    const insightText = message.content[0].text;
+    const tokensUsed = (message.usage?.input_tokens || 0) + (message.usage?.output_tokens || 0);
+    await pool.query(
+      "INSERT INTO financial_insights (insight_text, period_start, period_end, model_used, tokens_used) VALUES ($1, CURRENT_DATE - INTERVAL '6 months', CURRENT_DATE, $2, $3)",
+      [insightText, "claude-sonnet-4-20250514", tokensUsed]
+    );
+    await pool.query("UPDATE user_settings SET insights_last_run = now() WHERE id = 1").catch(() => {});
+    res.json({ insight: insightText, tokens_used: tokensUsed });
+  } catch (err) {
+    console.error("Insights error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /settings — settings page
+// ---------------------------------------------------------------------------
+app.get("/settings", (req, res) => {
+  const apiKey = API_KEY || "";
+  res.send(`<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Settings — Perfin</title>
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#080b12">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #080b12; --surface: rgba(255,255,255,0.04); --surface-2: rgba(255,255,255,0.07);
+      --border: rgba(255,255,255,0.08); --border-hover: rgba(255,255,255,0.18);
+      --text: #f0ebe3; --text-muted: rgba(240,235,227,0.5);
+      --warm: #d4a574; --warm-glow: #c8856c; --teal: #5a8f8f;
+      --green: #6fcf97; --green-bg: rgba(111,207,151,0.1);
+      --red: #eb6b6b; --red-bg: rgba(235,107,107,0.1);
+      --radius: 12px;
+    }
+    [data-theme="light"] {
+      --bg: #f5f2ed; --surface: rgba(0,0,0,0.03); --surface-2: rgba(0,0,0,0.06);
+      --border: rgba(0,0,0,0.10); --border-hover: rgba(0,0,0,0.20);
+      --text: #1a1a2e; --text-muted: rgba(26,26,46,0.5);
+      --warm: #b07a4a; --warm-glow: #a0684c; --teal: #3d7272;
+      --green: #2d9f5f; --green-bg: rgba(45,159,95,0.1);
+      --red: #c94444; --red-bg: rgba(201,68,68,0.1);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg); color: var(--text);
+           min-height: 100vh; position: relative; overflow-x: hidden; }
+    body::before { content: ''; position: fixed; top: -30%; right: -20%; width: 90vw; height: 90vh;
+      background: radial-gradient(ellipse at 50% 30%, rgba(200,133,108,0.28) 0%, rgba(180,120,100,0.15) 25%, rgba(90,143,143,0.12) 50%, transparent 75%);
+      pointer-events: none; z-index: 0; filter: blur(50px); }
+    body::after { content: ''; position: fixed; bottom: -20%; left: -15%; width: 80vw; height: 70vh;
+      background: radial-gradient(ellipse at 40% 60%, rgba(90,143,143,0.20) 0%, rgba(212,165,116,0.10) 35%, transparent 80%);
+      pointer-events: none; z-index: 0; filter: blur(60px); }
+    [data-theme="light"] body::before {
+      background: radial-gradient(ellipse at 50% 30%, rgba(200,133,108,0.12) 0%, rgba(90,143,143,0.06) 50%, transparent 75%); }
+    [data-theme="light"] body::after {
+      background: radial-gradient(ellipse at 40% 60%, rgba(90,143,143,0.10) 0%, rgba(212,165,116,0.05) 35%, transparent 80%); }
+    .container { max-width: 640px; margin: 0 auto; padding: 24px 20px; position: relative; z-index: 1; }
+    a { color: var(--warm); text-decoration: none; }
+    a:hover { color: var(--text); }
+    .topnav { display: flex; align-items: center; justify-content: space-between;
+              padding: 20px 0; margin-bottom: 40px; }
+    .topnav .logo { font-weight: 300; font-size: 13px; letter-spacing: 2px; text-transform: uppercase; color: var(--text-muted); }
+    .topnav .nav-links { display: flex; gap: 24px; font-size: 13px; font-weight: 400; letter-spacing: 0.5px; }
+    .topnav .nav-links a { color: var(--text-muted); }
+    .topnav .nav-links a:hover { color: var(--text); }
+    .topnav .nav-links a.active { color: var(--warm); }
+    h1 { font-size: 36px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 6px; }
+    .subtitle { color: var(--text-muted); margin-bottom: 32px; font-size: 15px; font-weight: 300; }
+    .section { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+               padding: 24px; margin-bottom: 16px; backdrop-filter: blur(12px); }
+    .section h2 { font-size: 10px; font-weight: 500; color: var(--text-muted); text-transform: uppercase;
+                  letter-spacing: 1.5px; margin-bottom: 20px; }
+    .setting-row { display: flex; align-items: center; justify-content: space-between;
+                   padding: 14px 0; border-bottom: 1px solid rgba(128,128,128,0.08); }
+    .setting-row:last-child { border-bottom: none; }
+    .setting-info .name { font-size: 14px; font-weight: 400; margin-bottom: 3px; }
+    .setting-info .desc { font-size: 12px; color: var(--text-muted); font-weight: 300; }
+    .setting-control { flex-shrink: 0; margin-left: 20px; }
+    .toggle { position: relative; width: 44px; height: 24px; cursor: pointer; display: inline-block; }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle .slider { position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(128,128,128,0.3); border-radius: 12px; transition: 0.3s; }
+    .toggle .slider::before { content: ''; position: absolute; width: 18px; height: 18px;
+      left: 3px; bottom: 3px; background: var(--text); border-radius: 50%; transition: 0.3s; }
+    .toggle input:checked + .slider { background: var(--warm); }
+    .toggle input:checked + .slider::before { transform: translateX(20px); }
+    select, input[type="number"] { padding: 8px 12px; font-size: 13px; border: 1px solid var(--border);
+      border-radius: 8px; background: transparent; color: var(--text); font-family: inherit; font-weight: 300; }
+    select:focus, input[type="number"]:focus { outline: none; border-color: var(--warm); }
+    select option { background: var(--bg); }
+    input[type="number"] { width: 80px; text-align: center; }
+    .btn { padding: 8px 16px; font-size: 12px; font-weight: 500; letter-spacing: 0.5px;
+      border: 1px solid var(--border); border-radius: 8px; cursor: pointer; background: transparent;
+      color: var(--text-muted); transition: all 0.2s; text-transform: uppercase; font-family: inherit; }
+    .btn:hover:not(:disabled) { border-color: var(--warm); color: var(--text); }
+    .btn.primary { border-color: var(--warm); color: var(--warm); }
+    .btn.primary:hover:not(:disabled) { background: rgba(212,165,116,0.1); color: var(--text); }
+    .btn.danger { border-color: rgba(235,107,107,0.25); color: var(--red); }
+    .btn.danger:hover { background: var(--red-bg); }
+    .status-msg { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; display: none; font-size: 13px; }
+    .status-msg.success { background: var(--green-bg); border: 1px solid rgba(111,207,151,0.15);
+      color: var(--green); display: block; }
+    .status-msg.error { background: var(--red-bg); border: 1px solid rgba(235,107,107,0.15);
+      color: var(--red); display: block; }
+    .insight-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 20px; margin-top: 12px; backdrop-filter: blur(12px); }
+    .insight-card h3 { font-size: 14px; font-weight: 400; margin-bottom: 10px; }
+    .insight-text { font-size: 13px; line-height: 1.7; color: var(--text-muted); font-weight: 300; }
+    .insight-text strong { color: var(--text); font-weight: 500; }
+    .insight-text li { margin-left: 16px; margin-bottom: 6px; }
+    .insight-meta { font-size: 11px; color: var(--text-muted); margin-top: 10px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .btn-loading { position: relative; color: transparent !important; pointer-events: none; }
+    .btn-loading::after { content: ''; position: absolute; top: 50%; left: 50%; width: 14px; height: 14px;
+      margin: -7px 0 0 -7px; border: 2px solid var(--warm); border-top-color: transparent;
+      border-radius: 50%; animation: spin 0.6s linear infinite; }
+  </style>
+  <script>document.documentElement.setAttribute('data-theme', localStorage.getItem('perfin-theme') || 'dark');</script>
+</head><body>
+  <div class="container">
+  <nav class="topnav">
+    <div class="logo">Perfin</div>
+    <div class="nav-links">
+      <a href="/dashboard">Dashboard</a>
+      <a href="/subscriptions">Subscriptions</a>
+      <a href="/">Accounts</a>
+      <a href="/settings" class="active">Settings</a>
+    </div>
+  </nav>
+  <h1>Settings</h1>
+  <p class="subtitle">Preferences and configuration</p>
+  <div id="status-msg" class="status-msg"></div>
+
+  <div class="section"><h2>Appearance</h2>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Theme</div><div class="desc">Switch between dark (night) and light (day) mode</div></div>
+      <div class="setting-control">
+        <select id="theme-select" onchange="updateSetting('theme', this.value)">
+          <option value="dark">Night Mode</option><option value="light">Day Mode</option>
+        </select>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Dashboard Range</div><div class="desc">Months of spending shown in charts</div></div>
+      <div class="setting-control">
+        <select id="months-select" onchange="updateSetting('dashboard_months', parseInt(this.value))">
+          <option value="3">3 months</option><option value="6">6 months</option>
+          <option value="12">12 months</option><option value="24">24 months</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="section"><h2>Security</h2>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Session Timeout</div><div class="desc">Minutes before requiring password again (1–1440)</div></div>
+      <div class="setting-control">
+        <input type="number" id="timeout-input" min="1" max="1440" value="15"
+               onchange="updateSetting('session_timeout_minutes', parseInt(this.value))">
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Sign Out</div><div class="desc">End your current session</div></div>
+      <div class="setting-control"><button class="btn danger" onclick="logout()">Sign Out</button></div>
+    </div>
+  </div>
+
+  <div class="section"><h2>AI Insights</h2>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Monthly AI Analysis</div><div class="desc">Financial insights powered by Claude (~$0.02/month)</div></div>
+      <div class="setting-control">
+        <label class="toggle"><input type="checkbox" id="insights-toggle" onchange="updateSetting('insights_enabled', this.checked)"><span class="slider"></span></label>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Generate Now</div><div class="desc">Run AI analysis on current data</div></div>
+      <div class="setting-control"><button class="btn primary" id="insights-btn" onclick="generateInsights()">Generate</button></div>
+    </div>
+  </div>
+
+  <div id="insights-container"></div>
+
+  <div class="section"><h2>Data</h2>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Export Transactions</div><div class="desc">Download as CSV</div></div>
+      <div class="setting-control"><a href="/api/export?type=transactions&api_key=${apiKey}"><button class="btn">Export</button></a></div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Export Subscriptions</div><div class="desc">Download as CSV</div></div>
+      <div class="setting-control"><a href="/api/export?type=subscriptions&api_key=${apiKey}"><button class="btn">Export</button></a></div>
+    </div>
+  </div>
+  </div>
+  <script>
+    const API_KEY = '${apiKey}';
+    const statusEl = document.getElementById('status-msg');
+    function apiFetch(url, opts = {}) {
+      if (API_KEY) { opts.headers = opts.headers || {}; opts.headers['x-api-key'] = API_KEY; }
+      return fetch(url, opts);
+    }
+    function showMsg(text, ok) {
+      statusEl.textContent = text;
+      statusEl.className = 'status-msg ' + (ok ? 'success' : 'error');
+      clearTimeout(statusEl._t);
+      statusEl._t = setTimeout(() => { statusEl.style.display = 'none'; statusEl.className = 'status-msg'; }, ok ? 3000 : 6000);
+    }
+    function applyTheme(t) { document.documentElement.setAttribute('data-theme', t); localStorage.setItem('perfin-theme', t); }
+    async function loadSettings() {
+      try {
+        const res = await apiFetch('/api/settings'); if (!res.ok) return;
+        const s = await res.json();
+        document.getElementById('theme-select').value = s.theme || 'dark';
+        document.getElementById('months-select').value = s.dashboard_months || 6;
+        document.getElementById('timeout-input').value = s.session_timeout_minutes || 15;
+        document.getElementById('insights-toggle').checked = s.insights_enabled || false;
+        applyTheme(s.theme || 'dark');
+      } catch {}
+    }
+    async function updateSetting(key, value) {
+      try {
+        const body = {}; body[key] = value;
+        const res = await apiFetch('/api/settings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (res.ok) { showMsg('Setting saved.', true); if (key === 'theme') applyTheme(value); }
+        else { const d = await res.json().catch(() => ({})); showMsg(d.error || 'Failed', false); }
+      } catch (e) { showMsg(e.message, false); }
+    }
+    async function logout() { await fetch('/api/logout', { method: 'POST' }); window.location.href = '/login'; }
+    async function generateInsights() {
+      const btn = document.getElementById('insights-btn');
+      btn.classList.add('btn-loading'); btn.disabled = true;
+      try {
+        const res = await apiFetch('/api/insights', { method: 'POST' });
+        const data = await res.json();
+        if (res.ok) { showMsg('Insights generated (' + (data.tokens_used || 0) + ' tokens).', true); renderInsight(data.insight); }
+        else showMsg(data.error || 'Failed', false);
+      } catch (e) { showMsg(e.message, false); }
+      btn.classList.remove('btn-loading'); btn.disabled = false;
+    }
+    function renderInsight(text) {
+      let html = text.replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>')
+        .replace(/^[\\-\\*] (.+)$/gm, '<li>$1</li>').replace(/\\n/g, '<br>');
+      document.getElementById('insights-container').innerHTML =
+        '<div class="insight-card"><h3>AI Financial Insights</h3><div class="insight-text">' + html +
+        '</div><div class="insight-meta">Generated just now</div></div>';
+    }
+    async function loadInsights() {
+      try {
+        const res = await apiFetch('/api/insights'); const data = await res.json();
+        if (data.length > 0) {
+          renderInsight(data[0].insight_text);
+          const meta = document.querySelector('.insight-meta');
+          if (meta) meta.textContent = 'Generated ' + new Date(data[0].created_at).toLocaleDateString();
+        }
+      } catch {}
+    }
+    loadSettings(); loadInsights();
+  </script>
+</body></html>`);
+});
+
+// ---------------------------------------------------------------------------
+// PWA manifest and service worker
+// ---------------------------------------------------------------------------
+app.get("/manifest.json", (_req, res) => {
+  res.json({
+    name: "Perfin — Subscription Tracker",
+    short_name: "Perfin",
+    start_url: "/dashboard",
+    display: "standalone",
+    background_color: "#080b12",
+    theme_color: "#080b12",
+    icons: [
+      { src: "data:image/svg+xml," + encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect fill='%23080b12' width='100' height='100' rx='20'/><text y='70' x='50' text-anchor='middle' font-size='55' fill='%23d4a574'>$</text></svg>"),
+        sizes: "any", type: "image/svg+xml" }
+    ],
+  });
+});
+
+app.get("/sw.js", (_req, res) => {
+  res.type("application/javascript").send(
+    "const CACHE='perfin-v1';" +
+    "self.addEventListener('install',()=>self.skipWaiting());" +
+    "self.addEventListener('activate',e=>e.waitUntil(clients.claim()));" +
+    "self.addEventListener('fetch',e=>{" +
+    "if(e.request.method!=='GET')return;" +
+    "e.respondWith(fetch(e.request).then(r=>{" +
+    "if(r.ok&&e.request.url.includes('cdn.jsdelivr.net')){" +
+    "const c=r.clone();caches.open(CACHE).then(ca=>ca.put(e.request,c));}" +
+    "return r;}).catch(()=>caches.match(e.request)));" +
+    "});"
+  );
 });
 
 // ---------------------------------------------------------------------------
