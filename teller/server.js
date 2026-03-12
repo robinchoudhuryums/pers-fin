@@ -1084,14 +1084,14 @@ app.get("/dashboard", (req, res) => {
       color: var(--text); min-height: 100vh; position: relative; overflow-x: hidden;
     }
     body::before {
-      content: ''; position: fixed; top: -20%; right: -10%; width: 70vw; height: 70vh;
-      background: radial-gradient(ellipse at 60% 40%, rgba(200,133,108,0.18) 0%, rgba(90,143,143,0.10) 40%, transparent 70%);
-      pointer-events: none; z-index: 0; filter: blur(60px);
+      content: ''; position: fixed; top: -30%; right: -20%; width: 90vw; height: 90vh;
+      background: radial-gradient(ellipse at 50% 30%, rgba(200,133,108,0.28) 0%, rgba(180,120,100,0.15) 25%, rgba(90,143,143,0.12) 50%, transparent 75%);
+      pointer-events: none; z-index: 0; filter: blur(50px);
     }
     body::after {
-      content: ''; position: fixed; bottom: -10%; left: -10%; width: 50vw; height: 50vh;
-      background: radial-gradient(ellipse at 30% 70%, rgba(90,143,143,0.12) 0%, rgba(212,165,116,0.06) 50%, transparent 70%);
-      pointer-events: none; z-index: 0; filter: blur(80px);
+      content: ''; position: fixed; bottom: -20%; left: -15%; width: 80vw; height: 70vh;
+      background: radial-gradient(ellipse at 40% 60%, rgba(90,143,143,0.20) 0%, rgba(212,165,116,0.10) 35%, rgba(160,100,80,0.05) 60%, transparent 80%);
+      pointer-events: none; z-index: 0; filter: blur(60px);
     }
     .container { max-width: 960px; margin: 0 auto; padding: 24px 20px; position: relative; z-index: 1; }
     a { color: var(--warm); text-decoration: none; transition: color 0.2s; }
@@ -1207,6 +1207,15 @@ app.get("/dashboard", (req, res) => {
     .empty { text-align: center; padding: 56px; color: var(--text-muted); font-weight: 300; font-size: 15px; }
 
     .export-link { font-size: 12px; color: var(--text-muted); }
+
+    /* Loading spinner for buttons */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .btn-loading { position: relative; color: transparent !important; pointer-events: none; }
+    .btn-loading::after {
+      content: ''; position: absolute; top: 50%; left: 50%; width: 14px; height: 14px;
+      margin: -7px 0 0 -7px; border: 2px solid var(--warm); border-top-color: transparent;
+      border-radius: 50%; animation: spin 0.6s linear infinite;
+    }
   </style>
 </head>
 <body>
@@ -1294,7 +1303,22 @@ app.get("/dashboard", (req, res) => {
     function showMsg(text, ok) {
       statusMsg.textContent = text;
       statusMsg.className = 'status-msg ' + (ok ? 'success' : 'error');
-      setTimeout(() => { statusMsg.style.display = 'none'; statusMsg.className = 'status-msg'; }, 4000);
+      if (statusMsg._timer) clearTimeout(statusMsg._timer);
+      statusMsg._timer = setTimeout(() => {
+        statusMsg.style.display = 'none'; statusMsg.className = 'status-msg';
+      }, ok ? 5000 : 10000);
+    }
+
+    function btnLoading(btn, loading, originalText) {
+      if (loading) {
+        btn._origText = btn.textContent;
+        btn.disabled = true;
+        btn.classList.add('btn-loading');
+      } else {
+        btn.disabled = false;
+        btn.classList.remove('btn-loading');
+        btn.textContent = originalText || btn._origText || btn.textContent;
+      }
     }
 
     function cadenceLabel(days) {
@@ -1311,6 +1335,7 @@ app.get("/dashboard", (req, res) => {
       const filter = document.getElementById('filter-select').value;
       try {
         const res = await apiFetch('/api/subscriptions?filter=' + filter);
+        if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || 'Server returned ' + res.status); }
         const data = await res.json();
         document.getElementById('monthly-cost').textContent = '$' + data.summary.monthly_cost.toFixed(2);
         document.getElementById('yearly-cost').textContent = '$' + data.summary.yearly_cost.toFixed(2);
@@ -1344,7 +1369,7 @@ app.get("/dashboard", (req, res) => {
               actions += '<button class="btn-sm cancel" onclick="markCancelled(' + s.id + ')">Cancel</button>';
             }
           }
-          const notesHtml = s.notes ? '<div style="font-size:12px;color:#888;">' + s.notes + '</div>' : '';
+          const notesHtml = s.notes ? '<div style="font-size:12px;color:var(--text-muted);">' + s.notes + '</div>' : '';
           return '<tr>' +
             '<td><strong>' + s.display_name + '</strong> ' + badges.join(' ') + notesHtml + '</td>' +
             '<td class="amount">$' + parseFloat(s.amount).toFixed(2) + '</td>' +
@@ -1354,32 +1379,33 @@ app.get("/dashboard", (req, res) => {
             '<td>' + actions + '</td></tr>';
         }).join('');
       } catch (e) {
-        tbody.innerHTML = '<tr><td colspan="6" class="empty">Error: ' + e.message + '</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" class="empty">Error loading subscriptions: ' + e.message + '</td></tr>';
+        showMsg('Failed to load subscriptions: ' + e.message, false);
       }
     }
 
     async function syncTransactions() {
       const btn = document.getElementById('sync-btn');
-      btn.disabled = true; btn.textContent = 'Syncing...';
+      btnLoading(btn, true);
       try {
         const res = await apiFetch('/api/sync', { method: 'POST' });
         const data = await res.json();
         if (res.ok) showMsg('Synced ' + data.transactions_added + ' transactions from ' + data.enrollments_synced + ' institution(s).', true);
-        else showMsg('Sync error: ' + data.error, false);
-      } catch (e) { showMsg('Network error: ' + e.message, false); }
-      btn.disabled = false; btn.textContent = 'Sync Transactions';
+        else showMsg('Sync failed: ' + (data.error || 'Unknown error (HTTP ' + res.status + ')'), false);
+      } catch (e) { showMsg('Sync failed: Could not reach server. ' + e.message, false); }
+      btnLoading(btn, false, 'Sync Transactions');
     }
 
     async function runDetection() {
       const btn = document.getElementById('detect-btn');
-      btn.disabled = true; btn.textContent = 'Detecting...';
+      btnLoading(btn, true);
       try {
         const res = await apiFetch('/api/detect', { method: 'POST' });
         const data = await res.json();
         if (res.ok) { showMsg('Detection complete: ' + data.detected_count + ' subscriptions found.', true); loadSubscriptions(); }
-        else showMsg('Detection error: ' + data.error, false);
-      } catch (e) { showMsg('Network error: ' + e.message, false); }
-      btn.disabled = false; btn.textContent = 'Run Detection';
+        else showMsg('Detection failed: ' + (data.error || 'Unknown error (HTTP ' + res.status + ')'), false);
+      } catch (e) { showMsg('Detection failed: Could not reach server. ' + e.message, false); }
+      btnLoading(btn, false, 'Run Detection');
     }
 
     function toggleManualForm() {
@@ -1404,29 +1430,40 @@ app.get("/dashboard", (req, res) => {
           document.querySelector('.manual-form input[name="amount"]').value = '';
           document.querySelector('.manual-form input[name="notes"]').value = '';
           loadSubscriptions();
-        } else { const data = await res.json(); showMsg('Error: ' + data.error, false); }
-      } catch (e) { showMsg('Network error: ' + e.message, false); }
+        } else { const data = await res.json(); showMsg('Failed to add: ' + (data.error || 'HTTP ' + res.status), false); }
+      } catch (e) { showMsg('Failed to add subscription: ' + e.message, false); }
     }
 
-    async function dismissSub(id) { await apiFetch('/api/subscriptions/' + id + '/dismiss', { method: 'PATCH' }); loadSubscriptions(); }
-    async function undismissSub(id) { await apiFetch('/api/subscriptions/' + id + '/undismiss', { method: 'PATCH' }); loadSubscriptions(); }
+    async function dismissSub(id) {
+      try { await apiFetch('/api/subscriptions/' + id + '/dismiss', { method: 'PATCH' }); loadSubscriptions(); }
+      catch (e) { showMsg('Failed to dismiss: ' + e.message, false); }
+    }
+    async function undismissSub(id) {
+      try { await apiFetch('/api/subscriptions/' + id + '/undismiss', { method: 'PATCH' }); loadSubscriptions(); }
+      catch (e) { showMsg('Failed to restore: ' + e.message, false); }
+    }
     async function markCancelled(id) {
       if (!confirm('Mark this subscription as cancelled?')) return;
-      await apiFetch('/api/subscriptions/' + id + '/cancel', { method: 'PATCH' });
-      showMsg('Subscription marked as cancelled.', true); loadSubscriptions();
+      try {
+        await apiFetch('/api/subscriptions/' + id + '/cancel', { method: 'PATCH' });
+        showMsg('Subscription marked as cancelled.', true); loadSubscriptions();
+      } catch (e) { showMsg('Failed to cancel: ' + e.message, false); }
     }
-    async function uncancelSub(id) { await apiFetch('/api/subscriptions/' + id + '/uncancel', { method: 'PATCH' }); loadSubscriptions(); }
+    async function uncancelSub(id) {
+      try { await apiFetch('/api/subscriptions/' + id + '/uncancel', { method: 'PATCH' }); loadSubscriptions(); }
+      catch (e) { showMsg('Failed to restore: ' + e.message, false); }
+    }
 
     async function syncSheets() {
       const btn = document.getElementById('sheets-btn');
-      btn.disabled = true; btn.textContent = 'Syncing...';
+      btnLoading(btn, true);
       try {
         const res = await apiFetch('/api/sheets/sync', { method: 'POST' });
         const data = await res.json();
         if (res.ok) showMsg('Synced to Sheets: ' + data.transactions_synced + ' txns, ' + data.subscriptions_synced + ' subs.', true);
-        else showMsg('Sheets sync error: ' + data.error, false);
-      } catch (e) { showMsg('Network error: ' + e.message, false); }
-      btn.disabled = false; btn.textContent = 'Sync to Sheets';
+        else showMsg('Sheets sync failed: ' + (data.error || 'HTTP ' + res.status), false);
+      } catch (e) { showMsg('Sheets sync failed: ' + e.message, false); }
+      btnLoading(btn, false, 'Sync to Sheets');
     }
 
     loadSubscriptions();
@@ -1467,14 +1504,14 @@ app.get("/", (req, res) => {
       color: var(--text); min-height: 100vh; position: relative; overflow-x: hidden;
     }
     body::before {
-      content: ''; position: fixed; top: -20%; right: -10%; width: 70vw; height: 70vh;
-      background: radial-gradient(ellipse at 60% 40%, rgba(200,133,108,0.18) 0%, rgba(90,143,143,0.10) 40%, transparent 70%);
-      pointer-events: none; z-index: 0; filter: blur(60px);
+      content: ''; position: fixed; top: -30%; right: -20%; width: 90vw; height: 90vh;
+      background: radial-gradient(ellipse at 50% 30%, rgba(200,133,108,0.28) 0%, rgba(180,120,100,0.15) 25%, rgba(90,143,143,0.12) 50%, transparent 75%);
+      pointer-events: none; z-index: 0; filter: blur(50px);
     }
     body::after {
-      content: ''; position: fixed; bottom: -10%; left: -10%; width: 50vw; height: 50vh;
-      background: radial-gradient(ellipse at 30% 70%, rgba(90,143,143,0.12) 0%, rgba(212,165,116,0.06) 50%, transparent 70%);
-      pointer-events: none; z-index: 0; filter: blur(80px);
+      content: ''; position: fixed; bottom: -20%; left: -15%; width: 80vw; height: 70vh;
+      background: radial-gradient(ellipse at 40% 60%, rgba(90,143,143,0.20) 0%, rgba(212,165,116,0.10) 35%, rgba(160,100,80,0.05) 60%, transparent 80%);
+      pointer-events: none; z-index: 0; filter: blur(60px);
     }
     .container { max-width: 640px; margin: 0 auto; padding: 24px 20px; position: relative; z-index: 1; }
     a { color: var(--warm); text-decoration: none; transition: color 0.2s; }
@@ -1531,6 +1568,25 @@ app.get("/", (req, res) => {
     .csv-import-entry { padding: 14px 18px; margin: 6px 0; background: var(--surface);
                         border: 1px solid var(--border); border-radius: var(--radius);
                         font-size: 13px; font-weight: 300; backdrop-filter: blur(12px); }
+
+    /* Loading spinner */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .btn-loading { position: relative; color: transparent !important; pointer-events: none; }
+    .btn-loading::after {
+      content: ''; position: absolute; top: 50%; left: 50%; width: 14px; height: 14px;
+      margin: -7px 0 0 -7px; border: 2px solid var(--warm); border-top-color: transparent;
+      border-radius: 50%; animation: spin 0.6s linear infinite;
+    }
+
+    /* Item with actions */
+    .item { display: flex; align-items: center; justify-content: space-between; }
+    .item-info { flex: 1; }
+    .item-actions { flex-shrink: 0; margin-left: 12px; }
+    .btn-unlink { padding: 5px 12px; font-size: 10px; font-weight: 500; letter-spacing: 0.5px;
+                  border: 1px solid rgba(235,107,107,0.25); border-radius: 6px; cursor: pointer;
+                  background: transparent; color: var(--red); text-transform: uppercase;
+                  transition: all 0.2s; }
+    .btn-unlink:hover { background: var(--red-bg); }
   </style>
 </head>
 <body>
@@ -1603,19 +1659,54 @@ app.get("/", (req, res) => {
       statusEl.textContent = msg;
       statusEl.className = ok ? 'success' : 'error';
       statusEl.style.display = 'block';
+      if (statusEl._timer) clearTimeout(statusEl._timer);
+      if (ok) { statusEl._timer = setTimeout(() => { statusEl.style.display = 'none'; }, 8000); }
+    }
+
+    function btnLoading(btn, loading, originalText) {
+      if (loading) {
+        btn._origText = btn.textContent;
+        btn.disabled = true;
+        btn.classList.add('btn-loading');
+      } else {
+        btn.disabled = false;
+        btn.classList.remove('btn-loading');
+        btn.textContent = originalText || btn._origText || btn.textContent;
+      }
     }
 
     async function loadItems() {
       try {
         const res = await apiFetch('/api/items');
+        if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || 'HTTP ' + res.status); }
         const items = await res.json();
         if (!items.length) { itemsList.textContent = 'No institutions linked yet.'; return; }
         itemsList.innerHTML = items.map(i =>
-          '<div class="item"><strong>' + i.institution_name + '</strong>' +
-          ' (' + (i.provider || 'teller') + ') — ' +
-          i.accounts.length + ' account(s) — Status: ' + i.status + '</div>'
+          '<div class="item">' +
+            '<div class="item-info"><strong>' + i.institution_name + '</strong>' +
+            ' (' + (i.provider || 'teller') + ') — ' +
+            i.accounts.length + ' account(s) — Status: ' + i.status + '</div>' +
+            '<div class="item-actions"><button class="btn-unlink" onclick="unlinkAccount(' + i.id + ', \\'' + (i.institution_name || '').replace(/'/g, "\\\\'") + '\\')">Unlink</button></div>' +
+          '</div>'
         ).join('');
-      } catch { itemsList.textContent = 'Could not load items.'; }
+      } catch (e) {
+        itemsList.textContent = 'Could not load items: ' + e.message;
+        showStatus('Failed to load linked accounts: ' + e.message, false);
+      }
+    }
+
+    async function unlinkAccount(id, name) {
+      if (!confirm('Unlink ' + name + '? This will remove the enrollment but keep existing transaction data.')) return;
+      try {
+        const res = await apiFetch('/api/enrollments/' + id, { method: 'DELETE' });
+        if (res.ok) {
+          showStatus('Unlinked ' + name + ' successfully.', true);
+          loadItems();
+        } else {
+          const data = await res.json().catch(() => ({}));
+          showStatus('Failed to unlink: ' + (data.error || 'HTTP ' + res.status), false);
+        }
+      } catch (e) { showStatus('Failed to unlink: ' + e.message, false); }
     }
 
     function startLink() {
@@ -1642,9 +1733,9 @@ app.get("/", (req, res) => {
               showStatus('Linked ' + data.institution + ' (' + data.accounts_linked + ' accounts)', true);
               loadItems();
             } else {
-              showStatus('Error: ' + data.error, false);
+              showStatus('Enrollment failed: ' + (data.error || 'HTTP ' + res.status), false);
             }
-          } catch (e) { showStatus('Network error: ' + e.message, false); }
+          } catch (e) { showStatus('Enrollment failed: Could not reach server. ' + e.message, false); }
         },
         onExit: function() { console.log("Teller Connect exited"); },
         onFailure: function(failure) {
@@ -1667,6 +1758,8 @@ app.get("/", (req, res) => {
       csvStatusEl.textContent = msg;
       csvStatusEl.className = ok ? 'success' : 'error';
       csvStatusEl.style.display = 'block';
+      if (csvStatusEl._timer) clearTimeout(csvStatusEl._timer);
+      if (ok) { csvStatusEl._timer = setTimeout(() => { csvStatusEl.style.display = 'none'; }, 8000); }
     }
 
     async function uploadCsv() {
@@ -1682,7 +1775,8 @@ app.get("/", (req, res) => {
       formData.append('file', file);
       formData.append('institution', institution);
       formData.append('account_label', accountLabel);
-      document.getElementById('csv-upload-btn').disabled = true;
+      const btn = document.getElementById('csv-upload-btn');
+      btnLoading(btn, true);
       showCsvStatus('Importing...', true);
       try {
         const resp = await apiFetch('/api/import-csv', { method: 'POST', body: formData });
@@ -1691,15 +1785,16 @@ app.get("/", (req, res) => {
           showCsvStatus('Imported ' + data.rows_imported + ' transactions (' + data.rows_skipped +
             ' skipped) — Format: ' + data.format_detected, true);
           loadCsvImports(); loadItems();
-        } else showCsvStatus('Error: ' + data.error, false);
-      } catch (e) { showCsvStatus('Network error: ' + e.message, false); }
-      document.getElementById('csv-upload-btn').disabled = false;
+        } else showCsvStatus('Import failed: ' + (data.error || 'HTTP ' + resp.status), false);
+      } catch (e) { showCsvStatus('Import failed: Could not reach server. ' + e.message, false); }
+      btnLoading(btn, false, 'Upload & Import');
     }
 
     async function loadCsvImports() {
       const list = document.getElementById('csv-imports-list');
       try {
         const res = await apiFetch('/api/csv-imports');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
         const imports = await res.json();
         if (!imports.length) { list.textContent = 'No CSV imports yet.'; return; }
         list.innerHTML = imports.map(i =>
@@ -1707,7 +1802,7 @@ app.get("/", (req, res) => {
           i.account_label + ' — ' + i.rows_imported + ' rows — ' +
           new Date(i.imported_at).toLocaleDateString() + ' — <em>' + i.filename + '</em></div>'
         ).join('');
-      } catch { list.textContent = 'Could not load import history.'; }
+      } catch (e) { list.textContent = 'Could not load import history.'; }
     }
 
     loadItems();

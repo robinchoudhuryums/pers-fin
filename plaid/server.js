@@ -229,6 +229,24 @@ app.get("/api/items", async (_req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// DELETE /api/items/:id — unlink an institution (remove item, keep transactions)
+// ---------------------------------------------------------------------------
+app.delete("/api/items/:id", async (req, res) => {
+  const { id } = req.params;
+  try {
+    const check = await pool.query("SELECT id, institution_name FROM plaid_items WHERE id = $1", [id]);
+    if (!check.rows.length) return res.status(404).json({ error: "Item not found" });
+    const name = check.rows[0].institution_name;
+    await pool.query("DELETE FROM linked_accounts WHERE plaid_item_id = $1", [id]);
+    await pool.query("DELETE FROM plaid_items WHERE id = $1", [id]);
+    res.json({ success: true, institution_name: name });
+  } catch (err) {
+    console.error("delete item error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // POST /api/import-csv — import transactions from a bank CSV export
 // ---------------------------------------------------------------------------
 // Supported formats: Chase, Wells Fargo, Capital One, and generic.
@@ -781,14 +799,21 @@ app.get("/dashboard", (_req, res) => {
       color: var(--text); min-height: 100vh; position: relative; overflow-x: hidden;
     }
     body::before {
-      content: ''; position: fixed; top: -20%; right: -10%; width: 70vw; height: 70vh;
-      background: radial-gradient(ellipse at 60% 40%, rgba(200,133,108,0.18) 0%, rgba(90,143,143,0.10) 40%, transparent 70%);
-      pointer-events: none; z-index: 0; filter: blur(60px);
+      content: ''; position: fixed; top: -30%; right: -20%; width: 90vw; height: 90vh;
+      background: radial-gradient(ellipse at 50% 30%, rgba(200,133,108,0.28) 0%, rgba(180,120,100,0.15) 25%, rgba(90,143,143,0.12) 50%, transparent 75%);
+      pointer-events: none; z-index: 0; filter: blur(50px);
     }
     body::after {
-      content: ''; position: fixed; bottom: -10%; left: -10%; width: 50vw; height: 50vh;
-      background: radial-gradient(ellipse at 30% 70%, rgba(90,143,143,0.12) 0%, rgba(212,165,116,0.06) 50%, transparent 70%);
-      pointer-events: none; z-index: 0; filter: blur(80px);
+      content: ''; position: fixed; bottom: -20%; left: -15%; width: 80vw; height: 70vh;
+      background: radial-gradient(ellipse at 40% 60%, rgba(90,143,143,0.20) 0%, rgba(212,165,116,0.10) 35%, rgba(160,100,80,0.05) 60%, transparent 80%);
+      pointer-events: none; z-index: 0; filter: blur(60px);
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .btn-loading { position: relative; color: transparent !important; pointer-events: none; }
+    .btn-loading::after {
+      content: ''; position: absolute; top: 50%; left: 50%; width: 14px; height: 14px;
+      margin: -7px 0 0 -7px; border: 2px solid var(--warm); border-top-color: transparent;
+      border-radius: 50%; animation: spin 0.6s linear infinite;
     }
     .container { max-width: 960px; margin: 0 auto; padding: 24px 20px; position: relative; z-index: 1; }
     a { color: var(--warm); text-decoration: none; transition: color 0.2s; }
@@ -965,7 +990,22 @@ app.get("/dashboard", (_req, res) => {
     function showMsg(text, ok) {
       statusMsg.textContent = text;
       statusMsg.className = 'status-msg ' + (ok ? 'success' : 'error');
-      setTimeout(() => { statusMsg.style.display = 'none'; statusMsg.className = 'status-msg'; }, 4000);
+      if (statusMsg._timer) clearTimeout(statusMsg._timer);
+      statusMsg._timer = setTimeout(() => {
+        statusMsg.style.display = 'none'; statusMsg.className = 'status-msg';
+      }, ok ? 5000 : 10000);
+    }
+
+    function btnLoading(btn, loading, originalText) {
+      if (loading) {
+        btn._origText = btn.textContent;
+        btn.disabled = true;
+        btn.classList.add('btn-loading');
+      } else {
+        btn.disabled = false;
+        btn.classList.remove('btn-loading');
+        btn.textContent = originalText || btn._origText || btn.textContent;
+      }
     }
 
     function cadenceLabel(days) {
@@ -984,6 +1024,10 @@ app.get("/dashboard", (_req, res) => {
       const filter = document.getElementById('filter-select').value;
       try {
         const res = await fetch('/api/subscriptions?filter=' + filter);
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || 'HTTP ' + res.status);
+        }
         const data = await res.json();
 
         document.getElementById('monthly-cost').textContent = '$' + data.summary.monthly_cost.toFixed(2);
@@ -1040,20 +1084,18 @@ app.get("/dashboard", (_req, res) => {
 
     async function runDetection() {
       const btn = document.getElementById('detect-btn');
-      btn.disabled = true;
-      btn.textContent = 'Detecting...';
+      btnLoading(btn, true);
       try {
         const res = await fetch('/api/detect', { method: 'POST' });
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
         if (res.ok) {
-          showMsg('Detection complete: ' + data.detected_count + ' subscriptions found.', true);
+          showMsg('Detection complete: ' + (data.detected_count || 0) + ' subscriptions found.', true);
           loadSubscriptions();
         } else {
-          showMsg('Detection error: ' + data.error, false);
+          showMsg('Detection error: ' + (data.error || 'HTTP ' + res.status), false);
         }
-      } catch (e) { showMsg('Network error: ' + e.message, false); }
-      btn.disabled = false;
-      btn.textContent = 'Run Detection';
+      } catch (e) { showMsg('Detection failed: ' + e.message, false); }
+      btnLoading(btn, false, 'Run Detection');
     }
 
     function toggleManualForm() {
@@ -1081,49 +1123,75 @@ app.get("/dashboard", (_req, res) => {
           document.querySelector('.manual-form input[name="notes"]').value = '';
           loadSubscriptions();
         } else {
-          const data = await res.json();
-          showMsg('Error: ' + data.error, false);
+          const data = await res.json().catch(() => ({}));
+          showMsg('Error adding subscription: ' + (data.error || 'HTTP ' + res.status), false);
         }
-      } catch (e) { showMsg('Network error: ' + e.message, false); }
+      } catch (e) { showMsg('Failed to add subscription: ' + e.message, false); }
     }
 
     async function dismissSub(id) {
-      await fetch('/api/subscriptions/' + id + '/dismiss', { method: 'PATCH' });
-      loadSubscriptions();
+      try {
+        const res = await fetch('/api/subscriptions/' + id + '/dismiss', { method: 'PATCH' });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          showMsg('Failed to dismiss: ' + (data.error || 'HTTP ' + res.status), false);
+          return;
+        }
+        loadSubscriptions();
+      } catch (e) { showMsg('Failed to dismiss: ' + e.message, false); }
     }
 
     async function undismissSub(id) {
-      await fetch('/api/subscriptions/' + id + '/undismiss', { method: 'PATCH' });
-      loadSubscriptions();
+      try {
+        const res = await fetch('/api/subscriptions/' + id + '/undismiss', { method: 'PATCH' });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          showMsg('Failed to restore: ' + (data.error || 'HTTP ' + res.status), false);
+          return;
+        }
+        loadSubscriptions();
+      } catch (e) { showMsg('Failed to restore: ' + e.message, false); }
     }
 
     async function markCancelled(id) {
       if (!confirm('Mark this subscription as cancelled?')) return;
-      await fetch('/api/subscriptions/' + id + '/cancel', { method: 'PATCH' });
-      showMsg('Subscription marked as cancelled.', true);
-      loadSubscriptions();
+      try {
+        const res = await fetch('/api/subscriptions/' + id + '/cancel', { method: 'PATCH' });
+        if (res.ok) {
+          showMsg('Subscription marked as cancelled.', true);
+          loadSubscriptions();
+        } else {
+          const data = await res.json().catch(() => ({}));
+          showMsg('Failed to cancel: ' + (data.error || 'HTTP ' + res.status), false);
+        }
+      } catch (e) { showMsg('Failed to cancel: ' + e.message, false); }
     }
 
     async function uncancelSub(id) {
-      await fetch('/api/subscriptions/' + id + '/uncancel', { method: 'PATCH' });
-      loadSubscriptions();
+      try {
+        const res = await fetch('/api/subscriptions/' + id + '/uncancel', { method: 'PATCH' });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          showMsg('Failed to restore: ' + (data.error || 'HTTP ' + res.status), false);
+          return;
+        }
+        loadSubscriptions();
+      } catch (e) { showMsg('Failed to restore: ' + e.message, false); }
     }
 
     async function syncSheets() {
       const btn = document.getElementById('sheets-btn');
-      btn.disabled = true;
-      btn.textContent = 'Syncing...';
+      btnLoading(btn, true);
       try {
         const res = await fetch('/api/sheets/sync', { method: 'POST' });
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
         if (res.ok) {
-          showMsg('Synced to Google Sheets: ' + data.transactions_synced + ' transactions, ' + data.subscriptions_synced + ' subscriptions.', true);
+          showMsg('Synced to Google Sheets: ' + (data.transactions_synced || 0) + ' transactions, ' + (data.subscriptions_synced || 0) + ' subscriptions.', true);
         } else {
-          showMsg('Sheets sync error: ' + data.error, false);
+          showMsg('Sheets sync error: ' + (data.error || 'HTTP ' + res.status), false);
         }
-      } catch (e) { showMsg('Network error: ' + e.message, false); }
-      btn.disabled = false;
-      btn.textContent = 'Sync to Sheets';
+      } catch (e) { showMsg('Sheets sync failed: ' + e.message, false); }
+      btnLoading(btn, false, 'Sync to Sheets');
     }
 
     loadSubscriptions();
@@ -1161,14 +1229,21 @@ app.get("/", (_req, res) => {
       color: var(--text); min-height: 100vh; position: relative; overflow-x: hidden;
     }
     body::before {
-      content: ''; position: fixed; top: -20%; right: -10%; width: 70vw; height: 70vh;
-      background: radial-gradient(ellipse at 60% 40%, rgba(200,133,108,0.18) 0%, rgba(90,143,143,0.10) 40%, transparent 70%);
-      pointer-events: none; z-index: 0; filter: blur(60px);
+      content: ''; position: fixed; top: -30%; right: -20%; width: 90vw; height: 90vh;
+      background: radial-gradient(ellipse at 50% 30%, rgba(200,133,108,0.28) 0%, rgba(180,120,100,0.15) 25%, rgba(90,143,143,0.12) 50%, transparent 75%);
+      pointer-events: none; z-index: 0; filter: blur(50px);
     }
     body::after {
-      content: ''; position: fixed; bottom: -10%; left: -10%; width: 50vw; height: 50vh;
-      background: radial-gradient(ellipse at 30% 70%, rgba(90,143,143,0.12) 0%, rgba(212,165,116,0.06) 50%, transparent 70%);
-      pointer-events: none; z-index: 0; filter: blur(80px);
+      content: ''; position: fixed; bottom: -20%; left: -15%; width: 80vw; height: 70vh;
+      background: radial-gradient(ellipse at 40% 60%, rgba(90,143,143,0.20) 0%, rgba(212,165,116,0.10) 35%, rgba(160,100,80,0.05) 60%, transparent 80%);
+      pointer-events: none; z-index: 0; filter: blur(60px);
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .btn-loading { position: relative; color: transparent !important; pointer-events: none; }
+    .btn-loading::after {
+      content: ''; position: absolute; top: 50%; left: 50%; width: 14px; height: 14px;
+      margin: -7px 0 0 -7px; border: 2px solid var(--warm); border-top-color: transparent;
+      border-radius: 50%; animation: spin 0.6s linear infinite;
     }
     .container { max-width: 640px; margin: 0 auto; padding: 24px 20px; position: relative; z-index: 1; }
     a { color: var(--warm); text-decoration: none; transition: color 0.2s; }
@@ -1202,8 +1277,15 @@ app.get("/", (_req, res) => {
     #items { margin-top: 36px; }
     .item { padding: 16px 18px; margin: 8px 0; background: var(--surface); border: 1px solid var(--border);
             border-radius: var(--radius); font-size: 14px; font-weight: 300; transition: all 0.2s;
-            backdrop-filter: blur(12px); }
+            backdrop-filter: blur(12px); display: flex; align-items: center; justify-content: space-between; }
     .item:hover { border-color: var(--border-hover); background: var(--surface-2); }
+    .item-info { flex: 1; }
+    .item-actions { flex-shrink: 0; margin-left: 12px; }
+    .btn-unlink { padding: 5px 12px; font-size: 10px; font-weight: 500; letter-spacing: 0.5px;
+                  border: 1px solid rgba(235,107,107,0.25); border-radius: 6px; cursor: pointer;
+                  background: transparent; color: var(--red); text-transform: uppercase;
+                  transition: all 0.2s; }
+    .btn-unlink:hover { background: var(--red-bg); }
 
     .section-divider { margin: 48px 0; border: none; border-top: 1px solid var(--border); }
 
@@ -1289,51 +1371,95 @@ app.get("/", (_req, res) => {
       statusEl.textContent = msg;
       statusEl.className = ok ? 'success' : 'error';
       statusEl.style.display = 'block';
+      if (statusEl._timer) clearTimeout(statusEl._timer);
+      statusEl._timer = setTimeout(() => {
+        statusEl.style.display = 'none'; statusEl.className = '';
+      }, ok ? 5000 : 10000);
+    }
+
+    function btnLoading(btn, loading, originalText) {
+      if (loading) {
+        btn._origText = btn.textContent;
+        btn.disabled = true;
+        btn.classList.add('btn-loading');
+      } else {
+        btn.disabled = false;
+        btn.classList.remove('btn-loading');
+        btn.textContent = originalText || btn._origText || btn.textContent;
+      }
+    }
+
+    async function unlinkAccount(id, name) {
+      if (!confirm('Unlink ' + name + '? This will remove the enrollment but keep existing transaction data.')) return;
+      try {
+        const res = await fetch('/api/items/' + id, { method: 'DELETE' });
+        if (res.ok) {
+          showStatus('Unlinked ' + name + ' successfully.', true);
+          loadItems();
+        } else {
+          const data = await res.json().catch(() => ({}));
+          showStatus('Failed to unlink: ' + (data.error || 'HTTP ' + res.status), false);
+        }
+      } catch (e) { showStatus('Failed to unlink: ' + e.message, false); }
     }
 
     async function loadItems() {
       try {
         const res = await fetch('/api/items');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
         const items = await res.json();
         if (!items.length) { itemsList.textContent = 'No institutions linked yet.'; return; }
         itemsList.innerHTML = items.map(i =>
-          '<div class="item"><strong>' + i.institution_name + '</strong> — ' +
-          i.accounts.length + ' account(s) — Status: ' + i.status + '</div>'
+          '<div class="item">' +
+            '<div class="item-info"><strong>' + i.institution_name + '</strong> — ' +
+            i.accounts.length + ' account(s) — Status: ' + i.status + '</div>' +
+            '<div class="item-actions"><button class="btn-unlink" onclick="unlinkAccount(' + i.id + ', \\'' + (i.institution_name || '').replace(/'/g, "\\\\'") + '\\')">Unlink</button></div>' +
+          '</div>'
         ).join('');
-      } catch { itemsList.textContent = 'Could not load items.'; }
+      } catch (e) { itemsList.textContent = 'Could not load items: ' + e.message; }
     }
 
     async function startLink() {
-      const res = await fetch('/api/create_link_token', { method: 'POST' });
-      const { link_token } = await res.json();
+      btnLoading(linkBtn, true);
+      try {
+        const res = await fetch('/api/create_link_token', { method: 'POST' });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          showStatus('Failed to create link token: ' + (data.error || 'HTTP ' + res.status), false);
+          btnLoading(linkBtn, false, 'Link an Account');
+          return;
+        }
+        const { link_token } = await res.json();
 
-      const handler = Plaid.create({
-        token: link_token,
-        onSuccess: async (public_token, metadata) => {
-          showStatus('Exchanging token…', true);
-          try {
-            const exRes = await fetch('/api/exchange_token', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                public_token,
-                institution: metadata.institution,
-              }),
-            });
-            const data = await exRes.json();
-            if (exRes.ok) {
-              showStatus('Linked ' + data.institution + ' (' + data.accounts_linked + ' accounts)', true);
-              loadItems();
-            } else {
-              showStatus('Error: ' + JSON.stringify(data.error), false);
-            }
-          } catch (e) { showStatus('Network error: ' + e.message, false); }
-        },
-        onExit: (err) => {
-          if (err) showStatus('Link exited with error: ' + err.error_message, false);
-        },
-      });
-      handler.open();
+        const handler = Plaid.create({
+          token: link_token,
+          onSuccess: async (public_token, metadata) => {
+            showStatus('Exchanging token…', true);
+            try {
+              const exRes = await fetch('/api/exchange_token', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  public_token,
+                  institution: metadata.institution,
+                }),
+              });
+              const data = await exRes.json();
+              if (exRes.ok) {
+                showStatus('Linked ' + data.institution + ' (' + data.accounts_linked + ' accounts)', true);
+                loadItems();
+              } else {
+                showStatus('Error: ' + JSON.stringify(data.error), false);
+              }
+            } catch (e) { showStatus('Network error: ' + e.message, false); }
+          },
+          onExit: (err) => {
+            if (err) showStatus('Link exited with error: ' + err.error_message, false);
+          },
+        });
+        handler.open();
+      } catch (e) { showStatus('Failed to start link: ' + e.message, false); }
+      btnLoading(linkBtn, false, 'Link an Account');
     }
 
     // CSV import
@@ -1349,6 +1475,10 @@ app.get("/", (_req, res) => {
       csvStatusEl.textContent = msg;
       csvStatusEl.className = ok ? 'success' : 'error';
       csvStatusEl.style.display = 'block';
+      if (csvStatusEl._timer) clearTimeout(csvStatusEl._timer);
+      csvStatusEl._timer = setTimeout(() => {
+        csvStatusEl.style.display = 'none'; csvStatusEl.className = '';
+      }, ok ? 5000 : 10000);
     }
 
     async function uploadCsv() {
@@ -1367,30 +1497,32 @@ app.get("/", (_req, res) => {
       formData.append('institution', institution);
       formData.append('account_label', accountLabel);
 
-      document.getElementById('csv-upload-btn').disabled = true;
+      const btn = document.getElementById('csv-upload-btn');
+      btnLoading(btn, true);
       showCsvStatus('Importing…', true);
 
       try {
         const resp = await fetch('/api/import-csv', { method: 'POST', body: formData });
-        const data = await resp.json();
+        const data = await resp.json().catch(() => ({}));
         if (resp.ok) {
           showCsvStatus(
-            'Imported ' + data.rows_imported + ' transactions (' + data.rows_skipped +
-            ' skipped) — Format: ' + data.format_detected, true
+            'Imported ' + (data.rows_imported || 0) + ' transactions (' + (data.rows_skipped || 0) +
+            ' skipped) — Format: ' + (data.format_detected || 'unknown'), true
           );
           loadCsvImports();
           loadItems();
         } else {
-          showCsvStatus('Error: ' + data.error, false);
+          showCsvStatus('Import error: ' + (data.error || 'HTTP ' + resp.status), false);
         }
-      } catch (e) { showCsvStatus('Network error: ' + e.message, false); }
-      document.getElementById('csv-upload-btn').disabled = false;
+      } catch (e) { showCsvStatus('Import failed: ' + e.message, false); }
+      btnLoading(btn, false, 'Upload & Import');
     }
 
     async function loadCsvImports() {
       const list = document.getElementById('csv-imports-list');
       try {
         const res = await fetch('/api/csv-imports');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
         const imports = await res.json();
         if (!imports.length) { list.textContent = 'No CSV imports yet.'; return; }
         list.innerHTML = imports.map(i =>
@@ -1398,7 +1530,7 @@ app.get("/", (_req, res) => {
           i.account_label + ' — ' + i.rows_imported + ' rows — ' +
           new Date(i.imported_at).toLocaleDateString() + ' — <em>' + i.filename + '</em></div>'
         ).join('');
-      } catch { list.textContent = 'Could not load import history.'; }
+      } catch (e) { list.textContent = 'Could not load import history: ' + e.message; }
     }
 
     // Initialize
