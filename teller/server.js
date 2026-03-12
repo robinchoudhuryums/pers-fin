@@ -2707,8 +2707,8 @@ app.post("/api/logout", (req, res) => {
 // GET /api/settings
 app.get("/api/settings", async (_req, res) => {
   try {
-    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run FROM user_settings WHERE id = 1");
-    res.json(result.rows[0] || { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null });
+    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary FROM user_settings WHERE id = 1");
+    res.json(result.rows[0] || { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null });
   } catch {
     res.json({ session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null });
   }
@@ -2816,7 +2816,7 @@ app.post("/api/insights", async (_req, res) => {
       });
     }
 
-    const [monthlyData, subData, prevInsights] = await Promise.all([
+    const [monthlyData, subData, prevInsight, settingsRow] = await Promise.all([
       pool.query(
         "SELECT TO_CHAR(date, 'YYYY-MM') AS month, SUM(amount) AS total, COUNT(*) AS txns " +
         "FROM transactions WHERE amount > 0 AND date >= CURRENT_DATE - INTERVAL '6 months' " +
@@ -2827,39 +2827,121 @@ app.post("/api/insights", async (_req, res) => {
         "WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL ORDER BY amount DESC"
       ),
       pool.query(
-        "SELECT insight_text, period_start, period_end, created_at FROM financial_insights " +
-        "ORDER BY created_at DESC LIMIT 3"
+        "SELECT insight_text, created_at FROM financial_insights ORDER BY created_at DESC LIMIT 1"
       ).catch(() => ({ rows: [] })),
+      pool.query(
+        "SELECT insights_running_summary FROM user_settings WHERE id = 1"
+      ).catch(() => ({ rows: [{ insights_running_summary: null }] })),
     ]);
+    const runningSummary = settingsRow.rows[0]?.insights_running_summary || null;
     const subTotal = subData.rows.reduce((s, r) => s + parseFloat(r.amount) * 30 / r.cadence_days, 0);
-    let prompt = "You are a personal finance advisor providing ongoing monthly analysis. Analyze this data and give 3-5 concise, actionable insights with specific dollar amounts. Use markdown bullet points.\n\n" +
+    let prompt = "You are a personal finance advisor providing ongoing monthly analysis. You have two tasks:\n\n" +
+      "TASK 1: Analyze the data below and give 3-5 concise, actionable insights with specific dollar amounts. Use markdown bullet points. Reference long-term context where relevant.\n\n" +
+      "TASK 2: After your insights, output a delimiter line containing exactly '---RUNNING_SUMMARY---' followed by an updated cumulative summary (max 200 words). This summary should capture:\n" +
+      "- Baseline spending levels and trends (e.g. 'avg monthly spend ~$X, trending up/down')\n" +
+      "- Key subscriptions and any changes noticed over time\n" +
+      "- Progress on past recommendations (what improved, what didn't)\n" +
+      "- Any recurring patterns or concerns worth tracking long-term\n" +
+      "This summary persists across sessions as your long-term memory. Update it — don't just append.\n\n" +
+      "=== CURRENT DATA ===\n" +
       "Monthly Spending (6mo):\n" + monthlyData.rows.map(r => r.month + ": $" + parseFloat(r.total).toFixed(2) + " (" + r.txns + " txns)").join("\n") +
       "\n\nActive Subscriptions (" + subData.rows.length + " total, $" + subTotal.toFixed(2) + "/mo):\n" +
       subData.rows.map(r => r.display_name + ": $" + parseFloat(r.amount).toFixed(2) + " every " + r.cadence_days + " days").join("\n");
-    // Include previous insights for long-term context continuity
-    if (prevInsights.rows.length > 0) {
-      prompt += "\n\n--- PREVIOUS ANALYSIS (for continuity — track progress on past recommendations) ---\n";
-      prevInsights.rows.forEach((ins, i) => {
-        const date = new Date(ins.created_at).toLocaleDateString("en-US", { month: "short", year: "numeric" });
-        prompt += "\n[" + date + "]:\n" + ins.insight_text.substring(0, 500) + (ins.insight_text.length > 500 ? "..." : "") + "\n";
-      });
-      prompt += "\nIMPORTANT: Reference your previous recommendations where relevant. Note any progress, improvements, or worsening trends compared to past analysis. This helps the user track their financial health over time.";
+    // Include running summary for long-term context
+    if (runningSummary) {
+      prompt += "\n\n=== LONG-TERM CONTEXT (your cumulative memory from past analyses) ===\n" + runningSummary;
+    }
+    // Include most recent analysis for immediate continuity
+    if (prevInsight.rows.length > 0) {
+      const prev = prevInsight.rows[0];
+      const date = new Date(prev.created_at).toLocaleDateString("en-US", { month: "short", year: "numeric" });
+      prompt += "\n\n=== MOST RECENT ANALYSIS [" + date + "] ===\n" + prev.insight_text.substring(0, 600) + (prev.insight_text.length > 600 ? "..." : "");
     }
     const client = new Anthropic();
     const message = await client.messages.create({
-      model: "claude-sonnet-4-20250514", max_tokens: 1024,
+      model: "claude-sonnet-4-20250514", max_tokens: 1500,
       messages: [{ role: "user", content: prompt }],
     });
-    const insightText = message.content[0].text;
+    const fullResponse = message.content[0].text;
     const tokensUsed = (message.usage?.input_tokens || 0) + (message.usage?.output_tokens || 0);
+    // Parse out the running summary from the response
+    const delimIdx = fullResponse.indexOf("---RUNNING_SUMMARY---");
+    let insightText, newSummary;
+    if (delimIdx !== -1) {
+      insightText = fullResponse.substring(0, delimIdx).trim();
+      newSummary = fullResponse.substring(delimIdx + "---RUNNING_SUMMARY---".length).trim();
+    } else {
+      insightText = fullResponse.trim();
+      newSummary = runningSummary; // keep existing if AI didn't output delimiter
+    }
     await pool.query(
       "INSERT INTO financial_insights (insight_text, period_start, period_end, model_used, tokens_used) VALUES ($1, CURRENT_DATE - INTERVAL '6 months', CURRENT_DATE, $2, $3)",
       [insightText, "claude-sonnet-4-20250514", tokensUsed]
     );
-    await pool.query("UPDATE user_settings SET insights_last_run = now() WHERE id = 1").catch(() => {});
+    // Persist the updated running summary
+    if (newSummary) {
+      await pool.query(
+        "UPDATE user_settings SET insights_running_summary = $1, insights_last_run = now() WHERE id = 1",
+        [newSummary]
+      ).catch(() => {});
+    } else {
+      await pool.query("UPDATE user_settings SET insights_last_run = now() WHERE id = 1").catch(() => {});
+    }
     res.json({ insight: insightText, tokens_used: tokensUsed });
   } catch (err) {
     console.error("Insights error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/insights/reset — clear running summary (fresh start)
+app.post("/api/insights/reset", async (_req, res) => {
+  try {
+    await pool.query("UPDATE user_settings SET insights_running_summary = NULL WHERE id = 1");
+    res.json({ ok: true, message: "Long-term AI context cleared. Next analysis starts fresh." });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/insights/rebuild — rebuild running summary from all historical insights
+app.post("/api/insights/rebuild", async (_req, res) => {
+  if (!Anthropic || !process.env.ANTHROPIC_API_KEY) {
+    return res.status(501).json({ error: "Set ANTHROPIC_API_KEY in .env to enable AI insights." });
+  }
+  try {
+    const allInsights = await pool.query(
+      "SELECT insight_text, created_at FROM financial_insights ORDER BY created_at ASC"
+    );
+    if (allInsights.rows.length === 0) {
+      return res.json({ ok: true, message: "No historical insights to rebuild from.", summary: null });
+    }
+    // Build a condensed timeline of all past analyses
+    let timeline = "";
+    allInsights.rows.forEach((ins) => {
+      const date = new Date(ins.created_at).toLocaleDateString("en-US", { month: "short", year: "numeric" });
+      timeline += "[" + date + "]: " + ins.insight_text.substring(0, 400) + (ins.insight_text.length > 400 ? "..." : "") + "\n\n";
+    });
+    const client = new Anthropic();
+    const message = await client.messages.create({
+      model: "claude-sonnet-4-20250514", max_tokens: 500,
+      messages: [{ role: "user", content:
+        "You are a personal finance advisor. Below is a chronological timeline of all past monthly financial analyses for one user. " +
+        "Synthesize these into a single cumulative summary (max 200 words) that captures:\n" +
+        "- Baseline spending levels and long-term trends\n" +
+        "- Key subscriptions and how they've changed over time\n" +
+        "- Progress on past recommendations (what improved, what didn't)\n" +
+        "- Recurring patterns or concerns worth continuing to track\n\n" +
+        "This summary will serve as persistent memory for future analyses.\n\n" +
+        "=== ALL PAST ANALYSES ===\n" + timeline
+      }],
+    });
+    const newSummary = message.content[0].text.trim();
+    const tokensUsed = (message.usage?.input_tokens || 0) + (message.usage?.output_tokens || 0);
+    await pool.query(
+      "UPDATE user_settings SET insights_running_summary = $1 WHERE id = 1", [newSummary]
+    );
+    res.json({ ok: true, message: "Long-term context rebuilt from " + allInsights.rows.length + " historical analyses.", summary: newSummary, tokens_used: tokensUsed });
+  } catch (err) {
+    console.error("Rebuild error:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -3045,6 +3127,18 @@ app.get("/settings", (req, res) => {
       <div class="setting-info"><div class="name">Monthly Budget Cap</div><div class="desc" id="budget-desc">Limits API spending per month (set via INSIGHTS_MONTHLY_BUDGET_CENTS env var)</div></div>
       <div class="setting-control"><span id="budget-status" style="font-size:12px;color:var(--text-muted);">--</span></div>
     </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Long-Term Memory</div><div class="desc" id="memory-desc">AI maintains a cumulative summary across analyses for context continuity</div></div>
+      <div class="setting-control"><span id="memory-status" style="font-size:12px;color:var(--text-muted);">--</span></div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Reset AI Context</div><div class="desc">Clear long-term memory — next analysis starts fresh with no prior context</div></div>
+      <div class="setting-control"><button class="btn danger" id="reset-btn" onclick="resetContext()">Reset</button></div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Rebuild AI Context</div><div class="desc">Regenerate long-term memory by re-reading all historical analyses</div></div>
+      <div class="setting-control"><button class="btn primary" id="rebuild-btn" onclick="rebuildContext()">Rebuild</button></div>
+    </div>
   </div>
 
   <div id="insights-container"></div>
@@ -3088,6 +3182,15 @@ app.get("/settings", (req, res) => {
         document.getElementById('timeout-input').value = s.session_timeout_minutes || 15;
         document.getElementById('insights-toggle').checked = s.insights_enabled || false;
         applyTheme(s.theme || 'dark');
+        // Show memory status
+        const memEl = document.getElementById('memory-status');
+        if (memEl) {
+          if (s.insights_running_summary) {
+            memEl.innerHTML = '<span style="color:var(--green);">Active</span> (' + s.insights_running_summary.split(/\s+/).length + ' words)';
+          } else {
+            memEl.textContent = 'Not yet initialized — runs after first analysis';
+          }
+        }
       } catch {}
       // Check AI API status
       try {
@@ -3183,6 +3286,34 @@ app.get("/settings", (req, res) => {
         html += '</table>';
         histEl.innerHTML = html;
       } catch {}
+    }
+    async function resetContext() {
+      if (!confirm('Clear all long-term AI memory? Next analysis will start fresh with no prior context.')) return;
+      const btn = document.getElementById('reset-btn');
+      btn.classList.add('btn-loading'); btn.disabled = true;
+      try {
+        const res = await apiFetch('/api/insights/reset', { method: 'POST' });
+        const data = await res.json();
+        if (res.ok) { showMsg(data.message, true); document.getElementById('memory-status').textContent = 'Cleared — will reinitialize on next analysis'; }
+        else showMsg(data.error || 'Failed', false);
+      } catch (e) { showMsg(e.message, false); }
+      btn.classList.remove('btn-loading'); btn.disabled = false;
+    }
+    async function rebuildContext() {
+      if (!confirm('Rebuild long-term memory from all historical analyses? This uses a small API call to synthesize past insights.')) return;
+      const btn = document.getElementById('rebuild-btn');
+      btn.classList.add('btn-loading'); btn.disabled = true;
+      try {
+        const res = await apiFetch('/api/insights/rebuild', { method: 'POST' });
+        const data = await res.json();
+        if (res.ok) {
+          showMsg(data.message + (data.tokens_used ? ' (' + data.tokens_used + ' tokens)' : ''), true);
+          const memEl = document.getElementById('memory-status');
+          if (data.summary) memEl.innerHTML = '<span style="color:var(--green);">Active</span> (' + data.summary.split(/\\s+/).length + ' words)';
+          else memEl.textContent = 'No historical data to rebuild from';
+        } else showMsg(data.error || 'Failed', false);
+      } catch (e) { showMsg(e.message, false); }
+      btn.classList.remove('btn-loading'); btn.disabled = false;
     }
     loadSettings(); loadInsights(); loadUsageHistory();
   </script>

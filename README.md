@@ -33,6 +33,7 @@ Detect recurring charges across your bank accounts using **Teller API** (primary
 | `db/002_csv_import.sql` | CSV import tracking table |
 | `db/003_dashboard_features.sql` | Dashboard feature columns |
 | `db/005_settings.sql` | User settings + AI insights tables |
+| `db/006_insights_memory.sql` | Long-term AI insights memory column |
 | `plaid/server.js` | Express server for Plaid Link + API |
 | `plaid/package.json` | Server dependencies |
 | `scripts/detect-subscriptions.js` | Recurring charge detection algorithm |
@@ -63,6 +64,7 @@ psql "$NEON_DATABASE_URL" -f db/001_schema.sql
 psql "$NEON_DATABASE_URL" -f db/002_csv_import.sql
 psql "$NEON_DATABASE_URL" -f db/003_dashboard_features.sql
 psql "$NEON_DATABASE_URL" -f db/005_settings.sql
+psql "$NEON_DATABASE_URL" -f db/006_insights_memory.sql
 ```
 
 ### 3. Plaid Link Server
@@ -155,6 +157,10 @@ Tests cover the detection algorithm, CSV parsing, date handling, API logic, and 
 | `PATCH` | `/api/settings` | Update user settings |
 | `GET` | `/api/insights` | Stored AI financial insights |
 | `POST` | `/api/insights` | Generate new AI insights via Claude |
+| `GET` | `/api/insights/status` | AI API configuration and usage status |
+| `GET` | `/api/insights/usage` | Historical API usage breakdown |
+| `POST` | `/api/insights/reset` | Clear long-term AI context memory |
+| `POST` | `/api/insights/rebuild` | Rebuild AI context from all historical analyses |
 
 ## Features
 
@@ -171,6 +177,11 @@ The dashboard includes two interactive charts (Chart.js):
 
 ### AI Financial Insights
 Set `ANTHROPIC_API_KEY` in `.env` to enable AI-powered financial analysis via Claude. Cost: ~**$0.02/month**.
+
+The AI maintains a **persistent running summary** across analyses — a cumulative memory of your spending baselines, trends, and progress on past recommendations. This means insights improve over time as the AI tracks changes month-to-month.
+
+- **Reset**: Clear the long-term memory to start fresh (Settings → Reset AI Context)
+- **Rebuild**: Regenerate the memory from all historical analyses (Settings → Rebuild AI Context) — useful if context feels stale or after clearing
 
 ### Mobile App (PWA)
 Installable as a home screen icon:

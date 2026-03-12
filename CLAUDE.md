@@ -27,7 +27,7 @@ Uses **Teller API** (primary) and Plaid (legacy) for bank account linking via mT
 - **Settings page**: `/settings` — theme, session timeout, dashboard range, AI insights toggle, data export
 - **Dark/Light theme**: Toggle in Settings, persisted to DB + localStorage
 - **Dashboard charts**: Monthly spending trend (line) and category breakdown (doughnut) via Chart.js
-- **AI Insights**: Optional financial analysis via Claude API (`ANTHROPIC_API_KEY`, ~$0.02/month)
+- **AI Insights**: Optional financial analysis via Claude API (`ANTHROPIC_API_KEY`, ~$0.02/month) with persistent long-term memory (running summary), reset/rebuild controls, and usage history
 - **PWA**: Installable as home screen app on iPhone/Android (manifest.json + service worker)
 - **Blocker**: Codespace port forwarding doesn't work — deploy to Render/Fly.io or run locally
 
@@ -83,6 +83,7 @@ cd teller && npm install && node server.js
 - `db/001_schema.sql` — core schema
 - `db/003_teller.sql` — Teller-specific migrations
 - `db/005_settings.sql` — user settings + financial insights tables
+- `db/006_insights_memory.sql` — long-term AI insights memory column
 - `Dockerfile` / `docker-entrypoint.sh` — container deployment
 - `fly.toml` — Fly.io config
 - `render.yaml` — Render blueprint
@@ -110,6 +111,10 @@ GET  /api/settings        # retrieve user settings
 PATCH /api/settings       # update user settings
 GET  /api/insights        # stored AI insights
 POST /api/insights        # generate new AI insights
+GET  /api/insights/status # AI API config check + usage stats
+GET  /api/insights/usage  # historical usage breakdown
+POST /api/insights/reset  # clear long-term AI context
+POST /api/insights/rebuild # rebuild context from all history
 POST /api/sheets/sync     # sync to Google Sheets
 GET  /manifest.json       # PWA manifest
 GET  /sw.js               # service worker
