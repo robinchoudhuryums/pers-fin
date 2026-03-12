@@ -1,5 +1,5 @@
 // ============================================================================
-// Teller Server — Personal Subscription Tracker
+// Teller Server — Perfin (Personal Finance Tracker)
 // ============================================================================
 // Express server that uses the Teller API (https://api.teller.io) instead of
 // Plaid.  Teller uses mTLS (client certificate) + HTTP Basic Auth (access
@@ -12,7 +12,8 @@
 //   GET  /api/transactions     — list transactions (query: months, limit, offset)
 //   GET  /api/subscriptions    — list detected subscriptions
 //   GET  /                     — Teller Connect + CSV import UI
-//   GET  /dashboard            — subscription dashboard
+//   GET  /dashboard            — personal finance dashboard
+//   GET  /subscriptions        — subscription management
 //
 // Run with:  node server.js
 // Requires:  .env file in repo root (see .env.example)
@@ -94,7 +95,7 @@ app.use("/api/cleanup", tightLimiter);
 app.use("/api/enroll", tightLimiter);
 
 // API key authentication — protects all /api/* routes
-// Set API_KEY env var to enable. Browser pages (/, /dashboard) remain open.
+// Set API_KEY env var to enable. Browser pages (/, /dashboard, /subscriptions) remain open.
 const API_KEY = process.env.API_KEY;
 app.use("/api", (req, res, next) => {
   if (!API_KEY) return next(); // no key configured = open (dev mode)
@@ -519,6 +520,148 @@ app.delete("/api/enrollments/:id", async (req, res) => {
 
     res.json({ deleted: true });
   } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/accounts — list accounts with balances
+// ---------------------------------------------------------------------------
+app.get("/api/accounts", async (_req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT la.id, la.account_id, la.name, la.official_name, la.type, la.subtype, la.mask,
+              la.available_balance, la.current_balance, la.balance_currency, la.balance_updated_at,
+              COALESCE(te.institution_name, pi.institution_name) AS institution_name,
+              CASE WHEN te.id IS NOT NULL THEN 'teller' ELSE 'plaid' END AS provider
+       FROM linked_accounts la
+       LEFT JOIN teller_enrollments te ON te.id = la.teller_enrollment_id
+       LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
+       ORDER BY la.type, la.name`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error("list accounts error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/sync-balances — fetch latest balances from Teller
+// ---------------------------------------------------------------------------
+app.post("/api/sync-balances", async (_req, res) => {
+  try {
+    const enrollments = await pool.query(
+      `SELECT id, enrollment_id, institution_name,
+              pgp_sym_decrypt(access_token_enc, $1) AS access_token
+       FROM teller_enrollments WHERE status = 'GOOD'`,
+      [ENCRYPTION_PASSPHRASE]
+    );
+
+    let updated = 0;
+    const errors = [];
+
+    for (const enrollment of enrollments.rows) {
+      try {
+        const accounts = await tellerRequest("/accounts", enrollment.access_token);
+        for (const acct of accounts) {
+          // Teller returns balance info on each account object
+          let balances = null;
+          try {
+            balances = await tellerRequest(`/accounts/${acct.id}/balances`, enrollment.access_token);
+          } catch {
+            // Some account types may not support balances
+          }
+
+          const available = balances?.available || acct.balance?.available || null;
+          const ledger = balances?.ledger || acct.balance?.ledger || acct.balance?.current || null;
+
+          if (available !== null || ledger !== null) {
+            await pool.query(
+              `UPDATE linked_accounts
+               SET available_balance = $1, current_balance = $2, balance_updated_at = now()
+               WHERE account_id = $3`,
+              [available ? parseFloat(available) : null, ledger ? parseFloat(ledger) : null, acct.id]
+            );
+            updated++;
+          }
+        }
+      } catch (err) {
+        errors.push({ institution: enrollment.institution_name, error: err.message });
+      }
+    }
+
+    res.json({ accounts_updated: updated, errors: errors.length > 0 ? errors : undefined });
+  } catch (err) {
+    console.error("sync-balances error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/spending-summary — aggregated spending data for dashboard
+// ---------------------------------------------------------------------------
+app.get("/api/spending-summary", async (req, res) => {
+  const months = parseInt(req.query.months) || 6;
+  try {
+    // Monthly spending trend
+    const monthlyTrend = await pool.query(
+      `SELECT TO_CHAR(date, 'YYYY-MM') AS month,
+              SUM(amount) AS total_spend,
+              COUNT(*) AS txn_count,
+              ROUND(AVG(amount), 2) AS avg_transaction
+       FROM transactions
+       WHERE amount > 0 AND date >= CURRENT_DATE - ($1 || ' months')::INTERVAL
+       GROUP BY TO_CHAR(date, 'YYYY-MM')
+       ORDER BY month DESC`,
+      [months]
+    );
+
+    // Spending by category
+    const byCategory = await pool.query(
+      `SELECT COALESCE(category[1], 'Uncategorized') AS category,
+              SUM(amount) AS total,
+              COUNT(*) AS txn_count
+       FROM transactions
+       WHERE amount > 0 AND date >= CURRENT_DATE - ($1 || ' months')::INTERVAL
+       GROUP BY COALESCE(category[1], 'Uncategorized')
+       ORDER BY total DESC
+       LIMIT 15`,
+      [months]
+    );
+
+    // Top merchants
+    const topMerchants = await pool.query(
+      `SELECT COALESCE(merchant_name, name) AS merchant,
+              SUM(amount) AS total_spent,
+              COUNT(*) AS txn_count
+       FROM transactions
+       WHERE amount > 0 AND merchant_name IS NOT NULL
+             AND date >= CURRENT_DATE - ($1 || ' months')::INTERVAL
+       GROUP BY COALESCE(merchant_name, name)
+       ORDER BY total_spent DESC
+       LIMIT 10`,
+      [months]
+    );
+
+    // Upcoming subscription charges
+    const upcoming = await pool.query(
+      `SELECT display_name, amount, cadence_days, next_expected,
+              ROUND(amount * (30.0 / NULLIF(cadence_days, 0)), 2) AS monthly_cost
+       FROM detected_subscriptions
+       WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL
+       ORDER BY next_expected ASC
+       LIMIT 10`
+    );
+
+    res.json({
+      monthly_trend: monthlyTrend.rows,
+      by_category: byCategory.rows,
+      top_merchants: topMerchants.rows,
+      upcoming_subscriptions: upcoming.rows,
+    });
+  } catch (err) {
+    console.error("spending-summary error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
   }
 });
@@ -1054,7 +1197,7 @@ app.post("/api/cleanup", async (_req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// GET /dashboard — subscription dashboard page
+// GET /dashboard — personal finance dashboard
 // ---------------------------------------------------------------------------
 app.get("/dashboard", (req, res) => {
   const apiKey = API_KEY || "";
@@ -1063,7 +1206,445 @@ app.get("/dashboard", (req, res) => {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Subscription Dashboard</title>
+  <title>Dashboard — Perfin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #080b12; --surface: rgba(255,255,255,0.04); --surface-2: rgba(255,255,255,0.07);
+      --border: rgba(255,255,255,0.08); --border-hover: rgba(255,255,255,0.18);
+      --text: #f0ebe3; --text-muted: rgba(240,235,227,0.5);
+      --warm: #d4a574; --warm-glow: #c8856c; --teal: #5a8f8f;
+      --green: #6fcf97; --green-bg: rgba(111,207,151,0.1);
+      --red: #eb6b6b; --red-bg: rgba(235,107,107,0.1);
+      --yellow: #f0c36d; --yellow-bg: rgba(240,195,109,0.1);
+      --blue: #7fb5e6; --blue-bg: rgba(127,181,230,0.1);
+      --radius: 12px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', system-ui, sans-serif; background: var(--bg);
+      color: var(--text); min-height: 100vh; position: relative; overflow-x: hidden;
+    }
+    body::before {
+      content: ''; position: fixed; top: -30%; right: -20%; width: 90vw; height: 90vh;
+      background: radial-gradient(ellipse at 50% 30%, rgba(200,133,108,0.28) 0%, rgba(180,120,100,0.15) 25%, rgba(90,143,143,0.12) 50%, transparent 75%);
+      pointer-events: none; z-index: 0; filter: blur(50px);
+    }
+    body::after {
+      content: ''; position: fixed; bottom: -20%; left: -15%; width: 80vw; height: 70vh;
+      background: radial-gradient(ellipse at 40% 60%, rgba(90,143,143,0.20) 0%, rgba(212,165,116,0.10) 35%, rgba(160,100,80,0.05) 60%, transparent 80%);
+      pointer-events: none; z-index: 0; filter: blur(60px);
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .btn-loading { position: relative; color: transparent !important; pointer-events: none; }
+    .btn-loading::after {
+      content: ''; position: absolute; top: 50%; left: 50%; width: 14px; height: 14px;
+      margin: -7px 0 0 -7px; border: 2px solid var(--warm); border-top-color: transparent;
+      border-radius: 50%; animation: spin 0.6s linear infinite;
+    }
+    .container { max-width: 1060px; margin: 0 auto; padding: 24px 20px; position: relative; z-index: 1; }
+    a { color: var(--warm); text-decoration: none; transition: color 0.2s; }
+    a:hover { color: var(--text); }
+
+    .topnav { display: flex; align-items: center; justify-content: space-between;
+              padding: 20px 0; margin-bottom: 40px; }
+    .topnav .logo { font-weight: 300; font-size: 13px; letter-spacing: 2px;
+                    text-transform: uppercase; color: var(--text-muted); }
+    .topnav .nav-links { display: flex; gap: 24px; font-size: 13px; font-weight: 400;
+                         letter-spacing: 0.5px; }
+    .topnav .nav-links a { color: var(--text-muted); }
+    .topnav .nav-links a:hover { color: var(--text); }
+    .topnav .nav-links a.active { color: var(--warm); }
+
+    h1 { font-size: 42px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 8px; }
+    .subtitle { color: var(--text-muted); margin-bottom: 36px; font-size: 15px; font-weight: 300; letter-spacing: 0.3px; }
+
+    .top-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+                 gap: 16px; margin-bottom: 36px; }
+    .card { padding: 24px; border-radius: var(--radius); background: var(--surface);
+            border: 1px solid var(--border); transition: all 0.3s ease; backdrop-filter: blur(12px); }
+    .card:hover { border-color: var(--border-hover); background: var(--surface-2); }
+    .card .label { font-size: 10px; color: var(--text-muted); text-transform: uppercase;
+                   letter-spacing: 1.5px; font-weight: 500; }
+    .card .value { font-size: 28px; font-weight: 300; margin-top: 8px;
+                   font-variant-numeric: tabular-nums; letter-spacing: -1px; }
+    .card .value.warm { color: var(--warm-glow); }
+    .card .value.teal { color: var(--teal); }
+    .card .value.green { color: var(--green); }
+    .card .value.red { color: var(--red); }
+    .card .sub { font-size: 11px; color: var(--text-muted); margin-top: 4px; font-weight: 300; }
+
+    .actions { display: flex; gap: 10px; margin-bottom: 28px; flex-wrap: wrap; align-items: center; }
+    .actions button {
+      padding: 9px 18px; font-size: 12px; font-weight: 500; letter-spacing: 0.5px;
+      border: 1px solid var(--border); border-radius: 8px; cursor: pointer;
+      background: transparent; color: var(--text-muted); transition: all 0.2s; text-transform: uppercase;
+    }
+    .actions button:hover:not(:disabled) { border-color: var(--warm); color: var(--text); }
+    .actions button.primary { border-color: var(--warm); color: var(--warm); }
+    .actions button.primary:hover:not(:disabled) { background: rgba(212,165,116,0.1); color: var(--text); }
+
+    .status-msg { padding: 14px 18px; border-radius: 8px; margin-bottom: 20px; display: none;
+                  font-size: 13px; font-weight: 400; }
+    .status-msg.success { background: var(--green-bg); border: 1px solid rgba(111,207,151,0.15);
+                          color: var(--green); display: block; }
+    .status-msg.error { background: var(--red-bg); border: 1px solid rgba(235,107,107,0.15);
+                        color: var(--red); display: block; }
+
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 28px; }
+    @media (max-width: 768px) { .two-col { grid-template-columns: 1fr; } }
+
+    .section { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+               padding: 24px; backdrop-filter: blur(12px); }
+    .section h2 { font-size: 10px; font-weight: 500; color: var(--text-muted); text-transform: uppercase;
+                  letter-spacing: 1.5px; margin-bottom: 20px; }
+
+    .accounts-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+                     gap: 12px; margin-bottom: 28px; }
+    .acct-card { padding: 18px; border-radius: var(--radius); background: var(--surface);
+                 border: 1px solid var(--border); transition: all 0.2s; }
+    .acct-card:hover { border-color: var(--border-hover); }
+    .acct-card .acct-inst { font-size: 10px; color: var(--text-muted); text-transform: uppercase;
+                            letter-spacing: 1px; font-weight: 500; }
+    .acct-card .acct-name { font-size: 14px; font-weight: 400; margin-top: 4px; }
+    .acct-card .acct-mask { color: var(--text-muted); font-weight: 300; }
+    .acct-card .acct-balance { font-size: 22px; font-weight: 300; margin-top: 10px;
+                               font-variant-numeric: tabular-nums; }
+    .acct-card .acct-balance.positive { color: var(--green); }
+    .acct-card .acct-balance.negative { color: var(--red); }
+    .acct-card .acct-balance.neutral { color: var(--warm-glow); }
+    .acct-card .acct-type { font-size: 10px; color: var(--text-muted); margin-top: 4px;
+                            text-transform: uppercase; letter-spacing: 0.5px; font-weight: 400; }
+
+    table { width: 100%; border-collapse: collapse; }
+    th { text-align: left; padding: 10px 12px; font-size: 9px; color: var(--text-muted);
+         text-transform: uppercase; letter-spacing: 1.5px; font-weight: 500;
+         border-bottom: 1px solid var(--border); }
+    td { padding: 12px; border-bottom: 1px solid rgba(255,255,255,0.04); font-size: 13px; font-weight: 300; }
+    tr { transition: background 0.15s; }
+    tr:hover { background: var(--surface); }
+    .amount { font-weight: 400; font-variant-numeric: tabular-nums; letter-spacing: -0.3px; }
+    .amount.warm { color: var(--warm-glow); }
+    .amount.teal { color: var(--teal); }
+
+    .bar-container { width: 100%; height: 6px; background: rgba(255,255,255,0.06);
+                     border-radius: 3px; overflow: hidden; }
+    .bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
+
+    .empty-msg { text-align: center; padding: 40px; color: var(--text-muted); font-weight: 300; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+  <nav class="topnav">
+    <div class="logo">Perfin</div>
+    <div class="nav-links">
+      <a href="/dashboard" class="active">Dashboard</a>
+      <a href="/subscriptions">Subscriptions</a>
+      <a href="/">Accounts</a>
+    </div>
+  </nav>
+
+  <h1>Dashboard</h1>
+  <p class="subtitle">Personal finance overview</p>
+
+  <div class="actions">
+    <button class="primary" id="sync-btn" onclick="syncTransactions()">Sync Transactions</button>
+    <button id="balance-btn" onclick="syncBalances()">Refresh Balances</button>
+    <button id="detect-btn" onclick="runDetection()">Run Detection</button>
+  </div>
+
+  <div id="status-msg" class="status-msg"></div>
+
+  <!-- Summary cards -->
+  <div class="top-cards" id="summary-cards">
+    <div class="card"><div class="label">Net Balance</div><div class="value warm" id="net-balance">--</div></div>
+    <div class="card"><div class="label">Monthly Spend</div><div class="value warm" id="avg-monthly">--</div><div class="sub" id="avg-monthly-sub"></div></div>
+    <div class="card"><div class="label">Subscriptions /mo</div><div class="value teal" id="subs-monthly">--</div></div>
+    <div class="card"><div class="label">Active Subs</div><div class="value teal" id="active-subs">--</div></div>
+    <div class="card"><div class="label">Avg Daily Spend</div><div class="value warm" id="avg-daily">--</div></div>
+    <div class="card"><div class="label">Linked Accounts</div><div class="value teal" id="acct-count">--</div></div>
+  </div>
+
+  <!-- Account balances -->
+  <div id="accounts-section" style="margin-bottom:28px;">
+    <div style="font-size:10px;font-weight:500;color:var(--text-muted);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:14px;">Account Balances</div>
+    <div class="accounts-grid" id="accounts-grid">
+      <div class="empty-msg">Loading accounts...</div>
+    </div>
+  </div>
+
+  <!-- Two-column: Monthly trend + Categories -->
+  <div class="two-col">
+    <div class="section">
+      <h2>Monthly Spending</h2>
+      <table>
+        <thead><tr><th>Month</th><th>Total</th><th>Txns</th><th>Avg</th></tr></thead>
+        <tbody id="monthly-body"><tr><td colspan="4" class="empty-msg">Loading...</td></tr></tbody>
+      </table>
+    </div>
+    <div class="section">
+      <h2>Spending by Category</h2>
+      <table>
+        <thead><tr><th>Category</th><th>Total</th><th style="width:30%">Share</th></tr></thead>
+        <tbody id="category-body"><tr><td colspan="3" class="empty-msg">Loading...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Two-column: Top merchants + Upcoming subscriptions -->
+  <div class="two-col">
+    <div class="section">
+      <h2>Top Merchants</h2>
+      <table>
+        <thead><tr><th>Merchant</th><th>Total</th><th>Txns</th></tr></thead>
+        <tbody id="merchant-body"><tr><td colspan="3" class="empty-msg">Loading...</td></tr></tbody>
+      </table>
+    </div>
+    <div class="section">
+      <h2>Upcoming Charges</h2>
+      <table>
+        <thead><tr><th>Service</th><th>Amount</th><th>Next</th></tr></thead>
+        <tbody id="upcoming-body"><tr><td colspan="3" class="empty-msg">Loading...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+  </div>
+
+  <script>
+    const API_KEY = '${apiKey}';
+    const statusMsg = document.getElementById('status-msg');
+
+    function apiFetch(url, opts = {}) {
+      if (API_KEY) {
+        opts.headers = opts.headers || {};
+        opts.headers['x-api-key'] = API_KEY;
+      }
+      return fetch(url, opts);
+    }
+
+    function showMsg(text, ok) {
+      statusMsg.textContent = text;
+      statusMsg.className = 'status-msg ' + (ok ? 'success' : 'error');
+      if (statusMsg._timer) clearTimeout(statusMsg._timer);
+      statusMsg._timer = setTimeout(() => {
+        statusMsg.style.display = 'none'; statusMsg.className = 'status-msg';
+      }, ok ? 5000 : 10000);
+    }
+
+    function btnLoading(btn, loading, originalText) {
+      if (loading) {
+        btn._origText = btn.textContent;
+        btn.disabled = true;
+        btn.classList.add('btn-loading');
+      } else {
+        btn.disabled = false;
+        btn.classList.remove('btn-loading');
+        btn.textContent = originalText || btn._origText || btn.textContent;
+      }
+    }
+
+    const fmt = (n) => '$' + parseFloat(n || 0).toFixed(2);
+    const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '\\u2014';
+    const fmtMonth = (m) => {
+      const [y, mo] = m.split('-');
+      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      return months[parseInt(mo)-1] + ' ' + y;
+    };
+
+    const barColors = ['#c8856c','#d4a574','#5a8f8f','#6fcf97','#7fb5e6','#f0c36d','#eb6b6b','#b07cc6','#e8a87c','#85dcb0','#7bb5d4','#d4a0a0','#9fd4c9','#c4b28f','#a8c3d4'];
+
+    // Load accounts with balances
+    async function loadAccounts() {
+      try {
+        const res = await apiFetch('/api/accounts');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const accounts = await res.json();
+        const grid = document.getElementById('accounts-grid');
+
+        document.getElementById('acct-count').textContent = accounts.length;
+
+        if (!accounts.length) {
+          grid.innerHTML = '<div class="empty-msg">No accounts linked. <a href="/">Link an account</a> to get started.</div>';
+          return;
+        }
+
+        let netBalance = 0;
+        const hasBalances = accounts.some(a => a.available_balance !== null || a.current_balance !== null);
+
+        grid.innerHTML = accounts.map(a => {
+          const bal = parseFloat(a.available_balance || a.current_balance || 0);
+          // Credit accounts: balance represents debt
+          const isCredit = a.type === 'credit';
+          const displayBal = isCredit ? -bal : bal;
+          netBalance += displayBal;
+
+          const balClass = !hasBalances ? 'neutral' : displayBal > 0 ? 'positive' : displayBal < 0 ? 'negative' : 'neutral';
+          const balDisplay = hasBalances ? (displayBal < 0 ? '-' + fmt(Math.abs(displayBal)) : fmt(displayBal)) : '\\u2014';
+
+          return '<div class="acct-card">' +
+            '<div class="acct-inst">' + (a.institution_name || 'Unknown') + '</div>' +
+            '<div class="acct-name">' + a.name + (a.mask ? ' <span class="acct-mask">\\u2022\\u2022\\u2022\\u2022 ' + a.mask + '</span>' : '') + '</div>' +
+            '<div class="acct-balance ' + balClass + '">' + balDisplay + '</div>' +
+            '<div class="acct-type">' + (a.subtype || a.type || '') + '</div>' +
+          '</div>';
+        }).join('');
+
+        document.getElementById('net-balance').textContent = hasBalances ? fmt(netBalance) : '\\u2014';
+        if (hasBalances) {
+          document.getElementById('net-balance').className = 'value ' + (netBalance >= 0 ? 'green' : 'red');
+        }
+      } catch (e) {
+        document.getElementById('accounts-grid').innerHTML = '<div class="empty-msg">Could not load accounts: ' + e.message + '</div>';
+      }
+    }
+
+    // Load spending summary
+    async function loadSpendingSummary() {
+      try {
+        const res = await apiFetch('/api/spending-summary?months=6');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+
+        // Monthly trend
+        const monthBody = document.getElementById('monthly-body');
+        if (data.monthly_trend.length) {
+          monthBody.innerHTML = data.monthly_trend.map(m =>
+            '<tr><td>' + fmtMonth(m.month) + '</td>' +
+            '<td class="amount warm">' + fmt(m.total_spend) + '</td>' +
+            '<td>' + m.txn_count + '</td>' +
+            '<td class="amount">' + fmt(m.avg_transaction) + '</td></tr>'
+          ).join('');
+
+          // Avg monthly spend
+          const totalSpend = data.monthly_trend.reduce((s, m) => s + parseFloat(m.total_spend), 0);
+          const avgMonthly = totalSpend / data.monthly_trend.length;
+          document.getElementById('avg-monthly').textContent = fmt(avgMonthly);
+          document.getElementById('avg-monthly-sub').textContent = data.monthly_trend.length + '-month avg';
+
+          // Avg daily
+          const totalDays = data.monthly_trend.length * 30;
+          document.getElementById('avg-daily').textContent = fmt(totalSpend / totalDays);
+        } else {
+          monthBody.innerHTML = '<tr><td colspan="4" class="empty-msg">No spending data yet.</td></tr>';
+        }
+
+        // Categories
+        const catBody = document.getElementById('category-body');
+        if (data.by_category.length) {
+          const maxCat = parseFloat(data.by_category[0].total);
+          catBody.innerHTML = data.by_category.map((c, i) => {
+            const pct = Math.round((parseFloat(c.total) / maxCat) * 100);
+            const color = barColors[i % barColors.length];
+            return '<tr><td>' + c.category + '</td>' +
+              '<td class="amount warm">' + fmt(c.total) + '</td>' +
+              '<td><div class="bar-container"><div class="bar-fill" style="width:' + pct + '%;background:' + color + '"></div></div></td></tr>';
+          }).join('');
+        } else {
+          catBody.innerHTML = '<tr><td colspan="3" class="empty-msg">No category data yet.</td></tr>';
+        }
+
+        // Top merchants
+        const merchBody = document.getElementById('merchant-body');
+        if (data.top_merchants.length) {
+          merchBody.innerHTML = data.top_merchants.map(m =>
+            '<tr><td>' + m.merchant + '</td>' +
+            '<td class="amount warm">' + fmt(m.total_spent) + '</td>' +
+            '<td>' + m.txn_count + '</td></tr>'
+          ).join('');
+        } else {
+          merchBody.innerHTML = '<tr><td colspan="3" class="empty-msg">No merchant data yet.</td></tr>';
+        }
+
+        // Upcoming subscriptions
+        const upBody = document.getElementById('upcoming-body');
+        if (data.upcoming_subscriptions.length) {
+          upBody.innerHTML = data.upcoming_subscriptions.map(s =>
+            '<tr><td>' + s.display_name + '</td>' +
+            '<td class="amount teal">' + fmt(s.amount) + '</td>' +
+            '<td>' + fmtDate(s.next_expected) + '</td></tr>'
+          ).join('');
+
+          // Subs monthly total
+          const subsMonthly = data.upcoming_subscriptions.reduce((s, sub) => s + parseFloat(sub.monthly_cost || 0), 0);
+          document.getElementById('subs-monthly').textContent = fmt(subsMonthly);
+          document.getElementById('active-subs').textContent = data.upcoming_subscriptions.length;
+        } else {
+          upBody.innerHTML = '<tr><td colspan="3" class="empty-msg">No upcoming charges.</td></tr>';
+        }
+      } catch (e) {
+        showMsg('Could not load spending data: ' + e.message, false);
+      }
+    }
+
+    async function syncTransactions() {
+      const btn = document.getElementById('sync-btn');
+      btnLoading(btn, true);
+      try {
+        const res = await apiFetch('/api/sync', { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          showMsg('Synced: ' + (data.transactions_added || 0) + ' transactions added.', true);
+          loadSpendingSummary();
+        } else {
+          showMsg('Sync error: ' + (data.error || 'HTTP ' + res.status), false);
+        }
+      } catch (e) { showMsg('Sync failed: ' + e.message, false); }
+      btnLoading(btn, false, 'Sync Transactions');
+    }
+
+    async function syncBalances() {
+      const btn = document.getElementById('balance-btn');
+      btnLoading(btn, true);
+      try {
+        const res = await apiFetch('/api/sync-balances', { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          showMsg('Balances updated for ' + (data.accounts_updated || 0) + ' accounts.', true);
+          loadAccounts();
+        } else {
+          showMsg('Balance sync error: ' + (data.error || 'HTTP ' + res.status), false);
+        }
+      } catch (e) { showMsg('Balance sync failed: ' + e.message, false); }
+      btnLoading(btn, false, 'Refresh Balances');
+    }
+
+    async function runDetection() {
+      const btn = document.getElementById('detect-btn');
+      btnLoading(btn, true);
+      try {
+        const res = await apiFetch('/api/detect', { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          showMsg('Detection complete: ' + (data.detected_count || 0) + ' subscriptions found.', true);
+          loadSpendingSummary();
+        } else {
+          showMsg('Detection error: ' + (data.error || 'HTTP ' + res.status), false);
+        }
+      } catch (e) { showMsg('Detection failed: ' + e.message, false); }
+      btnLoading(btn, false, 'Run Detection');
+    }
+
+    // Initialize
+    loadAccounts();
+    loadSpendingSummary();
+  </script>
+</body>
+</html>`);
+});
+
+// ---------------------------------------------------------------------------
+// GET /subscriptions — subscription management page
+// ---------------------------------------------------------------------------
+app.get("/subscriptions", (req, res) => {
+  const apiKey = API_KEY || "";
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Subscriptions — Perfin</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <style>
@@ -1221,10 +1802,11 @@ app.get("/dashboard", (req, res) => {
 <body>
   <div class="container">
   <nav class="topnav">
-    <div class="logo">Subscription Tracker</div>
+    <div class="logo">Perfin</div>
     <div class="nav-links">
-      <a href="/">Accounts</a>
       <a href="/dashboard">Dashboard</a>
+      <a href="/subscriptions">Subscriptions</a>
+      <a href="/">Accounts</a>
       <a href="/api/export?type=subscriptions&api_key=${apiKey}" class="export-link">Export</a>
     </div>
   </nav>
@@ -1484,7 +2066,7 @@ app.get("/", (req, res) => {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Subscription Tracker — Link Account</title>
+  <title>Perfin — Link Account</title>
   <script src="https://cdn.teller.io/connect/connect.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -1592,10 +2174,11 @@ app.get("/", (req, res) => {
 <body>
   <div class="container">
   <nav class="topnav">
-    <div class="logo">Subscription Tracker</div>
+    <div class="logo">Perfin</div>
     <div class="nav-links">
-      <a href="/">Accounts</a>
       <a href="/dashboard">Dashboard</a>
+      <a href="/subscriptions">Subscriptions</a>
+      <a href="/">Accounts</a>
     </div>
   </nav>
 
