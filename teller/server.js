@@ -267,6 +267,50 @@ const pool = new Pool({
 const ENCRYPTION_PASSPHRASE = process.env.TOKEN_ENCRYPTION_PASSPHRASE;
 
 // ---------------------------------------------------------------------------
+// Auto-migration: ensure all required tables and columns exist at startup
+// ---------------------------------------------------------------------------
+async function runMigrations() {
+  try {
+    await pool.query("CREATE EXTENSION IF NOT EXISTS pgcrypto");
+    // 005_settings.sql
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS user_settings (
+        id                      INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+        session_timeout_minutes INT NOT NULL DEFAULT 15,
+        theme                   TEXT NOT NULL DEFAULT 'dark',
+        dashboard_months        INT NOT NULL DEFAULT 6,
+        insights_enabled        BOOLEAN NOT NULL DEFAULT false,
+        insights_last_run       TIMESTAMPTZ,
+        updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `);
+    await pool.query("INSERT INTO user_settings (id) VALUES (1) ON CONFLICT DO NOTHING");
+    await pool.query("CREATE TABLE IF NOT EXISTS financial_insights (id SERIAL PRIMARY KEY, insight_text TEXT NOT NULL, period_start DATE, period_end DATE, model_used TEXT, tokens_used INT, created_at TIMESTAMPTZ NOT NULL DEFAULT now())");
+    // 006_insights_memory.sql
+    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_running_summary TEXT DEFAULT NULL");
+    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_model TEXT NOT NULL DEFAULT 'sonnet'");
+    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_cadence_days INT NOT NULL DEFAULT 30");
+    // 003_dashboard_features.sql
+    await pool.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS is_dismissed BOOLEAN NOT NULL DEFAULT false");
+    await pool.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'detected'");
+    await pool.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ");
+    await pool.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS cancel_confirmed BOOLEAN NOT NULL DEFAULT false");
+    await pool.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS notes TEXT");
+    // 004_balances.sql
+    await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS available_balance NUMERIC(12,2)");
+    await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS current_balance NUMERIC(12,2)");
+    await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS balance_currency TEXT DEFAULT 'USD'");
+    await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS balance_updated_at TIMESTAMPTZ");
+    // 002_csv_import.sql
+    await pool.query("CREATE TABLE IF NOT EXISTS csv_imports (id SERIAL PRIMARY KEY, filename TEXT NOT NULL, institution TEXT NOT NULL, account_label TEXT, rows_imported INT NOT NULL DEFAULT 0, rows_skipped INT NOT NULL DEFAULT 0, imported_at TIMESTAMPTZ NOT NULL DEFAULT now())");
+    console.log("Migrations complete.");
+  } catch (err) {
+    console.error("Migration error (non-fatal):", err.message);
+  }
+}
+runMigrations();
+
+// ---------------------------------------------------------------------------
 // POST /api/enroll — store Teller Connect enrollment
 // ---------------------------------------------------------------------------
 // Called by the frontend after Teller Connect completes.
@@ -560,12 +604,18 @@ app.delete("/api/enrollments/:id", async (req, res) => {
       console.warn("Could not revoke at Teller (may already be disconnected):", err.message);
     }
 
-    // Remove from DB (cascade deletes linked_accounts and transactions)
+    // Remove transactions referencing this enrollment's accounts (no cascade on transactions FK)
+    await pool.query(
+      `DELETE FROM transactions WHERE account_id IN (SELECT account_id FROM linked_accounts WHERE teller_enrollment_id = $1)`,
+      [req.params.id]
+    );
+    // Remove from DB (cascade deletes linked_accounts)
     await pool.query(`DELETE FROM teller_enrollments WHERE id = $1`, [req.params.id]);
 
     res.json({ deleted: true });
   } catch (err) {
-    res.status(500).json({ error: "An internal error occurred." });
+    console.error("unlink error:", err.message);
+    res.status(500).json({ error: err.message || "An internal error occurred." });
   }
 });
 
