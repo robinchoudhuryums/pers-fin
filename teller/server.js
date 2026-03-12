@@ -52,13 +52,39 @@ const TELLER_CERT_PATH = process.env.TELLER_CERT_PATH;
 const TELLER_KEY_PATH = process.env.TELLER_KEY_PATH;
 
 // Load TLS client certificate for mTLS
+// Supports: file paths (TELLER_CERT_PATH) or base64 env vars (TELLER_CERT / TELLER_KEY)
 let tlsAgent = null;
 function getTlsAgent() {
   if (tlsAgent) return tlsAgent;
-  const certPath = path.resolve(TELLER_CERT_PATH || "./certificate.pem");
-  const keyPath = path.resolve(TELLER_KEY_PATH || "./private_key.pem");
-  const cert = fs.readFileSync(certPath);
-  const key = fs.readFileSync(keyPath);
+
+  let cert, key;
+
+  // Option 1: base64-encoded cert/key in env vars (recommended for PaaS)
+  if (process.env.TELLER_CERT && process.env.TELLER_KEY) {
+    console.log("[mTLS] Loading certificate from TELLER_CERT/TELLER_KEY env vars (base64)");
+    cert = Buffer.from(process.env.TELLER_CERT, "base64");
+    key = Buffer.from(process.env.TELLER_KEY, "base64");
+  } else {
+    // Option 2: file paths
+    const certPath = path.resolve(TELLER_CERT_PATH || "./certificate.pem");
+    const keyPath = path.resolve(TELLER_KEY_PATH || "./private_key.pem");
+    console.log(`[mTLS] Loading certificate from files: ${certPath}, ${keyPath}`);
+
+    if (!fs.existsSync(certPath)) {
+      console.error(`[mTLS] ERROR: Certificate file not found: ${certPath}`);
+      console.error(`[mTLS] cwd: ${process.cwd()}`);
+      throw new Error(`Certificate file not found: ${certPath}`);
+    }
+    if (!fs.existsSync(keyPath)) {
+      console.error(`[mTLS] ERROR: Private key file not found: ${keyPath}`);
+      throw new Error(`Private key file not found: ${keyPath}`);
+    }
+
+    cert = fs.readFileSync(certPath);
+    key = fs.readFileSync(keyPath);
+  }
+
+  console.log(`[mTLS] Certificate loaded (${cert.length} bytes), key loaded (${key.length} bytes)`);
   tlsAgent = new https.Agent({ cert, key });
   return tlsAgent;
 }
