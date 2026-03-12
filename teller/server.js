@@ -27,6 +27,9 @@ const crypto = require("crypto");
 const { Pool } = require("pg");
 const path = require("path");
 const multer = require("multer");
+const helmet = require("helmet");
+const cors = require("cors");
+const rateLimit = require("express-rate-limit");
 const { parse } = require("csv-parse/sync");
 const { detectSubscriptions } = require("../scripts/detect-subscriptions");
 
@@ -41,6 +44,68 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 
 const app = express();
 app.use(express.json());
+
+// ---------------------------------------------------------------------------
+// Security middleware
+// ---------------------------------------------------------------------------
+// Helmet — sets security headers (CSP, X-Frame-Options, HSTS, etc.)
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.teller.io"],
+      connectSrc: ["'self'", "https://api.teller.io"],
+      frameSrc: ["https://cdn.teller.io"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+    },
+  },
+}));
+
+// CORS — restrict to allowed origins
+const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(",").map(s => s.trim())
+  : [];
+app.use(cors({
+  origin: (origin, cb) => {
+    // Allow requests with no origin (server-to-server, curl, mobile apps)
+    if (!origin || ALLOWED_ORIGINS.length === 0 || ALLOWED_ORIGINS.includes(origin)) {
+      return cb(null, true);
+    }
+    cb(new Error("Not allowed by CORS"));
+  },
+  credentials: true,
+}));
+
+// Rate limiting — general + tight limits for expensive operations
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100,
+  message: { error: "Too many requests, please try again later." },
+});
+const tightLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 5,
+  message: { error: "Too many requests, please try again later." },
+});
+app.use("/api/", generalLimiter);
+app.use("/api/sync", tightLimiter);
+app.use("/api/detect", tightLimiter);
+app.use("/api/cleanup", tightLimiter);
+app.use("/api/enroll", tightLimiter);
+
+// API key authentication — protects all /api/* routes
+// Set API_KEY env var to enable. Browser pages (/, /dashboard) remain open.
+const API_KEY = process.env.API_KEY;
+app.use("/api", (req, res, next) => {
+  if (!API_KEY) return next(); // no key configured = open (dev mode)
+  const provided = req.headers["x-api-key"] || req.query.api_key;
+  const providedBuf = Buffer.from(provided || "");
+  const keyBuf = Buffer.from(API_KEY);
+  if (!provided || providedBuf.length !== keyBuf.length || !crypto.timingSafeEqual(providedBuf, keyBuf)) {
+    return res.status(401).json({ error: "Unauthorized: invalid or missing API key" });
+  }
+  next();
+});
 
 // ---------------------------------------------------------------------------
 // Teller API config
@@ -148,7 +213,7 @@ async function tellerRequest(endpoint, accessToken, options = {}) {
 // ---------------------------------------------------------------------------
 const pool = new Pool({
   connectionString: process.env.NEON_DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
+  ssl: { rejectUnauthorized: true },
   max: 5,
   connectionTimeoutMillis: 10000,
 });
@@ -223,7 +288,7 @@ app.post("/api/enroll", async (req, res) => {
   } catch (err) {
     await client.query("ROLLBACK");
     console.error("Enrollment error:", err.message);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   } finally {
     client.release();
   }
@@ -280,7 +345,7 @@ app.post("/api/sync", async (req, res) => {
     });
   } catch (err) {
     console.error("Sync error:", err.message);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -422,7 +487,7 @@ app.get("/api/items", async (_req, res) => {
     res.json(result.rows);
   } catch (err) {
     console.error("list items error:", err.message);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -454,7 +519,7 @@ app.delete("/api/enrollments/:id", async (req, res) => {
 
     res.json({ deleted: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -640,7 +705,7 @@ app.post("/api/import-csv", upload.single("file"), async (req, res) => {
     }
   } catch (err) {
     console.error("CSV import error:", err.message);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -651,7 +716,7 @@ app.get("/api/csv-imports", async (_req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -704,6 +769,29 @@ const CANCEL_URLS = {
   "canva": "https://www.canva.com/settings/billing-and-plans",
 };
 
+// Subscription category auto-tagging
+const CATEGORY_RULES = {
+  streaming: ["netflix", "hulu", "disney", "hbo", "max", "prime video", "peacock", "paramount", "crunchyroll", "apple tv", "youtube premium", "spotify", "tidal", "deezer", "pandora", "audible"],
+  software: ["adobe", "microsoft", "notion", "figma", "canva", "github", "slack", "zoom", "dropbox", "1password", "dashlane", "grammarly", "chatgpt", "openai", "jetbrains"],
+  gaming: ["xbox", "playstation", "ps plus", "nintendo", "steam", "ea play", "game pass"],
+  news: ["nytimes", "new york times", "wsj", "wall street journal", "washington post", "the athletic", "substack"],
+  fitness: ["peloton", "strava", "fitbit", "headspace", "calm", "noom", "orange theory", "planet fitness", "gym"],
+  cloud: ["icloud", "google one", "aws", "azure", "digitalocean", "backblaze"],
+  vpn: ["nordvpn", "expressvpn", "surfshark", "protonvpn", "private internet"],
+  shopping: ["amazon prime", "costco", "walmart", "instacart", "doordash", "uber eats", "grubhub"],
+  finance: ["mint", "ynab", "quickbooks", "turbotax", "credit karma"],
+  communication: ["linkedin", "bumble", "tinder", "match", "whatsapp", "skype"],
+};
+
+function categorizeSubscription(merchantName) {
+  if (!merchantName) return "other";
+  const lower = merchantName.toLowerCase();
+  for (const [category, keywords] of Object.entries(CATEGORY_RULES)) {
+    if (keywords.some(kw => lower.includes(kw))) return category;
+  }
+  return "other";
+}
+
 function findCancelUrl(merchantName) {
   if (!merchantName) return null;
   const lower = merchantName.toLowerCase();
@@ -740,6 +828,7 @@ app.get("/api/subscriptions", async (req, res) => {
     const subs = result.rows.map(s => ({
       ...s,
       cancel_url: findCancelUrl(s.display_name) || findCancelUrl(s.merchant_key),
+      category: categorizeSubscription(s.display_name),
     }));
 
     const active = subs.filter(s => !s.is_dismissed && !s.cancelled_at);
@@ -755,7 +844,7 @@ app.get("/api/subscriptions", async (req, res) => {
       },
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -787,7 +876,7 @@ app.post("/api/subscriptions", async (req, res) => {
     );
     res.json(result.rows[0]);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -801,7 +890,7 @@ app.patch("/api/subscriptions/:id/dismiss", async (req, res) => {
     if (!result.rows.length) return res.status(404).json({ error: "Not found" });
     res.json(result.rows[0]);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -815,7 +904,7 @@ app.patch("/api/subscriptions/:id/undismiss", async (req, res) => {
     if (!result.rows.length) return res.status(404).json({ error: "Not found" });
     res.json(result.rows[0]);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -830,7 +919,7 @@ app.patch("/api/subscriptions/:id/cancel", async (req, res) => {
     if (!result.rows.length) return res.status(404).json({ error: "Not found" });
     res.json(result.rows[0]);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -845,7 +934,7 @@ app.patch("/api/subscriptions/:id/uncancel", async (req, res) => {
     if (!result.rows.length) return res.status(404).json({ error: "Not found" });
     res.json(result.rows[0]);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -896,7 +985,7 @@ app.get("/api/transactions", async (req, res) => {
       offset,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -909,7 +998,7 @@ app.post("/api/detect", async (_req, res) => {
     res.json({ detected_count: detected.length, subscriptions: detected });
   } catch (err) {
     console.error("Detection error:", err.message);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -928,7 +1017,7 @@ app.post("/api/sheets/sync", async (_req, res) => {
     res.json(result);
   } catch (err) {
     console.error("Sheets sync error:", err.message);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -940,7 +1029,7 @@ app.post("/api/sheets/dashboard", async (_req, res) => {
     const result = await sheetsSync.syncDashboardOnly();
     res.json(result);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -960,81 +1049,177 @@ app.post("/api/cleanup", async (_req, res) => {
       subscriptions_pruned: subResult.rowCount,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
 // ---------------------------------------------------------------------------
 // GET /dashboard — subscription dashboard page
 // ---------------------------------------------------------------------------
-app.get("/dashboard", (_req, res) => {
+app.get("/dashboard", (req, res) => {
+  const apiKey = API_KEY || "";
   res.send(`<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Subscription Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; color: #1a1a1a; }
-    a { color: #0052ff; text-decoration: none; }
-    a:hover { text-decoration: underline; }
-    h1 { margin-bottom: 4px; }
-    .subtitle { color: #666; margin-bottom: 24px; font-size: 14px; }
-    .summary { display: flex; gap: 16px; margin-bottom: 28px; flex-wrap: wrap; }
-    .card { flex: 1; min-width: 140px; padding: 16px; border-radius: 8px; background: #f8f9fa; border: 1px solid #e9ecef; }
-    .card .label { font-size: 12px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
-    .card .value { font-size: 28px; font-weight: 700; margin-top: 4px; }
-    .card .value.cost { color: #d63031; }
-    .card .value.count { color: #0052ff; }
-    .actions { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
-    .actions button, .actions select {
-      padding: 8px 16px; font-size: 14px; border: 1px solid #ccc; border-radius: 6px;
-      cursor: pointer; background: #fff;
+    :root {
+      --bg: #080b12; --surface: rgba(255,255,255,0.04); --surface-2: rgba(255,255,255,0.07);
+      --border: rgba(255,255,255,0.08); --border-hover: rgba(255,255,255,0.18);
+      --text: #f0ebe3; --text-muted: rgba(240,235,227,0.5);
+      --warm: #d4a574; --warm-glow: #c8856c; --teal: #5a8f8f;
+      --green: #6fcf97; --green-bg: rgba(111,207,151,0.1);
+      --red: #eb6b6b; --red-bg: rgba(235,107,107,0.1);
+      --yellow: #f0c36d; --yellow-bg: rgba(240,195,109,0.1);
+      --blue: #7fb5e6; --blue-bg: rgba(127,181,230,0.1);
+      --radius: 12px;
     }
-    .actions button.primary { background: #0052ff; color: #fff; border-color: #0052ff; }
-    .actions button.primary:disabled { opacity: 0.6; cursor: not-allowed; }
-    .actions button:hover:not(:disabled) { opacity: 0.9; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', system-ui, sans-serif; background: var(--bg);
+      color: var(--text); min-height: 100vh; position: relative; overflow-x: hidden;
+    }
+    body::before {
+      content: ''; position: fixed; top: -20%; right: -10%; width: 70vw; height: 70vh;
+      background: radial-gradient(ellipse at 60% 40%, rgba(200,133,108,0.18) 0%, rgba(90,143,143,0.10) 40%, transparent 70%);
+      pointer-events: none; z-index: 0; filter: blur(60px);
+    }
+    body::after {
+      content: ''; position: fixed; bottom: -10%; left: -10%; width: 50vw; height: 50vh;
+      background: radial-gradient(ellipse at 30% 70%, rgba(90,143,143,0.12) 0%, rgba(212,165,116,0.06) 50%, transparent 70%);
+      pointer-events: none; z-index: 0; filter: blur(80px);
+    }
+    .container { max-width: 960px; margin: 0 auto; padding: 24px 20px; position: relative; z-index: 1; }
+    a { color: var(--warm); text-decoration: none; transition: color 0.2s; }
+    a:hover { color: var(--text); }
+
+    /* Nav */
+    .topnav { display: flex; align-items: center; justify-content: space-between;
+              padding: 20px 0; margin-bottom: 40px; }
+    .topnav .logo { font-weight: 300; font-size: 13px; letter-spacing: 2px;
+                    text-transform: uppercase; color: var(--text-muted); }
+    .topnav .nav-links { display: flex; gap: 24px; font-size: 13px; font-weight: 400;
+                         letter-spacing: 0.5px; }
+    .topnav .nav-links a { color: var(--text-muted); }
+    .topnav .nav-links a:hover { color: var(--text); }
+
+    h1 { font-size: 42px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 8px;
+         color: var(--text); }
+    .subtitle { color: var(--text-muted); margin-bottom: 40px; font-size: 15px; font-weight: 300;
+                letter-spacing: 0.3px; }
+
+    /* Summary Cards */
+    .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+               gap: 16px; margin-bottom: 36px; }
+    .card { padding: 24px; border-radius: var(--radius); background: var(--surface);
+            border: 1px solid var(--border); transition: all 0.3s ease;
+            backdrop-filter: blur(12px); }
+    .card:hover { border-color: var(--border-hover); background: var(--surface-2); }
+    .card .label { font-size: 10px; color: var(--text-muted); text-transform: uppercase;
+                   letter-spacing: 1.5px; font-weight: 500; }
+    .card .value { font-size: 32px; font-weight: 300; margin-top: 8px;
+                   font-variant-numeric: tabular-nums; letter-spacing: -1px; }
+    .card .value.cost { color: var(--warm-glow); }
+    .card .value.count { color: var(--teal); }
+
+    /* Action bar */
+    .actions { display: flex; gap: 10px; margin-bottom: 24px; flex-wrap: wrap; align-items: center; }
+    .actions button, .actions select {
+      padding: 9px 18px; font-size: 12px; font-weight: 500; letter-spacing: 0.5px;
+      border: 1px solid var(--border); border-radius: 8px; cursor: pointer;
+      background: transparent; color: var(--text-muted); transition: all 0.2s;
+      text-transform: uppercase;
+    }
+    .actions button:hover:not(:disabled) { border-color: var(--warm); color: var(--text); }
+    .actions button.primary { border-color: var(--warm); color: var(--warm); background: transparent; }
+    .actions button.primary:hover:not(:disabled) { background: rgba(212,165,116,0.1); color: var(--text); }
+    .actions button.primary:disabled { opacity: 0.4; cursor: not-allowed; }
+    .actions select { appearance: none; padding-right: 30px;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23d4a574' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+      background-repeat: no-repeat; background-position: right 10px center; background-color: transparent; }
+    .actions select option { background: #131620; color: var(--text); }
+
+    /* Table */
     table { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
-    th { text-align: left; padding: 10px 8px; border-bottom: 2px solid #dee2e6; font-size: 13px;
-         color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
-    td { padding: 10px 8px; border-bottom: 1px solid #f0f0f0; font-size: 14px; }
-    tr:hover { background: #f8f9fa; }
-    .amount { font-weight: 600; }
-    .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
-    .badge-new { background: #d4edda; color: #155724; }
-    .badge-price { background: #fff3cd; color: #856404; }
-    .badge-manual { background: #e0e7ff; color: #3730a3; }
-    .badge-dismissed { background: #f0f0f0; color: #666; }
-    .badge-cancelled { background: #fce4e4; color: #c0392b; }
-    .btn-sm { padding: 4px 10px; font-size: 12px; border: 1px solid #ccc; border-radius: 4px;
-              cursor: pointer; background: #fff; margin-right: 4px; }
-    .btn-sm:hover { background: #f0f0f0; }
-    .btn-sm.cancel { border-color: #e74c3c; color: #e74c3c; }
-    .btn-sm.cancel:hover { background: #fce4e4; }
-    .btn-sm.restore { border-color: #27ae60; color: #27ae60; }
-    .btn-sm.restore:hover { background: #e6f9e6; }
-    .cancel-link { font-size: 12px; }
-    .next-date { font-size: 13px; color: #666; }
-    .next-date.overdue { color: #e74c3c; font-weight: 600; }
-    .manual-form { background: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 24px; display: none; }
-    .manual-form h3 { margin-bottom: 12px; }
-    .manual-form .fields { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; }
-    .manual-form .field { display: flex; flex-direction: column; gap: 4px; }
-    .manual-form label { font-size: 12px; font-weight: 600; color: #666; }
-    .manual-form input, .manual-form select { padding: 8px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; }
+    th { text-align: left; padding: 12px 14px; font-size: 10px; color: var(--text-muted);
+         text-transform: uppercase; letter-spacing: 1.5px; font-weight: 500;
+         border-bottom: 1px solid var(--border); }
+    td { padding: 14px; border-bottom: 1px solid rgba(255,255,255,0.04); font-size: 14px;
+         font-weight: 300; }
+    tr { transition: background 0.15s; }
+    tr:hover { background: var(--surface); }
+    .amount { font-weight: 400; font-variant-numeric: tabular-nums; letter-spacing: -0.3px; }
+
+    /* Badges */
+    .badge { display: inline-block; padding: 3px 8px; border-radius: 4px; font-size: 9px;
+             font-weight: 600; letter-spacing: 0.8px; text-transform: uppercase; }
+    .badge-new { background: var(--green-bg); color: var(--green); }
+    .badge-price { background: var(--yellow-bg); color: var(--yellow); }
+    .badge-manual { background: var(--blue-bg); color: var(--blue); }
+    .badge-dismissed { background: var(--surface-2); color: var(--text-muted); }
+    .badge-cancelled { background: var(--red-bg); color: var(--red); }
+    .badge-category { background: var(--surface-2); color: var(--text-muted); font-weight: 400; }
+
+    /* Action buttons */
+    .btn-sm { padding: 5px 12px; font-size: 10px; font-weight: 500; letter-spacing: 0.5px;
+              border: 1px solid var(--border); border-radius: 6px; cursor: pointer;
+              background: transparent; color: var(--text-muted); margin-right: 4px;
+              transition: all 0.2s; text-transform: uppercase; }
+    .btn-sm:hover { border-color: var(--border-hover); color: var(--text); }
+    .btn-sm.cancel { border-color: rgba(235,107,107,0.25); color: var(--red); }
+    .btn-sm.cancel:hover { background: var(--red-bg); }
+    .btn-sm.restore { border-color: rgba(111,207,151,0.25); color: var(--green); }
+    .btn-sm.restore:hover { background: var(--green-bg); }
+
+    .next-date { font-size: 13px; color: var(--text-muted); font-weight: 300; }
+    .next-date.overdue { color: var(--red); font-weight: 500; }
+
+    /* Manual form */
+    .manual-form { background: var(--surface); padding: 28px; border-radius: var(--radius);
+                   border: 1px solid var(--border); margin-bottom: 28px; display: none;
+                   backdrop-filter: blur(12px); }
+    .manual-form h3 { margin-bottom: 20px; font-size: 14px; font-weight: 400;
+                      text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); }
+    .manual-form .fields { display: flex; gap: 14px; flex-wrap: wrap; align-items: end; }
+    .manual-form .field { display: flex; flex-direction: column; gap: 6px; }
+    .manual-form label { font-size: 10px; font-weight: 500; color: var(--text-muted);
+                         text-transform: uppercase; letter-spacing: 1px; }
+    .manual-form input, .manual-form select {
+      padding: 9px 14px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px;
+      background: transparent; color: var(--text); font-weight: 300; transition: border-color 0.2s; }
+    .manual-form input:focus, .manual-form select:focus { outline: none; border-color: var(--warm); }
+    .manual-form input::placeholder { color: var(--text-muted); }
     .manual-form input[name="name"] { width: 200px; }
     .manual-form input[name="amount"] { width: 100px; }
     .manual-form input[name="notes"] { width: 200px; }
-    .status-msg { padding: 10px; border-radius: 6px; margin-bottom: 16px; display: none; }
-    .status-msg.success { background: #e6f9e6; border: 1px solid #4caf50; display: block; }
-    .status-msg.error { background: #fce4e4; border: 1px solid #f44336; display: block; }
-    .empty { text-align: center; padding: 40px; color: #999; }
-    nav { margin-bottom: 20px; font-size: 14px; }
+
+    /* Status messages */
+    .status-msg { padding: 14px 18px; border-radius: 8px; margin-bottom: 20px; display: none;
+                  font-size: 13px; font-weight: 400; letter-spacing: 0.2px; }
+    .status-msg.success { background: var(--green-bg); border: 1px solid rgba(111,207,151,0.15);
+                          color: var(--green); display: block; }
+    .status-msg.error { background: var(--red-bg); border: 1px solid rgba(235,107,107,0.15);
+                        color: var(--red); display: block; }
+    .empty { text-align: center; padding: 56px; color: var(--text-muted); font-weight: 300; font-size: 15px; }
+
+    .export-link { font-size: 12px; color: var(--text-muted); }
   </style>
 </head>
 <body>
-  <nav><a href="/">Link Accounts / CSV Import</a></nav>
+  <div class="container">
+  <nav class="topnav">
+    <div class="logo">Subscription Tracker</div>
+    <div class="nav-links">
+      <a href="/">Accounts</a>
+      <a href="/dashboard">Dashboard</a>
+      <a href="/api/export?type=subscriptions&api_key=${apiKey}" class="export-link">Export</a>
+    </div>
+  </nav>
+
   <h1>Subscriptions</h1>
   <p class="subtitle">Detected recurring charges and manually tracked subscriptions</p>
 
@@ -1048,7 +1233,7 @@ app.get("/dashboard", (_req, res) => {
     <button class="primary" id="sync-btn" onclick="syncTransactions()">Sync Transactions</button>
     <button class="primary" id="detect-btn" onclick="runDetection()">Run Detection</button>
     <button id="add-btn" onclick="toggleManualForm()">+ Add Manual</button>
-    <button id="sheets-btn" onclick="syncSheets()" title="Sync to Google Sheets">Sync to Sheets</button>
+    <button id="sheets-btn" onclick="syncSheets()">Sync to Sheets</button>
     <select id="filter-select" onchange="loadSubscriptions()">
       <option value="active">Active</option>
       <option value="dismissed">Dismissed</option>
@@ -1093,8 +1278,16 @@ app.get("/dashboard", (_req, res) => {
       <tr><td colspan="6" class="empty">Loading...</td></tr>
     </tbody>
   </table>
+  </div>
 
   <script>
+    const _apiKey = "${apiKey}";
+    function apiFetch(url, opts = {}) {
+      if (_apiKey) {
+        opts.headers = { ...opts.headers, 'x-api-key': _apiKey };
+      }
+      return fetch(url, opts);
+    }
     const tbody = document.getElementById('subs-body');
     const statusMsg = document.getElementById('status-msg');
 
@@ -1117,7 +1310,7 @@ app.get("/dashboard", (_req, res) => {
     async function loadSubscriptions() {
       const filter = document.getElementById('filter-select').value;
       try {
-        const res = await fetch('/api/subscriptions?filter=' + filter);
+        const res = await apiFetch('/api/subscriptions?filter=' + filter);
         const data = await res.json();
         document.getElementById('monthly-cost').textContent = '$' + data.summary.monthly_cost.toFixed(2);
         document.getElementById('yearly-cost').textContent = '$' + data.summary.yearly_cost.toFixed(2);
@@ -1131,6 +1324,7 @@ app.get("/dashboard", (_req, res) => {
           if (s.is_new) badges.push('<span class="badge badge-new">NEW</span>');
           if (s.amount_changed) badges.push('<span class="badge badge-price">PRICE CHANGE</span>');
           if (s.source === 'manual') badges.push('<span class="badge badge-manual">MANUAL</span>');
+          if (s.category && s.category !== 'other') badges.push('<span class="badge badge-category">' + s.category + '</span>');
           if (s.is_dismissed) badges.push('<span class="badge badge-dismissed">DISMISSED</span>');
           if (s.cancelled_at) badges.push('<span class="badge badge-cancelled">CANCELLED</span>');
           const overdue = !s.cancelled_at && isOverdue(s.next_expected);
@@ -1168,7 +1362,7 @@ app.get("/dashboard", (_req, res) => {
       const btn = document.getElementById('sync-btn');
       btn.disabled = true; btn.textContent = 'Syncing...';
       try {
-        const res = await fetch('/api/sync', { method: 'POST' });
+        const res = await apiFetch('/api/sync', { method: 'POST' });
         const data = await res.json();
         if (res.ok) showMsg('Synced ' + data.transactions_added + ' transactions from ' + data.enrollments_synced + ' institution(s).', true);
         else showMsg('Sync error: ' + data.error, false);
@@ -1180,7 +1374,7 @@ app.get("/dashboard", (_req, res) => {
       const btn = document.getElementById('detect-btn');
       btn.disabled = true; btn.textContent = 'Detecting...';
       try {
-        const res = await fetch('/api/detect', { method: 'POST' });
+        const res = await apiFetch('/api/detect', { method: 'POST' });
         const data = await res.json();
         if (res.ok) { showMsg('Detection complete: ' + data.detected_count + ' subscriptions found.', true); loadSubscriptions(); }
         else showMsg('Detection error: ' + data.error, false);
@@ -1200,7 +1394,7 @@ app.get("/dashboard", (_req, res) => {
       const notes = document.querySelector('.manual-form input[name="notes"]').value.trim();
       if (!name || !amount) { showMsg('Name and amount are required.', false); return; }
       try {
-        const res = await fetch('/api/subscriptions', {
+        const res = await apiFetch('/api/subscriptions', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name, amount, cadence_days, notes: notes || undefined }),
         });
@@ -1214,20 +1408,20 @@ app.get("/dashboard", (_req, res) => {
       } catch (e) { showMsg('Network error: ' + e.message, false); }
     }
 
-    async function dismissSub(id) { await fetch('/api/subscriptions/' + id + '/dismiss', { method: 'PATCH' }); loadSubscriptions(); }
-    async function undismissSub(id) { await fetch('/api/subscriptions/' + id + '/undismiss', { method: 'PATCH' }); loadSubscriptions(); }
+    async function dismissSub(id) { await apiFetch('/api/subscriptions/' + id + '/dismiss', { method: 'PATCH' }); loadSubscriptions(); }
+    async function undismissSub(id) { await apiFetch('/api/subscriptions/' + id + '/undismiss', { method: 'PATCH' }); loadSubscriptions(); }
     async function markCancelled(id) {
       if (!confirm('Mark this subscription as cancelled?')) return;
-      await fetch('/api/subscriptions/' + id + '/cancel', { method: 'PATCH' });
+      await apiFetch('/api/subscriptions/' + id + '/cancel', { method: 'PATCH' });
       showMsg('Subscription marked as cancelled.', true); loadSubscriptions();
     }
-    async function uncancelSub(id) { await fetch('/api/subscriptions/' + id + '/uncancel', { method: 'PATCH' }); loadSubscriptions(); }
+    async function uncancelSub(id) { await apiFetch('/api/subscriptions/' + id + '/uncancel', { method: 'PATCH' }); loadSubscriptions(); }
 
     async function syncSheets() {
       const btn = document.getElementById('sheets-btn');
       btn.disabled = true; btn.textContent = 'Syncing...';
       try {
-        const res = await fetch('/api/sheets/sync', { method: 'POST' });
+        const res = await apiFetch('/api/sheets/sync', { method: 'POST' });
         const data = await res.json();
         if (res.ok) showMsg('Synced to Sheets: ' + data.transactions_synced + ' txns, ' + data.subscriptions_synced + ' subs.', true);
         else showMsg('Sheets sync error: ' + data.error, false);
@@ -1244,8 +1438,9 @@ app.get("/dashboard", (_req, res) => {
 // ---------------------------------------------------------------------------
 // GET / — Teller Connect enrollment + CSV import page
 // ---------------------------------------------------------------------------
-app.get("/", (_req, res) => {
+app.get("/", (req, res) => {
   const tellerEnv = TELLER_ENV === "production" ? "production" : TELLER_ENV === "development" ? "development" : "sandbox";
+  const apiKey = API_KEY || "";
 
   res.send(`<!DOCTYPE html>
 <html lang="en">
@@ -1254,68 +1449,153 @@ app.get("/", (_req, res) => {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Subscription Tracker — Link Account</title>
   <script src="https://cdn.teller.io/connect/connect.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 600px; margin: 60px auto; padding: 0 20px; }
-    button { padding: 12px 24px; font-size: 16px; cursor: pointer; border: none;
-             background: #0052ff; color: #fff; border-radius: 6px; }
-    button:disabled { opacity: 0.5; cursor: not-allowed; }
-    #status { margin-top: 20px; padding: 12px; border-radius: 6px; display: none; }
-    .success { background: #e6f9e6; border: 1px solid #4caf50; }
-    .error   { background: #fce4e4; border: 1px solid #f44336; }
-    #items   { margin-top: 30px; }
-    .item    { padding: 10px; margin: 8px 0; background: #f5f5f5; border-radius: 4px; }
-    .divider { margin: 40px 0; border-top: 1px solid #ddd; }
-    .csv-section { margin-top: 20px; }
-    .csv-form { display: flex; flex-direction: column; gap: 12px; max-width: 400px; }
-    .csv-form label { font-weight: 600; font-size: 14px; }
+    :root {
+      --bg: #080b12; --surface: rgba(255,255,255,0.04); --surface-2: rgba(255,255,255,0.07);
+      --border: rgba(255,255,255,0.08); --border-hover: rgba(255,255,255,0.18);
+      --text: #f0ebe3; --text-muted: rgba(240,235,227,0.5);
+      --warm: #d4a574; --warm-glow: #c8856c; --teal: #5a8f8f;
+      --green: #6fcf97; --green-bg: rgba(111,207,151,0.1);
+      --red: #eb6b6b; --red-bg: rgba(235,107,107,0.1);
+      --radius: 12px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', system-ui, sans-serif; background: var(--bg);
+      color: var(--text); min-height: 100vh; position: relative; overflow-x: hidden;
+    }
+    body::before {
+      content: ''; position: fixed; top: -20%; right: -10%; width: 70vw; height: 70vh;
+      background: radial-gradient(ellipse at 60% 40%, rgba(200,133,108,0.18) 0%, rgba(90,143,143,0.10) 40%, transparent 70%);
+      pointer-events: none; z-index: 0; filter: blur(60px);
+    }
+    body::after {
+      content: ''; position: fixed; bottom: -10%; left: -10%; width: 50vw; height: 50vh;
+      background: radial-gradient(ellipse at 30% 70%, rgba(90,143,143,0.12) 0%, rgba(212,165,116,0.06) 50%, transparent 70%);
+      pointer-events: none; z-index: 0; filter: blur(80px);
+    }
+    .container { max-width: 640px; margin: 0 auto; padding: 24px 20px; position: relative; z-index: 1; }
+    a { color: var(--warm); text-decoration: none; transition: color 0.2s; }
+    a:hover { color: var(--text); }
+
+    .topnav { display: flex; align-items: center; justify-content: space-between;
+              padding: 20px 0; margin-bottom: 48px; }
+    .topnav .logo { font-weight: 300; font-size: 13px; letter-spacing: 2px;
+                    text-transform: uppercase; color: var(--text-muted); }
+    .topnav .nav-links { display: flex; gap: 24px; font-size: 13px; font-weight: 400;
+                         letter-spacing: 0.5px; }
+    .topnav .nav-links a { color: var(--text-muted); }
+    .topnav .nav-links a:hover { color: var(--text); }
+
+    h1 { font-size: 42px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 8px; }
+    h2 { font-size: 28px; font-weight: 300; letter-spacing: -0.3px; margin-bottom: 8px; }
+    h3 { font-size: 10px; font-weight: 500; margin-bottom: 12px; color: var(--text-muted);
+         text-transform: uppercase; letter-spacing: 1.5px; }
+    p { color: var(--text-muted); font-size: 15px; line-height: 1.6; margin-bottom: 24px; font-weight: 300; }
+
+    button { padding: 12px 28px; font-size: 12px; font-weight: 500; cursor: pointer;
+             border: 1px solid var(--warm); background: transparent; color: var(--warm);
+             border-radius: 8px; transition: all 0.2s; text-transform: uppercase; letter-spacing: 1px; }
+    button:hover { background: rgba(212,165,116,0.1); color: var(--text); }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    #status { margin-top: 20px; padding: 14px 18px; border-radius: 8px; display: none; font-size: 13px; font-weight: 400; }
+    .success { background: var(--green-bg); border: 1px solid rgba(111,207,151,0.15); color: var(--green); }
+    .error   { background: var(--red-bg); border: 1px solid rgba(235,107,107,0.15); color: var(--red); }
+
+    #items { margin-top: 36px; }
+    .item { padding: 16px 18px; margin: 8px 0; background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius); font-size: 14px; font-weight: 300; transition: all 0.2s;
+            backdrop-filter: blur(12px); }
+    .item:hover { border-color: var(--border-hover); background: var(--surface-2); }
+
+    .section-divider { margin: 48px 0; border: none; border-top: 1px solid var(--border); }
+
+    .csv-section { margin-top: 8px; }
+    .csv-form { display: flex; flex-direction: column; gap: 18px; max-width: 420px; }
+    .csv-form label { font-weight: 500; font-size: 10px; color: var(--text-muted);
+                      text-transform: uppercase; letter-spacing: 1.5px; }
     .csv-form select, .csv-form input[type="text"] {
-      padding: 8px 12px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px; }
-    .csv-form input[type="file"] { font-size: 14px; }
-    .csv-imports { margin-top: 16px; }
-    .csv-import-entry { padding: 8px; margin: 4px 0; background: #f0f4ff; border-radius: 4px; font-size: 14px; }
+      padding: 10px 14px; font-size: 14px; border: 1px solid var(--border); border-radius: 8px;
+      background: transparent; color: var(--text); width: 100%; font-weight: 300;
+      transition: border-color 0.2s; }
+    .csv-form select:focus, .csv-form input:focus { outline: none; border-color: var(--warm); }
+    .csv-form select option { background: #131620; color: var(--text); }
+    .csv-form input[type="file"] { font-size: 13px; color: var(--text-muted); }
+    .csv-form .field { display: flex; flex-direction: column; gap: 8px; }
+    .csv-form input::placeholder { color: var(--text-muted); }
+
+    .csv-imports { margin-top: 32px; }
+    .csv-import-entry { padding: 14px 18px; margin: 6px 0; background: var(--surface);
+                        border: 1px solid var(--border); border-radius: var(--radius);
+                        font-size: 13px; font-weight: 300; backdrop-filter: blur(12px); }
   </style>
 </head>
 <body>
-  <nav style="margin-bottom:20px;font-size:14px;"><a href="/dashboard">View Dashboard</a></nav>
-  <h1>Subscription Tracker</h1>
-  <p>Link a financial institution to start tracking recurring charges.</p>
+  <div class="container">
+  <nav class="topnav">
+    <div class="logo">Subscription Tracker</div>
+    <div class="nav-links">
+      <a href="/">Accounts</a>
+      <a href="/dashboard">Dashboard</a>
+    </div>
+  </nav>
+
+  <h1>Link Accounts</h1>
+  <p>Connect a financial institution to start tracking recurring charges automatically.</p>
   <button id="link-btn" onclick="startLink()">Link an Account</button>
   <div id="status"></div>
-  <div id="items"><h3>Linked Institutions</h3><div id="items-list">Loading...</div></div>
+  <div id="items"><h3>Linked Institutions</h3><div id="items-list" style="color:var(--text-muted);font-size:14px;font-weight:300;">Loading...</div></div>
 
-  <div class="divider"></div>
+  <hr class="section-divider">
 
   <div class="csv-section">
     <h2>Import from CSV</h2>
     <p>Upload a CSV export from your bank. Supports Chase, Wells Fargo, Capital One, Discover, Schwab, and generic formats.</p>
     <div class="csv-form">
-      <label for="csv-institution">Bank / Institution</label>
-      <select id="csv-institution">
-        <option value="Chase">Chase</option>
-        <option value="Wells Fargo">Wells Fargo</option>
-        <option value="Capital One">Capital One</option>
-        <option value="Discover">Discover</option>
-        <option value="Charles Schwab">Charles Schwab</option>
-        <option value="Other">Other</option>
-      </select>
+      <div class="field">
+        <label for="csv-institution">Bank / Institution</label>
+        <select id="csv-institution">
+          <option value="Chase">Chase</option>
+          <option value="Wells Fargo">Wells Fargo</option>
+          <option value="Capital One">Capital One</option>
+          <option value="Discover">Discover</option>
+          <option value="Charles Schwab">Charles Schwab</option>
+          <option value="Other">Other</option>
+        </select>
+      </div>
       <input type="text" id="csv-custom-institution" placeholder="Institution name" style="display:none">
 
-      <label for="csv-account-label">Account Label</label>
-      <input type="text" id="csv-account-label" placeholder="e.g. Chase Checking, WF Visa">
+      <div class="field">
+        <label for="csv-account-label">Account Label</label>
+        <input type="text" id="csv-account-label" placeholder="e.g. Chase Checking, WF Visa">
+      </div>
 
-      <label for="csv-file">CSV File</label>
-      <input type="file" id="csv-file" accept=".csv">
+      <div class="field">
+        <label for="csv-file">CSV File</label>
+        <input type="file" id="csv-file" accept=".csv">
+      </div>
 
       <button id="csv-upload-btn" onclick="uploadCsv()">Upload & Import</button>
     </div>
-    <div id="csv-status" style="margin-top:12px;padding:12px;border-radius:6px;display:none"></div>
+    <div id="csv-status" style="margin-top:12px;padding:14px 18px;border-radius:8px;display:none;font-size:13px;"></div>
     <div class="csv-imports">
       <h3>Import History</h3>
-      <div id="csv-imports-list">Loading...</div>
+      <div id="csv-imports-list" style="color:var(--text-muted);font-size:14px;font-weight:300;">Loading...</div>
     </div>
+  </div>
   </div>
 
   <script>
+    const _apiKey = "${apiKey}";
+    function apiFetch(url, opts = {}) {
+      if (_apiKey) {
+        opts.headers = { ...opts.headers, 'x-api-key': _apiKey };
+      }
+      return fetch(url, opts);
+    }
     const statusEl  = document.getElementById('status');
     const itemsList = document.getElementById('items-list');
 
@@ -1327,7 +1607,7 @@ app.get("/", (_req, res) => {
 
     async function loadItems() {
       try {
-        const res = await fetch('/api/items');
+        const res = await apiFetch('/api/items');
         const items = await res.json();
         if (!items.length) { itemsList.textContent = 'No institutions linked yet.'; return; }
         itemsList.innerHTML = items.map(i =>
@@ -1346,7 +1626,7 @@ app.get("/", (_req, res) => {
         onSuccess: async function(enrollment) {
           showStatus('Enrolling...', true);
           try {
-            const res = await fetch('/api/enroll', {
+            const res = await apiFetch('/api/enroll', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -1405,7 +1685,7 @@ app.get("/", (_req, res) => {
       document.getElementById('csv-upload-btn').disabled = true;
       showCsvStatus('Importing...', true);
       try {
-        const resp = await fetch('/api/import-csv', { method: 'POST', body: formData });
+        const resp = await apiFetch('/api/import-csv', { method: 'POST', body: formData });
         const data = await resp.json();
         if (resp.ok) {
           showCsvStatus('Imported ' + data.rows_imported + ' transactions (' + data.rows_skipped +
@@ -1419,7 +1699,7 @@ app.get("/", (_req, res) => {
     async function loadCsvImports() {
       const list = document.getElementById('csv-imports-list');
       try {
-        const res = await fetch('/api/csv-imports');
+        const res = await apiFetch('/api/csv-imports');
         const imports = await res.json();
         if (!imports.length) { list.textContent = 'No CSV imports yet.'; return; }
         list.innerHTML = imports.map(i =>
@@ -1435,6 +1715,63 @@ app.get("/", (_req, res) => {
   </script>
 </body>
 </html>`);
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/export — download transactions or subscriptions as CSV
+// ---------------------------------------------------------------------------
+app.get("/api/export", async (req, res) => {
+  const type = req.query.type || "transactions";
+  const months = Math.max(1, Math.min(parseInt(req.query.months) || 12, 120));
+
+  try {
+    let csvContent = "";
+
+    if (type === "subscriptions") {
+      const result = await pool.query(`
+        SELECT ds.display_name, ds.amount, ds.cadence_days, ds.first_seen, ds.last_charged,
+               ds.next_expected, ds.is_active, ds.is_dismissed, ds.cancelled_at, ds.source, ds.notes
+        FROM detected_subscriptions ds
+        ORDER BY ds.amount DESC
+      `);
+      csvContent = "Service,Amount,Cycle Days,Monthly Cost,First Seen,Last Charged,Next Charge,Status,Category,Source,Notes\n";
+      for (const r of result.rows) {
+        const monthlyCost = r.cadence_days > 0 ? (r.amount * 30 / r.cadence_days).toFixed(2) : r.amount;
+        const status = r.cancelled_at ? "Cancelled" : r.is_dismissed ? "Dismissed" : r.is_active ? "Active" : "Inactive";
+        const category = categorizeSubscription(r.display_name);
+        const escapeCsv = (s) => `"${(s || "").toString().replace(/"/g, '""')}"`;
+        csvContent += [escapeCsv(r.display_name), r.amount, r.cadence_days, monthlyCost,
+          r.first_seen, r.last_charged, r.next_expected, status, category, r.source, escapeCsv(r.notes)].join(",") + "\n";
+      }
+      res.setHeader("Content-Disposition", "attachment; filename=subscriptions.csv");
+    } else {
+      const result = await pool.query(`
+        SELECT t.date, COALESCE(t.merchant_name, t.name) AS merchant, t.amount,
+               la.name AS account_name,
+               COALESCE(pi.institution_name, te.institution_name, 'CSV Import') AS institution,
+               t.personal_finance_category->>'primary' AS category
+        FROM transactions t
+        JOIN linked_accounts la ON la.account_id = t.account_id
+        LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
+        LEFT JOIN teller_enrollments te ON te.id = la.teller_enrollment_id
+        WHERE t.pending = false AND t.date >= CURRENT_DATE - make_interval(months => $1)
+        ORDER BY t.date DESC
+      `, [months]);
+      csvContent = "Date,Merchant,Amount,Account,Institution,Category\n";
+      for (const r of result.rows) {
+        const escapeCsv = (s) => `"${(s || "").toString().replace(/"/g, '""')}"`;
+        csvContent += [r.date, escapeCsv(r.merchant), r.amount, escapeCsv(r.account_name),
+          escapeCsv(r.institution), escapeCsv(r.category)].join(",") + "\n";
+      }
+      res.setHeader("Content-Disposition", `attachment; filename=transactions-${months}mo.csv`);
+    }
+
+    res.setHeader("Content-Type", "text/csv");
+    res.send(csvContent);
+  } catch (err) {
+    console.error("Export error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
 });
 
 // ---------------------------------------------------------------------------
