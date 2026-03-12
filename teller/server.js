@@ -2715,7 +2715,8 @@ app.get("/login", (_req, res) => {
     .pin-pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; max-width: 240px; margin: 0 auto; }
     .pin-key { padding: 16px; font-size: 22px; font-weight: 300; border: 1px solid var(--border);
       border-radius: 10px; background: transparent; color: var(--text); cursor: pointer;
-      font-family: inherit; transition: all 0.15s; user-select: none; -webkit-user-select: none; }
+      font-family: inherit; transition: all 0.15s; user-select: none; -webkit-user-select: none;
+      touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
     .pin-key:hover { border-color: var(--warm); }
     .pin-key:active { background: rgba(212,165,116,0.1); transform: scale(0.95); }
     .pin-key.fn { font-size: 12px; font-weight: 400; letter-spacing: 0.5px; text-transform: uppercase;
@@ -2755,36 +2756,48 @@ app.get("/login", (_req, res) => {
     if (AUTH_MODE === 'pin') {
       const pinLen = ${SESSION_PIN ? SESSION_PIN.length : 4};
       let pin = '';
+      let submitting = false;
       const dotsEl = document.getElementById('pin-dots');
-      for (let i = 0; i < pinLen; i++) dotsEl.innerHTML += '<div class="pin-dot" id="dot-' + i + '"></div>';
+      let dotsHtml = '';
+      for (let i = 0; i < pinLen; i++) dotsHtml += '<div class="pin-dot" id="dot-' + i + '"></div>';
+      dotsEl.innerHTML = dotsHtml;
       const padEl = document.getElementById('pin-pad');
-      [1,2,3,4,5,6,7,8,9].forEach(n => {
-        padEl.innerHTML += '<button class="pin-key" type="button" onclick="addDigit(' + n + ')">' + n + '</button>';
+      let padHtml = '';
+      [1,2,3,4,5,6,7,8,9].forEach(function(n) {
+        padHtml += '<button class="pin-key" type="button" data-digit="' + n + '">' + n + '</button>';
       });
-      padEl.innerHTML += '<button class="pin-key fn" type="button" onclick="clearPin()">Clear</button>';
-      padEl.innerHTML += '<button class="pin-key" type="button" onclick="addDigit(0)">0</button>';
-      padEl.innerHTML += '<button class="pin-key fn" type="button" onclick="backspace()">Del</button>';
+      padHtml += '<button class="pin-key fn" type="button" data-action="clear">Clear</button>';
+      padHtml += '<button class="pin-key" type="button" data-digit="0">0</button>';
+      padHtml += '<button class="pin-key fn" type="button" data-action="del">Del</button>';
+      padEl.innerHTML = padHtml;
       function updateDots() {
         for (let i = 0; i < pinLen; i++) {
           document.getElementById('dot-' + i).className = 'pin-dot' + (i < pin.length ? ' filled' : '');
         }
       }
-      window.addDigit = async function(n) {
-        if (pin.length >= pinLen) return;
+      async function handleDigit(n) {
+        if (pin.length >= pinLen || submitting) return;
         pin += n;
         updateDots();
         errEl.style.display = 'none';
         if (pin.length === pinLen) {
-          const err = await doLogin(pin);
+          submitting = true;
+          var err = await doLogin(pin);
           if (err) {
             for (let i = 0; i < pinLen; i++) document.getElementById('dot-' + i).className = 'pin-dot error';
             errEl.textContent = err; errEl.style.display = 'block';
-            setTimeout(() => { pin = ''; updateDots(); }, 600);
+            setTimeout(function() { pin = ''; submitting = false; updateDots(); }, 600);
           }
         }
-      };
-      window.clearPin = function() { pin = ''; updateDots(); errEl.style.display = 'none'; };
-      window.backspace = function() { pin = pin.slice(0, -1); updateDots(); };
+      }
+      padEl.addEventListener('click', function(e) {
+        var btn = e.target.closest('button');
+        if (!btn) return;
+        e.preventDefault();
+        if (btn.dataset.digit !== undefined) handleDigit(btn.dataset.digit);
+        else if (btn.dataset.action === 'clear') { pin = ''; updateDots(); errEl.style.display = 'none'; }
+        else if (btn.dataset.action === 'del') { pin = pin.slice(0, -1); updateDots(); }
+      });
     } else {
       document.getElementById('login-form').addEventListener('submit', async (e) => {
         e.preventDefault();
