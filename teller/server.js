@@ -2767,6 +2767,23 @@ app.get("/api/insights/status", async (_req, res) => {
   });
 });
 
+// GET /api/insights/usage — historical usage breakdown
+app.get("/api/insights/usage", async (_req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT id, tokens_used, model_used, created_at, " +
+      "ROUND((tokens_used::numeric / 1000000) * 8, 4) AS estimated_cost_usd " +
+      "FROM financial_insights ORDER BY created_at DESC LIMIT 20"
+    );
+    const totals = await pool.query(
+      "SELECT COUNT(*) AS total_runs, COALESCE(SUM(tokens_used), 0)::int AS total_tokens, " +
+      "ROUND((COALESCE(SUM(tokens_used), 0)::numeric / 1000000) * 8, 4) AS total_cost_usd " +
+      "FROM financial_insights"
+    );
+    res.json({ history: result.rows, totals: totals.rows[0] });
+  } catch { res.json({ history: [], totals: { total_runs: 0, total_tokens: 0, total_cost_usd: 0 } }); }
+});
+
 // GET /api/insights
 app.get("/api/insights", async (_req, res) => {
   try {
@@ -2799,7 +2816,7 @@ app.post("/api/insights", async (_req, res) => {
       });
     }
 
-    const [monthlyData, subData] = await Promise.all([
+    const [monthlyData, subData, prevInsights] = await Promise.all([
       pool.query(
         "SELECT TO_CHAR(date, 'YYYY-MM') AS month, SUM(amount) AS total, COUNT(*) AS txns " +
         "FROM transactions WHERE amount > 0 AND date >= CURRENT_DATE - INTERVAL '6 months' " +
@@ -2809,12 +2826,25 @@ app.post("/api/insights", async (_req, res) => {
         "SELECT display_name, amount, cadence_days FROM detected_subscriptions " +
         "WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL ORDER BY amount DESC"
       ),
+      pool.query(
+        "SELECT insight_text, period_start, period_end, created_at FROM financial_insights " +
+        "ORDER BY created_at DESC LIMIT 3"
+      ).catch(() => ({ rows: [] })),
     ]);
     const subTotal = subData.rows.reduce((s, r) => s + parseFloat(r.amount) * 30 / r.cadence_days, 0);
-    const prompt = "You are a personal finance advisor. Analyze this data and give 3-5 concise, actionable insights with specific dollar amounts. Use markdown bullet points.\n\n" +
+    let prompt = "You are a personal finance advisor providing ongoing monthly analysis. Analyze this data and give 3-5 concise, actionable insights with specific dollar amounts. Use markdown bullet points.\n\n" +
       "Monthly Spending (6mo):\n" + monthlyData.rows.map(r => r.month + ": $" + parseFloat(r.total).toFixed(2) + " (" + r.txns + " txns)").join("\n") +
       "\n\nActive Subscriptions (" + subData.rows.length + " total, $" + subTotal.toFixed(2) + "/mo):\n" +
       subData.rows.map(r => r.display_name + ": $" + parseFloat(r.amount).toFixed(2) + " every " + r.cadence_days + " days").join("\n");
+    // Include previous insights for long-term context continuity
+    if (prevInsights.rows.length > 0) {
+      prompt += "\n\n--- PREVIOUS ANALYSIS (for continuity — track progress on past recommendations) ---\n";
+      prevInsights.rows.forEach((ins, i) => {
+        const date = new Date(ins.created_at).toLocaleDateString("en-US", { month: "short", year: "numeric" });
+        prompt += "\n[" + date + "]:\n" + ins.insight_text.substring(0, 500) + (ins.insight_text.length > 500 ? "..." : "") + "\n";
+      });
+      prompt += "\nIMPORTANT: Reference your previous recommendations where relevant. Note any progress, improvements, or worsening trends compared to past analysis. This helps the user track their financial health over time.";
+    }
     const client = new Anthropic();
     const message = await client.messages.create({
       model: "claude-sonnet-4-20250514", max_tokens: 1024,
@@ -3019,6 +3049,11 @@ app.get("/settings", (req, res) => {
 
   <div id="insights-container"></div>
 
+  <div class="section"><h2>API Usage History</h2>
+    <div id="usage-summary" style="padding:10px 0;font-size:13px;color:var(--text-muted);font-weight:300;">Loading...</div>
+    <div id="usage-history" style="max-height:260px;overflow-y:auto;"></div>
+  </div>
+
   <div class="section"><h2>Data</h2>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Export Transactions</div><div class="desc">Download as CSV</div></div>
@@ -3121,7 +3156,35 @@ app.get("/settings", (req, res) => {
         }
       } catch {}
     }
-    loadSettings(); loadInsights();
+    async function loadUsageHistory() {
+      try {
+        const res = await apiFetch('/api/insights/usage');
+        const data = await res.json();
+        const sumEl = document.getElementById('usage-summary');
+        const t = data.totals;
+        sumEl.innerHTML = '<span style="color:var(--text)">' + t.total_runs + ' total runs</span> &middot; ' +
+          Number(t.total_tokens).toLocaleString() + ' tokens &middot; <span style="color:var(--warm)">$' +
+          parseFloat(t.total_cost_usd).toFixed(4) + ' estimated total</span>';
+        const histEl = document.getElementById('usage-history');
+        if (data.history.length === 0) { histEl.innerHTML = '<div style="font-size:12px;color:var(--text-muted);padding:8px 0;">No AI insights generated yet.</div>'; return; }
+        let html = '<table style="width:100%;font-size:12px;border-collapse:collapse;">' +
+          '<tr style="color:var(--text-muted);text-transform:uppercase;font-size:10px;letter-spacing:1px;">' +
+          '<th style="text-align:left;padding:6px 0;border-bottom:1px solid var(--border);">Date</th>' +
+          '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Tokens</th>' +
+          '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Est. Cost</th>' +
+          '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Model</th></tr>';
+        data.history.forEach(function(row) {
+          html += '<tr style="font-weight:300;">' +
+            '<td style="padding:6px 0;border-bottom:1px solid rgba(128,128,128,0.06);">' + new Date(row.created_at).toLocaleDateString() + '</td>' +
+            '<td style="text-align:right;padding:6px 0;border-bottom:1px solid rgba(128,128,128,0.06);">' + (row.tokens_used || 0).toLocaleString() + '</td>' +
+            '<td style="text-align:right;padding:6px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--warm);">$' + parseFloat(row.estimated_cost_usd || 0).toFixed(4) + '</td>' +
+            '<td style="text-align:right;padding:6px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--text-muted);font-size:11px;">' + (row.model_used || '').replace('claude-', '').split('-202')[0] + '</td></tr>';
+        });
+        html += '</table>';
+        histEl.innerHTML = html;
+      } catch {}
+    }
+    loadSettings(); loadInsights(); loadUsageHistory();
   </script>
 </body></html>`);
 });
