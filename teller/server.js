@@ -52,6 +52,9 @@ try {
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 const SESSION_PASSWORD = process.env.SESSION_PASSWORD;
+const SESSION_PIN = process.env.SESSION_PIN;
+const AUTH_SECRET = SESSION_PASSWORD || SESSION_PIN || null;
+const AUTH_MODE = SESSION_PIN ? "pin" : (SESSION_PASSWORD ? "password" : null);
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
 
 const app = express();
@@ -73,7 +76,7 @@ app.use(session({
 }));
 
 function requireAuth(req, res, next) {
-  if (!SESSION_PASSWORD) return next();
+  if (!AUTH_SECRET) return next();
   if (["/login", "/api/login", "/manifest.json", "/sw.js"].includes(req.path)) return next();
   if (req.session && req.session.authenticated) {
     const timeout = (req.session.timeoutMinutes || 15) * 60 * 1000;
@@ -265,6 +268,50 @@ const pool = new Pool({
 });
 
 const ENCRYPTION_PASSPHRASE = process.env.TOKEN_ENCRYPTION_PASSPHRASE;
+
+// ---------------------------------------------------------------------------
+// Auto-migration: ensure all required tables and columns exist at startup
+// ---------------------------------------------------------------------------
+async function runMigrations() {
+  try {
+    await pool.query("CREATE EXTENSION IF NOT EXISTS pgcrypto");
+    // 005_settings.sql
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS user_settings (
+        id                      INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+        session_timeout_minutes INT NOT NULL DEFAULT 15,
+        theme                   TEXT NOT NULL DEFAULT 'dark',
+        dashboard_months        INT NOT NULL DEFAULT 6,
+        insights_enabled        BOOLEAN NOT NULL DEFAULT false,
+        insights_last_run       TIMESTAMPTZ,
+        updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `);
+    await pool.query("INSERT INTO user_settings (id) VALUES (1) ON CONFLICT DO NOTHING");
+    await pool.query("CREATE TABLE IF NOT EXISTS financial_insights (id SERIAL PRIMARY KEY, insight_text TEXT NOT NULL, period_start DATE, period_end DATE, model_used TEXT, tokens_used INT, created_at TIMESTAMPTZ NOT NULL DEFAULT now())");
+    // 006_insights_memory.sql
+    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_running_summary TEXT DEFAULT NULL");
+    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_model TEXT NOT NULL DEFAULT 'sonnet'");
+    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_cadence_days INT NOT NULL DEFAULT 30");
+    // 003_dashboard_features.sql
+    await pool.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS is_dismissed BOOLEAN NOT NULL DEFAULT false");
+    await pool.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'detected'");
+    await pool.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ");
+    await pool.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS cancel_confirmed BOOLEAN NOT NULL DEFAULT false");
+    await pool.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS notes TEXT");
+    // 004_balances.sql
+    await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS available_balance NUMERIC(12,2)");
+    await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS current_balance NUMERIC(12,2)");
+    await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS balance_currency TEXT DEFAULT 'USD'");
+    await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS balance_updated_at TIMESTAMPTZ");
+    // 002_csv_import.sql
+    await pool.query("CREATE TABLE IF NOT EXISTS csv_imports (id SERIAL PRIMARY KEY, filename TEXT NOT NULL, institution TEXT NOT NULL, account_label TEXT, rows_imported INT NOT NULL DEFAULT 0, rows_skipped INT NOT NULL DEFAULT 0, imported_at TIMESTAMPTZ NOT NULL DEFAULT now())");
+    console.log("Migrations complete.");
+  } catch (err) {
+    console.error("Migration error (non-fatal):", err.message);
+  }
+}
+runMigrations();
 
 // ---------------------------------------------------------------------------
 // POST /api/enroll — store Teller Connect enrollment
@@ -560,12 +607,18 @@ app.delete("/api/enrollments/:id", async (req, res) => {
       console.warn("Could not revoke at Teller (may already be disconnected):", err.message);
     }
 
-    // Remove from DB (cascade deletes linked_accounts and transactions)
+    // Remove transactions referencing this enrollment's accounts (no cascade on transactions FK)
+    await pool.query(
+      `DELETE FROM transactions WHERE account_id IN (SELECT account_id FROM linked_accounts WHERE teller_enrollment_id = $1)`,
+      [req.params.id]
+    );
+    // Remove from DB (cascade deletes linked_accounts)
     await pool.query(`DELETE FROM teller_enrollments WHERE id = $1`, [req.params.id]);
 
     res.json({ deleted: true });
   } catch (err) {
-    res.status(500).json({ error: "An internal error occurred." });
+    console.error("unlink error:", err.message);
+    res.status(500).json({ error: err.message || "An internal error occurred." });
   }
 });
 
@@ -2610,7 +2663,8 @@ app.get("/", (req, res) => {
 // GET /login — login page
 // ---------------------------------------------------------------------------
 app.get("/login", (_req, res) => {
-  if (!SESSION_PASSWORD) return res.redirect("/dashboard");
+  if (!AUTH_SECRET) return res.redirect("/dashboard");
+  const isPin = AUTH_MODE === "pin";
   res.send(`<!DOCTYPE html>
 <html lang="en"><head>
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -2646,52 +2700,111 @@ app.get("/login", (_req, res) => {
       border: 1px solid var(--border); border-radius: 8px; background: transparent;
       color: var(--text); font-family: inherit; }
     input:focus { outline: none; border-color: var(--warm); }
-    button { width: 100%; margin-top: 14px; padding: 12px; font-size: 13px; font-weight: 500;
+    button[type="submit"] { width: 100%; margin-top: 14px; padding: 12px; font-size: 13px; font-weight: 500;
       border: 1px solid var(--warm); border-radius: 8px; cursor: pointer;
       background: transparent; color: var(--warm); text-transform: uppercase;
       letter-spacing: 1px; font-family: inherit; transition: all 0.2s; }
-    button:hover { background: rgba(212,165,116,0.1); color: var(--text); }
+    button[type="submit"]:hover { background: rgba(212,165,116,0.1); color: var(--text); }
     .error-msg { margin-top: 14px; padding: 10px; border-radius: 6px;
       background: var(--red-bg); color: var(--red); font-size: 13px; display: none; }
+    .pin-dots { display: flex; justify-content: center; gap: 12px; margin-bottom: 24px; }
+    .pin-dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--border);
+      transition: all 0.2s; }
+    .pin-dot.filled { background: var(--warm); border-color: var(--warm); }
+    .pin-dot.error { border-color: var(--red); background: var(--red); }
+    .pin-pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; max-width: 240px; margin: 0 auto; }
+    .pin-key { padding: 16px; font-size: 22px; font-weight: 300; border: 1px solid var(--border);
+      border-radius: 10px; background: transparent; color: var(--text); cursor: pointer;
+      font-family: inherit; transition: all 0.15s; user-select: none; -webkit-user-select: none; }
+    .pin-key:hover { border-color: var(--warm); }
+    .pin-key:active { background: rgba(212,165,116,0.1); transform: scale(0.95); }
+    .pin-key.fn { font-size: 12px; font-weight: 400; letter-spacing: 0.5px; text-transform: uppercase;
+      color: var(--text-muted); border-color: transparent; }
+    .pin-key.fn:hover { color: var(--text); }
   </style>
 </head><body>
   <div class="login-card">
     <div class="logo">Perfin</div>
     <h1>Welcome back</h1>
-    <p>Enter your password to continue</p>
+    ${isPin ? `<p>Enter your PIN</p>
+    <div class="pin-dots" id="pin-dots"></div>
+    <div class="pin-pad" id="pin-pad"></div>
+    <div id="error" class="error-msg"></div>` :
+    `<p>Enter your password to continue</p>
     <form id="login-form">
       <input type="password" id="password" placeholder="Password" autofocus required>
       <button type="submit">Sign In</button>
     </form>
-    <div id="error" class="error-msg"></div>
+    <div id="error" class="error-msg"></div>`}
   </div>
   <script>
-    document.getElementById('login-form').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const errEl = document.getElementById('error');
+    const AUTH_MODE = '${AUTH_MODE}';
+    const errEl = document.getElementById('error');
+    async function doLogin(value) {
       try {
         const res = await fetch('/api/login', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ password: document.getElementById('password').value }),
+          body: JSON.stringify({ password: value }),
         });
         const data = await res.json();
         if (res.ok) window.location.href = '/dashboard';
-        else { errEl.textContent = data.error || 'Invalid password'; errEl.style.display = 'block'; }
-      } catch { errEl.textContent = 'Connection error'; errEl.style.display = 'block'; }
-    });
+        else return data.error || 'Invalid ' + AUTH_MODE;
+      } catch { return 'Connection error'; }
+      return null;
+    }
+    if (AUTH_MODE === 'pin') {
+      const pinLen = ${SESSION_PIN ? SESSION_PIN.length : 4};
+      let pin = '';
+      const dotsEl = document.getElementById('pin-dots');
+      for (let i = 0; i < pinLen; i++) dotsEl.innerHTML += '<div class="pin-dot" id="dot-' + i + '"></div>';
+      const padEl = document.getElementById('pin-pad');
+      [1,2,3,4,5,6,7,8,9].forEach(n => {
+        padEl.innerHTML += '<button class="pin-key" type="button" onclick="addDigit(' + n + ')">' + n + '</button>';
+      });
+      padEl.innerHTML += '<button class="pin-key fn" type="button" onclick="clearPin()">Clear</button>';
+      padEl.innerHTML += '<button class="pin-key" type="button" onclick="addDigit(0)">0</button>';
+      padEl.innerHTML += '<button class="pin-key fn" type="button" onclick="backspace()">Del</button>';
+      function updateDots() {
+        for (let i = 0; i < pinLen; i++) {
+          document.getElementById('dot-' + i).className = 'pin-dot' + (i < pin.length ? ' filled' : '');
+        }
+      }
+      window.addDigit = async function(n) {
+        if (pin.length >= pinLen) return;
+        pin += n;
+        updateDots();
+        errEl.style.display = 'none';
+        if (pin.length === pinLen) {
+          const err = await doLogin(pin);
+          if (err) {
+            for (let i = 0; i < pinLen; i++) document.getElementById('dot-' + i).className = 'pin-dot error';
+            errEl.textContent = err; errEl.style.display = 'block';
+            setTimeout(() => { pin = ''; updateDots(); }, 600);
+          }
+        }
+      };
+      window.clearPin = function() { pin = ''; updateDots(); errEl.style.display = 'none'; };
+      window.backspace = function() { pin = pin.slice(0, -1); updateDots(); };
+    } else {
+      document.getElementById('login-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const err = await doLogin(document.getElementById('password').value);
+        if (err) { errEl.textContent = err; errEl.style.display = 'block'; }
+      });
+    }
   </script>
 </body></html>`);
 });
 
 // POST /api/login
 app.post("/api/login", (req, res) => {
-  if (!SESSION_PASSWORD) return res.json({ ok: true });
+  if (!AUTH_SECRET) return res.json({ ok: true });
   const { password } = req.body;
-  if (!password) return res.status(400).json({ error: "Password required" });
+  if (!password) return res.status(400).json({ error: (AUTH_MODE === "pin" ? "PIN" : "Password") + " required" });
   const providedBuf = Buffer.from(password);
-  const expectedBuf = Buffer.from(SESSION_PASSWORD);
+  const expectedBuf = Buffer.from(AUTH_SECRET);
   if (providedBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(providedBuf, expectedBuf)) {
-    return res.status(401).json({ error: "Invalid password" });
+    return res.status(401).json({ error: AUTH_MODE === "pin" ? "Invalid PIN" : "Invalid password" });
   }
   req.session.authenticated = true;
   req.session.lastActivity = Date.now();
