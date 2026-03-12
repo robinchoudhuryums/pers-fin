@@ -2753,25 +2753,43 @@ app.patch("/api/settings", async (req, res) => {
   }
 });
 
+// Blended cost per million tokens by model family (input+output average).
+// Update these when Anthropic publishes new pricing.
+const MODEL_COST_PER_M = {
+  haiku:  { input: 0.80, output: 4.00, blended: 2.00 },
+  sonnet: { input: 3.00, output: 15.00, blended: 8.00 },
+  opus:   { input: 15.00, output: 75.00, blended: 40.00 },
+};
+function modelFamily(modelStr) {
+  if (!modelStr) return "sonnet";
+  const m = modelStr.toLowerCase();
+  if (m.includes("haiku")) return "haiku";
+  if (m.includes("opus")) return "opus";
+  return "sonnet";
+}
+function estimateCostUsd(tokens, modelStr) {
+  const family = modelFamily(modelStr);
+  return (tokens / 1_000_000) * (MODEL_COST_PER_M[family]?.blended || 8);
+}
+
 // GET /api/insights/status — check if AI insights are configured
 app.get("/api/insights/status", async (_req, res) => {
   const configured = !!(Anthropic && process.env.ANTHROPIC_API_KEY);
-  let tokensThisMonth = 0;
+  let estimatedCostCents = 0;
   let budgetCents = parseInt(process.env.INSIGHTS_MONTHLY_BUDGET_CENTS) || 50;
   try {
     const usage = await pool.query(
-      "SELECT COALESCE(SUM(tokens_used), 0)::int AS total FROM financial_insights WHERE created_at >= date_trunc('month', CURRENT_DATE)"
+      "SELECT tokens_used, model_used FROM financial_insights WHERE created_at >= date_trunc('month', CURRENT_DATE)"
     );
-    tokensThisMonth = usage.rows[0].total;
+    usage.rows.forEach(r => { estimatedCostCents += estimateCostUsd(r.tokens_used || 0, r.model_used) * 100; });
   } catch {}
-  const estimatedCostCents = (tokensThisMonth / 1_000_000) * 800;
   res.json({
     configured,
     reason: configured ? null : (!Anthropic ? "SDK not installed" : "ANTHROPIC_API_KEY not set in .env"),
-    tokens_this_month: tokensThisMonth,
     estimated_cost_cents: Math.round(estimatedCostCents * 100) / 100,
     budget_cents: budgetCents,
     budget_remaining_cents: Math.round((budgetCents - estimatedCostCents) * 100) / 100,
+    cost_rates: MODEL_COST_PER_M,
   });
 });
 
@@ -2779,17 +2797,21 @@ app.get("/api/insights/status", async (_req, res) => {
 app.get("/api/insights/usage", async (_req, res) => {
   try {
     const result = await pool.query(
-      "SELECT id, tokens_used, model_used, created_at, " +
-      "ROUND((tokens_used::numeric / 1000000) * 8, 4) AS estimated_cost_usd " +
-      "FROM financial_insights ORDER BY created_at DESC LIMIT 20"
+      "SELECT id, tokens_used, model_used, created_at FROM financial_insights ORDER BY created_at DESC LIMIT 20"
     );
-    const totals = await pool.query(
-      "SELECT COUNT(*) AS total_runs, COALESCE(SUM(tokens_used), 0)::int AS total_tokens, " +
-      "ROUND((COALESCE(SUM(tokens_used), 0)::numeric / 1000000) * 8, 4) AS total_cost_usd " +
-      "FROM financial_insights"
-    );
-    res.json({ history: result.rows, totals: totals.rows[0] });
-  } catch { res.json({ history: [], totals: { total_runs: 0, total_tokens: 0, total_cost_usd: 0 } }); }
+    const history = result.rows.map(r => ({
+      ...r,
+      estimated_cost_usd: parseFloat(estimateCostUsd(r.tokens_used || 0, r.model_used).toFixed(4)),
+    }));
+    const allRows = await pool.query("SELECT tokens_used, model_used FROM financial_insights");
+    let totalTokens = 0, totalCost = 0;
+    allRows.rows.forEach(r => { totalTokens += r.tokens_used || 0; totalCost += estimateCostUsd(r.tokens_used || 0, r.model_used); });
+    res.json({
+      history,
+      totals: { total_runs: allRows.rows.length, total_tokens: totalTokens, total_cost_usd: parseFloat(totalCost.toFixed(4)) },
+      cost_rates: MODEL_COST_PER_M,
+    });
+  } catch { res.json({ history: [], totals: { total_runs: 0, total_tokens: 0, total_cost_usd: 0 }, cost_rates: MODEL_COST_PER_M }); }
 });
 
 // GET /api/insights
@@ -2806,16 +2828,15 @@ app.post("/api/insights", async (_req, res) => {
     return res.status(501).json({ error: "Set ANTHROPIC_API_KEY in .env to enable AI insights." });
   }
   try {
-    // Monthly budget cap — check tokens used this calendar month
-    // Default cap: $0.50/month (50 cents). At ~$0.02/run, allows ~25 runs before hitting cap.
+    // Monthly budget cap — check cost of runs this calendar month (per-model pricing)
+    // Default cap: $0.50/month (50 cents). At ~$0.02/run with Sonnet, allows ~25 runs.
     const budgetCents = parseInt(process.env.INSIGHTS_MONTHLY_BUDGET_CENTS) || 50;
     const usageResult = await pool.query(
-      "SELECT COALESCE(SUM(tokens_used), 0)::int AS total_tokens FROM financial_insights " +
+      "SELECT tokens_used, model_used FROM financial_insights " +
       "WHERE created_at >= date_trunc('month', CURRENT_DATE)"
-    ).catch(() => ({ rows: [{ total_tokens: 0 }] }));
-    const tokensThisMonth = usageResult.rows[0].total_tokens;
-    // Rough cost estimate: ~$3/M input + $15/M output tokens. Average ~$8/M blended.
-    const estimatedCostCents = (tokensThisMonth / 1_000_000) * 800;
+    ).catch(() => ({ rows: [] }));
+    let estimatedCostCents = 0;
+    usageResult.rows.forEach(r => { estimatedCostCents += estimateCostUsd(r.tokens_used || 0, r.model_used) * 100; });
     if (estimatedCostCents >= budgetCents) {
       return res.status(429).json({
         error: `Monthly AI budget reached ($${(estimatedCostCents / 100).toFixed(2)} of $${(budgetCents / 100).toFixed(2)} cap). Resets next month. Adjust INSIGHTS_MONTHLY_BUDGET_CENTS in .env to raise the limit.`,
@@ -3282,16 +3303,6 @@ app.get("/settings", (req, res) => {
           renderInsight(data[0].insight_text);
           const meta = document.querySelector('.insight-meta');
           if (meta) meta.textContent = 'Generated ' + new Date(data[0].created_at).toLocaleDateString();
-          // Show budget status from this month's usage
-          const thisMonth = data.filter(d => {
-            const created = new Date(d.created_at);
-            const now = new Date();
-            return created.getMonth() === now.getMonth() && created.getFullYear() === now.getFullYear();
-          });
-          const totalTokens = thisMonth.reduce((sum, d) => sum + (d.tokens_used || 0), 0);
-          const estCost = (totalTokens / 1000000) * 8; // ~$8/M blended
-          document.getElementById('budget-status').textContent =
-            '$' + estCost.toFixed(3) + ' used this month (~' + totalTokens.toLocaleString() + ' tokens)';
         }
       } catch {}
     }
