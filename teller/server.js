@@ -2707,16 +2707,16 @@ app.post("/api/logout", (req, res) => {
 // GET /api/settings
 app.get("/api/settings", async (_req, res) => {
   try {
-    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary FROM user_settings WHERE id = 1");
-    res.json(result.rows[0] || { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null });
+    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary, insights_model, insights_cadence_days FROM user_settings WHERE id = 1");
+    res.json(result.rows[0] || { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30 });
   } catch {
-    res.json({ session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null });
+    res.json({ session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_model: "sonnet", insights_cadence_days: 30 });
   }
 });
 
 // PATCH /api/settings
 app.patch("/api/settings", async (req, res) => {
-  const { session_timeout_minutes, theme, dashboard_months, insights_enabled } = req.body;
+  const { session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_model, insights_cadence_days } = req.body;
   try {
     const updates = []; const values = []; let idx = 1;
     if (session_timeout_minutes !== undefined) {
@@ -2733,6 +2733,14 @@ app.patch("/api/settings", async (req, res) => {
     }
     if (insights_enabled !== undefined) {
       updates.push("insights_enabled = $" + idx++); values.push(!!insights_enabled);
+    }
+    if (insights_model !== undefined && ["haiku", "sonnet", "opus"].includes(insights_model)) {
+      updates.push("insights_model = $" + idx++); values.push(insights_model);
+    }
+    if (insights_cadence_days !== undefined) {
+      const valid = [7, 14, 30, 60, 90];
+      const val = parseInt(insights_cadence_days);
+      if (valid.includes(val)) { updates.push("insights_cadence_days = $" + idx++); values.push(val); }
     }
     if (!updates.length) return res.status(400).json({ error: "No valid settings" });
     updates.push("updated_at = now()");
@@ -2830,10 +2838,14 @@ app.post("/api/insights", async (_req, res) => {
         "SELECT insight_text, created_at FROM financial_insights ORDER BY created_at DESC LIMIT 1"
       ).catch(() => ({ rows: [] })),
       pool.query(
-        "SELECT insights_running_summary FROM user_settings WHERE id = 1"
-      ).catch(() => ({ rows: [{ insights_running_summary: null }] })),
+        "SELECT insights_running_summary, insights_model, insights_cadence_days FROM user_settings WHERE id = 1"
+      ).catch(() => ({ rows: [{ insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30 }] })),
     ]);
     const runningSummary = settingsRow.rows[0]?.insights_running_summary || null;
+    // Map model preference to API model ID using -latest aliases (auto-updates to newest version)
+    const MODEL_MAP = { haiku: "claude-haiku-4-5-latest", sonnet: "claude-sonnet-4-5-latest", opus: "claude-opus-4-latest" };
+    const modelPref = settingsRow.rows[0]?.insights_model || "sonnet";
+    const modelId = MODEL_MAP[modelPref] || MODEL_MAP.sonnet;
     const subTotal = subData.rows.reduce((s, r) => s + parseFloat(r.amount) * 30 / r.cadence_days, 0);
     let prompt = "You are a personal finance advisor providing ongoing monthly analysis. You have two tasks:\n\n" +
       "TASK 1: Analyze the data below and give 3-5 concise, actionable insights with specific dollar amounts. Use markdown bullet points. Reference long-term context where relevant.\n\n" +
@@ -2859,7 +2871,7 @@ app.post("/api/insights", async (_req, res) => {
     }
     const client = new Anthropic();
     const message = await client.messages.create({
-      model: "claude-sonnet-4-20250514", max_tokens: 1500,
+      model: modelId, max_tokens: 1500,
       messages: [{ role: "user", content: prompt }],
     });
     const fullResponse = message.content[0].text;
@@ -2874,9 +2886,10 @@ app.post("/api/insights", async (_req, res) => {
       insightText = fullResponse.trim();
       newSummary = runningSummary; // keep existing if AI didn't output delimiter
     }
+    const actualModel = message.model || modelId;
     await pool.query(
       "INSERT INTO financial_insights (insight_text, period_start, period_end, model_used, tokens_used) VALUES ($1, CURRENT_DATE - INTERVAL '6 months', CURRENT_DATE, $2, $3)",
-      [insightText, "claude-sonnet-4-20250514", tokensUsed]
+      [insightText, actualModel, tokensUsed]
     );
     // Persist the updated running summary
     if (newSummary) {
@@ -2908,12 +2921,15 @@ app.post("/api/insights/rebuild", async (_req, res) => {
     return res.status(501).json({ error: "Set ANTHROPIC_API_KEY in .env to enable AI insights." });
   }
   try {
-    const allInsights = await pool.query(
-      "SELECT insight_text, created_at FROM financial_insights ORDER BY created_at ASC"
-    );
+    const [allInsights, settingsRow] = await Promise.all([
+      pool.query("SELECT insight_text, created_at FROM financial_insights ORDER BY created_at ASC"),
+      pool.query("SELECT insights_model FROM user_settings WHERE id = 1").catch(() => ({ rows: [{ insights_model: "sonnet" }] })),
+    ]);
     if (allInsights.rows.length === 0) {
       return res.json({ ok: true, message: "No historical insights to rebuild from.", summary: null });
     }
+    const MODEL_MAP = { haiku: "claude-haiku-4-5-latest", sonnet: "claude-sonnet-4-5-latest", opus: "claude-opus-4-latest" };
+    const modelId = MODEL_MAP[settingsRow.rows[0]?.insights_model] || MODEL_MAP.sonnet;
     // Build a condensed timeline of all past analyses
     let timeline = "";
     allInsights.rows.forEach((ins) => {
@@ -2922,7 +2938,7 @@ app.post("/api/insights/rebuild", async (_req, res) => {
     });
     const client = new Anthropic();
     const message = await client.messages.create({
-      model: "claude-sonnet-4-20250514", max_tokens: 500,
+      model: modelId, max_tokens: 500,
       messages: [{ role: "user", content:
         "You are a personal finance advisor. Below is a chronological timeline of all past monthly financial analyses for one user. " +
         "Synthesize these into a single cumulative summary (max 200 words) that captures:\n" +
@@ -3124,6 +3140,24 @@ app.get("/settings", (req, res) => {
       <div class="setting-control"><button class="btn primary" id="insights-btn" onclick="generateInsights()">Generate</button></div>
     </div>
     <div class="setting-row">
+      <div class="setting-info"><div class="name">AI Model</div><div class="desc">Haiku (~$0.005/run), Sonnet (~$0.02/run), Opus (~$0.10/run). Always uses latest version.</div></div>
+      <div class="setting-control">
+        <select id="model-select" onchange="updateSetting('insights_model', this.value)">
+          <option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="opus">Opus</option>
+        </select>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Analysis Cadence</div><div class="desc" id="cadence-desc">How often automated analysis runs. More frequent = finer trend tracking.</div></div>
+      <div class="setting-control">
+        <select id="cadence-select" onchange="updateSetting('insights_cadence_days', parseInt(this.value))">
+          <option value="7">Weekly</option><option value="14">Every 2 weeks</option>
+          <option value="30">Monthly</option><option value="60">Every 2 months</option>
+          <option value="90">Quarterly</option>
+        </select>
+      </div>
+    </div>
+    <div class="setting-row">
       <div class="setting-info"><div class="name">Monthly Budget Cap</div><div class="desc" id="budget-desc">Limits API spending per month (set via INSIGHTS_MONTHLY_BUDGET_CENTS env var)</div></div>
       <div class="setting-control"><span id="budget-status" style="font-size:12px;color:var(--text-muted);">--</span></div>
     </div>
@@ -3181,6 +3215,8 @@ app.get("/settings", (req, res) => {
         document.getElementById('months-select').value = s.dashboard_months || 6;
         document.getElementById('timeout-input').value = s.session_timeout_minutes || 15;
         document.getElementById('insights-toggle').checked = s.insights_enabled || false;
+        document.getElementById('model-select').value = s.insights_model || 'sonnet';
+        document.getElementById('cadence-select').value = s.insights_cadence_days || 30;
         applyTheme(s.theme || 'dark');
         // Show memory status
         const memEl = document.getElementById('memory-status');

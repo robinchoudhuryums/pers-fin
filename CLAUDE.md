@@ -27,7 +27,7 @@ Uses **Teller API** (primary) and Plaid (legacy) for bank account linking via mT
 - **Settings page**: `/settings` — theme, session timeout, dashboard range, AI insights toggle, data export
 - **Dark/Light theme**: Toggle in Settings, persisted to DB + localStorage
 - **Dashboard charts**: Monthly spending trend (line) and category breakdown (doughnut) via Chart.js
-- **AI Insights**: Optional financial analysis via Claude API (`ANTHROPIC_API_KEY`, ~$0.02/month) with persistent long-term memory (running summary), reset/rebuild controls, and usage history
+- **AI Insights**: Optional financial analysis via Claude API (`ANTHROPIC_API_KEY`) with persistent long-term memory (running summary), reset/rebuild controls, usage history, model selector (Haiku/Sonnet/Opus with `-latest` aliases), and configurable cadence (weekly to quarterly)
 - **PWA**: Installable as home screen app on iPhone/Android (manifest.json + service worker)
 - **Blocker**: Codespace port forwarding doesn't work — deploy to Render/Fly.io or run locally
 

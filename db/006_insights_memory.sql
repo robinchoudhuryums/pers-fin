@@ -1,10 +1,15 @@
--- Long-term AI insights memory
--- Adds a persistent running summary to user_settings so the AI can maintain
--- cumulative context across months without token bloat.
+-- Long-term AI insights memory + model/cadence preferences
+-- Adds persistent running summary, model choice, and analysis cadence to user_settings.
 
 ALTER TABLE user_settings
   ADD COLUMN IF NOT EXISTS insights_running_summary TEXT DEFAULT NULL;
 
--- Comment: This stores a concise (~200 word) cumulative summary that the AI
--- updates after each analysis. It captures key long-term patterns, baselines,
--- and progress on past recommendations — acting as persistent memory.
+ALTER TABLE user_settings
+  ADD COLUMN IF NOT EXISTS insights_model TEXT NOT NULL DEFAULT 'sonnet';
+
+ALTER TABLE user_settings
+  ADD COLUMN IF NOT EXISTS insights_cadence_days INT NOT NULL DEFAULT 30;
+
+-- insights_running_summary: ~200-word cumulative summary the AI updates each run.
+-- insights_model: 'haiku', 'sonnet', or 'opus' — maps to claude-*-latest aliases.
+-- insights_cadence_days: how often analysis runs (7, 14, 30, 60, 90 days).

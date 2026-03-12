@@ -176,10 +176,12 @@ The dashboard includes two interactive charts (Chart.js):
 - **Spending by Category** — doughnut chart of top 8 spending categories
 
 ### AI Financial Insights
-Set `ANTHROPIC_API_KEY` in `.env` to enable AI-powered financial analysis via Claude. Cost: ~**$0.02/month**.
+Set `ANTHROPIC_API_KEY` in `.env` to enable AI-powered financial analysis via Claude.
 
 The AI maintains a **persistent running summary** across analyses — a cumulative memory of your spending baselines, trends, and progress on past recommendations. This means insights improve over time as the AI tracks changes month-to-month.
 
+- **Model selector**: Choose between Haiku (~$0.005/run), Sonnet (~$0.02/run), or Opus (~$0.10/run). Always uses the latest version automatically.
+- **Cadence**: Weekly, biweekly, monthly, every 2 months, or quarterly — adjustable in Settings
 - **Reset**: Clear the long-term memory to start fresh (Settings → Reset AI Context)
 - **Rebuild**: Regenerate the memory from all historical analyses (Settings → Rebuild AI Context) — useful if context feels stale or after clearing
 
