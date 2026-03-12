@@ -1064,133 +1064,159 @@ app.get("/dashboard", (req, res) => {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Subscription Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #0f1117; --surface: #1a1d27; --surface-2: #252836;
-      --border: #2e3140; --text: #e4e4e7; --text-muted: #9ca3af;
-      --accent: #6366f1; --accent-hover: #818cf8;
-      --green: #22c55e; --green-bg: rgba(34,197,94,0.12);
-      --red: #ef4444; --red-bg: rgba(239,68,68,0.12);
-      --yellow: #eab308; --yellow-bg: rgba(234,179,8,0.12);
-      --blue: #3b82f6; --blue-bg: rgba(59,130,246,0.12);
+      --bg: #080b12; --surface: rgba(255,255,255,0.04); --surface-2: rgba(255,255,255,0.07);
+      --border: rgba(255,255,255,0.08); --border-hover: rgba(255,255,255,0.18);
+      --text: #f0ebe3; --text-muted: rgba(240,235,227,0.5);
+      --warm: #d4a574; --warm-glow: #c8856c; --teal: #5a8f8f;
+      --green: #6fcf97; --green-bg: rgba(111,207,151,0.1);
+      --red: #eb6b6b; --red-bg: rgba(235,107,107,0.1);
+      --yellow: #f0c36d; --yellow-bg: rgba(240,195,109,0.1);
+      --blue: #7fb5e6; --blue-bg: rgba(127,181,230,0.1);
       --radius: 12px;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Inter', system-ui, -apple-system, sans-serif; background: var(--bg);
-           color: var(--text); min-height: 100vh; }
-    .container { max-width: 960px; margin: 0 auto; padding: 24px 20px; }
-    a { color: var(--accent-hover); text-decoration: none; }
-    a:hover { text-decoration: underline; }
+    body {
+      font-family: 'Inter', system-ui, sans-serif; background: var(--bg);
+      color: var(--text); min-height: 100vh; position: relative; overflow-x: hidden;
+    }
+    body::before {
+      content: ''; position: fixed; top: -20%; right: -10%; width: 70vw; height: 70vh;
+      background: radial-gradient(ellipse at 60% 40%, rgba(200,133,108,0.18) 0%, rgba(90,143,143,0.10) 40%, transparent 70%);
+      pointer-events: none; z-index: 0; filter: blur(60px);
+    }
+    body::after {
+      content: ''; position: fixed; bottom: -10%; left: -10%; width: 50vw; height: 50vh;
+      background: radial-gradient(ellipse at 30% 70%, rgba(90,143,143,0.12) 0%, rgba(212,165,116,0.06) 50%, transparent 70%);
+      pointer-events: none; z-index: 0; filter: blur(80px);
+    }
+    .container { max-width: 960px; margin: 0 auto; padding: 24px 20px; position: relative; z-index: 1; }
+    a { color: var(--warm); text-decoration: none; transition: color 0.2s; }
+    a:hover { color: var(--text); }
 
     /* Nav */
     .topnav { display: flex; align-items: center; justify-content: space-between;
-              padding: 16px 0; margin-bottom: 8px; border-bottom: 1px solid var(--border); }
-    .topnav .logo { font-weight: 700; font-size: 16px; color: var(--text); display: flex; align-items: center; gap: 8px; }
-    .topnav .logo span { color: var(--accent-hover); }
-    .topnav .nav-links { display: flex; gap: 20px; font-size: 14px; }
+              padding: 20px 0; margin-bottom: 40px; }
+    .topnav .logo { font-weight: 300; font-size: 13px; letter-spacing: 2px;
+                    text-transform: uppercase; color: var(--text-muted); }
+    .topnav .nav-links { display: flex; gap: 24px; font-size: 13px; font-weight: 400;
+                         letter-spacing: 0.5px; }
+    .topnav .nav-links a { color: var(--text-muted); }
+    .topnav .nav-links a:hover { color: var(--text); }
 
-    h1 { font-size: 24px; font-weight: 700; margin-bottom: 4px; }
-    .subtitle { color: var(--text-muted); margin-bottom: 28px; font-size: 14px; }
+    h1 { font-size: 42px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 8px;
+         color: var(--text); }
+    .subtitle { color: var(--text-muted); margin-bottom: 40px; font-size: 15px; font-weight: 300;
+                letter-spacing: 0.3px; }
 
     /* Summary Cards */
-    .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-               gap: 16px; margin-bottom: 28px; }
-    .card { padding: 20px; border-radius: var(--radius); background: var(--surface);
-            border: 1px solid var(--border); transition: border-color 0.2s; }
-    .card:hover { border-color: var(--accent); }
-    .card .label { font-size: 11px; color: var(--text-muted); text-transform: uppercase;
-                   letter-spacing: 1px; font-weight: 500; }
-    .card .value { font-size: 28px; font-weight: 700; margin-top: 6px;
-                   font-variant-numeric: tabular-nums; }
-    .card .value.cost { color: var(--red); }
-    .card .value.count { color: var(--accent-hover); }
+    .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+               gap: 16px; margin-bottom: 36px; }
+    .card { padding: 24px; border-radius: var(--radius); background: var(--surface);
+            border: 1px solid var(--border); transition: all 0.3s ease;
+            backdrop-filter: blur(12px); }
+    .card:hover { border-color: var(--border-hover); background: var(--surface-2); }
+    .card .label { font-size: 10px; color: var(--text-muted); text-transform: uppercase;
+                   letter-spacing: 1.5px; font-weight: 500; }
+    .card .value { font-size: 32px; font-weight: 300; margin-top: 8px;
+                   font-variant-numeric: tabular-nums; letter-spacing: -1px; }
+    .card .value.cost { color: var(--warm-glow); }
+    .card .value.count { color: var(--teal); }
 
     /* Action bar */
-    .actions { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
+    .actions { display: flex; gap: 10px; margin-bottom: 24px; flex-wrap: wrap; align-items: center; }
     .actions button, .actions select {
-      padding: 8px 16px; font-size: 13px; font-weight: 500; border: 1px solid var(--border);
-      border-radius: 8px; cursor: pointer; background: var(--surface); color: var(--text);
-      transition: all 0.15s;
+      padding: 9px 18px; font-size: 12px; font-weight: 500; letter-spacing: 0.5px;
+      border: 1px solid var(--border); border-radius: 8px; cursor: pointer;
+      background: transparent; color: var(--text-muted); transition: all 0.2s;
+      text-transform: uppercase;
     }
-    .actions button:hover:not(:disabled) { border-color: var(--accent); background: var(--surface-2); }
-    .actions button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-    .actions button.primary:hover:not(:disabled) { background: var(--accent-hover); }
-    .actions button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
-    .actions select { appearance: none; padding-right: 28px;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239ca3af' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-      background-repeat: no-repeat; background-position: right 10px center; }
+    .actions button:hover:not(:disabled) { border-color: var(--warm); color: var(--text); }
+    .actions button.primary { border-color: var(--warm); color: var(--warm); background: transparent; }
+    .actions button.primary:hover:not(:disabled) { background: rgba(212,165,116,0.1); color: var(--text); }
+    .actions button.primary:disabled { opacity: 0.4; cursor: not-allowed; }
+    .actions select { appearance: none; padding-right: 30px;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23d4a574' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+      background-repeat: no-repeat; background-position: right 10px center; background-color: transparent; }
+    .actions select option { background: #131620; color: var(--text); }
 
     /* Table */
     table { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
-    th { text-align: left; padding: 10px 12px; font-size: 11px; color: var(--text-muted);
-         text-transform: uppercase; letter-spacing: 1px; font-weight: 500;
+    th { text-align: left; padding: 12px 14px; font-size: 10px; color: var(--text-muted);
+         text-transform: uppercase; letter-spacing: 1.5px; font-weight: 500;
          border-bottom: 1px solid var(--border); }
-    td { padding: 12px; border-bottom: 1px solid var(--border); font-size: 14px; }
-    tr { transition: background 0.1s; }
+    td { padding: 14px; border-bottom: 1px solid rgba(255,255,255,0.04); font-size: 14px;
+         font-weight: 300; }
+    tr { transition: background 0.15s; }
     tr:hover { background: var(--surface); }
-    .amount { font-weight: 600; font-variant-numeric: tabular-nums; }
+    .amount { font-weight: 400; font-variant-numeric: tabular-nums; letter-spacing: -0.3px; }
 
     /* Badges */
-    .badge { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 10px;
-             font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase; }
+    .badge { display: inline-block; padding: 3px 8px; border-radius: 4px; font-size: 9px;
+             font-weight: 600; letter-spacing: 0.8px; text-transform: uppercase; }
     .badge-new { background: var(--green-bg); color: var(--green); }
     .badge-price { background: var(--yellow-bg); color: var(--yellow); }
     .badge-manual { background: var(--blue-bg); color: var(--blue); }
     .badge-dismissed { background: var(--surface-2); color: var(--text-muted); }
     .badge-cancelled { background: var(--red-bg); color: var(--red); }
-    .badge-category { background: var(--surface-2); color: var(--text-muted); font-weight: 500; }
+    .badge-category { background: var(--surface-2); color: var(--text-muted); font-weight: 400; }
 
     /* Action buttons */
-    .btn-sm { padding: 4px 10px; font-size: 11px; font-weight: 500; border: 1px solid var(--border);
-              border-radius: 6px; cursor: pointer; background: var(--surface); color: var(--text-muted);
-              margin-right: 4px; transition: all 0.15s; }
-    .btn-sm:hover { border-color: var(--text-muted); color: var(--text); }
-    .btn-sm.cancel { border-color: rgba(239,68,68,0.3); color: var(--red); }
+    .btn-sm { padding: 5px 12px; font-size: 10px; font-weight: 500; letter-spacing: 0.5px;
+              border: 1px solid var(--border); border-radius: 6px; cursor: pointer;
+              background: transparent; color: var(--text-muted); margin-right: 4px;
+              transition: all 0.2s; text-transform: uppercase; }
+    .btn-sm:hover { border-color: var(--border-hover); color: var(--text); }
+    .btn-sm.cancel { border-color: rgba(235,107,107,0.25); color: var(--red); }
     .btn-sm.cancel:hover { background: var(--red-bg); }
-    .btn-sm.restore { border-color: rgba(34,197,94,0.3); color: var(--green); }
+    .btn-sm.restore { border-color: rgba(111,207,151,0.25); color: var(--green); }
     .btn-sm.restore:hover { background: var(--green-bg); }
 
-    .next-date { font-size: 13px; color: var(--text-muted); }
-    .next-date.overdue { color: var(--red); font-weight: 600; }
+    .next-date { font-size: 13px; color: var(--text-muted); font-weight: 300; }
+    .next-date.overdue { color: var(--red); font-weight: 500; }
 
     /* Manual form */
-    .manual-form { background: var(--surface); padding: 24px; border-radius: var(--radius);
-                   border: 1px solid var(--border); margin-bottom: 24px; display: none; }
-    .manual-form h3 { margin-bottom: 16px; font-size: 16px; }
-    .manual-form .fields { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; }
+    .manual-form { background: var(--surface); padding: 28px; border-radius: var(--radius);
+                   border: 1px solid var(--border); margin-bottom: 28px; display: none;
+                   backdrop-filter: blur(12px); }
+    .manual-form h3 { margin-bottom: 20px; font-size: 14px; font-weight: 400;
+                      text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); }
+    .manual-form .fields { display: flex; gap: 14px; flex-wrap: wrap; align-items: end; }
     .manual-form .field { display: flex; flex-direction: column; gap: 6px; }
-    .manual-form label { font-size: 11px; font-weight: 600; color: var(--text-muted);
-                         text-transform: uppercase; letter-spacing: 0.5px; }
+    .manual-form label { font-size: 10px; font-weight: 500; color: var(--text-muted);
+                         text-transform: uppercase; letter-spacing: 1px; }
     .manual-form input, .manual-form select {
-      padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px;
-      background: var(--surface-2); color: var(--text); }
-    .manual-form input:focus, .manual-form select:focus { outline: none; border-color: var(--accent); }
+      padding: 9px 14px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px;
+      background: transparent; color: var(--text); font-weight: 300; transition: border-color 0.2s; }
+    .manual-form input:focus, .manual-form select:focus { outline: none; border-color: var(--warm); }
+    .manual-form input::placeholder { color: var(--text-muted); }
     .manual-form input[name="name"] { width: 200px; }
     .manual-form input[name="amount"] { width: 100px; }
     .manual-form input[name="notes"] { width: 200px; }
 
     /* Status messages */
-    .status-msg { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; display: none;
-                  font-size: 14px; font-weight: 500; }
-    .status-msg.success { background: var(--green-bg); border: 1px solid rgba(34,197,94,0.2);
+    .status-msg { padding: 14px 18px; border-radius: 8px; margin-bottom: 20px; display: none;
+                  font-size: 13px; font-weight: 400; letter-spacing: 0.2px; }
+    .status-msg.success { background: var(--green-bg); border: 1px solid rgba(111,207,151,0.15);
                           color: var(--green); display: block; }
-    .status-msg.error { background: var(--red-bg); border: 1px solid rgba(239,68,68,0.2);
+    .status-msg.error { background: var(--red-bg); border: 1px solid rgba(235,107,107,0.15);
                         color: var(--red); display: block; }
-    .empty { text-align: center; padding: 48px; color: var(--text-muted); }
+    .empty { text-align: center; padding: 56px; color: var(--text-muted); font-weight: 300; font-size: 15px; }
 
-    /* Export link */
-    .export-link { font-size: 12px; color: var(--text-muted); margin-left: auto; }
-    .export-link:hover { color: var(--accent-hover); }
+    .export-link { font-size: 12px; color: var(--text-muted); }
   </style>
 </head>
 <body>
   <div class="container">
   <nav class="topnav">
-    <div class="logo"><span>$</span> Subscription Tracker</div>
+    <div class="logo">Subscription Tracker</div>
     <div class="nav-links">
       <a href="/">Accounts</a>
       <a href="/dashboard">Dashboard</a>
-      <a href="/api/export?type=subscriptions&api_key=${apiKey}" class="export-link">Export CSV</a>
+      <a href="/api/export?type=subscriptions&api_key=${apiKey}" class="export-link">Export</a>
     </div>
   </nav>
 
@@ -1423,69 +1449,94 @@ app.get("/", (req, res) => {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Subscription Tracker — Link Account</title>
   <script src="https://cdn.teller.io/connect/connect.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #0f1117; --surface: #1a1d27; --surface-2: #252836;
-      --border: #2e3140; --text: #e4e4e7; --text-muted: #9ca3af;
-      --accent: #6366f1; --accent-hover: #818cf8;
-      --green: #22c55e; --green-bg: rgba(34,197,94,0.12);
-      --red: #ef4444; --red-bg: rgba(239,68,68,0.12);
+      --bg: #080b12; --surface: rgba(255,255,255,0.04); --surface-2: rgba(255,255,255,0.07);
+      --border: rgba(255,255,255,0.08); --border-hover: rgba(255,255,255,0.18);
+      --text: #f0ebe3; --text-muted: rgba(240,235,227,0.5);
+      --warm: #d4a574; --warm-glow: #c8856c; --teal: #5a8f8f;
+      --green: #6fcf97; --green-bg: rgba(111,207,151,0.1);
+      --red: #eb6b6b; --red-bg: rgba(235,107,107,0.1);
       --radius: 12px;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Inter', system-ui, -apple-system, sans-serif; background: var(--bg);
-           color: var(--text); min-height: 100vh; }
-    .container { max-width: 640px; margin: 0 auto; padding: 24px 20px; }
-    a { color: var(--accent-hover); text-decoration: none; }
-    a:hover { text-decoration: underline; }
+    body {
+      font-family: 'Inter', system-ui, sans-serif; background: var(--bg);
+      color: var(--text); min-height: 100vh; position: relative; overflow-x: hidden;
+    }
+    body::before {
+      content: ''; position: fixed; top: -20%; right: -10%; width: 70vw; height: 70vh;
+      background: radial-gradient(ellipse at 60% 40%, rgba(200,133,108,0.18) 0%, rgba(90,143,143,0.10) 40%, transparent 70%);
+      pointer-events: none; z-index: 0; filter: blur(60px);
+    }
+    body::after {
+      content: ''; position: fixed; bottom: -10%; left: -10%; width: 50vw; height: 50vh;
+      background: radial-gradient(ellipse at 30% 70%, rgba(90,143,143,0.12) 0%, rgba(212,165,116,0.06) 50%, transparent 70%);
+      pointer-events: none; z-index: 0; filter: blur(80px);
+    }
+    .container { max-width: 640px; margin: 0 auto; padding: 24px 20px; position: relative; z-index: 1; }
+    a { color: var(--warm); text-decoration: none; transition: color 0.2s; }
+    a:hover { color: var(--text); }
 
     .topnav { display: flex; align-items: center; justify-content: space-between;
-              padding: 16px 0; margin-bottom: 32px; border-bottom: 1px solid var(--border); }
-    .topnav .logo { font-weight: 700; font-size: 16px; color: var(--text); display: flex; align-items: center; gap: 8px; }
-    .topnav .logo span { color: var(--accent-hover); }
-    .topnav .nav-links { display: flex; gap: 20px; font-size: 14px; }
+              padding: 20px 0; margin-bottom: 48px; }
+    .topnav .logo { font-weight: 300; font-size: 13px; letter-spacing: 2px;
+                    text-transform: uppercase; color: var(--text-muted); }
+    .topnav .nav-links { display: flex; gap: 24px; font-size: 13px; font-weight: 400;
+                         letter-spacing: 0.5px; }
+    .topnav .nav-links a { color: var(--text-muted); }
+    .topnav .nav-links a:hover { color: var(--text); }
 
-    h1 { font-size: 24px; font-weight: 700; margin-bottom: 6px; }
-    h2 { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
-    h3 { font-size: 15px; font-weight: 600; margin-bottom: 8px; color: var(--text-muted); }
-    p { color: var(--text-muted); font-size: 14px; line-height: 1.5; margin-bottom: 20px; }
+    h1 { font-size: 42px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 8px; }
+    h2 { font-size: 28px; font-weight: 300; letter-spacing: -0.3px; margin-bottom: 8px; }
+    h3 { font-size: 10px; font-weight: 500; margin-bottom: 12px; color: var(--text-muted);
+         text-transform: uppercase; letter-spacing: 1.5px; }
+    p { color: var(--text-muted); font-size: 15px; line-height: 1.6; margin-bottom: 24px; font-weight: 300; }
 
-    button { padding: 10px 20px; font-size: 14px; font-weight: 500; cursor: pointer; border: none;
-             background: var(--accent); color: #fff; border-radius: 8px; transition: all 0.15s; }
-    button:hover { background: var(--accent-hover); }
-    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button { padding: 12px 28px; font-size: 12px; font-weight: 500; cursor: pointer;
+             border: 1px solid var(--warm); background: transparent; color: var(--warm);
+             border-radius: 8px; transition: all 0.2s; text-transform: uppercase; letter-spacing: 1px; }
+    button:hover { background: rgba(212,165,116,0.1); color: var(--text); }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
 
-    #status { margin-top: 16px; padding: 12px 16px; border-radius: 8px; display: none; font-size: 14px; }
-    .success { background: var(--green-bg); border: 1px solid rgba(34,197,94,0.2); color: var(--green); }
-    .error   { background: var(--red-bg); border: 1px solid rgba(239,68,68,0.2); color: var(--red); }
+    #status { margin-top: 20px; padding: 14px 18px; border-radius: 8px; display: none; font-size: 13px; font-weight: 400; }
+    .success { background: var(--green-bg); border: 1px solid rgba(111,207,151,0.15); color: var(--green); }
+    .error   { background: var(--red-bg); border: 1px solid rgba(235,107,107,0.15); color: var(--red); }
 
-    #items { margin-top: 28px; }
-    .item { padding: 14px 16px; margin: 8px 0; background: var(--surface); border: 1px solid var(--border);
-            border-radius: var(--radius); font-size: 14px; transition: border-color 0.15s; }
-    .item:hover { border-color: var(--accent); }
+    #items { margin-top: 36px; }
+    .item { padding: 16px 18px; margin: 8px 0; background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius); font-size: 14px; font-weight: 300; transition: all 0.2s;
+            backdrop-filter: blur(12px); }
+    .item:hover { border-color: var(--border-hover); background: var(--surface-2); }
 
-    .section-divider { margin: 40px 0; border: none; border-top: 1px solid var(--border); }
+    .section-divider { margin: 48px 0; border: none; border-top: 1px solid var(--border); }
 
     .csv-section { margin-top: 8px; }
-    .csv-form { display: flex; flex-direction: column; gap: 16px; max-width: 420px; }
-    .csv-form label { font-weight: 600; font-size: 11px; color: var(--text-muted);
-                      text-transform: uppercase; letter-spacing: 0.5px; }
+    .csv-form { display: flex; flex-direction: column; gap: 18px; max-width: 420px; }
+    .csv-form label { font-weight: 500; font-size: 10px; color: var(--text-muted);
+                      text-transform: uppercase; letter-spacing: 1.5px; }
     .csv-form select, .csv-form input[type="text"] {
       padding: 10px 14px; font-size: 14px; border: 1px solid var(--border); border-radius: 8px;
-      background: var(--surface-2); color: var(--text); width: 100%; }
-    .csv-form select:focus, .csv-form input:focus { outline: none; border-color: var(--accent); }
-    .csv-form input[type="file"] { font-size: 14px; color: var(--text-muted); }
-    .csv-form .field { display: flex; flex-direction: column; gap: 6px; }
+      background: transparent; color: var(--text); width: 100%; font-weight: 300;
+      transition: border-color 0.2s; }
+    .csv-form select:focus, .csv-form input:focus { outline: none; border-color: var(--warm); }
+    .csv-form select option { background: #131620; color: var(--text); }
+    .csv-form input[type="file"] { font-size: 13px; color: var(--text-muted); }
+    .csv-form .field { display: flex; flex-direction: column; gap: 8px; }
+    .csv-form input::placeholder { color: var(--text-muted); }
 
-    .csv-imports { margin-top: 24px; }
-    .csv-import-entry { padding: 12px 16px; margin: 6px 0; background: var(--surface);
-                        border: 1px solid var(--border); border-radius: var(--radius); font-size: 13px; }
+    .csv-imports { margin-top: 32px; }
+    .csv-import-entry { padding: 14px 18px; margin: 6px 0; background: var(--surface);
+                        border: 1px solid var(--border); border-radius: var(--radius);
+                        font-size: 13px; font-weight: 300; backdrop-filter: blur(12px); }
   </style>
 </head>
 <body>
   <div class="container">
   <nav class="topnav">
-    <div class="logo"><span>$</span> Subscription Tracker</div>
+    <div class="logo">Subscription Tracker</div>
     <div class="nav-links">
       <a href="/">Accounts</a>
       <a href="/dashboard">Dashboard</a>
@@ -1496,7 +1547,7 @@ app.get("/", (req, res) => {
   <p>Connect a financial institution to start tracking recurring charges automatically.</p>
   <button id="link-btn" onclick="startLink()">Link an Account</button>
   <div id="status"></div>
-  <div id="items"><h3>Linked Institutions</h3><div id="items-list" style="color:var(--text-muted);font-size:14px;">Loading...</div></div>
+  <div id="items"><h3>Linked Institutions</h3><div id="items-list" style="color:var(--text-muted);font-size:14px;font-weight:300;">Loading...</div></div>
 
   <hr class="section-divider">
 
@@ -1529,10 +1580,10 @@ app.get("/", (req, res) => {
 
       <button id="csv-upload-btn" onclick="uploadCsv()">Upload & Import</button>
     </div>
-    <div id="csv-status" style="margin-top:12px;padding:12px;border-radius:8px;display:none"></div>
+    <div id="csv-status" style="margin-top:12px;padding:14px 18px;border-radius:8px;display:none;font-size:13px;"></div>
     <div class="csv-imports">
       <h3>Import History</h3>
-      <div id="csv-imports-list" style="color:var(--text-muted);font-size:14px;">Loading...</div>
+      <div id="csv-imports-list" style="color:var(--text-muted);font-size:14px;font-weight:300;">Loading...</div>
     </div>
   </div>
   </div>
