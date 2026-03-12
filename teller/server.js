@@ -1406,7 +1406,15 @@ app.get("/dashboard", (req, res) => {
     .chart-card h3 { font-size: 10px; font-weight: 500; color: var(--text-muted); text-transform: uppercase;
                      letter-spacing: 1.5px; margin-bottom: 16px; }
     .chart-card canvas { max-height: 240px; }
-    @media (max-width: 640px) { .charts-grid { grid-template-columns: 1fr; } }
+    @media (max-width: 640px) {
+      .charts-grid { grid-template-columns: 1fr; }
+      .topnav { flex-direction: column; gap: 12px; align-items: flex-start; }
+      .topnav .nav-links { gap: 16px; flex-wrap: wrap; }
+      h1 { font-size: 28px; }
+      .summary { grid-template-columns: 1fr 1fr; }
+      .two-col { grid-template-columns: 1fr; }
+      .accounts-grid { grid-template-columns: 1fr; }
+    }
   </style>
   <script>document.documentElement.setAttribute('data-theme', localStorage.getItem('perfin-theme') || 'dark');</script>
 </head>
@@ -1977,6 +1985,12 @@ app.get("/subscriptions", (req, res) => {
       margin: -7px 0 0 -7px; border: 2px solid var(--warm); border-top-color: transparent;
       border-radius: 50%; animation: spin 0.6s linear infinite;
     }
+    @media (max-width: 640px) {
+      .topnav { flex-direction: column; gap: 12px; align-items: flex-start; }
+      .topnav .nav-links { gap: 14px; flex-wrap: wrap; }
+      h1 { font-size: 28px; }
+      .summary { grid-template-columns: 1fr 1fr; }
+    }
   </style>
   <script>document.documentElement.setAttribute('data-theme', localStorage.getItem('perfin-theme') || 'dark');</script>
 </head>
@@ -2359,6 +2373,11 @@ app.get("/", (req, res) => {
                   background: transparent; color: var(--red); text-transform: uppercase;
                   transition: all 0.2s; }
     .btn-unlink:hover { background: var(--red-bg); }
+    @media (max-width: 640px) {
+      .topnav { flex-direction: column; gap: 12px; align-items: flex-start; }
+      .topnav .nav-links { gap: 14px; flex-wrap: wrap; }
+      h1 { font-size: 28px; }
+    }
   </style>
   <script>document.documentElement.setAttribute('data-theme', localStorage.getItem('perfin-theme') || 'dark');</script>
 </head>
@@ -2726,6 +2745,28 @@ app.patch("/api/settings", async (req, res) => {
   }
 });
 
+// GET /api/insights/status — check if AI insights are configured
+app.get("/api/insights/status", async (_req, res) => {
+  const configured = !!(Anthropic && process.env.ANTHROPIC_API_KEY);
+  let tokensThisMonth = 0;
+  let budgetCents = parseInt(process.env.INSIGHTS_MONTHLY_BUDGET_CENTS) || 50;
+  try {
+    const usage = await pool.query(
+      "SELECT COALESCE(SUM(tokens_used), 0)::int AS total FROM financial_insights WHERE created_at >= date_trunc('month', CURRENT_DATE)"
+    );
+    tokensThisMonth = usage.rows[0].total;
+  } catch {}
+  const estimatedCostCents = (tokensThisMonth / 1_000_000) * 800;
+  res.json({
+    configured,
+    reason: configured ? null : (!Anthropic ? "SDK not installed" : "ANTHROPIC_API_KEY not set in .env"),
+    tokens_this_month: tokensThisMonth,
+    estimated_cost_cents: Math.round(estimatedCostCents * 100) / 100,
+    budget_cents: budgetCents,
+    budget_remaining_cents: Math.round((budgetCents - estimatedCostCents) * 100) / 100,
+  });
+});
+
 // GET /api/insights
 app.get("/api/insights", async (_req, res) => {
   try {
@@ -2897,6 +2938,13 @@ app.get("/settings", (req, res) => {
     .btn-loading::after { content: ''; position: absolute; top: 50%; left: 50%; width: 14px; height: 14px;
       margin: -7px 0 0 -7px; border: 2px solid var(--warm); border-top-color: transparent;
       border-radius: 50%; animation: spin 0.6s linear infinite; }
+    @media (max-width: 640px) {
+      .topnav { flex-direction: column; gap: 12px; align-items: flex-start; }
+      .topnav .nav-links { gap: 14px; flex-wrap: wrap; }
+      h1 { font-size: 28px; }
+      .setting-row { flex-direction: column; align-items: flex-start; gap: 10px; }
+      .setting-control { margin-left: 0; }
+    }
   </style>
   <script>document.documentElement.setAttribute('data-theme', localStorage.getItem('perfin-theme') || 'dark');</script>
 </head><body>
@@ -2950,6 +2998,10 @@ app.get("/settings", (req, res) => {
 
   <div class="section"><h2>AI Insights</h2>
     <div class="setting-row">
+      <div class="setting-info"><div class="name">API Status</div><div class="desc" id="api-status-desc">Checking...</div></div>
+      <div class="setting-control"><span id="api-status-badge" style="font-size:11px;font-weight:600;padding:3px 10px;border-radius:6px;letter-spacing:0.5px;text-transform:uppercase;">--</span></div>
+    </div>
+    <div class="setting-row">
       <div class="setting-info"><div class="name">Monthly AI Analysis</div><div class="desc">Financial insights powered by Claude (~$0.02/month)</div></div>
       <div class="setting-control">
         <label class="toggle"><input type="checkbox" id="insights-toggle" onchange="updateSetting('insights_enabled', this.checked)"><span class="slider"></span></label>
@@ -3001,6 +3053,25 @@ app.get("/settings", (req, res) => {
         document.getElementById('timeout-input').value = s.session_timeout_minutes || 15;
         document.getElementById('insights-toggle').checked = s.insights_enabled || false;
         applyTheme(s.theme || 'dark');
+      } catch {}
+      // Check AI API status
+      try {
+        const sRes = await apiFetch('/api/insights/status');
+        const st = await sRes.json();
+        const badge = document.getElementById('api-status-badge');
+        const desc = document.getElementById('api-status-desc');
+        const budgetEl = document.getElementById('budget-status');
+        if (st.configured) {
+          badge.textContent = 'Active';
+          badge.style.background = 'var(--green-bg)'; badge.style.color = 'var(--green)';
+          desc.textContent = 'ANTHROPIC_API_KEY is configured and ready';
+          if (budgetEl) budgetEl.textContent = '$' + (st.estimated_cost_cents / 100).toFixed(3) + ' of $' + (st.budget_cents / 100).toFixed(2) + ' cap used this month';
+        } else {
+          badge.textContent = 'Not Set';
+          badge.style.background = 'var(--yellow-bg)'; badge.style.color = 'var(--yellow)';
+          desc.textContent = st.reason + ' — insights will not run until configured';
+          if (budgetEl) budgetEl.textContent = 'N/A';
+        }
       } catch {}
     }
     async function updateSetting(key, value) {
