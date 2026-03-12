@@ -72,29 +72,49 @@ async function tellerRequest(endpoint, accessToken, options = {}) {
 
   // Basic auth: access_token as username, empty password
   const authHeader = "Basic " + Buffer.from(accessToken + ":").toString("base64");
+  const bodyData = options.body ? JSON.stringify(options.body) : null;
 
-  const response = await fetch(url, {
-    method,
-    headers: {
-      "Authorization": authHeader,
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-    agent: getTlsAgent(),
-    ...(options.body ? { body: JSON.stringify(options.body) } : {}),
+  // Use https.request (not fetch) so the mTLS agent is actually applied
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const req = https.request(
+      {
+        hostname: parsed.hostname,
+        path: parsed.pathname + parsed.search,
+        method,
+        agent: getTlsAgent(),
+        headers: {
+          "Authorization": authHeader,
+          "Content-Type": "application/json",
+          ...options.headers,
+          ...(bodyData ? { "Content-Length": Buffer.byteLength(bodyData) } : {}),
+        },
+      },
+      (res) => {
+        const chunks = [];
+        res.on("data", (chunk) => chunks.push(chunk));
+        res.on("end", () => {
+          const text = Buffer.concat(chunks).toString();
+          if (res.statusCode >= 400) {
+            const err = new Error(`Teller API error ${res.statusCode}: ${text}`);
+            err.status = res.statusCode;
+            err.body = text;
+            return reject(err);
+          }
+          // DELETE returns 204 No Content
+          if (res.statusCode === 204) return resolve(null);
+          try {
+            resolve(JSON.parse(text));
+          } catch (e) {
+            reject(new Error(`Invalid JSON from Teller API: ${text}`));
+          }
+        });
+      }
+    );
+    req.on("error", reject);
+    if (bodyData) req.write(bodyData);
+    req.end();
   });
-
-  if (!response.ok) {
-    const text = await response.text();
-    const err = new Error(`Teller API error ${response.status}: ${text}`);
-    err.status = response.status;
-    err.body = text;
-    throw err;
-  }
-
-  // DELETE returns 204 No Content
-  if (response.status === 204) return null;
-  return response.json();
 }
 
 // ---------------------------------------------------------------------------
