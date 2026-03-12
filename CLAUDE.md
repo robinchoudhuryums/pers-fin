@@ -23,12 +23,15 @@ Uses **Teller API** (primary) and Plaid (legacy) for bank account linking via mT
 - Server runs and responds correctly on localhost
 - Apps Script supports both CSV import and server sync modes
 - Yearly subscription detection (365-day cadence, 2 occurrences minimum)
-- **Password protection**: Set `SESSION_PASSWORD` env var to enable login screen (configurable timeout)
-- **Settings page**: `/settings` — theme, session timeout, dashboard range, AI insights toggle, data export
+- **Authentication**: Set `SESSION_PASSWORD` (text) or `SESSION_PIN` (numeric PIN pad) env var to enable login screen (configurable timeout)
+- **Settings page**: `/settings` — theme, session timeout, dashboard range, AI model/cadence, insights toggle, data export
 - **Dark/Light theme**: Toggle in Settings, persisted to DB + localStorage
 - **Dashboard charts**: Monthly spending trend (line) and category breakdown (doughnut) via Chart.js
 - **AI Insights**: Optional financial analysis via Claude API (`ANTHROPIC_API_KEY`) with persistent long-term memory (running summary), reset/rebuild controls, usage history, model selector (Haiku/Sonnet/Opus with `-latest` aliases), and configurable cadence (weekly to quarterly)
 - **PWA**: Installable as home screen app on iPhone/Android (manifest.json + service worker)
+- **Auto-migration**: Server runs all DB migrations on startup (no manual SQL needed)
+- **Per-model cost tracking**: Usage history with dynamic pricing per model family
+- **Deployed on Render** (free tier, sleeps after 15 min idle)
 - **Blocker**: Codespace port forwarding doesn't work — deploy to Render/Fly.io or run locally
 
 ## Deployment Options
@@ -63,14 +66,20 @@ cd teller && npm install && node server.js
 # Open http://localhost:3000
 ```
 
+## Current Status
+- Deployed on Render (free tier)
+- Render deploys from default branch (`claude/subscription-tracker-plaid-WeQTA`)
+- Env vars configured in Render dashboard: `NEON_DATABASE_URL`, `TOKEN_ENCRYPTION_PASSPHRASE`, `TELLER_APPLICATION_ID`, `SESSION_PIN` or `SESSION_PASSWORD`, `ANTHROPIC_API_KEY`
+- PEM files added as Secret Files in Render
+
 ## Next Steps
-1. **Deploy to Render or Fly.io** to get a public HTTPS URL for Teller Connect
+1. Merge feature branch into default branch if not already done (PR or direct merge)
 2. Link a bank account via Teller Connect in the browser
 3. Test transaction sync (`POST /api/sync`)
 4. Run subscription detection (`POST /api/detect`)
 5. Verify dashboard at `/dashboard`
-6. Set `CONFIG.SERVER_URL` in Apps Script to the deployed URL for Sheets sync
-7. Test Google Sheets sync if service account key is configured
+6. Test AI insights generation (Settings → Generate Now)
+7. Set `CONFIG.SERVER_URL` in Apps Script to the deployed URL for Sheets sync
 
 ## Key Files
 - `.env` — all secrets (never commit)
@@ -104,7 +113,7 @@ GET  /api/transactions    # list transactions (query: months, limit, offset)
 GET  /api/subscriptions   # list detected subscriptions
 GET  /dashboard           # subscription dashboard UI (with charts)
 GET  /settings            # settings page
-GET  /login               # password login (if SESSION_PASSWORD set)
+GET  /login               # password/PIN login (if SESSION_PASSWORD or SESSION_PIN set)
 POST /api/login           # authenticate session
 POST /api/logout          # end session
 GET  /api/settings        # retrieve user settings
@@ -120,12 +129,19 @@ GET  /manifest.json       # PWA manifest
 GET  /sw.js               # service worker
 ```
 
-## Environment Variables (new)
-- `SESSION_PASSWORD` — password for login screen (omit to disable auth)
+## Environment Variables
+- `SESSION_PASSWORD` — text password for login screen (omit to disable auth)
+- `SESSION_PIN` — numeric PIN for PIN pad login (alternative to password)
 - `SESSION_SECRET` — session cookie secret (auto-generated if not set)
 - `ANTHROPIC_API_KEY` — enables AI financial insights via Claude
+- `INSIGHTS_MONTHLY_BUDGET_CENTS` — monthly API spending cap (default: 50 = $0.50)
+
+## Database
+- Auto-migration runs on server startup — no manual SQL execution needed
+- Schema files in `db/` are still the source of truth for reference
+- `user_settings` table: single-row pattern (CHECK id = 1) for app preferences
+- `financial_insights` table: stores each AI analysis with tokens, model, cost
 
 ## Git
-- Branch: `claude/subscription-tracker-plaid-WeQTA`
-- Always commit and push to this branch
+- Default branch: `claude/subscription-tracker-plaid-WeQTA`
 - PEM files and `.env` are in `.gitignore`

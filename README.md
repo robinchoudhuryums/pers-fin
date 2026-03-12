@@ -57,15 +57,16 @@ cp .env.example .env
 
 ### 2. Database
 
-Run the schemas against your Neon database:
+The server runs **auto-migration on startup** — it creates all required tables and columns if they don't exist. No manual SQL execution needed.
+
+The core schema (`db/001_schema.sql` and `db/003_teller.sql`) must be run once manually since they create the base tables:
 
 ```bash
 psql "$NEON_DATABASE_URL" -f db/001_schema.sql
-psql "$NEON_DATABASE_URL" -f db/002_csv_import.sql
-psql "$NEON_DATABASE_URL" -f db/003_dashboard_features.sql
-psql "$NEON_DATABASE_URL" -f db/005_settings.sql
-psql "$NEON_DATABASE_URL" -f db/006_insights_memory.sql
+psql "$NEON_DATABASE_URL" -f db/003_teller.sql
 ```
+
+All other migrations (settings, balances, insights, etc.) are handled automatically by the server.
 
 ### 3. Plaid Link Server
 
@@ -164,8 +165,12 @@ Tests cover the detection algorithm, CSV parsing, date handling, API logic, and 
 
 ## Features
 
-### Password Protection
-Set `SESSION_PASSWORD` in `.env` to enable a login screen. Sessions expire after a configurable timeout (default 15 minutes, adjustable in Settings from 1–1440 minutes).
+### Authentication
+Two login modes available — set one in your environment variables:
+- **`SESSION_PASSWORD`** — text password, shows a standard password input
+- **`SESSION_PIN`** — numeric PIN (any length), shows a PIN pad with dot indicators
+
+Sessions expire after a configurable timeout (default 15 minutes, adjustable in Settings from 1–1440 minutes). Omit both to run without authentication (dev mode).
 
 ### Dark/Light Theme
 Toggle between Night Mode (default) and Day Mode in Settings. Preference is stored in the database and persisted via localStorage.
