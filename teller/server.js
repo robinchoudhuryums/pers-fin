@@ -2740,6 +2740,24 @@ app.post("/api/insights", async (_req, res) => {
     return res.status(501).json({ error: "Set ANTHROPIC_API_KEY in .env to enable AI insights." });
   }
   try {
+    // Monthly budget cap — check tokens used this calendar month
+    // Default cap: $0.50/month (50 cents). At ~$0.02/run, allows ~25 runs before hitting cap.
+    const budgetCents = parseInt(process.env.INSIGHTS_MONTHLY_BUDGET_CENTS) || 50;
+    const usageResult = await pool.query(
+      "SELECT COALESCE(SUM(tokens_used), 0)::int AS total_tokens FROM financial_insights " +
+      "WHERE created_at >= date_trunc('month', CURRENT_DATE)"
+    ).catch(() => ({ rows: [{ total_tokens: 0 }] }));
+    const tokensThisMonth = usageResult.rows[0].total_tokens;
+    // Rough cost estimate: ~$3/M input + $15/M output tokens. Average ~$8/M blended.
+    const estimatedCostCents = (tokensThisMonth / 1_000_000) * 800;
+    if (estimatedCostCents >= budgetCents) {
+      return res.status(429).json({
+        error: `Monthly AI budget reached ($${(estimatedCostCents / 100).toFixed(2)} of $${(budgetCents / 100).toFixed(2)} cap). Resets next month. Adjust INSIGHTS_MONTHLY_BUDGET_CENTS in .env to raise the limit.`,
+        tokens_this_month: tokensThisMonth,
+        budget_cents: budgetCents,
+      });
+    }
+
     const [monthlyData, subData] = await Promise.all([
       pool.query(
         "SELECT TO_CHAR(date, 'YYYY-MM') AS month, SUM(amount) AS total, COUNT(*) AS txns " +
@@ -2941,6 +2959,10 @@ app.get("/settings", (req, res) => {
       <div class="setting-info"><div class="name">Generate Now</div><div class="desc">Run AI analysis on current data</div></div>
       <div class="setting-control"><button class="btn primary" id="insights-btn" onclick="generateInsights()">Generate</button></div>
     </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Monthly Budget Cap</div><div class="desc" id="budget-desc">Limits API spending per month (set via INSIGHTS_MONTHLY_BUDGET_CENTS env var)</div></div>
+      <div class="setting-control"><span id="budget-status" style="font-size:12px;color:var(--text-muted);">--</span></div>
+    </div>
   </div>
 
   <div id="insights-container"></div>
@@ -3015,6 +3037,16 @@ app.get("/settings", (req, res) => {
           renderInsight(data[0].insight_text);
           const meta = document.querySelector('.insight-meta');
           if (meta) meta.textContent = 'Generated ' + new Date(data[0].created_at).toLocaleDateString();
+          // Show budget status from this month's usage
+          const thisMonth = data.filter(d => {
+            const created = new Date(d.created_at);
+            const now = new Date();
+            return created.getMonth() === now.getMonth() && created.getFullYear() === now.getFullYear();
+          });
+          const totalTokens = thisMonth.reduce((sum, d) => sum + (d.tokens_used || 0), 0);
+          const estCost = (totalTokens / 1000000) * 8; // ~$8/M blended
+          document.getElementById('budget-status').textContent =
+            '$' + estCost.toFixed(3) + ' used this month (~' + totalTokens.toLocaleString() + ' tokens)';
         }
       } catch {}
     }
