@@ -1,9 +1,9 @@
 # Render deployment blueprint for pers-fin subscription tracker
 # Deploy: Connect GitHub repo in Render dashboard, or `render blueprint apply`
 #
-# After deploy, add Secret Files in the dashboard:
-#   /etc/secrets/certificate.pem  → paste certificate.pem content
-#   /etc/secrets/private_key.pem  → paste private_key.pem content
+# After deploy, set these env vars in the dashboard:
+#   TELLER_CERT — base64-encoded certificate.pem  (run: base64 < certificate.pem)
+#   TELLER_KEY  — base64-encoded private_key.pem   (run: base64 < private_key.pem)
 
 services:
   - type: web
@@ -15,10 +15,10 @@ services:
     envVars:
       - key: PORT
         value: 3000
-      - key: TELLER_CERT_PATH
-        value: /etc/secrets/certificate.pem
-      - key: TELLER_KEY_PATH
-        value: /etc/secrets/private_key.pem
+      - key: TELLER_CERT
+        sync: false  # base64-encoded certificate.pem
+      - key: TELLER_KEY
+        sync: false  # base64-encoded private_key.pem
       - key: TELLER_ENV
         value: development
       - key: TELLER_APPLICATION_ID

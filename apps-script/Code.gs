@@ -883,7 +883,8 @@ function syncSubscriptionsFromServer_(ss) {
     throw new Error("Failed to fetch subscriptions: " + res.getContentText());
   }
 
-  const serverSubs = JSON.parse(res.getContentText());
+  const data = JSON.parse(res.getContentText());
+  const serverSubs = data.subscriptions || [];
   const subSheet = ss.getSheetByName(CONFIG.SHEET_SUBSCRIPTIONS) || ensureSheet_(ss, CONFIG.SHEET_SUBSCRIPTIONS, ["Service", "Amount", "Cycle Days", "Monthly Cost", "Yearly Cost", "First Seen", "Last Charged", "Next Charge", "Status", "Source", "Cancel URL", "Notes"]);
 
   // Load existing local entries (manual and CSV-detected)
