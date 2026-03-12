@@ -27,27 +27,34 @@
 // ============================================================================
 
 // ---------------------------------------------------------------------------
-// Config
+// Config — reads from Script Properties with hardcoded defaults
 // ---------------------------------------------------------------------------
-const CONFIG = {
-  // Server sync (set to your Teller server URL, e.g. "http://localhost:3000")
-  SERVER_URL: "",
-  // CSV import
-  CSV_FOLDER_NAME: "CSV Uploads",
-  PROCESSED_FOLDER_NAME: "CSV Uploads/Processed",
-  // Sheet names
-  SHEET_TRANSACTIONS: "Transactions",
-  SHEET_SUBSCRIPTIONS: "Subscriptions",
-  SHEET_DASHBOARD: "Dashboard",
-  SHEET_IMPORT_LOG: "Import Log",
-  SHEET_SYNC_LOG: "Sync Log",
-  // Detection parameters (matches Teller server's detect-subscriptions.js)
-  CADENCES: [30, 60, 90, 365],
-  TOLERANCE: 0.25,          // ±25% timing tolerance
-  AMOUNT_TOLERANCE: 0.10,   // ±10% amount tolerance
-  MIN_OCCURRENCES: 3,
-  MIN_OCCURRENCES_YEARLY: 2, // yearly subs only need 2 charges
-};
+// To configure: Run "Settings" from the Subscription Tracker menu, or set
+// Script Properties manually (File > Project properties > Script properties):
+//   SERVER_URL   — your Teller server URL (e.g. "https://pers-fin-tracker.onrender.com")
+//   API_KEY      — API key for server authentication
+// ---------------------------------------------------------------------------
+function getConfig_() {
+  const props = PropertiesService.getScriptProperties();
+  return {
+    SERVER_URL: props.getProperty("SERVER_URL") || "",
+    API_KEY: props.getProperty("API_KEY") || "",
+    CSV_FOLDER_NAME: "CSV Uploads",
+    PROCESSED_FOLDER_NAME: "CSV Uploads/Processed",
+    SHEET_TRANSACTIONS: "Transactions",
+    SHEET_SUBSCRIPTIONS: "Subscriptions",
+    SHEET_DASHBOARD: "Dashboard",
+    SHEET_IMPORT_LOG: "Import Log",
+    SHEET_SYNC_LOG: "Sync Log",
+    CADENCES: [30, 60, 90, 365],
+    TOLERANCE: 0.25,
+    AMOUNT_TOLERANCE: 0.10,
+    MIN_OCCURRENCES: 3,
+    MIN_OCCURRENCES_YEARLY: 2,
+  };
+}
+// Cached config for the current execution
+const CONFIG = getConfig_();
 
 // ---------------------------------------------------------------------------
 // CSV Format Definitions
@@ -168,6 +175,20 @@ const CANCEL_URLS = {
   "canva": "https://www.canva.com/settings/billing-and-plans",
 };
 
+// ---------------------------------------------------------------------------
+// Server fetch helper — includes API key in all requests
+// ---------------------------------------------------------------------------
+function fetchFromServer_(endpoint, options) {
+  const url = CONFIG.SERVER_URL + endpoint;
+  const opts = options || {};
+  opts.muteHttpExceptions = true;
+  if (CONFIG.API_KEY) {
+    opts.headers = opts.headers || {};
+    opts.headers["x-api-key"] = CONFIG.API_KEY;
+  }
+  return UrlFetchApp.fetch(url, opts);
+}
+
 // ============================================================================
 // SETUP
 // ============================================================================
@@ -189,13 +210,22 @@ function setupTracker() {
   const folder = getOrCreateFolder_(CONFIG.CSV_FOLDER_NAME);
   getOrCreateSubfolder_(folder, "Processed");
 
-  // Set up hourly trigger (if not already set)
+  // Set up triggers (if not already set)
   const triggers = ScriptApp.getProjectTriggers();
   const hasHourly = triggers.some(t => t.getHandlerFunction() === "autoImportFromDrive");
   if (!hasHourly) {
     ScriptApp.newTrigger("autoImportFromDrive")
       .timeBased()
       .everyHours(1)
+      .create();
+  }
+  // Daily server sync trigger (runs at 7 AM)
+  const hasDailySync = triggers.some(t => t.getHandlerFunction() === "dailyAutoSync");
+  if (!hasDailySync) {
+    ScriptApp.newTrigger("dailyAutoSync")
+      .timeBased()
+      .atHour(7)
+      .everyDays(1)
       .create();
   }
 
@@ -227,8 +257,31 @@ function onOpen() {
       .addSeparator();
   }
 
-  menu.addItem("Initial Setup", "setupTracker")
+  menu.addItem("Settings", "showSettings")
+    .addItem("Initial Setup", "setupTracker")
     .addToUi();
+}
+
+/**
+ * Show a dialog to configure SERVER_URL and API_KEY.
+ */
+function showSettings() {
+  const ui = SpreadsheetApp.getUi();
+  const props = PropertiesService.getScriptProperties();
+
+  const currentUrl = props.getProperty("SERVER_URL") || "";
+  const urlResult = ui.prompt("Settings (1/2)", "Server URL (e.g. https://pers-fin-tracker.onrender.com):\n\nCurrent: " + (currentUrl || "(not set)"), ui.ButtonSet.OK_CANCEL);
+  if (urlResult.getSelectedButton() === ui.Button.OK) {
+    props.setProperty("SERVER_URL", urlResult.getResponseText().trim());
+  }
+
+  const currentKey = props.getProperty("API_KEY") || "";
+  const keyResult = ui.prompt("Settings (2/2)", "API Key for server authentication:\n\nCurrent: " + (currentKey ? "(set)" : "(not set)"), ui.ButtonSet.OK_CANCEL);
+  if (keyResult.getSelectedButton() === ui.Button.OK) {
+    props.setProperty("API_KEY", keyResult.getResponseText().trim());
+  }
+
+  ui.alert("Settings saved. Reload the spreadsheet for changes to take effect.");
 }
 
 // ============================================================================
@@ -678,14 +731,14 @@ function buildDashboard() {
   const txns = [];
   if (txnSheet && txnSheet.getLastRow() > 1) {
     const data = txnSheet.getRange(2, 1, txnSheet.getLastRow() - 1, 8).getValues();
-    const sixMonthsAgo = new Date();
-    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+    const twelveMonthsAgo = new Date();
+    twelveMonthsAgo.setMonth(twelveMonthsAgo.getMonth() - 12);
 
     for (const row of data) {
       const date = row[0] instanceof Date ? row[0] : new Date(row[0]);
       const amount = parseFloat(row[2]);
       if (isNaN(date.getTime()) || isNaN(amount) || amount <= 0) continue;
-      if (date < sixMonthsAgo) continue;
+      if (date < twelveMonthsAgo) continue;
       txns.push({ date, merchant: row[1], amount, category: row[3] });
     }
   }
@@ -707,13 +760,6 @@ function buildDashboard() {
       }
     }
   }
-
-  // Calculate summaries
-  const totalMonthly = subs.reduce((s, sub) => s + sub.monthlyCost, 0);
-  const totalYearly = totalMonthly * 12;
-  const total6mo = txns.reduce((s, t) => s + t.amount, 0);
-  const avgMonthly = total6mo / 6;
-  const avgDaily = total6mo / 180;
 
   // Monthly breakdown
   const monthlyTotals = {};
@@ -742,6 +788,14 @@ function buildDashboard() {
     merchantTotals[m].count++;
   }
 
+  // Calculate summaries
+  const totalMonthly = subs.reduce((s, sub) => s + sub.monthlyCost, 0);
+  const totalYearly = totalMonthly * 12;
+  const totalSpend = txns.reduce((s, t) => s + t.amount, 0);
+  const monthCount = Object.keys(monthlyTotals).length || 1;
+  const avgMonthly = totalSpend / monthCount;
+  const avgDaily = totalSpend / (monthCount * 30);
+
   // Build dashboard rows
   const rows = [];
 
@@ -751,8 +805,8 @@ function buildDashboard() {
   rows.push(["", "", "", "", "", ""]);
 
   // Summary cards
-  rows.push(["Avg Monthly Spend", "Subscriptions /mo", "Subscriptions /yr", "Active Subscriptions", "Avg Daily Spend", "6-Month Total"]);
-  rows.push([avgMonthly, totalMonthly, totalYearly, subs.length, avgDaily, total6mo]);
+  rows.push(["Avg Monthly Spend", "Subscriptions /mo", "Subscriptions /yr", "Active Subscriptions", "Avg Daily Spend", "12-Month Total"]);
+  rows.push([avgMonthly, totalMonthly, totalYearly, subs.length, avgDaily, totalSpend]);
   rows.push(["", "", "", "", "", ""]);
 
   // Monthly trend
@@ -822,13 +876,13 @@ function syncFromServer() {
 
   try {
     // 1. Trigger a transaction sync on the server
-    const syncRes = UrlFetchApp.fetch(CONFIG.SERVER_URL + "/api/sync", { method: "post", muteHttpExceptions: true });
+    const syncRes = fetchFromServer_("/api/sync", { method: "post" });
     if (syncRes.getResponseCode() !== 200) {
       throw new Error("Server sync failed: " + syncRes.getContentText());
     }
 
     // 2. Trigger detection on the server
-    UrlFetchApp.fetch(CONFIG.SERVER_URL + "/api/detect", { method: "post", muteHttpExceptions: true });
+    fetchFromServer_("/api/detect", { method: "post" });
 
     // 3. Pull subscriptions from server
     subCount = syncSubscriptionsFromServer_(ss);
@@ -878,7 +932,7 @@ function syncSubscriptionsFromServer() {
  * Server-sourced entries get source="server", preserving local manual entries.
  */
 function syncSubscriptionsFromServer_(ss) {
-  const res = UrlFetchApp.fetch(CONFIG.SERVER_URL + "/api/subscriptions", { muteHttpExceptions: true });
+  const res = fetchFromServer_("/api/subscriptions");
   if (res.getResponseCode() !== 200) {
     throw new Error("Failed to fetch subscriptions: " + res.getContentText());
   }
@@ -979,10 +1033,10 @@ function syncSubscriptionsFromServer_(ss) {
  * and merge into the Transactions sheet, deduplicating by transaction ID.
  */
 function syncTransactionsFromServer_(ss) {
-  const res = UrlFetchApp.fetch(CONFIG.SERVER_URL + "/api/transactions?months=6", { muteHttpExceptions: true });
+  const res = fetchFromServer_("/api/transactions?months=12");
   if (res.getResponseCode() !== 200) {
     // Fallback: try sheets sync endpoint
-    const syncRes = UrlFetchApp.fetch(CONFIG.SERVER_URL + "/api/sheets/sync", { method: "post", muteHttpExceptions: true });
+    const syncRes = fetchFromServer_("/api/sheets/sync", { method: "post" });
     if (syncRes.getResponseCode() === 200) {
       return JSON.parse(syncRes.getContentText()).transactions_synced || 0;
     }
@@ -1042,6 +1096,108 @@ function syncTransactionsFromServer_(ss) {
 function logSync_(ss, source, txnCount, subCount, status) {
   const logSheet = ss.getSheetByName(CONFIG.SHEET_SYNC_LOG) || ensureSheet_(ss, CONFIG.SHEET_SYNC_LOG, ["Timestamp", "Source", "Transactions Synced", "Subscriptions Synced", "Status"]);
   logSheet.appendRow([new Date(), source, txnCount, subCount, status]);
+}
+
+// ============================================================================
+// DAILY AUTO SYNC (time-driven trigger, runs at 7 AM)
+// ============================================================================
+
+/**
+ * Automated daily sync: pulls from server (if configured), runs detection,
+ * refreshes dashboard, and emails alerts for new/changed subscriptions.
+ */
+function dailyAutoSync() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let txnCount = 0;
+  let subCount = 0;
+
+  try {
+    if (CONFIG.SERVER_URL) {
+      // Server sync mode
+      const syncRes = fetchFromServer_("/api/sync", { method: "post" });
+      if (syncRes.getResponseCode() === 200) {
+        fetchFromServer_("/api/detect", { method: "post" });
+        subCount = syncSubscriptionsFromServer_(ss);
+        txnCount = syncTransactionsFromServer_(ss);
+      }
+      logSync_(ss, "auto-daily", txnCount, subCount, "OK");
+    } else {
+      // Standalone mode: just run local detection
+      detectSubscriptions();
+    }
+
+    buildDashboard();
+
+    // Send email alerts for new or changed subscriptions
+    sendSubscriptionAlerts_();
+
+  } catch (e) {
+    logSync_(ss, "auto-daily", txnCount, subCount, "ERROR: " + e.message);
+  }
+}
+
+/**
+ * Email the user about new subscriptions, price changes, and upcoming charges.
+ */
+function sendSubscriptionAlerts_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const subSheet = ss.getSheetByName(CONFIG.SHEET_SUBSCRIPTIONS);
+  if (!subSheet || subSheet.getLastRow() < 2) return;
+
+  const data = subSheet.getRange(2, 1, subSheet.getLastRow() - 1, 12).getValues();
+  const alerts = [];
+  const upcoming = [];
+  const now = new Date();
+  const sevenDaysOut = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+  for (const row of data) {
+    const service = row[0];
+    const amount = parseFloat(row[1]) || 0;
+    const status = row[8];
+    const notes = row[11] || "";
+
+    if (status !== "Active") continue;
+
+    // Check for price changes
+    if (notes && notes.toString().toLowerCase().includes("price changed")) {
+      alerts.push("Price change: " + service + " — " + notes);
+    }
+
+    // Check for upcoming charges in next 7 days
+    const nextCharge = row[7] instanceof Date ? row[7] : new Date(row[7]);
+    if (!isNaN(nextCharge.getTime()) && nextCharge >= now && nextCharge <= sevenDaysOut) {
+      upcoming.push(service + " — $" + amount.toFixed(2) + " on " + nextCharge.toLocaleDateString());
+    }
+  }
+
+  // Only send email if there's something to report
+  if (alerts.length === 0 && upcoming.length === 0) return;
+
+  const email = Session.getActiveUser().getEmail();
+  if (!email) return;
+
+  let body = "Subscription Tracker Daily Summary\n";
+  body += "==================================\n\n";
+
+  if (alerts.length > 0) {
+    body += "ALERTS:\n";
+    alerts.forEach(a => body += "  • " + a + "\n");
+    body += "\n";
+  }
+
+  if (upcoming.length > 0) {
+    body += "UPCOMING CHARGES (next 7 days):\n";
+    upcoming.forEach(u => body += "  • " + u + "\n");
+    body += "\n";
+  }
+
+  body += "View dashboard: " + ss.getUrl() + "\n";
+
+  MailApp.sendEmail({
+    to: email,
+    subject: "Subscription Tracker: " + (alerts.length > 0 ? alerts.length + " alert(s)" : upcoming.length + " upcoming charge(s)"),
+    body: body,
+  });
 }
 
 // ============================================================================

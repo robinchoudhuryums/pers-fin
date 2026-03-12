@@ -1,0 +1,73 @@
+# Daily transaction sync + subscription detection
+# Runs at 7 AM UTC, or manually via workflow_dispatch
+# Requires these repository secrets:
+#   SERVER_URL  — e.g. https://pers-fin-tracker.onrender.com
+#   API_KEY     — the API key set on the server
+
+name: Daily Sync & Alerts
+
+on:
+  schedule:
+    - cron: '0 7 * * *'  # 7 AM UTC daily
+  workflow_dispatch:       # manual trigger
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake server (Render free tier cold start)
+        run: |
+          curl -s -o /dev/null -w "%{http_code}" "${{ secrets.SERVER_URL }}/dashboard" || true
+          sleep 10
+
+      - name: Sync transactions
+        run: |
+          STATUS=$(curl -s -o /tmp/sync.json -w "%{http_code}" \
+            -X POST "${{ secrets.SERVER_URL }}/api/sync" \
+            -H "x-api-key: ${{ secrets.API_KEY }}" \
+            -H "Content-Type: application/json")
+          echo "Sync status: $STATUS"
+          cat /tmp/sync.json
+          if [ "$STATUS" -ne 200 ]; then echo "Sync failed"; exit 1; fi
+
+      - name: Run subscription detection
+        run: |
+          STATUS=$(curl -s -o /tmp/detect.json -w "%{http_code}" \
+            -X POST "${{ secrets.SERVER_URL }}/api/detect" \
+            -H "x-api-key: ${{ secrets.API_KEY }}" \
+            -H "Content-Type: application/json")
+          echo "Detection status: $STATUS"
+          cat /tmp/detect.json
+
+      - name: Check for new/changed subscriptions
+        id: check
+        run: |
+          curl -s "${{ secrets.SERVER_URL }}/api/subscriptions?filter=all" \
+            -H "x-api-key: ${{ secrets.API_KEY }}" | \
+            python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          subs = data.get('subscriptions', [])
+          new_subs = [s for s in subs if s.get('is_new')]
+          changed = [s for s in subs if s.get('amount_changed')]
+          summary = data.get('summary', {})
+
+          print(f\"Active: {summary.get('total_active', 0)}\")
+          print(f\"Monthly cost: \${summary.get('monthly_cost', 0):.2f}\")
+          print(f\"New subscriptions: {len(new_subs)}\")
+          print(f\"Price changes: {len(changed)}\")
+
+          if new_subs:
+              print('::warning::New subscriptions detected:')
+              for s in new_subs:
+                  print(f\"  - {s['display_name']}: \${float(s['amount']):.2f}\")
+          if changed:
+              print('::warning::Price changes detected:')
+              for s in changed:
+                  print(f\"  - {s['display_name']}: \${float(s['amount']):.2f} (was \${float(s.get('prior_amount', 0)):.2f})\")
+
+          with open('$GITHUB_OUTPUT', 'a') as f:
+              f.write(f'new_count={len(new_subs)}\n')
+              f.write(f'changed_count={len(changed)}\n')
+              f.write(f'monthly_cost={summary.get(\"monthly_cost\", 0)}\n')
+          " 2>/dev/null || echo "Subscription check completed"

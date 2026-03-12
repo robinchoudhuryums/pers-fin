@@ -769,6 +769,29 @@ const CANCEL_URLS = {
   "canva": "https://www.canva.com/settings/billing-and-plans",
 };
 
+// Subscription category auto-tagging
+const CATEGORY_RULES = {
+  streaming: ["netflix", "hulu", "disney", "hbo", "max", "prime video", "peacock", "paramount", "crunchyroll", "apple tv", "youtube premium", "spotify", "tidal", "deezer", "pandora", "audible"],
+  software: ["adobe", "microsoft", "notion", "figma", "canva", "github", "slack", "zoom", "dropbox", "1password", "dashlane", "grammarly", "chatgpt", "openai", "jetbrains"],
+  gaming: ["xbox", "playstation", "ps plus", "nintendo", "steam", "ea play", "game pass"],
+  news: ["nytimes", "new york times", "wsj", "wall street journal", "washington post", "the athletic", "substack"],
+  fitness: ["peloton", "strava", "fitbit", "headspace", "calm", "noom", "orange theory", "planet fitness", "gym"],
+  cloud: ["icloud", "google one", "aws", "azure", "digitalocean", "backblaze"],
+  vpn: ["nordvpn", "expressvpn", "surfshark", "protonvpn", "private internet"],
+  shopping: ["amazon prime", "costco", "walmart", "instacart", "doordash", "uber eats", "grubhub"],
+  finance: ["mint", "ynab", "quickbooks", "turbotax", "credit karma"],
+  communication: ["linkedin", "bumble", "tinder", "match", "whatsapp", "skype"],
+};
+
+function categorizeSubscription(merchantName) {
+  if (!merchantName) return "other";
+  const lower = merchantName.toLowerCase();
+  for (const [category, keywords] of Object.entries(CATEGORY_RULES)) {
+    if (keywords.some(kw => lower.includes(kw))) return category;
+  }
+  return "other";
+}
+
 function findCancelUrl(merchantName) {
   if (!merchantName) return null;
   const lower = merchantName.toLowerCase();
@@ -805,6 +828,7 @@ app.get("/api/subscriptions", async (req, res) => {
     const subs = result.rows.map(s => ({
       ...s,
       cancel_url: findCancelUrl(s.display_name) || findCancelUrl(s.merchant_key),
+      category: categorizeSubscription(s.display_name),
     }));
 
     const active = subs.filter(s => !s.is_dismissed && !s.cancelled_at);
@@ -1516,6 +1540,63 @@ app.get("/", (req, res) => {
   </script>
 </body>
 </html>`);
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/export — download transactions or subscriptions as CSV
+// ---------------------------------------------------------------------------
+app.get("/api/export", async (req, res) => {
+  const type = req.query.type || "transactions";
+  const months = Math.max(1, Math.min(parseInt(req.query.months) || 12, 120));
+
+  try {
+    let csvContent = "";
+
+    if (type === "subscriptions") {
+      const result = await pool.query(`
+        SELECT ds.display_name, ds.amount, ds.cadence_days, ds.first_seen, ds.last_charged,
+               ds.next_expected, ds.is_active, ds.is_dismissed, ds.cancelled_at, ds.source, ds.notes
+        FROM detected_subscriptions ds
+        ORDER BY ds.amount DESC
+      `);
+      csvContent = "Service,Amount,Cycle Days,Monthly Cost,First Seen,Last Charged,Next Charge,Status,Category,Source,Notes\n";
+      for (const r of result.rows) {
+        const monthlyCost = r.cadence_days > 0 ? (r.amount * 30 / r.cadence_days).toFixed(2) : r.amount;
+        const status = r.cancelled_at ? "Cancelled" : r.is_dismissed ? "Dismissed" : r.is_active ? "Active" : "Inactive";
+        const category = categorizeSubscription(r.display_name);
+        const escapeCsv = (s) => `"${(s || "").toString().replace(/"/g, '""')}"`;
+        csvContent += [escapeCsv(r.display_name), r.amount, r.cadence_days, monthlyCost,
+          r.first_seen, r.last_charged, r.next_expected, status, category, r.source, escapeCsv(r.notes)].join(",") + "\n";
+      }
+      res.setHeader("Content-Disposition", "attachment; filename=subscriptions.csv");
+    } else {
+      const result = await pool.query(`
+        SELECT t.date, COALESCE(t.merchant_name, t.name) AS merchant, t.amount,
+               la.name AS account_name,
+               COALESCE(pi.institution_name, te.institution_name, 'CSV Import') AS institution,
+               t.personal_finance_category->>'primary' AS category
+        FROM transactions t
+        JOIN linked_accounts la ON la.account_id = t.account_id
+        LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
+        LEFT JOIN teller_enrollments te ON te.id = la.teller_enrollment_id
+        WHERE t.pending = false AND t.date >= CURRENT_DATE - make_interval(months => $1)
+        ORDER BY t.date DESC
+      `, [months]);
+      csvContent = "Date,Merchant,Amount,Account,Institution,Category\n";
+      for (const r of result.rows) {
+        const escapeCsv = (s) => `"${(s || "").toString().replace(/"/g, '""')}"`;
+        csvContent += [r.date, escapeCsv(r.merchant), r.amount, escapeCsv(r.account_name),
+          escapeCsv(r.institution), escapeCsv(r.category)].join(",") + "\n";
+      }
+      res.setHeader("Content-Disposition", `attachment; filename=transactions-${months}mo.csv`);
+    }
+
+    res.setHeader("Content-Type", "text/csv");
+    res.send(csvContent);
+  } catch (err) {
+    console.error("Export error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
 });
 
 // ---------------------------------------------------------------------------
