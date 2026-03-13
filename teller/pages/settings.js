@@ -147,6 +147,17 @@ router.get("/settings", (req, res) => {
 
   <div id="insights-container"></div>
 
+  <div class="section"><h2>Transaction Categorization</h2>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">ML Categorization</div><div class="desc" id="cat-desc">Use AI to auto-categorize uncategorized transactions (uses Haiku, ~$0.002/batch)</div></div>
+      <div class="setting-control"><button class="btn primary" id="categorize-btn" onclick="runCategorize()">Categorize</button></div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Uncategorized</div><div class="desc">Transactions without a category assignment</div></div>
+      <div class="setting-control"><span id="uncat-count" style="font-size:12px;color:var(--text-muted);">--</span></div>
+    </div>
+  </div>
+
   <div class="section"><h2>API Usage History</h2>
     <div id="usage-summary" style="padding:10px 0;font-size:13px;color:var(--text-muted);font-weight:300;">Loading...</div>
     <div id="usage-history" style="max-height:260px;overflow-y:auto;"></div>
@@ -427,7 +438,27 @@ router.get("/settings", (req, res) => {
       } catch (e) { showMsg(e.message, false); }
       btn.classList.remove('btn-loading'); btn.disabled = false;
     }
-    loadSettings(); loadInsights(); loadUsageHistory();
+    async function loadCatStatus() {
+      try {
+        const res = await apiFetch('/api/categorize/status'); const d = await res.json();
+        document.getElementById('uncat-count').textContent = d.uncategorized + ' transactions';
+        if (!d.ai_available) document.getElementById('categorize-btn').disabled = true;
+      } catch {}
+    }
+    async function runCategorize() {
+      var btn = document.getElementById('categorize-btn');
+      btn.classList.add('btn-loading'); btn.disabled = true;
+      try {
+        var res = await apiFetch('/api/categorize', { method: 'POST' });
+        var data = await res.json();
+        if (res.ok) {
+          showMsg('Categorized ' + data.categorized + ' transactions (' + data.tokens_used + ' tokens, ~$' + data.estimated_cost + '). ' + data.remaining + ' remaining.', true);
+          loadCatStatus();
+        } else showMsg(data.error || 'Failed', false);
+      } catch (e) { showMsg(e.message, false); }
+      btn.classList.remove('btn-loading'); btn.disabled = false;
+    }
+    loadSettings(); loadInsights(); loadUsageHistory(); loadCatStatus();
   </script>
 </body></html>`);
 });
