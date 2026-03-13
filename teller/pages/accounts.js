@@ -3,9 +3,6 @@ const router = express.Router();
 
 module.exports = function(config) {
   const { API_KEY, TELLER_APP_ID, TELLER_ENV } = config;
-// ---------------------------------------------------------------------------
-// GET / — Teller Connect enrollment + CSV import page
-// ---------------------------------------------------------------------------
 router.get("/", (req, res) => {
   const tellerEnv = TELLER_ENV === "production" ? "production" : TELLER_ENV === "development" ? "development" : "sandbox";
   const apiKey = API_KEY || "";
@@ -16,132 +13,57 @@ router.get("/", (req, res) => {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Perfin — Link Account</title>
-  <script src="https://cdn.teller.io/connect/connect.js"></script>
+  <script src="https://cdn.teller.io/connect/connect.js"><\/script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/perfin-shared.css">
   <style>
-    :root {
-      --bg: #080b12; --surface: rgba(255,255,255,0.04); --surface-2: rgba(255,255,255,0.07);
-      --border: rgba(255,255,255,0.08); --border-hover: rgba(255,255,255,0.18);
-      --text: #f0ebe3; --text-muted: rgba(240,235,227,0.5);
-      --warm: #d4a574; --warm-glow: #c8856c; --teal: #5a8f8f;
-      --green: #6fcf97; --green-bg: rgba(111,207,151,0.1);
-      --red: #eb6b6b; --red-bg: rgba(235,107,107,0.1);
-      --radius: 12px;
-    }
-    [data-theme="light"] {
-      --bg: #f5f2ed; --surface: rgba(0,0,0,0.03); --surface-2: rgba(0,0,0,0.06);
-      --border: rgba(0,0,0,0.10); --border-hover: rgba(0,0,0,0.20);
-      --text: #1a1a2e; --text-muted: rgba(26,26,46,0.5);
-      --warm: #b07a4a; --warm-glow: #a0684c; --teal: #3d7272;
-      --green: #2d9f5f; --green-bg: rgba(45,159,95,0.1);
-      --red: #c94444; --red-bg: rgba(201,68,68,0.1);
-    }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: 'Inter', system-ui, sans-serif; background: var(--bg);
-      color: var(--text); min-height: 100vh; position: relative; overflow-x: hidden;
-    }
-    body::before {
-      content: ''; position: fixed; top: -30%; right: -20%; width: 90vw; height: 90vh;
-      background: radial-gradient(ellipse at 50% 30%, rgba(200,133,108,0.28) 0%, rgba(180,120,100,0.15) 25%, rgba(90,143,143,0.12) 50%, transparent 75%);
-      pointer-events: none; z-index: 0; filter: blur(50px);
-    }
-    body::after {
-      content: ''; position: fixed; bottom: -20%; left: -15%; width: 80vw; height: 70vh;
-      background: radial-gradient(ellipse at 40% 60%, rgba(90,143,143,0.20) 0%, rgba(212,165,116,0.10) 35%, rgba(160,100,80,0.05) 60%, transparent 80%);
-      pointer-events: none; z-index: 0; filter: blur(60px);
-    }
-    @keyframes fadeInUp {
-      from { opacity: 0; transform: translateY(16px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-    @keyframes fadeIn {
-      from { opacity: 0; }
-      to { opacity: 1; }
-    }
-    .container { max-width: 640px; margin: 0 auto; padding: 24px 20px; position: relative; z-index: 1; }
-    a { color: var(--warm); text-decoration: none; transition: color 0.2s; }
-    a:hover { color: var(--text); }
-
-    .topnav { display: flex; align-items: center; justify-content: space-between;
-              padding: 20px 0; margin-bottom: 48px; animation: fadeIn 0.3s ease both; }
-    .topnav .logo { font-weight: 300; font-size: 13px; letter-spacing: 2px;
-                    text-transform: uppercase; color: var(--text-muted); }
-    .topnav .nav-links { display: flex; gap: 24px; font-size: 13px; font-weight: 400;
-                         letter-spacing: 0.5px; }
-    .topnav .nav-links a { color: var(--text-muted); }
-    .topnav .nav-links a:hover { color: var(--text); }
-
-    h1 { font-size: 42px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 8px;
-         animation: fadeInUp 0.4s ease both; animation-delay: 0.05s; }
+    .container { max-width: 640px; }
+    .topnav { margin-bottom: 48px; }
     h2 { font-size: 28px; font-weight: 300; letter-spacing: -0.3px; margin-bottom: 8px; }
     h3 { font-size: 10px; font-weight: 500; margin-bottom: 12px; color: var(--text-muted);
          text-transform: uppercase; letter-spacing: 1.5px; }
     p { color: var(--text-muted); font-size: 15px; line-height: 1.6; margin-bottom: 24px; font-weight: 300; }
-
     button { padding: 12px 28px; font-size: 12px; font-weight: 500; cursor: pointer;
              border: 1px solid var(--warm); background: transparent; color: var(--warm);
-             border-radius: 8px; transition: all 0.2s; text-transform: uppercase; letter-spacing: 1px; }
+             border-radius: 8px; transition: all 0.2s; text-transform: uppercase; letter-spacing: 1px;
+             font-family: inherit; }
     button:hover { background: rgba(212,165,116,0.1); color: var(--text); }
     button:disabled { opacity: 0.4; cursor: not-allowed; }
-
     #status { margin-top: 20px; padding: 14px 18px; border-radius: 8px; display: none; font-size: 13px; font-weight: 400; }
     .success { background: var(--green-bg); border: 1px solid rgba(111,207,151,0.15); color: var(--green); }
     .error   { background: var(--red-bg); border: 1px solid rgba(235,107,107,0.15); color: var(--red); }
-
     #items { margin-top: 36px; }
     .item { padding: 16px 18px; margin: 8px 0; background: var(--surface); border: 1px solid var(--border);
             border-radius: var(--radius); font-size: 14px; font-weight: 300; transition: all 0.2s;
-            backdrop-filter: blur(12px); }
+            backdrop-filter: blur(12px); display: flex; align-items: center; justify-content: space-between; }
     .item:hover { border-color: var(--border-hover); background: var(--surface-2); }
-
+    .item-info { flex: 1; }
+    .item-actions { flex-shrink: 0; margin-left: 12px; }
     .section-divider { margin: 48px 0; border: none; border-top: 1px solid var(--border); }
-
     .csv-section { margin-top: 8px; }
     .csv-form { display: flex; flex-direction: column; gap: 18px; max-width: 420px; }
     .csv-form label { font-weight: 500; font-size: 10px; color: var(--text-muted);
                       text-transform: uppercase; letter-spacing: 1.5px; }
     .csv-form select, .csv-form input[type="text"] {
       padding: 10px 14px; font-size: 14px; border: 1px solid var(--border); border-radius: 8px;
-      background: transparent; color: var(--text); width: 100%; font-weight: 300;
-      transition: border-color 0.2s; }
+      background: transparent; color: var(--text); width: 100%; font-weight: 300; transition: border-color 0.2s; }
     .csv-form select:focus, .csv-form input:focus { outline: none; border-color: var(--warm); }
     .csv-form select option { background: #131620; color: var(--text); }
     .csv-form input[type="file"] { font-size: 13px; color: var(--text-muted); }
     .csv-form .field { display: flex; flex-direction: column; gap: 8px; }
     .csv-form input::placeholder { color: var(--text-muted); }
-
     .csv-imports { margin-top: 32px; }
     .csv-import-entry { padding: 14px 18px; margin: 6px 0; background: var(--surface);
                         border: 1px solid var(--border); border-radius: var(--radius);
                         font-size: 13px; font-weight: 300; backdrop-filter: blur(12px); }
-
-    /* Loading spinner */
-    @keyframes spin { to { transform: rotate(360deg); } }
-    .btn-loading { position: relative; color: transparent !important; pointer-events: none; }
-    .btn-loading::after {
-      content: ''; position: absolute; top: 50%; left: 50%; width: 14px; height: 14px;
-      margin: -7px 0 0 -7px; border: 2px solid var(--warm); border-top-color: transparent;
-      border-radius: 50%; animation: spin 0.6s linear infinite;
-    }
-
-    /* Item with actions */
-    .item { display: flex; align-items: center; justify-content: space-between; }
-    .item-info { flex: 1; }
-    .item-actions { flex-shrink: 0; margin-left: 12px; }
     .btn-unlink { padding: 5px 12px; font-size: 10px; font-weight: 500; letter-spacing: 0.5px;
                   border: 1px solid rgba(235,107,107,0.25); border-radius: 6px; cursor: pointer;
                   background: transparent; color: var(--red); text-transform: uppercase;
-                  transition: all 0.2s; }
+                  transition: all 0.2s; font-family: inherit; }
     .btn-unlink:hover { background: var(--red-bg); }
-    @media (max-width: 640px) {
-      .topnav { flex-direction: column; gap: 12px; align-items: flex-start; }
-      .topnav .nav-links { gap: 14px; flex-wrap: wrap; }
-      h1 { font-size: 28px; }
-    }
   </style>
-  <script>document.documentElement.setAttribute('data-theme', localStorage.getItem('perfin-theme') || 'dark');</script>
+  <script>document.documentElement.setAttribute('data-theme', localStorage.getItem('perfin-theme') || 'dark');<\/script>
 </head>
 <body>
   <div class="container">
@@ -238,16 +160,11 @@ router.get("/", (req, res) => {
   </div>
   </div>
 
+  <script src="/perfin-shared.js"><\/script>
   <script>
-    const _apiKey = "${apiKey}";
-    function apiFetch(url, opts = {}) {
-      opts.headers = { ...opts.headers, 'X-Requested-With': 'XMLHttpRequest' };
-      if (_apiKey) { opts.headers['x-api-key'] = _apiKey; }
-      return fetch(url, opts);
-    }
+    window.PERFIN_API_KEY = "${apiKey}";
     const statusEl  = document.getElementById('status');
     const itemsList = document.getElementById('items-list');
-    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
     function showStatus(msg, ok) {
       statusEl.textContent = msg;
@@ -255,18 +172,6 @@ router.get("/", (req, res) => {
       statusEl.style.display = 'block';
       if (statusEl._timer) clearTimeout(statusEl._timer);
       if (ok) { statusEl._timer = setTimeout(() => { statusEl.style.display = 'none'; }, 8000); }
-    }
-
-    function btnLoading(btn, loading, originalText) {
-      if (loading) {
-        btn._origText = btn.textContent;
-        btn.disabled = true;
-        btn.classList.add('btn-loading');
-      } else {
-        btn.disabled = false;
-        btn.classList.remove('btn-loading');
-        btn.textContent = originalText || btn._origText || btn.textContent;
-      }
     }
 
     async function loadItems() {
@@ -278,9 +183,9 @@ router.get("/", (req, res) => {
         itemsList.innerHTML = items.map(i =>
           '<div class="item">' +
             '<div class="item-info"><strong>' + esc(i.institution_name) + '</strong>' +
-            ' (' + esc(i.provider || 'teller') + ') — ' +
-            i.accounts.length + ' account(s) — Status: ' + esc(i.status) + '</div>' +
-            '<div class="item-actions"><button class="btn-unlink" onclick="unlinkAccount(' + i.id + ', ' + JSON.stringify(i.institution_name || '').replace(/</g, '\\u003c') + ')">Unlink</button></div>' +
+            ' (' + esc(i.provider || 'teller') + ') \\u2014 ' +
+            i.accounts.length + ' account(s) \\u2014 Status: ' + esc(i.status) + '</div>' +
+            '<div class="item-actions"><button class="btn-unlink" onclick="unlinkAccount(' + i.id + ', ' + JSON.stringify(i.institution_name || '').replace(/</g, '\\\\u003c') + ')">Unlink</button></div>' +
           '</div>'
         ).join('');
       } catch (e) {
@@ -377,7 +282,7 @@ router.get("/", (req, res) => {
         const data = await resp.json();
         if (resp.ok) {
           showCsvStatus('Imported ' + data.rows_imported + ' transactions (' + data.rows_skipped +
-            ' skipped) — Format: ' + data.format_detected, true);
+            ' skipped) \\u2014 Format: ' + data.format_detected, true);
           loadCsvImports(); loadItems();
         } else showCsvStatus('Import failed: ' + (data.error || 'HTTP ' + resp.status), false);
       } catch (e) { showCsvStatus('Import failed: Could not reach server. ' + e.message, false); }
@@ -392,9 +297,9 @@ router.get("/", (req, res) => {
         const imports = await res.json();
         if (!imports.length) { list.textContent = 'No CSV imports yet.'; return; }
         list.innerHTML = imports.map(i =>
-          '<div class="csv-import-entry"><strong>' + esc(i.institution) + '</strong> — ' +
-          esc(i.account_label) + ' — ' + i.rows_imported + ' rows — ' +
-          new Date(i.imported_at).toLocaleDateString() + ' — <em>' + esc(i.filename) + '</em></div>'
+          '<div class="csv-import-entry"><strong>' + esc(i.institution) + '</strong> \\u2014 ' +
+          esc(i.account_label) + ' \\u2014 ' + i.rows_imported + ' rows \\u2014 ' +
+          new Date(i.imported_at).toLocaleDateString() + ' \\u2014 <em>' + esc(i.filename) + '</em></div>'
         ).join('');
       } catch (e) { list.textContent = 'Could not load import history.'; }
     }
@@ -411,11 +316,11 @@ router.get("/", (req, res) => {
           '<div class="item">' +
             '<div class="item-info"><strong>' + esc(a.name) + '</strong>' +
             (a.institution ? ' (' + esc(a.institution) + ')' : '') +
-            ' — ' + esc(a.account_type) + ' — <span style="color:var(--green);font-weight:400;">$' +
+            ' \\u2014 ' + esc(a.account_type) + ' \\u2014 <span style="color:var(--green);font-weight:400;">$' +
             parseFloat(a.balance).toLocaleString('en-US', {minimumFractionDigits: 2}) + '</span></div>' +
             '<div class="item-actions" style="display:flex;gap:6px;">' +
               '<button class="btn-unlink" style="border-color:var(--border);color:var(--warm);" onclick="updateInvestment(' + a.id + ')">Update</button>' +
-              '<button class="btn-unlink" onclick="deleteInvestment(' + a.id + ', ' + JSON.stringify(a.name).replace(/</g, '\\u003c') + ')">Remove</button>' +
+              '<button class="btn-unlink" onclick="deleteInvestment(' + a.id + ', ' + JSON.stringify(a.name).replace(/</g, '\\\\u003c') + ')">Remove</button>' +
             '</div></div>'
         ).join('');
       } catch (e) { list.textContent = 'Could not load investment accounts.'; }
@@ -469,7 +374,7 @@ router.get("/", (req, res) => {
     loadItems();
     loadCsvImports();
     loadInvestments();
-  </script>
+  <\/script>
 </body>
 </html>`);
 });

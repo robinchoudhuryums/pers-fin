@@ -24,6 +24,7 @@
 
 require("dotenv").config({ path: require("path").resolve(__dirname, "../.env") });
 
+const path = require("path");
 const express = require("express");
 const crypto = require("crypto");
 const helmet = require("helmet");
@@ -53,6 +54,9 @@ app.use(morgan("short"));
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
+// Serve shared static assets (CSS, JS) — before auth so login page can use them
+app.use(express.static(path.join(__dirname, "public"), { maxAge: "1h" }));
+
 // ---------------------------------------------------------------------------
 // Session middleware
 // ---------------------------------------------------------------------------
@@ -76,6 +80,7 @@ app.use(session({
 function requireAuth(req, res, next) {
   if (!AUTH_SECRET) return next();
   if (["/login", "/api/login", "/manifest.json", "/sw.js", "/health"].includes(req.path)) return next();
+  if (req.path.endsWith(".css") || req.path.endsWith(".js")) return next();
   if (req.session && req.session.authenticated) {
     const timeout = (req.session.timeoutMinutes || 15) * 60 * 1000;
     if (Date.now() - req.session.lastActivity < timeout) {

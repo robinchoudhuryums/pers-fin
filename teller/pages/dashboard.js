@@ -17,143 +17,11 @@ router.get("/dashboard", (req, res) => {
   <meta name="theme-color" content="#080b12">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/perfin-shared.css">
   <style>
-    :root {
-      --bg: #080b12; --surface: rgba(255,255,255,0.04); --surface-2: rgba(255,255,255,0.07);
-      --border: rgba(255,255,255,0.08); --border-hover: rgba(255,255,255,0.18);
-      --text: #f0ebe3; --text-muted: rgba(240,235,227,0.5);
-      --warm: #d4a574; --warm-glow: #c8856c; --teal: #5a8f8f;
-      --green: #6fcf97; --green-bg: rgba(111,207,151,0.1);
-      --red: #eb6b6b; --red-bg: rgba(235,107,107,0.1);
-      --yellow: #f0c36d; --yellow-bg: rgba(240,195,109,0.1);
-      --blue: #7fb5e6; --blue-bg: rgba(127,181,230,0.1);
-      --radius: 12px;
-    }
-    [data-theme="light"] {
-      --bg: #f5f2ed; --surface: rgba(0,0,0,0.03); --surface-2: rgba(0,0,0,0.06);
-      --border: rgba(0,0,0,0.10); --border-hover: rgba(0,0,0,0.20);
-      --text: #1a1a2e; --text-muted: rgba(26,26,46,0.5);
-      --warm: #b07a4a; --warm-glow: #a0684c; --teal: #3d7272;
-      --green: #2d9f5f; --green-bg: rgba(45,159,95,0.1);
-      --red: #c94444; --red-bg: rgba(201,68,68,0.1);
-      --yellow: #c49a2a; --yellow-bg: rgba(196,154,42,0.1);
-      --blue: #4a8abf; --blue-bg: rgba(74,138,191,0.1);
-    }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: 'Inter', system-ui, sans-serif; background: var(--bg);
-      color: var(--text); min-height: 100vh; position: relative; overflow-x: hidden;
-    }
-    body::before {
-      content: ''; position: fixed; top: -30%; right: -20%; width: 90vw; height: 90vh;
-      background: radial-gradient(ellipse at 50% 30%, rgba(200,133,108,0.28) 0%, rgba(180,120,100,0.15) 25%, rgba(90,143,143,0.12) 50%, transparent 75%);
-      pointer-events: none; z-index: 0; filter: blur(50px);
-    }
-    body::after {
-      content: ''; position: fixed; bottom: -20%; left: -15%; width: 80vw; height: 70vh;
-      background: radial-gradient(ellipse at 40% 60%, rgba(90,143,143,0.20) 0%, rgba(212,165,116,0.10) 35%, rgba(160,100,80,0.05) 60%, transparent 80%);
-      pointer-events: none; z-index: 0; filter: blur(60px);
-    }
-    [data-theme="light"] body::before {
-      background: radial-gradient(ellipse at 50% 30%, rgba(200,133,108,0.12) 0%, rgba(90,143,143,0.06) 50%, transparent 75%);
-    }
-    [data-theme="light"] body::after {
-      background: radial-gradient(ellipse at 40% 60%, rgba(90,143,143,0.10) 0%, rgba(212,165,116,0.05) 35%, transparent 80%);
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    @keyframes fadeInUp {
-      from { opacity: 0; transform: translateY(16px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-    @keyframes fadeIn {
-      from { opacity: 0; }
-      to { opacity: 1; }
-    }
-    @keyframes slideIn {
-      from { opacity: 0; transform: translateX(-8px); }
-      to { opacity: 1; transform: translateX(0); }
-    }
-    @keyframes countUp {
-      from { opacity: 0; transform: scale(0.95); }
-      to { opacity: 1; transform: scale(1); }
-    }
-    .animate-in { animation: fadeInUp 0.4s ease both; }
-    .animate-fade { animation: fadeIn 0.5s ease both; }
-    .btn-loading { position: relative; color: transparent !important; pointer-events: none; }
-    .btn-loading::after {
-      content: ''; position: absolute; top: 50%; left: 50%; width: 14px; height: 14px;
-      margin: -7px 0 0 -7px; border: 2px solid var(--warm); border-top-color: transparent;
-      border-radius: 50%; animation: spin 0.6s linear infinite;
-    }
-    .container { max-width: 1060px; margin: 0 auto; padding: 24px 20px; position: relative; z-index: 1; }
-    a { color: var(--warm); text-decoration: none; transition: color 0.2s; }
-    a:hover { color: var(--text); }
-
-    .topnav { display: flex; align-items: center; justify-content: space-between;
-              padding: 20px 0; margin-bottom: 40px; animation: fadeIn 0.3s ease both; }
-    .topnav .logo { font-weight: 300; font-size: 13px; letter-spacing: 2px;
-                    text-transform: uppercase; color: var(--text-muted); }
-    .topnav .nav-links { display: flex; gap: 24px; font-size: 13px; font-weight: 400;
-                         letter-spacing: 0.5px; }
-    .topnav .nav-links a { color: var(--text-muted); }
-    .topnav .nav-links a:hover { color: var(--text); }
-    .topnav .nav-links a.active { color: var(--warm); }
-
-    h1 { font-size: 42px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 8px;
-         animation: fadeInUp 0.4s ease both; animation-delay: 0.05s; }
-    .subtitle { color: var(--text-muted); margin-bottom: 36px; font-size: 15px; font-weight: 300;
-                letter-spacing: 0.3px; animation: fadeInUp 0.4s ease both; animation-delay: 0.1s; }
-
+    .container { max-width: 1060px; }
     .top-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
                  gap: 16px; margin-bottom: 36px; }
-    .card { padding: 24px; border-radius: var(--radius); background: var(--surface);
-            border: 1px solid var(--border); transition: all 0.3s ease; backdrop-filter: blur(12px);
-            animation: fadeInUp 0.4s ease both; }
-    .card:nth-child(1) { animation-delay: 0.1s; }
-    .card:nth-child(2) { animation-delay: 0.15s; }
-    .card:nth-child(3) { animation-delay: 0.2s; }
-    .card:nth-child(4) { animation-delay: 0.25s; }
-    .card:nth-child(5) { animation-delay: 0.3s; }
-    .card:hover { border-color: var(--border-hover); background: var(--surface-2); }
-    .card .label { font-size: 10px; color: var(--text-muted); text-transform: uppercase;
-                   letter-spacing: 1.5px; font-weight: 500; }
-    .card .value { font-size: 28px; font-weight: 300; margin-top: 8px;
-                   font-variant-numeric: tabular-nums; letter-spacing: -1px; }
-    .card .value.warm { color: var(--warm-glow); }
-    .card .value.teal { color: var(--teal); }
-    .card .value.green { color: var(--green); }
-    .card .value.red { color: var(--red); }
-    .card .sub { font-size: 11px; color: var(--text-muted); margin-top: 4px; font-weight: 300; }
-
-    .actions { display: flex; gap: 10px; margin-bottom: 28px; flex-wrap: wrap; align-items: center; }
-    .actions button {
-      padding: 9px 18px; font-size: 12px; font-weight: 500; letter-spacing: 0.5px;
-      border: 1px solid var(--border); border-radius: 8px; cursor: pointer;
-      background: transparent; color: var(--text-muted); transition: all 0.2s; text-transform: uppercase;
-    }
-    .actions button:hover:not(:disabled) { border-color: var(--warm); color: var(--text); }
-    .actions button.primary { border-color: var(--warm); color: var(--warm); }
-    .actions button.primary:hover:not(:disabled) { background: rgba(212,165,116,0.1); color: var(--text); }
-
-    @keyframes slideDown {
-      from { opacity: 0; transform: translateY(-8px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-    .status-msg { padding: 14px 18px; border-radius: 8px; margin-bottom: 20px; display: none;
-                  font-size: 13px; font-weight: 400; }
-    .status-msg.success { background: var(--green-bg); border: 1px solid rgba(111,207,151,0.15);
-                          color: var(--green); display: block; animation: slideDown 0.3s ease both; }
-    .status-msg.error { background: var(--red-bg); border: 1px solid rgba(235,107,107,0.15);
-                        color: var(--red); display: block; animation: slideDown 0.3s ease both; }
-
-    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 28px; }
-    @media (max-width: 768px) { .two-col { grid-template-columns: 1fr; } }
-
-    .section { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-               padding: 24px; backdrop-filter: blur(12px); animation: fadeInUp 0.4s ease both; animation-delay: 0.3s; }
-    .section h2 { font-size: 10px; font-weight: 500; color: var(--text-muted); text-transform: uppercase;
-                  letter-spacing: 1.5px; margin-bottom: 20px; }
-
     .accounts-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
                      gap: 12px; margin-bottom: 28px; animation: fadeInUp 0.4s ease both; animation-delay: 0.25s; }
     .acct-card { padding: 18px; border-radius: var(--radius); background: var(--surface);
@@ -170,25 +38,11 @@ router.get("/dashboard", (req, res) => {
     .acct-card .acct-balance.neutral { color: var(--warm-glow); }
     .acct-card .acct-type { font-size: 10px; color: var(--text-muted); margin-top: 4px;
                             text-transform: uppercase; letter-spacing: 0.5px; font-weight: 400; }
-
-    table { width: 100%; border-collapse: collapse; }
-    th { text-align: left; padding: 10px 12px; font-size: 9px; color: var(--text-muted);
-         text-transform: uppercase; letter-spacing: 1.5px; font-weight: 500;
-         border-bottom: 1px solid var(--border); }
-    td { padding: 12px; border-bottom: 1px solid rgba(255,255,255,0.04); font-size: 13px; font-weight: 300; }
-    tr { transition: background 0.15s; }
-    tr:hover { background: var(--surface); }
-    .amount { font-weight: 400; font-variant-numeric: tabular-nums; letter-spacing: -0.3px; }
-    .amount.warm { color: var(--warm-glow); }
-    .amount.teal { color: var(--teal); }
-
     .bar-container { width: 100%; height: 6px; background: rgba(255,255,255,0.06);
                      border-radius: 3px; overflow: hidden; }
     .bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
-
-    .empty-msg { text-align: center; padding: 40px; color: var(--text-muted); font-weight: 300; font-size: 14px; }
-
-    /* Charts */
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 28px; }
+    @media (max-width: 768px) { .two-col { grid-template-columns: 1fr; } }
     .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 28px;
                    animation: fadeInUp 0.4s ease both; animation-delay: 0.15s; }
     .chart-card { padding: 20px; border-radius: var(--radius); background: var(--surface);
@@ -198,10 +52,6 @@ router.get("/dashboard", (req, res) => {
     .chart-card canvas { max-height: 240px; }
     @media (max-width: 640px) {
       .charts-grid { grid-template-columns: 1fr; }
-      .topnav { flex-direction: column; gap: 12px; align-items: flex-start; }
-      .topnav .nav-links { gap: 16px; flex-wrap: wrap; }
-      h1 { font-size: 28px; }
-      .summary { grid-template-columns: 1fr 1fr; }
       .two-col { grid-template-columns: 1fr; }
       .accounts-grid { grid-template-columns: 1fr; }
     }
@@ -299,48 +149,9 @@ router.get("/dashboard", (req, res) => {
   </div>
   </div>
 
+  <script src="/perfin-shared.js"></script>
   <script>
-    const API_KEY = ${JSON.stringify(apiKey)};
-    const statusMsg = document.getElementById('status-msg');
-
-    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
-
-    function apiFetch(url, opts = {}) {
-      opts.headers = { ...opts.headers, 'X-Requested-With': 'XMLHttpRequest' };
-      if (API_KEY) {
-        opts.headers['x-api-key'] = API_KEY;
-      }
-      return fetch(url, opts);
-    }
-
-    function showMsg(text, ok) {
-      statusMsg.textContent = text;
-      statusMsg.className = 'status-msg ' + (ok ? 'success' : 'error');
-      if (statusMsg._timer) clearTimeout(statusMsg._timer);
-      statusMsg._timer = setTimeout(() => {
-        statusMsg.style.display = 'none'; statusMsg.className = 'status-msg';
-      }, ok ? 5000 : 10000);
-    }
-
-    function btnLoading(btn, loading, originalText) {
-      if (loading) {
-        btn._origText = btn.textContent;
-        btn.disabled = true;
-        btn.classList.add('btn-loading');
-      } else {
-        btn.disabled = false;
-        btn.classList.remove('btn-loading');
-        btn.textContent = originalText || btn._origText || btn.textContent;
-      }
-    }
-
-    const fmt = (n) => '$' + parseFloat(n || 0).toFixed(2);
-    const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '\\u2014';
-    const fmtMonth = (m) => {
-      const [y, mo] = m.split('-');
-      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-      return months[parseInt(mo)-1] + ' ' + y;
-    };
+    window.PERFIN_API_KEY = ${JSON.stringify(apiKey)};
 
     const barColors = ['#c8856c','#d4a574','#5a8f8f','#6fcf97','#7fb5e6','#f0c36d','#eb6b6b','#b07cc6','#e8a87c','#85dcb0','#7bb5d4','#d4a0a0','#9fd4c9','#c4b28f','#a8c3d4'];
 

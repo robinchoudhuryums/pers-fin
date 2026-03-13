@@ -18,26 +18,10 @@ router.get("/login", (_req, res) => {
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="theme-color" content="#080b12">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/perfin-shared.css">
   <style>
-    :root { --bg: #080b12; --surface: rgba(255,255,255,0.04); --border: rgba(255,255,255,0.08);
-      --text: #f0ebe3; --text-muted: rgba(240,235,227,0.5); --warm: #d4a574; --warm-glow: #c8856c;
-      --red: #eb6b6b; --red-bg: rgba(235,107,107,0.1); }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg); color: var(--text);
-           min-height: 100vh; display: flex; align-items: center; justify-content: center;
-           position: relative; overflow: hidden; }
-    body::before { content: ''; position: fixed; top: -30%; right: -20%; width: 90vw; height: 90vh;
-      background: radial-gradient(ellipse at 50% 30%, rgba(200,133,108,0.28) 0%, rgba(180,120,100,0.15) 25%, rgba(90,143,143,0.12) 50%, transparent 75%);
-      pointer-events: none; z-index: 0; filter: blur(50px); }
-    body::after { content: ''; position: fixed; bottom: -20%; left: -15%; width: 80vw; height: 70vh;
-      background: radial-gradient(ellipse at 40% 60%, rgba(90,143,143,0.20) 0%, rgba(212,165,116,0.10) 35%, transparent 80%);
-      pointer-events: none; z-index: 0; filter: blur(60px); }
-    @keyframes fadeInUp {
-      from { opacity: 0; transform: translateY(16px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
+    body { display: flex; align-items: center; justify-content: center; overflow: hidden; }
     @keyframes scaleIn {
       from { opacity: 0; transform: scale(0.96); }
       to { opacity: 1; transform: scale(1); }

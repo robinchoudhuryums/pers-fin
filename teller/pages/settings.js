@@ -14,102 +14,10 @@ router.get("/settings", (req, res) => {
   <title>Settings — Perfin</title>
   <link rel="manifest" href="/manifest.json">
   <meta name="theme-color" content="#080b12">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/perfin-shared.css">
   <style>
-    :root {
-      --bg: #080b12; --surface: rgba(255,255,255,0.04); --surface-2: rgba(255,255,255,0.07);
-      --border: rgba(255,255,255,0.08); --border-hover: rgba(255,255,255,0.18);
-      --text: #f0ebe3; --text-muted: rgba(240,235,227,0.5);
-      --warm: #d4a574; --warm-glow: #c8856c; --teal: #5a8f8f;
-      --green: #6fcf97; --green-bg: rgba(111,207,151,0.1);
-      --red: #eb6b6b; --red-bg: rgba(235,107,107,0.1);
-      --radius: 12px;
-    }
-    [data-theme="light"] {
-      --bg: #f5f2ed; --surface: rgba(0,0,0,0.03); --surface-2: rgba(0,0,0,0.06);
-      --border: rgba(0,0,0,0.10); --border-hover: rgba(0,0,0,0.20);
-      --text: #1a1a2e; --text-muted: rgba(26,26,46,0.5);
-      --warm: #b07a4a; --warm-glow: #a0684c; --teal: #3d7272;
-      --green: #2d9f5f; --green-bg: rgba(45,159,95,0.1);
-      --red: #c94444; --red-bg: rgba(201,68,68,0.1);
-    }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg); color: var(--text);
-           min-height: 100vh; position: relative; overflow-x: hidden; }
-    body::before { content: ''; position: fixed; top: -30%; right: -20%; width: 90vw; height: 90vh;
-      background: radial-gradient(ellipse at 50% 30%, rgba(200,133,108,0.28) 0%, rgba(180,120,100,0.15) 25%, rgba(90,143,143,0.12) 50%, transparent 75%);
-      pointer-events: none; z-index: 0; filter: blur(50px); }
-    body::after { content: ''; position: fixed; bottom: -20%; left: -15%; width: 80vw; height: 70vh;
-      background: radial-gradient(ellipse at 40% 60%, rgba(90,143,143,0.20) 0%, rgba(212,165,116,0.10) 35%, transparent 80%);
-      pointer-events: none; z-index: 0; filter: blur(60px); }
-    [data-theme="light"] body::before {
-      background: radial-gradient(ellipse at 50% 30%, rgba(200,133,108,0.12) 0%, rgba(90,143,143,0.06) 50%, transparent 75%); }
-    [data-theme="light"] body::after {
-      background: radial-gradient(ellipse at 40% 60%, rgba(90,143,143,0.10) 0%, rgba(212,165,116,0.05) 35%, transparent 80%); }
-    @keyframes fadeInUp {
-      from { opacity: 0; transform: translateY(16px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-    @keyframes fadeIn {
-      from { opacity: 0; }
-      to { opacity: 1; }
-    }
-    .container { max-width: 640px; margin: 0 auto; padding: 24px 20px; position: relative; z-index: 1; }
-    a { color: var(--warm); text-decoration: none; }
-    a:hover { color: var(--text); }
-    .topnav { display: flex; align-items: center; justify-content: space-between;
-              padding: 20px 0; margin-bottom: 40px; animation: fadeIn 0.3s ease both; }
-    .topnav .logo { font-weight: 300; font-size: 13px; letter-spacing: 2px; text-transform: uppercase; color: var(--text-muted); }
-    .topnav .nav-links { display: flex; gap: 24px; font-size: 13px; font-weight: 400; letter-spacing: 0.5px; }
-    .topnav .nav-links a { color: var(--text-muted); }
-    .topnav .nav-links a:hover { color: var(--text); }
-    .topnav .nav-links a.active { color: var(--warm); }
-    h1 { font-size: 36px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 6px;
-         animation: fadeInUp 0.4s ease both; animation-delay: 0.05s; }
-    .subtitle { color: var(--text-muted); margin-bottom: 32px; font-size: 15px; font-weight: 300;
-                animation: fadeInUp 0.4s ease both; animation-delay: 0.1s; }
-    .section { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-               padding: 24px; margin-bottom: 16px; backdrop-filter: blur(12px);
-               animation: fadeInUp 0.4s ease both; }
-    .section:nth-of-type(1) { animation-delay: 0.15s; }
-    .section:nth-of-type(2) { animation-delay: 0.2s; }
-    .section:nth-of-type(3) { animation-delay: 0.25s; }
-    .section:nth-of-type(4) { animation-delay: 0.3s; }
-    .section h2 { font-size: 10px; font-weight: 500; color: var(--text-muted); text-transform: uppercase;
-                  letter-spacing: 1.5px; margin-bottom: 20px; }
-    .setting-row { display: flex; align-items: center; justify-content: space-between;
-                   padding: 14px 0; border-bottom: 1px solid rgba(128,128,128,0.08); }
-    .setting-row:last-child { border-bottom: none; }
-    .setting-info .name { font-size: 14px; font-weight: 400; margin-bottom: 3px; }
-    .setting-info .desc { font-size: 12px; color: var(--text-muted); font-weight: 300; }
-    .setting-control { flex-shrink: 0; margin-left: 20px; }
-    .toggle { position: relative; width: 44px; height: 24px; cursor: pointer; display: inline-block; }
-    .toggle input { opacity: 0; width: 0; height: 0; }
-    .toggle .slider { position: absolute; top: 0; left: 0; right: 0; bottom: 0;
-      background: rgba(128,128,128,0.3); border-radius: 12px; transition: 0.3s; }
-    .toggle .slider::before { content: ''; position: absolute; width: 18px; height: 18px;
-      left: 3px; bottom: 3px; background: var(--text); border-radius: 50%; transition: 0.3s; }
-    .toggle input:checked + .slider { background: var(--warm); }
-    .toggle input:checked + .slider::before { transform: translateX(20px); }
-    select, input[type="number"] { padding: 8px 12px; font-size: 13px; border: 1px solid var(--border);
-      border-radius: 8px; background: transparent; color: var(--text); font-family: inherit; font-weight: 300; }
-    select:focus, input[type="number"]:focus { outline: none; border-color: var(--warm); }
-    select option { background: var(--bg); }
-    input[type="number"] { width: 80px; text-align: center; }
-    .btn { padding: 8px 16px; font-size: 12px; font-weight: 500; letter-spacing: 0.5px;
-      border: 1px solid var(--border); border-radius: 8px; cursor: pointer; background: transparent;
-      color: var(--text-muted); transition: all 0.2s; text-transform: uppercase; font-family: inherit; }
-    .btn:hover:not(:disabled) { border-color: var(--warm); color: var(--text); }
-    .btn.primary { border-color: var(--warm); color: var(--warm); }
-    .btn.primary:hover:not(:disabled) { background: rgba(212,165,116,0.1); color: var(--text); }
-    .btn.danger { border-color: rgba(235,107,107,0.25); color: var(--red); }
-    .btn.danger:hover { background: var(--red-bg); }
-    .status-msg { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; display: none; font-size: 13px; }
-    .status-msg.success { background: var(--green-bg); border: 1px solid rgba(111,207,151,0.15);
-      color: var(--green); display: block; }
-    .status-msg.error { background: var(--red-bg); border: 1px solid rgba(235,107,107,0.15);
-      color: var(--red); display: block; }
+    .container { max-width: 640px; }
     .insight-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
       padding: 20px; margin-top: 12px; backdrop-filter: blur(12px); }
     .insight-card h3 { font-size: 14px; font-weight: 400; margin-bottom: 10px; }
@@ -117,18 +25,11 @@ router.get("/settings", (req, res) => {
     .insight-text strong { color: var(--text); font-weight: 500; }
     .insight-text li { margin-left: 16px; margin-bottom: 6px; }
     .insight-meta { font-size: 11px; color: var(--text-muted); margin-top: 10px; }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    .btn-loading { position: relative; color: transparent !important; pointer-events: none; }
-    .btn-loading::after { content: ''; position: absolute; top: 50%; left: 50%; width: 14px; height: 14px;
-      margin: -7px 0 0 -7px; border: 2px solid var(--warm); border-top-color: transparent;
-      border-radius: 50%; animation: spin 0.6s linear infinite; }
-    @media (max-width: 640px) {
-      .topnav { flex-direction: column; gap: 12px; align-items: flex-start; }
-      .topnav .nav-links { gap: 14px; flex-wrap: wrap; }
-      h1 { font-size: 28px; }
-      .setting-row { flex-direction: column; align-items: flex-start; gap: 10px; }
-      .setting-control { margin-left: 0; }
-    }
+    select, input[type="number"] { padding: 8px 12px; font-size: 13px; border: 1px solid var(--border);
+      border-radius: 8px; background: transparent; color: var(--text); font-family: inherit; font-weight: 300; }
+    select:focus, input[type="number"]:focus { outline: none; border-color: var(--warm); }
+    select option { background: var(--bg); }
+    input[type="number"] { width: 80px; text-align: center; }
   </style>
   <script>document.documentElement.setAttribute('data-theme', localStorage.getItem('perfin-theme') || 'dark');</script>
 </head><body>
@@ -138,6 +39,7 @@ router.get("/settings", (req, res) => {
     <div class="nav-links">
       <a href="/dashboard">Dashboard</a>
       <a href="/subscriptions">Subscriptions</a>
+      <a href="/goals">Goals</a>
       <a href="/">Accounts</a>
       <a href="/settings" class="active">Settings</a>
     </div>
@@ -308,21 +210,9 @@ router.get("/settings", (req, res) => {
     </div>
   </div>
   </div>
+  <script src="/perfin-shared.js"></script>
   <script>
-    const API_KEY = '${apiKey}';
-    const statusEl = document.getElementById('status-msg');
-    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
-    function apiFetch(url, opts = {}) {
-      opts.headers = { ...opts.headers, 'X-Requested-With': 'XMLHttpRequest' };
-      if (API_KEY) { opts.headers['x-api-key'] = API_KEY; }
-      return fetch(url, opts);
-    }
-    function showMsg(text, ok) {
-      statusEl.textContent = text;
-      statusEl.className = 'status-msg ' + (ok ? 'success' : 'error');
-      clearTimeout(statusEl._t);
-      statusEl._t = setTimeout(() => { statusEl.style.display = 'none'; statusEl.className = 'status-msg'; }, ok ? 3000 : 6000);
-    }
+    window.PERFIN_API_KEY = '${apiKey}';
     function applyTheme(t) { document.documentElement.setAttribute('data-theme', t); localStorage.setItem('perfin-theme', t); }
     async function loadSettings() {
       try {
