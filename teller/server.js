@@ -119,9 +119,9 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.teller.io", "https://cdn.jsdelivr.net"],
-      connectSrc: ["'self'", "https://api.teller.io"],
-      frameSrc: ["https://cdn.teller.io"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.teller.io", "https://cdn.jsdelivr.net", "https://cdn.plaid.com"],
+      connectSrc: ["'self'", "https://api.teller.io", "https://*.plaid.com"],
+      frameSrc: ["https://cdn.teller.io", "https://cdn.plaid.com"],
       styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
       fontSrc: ["'self'", "https://fonts.gstatic.com"],
     },
@@ -190,6 +190,7 @@ app.use(require("./routes/insights"));
 app.use(require("./routes/budgets"));
 app.use(require("./routes/categorize"));
 app.use(require("./routes/notifications"));
+app.use(require("./routes/investments"));
 
 // ---------------------------------------------------------------------------
 // Mount HTML page modules

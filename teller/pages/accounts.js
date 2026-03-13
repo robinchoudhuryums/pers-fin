@@ -127,7 +127,10 @@ router.get("/", (req, res) => {
 
   <div class="csv-section">
     <h2>Investment Accounts</h2>
-    <p>Manually track brokerage, retirement, and other investment accounts not available via bank linking.</p>
+    <p>Track brokerage, retirement, and other investment accounts. Link via Plaid or add manually.</p>
+    <div style="margin-bottom:16px;">
+      <button id="plaid-inv-btn" onclick="linkPlaidInvestments()" style="display:none;">Link Investment Account via Plaid</button>
+    </div>
     <div class="csv-form" id="inv-form">
       <div class="field">
         <label>Account Name</label>
@@ -372,6 +375,48 @@ router.get("/", (req, res) => {
       } catch (e) { showStatus(e.message, false); }
     }
 
+    // Plaid investment linking
+    async function checkPlaid() {
+      try {
+        var res = await apiFetch('/api/plaid/status'); var d = await res.json();
+        if (d.configured) document.getElementById('plaid-inv-btn').style.display = 'inline-block';
+      } catch {}
+    }
+    async function linkPlaidInvestments() {
+      try {
+        var res = await apiFetch('/api/plaid/link-token', { method: 'POST' });
+        var d = await res.json();
+        if (!res.ok) { showStatus(d.error || 'Failed', false); return; }
+        // Load Plaid Link JS if not loaded
+        if (!window.Plaid) {
+          await new Promise(function(resolve, reject) {
+            var s = document.createElement('script');
+            s.src = 'https://cdn.plaid.com/link/v2/stable/link-initialize.js';
+            s.onload = resolve; s.onerror = reject;
+            document.head.appendChild(s);
+          });
+        }
+        var handler = window.Plaid.create({
+          token: d.link_token,
+          onSuccess: async function(public_token, metadata) {
+            try {
+              var exRes = await apiFetch('/api/plaid/exchange', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ public_token: public_token, institution: metadata.institution })
+              });
+              var exData = await exRes.json();
+              if (exRes.ok) {
+                showStatus('Linked ' + exData.accounts_stored + ' investment accounts with ' + exData.holdings_stored + ' holdings.', true);
+                loadInvestments();
+              } else showStatus(exData.error || 'Failed', false);
+            } catch (e) { showStatus(e.message, false); }
+          },
+          onExit: function() {}
+        });
+        handler.open();
+      } catch (e) { showStatus(e.message, false); }
+    }
+    checkPlaid();
     loadItems();
     loadCsvImports();
     loadInvestments();

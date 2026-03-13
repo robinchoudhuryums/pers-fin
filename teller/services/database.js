@@ -128,6 +128,32 @@ async function runMigrations() {
       keys JSONB NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
+    // Plaid investment items
+    await pool.query(`CREATE TABLE IF NOT EXISTS plaid_investment_items (
+      id SERIAL PRIMARY KEY,
+      item_id TEXT NOT NULL UNIQUE,
+      institution_name TEXT NOT NULL DEFAULT 'Unknown',
+      access_token_enc BYTEA NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+    // Add plaid_account_id to investment_accounts
+    await pool.query("ALTER TABLE investment_accounts ADD COLUMN IF NOT EXISTS plaid_account_id TEXT UNIQUE");
+    // Investment holdings
+    await pool.query(`CREATE TABLE IF NOT EXISTS investment_holdings (
+      id SERIAL PRIMARY KEY,
+      plaid_account_id TEXT NOT NULL,
+      security_id TEXT NOT NULL,
+      ticker TEXT,
+      name TEXT NOT NULL DEFAULT 'Unknown',
+      quantity NUMERIC(16,6) NOT NULL DEFAULT 0,
+      cost_basis NUMERIC(14,2) NOT NULL DEFAULT 0,
+      current_value NUMERIC(14,2) NOT NULL DEFAULT 0,
+      security_type TEXT DEFAULT 'unknown',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(plaid_account_id, security_id)
+    )`);
     console.log("Migrations complete.");
   } catch (err) {
     console.error("Migration error (non-fatal):", err.message);
