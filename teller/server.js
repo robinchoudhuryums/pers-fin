@@ -48,6 +48,9 @@ const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toSt
 
 // --- Express app setup ---
 const app = express();
+// EJS template engine
+app.set("view engine", "ejs");
+app.set("views", path.join(__dirname, "views"));
 // Trust first proxy (Render/Fly.io load balancer) so secure cookies work behind TLS termination
 app.set("trust proxy", 1);
 app.use(morgan("short"));

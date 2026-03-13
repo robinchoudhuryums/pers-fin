@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title><%= title %> — Perfin</title>
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#080b12">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/perfin-shared.css">
+<% if (typeof extraStyles !== 'undefined' && extraStyles) { %>
+  <style><%- extraStyles %></style>
+<% } %>
+  <script>document.documentElement.setAttribute('data-theme', localStorage.getItem('perfin-theme') || 'dark');</script>
+</head><body>
+  <div class="container">

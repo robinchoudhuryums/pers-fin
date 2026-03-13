@@ -1,0 +1,174 @@
+<%- include('partials/head', { title: 'Budgets', extraStyles: `
+    .container { max-width: 720px; }
+    h1 { font-size: 36px; }
+    .subtitle { margin-bottom: 32px; }
+    .budget-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 20px; margin-bottom: 12px; backdrop-filter: blur(12px); transition: border-color 0.2s; }
+    .budget-card:hover { border-color: var(--border-hover); }
+    .budget-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+    .budget-category { font-size: 15px; font-weight: 400; }
+    .budget-amounts { font-size: 13px; color: var(--text-muted); }
+    .budget-bar { height: 6px; background: var(--surface-2); border-radius: 3px; overflow: hidden; margin: 8px 0; }
+    .budget-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
+    .budget-meta { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-muted); }
+    .budget-actions { display: flex; gap: 6px; margin-top: 8px; }
+    .ai-badge { font-size: 9px; text-transform: uppercase; letter-spacing: 1px; color: var(--warm);
+      padding: 2px 6px; border: 1px solid rgba(212,165,116,0.3); border-radius: 4px; }
+    .add-form { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 20px; margin-bottom: 20px; display: none; }
+    .add-form .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .add-form label { font-size: 11px; color: var(--text-muted); display: block; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .add-form input { width: 100%; padding: 8px 10px; font-size: 13px; border: 1px solid var(--border);
+      border-radius: 8px; background: transparent; color: var(--text); font-family: inherit; }
+    .suggest-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 20px; margin-bottom: 16px; }
+    .suggest-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 0;
+      border-bottom: 1px solid rgba(128,128,128,0.08); font-size: 13px; }
+    .suggest-item:last-child { border-bottom: none; }
+    .suggest-item input { width: 90px; padding: 4px 8px; font-size: 13px; border: 1px solid var(--border);
+      border-radius: 6px; background: transparent; color: var(--text); text-align: right; font-family: inherit; }
+    .summary-bar { display: flex; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+    .summary-stat { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 14px 18px; flex: 1; min-width: 120px; }
+    .summary-stat .label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); margin-bottom: 4px; }
+    .summary-stat .value { font-size: 20px; font-weight: 300; }
+    @media (max-width: 640px) { .add-form .fields { grid-template-columns: 1fr; } }
+` }) %>
+<%- include('partials/nav', { activePage: 'budgets' }) %>
+  <h1>Budgets</h1>
+  <p class="subtitle">Track monthly spending by category with AI-suggested limits</p>
+  <div id="status-msg" class="status-msg"></div>
+
+  <div id="summary-bar" class="summary-bar"></div>
+
+  <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;">
+    <button class="btn primary" onclick="toggleForm()">+ Add Budget</button>
+    <button class="btn" id="suggest-btn" onclick="suggestBudgets()">AI Suggest Budgets</button>
+  </div>
+
+  <div class="add-form" id="add-form">
+    <div class="fields">
+      <div><label>Category</label><input id="b-category" placeholder="e.g. Food & Drink"></div>
+      <div><label>Monthly Limit ($)</label><input id="b-limit" type="number" step="1" placeholder="500"></div>
+    </div>
+    <div style="margin-top:12px;"><button class="btn primary" onclick="addBudget()">Save Budget</button></div>
+  </div>
+
+  <div id="suggest-container" style="display:none;"></div>
+  <div id="budgets-list"><div style="color:var(--text-muted);font-size:13px;">Loading...</div></div>
+<%- include('partials/foot', { apiKey: apiKey }) %>
+  <script>
+    function toggleForm() {
+      var f = document.getElementById('add-form');
+      f.style.display = f.style.display === 'none' ? 'block' : 'none';
+    }
+
+    async function loadBudgets() {
+      try {
+        const res = await apiFetch('/api/budgets'); const budgets = await res.json();
+        const el = document.getElementById('budgets-list');
+        if (!budgets.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:20px 0;">No budgets set. Add one or use AI suggestions above.</div>'; renderSummary([]); return; }
+        renderSummary(budgets);
+        el.innerHTML = budgets.map(function(b) {
+          var pct = b.percent_used;
+          var color = pct >= 100 ? 'var(--red)' : pct >= 75 ? 'var(--warm)' : pct >= 50 ? 'var(--teal)' : 'var(--green)';
+          var remaining = parseFloat(b.monthly_limit) - b.spent;
+          return '<div class="budget-card">' +
+            '<div class="budget-header"><span class="budget-category">' + esc(b.category) + '</span>' +
+            (b.is_ai_suggested ? '<span class="ai-badge">AI suggested</span>' : '') + '</div>' +
+            '<div class="budget-meta"><span>$' + b.spent.toFixed(2) + ' of $' + parseFloat(b.monthly_limit).toFixed(2) + '</span>' +
+            '<span style="color:' + color + ';font-weight:500;">' + pct + '%</span></div>' +
+            '<div class="budget-bar"><div class="budget-fill" style="width:' + Math.min(100, pct) + '%;background:' + color + ';"></div></div>' +
+            '<div class="budget-meta"><span>' + (remaining >= 0 ? '$' + remaining.toFixed(2) + ' remaining' : '<span style="color:var(--red);">$' + Math.abs(remaining).toFixed(2) + ' over budget</span>') + '</span>' +
+            (b.notes ? '<span>' + esc(b.notes) + '</span>' : '') + '</div>' +
+            '<div class="budget-actions">' +
+              '<button class="btn-sm" onclick="editBudget(' + b.id + ', ' + parseFloat(b.monthly_limit) + ')">Edit</button>' +
+              '<button class="btn-sm danger" onclick="deleteBudget(' + b.id + ')">Delete</button>' +
+            '</div></div>';
+        }).join('');
+      } catch (e) { document.getElementById('budgets-list').innerHTML = '<div style="color:var(--red);">Error: ' + esc(e.message) + '</div>'; }
+    }
+
+    function renderSummary(budgets) {
+      var totalBudget = 0, totalSpent = 0, overCount = 0;
+      budgets.forEach(function(b) { totalBudget += parseFloat(b.monthly_limit); totalSpent += b.spent; if (b.percent_used >= 100) overCount++; });
+      var el = document.getElementById('summary-bar');
+      if (!budgets.length) { el.innerHTML = ''; return; }
+      var pct = totalBudget > 0 ? Math.round((totalSpent / totalBudget) * 100) : 0;
+      var color = pct >= 100 ? 'var(--red)' : pct >= 75 ? 'var(--warm)' : 'var(--green)';
+      el.innerHTML = '<div class="summary-stat"><div class="label">Total Budget</div><div class="value">$' + totalBudget.toFixed(0) + '</div></div>' +
+        '<div class="summary-stat"><div class="label">Spent This Month</div><div class="value" style="color:' + color + ';">$' + totalSpent.toFixed(0) + '</div></div>' +
+        '<div class="summary-stat"><div class="label">Remaining</div><div class="value">' + (totalBudget - totalSpent >= 0 ? '$' + (totalBudget - totalSpent).toFixed(0) : '<span style="color:var(--red);">-$' + Math.abs(totalBudget - totalSpent).toFixed(0) + '</span>') + '</div></div>' +
+        (overCount > 0 ? '<div class="summary-stat"><div class="label">Over Budget</div><div class="value" style="color:var(--red);">' + overCount + '</div></div>' : '');
+    }
+
+    async function addBudget() {
+      var cat = document.getElementById('b-category').value.trim();
+      var limit = parseFloat(document.getElementById('b-limit').value);
+      if (!cat || !limit) { showMsg('Category and limit are required.', false); return; }
+      try {
+        var res = await apiFetch('/api/budgets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ category: cat, monthly_limit: limit }) });
+        if (res.ok) { showMsg('Budget added.', true); loadBudgets(); document.getElementById('add-form').style.display = 'none'; }
+        else { var d = await res.json(); showMsg(d.error || 'Failed', false); }
+      } catch (e) { showMsg(e.message, false); }
+    }
+
+    async function editBudget(id, current) {
+      var val = prompt('New monthly limit ($):', current);
+      if (val === null) return;
+      try {
+        var res = await apiFetch('/api/budgets/' + id, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ monthly_limit: parseFloat(val) }) });
+        if (res.ok) { showMsg('Budget updated.', true); loadBudgets(); }
+        else showMsg('Failed to update.', false);
+      } catch (e) { showMsg(e.message, false); }
+    }
+
+    async function deleteBudget(id) {
+      if (!confirm('Delete this budget?')) return;
+      try {
+        await apiFetch('/api/budgets/' + id, { method: 'DELETE' });
+        showMsg('Budget deleted.', true); loadBudgets();
+      } catch (e) { showMsg(e.message, false); }
+    }
+
+    async function suggestBudgets() {
+      var btn = document.getElementById('suggest-btn');
+      btnLoading(btn, true, 'AI Suggest Budgets');
+      try {
+        var res = await apiFetch('/api/budgets/suggest', { method: 'POST' });
+        var data = await res.json();
+        if (!res.ok) { showMsg(data.error || 'Failed', false); btnLoading(btn, false, 'AI Suggest Budgets'); return; }
+        var sc = document.getElementById('suggest-container');
+        sc.style.display = 'block';
+        sc.innerHTML = '<div class="suggest-card"><h3 style="font-size:14px;font-weight:400;margin-bottom:12px;">AI-Suggested Budgets <span style="font-size:11px;color:var(--text-muted);">(' + (data.tokens_used || 0) + ' tokens)</span></h3>' +
+          data.suggestions.map(function(s, i) {
+            return '<div class="suggest-item"><div><span style="font-weight:400;">' + esc(s.category) + '</span>' +
+              (s.notes ? '<br><span style="font-size:11px;color:var(--text-muted);">' + esc(s.notes) + '</span>' : '') +
+              '</div><input type="number" id="sug-' + i + '" value="' + s.monthly_limit + '"></div>';
+          }).join('') +
+          '<div style="margin-top:12px;display:flex;gap:8px;"><button class="btn primary" onclick="acceptSuggestions()">Accept All</button><button class="btn" onclick="document.getElementById(\'suggest-container\').style.display=\'none\'">Dismiss</button></div></div>';
+        window._suggestions = data.suggestions;
+      } catch (e) { showMsg(e.message, false); }
+      btnLoading(btn, false, 'AI Suggest Budgets');
+    }
+
+    async function acceptSuggestions() {
+      if (!window._suggestions) return;
+      var budgets = window._suggestions.map(function(s, i) {
+        var input = document.getElementById('sug-' + i);
+        return { category: s.category, monthly_limit: input ? parseFloat(input.value) : s.monthly_limit, notes: s.notes };
+      });
+      try {
+        var res = await apiFetch('/api/budgets/accept', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ budgets: budgets }) });
+        if (res.ok) {
+          var data = await res.json();
+          showMsg(data.accepted + ' budgets saved.', true);
+          document.getElementById('suggest-container').style.display = 'none';
+          loadBudgets();
+        } else showMsg('Failed to save.', false);
+      } catch (e) { showMsg(e.message, false); }
+    }
+
+    loadBudgets();
+  </script>
+</body></html>
