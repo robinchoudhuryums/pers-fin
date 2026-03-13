@@ -187,6 +187,7 @@ app.use(require("./routes/subscriptions"));
 app.use(require("./routes/goals"));
 app.use(require("./routes/settings"));
 app.use(require("./routes/insights"));
+app.use(require("./routes/budgets"));
 
 // ---------------------------------------------------------------------------
 // Mount HTML page modules
@@ -198,6 +199,7 @@ app.use(require("./pages/dashboard")(pageConfig));
 app.use(require("./pages/subscriptions")(pageConfig));
 app.use(require("./pages/accounts")(pageConfig));
 app.use(require("./pages/goals")(pageConfig));
+app.use(require("./pages/budgets")(pageConfig));
 app.use(require("./pages/login")(authConfig));
 app.use(require("./pages/settings")(pageConfig));
 app.use(require("./pages/pwa"));

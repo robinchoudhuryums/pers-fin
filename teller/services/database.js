@@ -111,6 +111,16 @@ async function runMigrations() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
+    // Budgets
+    await pool.query(`CREATE TABLE IF NOT EXISTS budgets (
+      id SERIAL PRIMARY KEY,
+      category TEXT NOT NULL UNIQUE,
+      monthly_limit NUMERIC(12,2) NOT NULL,
+      is_ai_suggested BOOLEAN NOT NULL DEFAULT false,
+      notes TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
     console.log("Migrations complete.");
   } catch (err) {
     console.error("Migration error (non-fatal):", err.message);

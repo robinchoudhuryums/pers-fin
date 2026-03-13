@@ -64,6 +64,7 @@ router.get("/subscriptions", (req, res) => {
       <a href="/dashboard">Dashboard</a>
       <a href="/subscriptions" class="active">Subscriptions</a>
       <a href="/goals">Goals</a>
+      <a href="/budgets">Budgets</a>
       <a href="/">Accounts</a>
       <a href="/settings">Settings</a>
       <a href="/api/export?type=subscriptions&api_key=${apiKey}" class="export-link">Export</a>

@@ -66,6 +66,7 @@ router.get("/dashboard", (req, res) => {
       <a href="/dashboard" class="active">Dashboard</a>
       <a href="/subscriptions">Subscriptions</a>
       <a href="/goals">Goals</a>
+      <a href="/budgets">Budgets</a>
       <a href="/">Accounts</a>
       <a href="/settings">Settings</a>
     </div>

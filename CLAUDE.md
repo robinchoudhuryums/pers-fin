@@ -30,6 +30,8 @@ teller/
                            POST /api/import-csv, GET /api/csv-imports, POST /api/cleanup
     goals.js             — GET/POST/PATCH/DELETE /api/goals, POST /api/net-worth/snapshot,
                            GET /api/net-worth/history, GET /api/context-export
+    budgets.js           — GET/POST/PATCH/DELETE /api/budgets, POST /api/budgets/suggest,
+                           POST /api/budgets/accept
     settings.js          — GET/PATCH /api/settings, POST /api/sheets/sync,
                            POST /api/sheets/dashboard, GET /api/export
     insights.js          — GET/POST /api/insights, GET /api/insights/status,
@@ -40,6 +42,7 @@ teller/
     subscriptions.js     — Subscription/utility management page
     accounts.js          — Teller Connect enrollment + CSV import page
     goals.js             — Financial goals tracking page
+    budgets.js           — Budget tracking page with AI suggestions
     login.js             — PIN pad or password login page
     settings.js          — Settings page (theme, AI insights, keep-alive, exports)
     pwa.js               — PWA manifest.json + service worker
