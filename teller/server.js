@@ -77,7 +77,7 @@ app.use(session({
 
 function requireAuth(req, res, next) {
   if (!AUTH_SECRET) return next();
-  if (["/login", "/api/login", "/manifest.json", "/sw.js"].includes(req.path)) return next();
+  if (["/login", "/api/login", "/manifest.json", "/sw.js", "/health"].includes(req.path)) return next();
   if (req.session && req.session.authenticated) {
     const timeout = (req.session.timeoutMinutes || 15) * 60 * 1000;
     if (Date.now() - req.session.lastActivity < timeout) {
@@ -308,6 +308,11 @@ async function runMigrations() {
     await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS current_balance NUMERIC(12,2)");
     await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS balance_currency TEXT DEFAULT 'USD'");
     await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS balance_updated_at TIMESTAMPTZ");
+    // keep-alive settings
+    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS keep_alive_enabled BOOLEAN NOT NULL DEFAULT false");
+    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS keep_alive_start INT NOT NULL DEFAULT 6");
+    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS keep_alive_end INT NOT NULL DEFAULT 0");
+    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS keep_alive_timezone TEXT NOT NULL DEFAULT 'America/New_York'");
     // 002_csv_import.sql
     await pool.query("CREATE TABLE IF NOT EXISTS csv_imports (id SERIAL PRIMARY KEY, filename TEXT NOT NULL, institution TEXT NOT NULL, account_label TEXT, rows_imported INT NOT NULL DEFAULT 0, rows_skipped INT NOT NULL DEFAULT 0, imported_at TIMESTAMPTZ NOT NULL DEFAULT now())");
     console.log("Migrations complete.");
@@ -2914,16 +2919,16 @@ app.post("/api/logout", (req, res) => {
 // GET /api/settings
 app.get("/api/settings", async (_req, res) => {
   try {
-    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary, insights_model, insights_cadence_days FROM user_settings WHERE id = 1");
-    res.json(result.rows[0] || { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30 });
+    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone FROM user_settings WHERE id = 1");
+    res.json(result.rows[0] || { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York" });
   } catch {
-    res.json({ session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_model: "sonnet", insights_cadence_days: 30 });
+    res.json({ session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York" });
   }
 });
 
 // PATCH /api/settings
 app.patch("/api/settings", async (req, res) => {
-  const { session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_model, insights_cadence_days } = req.body;
+  const { session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone } = req.body;
   try {
     const updates = []; const values = []; let idx = 1;
     if (session_timeout_minutes !== undefined) {
@@ -2948,6 +2953,20 @@ app.patch("/api/settings", async (req, res) => {
       const valid = [7, 14, 30, 60, 90];
       const val = parseInt(insights_cadence_days);
       if (valid.includes(val)) { updates.push("insights_cadence_days = $" + idx++); values.push(val); }
+    }
+    if (keep_alive_enabled !== undefined) {
+      updates.push("keep_alive_enabled = $" + idx++); values.push(!!keep_alive_enabled);
+    }
+    if (keep_alive_start !== undefined) {
+      const h = parseInt(keep_alive_start);
+      if (h >= 0 && h <= 23) { updates.push("keep_alive_start = $" + idx++); values.push(h); }
+    }
+    if (keep_alive_end !== undefined) {
+      const h = parseInt(keep_alive_end);
+      if (h >= 0 && h <= 23) { updates.push("keep_alive_end = $" + idx++); values.push(h); }
+    }
+    if (keep_alive_timezone !== undefined && typeof keep_alive_timezone === "string" && keep_alive_timezone.length <= 50) {
+      updates.push("keep_alive_timezone = $" + idx++); values.push(keep_alive_timezone);
     }
     if (!updates.length) return res.status(400).json({ error: "No valid settings" });
     updates.push("updated_at = now()");
@@ -3425,6 +3444,46 @@ app.get("/settings", (req, res) => {
     <div id="usage-history" style="max-height:260px;overflow-y:auto;"></div>
   </div>
 
+  <div class="section"><h2>Keep-Alive</h2>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Self-Ping</div><div class="desc">Prevents Render free tier from sleeping during active hours (pings every 14 min)</div></div>
+      <div class="setting-control">
+        <label class="toggle"><input type="checkbox" id="keepalive-toggle" onchange="updateSetting('keep_alive_enabled', this.checked)"><span class="slider"></span></label>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Active Hours</div><div class="desc" id="keepalive-hours-desc">Hours when keep-alive runs (saves Render free tier hours)</div></div>
+      <div class="setting-control" style="display:flex;gap:6px;align-items:center;">
+        <select id="keepalive-start" onchange="updateSetting('keep_alive_start', parseInt(this.value))">
+        </select>
+        <span style="color:var(--text-muted);font-size:12px;">to</span>
+        <select id="keepalive-end" onchange="updateSetting('keep_alive_end', parseInt(this.value))">
+        </select>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Timezone</div><div class="desc">Your local timezone for active hour scheduling</div></div>
+      <div class="setting-control">
+        <select id="keepalive-tz" onchange="updateSetting('keep_alive_timezone', this.value)">
+          <option value="America/New_York">Eastern (ET)</option>
+          <option value="America/Chicago">Central (CT)</option>
+          <option value="America/Denver">Mountain (MT)</option>
+          <option value="America/Los_Angeles">Pacific (PT)</option>
+          <option value="America/Anchorage">Alaska (AKT)</option>
+          <option value="Pacific/Honolulu">Hawaii (HT)</option>
+          <option value="Europe/London">London (GMT/BST)</option>
+          <option value="Europe/Berlin">Central Europe (CET)</option>
+          <option value="Asia/Tokyo">Tokyo (JST)</option>
+          <option value="UTC">UTC</option>
+        </select>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Monthly Hours Estimate</div><div class="desc">Estimated Render hours this app will use per month</div></div>
+      <div class="setting-control"><span id="keepalive-estimate" style="font-size:12px;color:var(--text-muted);">--</span></div>
+    </div>
+  </div>
+
   <div class="section"><h2>Data</h2>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Export Transactions</div><div class="desc">Download as CSV</div></div>
@@ -3460,6 +3519,11 @@ app.get("/settings", (req, res) => {
         document.getElementById('insights-toggle').checked = s.insights_enabled || false;
         document.getElementById('model-select').value = s.insights_model || 'sonnet';
         document.getElementById('cadence-select').value = s.insights_cadence_days || 30;
+        document.getElementById('keepalive-toggle').checked = s.keep_alive_enabled || false;
+        document.getElementById('keepalive-start').value = s.keep_alive_start != null ? s.keep_alive_start : 6;
+        document.getElementById('keepalive-end').value = s.keep_alive_end != null ? s.keep_alive_end : 0;
+        document.getElementById('keepalive-tz').value = s.keep_alive_timezone || 'America/New_York';
+        updateKeepAliveEstimate();
         applyTheme(s.theme || 'dark');
         // Show memory status
         const memEl = document.getElementById('memory-status');
@@ -3584,6 +3648,38 @@ app.get("/settings", (req, res) => {
       } catch (e) { showMsg(e.message, false); }
       btn.classList.remove('btn-loading'); btn.disabled = false;
     }
+    // Populate hour selectors for keep-alive
+    (function() {
+      var startSel = document.getElementById('keepalive-start');
+      var endSel = document.getElementById('keepalive-end');
+      if (!startSel || !endSel) return;
+      for (var h = 0; h < 24; h++) {
+        var label = (h === 0 ? '12 AM' : h < 12 ? h + ' AM' : h === 12 ? '12 PM' : (h - 12) + ' PM');
+        startSel.innerHTML += '<option value="' + h + '">' + label + '</option>';
+        endSel.innerHTML += '<option value="' + h + '">' + (h === 0 ? 'Midnight' : label) + '</option>';
+      }
+    })();
+    function updateKeepAliveEstimate() {
+      var enabled = document.getElementById('keepalive-toggle').checked;
+      var el = document.getElementById('keepalive-estimate');
+      if (!enabled) { el.textContent = 'Disabled — app sleeps after 15 min idle'; return; }
+      var start = parseInt(document.getElementById('keepalive-start').value);
+      var end = parseInt(document.getElementById('keepalive-end').value);
+      var hours;
+      if (start === end) hours = 24;
+      else if (start < end) hours = end - start;
+      else hours = (24 - start) + end;
+      var monthly = hours * 30;
+      var color = monthly > 375 ? 'var(--red)' : monthly > 300 ? 'var(--yellow)' : 'var(--green)';
+      el.innerHTML = '<span style="color:' + color + ';">' + monthly + ' hrs/mo</span> (' + hours + ' hrs/day)' +
+        (monthly > 375 ? ' <span style="color:var(--red);font-size:11px;">— tight if running 2 apps on Render free tier (750 hrs shared)</span>' : '');
+    }
+    // Override updateSetting to also refresh estimate
+    var _origUpdate = updateSetting;
+    updateSetting = async function(key, value) {
+      await _origUpdate(key, value);
+      if (key.startsWith('keep_alive')) updateKeepAliveEstimate();
+    };
     loadSettings(); loadInsights(); loadUsageHistory();
   </script>
 </body></html>`);
@@ -3682,9 +3778,70 @@ app.get("/api/export", async (req, res) => {
 // ---------------------------------------------------------------------------
 // Start
 // ---------------------------------------------------------------------------
+// GET /health — lightweight health check (exempt from auth + API key)
+// ---------------------------------------------------------------------------
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok", uptime: Math.floor(process.uptime()) });
+});
+
+// ---------------------------------------------------------------------------
+// Keep-alive self-ping: prevents Render free tier from sleeping during active hours
+// ---------------------------------------------------------------------------
+let keepAliveInterval = null;
+
+async function loadKeepAliveConfig() {
+  try {
+    const result = await pool.query(
+      "SELECT keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone FROM user_settings WHERE id = 1"
+    );
+    return result.rows[0] || { keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York" };
+  } catch {
+    return { keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York" };
+  }
+}
+
+function isWithinActiveHours(startHour, endHour, timezone) {
+  try {
+    const now = new Date();
+    const localHour = parseInt(now.toLocaleString("en-US", { hour: "numeric", hour12: false, timeZone: timezone }));
+    if (startHour < endHour) {
+      // e.g. 6–22: simple range
+      return localHour >= startHour && localHour < endHour;
+    } else if (startHour > endHour) {
+      // e.g. 6–0 (6am to midnight) or 22–6 (overnight)
+      return localHour >= startHour || localHour < endHour;
+    }
+    // startHour === endHour means 24/7
+    return true;
+  } catch {
+    // If timezone is invalid, fall back to always active
+    return true;
+  }
+}
+
+function startKeepAlive(port) {
+  if (keepAliveInterval) return;
+  const INTERVAL = 14 * 60 * 1000; // 14 minutes
+  keepAliveInterval = setInterval(async () => {
+    const config = await loadKeepAliveConfig();
+    if (!config.keep_alive_enabled) return;
+    if (!isWithinActiveHours(config.keep_alive_start, config.keep_alive_end, config.keep_alive_timezone)) {
+      return;
+    }
+    try {
+      await fetch(`http://localhost:${port}/health`);
+    } catch {
+      // Silently ignore — if we can't reach ourselves, we're shutting down
+    }
+  }, INTERVAL);
+  keepAliveInterval.unref(); // Don't prevent process exit
+}
+
+// ---------------------------------------------------------------------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Teller server running on http://0.0.0.0:${PORT}`);
   console.log(`  Environment: ${TELLER_ENV}`);
   console.log(`  Application ID: ${TELLER_APP_ID || "(not set)"}`);
+  startKeepAlive(PORT);
 });
