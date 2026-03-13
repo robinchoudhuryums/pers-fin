@@ -300,7 +300,7 @@ async function runMigrations() {
     await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_model TEXT NOT NULL DEFAULT 'sonnet'");
     await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_cadence_days INT NOT NULL DEFAULT 30");
     await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS zip_code TEXT DEFAULT NULL");
-    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insight_modules JSONB NOT NULL DEFAULT '{\"utility_comparison\":true,\"spending_benchmarks\":true,\"savings_suggestions\":true,\"subscription_audit\":true,\"anomaly_detection\":true,\"seasonal_forecast\":true,\"debt_optimizer\":true}'::jsonb");
+    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insight_modules JSONB NOT NULL DEFAULT '{\"utility_comparison\":true,\"spending_benchmarks\":true,\"savings_suggestions\":true,\"subscription_audit\":true,\"anomaly_detection\":true,\"seasonal_forecast\":true,\"debt_optimizer\":true,\"bill_negotiation\":true,\"income_savings\":true,\"tax_deductions\":true,\"goal_tracking\":true}'::jsonb");
     // 003_dashboard_features.sql
     await pool.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS is_dismissed BOOLEAN NOT NULL DEFAULT false");
     await pool.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'detected'");
@@ -321,6 +321,32 @@ async function runMigrations() {
     await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS keep_alive_timezone TEXT NOT NULL DEFAULT 'America/New_York'");
     // 002_csv_import.sql
     await pool.query("CREATE TABLE IF NOT EXISTS csv_imports (id SERIAL PRIMARY KEY, filename TEXT NOT NULL, institution TEXT NOT NULL, account_label TEXT, rows_imported INT NOT NULL DEFAULT 0, rows_skipped INT NOT NULL DEFAULT 0, imported_at TIMESTAMPTZ NOT NULL DEFAULT now())");
+    // Financial goals
+    await pool.query(`CREATE TABLE IF NOT EXISTS financial_goals (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL DEFAULT 'savings',
+      target_amount NUMERIC(14,2) NOT NULL,
+      current_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+      monthly_contribution NUMERIC(10,2) DEFAULT 0,
+      target_date DATE,
+      interest_rate NUMERIC(5,2) DEFAULT 0,
+      notes TEXT,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+    // Net worth snapshots
+    await pool.query(`CREATE TABLE IF NOT EXISTS net_worth_snapshots (
+      id SERIAL PRIMARY KEY,
+      total_assets NUMERIC(14,2) NOT NULL DEFAULT 0,
+      total_liabilities NUMERIC(14,2) NOT NULL DEFAULT 0,
+      net_worth NUMERIC(14,2) NOT NULL DEFAULT 0,
+      breakdown JSONB,
+      snapshot_date DATE NOT NULL DEFAULT CURRENT_DATE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(snapshot_date)
+    )`);
     console.log("Migrations complete.");
   } catch (err) {
     console.error("Migration error (non-fatal):", err.message);
@@ -729,6 +755,19 @@ app.post("/api/sync-balances", async (_req, res) => {
       }
     }
 
+    // Auto-snapshot net worth after balance sync
+    try {
+      const allAccts = await pool.query("SELECT type, available_balance, current_balance FROM linked_accounts WHERE available_balance IS NOT NULL OR current_balance IS NOT NULL");
+      let assets = 0, liabilities = 0;
+      for (const a of allAccts.rows) {
+        if (a.type === "credit") liabilities += parseFloat(a.current_balance || 0);
+        else assets += parseFloat(a.available_balance || a.current_balance || 0);
+      }
+      await pool.query(
+        "INSERT INTO net_worth_snapshots (total_assets, total_liabilities, net_worth, snapshot_date) VALUES ($1, $2, $3, CURRENT_DATE) ON CONFLICT (snapshot_date) DO UPDATE SET total_assets=$1, total_liabilities=$2, net_worth=$3",
+        [assets, liabilities, assets - liabilities]
+      );
+    } catch { /* non-critical */ }
     res.json({ accounts_updated: updated, errors: errors.length > 0 ? errors : undefined });
   } catch (err) {
     console.error("sync-balances error:", err.message);
@@ -1377,6 +1416,249 @@ app.post("/api/cleanup", async (_req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Financial Goals CRUD
+// ---------------------------------------------------------------------------
+app.get("/api/goals", async (_req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM financial_goals WHERE is_active = true ORDER BY target_date ASC NULLS LAST");
+    const goals = result.rows.map(g => {
+      const target = parseFloat(g.target_amount);
+      const current = parseFloat(g.current_amount);
+      const monthly = parseFloat(g.monthly_contribution || 0);
+      const rate = parseFloat(g.interest_rate || 0) / 100 / 12; // monthly rate
+      const pct = target > 0 ? Math.round((current / target) * 100) : 0;
+      const remaining = Math.max(0, target - current);
+      // Months to goal with compound interest
+      let months_to_goal = null;
+      if (monthly > 0 && remaining > 0) {
+        if (rate > 0) {
+          // FV = PV*(1+r)^n + PMT*((1+r)^n - 1)/r
+          // Solve for n: iterative approach
+          let bal = current; let m = 0;
+          while (bal < target && m < 1200) { bal = bal * (1 + rate) + monthly; m++; }
+          months_to_goal = m;
+        } else {
+          months_to_goal = Math.ceil(remaining / monthly);
+        }
+      }
+      return { ...g, percent_complete: pct, remaining, months_to_goal,
+        estimated_date: months_to_goal ? new Date(Date.now() + months_to_goal * 30.44 * 86400000).toISOString().split("T")[0] : null };
+    });
+    res.json(goals);
+  } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+app.post("/api/goals", async (req, res) => {
+  const { name, type, target_amount, current_amount, monthly_contribution, target_date, interest_rate, notes } = req.body;
+  if (!name || !target_amount) return res.status(400).json({ error: "name and target_amount are required" });
+  try {
+    const result = await pool.query(
+      `INSERT INTO financial_goals (name, type, target_amount, current_amount, monthly_contribution, target_date, interest_rate, notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [name, type || "savings", target_amount, current_amount || 0, monthly_contribution || 0, target_date || null, interest_rate || 0, notes || null]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+app.patch("/api/goals/:id", async (req, res) => {
+  const fields = ["name", "type", "target_amount", "current_amount", "monthly_contribution", "target_date", "interest_rate", "notes", "is_active"];
+  const updates = []; const values = []; let idx = 1;
+  for (const f of fields) {
+    if (req.body[f] !== undefined) { updates.push(f + " = $" + idx++); values.push(req.body[f]); }
+  }
+  if (!updates.length) return res.status(400).json({ error: "No valid fields" });
+  updates.push("updated_at = now()");
+  values.push(req.params.id);
+  try {
+    const result = await pool.query("UPDATE financial_goals SET " + updates.join(", ") + " WHERE id = $" + idx + " RETURNING *", values);
+    if (!result.rows.length) return res.status(404).json({ error: "Not found" });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+app.delete("/api/goals/:id", async (req, res) => {
+  try {
+    await pool.query("DELETE FROM financial_goals WHERE id = $1", [req.params.id]);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Net Worth Snapshots
+// ---------------------------------------------------------------------------
+app.post("/api/net-worth/snapshot", async (_req, res) => {
+  try {
+    const accounts = await pool.query(
+      "SELECT name, type, available_balance, current_balance FROM linked_accounts WHERE available_balance IS NOT NULL OR current_balance IS NOT NULL"
+    );
+    let totalAssets = 0, totalLiabilities = 0;
+    const breakdown = { accounts: [] };
+    for (const a of accounts.rows) {
+      const bal = parseFloat(a.available_balance || a.current_balance || 0);
+      if (a.type === "credit") {
+        const owed = parseFloat(a.current_balance || 0);
+        totalLiabilities += owed;
+        breakdown.accounts.push({ name: a.name, type: a.type, amount: -owed });
+      } else {
+        totalAssets += bal;
+        breakdown.accounts.push({ name: a.name, type: a.type, amount: bal });
+      }
+    }
+    const netWorth = totalAssets - totalLiabilities;
+    const result = await pool.query(
+      `INSERT INTO net_worth_snapshots (total_assets, total_liabilities, net_worth, breakdown, snapshot_date)
+       VALUES ($1, $2, $3, $4, CURRENT_DATE)
+       ON CONFLICT (snapshot_date) DO UPDATE SET total_assets = $1, total_liabilities = $2, net_worth = $3, breakdown = $4
+       RETURNING *`,
+      [totalAssets, totalLiabilities, netWorth, JSON.stringify(breakdown)]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+app.get("/api/net-worth/history", async (req, res) => {
+  const months = Math.max(1, Math.min(parseInt(req.query.months) || 12, 60));
+  try {
+    const result = await pool.query(
+      "SELECT * FROM net_worth_snapshots WHERE snapshot_date >= CURRENT_DATE - make_interval(months => $1) ORDER BY snapshot_date",
+      [months]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Claude Chat Context Export — structured data dump for deep-dive conversations
+// ---------------------------------------------------------------------------
+app.get("/api/context-export", async (req, res) => {
+  const format = req.query.format || "markdown";
+  try {
+    const [accounts, monthlySpend, subs, goals, creditCards, netWorth, recentInsight, settings] = await Promise.all([
+      pool.query("SELECT name, type, subtype, mask, available_balance, current_balance, apr FROM linked_accounts ORDER BY type, name"),
+      pool.query("SELECT TO_CHAR(date, 'YYYY-MM') AS month, SUM(amount) AS total, COUNT(*) AS txns FROM transactions WHERE amount > 0 AND date >= CURRENT_DATE - INTERVAL '12 months' GROUP BY TO_CHAR(date, 'YYYY-MM') ORDER BY month"),
+      pool.query("SELECT display_name, amount, cadence_days, category, next_expected FROM detected_subscriptions WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL ORDER BY amount DESC"),
+      pool.query("SELECT * FROM financial_goals WHERE is_active = true ORDER BY target_date ASC NULLS LAST").catch(() => ({ rows: [] })),
+      pool.query("SELECT name, mask, current_balance, available_balance, apr FROM linked_accounts WHERE type = 'credit' AND current_balance IS NOT NULL").catch(() => ({ rows: [] })),
+      pool.query("SELECT * FROM net_worth_snapshots ORDER BY snapshot_date DESC LIMIT 6").catch(() => ({ rows: [] })),
+      pool.query("SELECT insight_text, created_at FROM financial_insights ORDER BY created_at DESC LIMIT 1").catch(() => ({ rows: [] })),
+      pool.query("SELECT zip_code FROM user_settings WHERE id = 1").catch(() => ({ rows: [{}] })),
+    ]);
+
+    const zipCode = settings.rows[0]?.zip_code;
+    const state = zipCode ? zipToState(zipCode) : null;
+
+    if (format === "json") {
+      return res.json({
+        generated_at: new Date().toISOString(),
+        accounts: accounts.rows,
+        monthly_spending_12mo: monthlySpend.rows,
+        subscriptions: subs.rows,
+        goals: goals.rows,
+        credit_cards: creditCards.rows.map(c => {
+          const owed = parseFloat(c.current_balance || 0);
+          const avail = parseFloat(c.available_balance || 0);
+          return { ...c, credit_limit: owed + avail, utilization_pct: (owed + avail) > 0 ? Math.round(owed / (owed + avail) * 100) : 0 };
+        }),
+        net_worth_history: netWorth.rows,
+        latest_insight: recentInsight.rows[0] || null,
+        location: state ? { zip: zipCode, state } : null,
+      });
+    }
+
+    // Markdown format — optimized for pasting into Claude chat
+    let md = "# My Personal Finance Data (exported " + new Date().toLocaleDateString() + ")\n\n";
+
+    md += "## Accounts\n";
+    for (const a of accounts.rows) {
+      const bal = a.type === "credit" ? parseFloat(a.current_balance || 0) : parseFloat(a.available_balance || a.current_balance || 0);
+      md += "- **" + a.name + "** (" + (a.subtype || a.type) + (a.mask ? ", ****" + a.mask : "") + "): $" + bal.toFixed(2);
+      if (a.type === "credit" && a.apr) md += " @ " + a.apr + "% APR";
+      md += "\n";
+    }
+
+    md += "\n## Monthly Spending (12 months)\n";
+    for (const r of monthlySpend.rows) {
+      md += "- " + r.month + ": $" + parseFloat(r.total).toFixed(2) + " (" + r.txns + " transactions)\n";
+    }
+
+    md += "\n## Recurring Charges (" + subs.rows.length + " active)\n";
+    const subsByCategory = {};
+    for (const s of subs.rows) {
+      const cat = s.category || "subscription";
+      if (!subsByCategory[cat]) subsByCategory[cat] = [];
+      subsByCategory[cat].push(s);
+    }
+    for (const [cat, items] of Object.entries(subsByCategory)) {
+      md += "### " + cat.charAt(0).toUpperCase() + cat.slice(1) + "s\n";
+      for (const s of items) {
+        md += "- " + s.display_name + ": $" + parseFloat(s.amount).toFixed(2) + " every " + s.cadence_days + " days (next: " + s.next_expected + ")\n";
+      }
+    }
+
+    if (goals.rows.length > 0) {
+      md += "\n## Financial Goals\n";
+      for (const g of goals.rows) {
+        const pct = parseFloat(g.target_amount) > 0 ? Math.round(parseFloat(g.current_amount) / parseFloat(g.target_amount) * 100) : 0;
+        md += "- **" + g.name + "** (" + g.type + "): $" + parseFloat(g.current_amount).toFixed(2) + " / $" + parseFloat(g.target_amount).toFixed(2) + " (" + pct + "%)";
+        if (g.monthly_contribution > 0) md += ", contributing $" + parseFloat(g.monthly_contribution).toFixed(2) + "/mo";
+        if (g.target_date) md += ", target: " + g.target_date;
+        if (g.interest_rate > 0) md += ", " + g.interest_rate + "% expected return";
+        md += "\n";
+      }
+    }
+
+    if (creditCards.rows.length > 0) {
+      md += "\n## Credit Card Details\n";
+      for (const c of creditCards.rows) {
+        const owed = parseFloat(c.current_balance || 0);
+        const avail = parseFloat(c.available_balance || 0);
+        const limit = owed + avail;
+        const util = limit > 0 ? Math.round(owed / limit * 100) : 0;
+        md += "- **" + c.name + "**" + (c.mask ? " (****" + c.mask + ")" : "") + ": $" + owed.toFixed(2) + " owed / $" + limit.toFixed(2) + " limit (" + util + "% utilization)";
+        if (c.apr) md += ", " + c.apr + "% APR";
+        md += "\n";
+      }
+    }
+
+    if (netWorth.rows.length > 0) {
+      md += "\n## Net Worth History\n";
+      for (const nw of netWorth.rows) {
+        md += "- " + nw.snapshot_date + ": $" + parseFloat(nw.net_worth).toFixed(2) + " (assets: $" + parseFloat(nw.total_assets).toFixed(2) + ", liabilities: $" + parseFloat(nw.total_liabilities).toFixed(2) + ")\n";
+      }
+    }
+
+    if (state) md += "\n## Location\nZIP: " + zipCode + " (State: " + state + ")\n";
+
+    if (recentInsight.rows.length > 0) {
+      md += "\n## Most Recent AI Analysis (" + new Date(recentInsight.rows[0].created_at).toLocaleDateString() + ")\n";
+      md += recentInsight.rows[0].insight_text + "\n";
+    }
+
+    md += "\n---\n*Use this data as context for any personal finance questions. Ask me about budgeting, debt payoff strategies, savings goals, investment allocation, or any specific transaction patterns.*\n";
+
+    res.setHeader("Content-Type", "text/markdown");
+    res.setHeader("Content-Disposition", "attachment; filename=perfin-context.md");
+    res.send(md);
+  } catch (err) {
+    console.error("Context export error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // GET /dashboard — personal finance dashboard
 // ---------------------------------------------------------------------------
 app.get("/dashboard", (req, res) => {
@@ -1591,6 +1873,7 @@ app.get("/dashboard", (req, res) => {
     <div class="nav-links">
       <a href="/dashboard" class="active">Dashboard</a>
       <a href="/subscriptions">Subscriptions</a>
+      <a href="/goals">Goals</a>
       <a href="/">Accounts</a>
       <a href="/settings">Settings</a>
     </div>
@@ -2205,6 +2488,7 @@ app.get("/subscriptions", (req, res) => {
     <div class="nav-links">
       <a href="/dashboard">Dashboard</a>
       <a href="/subscriptions" class="active">Subscriptions</a>
+      <a href="/goals">Goals</a>
       <a href="/">Accounts</a>
       <a href="/settings">Settings</a>
       <a href="/api/export?type=subscriptions&api_key=${apiKey}" class="export-link">Export</a>
@@ -2619,6 +2903,7 @@ app.get("/", (req, res) => {
     <div class="nav-links">
       <a href="/dashboard">Dashboard</a>
       <a href="/subscriptions">Subscriptions</a>
+      <a href="/goals">Goals</a>
       <a href="/" class="active">Accounts</a>
       <a href="/settings">Settings</a>
     </div>
@@ -2838,6 +3123,220 @@ app.get("/", (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// GET /goals — financial goals page
+// ---------------------------------------------------------------------------
+app.get("/goals", (req, res) => {
+  const apiKey = API_KEY || "";
+  res.send(`<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Goals — Perfin</title>
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#080b12">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #080b12; --surface: rgba(255,255,255,0.04); --surface-2: rgba(255,255,255,0.07);
+      --border: rgba(255,255,255,0.08); --border-hover: rgba(255,255,255,0.18);
+      --text: #f0ebe3; --text-muted: rgba(240,235,227,0.5);
+      --warm: #d4a574; --warm-glow: #c8856c; --teal: #5a8f8f;
+      --green: #6fcf97; --green-bg: rgba(111,207,151,0.1);
+      --red: #eb6b6b; --red-bg: rgba(235,107,107,0.1);
+      --blue: #7fb5e6; --blue-bg: rgba(127,181,230,0.1);
+      --radius: 12px;
+    }
+    [data-theme="light"] {
+      --bg: #f5f2ed; --surface: rgba(0,0,0,0.03); --surface-2: rgba(0,0,0,0.06);
+      --border: rgba(0,0,0,0.10); --border-hover: rgba(0,0,0,0.20);
+      --text: #1a1a2e; --text-muted: rgba(26,26,46,0.5);
+      --warm: #b07a4a; --warm-glow: #a0684c; --teal: #3d7272;
+      --green: #2d9f5f; --green-bg: rgba(45,159,95,0.1);
+      --red: #c94444; --red-bg: rgba(201,68,68,0.1);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+    body::before { content: ''; position: fixed; top: -30%; right: -20%; width: 90vw; height: 90vh;
+      background: radial-gradient(ellipse at 50% 30%, rgba(200,133,108,0.28) 0%, rgba(90,143,143,0.12) 50%, transparent 75%);
+      pointer-events: none; z-index: 0; filter: blur(50px); }
+    .container { max-width: 720px; margin: 0 auto; padding: 24px 20px; position: relative; z-index: 1; }
+    a { color: var(--warm); text-decoration: none; }
+    .topnav { display: flex; align-items: center; justify-content: space-between; padding: 20px 0; margin-bottom: 40px; }
+    .topnav .logo { font-weight: 300; font-size: 13px; letter-spacing: 2px; text-transform: uppercase; color: var(--text-muted); }
+    .topnav .nav-links { display: flex; gap: 24px; font-size: 13px; }
+    .topnav .nav-links a { color: var(--text-muted); } .topnav .nav-links a:hover { color: var(--text); }
+    .topnav .nav-links a.active { color: var(--warm); }
+    h1 { font-size: 36px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 6px; }
+    .subtitle { color: var(--text-muted); margin-bottom: 32px; font-size: 15px; font-weight: 300; }
+    .status-msg { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; display: none; font-size: 13px; }
+    .status-msg.success { background: var(--green-bg); border: 1px solid rgba(111,207,151,0.15); color: var(--green); display: block; }
+    .status-msg.error { background: var(--red-bg); border: 1px solid rgba(235,107,107,0.15); color: var(--red); display: block; }
+    .goal-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 20px; margin-bottom: 12px; backdrop-filter: blur(12px); transition: border-color 0.2s; }
+    .goal-card:hover { border-color: var(--border-hover); }
+    .goal-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
+    .goal-name { font-size: 16px; font-weight: 400; }
+    .goal-type { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted);
+      padding: 2px 8px; border: 1px solid var(--border); border-radius: 4px; }
+    .goal-progress { margin-bottom: 8px; }
+    .progress-bar { height: 6px; background: var(--surface-2); border-radius: 3px; overflow: hidden; margin-top: 6px; }
+    .progress-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
+    .goal-amounts { display: flex; justify-content: space-between; font-size: 13px; color: var(--text-muted); }
+    .goal-meta { display: flex; gap: 16px; font-size: 11px; color: var(--text-muted); margin-top: 8px; flex-wrap: wrap; }
+    .goal-actions { display: flex; gap: 6px; margin-top: 10px; }
+    .btn-sm { padding: 4px 10px; font-size: 11px; border: 1px solid var(--border); border-radius: 6px;
+      background: transparent; color: var(--text-muted); cursor: pointer; font-family: inherit; }
+    .btn-sm:hover { border-color: var(--warm); color: var(--text); }
+    .btn-sm.danger { border-color: rgba(235,107,107,0.25); color: var(--red); }
+    .add-form { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 20px; margin-bottom: 20px; display: none; }
+    .add-form .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .add-form label { font-size: 11px; color: var(--text-muted); display: block; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .add-form input, .add-form select { width: 100%; padding: 8px 10px; font-size: 13px; border: 1px solid var(--border);
+      border-radius: 8px; background: transparent; color: var(--text); font-family: inherit; }
+    .btn { padding: 8px 16px; font-size: 12px; font-weight: 500; letter-spacing: 0.5px;
+      border: 1px solid var(--border); border-radius: 8px; cursor: pointer; background: transparent;
+      color: var(--text-muted); font-family: inherit; text-transform: uppercase; }
+    .btn:hover { border-color: var(--warm); color: var(--text); }
+    .btn.primary { border-color: var(--warm); color: var(--warm); }
+    .context-link { display: inline-block; margin-top: 20px; padding: 10px 16px; font-size: 12px;
+      border: 1px solid var(--border); border-radius: 8px; color: var(--text-muted); letter-spacing: 0.5px; }
+    .context-link:hover { border-color: var(--warm); color: var(--text); }
+    @media (max-width: 640px) { .add-form .fields { grid-template-columns: 1fr; } }
+  </style>
+  <script>document.documentElement.setAttribute('data-theme', localStorage.getItem('perfin-theme') || 'dark');</script>
+</head><body>
+  <div class="container">
+  <nav class="topnav">
+    <div class="logo">Perfin</div>
+    <div class="nav-links">
+      <a href="/dashboard">Dashboard</a>
+      <a href="/subscriptions">Subscriptions</a>
+      <a href="/goals" class="active">Goals</a>
+      <a href="/goals">Goals</a>
+      <a href="/">Accounts</a>
+      <a href="/settings">Settings</a>
+    </div>
+  </nav>
+  <h1>Financial Goals</h1>
+  <p class="subtitle">Track progress toward savings, purchases, and retirement</p>
+  <div id="status-msg" class="status-msg"></div>
+
+  <div style="margin-bottom:16px;">
+    <button class="btn primary" onclick="document.getElementById('add-form').style.display=document.getElementById('add-form').style.display==='none'?'block':'none'">+ Add Goal</button>
+  </div>
+
+  <div class="add-form" id="add-form">
+    <div class="fields">
+      <div><label>Goal Name</label><input id="g-name" placeholder="e.g. House Down Payment"></div>
+      <div><label>Type</label><select id="g-type">
+        <option value="savings">Savings</option><option value="home">Home Purchase</option>
+        <option value="car">Car Purchase</option><option value="retirement">Retirement</option>
+        <option value="emergency">Emergency Fund</option><option value="debt_payoff">Debt Payoff</option>
+        <option value="education">Education</option><option value="other">Other</option>
+      </select></div>
+      <div><label>Target Amount ($)</label><input id="g-target" type="number" step="0.01" placeholder="400000"></div>
+      <div><label>Current Amount ($)</label><input id="g-current" type="number" step="0.01" placeholder="25000"></div>
+      <div><label>Monthly Contribution ($)</label><input id="g-monthly" type="number" step="0.01" placeholder="500"></div>
+      <div><label>Expected Annual Return (%)</label><input id="g-rate" type="number" step="0.01" placeholder="7"></div>
+      <div><label>Target Date</label><input id="g-date" type="date"></div>
+      <div><label>Notes</label><input id="g-notes" placeholder="20% down payment"></div>
+    </div>
+    <div style="margin-top:12px;"><button class="btn primary" onclick="addGoal()">Save Goal</button></div>
+  </div>
+
+  <div id="goals-list"><div style="color:var(--text-muted);font-size:13px;">Loading...</div></div>
+
+  <a class="context-link" href="/api/context-export?api_key=${apiKey}" download>Export data for Claude chat</a>
+  </div>
+
+  <script>
+    const API_KEY = '${apiKey}';
+    function apiFetch(url, opts = {}) {
+      if (API_KEY) { opts.headers = opts.headers || {}; opts.headers['x-api-key'] = API_KEY; }
+      return fetch(url, opts);
+    }
+    const statusEl = document.getElementById('status-msg');
+    function showMsg(t, ok) {
+      statusEl.textContent = t; statusEl.className = 'status-msg ' + (ok ? 'success' : 'error');
+      clearTimeout(statusEl._t); statusEl._t = setTimeout(() => { statusEl.style.display='none'; statusEl.className='status-msg'; }, ok ? 4000 : 8000);
+    }
+    function fmt(n) { return '$' + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+
+    async function loadGoals() {
+      try {
+        const res = await apiFetch('/api/goals'); const goals = await res.json();
+        const el = document.getElementById('goals-list');
+        if (!goals.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:20px 0;">No goals yet. Add one above.</div>'; return; }
+        el.innerHTML = goals.map(g => {
+          const pct = g.percent_complete;
+          const color = pct >= 100 ? 'var(--green)' : pct >= 50 ? 'var(--teal)' : pct >= 25 ? 'var(--warm)' : 'var(--red)';
+          let meta = [];
+          if (g.monthly_contribution > 0) meta.push(fmt(g.monthly_contribution) + '/mo');
+          if (g.interest_rate > 0) meta.push(g.interest_rate + '% return');
+          if (g.estimated_date && pct < 100) meta.push('Est. ' + new Date(g.estimated_date).toLocaleDateString());
+          if (g.target_date) meta.push('Target: ' + new Date(g.target_date).toLocaleDateString());
+          if (g.months_to_goal && pct < 100) {
+            const yrs = Math.floor(g.months_to_goal / 12);
+            const mos = g.months_to_goal % 12;
+            meta.push((yrs > 0 ? yrs + 'y ' : '') + mos + 'mo to go');
+          }
+          return '<div class="goal-card">' +
+            '<div class="goal-header"><span class="goal-name">' + g.name + '</span><span class="goal-type">' + g.type + '</span></div>' +
+            '<div class="goal-progress"><div class="goal-amounts"><span>' + fmt(g.current_amount) + '</span><span style="color:' + color + ';font-weight:500;">' + pct + '%</span><span>' + fmt(g.target_amount) + '</span></div>' +
+            '<div class="progress-bar"><div class="progress-fill" style="width:' + Math.min(100, pct) + '%;background:' + color + ';"></div></div></div>' +
+            '<div class="goal-meta">' + meta.map(m => '<span>' + m + '</span>').join('') + '</div>' +
+            (g.notes ? '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;">' + g.notes + '</div>' : '') +
+            '<div class="goal-actions">' +
+              '<button class="btn-sm" onclick="updateAmount(' + g.id + ')">Update Amount</button>' +
+              '<button class="btn-sm danger" onclick="deleteGoal(' + g.id + ')">Delete</button>' +
+            '</div></div>';
+        }).join('');
+      } catch (e) { document.getElementById('goals-list').innerHTML = '<div style="color:var(--red);">Error: ' + e.message + '</div>'; }
+    }
+
+    async function addGoal() {
+      const body = {
+        name: document.getElementById('g-name').value,
+        type: document.getElementById('g-type').value,
+        target_amount: parseFloat(document.getElementById('g-target').value) || 0,
+        current_amount: parseFloat(document.getElementById('g-current').value) || 0,
+        monthly_contribution: parseFloat(document.getElementById('g-monthly').value) || 0,
+        interest_rate: parseFloat(document.getElementById('g-rate').value) || 0,
+        target_date: document.getElementById('g-date').value || null,
+        notes: document.getElementById('g-notes').value || null,
+      };
+      if (!body.name || !body.target_amount) { showMsg('Name and target amount are required.', false); return; }
+      try {
+        const res = await apiFetch('/api/goals', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (res.ok) { showMsg('Goal added.', true); loadGoals(); document.getElementById('add-form').style.display = 'none'; }
+        else { const d = await res.json(); showMsg(d.error || 'Failed', false); }
+      } catch (e) { showMsg(e.message, false); }
+    }
+
+    async function updateAmount(id) {
+      const val = prompt('Enter current amount ($):');
+      if (val === null) return;
+      try {
+        const res = await apiFetch('/api/goals/' + id, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ current_amount: parseFloat(val) }) });
+        if (res.ok) { showMsg('Updated.', true); loadGoals(); }
+        else showMsg('Failed to update.', false);
+      } catch (e) { showMsg(e.message, false); }
+    }
+
+    async function deleteGoal(id) {
+      if (!confirm('Delete this goal?')) return;
+      try {
+        await apiFetch('/api/goals/' + id, { method: 'DELETE' });
+        showMsg('Goal deleted.', true); loadGoals();
+      } catch (e) { showMsg(e.message, false); }
+    }
+
+    loadGoals();
+  </script>
+</body></html>`);
+});
+
+// ---------------------------------------------------------------------------
 // GET /login — login page
 // ---------------------------------------------------------------------------
 app.get("/login", (_req, res) => {
@@ -3037,12 +3536,12 @@ app.post("/api/logout", (req, res) => {
 app.get("/api/settings", async (_req, res) => {
   try {
     const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules FROM user_settings WHERE id = 1");
-    const defaults = { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true, anomaly_detection: true, seasonal_forecast: true, debt_optimizer: true } };
+    const defaults = { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true, anomaly_detection: true, seasonal_forecast: true, debt_optimizer: true, bill_negotiation: true, income_savings: true, tax_deductions: true, goal_tracking: true } };
     const row = result.rows[0] || defaults;
     if (typeof row.insight_modules === "string") row.insight_modules = JSON.parse(row.insight_modules);
     res.json({ ...defaults, ...row, available_modules: INSIGHT_MODULES });
   } catch {
-    res.json({ session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true, anomaly_detection: true, seasonal_forecast: true, debt_optimizer: true }, available_modules: INSIGHT_MODULES });
+    res.json({ session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true, anomaly_detection: true, seasonal_forecast: true, debt_optimizer: true, bill_negotiation: true, income_savings: true, tax_deductions: true, goal_tracking: true }, available_modules: INSIGHT_MODULES });
   }
 });
 
@@ -3229,6 +3728,30 @@ const INSIGHT_MODULES = {
     label: "Debt payoff optimizer",
     description: "Credit card payoff strategies with utilization and credit score impact",
     extra_tokens: 300,
+    requires_zip: false,
+  },
+  bill_negotiation: {
+    label: "Bill negotiation tips",
+    description: "Identify bills where calling to negotiate typically saves 10-30%",
+    extra_tokens: 100,
+    requires_zip: false,
+  },
+  income_savings: {
+    label: "Income & savings rate",
+    description: "Track income deposits and calculate your savings rate",
+    extra_tokens: 150,
+    requires_zip: false,
+  },
+  tax_deductions: {
+    label: "Tax deduction flags",
+    description: "Flag potentially tax-deductible transactions",
+    extra_tokens: 150,
+    requires_zip: false,
+  },
+  goal_tracking: {
+    label: "Goal progress",
+    description: "Track progress toward your financial goals with projections",
+    extra_tokens: 200,
     requires_zip: false,
   },
 };
@@ -3509,6 +4032,101 @@ app.post("/api/insights", async (_req, res) => {
             "4. If APR is unknown for any card, note that the user should add it in their Accounts page for more accurate projections.";
         }
       } catch { /* skip on query error */ }
+    }
+
+    // --- Module: Bill negotiation ---
+    if (modules.bill_negotiation !== false) {
+      activeModules.push("bill_negotiation");
+      prompt += "\n\n=== BILL NEGOTIATION ===\n" +
+        "INSTRUCTION: Review the utility bills and subscriptions for negotiation opportunities. " +
+        "Common negotiable bills include: internet/cable (call retention department), insurance premiums (shop quotes), " +
+        "cell phone plans (switch to MVNO), medical bills (ask for itemized + payment plan). " +
+        "For each opportunity, estimate typical savings (e.g. 'Internet: calling retention typically saves $20-40/mo'). " +
+        "Be specific about which bills to target and the typical script/approach.";
+    }
+
+    // --- Module: Income & savings rate ---
+    if (modules.income_savings !== false) {
+      try {
+        const incomeData = await pool.query(
+          `SELECT TO_CHAR(date, 'YYYY-MM') AS month,
+                  SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) AS income,
+                  SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) AS spending
+           FROM transactions
+           WHERE pending = false AND date >= CURRENT_DATE - INTERVAL '6 months'
+           GROUP BY TO_CHAR(date, 'YYYY-MM') ORDER BY month`
+        );
+        const hasIncome = incomeData.rows.some(r => parseFloat(r.income) > 0);
+        if (hasIncome) {
+          activeModules.push("income_savings");
+          prompt += "\n\n=== INCOME & SAVINGS RATE ===\n" +
+            incomeData.rows.map(r => {
+              const inc = parseFloat(r.income);
+              const spend = parseFloat(r.spending);
+              const rate = inc > 0 ? Math.round((1 - spend / inc) * 100) : 0;
+              return r.month + ": Income $" + inc.toFixed(2) + ", Spending $" + spend.toFixed(2) + ", Savings rate " + rate + "%";
+            }).join("\n") +
+            "\nINSTRUCTION: Analyze the savings rate trend. The recommended savings rate is 20%+ (50/30/20 rule). " +
+            "If below target, identify the top category driving overspending. " +
+            "Project how the current savings rate translates to emergency fund timeline (3-6 months of expenses). " +
+            "Suggest a specific, achievable savings rate improvement target.";
+        }
+      } catch { /* skip */ }
+    }
+
+    // --- Module: Tax deduction flags ---
+    if (modules.tax_deductions !== false) {
+      try {
+        const taxKeywords = ["doctor", "medical", "pharmacy", "hospital", "dental", "vision", "health",
+          "charity", "donation", "goodwill", "salvation army", "red cross",
+          "tuition", "university", "college", "education", "student",
+          "office", "supplies", "home office", "business",
+          "mortgage", "interest", "property tax", "state tax"];
+        const taxData = await pool.query(
+          `SELECT COALESCE(merchant_name, name) AS merchant, SUM(amount) AS total, COUNT(*) AS txn_count
+           FROM transactions
+           WHERE pending = false AND amount > 0
+             AND date >= date_trunc('year', CURRENT_DATE)
+             AND (${taxKeywords.map((_, i) => "LOWER(COALESCE(merchant_name, name)) LIKE $" + (i + 1)).join(" OR ")})
+           GROUP BY COALESCE(merchant_name, name)
+           ORDER BY total DESC LIMIT 15`,
+          taxKeywords.map(k => "%" + k + "%")
+        );
+        if (taxData.rows.length > 0) {
+          activeModules.push("tax_deductions");
+          prompt += "\n\n=== POTENTIAL TAX-DEDUCTIBLE TRANSACTIONS (YTD) ===\n" +
+            taxData.rows.map(r => r.merchant + ": $" + parseFloat(r.total).toFixed(2) + " (" + r.txn_count + " transactions)").join("\n") +
+            "\nINSTRUCTION: Review these flagged transactions for potential tax deductions. " +
+            "Categorize as: medical (Schedule A), charitable (Schedule A), education (1098-T/LLC), " +
+            "business (Schedule C), or not deductible. Note standard deduction thresholds ($14,600 single / $29,200 married 2024). " +
+            "Only flag deductions likely to exceed the standard deduction threshold. Remind user to consult a tax professional.";
+        }
+      } catch { /* skip */ }
+    }
+
+    // --- Module: Goal tracking ---
+    if (modules.goal_tracking !== false) {
+      try {
+        const goalsData = await pool.query("SELECT name, type, target_amount, current_amount, monthly_contribution, target_date, interest_rate FROM financial_goals WHERE is_active = true");
+        if (goalsData.rows.length > 0) {
+          activeModules.push("goal_tracking");
+          prompt += "\n\n=== FINANCIAL GOALS ===\n" +
+            goalsData.rows.map(g => {
+              const target = parseFloat(g.target_amount);
+              const current = parseFloat(g.current_amount);
+              const pct = target > 0 ? Math.round(current / target * 100) : 0;
+              let line = g.name + " (" + g.type + "): $" + current.toFixed(2) + " / $" + target.toFixed(2) + " (" + pct + "%)";
+              if (g.monthly_contribution > 0) line += ", contributing $" + parseFloat(g.monthly_contribution).toFixed(2) + "/mo";
+              if (g.target_date) line += ", target date: " + g.target_date;
+              if (g.interest_rate > 0) line += ", expected return: " + g.interest_rate + "%/yr";
+              return line;
+            }).join("\n") +
+            "\nINSTRUCTION: Assess progress on each goal. For savings goals, calculate if the current contribution rate is on track. " +
+            "For retirement goals, use the expected return to project growth. If a goal is behind schedule, suggest specific adjustments " +
+            "(increase monthly contribution by $X, extend timeline by Y months, or reallocate from discretionary spending). " +
+            "For home/car purchases, note down payment requirements (typically 20% for home, 10-20% for car) and monthly payment estimates.";
+        }
+      } catch { /* skip */ }
     }
 
     // Include running summary for long-term context
@@ -3911,6 +4529,14 @@ app.get("/settings", (req, res) => {
       <div class="setting-info"><div class="name">Export Subscriptions</div><div class="desc">Download as CSV</div></div>
       <div class="setting-control"><a href="/api/export?type=subscriptions&api_key=${apiKey}"><button class="btn">Export</button></a></div>
     </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Export for Claude Chat</div><div class="desc">Download a structured data summary to paste into a Claude conversation for deep-dive analysis</div></div>
+      <div class="setting-control"><a href="/api/context-export?api_key=${apiKey}" download><button class="btn primary">Export Context</button></a></div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Save Net Worth Snapshot</div><div class="desc">Record today's net worth from current account balances</div></div>
+      <div class="setting-control"><button class="btn" id="snapshot-btn" onclick="saveSnapshot()">Snapshot</button></div>
+    </div>
   </div>
   </div>
   <script>
@@ -4127,6 +4753,17 @@ app.get("/settings", (req, res) => {
       await _origUpdate(key, value);
       if (key.startsWith('keep_alive')) updateKeepAliveEstimate();
     };
+    async function saveSnapshot() {
+      const btn = document.getElementById('snapshot-btn');
+      btn.classList.add('btn-loading'); btn.disabled = true;
+      try {
+        const res = await apiFetch('/api/net-worth/snapshot', { method: 'POST' });
+        const data = await res.json();
+        if (res.ok) showMsg('Net worth snapshot saved: $' + parseFloat(data.net_worth).toLocaleString(), true);
+        else showMsg(data.error || 'Failed', false);
+      } catch (e) { showMsg(e.message, false); }
+      btn.classList.remove('btn-loading'); btn.disabled = false;
+    }
     loadSettings(); loadInsights(); loadUsageHistory();
   </script>
 </body></html>`);
