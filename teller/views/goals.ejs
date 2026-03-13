@@ -123,7 +123,8 @@
     async function deleteGoal(id) {
       if (!confirm('Delete this goal?')) return;
       try {
-        await apiFetch('/api/goals/' + id, { method: 'DELETE' });
+        var res = await apiFetch('/api/goals/' + id, { method: 'DELETE' });
+        if (!res.ok) { var d = await res.json().catch(function() { return {}; }); showMsg(d.error || 'Failed to delete (HTTP ' + res.status + ')', false); return; }
         showMsg('Goal deleted.', true); loadGoals();
       } catch (e) { showMsg(e.message, false); }
     }

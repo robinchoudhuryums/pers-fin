@@ -34,11 +34,11 @@
   function showMsg(text, ok) {
     var el = document.getElementById('status-msg');
     if (!el) return;
+    el.style.display = '';
     el.textContent = text;
     el.className = 'status-msg ' + (ok ? 'success' : 'error');
     if (el._timer) clearTimeout(el._timer);
     el._timer = setTimeout(function() {
-      el.style.display = 'none';
       el.className = 'status-msg';
     }, ok ? 5000 : 10000);
   }

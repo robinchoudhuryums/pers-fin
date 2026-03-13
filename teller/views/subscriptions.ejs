@@ -225,30 +225,41 @@
     }
 
     async function dismissSub(id) {
-      try { await apiFetch('/api/subscriptions/' + id + '/dismiss', { method: 'PATCH' }); loadSubscriptions(); }
-      catch (e) { showMsg('Failed to dismiss: ' + e.message, false); }
+      try {
+        var res = await apiFetch('/api/subscriptions/' + id + '/dismiss', { method: 'PATCH' });
+        if (!res.ok) { var d = await res.json().catch(function() { return {}; }); showMsg(d.error || 'Failed to dismiss (HTTP ' + res.status + ')', false); return; }
+        showMsg('Subscription dismissed.', true); loadSubscriptions();
+      } catch (e) { showMsg('Failed to dismiss: ' + e.message, false); }
     }
     async function undismissSub(id) {
-      try { await apiFetch('/api/subscriptions/' + id + '/undismiss', { method: 'PATCH' }); loadSubscriptions(); }
-      catch (e) { showMsg('Failed to restore: ' + e.message, false); }
+      try {
+        var res = await apiFetch('/api/subscriptions/' + id + '/undismiss', { method: 'PATCH' });
+        if (!res.ok) { var d = await res.json().catch(function() { return {}; }); showMsg(d.error || 'Failed to restore (HTTP ' + res.status + ')', false); return; }
+        showMsg('Subscription restored.', true); loadSubscriptions();
+      } catch (e) { showMsg('Failed to restore: ' + e.message, false); }
     }
     async function markCancelled(id) {
       if (!confirm('Mark this subscription as cancelled?')) return;
       try {
-        await apiFetch('/api/subscriptions/' + id + '/cancel', { method: 'PATCH' });
+        var res = await apiFetch('/api/subscriptions/' + id + '/cancel', { method: 'PATCH' });
+        if (!res.ok) { var d = await res.json().catch(function() { return {}; }); showMsg(d.error || 'Failed to cancel (HTTP ' + res.status + ')', false); return; }
         showMsg('Subscription marked as cancelled.', true); loadSubscriptions();
       } catch (e) { showMsg('Failed to cancel: ' + e.message, false); }
     }
     async function uncancelSub(id) {
-      try { await apiFetch('/api/subscriptions/' + id + '/uncancel', { method: 'PATCH' }); loadSubscriptions(); }
-      catch (e) { showMsg('Failed to restore: ' + e.message, false); }
+      try {
+        var res = await apiFetch('/api/subscriptions/' + id + '/uncancel', { method: 'PATCH' });
+        if (!res.ok) { var d = await res.json().catch(function() { return {}; }); showMsg(d.error || 'Failed to restore (HTTP ' + res.status + ')', false); return; }
+        showMsg('Subscription restored.', true); loadSubscriptions();
+      } catch (e) { showMsg('Failed to restore: ' + e.message, false); }
     }
     async function reclassify(id, category) {
       try {
-        await apiFetch('/api/subscriptions/' + id + '/category', {
+        var res = await apiFetch('/api/subscriptions/' + id + '/category', {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ category: category })
         });
+        if (!res.ok) { var d = await res.json().catch(function() { return {}; }); showMsg(d.error || 'Failed to reclassify (HTTP ' + res.status + ')', false); return; }
         showMsg('Reclassified as ' + category + '.', true);
         loadSubscriptions();
       } catch (e) { showMsg('Failed to reclassify: ' + e.message, false); }

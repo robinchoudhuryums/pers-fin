@@ -126,7 +126,8 @@
     async function deleteBudget(id) {
       if (!confirm('Delete this budget?')) return;
       try {
-        await apiFetch('/api/budgets/' + id, { method: 'DELETE' });
+        var res = await apiFetch('/api/budgets/' + id, { method: 'DELETE' });
+        if (!res.ok) { var d = await res.json().catch(function() { return {}; }); showMsg(d.error || 'Failed to delete (HTTP ' + res.status + ')', false); return; }
         showMsg('Budget deleted.', true); loadBudgets();
       } catch (e) { showMsg(e.message, false); }
     }
