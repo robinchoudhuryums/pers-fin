@@ -311,8 +311,10 @@ router.get("/settings", (req, res) => {
   <script>
     const API_KEY = '${apiKey}';
     const statusEl = document.getElementById('status-msg');
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
     function apiFetch(url, opts = {}) {
-      if (API_KEY) { opts.headers = opts.headers || {}; opts.headers['x-api-key'] = API_KEY; }
+      opts.headers = { ...opts.headers, 'X-Requested-With': 'XMLHttpRequest' };
+      if (API_KEY) { opts.headers['x-api-key'] = API_KEY; }
       return fetch(url, opts);
     }
     function showMsg(text, ok) {
@@ -348,10 +350,10 @@ router.get("/settings", (req, res) => {
             var checked = mods[key] !== false ? 'checked' : '';
             var needs = mod.requires_zip ? (s.zip_code ? '' : ' (needs ZIP)') : '';
             return '<label style="display:flex;align-items:flex-start;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;cursor:pointer;font-size:12px;transition:border-color 0.2s;" onmouseenter="this.style.borderColor=\\'var(--border-hover)\\';" onmouseleave="this.style.borderColor=\\'var(--border)\\';">' +
-              '<input type="checkbox" ' + checked + ' onchange="toggleModule(\\'' + key + '\\', this.checked)" style="margin-top:2px;">' +
-              '<span><span style="font-weight:400;">' + mod.label + '</span>' + needs +
-              '<br><span style="color:var(--text-muted);font-weight:300;font-size:11px;">' + mod.description +
-              ' (~+' + mod.extra_tokens + ' tokens)</span></span></label>';
+              '<input type="checkbox" ' + checked + ' onchange="toggleModule(\\'' + esc(key) + '\\', this.checked)" style="margin-top:2px;">' +
+              '<span><span style="font-weight:400;">' + esc(mod.label) + '</span>' + needs +
+              '<br><span style="color:var(--text-muted);font-weight:300;font-size:11px;">' + esc(mod.description) +
+              ' (~+' + parseInt(mod.extra_tokens) + ' tokens)</span></span></label>';
           }).join('');
         }
         applyTheme(s.theme || 'dark');
@@ -418,7 +420,8 @@ router.get("/settings", (req, res) => {
       btn.classList.remove('btn-loading'); btn.disabled = false;
     }
     function renderInsight(text) {
-      let html = text.replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>')
+      let safe = esc(text);
+      let html = safe.replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>')
         .replace(/^[\\-\\*] (.+)$/gm, '<li>$1</li>').replace(/\\n/g, '<br>');
       document.getElementById('insights-container').innerHTML =
         '<div class="insight-card"><h3>AI Financial Insights</h3><div class="insight-text">' + html +
@@ -456,7 +459,7 @@ router.get("/settings", (req, res) => {
             '<td style="padding:6px 0;border-bottom:1px solid rgba(128,128,128,0.06);">' + new Date(row.created_at).toLocaleDateString() + '</td>' +
             '<td style="text-align:right;padding:6px 0;border-bottom:1px solid rgba(128,128,128,0.06);">' + (row.tokens_used || 0).toLocaleString() + '</td>' +
             '<td style="text-align:right;padding:6px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--warm);">$' + parseFloat(row.estimated_cost_usd || 0).toFixed(4) + '</td>' +
-            '<td style="text-align:right;padding:6px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--text-muted);font-size:11px;">' + (row.model_used || '').replace('claude-', '').split('-202')[0] + '</td></tr>';
+            '<td style="text-align:right;padding:6px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--text-muted);font-size:11px;">' + esc((row.model_used || '').replace('claude-', '').split('-202')[0]) + '</td></tr>';
         });
         html += '</table>';
         histEl.innerHTML = html;

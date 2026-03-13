@@ -30,6 +30,8 @@ const helmet = require("helmet");
 const cors = require("cors");
 const rateLimit = require("express-rate-limit");
 const session = require("express-session");
+const pgSession = require("connect-pg-simple")(session);
+const morgan = require("morgan");
 
 // --- Services ---
 const { pool, runMigrations } = require("./services/database");
@@ -47,6 +49,7 @@ const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toSt
 const app = express();
 // Trust first proxy (Render/Fly.io load balancer) so secure cookies work behind TLS termination
 app.set("trust proxy", 1);
+app.use(morgan("short"));
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
@@ -54,6 +57,11 @@ app.use(express.urlencoded({ extended: false }));
 // Session middleware
 // ---------------------------------------------------------------------------
 app.use(session({
+  store: new pgSession({
+    pool,
+    tableName: "session",
+    createTableIfMissing: true,
+  }),
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
@@ -61,6 +69,7 @@ app.use(session({
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
+    maxAge: 24 * 60 * 60 * 1000, // 24 hours
   },
 }));
 
@@ -81,6 +90,22 @@ function requireAuth(req, res, next) {
   return res.redirect("/login");
 }
 app.use(requireAuth);
+
+// ---------------------------------------------------------------------------
+// CSRF protection — require custom header on state-changing API requests
+// Browsers block cross-origin custom headers without CORS preflight approval
+// ---------------------------------------------------------------------------
+app.use("/api", (req, res, next) => {
+  if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return next();
+  if (req.path === "/login" || req.path === "/logout") return next();
+  if (req.headers["x-requested-with"] === "XMLHttpRequest") return next();
+  // Also allow requests with JSON content type (also triggers CORS preflight)
+  if ((req.headers["content-type"] || "").startsWith("application/json")) return next();
+  // Allow API key authenticated requests (e.g., external tools)
+  const apiKey = req.headers["x-api-key"] || req.query.api_key;
+  if (apiKey) return next();
+  return res.status(403).json({ error: "CSRF validation failed. Include X-Requested-With header." });
+});
 
 // ---------------------------------------------------------------------------
 // Security middleware
@@ -184,10 +209,26 @@ app.get("/health", (_req, res) => {
 // ---------------------------------------------------------------------------
 const PORT = process.env.PORT || 3000;
 runMigrations().then(() => {
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`Teller server running on http://0.0.0.0:${PORT}`);
     console.log(`  Environment: ${TELLER_ENV}`);
     console.log(`  Application ID: ${TELLER_APP_ID || "(not set)"}`);
     startKeepAlive(PORT);
   });
+
+  // --- Graceful shutdown ---
+  function shutdown(signal) {
+    console.log(`\n${signal} received — shutting down gracefully...`);
+    server.close(() => {
+      console.log("HTTP server closed.");
+      pool.end().then(() => {
+        console.log("Database pool closed.");
+        process.exit(0);
+      }).catch(() => process.exit(1));
+    });
+    // Force exit after 10s if graceful shutdown stalls
+    setTimeout(() => { console.error("Forced shutdown after timeout."); process.exit(1); }, 10000);
+  }
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 });

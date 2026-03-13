@@ -123,7 +123,7 @@ router.get("/login", (_req, res) => {
       return null;
     }
     if (AUTH_MODE === 'pin') {
-      const pinLen = ${SESSION_PIN ? SESSION_PIN.length : 4};
+      const pinLen = 8;
       let pin = '';
       let submitting = false;
       const dotsEl = document.getElementById('pin-dots');
@@ -137,7 +137,7 @@ router.get("/login", (_req, res) => {
       });
       padHtml += '<button class="pin-key fn" type="button" data-action="clear">Clear</button>';
       padHtml += '<button class="pin-key" type="button" data-digit="0">0</button>';
-      padHtml += '<button class="pin-key fn" type="button" data-action="del">Del</button>';
+      padHtml += '<button class="pin-key fn" type="button" data-action="submit" style="color:var(--warm);">Go</button>';
       padEl.innerHTML = padHtml;
       function updateDots() {
         for (let i = 0; i < pinLen; i++) {
@@ -149,15 +149,18 @@ router.get("/login", (_req, res) => {
         pin += n;
         updateDots();
         errEl.style.display = 'none';
-        if (pin.length === pinLen) {
-          submitting = true;
-          var err = await doLogin(pin);
-          if (err) {
-            for (let i = 0; i < pinLen; i++) document.getElementById('dot-' + i).className = 'pin-dot error';
-            dotsEl.classList.add('shake');
-            errEl.textContent = err; errEl.style.display = 'block';
-            setTimeout(function() { pin = ''; submitting = false; updateDots(); dotsEl.classList.remove('shake'); }, 600);
+      }
+      async function submitPin() {
+        if (!pin.length || submitting) return;
+        submitting = true;
+        var err = await doLogin(pin);
+        if (err) {
+          for (let i = 0; i < pinLen; i++) {
+            if (i < pin.length) document.getElementById('dot-' + i).className = 'pin-dot error';
           }
+          dotsEl.classList.add('shake');
+          errEl.textContent = err; errEl.style.display = 'block';
+          setTimeout(function() { pin = ''; submitting = false; updateDots(); dotsEl.classList.remove('shake'); }, 600);
         }
       }
       padEl.addEventListener('click', function(e) {
@@ -166,7 +169,7 @@ router.get("/login", (_req, res) => {
         e.preventDefault();
         if (btn.dataset.digit !== undefined) handleDigit(btn.dataset.digit);
         else if (btn.dataset.action === 'clear') { pin = ''; updateDots(); errEl.style.display = 'none'; }
-        else if (btn.dataset.action === 'del') { pin = pin.slice(0, -1); updateDots(); }
+        else if (btn.dataset.action === 'submit') submitPin();
       });
     } else {
       document.getElementById('login-form').addEventListener('submit', async (e) => {

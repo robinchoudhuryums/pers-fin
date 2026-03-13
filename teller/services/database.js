@@ -96,6 +96,21 @@ async function runMigrations() {
       flagged_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       UNIQUE(transaction_id, tax_year)
     )`);
+    // Partial unique index for AI-detected deductions (no transaction_id)
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_tax_deductions_merchant_year
+      ON tax_deductions (merchant, tax_year) WHERE transaction_id IS NULL`);
+    // Investment / manual accounts (brokerage, retirement, etc.)
+    await pool.query(`CREATE TABLE IF NOT EXISTS investment_accounts (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      institution TEXT,
+      account_type TEXT NOT NULL DEFAULT 'brokerage',
+      balance NUMERIC(14,2) NOT NULL DEFAULT 0,
+      notes TEXT,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
     console.log("Migrations complete.");
   } catch (err) {
     console.error("Migration error (non-fatal):", err.message);

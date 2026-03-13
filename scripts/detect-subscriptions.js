@@ -239,4 +239,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { detectSubscriptions };
+module.exports = { detectSubscriptions, findModeAmount, addDays };

@@ -306,8 +306,8 @@ router.get("/dashboard", (req, res) => {
     function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
     function apiFetch(url, opts = {}) {
+      opts.headers = { ...opts.headers, 'X-Requested-With': 'XMLHttpRequest' };
       if (API_KEY) {
-        opts.headers = opts.headers || {};
         opts.headers['x-api-key'] = API_KEY;
       }
       return fetch(url, opts);
@@ -347,22 +347,26 @@ router.get("/dashboard", (req, res) => {
     // Load accounts with balances
     async function loadAccounts() {
       try {
-        const res = await apiFetch('/api/accounts');
+        const [res, invRes] = await Promise.all([
+          apiFetch('/api/accounts'),
+          apiFetch('/api/investment-accounts'),
+        ]);
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const accounts = await res.json();
+        const investments = invRes.ok ? await invRes.json() : [];
         const grid = document.getElementById('accounts-grid');
 
-        document.getElementById('acct-count').textContent = accounts.length;
+        document.getElementById('acct-count').textContent = accounts.length + investments.length;
 
-        if (!accounts.length) {
+        if (!accounts.length && !investments.length) {
           grid.innerHTML = '<div class="empty-msg">No accounts linked. <a href="/">Link an account</a> to get started.</div>';
           return;
         }
 
         let netBalance = 0;
-        const hasBalances = accounts.some(a => a.available_balance !== null || a.current_balance !== null);
+        const hasBalances = accounts.some(a => a.available_balance !== null || a.current_balance !== null) || investments.length > 0;
 
-        grid.innerHTML = accounts.map(a => {
+        let html = accounts.map(a => {
           const bal = parseFloat(a.available_balance || a.current_balance || 0);
           // Credit accounts: balance represents debt
           const isCredit = a.type === 'credit';
@@ -391,6 +395,21 @@ router.get("/dashboard", (req, res) => {
             creditExtra +
           '</div>';
         }).join('');
+
+        // Append investment accounts
+        html += investments.map(inv => {
+          const bal = parseFloat(inv.balance);
+          netBalance += bal;
+          const balClass = bal > 0 ? 'positive' : bal < 0 ? 'negative' : 'neutral';
+          return '<div class="acct-card">' +
+            '<div class="acct-inst">' + esc(inv.institution || 'Investment') + '</div>' +
+            '<div class="acct-name">' + esc(inv.name) + '</div>' +
+            '<div class="acct-balance ' + balClass + '">' + fmt(bal) + '</div>' +
+            '<div class="acct-type">' + esc(inv.account_type) + '</div>' +
+          '</div>';
+        }).join('');
+
+        grid.innerHTML = html;
 
         document.getElementById('net-balance').textContent = hasBalances ? fmt(netBalance) : '\\u2014';
         if (hasBalances) {

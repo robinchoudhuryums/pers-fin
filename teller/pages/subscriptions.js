@@ -276,10 +276,10 @@ router.get("/subscriptions", (req, res) => {
 
   <script>
     const _apiKey = "${apiKey}";
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
     function apiFetch(url, opts = {}) {
-      if (_apiKey) {
-        opts.headers = { ...opts.headers, 'x-api-key': _apiKey };
-      }
+      opts.headers = { ...opts.headers, 'X-Requested-With': 'XMLHttpRequest' };
+      if (_apiKey) { opts.headers['x-api-key'] = _apiKey; }
       return fetch(url, opts);
     }
     const tbody = document.getElementById('subs-body');
@@ -338,7 +338,7 @@ router.get("/subscriptions", (req, res) => {
           if (s.amount_changed) badges.push('<span class="badge badge-price">PRICE CHANGE</span>');
           if (s.source === 'manual') badges.push('<span class="badge badge-manual">MANUAL</span>');
           if (s.category === 'utility') badges.push('<span class="badge badge-utility">UTILITY</span>');
-          else if (s.display_category && s.display_category !== 'other') badges.push('<span class="badge badge-category">' + s.display_category + '</span>');
+          else if (s.display_category && s.display_category !== 'other') badges.push('<span class="badge badge-category">' + esc(s.display_category) + '</span>');
           if (s.is_dismissed) badges.push('<span class="badge badge-dismissed">DISMISSED</span>');
           if (s.cancelled_at) badges.push('<span class="badge badge-cancelled">CANCELLED</span>');
           const overdue = !s.cancelled_at && isOverdue(s.next_expected);
@@ -355,15 +355,15 @@ router.get("/subscriptions", (req, res) => {
             actions += '<button class="btn-sm" onclick="reclassify(' + s.id + ',\\'' + toggleCat + '\\')" title="Reclassify as ' + toggleCat + '">' + toggleLabel + '</button>';
             actions += '<button class="btn-sm" onclick="dismissSub(' + s.id + ')">Dismiss</button>';
             if (s.cancel_url) {
-              actions += '<a class="btn-sm cancel" href="' + s.cancel_url + '" target="_blank" rel="noopener">Cancel&rarr;</a>';
+              actions += '<a class="btn-sm cancel" href="' + esc(s.cancel_url) + '" target="_blank" rel="noopener">Cancel&rarr;</a>';
               actions += '<button class="btn-sm cancel" onclick="markCancelled(' + s.id + ')" title="Mark as cancelled">Done</button>';
             } else {
               actions += '<button class="btn-sm cancel" onclick="markCancelled(' + s.id + ')">Cancel</button>';
             }
           }
-          const notesHtml = s.notes ? '<div style="font-size:12px;color:var(--text-muted);">' + s.notes + '</div>' : '';
+          const notesHtml = s.notes ? '<div style="font-size:12px;color:var(--text-muted);">' + esc(s.notes) + '</div>' : '';
           return '<tr>' +
-            '<td><strong>' + s.display_name + '</strong> ' + badges.join(' ') + notesHtml + '</td>' +
+            '<td><strong>' + esc(s.display_name) + '</strong> ' + badges.join(' ') + notesHtml + '</td>' +
             '<td class="amount">$' + parseFloat(s.amount).toFixed(2) + '</td>' +
             '<td class="amount">$' + parseFloat(s.monthly_cost).toFixed(2) + '</td>' +
             '<td>' + cadenceLabel(s.cadence_days) + '</td>' +
@@ -371,7 +371,7 @@ router.get("/subscriptions", (req, res) => {
             '<td>' + actions + '</td></tr>';
         }).join('');
       } catch (e) {
-        tbody.innerHTML = '<tr><td colspan="6" class="empty">Error loading subscriptions: ' + e.message + '</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" class="empty">Error loading subscriptions: ' + esc(e.message) + '</td></tr>';
         showMsg('Failed to load subscriptions: ' + e.message, false);
       }
     }

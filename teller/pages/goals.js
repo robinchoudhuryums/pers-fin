@@ -133,10 +133,12 @@ router.get("/goals", (req, res) => {
   <script>
     const API_KEY = '${apiKey}';
     function apiFetch(url, opts = {}) {
-      if (API_KEY) { opts.headers = opts.headers || {}; opts.headers['x-api-key'] = API_KEY; }
+      opts.headers = { ...opts.headers, 'X-Requested-With': 'XMLHttpRequest' };
+      if (API_KEY) { opts.headers['x-api-key'] = API_KEY; }
       return fetch(url, opts);
     }
     const statusEl = document.getElementById('status-msg');
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
     function showMsg(t, ok) {
       statusEl.textContent = t; statusEl.className = 'status-msg ' + (ok ? 'success' : 'error');
       clearTimeout(statusEl._t); statusEl._t = setTimeout(() => { statusEl.style.display='none'; statusEl.className='status-msg'; }, ok ? 4000 : 8000);
@@ -162,17 +164,17 @@ router.get("/goals", (req, res) => {
             meta.push((yrs > 0 ? yrs + 'y ' : '') + mos + 'mo to go');
           }
           return '<div class="goal-card">' +
-            '<div class="goal-header"><span class="goal-name">' + g.name + '</span><span class="goal-type">' + g.type + '</span></div>' +
+            '<div class="goal-header"><span class="goal-name">' + esc(g.name) + '</span><span class="goal-type">' + esc(g.type) + '</span></div>' +
             '<div class="goal-progress"><div class="goal-amounts"><span>' + fmt(g.current_amount) + '</span><span style="color:' + color + ';font-weight:500;">' + pct + '%</span><span>' + fmt(g.target_amount) + '</span></div>' +
             '<div class="progress-bar"><div class="progress-fill" style="width:' + Math.min(100, pct) + '%;background:' + color + ';"></div></div></div>' +
             '<div class="goal-meta">' + meta.map(m => '<span>' + m + '</span>').join('') + '</div>' +
-            (g.notes ? '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;">' + g.notes + '</div>' : '') +
+            (g.notes ? '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;">' + esc(g.notes) + '</div>' : '') +
             '<div class="goal-actions">' +
               '<button class="btn-sm" onclick="updateAmount(' + g.id + ')">Update Amount</button>' +
               '<button class="btn-sm danger" onclick="deleteGoal(' + g.id + ')">Delete</button>' +
             '</div></div>';
         }).join('');
-      } catch (e) { document.getElementById('goals-list').innerHTML = '<div style="color:var(--red);">Error: ' + e.message + '</div>'; }
+      } catch (e) { document.getElementById('goals-list').innerHTML = '<div style="color:var(--red);">Error: ' + esc(e.message) + '</div>'; }
     }
 
     async function addGoal() {

@@ -199,18 +199,55 @@ router.get("/", (req, res) => {
       <div id="csv-imports-list" style="color:var(--text-muted);font-size:14px;font-weight:300;">Loading...</div>
     </div>
   </div>
+
+  <hr class="section-divider">
+
+  <div class="csv-section">
+    <h2>Investment Accounts</h2>
+    <p>Manually track brokerage, retirement, and other investment accounts not available via bank linking.</p>
+    <div class="csv-form" id="inv-form">
+      <div class="field">
+        <label>Account Name</label>
+        <input type="text" id="inv-name" placeholder="e.g. Fidelity 401(k)">
+      </div>
+      <div class="field">
+        <label>Institution</label>
+        <input type="text" id="inv-institution" placeholder="e.g. Fidelity">
+      </div>
+      <div class="field">
+        <label>Type</label>
+        <select id="inv-type">
+          <option value="brokerage">Brokerage</option>
+          <option value="401k">401(k)</option>
+          <option value="ira">IRA</option>
+          <option value="roth_ira">Roth IRA</option>
+          <option value="retirement">Other Retirement</option>
+          <option value="529">529 Plan</option>
+          <option value="hsa">HSA</option>
+          <option value="crypto">Crypto</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Current Balance ($)</label>
+        <input type="number" id="inv-balance" step="0.01" placeholder="50000">
+      </div>
+      <button onclick="addInvestment()">Add Account</button>
+    </div>
+    <div id="inv-list" style="margin-top:16px;color:var(--text-muted);font-size:14px;font-weight:300;">Loading...</div>
+  </div>
   </div>
 
   <script>
     const _apiKey = "${apiKey}";
     function apiFetch(url, opts = {}) {
-      if (_apiKey) {
-        opts.headers = { ...opts.headers, 'x-api-key': _apiKey };
-      }
+      opts.headers = { ...opts.headers, 'X-Requested-With': 'XMLHttpRequest' };
+      if (_apiKey) { opts.headers['x-api-key'] = _apiKey; }
       return fetch(url, opts);
     }
     const statusEl  = document.getElementById('status');
     const itemsList = document.getElementById('items-list');
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
     function showStatus(msg, ok) {
       statusEl.textContent = msg;
@@ -240,10 +277,10 @@ router.get("/", (req, res) => {
         if (!items.length) { itemsList.textContent = 'No institutions linked yet.'; return; }
         itemsList.innerHTML = items.map(i =>
           '<div class="item">' +
-            '<div class="item-info"><strong>' + i.institution_name + '</strong>' +
-            ' (' + (i.provider || 'teller') + ') — ' +
-            i.accounts.length + ' account(s) — Status: ' + i.status + '</div>' +
-            '<div class="item-actions"><button class="btn-unlink" onclick="unlinkAccount(' + i.id + ', \\'' + (i.institution_name || '').replace(/'/g, "\\\\'") + '\\')">Unlink</button></div>' +
+            '<div class="item-info"><strong>' + esc(i.institution_name) + '</strong>' +
+            ' (' + esc(i.provider || 'teller') + ') — ' +
+            i.accounts.length + ' account(s) — Status: ' + esc(i.status) + '</div>' +
+            '<div class="item-actions"><button class="btn-unlink" onclick="unlinkAccount(' + i.id + ', ' + JSON.stringify(i.institution_name || '').replace(/</g, '\\u003c') + ')">Unlink</button></div>' +
           '</div>'
         ).join('');
       } catch (e) {
@@ -355,15 +392,83 @@ router.get("/", (req, res) => {
         const imports = await res.json();
         if (!imports.length) { list.textContent = 'No CSV imports yet.'; return; }
         list.innerHTML = imports.map(i =>
-          '<div class="csv-import-entry"><strong>' + i.institution + '</strong> — ' +
-          i.account_label + ' — ' + i.rows_imported + ' rows — ' +
-          new Date(i.imported_at).toLocaleDateString() + ' — <em>' + i.filename + '</em></div>'
+          '<div class="csv-import-entry"><strong>' + esc(i.institution) + '</strong> — ' +
+          esc(i.account_label) + ' — ' + i.rows_imported + ' rows — ' +
+          new Date(i.imported_at).toLocaleDateString() + ' — <em>' + esc(i.filename) + '</em></div>'
         ).join('');
       } catch (e) { list.textContent = 'Could not load import history.'; }
     }
 
+    // Investment accounts
+    async function loadInvestments() {
+      const list = document.getElementById('inv-list');
+      try {
+        const res = await apiFetch('/api/investment-accounts');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const accts = await res.json();
+        if (!accts.length) { list.textContent = 'No investment accounts added yet.'; return; }
+        list.innerHTML = accts.map(a =>
+          '<div class="item">' +
+            '<div class="item-info"><strong>' + esc(a.name) + '</strong>' +
+            (a.institution ? ' (' + esc(a.institution) + ')' : '') +
+            ' — ' + esc(a.account_type) + ' — <span style="color:var(--green);font-weight:400;">$' +
+            parseFloat(a.balance).toLocaleString('en-US', {minimumFractionDigits: 2}) + '</span></div>' +
+            '<div class="item-actions" style="display:flex;gap:6px;">' +
+              '<button class="btn-unlink" style="border-color:var(--border);color:var(--warm);" onclick="updateInvestment(' + a.id + ')">Update</button>' +
+              '<button class="btn-unlink" onclick="deleteInvestment(' + a.id + ', ' + JSON.stringify(a.name).replace(/</g, '\\u003c') + ')">Remove</button>' +
+            '</div></div>'
+        ).join('');
+      } catch (e) { list.textContent = 'Could not load investment accounts.'; }
+    }
+
+    async function addInvestment() {
+      const name = document.getElementById('inv-name').value.trim();
+      const balance = parseFloat(document.getElementById('inv-balance').value);
+      if (!name) { showStatus('Account name is required.', false); return; }
+      try {
+        const res = await apiFetch('/api/investment-accounts', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name,
+            institution: document.getElementById('inv-institution').value.trim() || null,
+            account_type: document.getElementById('inv-type').value,
+            balance: balance || 0,
+          }),
+        });
+        if (res.ok) {
+          showStatus('Investment account added.', true);
+          document.getElementById('inv-name').value = '';
+          document.getElementById('inv-institution').value = '';
+          document.getElementById('inv-balance').value = '';
+          loadInvestments();
+        } else { const d = await res.json(); showStatus(d.error || 'Failed', false); }
+      } catch (e) { showStatus(e.message, false); }
+    }
+
+    async function updateInvestment(id) {
+      const val = prompt('Enter current balance ($):');
+      if (val === null) return;
+      try {
+        const res = await apiFetch('/api/investment-accounts/' + id, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ balance: parseFloat(val) }),
+        });
+        if (res.ok) { showStatus('Balance updated.', true); loadInvestments(); }
+        else showStatus('Failed to update.', false);
+      } catch (e) { showStatus(e.message, false); }
+    }
+
+    async function deleteInvestment(id, name) {
+      if (!confirm('Remove ' + name + '?')) return;
+      try {
+        await apiFetch('/api/investment-accounts/' + id, { method: 'DELETE' });
+        showStatus('Removed ' + name + '.', true); loadInvestments();
+      } catch (e) { showStatus(e.message, false); }
+    }
+
     loadItems();
     loadCsvImports();
+    loadInvestments();
   </script>
 </body>
 </html>`);
