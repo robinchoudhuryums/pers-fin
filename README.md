@@ -27,24 +27,26 @@ Detect recurring charges across your bank accounts using **Teller API** (primary
 
 | Path | Description |
 |------|-------------|
-| `teller/server.js` | Main Express server (Teller API + dashboard + settings) |
-| `teller/package.json` | Server dependencies |
+| `teller/server.js` | Bootstrap: middleware, auth, route mounting (190 lines) |
+| `teller/data/reference-data.js` | Static lookups: electricity rates, categories, AI costs |
+| `teller/data/csv-formats.js` | CSV format detection (Chase, CapOne, Discover, WF, Schwab) |
+| `teller/services/database.js` | Postgres pool + auto-migrations |
+| `teller/services/teller-api.js` | mTLS HTTP client for Teller API |
+| `teller/services/keep-alive.js` | Self-ping for Render free tier |
+| `teller/routes/enrollments.js` | Enrollment, sync, items, accounts, balances |
+| `teller/routes/subscriptions.js` | Subscription CRUD, transactions, detection, CSV import |
+| `teller/routes/goals.js` | Financial goals, net worth, context export |
+| `teller/routes/settings.js` | User settings, sheets sync, CSV export |
+| `teller/routes/insights.js` | AI insights (11 modules), tax deductions |
+| `teller/pages/*.js` | HTML page generators (dashboard, subscriptions, etc.) |
 | `plaid/server.js` | Legacy Plaid server (still functional) |
-| `db/001_schema.sql` | Core Postgres schema |
-| `db/002_csv_import.sql` | CSV import tracking table |
-| `db/003_teller.sql` | Teller-specific migrations |
-| `db/005_settings.sql` | User settings + AI insights tables |
-| `db/006_insights_memory.sql` | Long-term AI insights memory column |
 | `scripts/detect-subscriptions.js` | Recurring charge detection algorithm |
 | `scripts/sheets-sync.js` | Google Sheets sync + dashboard builder |
-| `scripts/retention-cleanup.sql` | Data retention queries |
 | `apps-script/Code.gs` | Google Sheets Apps Script (standalone + server sync) |
-| `n8n-workflows/` | n8n automation workflows |
 | `tests/` | Test suite (node:test, 60 tests) |
 | `Dockerfile` | Container build |
 | `render.yaml` | Render deployment blueprint |
 | `fly.toml` | Fly.io deployment config |
-| `manifest.json` | PWA manifest |
 
 ## Setup
 
@@ -102,31 +104,35 @@ Tests cover the detection algorithm, CSV parsing, date handling, API logic, and 
 |--------|------|-------------|
 | `POST` | `/api/enroll` | Store Teller access token after Connect |
 | `POST` | `/api/sync` | Pull transactions for all enrollments |
+| `POST` | `/api/sync-balances` | Fetch latest account balances + auto net worth snapshot |
 | `POST` | `/api/detect` | Run subscription detection |
 | `GET` | `/api/transactions` | List transactions (query: months, limit, offset) |
+| `GET` | `/api/accounts` | List linked accounts with balances |
+| `GET` | `/api/spending-summary` | Monthly trends, categories, top merchants |
 | `GET` | `/api/subscriptions` | List subscriptions (filter: active/dismissed/cancelled/all) |
 | `POST` | `/api/subscriptions` | Add manual subscription |
 | `PATCH` | `/api/subscriptions/:id/dismiss` | Dismiss a subscription |
-| `PATCH` | `/api/subscriptions/:id/undismiss` | Restore dismissed |
 | `PATCH` | `/api/subscriptions/:id/cancel` | Mark as cancelled |
-| `PATCH` | `/api/subscriptions/:id/uncancel` | Undo cancellation |
+| `PATCH` | `/api/subscriptions/:id/category` | Reclassify as subscription/utility |
 | `POST` | `/api/import-csv` | Import bank CSV export |
-| `POST` | `/api/sheets/sync` | Sync all data to Google Sheets |
-| `GET` | `/dashboard` | Subscription dashboard (with charts) |
-| `GET` | `/settings` | Settings page |
-| `GET` | `/login` | PIN pad or password login |
-| `POST` | `/api/login` | Authenticate session |
-| `POST` | `/api/logout` | End session |
-| `GET` | `/api/settings` | Retrieve user settings |
-| `PATCH` | `/api/settings` | Update user settings |
-| `GET` | `/api/insights` | Stored AI financial insights |
-| `POST` | `/api/insights` | Generate new AI insights via Claude |
-| `GET` | `/api/insights/status` | AI API config + usage stats |
-| `GET` | `/api/insights/usage` | Historical usage breakdown |
+| `GET/POST/PATCH/DELETE` | `/api/goals` | Financial goals CRUD |
+| `POST` | `/api/net-worth/snapshot` | Manual net worth snapshot |
+| `GET` | `/api/net-worth/history` | Net worth snapshots over time |
+| `GET` | `/api/context-export` | Structured data dump for Claude chat (markdown/JSON) |
+| `GET` | `/api/tax-deductions` | Accumulated tax-deductible transactions (by year) |
+| `GET/PATCH` | `/api/settings` | Retrieve/update user settings |
+| `POST` | `/api/insights` | Generate new AI insights via Claude (11 modules) |
+| `GET` | `/api/insights/status` | AI API config + budget stats |
 | `POST` | `/api/insights/reset` | Clear long-term AI context memory |
 | `POST` | `/api/insights/rebuild` | Rebuild AI context from all history |
-| `GET` | `/manifest.json` | PWA manifest |
-| `GET` | `/sw.js` | Service worker |
+| `POST` | `/api/sheets/sync` | Sync all data to Google Sheets |
+| `GET` | `/api/export` | Download transactions/subscriptions CSV |
+| `POST` | `/api/login` | Authenticate session |
+| `GET` | `/dashboard` | Main dashboard UI |
+| `GET` | `/subscriptions` | Subscription management |
+| `GET` | `/goals` | Financial goals page |
+| `GET` | `/settings` | Settings page |
+| `GET` | `/health` | Health check |
 
 ## Features
 
@@ -145,14 +151,39 @@ Two interactive charts (Chart.js):
 - **Monthly Spending Trend** — line chart of total spending over the last 6 months
 - **Spending by Category** — doughnut chart of top 8 spending categories
 
-### AI Financial Insights
+### AI Financial Insights (11 Toggleable Modules)
 Set `ANTHROPIC_API_KEY` in `.env` to enable AI-powered financial analysis via Claude.
 
 The AI maintains a **persistent running summary** across analyses — a cumulative memory of your spending baselines, trends, and progress on past recommendations. Insights improve over time as the AI tracks changes month-to-month.
 
-- **Model selector**: Haiku (~$0.005/run), Sonnet (~$0.02/run), or Opus (~$0.10/run) — always uses the latest version
+**Modules** (each can be toggled on/off in Settings):
+1. **Utility rate comparison** — compare bills to state/national averages (requires ZIP)
+2. **Spending benchmarks** — compare to BLS Consumer Expenditure Survey averages
+3. **Savings & wealth-building** — actionable tips with dollar projections
+4. **Subscription audit** — flag overlaps and suggest cheaper alternatives
+5. **Anomaly detection** — flag transactions 2x+ above merchant average
+6. **Seasonal forecasting** — predict upcoming spend from 24-month patterns
+7. **Debt payoff optimizer** — avalanche vs snowball strategies, credit score projections
+8. **Bill negotiation tips** — identify negotiable bills with typical savings estimates
+9. **Income & savings rate** — track savings rate vs 50/30/20 rule
+10. **Tax deduction flags** — flag deductible transactions, persist year-round for tax filing
+11. **Goal tracking** — progress assessment with real-world economic context
+
+- **Model selector**: Haiku (~$0.005/run), Sonnet (~$0.02/run), or Opus (~$0.10/run)
 - **Cadence**: Weekly, biweekly, monthly, every 2 months, or quarterly
 - **Reset/Rebuild**: Clear or regenerate long-term memory from Settings
+
+### Financial Goals
+Track progress toward savings targets (house, car, retirement, etc.) with compound interest projections, monthly contribution tracking, and AI-powered progress assessment.
+
+### Net Worth Tracking
+Automatic snapshots after balance sync, with historical trend data.
+
+### Context Export
+Export all financial data as structured markdown or JSON — paste into Claude chat for deep-dive questions about your finances.
+
+### Tax Deduction Tracking
+AI-flagged deductions are accumulated year-round in a persistent table, available for review at tax filing time.
 
 ### Mobile App (PWA)
 Installable as a home screen icon:
