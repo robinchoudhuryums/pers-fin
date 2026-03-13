@@ -147,6 +147,10 @@ app.use("/api/enroll", tightLimiter);
 const API_KEY = process.env.API_KEY;
 app.use("/api", (req, res, next) => {
   if (!API_KEY) return next(); // no key configured = open (dev mode)
+  // Session auth endpoints must be accessible without API key
+  if (req.path === "/login" || req.path === "/logout") return next();
+  // Authenticated browser sessions bypass API key requirement
+  if (req.session && req.session.authenticated) return next();
   const provided = req.headers["x-api-key"] || req.query.api_key;
   const providedBuf = Buffer.from(provided || "");
   const keyBuf = Buffer.from(API_KEY);
@@ -1355,6 +1359,24 @@ app.get("/dashboard", (req, res) => {
       background: radial-gradient(ellipse at 40% 60%, rgba(90,143,143,0.10) 0%, rgba(212,165,116,0.05) 35%, transparent 80%);
     }
     @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateX(-8px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+    @keyframes countUp {
+      from { opacity: 0; transform: scale(0.95); }
+      to { opacity: 1; transform: scale(1); }
+    }
+    .animate-in { animation: fadeInUp 0.4s ease both; }
+    .animate-fade { animation: fadeIn 0.5s ease both; }
     .btn-loading { position: relative; color: transparent !important; pointer-events: none; }
     .btn-loading::after {
       content: ''; position: absolute; top: 50%; left: 50%; width: 14px; height: 14px;
@@ -1366,7 +1388,7 @@ app.get("/dashboard", (req, res) => {
     a:hover { color: var(--text); }
 
     .topnav { display: flex; align-items: center; justify-content: space-between;
-              padding: 20px 0; margin-bottom: 40px; }
+              padding: 20px 0; margin-bottom: 40px; animation: fadeIn 0.3s ease both; }
     .topnav .logo { font-weight: 300; font-size: 13px; letter-spacing: 2px;
                     text-transform: uppercase; color: var(--text-muted); }
     .topnav .nav-links { display: flex; gap: 24px; font-size: 13px; font-weight: 400;
@@ -1375,13 +1397,21 @@ app.get("/dashboard", (req, res) => {
     .topnav .nav-links a:hover { color: var(--text); }
     .topnav .nav-links a.active { color: var(--warm); }
 
-    h1 { font-size: 42px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 8px; }
-    .subtitle { color: var(--text-muted); margin-bottom: 36px; font-size: 15px; font-weight: 300; letter-spacing: 0.3px; }
+    h1 { font-size: 42px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 8px;
+         animation: fadeInUp 0.4s ease both; animation-delay: 0.05s; }
+    .subtitle { color: var(--text-muted); margin-bottom: 36px; font-size: 15px; font-weight: 300;
+                letter-spacing: 0.3px; animation: fadeInUp 0.4s ease both; animation-delay: 0.1s; }
 
     .top-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
                  gap: 16px; margin-bottom: 36px; }
     .card { padding: 24px; border-radius: var(--radius); background: var(--surface);
-            border: 1px solid var(--border); transition: all 0.3s ease; backdrop-filter: blur(12px); }
+            border: 1px solid var(--border); transition: all 0.3s ease; backdrop-filter: blur(12px);
+            animation: fadeInUp 0.4s ease both; }
+    .card:nth-child(1) { animation-delay: 0.1s; }
+    .card:nth-child(2) { animation-delay: 0.15s; }
+    .card:nth-child(3) { animation-delay: 0.2s; }
+    .card:nth-child(4) { animation-delay: 0.25s; }
+    .card:nth-child(5) { animation-delay: 0.3s; }
     .card:hover { border-color: var(--border-hover); background: var(--surface-2); }
     .card .label { font-size: 10px; color: var(--text-muted); text-transform: uppercase;
                    letter-spacing: 1.5px; font-weight: 500; }
@@ -1403,23 +1433,27 @@ app.get("/dashboard", (req, res) => {
     .actions button.primary { border-color: var(--warm); color: var(--warm); }
     .actions button.primary:hover:not(:disabled) { background: rgba(212,165,116,0.1); color: var(--text); }
 
+    @keyframes slideDown {
+      from { opacity: 0; transform: translateY(-8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
     .status-msg { padding: 14px 18px; border-radius: 8px; margin-bottom: 20px; display: none;
                   font-size: 13px; font-weight: 400; }
     .status-msg.success { background: var(--green-bg); border: 1px solid rgba(111,207,151,0.15);
-                          color: var(--green); display: block; }
+                          color: var(--green); display: block; animation: slideDown 0.3s ease both; }
     .status-msg.error { background: var(--red-bg); border: 1px solid rgba(235,107,107,0.15);
-                        color: var(--red); display: block; }
+                        color: var(--red); display: block; animation: slideDown 0.3s ease both; }
 
     .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 28px; }
     @media (max-width: 768px) { .two-col { grid-template-columns: 1fr; } }
 
     .section { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-               padding: 24px; backdrop-filter: blur(12px); }
+               padding: 24px; backdrop-filter: blur(12px); animation: fadeInUp 0.4s ease both; animation-delay: 0.3s; }
     .section h2 { font-size: 10px; font-weight: 500; color: var(--text-muted); text-transform: uppercase;
                   letter-spacing: 1.5px; margin-bottom: 20px; }
 
     .accounts-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-                     gap: 12px; margin-bottom: 28px; }
+                     gap: 12px; margin-bottom: 28px; animation: fadeInUp 0.4s ease both; animation-delay: 0.25s; }
     .acct-card { padding: 18px; border-radius: var(--radius); background: var(--surface);
                  border: 1px solid var(--border); transition: all 0.2s; }
     .acct-card:hover { border-color: var(--border-hover); }
@@ -1453,7 +1487,8 @@ app.get("/dashboard", (req, res) => {
     .empty-msg { text-align: center; padding: 40px; color: var(--text-muted); font-weight: 300; font-size: 14px; }
 
     /* Charts */
-    .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 28px; }
+    .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 28px;
+                   animation: fadeInUp 0.4s ease both; animation-delay: 0.15s; }
     .chart-card { padding: 20px; border-radius: var(--radius); background: var(--surface);
                   border: 1px solid var(--border); backdrop-filter: blur(12px); }
     .chart-card h3 { font-size: 10px; font-weight: 500; color: var(--text-muted); text-transform: uppercase;
@@ -1915,13 +1950,21 @@ app.get("/subscriptions", (req, res) => {
       background: radial-gradient(ellipse at 40% 60%, rgba(90,143,143,0.20) 0%, rgba(212,165,116,0.10) 35%, rgba(160,100,80,0.05) 60%, transparent 80%);
       pointer-events: none; z-index: 0; filter: blur(60px);
     }
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
     .container { max-width: 960px; margin: 0 auto; padding: 24px 20px; position: relative; z-index: 1; }
     a { color: var(--warm); text-decoration: none; transition: color 0.2s; }
     a:hover { color: var(--text); }
 
     /* Nav */
     .topnav { display: flex; align-items: center; justify-content: space-between;
-              padding: 20px 0; margin-bottom: 40px; }
+              padding: 20px 0; margin-bottom: 40px; animation: fadeIn 0.3s ease both; }
     .topnav .logo { font-weight: 300; font-size: 13px; letter-spacing: 2px;
                     text-transform: uppercase; color: var(--text-muted); }
     .topnav .nav-links { display: flex; gap: 24px; font-size: 13px; font-weight: 400;
@@ -1930,16 +1973,20 @@ app.get("/subscriptions", (req, res) => {
     .topnav .nav-links a:hover { color: var(--text); }
 
     h1 { font-size: 42px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 8px;
-         color: var(--text); }
+         color: var(--text); animation: fadeInUp 0.4s ease both; animation-delay: 0.05s; }
     .subtitle { color: var(--text-muted); margin-bottom: 40px; font-size: 15px; font-weight: 300;
-                letter-spacing: 0.3px; }
+                letter-spacing: 0.3px; animation: fadeInUp 0.4s ease both; animation-delay: 0.1s; }
 
     /* Summary Cards */
     .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
                gap: 16px; margin-bottom: 36px; }
     .card { padding: 24px; border-radius: var(--radius); background: var(--surface);
             border: 1px solid var(--border); transition: all 0.3s ease;
-            backdrop-filter: blur(12px); }
+            backdrop-filter: blur(12px); animation: fadeInUp 0.4s ease both; }
+    .card:nth-child(1) { animation-delay: 0.1s; }
+    .card:nth-child(2) { animation-delay: 0.15s; }
+    .card:nth-child(3) { animation-delay: 0.2s; }
+    .card:nth-child(4) { animation-delay: 0.25s; }
     .card:hover { border-color: var(--border-hover); background: var(--surface-2); }
     .card .label { font-size: 10px; color: var(--text-muted); text-transform: uppercase;
                    letter-spacing: 1.5px; font-weight: 500; }
@@ -2352,12 +2399,20 @@ app.get("/", (req, res) => {
       background: radial-gradient(ellipse at 40% 60%, rgba(90,143,143,0.20) 0%, rgba(212,165,116,0.10) 35%, rgba(160,100,80,0.05) 60%, transparent 80%);
       pointer-events: none; z-index: 0; filter: blur(60px);
     }
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
     .container { max-width: 640px; margin: 0 auto; padding: 24px 20px; position: relative; z-index: 1; }
     a { color: var(--warm); text-decoration: none; transition: color 0.2s; }
     a:hover { color: var(--text); }
 
     .topnav { display: flex; align-items: center; justify-content: space-between;
-              padding: 20px 0; margin-bottom: 48px; }
+              padding: 20px 0; margin-bottom: 48px; animation: fadeIn 0.3s ease both; }
     .topnav .logo { font-weight: 300; font-size: 13px; letter-spacing: 2px;
                     text-transform: uppercase; color: var(--text-muted); }
     .topnav .nav-links { display: flex; gap: 24px; font-size: 13px; font-weight: 400;
@@ -2365,7 +2420,8 @@ app.get("/", (req, res) => {
     .topnav .nav-links a { color: var(--text-muted); }
     .topnav .nav-links a:hover { color: var(--text); }
 
-    h1 { font-size: 42px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 8px; }
+    h1 { font-size: 42px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 8px;
+         animation: fadeInUp 0.4s ease both; animation-delay: 0.05s; }
     h2 { font-size: 28px; font-weight: 300; letter-spacing: -0.3px; margin-bottom: 8px; }
     h3 { font-size: 10px; font-weight: 500; margin-bottom: 12px; color: var(--text-muted);
          text-transform: uppercase; letter-spacing: 1.5px; }
@@ -2689,13 +2745,34 @@ app.get("/login", (_req, res) => {
     body::after { content: ''; position: fixed; bottom: -20%; left: -15%; width: 80vw; height: 70vh;
       background: radial-gradient(ellipse at 40% 60%, rgba(90,143,143,0.20) 0%, rgba(212,165,116,0.10) 35%, transparent 80%);
       pointer-events: none; z-index: 0; filter: blur(60px); }
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes scaleIn {
+      from { opacity: 0; transform: scale(0.96); }
+      to { opacity: 1; transform: scale(1); }
+    }
+    @keyframes dotPop {
+      0% { transform: scale(1); }
+      50% { transform: scale(1.3); }
+      100% { transform: scale(1); }
+    }
+    @keyframes shake {
+      0%, 100% { transform: translateX(0); }
+      20%, 60% { transform: translateX(-6px); }
+      40%, 80% { transform: translateX(6px); }
+    }
     .login-card { position: relative; z-index: 1; width: 100%; max-width: 360px; padding: 44px 32px;
       background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
-      backdrop-filter: blur(16px); text-align: center; }
+      backdrop-filter: blur(16px); text-align: center;
+      animation: scaleIn 0.4s ease both; }
     .logo { font-weight: 300; font-size: 13px; letter-spacing: 2px; text-transform: uppercase;
-            color: var(--text-muted); margin-bottom: 28px; }
-    h1 { font-size: 26px; font-weight: 300; letter-spacing: -0.3px; margin-bottom: 6px; }
-    p { color: var(--text-muted); font-size: 14px; font-weight: 300; margin-bottom: 24px; }
+            color: var(--text-muted); margin-bottom: 28px; animation: fadeInUp 0.4s ease both; animation-delay: 0.1s; }
+    h1 { font-size: 26px; font-weight: 300; letter-spacing: -0.3px; margin-bottom: 6px;
+         animation: fadeInUp 0.4s ease both; animation-delay: 0.15s; }
+    p { color: var(--text-muted); font-size: 14px; font-weight: 300; margin-bottom: 24px;
+        animation: fadeInUp 0.4s ease both; animation-delay: 0.2s; }
     input[type="password"] { width: 100%; padding: 12px 16px; font-size: 14px; font-weight: 300;
       border: 1px solid var(--border); border-radius: 8px; background: transparent;
       color: var(--text); font-family: inherit; }
@@ -2707,12 +2784,15 @@ app.get("/login", (_req, res) => {
     button[type="submit"]:hover { background: rgba(212,165,116,0.1); color: var(--text); }
     .error-msg { margin-top: 14px; padding: 10px; border-radius: 6px;
       background: var(--red-bg); color: var(--red); font-size: 13px; display: none; }
-    .pin-dots { display: flex; justify-content: center; gap: 12px; margin-bottom: 24px; }
+    .pin-dots { display: flex; justify-content: center; gap: 12px; margin-bottom: 24px;
+                animation: fadeInUp 0.4s ease both; animation-delay: 0.25s; }
     .pin-dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--border);
       transition: all 0.2s; }
-    .pin-dot.filled { background: var(--warm); border-color: var(--warm); }
+    .pin-dot.filled { background: var(--warm); border-color: var(--warm); animation: dotPop 0.2s ease; }
     .pin-dot.error { border-color: var(--red); background: var(--red); }
-    .pin-pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; max-width: 240px; margin: 0 auto; }
+    .pin-dots.shake { animation: shake 0.4s ease; }
+    .pin-pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; max-width: 240px; margin: 0 auto;
+               animation: fadeInUp 0.4s ease both; animation-delay: 0.3s; }
     .pin-key { padding: 16px; font-size: 22px; font-weight: 300; border: 1px solid var(--border);
       border-radius: 10px; background: transparent; color: var(--text); cursor: pointer;
       font-family: inherit; transition: all 0.15s; user-select: none; -webkit-user-select: none;
@@ -2785,8 +2865,9 @@ app.get("/login", (_req, res) => {
           var err = await doLogin(pin);
           if (err) {
             for (let i = 0; i < pinLen; i++) document.getElementById('dot-' + i).className = 'pin-dot error';
+            dotsEl.classList.add('shake');
             errEl.textContent = err; errEl.style.display = 'block';
-            setTimeout(function() { pin = ''; submitting = false; updateDots(); }, 600);
+            setTimeout(function() { pin = ''; submitting = false; updateDots(); dotsEl.classList.remove('shake'); }, 600);
           }
         }
       }
@@ -3153,20 +3234,35 @@ app.get("/settings", (req, res) => {
       background: radial-gradient(ellipse at 50% 30%, rgba(200,133,108,0.12) 0%, rgba(90,143,143,0.06) 50%, transparent 75%); }
     [data-theme="light"] body::after {
       background: radial-gradient(ellipse at 40% 60%, rgba(90,143,143,0.10) 0%, rgba(212,165,116,0.05) 35%, transparent 80%); }
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
     .container { max-width: 640px; margin: 0 auto; padding: 24px 20px; position: relative; z-index: 1; }
     a { color: var(--warm); text-decoration: none; }
     a:hover { color: var(--text); }
     .topnav { display: flex; align-items: center; justify-content: space-between;
-              padding: 20px 0; margin-bottom: 40px; }
+              padding: 20px 0; margin-bottom: 40px; animation: fadeIn 0.3s ease both; }
     .topnav .logo { font-weight: 300; font-size: 13px; letter-spacing: 2px; text-transform: uppercase; color: var(--text-muted); }
     .topnav .nav-links { display: flex; gap: 24px; font-size: 13px; font-weight: 400; letter-spacing: 0.5px; }
     .topnav .nav-links a { color: var(--text-muted); }
     .topnav .nav-links a:hover { color: var(--text); }
     .topnav .nav-links a.active { color: var(--warm); }
-    h1 { font-size: 36px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 6px; }
-    .subtitle { color: var(--text-muted); margin-bottom: 32px; font-size: 15px; font-weight: 300; }
+    h1 { font-size: 36px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 6px;
+         animation: fadeInUp 0.4s ease both; animation-delay: 0.05s; }
+    .subtitle { color: var(--text-muted); margin-bottom: 32px; font-size: 15px; font-weight: 300;
+                animation: fadeInUp 0.4s ease both; animation-delay: 0.1s; }
     .section { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-               padding: 24px; margin-bottom: 16px; backdrop-filter: blur(12px); }
+               padding: 24px; margin-bottom: 16px; backdrop-filter: blur(12px);
+               animation: fadeInUp 0.4s ease both; }
+    .section:nth-of-type(1) { animation-delay: 0.15s; }
+    .section:nth-of-type(2) { animation-delay: 0.2s; }
+    .section:nth-of-type(3) { animation-delay: 0.25s; }
+    .section:nth-of-type(4) { animation-delay: 0.3s; }
     .section h2 { font-size: 10px; font-weight: 500; color: var(--text-muted); text-transform: uppercase;
                   letter-spacing: 1.5px; margin-bottom: 20px; }
     .setting-row { display: flex; align-items: center; justify-content: space-between;
