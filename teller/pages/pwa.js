@@ -30,6 +30,17 @@ router.get("/sw.js", (_req, res) => {
     "if(r.ok&&e.request.url.includes('cdn.jsdelivr.net')){" +
     "const c=r.clone();caches.open(CACHE).then(ca=>ca.put(e.request,c));}" +
     "return r;}).catch(()=>caches.match(e.request)));" +
+    "});" +
+    "self.addEventListener('push',e=>{" +
+    "if(!e.data)return;" +
+    "const d=e.data.json();" +
+    "e.waitUntil(self.registration.showNotification(d.title||'Perfin',{" +
+    "body:d.body||'',tag:d.tag||'perfin',data:d.data||{}" +
+    "}));" +
+    "});" +
+    "self.addEventListener('notificationclick',e=>{" +
+    "e.notification.close();" +
+    "e.waitUntil(clients.openWindow(e.notification.data.url||'/dashboard'));" +
     "});"
   );
 });

@@ -189,6 +189,7 @@ app.use(require("./routes/settings"));
 app.use(require("./routes/insights"));
 app.use(require("./routes/budgets"));
 app.use(require("./routes/categorize"));
+app.use(require("./routes/notifications"));
 
 // ---------------------------------------------------------------------------
 // Mount HTML page modules

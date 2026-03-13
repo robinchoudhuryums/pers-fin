@@ -163,6 +163,17 @@ router.get("/settings", (req, res) => {
     <div id="usage-history" style="max-height:260px;overflow-y:auto;"></div>
   </div>
 
+  <div class="section"><h2>Push Notifications</h2>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Enable Notifications</div><div class="desc" id="push-desc">Get alerts for anomalies, upcoming charges, and goal milestones</div></div>
+      <div class="setting-control"><button class="btn primary" id="push-btn" onclick="togglePush()">Enable</button></div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Test Notification</div><div class="desc">Send a test push notification to verify setup</div></div>
+      <div class="setting-control"><button class="btn" id="test-push-btn" onclick="testPush()" disabled>Test</button></div>
+    </div>
+  </div>
+
   <div class="section"><h2>Keep-Alive</h2>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Self-Ping</div><div class="desc">Prevents Render free tier from sleeping during active hours (pings every 14 min)</div></div>
@@ -458,6 +469,61 @@ router.get("/settings", (req, res) => {
       } catch (e) { showMsg(e.message, false); }
       btn.classList.remove('btn-loading'); btn.disabled = false;
     }
+    // Push notifications
+    async function checkPushStatus() {
+      var btn = document.getElementById('push-btn');
+      var testBtn = document.getElementById('test-push-btn');
+      var desc = document.getElementById('push-desc');
+      if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+        btn.disabled = true; desc.textContent = 'Push notifications not supported in this browser';
+        return;
+      }
+      try {
+        var reg = await navigator.serviceWorker.ready;
+        var sub = await reg.pushManager.getSubscription();
+        if (sub) { btn.textContent = 'Disable'; testBtn.disabled = false; desc.textContent = 'Push notifications are enabled'; }
+        else { btn.textContent = 'Enable'; testBtn.disabled = true; desc.textContent = 'Get alerts for anomalies, upcoming charges, and goal milestones'; }
+      } catch { btn.disabled = true; desc.textContent = 'Error checking push status'; }
+    }
+    async function togglePush() {
+      var btn = document.getElementById('push-btn');
+      btnLoading(btn, true, btn.textContent);
+      try {
+        var reg = await navigator.serviceWorker.ready;
+        var sub = await reg.pushManager.getSubscription();
+        if (sub) {
+          await apiFetch('/api/notifications/subscribe', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: sub.endpoint }) });
+          await sub.unsubscribe();
+          showMsg('Push notifications disabled.', true);
+        } else {
+          var vapidRes = await apiFetch('/api/notifications/vapid');
+          if (!vapidRes.ok) { var d = await vapidRes.json(); showMsg(d.error || 'VAPID not configured', false); btnLoading(btn, false, 'Enable'); return; }
+          var vapid = await vapidRes.json();
+          var newSub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(vapid.publicKey) });
+          await apiFetch('/api/notifications/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subscription: newSub }) });
+          showMsg('Push notifications enabled!', true);
+        }
+        checkPushStatus();
+      } catch (e) { showMsg(e.message, false); }
+      btnLoading(btn, false, btn.textContent);
+    }
+    async function testPush() {
+      try {
+        var res = await apiFetch('/api/notifications/test', { method: 'POST' });
+        var d = await res.json();
+        if (res.ok) showMsg('Test sent: ' + d.sent + ' delivered, ' + d.failed + ' failed.', true);
+        else showMsg(d.error || 'Failed', false);
+      } catch (e) { showMsg(e.message, false); }
+    }
+    function urlBase64ToUint8Array(base64String) {
+      var padding = '='.repeat((4 - base64String.length % 4) % 4);
+      var base64 = (base64String + padding).replace(/\\-/g, '+').replace(/_/g, '/');
+      var raw = atob(base64);
+      var arr = new Uint8Array(raw.length);
+      for (var i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+      return arr;
+    }
+    checkPushStatus();
     loadSettings(); loadInsights(); loadUsageHistory(); loadCatStatus();
   </script>
 </body></html>`);
