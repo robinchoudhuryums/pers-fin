@@ -20,10 +20,11 @@
 
 const { Pool } = require("pg");
 
-async function detectSubscriptions() {
-  const pool = new Pool({
+async function detectSubscriptions(externalPool) {
+  const ownPool = !externalPool;
+  const pool = externalPool || new Pool({
     connectionString: process.env.NEON_DATABASE_URL,
-    ssl: { rejectUnauthorized: false },
+    ssl: { rejectUnauthorized: true },
     max: 2,
     connectionTimeoutMillis: 10000,
   });
@@ -185,7 +186,7 @@ async function detectSubscriptions() {
     console.log(`Detected ${detected.length} recurring subscriptions.`);
     return detected;
   } finally {
-    await pool.end();
+    if (ownPool) await pool.end();
   }
 }
 
@@ -238,4 +239,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { detectSubscriptions };
+module.exports = { detectSubscriptions, findModeAmount, addDays };

@@ -96,6 +96,64 @@ async function runMigrations() {
       flagged_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       UNIQUE(transaction_id, tax_year)
     )`);
+    // Partial unique index for AI-detected deductions (no transaction_id)
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_tax_deductions_merchant_year
+      ON tax_deductions (merchant, tax_year) WHERE transaction_id IS NULL`);
+    // Investment / manual accounts (brokerage, retirement, etc.)
+    await pool.query(`CREATE TABLE IF NOT EXISTS investment_accounts (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      institution TEXT,
+      account_type TEXT NOT NULL DEFAULT 'brokerage',
+      balance NUMERIC(14,2) NOT NULL DEFAULT 0,
+      notes TEXT,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+    // Budgets
+    await pool.query(`CREATE TABLE IF NOT EXISTS budgets (
+      id SERIAL PRIMARY KEY,
+      category TEXT NOT NULL UNIQUE,
+      monthly_limit NUMERIC(12,2) NOT NULL,
+      is_ai_suggested BOOLEAN NOT NULL DEFAULT false,
+      notes TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+    // Push notification subscriptions
+    await pool.query(`CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id SERIAL PRIMARY KEY,
+      endpoint TEXT NOT NULL UNIQUE,
+      keys JSONB NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+    // Plaid investment items
+    await pool.query(`CREATE TABLE IF NOT EXISTS plaid_investment_items (
+      id SERIAL PRIMARY KEY,
+      item_id TEXT NOT NULL UNIQUE,
+      institution_name TEXT NOT NULL DEFAULT 'Unknown',
+      access_token_enc BYTEA NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+    // Add plaid_account_id to investment_accounts
+    await pool.query("ALTER TABLE investment_accounts ADD COLUMN IF NOT EXISTS plaid_account_id TEXT UNIQUE");
+    // Investment holdings
+    await pool.query(`CREATE TABLE IF NOT EXISTS investment_holdings (
+      id SERIAL PRIMARY KEY,
+      plaid_account_id TEXT NOT NULL,
+      security_id TEXT NOT NULL,
+      ticker TEXT,
+      name TEXT NOT NULL DEFAULT 'Unknown',
+      quantity NUMERIC(16,6) NOT NULL DEFAULT 0,
+      cost_basis NUMERIC(14,2) NOT NULL DEFAULT 0,
+      current_value NUMERIC(14,2) NOT NULL DEFAULT 0,
+      security_type TEXT DEFAULT 'unknown',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(plaid_account_id, security_id)
+    )`);
     console.log("Migrations complete.");
   } catch (err) {
     console.error("Migration error (non-fatal):", err.message);

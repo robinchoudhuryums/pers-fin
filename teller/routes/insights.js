@@ -361,11 +361,13 @@ router.post("/api/insights", async (_req, res) => {
             "Only flag deductions likely to exceed the standard deduction threshold. Remind user to consult a tax professional.";
 
           // Persist flagged deductions to tax_deductions table for year-round accumulation
+          // Uses upsert on (merchant, tax_year) for AI-detected rows (which have no transaction_id)
           for (const row of taxData.rows) {
             await pool.query(
               `INSERT INTO tax_deductions (tax_year, merchant, amount, category, deduction_type)
                VALUES (EXTRACT(YEAR FROM CURRENT_DATE), $1, $2, 'flagged', 'ai_detected')
-               ON CONFLICT DO NOTHING`,
+               ON CONFLICT (merchant, tax_year) WHERE transaction_id IS NULL
+               DO UPDATE SET amount = EXCLUDED.amount, flagged_at = now()`,
               [row.merchant, parseFloat(row.total)]
             ).catch(() => {});
           }

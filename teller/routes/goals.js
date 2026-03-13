@@ -85,11 +85,12 @@ router.delete("/api/goals/:id", async (req, res) => {
 // POST /api/net-worth/snapshot
 router.post("/api/net-worth/snapshot", async (_req, res) => {
   try {
-    const accounts = await pool.query(
-      "SELECT name, type, available_balance, current_balance FROM linked_accounts WHERE available_balance IS NOT NULL OR current_balance IS NOT NULL"
-    );
+    const [accounts, investments] = await Promise.all([
+      pool.query("SELECT name, type, available_balance, current_balance FROM linked_accounts WHERE available_balance IS NOT NULL OR current_balance IS NOT NULL"),
+      pool.query("SELECT name, account_type, balance FROM investment_accounts WHERE is_active = true AND balance != 0"),
+    ]);
     let totalAssets = 0, totalLiabilities = 0;
-    const breakdown = { accounts: [] };
+    const breakdown = { accounts: [], investments: [] };
     for (const a of accounts.rows) {
       if (a.type === "credit") {
         const owed = parseFloat(a.current_balance || 0);
@@ -100,6 +101,11 @@ router.post("/api/net-worth/snapshot", async (_req, res) => {
         totalAssets += bal;
         breakdown.accounts.push({ name: a.name, type: a.type, amount: bal });
       }
+    }
+    for (const inv of investments.rows) {
+      const bal = parseFloat(inv.balance);
+      totalAssets += bal;
+      breakdown.investments.push({ name: inv.name, type: inv.account_type, amount: bal });
     }
     const netWorth = totalAssets - totalLiabilities;
     const result = await pool.query(
@@ -124,6 +130,74 @@ router.get("/api/net-worth/history", async (req, res) => {
       [months]
     );
     res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// ============================================================================
+// Investment Accounts
+// ============================================================================
+
+// GET /api/investment-accounts
+router.get("/api/investment-accounts", async (_req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT * FROM investment_accounts WHERE is_active = true ORDER BY balance DESC"
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// POST /api/investment-accounts
+router.post("/api/investment-accounts", async (req, res) => {
+  const { name, institution, account_type, balance, notes } = req.body;
+  if (!name) return res.status(400).json({ error: "Name is required" });
+  const validTypes = ["brokerage", "retirement", "401k", "ira", "roth_ira", "529", "hsa", "crypto", "other"];
+  const type = validTypes.includes(account_type) ? account_type : "brokerage";
+  try {
+    const result = await pool.query(
+      `INSERT INTO investment_accounts (name, institution, account_type, balance, notes)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [name, institution || null, type, parseFloat(balance) || 0, notes || null]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// PATCH /api/investment-accounts/:id
+router.patch("/api/investment-accounts/:id", async (req, res) => {
+  const { name, institution, account_type, balance, notes } = req.body;
+  try {
+    const updates = []; const values = []; let idx = 1;
+    if (name !== undefined) { updates.push(`name = $${idx++}`); values.push(name); }
+    if (institution !== undefined) { updates.push(`institution = $${idx++}`); values.push(institution); }
+    if (account_type !== undefined) { updates.push(`account_type = $${idx++}`); values.push(account_type); }
+    if (balance !== undefined) { updates.push(`balance = $${idx++}`); values.push(parseFloat(balance)); }
+    if (notes !== undefined) { updates.push(`notes = $${idx++}`); values.push(notes || null); }
+    if (updates.length === 0) return res.status(400).json({ error: "No fields to update" });
+    updates.push(`updated_at = now()`);
+    values.push(req.params.id);
+    const result = await pool.query(
+      `UPDATE investment_accounts SET ${updates.join(", ")} WHERE id = $${idx} AND is_active = true RETURNING *`,
+      values
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "Account not found" });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// DELETE /api/investment-accounts/:id
+router.delete("/api/investment-accounts/:id", async (req, res) => {
+  try {
+    await pool.query("UPDATE investment_accounts SET is_active = false, updated_at = now() WHERE id = $1", [req.params.id]);
+    res.json({ deleted: true });
   } catch (err) {
     res.status(500).json({ error: "An internal error occurred." });
   }

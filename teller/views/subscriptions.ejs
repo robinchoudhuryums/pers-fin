@@ -1,0 +1,272 @@
+<%- include('partials/head', { title: 'Subscriptions', extraStyles: `
+    .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+               gap: 16px; margin-bottom: 36px; }
+    .card .value { font-size: 32px; }
+    .badge { display: inline-block; padding: 3px 8px; border-radius: 4px; font-size: 9px;
+             font-weight: 600; letter-spacing: 0.8px; text-transform: uppercase; }
+    .badge-new { background: var(--green-bg); color: var(--green); }
+    .badge-price { background: var(--yellow-bg); color: var(--yellow); }
+    .badge-manual { background: var(--blue-bg); color: var(--blue); }
+    .badge-dismissed { background: var(--surface-2); color: var(--text-muted); }
+    .badge-cancelled { background: var(--red-bg); color: var(--red); }
+    .badge-category { background: var(--surface-2); color: var(--text-muted); font-weight: 400; }
+    .badge-utility { background: var(--blue-bg); color: var(--blue); font-weight: 600; }
+    .next-date { font-size: 13px; color: var(--text-muted); font-weight: 300; }
+    .next-date.overdue { color: var(--red); font-weight: 500; }
+    .manual-form { background: var(--surface); padding: 28px; border-radius: var(--radius);
+                   border: 1px solid var(--border); margin-bottom: 28px; display: none;
+                   backdrop-filter: blur(12px); }
+    .manual-form h3 { margin-bottom: 20px; font-size: 14px; font-weight: 400;
+                      text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); }
+    .manual-form .fields { display: flex; gap: 14px; flex-wrap: wrap; align-items: end; }
+    .manual-form .field { display: flex; flex-direction: column; gap: 6px; }
+    .manual-form label { font-size: 10px; font-weight: 500; color: var(--text-muted);
+                         text-transform: uppercase; letter-spacing: 1px; }
+    .manual-form input, .manual-form select {
+      padding: 9px 14px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px;
+      background: transparent; color: var(--text); font-weight: 300; transition: border-color 0.2s; }
+    .manual-form input:focus, .manual-form select:focus { outline: none; border-color: var(--warm); }
+    .manual-form input::placeholder { color: var(--text-muted); }
+    .manual-form input[name="name"] { width: 200px; }
+    .manual-form input[name="amount"] { width: 100px; }
+    .manual-form input[name="notes"] { width: 200px; }
+    td { padding: 14px; font-size: 14px; }
+    .empty { text-align: center; padding: 56px; color: var(--text-muted); font-weight: 300; font-size: 15px; }
+    .export-link { font-size: 12px; color: var(--text-muted); }
+    @media (max-width: 640px) { .summary { grid-template-columns: 1fr 1fr; } }
+` }) %>
+<%- include('partials/nav', { activePage: 'subscriptions' }) %>
+
+  <h1>Subscriptions</h1>
+  <p class="subtitle">Detected recurring charges and manually tracked subscriptions</p>
+
+  <div class="summary">
+    <div class="card"><div class="label">Subscriptions/mo</div><div class="value cost" id="subs-cost">--</div><div class="sub" id="subs-count"></div></div>
+    <div class="card"><div class="label">Utilities/mo</div><div class="value cost" id="utils-cost">--</div><div class="sub" id="utils-count"></div></div>
+    <div class="card"><div class="label">Total Monthly</div><div class="value cost" id="monthly-cost">--</div></div>
+    <div class="card"><div class="label">Total Yearly</div><div class="value count" id="yearly-cost">--</div></div>
+  </div>
+
+  <div class="actions">
+    <button class="primary" id="sync-btn" onclick="syncTransactions()">Sync Transactions</button>
+    <button class="primary" id="detect-btn" onclick="runDetection()">Run Detection</button>
+    <button id="add-btn" onclick="toggleManualForm()">+ Add Manual</button>
+    <button id="sheets-btn" onclick="syncSheets()">Sync to Sheets</button>
+    <select id="filter-select" onchange="loadSubscriptions()">
+      <option value="active">Active</option>
+      <option value="dismissed">Dismissed</option>
+      <option value="cancelled">Cancelled</option>
+      <option value="all">All</option>
+    </select>
+  </div>
+
+  <div id="status-msg" class="status-msg"></div>
+
+  <div class="manual-form" id="manual-form">
+    <h3>Add Subscription Manually</h3>
+    <div class="fields">
+      <div class="field"><label>Service Name</label><input name="name" placeholder="e.g. Netflix"></div>
+      <div class="field"><label>Amount ($)</label><input name="amount" type="number" step="0.01" placeholder="15.99"></div>
+      <div class="field">
+        <label>Billing Cycle</label>
+        <select name="cadence">
+          <option value="30">Monthly</option>
+          <option value="90">Quarterly</option>
+          <option value="365">Yearly</option>
+          <option value="60">Every 2 months</option>
+        </select>
+      </div>
+      <div class="field"><label>Notes (optional)</label><input name="notes" placeholder="Family plan, etc."></div>
+      <div class="field"><label>&nbsp;</label><button class="primary" onclick="addManual()">Add</button></div>
+    </div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Subscription</th>
+        <th>Amount</th>
+        <th>/month</th>
+        <th>Cycle</th>
+        <th>Next Charge</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody id="subs-body">
+      <tr><td colspan="6" class="empty">Loading...</td></tr>
+    </tbody>
+  </table>
+
+  <div style="margin-top:16px;text-align:right;">
+    <a class="export-link" href="/api/export?type=subscriptions&api_key=<%= apiKey %>">Export CSV</a>
+  </div>
+<%- include('partials/foot', { apiKey: apiKey }) %>
+  <script>
+    const tbody = document.getElementById('subs-body');
+
+    function cadenceLabel(days) {
+      if (days === 30) return 'Monthly';
+      if (days === 60) return 'Bimonthly';
+      if (days === 90) return 'Quarterly';
+      if (days === 365) return 'Yearly';
+      return days + 'd';
+    }
+
+    function isOverdue(dateStr) { return new Date(dateStr) < new Date(); }
+
+    async function loadSubscriptions() {
+      const filter = document.getElementById('filter-select').value;
+      try {
+        const res = await apiFetch('/api/subscriptions?filter=' + filter);
+        if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || 'Server returned ' + res.status); }
+        const data = await res.json();
+        document.getElementById('subs-cost').textContent = '$' + data.summary.subscriptions_monthly.toFixed(2);
+        document.getElementById('subs-count').textContent = data.summary.subscription_count + ' active';
+        document.getElementById('utils-cost').textContent = '$' + data.summary.utilities_monthly.toFixed(2);
+        document.getElementById('utils-count').textContent = data.summary.utility_count + ' active';
+        document.getElementById('monthly-cost').textContent = '$' + data.summary.monthly_cost.toFixed(2);
+        document.getElementById('yearly-cost').textContent = '$' + data.summary.yearly_cost.toFixed(2);
+        if (!data.subscriptions.length) {
+          tbody.innerHTML = '<tr><td colspan="6" class="empty">No subscriptions found. Import transactions or add manually.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = data.subscriptions.map(s => {
+          const badges = [];
+          if (s.is_new) badges.push('<span class="badge badge-new">NEW</span>');
+          if (s.amount_changed) badges.push('<span class="badge badge-price">PRICE CHANGE</span>');
+          if (s.source === 'manual') badges.push('<span class="badge badge-manual">MANUAL</span>');
+          if (s.category === 'utility') badges.push('<span class="badge badge-utility">UTILITY</span>');
+          else if (s.display_category && s.display_category !== 'other') badges.push('<span class="badge badge-category">' + esc(s.display_category) + '</span>');
+          if (s.is_dismissed) badges.push('<span class="badge badge-dismissed">DISMISSED</span>');
+          if (s.cancelled_at) badges.push('<span class="badge badge-cancelled">CANCELLED</span>');
+          const overdue = !s.cancelled_at && isOverdue(s.next_expected);
+          const nextClass = overdue ? 'next-date overdue' : 'next-date';
+          const nextLabel = s.cancelled_at ? 'Cancelled ' + new Date(s.cancelled_at).toLocaleDateString() : new Date(s.next_expected).toLocaleDateString();
+          let actions = '';
+          if (s.cancelled_at) {
+            actions = '<button class="btn-sm restore" onclick="uncancelSub(' + s.id + ')">Restore</button>';
+          } else if (s.is_dismissed) {
+            actions = '<button class="btn-sm restore" onclick="undismissSub(' + s.id + ')">Restore</button>';
+          } else {
+            var toggleCat = s.category === 'utility' ? 'subscription' : 'utility';
+            var toggleLabel = s.category === 'utility' ? 'Sub' : 'Util';
+            actions += '<button class="btn-sm" onclick="reclassify(' + s.id + ',\'' + toggleCat + '\')" title="Reclassify as ' + toggleCat + '">' + toggleLabel + '</button>';
+            actions += '<button class="btn-sm" onclick="dismissSub(' + s.id + ')">Dismiss</button>';
+            if (s.cancel_url) {
+              actions += '<a class="btn-sm cancel" href="' + esc(s.cancel_url) + '" target="_blank" rel="noopener">Cancel&rarr;</a>';
+              actions += '<button class="btn-sm cancel" onclick="markCancelled(' + s.id + ')" title="Mark as cancelled">Done</button>';
+            } else {
+              actions += '<button class="btn-sm cancel" onclick="markCancelled(' + s.id + ')">Cancel</button>';
+            }
+          }
+          const notesHtml = s.notes ? '<div style="font-size:12px;color:var(--text-muted);">' + esc(s.notes) + '</div>' : '';
+          return '<tr>' +
+            '<td><strong>' + esc(s.display_name) + '</strong> ' + badges.join(' ') + notesHtml + '</td>' +
+            '<td class="amount">$' + parseFloat(s.amount).toFixed(2) + '</td>' +
+            '<td class="amount">$' + parseFloat(s.monthly_cost).toFixed(2) + '</td>' +
+            '<td>' + cadenceLabel(s.cadence_days) + '</td>' +
+            '<td><span class="' + nextClass + '">' + nextLabel + '</span></td>' +
+            '<td>' + actions + '</td></tr>';
+        }).join('');
+      } catch (e) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty">Error loading subscriptions: ' + esc(e.message) + '</td></tr>';
+        showMsg('Failed to load subscriptions: ' + e.message, false);
+      }
+    }
+
+    async function syncTransactions() {
+      const btn = document.getElementById('sync-btn');
+      btnLoading(btn, true);
+      try {
+        const res = await apiFetch('/api/sync', { method: 'POST' });
+        const data = await res.json();
+        if (res.ok) showMsg('Synced ' + data.transactions_added + ' transactions from ' + data.enrollments_synced + ' institution(s).', true);
+        else showMsg('Sync failed: ' + (data.error || 'Unknown error (HTTP ' + res.status + ')'), false);
+      } catch (e) { showMsg('Sync failed: Could not reach server. ' + e.message, false); }
+      btnLoading(btn, false, 'Sync Transactions');
+    }
+
+    async function runDetection() {
+      const btn = document.getElementById('detect-btn');
+      btnLoading(btn, true);
+      try {
+        const res = await apiFetch('/api/detect', { method: 'POST' });
+        const data = await res.json();
+        if (res.ok) { showMsg('Detection complete: ' + data.detected_count + ' subscriptions found.', true); loadSubscriptions(); }
+        else showMsg('Detection failed: ' + (data.error || 'Unknown error (HTTP ' + res.status + ')'), false);
+      } catch (e) { showMsg('Detection failed: Could not reach server. ' + e.message, false); }
+      btnLoading(btn, false, 'Run Detection');
+    }
+
+    function toggleManualForm() {
+      const form = document.getElementById('manual-form');
+      form.style.display = form.style.display === 'none' ? 'block' : 'none';
+    }
+
+    async function addManual() {
+      const name = document.querySelector('.manual-form input[name="name"]').value.trim();
+      const amount = parseFloat(document.querySelector('.manual-form input[name="amount"]').value);
+      const cadence_days = parseInt(document.querySelector('.manual-form select[name="cadence"]').value);
+      const notes = document.querySelector('.manual-form input[name="notes"]').value.trim();
+      if (!name || !amount) { showMsg('Name and amount are required.', false); return; }
+      try {
+        const res = await apiFetch('/api/subscriptions', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, amount, cadence_days, notes: notes || undefined }),
+        });
+        if (res.ok) {
+          showMsg('Added ' + name + ' ($' + amount.toFixed(2) + '/' + cadenceLabel(cadence_days).toLowerCase() + ')', true);
+          document.querySelector('.manual-form input[name="name"]').value = '';
+          document.querySelector('.manual-form input[name="amount"]').value = '';
+          document.querySelector('.manual-form input[name="notes"]').value = '';
+          loadSubscriptions();
+        } else { const data = await res.json(); showMsg('Failed to add: ' + (data.error || 'HTTP ' + res.status), false); }
+      } catch (e) { showMsg('Failed to add subscription: ' + e.message, false); }
+    }
+
+    async function dismissSub(id) {
+      try { await apiFetch('/api/subscriptions/' + id + '/dismiss', { method: 'PATCH' }); loadSubscriptions(); }
+      catch (e) { showMsg('Failed to dismiss: ' + e.message, false); }
+    }
+    async function undismissSub(id) {
+      try { await apiFetch('/api/subscriptions/' + id + '/undismiss', { method: 'PATCH' }); loadSubscriptions(); }
+      catch (e) { showMsg('Failed to restore: ' + e.message, false); }
+    }
+    async function markCancelled(id) {
+      if (!confirm('Mark this subscription as cancelled?')) return;
+      try {
+        await apiFetch('/api/subscriptions/' + id + '/cancel', { method: 'PATCH' });
+        showMsg('Subscription marked as cancelled.', true); loadSubscriptions();
+      } catch (e) { showMsg('Failed to cancel: ' + e.message, false); }
+    }
+    async function uncancelSub(id) {
+      try { await apiFetch('/api/subscriptions/' + id + '/uncancel', { method: 'PATCH' }); loadSubscriptions(); }
+      catch (e) { showMsg('Failed to restore: ' + e.message, false); }
+    }
+    async function reclassify(id, category) {
+      try {
+        await apiFetch('/api/subscriptions/' + id + '/category', {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ category: category })
+        });
+        showMsg('Reclassified as ' + category + '.', true);
+        loadSubscriptions();
+      } catch (e) { showMsg('Failed to reclassify: ' + e.message, false); }
+    }
+
+    async function syncSheets() {
+      const btn = document.getElementById('sheets-btn');
+      btnLoading(btn, true);
+      try {
+        const res = await apiFetch('/api/sheets/sync', { method: 'POST' });
+        const data = await res.json();
+        if (res.ok) showMsg('Synced to Sheets: ' + data.transactions_synced + ' txns, ' + data.subscriptions_synced + ' subs.', true);
+        else showMsg('Sheets sync failed: ' + (data.error || 'HTTP ' + res.status), false);
+      } catch (e) { showMsg('Sheets sync failed: ' + e.message, false); }
+      btnLoading(btn, false, 'Sync to Sheets');
+    }
+
+    loadSubscriptions();
+  </script>
+</body>
+</html>

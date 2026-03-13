@@ -1,0 +1,5 @@
+  </div>
+  <script src="/perfin-shared.js"></script>
+<% if (typeof apiKey !== 'undefined' && apiKey) { %>
+  <script>window.PERFIN_API_KEY = <%- JSON.stringify(apiKey) %>;</script>
+<% } %>

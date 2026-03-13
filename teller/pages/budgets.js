@@ -3,8 +3,8 @@ const router = express.Router();
 
 module.exports = function(config) {
   const { API_KEY } = config;
-router.get("/subscriptions", (req, res) => {
-  res.render("subscriptions", { apiKey: API_KEY || "" });
+router.get("/budgets", (req, res) => {
+  res.render("budgets", { apiKey: API_KEY || "" });
 });
 
   return router;

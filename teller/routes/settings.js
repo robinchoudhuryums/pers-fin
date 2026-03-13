@@ -126,7 +126,7 @@ router.get("/api/export", async (req, res) => {
     if (type === "subscriptions") {
       const result = await pool.query("SELECT display_name, amount, cadence_days, category, first_seen, last_charged, next_expected, is_active FROM detected_subscriptions ORDER BY amount DESC");
       const header = "Name,Amount,Cadence Days,Category,First Seen,Last Charged,Next Expected,Active\n";
-      const rows = result.rows.map(r => `"${r.display_name}",${r.amount},${r.cadence_days},"${r.category}",${r.first_seen},${r.last_charged},${r.next_expected},${r.is_active}`).join("\n");
+      const rows = result.rows.map(r => `"${(r.display_name || "").replace(/"/g, '""')}",${r.amount},${r.cadence_days},"${(r.category || "").replace(/"/g, '""')}",${r.first_seen},${r.last_charged},${r.next_expected},${r.is_active}`).join("\n");
       res.setHeader("Content-Type", "text/csv");
       res.setHeader("Content-Disposition", "attachment; filename=subscriptions.csv");
       return res.send(header + rows);
