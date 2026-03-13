@@ -299,6 +299,8 @@ async function runMigrations() {
     await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_running_summary TEXT DEFAULT NULL");
     await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_model TEXT NOT NULL DEFAULT 'sonnet'");
     await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_cadence_days INT NOT NULL DEFAULT 30");
+    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS zip_code TEXT DEFAULT NULL");
+    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insight_modules JSONB NOT NULL DEFAULT '{\"utility_comparison\":true,\"spending_benchmarks\":true,\"savings_suggestions\":true,\"subscription_audit\":true}'::jsonb");
     // 003_dashboard_features.sql
     await pool.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS is_dismissed BOOLEAN NOT NULL DEFAULT false");
     await pool.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'detected'");
@@ -2984,16 +2986,19 @@ app.post("/api/logout", (req, res) => {
 // GET /api/settings
 app.get("/api/settings", async (_req, res) => {
   try {
-    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone FROM user_settings WHERE id = 1");
-    res.json(result.rows[0] || { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York" });
+    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules FROM user_settings WHERE id = 1");
+    const defaults = { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true } };
+    const row = result.rows[0] || defaults;
+    if (typeof row.insight_modules === "string") row.insight_modules = JSON.parse(row.insight_modules);
+    res.json({ ...defaults, ...row, available_modules: INSIGHT_MODULES });
   } catch {
-    res.json({ session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York" });
+    res.json({ session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true }, available_modules: INSIGHT_MODULES });
   }
 });
 
 // PATCH /api/settings
 app.patch("/api/settings", async (req, res) => {
-  const { session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone } = req.body;
+  const { session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules } = req.body;
   try {
     const updates = []; const values = []; let idx = 1;
     if (session_timeout_minutes !== undefined) {
@@ -3033,6 +3038,15 @@ app.patch("/api/settings", async (req, res) => {
     if (keep_alive_timezone !== undefined && typeof keep_alive_timezone === "string" && keep_alive_timezone.length <= 50) {
       updates.push("keep_alive_timezone = $" + idx++); values.push(keep_alive_timezone);
     }
+    if (zip_code !== undefined) {
+      const cleaned = (zip_code || "").replace(/\D/g, "").substring(0, 5);
+      updates.push("zip_code = $" + idx++);
+      values.push(cleaned || null);
+    }
+    if (insight_modules !== undefined && typeof insight_modules === "object") {
+      updates.push("insight_modules = $" + idx++);
+      values.push(JSON.stringify(insight_modules));
+    }
     if (!updates.length) return res.status(400).json({ error: "No valid settings" });
     updates.push("updated_at = now()");
     await pool.query("INSERT INTO user_settings (id) VALUES (1) ON CONFLICT DO NOTHING");
@@ -3063,7 +3077,93 @@ function estimateCostUsd(tokens, modelStr) {
   return (tokens / 1_000_000) * (MODEL_COST_PER_M[family]?.blended || 8);
 }
 
-// GET /api/insights/status — check if AI insights are configured
+// ---------------------------------------------------------------------------
+// Static reference data for insight modules
+// ---------------------------------------------------------------------------
+
+// Average residential electricity rates by state (cents/kWh, EIA 2025 data)
+const STATE_ELECTRICITY_RATES = {
+  AL: 15.88, AK: 27.70, AZ: 15.20, AR: 13.30, CA: 32.58, CO: 16.50,
+  CT: 30.30, DE: 16.80, DC: 23.20, FL: 15.12, GA: 15.50, HI: 42.62,
+  ID: 11.74, IL: 18.10, IN: 16.60, IA: 15.60, KS: 14.70, KY: 13.80,
+  LA: 12.44, ME: 29.55, MD: 17.40, MA: 31.51, MI: 19.50, MN: 15.20,
+  MS: 13.90, MO: 13.60, MT: 12.90, NE: 12.80, NV: 14.80, NH: 25.90,
+  NJ: 19.80, NM: 15.50, NY: 24.30, NC: 14.50, ND: 11.02, OH: 15.60,
+  OK: 12.80, OR: 13.20, PA: 18.50, RI: 31.30, SC: 14.80, SD: 13.90,
+  TN: 13.40, TX: 15.87, UT: 12.30, VT: 22.80, VA: 15.10, WA: 12.00,
+  WV: 13.80, WI: 17.30, WY: 12.50,
+};
+const US_AVG_ELECTRICITY_RATE = 18.05; // national average cents/kWh
+
+// ZIP code prefix → state mapping (first 3 digits)
+const ZIP_TO_STATE = {};
+const zipRanges = [
+  [[35,36],"AL"],[[995,999],"AK"],[[850,865],"AZ"],[[716,729],"AR"],
+  [[900,961],"CA"],[[800,816],"CO"],[[60,69],"CT"],[[197,199],"DE"],
+  [[200,205],"DC"],[[320,349],"FL"],[[300,319],"GA"],[[967,968],"HI"],
+  [[832,838],"ID"],[[600,629],"IL"],[[460,479],"IN"],[[500,528],"IA"],
+  [[660,679],"KS"],[[400,427],"KY"],[[700,714],"LA"],[[39,49],"ME"],
+  [[206,219],"MD"],[[10,27],"MA"],[[480,499],"MI"],[[550,567],"MN"],
+  [[386,397],"MS"],[[630,658],"MO"],[[590,599],"MT"],[[680,693],"NE"],
+  [[889,898],"NV"],[[30,38],"NH"],[[70,89],"NJ"],[[870,884],"NM"],
+  [[100,149],"NY"],[[270,289],"NC"],[[580,588],"ND"],[[430,459],"OH"],
+  [[730,749],"OK"],[[970,979],"OR"],[[150,196],"PA"],[[28,29],"RI"],
+  [[290,299],"SC"],[[570,577],"SD"],[[370,385],"TN"],[[750,799],"TX"],
+  [[840,847],"UT"],[[50,59],"VT"],[[220,246],"VA"],[[980,994],"WA"],
+  [[247,268],"WV"],[[530,549],"WI"],[[820,831],"WY"],
+];
+for (const [ranges, state] of zipRanges) {
+  for (let z = ranges[0]; z <= ranges[1]; z++) {
+    ZIP_TO_STATE[z] = state;
+  }
+}
+function zipToState(zip) {
+  if (!zip || zip.length < 3) return null;
+  const prefix = parseInt(zip.substring(0, 3));
+  return ZIP_TO_STATE[prefix] || null;
+}
+
+// BLS Consumer Expenditure Survey averages (annual, 2024 data)
+// Used for spending benchmark comparisons
+const ANNUAL_SPENDING_BENCHMARKS = {
+  housing: { avg: 24298, label: "Housing (rent/mortgage, maintenance)" },
+  transportation: { avg: 12295, label: "Transportation (car, gas, insurance, transit)" },
+  food: { avg: 9854, label: "Food (groceries + dining out)" },
+  healthcare: { avg: 5850, label: "Healthcare (insurance + out-of-pocket)" },
+  entertainment: { avg: 3458, label: "Entertainment & recreation" },
+  utilities: { avg: 4968, label: "Utilities (electric, gas, water, internet, phone)" },
+  insurance: { avg: 7010, label: "Insurance (all types)" },
+  clothing: { avg: 1945, label: "Apparel & services" },
+  subscriptions_streaming: { avg: 780, label: "Streaming & digital subscriptions" },
+};
+
+// Insight modules — each adds context to the AI prompt
+const INSIGHT_MODULES = {
+  utility_comparison: {
+    label: "Utility rate comparison",
+    description: "Compare your utility bills to state/regional averages",
+    extra_tokens: 150,
+    requires_zip: true,
+  },
+  spending_benchmarks: {
+    label: "Spending benchmarks",
+    description: "Compare your spending to national household averages",
+    extra_tokens: 200,
+    requires_zip: false,
+  },
+  savings_suggestions: {
+    label: "Savings & wealth-building",
+    description: "Actionable tips for reducing spend and building wealth",
+    extra_tokens: 120,
+    requires_zip: false,
+  },
+  subscription_audit: {
+    label: "Subscription audit",
+    description: "Flag redundant, unused, or overpriced subscriptions",
+    extra_tokens: 100,
+    requires_zip: false,
+  },
+};
 app.get("/api/insights/status", async (_req, res) => {
   const configured = !!(Anthropic && process.env.ANTHROPIC_API_KEY);
   let estimatedCostCents = 0;
@@ -3143,22 +3243,33 @@ app.post("/api/insights", async (_req, res) => {
         "GROUP BY TO_CHAR(date, 'YYYY-MM') ORDER BY month"
       ),
       pool.query(
-        "SELECT display_name, amount, cadence_days FROM detected_subscriptions " +
+        "SELECT display_name, amount, cadence_days, category FROM detected_subscriptions " +
         "WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL ORDER BY amount DESC"
       ),
       pool.query(
         "SELECT insight_text, created_at FROM financial_insights ORDER BY created_at DESC LIMIT 1"
       ).catch(() => ({ rows: [] })),
       pool.query(
-        "SELECT insights_running_summary, insights_model, insights_cadence_days FROM user_settings WHERE id = 1"
-      ).catch(() => ({ rows: [{ insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30 }] })),
+        "SELECT insights_running_summary, insights_model, insights_cadence_days, zip_code, insight_modules FROM user_settings WHERE id = 1"
+      ).catch(() => ({ rows: [{ insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30, zip_code: null, insight_modules: {} }] })),
     ]);
-    const runningSummary = settingsRow.rows[0]?.insights_running_summary || null;
+    const settings = settingsRow.rows[0] || {};
+    const runningSummary = settings.insights_running_summary || null;
+    const zipCode = settings.zip_code || null;
+    let modules = settings.insight_modules || {};
+    if (typeof modules === "string") modules = JSON.parse(modules);
     // Map model preference to API model ID using -latest aliases (auto-updates to newest version)
     const MODEL_MAP = { haiku: "claude-haiku-4-5-latest", sonnet: "claude-sonnet-4-5-latest", opus: "claude-opus-4-latest" };
-    const modelPref = settingsRow.rows[0]?.insights_model || "sonnet";
+    const modelPref = settings.insights_model || "sonnet";
     const modelId = MODEL_MAP[modelPref] || MODEL_MAP.sonnet;
-    const subTotal = subData.rows.reduce((s, r) => s + parseFloat(r.amount) * 30 / r.cadence_days, 0);
+
+    // Separate subscriptions from utilities
+    const subs = subData.rows.filter(r => r.category !== "utility");
+    const utils = subData.rows.filter(r => r.category === "utility");
+    const subTotal = subs.reduce((s, r) => s + parseFloat(r.amount) * 30 / r.cadence_days, 0);
+    const utilTotal = utils.reduce((s, r) => s + parseFloat(r.amount) * 30 / r.cadence_days, 0);
+
+    const activeModules = [];
     let prompt = "You are a personal finance advisor providing ongoing monthly analysis. You have two tasks:\n\n" +
       "TASK 1: Analyze the data below and give 3-5 concise, actionable insights with specific dollar amounts. Use markdown bullet points. Reference long-term context where relevant.\n\n" +
       "TASK 2: After your insights, output a delimiter line containing exactly '---RUNNING_SUMMARY---' followed by an updated cumulative summary (max 200 words). This summary should capture:\n" +
@@ -3169,8 +3280,58 @@ app.post("/api/insights", async (_req, res) => {
       "This summary persists across sessions as your long-term memory. Update it — don't just append.\n\n" +
       "=== CURRENT DATA ===\n" +
       "Monthly Spending (6mo):\n" + monthlyData.rows.map(r => r.month + ": $" + parseFloat(r.total).toFixed(2) + " (" + r.txns + " txns)").join("\n") +
-      "\n\nActive Subscriptions (" + subData.rows.length + " total, $" + subTotal.toFixed(2) + "/mo):\n" +
-      subData.rows.map(r => r.display_name + ": $" + parseFloat(r.amount).toFixed(2) + " every " + r.cadence_days + " days").join("\n");
+      "\n\nActive Subscriptions (" + subs.length + " total, $" + subTotal.toFixed(2) + "/mo):\n" +
+      subs.map(r => r.display_name + ": $" + parseFloat(r.amount).toFixed(2) + " every " + r.cadence_days + " days").join("\n") +
+      "\n\nUtility Bills (" + utils.length + " total, $" + utilTotal.toFixed(2) + "/mo):\n" +
+      (utils.length > 0 ? utils.map(r => r.display_name + ": $" + parseFloat(r.amount).toFixed(2) + " every " + r.cadence_days + " days").join("\n") : "(none detected)");
+
+    // --- Module: Utility rate comparison ---
+    if (modules.utility_comparison !== false && zipCode && utils.length > 0) {
+      const state = zipToState(zipCode);
+      if (state) {
+        const stateRate = STATE_ELECTRICITY_RATES[state] || US_AVG_ELECTRICITY_RATE;
+        activeModules.push("utility_comparison");
+        prompt += "\n\n=== UTILITY RATE COMPARISON ===\n" +
+          "User ZIP: " + zipCode + " (State: " + state + ")\n" +
+          "State avg residential electricity rate: " + stateRate.toFixed(1) + "¢/kWh\n" +
+          "National avg: " + US_AVG_ELECTRICITY_RATE.toFixed(1) + "¢/kWh\n" +
+          "INSTRUCTION: Compare the user's utility bills to their state and national averages. " +
+          "If their electricity bill seems high or low relative to local rates, explain whether it's likely due to their usage habits or the region's rates. " +
+          "Suggest whether they should scrutinize their energy usage or if the bill reflects normal regional pricing.";
+      }
+    }
+
+    // --- Module: Spending benchmarks ---
+    if (modules.spending_benchmarks !== false) {
+      activeModules.push("spending_benchmarks");
+      const benchText = Object.entries(ANNUAL_SPENDING_BENCHMARKS)
+        .map(([, v]) => v.label + ": $" + Math.round(v.avg / 12) + "/mo ($" + v.avg.toLocaleString() + "/yr)")
+        .join("\n");
+      prompt += "\n\n=== NATIONAL SPENDING BENCHMARKS (avg US household, BLS 2024) ===\n" + benchText +
+        "\nINSTRUCTION: Where the user's spending in a category is visible, briefly note how it compares to the national average. Only mention categories where there's a meaningful difference.";
+    }
+
+    // --- Module: Savings & wealth-building ---
+    if (modules.savings_suggestions !== false) {
+      activeModules.push("savings_suggestions");
+      prompt += "\n\n=== SAVINGS & WEALTH-BUILDING ===\n" +
+        "INSTRUCTION: Based on the user's spending patterns, include 1-2 specific, actionable wealth-building suggestions. Examples: " +
+        "if cancelling a specific subscription could fund an index fund contribution, quantify the 10-year compound growth; " +
+        "if utility costs are high, estimate annual savings from a specific efficiency improvement; " +
+        "if spending is trending up, identify the category driving it and suggest a concrete target. " +
+        "Always give specific dollar amounts and time horizons. Avoid generic advice like 'save more'.";
+    }
+
+    // --- Module: Subscription audit ---
+    if (modules.subscription_audit !== false) {
+      activeModules.push("subscription_audit");
+      prompt += "\n\n=== SUBSCRIPTION AUDIT ===\n" +
+        "INSTRUCTION: Review the subscription list for potential savings: " +
+        "flag services with overlapping functionality (e.g. multiple streaming or cloud storage), " +
+        "note any subscriptions that seem unusually expensive for their category, " +
+        "and suggest cheaper alternatives where well-known options exist. Be specific about potential monthly savings.";
+    }
+
     // Include running summary for long-term context
     if (runningSummary) {
       prompt += "\n\n=== LONG-TERM CONTEXT (your cumulative memory from past analyses) ===\n" + runningSummary;
@@ -3212,7 +3373,7 @@ app.post("/api/insights", async (_req, res) => {
     } else {
       await pool.query("UPDATE user_settings SET insights_last_run = now() WHERE id = 1").catch(() => {});
     }
-    res.json({ insight: insightText, tokens_used: tokensUsed });
+    res.json({ insight: insightText, tokens_used: tokensUsed, modules_used: activeModules });
   } catch (err) {
     console.error("Insights error:", err.message);
     res.status(500).json({ error: err.message });
@@ -3485,6 +3646,17 @@ app.get("/settings", (req, res) => {
       </div>
     </div>
     <div class="setting-row">
+      <div class="setting-info"><div class="name">ZIP Code</div><div class="desc">For regional rate comparisons (utility costs vs your area's average)</div></div>
+      <div class="setting-control">
+        <input type="text" id="zip-input" maxlength="5" placeholder="e.g. 10001" style="width:80px;padding:8px 12px;font-size:13px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;text-align:center;"
+               onchange="updateSetting('zip_code', this.value)">
+      </div>
+    </div>
+    <div class="setting-row" style="flex-direction:column;align-items:stretch;">
+      <div class="setting-info" style="margin-bottom:12px;"><div class="name">Insight Modules</div><div class="desc">Toggle analysis features. Each adds a small amount of context to the AI prompt.</div></div>
+      <div id="modules-container" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;"></div>
+    </div>
+    <div class="setting-row">
       <div class="setting-info"><div class="name">Monthly Budget Cap</div><div class="desc" id="budget-desc">Limits API spending per month (set via INSIGHTS_MONTHLY_BUDGET_CENTS env var)</div></div>
       <div class="setting-control"><span id="budget-status" style="font-size:12px;color:var(--text-muted);">--</span></div>
     </div>
@@ -3589,6 +3761,23 @@ app.get("/settings", (req, res) => {
         document.getElementById('keepalive-end').value = s.keep_alive_end != null ? s.keep_alive_end : 0;
         document.getElementById('keepalive-tz').value = s.keep_alive_timezone || 'America/New_York';
         updateKeepAliveEstimate();
+        document.getElementById('zip-input').value = s.zip_code || '';
+        // Render insight module toggles
+        const mods = s.insight_modules || {};
+        const avail = s.available_modules || {};
+        const mc = document.getElementById('modules-container');
+        if (mc && Object.keys(avail).length > 0) {
+          mc.innerHTML = Object.entries(avail).map(function(e) {
+            var key = e[0], mod = e[1];
+            var checked = mods[key] !== false ? 'checked' : '';
+            var needs = mod.requires_zip ? (s.zip_code ? '' : ' (needs ZIP)') : '';
+            return '<label style="display:flex;align-items:flex-start;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;cursor:pointer;font-size:12px;transition:border-color 0.2s;" onmouseenter="this.style.borderColor=\\'var(--border-hover)\\';" onmouseleave="this.style.borderColor=\\'var(--border)\\';">' +
+              '<input type="checkbox" ' + checked + ' onchange="toggleModule(\\'' + key + '\\', this.checked)" style="margin-top:2px;">' +
+              '<span><span style="font-weight:400;">' + mod.label + '</span>' + needs +
+              '<br><span style="color:var(--text-muted);font-weight:300;font-size:11px;">' + mod.description +
+              ' (~+' + mod.extra_tokens + ' tokens)</span></span></label>';
+          }).join('');
+        }
         applyTheme(s.theme || 'dark');
         // Show memory status
         const memEl = document.getElementById('memory-status');
@@ -3628,6 +3817,14 @@ app.get("/settings", (req, res) => {
         else { const d = await res.json().catch(() => ({})); showMsg(d.error || 'Failed', false); }
       } catch (e) { showMsg(e.message, false); }
     }
+    async function toggleModule(key, enabled) {
+      try {
+        const res = await apiFetch('/api/settings'); const s = await res.json();
+        var mods = s.insight_modules || {};
+        mods[key] = enabled;
+        await updateSetting('insight_modules', mods);
+      } catch (e) { showMsg(e.message, false); }
+    }
     async function logout() { await fetch('/api/logout', { method: 'POST' }); window.location.href = '/login'; }
     async function generateInsights() {
       const btn = document.getElementById('insights-btn');
@@ -3635,7 +3832,11 @@ app.get("/settings", (req, res) => {
       try {
         const res = await apiFetch('/api/insights', { method: 'POST' });
         const data = await res.json();
-        if (res.ok) { showMsg('Insights generated (' + (data.tokens_used || 0) + ' tokens).', true); renderInsight(data.insight); }
+        if (res.ok) {
+          var modList = (data.modules_used || []).length > 0 ? ' Modules: ' + data.modules_used.join(', ') + '.' : '';
+          showMsg('Insights generated (' + (data.tokens_used || 0) + ' tokens).' + modList, true);
+          renderInsight(data.insight);
+        }
         else showMsg(data.error || 'Failed', false);
       } catch (e) { showMsg(e.message, false); }
       btn.classList.remove('btn-loading'); btn.disabled = false;
