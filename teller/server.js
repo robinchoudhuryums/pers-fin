@@ -77,7 +77,7 @@ app.use(session({
 
 function requireAuth(req, res, next) {
   if (!AUTH_SECRET) return next();
-  if (["/login", "/api/login", "/manifest.json", "/sw.js"].includes(req.path)) return next();
+  if (["/login", "/api/login", "/manifest.json", "/sw.js", "/health"].includes(req.path)) return next();
   if (req.session && req.session.authenticated) {
     const timeout = (req.session.timeoutMinutes || 15) * 60 * 1000;
     if (Date.now() - req.session.lastActivity < timeout) {
@@ -147,6 +147,10 @@ app.use("/api/enroll", tightLimiter);
 const API_KEY = process.env.API_KEY;
 app.use("/api", (req, res, next) => {
   if (!API_KEY) return next(); // no key configured = open (dev mode)
+  // Session auth endpoints must be accessible without API key
+  if (req.path === "/login" || req.path === "/logout") return next();
+  // Authenticated browser sessions bypass API key requirement
+  if (req.session && req.session.authenticated) return next();
   const provided = req.headers["x-api-key"] || req.query.api_key;
   const providedBuf = Buffer.from(provided || "");
   const keyBuf = Buffer.from(API_KEY);
@@ -304,6 +308,11 @@ async function runMigrations() {
     await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS current_balance NUMERIC(12,2)");
     await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS balance_currency TEXT DEFAULT 'USD'");
     await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS balance_updated_at TIMESTAMPTZ");
+    // keep-alive settings
+    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS keep_alive_enabled BOOLEAN NOT NULL DEFAULT false");
+    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS keep_alive_start INT NOT NULL DEFAULT 6");
+    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS keep_alive_end INT NOT NULL DEFAULT 0");
+    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS keep_alive_timezone TEXT NOT NULL DEFAULT 'America/New_York'");
     // 002_csv_import.sql
     await pool.query("CREATE TABLE IF NOT EXISTS csv_imports (id SERIAL PRIMARY KEY, filename TEXT NOT NULL, institution TEXT NOT NULL, account_label TEXT, rows_imported INT NOT NULL DEFAULT 0, rows_skipped INT NOT NULL DEFAULT 0, imported_at TIMESTAMPTZ NOT NULL DEFAULT now())");
     console.log("Migrations complete.");
@@ -1355,6 +1364,24 @@ app.get("/dashboard", (req, res) => {
       background: radial-gradient(ellipse at 40% 60%, rgba(90,143,143,0.10) 0%, rgba(212,165,116,0.05) 35%, transparent 80%);
     }
     @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateX(-8px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+    @keyframes countUp {
+      from { opacity: 0; transform: scale(0.95); }
+      to { opacity: 1; transform: scale(1); }
+    }
+    .animate-in { animation: fadeInUp 0.4s ease both; }
+    .animate-fade { animation: fadeIn 0.5s ease both; }
     .btn-loading { position: relative; color: transparent !important; pointer-events: none; }
     .btn-loading::after {
       content: ''; position: absolute; top: 50%; left: 50%; width: 14px; height: 14px;
@@ -1366,7 +1393,7 @@ app.get("/dashboard", (req, res) => {
     a:hover { color: var(--text); }
 
     .topnav { display: flex; align-items: center; justify-content: space-between;
-              padding: 20px 0; margin-bottom: 40px; }
+              padding: 20px 0; margin-bottom: 40px; animation: fadeIn 0.3s ease both; }
     .topnav .logo { font-weight: 300; font-size: 13px; letter-spacing: 2px;
                     text-transform: uppercase; color: var(--text-muted); }
     .topnav .nav-links { display: flex; gap: 24px; font-size: 13px; font-weight: 400;
@@ -1375,13 +1402,21 @@ app.get("/dashboard", (req, res) => {
     .topnav .nav-links a:hover { color: var(--text); }
     .topnav .nav-links a.active { color: var(--warm); }
 
-    h1 { font-size: 42px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 8px; }
-    .subtitle { color: var(--text-muted); margin-bottom: 36px; font-size: 15px; font-weight: 300; letter-spacing: 0.3px; }
+    h1 { font-size: 42px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 8px;
+         animation: fadeInUp 0.4s ease both; animation-delay: 0.05s; }
+    .subtitle { color: var(--text-muted); margin-bottom: 36px; font-size: 15px; font-weight: 300;
+                letter-spacing: 0.3px; animation: fadeInUp 0.4s ease both; animation-delay: 0.1s; }
 
     .top-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
                  gap: 16px; margin-bottom: 36px; }
     .card { padding: 24px; border-radius: var(--radius); background: var(--surface);
-            border: 1px solid var(--border); transition: all 0.3s ease; backdrop-filter: blur(12px); }
+            border: 1px solid var(--border); transition: all 0.3s ease; backdrop-filter: blur(12px);
+            animation: fadeInUp 0.4s ease both; }
+    .card:nth-child(1) { animation-delay: 0.1s; }
+    .card:nth-child(2) { animation-delay: 0.15s; }
+    .card:nth-child(3) { animation-delay: 0.2s; }
+    .card:nth-child(4) { animation-delay: 0.25s; }
+    .card:nth-child(5) { animation-delay: 0.3s; }
     .card:hover { border-color: var(--border-hover); background: var(--surface-2); }
     .card .label { font-size: 10px; color: var(--text-muted); text-transform: uppercase;
                    letter-spacing: 1.5px; font-weight: 500; }
@@ -1403,23 +1438,27 @@ app.get("/dashboard", (req, res) => {
     .actions button.primary { border-color: var(--warm); color: var(--warm); }
     .actions button.primary:hover:not(:disabled) { background: rgba(212,165,116,0.1); color: var(--text); }
 
+    @keyframes slideDown {
+      from { opacity: 0; transform: translateY(-8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
     .status-msg { padding: 14px 18px; border-radius: 8px; margin-bottom: 20px; display: none;
                   font-size: 13px; font-weight: 400; }
     .status-msg.success { background: var(--green-bg); border: 1px solid rgba(111,207,151,0.15);
-                          color: var(--green); display: block; }
+                          color: var(--green); display: block; animation: slideDown 0.3s ease both; }
     .status-msg.error { background: var(--red-bg); border: 1px solid rgba(235,107,107,0.15);
-                        color: var(--red); display: block; }
+                        color: var(--red); display: block; animation: slideDown 0.3s ease both; }
 
     .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 28px; }
     @media (max-width: 768px) { .two-col { grid-template-columns: 1fr; } }
 
     .section { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-               padding: 24px; backdrop-filter: blur(12px); }
+               padding: 24px; backdrop-filter: blur(12px); animation: fadeInUp 0.4s ease both; animation-delay: 0.3s; }
     .section h2 { font-size: 10px; font-weight: 500; color: var(--text-muted); text-transform: uppercase;
                   letter-spacing: 1.5px; margin-bottom: 20px; }
 
     .accounts-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-                     gap: 12px; margin-bottom: 28px; }
+                     gap: 12px; margin-bottom: 28px; animation: fadeInUp 0.4s ease both; animation-delay: 0.25s; }
     .acct-card { padding: 18px; border-radius: var(--radius); background: var(--surface);
                  border: 1px solid var(--border); transition: all 0.2s; }
     .acct-card:hover { border-color: var(--border-hover); }
@@ -1453,7 +1492,8 @@ app.get("/dashboard", (req, res) => {
     .empty-msg { text-align: center; padding: 40px; color: var(--text-muted); font-weight: 300; font-size: 14px; }
 
     /* Charts */
-    .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 28px; }
+    .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 28px;
+                   animation: fadeInUp 0.4s ease both; animation-delay: 0.15s; }
     .chart-card { padding: 20px; border-radius: var(--radius); background: var(--surface);
                   border: 1px solid var(--border); backdrop-filter: blur(12px); }
     .chart-card h3 { font-size: 10px; font-weight: 500; color: var(--text-muted); text-transform: uppercase;
@@ -1915,13 +1955,21 @@ app.get("/subscriptions", (req, res) => {
       background: radial-gradient(ellipse at 40% 60%, rgba(90,143,143,0.20) 0%, rgba(212,165,116,0.10) 35%, rgba(160,100,80,0.05) 60%, transparent 80%);
       pointer-events: none; z-index: 0; filter: blur(60px);
     }
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
     .container { max-width: 960px; margin: 0 auto; padding: 24px 20px; position: relative; z-index: 1; }
     a { color: var(--warm); text-decoration: none; transition: color 0.2s; }
     a:hover { color: var(--text); }
 
     /* Nav */
     .topnav { display: flex; align-items: center; justify-content: space-between;
-              padding: 20px 0; margin-bottom: 40px; }
+              padding: 20px 0; margin-bottom: 40px; animation: fadeIn 0.3s ease both; }
     .topnav .logo { font-weight: 300; font-size: 13px; letter-spacing: 2px;
                     text-transform: uppercase; color: var(--text-muted); }
     .topnav .nav-links { display: flex; gap: 24px; font-size: 13px; font-weight: 400;
@@ -1930,16 +1978,20 @@ app.get("/subscriptions", (req, res) => {
     .topnav .nav-links a:hover { color: var(--text); }
 
     h1 { font-size: 42px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 8px;
-         color: var(--text); }
+         color: var(--text); animation: fadeInUp 0.4s ease both; animation-delay: 0.05s; }
     .subtitle { color: var(--text-muted); margin-bottom: 40px; font-size: 15px; font-weight: 300;
-                letter-spacing: 0.3px; }
+                letter-spacing: 0.3px; animation: fadeInUp 0.4s ease both; animation-delay: 0.1s; }
 
     /* Summary Cards */
     .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
                gap: 16px; margin-bottom: 36px; }
     .card { padding: 24px; border-radius: var(--radius); background: var(--surface);
             border: 1px solid var(--border); transition: all 0.3s ease;
-            backdrop-filter: blur(12px); }
+            backdrop-filter: blur(12px); animation: fadeInUp 0.4s ease both; }
+    .card:nth-child(1) { animation-delay: 0.1s; }
+    .card:nth-child(2) { animation-delay: 0.15s; }
+    .card:nth-child(3) { animation-delay: 0.2s; }
+    .card:nth-child(4) { animation-delay: 0.25s; }
     .card:hover { border-color: var(--border-hover); background: var(--surface-2); }
     .card .label { font-size: 10px; color: var(--text-muted); text-transform: uppercase;
                    letter-spacing: 1.5px; font-weight: 500; }
@@ -2352,12 +2404,20 @@ app.get("/", (req, res) => {
       background: radial-gradient(ellipse at 40% 60%, rgba(90,143,143,0.20) 0%, rgba(212,165,116,0.10) 35%, rgba(160,100,80,0.05) 60%, transparent 80%);
       pointer-events: none; z-index: 0; filter: blur(60px);
     }
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
     .container { max-width: 640px; margin: 0 auto; padding: 24px 20px; position: relative; z-index: 1; }
     a { color: var(--warm); text-decoration: none; transition: color 0.2s; }
     a:hover { color: var(--text); }
 
     .topnav { display: flex; align-items: center; justify-content: space-between;
-              padding: 20px 0; margin-bottom: 48px; }
+              padding: 20px 0; margin-bottom: 48px; animation: fadeIn 0.3s ease both; }
     .topnav .logo { font-weight: 300; font-size: 13px; letter-spacing: 2px;
                     text-transform: uppercase; color: var(--text-muted); }
     .topnav .nav-links { display: flex; gap: 24px; font-size: 13px; font-weight: 400;
@@ -2365,7 +2425,8 @@ app.get("/", (req, res) => {
     .topnav .nav-links a { color: var(--text-muted); }
     .topnav .nav-links a:hover { color: var(--text); }
 
-    h1 { font-size: 42px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 8px; }
+    h1 { font-size: 42px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 8px;
+         animation: fadeInUp 0.4s ease both; animation-delay: 0.05s; }
     h2 { font-size: 28px; font-weight: 300; letter-spacing: -0.3px; margin-bottom: 8px; }
     h3 { font-size: 10px; font-weight: 500; margin-bottom: 12px; color: var(--text-muted);
          text-transform: uppercase; letter-spacing: 1.5px; }
@@ -2689,13 +2750,34 @@ app.get("/login", (_req, res) => {
     body::after { content: ''; position: fixed; bottom: -20%; left: -15%; width: 80vw; height: 70vh;
       background: radial-gradient(ellipse at 40% 60%, rgba(90,143,143,0.20) 0%, rgba(212,165,116,0.10) 35%, transparent 80%);
       pointer-events: none; z-index: 0; filter: blur(60px); }
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes scaleIn {
+      from { opacity: 0; transform: scale(0.96); }
+      to { opacity: 1; transform: scale(1); }
+    }
+    @keyframes dotPop {
+      0% { transform: scale(1); }
+      50% { transform: scale(1.3); }
+      100% { transform: scale(1); }
+    }
+    @keyframes shake {
+      0%, 100% { transform: translateX(0); }
+      20%, 60% { transform: translateX(-6px); }
+      40%, 80% { transform: translateX(6px); }
+    }
     .login-card { position: relative; z-index: 1; width: 100%; max-width: 360px; padding: 44px 32px;
       background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
-      backdrop-filter: blur(16px); text-align: center; }
+      backdrop-filter: blur(16px); text-align: center;
+      animation: scaleIn 0.4s ease both; }
     .logo { font-weight: 300; font-size: 13px; letter-spacing: 2px; text-transform: uppercase;
-            color: var(--text-muted); margin-bottom: 28px; }
-    h1 { font-size: 26px; font-weight: 300; letter-spacing: -0.3px; margin-bottom: 6px; }
-    p { color: var(--text-muted); font-size: 14px; font-weight: 300; margin-bottom: 24px; }
+            color: var(--text-muted); margin-bottom: 28px; animation: fadeInUp 0.4s ease both; animation-delay: 0.1s; }
+    h1 { font-size: 26px; font-weight: 300; letter-spacing: -0.3px; margin-bottom: 6px;
+         animation: fadeInUp 0.4s ease both; animation-delay: 0.15s; }
+    p { color: var(--text-muted); font-size: 14px; font-weight: 300; margin-bottom: 24px;
+        animation: fadeInUp 0.4s ease both; animation-delay: 0.2s; }
     input[type="password"] { width: 100%; padding: 12px 16px; font-size: 14px; font-weight: 300;
       border: 1px solid var(--border); border-radius: 8px; background: transparent;
       color: var(--text); font-family: inherit; }
@@ -2707,12 +2789,15 @@ app.get("/login", (_req, res) => {
     button[type="submit"]:hover { background: rgba(212,165,116,0.1); color: var(--text); }
     .error-msg { margin-top: 14px; padding: 10px; border-radius: 6px;
       background: var(--red-bg); color: var(--red); font-size: 13px; display: none; }
-    .pin-dots { display: flex; justify-content: center; gap: 12px; margin-bottom: 24px; }
+    .pin-dots { display: flex; justify-content: center; gap: 12px; margin-bottom: 24px;
+                animation: fadeInUp 0.4s ease both; animation-delay: 0.25s; }
     .pin-dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--border);
       transition: all 0.2s; }
-    .pin-dot.filled { background: var(--warm); border-color: var(--warm); }
+    .pin-dot.filled { background: var(--warm); border-color: var(--warm); animation: dotPop 0.2s ease; }
     .pin-dot.error { border-color: var(--red); background: var(--red); }
-    .pin-pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; max-width: 240px; margin: 0 auto; }
+    .pin-dots.shake { animation: shake 0.4s ease; }
+    .pin-pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; max-width: 240px; margin: 0 auto;
+               animation: fadeInUp 0.4s ease both; animation-delay: 0.3s; }
     .pin-key { padding: 16px; font-size: 22px; font-weight: 300; border: 1px solid var(--border);
       border-radius: 10px; background: transparent; color: var(--text); cursor: pointer;
       font-family: inherit; transition: all 0.15s; user-select: none; -webkit-user-select: none;
@@ -2785,8 +2870,9 @@ app.get("/login", (_req, res) => {
           var err = await doLogin(pin);
           if (err) {
             for (let i = 0; i < pinLen; i++) document.getElementById('dot-' + i).className = 'pin-dot error';
+            dotsEl.classList.add('shake');
             errEl.textContent = err; errEl.style.display = 'block';
-            setTimeout(function() { pin = ''; submitting = false; updateDots(); }, 600);
+            setTimeout(function() { pin = ''; submitting = false; updateDots(); dotsEl.classList.remove('shake'); }, 600);
           }
         }
       }
@@ -2833,16 +2919,16 @@ app.post("/api/logout", (req, res) => {
 // GET /api/settings
 app.get("/api/settings", async (_req, res) => {
   try {
-    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary, insights_model, insights_cadence_days FROM user_settings WHERE id = 1");
-    res.json(result.rows[0] || { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30 });
+    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone FROM user_settings WHERE id = 1");
+    res.json(result.rows[0] || { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York" });
   } catch {
-    res.json({ session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_model: "sonnet", insights_cadence_days: 30 });
+    res.json({ session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York" });
   }
 });
 
 // PATCH /api/settings
 app.patch("/api/settings", async (req, res) => {
-  const { session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_model, insights_cadence_days } = req.body;
+  const { session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone } = req.body;
   try {
     const updates = []; const values = []; let idx = 1;
     if (session_timeout_minutes !== undefined) {
@@ -2867,6 +2953,20 @@ app.patch("/api/settings", async (req, res) => {
       const valid = [7, 14, 30, 60, 90];
       const val = parseInt(insights_cadence_days);
       if (valid.includes(val)) { updates.push("insights_cadence_days = $" + idx++); values.push(val); }
+    }
+    if (keep_alive_enabled !== undefined) {
+      updates.push("keep_alive_enabled = $" + idx++); values.push(!!keep_alive_enabled);
+    }
+    if (keep_alive_start !== undefined) {
+      const h = parseInt(keep_alive_start);
+      if (h >= 0 && h <= 23) { updates.push("keep_alive_start = $" + idx++); values.push(h); }
+    }
+    if (keep_alive_end !== undefined) {
+      const h = parseInt(keep_alive_end);
+      if (h >= 0 && h <= 23) { updates.push("keep_alive_end = $" + idx++); values.push(h); }
+    }
+    if (keep_alive_timezone !== undefined && typeof keep_alive_timezone === "string" && keep_alive_timezone.length <= 50) {
+      updates.push("keep_alive_timezone = $" + idx++); values.push(keep_alive_timezone);
     }
     if (!updates.length) return res.status(400).json({ error: "No valid settings" });
     updates.push("updated_at = now()");
@@ -3153,20 +3253,35 @@ app.get("/settings", (req, res) => {
       background: radial-gradient(ellipse at 50% 30%, rgba(200,133,108,0.12) 0%, rgba(90,143,143,0.06) 50%, transparent 75%); }
     [data-theme="light"] body::after {
       background: radial-gradient(ellipse at 40% 60%, rgba(90,143,143,0.10) 0%, rgba(212,165,116,0.05) 35%, transparent 80%); }
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
     .container { max-width: 640px; margin: 0 auto; padding: 24px 20px; position: relative; z-index: 1; }
     a { color: var(--warm); text-decoration: none; }
     a:hover { color: var(--text); }
     .topnav { display: flex; align-items: center; justify-content: space-between;
-              padding: 20px 0; margin-bottom: 40px; }
+              padding: 20px 0; margin-bottom: 40px; animation: fadeIn 0.3s ease both; }
     .topnav .logo { font-weight: 300; font-size: 13px; letter-spacing: 2px; text-transform: uppercase; color: var(--text-muted); }
     .topnav .nav-links { display: flex; gap: 24px; font-size: 13px; font-weight: 400; letter-spacing: 0.5px; }
     .topnav .nav-links a { color: var(--text-muted); }
     .topnav .nav-links a:hover { color: var(--text); }
     .topnav .nav-links a.active { color: var(--warm); }
-    h1 { font-size: 36px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 6px; }
-    .subtitle { color: var(--text-muted); margin-bottom: 32px; font-size: 15px; font-weight: 300; }
+    h1 { font-size: 36px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 6px;
+         animation: fadeInUp 0.4s ease both; animation-delay: 0.05s; }
+    .subtitle { color: var(--text-muted); margin-bottom: 32px; font-size: 15px; font-weight: 300;
+                animation: fadeInUp 0.4s ease both; animation-delay: 0.1s; }
     .section { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-               padding: 24px; margin-bottom: 16px; backdrop-filter: blur(12px); }
+               padding: 24px; margin-bottom: 16px; backdrop-filter: blur(12px);
+               animation: fadeInUp 0.4s ease both; }
+    .section:nth-of-type(1) { animation-delay: 0.15s; }
+    .section:nth-of-type(2) { animation-delay: 0.2s; }
+    .section:nth-of-type(3) { animation-delay: 0.25s; }
+    .section:nth-of-type(4) { animation-delay: 0.3s; }
     .section h2 { font-size: 10px; font-weight: 500; color: var(--text-muted); text-transform: uppercase;
                   letter-spacing: 1.5px; margin-bottom: 20px; }
     .setting-row { display: flex; align-items: center; justify-content: space-between;
@@ -3329,6 +3444,46 @@ app.get("/settings", (req, res) => {
     <div id="usage-history" style="max-height:260px;overflow-y:auto;"></div>
   </div>
 
+  <div class="section"><h2>Keep-Alive</h2>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Self-Ping</div><div class="desc">Prevents Render free tier from sleeping during active hours (pings every 14 min)</div></div>
+      <div class="setting-control">
+        <label class="toggle"><input type="checkbox" id="keepalive-toggle" onchange="updateSetting('keep_alive_enabled', this.checked)"><span class="slider"></span></label>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Active Hours</div><div class="desc" id="keepalive-hours-desc">Hours when keep-alive runs (saves Render free tier hours)</div></div>
+      <div class="setting-control" style="display:flex;gap:6px;align-items:center;">
+        <select id="keepalive-start" onchange="updateSetting('keep_alive_start', parseInt(this.value))">
+        </select>
+        <span style="color:var(--text-muted);font-size:12px;">to</span>
+        <select id="keepalive-end" onchange="updateSetting('keep_alive_end', parseInt(this.value))">
+        </select>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Timezone</div><div class="desc">Your local timezone for active hour scheduling</div></div>
+      <div class="setting-control">
+        <select id="keepalive-tz" onchange="updateSetting('keep_alive_timezone', this.value)">
+          <option value="America/New_York">Eastern (ET)</option>
+          <option value="America/Chicago">Central (CT)</option>
+          <option value="America/Denver">Mountain (MT)</option>
+          <option value="America/Los_Angeles">Pacific (PT)</option>
+          <option value="America/Anchorage">Alaska (AKT)</option>
+          <option value="Pacific/Honolulu">Hawaii (HT)</option>
+          <option value="Europe/London">London (GMT/BST)</option>
+          <option value="Europe/Berlin">Central Europe (CET)</option>
+          <option value="Asia/Tokyo">Tokyo (JST)</option>
+          <option value="UTC">UTC</option>
+        </select>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Monthly Hours Estimate</div><div class="desc">Estimated Render hours this app will use per month</div></div>
+      <div class="setting-control"><span id="keepalive-estimate" style="font-size:12px;color:var(--text-muted);">--</span></div>
+    </div>
+  </div>
+
   <div class="section"><h2>Data</h2>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Export Transactions</div><div class="desc">Download as CSV</div></div>
@@ -3364,6 +3519,11 @@ app.get("/settings", (req, res) => {
         document.getElementById('insights-toggle').checked = s.insights_enabled || false;
         document.getElementById('model-select').value = s.insights_model || 'sonnet';
         document.getElementById('cadence-select').value = s.insights_cadence_days || 30;
+        document.getElementById('keepalive-toggle').checked = s.keep_alive_enabled || false;
+        document.getElementById('keepalive-start').value = s.keep_alive_start != null ? s.keep_alive_start : 6;
+        document.getElementById('keepalive-end').value = s.keep_alive_end != null ? s.keep_alive_end : 0;
+        document.getElementById('keepalive-tz').value = s.keep_alive_timezone || 'America/New_York';
+        updateKeepAliveEstimate();
         applyTheme(s.theme || 'dark');
         // Show memory status
         const memEl = document.getElementById('memory-status');
@@ -3488,6 +3648,38 @@ app.get("/settings", (req, res) => {
       } catch (e) { showMsg(e.message, false); }
       btn.classList.remove('btn-loading'); btn.disabled = false;
     }
+    // Populate hour selectors for keep-alive
+    (function() {
+      var startSel = document.getElementById('keepalive-start');
+      var endSel = document.getElementById('keepalive-end');
+      if (!startSel || !endSel) return;
+      for (var h = 0; h < 24; h++) {
+        var label = (h === 0 ? '12 AM' : h < 12 ? h + ' AM' : h === 12 ? '12 PM' : (h - 12) + ' PM');
+        startSel.innerHTML += '<option value="' + h + '">' + label + '</option>';
+        endSel.innerHTML += '<option value="' + h + '">' + (h === 0 ? 'Midnight' : label) + '</option>';
+      }
+    })();
+    function updateKeepAliveEstimate() {
+      var enabled = document.getElementById('keepalive-toggle').checked;
+      var el = document.getElementById('keepalive-estimate');
+      if (!enabled) { el.textContent = 'Disabled — app sleeps after 15 min idle'; return; }
+      var start = parseInt(document.getElementById('keepalive-start').value);
+      var end = parseInt(document.getElementById('keepalive-end').value);
+      var hours;
+      if (start === end) hours = 24;
+      else if (start < end) hours = end - start;
+      else hours = (24 - start) + end;
+      var monthly = hours * 30;
+      var color = monthly > 375 ? 'var(--red)' : monthly > 300 ? 'var(--yellow)' : 'var(--green)';
+      el.innerHTML = '<span style="color:' + color + ';">' + monthly + ' hrs/mo</span> (' + hours + ' hrs/day)' +
+        (monthly > 375 ? ' <span style="color:var(--red);font-size:11px;">— tight if running 2 apps on Render free tier (750 hrs shared)</span>' : '');
+    }
+    // Override updateSetting to also refresh estimate
+    var _origUpdate = updateSetting;
+    updateSetting = async function(key, value) {
+      await _origUpdate(key, value);
+      if (key.startsWith('keep_alive')) updateKeepAliveEstimate();
+    };
     loadSettings(); loadInsights(); loadUsageHistory();
   </script>
 </body></html>`);
@@ -3586,9 +3778,70 @@ app.get("/api/export", async (req, res) => {
 // ---------------------------------------------------------------------------
 // Start
 // ---------------------------------------------------------------------------
+// GET /health — lightweight health check (exempt from auth + API key)
+// ---------------------------------------------------------------------------
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok", uptime: Math.floor(process.uptime()) });
+});
+
+// ---------------------------------------------------------------------------
+// Keep-alive self-ping: prevents Render free tier from sleeping during active hours
+// ---------------------------------------------------------------------------
+let keepAliveInterval = null;
+
+async function loadKeepAliveConfig() {
+  try {
+    const result = await pool.query(
+      "SELECT keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone FROM user_settings WHERE id = 1"
+    );
+    return result.rows[0] || { keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York" };
+  } catch {
+    return { keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York" };
+  }
+}
+
+function isWithinActiveHours(startHour, endHour, timezone) {
+  try {
+    const now = new Date();
+    const localHour = parseInt(now.toLocaleString("en-US", { hour: "numeric", hour12: false, timeZone: timezone }));
+    if (startHour < endHour) {
+      // e.g. 6–22: simple range
+      return localHour >= startHour && localHour < endHour;
+    } else if (startHour > endHour) {
+      // e.g. 6–0 (6am to midnight) or 22–6 (overnight)
+      return localHour >= startHour || localHour < endHour;
+    }
+    // startHour === endHour means 24/7
+    return true;
+  } catch {
+    // If timezone is invalid, fall back to always active
+    return true;
+  }
+}
+
+function startKeepAlive(port) {
+  if (keepAliveInterval) return;
+  const INTERVAL = 14 * 60 * 1000; // 14 minutes
+  keepAliveInterval = setInterval(async () => {
+    const config = await loadKeepAliveConfig();
+    if (!config.keep_alive_enabled) return;
+    if (!isWithinActiveHours(config.keep_alive_start, config.keep_alive_end, config.keep_alive_timezone)) {
+      return;
+    }
+    try {
+      await fetch(`http://localhost:${port}/health`);
+    } catch {
+      // Silently ignore — if we can't reach ourselves, we're shutting down
+    }
+  }, INTERVAL);
+  keepAliveInterval.unref(); // Don't prevent process exit
+}
+
+// ---------------------------------------------------------------------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Teller server running on http://0.0.0.0:${PORT}`);
   console.log(`  Environment: ${TELLER_ENV}`);
   console.log(`  Application ID: ${TELLER_APP_ID || "(not set)"}`);
+  startKeepAlive(PORT);
 });
