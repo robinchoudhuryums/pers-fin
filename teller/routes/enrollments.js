@@ -278,6 +278,26 @@ router.delete("/api/enrollments/:id", async (req, res) => {
   }
 });
 
+// DELETE /api/items/:id — unlink a Plaid institution
+router.delete("/api/items/:id", async (req, res) => {
+  const { id } = req.params;
+  try {
+    const check = await pool.query("SELECT id, institution_name FROM plaid_items WHERE id = $1", [id]);
+    if (!check.rows.length) return res.status(404).json({ error: "Item not found" });
+    const name = check.rows[0].institution_name;
+    await pool.query(
+      `DELETE FROM transactions WHERE account_id IN (SELECT account_id FROM linked_accounts WHERE plaid_item_id = $1)`,
+      [id]
+    );
+    await pool.query("DELETE FROM linked_accounts WHERE plaid_item_id = $1", [id]);
+    await pool.query("DELETE FROM plaid_items WHERE id = $1", [id]);
+    res.json({ deleted: true, institution_name: name });
+  } catch (err) {
+    console.error("delete plaid item error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
 // GET /api/accounts
 router.get("/api/accounts", async (_req, res) => {
   try {
