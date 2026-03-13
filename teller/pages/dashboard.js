@@ -148,6 +148,13 @@ router.get("/dashboard", (req, res) => {
       </table>
     </div>
   </div>
+
+  <!-- 30-day forecast -->
+  <div class="section" id="forecast-section" style="display:none;">
+    <h2>Next 30 Days Forecast</h2>
+    <div id="forecast-summary" style="font-size:13px;color:var(--text-muted);margin-bottom:12px;"></div>
+    <div id="forecast-list"></div>
+  </div>
   </div>
 
   <script src="/perfin-shared.js"></script>
@@ -370,9 +377,34 @@ router.get("/dashboard", (req, res) => {
       } catch (e) { showMsg(e.message, false); }
     }
 
+    async function loadForecast() {
+      try {
+        var res = await apiFetch('/api/forecast?days=30'); var data = await res.json();
+        if (data.charge_count === 0) return;
+        document.getElementById('forecast-section').style.display = 'block';
+        document.getElementById('forecast-summary').innerHTML =
+          '<strong>' + data.charge_count + ' charges</strong> totaling <strong style="color:var(--warm);">$' + data.total_expected.toFixed(2) +
+          '</strong> expected in the next ' + data.forecast_days + ' days';
+        var html = '<table style="width:100%;font-size:12px;border-collapse:collapse;">' +
+          '<thead><tr><th style="text-align:left;padding:6px 0;border-bottom:1px solid var(--border);">Service</th>' +
+          '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Amount</th>' +
+          '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Date</th>' +
+          '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">In</th></tr></thead><tbody>';
+        data.charges.forEach(function(c) {
+          html += '<tr><td style="padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);">' + esc(c.name) + '</td>' +
+            '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--warm);">$' + c.amount.toFixed(2) + '</td>' +
+            '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);">' + c.date + '</td>' +
+            '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--text-muted);">' + c.days_away + 'd</td></tr>';
+        });
+        html += '</tbody></table>';
+        document.getElementById('forecast-list').innerHTML = html;
+      } catch {}
+    }
+
     // Initialize
     loadAccounts();
     loadSpendingSummary();
+    loadForecast();
 
     // PWA
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});

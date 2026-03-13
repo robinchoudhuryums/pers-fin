@@ -370,4 +370,76 @@ router.post("/api/cleanup", async (_req, res) => {
   }
 });
 
+// GET /api/forecast — predict recurring charges for the next 30 days
+router.get("/api/forecast", async (req, res) => {
+  const days = Math.min(Math.max(parseInt(req.query.days) || 30, 7), 90);
+  try {
+    const result = await pool.query(
+      `SELECT display_name, amount, cadence_days, next_expected, category
+       FROM detected_subscriptions
+       WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL
+         AND next_expected IS NOT NULL
+       ORDER BY next_expected ASC`
+    );
+
+    const now = new Date();
+    const endDate = new Date(now.getTime() + days * 86400000);
+    const forecast = [];
+    let totalExpected = 0;
+
+    for (const sub of result.rows) {
+      const amount = parseFloat(sub.amount);
+      const cadence = parseInt(sub.cadence_days);
+      let nextDate = new Date(sub.next_expected);
+
+      // If next_expected is in the past, advance it
+      while (nextDate < now) {
+        nextDate = new Date(nextDate.getTime() + cadence * 86400000);
+      }
+
+      // Generate all occurrences within the forecast window
+      while (nextDate <= endDate) {
+        const daysAway = Math.ceil((nextDate - now) / 86400000);
+        forecast.push({
+          name: sub.display_name,
+          amount,
+          date: nextDate.toISOString().split("T")[0],
+          days_away: daysAway,
+          category: sub.category,
+        });
+        totalExpected += amount;
+        nextDate = new Date(nextDate.getTime() + cadence * 86400000);
+      }
+    }
+
+    // Sort by date
+    forecast.sort((a, b) => a.date.localeCompare(b.date));
+
+    // Group by week
+    const byWeek = [];
+    let weekTotal = 0;
+    let weekStart = null;
+    for (const f of forecast) {
+      const weekNum = Math.floor(f.days_away / 7);
+      if (weekStart === null || weekNum !== weekStart) {
+        if (weekStart !== null) byWeek.push({ week: weekStart, total: weekTotal });
+        weekStart = weekNum;
+        weekTotal = 0;
+      }
+      weekTotal += f.amount;
+    }
+    if (weekStart !== null) byWeek.push({ week: weekStart, total: weekTotal });
+
+    res.json({
+      forecast_days: days,
+      total_expected: Math.round(totalExpected * 100) / 100,
+      charge_count: forecast.length,
+      charges: forecast,
+      by_week: byWeek,
+    });
+  } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
 module.exports = router;
