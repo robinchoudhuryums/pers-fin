@@ -300,7 +300,7 @@ async function runMigrations() {
     await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_model TEXT NOT NULL DEFAULT 'sonnet'");
     await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_cadence_days INT NOT NULL DEFAULT 30");
     await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS zip_code TEXT DEFAULT NULL");
-    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insight_modules JSONB NOT NULL DEFAULT '{\"utility_comparison\":true,\"spending_benchmarks\":true,\"savings_suggestions\":true,\"subscription_audit\":true}'::jsonb");
+    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insight_modules JSONB NOT NULL DEFAULT '{\"utility_comparison\":true,\"spending_benchmarks\":true,\"savings_suggestions\":true,\"subscription_audit\":true,\"anomaly_detection\":true,\"seasonal_forecast\":true,\"debt_optimizer\":true}'::jsonb");
     // 003_dashboard_features.sql
     await pool.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS is_dismissed BOOLEAN NOT NULL DEFAULT false");
     await pool.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'detected'");
@@ -313,6 +313,7 @@ async function runMigrations() {
     await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS current_balance NUMERIC(12,2)");
     await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS balance_currency TEXT DEFAULT 'USD'");
     await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS balance_updated_at TIMESTAMPTZ");
+    await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS apr NUMERIC(5,2)");
     // keep-alive settings
     await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS keep_alive_enabled BOOLEAN NOT NULL DEFAULT false");
     await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS keep_alive_start INT NOT NULL DEFAULT 6");
@@ -643,7 +644,7 @@ app.get("/api/accounts", async (_req, res) => {
   try {
     const result = await pool.query(
       `SELECT la.id, la.account_id, la.name, la.official_name, la.type, la.subtype, la.mask,
-              la.available_balance, la.current_balance, la.balance_currency, la.balance_updated_at,
+              la.available_balance, la.current_balance, la.balance_currency, la.balance_updated_at, la.apr,
               COALESCE(te.institution_name, pi.institution_name) AS institution_name,
               CASE WHEN te.id IS NOT NULL THEN 'teller' ELSE 'plaid' END AS provider
        FROM linked_accounts la
@@ -654,6 +655,31 @@ app.get("/api/accounts", async (_req, res) => {
     res.json(result.rows);
   } catch (err) {
     console.error("list accounts error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// PATCH /api/accounts/:id — update account metadata (e.g. APR)
+app.patch("/api/accounts/:id", async (req, res) => {
+  const { apr } = req.body;
+  try {
+    const updates = []; const values = []; let idx = 1;
+    if (apr !== undefined) {
+      const val = apr === null || apr === "" ? null : parseFloat(apr);
+      if (val !== null && (isNaN(val) || val < 0 || val > 99.99)) {
+        return res.status(400).json({ error: "APR must be between 0 and 99.99" });
+      }
+      updates.push("apr = $" + idx++); values.push(val);
+    }
+    if (!updates.length) return res.status(400).json({ error: "No valid fields" });
+    values.push(req.params.id);
+    const result = await pool.query(
+      "UPDATE linked_accounts SET " + updates.join(", ") + " WHERE id = $" + idx + " RETURNING *",
+      values
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "Account not found" });
+    res.json(result.rows[0]);
+  } catch (err) {
     res.status(500).json({ error: "An internal error occurred." });
   }
 });
@@ -1719,11 +1745,23 @@ app.get("/dashboard", (req, res) => {
           const balClass = !hasBalances ? 'neutral' : displayBal > 0 ? 'positive' : displayBal < 0 ? 'negative' : 'neutral';
           const balDisplay = hasBalances ? (displayBal < 0 ? '-' + fmt(Math.abs(displayBal)) : fmt(displayBal)) : '\\u2014';
 
+          // Credit utilization for credit accounts
+          let creditExtra = '';
+          if (isCredit && hasBalances) {
+            const owed = parseFloat(a.current_balance || 0);
+            const avail = parseFloat(a.available_balance || 0);
+            const limit = owed + avail;
+            const util = limit > 0 ? Math.round((owed / limit) * 100) : 0;
+            const utilColor = util <= 10 ? 'var(--green)' : util <= 30 ? 'var(--teal)' : util <= 50 ? 'var(--warm)' : 'var(--red)';
+            creditExtra += '<div style="font-size:11px;margin-top:4px;color:var(--text-muted);">Utilization: <span style="color:' + utilColor + ';font-weight:500;">' + util + '%</span> of ' + fmt(limit) + '</div>';
+            creditExtra += '<div style="font-size:11px;margin-top:4px;display:flex;align-items:center;gap:6px;color:var(--text-muted);">APR: <input type="number" step="0.01" min="0" max="99.99" value="' + (a.apr || '') + '" placeholder="—" style="width:60px;padding:2px 6px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);font-family:inherit;" onchange="setApr(' + a.id + ',this.value)">%</div>';
+          }
           return '<div class="acct-card">' +
             '<div class="acct-inst">' + (a.institution_name || 'Unknown') + '</div>' +
             '<div class="acct-name">' + a.name + (a.mask ? ' <span class="acct-mask">\\u2022\\u2022\\u2022\\u2022 ' + a.mask + '</span>' : '') + '</div>' +
             '<div class="acct-balance ' + balClass + '">' + balDisplay + '</div>' +
             '<div class="acct-type">' + (a.subtype || a.type || '') + '</div>' +
+            creditExtra +
           '</div>';
         }).join('');
 
@@ -1860,6 +1898,18 @@ app.get("/dashboard", (req, res) => {
         }
       } catch (e) { showMsg('Detection failed: ' + e.message, false); }
       btnLoading(btn, false, 'Run Detection');
+    }
+
+    async function setApr(accountId, value) {
+      try {
+        const apr = value === '' ? null : parseFloat(value);
+        const res = await apiFetch('/api/accounts/' + accountId, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ apr: apr })
+        });
+        if (res.ok) showMsg('APR saved.', true);
+        else { const d = await res.json().catch(() => ({})); showMsg(d.error || 'Failed to save APR', false); }
+      } catch (e) { showMsg(e.message, false); }
     }
 
     // Initialize
@@ -2987,12 +3037,12 @@ app.post("/api/logout", (req, res) => {
 app.get("/api/settings", async (_req, res) => {
   try {
     const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules FROM user_settings WHERE id = 1");
-    const defaults = { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true } };
+    const defaults = { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true, anomaly_detection: true, seasonal_forecast: true, debt_optimizer: true } };
     const row = result.rows[0] || defaults;
     if (typeof row.insight_modules === "string") row.insight_modules = JSON.parse(row.insight_modules);
     res.json({ ...defaults, ...row, available_modules: INSIGHT_MODULES });
   } catch {
-    res.json({ session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true }, available_modules: INSIGHT_MODULES });
+    res.json({ session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true, anomaly_detection: true, seasonal_forecast: true, debt_optimizer: true }, available_modules: INSIGHT_MODULES });
   }
 });
 
@@ -3161,6 +3211,24 @@ const INSIGHT_MODULES = {
     label: "Subscription audit",
     description: "Flag redundant, unused, or overpriced subscriptions",
     extra_tokens: 100,
+    requires_zip: false,
+  },
+  anomaly_detection: {
+    label: "Anomaly detection",
+    description: "Flag unusual transactions that deviate from your typical spending",
+    extra_tokens: 250,
+    requires_zip: false,
+  },
+  seasonal_forecast: {
+    label: "Seasonal forecasting",
+    description: "Predict upcoming spend based on seasonal patterns in your history",
+    extra_tokens: 200,
+    requires_zip: false,
+  },
+  debt_optimizer: {
+    label: "Debt payoff optimizer",
+    description: "Credit card payoff strategies with utilization and credit score impact",
+    extra_tokens: 300,
     requires_zip: false,
   },
 };
@@ -3332,6 +3400,117 @@ app.post("/api/insights", async (_req, res) => {
         "and suggest cheaper alternatives where well-known options exist. Be specific about potential monthly savings.";
     }
 
+    // --- Module: Anomaly detection ---
+    if (modules.anomaly_detection !== false) {
+      try {
+        const anomalyData = await pool.query(
+          `SELECT t.merchant_name, t.name, t.amount, t.date,
+                  avg_tbl.avg_amount, avg_tbl.txn_count
+           FROM transactions t
+           JOIN (
+             SELECT COALESCE(merchant_name, name) AS merchant,
+                    AVG(amount) AS avg_amount,
+                    STDDEV(amount) AS std_amount,
+                    COUNT(*) AS txn_count
+             FROM transactions
+             WHERE amount > 0 AND pending = false
+               AND date >= CURRENT_DATE - INTERVAL '12 months'
+             GROUP BY COALESCE(merchant_name, name)
+             HAVING COUNT(*) >= 3
+           ) avg_tbl ON COALESCE(t.merchant_name, t.name) = avg_tbl.merchant
+           WHERE t.amount > 0 AND t.pending = false
+             AND t.date >= CURRENT_DATE - INTERVAL '2 months'
+             AND t.amount > avg_tbl.avg_amount * 2
+           ORDER BY t.date DESC
+           LIMIT 10`
+        );
+        if (anomalyData.rows.length > 0) {
+          activeModules.push("anomaly_detection");
+          prompt += "\n\n=== ANOMALY DETECTION ===\n" +
+            "Recent transactions significantly above their merchant's typical amount:\n" +
+            anomalyData.rows.map(r =>
+              (r.merchant_name || r.name) + ": $" + parseFloat(r.amount).toFixed(2) +
+              " on " + r.date + " (usual avg: $" + parseFloat(r.avg_amount).toFixed(2) +
+              " over " + r.txn_count + " transactions)"
+            ).join("\n") +
+            "\nINSTRUCTION: Flag these anomalies. For each, suggest whether it's likely a one-time event, price increase, " +
+            "or potentially unauthorized. Recommend specific action if warranted (e.g. dispute, check account, update budget).";
+        } else {
+          activeModules.push("anomaly_detection");
+          prompt += "\n\n=== ANOMALY DETECTION ===\nNo unusual transactions detected in the last 2 months — spending patterns are consistent. Note this positively.";
+        }
+      } catch { /* skip on query error */ }
+    }
+
+    // --- Module: Seasonal forecasting ---
+    if (modules.seasonal_forecast !== false) {
+      try {
+        const seasonalData = await pool.query(
+          `SELECT EXTRACT(MONTH FROM date)::int AS month_num,
+                  TO_CHAR(date, 'Mon') AS month_name,
+                  EXTRACT(YEAR FROM date)::int AS year,
+                  SUM(amount) AS total
+           FROM transactions
+           WHERE amount > 0 AND pending = false
+             AND date >= CURRENT_DATE - INTERVAL '24 months'
+           GROUP BY EXTRACT(MONTH FROM date), TO_CHAR(date, 'Mon'), EXTRACT(YEAR FROM date)
+           ORDER BY year, month_num`
+        );
+        if (seasonalData.rows.length >= 6) {
+          activeModules.push("seasonal_forecast");
+          prompt += "\n\n=== SEASONAL SPENDING HISTORY (24 months) ===\n" +
+            seasonalData.rows.map(r => r.month_name + " " + r.year + ": $" + parseFloat(r.total).toFixed(2)).join("\n") +
+            "\nINSTRUCTION: Identify seasonal patterns (e.g. holiday spending spikes, summer utility increases, " +
+            "back-to-school, annual renewals). Predict the likely spend for the next 1-2 months based on these patterns. " +
+            "If certain months are consistently high, warn the user in advance and suggest preparing a buffer.";
+        }
+      } catch { /* skip on query error */ }
+    }
+
+    // --- Module: Debt payoff optimizer ---
+    if (modules.debt_optimizer !== false) {
+      try {
+        const creditAccounts = await pool.query(
+          `SELECT name, mask, current_balance, available_balance, apr
+           FROM linked_accounts
+           WHERE type = 'credit'
+             AND (current_balance IS NOT NULL OR available_balance IS NOT NULL)
+           ORDER BY current_balance DESC NULLS LAST`
+        );
+        const cards = creditAccounts.rows.filter(r => parseFloat(r.current_balance || 0) > 0);
+        if (cards.length > 0) {
+          activeModules.push("debt_optimizer");
+          let cardLines = cards.map(c => {
+            const owed = parseFloat(c.current_balance || 0);
+            const avail = parseFloat(c.available_balance || 0);
+            const limit = owed + avail;
+            const util = limit > 0 ? Math.round((owed / limit) * 100) : 0;
+            return c.name + (c.mask ? " (****" + c.mask + ")" : "") +
+              ": Balance $" + owed.toFixed(2) +
+              ", Limit $" + limit.toFixed(2) +
+              ", Utilization " + util + "%" +
+              (c.apr ? ", APR " + c.apr + "%" : ", APR unknown");
+          }).join("\n");
+          const totalDebt = cards.reduce((s, c) => s + parseFloat(c.current_balance || 0), 0);
+          const totalLimit = cards.reduce((s, c) => s + parseFloat(c.current_balance || 0) + parseFloat(c.available_balance || 0), 0);
+          const overallUtil = totalLimit > 0 ? Math.round((totalDebt / totalLimit) * 100) : 0;
+          prompt += "\n\n=== DEBT PAYOFF OPTIMIZER ===\n" +
+            "Credit Card Accounts:\n" + cardLines +
+            "\nTotal credit card debt: $" + totalDebt.toFixed(2) +
+            "\nTotal credit limit: $" + totalLimit.toFixed(2) +
+            "\nOverall utilization: " + overallUtil + "%" +
+            "\n\nINSTRUCTION: Provide a personalized debt payoff analysis:\n" +
+            "1. CREDIT SCORE IMPACT: Explain current utilization impact on credit score (FICO uses 30% weight for utilization). " +
+            "Project how the score would improve at key thresholds: <50%, <30%, <10%, and 0% utilization. " +
+            "Be specific: 'Paying down $X would drop utilization from Y% to Z%, which typically improves scores by N points.'\n" +
+            "2. PAYOFF STRATEGY: If APRs are known, compare avalanche (highest APR first) vs snowball (smallest balance first) approaches. " +
+            "Calculate interest saved with the optimal strategy over 6-12 months.\n" +
+            "3. QUICK WINS: Identify any cards near a utilization threshold (e.g. just over 30%) where a small payment would have outsized credit score impact.\n" +
+            "4. If APR is unknown for any card, note that the user should add it in their Accounts page for more accurate projections.";
+        }
+      } catch { /* skip on query error */ }
+    }
+
     // Include running summary for long-term context
     if (runningSummary) {
       prompt += "\n\n=== LONG-TERM CONTEXT (your cumulative memory from past analyses) ===\n" + runningSummary;
@@ -3343,8 +3522,10 @@ app.post("/api/insights", async (_req, res) => {
       prompt += "\n\n=== MOST RECENT ANALYSIS [" + date + "] ===\n" + prev.insight_text.substring(0, 600) + (prev.insight_text.length > 600 ? "..." : "");
     }
     const client = new Anthropic();
+    // Scale max_tokens based on active modules (base 1500 + 200 per extra module)
+    const maxTokens = Math.min(4096, 1500 + activeModules.length * 200);
     const message = await client.messages.create({
-      model: modelId, max_tokens: 1500,
+      model: modelId, max_tokens: maxTokens,
       messages: [{ role: "user", content: prompt }],
     });
     const fullResponse = message.content[0].text;
