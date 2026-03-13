@@ -300,8 +300,10 @@ router.get("/dashboard", (req, res) => {
   </div>
 
   <script>
-    const API_KEY = '${apiKey}';
+    const API_KEY = ${JSON.stringify(apiKey)};
     const statusMsg = document.getElementById('status-msg');
+
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
     function apiFetch(url, opts = {}) {
       if (API_KEY) {
@@ -382,10 +384,10 @@ router.get("/dashboard", (req, res) => {
             creditExtra += '<div style="font-size:11px;margin-top:4px;display:flex;align-items:center;gap:6px;color:var(--text-muted);">APR: <input type="number" step="0.01" min="0" max="99.99" value="' + (a.apr || '') + '" placeholder="—" style="width:60px;padding:2px 6px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);font-family:inherit;" onchange="setApr(' + a.id + ',this.value)">%</div>';
           }
           return '<div class="acct-card">' +
-            '<div class="acct-inst">' + (a.institution_name || 'Unknown') + '</div>' +
-            '<div class="acct-name">' + a.name + (a.mask ? ' <span class="acct-mask">\\u2022\\u2022\\u2022\\u2022 ' + a.mask + '</span>' : '') + '</div>' +
+            '<div class="acct-inst">' + esc(a.institution_name || 'Unknown') + '</div>' +
+            '<div class="acct-name">' + esc(a.name) + (a.mask ? ' <span class="acct-mask">\\u2022\\u2022\\u2022\\u2022 ' + esc(a.mask) + '</span>' : '') + '</div>' +
             '<div class="acct-balance ' + balClass + '">' + balDisplay + '</div>' +
-            '<div class="acct-type">' + (a.subtype || a.type || '') + '</div>' +
+            '<div class="acct-type">' + esc(a.subtype || a.type || '') + '</div>' +
             creditExtra +
           '</div>';
         }).join('');
@@ -436,7 +438,7 @@ router.get("/dashboard", (req, res) => {
           catBody.innerHTML = data.by_category.map((c, i) => {
             const pct = Math.round((parseFloat(c.total) / maxCat) * 100);
             const color = barColors[i % barColors.length];
-            return '<tr><td>' + c.category + '</td>' +
+            return '<tr><td>' + esc(c.category) + '</td>' +
               '<td class="amount warm">' + fmt(c.total) + '</td>' +
               '<td><div class="bar-container"><div class="bar-fill" style="width:' + pct + '%;background:' + color + '"></div></div></td></tr>';
           }).join('');
@@ -448,7 +450,7 @@ router.get("/dashboard", (req, res) => {
         const merchBody = document.getElementById('merchant-body');
         if (data.top_merchants.length) {
           merchBody.innerHTML = data.top_merchants.map(m =>
-            '<tr><td>' + m.merchant + '</td>' +
+            '<tr><td>' + esc(m.merchant) + '</td>' +
             '<td class="amount warm">' + fmt(m.total_spent) + '</td>' +
             '<td>' + m.txn_count + '</td></tr>'
           ).join('');
@@ -460,7 +462,7 @@ router.get("/dashboard", (req, res) => {
         const upBody = document.getElementById('upcoming-body');
         if (data.upcoming_subscriptions.length) {
           upBody.innerHTML = data.upcoming_subscriptions.map(s =>
-            '<tr><td>' + s.display_name + '</td>' +
+            '<tr><td>' + esc(s.display_name) + '</td>' +
             '<td class="amount teal">' + fmt(s.amount) + '</td>' +
             '<td>' + fmtDate(s.next_expected) + '</td></tr>'
           ).join('');

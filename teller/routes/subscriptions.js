@@ -230,7 +230,7 @@ router.get("/api/transactions", async (req, res) => {
 // POST /api/detect
 router.post("/api/detect", async (_req, res) => {
   try {
-    const detected = await detectSubscriptions();
+    const detected = await detectSubscriptions(pool);
     for (const sub of detected) {
       const cat = categorizeSubscription(sub.display_name);
       const dbCategory = cat === "utility" ? "utility" : "subscription";

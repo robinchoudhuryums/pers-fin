@@ -122,7 +122,13 @@ const tightLimiter = rateLimit({
   max: 5,
   message: { error: "Too many requests, please try again later." },
 });
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: { error: "Too many login attempts, please try again later." },
+});
 app.use("/api/", generalLimiter);
+app.use("/api/login", loginLimiter);
 app.use("/api/sync", tightLimiter);
 app.use("/api/detect", tightLimiter);
 app.use("/api/cleanup", tightLimiter);
@@ -142,11 +148,6 @@ app.use("/api", (req, res, next) => {
   }
   next();
 });
-
-// ---------------------------------------------------------------------------
-// Run migrations
-// ---------------------------------------------------------------------------
-runMigrations();
 
 // ---------------------------------------------------------------------------
 // Mount API route modules
@@ -179,12 +180,14 @@ app.get("/health", (_req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Start
+// Start — run migrations before accepting requests
 // ---------------------------------------------------------------------------
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Teller server running on http://0.0.0.0:${PORT}`);
-  console.log(`  Environment: ${TELLER_ENV}`);
-  console.log(`  Application ID: ${TELLER_APP_ID || "(not set)"}`);
-  startKeepAlive(PORT);
+runMigrations().then(() => {
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Teller server running on http://0.0.0.0:${PORT}`);
+    console.log(`  Environment: ${TELLER_ENV}`);
+    console.log(`  Application ID: ${TELLER_APP_ID || "(not set)"}`);
+    startKeepAlive(PORT);
+  });
 });
