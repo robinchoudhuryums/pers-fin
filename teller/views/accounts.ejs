@@ -49,7 +49,7 @@
 
   <h1>Link Accounts</h1>
   <p>Connect a financial institution to start tracking recurring charges automatically.</p>
-  <button id="link-btn" onclick="startLink()">Link an Account</button>
+  <button id="link-btn">Link an Account</button>
   <div id="status"></div>
   <div id="items"><h3>Linked Institutions</h3><div id="items-list" style="color:var(--text-muted);font-size:14px;font-weight:300;">Loading...</div></div>
 
@@ -82,7 +82,7 @@
         <input type="file" id="csv-file" accept=".csv">
       </div>
 
-      <button id="csv-upload-btn" onclick="uploadCsv()">Upload & Import</button>
+      <button id="csv-upload-btn">Upload & Import</button>
     </div>
     <div id="csv-status" style="margin-top:12px;padding:14px 18px;border-radius:8px;display:none;font-size:13px;"></div>
     <div class="csv-imports">
@@ -97,7 +97,7 @@
     <h2>Investment Accounts</h2>
     <p>Track brokerage, retirement, and other investment accounts. Link via Plaid or add manually.</p>
     <div style="margin-bottom:16px;">
-      <button id="plaid-inv-btn" onclick="linkPlaidInvestments()" style="display:none;">Link Investment Account via Plaid</button>
+      <button id="plaid-inv-btn" style="display:none;">Link Investment Account via Plaid</button>
     </div>
     <div class="csv-form" id="inv-form">
       <div class="field">
@@ -126,7 +126,7 @@
         <label>Current Balance ($)</label>
         <input type="number" id="inv-balance" step="0.01" placeholder="50000">
       </div>
-      <button onclick="addInvestment()">Add Account</button>
+      <button id="add-inv-btn">Add Account</button>
     </div>
     <div id="inv-list" style="margin-top:16px;color:var(--text-muted);font-size:14px;font-weight:300;">Loading...</div>
   </div>
@@ -154,7 +154,7 @@
             '<div class="item-info"><strong>' + esc(i.institution_name) + '</strong>' +
             ' (' + esc(i.provider || 'teller') + ') \u2014 ' +
             i.accounts.length + ' account(s) \u2014 Status: ' + esc(i.status) + '</div>' +
-            '<div class="item-actions"><button class="btn-unlink" onclick="unlinkAccount(' + i.id + ', ' + JSON.stringify(i.institution_name || '').replace(/</g, '\\u003c') + ')">Unlink</button></div>' +
+            '<div class="item-actions"><button class="btn-unlink" data-action="unlink" data-id="' + i.id + '" data-name="' + esc(i.institution_name || '') + '">Unlink</button></div>' +
           '</div>'
         ).join('');
       } catch (e) {
@@ -288,8 +288,8 @@
             ' \u2014 ' + esc(a.account_type) + ' \u2014 <span style="color:var(--green);font-weight:400;">$' +
             parseFloat(a.balance).toLocaleString('en-US', {minimumFractionDigits: 2}) + '</span></div>' +
             '<div class="item-actions" style="display:flex;gap:6px;">' +
-              '<button class="btn-unlink" style="border-color:var(--border);color:var(--warm);" onclick="updateInvestment(' + a.id + ')">Update</button>' +
-              '<button class="btn-unlink" onclick="deleteInvestment(' + a.id + ', ' + JSON.stringify(a.name).replace(/</g, '\\u003c') + ')">Remove</button>' +
+              '<button class="btn-unlink" style="border-color:var(--border);color:var(--warm);" data-action="update-inv" data-id="' + a.id + '">Update</button>' +
+              '<button class="btn-unlink" data-action="delete-inv" data-id="' + a.id + '" data-name="' + esc(a.name) + '">Remove</button>' +
             '</div></div>'
         ).join('');
       } catch (e) { list.textContent = 'Could not load investment accounts.'; }
@@ -352,7 +352,6 @@
         var res = await apiFetch('/api/plaid/link-token', { method: 'POST' });
         var d = await res.json();
         if (!res.ok) { showStatus(d.error || 'Failed', false); return; }
-        // Load Plaid Link JS if not loaded
         if (!window.Plaid) {
           await new Promise(function(resolve, reject) {
             var s = document.createElement('script');
@@ -381,6 +380,25 @@
         handler.open();
       } catch (e) { showStatus(e.message, false); }
     }
+
+    // --- Bind event handlers (CSP-safe) ---
+    bindEvents([
+      ['link-btn', 'click', startLink],
+      ['csv-upload-btn', 'click', uploadCsv],
+      ['plaid-inv-btn', 'click', linkPlaidInvestments],
+      ['add-inv-btn', 'click', addInvestment],
+    ]);
+    // Event delegation for dynamically generated unlink/investment buttons
+    onDelegate('items-list', 'click', '[data-action="unlink"]', function() {
+      unlinkAccount(parseInt(this.dataset.id), this.dataset.name);
+    });
+    onDelegate('inv-list', 'click', '[data-action]', function() {
+      var action = this.dataset.action;
+      var id = parseInt(this.dataset.id);
+      if (action === 'update-inv') updateInvestment(id);
+      else if (action === 'delete-inv') deleteInvestment(id, this.dataset.name);
+    });
+
     checkPlaid();
     loadItems();
     loadCsvImports();

@@ -42,8 +42,8 @@
   <div id="summary-bar" class="summary-bar"></div>
 
   <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;">
-    <button class="btn primary" onclick="toggleForm()">+ Add Budget</button>
-    <button class="btn" id="suggest-btn" onclick="suggestBudgets()">AI Suggest Budgets</button>
+    <button class="btn primary" id="toggle-form-btn">+ Add Budget</button>
+    <button class="btn" id="suggest-btn">AI Suggest Budgets</button>
   </div>
 
   <div class="add-form" id="add-form">
@@ -51,7 +51,7 @@
       <div><label>Category</label><input id="b-category" placeholder="e.g. Food & Drink"></div>
       <div><label>Monthly Limit ($)</label><input id="b-limit" type="number" step="1" placeholder="500"></div>
     </div>
-    <div style="margin-top:12px;"><button class="btn primary" onclick="addBudget()">Save Budget</button></div>
+    <div style="margin-top:12px;"><button class="btn primary" id="save-budget-btn">Save Budget</button></div>
   </div>
 
   <div id="suggest-container" style="display:none;"></div>
@@ -82,8 +82,8 @@
             '<div class="budget-meta"><span>' + (remaining >= 0 ? '$' + remaining.toFixed(2) + ' remaining' : '<span style="color:var(--red);">$' + Math.abs(remaining).toFixed(2) + ' over budget</span>') + '</span>' +
             (b.notes ? '<span>' + esc(b.notes) + '</span>' : '') + '</div>' +
             '<div class="budget-actions">' +
-              '<button class="btn-sm" onclick="editBudget(' + b.id + ', ' + parseFloat(b.monthly_limit) + ')">Edit</button>' +
-              '<button class="btn-sm danger" onclick="deleteBudget(' + b.id + ')">Delete</button>' +
+              '<button class="btn-sm" data-action="edit" data-id="' + b.id + '" data-limit="' + parseFloat(b.monthly_limit) + '">Edit</button>' +
+              '<button class="btn-sm danger" data-action="delete" data-id="' + b.id + '">Delete</button>' +
             '</div></div>';
         }).join('');
       } catch (e) { document.getElementById('budgets-list').innerHTML = '<div style="color:var(--red);">Error: ' + esc(e.message) + '</div>'; }
@@ -147,8 +147,13 @@
               (s.notes ? '<br><span style="font-size:11px;color:var(--text-muted);">' + esc(s.notes) + '</span>' : '') +
               '</div><input type="number" id="sug-' + i + '" value="' + s.monthly_limit + '"></div>';
           }).join('') +
-          '<div style="margin-top:12px;display:flex;gap:8px;"><button class="btn primary" onclick="acceptSuggestions()">Accept All</button><button class="btn" onclick="document.getElementById(\'suggest-container\').style.display=\'none\'">Dismiss</button></div></div>';
+          '<div style="margin-top:12px;display:flex;gap:8px;"><button class="btn primary" id="accept-sug-btn">Accept All</button><button class="btn" id="dismiss-sug-btn">Dismiss</button></div></div>';
         window._suggestions = data.suggestions;
+        // Bind the dynamically created buttons
+        document.getElementById('accept-sug-btn').addEventListener('click', acceptSuggestions);
+        document.getElementById('dismiss-sug-btn').addEventListener('click', function() {
+          document.getElementById('suggest-container').style.display = 'none';
+        });
       } catch (e) { showMsg(e.message, false); }
       btnLoading(btn, false, 'AI Suggest Budgets');
     }
@@ -169,6 +174,19 @@
         } else showMsg('Failed to save.', false);
       } catch (e) { showMsg(e.message, false); }
     }
+
+    // --- Bind event handlers (CSP-safe) ---
+    bindEvents([
+      ['toggle-form-btn', 'click', toggleForm],
+      ['suggest-btn', 'click', suggestBudgets],
+      ['save-budget-btn', 'click', addBudget],
+    ]);
+    onDelegate('budgets-list', 'click', '[data-action]', function() {
+      var action = this.dataset.action;
+      var id = parseInt(this.dataset.id);
+      if (action === 'edit') editBudget(id, parseFloat(this.dataset.limit));
+      else if (action === 'delete') deleteBudget(id);
+    });
 
     loadBudgets();
   </script>
