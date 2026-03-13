@@ -74,6 +74,23 @@
     }
   }
 
+  // --- CSP-safe event binding helpers ---
+  // Bind multiple [id, event, handler] tuples
+  function bindEvents(bindings) {
+    bindings.forEach(function(b) {
+      var el = typeof b[0] === 'string' ? document.getElementById(b[0]) : b[0];
+      if (el) el.addEventListener(b[1], b[2]);
+    });
+  }
+  // Event delegation: listen on parent for clicks/changes matching a selector
+  function onDelegate(parentId, event, selector, handler) {
+    var parent = document.getElementById(parentId);
+    if (parent) parent.addEventListener(event, function(e) {
+      var target = e.target.closest(selector);
+      if (target) handler.call(target, e);
+    });
+  }
+
   // Export to window
   win.esc = esc;
   win.apiFetch = apiFetch;
@@ -83,4 +100,6 @@
   win.fmtDate = fmtDate;
   win.fmtMonth = fmtMonth;
   win.registerSW = registerSW;
+  win.bindEvents = bindEvents;
+  win.onDelegate = onDelegate;
 })(window);

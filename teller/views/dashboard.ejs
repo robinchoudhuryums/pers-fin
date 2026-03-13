@@ -54,9 +54,9 @@
   </div>
 
   <div class="actions">
-    <button class="primary" id="sync-btn" onclick="syncTransactions()">Sync Transactions</button>
-    <button id="balance-btn" onclick="syncBalances()">Refresh Balances</button>
-    <button id="detect-btn" onclick="runDetection()">Run Detection</button>
+    <button class="primary" id="sync-btn">Sync Transactions</button>
+    <button id="balance-btn">Refresh Balances</button>
+    <button id="detect-btn">Run Detection</button>
   </div>
 
   <div id="status-msg" class="status-msg"></div>
@@ -125,7 +125,6 @@
   <script>
     const barColors = ['#c8856c','#d4a574','#5a8f8f','#6fcf97','#7fb5e6','#f0c36d','#eb6b6b','#b07cc6','#e8a87c','#85dcb0','#7bb5d4','#d4a0a0','#9fd4c9','#c4b28f','#a8c3d4'];
 
-    // Load accounts with balances
     async function loadAccounts() {
       try {
         const [res, invRes] = await Promise.all([
@@ -149,7 +148,6 @@
 
         let html = accounts.map(a => {
           const bal = parseFloat(a.available_balance || a.current_balance || 0);
-          // Credit accounts: balance represents debt
           const isCredit = a.type === 'credit';
           const displayBal = isCredit ? -bal : bal;
           netBalance += displayBal;
@@ -157,7 +155,6 @@
           const balClass = !hasBalances ? 'neutral' : displayBal > 0 ? 'positive' : displayBal < 0 ? 'negative' : 'neutral';
           const balDisplay = hasBalances ? (displayBal < 0 ? '-' + fmt(Math.abs(displayBal)) : fmt(displayBal)) : '\u2014';
 
-          // Credit utilization for credit accounts
           let creditExtra = '';
           if (isCredit && hasBalances) {
             const owed = parseFloat(a.current_balance || 0);
@@ -166,7 +163,7 @@
             const util = limit > 0 ? Math.round((owed / limit) * 100) : 0;
             const utilColor = util <= 10 ? 'var(--green)' : util <= 30 ? 'var(--teal)' : util <= 50 ? 'var(--warm)' : 'var(--red)';
             creditExtra += '<div style="font-size:11px;margin-top:4px;color:var(--text-muted);">Utilization: <span style="color:' + utilColor + ';font-weight:500;">' + util + '%</span> of ' + fmt(limit) + '</div>';
-            creditExtra += '<div style="font-size:11px;margin-top:4px;display:flex;align-items:center;gap:6px;color:var(--text-muted);">APR: <input type="number" step="0.01" min="0" max="99.99" value="' + (a.apr || '') + '" placeholder="\u2014" style="width:60px;padding:2px 6px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);font-family:inherit;" onchange="setApr(' + a.id + ',this.value)">%</div>';
+            creditExtra += '<div style="font-size:11px;margin-top:4px;display:flex;align-items:center;gap:6px;color:var(--text-muted);">APR: <input type="number" step="0.01" min="0" max="99.99" value="' + (a.apr || '') + '" placeholder="\u2014" data-apr-account="' + a.id + '" style="width:60px;padding:2px 6px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);font-family:inherit;">%</div>';
           }
           return '<div class="acct-card">' +
             '<div class="acct-inst">' + esc(a.institution_name || 'Unknown') + '</div>' +
@@ -177,7 +174,6 @@
           '</div>';
         }).join('');
 
-        // Append investment accounts
         html += investments.map(inv => {
           const bal = parseFloat(inv.balance);
           netBalance += bal;
@@ -201,14 +197,12 @@
       }
     }
 
-    // Load spending summary
     async function loadSpendingSummary() {
       try {
         const res = await apiFetch('/api/spending-summary?months=6');
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
 
-        // Monthly trend
         const monthBody = document.getElementById('monthly-body');
         if (data.monthly_trend.length) {
           monthBody.innerHTML = data.monthly_trend.map(m =>
@@ -218,20 +212,17 @@
             '<td class="amount">' + fmt(m.avg_transaction) + '</td></tr>'
           ).join('');
 
-          // Avg monthly spend
           const totalSpend = data.monthly_trend.reduce((s, m) => s + parseFloat(m.total_spend), 0);
           const avgMonthly = totalSpend / data.monthly_trend.length;
           document.getElementById('avg-monthly').textContent = fmt(avgMonthly);
           document.getElementById('avg-monthly-sub').textContent = data.monthly_trend.length + '-month avg';
 
-          // Avg daily
           const totalDays = data.monthly_trend.length * 30;
           document.getElementById('avg-daily').textContent = fmt(totalSpend / totalDays);
         } else {
           monthBody.innerHTML = '<tr><td colspan="4" class="empty-msg">No spending data yet.</td></tr>';
         }
 
-        // Categories
         const catBody = document.getElementById('category-body');
         if (data.by_category.length) {
           const maxCat = parseFloat(data.by_category[0].total);
@@ -246,7 +237,6 @@
           catBody.innerHTML = '<tr><td colspan="3" class="empty-msg">No category data yet.</td></tr>';
         }
 
-        // Top merchants
         const merchBody = document.getElementById('merchant-body');
         if (data.top_merchants.length) {
           merchBody.innerHTML = data.top_merchants.map(m =>
@@ -258,7 +248,6 @@
           merchBody.innerHTML = '<tr><td colspan="3" class="empty-msg">No merchant data yet.</td></tr>';
         }
 
-        // Upcoming subscriptions
         const upBody = document.getElementById('upcoming-body');
         if (data.upcoming_subscriptions.length) {
           upBody.innerHTML = data.upcoming_subscriptions.map(s =>
@@ -267,7 +256,6 @@
             '<td>' + fmtDate(s.next_expected) + '</td></tr>'
           ).join('');
 
-          // Subs monthly total
           const subsMonthly = data.upcoming_subscriptions.reduce((s, sub) => s + parseFloat(sub.monthly_cost || 0), 0);
           document.getElementById('subs-monthly').textContent = fmt(subsMonthly);
           document.getElementById('active-subs').textContent = data.upcoming_subscriptions.length;
@@ -363,6 +351,16 @@
       } catch {}
     }
 
+    // --- Bind event handlers (CSP-safe) ---
+    bindEvents([
+      ['sync-btn', 'click', syncTransactions],
+      ['balance-btn', 'click', syncBalances],
+      ['detect-btn', 'click', runDetection],
+    ]);
+    onDelegate('accounts-grid', 'change', 'input[data-apr-account]', function() {
+      setApr(parseInt(this.dataset.aprAccount), this.value);
+    });
+
     // Initialize
     loadAccounts();
     loadSpendingSummary();
@@ -420,7 +418,6 @@
             }
           });
         }
-        // Category doughnut
         const catMap = {};
         (txData.transactions || []).forEach(t => {
           if (t.amount > 0) {

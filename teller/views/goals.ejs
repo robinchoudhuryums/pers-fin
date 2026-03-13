@@ -32,7 +32,7 @@
   <div id="status-msg" class="status-msg"></div>
 
   <div style="margin-bottom:16px;">
-    <button class="btn primary" onclick="document.getElementById('add-form').style.display=document.getElementById('add-form').style.display==='none'?'block':'none'">+ Add Goal</button>
+    <button class="btn primary" id="toggle-form-btn">+ Add Goal</button>
   </div>
 
   <div class="add-form" id="add-form">
@@ -51,7 +51,7 @@
       <div><label>Target Date</label><input id="g-date" type="date"></div>
       <div><label>Notes</label><input id="g-notes" placeholder="20% down payment"></div>
     </div>
-    <div style="margin-top:12px;"><button class="btn primary" onclick="addGoal()">Save Goal</button></div>
+    <div style="margin-top:12px;"><button class="btn primary" id="save-goal-btn">Save Goal</button></div>
   </div>
 
   <div id="goals-list"><div style="color:var(--text-muted);font-size:13px;">Loading...</div></div>
@@ -84,8 +84,8 @@
             '<div class="goal-meta">' + meta.map(m => '<span>' + m + '</span>').join('') + '</div>' +
             (g.notes ? '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;">' + esc(g.notes) + '</div>' : '') +
             '<div class="goal-actions">' +
-              '<button class="btn-sm" onclick="updateAmount(' + g.id + ')">Update Amount</button>' +
-              '<button class="btn-sm danger" onclick="deleteGoal(' + g.id + ')">Delete</button>' +
+              '<button class="btn-sm" data-action="update" data-id="' + g.id + '">Update Amount</button>' +
+              '<button class="btn-sm danger" data-action="delete" data-id="' + g.id + '">Delete</button>' +
             '</div></div>';
         }).join('');
       } catch (e) { document.getElementById('goals-list').innerHTML = '<div style="color:var(--red);">Error: ' + esc(e.message) + '</div>'; }
@@ -128,6 +128,21 @@
         showMsg('Goal deleted.', true); loadGoals();
       } catch (e) { showMsg(e.message, false); }
     }
+
+    // --- Bind event handlers (CSP-safe) ---
+    bindEvents([
+      ['toggle-form-btn', 'click', function() {
+        var f = document.getElementById('add-form');
+        f.style.display = f.style.display === 'none' ? 'block' : 'none';
+      }],
+      ['save-goal-btn', 'click', addGoal],
+    ]);
+    onDelegate('goals-list', 'click', '[data-action]', function() {
+      var action = this.dataset.action;
+      var id = parseInt(this.dataset.id);
+      if (action === 'update') updateAmount(id);
+      else if (action === 'delete') deleteGoal(id);
+    });
 
     loadGoals();
   </script>

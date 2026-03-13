@@ -48,11 +48,11 @@
   </div>
 
   <div class="actions">
-    <button class="primary" id="sync-btn" onclick="syncTransactions()">Sync Transactions</button>
-    <button class="primary" id="detect-btn" onclick="runDetection()">Run Detection</button>
-    <button id="add-btn" onclick="toggleManualForm()">+ Add Manual</button>
-    <button id="sheets-btn" onclick="syncSheets()">Sync to Sheets</button>
-    <select id="filter-select" onchange="loadSubscriptions()">
+    <button class="primary" id="sync-btn">Sync Transactions</button>
+    <button class="primary" id="detect-btn">Run Detection</button>
+    <button id="add-btn">+ Add Manual</button>
+    <button id="sheets-btn">Sync to Sheets</button>
+    <select id="filter-select">
       <option value="active">Active</option>
       <option value="dismissed">Dismissed</option>
       <option value="cancelled">Cancelled</option>
@@ -77,7 +77,7 @@
         </select>
       </div>
       <div class="field"><label>Notes (optional)</label><input name="notes" placeholder="Family plan, etc."></div>
-      <div class="field"><label>&nbsp;</label><button class="primary" onclick="addManual()">Add</button></div>
+      <div class="field"><label>&nbsp;</label><button class="primary" id="add-manual-btn">Add</button></div>
     </div>
   </div>
 
@@ -144,19 +144,19 @@
           const nextLabel = s.cancelled_at ? 'Cancelled ' + new Date(s.cancelled_at).toLocaleDateString() : new Date(s.next_expected).toLocaleDateString();
           let actions = '';
           if (s.cancelled_at) {
-            actions = '<button class="btn-sm restore" onclick="uncancelSub(' + s.id + ')">Restore</button>';
+            actions = '<button class="btn-sm restore" data-action="uncancel" data-id="' + s.id + '">Restore</button>';
           } else if (s.is_dismissed) {
-            actions = '<button class="btn-sm restore" onclick="undismissSub(' + s.id + ')">Restore</button>';
+            actions = '<button class="btn-sm restore" data-action="undismiss" data-id="' + s.id + '">Restore</button>';
           } else {
             var toggleCat = s.category === 'utility' ? 'subscription' : 'utility';
             var toggleLabel = s.category === 'utility' ? 'Sub' : 'Util';
-            actions += '<button class="btn-sm" onclick="reclassify(' + s.id + ',\'' + toggleCat + '\')" title="Reclassify as ' + toggleCat + '">' + toggleLabel + '</button>';
-            actions += '<button class="btn-sm" onclick="dismissSub(' + s.id + ')">Dismiss</button>';
+            actions += '<button class="btn-sm" data-action="reclassify" data-id="' + s.id + '" data-category="' + toggleCat + '" title="Reclassify as ' + toggleCat + '">' + toggleLabel + '</button>';
+            actions += '<button class="btn-sm" data-action="dismiss" data-id="' + s.id + '">Dismiss</button>';
             if (s.cancel_url) {
               actions += '<a class="btn-sm cancel" href="' + esc(s.cancel_url) + '" target="_blank" rel="noopener">Cancel&rarr;</a>';
-              actions += '<button class="btn-sm cancel" onclick="markCancelled(' + s.id + ')" title="Mark as cancelled">Done</button>';
+              actions += '<button class="btn-sm cancel" data-action="cancel" data-id="' + s.id + '" title="Mark as cancelled">Done</button>';
             } else {
-              actions += '<button class="btn-sm cancel" onclick="markCancelled(' + s.id + ')">Cancel</button>';
+              actions += '<button class="btn-sm cancel" data-action="cancel" data-id="' + s.id + '">Cancel</button>';
             }
           }
           const notesHtml = s.notes ? '<div style="font-size:12px;color:var(--text-muted);">' + esc(s.notes) + '</div>' : '';
@@ -276,6 +276,26 @@
       } catch (e) { showMsg('Sheets sync failed: ' + e.message, false); }
       btnLoading(btn, false, 'Sync to Sheets');
     }
+
+    // --- Bind event handlers (CSP-safe) ---
+    bindEvents([
+      ['sync-btn', 'click', syncTransactions],
+      ['detect-btn', 'click', runDetection],
+      ['add-btn', 'click', toggleManualForm],
+      ['sheets-btn', 'click', syncSheets],
+      ['filter-select', 'change', loadSubscriptions],
+      ['add-manual-btn', 'click', addManual],
+    ]);
+    // Event delegation for dynamically generated action buttons
+    onDelegate('subs-body', 'click', '[data-action]', function() {
+      var action = this.dataset.action;
+      var id = parseInt(this.dataset.id);
+      if (action === 'dismiss') dismissSub(id);
+      else if (action === 'undismiss') undismissSub(id);
+      else if (action === 'cancel') markCancelled(id);
+      else if (action === 'uncancel') uncancelSub(id);
+      else if (action === 'reclassify') reclassify(id, this.dataset.category);
+    });
 
     loadSubscriptions();
   </script>

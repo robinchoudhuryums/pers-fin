@@ -51,6 +51,11 @@ const app = express();
 // EJS template engine
 app.set("view engine", "ejs");
 app.set("views", path.join(__dirname, "views"));
+// Disable ETags for HTML pages so browsers always revalidate
+app.set("etag", false);
+// Cache-busting version for static assets (changes on each deploy/restart)
+const BUILD_VERSION = Date.now().toString(36);
+app.locals.v = BUILD_VERSION;
 // Trust first proxy (Render/Fly.io load balancer) so secure cookies work behind TLS termination
 app.set("trust proxy", 1);
 app.use(morgan("short"));
@@ -123,6 +128,8 @@ app.use(helmet({
     directives: {
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.teller.io", "https://cdn.jsdelivr.net", "https://cdn.plaid.com"],
+      // Allow inline event handlers (onclick, onchange) — helmet v8 blocks these by default
+      scriptSrcAttr: ["'unsafe-inline'"],
       connectSrc: ["'self'", "https://api.teller.io", "https://*.plaid.com"],
       frameSrc: ["https://cdn.teller.io", "https://cdn.plaid.com"],
       styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
@@ -194,6 +201,21 @@ app.use(require("./routes/budgets"));
 app.use(require("./routes/categorize"));
 app.use(require("./routes/notifications"));
 app.use(require("./routes/investments"));
+
+// ---------------------------------------------------------------------------
+// Prevent browser caching of HTML pages and API mutation responses
+// ---------------------------------------------------------------------------
+app.use((req, res, next) => {
+  // HTML pages: never cache so deploys take effect immediately
+  if (!req.path.startsWith("/api/") && !req.path.endsWith(".js") && !req.path.endsWith(".css") && !req.path.endsWith(".json")) {
+    res.set("Cache-Control", "no-store");
+  }
+  // API mutations: never cache responses
+  if (req.path.startsWith("/api/") && req.method !== "GET" && req.method !== "HEAD") {
+    res.set("Cache-Control", "no-store");
+  }
+  next();
+});
 
 // ---------------------------------------------------------------------------
 // Mount HTML page modules
