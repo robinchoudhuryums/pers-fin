@@ -58,6 +58,8 @@ const AUTH_MODE = SESSION_PIN ? "pin" : (SESSION_PASSWORD ? "password" : null);
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
 
 const app = express();
+// Trust first proxy (Render/Fly.io load balancer) so secure cookies work behind TLS termination
+app.set("trust proxy", 1);
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
@@ -303,6 +305,7 @@ async function runMigrations() {
     await pool.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ");
     await pool.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS cancel_confirmed BOOLEAN NOT NULL DEFAULT false");
     await pool.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS notes TEXT");
+    await pool.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'subscription'");
     // 004_balances.sql
     await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS available_balance NUMERIC(12,2)");
     await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS current_balance NUMERIC(12,2)");
@@ -1021,6 +1024,14 @@ const CANCEL_URLS = {
 
 // Subscription category auto-tagging
 const CATEGORY_RULES = {
+  utility: ["electric", "power", "energy", "gas", "water", "sewer", "sewage", "trash", "waste", "garbage", "recycling",
+    "internet", "broadband", "comcast", "xfinity", "spectrum", "att", "at&t", "verizon", "t-mobile", "tmobile",
+    "cox", "centurylink", "lumen", "frontier", "windstream", "optimum", "mediacom",
+    "duke energy", "dominion", "pge", "pg&e", "pacific gas", "con edison", "coned", "entergy", "eversource",
+    "national grid", "southern company", "sce", "socal edison", "fpl", "florida power",
+    "pepco", "bge", "peco", "pseg", "ameren", "xcel", "avista", "puget sound",
+    "consumers energy", "dte", "aep", "rocky mountain", "nstar", "green mountain",
+    "city of", "municipal", "utility", "utilities"],
   streaming: ["netflix", "hulu", "disney", "hbo", "max", "prime video", "peacock", "paramount", "crunchyroll", "apple tv", "youtube premium", "spotify", "tidal", "deezer", "pandora", "audible"],
   software: ["adobe", "microsoft", "notion", "figma", "canva", "github", "slack", "zoom", "dropbox", "1password", "dashlane", "grammarly", "chatgpt", "openai", "jetbrains"],
   gaming: ["xbox", "playstation", "ps plus", "nintendo", "steam", "ea play", "game pass"],
@@ -1031,6 +1042,7 @@ const CATEGORY_RULES = {
   shopping: ["amazon prime", "costco", "walmart", "instacart", "doordash", "uber eats", "grubhub"],
   finance: ["mint", "ynab", "quickbooks", "turbotax", "credit karma"],
   communication: ["linkedin", "bumble", "tinder", "match", "whatsapp", "skype"],
+  insurance: ["geico", "progressive", "state farm", "allstate", "usaa", "liberty mutual", "farmers", "nationwide", "travelers"],
 };
 
 function categorizeSubscription(merchantName) {
@@ -1078,19 +1090,26 @@ app.get("/api/subscriptions", async (req, res) => {
     const subs = result.rows.map(s => ({
       ...s,
       cancel_url: findCancelUrl(s.display_name) || findCancelUrl(s.merchant_key),
-      category: categorizeSubscription(s.display_name),
+      display_category: categorizeSubscription(s.display_name),
     }));
 
     const active = subs.filter(s => !s.is_dismissed && !s.cancelled_at);
-    const monthlyCost = active.reduce((sum, s) => sum + parseFloat(s.monthly_cost || 0), 0);
-    const yearlyCost = monthlyCost * 12;
+    const activeSubs = active.filter(s => s.category !== "utility");
+    const activeUtils = active.filter(s => s.category === "utility");
+    const subsMonthlyCost = activeSubs.reduce((sum, s) => sum + parseFloat(s.monthly_cost || 0), 0);
+    const utilMonthlyCost = activeUtils.reduce((sum, s) => sum + parseFloat(s.monthly_cost || 0), 0);
+    const totalMonthlyCost = subsMonthlyCost + utilMonthlyCost;
 
     res.json({
       subscriptions: subs,
       summary: {
         total_active: active.length,
-        monthly_cost: Math.round(monthlyCost * 100) / 100,
-        yearly_cost: Math.round(yearlyCost * 100) / 100,
+        monthly_cost: Math.round(totalMonthlyCost * 100) / 100,
+        yearly_cost: Math.round(totalMonthlyCost * 12 * 100) / 100,
+        subscriptions_monthly: Math.round(subsMonthlyCost * 100) / 100,
+        utilities_monthly: Math.round(utilMonthlyCost * 100) / 100,
+        subscription_count: activeSubs.length,
+        utility_count: activeUtils.length,
       },
     });
   } catch (err) {
@@ -1188,6 +1207,23 @@ app.patch("/api/subscriptions/:id/uncancel", async (req, res) => {
   }
 });
 
+app.patch("/api/subscriptions/:id/category", async (req, res) => {
+  const { category } = req.body;
+  if (!category || !["subscription", "utility"].includes(category)) {
+    return res.status(400).json({ error: "category must be 'subscription' or 'utility'" });
+  }
+  try {
+    const result = await pool.query(
+      "UPDATE detected_subscriptions SET category = $1, updated_at = now() WHERE id = $2 RETURNING *",
+      [category, req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "Not found" });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // GET /api/transactions — list transactions with optional filters
 // ---------------------------------------------------------------------------
@@ -1245,6 +1281,15 @@ app.get("/api/transactions", async (req, res) => {
 app.post("/api/detect", async (_req, res) => {
   try {
     const detected = await detectSubscriptions();
+    // Auto-categorize newly detected items (only if still default 'subscription')
+    for (const sub of detected) {
+      const cat = categorizeSubscription(sub.display_name);
+      const dbCategory = cat === "utility" ? "utility" : "subscription";
+      await pool.query(
+        "UPDATE detected_subscriptions SET category = $1 WHERE merchant_key = $2 AND category = 'subscription' AND category != $1",
+        [dbCategory, sub.merchant_key]
+      );
+    }
     res.json({ detected_count: detected.length, subscriptions: detected });
   } catch (err) {
     console.error("Detection error:", err.message);
@@ -1999,6 +2044,7 @@ app.get("/subscriptions", (req, res) => {
                    font-variant-numeric: tabular-nums; letter-spacing: -1px; }
     .card .value.cost { color: var(--warm-glow); }
     .card .value.count { color: var(--teal); }
+    .card .sub { font-size: 11px; color: var(--text-muted); margin-top: 4px; font-weight: 300; }
 
     /* Action bar */
     .actions { display: flex; gap: 10px; margin-bottom: 24px; flex-wrap: wrap; align-items: center; }
@@ -2037,6 +2083,7 @@ app.get("/subscriptions", (req, res) => {
     .badge-dismissed { background: var(--surface-2); color: var(--text-muted); }
     .badge-cancelled { background: var(--red-bg); color: var(--red); }
     .badge-category { background: var(--surface-2); color: var(--text-muted); font-weight: 400; }
+    .badge-utility { background: var(--blue-bg); color: var(--blue); font-weight: 600; }
 
     /* Action buttons */
     .btn-sm { padding: 5px 12px; font-size: 10px; font-weight: 500; letter-spacing: 0.5px;
@@ -2116,9 +2163,10 @@ app.get("/subscriptions", (req, res) => {
   <p class="subtitle">Detected recurring charges and manually tracked subscriptions</p>
 
   <div class="summary">
-    <div class="card"><div class="label">Monthly Cost</div><div class="value cost" id="monthly-cost">--</div></div>
-    <div class="card"><div class="label">Yearly Cost</div><div class="value cost" id="yearly-cost">--</div></div>
-    <div class="card"><div class="label">Active</div><div class="value count" id="active-count">--</div></div>
+    <div class="card"><div class="label">Subscriptions/mo</div><div class="value cost" id="subs-cost">--</div><div class="sub" id="subs-count"></div></div>
+    <div class="card"><div class="label">Utilities/mo</div><div class="value cost" id="utils-cost">--</div><div class="sub" id="utils-count"></div></div>
+    <div class="card"><div class="label">Total Monthly</div><div class="value cost" id="monthly-cost">--</div></div>
+    <div class="card"><div class="label">Total Yearly</div><div class="value count" id="yearly-cost">--</div></div>
   </div>
 
   <div class="actions">
@@ -2220,9 +2268,12 @@ app.get("/subscriptions", (req, res) => {
         const res = await apiFetch('/api/subscriptions?filter=' + filter);
         if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || 'Server returned ' + res.status); }
         const data = await res.json();
+        document.getElementById('subs-cost').textContent = '$' + data.summary.subscriptions_monthly.toFixed(2);
+        document.getElementById('subs-count').textContent = data.summary.subscription_count + ' active';
+        document.getElementById('utils-cost').textContent = '$' + data.summary.utilities_monthly.toFixed(2);
+        document.getElementById('utils-count').textContent = data.summary.utility_count + ' active';
         document.getElementById('monthly-cost').textContent = '$' + data.summary.monthly_cost.toFixed(2);
         document.getElementById('yearly-cost').textContent = '$' + data.summary.yearly_cost.toFixed(2);
-        document.getElementById('active-count').textContent = data.summary.total_active;
         if (!data.subscriptions.length) {
           tbody.innerHTML = '<tr><td colspan="6" class="empty">No subscriptions found. Import transactions or add manually.</td></tr>';
           return;
@@ -2232,7 +2283,8 @@ app.get("/subscriptions", (req, res) => {
           if (s.is_new) badges.push('<span class="badge badge-new">NEW</span>');
           if (s.amount_changed) badges.push('<span class="badge badge-price">PRICE CHANGE</span>');
           if (s.source === 'manual') badges.push('<span class="badge badge-manual">MANUAL</span>');
-          if (s.category && s.category !== 'other') badges.push('<span class="badge badge-category">' + s.category + '</span>');
+          if (s.category === 'utility') badges.push('<span class="badge badge-utility">UTILITY</span>');
+          else if (s.display_category && s.display_category !== 'other') badges.push('<span class="badge badge-category">' + s.display_category + '</span>');
           if (s.is_dismissed) badges.push('<span class="badge badge-dismissed">DISMISSED</span>');
           if (s.cancelled_at) badges.push('<span class="badge badge-cancelled">CANCELLED</span>');
           const overdue = !s.cancelled_at && isOverdue(s.next_expected);
@@ -2244,6 +2296,9 @@ app.get("/subscriptions", (req, res) => {
           } else if (s.is_dismissed) {
             actions = '<button class="btn-sm restore" onclick="undismissSub(' + s.id + ')">Restore</button>';
           } else {
+            var toggleCat = s.category === 'utility' ? 'subscription' : 'utility';
+            var toggleLabel = s.category === 'utility' ? 'Sub' : 'Util';
+            actions += '<button class="btn-sm" onclick="reclassify(' + s.id + ',\\'' + toggleCat + '\\')" title="Reclassify as ' + toggleCat + '">' + toggleLabel + '</button>';
             actions += '<button class="btn-sm" onclick="dismissSub(' + s.id + ')">Dismiss</button>';
             if (s.cancel_url) {
               actions += '<a class="btn-sm cancel" href="' + s.cancel_url + '" target="_blank" rel="noopener">Cancel&rarr;</a>';
@@ -2335,6 +2390,16 @@ app.get("/subscriptions", (req, res) => {
     async function uncancelSub(id) {
       try { await apiFetch('/api/subscriptions/' + id + '/uncancel', { method: 'PATCH' }); loadSubscriptions(); }
       catch (e) { showMsg('Failed to restore: ' + e.message, false); }
+    }
+    async function reclassify(id, category) {
+      try {
+        await apiFetch('/api/subscriptions/' + id + '/category', {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ category: category })
+        });
+        showMsg('Reclassified as ' + category + '.', true);
+        loadSubscriptions();
+      } catch (e) { showMsg('Failed to reclassify: ' + e.message, false); }
     }
 
     async function syncSheets() {
