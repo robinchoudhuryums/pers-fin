@@ -34,6 +34,10 @@ function isWithinActiveHours(startHour, endHour, timezone) {
 
 function startKeepAlive(port) {
   if (keepAliveInterval) return;
+  // Render sets RENDER_EXTERNAL_URL automatically; fall back to localhost
+  const pingUrl = process.env.RENDER_EXTERNAL_URL
+    ? `${process.env.RENDER_EXTERNAL_URL}/health`
+    : `http://localhost:${port}/health`;
   const INTERVAL = 14 * 60 * 1000; // 14 minutes
   keepAliveInterval = setInterval(async () => {
     const config = await loadKeepAliveConfig();
@@ -42,7 +46,7 @@ function startKeepAlive(port) {
       return;
     }
     try {
-      await fetch(`http://localhost:${port}/health`);
+      await fetch(pingUrl);
     } catch {
       // Silently ignore
     }
