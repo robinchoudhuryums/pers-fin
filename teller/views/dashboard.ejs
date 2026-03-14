@@ -29,11 +29,13 @@
                   border: 1px solid var(--border); backdrop-filter: blur(12px); }
     .chart-card h3 { font-size: 10px; font-weight: 500; color: var(--text-muted); text-transform: uppercase;
                      letter-spacing: 1.5px; margin-bottom: 16px; }
-    .chart-card canvas { max-height: 240px; }
+    .chart-card canvas { max-height: 240px; width: 100% !important; }
+    .chart-wrap { position: relative; width: 100%; }
     @media (max-width: 640px) {
       .charts-grid { grid-template-columns: 1fr; }
       .two-col { grid-template-columns: 1fr; }
       .accounts-grid { grid-template-columns: 1fr; }
+      .chart-card canvas { max-height: 280px; }
     }
 ` }) %>
 <%- include('partials/nav', { activePage: 'dashboard' }) %>
@@ -45,11 +47,11 @@
   <div class="charts-grid">
     <div class="chart-card">
       <h3>Monthly Spending Trend</h3>
-      <canvas id="trend-chart"></canvas>
+      <div class="chart-wrap"><canvas id="trend-chart"></canvas></div>
     </div>
     <div class="chart-card">
       <h3>Spending by Category</h3>
-      <canvas id="category-chart"></canvas>
+      <div class="chart-wrap"><canvas id="category-chart"></canvas></div>
     </div>
   </div>
 
@@ -147,8 +149,10 @@
         const hasBalances = accounts.some(a => a.available_balance !== null || a.current_balance !== null) || investments.length > 0;
 
         let html = accounts.map(a => {
-          const bal = parseFloat(a.available_balance || a.current_balance || 0);
           const isCredit = a.type === 'credit';
+          const bal = isCredit
+            ? parseFloat(a.current_balance || 0)
+            : parseFloat(a.available_balance || a.current_balance || 0);
           const displayBal = isCredit ? -bal : bal;
           netBalance += displayBal;
 
@@ -394,6 +398,9 @@
         const months = Object.keys(monthlyMap).sort();
         const amounts = months.map(m => monthlyMap[m]);
         const trendCtx = document.getElementById('trend-chart');
+        if (trendCtx && months.length === 0) {
+          trendCtx.parentElement.innerHTML = '<div style="text-align:center;padding:32px;color:var(--text-muted);font-size:13px;">No spending data yet</div>';
+        }
         if (trendCtx && months.length > 0) {
           new Chart(trendCtx, {
             type: 'line',
@@ -428,6 +435,9 @@
         const cats = Object.entries(catMap).sort((a, b) => b[1] - a[1]).slice(0, 8);
         const pieColors = ['#d4a574', '#5a8f8f', '#c8856c', '#6fcf97', '#7fb5e6', '#f0c36d', '#eb6b6b', '#b08ed6'];
         const catCtx = document.getElementById('category-chart');
+        if (catCtx && cats.length === 0) {
+          catCtx.parentElement.innerHTML = '<div style="text-align:center;padding:32px;color:var(--text-muted);font-size:13px;">No category data yet</div>';
+        }
         if (catCtx && cats.length > 0) {
           new Chart(catCtx, {
             type: 'doughnut',
@@ -438,7 +448,7 @@
             options: {
               responsive: true, maintainAspectRatio: true, cutout: '60%',
               plugins: {
-                legend: { position: 'right', labels: { boxWidth: 12, padding: 10, font: { size: 11 } } },
+                legend: { position: window.innerWidth <= 640 ? 'bottom' : 'right', labels: { boxWidth: 12, padding: 10, font: { size: 11 } } },
                 tooltip: { callbacks: { label: ctx => ctx.label + ': $' + parseFloat(ctx.raw).toLocaleString() } }
               }
             }
