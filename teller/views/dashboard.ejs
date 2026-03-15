@@ -37,11 +37,155 @@
       .accounts-grid { grid-template-columns: 1fr; }
       .chart-wrap { height: 220px; }
     }
+
+    /* ── Financial Wellness Pyramid ────────────────────────────── */
+    .wellness-section {
+      display: flex; flex-direction: column; align-items: center;
+      margin-bottom: 44px; animation: fadeInUp 0.6s ease both; animation-delay: 0.08s;
+    }
+    .wellness-section h3 {
+      font-size: 10px; font-weight: 500; color: var(--text-muted); text-transform: uppercase;
+      letter-spacing: 2px; margin-bottom: 8px;
+    }
+    .pyramid-stage {
+      position: relative; width: 280px; height: 300px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .pyramid-scene {
+      perspective: 600px; width: 160px; height: 200px;
+      position: relative;
+    }
+    .pyramid-3d {
+      width: 160px; height: 200px; position: relative;
+      transform-style: preserve-3d;
+      transform: rotateX(-20deg) rotateY(45deg);
+      animation: pyramidSpin 20s linear infinite;
+    }
+    @keyframes pyramidSpin {
+      from { transform: rotateX(-20deg) rotateY(45deg); }
+      to   { transform: rotateX(-20deg) rotateY(405deg); }
+    }
+    .pyramid-face {
+      position: absolute; width: 160px; height: 186px;
+      clip-path: polygon(50% 0%, 0% 100%, 100% 100%);
+      transform-origin: 50% 100%; bottom: 0; left: 0;
+      transition: background 1.5s ease;
+    }
+    .pyramid-face.f-front  { transform: translateZ(80px) rotateX(25deg); }
+    .pyramid-face.f-right  { transform: rotateY(90deg) translateZ(80px) rotateX(25deg); }
+    .pyramid-face.f-back   { transform: rotateY(180deg) translateZ(80px) rotateX(25deg); }
+    .pyramid-face.f-left   { transform: rotateY(270deg) translateZ(80px) rotateX(25deg); }
+    .pyramid-base {
+      position: absolute; width: 160px; height: 160px; bottom: 0; left: 0;
+      transform-style: preserve-3d;
+      transform: rotateX(-90deg) translateZ(0px);
+      background: rgba(90,143,143,0.08);
+      border: 1px solid rgba(90,143,143,0.15);
+    }
+
+    /* Glow underneath */
+    .pyramid-glow {
+      position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+      width: 200px; height: 60px; border-radius: 50%;
+      background: radial-gradient(ellipse, rgba(90,143,143,0.35) 0%, rgba(212,165,116,0.15) 40%, transparent 70%);
+      filter: blur(18px); animation: glowPulse 3s ease-in-out infinite;
+      pointer-events: none;
+    }
+    @keyframes glowPulse {
+      0%, 100% { opacity: 0.6; transform: translateX(-50%) scale(1); }
+      50%      { opacity: 1; transform: translateX(-50%) scale(1.1); }
+    }
+
+    /* Rising orbs */
+    .pyramid-orbs {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      pointer-events: none; overflow: hidden;
+    }
+    .orb {
+      position: absolute; border-radius: 50%;
+      background: radial-gradient(circle, rgba(90,143,143,0.9) 0%, rgba(212,165,116,0.4) 60%, transparent 100%);
+      animation: orbRise linear infinite;
+      opacity: 0;
+    }
+    @keyframes orbRise {
+      0%   { opacity: 0; transform: translateY(0) scale(0.5); }
+      15%  { opacity: 0.8; }
+      85%  { opacity: 0.3; }
+      100% { opacity: 0; transform: translateY(-260px) scale(0.2); }
+    }
+
+    /* Score display */
+    .wellness-score {
+      font-size: 36px; font-weight: 200; color: var(--teal);
+      margin-top: 4px; font-variant-numeric: tabular-nums;
+      letter-spacing: -1px; transition: color 0.5s;
+    }
+    .wellness-status {
+      font-size: 12px; color: var(--text-muted); font-weight: 300;
+      margin-top: 2px; letter-spacing: 0.3px; text-align: center;
+      max-width: 220px; transition: color 0.5s;
+    }
+
+    /* Tier labels around pyramid */
+    .pyramid-tiers {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      pointer-events: none;
+    }
+    .tier-label {
+      position: absolute; font-size: 9px; font-weight: 500;
+      text-transform: uppercase; letter-spacing: 1.2px;
+      color: var(--text-muted); white-space: nowrap;
+      transition: color 0.5s, opacity 0.5s; opacity: 0.5;
+    }
+    .tier-label.active { opacity: 1; }
+    .tier-label.t-base    { bottom: 28px; right: -4px; }
+    .tier-label.t-budget  { bottom: 95px; right: -18px; }
+    .tier-label.t-subs    { bottom: 158px; right: -10px; }
+    .tier-label.t-goals   { bottom: 215px; right: 14px; }
+
+    [data-theme="light"] .pyramid-glow {
+      background: radial-gradient(ellipse, rgba(61,114,114,0.25) 0%, rgba(176,122,74,0.1) 40%, transparent 70%);
+    }
+    [data-theme="light"] .orb {
+      background: radial-gradient(circle, rgba(61,114,114,0.8) 0%, rgba(176,122,74,0.3) 60%, transparent 100%);
+    }
+
+    @media (max-width: 640px) {
+      .pyramid-stage { width: 240px; height: 260px; }
+      .pyramid-scene { transform: scale(0.8); }
+      .tier-label { display: none; }
+    }
 ` }) %>
 <%- include('partials/nav', { activePage: 'dashboard' }) %>
 
   <h1>Dashboard</h1>
   <p class="subtitle">Personal finance overview</p>
+
+  <!-- Financial Wellness Pyramid -->
+  <div class="wellness-section">
+    <h3>Financial Wellness</h3>
+    <div class="pyramid-stage">
+      <div class="pyramid-orbs" id="pyramid-orbs"></div>
+      <div class="pyramid-scene">
+        <div class="pyramid-3d" id="pyramid-3d">
+          <div class="pyramid-face f-front" id="face-front"></div>
+          <div class="pyramid-face f-right" id="face-right"></div>
+          <div class="pyramid-face f-back"  id="face-back"></div>
+          <div class="pyramid-face f-left"  id="face-left"></div>
+          <div class="pyramid-base"></div>
+        </div>
+      </div>
+      <div class="pyramid-glow" id="pyramid-glow"></div>
+      <div class="pyramid-tiers">
+        <div class="tier-label t-base"   id="tier-accounts">Accounts</div>
+        <div class="tier-label t-budget" id="tier-budget">Budgets</div>
+        <div class="tier-label t-subs"   id="tier-subs">Subs</div>
+        <div class="tier-label t-goals"  id="tier-goals">Goals</div>
+      </div>
+    </div>
+    <div class="wellness-score" id="wellness-score">--</div>
+    <div class="wellness-status" id="wellness-status">Calculating...</div>
+  </div>
 
   <!-- Charts -->
   <div class="charts-grid">
@@ -139,7 +283,7 @@
         const investments = invRes.ok ? await invRes.json() : [];
         const grid = document.getElementById('accounts-grid');
 
-        document.getElementById('acct-count').textContent = accounts.length + investments.length;
+        animateInt(document.getElementById('acct-count'), accounts.length + investments.length);
 
         if (!accounts.length && !investments.length) {
           grid.innerHTML = '<div class="empty-msg">No accounts linked. <a href="/">Link an account</a> to get started.</div>';
@@ -193,7 +337,11 @@
 
         grid.innerHTML = html;
 
-        document.getElementById('net-balance').textContent = hasBalances ? fmt(netBalance) : '\u2014';
+        if (hasBalances) {
+          animateCurrency(document.getElementById('net-balance'), netBalance);
+        } else {
+          document.getElementById('net-balance').textContent = '\u2014';
+        }
         if (hasBalances) {
           document.getElementById('net-balance').className = 'value ' + (netBalance >= 0 ? 'green' : 'red');
         }
@@ -219,11 +367,11 @@
 
           const totalSpend = data.monthly_trend.reduce((s, m) => s + parseFloat(m.total_spend), 0);
           const avgMonthly = totalSpend / data.monthly_trend.length;
-          document.getElementById('avg-monthly').textContent = fmt(avgMonthly);
+          animateCurrency(document.getElementById('avg-monthly'), avgMonthly);
           document.getElementById('avg-monthly-sub').textContent = data.monthly_trend.length + '-month avg';
 
           const totalDays = data.monthly_trend.length * 30;
-          document.getElementById('avg-daily').textContent = fmt(totalSpend / totalDays);
+          animateCurrency(document.getElementById('avg-daily'), totalSpend / totalDays);
         } else {
           monthBody.innerHTML = '<tr><td colspan="4" class="empty-msg">No spending data yet.</td></tr>';
         }
@@ -262,8 +410,8 @@
           ).join('');
 
           const subsMonthly = data.upcoming_subscriptions.reduce((s, sub) => s + parseFloat(sub.monthly_cost || 0), 0);
-          document.getElementById('subs-monthly').textContent = fmt(subsMonthly);
-          document.getElementById('active-subs').textContent = data.upcoming_subscriptions.length;
+          animateCurrency(document.getElementById('subs-monthly'), subsMonthly);
+          animateInt(document.getElementById('active-subs'), data.upcoming_subscriptions.length);
         } else {
           upBody.innerHTML = '<tr><td colspan="3" class="empty-msg">No upcoming charges.</td></tr>';
         }
@@ -373,6 +521,205 @@
 
     // PWA
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+
+    // ── Financial Wellness Pyramid ──────────────────────────────
+    // Spawn rising orbs
+    (function spawnOrbs() {
+      const container = document.getElementById('pyramid-orbs');
+      if (!container) return;
+      function createOrb() {
+        const orb = document.createElement('div');
+        orb.className = 'orb';
+        const size = 4 + Math.random() * 8;
+        const x = 80 + (Math.random() - 0.5) * 120;
+        const duration = 3 + Math.random() * 4;
+        const delay = Math.random() * 2;
+        orb.style.cssText = 'width:' + size + 'px;height:' + size + 'px;left:' + x + 'px;bottom:40px;animation-duration:' + duration + 's;animation-delay:' + delay + 's;';
+        container.appendChild(orb);
+        setTimeout(function() { orb.remove(); }, (duration + delay) * 1000);
+      }
+      // Initial burst
+      for (var i = 0; i < 6; i++) setTimeout(createOrb, i * 400);
+      // Continuous spawning
+      setInterval(function() { createOrb(); }, 1200);
+    })();
+
+    // Compute wellness score from API data
+    async function computeWellness() {
+      var score = 0;
+      var tiers = { accounts: false, budget: false, subs: false, goals: false };
+      var statusMsg = '';
+
+      try {
+        // Tier 1: Accounts & Tracking (25 pts) — linked accounts exist
+        var acctRes = await apiFetch('/api/accounts');
+        var accounts = acctRes.ok ? await acctRes.json() : [];
+        if (accounts.length > 0) {
+          score += 25;
+          tiers.accounts = true;
+        }
+
+        // Tier 2: Budget Discipline (25 pts) — budgets exist and avg under limit
+        try {
+          var budRes = await apiFetch('/api/budgets');
+          var budgets = budRes.ok ? await budRes.json() : [];
+          if (budgets.length > 0) {
+            var underBudget = budgets.filter(function(b) { return b.percent_used <= 100; }).length;
+            var budgetRatio = underBudget / budgets.length;
+            score += Math.round(25 * budgetRatio);
+            if (budgetRatio >= 0.5) tiers.budget = true;
+          }
+        } catch (e) {}
+
+        // Tier 3: Subscription Control (25 pts) — actively tracking subscriptions
+        try {
+          var subRes = await apiFetch('/api/subscriptions?filter=all');
+          var subs = subRes.ok ? await subRes.json() : [];
+          if (subs.length > 0) {
+            // Points for having detected subs + bonus for dismissed/canceled ones
+            score += 15;
+            tiers.subs = true;
+            var managed = subs.filter(function(s) { return s.is_dismissed || s.is_canceled; }).length;
+            if (managed > 0) score += Math.min(10, Math.round(10 * (managed / subs.length)));
+          }
+        } catch (e) {}
+
+        // Tier 4: Goal Progress (25 pts) — goals set with progress
+        try {
+          var goalRes = await apiFetch('/api/goals');
+          var goals = goalRes.ok ? await goalRes.json() : [];
+          var activeGoals = goals.filter(function(g) { return g.is_active; });
+          if (activeGoals.length > 0) {
+            tiers.goals = true;
+            var avgProgress = activeGoals.reduce(function(s, g) { return s + Math.min(100, g.percent_complete); }, 0) / activeGoals.length;
+            score += Math.round(25 * (avgProgress / 100));
+          }
+        } catch (e) {}
+
+        // Cap at 100
+        score = Math.min(100, score);
+
+        // Status message
+        if (score >= 90) statusMsg = 'Excellent financial health';
+        else if (score >= 70) statusMsg = 'Strong financial foundation';
+        else if (score >= 50) statusMsg = 'Building good habits';
+        else if (score >= 25) statusMsg = 'Getting started on your journey';
+        else statusMsg = 'Link accounts to begin tracking';
+
+      } catch (e) {
+        statusMsg = 'Could not compute score';
+      }
+
+      updatePyramid(score, tiers, statusMsg);
+    }
+
+    function updatePyramid(score, tiers, statusMsg) {
+      var fill = score / 100;
+
+      // Color stops based on fill level
+      var filledColor, unfilledColor;
+      if (score >= 75) {
+        filledColor = 'rgba(111,207,151,0.55)';  // green
+      } else if (score >= 50) {
+        filledColor = 'rgba(90,143,143,0.55)';    // teal
+      } else if (score >= 25) {
+        filledColor = 'rgba(212,165,116,0.45)';   // warm
+      } else {
+        filledColor = 'rgba(200,133,108,0.35)';   // warm-glow
+      }
+      unfilledColor = 'rgba(90,143,143,0.08)';
+
+      var fillPct = Math.round(fill * 100);
+      var bg = 'linear-gradient(to top, ' + filledColor + ' 0%, ' + filledColor + ' ' + fillPct + '%, ' + unfilledColor + ' ' + (fillPct + 5) + '%, ' + unfilledColor + ' 100%)';
+
+      // Slightly different shading per face for 3D depth
+      var faces = document.querySelectorAll('.pyramid-face');
+      var opacities = [1, 0.85, 0.65, 0.85];
+      faces.forEach(function(face, i) {
+        face.style.background = bg;
+        face.style.opacity = opacities[i];
+      });
+
+      // Update glow intensity based on score
+      var glow = document.getElementById('pyramid-glow');
+      if (glow) {
+        var glowIntensity = 0.3 + fill * 0.7;
+        glow.style.opacity = glowIntensity;
+      }
+
+      // Animate score number
+      animateCounter(document.getElementById('wellness-score'), score, '%');
+
+      // Score color
+      var scoreEl = document.getElementById('wellness-score');
+      if (score >= 75) scoreEl.style.color = 'var(--green)';
+      else if (score >= 50) scoreEl.style.color = 'var(--teal)';
+      else if (score >= 25) scoreEl.style.color = 'var(--warm)';
+      else scoreEl.style.color = 'var(--warm-glow)';
+
+      // Status message
+      document.getElementById('wellness-status').textContent = statusMsg;
+
+      // Tier labels
+      if (tiers.accounts) document.getElementById('tier-accounts').classList.add('active');
+      if (tiers.budget)   document.getElementById('tier-budget').classList.add('active');
+      if (tiers.subs)     document.getElementById('tier-subs').classList.add('active');
+      if (tiers.goals)    document.getElementById('tier-goals').classList.add('active');
+
+      // Active tier label colors
+      document.querySelectorAll('.tier-label.active').forEach(function(el) {
+        el.style.color = score >= 75 ? 'var(--green)' : score >= 50 ? 'var(--teal)' : 'var(--warm)';
+      });
+    }
+
+    // Animated counter (counts up from 0 to target)
+    function animateCounter(el, target, suffix) {
+      if (!el) return;
+      suffix = suffix || '';
+      var current = 0;
+      var duration = 1200;
+      var steps = 30;
+      var increment = target / steps;
+      var stepTime = duration / steps;
+      var timer = setInterval(function() {
+        current += increment;
+        if (current >= target) {
+          current = target;
+          clearInterval(timer);
+        }
+        el.textContent = Math.round(current) + suffix;
+      }, stepTime);
+    }
+
+    // Animated currency counter (counts up from 0, formats as $X,XXX.XX)
+    function animateCurrency(el, target) {
+      if (!el || isNaN(target)) return;
+      var current = 0;
+      var duration = 1000;
+      var steps = 25;
+      var increment = target / steps;
+      var stepTime = duration / steps;
+      var neg = target < 0;
+      var absTarget = Math.abs(target);
+      var absCurrent = 0;
+      var absIncrement = absTarget / steps;
+      var timer = setInterval(function() {
+        absCurrent += absIncrement;
+        if (absCurrent >= absTarget) {
+          absCurrent = absTarget;
+          clearInterval(timer);
+        }
+        el.textContent = (neg ? '-' : '') + fmt(absCurrent);
+      }, stepTime);
+    }
+
+    // Animated integer counter
+    function animateInt(el, target) {
+      if (!el || isNaN(target)) return;
+      animateCounter(el, target, '');
+    }
+
+    computeWellness();
 
     // Charts — Chart.js loaded via blocking <script> tag above
     if (typeof Chart !== 'undefined') {
