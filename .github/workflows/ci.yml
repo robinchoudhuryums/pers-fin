@@ -17,4 +17,5 @@ jobs:
           cache: 'npm'
           cache-dependency-path: teller/package-lock.json
       - run: cd teller && npm ci
+      - run: npm ci
       - run: npm test
