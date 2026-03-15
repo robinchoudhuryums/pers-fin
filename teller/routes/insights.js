@@ -6,7 +6,7 @@ const express = require("express");
 const router = express.Router();
 const { pool } = require("../services/database");
 const {
-  MODEL_COST_PER_M, modelFamily, estimateCostUsd,
+  MODEL_COST_PER_M, modelFamily, estimateCostUsd, estimateCostGranular,
   STATE_ELECTRICITY_RATES, US_AVG_ELECTRICITY_RATE,
   zipToState, ANNUAL_SPENDING_BENCHMARKS,
   INSIGHT_MODULES, MODEL_MAP,
@@ -25,10 +25,15 @@ router.get("/api/insights/status", async (_req, res) => {
   let estimatedCostCents = 0;
   let budgetCents = parseInt(process.env.INSIGHTS_MONTHLY_BUDGET_CENTS) || 50;
   try {
-    const usage = await pool.query(
-      "SELECT tokens_used, model_used FROM financial_insights WHERE created_at >= date_trunc('month', CURRENT_DATE)"
+    const usageRows = await pool.query(
+      "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights WHERE created_at >= date_trunc('month', CURRENT_DATE)"
     );
-    usage.rows.forEach(r => { estimatedCostCents += estimateCostUsd(r.tokens_used || 0, r.model_used) * 100; });
+    usageRows.rows.forEach(r => {
+      const cost = r.input_tokens
+        ? estimateCostGranular({ input_tokens: r.input_tokens, output_tokens: r.output_tokens, cache_read_input_tokens: r.cache_read_tokens || 0, cache_creation_input_tokens: r.cache_creation_tokens || 0 }, r.model_used)
+        : estimateCostUsd(r.tokens_used || 0, r.model_used);
+      estimatedCostCents += cost * 100;
+    });
   } catch {}
   res.json({
     configured,
@@ -46,13 +51,21 @@ router.get("/api/insights/usage", async (_req, res) => {
     const result = await pool.query(
       "SELECT id, tokens_used, model_used, created_at FROM financial_insights ORDER BY created_at DESC LIMIT 20"
     );
-    const history = result.rows.map(r => ({
-      ...r,
-      estimated_cost_usd: parseFloat(estimateCostUsd(r.tokens_used || 0, r.model_used).toFixed(4)),
-    }));
-    const allRows = await pool.query("SELECT tokens_used, model_used FROM financial_insights");
+    const history = result.rows.map(r => {
+      // Use granular cost if we have separate token counts, otherwise fall back to blended
+      const cost = r.input_tokens
+        ? estimateCostGranular({ input_tokens: r.input_tokens, output_tokens: r.output_tokens, cache_read_input_tokens: r.cache_read_tokens || 0, cache_creation_input_tokens: r.cache_creation_tokens || 0 }, r.model_used)
+        : estimateCostUsd(r.tokens_used || 0, r.model_used);
+      return { ...r, estimated_cost_usd: parseFloat(cost.toFixed(4)) };
+    });
+    const allRows = await pool.query("SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights");
     let totalTokens = 0, totalCost = 0;
-    allRows.rows.forEach(r => { totalTokens += r.tokens_used || 0; totalCost += estimateCostUsd(r.tokens_used || 0, r.model_used); });
+    allRows.rows.forEach(r => {
+      totalTokens += r.tokens_used || 0;
+      totalCost += r.input_tokens
+        ? estimateCostGranular({ input_tokens: r.input_tokens, output_tokens: r.output_tokens, cache_read_input_tokens: r.cache_read_tokens || 0, cache_creation_input_tokens: r.cache_creation_tokens || 0 }, r.model_used)
+        : estimateCostUsd(r.tokens_used || 0, r.model_used);
+    });
     res.json({
       history,
       totals: { total_runs: allRows.rows.length, total_tokens: totalTokens, total_cost_usd: parseFloat(totalCost.toFixed(4)) },
@@ -120,69 +133,124 @@ router.post("/api/insights", async (_req, res) => {
     const utilTotal = utils.reduce((s, r) => s + parseFloat(r.amount) * 30 / r.cadence_days, 0);
 
     const activeModules = [];
-    let prompt = "You are a personal finance advisor providing ongoing monthly analysis. You have two tasks:\n\n" +
+
+    // ---- Build STATIC system prompt (cacheable across requests) ----
+    let systemText = "You are a personal finance advisor providing ongoing monthly analysis. You have two tasks:\n\n" +
       "TASK 1: Analyze the data below and give 3-5 concise, actionable insights with specific dollar amounts. Use markdown bullet points. Reference long-term context where relevant.\n\n" +
       "TASK 2: After your insights, output a delimiter line containing exactly '---RUNNING_SUMMARY---' followed by an updated cumulative summary (max 200 words). This summary should capture:\n" +
       "- Baseline spending levels and trends (e.g. 'avg monthly spend ~$X, trending up/down')\n" +
       "- Key subscriptions and any changes noticed over time\n" +
       "- Progress on past recommendations (what improved, what didn't)\n" +
       "- Any recurring patterns or concerns worth tracking long-term\n" +
-      "This summary persists across sessions as your long-term memory. Update it — don't just append.\n\n" +
-      "=== CURRENT DATA ===\n" +
-      "Monthly Spending (6mo):\n" + monthlyData.rows.map(r => r.month + ": $" + parseFloat(r.total).toFixed(2) + " (" + r.txns + " txns)").join("\n") +
-      "\n\nActive Subscriptions (" + subs.length + " total, $" + subTotal.toFixed(2) + "/mo):\n" +
-      subs.map(r => r.display_name + ": $" + parseFloat(r.amount).toFixed(2) + " every " + r.cadence_days + " days").join("\n") +
-      "\n\nUtility Bills (" + utils.length + " total, $" + utilTotal.toFixed(2) + "/mo):\n" +
-      (utils.length > 0 ? utils.map(r => r.display_name + ": $" + parseFloat(r.amount).toFixed(2) + " every " + r.cadence_days + " days").join("\n") : "(none detected)");
+      "This summary persists across sessions as your long-term memory. Update it — don't just append.";
 
-    // --- Module: Utility rate comparison ---
-    if (modules.utility_comparison !== false && zipCode && utils.length > 0) {
-      const state = zipToState(zipCode);
-      if (state) {
-        const stateRate = STATE_ELECTRICITY_RATES[state] || US_AVG_ELECTRICITY_RATE;
-        activeModules.push("utility_comparison");
-        prompt += "\n\n=== UTILITY RATE COMPARISON ===\n" +
-          "User ZIP: " + zipCode + " (State: " + state + ")\n" +
-          "State avg residential electricity rate: " + stateRate.toFixed(1) + "¢/kWh\n" +
-          "National avg: " + US_AVG_ELECTRICITY_RATE.toFixed(1) + "¢/kWh\n" +
-          "INSTRUCTION: Compare the user's utility bills to their state and national averages. " +
-          "If their electricity bill seems high or low relative to local rates, explain whether it's likely due to their usage habits or the region's rates. " +
-          "Suggest whether they should scrutinize their energy usage or if the bill reflects normal regional pricing.";
-      }
-    }
-
-    // --- Module: Spending benchmarks ---
+    // Add static module instructions to system prompt
     if (modules.spending_benchmarks !== false) {
       activeModules.push("spending_benchmarks");
       const benchText = Object.entries(ANNUAL_SPENDING_BENCHMARKS)
         .map(([, v]) => v.label + ": $" + Math.round(v.avg / 12) + "/mo ($" + v.avg.toLocaleString() + "/yr)")
         .join("\n");
-      prompt += "\n\n=== NATIONAL SPENDING BENCHMARKS (avg US household, BLS 2024) ===\n" + benchText +
+      systemText += "\n\n=== NATIONAL SPENDING BENCHMARKS (avg US household, BLS 2024) ===\n" + benchText +
         "\nINSTRUCTION: Where the user's spending in a category is visible, briefly note how it compares to the national average. Only mention categories where there's a meaningful difference.";
     }
-
-    // --- Module: Savings & wealth-building ---
     if (modules.savings_suggestions !== false) {
       activeModules.push("savings_suggestions");
-      prompt += "\n\n=== SAVINGS & WEALTH-BUILDING ===\n" +
+      systemText += "\n\n=== SAVINGS & WEALTH-BUILDING ===\n" +
         "INSTRUCTION: Based on the user's spending patterns, include 1-2 specific, actionable wealth-building suggestions. Examples: " +
         "if cancelling a specific subscription could fund an index fund contribution, quantify the 10-year compound growth; " +
         "if utility costs are high, estimate annual savings from a specific efficiency improvement; " +
         "if spending is trending up, identify the category driving it and suggest a concrete target. " +
         "Always give specific dollar amounts and time horizons. Avoid generic advice like 'save more'.";
     }
-
-    // --- Module: Subscription audit ---
     if (modules.subscription_audit !== false) {
       activeModules.push("subscription_audit");
-      prompt += "\n\n=== SUBSCRIPTION AUDIT ===\n" +
+      systemText += "\n\n=== SUBSCRIPTION AUDIT ===\n" +
         "INSTRUCTION: Review the subscription list for potential savings: " +
         "flag services with overlapping functionality (e.g. multiple streaming or cloud storage), " +
         "note any subscriptions that seem unusually expensive for their category, " +
         "and suggest cheaper alternatives where well-known options exist. Be specific about potential monthly savings.";
     }
+    if (modules.anomaly_detection !== false) {
+      systemText += "\n\n=== ANOMALY DETECTION INSTRUCTIONS ===\n" +
+        "When anomaly data is present: Flag anomalies. For each, suggest whether it's likely a one-time event, price increase, " +
+        "or potentially unauthorized. Recommend specific action if warranted (e.g. dispute, check account, update budget).\n" +
+        "When no anomalies are present: Note positively that spending patterns are consistent.";
+    }
+    if (modules.seasonal_forecast !== false) {
+      systemText += "\n\n=== SEASONAL FORECASTING INSTRUCTIONS ===\n" +
+        "When seasonal history is provided: Identify seasonal patterns (e.g. holiday spending spikes, summer utility increases, " +
+        "back-to-school, annual renewals). Predict the likely spend for the next 1-2 months based on these patterns. " +
+        "If certain months are consistently high, warn the user in advance and suggest preparing a buffer.";
+    }
+    if (modules.debt_optimizer !== false) {
+      systemText += "\n\n=== DEBT PAYOFF OPTIMIZER INSTRUCTIONS ===\n" +
+        "When credit card data is provided, give a personalized debt payoff analysis:\n" +
+        "1. CREDIT SCORE IMPACT: Explain current utilization impact on credit score (FICO uses 30% weight for utilization). " +
+        "Project how the score would improve at key thresholds: <50%, <30%, <10%, and 0% utilization. " +
+        "Be specific: 'Paying down $X would drop utilization from Y% to Z%, which typically improves scores by N points.'\n" +
+        "2. PAYOFF STRATEGY: If APRs are known, compare avalanche (highest APR first) vs snowball (smallest balance first) approaches. " +
+        "Calculate interest saved with the optimal strategy over 6-12 months.\n" +
+        "3. QUICK WINS: Identify any cards near a utilization threshold (e.g. just over 30%) where a small payment would have outsized credit score impact.\n" +
+        "4. If APR is unknown for any card, note that the user should add it in their Accounts page for more accurate projections.";
+    }
+    if (modules.bill_negotiation !== false) {
+      activeModules.push("bill_negotiation");
+      systemText += "\n\n=== BILL NEGOTIATION INSTRUCTIONS ===\n" +
+        "Review the utility bills and subscriptions for negotiation opportunities. " +
+        "Common negotiable bills include: internet/cable (call retention department), insurance premiums (shop quotes), " +
+        "cell phone plans (switch to MVNO), medical bills (ask for itemized + payment plan). " +
+        "For each opportunity, estimate typical savings (e.g. 'Internet: calling retention typically saves $20-40/mo'). " +
+        "Be specific about which bills to target and the typical script/approach.";
+    }
+    if (modules.income_savings !== false) {
+      systemText += "\n\n=== INCOME & SAVINGS RATE INSTRUCTIONS ===\n" +
+        "When income data is provided: Analyze the savings rate trend. The recommended savings rate is 20%+ (50/30/20 rule). " +
+        "If below target, identify the top category driving overspending. " +
+        "Project how the current savings rate translates to emergency fund timeline (3-6 months of expenses). " +
+        "Suggest a specific, achievable savings rate improvement target.";
+    }
+    if (modules.tax_deductions !== false) {
+      systemText += "\n\n=== TAX DEDUCTION INSTRUCTIONS ===\n" +
+        "When tax-deductible transactions are provided: Review for potential deductions. " +
+        "Categorize as: medical (Schedule A), charitable (Schedule A), education (1098-T/LLC), " +
+        "business (Schedule C), or not deductible. Note standard deduction thresholds ($14,600 single / $29,200 married 2024). " +
+        "Only flag deductions likely to exceed the standard deduction threshold. Remind user to consult a tax professional.";
+    }
+    if (modules.goal_tracking !== false) {
+      systemText += "\n\n=== GOAL TRACKING INSTRUCTIONS ===\n" +
+        "When financial goals are provided: Assess progress on each goal. For savings goals, calculate if the current contribution rate is on track. " +
+        "For retirement goals, use the expected return to project growth. If a goal is behind schedule, suggest specific adjustments " +
+        "(increase monthly contribution by $X, extend timeline by Y months, or reallocate from discretionary spending). " +
+        "For home/car purchases, note down payment requirements (typically 20% for home, 10-20% for car) and monthly payment estimates.\n" +
+        "IMPORTANT: Consider current real-world economic context when making projections. " +
+        "Account for current market conditions, interest rate environment, inflation trends, and any major economic events " +
+        "that could affect investment returns, home prices, or retirement planning. " +
+        "For retirement goals, factor in realistic return expectations given current market conditions rather than historical averages.";
+    }
 
-    // --- Module: Anomaly detection ---
+    // ---- Build DYNAMIC user message (changes each request) ----
+    let userMsg = "=== CURRENT DATA ===\n" +
+      "Monthly Spending (6mo):\n" + monthlyData.rows.map(r => r.month + ": $" + parseFloat(r.total).toFixed(2) + " (" + r.txns + " txns)").join("\n") +
+      "\n\nActive Subscriptions (" + subs.length + " total, $" + subTotal.toFixed(2) + "/mo):\n" +
+      subs.map(r => r.display_name + ": $" + parseFloat(r.amount).toFixed(2) + " every " + r.cadence_days + " days").join("\n") +
+      "\n\nUtility Bills (" + utils.length + " total, $" + utilTotal.toFixed(2) + "/mo):\n" +
+      (utils.length > 0 ? utils.map(r => r.display_name + ": $" + parseFloat(r.amount).toFixed(2) + " every " + r.cadence_days + " days").join("\n") : "(none detected)");
+
+    // --- Module: Utility rate comparison (dynamic data in user msg) ---
+    if (modules.utility_comparison !== false && zipCode && utils.length > 0) {
+      const state = zipToState(zipCode);
+      if (state) {
+        const stateRate = STATE_ELECTRICITY_RATES[state] || US_AVG_ELECTRICITY_RATE;
+        activeModules.push("utility_comparison");
+        userMsg += "\n\n=== UTILITY RATE COMPARISON ===\n" +
+          "User ZIP: " + zipCode + " (State: " + state + ")\n" +
+          "State avg residential electricity rate: " + stateRate.toFixed(1) + "¢/kWh\n" +
+          "National avg: " + US_AVG_ELECTRICITY_RATE.toFixed(1) + "¢/kWh\n" +
+          "Compare the user's utility bills to their state and national averages.";
+      }
+    }
+
+    // --- Module: Anomaly detection (dynamic data) ---
     if (modules.anomaly_detection !== false) {
       try {
         const anomalyData = await pool.query(
@@ -206,25 +274,22 @@ router.post("/api/insights", async (_req, res) => {
            ORDER BY t.date DESC
            LIMIT 10`
         );
+        activeModules.push("anomaly_detection");
         if (anomalyData.rows.length > 0) {
-          activeModules.push("anomaly_detection");
-          prompt += "\n\n=== ANOMALY DETECTION ===\n" +
+          userMsg += "\n\n=== ANOMALY DETECTION DATA ===\n" +
             "Recent transactions significantly above their merchant's typical amount:\n" +
             anomalyData.rows.map(r =>
               (r.merchant_name || r.name) + ": $" + parseFloat(r.amount).toFixed(2) +
               " on " + r.date + " (usual avg: $" + parseFloat(r.avg_amount).toFixed(2) +
               " over " + r.txn_count + " transactions)"
-            ).join("\n") +
-            "\nINSTRUCTION: Flag these anomalies. For each, suggest whether it's likely a one-time event, price increase, " +
-            "or potentially unauthorized. Recommend specific action if warranted (e.g. dispute, check account, update budget).";
+            ).join("\n");
         } else {
-          activeModules.push("anomaly_detection");
-          prompt += "\n\n=== ANOMALY DETECTION ===\nNo unusual transactions detected in the last 2 months — spending patterns are consistent. Note this positively.";
+          userMsg += "\n\n=== ANOMALY DETECTION DATA ===\nNo unusual transactions detected in the last 2 months.";
         }
       } catch { /* skip on query error */ }
     }
 
-    // --- Module: Seasonal forecasting ---
+    // --- Module: Seasonal forecasting (dynamic data) ---
     if (modules.seasonal_forecast !== false) {
       try {
         const seasonalData = await pool.query(
@@ -240,16 +305,13 @@ router.post("/api/insights", async (_req, res) => {
         );
         if (seasonalData.rows.length >= 6) {
           activeModules.push("seasonal_forecast");
-          prompt += "\n\n=== SEASONAL SPENDING HISTORY (24 months) ===\n" +
-            seasonalData.rows.map(r => r.month_name + " " + r.year + ": $" + parseFloat(r.total).toFixed(2)).join("\n") +
-            "\nINSTRUCTION: Identify seasonal patterns (e.g. holiday spending spikes, summer utility increases, " +
-            "back-to-school, annual renewals). Predict the likely spend for the next 1-2 months based on these patterns. " +
-            "If certain months are consistently high, warn the user in advance and suggest preparing a buffer.";
+          userMsg += "\n\n=== SEASONAL SPENDING HISTORY (24 months) ===\n" +
+            seasonalData.rows.map(r => r.month_name + " " + r.year + ": $" + parseFloat(r.total).toFixed(2)).join("\n");
         }
       } catch { /* skip on query error */ }
     }
 
-    // --- Module: Debt payoff optimizer ---
+    // --- Module: Debt payoff optimizer (dynamic data) ---
     if (modules.debt_optimizer !== false) {
       try {
         const creditAccounts = await pool.query(
@@ -276,35 +338,16 @@ router.post("/api/insights", async (_req, res) => {
           const totalDebt = cards.reduce((s, c) => s + parseFloat(c.current_balance || 0), 0);
           const totalLimit = cards.reduce((s, c) => s + parseFloat(c.current_balance || 0) + parseFloat(c.available_balance || 0), 0);
           const overallUtil = totalLimit > 0 ? Math.round((totalDebt / totalLimit) * 100) : 0;
-          prompt += "\n\n=== DEBT PAYOFF OPTIMIZER ===\n" +
+          userMsg += "\n\n=== DEBT PAYOFF DATA ===\n" +
             "Credit Card Accounts:\n" + cardLines +
             "\nTotal credit card debt: $" + totalDebt.toFixed(2) +
             "\nTotal credit limit: $" + totalLimit.toFixed(2) +
-            "\nOverall utilization: " + overallUtil + "%" +
-            "\n\nINSTRUCTION: Provide a personalized debt payoff analysis:\n" +
-            "1. CREDIT SCORE IMPACT: Explain current utilization impact on credit score (FICO uses 30% weight for utilization). " +
-            "Project how the score would improve at key thresholds: <50%, <30%, <10%, and 0% utilization. " +
-            "Be specific: 'Paying down $X would drop utilization from Y% to Z%, which typically improves scores by N points.'\n" +
-            "2. PAYOFF STRATEGY: If APRs are known, compare avalanche (highest APR first) vs snowball (smallest balance first) approaches. " +
-            "Calculate interest saved with the optimal strategy over 6-12 months.\n" +
-            "3. QUICK WINS: Identify any cards near a utilization threshold (e.g. just over 30%) where a small payment would have outsized credit score impact.\n" +
-            "4. If APR is unknown for any card, note that the user should add it in their Accounts page for more accurate projections.";
+            "\nOverall utilization: " + overallUtil + "%";
         }
       } catch { /* skip on query error */ }
     }
 
-    // --- Module: Bill negotiation ---
-    if (modules.bill_negotiation !== false) {
-      activeModules.push("bill_negotiation");
-      prompt += "\n\n=== BILL NEGOTIATION ===\n" +
-        "INSTRUCTION: Review the utility bills and subscriptions for negotiation opportunities. " +
-        "Common negotiable bills include: internet/cable (call retention department), insurance premiums (shop quotes), " +
-        "cell phone plans (switch to MVNO), medical bills (ask for itemized + payment plan). " +
-        "For each opportunity, estimate typical savings (e.g. 'Internet: calling retention typically saves $20-40/mo'). " +
-        "Be specific about which bills to target and the typical script/approach.";
-    }
-
-    // --- Module: Income & savings rate ---
+    // --- Module: Income & savings rate (dynamic data) ---
     if (modules.income_savings !== false) {
       try {
         const incomeData = await pool.query(
@@ -318,22 +361,18 @@ router.post("/api/insights", async (_req, res) => {
         const hasIncome = incomeData.rows.some(r => parseFloat(r.income) > 0);
         if (hasIncome) {
           activeModules.push("income_savings");
-          prompt += "\n\n=== INCOME & SAVINGS RATE ===\n" +
+          userMsg += "\n\n=== INCOME & SAVINGS RATE DATA ===\n" +
             incomeData.rows.map(r => {
               const inc = parseFloat(r.income);
               const spend = parseFloat(r.spending);
               const rate = inc > 0 ? Math.round((1 - spend / inc) * 100) : 0;
               return r.month + ": Income $" + inc.toFixed(2) + ", Spending $" + spend.toFixed(2) + ", Savings rate " + rate + "%";
-            }).join("\n") +
-            "\nINSTRUCTION: Analyze the savings rate trend. The recommended savings rate is 20%+ (50/30/20 rule). " +
-            "If below target, identify the top category driving overspending. " +
-            "Project how the current savings rate translates to emergency fund timeline (3-6 months of expenses). " +
-            "Suggest a specific, achievable savings rate improvement target.";
+            }).join("\n");
         }
       } catch { /* skip */ }
     }
 
-    // --- Module: Tax deduction flags ---
+    // --- Module: Tax deduction flags (dynamic data) ---
     if (modules.tax_deductions !== false) {
       try {
         const taxKeywords = ["doctor", "medical", "pharmacy", "hospital", "dental", "vision", "health",
@@ -353,15 +392,10 @@ router.post("/api/insights", async (_req, res) => {
         );
         if (taxData.rows.length > 0) {
           activeModules.push("tax_deductions");
-          prompt += "\n\n=== POTENTIAL TAX-DEDUCTIBLE TRANSACTIONS (YTD) ===\n" +
-            taxData.rows.map(r => r.merchant + ": $" + parseFloat(r.total).toFixed(2) + " (" + r.txn_count + " transactions)").join("\n") +
-            "\nINSTRUCTION: Review these flagged transactions for potential tax deductions. " +
-            "Categorize as: medical (Schedule A), charitable (Schedule A), education (1098-T/LLC), " +
-            "business (Schedule C), or not deductible. Note standard deduction thresholds ($14,600 single / $29,200 married 2024). " +
-            "Only flag deductions likely to exceed the standard deduction threshold. Remind user to consult a tax professional.";
+          userMsg += "\n\n=== POTENTIAL TAX-DEDUCTIBLE TRANSACTIONS (YTD) ===\n" +
+            taxData.rows.map(r => r.merchant + ": $" + parseFloat(r.total).toFixed(2) + " (" + r.txn_count + " transactions)").join("\n");
 
           // Persist flagged deductions to tax_deductions table for year-round accumulation
-          // Uses upsert on (merchant, tax_year) for AI-detected rows (which have no transaction_id)
           for (const row of taxData.rows) {
             await pool.query(
               `INSERT INTO tax_deductions (tax_year, merchant, amount, category, deduction_type)
@@ -375,13 +409,13 @@ router.post("/api/insights", async (_req, res) => {
       } catch { /* skip */ }
     }
 
-    // --- Module: Goal tracking ---
+    // --- Module: Goal tracking (dynamic data) ---
     if (modules.goal_tracking !== false) {
       try {
         const goalsData = await pool.query("SELECT name, type, target_amount, current_amount, monthly_contribution, target_date, interest_rate FROM financial_goals WHERE is_active = true");
         if (goalsData.rows.length > 0) {
           activeModules.push("goal_tracking");
-          prompt += "\n\n=== FINANCIAL GOALS ===\n" +
+          userMsg += "\n\n=== FINANCIAL GOALS ===\n" +
             goalsData.rows.map(g => {
               const target = parseFloat(g.target_amount);
               const current = parseFloat(g.current_amount);
@@ -391,36 +425,31 @@ router.post("/api/insights", async (_req, res) => {
               if (g.target_date) line += ", target date: " + g.target_date;
               if (g.interest_rate > 0) line += ", expected return: " + g.interest_rate + "%/yr";
               return line;
-            }).join("\n") +
-            "\nINSTRUCTION: Assess progress on each goal. For savings goals, calculate if the current contribution rate is on track. " +
-            "For retirement goals, use the expected return to project growth. If a goal is behind schedule, suggest specific adjustments " +
-            "(increase monthly contribution by $X, extend timeline by Y months, or reallocate from discretionary spending). " +
-            "For home/car purchases, note down payment requirements (typically 20% for home, 10-20% for car) and monthly payment estimates.\n" +
-            "IMPORTANT: Consider current real-world economic context when making projections. " +
-            "Account for current market conditions, interest rate environment, inflation trends, and any major economic events " +
-            "that could affect investment returns, home prices, or retirement planning. " +
-            "For retirement goals, factor in realistic return expectations given current market conditions rather than historical averages.";
+            }).join("\n");
         }
       } catch { /* skip */ }
     }
 
-    // Include running summary for long-term context
+    // Include running summary and previous insight in user message (dynamic)
     if (runningSummary) {
-      prompt += "\n\n=== LONG-TERM CONTEXT (your cumulative memory from past analyses) ===\n" + runningSummary;
+      userMsg += "\n\n=== LONG-TERM CONTEXT (your cumulative memory from past analyses) ===\n" + runningSummary;
     }
     if (prevInsight.rows.length > 0) {
       const prev = prevInsight.rows[0];
       const date = new Date(prev.created_at).toLocaleDateString("en-US", { month: "short", year: "numeric" });
-      prompt += "\n\n=== MOST RECENT ANALYSIS [" + date + "] ===\n" + prev.insight_text.substring(0, 600) + (prev.insight_text.length > 600 ? "..." : "");
+      userMsg += "\n\n=== MOST RECENT ANALYSIS [" + date + "] ===\n" + prev.insight_text.substring(0, 600) + (prev.insight_text.length > 600 ? "..." : "");
     }
+
     const client = new Anthropic();
     const maxTokens = Math.min(4096, 1500 + activeModules.length * 200);
     const message = await client.messages.create({
       model: modelId, max_tokens: maxTokens,
-      messages: [{ role: "user", content: prompt }],
+      system: [{ type: "text", text: systemText, cache_control: { type: "ephemeral" } }],
+      messages: [{ role: "user", content: userMsg }],
     });
     const fullResponse = message.content[0].text;
-    const tokensUsed = (message.usage?.input_tokens || 0) + (message.usage?.output_tokens || 0);
+    const usage = message.usage || {};
+    const tokensUsed = (usage.input_tokens || 0) + (usage.output_tokens || 0);
     const delimIdx = fullResponse.indexOf("---RUNNING_SUMMARY---");
     let insightText, newSummary;
     if (delimIdx !== -1) {
@@ -432,8 +461,8 @@ router.post("/api/insights", async (_req, res) => {
     }
     const actualModel = message.model || modelId;
     await pool.query(
-      "INSERT INTO financial_insights (insight_text, period_start, period_end, model_used, tokens_used) VALUES ($1, CURRENT_DATE - INTERVAL '6 months', CURRENT_DATE, $2, $3)",
-      [insightText, actualModel, tokensUsed]
+      "INSERT INTO financial_insights (insight_text, period_start, period_end, model_used, tokens_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens) VALUES ($1, CURRENT_DATE - INTERVAL '6 months', CURRENT_DATE, $2, $3, $4, $5, $6, $7)",
+      [insightText, actualModel, tokensUsed, usage.input_tokens || 0, usage.output_tokens || 0, usage.cache_read_input_tokens || 0, usage.cache_creation_input_tokens || 0]
     );
     if (newSummary) {
       await pool.query(
@@ -443,7 +472,8 @@ router.post("/api/insights", async (_req, res) => {
     } else {
       await pool.query("UPDATE user_settings SET insights_last_run = now() WHERE id = 1").catch(() => {});
     }
-    res.json({ insight: insightText, tokens_used: tokensUsed, modules_used: activeModules });
+    const costUsd = estimateCostGranular(usage, actualModel);
+    res.json({ insight: insightText, tokens_used: tokensUsed, modules_used: activeModules, cache_read_tokens: usage.cache_read_input_tokens || 0, estimated_cost_usd: parseFloat(costUsd.toFixed(6)) });
   } catch (err) {
     console.error("Insights error:", err.message);
     res.status(500).json({ error: err.message });
@@ -480,19 +510,20 @@ router.post("/api/insights/rebuild", async (_req, res) => {
     const client = new Anthropic();
     const message = await client.messages.create({
       model: modelId, max_tokens: 500,
-      messages: [{ role: "user", content:
-        "You are a personal finance advisor. Below is a chronological timeline of all past monthly financial analyses for one user. " +
-        "Synthesize these into a single cumulative summary (max 200 words) that captures:\n" +
+      system: [{ type: "text", text:
+        "You are a personal finance advisor. Synthesize a chronological timeline of past financial analyses into a single cumulative summary (max 200 words) that captures:\n" +
         "- Baseline spending levels and long-term trends\n" +
         "- Key subscriptions and how they've changed over time\n" +
         "- Progress on past recommendations (what improved, what didn't)\n" +
         "- Recurring patterns or concerns worth continuing to track\n\n" +
-        "This summary will serve as persistent memory for future analyses.\n\n" +
-        "=== ALL PAST ANALYSES ===\n" + timeline
+        "This summary will serve as persistent memory for future analyses.",
+        cache_control: { type: "ephemeral" },
       }],
+      messages: [{ role: "user", content: "=== ALL PAST ANALYSES ===\n" + timeline }],
     });
     const newSummary = message.content[0].text.trim();
-    const tokensUsed = (message.usage?.input_tokens || 0) + (message.usage?.output_tokens || 0);
+    const usage = message.usage || {};
+    const tokensUsed = (usage.input_tokens || 0) + (usage.output_tokens || 0);
     await pool.query(
       "UPDATE user_settings SET insights_running_summary = $1 WHERE id = 1", [newSummary]
     );

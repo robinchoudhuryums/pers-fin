@@ -154,6 +154,11 @@ async function runMigrations() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       UNIQUE(plaid_account_id, security_id)
     )`);
+    // Granular token tracking for prompt caching
+    await pool.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS input_tokens INT");
+    await pool.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS output_tokens INT");
+    await pool.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS cache_read_tokens INT");
+    await pool.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS cache_creation_tokens INT");
     console.log("Migrations complete.");
   } catch (err) {
     console.error("Migration error (non-fatal):", err.message);
