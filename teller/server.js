@@ -37,7 +37,7 @@ const morgan = require("morgan");
 // --- Services ---
 const { pool, runMigrations } = require("./services/database");
 const { TELLER_APP_ID, TELLER_ENV } = require("./services/teller-api");
-const { startKeepAlive } = require("./services/keep-alive");
+const { startKeepAlive, loadKeepAliveConfig } = require("./services/keep-alive");
 
 // --- Auth config ---
 const SESSION_PASSWORD = process.env.SESSION_PASSWORD;
@@ -87,7 +87,7 @@ app.use(session({
 
 function requireAuth(req, res, next) {
   if (!AUTH_SECRET) return next();
-  if (["/login", "/api/login", "/manifest.json", "/sw.js", "/health"].includes(req.path)) return next();
+  if (["/login", "/api/login", "/manifest.json", "/sw.js", "/health", "/api/keep-alive-schedule"].includes(req.path)) return next();
   if (req.path.endsWith(".css") || req.path.endsWith(".js")) return next();
   if (req.session && req.session.authenticated) {
     const timeout = (req.session.timeoutMinutes || 15) * 60 * 1000;
@@ -127,7 +127,7 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.teller.io", "https://cdn.jsdelivr.net", "https://cdn.plaid.com"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.teller.io", "https://cdn.jsdelivr.net", "https://*.jsdelivr.net", "https://cdn.plaid.com"],
       // Allow inline event handlers (onclick, onchange) — helmet v8 blocks these by default
       scriptSrcAttr: ["'unsafe-inline'"],
       connectSrc: ["'self'", "https://api.teller.io", "https://*.plaid.com"],
@@ -237,6 +237,21 @@ app.use(require("./pages/pwa"));
 // ---------------------------------------------------------------------------
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", uptime: Math.floor(process.uptime()) });
+});
+
+// Keep-alive schedule (public, no auth — used by external cron to check hours)
+app.get("/api/keep-alive-schedule", async (_req, res) => {
+  try {
+    const config = await loadKeepAliveConfig();
+    res.json({
+      enabled: config.keep_alive_enabled,
+      start: config.keep_alive_start,
+      end: config.keep_alive_end,
+      timezone: config.keep_alive_timezone,
+    });
+  } catch {
+    res.json({ enabled: false });
+  }
 });
 
 // ---------------------------------------------------------------------------

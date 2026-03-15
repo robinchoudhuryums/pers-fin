@@ -124,6 +124,7 @@
     <div id="forecast-list"></div>
   </div>
 <%- include('partials/foot', { apiKey: apiKey }) %>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script>
     const barColors = ['#c8856c','#d4a574','#5a8f8f','#6fcf97','#7fb5e6','#f0c36d','#eb6b6b','#b07cc6','#e8a87c','#85dcb0','#7bb5d4','#d4a0a0','#9fd4c9','#c4b28f','#a8c3d4'];
 
@@ -373,16 +374,14 @@
     // PWA
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 
-    // Charts
-    const chartScript = document.createElement('script');
-    chartScript.src = 'https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js';
-    chartScript.onload = loadCharts;
-    chartScript.onerror = function() {
-      document.querySelectorAll('.chart-wrap').forEach(el => {
+    // Charts — Chart.js loaded via blocking <script> tag above
+    if (typeof Chart !== 'undefined') {
+      loadCharts();
+    } else {
+      document.querySelectorAll('.chart-wrap').forEach(function(el) {
         el.innerHTML = '<div style="text-align:center;padding:32px;color:var(--text-muted);font-size:13px;">Chart library failed to load</div>';
       });
-    };
-    document.head.appendChild(chartScript);
+    }
 
     async function loadCharts() {
       const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
