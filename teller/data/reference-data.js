@@ -147,10 +147,11 @@ function findCancelUrl(merchantName) {
 }
 
 // AI model cost tracking
+// Cached input tokens are 90% cheaper than regular input tokens
 const MODEL_COST_PER_M = {
-  haiku:  { input: 0.80, output: 4.00, blended: 2.00 },
-  sonnet: { input: 3.00, output: 15.00, blended: 8.00 },
-  opus:   { input: 15.00, output: 75.00, blended: 40.00 },
+  haiku:  { input: 0.80, output: 4.00, cache_read: 0.08, cache_write: 1.00, blended: 2.00 },
+  sonnet: { input: 3.00, output: 15.00, cache_read: 0.30, cache_write: 3.75, blended: 8.00 },
+  opus:   { input: 15.00, output: 75.00, cache_read: 1.50, cache_write: 18.75, blended: 40.00 },
 };
 
 function modelFamily(modelStr) {
@@ -164,6 +165,22 @@ function modelFamily(modelStr) {
 function estimateCostUsd(tokens, modelStr) {
   const family = modelFamily(modelStr);
   return (tokens / 1_000_000) * (MODEL_COST_PER_M[family]?.blended || 8);
+}
+
+// Granular cost calculation using separate input/output/cached token counts
+function estimateCostGranular(usage, modelStr) {
+  const family = modelFamily(modelStr);
+  const rates = MODEL_COST_PER_M[family] || MODEL_COST_PER_M.sonnet;
+  const inputTokens = usage.input_tokens || 0;
+  const outputTokens = usage.output_tokens || 0;
+  const cacheRead = usage.cache_read_input_tokens || 0;
+  const cacheCreation = usage.cache_creation_input_tokens || 0;
+  // input_tokens from API includes cache_read + cache_creation; subtract them for non-cached input
+  const regularInput = Math.max(0, inputTokens - cacheRead - cacheCreation);
+  return (regularInput / 1_000_000) * rates.input +
+    (outputTokens / 1_000_000) * rates.output +
+    (cacheRead / 1_000_000) * rates.cache_read +
+    (cacheCreation / 1_000_000) * rates.cache_write;
 }
 
 // Insight modules — each adds context to the AI prompt
@@ -252,6 +269,7 @@ module.exports = {
   MODEL_COST_PER_M,
   modelFamily,
   estimateCostUsd,
+  estimateCostGranular,
   INSIGHT_MODULES,
   MODEL_MAP,
 };

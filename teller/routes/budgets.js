@@ -141,18 +141,19 @@ router.post("/api/budgets/suggest", async (_req, res) => {
     const client = new Anthropic();
     const message = await client.messages.create({
       model: modelId, max_tokens: 1000,
-      messages: [{ role: "user", content:
-        "You are a personal finance advisor. Based on the user's spending history by category over the last 3 months, " +
+      system: [{ type: "text", text:
+        "You are a personal finance advisor. Based on the user's spending history by category, " +
         "suggest reasonable monthly budgets for each category.\n\n" +
         "Rules:\n" +
         "- For essential categories (food, utilities, transportation), suggest budgets close to or slightly above the average\n" +
         "- For discretionary categories (entertainment, shopping, dining), suggest budgets 10-20% below the average to encourage savings\n" +
         "- Round to the nearest $5 or $10 for cleanliness\n" +
         "- Skip categories with very low spending (<$10/mo avg)\n\n" +
-        "Spending history:\n" + catSummary + "\n\n" +
         "Respond ONLY with a JSON array of objects with keys: category (string), monthly_limit (number), notes (string with brief rationale). " +
-        "No markdown, no extra text — just the JSON array."
+        "No markdown, no extra text — just the JSON array.",
+        cache_control: { type: "ephemeral" },
       }],
+      messages: [{ role: "user", content: "Spending history (last 3 months):\n" + catSummary }],
     });
 
     let suggestions;

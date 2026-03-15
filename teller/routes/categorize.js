@@ -76,13 +76,14 @@ router.post("/api/categorize", async (_req, res) => {
     const client = new Anthropic();
     const message = await client.messages.create({
       model: modelId, max_tokens: 2000,
-      messages: [{ role: "user", content:
+      system: [{ type: "text", text:
         "Categorize each transaction into exactly one category from this list:\n" +
         CATEGORIES.join(", ") + "\n\n" +
-        "Transactions:\n" + txnList + "\n\n" +
         "Respond ONLY with a JSON array of objects with keys: index (number, 1-based), category (string from the list above). " +
-        "No markdown, no extra text — just the JSON array."
+        "No markdown, no extra text — just the JSON array.",
+        cache_control: { type: "ephemeral" },
       }],
+      messages: [{ role: "user", content: "Transactions:\n" + txnList }],
     });
 
     const tokensUsed = (message.usage?.input_tokens || 0) + (message.usage?.output_tokens || 0);
