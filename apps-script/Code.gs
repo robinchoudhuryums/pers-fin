@@ -1138,6 +1138,7 @@ function dailyAutoSync() {
 
 /**
  * Email the user about new subscriptions, price changes, and upcoming charges.
+ * Uses styled HTML matching the app's dark aurora design.
  */
 function sendSubscriptionAlerts_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -1160,13 +1161,13 @@ function sendSubscriptionAlerts_() {
 
     // Check for price changes
     if (notes && notes.toString().toLowerCase().includes("price changed")) {
-      alerts.push("Price change: " + service + " — " + notes);
+      alerts.push({ service: service, detail: notes.toString() });
     }
 
     // Check for upcoming charges in next 7 days
     const nextCharge = row[7] instanceof Date ? row[7] : new Date(row[7]);
     if (!isNaN(nextCharge.getTime()) && nextCharge >= now && nextCharge <= sevenDaysOut) {
-      upcoming.push(service + " — $" + amount.toFixed(2) + " on " + nextCharge.toLocaleDateString());
+      upcoming.push({ service: service, amount: amount, date: nextCharge.toLocaleDateString("en-US", { month: "short", day: "numeric" }) });
     }
   }
 
@@ -1176,27 +1177,102 @@ function sendSubscriptionAlerts_() {
   const email = Session.getActiveUser().getEmail();
   if (!email) return;
 
-  let body = "Subscription Tracker Daily Summary\n";
-  body += "==================================\n\n";
+  var fmt = function(n) { return "$" + parseFloat(n).toFixed(2); };
 
+  // Build styled HTML email matching the app's dark aurora design
+  var html = '<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">' +
+    '<meta name="color-scheme" content="dark"><meta name="supported-color-schemes" content="dark">' +
+    '<style>body,html{margin:0;padding:0;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%}' +
+    '@media only screen and (max-width:480px){.email-body{padding:24px 16px !important}' +
+    '.email-header{padding:28px 16px 24px !important}.email-header h1{font-size:24px !important}' +
+    '.card{padding:14px 16px !important}.footer{padding:16px !important}}</style></head>' +
+    '<body style="margin:0;padding:0;background:#06080e;">';
+
+  html += '<div style="font-family:Inter,system-ui,-apple-system,Helvetica,Arial,sans-serif;background:#080b12;max-width:600px;margin:0 auto;border-radius:12px;overflow:hidden;">';
+
+  // Header
+  html += '<div class="email-header" style="background:linear-gradient(135deg,#2a1f1a 0%,#121a1a 50%,#080b12 100%);padding:40px 32px 32px;">';
+  html += '<p style="font-size:10px;font-weight:500;letter-spacing:2px;text-transform:uppercase;color:#78746d;margin:0 0 16px;">Subscription Tracker</p>';
+  html += '<h1 style="font-size:32px;font-weight:300;color:#f0ebe3;margin:0 0 8px;letter-spacing:-0.5px;">Daily Summary</h1>';
+  var summaryParts = [];
+  if (alerts.length > 0) summaryParts.push(alerts.length + " alert" + (alerts.length !== 1 ? "s" : ""));
+  if (upcoming.length > 0) summaryParts.push(upcoming.length + " upcoming charge" + (upcoming.length !== 1 ? "s" : ""));
+  html += '<p style="font-size:15px;color:#78746d;margin:0;font-weight:300;">' + summaryParts.join(" \u00b7 ") + '</p>';
+  html += '</div>';
+
+  // Body
+  html += '<div class="email-body" style="padding:0 32px;">';
+
+  // Alerts section
   if (alerts.length > 0) {
-    body += "ALERTS:\n";
-    alerts.forEach(a => body += "  • " + a + "\n");
-    body += "\n";
+    html += '<div class="card" style="background:#1a1210;border:1px solid#2e1d17;border-radius:10px;padding:16px 20px;margin:24px 0;">';
+    html += '<p style="font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:#c8856c;margin:0 0 12px;font-weight:500;">Alerts</p>';
+    for (var i = 0; i < alerts.length; i++) {
+      var a = alerts[i];
+      html += '<div style="padding:8px 0;' + (i < alerts.length - 1 ? 'border-bottom:1px solid #1e2228;' : '') + '">';
+      html += '<p style="font-size:14px;color:#f0ebe3;margin:0 0 2px;font-weight:400;">' + a.service + '</p>';
+      html += '<p style="font-size:12px;color:#78746d;margin:0;word-break:break-word;">' + a.detail + '</p>';
+      html += '</div>';
+    }
+    html += '</div>';
   }
 
+  // Upcoming charges section
   if (upcoming.length > 0) {
-    body += "UPCOMING CHARGES (next 7 days):\n";
-    upcoming.forEach(u => body += "  • " + u + "\n");
-    body += "\n";
+    html += '<div class="card" style="background:#111519;border:1px solid #1e2228;border-radius:10px;padding:16px 20px;margin:24px 0;">';
+    html += '<p style="font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:#78746d;margin:0 0 12px;font-weight:500;">Upcoming Charges (Next 7 Days)</p>';
+    html += '<table style="width:100%;border-collapse:collapse;">';
+    for (var j = 0; j < upcoming.length; j++) {
+      var u = upcoming[j];
+      var borderStyle = j < upcoming.length - 1 ? 'border-bottom:1px solid #1e2228;' : '';
+      html += '<tr>';
+      html += '<td style="padding:8px 0;font-size:14px;color:#f0ebe3;font-weight:400;' + borderStyle + '">' + u.service + '</td>';
+      html += '<td style="padding:8px 0;font-size:14px;color:#c8856c;font-weight:400;text-align:right;white-space:nowrap;' + borderStyle + '">' + fmt(u.amount) + '</td>';
+      html += '<td style="padding:8px 0;font-size:12px;color:#78746d;text-align:right;white-space:nowrap;padding-left:12px;' + borderStyle + '">' + u.date + '</td>';
+      html += '</tr>';
+    }
+    html += '</table>';
+    html += '</div>';
   }
 
-  body += "View dashboard: " + ss.getUrl() + "\n";
+  // Dashboard link button
+  html += '<div style="text-align:center;margin:24px 0;">';
+  html += '<a href="' + ss.getUrl() + '" style="display:inline-block;background:#1e2228;color:#f0ebe3;text-decoration:none;padding:12px 28px;border-radius:8px;font-size:14px;font-weight:400;letter-spacing:0.3px;">View Spreadsheet Dashboard</a>';
+  html += '</div>';
+
+  html += '</div>'; // end email-body
+
+  // Footer with disclaimer
+  html += '<div class="footer" style="padding:24px 32px;border-top:1px solid #1e2228;">';
+  html += '<p style="font-size:11px;color:#4a4740;margin:0;line-height:1.5;text-align:center;">' +
+    'This email was sent by the Google Sheets Apps Script tracker, not the main app. ' +
+    'Data may differ slightly from the web dashboard.' +
+    '</p>';
+  html += '</div>';
+
+  html += '</div>'; // end wrapper
+  html += '</body></html>';
+
+  // Plain text fallback
+  var plainBody = "Subscription Tracker Daily Summary\n==================================\n\n";
+  if (alerts.length > 0) {
+    plainBody += "ALERTS:\n";
+    alerts.forEach(function(a) { plainBody += "  - " + a.service + ": " + a.detail + "\n"; });
+    plainBody += "\n";
+  }
+  if (upcoming.length > 0) {
+    plainBody += "UPCOMING CHARGES (next 7 days):\n";
+    upcoming.forEach(function(u) { plainBody += "  - " + u.service + " — " + fmt(u.amount) + " on " + u.date + "\n"; });
+    plainBody += "\n";
+  }
+  plainBody += "View dashboard: " + ss.getUrl() + "\n\n";
+  plainBody += "---\nSent by the Google Sheets Apps Script tracker, not the main app.";
 
   MailApp.sendEmail({
     to: email,
     subject: "Subscription Tracker: " + (alerts.length > 0 ? alerts.length + " alert(s)" : upcoming.length + " upcoming charge(s)"),
-    body: body,
+    body: plainBody,
+    htmlBody: html,
   });
 }
 
