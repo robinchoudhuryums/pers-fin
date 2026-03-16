@@ -39,6 +39,30 @@
     </div>
   </div>
 
+  <div class="section"><h2>Pyramid Visualization</h2>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Data Source</div><div class="desc">What the pyramid tiers represent</div></div>
+      <div class="setting-control">
+        <select id="pyramid-source-select">
+          <option value="wellness">Financial Wellness</option>
+          <option value="debt_payoff">Debt Payoff</option>
+          <option value="goal_progress">Goal Progress</option>
+          <option value="spending_categories">Spending Categories</option>
+          <option value="net_worth">Net Worth</option>
+        </select>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Color Mode</div><div class="desc">Single amber-orange or multi-color per tier</div></div>
+      <div class="setting-control">
+        <select id="pyramid-color-select">
+          <option value="single">Single Color (Amber)</option>
+          <option value="multi">Multi-Color</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
   <div class="section"><h2>Security</h2>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Session Timeout</div><div class="desc">Minutes before requiring password again (1-1440)</div></div>
@@ -219,6 +243,8 @@
         document.getElementById('keepalive-tz').value = s.keep_alive_timezone || 'America/New_York';
         updateKeepAliveEstimate();
         document.getElementById('zip-input').value = s.zip_code || '';
+        document.getElementById('pyramid-source-select').value = s.pyramid_data_source || 'wellness';
+        document.getElementById('pyramid-color-select').value = s.pyramid_color_mode || 'single';
         // Render insight module toggles
         const mods = s.insight_modules || {};
         const avail = s.available_modules || {};
@@ -510,6 +536,8 @@
       ['keepalive-start', 'change', function() { updateSetting('keep_alive_start', parseInt(this.value)); }],
       ['keepalive-end', 'change', function() { updateSetting('keep_alive_end', parseInt(this.value)); }],
       ['keepalive-tz', 'change', function() { updateSetting('keep_alive_timezone', this.value); }],
+      ['pyramid-source-select', 'change', function() { updateSetting('pyramid_data_source', this.value); }],
+      ['pyramid-color-select', 'change', function() { updateSetting('pyramid_color_mode', this.value); }],
       ['snapshot-btn', 'click', saveSnapshot],
     ]);
     // Event delegation for dynamically generated module checkboxes
