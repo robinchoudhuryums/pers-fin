@@ -71,7 +71,13 @@ a:hover { color: var(--text); }
 .topnav .logo { font-weight: 300; font-size: 13px; letter-spacing: 2px;
                 text-transform: uppercase; color: var(--text-muted);
                 display: flex; align-items: center; gap: 8px; }
-.topnav .logo .logo-icon { width: 20px; height: 24px; color: var(--teal); flex-shrink: 0; }
+.topnav .logo .logo-icon {
+  display: inline-block; width: 20px; height: 20px; flex-shrink: 0;
+  background: var(--teal);
+  -webkit-mask: url(/logo.svg) center / contain no-repeat;
+  mask: url(/logo.svg) center / contain no-repeat;
+  mask-mode: alpha; -webkit-mask-mode: alpha;
+}
 .topnav .nav-links { display: flex; gap: 24px; font-size: 13px; font-weight: 400;
                      letter-spacing: 0.5px; }
 .topnav .nav-links a { color: var(--text-muted); }
