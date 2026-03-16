@@ -77,7 +77,7 @@
     .pyramid-face .face-fill {
       position: absolute; inset: 0;
       clip-path: polygon(50% 0%, 0% 100%, 100% 100%);
-      background: linear-gradient(to top, rgba(200,133,108,0.08) 0%, transparent 60%);
+      background: linear-gradient(to top, rgba(200,133,108,0.15) 0%, transparent 60%);
       transition: background 1.5s ease;
     }
     /* SVG wireframe edges — actual visible neon lines */
@@ -784,11 +784,14 @@
         face.querySelectorAll('.face-edges .tier-div').forEach(function(line) {
           line.setAttribute('stroke', 'rgba(' + neonRgb + ',' + (0.25 + fill * 0.2) + ')');
         });
-        // Update face inner fill glow — amber-orange
+        // Update face inner fill glow — amber-orange with sharp cutoff
         var faceFill = face.querySelector('.face-fill');
         if (faceFill) {
-          faceFill.style.background = 'linear-gradient(to top, rgba(' + fillRgb + ',' + (0.2 + fill * 0.25) + ') 0%, ' +
-            'rgba(' + fillRgb + ',' + (0.12 + fill * 0.15) + ') ' + fillPct + '%, transparent ' + Math.min(100, fillPct + 15) + '%)';
+          faceFill.style.background = 'linear-gradient(to top, ' +
+            'rgba(' + fillRgb + ',' + (0.35 + fill * 0.25) + ') 0%, ' +
+            'rgba(' + fillRgb + ',' + (0.25 + fill * 0.2) + ') ' + Math.max(0, fillPct - 5) + '%, ' +
+            'rgba(' + fillRgb + ',0.06) ' + fillPct + '%, ' +
+            'transparent ' + Math.min(100, fillPct + 5) + '%)';
         }
       });
 
