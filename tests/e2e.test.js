@@ -5,6 +5,9 @@
 // a mock database pool. No real Postgres required.
 // ============================================================================
 
+// Set dummy DB URL so database.js doesn't process.exit on import (we mock the pool below)
+if (!process.env.NEON_DATABASE_URL) process.env.NEON_DATABASE_URL = "postgres://mock:mock@localhost/mock";
+
 const { describe, it, before, beforeEach } = require("node:test");
 const assert = require("node:assert/strict");
 const express = require("express");
