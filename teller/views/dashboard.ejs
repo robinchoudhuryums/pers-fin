@@ -431,7 +431,7 @@
             face.style.clipPath = 'polygon(' + inset.toFixed(1) + '% 0%, ' + (100 - inset).toFixed(1) + '% 0%, 100% 100%, 0% 100%)';
           }
           // 3D transform: rotateY to orient face, translateZ to push outward, rotateX to tilt inward
-          face.style.transform = 'rotateY(' + faceRotY[fi] + 'deg) translateZ(' + avgZ.toFixed(1) + 'px) rotateX(-' + ALPHA_DEG.toFixed(1) + 'deg)';
+          face.style.transform = 'rotateY(' + faceRotY[fi] + 'deg) translateZ(' + avgZ.toFixed(1) + 'px) rotateX(' + ALPHA_DEG.toFixed(1) + 'deg)';
 
           // Face fill gradient
           var fill = document.createElement('div');
