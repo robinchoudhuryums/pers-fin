@@ -18,8 +18,10 @@
       background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
       backdrop-filter: blur(16px); text-align: center;
       animation: scaleIn 0.4s ease both; }
-    .logo { font-weight: 300; font-size: 13px; letter-spacing: 2px; text-transform: uppercase;
-            color: var(--text-muted); margin-bottom: 28px; animation: fadeInUp 0.4s ease both; animation-delay: 0.1s; }
+    .login-logo { font-weight: 300; font-size: 13px; letter-spacing: 2px; text-transform: uppercase;
+            color: var(--text-muted); margin-bottom: 28px; animation: fadeInUp 0.4s ease both; animation-delay: 0.1s;
+            display: flex; align-items: center; justify-content: center; gap: 8px; }
+    .login-logo .logo-icon { width: 18px; height: 22px; color: var(--teal); }
     h1 { font-size: 26px; font-weight: 300; letter-spacing: -0.3px; margin-bottom: 6px;
          animation: fadeInUp 0.4s ease both; animation-delay: 0.15s; }
     p { color: var(--text-muted); font-size: 14px; font-weight: 300; margin-bottom: 24px;
@@ -53,9 +55,80 @@
     .pin-key.fn { font-size: 12px; font-weight: 400; letter-spacing: 0.5px; text-transform: uppercase;
       color: var(--text-muted); border-color: transparent; }
     .pin-key.fn:hover { color: var(--text); }
+
+    /* ── Materialize overlay ── */
+    .materialize-overlay {
+      position: fixed; inset: 0; z-index: 9999;
+      display: flex; align-items: center; justify-content: center; flex-direction: column;
+      background: var(--bg); opacity: 0; pointer-events: none;
+      transition: opacity 0.3s ease;
+    }
+    .materialize-overlay.active { opacity: 1; pointer-events: all; }
+    .materialize-overlay svg { width: 120px; height: 144px; }
+    .materialize-overlay .helmet-stroke {
+      fill: none; stroke: var(--teal); stroke-width: 3;
+      stroke-dasharray: 1200; stroke-dashoffset: 1200;
+      filter: drop-shadow(0 0 8px rgba(90,143,143,0.6));
+    }
+    .materialize-overlay .helmet-fill {
+      fill: var(--teal); opacity: 0;
+    }
+    .materialize-overlay .helmet-eyes {
+      fill: var(--bg); opacity: 0;
+    }
+    .materialize-overlay.active .helmet-stroke {
+      animation: drawHelmet 1s ease-out 0.15s forwards;
+    }
+    .materialize-overlay.active .helmet-fill {
+      animation: fillHelmet 0.6s ease-in 0.9s forwards;
+    }
+    .materialize-overlay.active .helmet-eyes {
+      animation: showEyes 0.3s ease-in 1.3s forwards;
+    }
+    @keyframes drawHelmet {
+      to { stroke-dashoffset: 0; }
+    }
+    @keyframes fillHelmet {
+      0%  { opacity: 0; filter: drop-shadow(0 0 0 transparent); }
+      60% { opacity: 0.7; filter: drop-shadow(0 0 20px rgba(90,143,143,0.5)); }
+      100% { opacity: 1; filter: drop-shadow(0 0 12px rgba(90,143,143,0.3)); }
+    }
+    @keyframes showEyes {
+      to { opacity: 1; }
+    }
+    .materialize-label {
+      font-size: 11px; letter-spacing: 3px; text-transform: uppercase;
+      color: var(--teal); margin-top: 16px; opacity: 0;
+      font-weight: 400;
+    }
+    .materialize-overlay.active .materialize-label {
+      animation: fadeInUp 0.4s ease 1.2s forwards;
+    }
+    .materialize-overlay.done {
+      animation: overlayFadeOut 0.4s ease 0.2s forwards;
+    }
+    @keyframes overlayFadeOut {
+      to { opacity: 0; }
+    }
 ` }) %>
+  <!-- Materialize animation overlay -->
+  <div class="materialize-overlay" id="materialize-overlay">
+    <svg viewBox="0 0 200 240" xmlns="http://www.w3.org/2000/svg">
+      <!-- Fill layer (appears after stroke draws) -->
+      <path class="helmet-fill" d="M100,6 C56,6 24,44 24,92L24,132C24,150 32,168 44,180L60,196 74,212 86,224 100,232 114,224 126,212 140,196 156,180C168,168 176,150 176,132L176,92C176,44 144,6 100,6Z"/>
+      <!-- Stroke outline (draws in) -->
+      <path class="helmet-stroke" d="M100,6 C56,6 24,44 24,92L24,132C24,150 32,168 44,180L60,196 74,212 86,224 100,232 114,224 126,212 140,196 156,180C168,168 176,150 176,132L176,92C176,44 144,6 100,6Z"/>
+      <!-- Eye and detail cutouts (appear last) -->
+      <path class="helmet-eyes" d="M100,38L72,50 76,88 90,102 100,106 110,102 124,88 128,50Z"/>
+      <path class="helmet-eyes" d="M30,108L86,96 82,130 30,126Z"/>
+      <path class="helmet-eyes" d="M170,108L114,96 118,130 170,126Z"/>
+      <path class="helmet-eyes" d="M78,170L122,170 116,184 84,184Z"/>
+    </svg>
+    <div class="materialize-label">Perfin</div>
+  </div>
+
   <div class="login-card">
-    <div class="logo">Perfin</div>
+    <div class="login-logo"><svg class="logo-icon" viewBox="0 0 200 240" fill-rule="evenodd" aria-hidden="true"><path d="M100,6 C56,6 24,44 24,92L24,132C24,150 32,168 44,180L60,196 74,212 86,224 100,232 114,224 126,212 140,196 156,180C168,168 176,150 176,132L176,92C176,44 144,6 100,6Z M100,38L72,50 76,88 90,102 100,106 110,102 124,88 128,50Z M30,108L86,96 82,130 30,126Z M170,108L114,96 118,130 170,126Z M78,170L122,170 116,184 84,184Z" fill="currentColor"/></svg>Perfin</div>
     <h1>Welcome back</h1>
     <% if (isPin) { %>
     <p>Enter your PIN</p>
@@ -74,6 +147,19 @@
   <script>
     const AUTH_MODE = '<%= authMode %>';
     const errEl = document.getElementById('error');
+    const overlay = document.getElementById('materialize-overlay');
+
+    function playMaterialize() {
+      overlay.classList.add('active');
+      // After animation completes (~1.7s), fade out and redirect
+      setTimeout(function() {
+        overlay.classList.add('done');
+        setTimeout(function() {
+          window.location.href = '/dashboard';
+        }, 500);
+      }, 1700);
+    }
+
     async function doLogin(value) {
       try {
         const res = await fetch('/api/login', {
@@ -81,10 +167,12 @@
           body: JSON.stringify({ password: value }),
         });
         const data = await res.json();
-        if (res.ok) window.location.href = '/dashboard';
+        if (res.ok) {
+          playMaterialize();
+          return null;
+        }
         else return data.error || 'Invalid ' + AUTH_MODE;
       } catch { return 'Connection error'; }
-      return null;
     }
     if (AUTH_MODE === 'pin') {
       const pinLen = 8;

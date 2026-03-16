@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 240" fill-rule="evenodd">
+  <!--
+    Iron Man helmet logo for Perfin app.
+    Uses fill-rule="evenodd" so inner paths create transparent cutouts.
+    Apply fill color via CSS or the fill attribute.
+  -->
+  <path d="
+    M100,6 C56,6 24,44 24,92 L24,132
+    C24,150 32,168 44,180 L60,196 L74,212 L86,224 L100,232
+    L114,224 L126,212 L140,196 L156,180
+    C168,168 176,150 176,132 L176,92
+    C176,44 144,6 100,6 Z
+
+    M100,38 L72,50 L76,88 L90,102 L100,106 L110,102 L124,88 L128,50 Z
+
+    M30,108 L86,96 L82,130 L30,126 Z
+
+    M170,108 L114,96 L118,130 L170,126 Z
+
+    M78,170 L122,170 L116,184 L84,184 Z
+  " fill="currentColor"/>
+</svg>

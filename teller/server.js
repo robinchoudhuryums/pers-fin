@@ -91,7 +91,7 @@ app.use(session({
 
 function requireAuth(req, res, next) {
   if (!AUTH_SECRET) return next();
-  if (["/login", "/api/login", "/manifest.json", "/sw.js", "/health", "/api/keep-alive-schedule"].includes(req.path)) return next();
+  if (["/login", "/api/login", "/manifest.json", "/sw.js", "/health", "/api/keep-alive-schedule", "/apple-touch-icon.svg", "/apple-touch-icon.png", "/logo.svg"].includes(req.path)) return next();
   if (req.path.endsWith(".css") || req.path.endsWith(".js")) return next();
   if (req.session && req.session.authenticated) {
     const timeout = (req.session.timeoutMinutes || 15) * 60 * 1000;
