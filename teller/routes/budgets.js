@@ -169,7 +169,6 @@ router.post("/api/budgets/suggest", async (_req, res) => {
     res.json({ suggestions, tokens_used: (message.usage?.input_tokens || 0) + (message.usage?.output_tokens || 0) });
   } catch (err) {
     console.error("Budget suggest error:", err.message);
-    console.error("Budget suggest error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
   }
 });

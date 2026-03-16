@@ -994,8 +994,8 @@
         var cls = isWarm ? warmOrbs[Math.floor(Math.random() * warmOrbs.length)] : tealOrbs[Math.floor(Math.random() * tealOrbs.length)];
         orb.className = 'orb ' + cls;
         var size = 3 + Math.random() * 6;
-        // Warm orbs biased to right side, teal orbs centered/left
-        var x = isWarm ? 120 + Math.random() * 60 : 90 + (Math.random() - 0.5) * 160;
+        // Both warm and teal orbs spread evenly across left, center, and right
+        var x = 90 + (Math.random() - 0.5) * 160;
         var duration = 3.5 + Math.random() * 3.5;
         var delay = Math.random() * 1.5;
         orb.style.cssText = 'width:' + size + 'px;height:' + size + 'px;left:' + x + 'px;bottom:40px;animation-duration:' + duration + 's;animation-delay:' + delay + 's;';
