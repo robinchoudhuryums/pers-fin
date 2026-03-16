@@ -200,6 +200,15 @@
       max-width: 240px; transition: color 0.5s;
     }
 
+    .orb.orb-amber {
+      background: radial-gradient(circle, rgba(212,165,116,1) 0%, rgba(200,133,108,0.5) 50%, transparent 100%);
+      box-shadow: 0 0 6px rgba(212,165,116,0.6);
+    }
+    .orb.orb-orange {
+      background: radial-gradient(circle, rgba(230,160,80,1) 0%, rgba(200,133,108,0.4) 50%, transparent 100%);
+      box-shadow: 0 0 6px rgba(230,160,80,0.5);
+    }
+
     /* Tier labels — pushed further right to avoid overlap during rotation */
     .pyramid-tiers {
       position: absolute; top: 0; left: 0; width: 100%; height: 100%;
@@ -234,12 +243,19 @@
     [data-theme="light"] .orb.orb-blue {
       background: radial-gradient(circle, rgba(74,138,191,0.9) 0%, rgba(74,138,191,0.3) 50%, transparent 100%);
     }
+    [data-theme="light"] .orb.orb-amber {
+      background: radial-gradient(circle, rgba(176,122,74,0.9) 0%, rgba(160,104,76,0.4) 50%, transparent 100%);
+    }
+    [data-theme="light"] .orb.orb-orange {
+      background: radial-gradient(circle, rgba(190,130,50,0.9) 0%, rgba(160,104,76,0.3) 50%, transparent 100%);
+    }
 
     @media (max-width: 640px) {
       .pyramid-stage { width: 280px; height: 310px; }
       .pyramid-scene { transform: scale(0.78); }
       .tier-label { display: none; }
-      /* Mobile perf: remove expensive filters/shadows, simplify animations */
+      /* Mobile perf: stop rotation, remove expensive filters/shadows */
+      .pyramid-3d { animation: none; }
       .layer-face .face-edges line {
         filter: none !important;
         stroke-width: 1;
@@ -254,7 +270,7 @@
     }
     /* Respect reduced-motion preference */
     @media (prefers-reduced-motion: reduce) {
-      .pyramid-3d { animation-duration: 60s; }
+      .pyramid-3d { animation: none; }
       .layer-face .scanline { display: none; }
       .orb { display: none; }
     }
@@ -966,24 +982,28 @@
       }
     };
 
-    // Spawn rising neon orbs
+    // Spawn rising neon orbs (teal/blue/cyan + amber/orange biased right)
     (function spawnOrbs() {
       var container = document.getElementById('pyramid-orbs');
       if (!container) return;
-      var orbClasses = ['orb-teal', 'orb-blue', 'orb-cyan'];
+      var tealOrbs = ['orb-teal', 'orb-blue', 'orb-cyan'];
+      var warmOrbs = ['orb-amber', 'orb-orange'];
       function createOrb() {
+        var isWarm = Math.random() < 0.35;
         var orb = document.createElement('div');
-        orb.className = 'orb ' + orbClasses[Math.floor(Math.random() * orbClasses.length)];
+        var cls = isWarm ? warmOrbs[Math.floor(Math.random() * warmOrbs.length)] : tealOrbs[Math.floor(Math.random() * tealOrbs.length)];
+        orb.className = 'orb ' + cls;
         var size = 3 + Math.random() * 6;
-        var x = 90 + (Math.random() - 0.5) * 160;
+        // Warm orbs biased to right side, teal orbs centered/left
+        var x = isWarm ? 120 + Math.random() * 60 : 90 + (Math.random() - 0.5) * 160;
         var duration = 3.5 + Math.random() * 3.5;
         var delay = Math.random() * 1.5;
         orb.style.cssText = 'width:' + size + 'px;height:' + size + 'px;left:' + x + 'px;bottom:40px;animation-duration:' + duration + 's;animation-delay:' + delay + 's;';
         container.appendChild(orb);
         setTimeout(function() { orb.remove(); }, (duration + delay) * 1000);
       }
-      for (var i = 0; i < 8; i++) setTimeout(createOrb, i * 300);
-      setInterval(function() { createOrb(); }, 900);
+      for (var i = 0; i < 10; i++) setTimeout(createOrb, i * 250);
+      setInterval(function() { createOrb(); }, 800);
     })();
 
     // Load pyramid settings and compute

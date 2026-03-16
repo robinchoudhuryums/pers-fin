@@ -23,10 +23,11 @@
             display: flex; align-items: center; justify-content: center; gap: 8px; }
     .login-logo-icon {
       display: inline-block; width: 18px; height: 18px;
-      background: var(--teal);
+      background: #5adfdf;
       -webkit-mask: url(/logo.svg) center / contain no-repeat;
       mask: url(/logo.svg) center / contain no-repeat;
       mask-mode: alpha; -webkit-mask-mode: alpha;
+      filter: drop-shadow(0 0 4px rgba(90,223,223,0.4));
     }
     h1 { font-size: 26px; font-weight: 300; letter-spacing: -0.3px; margin-bottom: 6px;
          animation: fadeInUp 0.4s ease both; animation-delay: 0.15s; }
@@ -72,12 +73,12 @@
     .materialize-overlay.active { opacity: 1; pointer-events: all; }
     .materialize-overlay svg { width: 120px; height: 144px; }
     .materialize-overlay .helmet-stroke {
-      fill: none; stroke: var(--teal); stroke-width: 2;
+      fill: none; stroke: #5adfdf; stroke-width: 2;
       stroke-dasharray: 1; stroke-dashoffset: 1;
-      filter: drop-shadow(0 0 8px rgba(90,143,143,0.6));
+      filter: drop-shadow(0 0 10px rgba(90,223,223,0.7)) drop-shadow(0 0 20px rgba(90,143,143,0.4));
     }
     .materialize-overlay .helmet-fill {
-      fill: var(--teal); opacity: 0;
+      fill: #5adfdf; opacity: 0;
     }
     .materialize-overlay.active .helmet-stroke {
       animation: drawHelmet 1.2s ease-out 0.15s forwards;
@@ -90,19 +91,11 @@
     }
     @keyframes fillHelmet {
       0%  { opacity: 0; filter: drop-shadow(0 0 0 transparent); }
-      60% { opacity: 0.7; filter: drop-shadow(0 0 20px rgba(90,143,143,0.5)); }
-      100% { opacity: 1; filter: drop-shadow(0 0 12px rgba(90,143,143,0.3)); }
-    }
-    .materialize-label {
-      font-size: 11px; letter-spacing: 3px; text-transform: uppercase;
-      color: var(--teal); margin-top: 16px; opacity: 0;
-      font-weight: 400;
-    }
-    .materialize-overlay.active .materialize-label {
-      animation: fadeInUp 0.4s ease 1.2s forwards;
+      60% { opacity: 0.7; filter: drop-shadow(0 0 24px rgba(90,223,223,0.6)); }
+      100% { opacity: 1; filter: drop-shadow(0 0 14px rgba(90,223,223,0.4)); }
     }
     .materialize-overlay.done {
-      animation: overlayFadeOut 0.4s ease 0.2s forwards;
+      animation: overlayFadeOut 0.4s ease 0.1s forwards;
     }
     @keyframes overlayFadeOut {
       to { opacity: 0; }
@@ -120,7 +113,6 @@
       <path class="helmet-stroke" pathLength="1" d="M0 0 C0.36299554 1.48858674 0.6628113 2.99261738 0.9375 4.5 C1.11152344 5.3353125 1.28554687 6.170625 1.46484375 7.03125 C0.69282234 11.96180692 -2.12098043 14.98340609 -6 18 C-9.58757457 19.42801358 -13.12130788 19.99917369 -16.9375 20.5 C-17.90751953 20.6546875 -18.87753906 20.809375 -19.87695312 20.96875 C-22.24843597 21.34257981 -24.62007895 21.68527855 -27 22 C-31 16.25 -31 16.25 -31 14 C-26.74698389 12.00375597 -22.49281796 10.00999161 -18.23754883 8.01855469 C-16.78898447 7.34020577 -15.3407413 6.66117055 -13.89282227 5.98144531 C-11.81610064 5.00667211 -9.73825066 4.03434248 -7.66015625 3.0625 C-7.00910416 2.75626709 -6.35805206 2.45003418 -5.68727112 2.13452148 C-1.11387171 0 -1.11387171 0 0 0 Z" transform="translate(144,96)"/>
       <path class="helmet-stroke" pathLength="1" d="M0 0 C10.41385752 4.50218019 20.74277403 9.15139749 31 14 C29.81986879 17.35883498 28.85109106 19.80034153 26 22 C18.72738649 22.35331491 9.33291904 19.95501426 3.08984375 16.29296875 C0.2247886 13.40438132 -0.91958295 11.34411363 -1.1640625 7.2578125 C-0.95879684 4.75923393 -0.59329774 2.4330193 0 0 Z" transform="translate(56,96)"/>
     </svg>
-    <div class="materialize-label">Perfin</div>
   </div>
 
   <div class="login-card">
@@ -147,13 +139,10 @@
 
     function playMaterialize() {
       overlay.classList.add('active');
-      // After animation completes (~1.7s), fade out and redirect
+      // After animation completes (~1.7s), redirect immediately (overlay stays visible to prevent flash)
       setTimeout(function() {
-        overlay.classList.add('done');
-        setTimeout(function() {
-          window.location.href = '/dashboard';
-        }, 500);
-      }, 1700);
+        window.location.href = '/dashboard';
+      }, 1800);
     }
 
     async function doLogin(value) {

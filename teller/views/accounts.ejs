@@ -179,39 +179,52 @@
     }
 
     function startLink() {
-      var tellerConnect = TellerConnect.setup({
-        applicationId: "<%= tellerAppId %>",
-        environment: "<%= tellerEnv %>",
-        onInit: function() {},
-        onSuccess: async function(enrollment) {
-          showStatus('Enrolling...', true);
-          try {
-            const res = await apiFetch('/api/enroll', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                accessToken: enrollment.accessToken,
-                enrollment: {
-                  id: enrollment.enrollment.id,
-                  institution: enrollment.enrollment.institution,
-                },
-              }),
-            });
-            const data = await res.json();
-            if (res.ok) {
-              showStatus('Linked ' + data.institution + ' (' + data.accounts_linked + ' accounts)', true);
-              loadItems();
-            } else {
-              showStatus('Enrollment failed: ' + (data.error || 'HTTP ' + res.status), false);
-            }
-          } catch (e) { showStatus('Enrollment failed: Could not reach server. ' + e.message, false); }
-        },
-        onExit: function() {},
-        onFailure: function(failure) {
-          showStatus('Teller Connect error: ' + (failure.message || JSON.stringify(failure)), false);
-        },
-      });
-      tellerConnect.open();
+      if (typeof TellerConnect === 'undefined') {
+        showStatus('Teller Connect SDK failed to load. Check your network connection or try refreshing the page.', false);
+        return;
+      }
+      var appId = "<%= tellerAppId %>";
+      if (!appId) {
+        showStatus('Teller Application ID is not configured. Set TELLER_APPLICATION_ID in your environment variables.', false);
+        return;
+      }
+      try {
+        var tellerConnect = TellerConnect.setup({
+          applicationId: appId,
+          environment: "<%= tellerEnv %>",
+          onInit: function() {},
+          onSuccess: async function(enrollment) {
+            showStatus('Enrolling...', true);
+            try {
+              const res = await apiFetch('/api/enroll', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  accessToken: enrollment.accessToken,
+                  enrollment: {
+                    id: enrollment.enrollment.id,
+                    institution: enrollment.enrollment.institution,
+                  },
+                }),
+              });
+              const data = await res.json();
+              if (res.ok) {
+                showStatus('Linked ' + data.institution + ' (' + data.accounts_linked + ' accounts)', true);
+                loadItems();
+              } else {
+                showStatus('Enrollment failed: ' + (data.error || 'HTTP ' + res.status), false);
+              }
+            } catch (e) { showStatus('Enrollment failed: Could not reach server. ' + e.message, false); }
+          },
+          onExit: function() {},
+          onFailure: function(failure) {
+            showStatus('Teller Connect error: ' + (failure.message || JSON.stringify(failure)), false);
+          },
+        });
+        tellerConnect.open();
+      } catch (e) {
+        showStatus('Failed to open Teller Connect: ' + e.message, false);
+      }
     }
 
     // CSV import
