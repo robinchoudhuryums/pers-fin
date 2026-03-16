@@ -3,7 +3,7 @@
 ## Project Overview
 Personal finance tracker that detects recurring charges, compares spending to benchmarks,
 tracks financial goals, and provides AI-powered insights. Uses **Teller API** (primary) and
-Plaid (legacy) for bank account linking via mTLS.
+Plaid (legacy/investments) for bank account linking via mTLS.
 
 ## Architecture (Modular)
 The server was modularized from a single 4,931-line file into focused modules:
@@ -29,7 +29,8 @@ teller/
                            uncancel/category, GET /api/transactions, POST /api/detect,
                            POST /api/import-csv, GET /api/csv-imports, POST /api/cleanup
     goals.js             — GET/POST/PATCH/DELETE /api/goals, POST /api/net-worth/snapshot,
-                           GET /api/net-worth/history, GET /api/context-export
+                           GET /api/net-worth/history, GET /api/context-export,
+                           GET/POST /api/investment-accounts
     budgets.js           — GET/POST/PATCH/DELETE /api/budgets, POST /api/budgets/suggest,
                            POST /api/budgets/accept
     settings.js          — GET/PATCH /api/settings, POST /api/sheets/sync,
@@ -37,15 +38,32 @@ teller/
     insights.js          — GET/POST /api/insights, GET /api/insights/status,
                            GET /api/insights/usage, POST /api/insights/reset,
                            POST /api/insights/rebuild, GET/PATCH /api/tax-deductions
+    categorize.js        — POST /api/categorize, GET /api/categorize/status,
+                           PATCH /api/transactions/:id/category (ML categorization via Claude)
+    investments.js       — GET /api/plaid/status, POST /api/plaid/link-token,
+                           POST /api/plaid/exchange, POST /api/plaid/sync-holdings,
+                           GET /api/plaid/holdings (Plaid investment accounts)
+    notifications.js     — GET /api/notifications/vapid, POST/DELETE /api/notifications/subscribe,
+                           POST /api/notifications/test (Web Push notifications)
   pages/
-    dashboard.js         — Dashboard page (Chart.js charts, account list, balances)
+    dashboard.js         — Dashboard page (Chart.js charts, 3D pyramid, account list, balances)
     subscriptions.js     — Subscription/utility management page
     accounts.js          — Teller Connect enrollment + CSV import page
     goals.js             — Financial goals tracking page
     budgets.js           — Budget tracking page with AI suggestions
-    login.js             — PIN pad or password login page
+    login.js             — PIN pad or password login page (with materialize animation)
     settings.js          — Settings page (theme, AI insights, keep-alive, exports)
-    pwa.js               — PWA manifest.json + service worker
+    pwa.js               — PWA manifest.json + service worker + icon generation
+  public/
+    logo.svg             — Iron Man helmet SVG logo (traced from PNG, used as nav icon, PWA icon)
+    perfin-shared.css    — Shared styles (variables, nav, cards, animations, responsive)
+    perfin-shared.js     — Shared JavaScript (apiFetch, theme, nav helpers)
+  views/
+    dashboard.ejs        — Dashboard template with 3D financial wellness pyramid
+    login.ejs            — Login template with helmet materialize animation on success
+    partials/head.ejs    — HTML head (meta, PWA manifest, apple-touch-icon, theme)
+    partials/nav.ejs     — Top navigation bar with helmet logo icon
+    partials/foot.ejs    — Footer partial
 ```
 
 **Other key files:**
@@ -53,18 +71,25 @@ teller/
 - `scripts/detect-subscriptions.js` — Recurring pattern detection (30/60/90/365-day cadences)
 - `scripts/sheets-sync.js` — Google Sheets sync (server-side push)
 - `apps-script/Code.gs` — Google Sheets Apps Script (standalone + server sync)
-- `tests/` — 60 tests (node:test runner, `npm test`)
+- `tests/` — 97 tests (node:test runner, `npm test`)
 - `Dockerfile`, `fly.toml`, `render.yaml` — Deployment configs
 
 ## Features
 - **Bank linking**: Teller Connect UI + mTLS API for transaction sync
+- **Investment accounts**: Plaid API integration for brokerage/retirement/crypto holdings
 - **CSV import**: Auto-detect Chase, Capital One, Discover, Wells Fargo, Schwab formats
 - **Subscription detection**: Automatic recurring charge identification (30/60/90/365-day cadences)
 - **Utility separation**: Utilities tracked separately from optional subscriptions
-- **Dashboard**: Monthly spending trend (line chart), category breakdown (doughnut), account balances
+- **Dashboard**: Monthly spending trend (line chart), category breakdown (doughnut), account balances,
+  3D financial wellness pyramid (CSS 3D with true frustum geometry, configurable data sources)
+- **3D Financial Pyramid**: Interactive spinning pyramid with 4 frustum layers, neon wireframe edges,
+  holographic effects. Layers computed by JS (`buildPyramidGeometry()`) with proper taper geometry.
+  Configurable data sources: wellness, debt payoff, goal progress, etc. Mobile-optimized (reduced
+  filters/shadows on small screens, `prefers-reduced-motion` support).
 - **Financial goals**: Track progress toward savings/investment targets with compound interest projections
 - **Net worth tracking**: Periodic snapshots with trend history
 - **Credit utilization**: Derived credit limit display, utilization percentages
+- **ML categorization**: Claude-powered smart transaction categorization (POST /api/categorize)
 - **AI Insights** (11 toggleable modules):
   - Utility rate comparison (vs state/national averages, requires ZIP)
   - Spending benchmarks (vs BLS Consumer Expenditure Survey)
@@ -80,8 +105,11 @@ teller/
 - **Tax deduction persistence**: Flagged deductions stored in `tax_deductions` table, accumulated year-round
 - **Context export**: Structured financial data (markdown/JSON) for pasting into Claude chat deep-dives
 - **Authentication**: SESSION_PASSWORD (text) or SESSION_PIN (numeric PIN pad), configurable timeout
+- **Login animation**: Iron Man helmet materialize effect on successful login (stroke-draw → fill → redirect)
+- **Branding**: Iron Man helmet logo (SVG traced from PNG) — nav bar icon (CSS mask), PWA icon, login page
 - **Dark/Light theme**: Toggle in Settings, persisted to DB + localStorage
-- **PWA**: Installable home screen app (manifest.json + service worker)
+- **PWA**: Installable home screen app (manifest.json + service worker, helmet icon on home screen)
+- **Web Push notifications**: VAPID-based push notifications for alerts
 - **Keep-alive**: Timezone-aware self-ping to prevent Render free tier sleep
 - **Per-model cost tracking**: Usage history with dynamic pricing (Haiku/Sonnet/Opus)
 
@@ -115,12 +143,12 @@ cd teller && npm install && node server.js
 - Env vars configured in Render dashboard
 - PEM files added as Secret Files in Render
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 60 tests passing
+- 97 tests passing
 
 ## Commands
 ```bash
 cd teller && npm install && node server.js    # Run locally
-npm test                                       # Run 60 tests
+npm test                                       # Run 97 tests
 
 # Key API endpoints
 POST /api/enroll           # store Teller access token after Connect
@@ -133,6 +161,8 @@ GET  /api/accounts         # list linked accounts with balances
 GET  /api/spending-summary # monthly trends, categories, top merchants
 GET  /api/goals            # list financial goals with projections
 POST /api/goals            # create a financial goal
+GET  /api/investment-accounts # list manual investment accounts
+POST /api/investment-accounts # add manual investment account
 GET  /api/net-worth/history # net worth snapshots over time
 GET  /api/context-export   # structured data dump for Claude chat
 GET  /api/tax-deductions   # accumulated tax-deductible transactions
@@ -142,9 +172,19 @@ POST /api/insights         # generate new AI insights
 GET  /api/insights/status  # AI API config + usage stats
 POST /api/insights/reset   # clear long-term AI context
 POST /api/insights/rebuild # rebuild context from all history
+POST /api/categorize       # ML categorize transactions via Claude
+GET  /api/categorize/status # ML categorization status
 POST /api/import-csv       # import bank CSV file
 GET  /api/export           # download transactions/subscriptions CSV
 POST /api/sheets/sync      # sync to Google Sheets
+GET  /api/plaid/status     # Plaid investment API status
+POST /api/plaid/link-token # create Plaid Link token for investments
+POST /api/plaid/exchange   # exchange public token for access token
+POST /api/plaid/sync-holdings # sync investment holdings
+GET  /api/plaid/holdings   # list investment holdings
+GET  /api/notifications/vapid # get VAPID public key for push
+POST /api/notifications/subscribe # register push subscription
+POST /api/notifications/test # send test push notification
 GET  /dashboard            # main dashboard UI
 GET  /subscriptions        # subscription management
 GET  /goals                # financial goals page

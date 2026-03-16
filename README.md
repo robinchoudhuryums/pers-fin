@@ -1,6 +1,6 @@
-# Personal Subscription Tracker
+# Personal Finance Tracker (Perfin)
 
-Detect recurring charges across your bank accounts using **Teller API** (primary) or Plaid (legacy), with Neon Postgres. Features a web dashboard with spending charts, dark/light theme, PIN/password-protected sessions, optional AI financial insights, and installable as a mobile home-screen app (PWA).
+Personal finance tracker that detects recurring charges, compares spending to benchmarks, tracks financial goals, and provides AI-powered insights. Uses **Teller API** (primary) and Plaid (legacy/investments) for bank account linking via mTLS. Features a web dashboard with spending charts, 3D financial wellness pyramid, dark/light theme, PIN/password-protected sessions with Iron Man helmet branding, and installable as a mobile home-screen app (PWA).
 
 ## Architecture
 
@@ -35,15 +35,22 @@ Detect recurring charges across your bank accounts using **Teller API** (primary
 | `teller/services/keep-alive.js` | Self-ping for Render free tier |
 | `teller/routes/enrollments.js` | Enrollment, sync, items, accounts, balances |
 | `teller/routes/subscriptions.js` | Subscription CRUD, transactions, detection, CSV import |
-| `teller/routes/goals.js` | Financial goals, net worth, context export |
+| `teller/routes/goals.js` | Financial goals, net worth, context export, investment accounts |
+| `teller/routes/budgets.js` | Budget CRUD, AI suggestions, accept |
 | `teller/routes/settings.js` | User settings, sheets sync, CSV export |
 | `teller/routes/insights.js` | AI insights (11 modules), tax deductions |
+| `teller/routes/categorize.js` | ML transaction categorization via Claude |
+| `teller/routes/investments.js` | Plaid investment accounts (holdings, sync) |
+| `teller/routes/notifications.js` | Web Push notifications (VAPID) |
 | `teller/pages/*.js` | HTML page generators (dashboard, subscriptions, etc.) |
+| `teller/public/logo.svg` | Iron Man helmet SVG logo (nav icon, PWA icon) |
+| `teller/public/perfin-shared.css` | Shared styles (variables, nav, cards, animations) |
+| `teller/views/*.ejs` | EJS templates (dashboard, login, partials) |
 | `plaid/server.js` | Legacy Plaid server (still functional) |
 | `scripts/detect-subscriptions.js` | Recurring charge detection algorithm |
 | `scripts/sheets-sync.js` | Google Sheets sync + dashboard builder |
 | `apps-script/Code.gs` | Google Sheets Apps Script (standalone + server sync) |
-| `tests/` | Test suite (node:test, 60 tests) |
+| `tests/` | Test suite (node:test, 97 tests) |
 | `Dockerfile` | Container build |
 | `render.yaml` | Render deployment blueprint |
 | `fly.toml` | Fly.io deployment config |
@@ -125,12 +132,29 @@ Tests cover the detection algorithm, CSV parsing, date handling, API logic, and 
 | `GET` | `/api/insights/status` | AI API config + budget stats |
 | `POST` | `/api/insights/reset` | Clear long-term AI context memory |
 | `POST` | `/api/insights/rebuild` | Rebuild AI context from all history |
+| `POST` | `/api/categorize` | ML categorize transactions via Claude |
+| `GET` | `/api/categorize/status` | ML categorization status |
+| `PATCH` | `/api/transactions/:id/category` | Update transaction category |
+| `GET/POST/PATCH/DELETE` | `/api/budgets` | Budget CRUD |
+| `POST` | `/api/budgets/suggest` | AI budget suggestions |
+| `POST` | `/api/budgets/accept` | Accept AI-suggested budget |
+| `GET` | `/api/investment-accounts` | List manual investment accounts |
+| `POST` | `/api/investment-accounts` | Add manual investment account |
+| `GET` | `/api/plaid/status` | Plaid investment API status |
+| `POST` | `/api/plaid/link-token` | Create Plaid Link token for investments |
+| `POST` | `/api/plaid/exchange` | Exchange public token for access token |
+| `POST` | `/api/plaid/sync-holdings` | Sync investment holdings |
+| `GET` | `/api/plaid/holdings` | List investment holdings |
+| `GET` | `/api/notifications/vapid` | Get VAPID public key for push |
+| `POST` | `/api/notifications/subscribe` | Register push subscription |
+| `POST` | `/api/notifications/test` | Send test push notification |
 | `POST` | `/api/sheets/sync` | Sync all data to Google Sheets |
 | `GET` | `/api/export` | Download transactions/subscriptions CSV |
 | `POST` | `/api/login` | Authenticate session |
 | `GET` | `/dashboard` | Main dashboard UI |
 | `GET` | `/subscriptions` | Subscription management |
 | `GET` | `/goals` | Financial goals page |
+| `GET` | `/budgets` | Budget tracking page |
 | `GET` | `/settings` | Settings page |
 | `GET` | `/health` | Health check |
 
@@ -146,10 +170,20 @@ Sessions expire after a configurable timeout (default 15 minutes, adjustable in 
 ### Dark/Light Theme
 Toggle between Night Mode (default) and Day Mode in Settings. Preference is stored in the database and persisted via localStorage.
 
-### Dashboard Charts
+### Dashboard
 Two interactive charts (Chart.js):
 - **Monthly Spending Trend** — line chart of total spending over the last 6 months
 - **Spending by Category** — doughnut chart of top 8 spending categories
+- **3D Financial Wellness Pyramid** — interactive CSS 3D pyramid with 4 frustum layers, neon wireframe edges, holographic effects. Mobile-optimized with `prefers-reduced-motion` support.
+
+### Investment Accounts
+Track brokerage, retirement, and crypto holdings via Plaid API integration. Holdings sync with market values.
+
+### ML Transaction Categorization
+Claude-powered smart categorization beyond keyword matching (POST /api/categorize).
+
+### Web Push Notifications
+VAPID-based push notifications for alerts (anomalies, upcoming charges, goal milestones).
 
 ### AI Financial Insights (11 Toggleable Modules)
 Set `ANTHROPIC_API_KEY` in `.env` to enable AI-powered financial analysis via Claude.
@@ -185,8 +219,14 @@ Export all financial data as structured markdown or JSON — paste into Claude c
 ### Tax Deduction Tracking
 AI-flagged deductions are accumulated year-round in a persistent table, available for review at tax filing time.
 
+### Branding
+Iron Man helmet logo (SVG traced from PNG) used throughout:
+- **Nav bar** — teal helmet icon via CSS mask
+- **PWA icon** — helmet on dark background for home screen
+- **Login** — helmet materialize animation (stroke-draw → fill → redirect) on successful PIN/password entry
+
 ### Mobile App (PWA)
-Installable as a home screen icon:
+Installable as a home screen icon with Iron Man helmet branding:
 - **iPhone**: Open in Safari → Share → "Add to Home Screen"
 - **Android**: Chrome → Menu → "Install app"
 
