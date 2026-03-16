@@ -810,22 +810,26 @@ function buildDashboard() {
   rows.push(["", "", "", "", "", ""]);
 
   // Monthly trend
-  rows.push(["MONTHLY SPENDING TREND", "", "", ""]);
-  rows.push(["Month", "Total Spend", "Transactions", "Avg Transaction"]);
+  rows.push(["MONTHLY SPENDING TREND", "", "", "", ""]);
+  rows.push(["Month", "Total Spend", "Transactions", "Avg Transaction", "Trend"]);
   const sortedMonths = Object.entries(monthlyTotals).sort((a, b) => b[0].localeCompare(a[0]));
+  const monthlyTrendStartRow = rows.length + 1; // 1-indexed row where data starts
   for (const [month, data] of sortedMonths) {
-    rows.push([month, data.total, data.count, data.total / data.count]);
+    rows.push([month, data.total, data.count, data.total / data.count, ""]);
   }
-  rows.push(["", "", "", ""]);
+  const monthlyTrendEndRow = rows.length; // 1-indexed last data row
+  rows.push(["", "", "", "", ""]);
 
   // Category breakdown
-  rows.push(["SPENDING BY CATEGORY", "", ""]);
-  rows.push(["Category", "Total", "Transactions"]);
+  rows.push(["SPENDING BY CATEGORY", "", "", ""]);
+  rows.push(["Category", "Total", "Transactions", "Share"]);
   const sortedCats = Object.entries(categoryTotals).sort((a, b) => b[1].total - a[1].total).slice(0, 15);
+  const categoryStartRow = rows.length + 1;
   for (const [cat, data] of sortedCats) {
-    rows.push([cat, data.total, data.count]);
+    rows.push([cat, data.total, data.count, ""]);
   }
-  rows.push(["", "", ""]);
+  const categoryEndRow = rows.length;
+  rows.push(["", "", "", ""]);
 
   // Top merchants
   rows.push(["TOP MERCHANTS", "", ""]);
@@ -852,8 +856,16 @@ function buildDashboard() {
     }));
   }
 
-  // Apply formatting
-  formatDashboard_(dashSheet, rows);
+  // Apply formatting (pass section positions for sparklines + charts)
+  formatDashboard_(dashSheet, rows, {
+    monthlyTrendStartRow: monthlyTrendStartRow,
+    monthlyTrendEndRow: monthlyTrendEndRow,
+    categoryStartRow: categoryStartRow,
+    categoryEndRow: categoryEndRow,
+    sortedMonths: sortedMonths,
+    sortedCats: sortedCats,
+    totalSpend: totalSpend,
+  });
 }
 
 // ============================================================================
@@ -1171,13 +1183,42 @@ function sendSubscriptionAlerts_() {
     }
   }
 
-  // Only send email if there's something to report
-  if (alerts.length === 0 && upcoming.length === 0) return;
+  // Build financial wellness summary from subscription + transaction data
+  var totalMonthlySubs = 0;
+  var activeSubs = 0;
+  for (var si = 0; si < data.length; si++) {
+    if (data[si][8] === "Active") {
+      totalMonthlySubs += parseFloat(data[si][3]) || 0;
+      activeSubs++;
+    }
+  }
+  var totalYearlySubs = totalMonthlySubs * 12;
+  var upcomingTotal = 0;
+  for (var ui = 0; ui < upcoming.length; ui++) {
+    upcomingTotal += upcoming[ui].amount;
+  }
+
+  // Always send if we have financial data (wellness summary), not just alerts
+  if (alerts.length === 0 && upcoming.length === 0 && activeSubs === 0) return;
 
   const email = Session.getActiveUser().getEmail();
   if (!email) return;
 
   var fmt = function(n) { return "$" + parseFloat(n).toFixed(2); };
+
+  // Try to export a chart image from the Dashboard sheet
+  var chartBlob = null;
+  try {
+    var dashSheet = ss.getSheetByName(CONFIG.SHEET_DASHBOARD);
+    if (dashSheet) {
+      var charts = dashSheet.getCharts();
+      if (charts.length > 0) {
+        chartBlob = charts[0].getBlob().setName("spending-trend.png");
+      }
+    }
+  } catch (e) {
+    // Chart export not available — continue without it
+  }
 
   // Build styled HTML email matching the app's dark aurora design
   var html = '<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">' +
@@ -1197,15 +1238,64 @@ function sendSubscriptionAlerts_() {
   var summaryParts = [];
   if (alerts.length > 0) summaryParts.push(alerts.length + " alert" + (alerts.length !== 1 ? "s" : ""));
   if (upcoming.length > 0) summaryParts.push(upcoming.length + " upcoming charge" + (upcoming.length !== 1 ? "s" : ""));
+  if (activeSubs > 0) summaryParts.push(activeSubs + " active subscription" + (activeSubs !== 1 ? "s" : ""));
   html += '<p style="font-size:15px;color:#78746d;margin:0;font-weight:300;">' + summaryParts.join(" \u00b7 ") + '</p>';
   html += '</div>';
 
   // Body
   html += '<div class="email-body" style="padding:0 32px;">';
 
+  // Financial Wellness Summary card
+  if (activeSubs > 0) {
+    html += '<div class="card" style="background:#101820;border:1px solid #1e2228;border-radius:10px;padding:16px 20px;margin:24px 0;">';
+    html += '<p style="font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:#5a8f8f;margin:0 0 16px;font-weight:500;">Financial Snapshot</p>';
+
+    // Monthly subscriptions total with progress bar
+    html += '<div style="margin-bottom:14px;">';
+    html += '<div style="display:flex;justify-content:space-between;margin-bottom:6px;">';
+    html += '<span style="font-size:12px;color:#78746d;">Monthly Subscriptions</span>';
+    html += '<span style="font-size:14px;color:#f0ebe3;font-weight:400;">' + fmt(totalMonthlySubs) + '</span>';
+    html += '</div>';
+    // Progress bar: subscriptions as fraction of a $200 benchmark
+    var subsPct = Math.min(Math.round((totalMonthlySubs / 200) * 100), 100);
+    var barColor = subsPct < 50 ? '#5a8f8f' : subsPct < 80 ? '#c8a96c' : '#c8856c';
+    html += '<div style="background:#1e2228;border-radius:4px;height:6px;overflow:hidden;">';
+    html += '<div style="background:' + barColor + ';width:' + subsPct + '%;height:100%;border-radius:4px;"></div>';
+    html += '</div>';
+    html += '</div>';
+
+    // Yearly projection
+    html += '<div style="margin-bottom:14px;">';
+    html += '<div style="display:flex;justify-content:space-between;">';
+    html += '<span style="font-size:12px;color:#78746d;">Yearly Projection</span>';
+    html += '<span style="font-size:14px;color:#c8856c;font-weight:400;">' + fmt(totalYearlySubs) + '</span>';
+    html += '</div>';
+    html += '</div>';
+
+    // Upcoming week total
+    if (upcoming.length > 0) {
+      html += '<div style="padding-top:10px;border-top:1px solid #1e2228;">';
+      html += '<div style="display:flex;justify-content:space-between;">';
+      html += '<span style="font-size:12px;color:#78746d;">Due This Week (' + upcoming.length + ' charge' + (upcoming.length !== 1 ? 's' : '') + ')</span>';
+      html += '<span style="font-size:14px;color:#d4a574;font-weight:400;">' + fmt(upcomingTotal) + '</span>';
+      html += '</div>';
+      html += '</div>';
+    }
+
+    html += '</div>';
+  }
+
+  // Embedded chart image (if available)
+  if (chartBlob) {
+    html += '<div style="margin:24px 0;text-align:center;">';
+    html += '<p style="font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:#78746d;margin:0 0 12px;font-weight:500;">Spending Trend</p>';
+    html += '<img src="cid:spendingChart" style="max-width:100%;border-radius:8px;border:1px solid #1e2228;" />';
+    html += '</div>';
+  }
+
   // Alerts section
   if (alerts.length > 0) {
-    html += '<div class="card" style="background:#1a1210;border:1px solid#2e1d17;border-radius:10px;padding:16px 20px;margin:24px 0;">';
+    html += '<div class="card" style="background:#1a1210;border:1px solid #2e1d17;border-radius:10px;padding:16px 20px;margin:24px 0;">';
     html += '<p style="font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:#c8856c;margin:0 0 12px;font-weight:500;">Alerts</p>';
     for (var i = 0; i < alerts.length; i++) {
       var a = alerts[i];
@@ -1255,6 +1345,15 @@ function sendSubscriptionAlerts_() {
 
   // Plain text fallback
   var plainBody = "Subscription Tracker Daily Summary\n==================================\n\n";
+  if (activeSubs > 0) {
+    plainBody += "FINANCIAL SNAPSHOT:\n";
+    plainBody += "  Monthly subscriptions: " + fmt(totalMonthlySubs) + " (" + activeSubs + " active)\n";
+    plainBody += "  Yearly projection: " + fmt(totalYearlySubs) + "\n";
+    if (upcoming.length > 0) {
+      plainBody += "  Due this week: " + fmt(upcomingTotal) + " (" + upcoming.length + " charges)\n";
+    }
+    plainBody += "\n";
+  }
   if (alerts.length > 0) {
     plainBody += "ALERTS:\n";
     alerts.forEach(function(a) { plainBody += "  - " + a.service + ": " + a.detail + "\n"; });
@@ -1268,12 +1367,19 @@ function sendSubscriptionAlerts_() {
   plainBody += "View dashboard: " + ss.getUrl() + "\n\n";
   plainBody += "---\nSent by the Google Sheets Apps Script tracker, not the main app.";
 
-  MailApp.sendEmail({
+  // Build email options with optional inline chart image
+  var emailOptions = {
     to: email,
-    subject: "Subscription Tracker: " + (alerts.length > 0 ? alerts.length + " alert(s)" : upcoming.length + " upcoming charge(s)"),
+    subject: "Subscription Tracker: " + (alerts.length > 0 ? alerts.length + " alert(s)" : upcoming.length > 0 ? upcoming.length + " upcoming charge(s)" : "Daily snapshot"),
     body: plainBody,
     htmlBody: html,
-  });
+  };
+
+  if (chartBlob) {
+    emailOptions.inlineImages = { spendingChart: chartBlob };
+  }
+
+  MailApp.sendEmail(emailOptions);
 }
 
 // ============================================================================
@@ -1442,9 +1548,9 @@ function formatSubscriptionsSheet_(sheet, dataRows) {
   sheet.setTabColor(TEAL);
 }
 
-function formatDashboard_(sheet, rows) {
+function formatDashboard_(sheet, rows, opts) {
+  opts = opts || {};
   // Dark aurora-inspired palette for Google Sheets
-  // (Sheets doesn't support true dark mode, so we use a deep navy base)
   const BG_DARK = "#0d1117";
   const BG_SURFACE = "#161b22";
   const BG_SURFACE2 = "#1c2129";
@@ -1454,6 +1560,8 @@ function formatDashboard_(sheet, rows) {
   const WARM_GLOW = "#c8856c";
   const TEAL = "#5a8f8f";
   const SECTION_BG = "#1a2030";
+  const ACCENT_BORDER = "#2e3440";
+  const WARM_BORDER = "#3d2e1e";
 
   // Full sheet dark background
   const totalRows = Math.max(rows.length, 50);
@@ -1468,29 +1576,36 @@ function formatDashboard_(sheet, rows) {
   sheet.getRange(2, 1, 1, 6).merge()
     .setFontSize(10).setFontStyle("italic").setFontColor(TEXT_MUTED);
 
-  // Summary card labels — warm accent bar
-  sheet.getRange(4, 1, 1, 6)
-    .setBackground(BG_SURFACE).setFontColor(WARM).setFontWeight("bold")
+  // Summary card labels — warm accent bar with top/bottom borders
+  var cardLabels = sheet.getRange(4, 1, 1, 6);
+  cardLabels.setBackground(BG_SURFACE).setFontColor(WARM).setFontWeight("bold")
     .setFontSize(9).setHorizontalAlignment("center");
+  cardLabels.setBorder(true, null, true, null, null, null, WARM_BORDER, SpreadsheetApp.BorderStyle.SOLID);
 
-  // Summary card values
-  sheet.getRange(5, 1, 1, 6)
-    .setBackground(BG_SURFACE2).setFontWeight("bold").setFontSize(16)
+  // Summary card values — taller row with accent borders
+  var cardValues = sheet.getRange(5, 1, 1, 6);
+  cardValues.setBackground(BG_SURFACE2).setFontWeight("bold").setFontSize(16)
     .setFontColor(WARM_GLOW).setHorizontalAlignment("center").setNumberFormat("$#,##0.00");
+  cardValues.setBorder(null, null, true, null, null, null, WARM_BORDER, SpreadsheetApp.BorderStyle.SOLID);
   sheet.getRange(5, 4).setNumberFormat("0").setFontColor(TEAL); // Active count
+  sheet.setRowHeight(5, 40); // Breathing room for summary cards
 
   // Section headers
   const sectionKeywords = ["MONTHLY SPENDING TREND", "SPENDING BY CATEGORY", "TOP MERCHANTS", "UPCOMING SUBSCRIPTION CHARGES"];
   for (let r = 0; r < rows.length; r++) {
     if (rows[r][0] && sectionKeywords.includes(rows[r][0])) {
-      sheet.getRange(r + 1, 1, 1, 6)
-        .setFontSize(12).setFontWeight("bold").setFontColor(WARM)
+      var sectionRange = sheet.getRange(r + 1, 1, 1, 6);
+      sectionRange.setFontSize(12).setFontWeight("bold").setFontColor(WARM)
         .setBackground(BG_DARK);
-      // Column headers (row after section title)
+      // Accent top border on section headers
+      sectionRange.setBorder(true, null, true, null, null, null, WARM_BORDER, SpreadsheetApp.BorderStyle.SOLID);
+      sheet.setRowHeight(r + 1, 32);
+      // Column sub-headers (row after section title)
       if (r + 1 < rows.length) {
-        sheet.getRange(r + 2, 1, 1, 6)
-          .setBackground(SECTION_BG).setFontWeight("bold").setFontSize(9)
+        var subHeaderRange = sheet.getRange(r + 2, 1, 1, 6);
+        subHeaderRange.setBackground(SECTION_BG).setFontWeight("bold").setFontSize(9)
           .setFontColor(TEXT_MUTED);
+        subHeaderRange.setBorder(null, null, true, null, null, null, ACCENT_BORDER, SpreadsheetApp.BorderStyle.DOTTED);
       }
     }
     // Currency formatting for data rows
@@ -1509,8 +1624,113 @@ function formatDashboard_(sheet, rows) {
     }
   }
 
+  // --- SPARKLINE formulas ---
+  // Monthly trend: inline sparkline in column E showing spend over time (reversed for chronological)
+  if (opts.monthlyTrendStartRow && opts.monthlyTrendEndRow && opts.monthlyTrendEndRow >= opts.monthlyTrendStartRow) {
+    var trendDataRange = "B" + opts.monthlyTrendEndRow + ":B" + opts.monthlyTrendStartRow;
+    var sparkFormula = '=SPARKLINE({' + trendDataRange + '},{"charttype","line";"color","#5a8f8f";"linewidth",2})';
+    // Place a single sparkline spanning the trend section in the first data row's Trend column
+    sheet.getRange(opts.monthlyTrendStartRow, 5).setFormula(sparkFormula).setFontColor(BG_DARK);
+    // Merge the trend column for all monthly rows so the sparkline spans them
+    if (opts.monthlyTrendEndRow > opts.monthlyTrendStartRow) {
+      sheet.getRange(opts.monthlyTrendStartRow, 5, opts.monthlyTrendEndRow - opts.monthlyTrendStartRow + 1, 1)
+        .merge().setVerticalAlignment("middle");
+    }
+  }
+
+  // Category breakdown: bar sparkline in column D showing relative share
+  if (opts.categoryStartRow && opts.categoryEndRow && opts.totalSpend > 0) {
+    for (var cr = opts.categoryStartRow; cr <= opts.categoryEndRow; cr++) {
+      var barFormula = '=SPARKLINE(B' + cr + '/' + opts.totalSpend.toFixed(2) + ',{"charttype","bar";"max",1;"color1","#5a8f8f";"color2","#161b22"})';
+      sheet.getRange(cr, 4).setFormula(barFormula);
+    }
+  }
+
+  // --- Color scale conditional formatting on Total Spend columns ---
+  var conditionalRules = [];
+
+  // Monthly trend Total Spend (col B) - green to amber gradient
+  if (opts.monthlyTrendStartRow && opts.monthlyTrendEndRow && opts.monthlyTrendEndRow >= opts.monthlyTrendStartRow) {
+    var trendRange = sheet.getRange(opts.monthlyTrendStartRow, 2, opts.monthlyTrendEndRow - opts.monthlyTrendStartRow + 1, 1);
+    var trendColorScale = SpreadsheetApp.newConditionalFormatRule()
+      .setGradientMinpoint("#1a2a1a")
+      .setGradientMidpointWithValue("#2a3020", SpreadsheetApp.InterpolationType.PERCENTILE, "50")
+      .setGradientMaxpoint("#3d2e1e")
+      .setRanges([trendRange])
+      .build();
+    conditionalRules.push(trendColorScale);
+  }
+
+  // Category Total (col B) - green to amber gradient
+  if (opts.categoryStartRow && opts.categoryEndRow && opts.categoryEndRow >= opts.categoryStartRow) {
+    var catRange = sheet.getRange(opts.categoryStartRow, 2, opts.categoryEndRow - opts.categoryStartRow + 1, 1);
+    var catColorScale = SpreadsheetApp.newConditionalFormatRule()
+      .setGradientMinpoint("#1a2a1a")
+      .setGradientMidpointWithValue("#2a3020", SpreadsheetApp.InterpolationType.PERCENTILE, "50")
+      .setGradientMaxpoint("#3d2e1e")
+      .setRanges([catRange])
+      .build();
+    conditionalRules.push(catColorScale);
+  }
+
+  if (conditionalRules.length > 0) {
+    sheet.setConditionalFormatRules(conditionalRules);
+  }
+
+  // --- Embedded Charts ---
+  // Remove any existing charts first
+  var existingCharts = sheet.getCharts();
+  for (var ci = 0; ci < existingCharts.length; ci++) {
+    sheet.removeChart(existingCharts[ci]);
+  }
+
+  // Line chart: Monthly spending trend
+  if (opts.monthlyTrendStartRow && opts.monthlyTrendEndRow && opts.monthlyTrendEndRow > opts.monthlyTrendStartRow) {
+    var chartAnchorRow = opts.monthlyTrendStartRow;
+    var lineChart = sheet.newChart()
+      .setChartType(Charts.ChartType.LINE)
+      .addRange(sheet.getRange(opts.monthlyTrendStartRow, 1, opts.monthlyTrendEndRow - opts.monthlyTrendStartRow + 1, 2))
+      .setPosition(chartAnchorRow, 6, 10, 0)
+      .setOption("title", "Monthly Spending")
+      .setOption("titleTextStyle", { color: WARM, fontSize: 12, bold: false })
+      .setOption("legend", { position: "none" })
+      .setOption("backgroundColor", { fill: BG_DARK })
+      .setOption("chartArea", { backgroundColor: { fill: BG_DARK } })
+      .setOption("hAxis", { textStyle: { color: TEXT_MUTED, fontSize: 9 }, gridlines: { color: ACCENT_BORDER }, baselineColor: ACCENT_BORDER })
+      .setOption("vAxis", { textStyle: { color: TEXT_MUTED, fontSize: 9 }, gridlines: { color: ACCENT_BORDER }, baselineColor: ACCENT_BORDER, format: "$#,##0" })
+      .setOption("colors", [TEAL])
+      .setOption("curveType", "function")
+      .setOption("lineWidth", 3)
+      .setOption("pointSize", 5)
+      .setOption("width", 480)
+      .setOption("height", 280)
+      .build();
+    sheet.insertChart(lineChart);
+  }
+
+  // Column chart: Category breakdown (top 8)
+  if (opts.categoryStartRow && opts.categoryEndRow && opts.categoryEndRow > opts.categoryStartRow) {
+    var catChartRows = Math.min(opts.categoryEndRow - opts.categoryStartRow + 1, 8);
+    var columnChart = sheet.newChart()
+      .setChartType(Charts.ChartType.COLUMN)
+      .addRange(sheet.getRange(opts.categoryStartRow, 1, catChartRows, 2))
+      .setPosition(opts.categoryStartRow, 5, 10, 0)
+      .setOption("title", "Top Categories")
+      .setOption("titleTextStyle", { color: WARM, fontSize: 12, bold: false })
+      .setOption("legend", { position: "none" })
+      .setOption("backgroundColor", { fill: BG_DARK })
+      .setOption("chartArea", { backgroundColor: { fill: BG_DARK } })
+      .setOption("hAxis", { textStyle: { color: TEXT_MUTED, fontSize: 8 }, slantedText: true, slantedTextAngle: 45, gridlines: { color: "transparent" } })
+      .setOption("vAxis", { textStyle: { color: TEXT_MUTED, fontSize: 9 }, gridlines: { color: ACCENT_BORDER }, baselineColor: ACCENT_BORDER, format: "$#,##0" })
+      .setOption("colors", ["#5a8f8f", "#6b9e76", "#c8856c", "#8b7ec8", "#c89b6c", "#6b8ec8", "#c86c8b", "#8fc86c"])
+      .setOption("width", 480)
+      .setOption("height", 280)
+      .build();
+    sheet.insertChart(columnChart);
+  }
+
   // Column widths
-  [200, 150, 150, 170, 150, 150].forEach((px, i) => sheet.setColumnWidth(i + 1, px));
+  [200, 150, 120, 170, 180, 150].forEach((px, i) => sheet.setColumnWidth(i + 1, px));
 
   // Hide gridlines and set tab color
   sheet.setHiddenGridlines(true);
