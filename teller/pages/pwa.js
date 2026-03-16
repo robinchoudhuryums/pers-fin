@@ -1,23 +1,29 @@
 const express = require("express");
+const path = require("path");
+const fs = require("fs");
 const router = express.Router();
 
 // ---------------------------------------------------------------------------
-// Iron Man helmet SVG path (shared across manifest icon + apple-touch-icon)
+// Load helmet SVG and build PWA icon from it (teal on dark background)
 // ---------------------------------------------------------------------------
-const HELMET_PATH = "M100,6 C56,6 24,44 24,92L24,132C24,150 32,168 44,180L60,196 74,212 86,224 100,232 114,224 126,212 140,196 156,180C168,168 176,150 176,132L176,92C176,44 144,6 100,6Z M100,38L72,50 76,88 90,102 100,106 110,102 124,88 128,50Z M30,108L86,96 82,130 30,126Z M170,108L114,96 118,130 170,126Z M78,170L122,170 116,184 84,184Z";
+const logoSvgRaw = fs.readFileSync(path.join(__dirname, "../public/logo.svg"), "utf8");
 
-function helmetSvg(size, bg, fg) {
+function buildIcon(size) {
+  // Extract the inner content of logo.svg (everything between <svg> tags)
+  const inner = logoSvgRaw.replace(/<\?xml[^?]*\?>/, "").replace(/<svg[^>]*>/, "").replace(/<\/svg>/, "").trim();
+  // Re-color fills to teal and wrap in a sized SVG with dark rounded-rect background
+  const tealInner = inner.replace(/fill="currentColor"/g, `fill="#5a8f8f"`);
   return `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 ${size} ${size}'>`
-    + `<rect fill='${bg}' width='${size}' height='${size}' rx='${Math.round(size * 0.2)}'/>`
+    + `<rect fill='#080b12' width='${size}' height='${size}' rx='${Math.round(size * 0.2)}'/>`
     + `<g transform='translate(${size * 0.15},${size * 0.1}) scale(${(size * 0.7) / 200})'>`
-    + `<path fill-rule='evenodd' d='${HELMET_PATH}' fill='${fg}'/></g></svg>`;
+    + tealInner + `</g></svg>`;
 }
 
 // ---------------------------------------------------------------------------
 // PWA manifest and service worker
 // ---------------------------------------------------------------------------
 router.get("/manifest.json", (_req, res) => {
-  const svgIcon = "data:image/svg+xml," + encodeURIComponent(helmetSvg(512, "#080b12", "#5a8f8f"));
+  const svgIcon = "data:image/svg+xml," + encodeURIComponent(buildIcon(512));
   res.json({
     name: "Perfin — Personal Finance",
     short_name: "Perfin",
@@ -32,13 +38,12 @@ router.get("/manifest.json", (_req, res) => {
   });
 });
 
-// Apple touch icon — served as SVG (iOS 16.4+ supports this in PWA context)
+// Apple touch icon — served as SVG
 router.get("/apple-touch-icon.svg", (_req, res) => {
-  res.type("image/svg+xml").send(helmetSvg(180, "#080b12", "#5a8f8f"));
+  res.type("image/svg+xml").send(buildIcon(180));
 });
-// Also handle the standard apple-touch-icon.png path by serving SVG
 router.get("/apple-touch-icon.png", (_req, res) => {
-  res.type("image/svg+xml").send(helmetSvg(180, "#080b12", "#5a8f8f"));
+  res.type("image/svg+xml").send(buildIcon(180));
 });
 
 router.get("/sw.js", (_req, res) => {
