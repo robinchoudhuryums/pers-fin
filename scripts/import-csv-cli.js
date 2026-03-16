@@ -31,7 +31,7 @@ const { parse } = require("csv-parse/sync");
 const ENCRYPTION_PASSPHRASE = process.env.TOKEN_ENCRYPTION_PASSPHRASE;
 const pool = new Pool({
   connectionString: process.env.NEON_DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
+  ssl: { rejectUnauthorized: true },
   max: 2,
   connectionTimeoutMillis: 10000,
 });

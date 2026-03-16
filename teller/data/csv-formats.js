@@ -75,20 +75,30 @@ function detectCsvFormat(headers) {
 function parseDate(dateStr) {
   if (!dateStr) return null;
   const trimmed = dateStr.trim();
+  let isoDate;
   const slashMatch = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
   if (slashMatch) {
     const [, m, d, y] = slashMatch;
-    return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+    isoDate = `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+  } else {
+    const isoMatch = trimmed.match(/^\d{4}-\d{2}-\d{2}$/);
+    if (isoMatch) {
+      isoDate = trimmed;
+    } else {
+      const parsed = new Date(trimmed);
+      if (isNaN(parsed)) return null;
+      isoDate = parsed.toISOString().split("T")[0];
+    }
   }
-  const isoMatch = trimmed.match(/^\d{4}-\d{2}-\d{2}$/);
-  if (isoMatch) return trimmed;
-  const parsed = new Date(trimmed);
-  return isNaN(parsed) ? null : parsed.toISOString().split("T")[0];
+  // Validate the date is real (rejects Feb 30, month 13, etc.)
+  const check = new Date(isoDate + "T00:00:00Z");
+  if (isNaN(check) || check.toISOString().split("T")[0] !== isoDate) return null;
+  return isoDate;
 }
 
 function csvTransactionId(accountLabel, date, amount, merchant, rowIdx) {
   const raw = `${accountLabel}|${date}|${amount}|${merchant || ""}|${rowIdx}`;
-  return "csv_" + crypto.createHash("sha256").update(raw).digest("hex").slice(0, 24);
+  return "csv_" + crypto.createHash("sha256").update(raw).digest("hex");
 }
 
 module.exports = {

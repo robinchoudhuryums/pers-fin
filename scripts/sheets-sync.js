@@ -48,7 +48,7 @@ async function getSheetsClient() {
 function getPool() {
   return new Pool({
     connectionString: process.env.NEON_DATABASE_URL,
-    ssl: { rejectUnauthorized: false },
+    ssl: { rejectUnauthorized: true },
     max: 2,
     connectionTimeoutMillis: 10000,
   });

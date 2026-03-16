@@ -144,11 +144,13 @@ async function detectSubscriptions(externalPool) {
     // ------------------------------------------------------------------
     // 4. Upsert detected subscriptions
     // ------------------------------------------------------------------
-    // Mark all existing as potentially inactive, then re-activate matched ones
+    // Mark subscriptions inactive if they're past their expected next charge + buffer
+    // Use cadence-aware threshold: max(120 days, cadence_days * 1.5)
     await pool.query(`
       UPDATE detected_subscriptions
       SET is_active = false, updated_at = now()
-      WHERE last_charged < CURRENT_DATE - INTERVAL '120 days'
+      WHERE last_charged < CURRENT_DATE - GREATEST(INTERVAL '120 days', (cadence_days * 1.5) * INTERVAL '1 day')
+        AND source != 'manual'
     `);
 
     for (const sub of detected) {

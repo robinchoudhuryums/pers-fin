@@ -371,7 +371,7 @@
   </div>
 <%- include('partials/foot', { apiKey: apiKey }) %>
   <script src="/vendor/chart.umd.js"></script>
-  <script>if(typeof Chart==='undefined'){document.write('<scr'+'ipt src="/chart.umd.js?v=<%= v %>"><\/scr'+'ipt>')}</script>
+  <script>if(typeof Chart==='undefined'){var s=document.createElement('script');s.src='/vendor/chart.umd.js?v=<%= v %>';document.head.appendChild(s);}</script>
   <script>
     const barColors = ['#c8856c','#d4a574','#5a8f8f','#6fcf97','#7fb5e6','#f0c36d','#eb6b6b','#b07cc6','#e8a87c','#85dcb0','#7bb5d4','#d4a0a0','#9fd4c9','#c4b28f','#a8c3d4'];
 
@@ -566,7 +566,7 @@
           document.getElementById('net-balance').className = 'value ' + (netBalance >= 0 ? 'green' : 'red');
         }
       } catch (e) {
-        document.getElementById('accounts-grid').innerHTML = '<div class="empty-msg">Could not load accounts: ' + e.message + '</div>';
+        document.getElementById('accounts-grid').innerHTML = '<div class="empty-msg">Could not load accounts: ' + esc(e.message) + '</div>';
       }
     }
 

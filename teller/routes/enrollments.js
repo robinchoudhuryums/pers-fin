@@ -85,7 +85,6 @@ async function syncEnrollment(enrollment) {
   );
 
   let added = 0;
-  let updated = 0;
   let latestDate = last_synced_txn_date;
 
   for (const { account_id } of accounts) {
@@ -94,7 +93,13 @@ async function syncEnrollment(enrollment) {
 
     let keepFetching = true;
     while (keepFetching) {
-      const txns = await tellerRequest(endpoint, access_token);
+      let txns;
+      try {
+        txns = await tellerRequest(endpoint, access_token);
+      } catch (fetchErr) {
+        console.error(`  Error fetching transactions for account ${account_id}:`, fetchErr.message);
+        break;
+      }
 
       if (!txns || txns.length === 0) break;
       allTxns = allTxns.concat(txns);
@@ -118,31 +123,35 @@ async function syncEnrollment(enrollment) {
 
       const normalizedAmount = parseFloat(txn.amount) < 0 ? Math.abs(parseFloat(txn.amount)) : -parseFloat(txn.amount);
 
-      const result = await pool.query(
-        `INSERT INTO transactions (account_id, transaction_id, amount, iso_currency_code, date,
-                                   merchant_name, name, category, pending)
-         VALUES ($1, $2, $3, 'USD', $4, $5, $6, $7, false)
-         ON CONFLICT (transaction_id)
-         DO UPDATE SET
-           amount = EXCLUDED.amount,
-           date = EXCLUDED.date,
-           merchant_name = EXCLUDED.merchant_name,
-           name = EXCLUDED.name,
-           category = EXCLUDED.category,
-           pending = EXCLUDED.pending`,
-        [
-          account_id,
-          txn.id,
-          normalizedAmount,
-          txn.date,
-          txn.details?.counterparty?.name || txn.description || null,
-          txn.description || "",
-          txn.details?.category ? `{${txn.details.category}}` : null,
-        ]
-      );
+      try {
+        const result = await pool.query(
+          `INSERT INTO transactions (account_id, transaction_id, amount, iso_currency_code, date,
+                                     merchant_name, name, category, pending)
+           VALUES ($1, $2, $3, 'USD', $4, $5, $6, $7, false)
+           ON CONFLICT (transaction_id)
+           DO UPDATE SET
+             amount = EXCLUDED.amount,
+             date = EXCLUDED.date,
+             merchant_name = EXCLUDED.merchant_name,
+             name = EXCLUDED.name,
+             category = EXCLUDED.category,
+             pending = EXCLUDED.pending`,
+          [
+            account_id,
+            txn.id,
+            normalizedAmount,
+            txn.date,
+            txn.details?.counterparty?.name || txn.description || null,
+            txn.description || "",
+            txn.details?.category ? `{${txn.details.category}}` : null,
+          ]
+        );
 
-      if (result.rowCount > 0) {
-        added++;
+        if (result.rowCount > 0) {
+          added++;
+        }
+      } catch (insertErr) {
+        console.error(`  Error inserting transaction ${txn.id}:`, insertErr.message);
       }
 
       if (!latestDate || new Date(txn.date) > new Date(latestDate)) {
@@ -160,7 +169,7 @@ async function syncEnrollment(enrollment) {
   }
 
   console.log(`  ${institution_name}: ${added} added/updated`);
-  return { added, updated };
+  return { added };
 }
 
 // POST /api/sync
@@ -177,14 +186,12 @@ router.post("/api/sync", async (req, res) => {
     );
 
     let totalAdded = 0;
-    let totalUpdated = 0;
     const errors = [];
 
     for (const enrollment of enrollments) {
       try {
         const result = await syncEnrollment(enrollment);
         totalAdded += result.added;
-        totalUpdated += result.updated;
       } catch (err) {
         console.error(`Sync error for ${enrollment.institution_name}:`, err.message);
         if (err.status === 401 || err.status === 403) {
@@ -204,7 +211,6 @@ router.post("/api/sync", async (req, res) => {
     res.json({
       enrollments_synced: enrollments.length - errors.length,
       transactions_added: totalAdded,
-      transactions_updated: totalUpdated,
       errors: errors.length > 0 ? errors : undefined,
     });
   } catch (err) {
@@ -265,16 +271,27 @@ router.delete("/api/enrollments/:id", async (req, res) => {
       console.warn("Could not revoke at Teller (may already be disconnected):", err.message);
     }
 
-    await pool.query(
-      `DELETE FROM transactions WHERE account_id IN (SELECT account_id FROM linked_accounts WHERE teller_enrollment_id = $1)`,
-      [req.params.id]
-    );
-    await pool.query(`DELETE FROM teller_enrollments WHERE id = $1`, [req.params.id]);
+    const delClient = await pool.connect();
+    try {
+      await delClient.query("BEGIN");
+      await delClient.query(
+        `DELETE FROM transactions WHERE account_id IN (SELECT account_id FROM linked_accounts WHERE teller_enrollment_id = $1)`,
+        [req.params.id]
+      );
+      await delClient.query(`DELETE FROM linked_accounts WHERE teller_enrollment_id = $1`, [req.params.id]);
+      await delClient.query(`DELETE FROM teller_enrollments WHERE id = $1`, [req.params.id]);
+      await delClient.query("COMMIT");
+    } catch (delErr) {
+      await delClient.query("ROLLBACK");
+      throw delErr;
+    } finally {
+      delClient.release();
+    }
 
     res.json({ deleted: true });
   } catch (err) {
     console.error("unlink error:", err.message);
-    res.status(500).json({ error: err.message || "An internal error occurred." });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -285,12 +302,22 @@ router.delete("/api/items/:id", async (req, res) => {
     const check = await pool.query("SELECT id, institution_name FROM plaid_items WHERE id = $1", [id]);
     if (!check.rows.length) return res.status(404).json({ error: "Item not found" });
     const name = check.rows[0].institution_name;
-    await pool.query(
-      `DELETE FROM transactions WHERE account_id IN (SELECT account_id FROM linked_accounts WHERE plaid_item_id = $1)`,
-      [id]
-    );
-    await pool.query("DELETE FROM linked_accounts WHERE plaid_item_id = $1", [id]);
-    await pool.query("DELETE FROM plaid_items WHERE id = $1", [id]);
+    const delClient = await pool.connect();
+    try {
+      await delClient.query("BEGIN");
+      await delClient.query(
+        `DELETE FROM transactions WHERE account_id IN (SELECT account_id FROM linked_accounts WHERE plaid_item_id = $1)`,
+        [id]
+      );
+      await delClient.query("DELETE FROM linked_accounts WHERE plaid_item_id = $1", [id]);
+      await delClient.query("DELETE FROM plaid_items WHERE id = $1", [id]);
+      await delClient.query("COMMIT");
+    } catch (delErr) {
+      await delClient.query("ROLLBACK");
+      throw delErr;
+    } finally {
+      delClient.release();
+    }
     res.json({ deleted: true, institution_name: name });
   } catch (err) {
     console.error("delete plaid item error:", err.message);

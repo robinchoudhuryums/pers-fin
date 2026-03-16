@@ -41,11 +41,19 @@ router.get("/api/goals", async (_req, res) => {
 router.post("/api/goals", async (req, res) => {
   const { name, type, target_amount, current_amount, monthly_contribution, target_date, interest_rate, notes } = req.body;
   if (!name || !target_amount) return res.status(400).json({ error: "name and target_amount are required" });
+  const parsedTarget = parseFloat(target_amount);
+  const parsedCurrent = parseFloat(current_amount || 0);
+  const parsedMonthly = parseFloat(monthly_contribution || 0);
+  const parsedRate = parseFloat(interest_rate || 0);
+  if (isNaN(parsedTarget) || parsedTarget <= 0) return res.status(400).json({ error: "target_amount must be a positive number" });
+  if (isNaN(parsedCurrent) || parsedCurrent < 0) return res.status(400).json({ error: "current_amount must be non-negative" });
+  if (isNaN(parsedMonthly) || parsedMonthly < 0) return res.status(400).json({ error: "monthly_contribution must be non-negative" });
+  if (isNaN(parsedRate) || parsedRate < 0 || parsedRate > 100) return res.status(400).json({ error: "interest_rate must be between 0 and 100" });
   try {
     const result = await pool.query(
       `INSERT INTO financial_goals (name, type, target_amount, current_amount, monthly_contribution, target_date, interest_rate, notes)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-      [name, type || "savings", target_amount, current_amount || 0, monthly_contribution || 0, target_date || null, interest_rate || 0, notes || null]
+      [name, type || "savings", parsedTarget, parsedCurrent, parsedMonthly, target_date || null, parsedRate, notes || null]
     );
     res.json(result.rows[0]);
   } catch (err) {
@@ -55,10 +63,10 @@ router.post("/api/goals", async (req, res) => {
 
 // PATCH /api/goals/:id
 router.patch("/api/goals/:id", async (req, res) => {
-  const fields = ["name", "type", "target_amount", "current_amount", "monthly_contribution", "target_date", "interest_rate", "notes", "is_active"];
+  const ALLOWED_FIELDS = new Set(["name", "type", "target_amount", "current_amount", "monthly_contribution", "target_date", "interest_rate", "notes", "is_active"]);
   const updates = []; const values = []; let idx = 1;
-  for (const f of fields) {
-    if (req.body[f] !== undefined) { updates.push(f + " = $" + idx++); values.push(req.body[f]); }
+  for (const f of ALLOWED_FIELDS) {
+    if (req.body[f] !== undefined) { updates.push(`"${f}" = $` + idx++); values.push(req.body[f]); }
   }
   if (!updates.length) return res.status(400).json({ error: "No valid fields" });
   updates.push("updated_at = now()");
@@ -171,14 +179,13 @@ router.post("/api/investment-accounts", async (req, res) => {
 
 // PATCH /api/investment-accounts/:id
 router.patch("/api/investment-accounts/:id", async (req, res) => {
-  const { name, institution, account_type, balance, notes } = req.body;
+  const ALLOWED_FIELDS = new Set(["name", "institution", "account_type", "notes"]);
   try {
     const updates = []; const values = []; let idx = 1;
-    if (name !== undefined) { updates.push(`name = $${idx++}`); values.push(name); }
-    if (institution !== undefined) { updates.push(`institution = $${idx++}`); values.push(institution); }
-    if (account_type !== undefined) { updates.push(`account_type = $${idx++}`); values.push(account_type); }
-    if (balance !== undefined) { updates.push(`balance = $${idx++}`); values.push(parseFloat(balance)); }
-    if (notes !== undefined) { updates.push(`notes = $${idx++}`); values.push(notes || null); }
+    for (const f of ALLOWED_FIELDS) {
+      if (req.body[f] !== undefined) { updates.push(`"${f}" = $${idx++}`); values.push(f === "notes" ? (req.body[f] || null) : req.body[f]); }
+    }
+    if (req.body.balance !== undefined) { updates.push(`"balance" = $${idx++}`); values.push(parseFloat(req.body.balance)); }
     if (updates.length === 0) return res.status(400).json({ error: "No fields to update" });
     updates.push(`updated_at = now()`);
     values.push(req.params.id);

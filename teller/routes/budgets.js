@@ -49,13 +49,15 @@ router.get("/api/budgets", async (_req, res) => {
 router.post("/api/budgets", async (req, res) => {
   const { category, monthly_limit, notes } = req.body;
   if (!category || monthly_limit == null) return res.status(400).json({ error: "category and monthly_limit are required" });
+  const parsedLimit = parseFloat(monthly_limit);
+  if (isNaN(parsedLimit) || parsedLimit < 0) return res.status(400).json({ error: "monthly_limit must be a non-negative number" });
   try {
     const result = await pool.query(
       `INSERT INTO budgets (category, monthly_limit, notes)
        VALUES ($1, $2, $3)
        ON CONFLICT (category) DO UPDATE SET monthly_limit = $2, notes = $3, is_ai_suggested = false, updated_at = now()
        RETURNING *`,
-      [category, parseFloat(monthly_limit), notes || null]
+      [category, parsedLimit, notes || null]
     );
     res.json(result.rows[0]);
   } catch (err) {
@@ -167,7 +169,8 @@ router.post("/api/budgets/suggest", async (_req, res) => {
     res.json({ suggestions, tokens_used: (message.usage?.input_tokens || 0) + (message.usage?.output_tokens || 0) });
   } catch (err) {
     console.error("Budget suggest error:", err.message);
-    res.status(500).json({ error: err.message });
+    console.error("Budget suggest error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -178,19 +181,25 @@ router.post("/api/budgets/accept", async (req, res) => {
     return res.status(400).json({ error: "budgets array is required" });
   }
   try {
-    const results = [];
-    for (const b of budgets) {
-      if (!b.category || b.monthly_limit == null) continue;
-      const result = await pool.query(
-        `INSERT INTO budgets (category, monthly_limit, is_ai_suggested, notes)
-         VALUES ($1, $2, true, $3)
-         ON CONFLICT (category) DO UPDATE SET monthly_limit = $2, is_ai_suggested = true, notes = $3, updated_at = now()
-         RETURNING *`,
-        [b.category, parseFloat(b.monthly_limit), b.notes || null]
-      );
-      results.push(result.rows[0]);
+    const valid = budgets.filter(b => b.category && b.monthly_limit != null);
+    if (valid.length === 0) return res.status(400).json({ error: "No valid budgets in array" });
+
+    // Build batch upsert
+    const placeholders = [];
+    const values = [];
+    let idx = 1;
+    for (const b of valid) {
+      placeholders.push(`($${idx++}, $${idx++}, true, $${idx++})`);
+      values.push(b.category, parseFloat(b.monthly_limit), b.notes || null);
     }
-    res.json({ accepted: results.length, budgets: results });
+    const result = await pool.query(
+      `INSERT INTO budgets (category, monthly_limit, is_ai_suggested, notes)
+       VALUES ${placeholders.join(", ")}
+       ON CONFLICT (category) DO UPDATE SET monthly_limit = EXCLUDED.monthly_limit, is_ai_suggested = true, notes = EXCLUDED.notes, updated_at = now()
+       RETURNING *`,
+      values
+    );
+    res.json({ accepted: result.rows.length, budgets: result.rows });
   } catch (err) {
     res.status(500).json({ error: "An internal error occurred." });
   }
