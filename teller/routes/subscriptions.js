@@ -71,10 +71,14 @@ router.post("/api/subscriptions", async (req, res) => {
   if (!name || !amount || !cadence_days) {
     return res.status(400).json({ error: "name, amount, and cadence_days are required" });
   }
+  const parsedAmount = parseFloat(amount);
+  const parsedCadence = parseInt(cadence_days);
+  if (isNaN(parsedAmount) || parsedAmount <= 0) return res.status(400).json({ error: "amount must be a positive number" });
+  if (isNaN(parsedCadence) || parsedCadence < 1) return res.status(400).json({ error: "cadence_days must be a positive integer" });
   try {
     const merchantKey = `manual_${name.toLowerCase().replace(/[^a-z0-9]+/g, "_")}`;
     const today = new Date().toISOString().slice(0, 10);
-    const nextExpected = new Date(Date.now() + cadence_days * 86400000).toISOString().slice(0, 10);
+    const nextExpected = new Date(Date.now() + parsedCadence * 86400000).toISOString().slice(0, 10);
 
     const result = await pool.query(
       `INSERT INTO detected_subscriptions
@@ -90,7 +94,7 @@ router.post("/api/subscriptions", async (req, res) => {
          cancelled_at = NULL,
          updated_at = now()
        RETURNING *`,
-      [merchantKey, name, amount, cadence_days, today, nextExpected, notes || null]
+      [merchantKey, name, parsedAmount, parsedCadence, today, nextExpected, notes || null]
     );
     res.json(result.rows[0]);
   } catch (err) {
@@ -234,10 +238,12 @@ router.post("/api/detect", async (_req, res) => {
     for (const sub of detected) {
       const cat = categorizeSubscription(sub.display_name);
       const dbCategory = cat === "utility" ? "utility" : "subscription";
-      await pool.query(
-        "UPDATE detected_subscriptions SET category = $1 WHERE merchant_key = $2 AND category = 'subscription' AND category != $1",
-        [dbCategory, sub.merchant_key]
-      );
+      if (dbCategory !== "subscription") {
+        await pool.query(
+          "UPDATE detected_subscriptions SET category = $1 WHERE merchant_key = $2 AND category = 'subscription'",
+          [dbCategory, sub.merchant_key]
+        );
+      }
     }
     res.json({ detected_count: detected.length, subscriptions: detected });
   } catch (err) {
@@ -261,6 +267,7 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
     const headers = Object.keys(records[0]);
     const formatName = detectCsvFormat(headers);
     const fmt = CSV_FORMATS[formatName];
+    if (!fmt) return res.status(400).json({ error: `Unrecognized CSV format: ${formatName}` });
 
     const client = await pool.connect();
     try {
@@ -277,6 +284,7 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
       );
 
       const piRow = await client.query(`SELECT id FROM plaid_items WHERE item_id = $1`, [virtualEnrollId]);
+      if (!piRow.rows.length) throw new Error("Failed to create CSV import record");
 
       await client.query(
         `INSERT INTO linked_accounts (plaid_item_id, account_id, name, type, subtype)

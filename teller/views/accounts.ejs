@@ -182,7 +182,7 @@
       var tellerConnect = TellerConnect.setup({
         applicationId: "<%= tellerAppId %>",
         environment: "<%= tellerEnv %>",
-        onInit: function() { console.log("Teller Connect initialized"); },
+        onInit: function() {},
         onSuccess: async function(enrollment) {
           showStatus('Enrolling...', true);
           try {
@@ -206,7 +206,7 @@
             }
           } catch (e) { showStatus('Enrollment failed: Could not reach server. ' + e.message, false); }
         },
-        onExit: function() { console.log("Teller Connect exited"); },
+        onExit: function() {},
         onFailure: function(failure) {
           showStatus('Teller Connect error: ' + (failure.message || JSON.stringify(failure)), false);
         },

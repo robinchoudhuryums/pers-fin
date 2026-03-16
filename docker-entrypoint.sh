@@ -6,15 +6,17 @@
 CERT_PATH="${TELLER_CERT_PATH:-./certificate.pem}"
 KEY_PATH="${TELLER_KEY_PATH:-./private_key.pem}"
 
-# If cert file doesn't exist but env var is set, write it
+# If cert file doesn't exist but env var is set, write it with restrictive permissions
 if [ ! -f "$CERT_PATH" ] && [ -n "$TELLER_CERT_CONTENT" ]; then
-  echo "$TELLER_CERT_CONTENT" > "$CERT_PATH"
-  echo "Wrote certificate to $CERT_PATH from TELLER_CERT_CONTENT"
+  umask 077
+  printf '%s\n' "$TELLER_CERT_CONTENT" > "$CERT_PATH"
+  echo "Wrote certificate to $CERT_PATH"
 fi
 
 if [ ! -f "$KEY_PATH" ] && [ -n "$TELLER_KEY_CONTENT" ]; then
-  echo "$TELLER_KEY_CONTENT" > "$KEY_PATH"
-  echo "Wrote private key to $KEY_PATH from TELLER_KEY_CONTENT"
+  umask 077
+  printf '%s\n' "$TELLER_KEY_CONTENT" > "$KEY_PATH"
+  echo "Wrote private key to $KEY_PATH"
 fi
 
 exec "$@"

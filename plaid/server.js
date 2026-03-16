@@ -77,7 +77,7 @@ console.log(`Plaid environment: ${plaidEnv} | client_id: ${process.env.PLAID_CLI
 // a generous connectionTimeoutMillis.
 const pool = new Pool({
   connectionString: process.env.NEON_DATABASE_URL, // use ?pgbouncer=true endpoint
-  ssl: { rejectUnauthorized: false },
+  ssl: { rejectUnauthorized: true },
   max: 3,                        // single-user app, keep it small
   connectionTimeoutMillis: 10000, // allow for Neon cold-start
   idleTimeoutMillis: 30000,

@@ -476,7 +476,7 @@ router.post("/api/insights", async (_req, res) => {
     res.json({ insight: insightText, tokens_used: tokensUsed, modules_used: activeModules, cache_read_tokens: usage.cache_read_input_tokens || 0, estimated_cost_usd: parseFloat(costUsd.toFixed(6)) });
   } catch (err) {
     console.error("Insights error:", err.message);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -485,7 +485,10 @@ router.post("/api/insights/reset", async (_req, res) => {
   try {
     await pool.query("UPDATE user_settings SET insights_running_summary = NULL WHERE id = 1");
     res.json({ ok: true, message: "Long-term AI context cleared. Next analysis starts fresh." });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    console.error("Insights reset error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
 });
 
 // POST /api/insights/rebuild
@@ -530,7 +533,7 @@ router.post("/api/insights/rebuild", async (_req, res) => {
     res.json({ ok: true, message: "Long-term context rebuilt from " + allInsights.rows.length + " historical analyses.", summary: newSummary, tokens_used: tokensUsed });
   } catch (err) {
     console.error("Rebuild error:", err.message);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 

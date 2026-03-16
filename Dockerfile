@@ -25,7 +25,14 @@ COPY docker-entrypoint.sh ./
 
 RUN chmod +x docker-entrypoint.sh
 
+# Run as non-root user for security
+RUN addgroup -g 1001 -S appgroup && adduser -u 1001 -S appuser -G appgroup
+USER appuser
+
 EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+  CMD node -e "require('http').get('http://localhost:3000/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1))"
 
 ENTRYPOINT ["./docker-entrypoint.sh"]
 CMD ["node", "teller/server.js"]

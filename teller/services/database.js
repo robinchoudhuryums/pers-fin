@@ -4,6 +4,11 @@
 
 const { Pool } = require("pg");
 
+if (!process.env.NEON_DATABASE_URL) {
+  console.error("FATAL: NEON_DATABASE_URL environment variable is not set.");
+  process.exit(1);
+}
+
 const pool = new Pool({
   connectionString: process.env.NEON_DATABASE_URL,
   ssl: { rejectUnauthorized: true },
@@ -11,7 +16,15 @@ const pool = new Pool({
   connectionTimeoutMillis: 10000,
 });
 
+// Log pool errors to prevent unhandled rejections
+pool.on("error", (err) => {
+  console.error("Unexpected database pool error:", err.message);
+});
+
 const ENCRYPTION_PASSPHRASE = process.env.TOKEN_ENCRYPTION_PASSPHRASE;
+if (!ENCRYPTION_PASSPHRASE) {
+  console.warn("WARNING: TOKEN_ENCRYPTION_PASSPHRASE is not set. Token encryption will fail.");
+}
 
 async function runMigrations() {
   try {
@@ -162,6 +175,11 @@ async function runMigrations() {
     await pool.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS output_tokens INT");
     await pool.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS cache_read_tokens INT");
     await pool.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS cache_creation_tokens INT");
+    // Performance indexes
+    await pool.query("CREATE INDEX IF NOT EXISTS idx_transactions_date_pending ON transactions (date, pending)");
+    await pool.query("CREATE INDEX IF NOT EXISTS idx_linked_accounts_account_id ON linked_accounts (account_id)");
+    await pool.query("CREATE INDEX IF NOT EXISTS idx_detected_subscriptions_active ON detected_subscriptions (is_active, is_dismissed, cancelled_at)");
+    await pool.query("CREATE INDEX IF NOT EXISTS idx_financial_goals_active ON financial_goals (is_active)");
     console.log("Migrations complete.");
   } catch (err) {
     console.error("Migration error (non-fatal):", err.message);

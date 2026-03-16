@@ -131,7 +131,7 @@ router.post("/api/categorize", async (_req, res) => {
     });
   } catch (err) {
     console.error("Categorize error:", err.message);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -139,6 +139,7 @@ router.post("/api/categorize", async (_req, res) => {
 router.patch("/api/transactions/:id/category", async (req, res) => {
   const { category } = req.body;
   if (!category) return res.status(400).json({ error: "category is required" });
+  if (!CATEGORIES.includes(category)) return res.status(400).json({ error: `Invalid category. Must be one of: ${CATEGORIES.join(", ")}` });
   try {
     const result = await pool.query(
       "UPDATE transactions SET category = $1 WHERE transaction_id = $2 RETURNING transaction_id, category",
