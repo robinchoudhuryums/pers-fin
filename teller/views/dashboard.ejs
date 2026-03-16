@@ -66,24 +66,21 @@
       to   { transform: rotateX(-20deg) rotateY(405deg); }
     }
 
-    /* Each layer is a separate 3D box, sized to its own width and centered */
+    /* Each layer is an anchor point at the pyramid center axis */
     .pyramid-layer {
       position: absolute;
+      left: 90px; /* center of 180px parent */
+      width: 0; height: 0;
       transform-style: preserve-3d;
       transition: opacity 1.5s ease;
     }
-    /* 4 layers — each layer width = its box size, centered in 180px parent */
-    .pyramid-layer.layer-0 { bottom: 0; height: 52px; width: 150px; left: 15px; }
-    .pyramid-layer.layer-1 { bottom: 62px; height: 48px; width: 112px; left: 34px; }
-    .pyramid-layer.layer-2 { bottom: 120px; height: 44px; width: 76px; left: 52px; }
-    .pyramid-layer.layer-3 { bottom: 172px; height: 40px; width: 44px; left: 68px; }
 
-    /* Neon wireframe faces per layer — each face fills its layer box */
+    /* Trapezoidal/triangular faces — positioned and transformed by JS */
     .layer-face {
-      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      position: absolute;
       background: transparent;
       transform-origin: center center;
-      transition: all 1.5s ease;
+      transition: opacity 1.5s ease;
     }
     .layer-face .face-fill {
       position: absolute; inset: 0;
@@ -105,29 +102,7 @@
       50%      { opacity: 1; }
     }
 
-    /* Face transforms — translateZ = half layer width for proper closed box */
-    /* Layer 0: 150px */
-    .layer-0 .lf-front  { transform: translateZ(75px); }
-    .layer-0 .lf-right  { transform: rotateY(90deg) translateZ(75px); }
-    .layer-0 .lf-back   { transform: rotateY(180deg) translateZ(75px); }
-    .layer-0 .lf-left   { transform: rotateY(270deg) translateZ(75px); }
-    /* Layer 1: 112px */
-    .layer-1 .lf-front  { transform: translateZ(56px); }
-    .layer-1 .lf-right  { transform: rotateY(90deg) translateZ(56px); }
-    .layer-1 .lf-back   { transform: rotateY(180deg) translateZ(56px); }
-    .layer-1 .lf-left   { transform: rotateY(270deg) translateZ(56px); }
-    /* Layer 2: 76px */
-    .layer-2 .lf-front  { transform: translateZ(38px); }
-    .layer-2 .lf-right  { transform: rotateY(90deg) translateZ(38px); }
-    .layer-2 .lf-back   { transform: rotateY(180deg) translateZ(38px); }
-    .layer-2 .lf-left   { transform: rotateY(270deg) translateZ(38px); }
-    /* Layer 3: 44px */
-    .layer-3 .lf-front  { transform: translateZ(22px); }
-    .layer-3 .lf-right  { transform: rotateY(90deg) translateZ(22px); }
-    .layer-3 .lf-back   { transform: rotateY(180deg) translateZ(22px); }
-    .layer-3 .lf-left   { transform: rotateY(270deg) translateZ(22px); }
-
-    /* Scanline sweep within each layer */
+    /* Scanline sweep within each face */
     .layer-face .scanline {
       position: absolute; bottom: 0; left: 0; width: 100%; height: 3px;
       background: linear-gradient(90deg, transparent 0%, rgba(90,143,143,0.9) 20%, rgba(127,181,230,1) 50%, rgba(90,143,143,0.9) 80%, transparent 100%);
@@ -141,9 +116,9 @@
       100% { bottom: 95%; opacity: 0; }
     }
 
-    /* Neon wireframe base */
+    /* Neon wireframe base — sized/positioned by JS */
     .pyramid-base {
-      position: absolute; width: 150px; height: 150px; bottom: 0; left: 15px;
+      position: absolute;
       transform-style: preserve-3d;
       transform: rotateX(-90deg) translateZ(0px);
       background: transparent;
@@ -245,10 +220,10 @@
       transition: color 0.5s, opacity 0.5s, text-shadow 0.5s; opacity: 0.4;
     }
     .tier-label.active { opacity: 1; text-shadow: 0 0 8px currentColor; }
-    .tier-label.t-0 { bottom: 38px; right: -48px; }
-    .tier-label.t-1 { bottom: 100px; right: -48px; }
-    .tier-label.t-2 { bottom: 156px; right: -42px; }
-    .tier-label.t-3 { bottom: 210px; right: -32px; }
+    .tier-label.t-0 { bottom: 68px; right: -58px; }
+    .tier-label.t-1 { bottom: 128px; right: -52px; }
+    .tier-label.t-2 { bottom: 184px; right: -44px; }
+    .tier-label.t-3 { bottom: 236px; right: -36px; }
 
     /* Light theme adjustments */
     [data-theme="light"] .layer-face .face-edges line {
@@ -287,35 +262,8 @@
       <div class="pyramid-scene">
         <div class="pyramid-holo">
           <div class="pyramid-3d" id="pyramid-3d">
-            <!-- Layer 0 (base) — 150×52px box, translateZ=75px -->
-            <div class="pyramid-layer layer-0" id="layer-0">
-              <div class="layer-face lf-front"><div class="face-fill" style="background:linear-gradient(to top,rgba(200,133,108,0.2),transparent 70%);"></div><svg class="face-edges" viewBox="0 0 150 52" xmlns="http://www.w3.org/2000/svg"><line x1="0" y1="0" x2="150" y2="0"/><line x1="150" y1="0" x2="150" y2="52"/><line x1="150" y1="52" x2="0" y2="52"/><line x1="0" y1="52" x2="0" y2="0"/></svg><div class="scanline"></div></div>
-              <div class="layer-face lf-right"><div class="face-fill" style="background:linear-gradient(to top,rgba(200,133,108,0.15),transparent 70%);"></div><svg class="face-edges" viewBox="0 0 150 52" xmlns="http://www.w3.org/2000/svg"><line x1="0" y1="0" x2="150" y2="0"/><line x1="150" y1="0" x2="150" y2="52"/><line x1="150" y1="52" x2="0" y2="52"/><line x1="0" y1="52" x2="0" y2="0"/></svg><div class="scanline" style="animation-delay:1s"></div></div>
-              <div class="layer-face lf-back"><div class="face-fill" style="background:linear-gradient(to top,rgba(200,133,108,0.12),transparent 70%);"></div><svg class="face-edges" viewBox="0 0 150 52" xmlns="http://www.w3.org/2000/svg"><line x1="0" y1="0" x2="150" y2="0"/><line x1="150" y1="0" x2="150" y2="52"/><line x1="150" y1="52" x2="0" y2="52"/><line x1="0" y1="52" x2="0" y2="0"/></svg><div class="scanline" style="animation-delay:2s"></div></div>
-              <div class="layer-face lf-left"><div class="face-fill" style="background:linear-gradient(to top,rgba(200,133,108,0.15),transparent 70%);"></div><svg class="face-edges" viewBox="0 0 150 52" xmlns="http://www.w3.org/2000/svg"><line x1="0" y1="0" x2="150" y2="0"/><line x1="150" y1="0" x2="150" y2="52"/><line x1="150" y1="52" x2="0" y2="52"/><line x1="0" y1="52" x2="0" y2="0"/></svg><div class="scanline" style="animation-delay:3s"></div></div>
-            </div>
-            <!-- Layer 1 — 112×48px box, translateZ=56px -->
-            <div class="pyramid-layer layer-1" id="layer-1">
-              <div class="layer-face lf-front"><div class="face-fill" style="background:linear-gradient(to top,rgba(200,133,108,0.2),transparent 70%);"></div><svg class="face-edges" viewBox="0 0 112 48" xmlns="http://www.w3.org/2000/svg"><line x1="0" y1="0" x2="112" y2="0"/><line x1="112" y1="0" x2="112" y2="48"/><line x1="112" y1="48" x2="0" y2="48"/><line x1="0" y1="48" x2="0" y2="0"/></svg><div class="scanline"></div></div>
-              <div class="layer-face lf-right"><div class="face-fill" style="background:linear-gradient(to top,rgba(200,133,108,0.15),transparent 70%);"></div><svg class="face-edges" viewBox="0 0 112 48" xmlns="http://www.w3.org/2000/svg"><line x1="0" y1="0" x2="112" y2="0"/><line x1="112" y1="0" x2="112" y2="48"/><line x1="112" y1="48" x2="0" y2="48"/><line x1="0" y1="48" x2="0" y2="0"/></svg><div class="scanline" style="animation-delay:1s"></div></div>
-              <div class="layer-face lf-back"><div class="face-fill" style="background:linear-gradient(to top,rgba(200,133,108,0.12),transparent 70%);"></div><svg class="face-edges" viewBox="0 0 112 48" xmlns="http://www.w3.org/2000/svg"><line x1="0" y1="0" x2="112" y2="0"/><line x1="112" y1="0" x2="112" y2="48"/><line x1="112" y1="48" x2="0" y2="48"/><line x1="0" y1="48" x2="0" y2="0"/></svg><div class="scanline" style="animation-delay:2s"></div></div>
-              <div class="layer-face lf-left"><div class="face-fill" style="background:linear-gradient(to top,rgba(200,133,108,0.15),transparent 70%);"></div><svg class="face-edges" viewBox="0 0 112 48" xmlns="http://www.w3.org/2000/svg"><line x1="0" y1="0" x2="112" y2="0"/><line x1="112" y1="0" x2="112" y2="48"/><line x1="112" y1="48" x2="0" y2="48"/><line x1="0" y1="48" x2="0" y2="0"/></svg><div class="scanline" style="animation-delay:3s"></div></div>
-            </div>
-            <!-- Layer 2 — 76×44px box, translateZ=38px -->
-            <div class="pyramid-layer layer-2" id="layer-2">
-              <div class="layer-face lf-front"><div class="face-fill" style="background:linear-gradient(to top,rgba(200,133,108,0.2),transparent 70%);"></div><svg class="face-edges" viewBox="0 0 76 44" xmlns="http://www.w3.org/2000/svg"><line x1="0" y1="0" x2="76" y2="0"/><line x1="76" y1="0" x2="76" y2="44"/><line x1="76" y1="44" x2="0" y2="44"/><line x1="0" y1="44" x2="0" y2="0"/></svg><div class="scanline"></div></div>
-              <div class="layer-face lf-right"><div class="face-fill" style="background:linear-gradient(to top,rgba(200,133,108,0.15),transparent 70%);"></div><svg class="face-edges" viewBox="0 0 76 44" xmlns="http://www.w3.org/2000/svg"><line x1="0" y1="0" x2="76" y2="0"/><line x1="76" y1="0" x2="76" y2="44"/><line x1="76" y1="44" x2="0" y2="44"/><line x1="0" y1="44" x2="0" y2="0"/></svg><div class="scanline" style="animation-delay:1s"></div></div>
-              <div class="layer-face lf-back"><div class="face-fill" style="background:linear-gradient(to top,rgba(200,133,108,0.12),transparent 70%);"></div><svg class="face-edges" viewBox="0 0 76 44" xmlns="http://www.w3.org/2000/svg"><line x1="0" y1="0" x2="76" y2="0"/><line x1="76" y1="0" x2="76" y2="44"/><line x1="76" y1="44" x2="0" y2="44"/><line x1="0" y1="44" x2="0" y2="0"/></svg><div class="scanline" style="animation-delay:2s"></div></div>
-              <div class="layer-face lf-left"><div class="face-fill" style="background:linear-gradient(to top,rgba(200,133,108,0.15),transparent 70%);"></div><svg class="face-edges" viewBox="0 0 76 44" xmlns="http://www.w3.org/2000/svg"><line x1="0" y1="0" x2="76" y2="0"/><line x1="76" y1="0" x2="76" y2="44"/><line x1="76" y1="44" x2="0" y2="44"/><line x1="0" y1="44" x2="0" y2="0"/></svg><div class="scanline" style="animation-delay:3s"></div></div>
-            </div>
-            <!-- Layer 3 (apex) — 44×40px box, translateZ=22px -->
-            <div class="pyramid-layer layer-3" id="layer-3">
-              <div class="layer-face lf-front"><div class="face-fill" style="background:linear-gradient(to top,rgba(200,133,108,0.25),transparent 70%);"></div><svg class="face-edges" viewBox="0 0 44 40" xmlns="http://www.w3.org/2000/svg"><line x1="0" y1="0" x2="44" y2="0"/><line x1="44" y1="0" x2="44" y2="40"/><line x1="44" y1="40" x2="0" y2="40"/><line x1="0" y1="40" x2="0" y2="0"/></svg><div class="scanline"></div></div>
-              <div class="layer-face lf-right"><div class="face-fill" style="background:linear-gradient(to top,rgba(200,133,108,0.2),transparent 70%);"></div><svg class="face-edges" viewBox="0 0 44 40" xmlns="http://www.w3.org/2000/svg"><line x1="0" y1="0" x2="44" y2="0"/><line x1="44" y1="0" x2="44" y2="40"/><line x1="44" y1="40" x2="0" y2="40"/><line x1="0" y1="40" x2="0" y2="0"/></svg><div class="scanline" style="animation-delay:1s"></div></div>
-              <div class="layer-face lf-back"><div class="face-fill" style="background:linear-gradient(to top,rgba(200,133,108,0.15),transparent 70%);"></div><svg class="face-edges" viewBox="0 0 44 40" xmlns="http://www.w3.org/2000/svg"><line x1="0" y1="0" x2="44" y2="0"/><line x1="44" y1="0" x2="44" y2="40"/><line x1="44" y1="40" x2="0" y2="40"/><line x1="0" y1="40" x2="0" y2="0"/></svg><div class="scanline" style="animation-delay:2s"></div></div>
-              <div class="layer-face lf-left"><div class="face-fill" style="background:linear-gradient(to top,rgba(200,133,108,0.2),transparent 70%);"></div><svg class="face-edges" viewBox="0 0 44 40" xmlns="http://www.w3.org/2000/svg"><line x1="0" y1="0" x2="44" y2="0"/><line x1="44" y1="0" x2="44" y2="40"/><line x1="44" y1="40" x2="0" y2="40"/><line x1="0" y1="40" x2="0" y2="0"/></svg><div class="scanline" style="animation-delay:3s"></div></div>
-            </div>
-            <div class="pyramid-base"></div>
+            <!-- Layers generated by buildPyramidGeometry() -->
+            <div class="pyramid-base" id="pyramid-base"></div>
           </div>
         </div>
       </div>
@@ -416,6 +364,123 @@
   <script>if(typeof Chart==='undefined'){document.write('<scr'+'ipt src="/chart.umd.js?v=<%= v %>"><\/scr'+'ipt>')}</script>
   <script>
     const barColors = ['#c8856c','#d4a574','#5a8f8f','#6fcf97','#7fb5e6','#f0c36d','#eb6b6b','#b07cc6','#e8a87c','#85dcb0','#7bb5d4','#d4a0a0','#9fd4c9','#c4b28f','#a8c3d4'];
+
+    // Build true 3D pyramid geometry — frustum layers with trapezoidal faces
+    (function buildPyramidGeometry() {
+      var container = document.getElementById('pyramid-3d');
+      if (!container) return;
+      var B = 75;   // half-base of pyramid
+      var H = 212;  // total pyramid height (base to apex)
+      var GAP = 10;  // vertical gap between layers
+      // Layer vertical slices (from bottom)
+      var layers = [
+        { y0: 0, y1: 52 },     // base
+        { y0: 62, y1: 110 },   // +10 gap
+        { y0: 120, y1: 164 },  // +10 gap
+        { y0: 174, y1: H }     // apex, +10 gap
+      ];
+      var ALPHA_DEG = Math.atan(B / H) * (180 / Math.PI); // ~19.5°
+      var faceNames = ['lf-front', 'lf-right', 'lf-back', 'lf-left'];
+      var faceRotY = [0, 90, 180, 270];
+      var faceOpacities = [0.2, 0.15, 0.12, 0.15];
+      var SVG_NS = 'http://www.w3.org/2000/svg';
+
+      // Position base grid
+      var base = document.getElementById('pyramid-base');
+      if (base) {
+        var baseW = B * 2;
+        base.style.width = baseW + 'px';
+        base.style.height = baseW + 'px';
+        base.style.bottom = '0';
+        base.style.left = (90 - B) + 'px';
+      }
+
+      layers.forEach(function(L, li) {
+        var h = L.y1 - L.y0;
+        var bw = B * (H - L.y0) / H;  // bottom half-width
+        var tw = B * (H - L.y1) / H;  // top half-width (0 for apex)
+        var diff = bw - tw;
+        var sh = Math.sqrt(h * h + diff * diff); // slant height
+        var avgZ = (bw + tw) / 2;
+        var faceW = bw * 2;
+        var isApex = tw < 0.5; // effectively zero = triangle
+
+        // Create layer container (0×0 anchor at pyramid center, at layer vertical center)
+        var layerEl = document.createElement('div');
+        layerEl.className = 'pyramid-layer layer-' + li;
+        layerEl.id = 'layer-' + li;
+        // Position anchor at the vertical center of this layer
+        layerEl.style.bottom = (L.y0 + h / 2) + 'px';
+        container.insertBefore(layerEl, base);
+
+        // Create 4 faces (front, right, back, left)
+        for (var fi = 0; fi < 4; fi++) {
+          var face = document.createElement('div');
+          face.className = 'layer-face ' + faceNames[fi];
+          // Size: width = bottom width (2*bw), height = slant height
+          face.style.width = faceW + 'px';
+          face.style.height = sh + 'px';
+          // Center on the 0×0 anchor point
+          face.style.left = -bw + 'px';
+          face.style.top = (-sh / 2) + 'px';
+          // Clip to trapezoid (or triangle for apex)
+          if (isApex) {
+            face.style.clipPath = 'polygon(50% 0%, 0% 100%, 100% 100%)';
+          } else {
+            var inset = (diff / faceW) * 100;
+            face.style.clipPath = 'polygon(' + inset.toFixed(1) + '% 0%, ' + (100 - inset).toFixed(1) + '% 0%, 100% 100%, 0% 100%)';
+          }
+          // 3D transform: rotateY to orient face, translateZ to push outward, rotateX to tilt inward
+          face.style.transform = 'rotateY(' + faceRotY[fi] + 'deg) translateZ(' + avgZ.toFixed(1) + 'px) rotateX(-' + ALPHA_DEG.toFixed(1) + 'deg)';
+
+          // Face fill gradient
+          var fill = document.createElement('div');
+          fill.className = 'face-fill';
+          fill.style.background = 'linear-gradient(to top, rgba(200,133,108,' + faceOpacities[fi] + '), transparent 70%)';
+          if (isApex) {
+            fill.style.clipPath = 'polygon(50% 0%, 0% 100%, 100% 100%)';
+          }
+          face.appendChild(fill);
+
+          // SVG wireframe edges
+          var svg = document.createElementNS(SVG_NS, 'svg');
+          svg.setAttribute('class', 'face-edges');
+          svg.setAttribute('viewBox', '0 0 ' + faceW.toFixed(1) + ' ' + sh.toFixed(1));
+          svg.setAttribute('xmlns', SVG_NS);
+          if (isApex) {
+            // Triangle: apex at top center, base at bottom
+            var cx = bw;
+            addLine(svg, cx, 0, 0, sh);
+            addLine(svg, cx, 0, faceW, sh);
+            addLine(svg, 0, sh, faceW, sh);
+          } else {
+            // Trapezoid: narrower at top
+            addLine(svg, diff, 0, 0, sh);          // top-left to bottom-left
+            addLine(svg, diff, 0, faceW - diff, 0); // top edge
+            addLine(svg, faceW - diff, 0, faceW, sh); // top-right to bottom-right
+            addLine(svg, 0, sh, faceW, sh);         // bottom edge
+          }
+          face.appendChild(svg);
+
+          // Scanline
+          var scan = document.createElement('div');
+          scan.className = 'scanline';
+          if (fi > 0) scan.style.animationDelay = fi + 's';
+          face.appendChild(scan);
+
+          layerEl.appendChild(face);
+        }
+      });
+
+      function addLine(svg, x1, y1, x2, y2) {
+        var line = document.createElementNS(SVG_NS, 'line');
+        line.setAttribute('x1', x1.toFixed(1));
+        line.setAttribute('y1', y1.toFixed(1));
+        line.setAttribute('x2', x2.toFixed(1));
+        line.setAttribute('y2', y2.toFixed(1));
+        svg.appendChild(line);
+      }
+    })();
 
     async function loadAccounts() {
       try {
