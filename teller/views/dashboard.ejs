@@ -60,6 +60,7 @@
       transform-style: preserve-3d;
       transform: rotateX(-20deg) rotateY(45deg);
       animation: pyramidSpin 20s linear infinite;
+      will-change: transform;
     }
     @keyframes pyramidSpin {
       from { transform: rotateX(-20deg) rotateY(45deg); }
@@ -72,7 +73,7 @@
       left: 90px; /* center of 180px parent */
       width: 0; height: 0;
       transform-style: preserve-3d;
-      transition: opacity 1.5s ease;
+      /* NEVER set opacity on this element — it flattens preserve-3d children */
     }
 
     /* Trapezoidal/triangular faces — positioned and transformed by JS */
@@ -138,21 +139,12 @@
       50%      { border-color: rgba(90,143,143,0.6); box-shadow: inset 0 0 30px rgba(90,143,143,0.1), 0 0 15px rgba(90,143,143,0.25); }
     }
 
-    /* Holographic flicker overlay — MUST preserve-3d to keep children 3D */
+    /* Holographic container — no opacity/filter to preserve 3D context */
     .pyramid-holo {
       position: absolute; inset: 0; pointer-events: none;
       transform-style: preserve-3d;
-      animation: holoFlicker 8s ease-in-out infinite;
     }
-    @keyframes holoFlicker {
-      0%, 100% { opacity: 1; }
-      48% { opacity: 1; }
-      49% { opacity: 0.7; }
-      50% { opacity: 1; }
-      77% { opacity: 1; }
-      78% { opacity: 0.85; }
-      79% { opacity: 1; }
-    }
+    /* Flicker applied per-face via edge pulse instead */
 
     /* Neon glow underneath */
     .pyramid-glow {
@@ -247,6 +239,24 @@
       .pyramid-stage { width: 280px; height: 310px; }
       .pyramid-scene { transform: scale(0.78); }
       .tier-label { display: none; }
+      /* Mobile perf: remove expensive filters/shadows, simplify animations */
+      .layer-face .face-edges line {
+        filter: none !important;
+        stroke-width: 1;
+      }
+      .layer-face .scanline { display: none; }
+      .pyramid-glow { filter: none; }
+      .orb { box-shadow: none; }
+      @keyframes basePulse {
+        0%, 100% { border-color: rgba(90,143,143,0.4); }
+        50%      { border-color: rgba(90,143,143,0.6); }
+      }
+    }
+    /* Respect reduced-motion preference */
+    @media (prefers-reduced-motion: reduce) {
+      .pyramid-3d { animation-duration: 60s; }
+      .layer-face .scanline { display: none; }
+      .orb { display: none; }
     }
 ` }) %>
 <%- include('partials/nav', { activePage: 'dashboard' }) %>
@@ -1003,6 +1013,8 @@
       updatePyramid(result.score, result.tierScores, result.status, colorMode);
     }
 
+    var isMobile = window.matchMedia('(max-width: 640px)').matches;
+
     function updatePyramid(score, tierScores, statusMsg, colorMode) {
       var fill = score / 100;
 
@@ -1027,18 +1039,20 @@
         var strokeColor = 'rgba(' + edgeRgb + ',' + (0.5 + tierFill * 0.5) + ')';
         var layerGlow = Math.round(3 + tierFill * 6);
 
-        // Layer opacity: dim if tier is empty, bright if active
-        layer.style.opacity = tierFill > 0 ? (0.6 + tierFill * 0.4) : 0.3;
+        // Compute layer-level dim factor (applied per-face to avoid breaking preserve-3d)
+        var layerDim = tierFill > 0 ? (0.6 + tierFill * 0.4) : 0.3;
 
-        // Update faces within this layer
+        // Update faces within this layer — opacity set per-face, never on layer container
         var faces = layer.querySelectorAll('.layer-face');
         var faceOpacities = [1, 0.9, 0.65, 0.9];
         faces.forEach(function(face, fi) {
-          face.style.opacity = faceOpacities[fi];
+          face.style.opacity = faceOpacities[fi] * layerDim;
           // Edge lines
           face.querySelectorAll('.face-edges line').forEach(function(line) {
             line.setAttribute('stroke', strokeColor);
-            line.style.filter = 'drop-shadow(0 0 ' + layerGlow + 'px rgba(' + edgeRgb + ',0.6)) drop-shadow(0 0 ' + (layerGlow * 2) + 'px rgba(' + edgeRgb + ',0.3))';
+            if (!isMobile) {
+              line.style.filter = 'drop-shadow(0 0 ' + layerGlow + 'px rgba(' + edgeRgb + ',0.6)) drop-shadow(0 0 ' + (layerGlow * 2) + 'px rgba(' + edgeRgb + ',0.3))';
+            }
           });
           // Fill glow — intensity based on tier score
           var faceFill = face.querySelector('.face-fill');
