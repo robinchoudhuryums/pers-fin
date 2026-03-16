@@ -66,35 +66,33 @@
       to   { transform: rotateX(-20deg) rotateY(405deg); }
     }
 
-    /* Neon wireframe faces — transparent with glowing edges */
+    /* Neon wireframe faces — transparent with bright edge lines */
     .pyramid-face {
       position: absolute; width: 160px; height: 186px;
-      clip-path: polygon(50% 0%, 0% 100%, 100% 100%);
       transform-origin: 50% 100%; bottom: 0; left: 0;
       background: transparent;
       transition: all 1.5s ease;
     }
-    /* Inner edge glow via layered borders using box-shadow on a nested element */
-    .pyramid-face::before {
-      content: ''; position: absolute; inset: 0;
+    /* Inner fill glow from bottom up */
+    .pyramid-face .face-fill {
+      position: absolute; inset: 0;
       clip-path: polygon(50% 0%, 0% 100%, 100% 100%);
       background: linear-gradient(to top, rgba(90,143,143,0.06) 0%, transparent 60%);
       transition: background 1.5s ease;
     }
-    /* Edge lines via SVG-like border effect */
-    .pyramid-face::after {
-      content: ''; position: absolute; inset: 0;
-      clip-path: polygon(50% 0%, 0% 100%, 100% 100%);
-      background:
-        linear-gradient(to bottom right, rgba(90,143,143,0.8) 0%, transparent 2%),
-        linear-gradient(to bottom left, rgba(90,143,143,0.8) 0%, transparent 2%),
-        linear-gradient(to top, rgba(90,143,143,0.6) 0%, transparent 2%);
-      filter: blur(0.5px);
-      transition: filter 1.5s, background 1.5s;
+    /* SVG wireframe edges — actual visible neon lines */
+    .pyramid-face .face-edges {
+      position: absolute; inset: 0; overflow: visible;
+    }
+    .pyramid-face .face-edges line {
+      stroke: rgba(90,143,143,0.8);
+      stroke-width: 1.5;
+      filter: drop-shadow(0 0 4px rgba(90,143,143,0.6)) drop-shadow(0 0 8px rgba(90,143,143,0.3));
+      transition: stroke 1s, filter 1s;
       animation: edgePulse 3s ease-in-out infinite;
     }
     @keyframes edgePulse {
-      0%, 100% { opacity: 0.7; }
+      0%, 100% { opacity: 0.75; }
       50%      { opacity: 1; }
     }
 
@@ -103,13 +101,12 @@
     .pyramid-face.f-back   { transform: rotateY(180deg) translateZ(80px) rotateX(25deg); }
     .pyramid-face.f-left   { transform: rotateY(270deg) translateZ(80px) rotateX(25deg); }
 
-    /* Scanline sweep — horizontal line that moves upward */
+    /* Scanline sweep — horizontal line that moves upward within triangle */
     .pyramid-face .scanline {
-      position: absolute; bottom: 0; left: 0; width: 100%; height: 2px;
-      background: linear-gradient(90deg, transparent 0%, rgba(90,143,143,0.9) 30%, rgba(127,181,230,0.9) 50%, rgba(90,143,143,0.9) 70%, transparent 100%);
-      filter: blur(1px); opacity: 0;
+      position: absolute; bottom: 0; left: 0; width: 100%; height: 3px;
+      background: linear-gradient(90deg, transparent 0%, rgba(90,143,143,0.9) 20%, rgba(127,181,230,1) 50%, rgba(90,143,143,0.9) 80%, transparent 100%);
+      filter: blur(1.5px); opacity: 0;
       animation: scanSweep 4s ease-in-out infinite;
-      clip-path: polygon(50% 0%, 0% 100%, 100% 100%);
     }
     @keyframes scanSweep {
       0%   { bottom: 0%; opacity: 0; }
@@ -228,11 +225,9 @@
     .tier-label.t-goals   { bottom: 224px; right: 14px; }
 
     /* Light theme adjustments */
-    [data-theme="light"] .pyramid-face::after {
-      background:
-        linear-gradient(to bottom right, rgba(61,114,114,0.7) 0%, transparent 2%),
-        linear-gradient(to bottom left, rgba(61,114,114,0.7) 0%, transparent 2%),
-        linear-gradient(to top, rgba(61,114,114,0.5) 0%, transparent 2%);
+    [data-theme="light"] .pyramid-face .face-edges line {
+      stroke: rgba(61,114,114,0.7);
+      filter: drop-shadow(0 0 3px rgba(61,114,114,0.4)) drop-shadow(0 0 6px rgba(61,114,114,0.2));
     }
     [data-theme="light"] .pyramid-base {
       border-color: rgba(61,114,114,0.35);
@@ -266,10 +261,34 @@
       <div class="pyramid-scene">
         <div class="pyramid-holo">
           <div class="pyramid-3d" id="pyramid-3d">
-            <div class="pyramid-face f-front" id="face-front"><div class="scanline"></div></div>
-            <div class="pyramid-face f-right" id="face-right"><div class="scanline" style="animation-delay:1s"></div></div>
-            <div class="pyramid-face f-back"  id="face-back"><div class="scanline" style="animation-delay:2s"></div></div>
-            <div class="pyramid-face f-left"  id="face-left"><div class="scanline" style="animation-delay:3s"></div></div>
+            <div class="pyramid-face f-front" id="face-front">
+              <div class="face-fill"></div>
+              <svg class="face-edges" viewBox="0 0 160 186" xmlns="http://www.w3.org/2000/svg">
+                <line x1="80" y1="0" x2="0" y2="186"/><line x1="80" y1="0" x2="160" y2="186"/><line x1="0" y1="186" x2="160" y2="186"/>
+              </svg>
+              <div class="scanline"></div>
+            </div>
+            <div class="pyramid-face f-right" id="face-right">
+              <div class="face-fill"></div>
+              <svg class="face-edges" viewBox="0 0 160 186" xmlns="http://www.w3.org/2000/svg">
+                <line x1="80" y1="0" x2="0" y2="186"/><line x1="80" y1="0" x2="160" y2="186"/><line x1="0" y1="186" x2="160" y2="186"/>
+              </svg>
+              <div class="scanline" style="animation-delay:1s"></div>
+            </div>
+            <div class="pyramid-face f-back" id="face-back">
+              <div class="face-fill"></div>
+              <svg class="face-edges" viewBox="0 0 160 186" xmlns="http://www.w3.org/2000/svg">
+                <line x1="80" y1="0" x2="0" y2="186"/><line x1="80" y1="0" x2="160" y2="186"/><line x1="0" y1="186" x2="160" y2="186"/>
+              </svg>
+              <div class="scanline" style="animation-delay:2s"></div>
+            </div>
+            <div class="pyramid-face f-left" id="face-left">
+              <div class="face-fill"></div>
+              <svg class="face-edges" viewBox="0 0 160 186" xmlns="http://www.w3.org/2000/svg">
+                <line x1="80" y1="0" x2="0" y2="186"/><line x1="80" y1="0" x2="160" y2="186"/><line x1="0" y1="186" x2="160" y2="186"/>
+              </svg>
+              <div class="scanline" style="animation-delay:3s"></div>
+            </div>
             <div class="pyramid-base"></div>
           </div>
         </div>
@@ -367,7 +386,8 @@
     <div id="forecast-list"></div>
   </div>
 <%- include('partials/foot', { apiKey: apiKey }) %>
-  <script src="/chart.umd.js?v=<%= v %>"></script>
+  <script src="/vendor/chart.umd.js"></script>
+  <script>if(typeof Chart==='undefined'){document.write('<scr'+'ipt src="/chart.umd.js?v=<%= v %>"><\/scr'+'ipt>')}</script>
   <script>
     const barColors = ['#c8856c','#d4a574','#5a8f8f','#6fcf97','#7fb5e6','#f0c36d','#eb6b6b','#b07cc6','#e8a87c','#85dcb0','#7bb5d4','#d4a0a0','#9fd4c9','#c4b28f','#a8c3d4'];
 
@@ -718,61 +738,49 @@
       var fillPct = Math.round(fill * 100);
 
       // Neon color based on score level
-      var neonColor, neonRgb;
+      var neonRgb, strokeColor, glowSize;
       if (score >= 75) {
-        neonColor = 'rgba(111,207,151,'; neonRgb = '111,207,151';
+        neonRgb = '111,207,151'; // green
       } else if (score >= 50) {
-        neonColor = 'rgba(90,143,143,'; neonRgb = '90,143,143';
+        neonRgb = '90,143,143'; // teal
       } else if (score >= 25) {
-        neonColor = 'rgba(127,181,230,'; neonRgb = '127,181,230';
+        neonRgb = '127,181,230'; // blue
       } else {
-        neonColor = 'rgba(90,143,143,'; neonRgb = '90,143,143';
+        neonRgb = '90,143,143'; // teal
       }
+      strokeColor = 'rgba(' + neonRgb + ',' + (0.7 + fill * 0.3) + ')';
+      glowSize = Math.round(4 + fill * 8);
 
-      // Update face inner glow (::before) via CSS variable on each face
+      // Update SVG edge lines on each face
       var faces = document.querySelectorAll('.pyramid-face');
-      var faceOpacities = [1, 0.9, 0.7, 0.9];
+      var faceOpacities = [1, 0.9, 0.65, 0.9];
       faces.forEach(function(face, i) {
-        // Inner fill glow from bottom up
-        var innerBg = 'linear-gradient(to top, ' + neonColor + (0.15 + fill * 0.15) + ') 0%, ' +
-          neonColor + (0.1 + fill * 0.12) + ') ' + fillPct + '%, transparent ' + Math.min(100, fillPct + 15) + '%)';
-        face.querySelector('.scanline') && (face.querySelector('.scanline').style.background =
-          'linear-gradient(90deg, transparent 0%, ' + neonColor + '0.9) 30%, rgba(' + neonRgb + ',1) 50%, ' + neonColor + '0.9) 70%, transparent 100%)');
         face.style.opacity = faceOpacities[i];
-        // Set edge glow intensity via filter
-        var edgeGlow = face.querySelector('::after');
+        // Update SVG line colors
+        face.querySelectorAll('.face-edges line').forEach(function(line) {
+          line.setAttribute('stroke', strokeColor);
+          line.style.filter = 'drop-shadow(0 0 ' + glowSize + 'px rgba(' + neonRgb + ',0.6)) drop-shadow(0 0 ' + (glowSize * 2) + 'px rgba(' + neonRgb + ',0.3))';
+        });
+        // Update face inner fill glow
+        var faceFill = face.querySelector('.face-fill');
+        if (faceFill) {
+          faceFill.style.background = 'linear-gradient(to top, rgba(' + neonRgb + ',' + (0.15 + fill * 0.2) + ') 0%, ' +
+            'rgba(' + neonRgb + ',' + (0.08 + fill * 0.12) + ') ' + fillPct + '%, transparent ' + Math.min(100, fillPct + 20) + '%)';
+        }
       });
 
-      // Update face ::before backgrounds using inline style on a style tag
-      var neonStyle = document.getElementById('neon-dynamic');
-      if (!neonStyle) {
-        neonStyle = document.createElement('style');
-        neonStyle.id = 'neon-dynamic';
-        document.head.appendChild(neonStyle);
+      // Update base neon glow
+      var base = document.querySelector('.pyramid-base');
+      if (base) {
+        base.style.borderColor = 'rgba(' + neonRgb + ',' + (0.3 + fill * 0.4) + ')';
+        base.style.boxShadow = 'inset 0 0 ' + Math.round(15 + fill * 25) + 'px rgba(' + neonRgb + ',0.08), 0 0 ' + Math.round(6 + fill * 15) + 'px rgba(' + neonRgb + ',' + (0.15 + fill * 0.25) + ')';
       }
-      neonStyle.textContent =
-        '.pyramid-face::before { background: linear-gradient(to top, ' + neonColor + (0.18 + fill * 0.18) + ') 0%, ' +
-        neonColor + (0.12 + fill * 0.12) + ') ' + fillPct + '%, transparent ' + Math.min(100, fillPct + 20) + '%) !important; }' +
-        '.pyramid-face::after { background: ' +
-        'linear-gradient(to bottom right, ' + neonColor + (0.6 + fill * 0.4) + ') 0%, transparent 2%), ' +
-        'linear-gradient(to bottom left, ' + neonColor + (0.6 + fill * 0.4) + ') 0%, transparent 2%), ' +
-        'linear-gradient(to top, ' + neonColor + (0.4 + fill * 0.3) + ') 0%, transparent 2%) !important; ' +
-        'filter: blur(0.5px) drop-shadow(0 0 ' + Math.round(3 + fill * 6) + 'px ' + neonColor + '0.5)) !important; }' +
-        '.pyramid-base { border-color: ' + neonColor + (0.3 + fill * 0.4) + ') !important; ' +
-        'box-shadow: inset 0 0 ' + Math.round(15 + fill * 25) + 'px ' + neonColor + '0.08), ' +
-        '0 0 ' + Math.round(6 + fill * 15) + 'px ' + neonColor + (0.15 + fill * 0.25) + ') !important; }' +
-        '.pyramid-base::before { background: ' +
-        'linear-gradient(90deg, ' + neonColor + (0.08 + fill * 0.1) + ') 1px, transparent 1px), ' +
-        'linear-gradient(0deg, ' + neonColor + (0.08 + fill * 0.1) + ') 1px, transparent 1px) !important; ' +
-        'background-size: 40px 40px !important; }';
 
       // Update glow underneath
       var glow = document.getElementById('pyramid-glow');
       if (glow) {
-        var glowIntensity = 0.3 + fill * 0.7;
-        glow.style.opacity = glowIntensity;
-        glow.style.background = 'radial-gradient(ellipse, ' + neonColor + (0.4 + fill * 0.3) + ') 0%, ' +
-          neonColor + '0.15) 35%, transparent 65%)';
+        glow.style.opacity = 0.3 + fill * 0.7;
+        glow.style.background = 'radial-gradient(ellipse, rgba(' + neonRgb + ',' + (0.4 + fill * 0.3) + ') 0%, rgba(' + neonRgb + ',0.15) 35%, transparent 65%)';
       }
 
       // Animate score number

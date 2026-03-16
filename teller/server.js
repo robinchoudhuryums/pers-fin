@@ -64,6 +64,10 @@ app.use(express.urlencoded({ extended: false }));
 
 // Serve shared static assets (CSS, JS) — before auth so login page can use them
 app.use(express.static(path.join(__dirname, "public"), { maxAge: "1h" }));
+// Serve Chart.js from node_modules (more reliable than CDN)
+app.get("/vendor/chart.umd.js", (_req, res) => {
+  res.sendFile(path.join(__dirname, "node_modules/chart.js/dist/chart.umd.js"));
+});
 
 // ---------------------------------------------------------------------------
 // Session middleware
