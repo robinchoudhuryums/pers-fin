@@ -136,12 +136,15 @@ app.use(helmet({
       scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.teller.io", "https://cdn.jsdelivr.net", "https://*.jsdelivr.net", "https://cdn.plaid.com"],
       // Allow inline event handlers (onclick, onchange) — helmet v8 blocks these by default
       scriptSrcAttr: ["'unsafe-inline'"],
-      connectSrc: ["'self'", "https://api.teller.io", "https://*.plaid.com"],
-      frameSrc: ["https://cdn.teller.io", "https://cdn.plaid.com"],
+      connectSrc: ["'self'", "https://api.teller.io", "https://*.teller.io", "https://*.plaid.com"],
+      frameSrc: ["https://cdn.teller.io", "https://*.teller.io", "https://cdn.plaid.com"],
       styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
       fontSrc: ["'self'", "https://fonts.gstatic.com"],
     },
   },
+  // Disable COEP — it blocks cross-origin resources (Teller Connect, Plaid, CDN scripts)
+  // unless the remote server sends Cross-Origin-Resource-Policy headers, which most don't
+  crossOriginEmbedderPolicy: false,
 }));
 
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
