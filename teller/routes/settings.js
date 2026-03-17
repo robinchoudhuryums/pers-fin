@@ -17,8 +17,8 @@ try {
 // GET /api/settings
 router.get("/api/settings", async (_req, res) => {
   try {
-    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules, pyramid_data_source, pyramid_color_mode FROM user_settings WHERE id = 1");
-    const defaults = { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true, anomaly_detection: true, seasonal_forecast: true, debt_optimizer: true, bill_negotiation: true, income_savings: true, tax_deductions: true, goal_tracking: true }, pyramid_data_source: "wellness", pyramid_color_mode: "single" };
+    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules, pyramid_data_source, pyramid_color_mode, debt_baseline_amount FROM user_settings WHERE id = 1");
+    const defaults = { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true, anomaly_detection: true, seasonal_forecast: true, debt_optimizer: true, bill_negotiation: true, income_savings: true, tax_deductions: true, goal_tracking: true }, pyramid_data_source: "wellness", pyramid_color_mode: "single", debt_baseline_amount: null };
     const row = result.rows[0] || defaults;
     if (typeof row.insight_modules === "string") row.insight_modules = JSON.parse(row.insight_modules);
     res.json({ ...defaults, ...row, available_modules: INSIGHT_MODULES });
@@ -29,7 +29,7 @@ router.get("/api/settings", async (_req, res) => {
 
 // PATCH /api/settings
 router.patch("/api/settings", async (req, res) => {
-  const { session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules, pyramid_data_source, pyramid_color_mode } = req.body;
+  const { session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules, pyramid_data_source, pyramid_color_mode, debt_baseline_amount } = req.body;
   try {
     const updates = []; const values = []; let idx = 1;
     if (session_timeout_minutes !== undefined) {
@@ -83,6 +83,12 @@ router.patch("/api/settings", async (req, res) => {
     }
     if (pyramid_color_mode !== undefined && ["single", "multi"].includes(pyramid_color_mode)) {
       updates.push("pyramid_color_mode = $" + idx++); values.push(pyramid_color_mode);
+    }
+    if (debt_baseline_amount !== undefined) {
+      const val = debt_baseline_amount === null ? null : parseFloat(debt_baseline_amount);
+      if (val === null || (!isNaN(val) && val >= 0)) {
+        updates.push("debt_baseline_amount = $" + idx++); values.push(val);
+      }
     }
     if (!updates.length) return res.status(400).json({ error: "No valid settings" });
     updates.push("updated_at = now()");
