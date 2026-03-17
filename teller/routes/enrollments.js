@@ -482,11 +482,21 @@ router.get("/api/spending-summary", async (req, res) => {
        LIMIT 10`
     );
 
+    const recentTxns = await pool.query(
+      `SELECT COALESCE(merchant_name, name) AS description,
+              amount, date, pending,
+              COALESCE(category[1], 'Uncategorized') AS category
+       FROM transactions
+       ORDER BY date DESC, created_at DESC
+       LIMIT 10`
+    );
+
     res.json({
       monthly_trend: monthlyTrend.rows,
       by_category: byCategory.rows,
       top_merchants: topMerchants.rows,
       upcoming_subscriptions: upcoming.rows,
+      recent_transactions: recentTxns.rows,
     });
   } catch (err) {
     console.error("spending-summary error:", err.message);

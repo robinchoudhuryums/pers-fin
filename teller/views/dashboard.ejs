@@ -38,6 +38,17 @@
       .chart-wrap { height: 220px; }
     }
 
+    /* ── Recent Transactions ── */
+    .recent-txn-table { width: 100%; border-collapse: collapse; }
+    .recent-txn-table th { font-size: 10px; font-weight: 500; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 1px; text-align: left; padding: 6px 8px;
+      border-bottom: 1px solid var(--border); }
+    .recent-txn-table td { padding: 8px; font-size: 13px; border-bottom: 1px solid var(--border); }
+    .badge-pending { display: inline-block; font-size: 9px; padding: 1px 6px; border-radius: 8px;
+      background: var(--warm-glow); color: #1a1a2e; font-weight: 600; letter-spacing: 0.5px; }
+    .badge-posted { display: inline-block; font-size: 9px; padding: 1px 6px; border-radius: 8px;
+      background: var(--green); color: #1a1a2e; font-weight: 600; letter-spacing: 0.5px; }
+
     /* ── Financial Pyramid — Separated Layers with Neon Hologram ── */
     .wellness-section {
       display: flex; flex-direction: column; align-items: center;
@@ -341,6 +352,15 @@
     <div class="accounts-grid" id="accounts-grid">
       <div class="empty-msg">Loading accounts...</div>
     </div>
+  </div>
+
+  <!-- Recent Transactions -->
+  <div class="section" style="margin-bottom:28px; animation: fadeInUp 0.4s ease both; animation-delay: 0.3s;">
+    <h2>Recent Transactions</h2>
+    <table class="recent-txn-table">
+      <thead><tr><th>Date</th><th>Description</th><th>Category</th><th>Amount</th><th>Status</th></tr></thead>
+      <tbody id="recent-txn-body"><tr><td colspan="5" class="empty-msg">Loading...</td></tr></tbody>
+    </table>
   </div>
 
   <!-- Two-column: Monthly trend + Categories -->
@@ -651,6 +671,24 @@
         } else {
           upBody.innerHTML = '<tr><td colspan="3" class="empty-msg">No upcoming charges.</td></tr>';
         }
+        const recentBody = document.getElementById('recent-txn-body');
+        if (data.recent_transactions && data.recent_transactions.length) {
+          recentBody.innerHTML = data.recent_transactions.map(t => {
+            const isPending = t.pending;
+            const badge = isPending
+              ? '<span class="badge-pending">PENDING</span>'
+              : '<span class="badge-posted">POSTED</span>';
+            const amtClass = parseFloat(t.amount) > 0 ? 'warm' : 'teal';
+            return '<tr><td>' + fmtDate(t.date) + '</td>' +
+              '<td>' + esc(t.description) + '</td>' +
+              '<td style="font-size:11px;color:var(--text-muted)">' + esc(t.category) + '</td>' +
+              '<td class="amount ' + amtClass + '">' + fmt(t.amount) + '</td>' +
+              '<td>' + badge + '</td></tr>';
+          }).join('');
+        } else {
+          recentBody.innerHTML = '<tr><td colspan="5" class="empty-msg">No transactions yet.</td></tr>';
+        }
+
       } catch (e) {
         showMsg('Could not load spending data: ' + e.message, false);
       }
