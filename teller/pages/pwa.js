@@ -53,10 +53,11 @@ router.get("/sw.js", (_req, res) => {
     "self.addEventListener('activate',e=>e.waitUntil(clients.claim()));" +
     "self.addEventListener('fetch',e=>{" +
     "if(e.request.method!=='GET')return;" +
-    "e.respondWith(fetch(e.request).then(r=>{" +
-    "if(r.ok&&e.request.url.includes('cdn.jsdelivr.net')){" +
-    "const c=r.clone();caches.open(CACHE).then(ca=>ca.put(e.request,c));}" +
-    "return r;}).catch(()=>caches.match(e.request)));" +
+    // Don't intercept cross-origin requests — let them pass through to the network
+    // directly. Intercepting them causes CSP violations for external CDNs (Teller, fonts).
+    "const u=new URL(e.request.url);" +
+    "if(u.origin!==self.location.origin)return;" +
+    "e.respondWith(fetch(e.request).then(r=>{return r;}).catch(()=>caches.match(e.request)));" +
     "});" +
     "self.addEventListener('push',e=>{" +
     "if(!e.data)return;" +
