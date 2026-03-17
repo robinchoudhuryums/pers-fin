@@ -465,6 +465,8 @@ router.get("/api/spending-summary", async (req, res) => {
        FROM transactions
        WHERE amount > 0 AND merchant_name IS NOT NULL
              AND date >= CURRENT_DATE - ($1 || ' months')::INTERVAL
+             AND LOWER(COALESCE(merchant_name, name)) NOT SIMILAR TO
+               '%(payment thank|pymt|autopay|auto pay|minimum payment|directpay|automatic payment|interest|int charge|finance charge|funds tran|funds transfer|transfer to|transfer from|ach transfer|wire transfer|internal transfer)%'
        GROUP BY COALESCE(merchant_name, name)
        ORDER BY total_spent DESC
        LIMIT 10`,
