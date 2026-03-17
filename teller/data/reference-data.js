@@ -254,7 +254,7 @@ const INSIGHT_MODULES = {
 };
 
 // Model ID mapping for Claude API
-const MODEL_MAP = { haiku: "claude-haiku-4-5-20251001", sonnet: "claude-sonnet-4-5-20250514", opus: "claude-opus-4-20250514" };
+const MODEL_MAP = { haiku: "claude-haiku-4-5", sonnet: "claude-sonnet-4-5", opus: "claude-opus-4-6" };
 
 module.exports = {
   STATE_ELECTRICITY_RATES,
