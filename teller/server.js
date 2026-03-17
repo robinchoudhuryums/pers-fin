@@ -136,8 +136,8 @@ app.use(helmet({
       scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.teller.io", "https://*.teller.io", "https://cdn.jsdelivr.net", "https://*.jsdelivr.net", "https://cdn.plaid.com"],
       // Allow inline event handlers (onclick, onchange) — helmet v8 blocks these by default
       scriptSrcAttr: ["'unsafe-inline'"],
-      connectSrc: ["'self'", "https://api.teller.io", "https://*.teller.io", "https://*.plaid.com", "https://fonts.googleapis.com", "https://fonts.gstatic.com"],
-      frameSrc: ["https://cdn.teller.io", "https://*.teller.io", "https://cdn.plaid.com"],
+      connectSrc: ["'self'", "https://teller.io", "https://*.teller.io", "https://*.plaid.com", "https://fonts.googleapis.com", "https://fonts.gstatic.com"],
+      frameSrc: ["https://teller.io", "https://*.teller.io", "https://cdn.plaid.com"],
       styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
       fontSrc: ["'self'", "https://fonts.gstatic.com"],
       workerSrc: ["'self'"],
