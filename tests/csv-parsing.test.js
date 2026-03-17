@@ -173,6 +173,59 @@ describe("Generic CSV parsing", () => {
 });
 
 // ============================================================================
+// Schwab format tests (using real module)
+// ============================================================================
+const realCsvFormats = require("../teller/data/csv-formats");
+
+describe("Schwab CSV detection", () => {
+  it("detects Schwab format with Withdrawal column", () => {
+    const headers = ["Date", "Status", "Type", "CheckNumber", "Description", "Withdrawal", "Deposit", "RunningBalance"];
+    assert.equal(realCsvFormats.detectCsvFormat(headers), "schwab");
+  });
+});
+
+describe("Schwab CSV parsing", () => {
+  it("parses withdrawal with dollar sign and commas", () => {
+    const row = {
+      "Date": "03/17/2026", "Status": "Posted", "Type": "VISA", "CheckNumber": "",
+      "Description": "VENDING TISARA LLC IRVING", "Withdrawal": "$1.00", "Deposit": "", "RunningBalance": "$2,443.49",
+    };
+    const result = realCsvFormats.CSV_FORMATS.schwab.parse(row);
+    assert.equal(result.merchant_name, "VENDING TISARA LLC IRVING");
+    assert.equal(result.amount, 1.00);
+    assert.equal(result.date, "03/17/2026");
+    assert.equal(result.category, "VISA");
+  });
+
+  it("parses deposit as negative (credit)", () => {
+    const row = {
+      "Date": "03/15/2026", "Status": "Posted", "Type": "ACH", "CheckNumber": "",
+      "Description": "DIRECT DEPOSIT EMPLOYER", "Withdrawal": "", "Deposit": "$3,250.00", "RunningBalance": "$5,693.49",
+    };
+    const result = realCsvFormats.CSV_FORMATS.schwab.parse(row);
+    assert.equal(result.amount, -3250.00);
+  });
+
+  it("handles amounts without dollar signs", () => {
+    const row = {
+      "Date": "03/10/2026", "Status": "Posted", "Type": "VISA", "CheckNumber": "",
+      "Description": "AMAZON.COM", "Withdrawal": "42.99", "Deposit": "", "RunningBalance": "2443.49",
+    };
+    const result = realCsvFormats.CSV_FORMATS.schwab.parse(row);
+    assert.equal(result.amount, 42.99);
+  });
+
+  it("handles large comma-formatted amounts", () => {
+    const row = {
+      "Date": "03/01/2026", "Status": "Posted", "Type": "ACH", "CheckNumber": "",
+      "Description": "RENT PAYMENT", "Withdrawal": "$2,150.00", "Deposit": "", "RunningBalance": "$293.49",
+    };
+    const result = realCsvFormats.CSV_FORMATS.schwab.parse(row);
+    assert.equal(result.amount, 2150.00);
+  });
+});
+
+// ============================================================================
 // Date parsing tests
 // ============================================================================
 describe("parseDate", () => {
