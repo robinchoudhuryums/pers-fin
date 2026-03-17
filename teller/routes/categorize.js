@@ -89,9 +89,13 @@ router.post("/api/categorize", async (_req, res) => {
     const tokensUsed = (message.usage?.input_tokens || 0) + (message.usage?.output_tokens || 0);
     let categories;
     try {
-      const text = message.content[0].text.trim();
+      let text = message.content[0].text.trim();
+      // Strip markdown fences if Claude wraps the JSON
+      const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (fenceMatch) text = fenceMatch[1].trim();
       categories = JSON.parse(text);
-    } catch {
+    } catch (e) {
+      console.error("AI response parse error:", e.message, "| Raw:", message.content[0]?.text?.slice(0, 500));
       return res.status(500).json({ error: "Failed to parse AI response" });
     }
 

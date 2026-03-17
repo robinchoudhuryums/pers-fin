@@ -38,6 +38,49 @@
       .chart-wrap { height: 220px; }
     }
 
+    /* ── Pyramid View Switcher ── */
+    .pyramid-wrapper { display: flex; align-items: flex-start; justify-content: center; gap: 12px; }
+    .pyramid-switcher { display: flex; flex-direction: column; gap: 6px; padding-top: 40px; }
+    .pyramid-switcher button {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      color: var(--text-muted); font-size: 10px; padding: 8px 12px; cursor: pointer;
+      text-transform: uppercase; letter-spacing: 0.8px; font-weight: 500;
+      transition: all 0.2s; white-space: nowrap; text-align: left;
+    }
+    .pyramid-switcher button:hover { border-color: var(--border-hover); color: var(--text); }
+    .pyramid-switcher button.active {
+      border-color: var(--teal); color: var(--teal);
+      box-shadow: 0 0 8px rgba(90,143,143,0.2);
+    }
+    .pyramid-debt-baseline {
+      margin-top: 8px; font-size: 10px; color: var(--text-muted);
+      display: flex; align-items: center; gap: 4px;
+    }
+    .pyramid-debt-baseline input {
+      width: 90px; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 4px; padding: 3px 6px; color: var(--text); font-size: 10px;
+      font-variant-numeric: tabular-nums;
+    }
+    .pyramid-debt-baseline button {
+      background: var(--teal); border: none; border-radius: 4px; padding: 3px 8px;
+      color: #1a1a2e; font-size: 9px; font-weight: 600; cursor: pointer;
+    }
+    @media (max-width: 640px) {
+      .pyramid-wrapper { flex-direction: column; align-items: center; }
+      .pyramid-switcher { flex-direction: row; flex-wrap: wrap; justify-content: center; padding-top: 0; }
+    }
+
+    /* ── Recent Transactions ── */
+    .recent-txn-table { width: 100%; border-collapse: collapse; }
+    .recent-txn-table th { font-size: 10px; font-weight: 500; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 1px; text-align: left; padding: 6px 8px;
+      border-bottom: 1px solid var(--border); }
+    .recent-txn-table td { padding: 8px; font-size: 13px; border-bottom: 1px solid var(--border); }
+    .badge-pending { display: inline-block; font-size: 9px; padding: 1px 6px; border-radius: 8px;
+      background: var(--warm-glow); color: #1a1a2e; font-weight: 600; letter-spacing: 0.5px; }
+    .badge-posted { display: inline-block; font-size: 9px; padding: 1px 6px; border-radius: 8px;
+      background: var(--green); color: #1a1a2e; font-weight: 600; letter-spacing: 0.5px; }
+
     /* ── Financial Pyramid — Separated Layers with Neon Hologram ── */
     .wellness-section {
       display: flex; flex-direction: column; align-items: center;
@@ -283,6 +326,19 @@
   <!-- Financial Pyramid — Separated Layers -->
   <div class="wellness-section">
     <h3 id="pyramid-title">Financial Wellness</h3>
+    <div class="pyramid-wrapper">
+    <div class="pyramid-switcher" id="pyramid-switcher">
+      <button class="active" data-mode="wellness" title="Overall financial health">Wellness</button>
+      <button data-mode="debt_payoff" title="Credit card debt payoff progress">Debt</button>
+      <button data-mode="goal_progress" title="Individual goal progress">Goals</button>
+      <button data-mode="spending_categories" title="Spending category balance">Spending</button>
+      <button data-mode="net_worth" title="Net worth breakdown">Net Worth</button>
+      <div class="pyramid-debt-baseline" id="debt-baseline-ctrl" style="display:none;">
+        <span>Baseline $</span>
+        <input type="number" id="debt-baseline-input" placeholder="0" min="0" step="100">
+        <button id="debt-baseline-save">Set</button>
+      </div>
+    </div>
     <div class="pyramid-stage">
       <div class="pyramid-orbs" id="pyramid-orbs"></div>
       <div class="pyramid-scene">
@@ -301,6 +357,7 @@
         <div class="tier-label t-3" id="tier-3">Goals</div>
       </div>
     </div>
+    </div><!-- .pyramid-wrapper -->
     <div class="wellness-score" id="wellness-score">--</div>
     <div class="wellness-status" id="wellness-status">Calculating...</div>
   </div>
@@ -341,6 +398,15 @@
     <div class="accounts-grid" id="accounts-grid">
       <div class="empty-msg">Loading accounts...</div>
     </div>
+  </div>
+
+  <!-- Recent Transactions -->
+  <div class="section" style="margin-bottom:28px; animation: fadeInUp 0.4s ease both; animation-delay: 0.3s;">
+    <h2>Recent Transactions</h2>
+    <table class="recent-txn-table">
+      <thead><tr><th>Date</th><th>Description</th><th>Category</th><th>Amount</th><th>Status</th></tr></thead>
+      <tbody id="recent-txn-body"><tr><td colspan="5" class="empty-msg">Loading...</td></tr></tbody>
+    </table>
   </div>
 
   <!-- Two-column: Monthly trend + Categories -->
@@ -651,6 +717,24 @@
         } else {
           upBody.innerHTML = '<tr><td colspan="3" class="empty-msg">No upcoming charges.</td></tr>';
         }
+        const recentBody = document.getElementById('recent-txn-body');
+        if (data.recent_transactions && data.recent_transactions.length) {
+          recentBody.innerHTML = data.recent_transactions.map(t => {
+            const isPending = t.pending;
+            const badge = isPending
+              ? '<span class="badge-pending">PENDING</span>'
+              : '<span class="badge-posted">POSTED</span>';
+            const amtClass = parseFloat(t.amount) > 0 ? 'warm' : 'teal';
+            return '<tr><td>' + fmtDate(t.date) + '</td>' +
+              '<td>' + esc(t.description) + '</td>' +
+              '<td style="font-size:11px;color:var(--text-muted)">' + esc(t.category) + '</td>' +
+              '<td class="amount ' + amtClass + '">' + fmt(t.amount) + '</td>' +
+              '<td>' + badge + '</td></tr>';
+          }).join('');
+        } else {
+          recentBody.innerHTML = '<tr><td colspan="5" class="empty-msg">No transactions yet.</td></tr>';
+        }
+
       } catch (e) {
         showMsg('Could not load spending data: ' + e.message, false);
       }
@@ -818,97 +902,97 @@
       },
       debt_payoff: {
         title: 'Debt Payoff',
-        tiers: ['Credit Cards', 'Loans', 'Strategy', 'Freedom'],
+        tiers: ['Progress', 'Paid Off', 'Remaining', 'Freedom'],
         compute: async function() {
           var score = 0; var tierScores = [0,0,0,0]; var statusMsg = '';
           try {
             var acctRes = await apiFetch('/api/accounts');
             var accounts = acctRes.ok ? await acctRes.json() : [];
             var creditAccts = accounts.filter(function(a) { return a.type === 'credit' || a.subtype === 'credit_card'; });
-            var totalDebt = 0; var totalLimit = 0;
+            var totalDebt = 0;
             creditAccts.forEach(function(a) {
-              var bal = Math.abs(parseFloat(a.current_balance || a.available_balance || 0));
-              totalDebt += bal;
-              var lim = parseFloat(a.credit_limit || 0);
-              if (lim > 0) totalLimit += lim;
+              totalDebt += Math.abs(parseFloat(a.current_balance || a.available_balance || 0));
             });
-            // Tier 0: Credit card utilization (lower = better)
-            if (totalLimit > 0) {
-              var util = totalDebt / totalLimit;
-              tierScores[0] = Math.round(Math.max(0, (1 - util)) * 100);
-              score += Math.round(25 * (1 - Math.min(1, util)));
-            } else if (creditAccts.length === 0) {
-              tierScores[0] = 100; score += 25; // No credit cards = no CC debt
-            }
-            // Tier 1: Non-credit accounts health (positive balances)
-            var otherAccts = accounts.filter(function(a) { return a.type !== 'credit' && a.subtype !== 'credit_card'; });
-            if (otherAccts.length > 0) {
-              var posCount = otherAccts.filter(function(a) { return parseFloat(a.current_balance || a.available_balance || 0) > 0; }).length;
-              tierScores[1] = Math.round((posCount / otherAccts.length) * 100);
-              score += Math.round(25 * (posCount / otherAccts.length));
-            }
-            // Tier 2: Budget discipline (debt payoff strategy)
-            try {
-              var budRes = await apiFetch('/api/budgets');
-              var budgets = budRes.ok ? await budRes.json() : [];
-              if (budgets.length > 0) {
-                var underBudget = budgets.filter(function(b) { return b.percent_used <= 100; }).length;
-                tierScores[2] = Math.round((underBudget / budgets.length) * 100);
-                score += Math.round(25 * (underBudget / budgets.length));
+
+            // Get baseline from settings (or auto-set from current debt)
+            var setRes = await apiFetch('/api/settings');
+            var settings = setRes.ok ? await setRes.json() : {};
+            var baseline = parseFloat(settings.debt_baseline_amount);
+            if (!baseline || isNaN(baseline) || baseline <= 0) {
+              // Auto-initialize baseline to current debt if not set
+              if (totalDebt > 0) {
+                baseline = totalDebt;
+                apiFetch('/api/settings', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ debt_baseline_amount: totalDebt }) }).catch(function(){});
+              } else {
+                // No debt, no baseline — 100%
+                score = 100; tierScores = [100,100,100,100];
+                return { score: score, tierScores: tierScores, status: 'Debt-free!' };
               }
-            } catch (e) {}
-            // Tier 3: Goal-based debt freedom progress
-            try {
-              var goalRes = await apiFetch('/api/goals');
-              var goals = goalRes.ok ? await goalRes.json() : [];
-              var debtGoals = goals.filter(function(g) { return g.is_active && (g.type === 'debt' || g.name.toLowerCase().indexOf('debt') >= 0 || g.name.toLowerCase().indexOf('payoff') >= 0); });
-              if (debtGoals.length === 0) debtGoals = goals.filter(function(g) { return g.is_active; });
-              if (debtGoals.length > 0) {
-                var avgProg = debtGoals.reduce(function(s, g) { return s + Math.min(100, g.percent_complete); }, 0) / debtGoals.length;
-                tierScores[3] = Math.round(avgProg);
-                score += Math.round(25 * (avgProg / 100));
-              }
-            } catch (e) {}
-            score = Math.min(100, score);
-            if (score >= 90) statusMsg = 'Nearly debt-free!';
-            else if (score >= 70) statusMsg = 'Strong payoff momentum';
-            else if (score >= 50) statusMsg = 'Making steady progress';
-            else if (score >= 25) statusMsg = 'Building your payoff plan';
-            else statusMsg = 'Link accounts to track debt';
+            }
+
+            // Progress: how much of the baseline has been paid off
+            var paidOff = Math.max(0, baseline - totalDebt);
+            score = baseline > 0 ? Math.round((paidOff / baseline) * 100) : 100;
+            score = Math.min(100, Math.max(0, score));
+
+            // Distribute across 4 tiers as quartile milestones (25/50/75/100%)
+            tierScores[0] = Math.min(100, Math.round(score * 4));         // fills at 25%
+            tierScores[1] = Math.min(100, Math.max(0, (score - 25) * 4)); // fills at 50%
+            tierScores[2] = Math.min(100, Math.max(0, (score - 50) * 4)); // fills at 75%
+            tierScores[3] = Math.min(100, Math.max(0, (score - 75) * 4)); // fills at 100%
+
+            var fmtDebt = '$' + totalDebt.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 0});
+            var fmtBase = '$' + baseline.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 0});
+            if (score >= 100) statusMsg = 'Debt-free! Started at ' + fmtBase;
+            else if (score >= 75) statusMsg = fmtDebt + ' left — almost there!';
+            else if (score >= 50) statusMsg = fmtDebt + ' remaining of ' + fmtBase;
+            else if (score >= 25) statusMsg = fmtDebt + ' remaining — keep going';
+            else statusMsg = fmtDebt + ' of ' + fmtBase + ' to pay off';
           } catch (e) { statusMsg = 'Could not compute score'; }
           return { score: score, tierScores: tierScores, status: statusMsg };
         }
       },
       goal_progress: {
         title: 'Goal Progress',
-        tiers: ['Savings', 'Investment', 'Debt', 'Lifestyle'],
+        tiers: ['Goal 1', 'Goal 2', 'Goal 3', 'Overall'],
         compute: async function() {
           var score = 0; var tierScores = [0,0,0,0]; var statusMsg = '';
+          var tierLabels = ['Goal 1', 'Goal 2', 'Goal 3', 'Overall'];
           try {
             var goalRes = await apiFetch('/api/goals');
             var goals = goalRes.ok ? await goalRes.json() : [];
             var active = goals.filter(function(g) { return g.is_active; });
-            var typeMap = { savings: 0, investment: 1, debt: 2 };
-            var tierCounts = [0,0,0,0]; var tierTotals = [0,0,0,0];
-            active.forEach(function(g) {
-              var idx = typeMap[g.type] !== undefined ? typeMap[g.type] : 3;
-              tierCounts[idx]++;
-              tierTotals[idx] += Math.min(100, g.percent_complete || 0);
-            });
-            for (var i = 0; i < 4; i++) {
-              if (tierCounts[i] > 0) {
-                tierScores[i] = Math.round(tierTotals[i] / tierCounts[i]);
-                score += Math.round(25 * (tierScores[i] / 100));
+            if (active.length === 0) {
+              statusMsg = 'Set goals to track progress';
+            } else {
+              // Show up to 3 individual goals, 4th tier = overall average
+              var shown = active.slice(0, 3);
+              var totalPct = 0;
+              for (var i = 0; i < shown.length; i++) {
+                var g = shown[i];
+                var pct = Math.min(100, g.percent_complete || 0);
+                tierScores[i] = Math.round(pct);
+                totalPct += pct;
+                tierLabels[i] = g.name.length > 12 ? g.name.substring(0, 11) + '…' : g.name;
               }
+              // Overall average across ALL active goals (not just shown 3)
+              var allAvg = active.reduce(function(s, g) { return s + Math.min(100, g.percent_complete || 0); }, 0) / active.length;
+              tierScores[3] = Math.round(allAvg);
+              score = Math.round(allAvg);
+
+              if (score >= 90) statusMsg = 'Goals nearly achieved!';
+              else if (score >= 70) statusMsg = 'Excellent goal progress';
+              else if (score >= 50) statusMsg = 'On track with your goals';
+              else if (score >= 25) statusMsg = 'Goals in early stages';
+              else statusMsg = 'Just getting started';
+              if (active.length > 3) statusMsg += ' (' + active.length + ' goals total)';
             }
-            score = Math.min(100, score);
-            if (active.length === 0) statusMsg = 'Set goals to track progress';
-            else if (score >= 90) statusMsg = 'Goals nearly achieved!';
-            else if (score >= 70) statusMsg = 'Excellent goal progress';
-            else if (score >= 50) statusMsg = 'On track with your goals';
-            else if (score >= 25) statusMsg = 'Goals in early stages';
-            else statusMsg = 'Just getting started';
           } catch (e) { statusMsg = 'Could not load goals'; }
+          // Update tier labels dynamically
+          for (var j = 0; j < 4; j++) {
+            var lbl = document.getElementById('tier-' + j);
+            if (lbl) lbl.textContent = tierLabels[j];
+          }
           return { score: score, tierScores: tierScores, status: statusMsg };
         }
       },
@@ -1006,18 +1090,42 @@
       setInterval(function() { createOrb(); }, 800);
     })();
 
+    // Current pyramid state
+    var currentPyramidMode = 'wellness';
+    var currentColorMode = 'single';
+
     // Load pyramid settings and compute
-    async function computeWellness() {
-      var dataSource = 'wellness';
-      var colorMode = 'single';
-      try {
-        var setRes = await apiFetch('/api/settings');
-        if (setRes.ok) {
-          var settings = await setRes.json();
-          dataSource = settings.pyramid_data_source || 'wellness';
-          colorMode = settings.pyramid_color_mode || 'single';
-        }
-      } catch (e) {}
+    async function computeWellness(overrideSource) {
+      var dataSource = overrideSource || currentPyramidMode;
+      var colorMode = currentColorMode;
+
+      if (!overrideSource) {
+        try {
+          var setRes = await apiFetch('/api/settings');
+          if (setRes.ok) {
+            var settings = await setRes.json();
+            dataSource = settings.pyramid_data_source || 'wellness';
+            colorMode = settings.pyramid_color_mode || 'single';
+            currentPyramidMode = dataSource;
+            currentColorMode = colorMode;
+            // Pre-fill debt baseline input
+            var baselineInput = document.getElementById('debt-baseline-input');
+            if (baselineInput && settings.debt_baseline_amount) {
+              baselineInput.value = Math.round(parseFloat(settings.debt_baseline_amount));
+            }
+          }
+        } catch (e) {}
+      }
+
+      // Update switcher active state
+      var btns = document.querySelectorAll('#pyramid-switcher button[data-mode]');
+      btns.forEach(function(b) {
+        b.classList.toggle('active', b.dataset.mode === dataSource);
+      });
+
+      // Show/hide debt baseline control
+      var baselineCtrl = document.getElementById('debt-baseline-ctrl');
+      if (baselineCtrl) baselineCtrl.style.display = dataSource === 'debt_payoff' ? 'flex' : 'none';
 
       var mode = PYRAMID_MODES[dataSource] || PYRAMID_MODES.wellness;
 
@@ -1032,6 +1140,25 @@
       var result = await mode.compute();
       updatePyramid(result.score, result.tierScores, result.status, colorMode);
     }
+
+    // Pyramid view switcher
+    document.getElementById('pyramid-switcher').addEventListener('click', function(e) {
+      var btn = e.target.closest('button[data-mode]');
+      if (!btn) return;
+      var mode = btn.dataset.mode;
+      currentPyramidMode = mode;
+      // Persist to settings
+      apiFetch('/api/settings', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ pyramid_data_source: mode }) }).catch(function(){});
+      computeWellness(mode);
+    });
+
+    // Debt baseline save
+    document.getElementById('debt-baseline-save').addEventListener('click', function() {
+      var val = parseFloat(document.getElementById('debt-baseline-input').value);
+      if (isNaN(val) || val < 0) return;
+      apiFetch('/api/settings', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ debt_baseline_amount: val }) })
+        .then(function() { computeWellness('debt_payoff'); });
+    });
 
     var isMobile = window.matchMedia('(max-width: 640px)').matches;
 
