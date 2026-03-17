@@ -110,7 +110,7 @@ const CATEGORY_RULES = {
   utility: ["electric", "power", "energy", "gas", "water", "sewer", "sewage", "trash", "waste", "garbage", "recycling",
     "internet", "broadband", "comcast", "xfinity", "spectrum", "att", "at&t", "verizon", "t-mobile", "tmobile",
     "cox", "centurylink", "lumen", "frontier", "windstream", "optimum", "mediacom",
-    "duke energy", "dominion", "pge", "pg&e", "pacific gas", "con edison", "coned", "entergy", "eversource",
+    "direct energy", "duke energy", "dominion", "pge", "pg&e", "pacific gas", "con edison", "coned", "entergy", "eversource",
     "national grid", "southern company", "sce", "socal edison", "fpl", "florida power",
     "pepco", "bge", "peco", "pseg", "ameren", "xcel", "avista", "puget sound",
     "consumers energy", "dte", "aep", "rocky mountain", "nstar", "green mountain",

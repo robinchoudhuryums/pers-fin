@@ -70,6 +70,8 @@ async function detectSubscriptions(externalPool) {
     const detected = [];
 
     for (const [merchantKey, merchantTxns] of Object.entries(groups)) {
+      // Skip merchant groups that match non-subscription patterns
+      if (isExcludedMerchant(merchantKey)) continue;
       if (merchantTxns.length < MIN_OCCURRENCES_YEARLY) continue;
 
       // Sort by date ascending
@@ -193,6 +195,43 @@ async function detectSubscriptions(externalPool) {
 }
 
 // ---------------------------------------------------------------------------
+// Exclusion patterns — recurring charges that aren't subscriptions
+// ---------------------------------------------------------------------------
+
+// Keywords that indicate non-subscription recurring charges
+const EXCLUSION_PATTERNS = {
+  interest: ["interest", "int charge", "finance charge", "apr charge"],
+  fees: ["late fee", "late charge", "overdraft fee", "nsf fee", "service fee", "maintenance fee", "annual fee"],
+  fast_food_retail: [
+    "walgreens", "cvs pharmacy", "rite aid", "dollar general", "dollar tree", "7-eleven", "7 eleven",
+    "mcdonald", "mcdonalds", "burger king", "wendy", "taco bell", "chick-fil-a", "chickfila",
+    "subway", "chipotle", "popeye", "sonic drive", "jack in the box", "five guys",
+    "dutch bros", "starbucks", "dunkin", "peet", "tim horton",
+    "walmart", "target", "costco gas", "sam's club", "kroger", "safeway", "albertson",
+    "publix", "heb", "h-e-b", "aldi", "trader joe", "whole foods", "food lion",
+    "wawa", "sheetz", "quiktrip", "racetrac", "circle k", "shell", "chevron", "exxon", "bp ",
+  ],
+  debt_payments: [
+    "directpay", "minimum payment", "autopay", "auto pay", "payment thank you",
+    "credit card payment", "loan payment", "debt payment",
+  ],
+  transfers: [
+    "funds tran", "funds transfer", "transfer to", "transfer from",
+    "zelle", "venmo", "cash app", "paypal transfer",
+    "ach transfer", "wire transfer", "internal transfer",
+  ],
+};
+
+function isExcludedMerchant(merchantKey) {
+  if (!merchantKey) return false;
+  const lower = merchantKey.toLowerCase();
+  for (const keywords of Object.values(EXCLUSION_PATTERNS)) {
+    if (keywords.some(kw => lower.includes(kw))) return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -241,4 +280,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { detectSubscriptions, findModeAmount, addDays };
+module.exports = { detectSubscriptions, findModeAmount, addDays, isExcludedMerchant, EXCLUSION_PATTERNS };

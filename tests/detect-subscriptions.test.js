@@ -311,3 +311,54 @@ describe("addDays", () => {
     assert.equal(d.toISOString().split("T")[0], "2025-06-15");
   });
 });
+
+// ============================================================================
+// Merchant exclusion tests
+// ============================================================================
+const { isExcludedMerchant } = require("../scripts/detect-subscriptions");
+
+describe("isExcludedMerchant", () => {
+  it("excludes interest charges", () => {
+    assert.ok(isExcludedMerchant("CHASE INTEREST CHARGE"));
+    assert.ok(isExcludedMerchant("interest"));
+    assert.ok(isExcludedMerchant("APR CHARGE ON PURCHASES"));
+  });
+
+  it("excludes fast food and retail", () => {
+    assert.ok(isExcludedMerchant("WALGREENS #1234"));
+    assert.ok(isExcludedMerchant("MCDONALDS F12345"));
+    assert.ok(isExcludedMerchant("DUTCH BROS 567"));
+    assert.ok(isExcludedMerchant("starbucks"));
+  });
+
+  it("excludes fees", () => {
+    assert.ok(isExcludedMerchant("LATE FEE"));
+    assert.ok(isExcludedMerchant("late charge"));
+    assert.ok(isExcludedMerchant("OVERDRAFT FEE"));
+  });
+
+  it("excludes debt/loan payments", () => {
+    assert.ok(isExcludedMerchant("DIRECTPAY MINIMUM PAYMENT"));
+    assert.ok(isExcludedMerchant("AUTOPAY CREDIT CARD"));
+    assert.ok(isExcludedMerchant("loan payment"));
+  });
+
+  it("excludes transfers", () => {
+    assert.ok(isExcludedMerchant("AMERICAN AIRLINE FUNDS TRAN"));
+    assert.ok(isExcludedMerchant("ACH TRANSFER"));
+    assert.ok(isExcludedMerchant("TRANSFER TO SAVINGS"));
+  });
+
+  it("does NOT exclude real subscriptions", () => {
+    assert.ok(!isExcludedMerchant("NETFLIX.COM"));
+    assert.ok(!isExcludedMerchant("SPOTIFY USA"));
+    assert.ok(!isExcludedMerchant("HULU"));
+    assert.ok(!isExcludedMerchant("ADOBE CREATIVE CLOUD"));
+    assert.ok(!isExcludedMerchant("CHATGPT SUBSCRIPTION"));
+  });
+
+  it("handles null/empty input", () => {
+    assert.ok(!isExcludedMerchant(null));
+    assert.ok(!isExcludedMerchant(""));
+  });
+});
