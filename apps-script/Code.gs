@@ -98,13 +98,21 @@ const CSV_FORMATS = {
     }),
   },
   schwab: {
-    detect: (headers) => headers.includes("Date") && headers.includes("Description") && (headers.includes("Withdrawal") || headers.includes("Amount")),
-    parse: (row, headers) => ({
-      date: row[headers.indexOf("Date")],
-      merchant: row[headers.indexOf("Description")],
-      amount: Math.abs(parseFloat(row[headers.indexOf("Withdrawal")] || row[headers.indexOf("Amount")] || "0")),
-      category: row[headers.indexOf("Type")] || "",
-    }),
+    detect: (headers) => headers.includes("Date") && headers.includes("Description") && (headers.includes("Withdrawal") || (headers.includes("Amount") && headers.includes("Type"))),
+    parse: (row, headers) => {
+      const rawW = (row[headers.indexOf("Withdrawal")] || "").replace(/[$,]/g, "").trim();
+      const rawD = (row[headers.indexOf("Deposit")] || "").replace(/[$,]/g, "").trim();
+      const rawA = (row[headers.indexOf("Amount")] || "").replace(/[$,]/g, "").trim();
+      const withdrawal = parseFloat(rawW) || 0;
+      const deposit = parseFloat(rawD) || 0;
+      const amount = withdrawal > 0 ? withdrawal : deposit > 0 ? -deposit : Math.abs(parseFloat(rawA) || 0);
+      return {
+        date: row[headers.indexOf("Date")],
+        merchant: row[headers.indexOf("Description")],
+        amount,
+        category: row[headers.indexOf("Type")] || "",
+      };
+    },
   },
   generic: {
     detect: () => true,
@@ -120,7 +128,7 @@ const CSV_FORMATS = {
       return {
         date: row[dateIdx] || "",
         merchant: row[descIdx] || "",
-        amount: Math.abs(parseFloat(row[amtIdx]) || 0),
+        amount: Math.abs(parseFloat((row[amtIdx] || "0").replace(/[$,]/g, "")) || 0),
         category: catIdx >= 0 ? (row[catIdx] || "") : "",
       };
     },
