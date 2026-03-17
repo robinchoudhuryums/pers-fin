@@ -44,20 +44,30 @@ const CSV_FORMATS = {
     }),
   },
   schwab: {
-    detect: (headers) => headers.includes("Date") && headers.includes("Description") && (headers.includes("Withdrawal") || headers.includes("Amount")),
-    parse: (row) => ({
-      date: row["Date"],
-      merchant_name: row["Description"],
-      amount: Math.abs(parseFloat(row["Withdrawal"] || row["Amount"] || "0")),
-      category: row["Type"] || "",
-    }),
+    detect: (headers) => headers.includes("Date") && headers.includes("Description") && (headers.includes("Withdrawal") || (headers.includes("Amount") && headers.includes("Type"))),
+    parse: (row) => {
+      const rawWithdrawal = (row["Withdrawal"] || "").replace(/[$,]/g, "").trim();
+      const rawDeposit = (row["Deposit"] || "").replace(/[$,]/g, "").trim();
+      const rawAmount = (row["Amount"] || "").replace(/[$,]/g, "").trim();
+      const withdrawal = parseFloat(rawWithdrawal) || 0;
+      const deposit = parseFloat(rawDeposit) || 0;
+      // Withdrawals are debits (positive), deposits are credits (negative)
+      const amount = withdrawal > 0 ? withdrawal : deposit > 0 ? -deposit : Math.abs(parseFloat(rawAmount) || 0);
+      return {
+        date: row["Date"],
+        merchant_name: row["Description"],
+        amount,
+        category: row["Type"] || "",
+      };
+    },
   },
   generic: {
     detect: () => true,
     parse: (row) => {
       const date = row["Date"] || row["Transaction Date"] || Object.values(row)[0];
       const merchant = row["Description"] || row["Merchant"] || row["Name"] || Object.values(row)[1];
-      const amount = parseFloat(row["Amount"] || row["Debit"] || Object.values(row)[2] || 0);
+      const rawAmt = (row["Amount"] || row["Debit"] || Object.values(row)[2] || "0").toString().replace(/[$,]/g, "");
+      const amount = parseFloat(rawAmt);
       const category = row["Category"] || "";
       return { date, merchant_name: merchant, amount: Math.abs(amount), category };
     },
