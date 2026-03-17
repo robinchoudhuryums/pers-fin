@@ -44,7 +44,13 @@
                   transition: all 0.2s; font-family: inherit; }
     .btn-unlink:hover { background: var(--red-bg); }
 ` }) %>
-  <script src="https://cdn.teller.io/connect/connect.js"></script>
+  <script>
+    window._tellerLoaded = false;
+    window._tellerError = null;
+  </script>
+  <script src="https://cdn.teller.io/connect/connect.js"
+    onload="window._tellerLoaded=true"
+    onerror="window._tellerError='Script load failed'"></script>
 <%- include('partials/nav', { activePage: 'accounts' }) %>
 
   <h1>Link Accounts</h1>
@@ -180,7 +186,9 @@
 
     function startLink() {
       if (typeof TellerConnect === 'undefined') {
-        showStatus('Teller Connect SDK failed to load. Check your network connection or try refreshing the page.', false);
+        var detail = window._tellerError || (window._tellerLoaded ? 'Script loaded but TellerConnect not defined' : 'Script tag did not execute');
+        showStatus('Teller Connect SDK failed to load (' + detail + '). Check browser console for CSP or network errors.', false);
+        console.error('TellerConnect undefined. _tellerLoaded:', window._tellerLoaded, '_tellerError:', window._tellerError);
         return;
       }
       var appId = "<%= tellerAppId %>";

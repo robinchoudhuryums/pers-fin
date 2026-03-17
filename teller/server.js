@@ -133,7 +133,7 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.teller.io", "https://cdn.jsdelivr.net", "https://*.jsdelivr.net", "https://cdn.plaid.com"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.teller.io", "https://*.teller.io", "https://cdn.jsdelivr.net", "https://*.jsdelivr.net", "https://cdn.plaid.com"],
       // Allow inline event handlers (onclick, onchange) — helmet v8 blocks these by default
       scriptSrcAttr: ["'unsafe-inline'"],
       connectSrc: ["'self'", "https://api.teller.io", "https://*.teller.io", "https://*.plaid.com"],
@@ -142,9 +142,10 @@ app.use(helmet({
       fontSrc: ["'self'", "https://fonts.gstatic.com"],
     },
   },
-  // Disable COEP — it blocks cross-origin resources (Teller Connect, Plaid, CDN scripts)
-  // unless the remote server sends Cross-Origin-Resource-Policy headers, which most don't
+  // Disable COEP and CORP — they block cross-origin resources (Teller Connect, Plaid, CDN
+  // scripts/iframes) unless the remote server sends specific headers, which most CDNs don't
   crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: { policy: "cross-origin" },
 }));
 
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS

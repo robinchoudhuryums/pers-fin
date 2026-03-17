@@ -23,11 +23,11 @@
             display: flex; align-items: center; justify-content: center; gap: 8px; }
     .login-logo-icon {
       display: inline-block; width: 18px; height: 18px;
-      background: #5adfdf;
+      background: #a0dad0;
       -webkit-mask: url(/logo.svg) center / contain no-repeat;
       mask: url(/logo.svg) center / contain no-repeat;
       mask-mode: alpha; -webkit-mask-mode: alpha;
-      filter: drop-shadow(0 0 4px rgba(90,223,223,0.4));
+      filter: drop-shadow(0 0 4px rgba(160,218,208,0.4));
     }
     h1 { font-size: 26px; font-weight: 300; letter-spacing: -0.3px; margin-bottom: 6px;
          animation: fadeInUp 0.4s ease both; animation-delay: 0.15s; }
@@ -71,12 +71,12 @@
     .biometric-divider span { font-size: 11px; color: var(--text-muted); text-transform: uppercase;
       letter-spacing: 1px; font-weight: 400; }
     .faceid-btn { width: 100%; padding: 14px; font-size: 13px; font-weight: 500;
-      border: 1px solid #5adfdf; border-radius: 8px; cursor: pointer;
-      background: transparent; color: #5adfdf; text-transform: uppercase;
+      border: 1px solid #a0dad0; border-radius: 8px; cursor: pointer;
+      background: transparent; color: #a0dad0; text-transform: uppercase;
       letter-spacing: 1px; font-family: inherit; transition: all 0.2s;
       display: flex; align-items: center; justify-content: center; gap: 10px;
       animation: fadeInUp 0.4s ease both; animation-delay: 0.4s; }
-    .faceid-btn:hover { background: rgba(90,223,223,0.08); }
+    .faceid-btn:hover { background: rgba(160,218,208,0.08); }
     .faceid-btn:active { transform: scale(0.98); }
     .faceid-btn:disabled { opacity: 0.5; cursor: not-allowed; }
     .faceid-btn svg { width: 22px; height: 22px; }
@@ -91,12 +91,12 @@
     .materialize-overlay.active { opacity: 1; pointer-events: all; }
     .materialize-overlay .helmet-svg { width: 120px; height: 144px; }
     .materialize-overlay .helmet-stroke {
-      fill: none; stroke: #5adfdf; stroke-width: 2;
+      fill: none; stroke: #a0dad0; stroke-width: 2;
       stroke-dasharray: 1; stroke-dashoffset: 1;
-      filter: drop-shadow(0 0 10px rgba(90,223,223,0.7)) drop-shadow(0 0 20px rgba(90,143,143,0.4));
+      filter: drop-shadow(0 0 10px rgba(160,218,208,0.7)) drop-shadow(0 0 20px rgba(90,143,143,0.4));
     }
     .materialize-overlay .helmet-fill {
-      fill: #5adfdf; opacity: 0;
+      fill: #a0dad0; opacity: 0;
     }
     .materialize-overlay.active .helmet-stroke {
       animation: drawHelmet 1.2s ease-out 0.15s forwards;
@@ -109,8 +109,8 @@
     }
     @keyframes fillHelmet {
       0%  { opacity: 0; filter: drop-shadow(0 0 0 transparent); }
-      60% { opacity: 0.7; filter: drop-shadow(0 0 24px rgba(90,223,223,0.6)); }
-      100% { opacity: 1; filter: drop-shadow(0 0 14px rgba(90,223,223,0.4)); }
+      60% { opacity: 0.7; filter: drop-shadow(0 0 24px rgba(160,218,208,0.6)); }
+      100% { opacity: 1; filter: drop-shadow(0 0 14px rgba(160,218,208,0.4)); }
     }
 
     /* ── Biometric scan animation ── */
@@ -126,26 +126,26 @@
     }
     .bio-scan-ring {
       width: 140px; height: 140px; border-radius: 50%;
-      border: 2px solid rgba(90,223,223,0.3);
+      border: 2px solid rgba(160,218,208,0.3);
       position: relative;
     }
     .bio-scan-ring::before {
       content: ""; position: absolute; inset: -4px; border-radius: 50%;
-      border: 2px solid transparent; border-top-color: #5adfdf;
+      border: 2px solid transparent; border-top-color: #a0dad0;
       animation: bioSpin 1.2s linear infinite;
-      filter: drop-shadow(0 0 8px rgba(90,223,223,0.6));
+      filter: drop-shadow(0 0 8px rgba(160,218,208,0.6));
     }
     .bio-scan-ring::after {
       content: ""; position: absolute; inset: 8px; border-radius: 50%;
-      border: 1px solid rgba(90,223,223,0.15);
+      border: 1px solid rgba(160,218,208,0.15);
     }
     @keyframes bioSpin {
       to { transform: rotate(360deg); }
     }
     .bio-scan-line {
       position: absolute; left: 15%; right: 15%; height: 2px;
-      background: linear-gradient(90deg, transparent, #5adfdf, transparent);
-      filter: drop-shadow(0 0 6px rgba(90,223,223,0.8));
+      background: linear-gradient(90deg, transparent, #a0dad0, transparent);
+      filter: drop-shadow(0 0 6px rgba(160,218,208,0.8));
       animation: bioScanLine 2s ease-in-out infinite;
     }
     @keyframes bioScanLine {
@@ -161,7 +161,7 @@
     }
     .bio-scan-dots span {
       position: absolute; width: 3px; height: 3px; border-radius: 50%;
-      background: #5adfdf; opacity: 0;
+      background: #a0dad0; opacity: 0;
       animation: bioDotPulse 2s ease-in-out infinite;
     }
     .bio-scan-dots span:nth-child(1) { top: 30%; left: 35%; animation-delay: 0s; }
@@ -177,22 +177,141 @@
     }
     .bio-scan-status {
       position: absolute; bottom: -36px; font-size: 11px; font-weight: 400;
-      color: #5adfdf; letter-spacing: 1.5px; text-transform: uppercase;
+      color: #a0dad0; letter-spacing: 1.5px; text-transform: uppercase;
       opacity: 0; animation: fadeInUp 0.3s ease forwards;
     }
     .bio-scan-success .bio-scan-ring {
-      border-color: #5adfdf;
-      box-shadow: 0 0 20px rgba(90,223,223,0.4), inset 0 0 20px rgba(90,223,223,0.1);
+      border-color: #a0dad0;
+      box-shadow: 0 0 20px rgba(160,218,208,0.4), inset 0 0 20px rgba(160,218,208,0.1);
       transition: all 0.3s ease;
     }
     .bio-scan-success .bio-scan-ring::before {
-      border-top-color: #5adfdf; border-right-color: #5adfdf;
-      border-bottom-color: #5adfdf; border-left-color: #5adfdf;
+      border-top-color: #a0dad0; border-right-color: #a0dad0;
+      border-bottom-color: #a0dad0; border-left-color: #a0dad0;
       animation: none;
     }
+
+    /* ── Ambient floating particles ── */
+    .overlay-particles {
+      position: absolute; inset: 0; overflow: hidden; pointer-events: none;
+    }
+    .overlay-particle {
+      position: absolute; width: 2px; height: 2px; border-radius: 50%;
+      background: #a0dad0; opacity: 0;
+    }
+    .materialize-overlay.active .overlay-particle {
+      animation: floatParticle var(--dur) ease-in-out var(--delay) infinite;
+    }
+    @keyframes floatParticle {
+      0% { opacity: 0; transform: translateY(0) scale(0.5); }
+      20% { opacity: 0.6; }
+      80% { opacity: 0.3; }
+      100% { opacity: 0; transform: translateY(-120px) scale(0); }
+    }
+
+    /* ── Pulse rings (expand from helmet center) ── */
+    .pulse-ring {
+      position: absolute; width: 80px; height: 80px; border-radius: 50%;
+      border: 1px solid rgba(160,218,208,0.5); opacity: 0; pointer-events: none;
+    }
+    .materialize-overlay.active .pulse-ring {
+      animation: pulseExpand 1s ease-out forwards;
+    }
+    .pulse-ring:nth-child(1) { animation-delay: 1.2s !important; }
+    .pulse-ring:nth-child(2) { animation-delay: 1.4s !important; }
+    .pulse-ring:nth-child(3) { animation-delay: 1.6s !important; }
+    @keyframes pulseExpand {
+      0% { opacity: 0.6; transform: scale(1); }
+      100% { opacity: 0; transform: scale(4); }
+    }
+
+    /* ── Particle burst (explode outward) ── */
+    .burst-container {
+      position: absolute; pointer-events: none;
+    }
+    .burst-particle {
+      position: absolute; width: 3px; height: 3px; border-radius: 50%;
+      background: #a0dad0; opacity: 0;
+    }
+    .materialize-overlay.active .burst-particle {
+      animation: burstOut 0.8s ease-out 1.5s forwards;
+    }
+    @keyframes burstOut {
+      0% { opacity: 1; transform: translate(0,0) scale(1); }
+      100% { opacity: 0; transform: var(--burst-dir) scale(0); }
+    }
+
+    /* ── HUD status text ── */
+    .hud-text {
+      position: absolute; bottom: calc(50% - 110px);
+      font-size: 10px; font-weight: 500; letter-spacing: 3px; text-transform: uppercase;
+      color: #a0dad0; opacity: 0; pointer-events: none;
+      font-family: inherit;
+      filter: drop-shadow(0 0 6px rgba(160,218,208,0.5));
+    }
+    .materialize-overlay.active .hud-text {
+      animation: hudAppear 0.5s ease 1.5s forwards;
+    }
+    @keyframes hudAppear {
+      0% { opacity: 0; letter-spacing: 8px; filter: blur(4px) drop-shadow(0 0 6px rgba(160,218,208,0.5)); }
+      100% { opacity: 0.8; letter-spacing: 3px; filter: blur(0) drop-shadow(0 0 6px rgba(160,218,208,0.5)); }
+    }
+
+    /* ── Horizontal scan line across overlay ── */
+    .hud-scanline {
+      position: absolute; left: 0; right: 0; height: 1px;
+      background: linear-gradient(90deg, transparent 0%, rgba(160,218,208,0.3) 20%, rgba(160,218,208,0.6) 50%, rgba(160,218,208,0.3) 80%, transparent 100%);
+      opacity: 0; pointer-events: none;
+    }
+    .materialize-overlay.active .hud-scanline {
+      animation: scanDown 1.8s ease-in-out 0.1s forwards;
+    }
+    @keyframes scanDown {
+      0% { top: 20%; opacity: 0; }
+      10% { opacity: 0.7; }
+      90% { opacity: 0.3; }
+      100% { top: 80%; opacity: 0; }
+    }
+
+    /* ── Corner brackets (HUD frame) ── */
+    .hud-corner {
+      position: absolute; width: 24px; height: 24px; opacity: 0; pointer-events: none;
+    }
+    .materialize-overlay.active .hud-corner {
+      animation: cornerAppear 0.4s ease 0.8s forwards;
+    }
+    @keyframes cornerAppear {
+      from { opacity: 0; }
+      to { opacity: 0.4; }
+    }
+    .hud-corner.tl { top: calc(50% - 90px); left: calc(50% - 80px);
+      border-top: 1px solid #a0dad0; border-left: 1px solid #a0dad0; }
+    .hud-corner.tr { top: calc(50% - 90px); right: calc(50% - 80px);
+      border-top: 1px solid #a0dad0; border-right: 1px solid #a0dad0; }
+    .hud-corner.bl { bottom: calc(50% - 90px); left: calc(50% - 80px);
+      border-bottom: 1px solid #a0dad0; border-left: 1px solid #a0dad0; }
+    .hud-corner.br { bottom: calc(50% - 90px); right: calc(50% - 80px);
+      border-bottom: 1px solid #a0dad0; border-right: 1px solid #a0dad0; }
 ` }) %>
   <!-- Materialize animation overlay -->
   <div class="materialize-overlay" id="materialize-overlay">
+    <!-- Ambient floating particles -->
+    <div class="overlay-particles" id="overlay-particles"></div>
+    <!-- Horizontal scan line -->
+    <div class="hud-scanline"></div>
+    <!-- HUD corner brackets -->
+    <div class="hud-corner tl"></div>
+    <div class="hud-corner tr"></div>
+    <div class="hud-corner bl"></div>
+    <div class="hud-corner br"></div>
+    <!-- Pulse rings -->
+    <div class="pulse-ring"></div>
+    <div class="pulse-ring"></div>
+    <div class="pulse-ring"></div>
+    <!-- Particle burst -->
+    <div class="burst-container" id="burst-container"></div>
+    <!-- HUD status text -->
+    <div class="hud-text" id="hud-text">System Online</div>
     <!-- Biometric scan (shown first for FaceID flow, then shrinks into helmet) -->
     <div class="bio-scan-container" id="bio-scan">
       <div class="bio-scan-ring">
@@ -201,15 +320,15 @@
           <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
         </div>
         <div class="bio-scan-icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="#5adfdf" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#a0dad0" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <!-- Face scan corners -->
             <path d="M7 3H5a2 2 0 0 0-2 2v2"/>
             <path d="M17 3h2a2 2 0 0 1 2 2v2"/>
             <path d="M7 21H5a2 2 0 0 1-2-2v-2"/>
             <path d="M17 21h2a2 2 0 0 0 2-2v-2"/>
             <!-- Face features -->
-            <circle cx="9" cy="10" r="0.5" fill="#5adfdf" stroke="none"/>
-            <circle cx="15" cy="10" r="0.5" fill="#5adfdf" stroke="none"/>
+            <circle cx="9" cy="10" r="0.5" fill="#a0dad0" stroke="none"/>
+            <circle cx="15" cy="10" r="0.5" fill="#a0dad0" stroke="none"/>
             <path d="M9.5 15a3.5 3.5 0 0 0 5 0"/>
           </svg>
         </div>
@@ -287,10 +406,10 @@
           helmetSvg.style.display = '';
           // Force reflow to restart helmet animations
           void helmetSvg.offsetWidth;
-          // Helmet draws after scan shrinks
+          // Helmet draws after scan shrinks, then HUD effects play
           setTimeout(function() {
             window.location.href = '/dashboard';
-          }, 1800);
+          }, 2200);
         }, 500);
       }, 600);
     }
@@ -306,13 +425,33 @@
       if (btn) btn.disabled = false;
     }
 
+    // Generate ambient particles and burst particles on load
+    (function() {
+      var particlesEl = document.getElementById('overlay-particles');
+      for (var p = 0; p < 20; p++) {
+        var dot = document.createElement('div');
+        dot.className = 'overlay-particle';
+        dot.style.cssText = 'left:' + (5 + Math.random() * 90) + '%;bottom:' + (Math.random() * 40) + '%;--dur:' + (2.5 + Math.random() * 3) + 's;--delay:' + (Math.random() * 2) + 's;width:' + (1 + Math.random() * 2) + 'px;height:' + (1 + Math.random() * 2) + 'px;';
+        particlesEl.appendChild(dot);
+      }
+      var burstEl = document.getElementById('burst-container');
+      for (var b = 0; b < 12; b++) {
+        var angle = (b / 12) * Math.PI * 2;
+        var dist = 60 + Math.random() * 40;
+        var bDot = document.createElement('div');
+        bDot.className = 'burst-particle';
+        bDot.style.setProperty('--burst-dir', 'translate(' + Math.round(Math.cos(angle) * dist) + 'px,' + Math.round(Math.sin(angle) * dist) + 'px)');
+        burstEl.appendChild(bDot);
+      }
+    })();
+
     // Standard PIN/password flow
     function playMaterialize() {
       bioScan.style.display = 'none';
       overlay.classList.add('active');
       setTimeout(function() {
         window.location.href = '/dashboard';
-      }, 1800);
+      }, 2200);
     }
 
     async function doLogin(value) {
