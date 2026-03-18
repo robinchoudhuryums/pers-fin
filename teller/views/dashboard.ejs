@@ -461,6 +461,45 @@
     <div id="forecast-summary" style="font-size:13px;color:var(--text-muted);margin-bottom:12px;"></div>
     <div id="forecast-list"></div>
   </div>
+
+  <!-- CSV Import Reminder Banner -->
+  <div id="csv-reminder-banner" style="display:none;padding:14px 18px;background:var(--yellow-bg);border:1px solid rgba(240,195,109,0.2);border-radius:var(--radius);margin-bottom:20px;font-size:13px;color:var(--yellow);font-weight:400;">
+    <div style="display:flex;align-items:center;justify-content:space-between;">
+      <div id="csv-reminder-text"></div>
+      <a href="/" style="color:var(--warm);font-weight:500;text-decoration:none;white-space:nowrap;margin-left:12px;">Import CSV &rarr;</a>
+    </div>
+  </div>
+
+  <!-- Budget Velocity Alerts -->
+  <div id="budget-alerts-section" style="display:none;margin-bottom:20px;">
+    <div id="budget-alerts-list"></div>
+  </div>
+
+  <!-- Savings Rate -->
+  <div class="section" id="savings-rate-section" style="display:none;margin-bottom:28px;">
+    <h2>Savings Rate</h2>
+    <div id="savings-rate-content"></div>
+  </div>
+
+  <!-- Cash Flow Forecast -->
+  <div class="section" id="cashflow-section" style="display:none;margin-bottom:28px;">
+    <h2>Cash Flow Projection</h2>
+    <div id="cashflow-summary" style="font-size:13px;color:var(--text-muted);margin-bottom:12px;"></div>
+    <div id="cashflow-list"></div>
+  </div>
+
+  <!-- Year-over-Year Comparison -->
+  <div class="section" id="yoy-section" style="display:none;margin-bottom:28px;">
+    <h2>Year-over-Year Comparison</h2>
+    <div id="yoy-content"></div>
+  </div>
+
+  <!-- Quick Links -->
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:24px;">
+    <a href="/calendar" class="btn" style="text-decoration:none;">Bill Calendar</a>
+    <a href="/transactions" class="btn" style="text-decoration:none;">Search Transactions</a>
+  </div>
+
 <%- include('partials/foot', { apiKey: apiKey }) %>
   <script src="/vendor/chart.umd.js"></script>
   <script>if(typeof Chart==='undefined'){var s=document.createElement('script');s.src='/vendor/chart.umd.js?v=<%= v %>';document.head.appendChild(s);}</script>
@@ -1330,6 +1369,192 @@
       if (!el || isNaN(target)) return;
       animateCounter(el, target, '');
     }
+
+    // --- CSV Import Reminder ---
+    async function loadCsvReminder() {
+      try {
+        var res = await apiFetch('/api/csv-reminder');
+        if (!res.ok) return;
+        var data = await res.json();
+        if (data.due && data.reminders.length > 0) {
+          var banner = document.getElementById('csv-reminder-banner');
+          banner.style.display = 'block';
+          document.getElementById('csv-reminder-text').innerHTML =
+            data.reminders.map(function(r) { return esc(r.message); }).join('<br>');
+        }
+      } catch (e) { /* non-critical */ }
+    }
+
+    // --- Budget Velocity Alerts ---
+    async function loadBudgetAlerts() {
+      try {
+        var res = await apiFetch('/api/budgets/alerts');
+        if (!res.ok) return;
+        var data = await res.json();
+        if (!data.alerts || data.alerts.length === 0) return;
+        var section = document.getElementById('budget-alerts-section');
+        section.style.display = 'block';
+        document.getElementById('budget-alerts-list').innerHTML = data.alerts.map(function(a) {
+          var bgColor, borderColor, textColor;
+          if (a.severity === 'critical') { bgColor = 'var(--red-bg)'; borderColor = 'rgba(235,107,107,0.2)'; textColor = 'var(--red)'; }
+          else if (a.severity === 'warning') { bgColor = 'var(--yellow-bg)'; borderColor = 'rgba(240,195,109,0.2)'; textColor = 'var(--yellow)'; }
+          else { bgColor = 'var(--surface)'; borderColor = 'var(--border)'; textColor = 'var(--text-muted)'; }
+          var extra = '';
+          if (a.daily_budget_remaining) extra = ' ($' + a.daily_budget_remaining.toFixed(2) + '/day remaining)';
+          if (a.projected_total) extra = ' (projected: ' + fmt(a.projected_total) + ')';
+          return '<div style="padding:10px 14px;background:' + bgColor + ';border:1px solid ' + borderColor +
+            ';border-radius:var(--radius);margin-bottom:6px;font-size:12px;color:' + textColor + ';font-weight:400;">' +
+            esc(a.message) + extra + '</div>';
+        }).join('');
+      } catch (e) { /* non-critical */ }
+    }
+
+    // --- Savings Rate ---
+    async function loadSavingsRate() {
+      try {
+        var res = await apiFetch('/api/savings-rate?months=3');
+        if (!res.ok) return;
+        var data = await res.json();
+        if (!data.months || data.months.length === 0) return;
+        var section = document.getElementById('savings-rate-section');
+        section.style.display = 'block';
+        var avg = data.averages;
+        var rateColor = avg.savings_rate >= 20 ? 'var(--green)' : avg.savings_rate >= 10 ? 'var(--yellow)' : avg.savings_rate > 0 ? 'var(--warm)' : 'var(--red)';
+        var html = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:12px;">';
+        html += '<div class="card"><div class="label">Avg Income</div><div class="value green">' + fmt(avg.income) + '</div></div>';
+        html += '<div class="card"><div class="label">Avg Spending</div><div class="value warm">' + fmt(avg.spending) + '</div></div>';
+        html += '<div class="card"><div class="label">Avg Saved</div><div class="value" style="color:' + (avg.saved >= 0 ? 'var(--green)' : 'var(--red)') + ';">' + fmt(avg.saved) + '</div></div>';
+        html += '<div class="card"><div class="label">Savings Rate</div><div class="value" style="color:' + rateColor + ';">' + avg.savings_rate + '%</div></div>';
+        html += '</div>';
+        html += '<div style="font-size:12px;color:var(--text-muted);font-weight:300;margin-bottom:12px;">' + esc(data.recommendation) + '</div>';
+        html += '<div class="table-wrap"><table style="width:100%;font-size:12px;border-collapse:collapse;">';
+        html += '<thead><tr><th style="text-align:left;padding:6px 0;border-bottom:1px solid var(--border);">Month</th>';
+        html += '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Income</th>';
+        html += '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Spending</th>';
+        html += '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Saved</th>';
+        html += '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Rate</th></tr></thead><tbody>';
+        data.months.forEach(function(m) {
+          var rc = m.savings_rate >= 20 ? 'var(--green)' : m.savings_rate >= 10 ? 'var(--yellow)' : m.savings_rate > 0 ? 'var(--warm)' : 'var(--red)';
+          html += '<tr><td style="padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);">' + fmtMonth(m.month) + '</td>';
+          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--green);">' + fmt(m.income) + '</td>';
+          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--warm);">' + fmt(m.spending) + '</td>';
+          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:' + (m.saved >= 0 ? 'var(--green)' : 'var(--red)') + ';">' + fmt(m.saved) + '</td>';
+          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:' + rc + ';">' + m.savings_rate + '%</td></tr>';
+        });
+        html += '</tbody></table></div>';
+        document.getElementById('savings-rate-content').innerHTML = html;
+      } catch (e) { /* non-critical */ }
+    }
+
+    // --- Cash Flow Projection ---
+    async function loadCashFlow() {
+      try {
+        var res = await apiFetch('/api/cash-flow?days=90');
+        if (!res.ok) return;
+        var data = await res.json();
+        if (!data.by_week || data.by_week.length === 0) return;
+        var section = document.getElementById('cashflow-section');
+        section.style.display = 'block';
+        var surplusColor = data.surplus_shortfall >= 0 ? 'var(--green)' : 'var(--red)';
+        document.getElementById('cashflow-summary').innerHTML =
+          'Starting balance: <strong style="color:var(--teal);">' + fmt(data.starting_balance) + '</strong>' +
+          ' &bull; Projected end: <strong style="color:' + surplusColor + ';">' + fmt(data.ending_balance) + '</strong>' +
+          ' &bull; Daily discretionary: <strong style="color:var(--warm);">' + fmt(data.avg_daily_spend) + '</strong>' +
+          (data.recurring_income.length > 0 ? ' &bull; Income sources: ' + data.recurring_income.map(function(i) { return esc(i.source); }).join(', ') : '');
+        var html = '<div class="table-wrap"><table style="width:100%;font-size:12px;border-collapse:collapse;">';
+        html += '<thead><tr><th style="text-align:left;padding:6px 0;border-bottom:1px solid var(--border);">Week</th>';
+        html += '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Income</th>';
+        html += '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Bills</th>';
+        html += '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Spending</th>';
+        html += '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Balance</th></tr></thead><tbody>';
+        data.by_week.forEach(function(w) {
+          var balColor = w.end_balance >= 0 ? 'var(--green)' : 'var(--red)';
+          html += '<tr><td style="padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);">Wk ' + w.week + (w.start_date ? ' (' + fmtDate(w.start_date) + ')' : '') + '</td>';
+          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--green);">' + fmt(w.income) + '</td>';
+          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--red);">' + fmt(w.bills) + '</td>';
+          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--warm);">' + fmt(w.discretionary) + '</td>';
+          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:' + balColor + ';">' + fmt(w.end_balance) + '</td></tr>';
+        });
+        html += '</tbody></table></div>';
+        document.getElementById('cashflow-list').innerHTML = html;
+      } catch (e) { /* non-critical */ }
+    }
+
+    // --- Year-over-Year Comparison ---
+    async function loadYoY() {
+      try {
+        var res = await apiFetch('/api/spending-yoy');
+        if (!res.ok) return;
+        var data = await res.json();
+        if (!data.comparisons || data.comparisons.length === 0) return;
+        var section = document.getElementById('yoy-section');
+        section.style.display = 'block';
+        var comp = data.comparisons[0];
+        var changeColor = comp.change_amount <= 0 ? 'var(--green)' : 'var(--red)';
+        var arrow = comp.change_amount <= 0 ? '↓' : '↑';
+        var html = '<div style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">' +
+          data.month_name + ' ' + comp.current_year + ' vs ' + comp.previous_year +
+          ': <strong style="color:' + changeColor + ';">' + arrow + ' ' +
+          (comp.change_percent !== null ? Math.abs(comp.change_percent) + '%' : 'N/A') +
+          ' (' + (comp.change_amount > 0 ? '+' : '') + fmt(comp.change_amount) + ')</strong></div>';
+        html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">';
+        html += '<div class="card"><div class="label">' + data.month_name + ' ' + comp.current_year + '</div><div class="value warm">' + fmt(comp.current_total) + '</div></div>';
+        html += '<div class="card"><div class="label">' + data.month_name + ' ' + comp.previous_year + '</div><div class="value teal">' + fmt(comp.previous_total) + '</div></div>';
+        html += '</div>';
+        if (comp.category_changes.length > 0) {
+          html += '<div class="table-wrap"><table style="width:100%;font-size:12px;border-collapse:collapse;">';
+          html += '<thead><tr><th style="text-align:left;padding:6px 0;border-bottom:1px solid var(--border);">Category</th>';
+          html += '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">' + comp.current_year + '</th>';
+          html += '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">' + comp.previous_year + '</th>';
+          html += '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Change</th></tr></thead><tbody>';
+          comp.category_changes.slice(0, 10).forEach(function(c) {
+            var cc = c.change <= 0 ? 'var(--green)' : 'var(--red)';
+            html += '<tr><td style="padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);">' + esc(c.category) + '</td>';
+            html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);">' + fmt(c.current) + '</td>';
+            html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);">' + fmt(c.previous) + '</td>';
+            html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:' + cc + ';">' + (c.change > 0 ? '+' : '') + fmt(c.change) + '</td></tr>';
+          });
+          html += '</tbody></table></div>';
+        }
+        document.getElementById('yoy-content').innerHTML = html;
+      } catch (e) { /* non-critical */ }
+    }
+
+    // Dashboard widget visibility
+    async function applyWidgetVisibility() {
+      try {
+        var res = await apiFetch('/api/settings');
+        if (!res.ok) return;
+        var s = await res.json();
+        var w = s.dashboard_widgets || {};
+        // Map widget keys to section IDs
+        var map = {
+          pyramid: '.wellness-section',
+          accounts: '#accounts-section',
+          recentTxns: '.recent-txn-table',
+          charts: '.charts-grid',
+          forecast: '#forecast-section',
+          savingsRate: '#savings-rate-section',
+          cashFlow: '#cashflow-section',
+          yoy: '#yoy-section',
+        };
+        Object.entries(map).forEach(function(e) {
+          var key = e[0], selector = e[1];
+          if (w[key] === false) {
+            var el = document.querySelector(selector);
+            if (el) el.style.display = 'none';
+          }
+        });
+      } catch (e) { /* non-critical */ }
+    }
+    applyWidgetVisibility();
+
+    // Load new dashboard widgets
+    loadCsvReminder();
+    loadBudgetAlerts();
+    loadSavingsRate();
+    loadCashFlow();
+    loadYoY();
 
     computeWellness();
 

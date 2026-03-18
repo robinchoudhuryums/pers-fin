@@ -180,6 +180,15 @@ async function runMigrations() {
     await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS is_manual BOOLEAN NOT NULL DEFAULT false");
     await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS institution_name_manual TEXT DEFAULT NULL");
     await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS credit_limit NUMERIC(12,2) DEFAULT NULL");
+    // Dashboard widget order/visibility
+    await pool.query(`ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS dashboard_widgets JSONB NOT NULL DEFAULT '{"pyramid":true,"accounts":true,"recentTxns":true,"monthlySpend":true,"categories":true,"merchants":true,"upcoming":true,"forecast":true,"charts":true,"calendar":true,"cashFlow":true,"savingsRate":true,"yoy":true}'::jsonb`);
+    // Sheets auto-sync
+    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sheets_auto_sync_enabled BOOLEAN NOT NULL DEFAULT false");
+    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sheets_auto_sync_interval TEXT NOT NULL DEFAULT 'weekly'");
+    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sheets_last_auto_sync TIMESTAMPTZ DEFAULT NULL");
+    // CSV import reminder
+    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS csv_reminder_days INT NOT NULL DEFAULT 14");
+    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS csv_reminder_enabled BOOLEAN NOT NULL DEFAULT true");
     // Performance indexes
     await pool.query("CREATE INDEX IF NOT EXISTS idx_transactions_date_pending ON transactions (date, pending)");
     await pool.query("CREATE INDEX IF NOT EXISTS idx_linked_accounts_account_id ON linked_accounts (account_id)");

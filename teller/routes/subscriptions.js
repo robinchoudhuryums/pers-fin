@@ -182,6 +182,83 @@ router.patch("/api/subscriptions/:id/category", async (req, res) => {
   }
 });
 
+// GET /api/transactions/search — Full-text search with filters
+router.get("/api/transactions/search", async (req, res) => {
+  const { q, category, account_id, min_amount, max_amount, start_date, end_date, limit: rawLimit, offset: rawOffset } = req.query;
+  const limit = Math.min(parseInt(rawLimit) || 100, 500);
+  const offset = parseInt(rawOffset) || 0;
+
+  try {
+    const conditions = ["t.pending = false"];
+    const values = [];
+    let idx = 1;
+
+    if (q) {
+      conditions.push(`(LOWER(COALESCE(t.merchant_name, t.name, '')) LIKE $${idx})`);
+      values.push("%" + q.toLowerCase() + "%");
+      idx++;
+    }
+    if (category) {
+      conditions.push(`t.category[1] = $${idx}`);
+      values.push(category);
+      idx++;
+    }
+    if (account_id) {
+      conditions.push(`t.account_id = $${idx}`);
+      values.push(account_id);
+      idx++;
+    }
+    if (min_amount) {
+      conditions.push(`ABS(t.amount) >= $${idx}`);
+      values.push(parseFloat(min_amount));
+      idx++;
+    }
+    if (max_amount) {
+      conditions.push(`ABS(t.amount) <= $${idx}`);
+      values.push(parseFloat(max_amount));
+      idx++;
+    }
+    if (start_date) {
+      conditions.push(`t.date >= $${idx}`);
+      values.push(start_date);
+      idx++;
+    }
+    if (end_date) {
+      conditions.push(`t.date <= $${idx}`);
+      values.push(end_date);
+      idx++;
+    }
+
+    const where = conditions.length ? "WHERE " + conditions.join(" AND ") : "";
+
+    const [result, countResult] = await Promise.all([
+      pool.query(`
+        SELECT t.transaction_id, t.date, COALESCE(t.merchant_name, t.name) AS merchant,
+               t.amount, la.name AS account_name, la.type AS account_type,
+               COALESCE(pi.institution_name, te.institution_name, la.institution_name_manual, 'CSV Import') AS institution_name,
+               t.category[1] AS category, t.pending
+        FROM transactions t
+        JOIN linked_accounts la ON la.account_id = t.account_id
+        LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
+        LEFT JOIN teller_enrollments te ON te.id = la.teller_enrollment_id
+        ${where}
+        ORDER BY t.date DESC
+        LIMIT $${idx} OFFSET $${idx + 1}
+      `, [...values, limit, offset]),
+      pool.query(`SELECT COUNT(*) AS total FROM transactions t ${where}`, values),
+    ]);
+
+    res.json({
+      transactions: result.rows,
+      total: parseInt(countResult.rows[0].total),
+      limit, offset,
+    });
+  } catch (err) {
+    console.error("transaction search error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
 // GET /api/transactions
 router.get("/api/transactions", async (req, res) => {
   const months = parseInt(req.query.months) || 6;
@@ -328,6 +405,32 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
         [req.file.originalname, institution, accountLabel, imported, skipped]
       );
 
+      // Auto-update manual account balance if institution matches
+      try {
+        const manualAcct = await client.query(
+          `SELECT id, type FROM linked_accounts
+           WHERE is_manual = true
+             AND (LOWER(institution_name_manual) = LOWER($1) OR LOWER(name) LIKE '%' || LOWER($1) || '%')
+           LIMIT 1`,
+          [institution]
+        );
+        if (manualAcct.rows.length) {
+          // Calculate balance from most recent transactions
+          const balanceResult = await client.query(
+            `SELECT SUM(amount) AS net FROM transactions
+             WHERE account_id = $1 AND pending = false`,
+            [virtualAccountId]
+          );
+          const netAmount = parseFloat(balanceResult.rows[0]?.net || 0);
+          // For credit cards, the balance is the sum of debits (positive = spent)
+          const balance = manualAcct.rows[0].type === 'credit' ? Math.abs(netAmount) : -netAmount;
+          await client.query(
+            `UPDATE linked_accounts SET current_balance = $1, balance_updated_at = now() WHERE id = $2`,
+            [balance, manualAcct.rows[0].id]
+          );
+        }
+      } catch (e) { /* non-critical */ }
+
       await client.query("COMMIT");
 
       res.json({
@@ -446,6 +549,191 @@ router.get("/api/forecast", async (req, res) => {
       by_week: byWeek,
     });
   } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// GET /api/bill-calendar — Monthly calendar of expected charges
+router.get("/api/bill-calendar", async (req, res) => {
+  const year = parseInt(req.query.year) || new Date().getFullYear();
+  const month = parseInt(req.query.month) || new Date().getMonth() + 1;
+  try {
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
+    const endDate = `${year}-${String(month).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`;
+
+    // Get active subscriptions
+    const subs = await pool.query(`
+      SELECT display_name, amount, cadence_days, next_expected, category
+      FROM detected_subscriptions
+      WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL
+        AND next_expected IS NOT NULL
+    `);
+
+    // Place subscriptions on calendar days
+    const calendar = {};
+    for (let d = 1; d <= daysInMonth; d++) calendar[d] = [];
+
+    for (const sub of subs.rows) {
+      const amount = parseFloat(sub.amount);
+      const cadence = parseInt(sub.cadence_days);
+      let nextDate = new Date(sub.next_expected);
+
+      // Advance past dates
+      const monthStart = new Date(startDate);
+      while (nextDate < monthStart) {
+        nextDate = new Date(nextDate.getTime() + cadence * 86400000);
+      }
+
+      // Place within this month
+      const monthEnd = new Date(endDate);
+      while (nextDate <= monthEnd) {
+        const day = nextDate.getDate();
+        calendar[day].push({
+          name: sub.display_name,
+          amount,
+          category: sub.category,
+        });
+        nextDate = new Date(nextDate.getTime() + cadence * 86400000);
+      }
+    }
+
+    // Income deposits (detected from recent patterns)
+    const incomeResult = await pool.query(`
+      SELECT COALESCE(merchant_name, name) AS source,
+             ABS(amount) AS amount,
+             ROUND(AVG(EXTRACT(DAY FROM date::timestamp))) AS typical_day
+      FROM transactions
+      WHERE amount < 0 AND pending = false
+        AND date >= CURRENT_DATE - INTERVAL '3 months'
+        AND (LOWER(COALESCE(merchant_name, name, '')) LIKE '%payroll%'
+          OR LOWER(COALESCE(merchant_name, name, '')) LIKE '%direct dep%'
+          OR LOWER(COALESCE(merchant_name, name, '')) LIKE '%salary%'
+          OR category[1] = 'Income')
+      GROUP BY COALESCE(merchant_name, name), ABS(amount)
+      HAVING COUNT(*) >= 2
+    `);
+
+    for (const inc of incomeResult.rows) {
+      const day = parseInt(inc.typical_day);
+      if (day >= 1 && day <= daysInMonth) {
+        calendar[day].push({
+          name: inc.source,
+          amount: -parseFloat(inc.amount),
+          category: "income",
+          is_income: true,
+        });
+      }
+    }
+
+    // Calculate daily totals
+    let totalBills = 0;
+    let totalIncome = 0;
+    const days = [];
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dayBills = calendar[d].filter(e => !e.is_income).reduce((s, e) => s + e.amount, 0);
+      const dayIncome = calendar[d].filter(e => e.is_income).reduce((s, e) => s + Math.abs(e.amount), 0);
+      totalBills += dayBills;
+      totalIncome += dayIncome;
+      days.push({
+        day: d,
+        date: `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`,
+        events: calendar[d],
+        total_bills: Math.round(dayBills * 100) / 100,
+        total_income: Math.round(dayIncome * 100) / 100,
+      });
+    }
+
+    const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    res.json({
+      year, month,
+      month_name: monthNames[month - 1],
+      days_in_month: daysInMonth,
+      total_bills: Math.round(totalBills * 100) / 100,
+      total_income: Math.round(totalIncome * 100) / 100,
+      net: Math.round((totalIncome - totalBills) * 100) / 100,
+      days,
+    });
+  } catch (err) {
+    console.error("bill-calendar error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// GET /api/transactions/duplicates — Find potential duplicate transactions across sources
+router.get("/api/transactions/duplicates", async (_req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT t1.transaction_id AS id1, t2.transaction_id AS id2,
+             t1.date, COALESCE(t1.merchant_name, t1.name) AS merchant,
+             t1.amount,
+             la1.name AS account1, la2.name AS account2,
+             COALESCE(pi1.institution_name, te1.institution_name, la1.institution_name_manual, 'CSV') AS inst1,
+             COALESCE(pi2.institution_name, te2.institution_name, la2.institution_name_manual, 'CSV') AS inst2
+      FROM transactions t1
+      JOIN transactions t2 ON t1.date = t2.date
+        AND t1.amount = t2.amount
+        AND t1.transaction_id < t2.transaction_id
+        AND t1.account_id != t2.account_id
+        AND ABS(t1.amount) > 0
+      JOIN linked_accounts la1 ON la1.account_id = t1.account_id
+      JOIN linked_accounts la2 ON la2.account_id = t2.account_id
+      LEFT JOIN plaid_items pi1 ON pi1.id = la1.plaid_item_id
+      LEFT JOIN teller_enrollments te1 ON te1.id = la1.teller_enrollment_id
+      LEFT JOIN plaid_items pi2 ON pi2.id = la2.plaid_item_id
+      LEFT JOIN teller_enrollments te2 ON te2.id = la2.teller_enrollment_id
+      WHERE t1.pending = false AND t2.pending = false
+        AND t1.date >= CURRENT_DATE - INTERVAL '6 months'
+        AND (LOWER(COALESCE(t1.merchant_name, t1.name, '')) = LOWER(COALESCE(t2.merchant_name, t2.name, ''))
+             OR SIMILARITY(LOWER(COALESCE(t1.merchant_name, t1.name, '')), LOWER(COALESCE(t2.merchant_name, t2.name, ''))) > 0.6)
+      ORDER BY t1.date DESC
+      LIMIT 100
+    `);
+
+    res.json({
+      duplicates: result.rows,
+      count: result.rows.length,
+    });
+  } catch (err) {
+    // Fallback without SIMILARITY (pg_trgm might not be installed)
+    try {
+      const result = await pool.query(`
+        SELECT t1.transaction_id AS id1, t2.transaction_id AS id2,
+               t1.date, COALESCE(t1.merchant_name, t1.name) AS merchant,
+               t1.amount,
+               la1.name AS account1, la2.name AS account2
+        FROM transactions t1
+        JOIN transactions t2 ON t1.date = t2.date
+          AND t1.amount = t2.amount
+          AND t1.transaction_id < t2.transaction_id
+          AND t1.account_id != t2.account_id
+        JOIN linked_accounts la1 ON la1.account_id = t1.account_id
+        JOIN linked_accounts la2 ON la2.account_id = t2.account_id
+        WHERE t1.pending = false AND t2.pending = false
+          AND t1.date >= CURRENT_DATE - INTERVAL '6 months'
+          AND LOWER(COALESCE(t1.merchant_name, t1.name, '')) = LOWER(COALESCE(t2.merchant_name, t2.name, ''))
+        ORDER BY t1.date DESC
+        LIMIT 100
+      `);
+      res.json({ duplicates: result.rows, count: result.rows.length });
+    } catch (err2) {
+      console.error("duplicates error:", err2.message);
+      res.status(500).json({ error: "An internal error occurred." });
+    }
+  }
+});
+
+// DELETE /api/transactions/:id — Delete a specific transaction (for dedup)
+router.delete("/api/transactions/:id", async (req, res) => {
+  try {
+    const result = await pool.query(
+      "DELETE FROM transactions WHERE transaction_id = $1 RETURNING transaction_id",
+      [req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "Transaction not found" });
+    res.json({ deleted: true, transaction_id: req.params.id });
+  } catch (err) {
+    console.error("delete transaction error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
   }
 });

@@ -204,4 +204,92 @@ router.post("/api/budgets/accept", async (req, res) => {
   }
 });
 
+// GET /api/budgets/alerts — Spending velocity / pacing warnings
+router.get("/api/budgets/alerts", async (_req, res) => {
+  try {
+    const [budgets, spending] = await Promise.all([
+      pool.query("SELECT * FROM budgets ORDER BY monthly_limit DESC"),
+      pool.query(
+        `SELECT COALESCE(category[1], 'Uncategorized') AS category,
+                SUM(amount) AS spent
+         FROM transactions
+         WHERE amount > 0 AND pending = false
+           AND date >= date_trunc('month', CURRENT_DATE)
+           AND date < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
+         GROUP BY COALESCE(category[1], 'Uncategorized')`
+      ),
+    ]);
+
+    const today = new Date();
+    const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+    const dayOfMonth = today.getDate();
+    const daysRemaining = daysInMonth - dayOfMonth;
+    const monthProgress = dayOfMonth / daysInMonth;
+
+    const spendMap = {};
+    for (const r of spending.rows) spendMap[r.category] = parseFloat(r.spent);
+
+    const alerts = [];
+    for (const b of budgets.rows) {
+      const spent = spendMap[b.category] || 0;
+      const limit = parseFloat(b.monthly_limit);
+      const pctUsed = limit > 0 ? (spent / limit) * 100 : 0;
+      const pace = monthProgress > 0 ? pctUsed / (monthProgress * 100) : 0;
+
+      if (pctUsed >= 100) {
+        alerts.push({
+          category: b.category,
+          type: "over_budget",
+          severity: "critical",
+          message: `${b.category}: Over budget by $${(spent - limit).toFixed(2)}`,
+          spent: Math.round(spent * 100) / 100,
+          limit: Math.round(limit * 100) / 100,
+          percent_used: Math.round(pctUsed),
+          days_remaining: daysRemaining,
+        });
+      } else if (pctUsed >= 80) {
+        alerts.push({
+          category: b.category,
+          type: "approaching_limit",
+          severity: "warning",
+          message: `${b.category}: ${Math.round(pctUsed)}% spent with ${daysRemaining} days left`,
+          spent: Math.round(spent * 100) / 100,
+          limit: Math.round(limit * 100) / 100,
+          percent_used: Math.round(pctUsed),
+          days_remaining: daysRemaining,
+          daily_budget_remaining: daysRemaining > 0 ? Math.round((limit - spent) / daysRemaining * 100) / 100 : 0,
+        });
+      } else if (pace > 1.2 && pctUsed >= 50) {
+        alerts.push({
+          category: b.category,
+          type: "fast_pace",
+          severity: "info",
+          message: `${b.category}: Spending faster than budget pace (${Math.round(pctUsed)}% used at ${Math.round(monthProgress * 100)}% through month)`,
+          spent: Math.round(spent * 100) / 100,
+          limit: Math.round(limit * 100) / 100,
+          percent_used: Math.round(pctUsed),
+          pace: Math.round(pace * 100) / 100,
+          projected_total: Math.round(spent / monthProgress * 100) / 100,
+        });
+      }
+    }
+
+    alerts.sort((a, b) => {
+      const sev = { critical: 0, warning: 1, info: 2 };
+      return (sev[a.severity] || 3) - (sev[b.severity] || 3);
+    });
+
+    res.json({
+      alerts,
+      month_progress: Math.round(monthProgress * 10000) / 100,
+      days_remaining: daysRemaining,
+      day_of_month: dayOfMonth,
+      days_in_month: daysInMonth,
+    });
+  } catch (err) {
+    console.error("budget alerts error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
 module.exports = router;

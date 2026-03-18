@@ -241,6 +241,8 @@ app.use(require("./pages/goals")(pageConfig));
 app.use(require("./pages/budgets")(pageConfig));
 app.use(require("./pages/login")(authConfig));
 app.use(require("./pages/settings")(pageConfig));
+app.use(require("./pages/transactions")(pageConfig));
+app.use(require("./pages/calendar")(pageConfig));
 app.use(require("./pages/pwa"));
 
 // ---------------------------------------------------------------------------
@@ -275,6 +277,29 @@ runMigrations().then(() => {
     console.log(`  Environment: ${TELLER_ENV}`);
     console.log(`  Application ID: ${TELLER_APP_ID || "(not set)"}`);
     startKeepAlive(PORT);
+
+    // Sheets auto-sync check (every hour)
+    setInterval(async () => {
+      try {
+        const settings = await pool.query("SELECT sheets_auto_sync_enabled, sheets_auto_sync_interval, sheets_last_auto_sync FROM user_settings WHERE id = 1");
+        const s = settings.rows[0];
+        if (!s || !s.sheets_auto_sync_enabled) return;
+        const intervals = { daily: 1, weekly: 7, monthly: 30 };
+        const intervalDays = intervals[s.sheets_auto_sync_interval] || 7;
+        const lastSync = s.sheets_last_auto_sync ? new Date(s.sheets_last_auto_sync) : null;
+        const now = new Date();
+        if (!lastSync || (now - lastSync) / 86400000 >= intervalDays) {
+          let sheetsSync;
+          try { sheetsSync = require("../scripts/sheets-sync"); } catch { return; }
+          if (!process.env.GOOGLE_SHEETS_ID || !process.env.GOOGLE_SERVICE_ACCOUNT_KEY) return;
+          await sheetsSync.syncAll();
+          await pool.query("UPDATE user_settings SET sheets_last_auto_sync = now() WHERE id = 1");
+          console.log("Auto-sync to Google Sheets complete.");
+        }
+      } catch (err) {
+        console.error("Sheets auto-sync error:", err.message);
+      }
+    }, 60 * 60 * 1000); // Check every hour
   });
 
   // --- Graceful shutdown ---

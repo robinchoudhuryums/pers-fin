@@ -1,0 +1,349 @@
+<%- include('partials/head', { title: 'Transactions', extraStyles: `
+    .container { max-width: 1060px; }
+    .search-bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; margin-bottom: 20px;
+                  padding: 20px; background: var(--surface); border: 1px solid var(--border);
+                  border-radius: var(--radius); backdrop-filter: blur(12px); }
+    .search-bar .field { display: flex; flex-direction: column; gap: 4px; }
+    .search-bar label { font-size: 9px; font-weight: 500; color: var(--text-muted);
+                        text-transform: uppercase; letter-spacing: 1px; }
+    .search-bar input, .search-bar select { padding: 7px 12px; font-size: 13px; border: 1px solid var(--border);
+      border-radius: 6px; background: transparent; color: var(--text); font-family: inherit; font-weight: 300; }
+    .search-bar input:focus, .search-bar select:focus { outline: none; border-color: var(--warm); }
+    .search-bar input::placeholder { color: var(--text-muted); }
+    #search-input { width: 200px; }
+    .amount-range { display: flex; gap: 4px; align-items: center; }
+    .amount-range input { width: 80px; }
+    .date-range { display: flex; gap: 4px; align-items: center; }
+    .date-range input { width: 130px; }
+    .bulk-bar { display: flex; gap: 10px; align-items: center; padding: 12px 16px; margin-bottom: 12px;
+                background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius);
+                font-size: 12px; display: none; }
+    .bulk-bar select { padding: 5px 10px; font-size: 12px; border: 1px solid var(--border);
+      border-radius: 6px; background: transparent; color: var(--text); font-family: inherit; }
+    .txn-table { width: 100%; border-collapse: collapse; }
+    .txn-table th { font-size: 10px; font-weight: 500; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 1px; text-align: left; padding: 8px;
+      border-bottom: 1px solid var(--border); }
+    .txn-table td { padding: 8px; font-size: 13px; border-bottom: 1px solid var(--border); font-weight: 300; }
+    .txn-table tr:hover { background: rgba(255,255,255,0.02); }
+    .txn-table .amount.debit { color: var(--warm); }
+    .txn-table .amount.credit { color: var(--green); }
+    .txn-cat { font-size: 11px; color: var(--text-muted); }
+    .pagination { display: flex; gap: 10px; align-items: center; justify-content: center;
+                  margin-top: 16px; font-size: 13px; color: var(--text-muted); }
+    .pagination button { padding: 6px 14px; }
+    .result-count { font-size: 12px; color: var(--text-muted); margin-bottom: 12px; }
+    .dup-section { margin-top: 32px; }
+    .dup-card { padding: 14px; background: var(--surface); border: 1px solid var(--border);
+                border-radius: var(--radius); margin-bottom: 8px; font-size: 13px; font-weight: 300;
+                display: flex; justify-content: space-between; align-items: center; }
+    .dup-info { flex: 1; }
+    @media (max-width: 640px) {
+      #search-input { width: 100%; }
+      .search-bar { flex-direction: column; }
+      .search-bar .field { width: 100%; }
+      .search-bar input, .search-bar select { width: 100%; }
+      .hide-mobile { display: none; }
+    }
+` }) %>
+<%- include('partials/nav', { activePage: 'transactions' }) %>
+
+  <h1>Transactions</h1>
+  <p class="subtitle">Search, filter, and categorize transactions</p>
+  <div id="status-msg" class="status-msg"></div>
+
+  <div class="search-bar">
+    <div class="field" style="flex:1;min-width:180px;">
+      <label>Search</label>
+      <input type="text" id="search-input" placeholder="Merchant name...">
+    </div>
+    <div class="field">
+      <label>Category</label>
+      <select id="filter-category">
+        <option value="">All</option>
+        <option value="Food & Drink">Food & Drink</option>
+        <option value="Groceries">Groceries</option>
+        <option value="Transportation">Transportation</option>
+        <option value="Gas & Fuel">Gas & Fuel</option>
+        <option value="Shopping">Shopping</option>
+        <option value="Entertainment">Entertainment</option>
+        <option value="Health & Fitness">Health & Fitness</option>
+        <option value="Healthcare">Healthcare</option>
+        <option value="Housing">Housing</option>
+        <option value="Utilities">Utilities</option>
+        <option value="Insurance">Insurance</option>
+        <option value="Education">Education</option>
+        <option value="Travel">Travel</option>
+        <option value="Personal Care">Personal Care</option>
+        <option value="Gifts & Donations">Gifts & Donations</option>
+        <option value="Fees & Charges">Fees & Charges</option>
+        <option value="Transfer">Transfer</option>
+        <option value="Income">Income</option>
+        <option value="Investment">Investment</option>
+        <option value="Subscription">Subscription</option>
+        <option value="Uncategorized">Uncategorized</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Amount Range</label>
+      <div class="amount-range">
+        <input type="number" id="filter-min" placeholder="Min" step="0.01">
+        <span style="color:var(--text-muted);">-</span>
+        <input type="number" id="filter-max" placeholder="Max" step="0.01">
+      </div>
+    </div>
+    <div class="field">
+      <label>Date Range</label>
+      <div class="date-range">
+        <input type="date" id="filter-start">
+        <span style="color:var(--text-muted);">to</span>
+        <input type="date" id="filter-end">
+      </div>
+    </div>
+    <div class="field">
+      <label>&nbsp;</label>
+      <button class="btn primary" id="search-btn">Search</button>
+    </div>
+  </div>
+
+  <div class="bulk-bar" id="bulk-bar">
+    <input type="checkbox" id="select-all">
+    <span id="selected-count">0 selected</span>
+    <select id="bulk-category">
+      <option value="">Set category...</option>
+      <option value="Food & Drink">Food & Drink</option>
+      <option value="Groceries">Groceries</option>
+      <option value="Transportation">Transportation</option>
+      <option value="Gas & Fuel">Gas & Fuel</option>
+      <option value="Shopping">Shopping</option>
+      <option value="Entertainment">Entertainment</option>
+      <option value="Health & Fitness">Health & Fitness</option>
+      <option value="Healthcare">Healthcare</option>
+      <option value="Housing">Housing</option>
+      <option value="Utilities">Utilities</option>
+      <option value="Insurance">Insurance</option>
+      <option value="Education">Education</option>
+      <option value="Travel">Travel</option>
+      <option value="Personal Care">Personal Care</option>
+      <option value="Gifts & Donations">Gifts & Donations</option>
+      <option value="Fees & Charges">Fees & Charges</option>
+      <option value="Transfer">Transfer</option>
+      <option value="Income">Income</option>
+      <option value="Subscription">Subscription</option>
+      <option value="Other">Other</option>
+    </select>
+    <button class="btn primary btn-sm" id="bulk-apply-btn">Apply</button>
+  </div>
+
+  <div id="result-count" class="result-count"></div>
+  <div class="table-wrap">
+    <table class="txn-table">
+      <thead>
+        <tr>
+          <th style="width:30px;"><input type="checkbox" id="header-check"></th>
+          <th>Date</th>
+          <th>Merchant</th>
+          <th>Category</th>
+          <th>Amount</th>
+          <th class="hide-mobile">Account</th>
+        </tr>
+      </thead>
+      <tbody id="txn-body">
+        <tr><td colspan="6" class="empty">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="pagination" id="pagination"></div>
+
+  <div class="dup-section" id="dup-section" style="display:none;">
+    <h2>Potential Duplicates</h2>
+    <p class="subtitle">Transactions with same date, amount, and merchant across different accounts</p>
+    <div id="dup-list"></div>
+  </div>
+
+<%- include('partials/foot', { apiKey: apiKey }) %>
+  <script>
+    var currentOffset = 0;
+    var currentTotal = 0;
+    var PAGE_SIZE = 100;
+    var selectedIds = new Set();
+
+    function getFilters() {
+      return {
+        q: document.getElementById('search-input').value.trim(),
+        category: document.getElementById('filter-category').value,
+        min_amount: document.getElementById('filter-min').value,
+        max_amount: document.getElementById('filter-max').value,
+        start_date: document.getElementById('filter-start').value,
+        end_date: document.getElementById('filter-end').value,
+      };
+    }
+
+    async function searchTransactions(offset) {
+      currentOffset = offset || 0;
+      var filters = getFilters();
+      var params = new URLSearchParams();
+      if (filters.q) params.set('q', filters.q);
+      if (filters.category) params.set('category', filters.category);
+      if (filters.min_amount) params.set('min_amount', filters.min_amount);
+      if (filters.max_amount) params.set('max_amount', filters.max_amount);
+      if (filters.start_date) params.set('start_date', filters.start_date);
+      if (filters.end_date) params.set('end_date', filters.end_date);
+      params.set('limit', PAGE_SIZE);
+      params.set('offset', currentOffset);
+
+      try {
+        var res = await apiFetch('/api/transactions/search?' + params.toString());
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        var data = await res.json();
+        currentTotal = data.total;
+        selectedIds.clear();
+        updateBulkBar();
+
+        document.getElementById('result-count').textContent =
+          data.total.toLocaleString() + ' transactions found' +
+          (currentOffset > 0 ? ' (showing ' + (currentOffset + 1) + '-' + Math.min(currentOffset + PAGE_SIZE, data.total) + ')' : '');
+
+        var tbody = document.getElementById('txn-body');
+        if (!data.transactions.length) {
+          tbody.innerHTML = '<tr><td colspan="6" class="empty">No transactions match your filters.</td></tr>';
+          document.getElementById('pagination').innerHTML = '';
+          return;
+        }
+
+        tbody.innerHTML = data.transactions.map(function(t) {
+          var amt = parseFloat(t.amount);
+          var amtClass = amt > 0 ? 'debit' : 'credit';
+          return '<tr>' +
+            '<td><input type="checkbox" class="txn-check" data-id="' + esc(t.transaction_id) + '"></td>' +
+            '<td>' + fmtDate(t.date) + '</td>' +
+            '<td>' + esc(t.merchant) + '</td>' +
+            '<td><span class="txn-cat">' + esc(t.category || 'Uncategorized') + '</span></td>' +
+            '<td class="amount ' + amtClass + '">' + fmt(Math.abs(amt)) + '</td>' +
+            '<td class="hide-mobile" style="font-size:11px;color:var(--text-muted);">' + esc(t.account_name || '') + '</td>' +
+            '</tr>';
+        }).join('');
+
+        // Pagination
+        var totalPages = Math.ceil(data.total / PAGE_SIZE);
+        var currentPage = Math.floor(currentOffset / PAGE_SIZE) + 1;
+        var pagHtml = '';
+        if (currentPage > 1) pagHtml += '<button class="btn btn-sm" id="prev-page">Previous</button>';
+        pagHtml += '<span>Page ' + currentPage + ' of ' + totalPages + '</span>';
+        if (currentPage < totalPages) pagHtml += '<button class="btn btn-sm" id="next-page">Next</button>';
+        document.getElementById('pagination').innerHTML = pagHtml;
+
+      } catch (e) {
+        document.getElementById('txn-body').innerHTML = '<tr><td colspan="6" class="empty">Error: ' + esc(e.message) + '</td></tr>';
+      }
+    }
+
+    function updateBulkBar() {
+      var bar = document.getElementById('bulk-bar');
+      bar.style.display = selectedIds.size > 0 ? 'flex' : 'none';
+      document.getElementById('selected-count').textContent = selectedIds.size + ' selected';
+    }
+
+    async function applyBulkCategory() {
+      var category = document.getElementById('bulk-category').value;
+      if (!category) { showMsg('Select a category first.', false); return; }
+      if (selectedIds.size === 0) { showMsg('No transactions selected.', false); return; }
+      try {
+        var res = await apiFetch('/api/transactions/bulk-category', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ transaction_ids: Array.from(selectedIds), category: category }),
+        });
+        var data = await res.json();
+        if (res.ok) {
+          showMsg('Updated ' + data.updated + ' transactions to ' + category + '.', true);
+          selectedIds.clear();
+          updateBulkBar();
+          searchTransactions(currentOffset);
+        } else showMsg(data.error || 'Failed', false);
+      } catch (e) { showMsg(e.message, false); }
+    }
+
+    async function loadDuplicates() {
+      try {
+        var res = await apiFetch('/api/transactions/duplicates');
+        if (!res.ok) return;
+        var data = await res.json();
+        if (!data.duplicates || data.duplicates.length === 0) return;
+
+        document.getElementById('dup-section').style.display = 'block';
+        document.getElementById('dup-list').innerHTML = data.duplicates.map(function(d) {
+          return '<div class="dup-card">' +
+            '<div class="dup-info">' +
+              '<strong>' + esc(d.merchant) + '</strong> &mdash; ' + fmt(Math.abs(parseFloat(d.amount))) +
+              ' on ' + fmtDate(d.date) +
+              '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">' +
+                'Account 1: ' + esc(d.account1 || '') + ' &bull; Account 2: ' + esc(d.account2 || '') +
+              '</div>' +
+            '</div>' +
+            '<div style="display:flex;gap:6px;">' +
+              '<button class="btn btn-sm" data-action="delete-dup" data-id="' + esc(d.id1) + '" title="Keep second, delete first">Delete #1</button>' +
+              '<button class="btn btn-sm" data-action="delete-dup" data-id="' + esc(d.id2) + '" title="Keep first, delete second">Delete #2</button>' +
+            '</div>' +
+          '</div>';
+        }).join('');
+      } catch (e) { /* non-critical */ }
+    }
+
+    async function deleteDuplicate(txnId) {
+      if (!confirm('Delete this duplicate transaction?')) return;
+      try {
+        var res = await apiFetch('/api/transactions/' + encodeURIComponent(txnId), { method: 'DELETE' });
+        if (res.ok) { showMsg('Transaction deleted.', true); loadDuplicates(); searchTransactions(currentOffset); }
+        else showMsg('Failed to delete.', false);
+      } catch (e) { showMsg(e.message, false); }
+    }
+
+    // Event bindings
+    bindEvents([
+      ['search-btn', 'click', function() { searchTransactions(0); }],
+      ['search-input', 'keydown', function(e) { if (e.key === 'Enter') searchTransactions(0); }],
+      ['filter-category', 'change', function() { searchTransactions(0); }],
+      ['bulk-apply-btn', 'click', applyBulkCategory],
+      ['header-check', 'change', function() {
+        var checked = this.checked;
+        document.querySelectorAll('.txn-check').forEach(function(cb) {
+          cb.checked = checked;
+          if (checked) selectedIds.add(cb.dataset.id);
+          else selectedIds.delete(cb.dataset.id);
+        });
+        updateBulkBar();
+      }],
+      ['select-all', 'change', function() {
+        var checked = this.checked;
+        document.querySelectorAll('.txn-check').forEach(function(cb) {
+          cb.checked = checked;
+          if (checked) selectedIds.add(cb.dataset.id);
+          else selectedIds.delete(cb.dataset.id);
+        });
+        document.getElementById('header-check').checked = checked;
+        updateBulkBar();
+      }],
+    ]);
+
+    onDelegate('txn-body', 'change', '.txn-check', function() {
+      if (this.checked) selectedIds.add(this.dataset.id);
+      else selectedIds.delete(this.dataset.id);
+      updateBulkBar();
+    });
+
+    onDelegate('pagination', 'click', '#prev-page', function() { searchTransactions(Math.max(0, currentOffset - PAGE_SIZE)); });
+    onDelegate('pagination', 'click', '#next-page', function() { searchTransactions(currentOffset + PAGE_SIZE); });
+    onDelegate('dup-list', 'click', '[data-action="delete-dup"]', function() { deleteDuplicate(this.dataset.id); });
+
+    // Set default date range to last 6 months
+    var now = new Date();
+    var sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 6, now.getDate());
+    document.getElementById('filter-start').value = sixMonthsAgo.toISOString().split('T')[0];
+    document.getElementById('filter-end').value = now.toISOString().split('T')[0];
+
+    searchTransactions(0);
+    loadDuplicates();
+  </script>
+</body></html>
