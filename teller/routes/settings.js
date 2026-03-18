@@ -17,7 +17,7 @@ try {
 // GET /api/settings
 router.get("/api/settings", async (_req, res) => {
   try {
-    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules, pyramid_data_source, pyramid_color_mode, debt_baseline_amount, sheets_auto_sync_enabled, sheets_auto_sync_interval, sheets_last_auto_sync, csv_reminder_days, csv_reminder_enabled, dashboard_widgets FROM user_settings WHERE id = 1");
+    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules, pyramid_data_source, pyramid_color_mode, debt_baseline_amount, sheets_auto_sync_enabled, sheets_auto_sync_interval, sheets_last_auto_sync, csv_reminder_days, csv_reminder_enabled, dashboard_widgets, persistent_url, persistent_webhook_enabled FROM user_settings WHERE id = 1");
     const defaults = { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true, anomaly_detection: true, seasonal_forecast: true, debt_optimizer: true, bill_negotiation: true, income_savings: true, tax_deductions: true, goal_tracking: true }, pyramid_data_source: "wellness", pyramid_color_mode: "single", debt_baseline_amount: null, sheets_auto_sync_enabled: false, sheets_auto_sync_interval: 'weekly', sheets_last_auto_sync: null, csv_reminder_days: 14, csv_reminder_enabled: true, dashboard_widgets: {pyramid:true,accounts:true,recentTxns:true,monthlySpend:true,categories:true,merchants:true,upcoming:true,forecast:true,charts:true,calendar:true,cashFlow:true,savingsRate:true,yoy:true} };
     const row = result.rows[0] || defaults;
     if (typeof row.insight_modules === "string") row.insight_modules = JSON.parse(row.insight_modules);
@@ -105,6 +105,16 @@ router.patch("/api/settings", async (req, res) => {
     }
     if (req.body.dashboard_widgets !== undefined && typeof req.body.dashboard_widgets === "object") {
       updates.push("dashboard_widgets = $" + idx++); values.push(JSON.stringify(req.body.dashboard_widgets));
+    }
+    // Per-sistant integration settings
+    if (req.body.persistent_url !== undefined) {
+      updates.push("persistent_url = $" + idx++); values.push(req.body.persistent_url || null);
+    }
+    if (req.body.persistent_webhook_secret !== undefined) {
+      updates.push("persistent_webhook_secret = $" + idx++); values.push(req.body.persistent_webhook_secret || null);
+    }
+    if (req.body.persistent_webhook_enabled !== undefined) {
+      updates.push("persistent_webhook_enabled = $" + idx++); values.push(!!req.body.persistent_webhook_enabled);
     }
     if (!updates.length) return res.status(400).json({ error: "No valid settings" });
     updates.push("updated_at = now()");

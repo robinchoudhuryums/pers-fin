@@ -209,6 +209,10 @@ async function runMigrations() {
       device_name TEXT DEFAULT 'Unknown Device',
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
+    // Per-sistant integration: webhook target + SSO shared secret
+    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS persistent_url TEXT");
+    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS persistent_webhook_secret TEXT");
+    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS persistent_webhook_enabled BOOLEAN NOT NULL DEFAULT false");
     console.log("Migrations complete.");
   } catch (err) {
     console.error("Migration error (non-fatal):", err.message);
