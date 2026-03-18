@@ -180,6 +180,12 @@ async function runMigrations() {
     await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS is_manual BOOLEAN NOT NULL DEFAULT false");
     await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS institution_name_manual TEXT DEFAULT NULL");
     await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS credit_limit NUMERIC(12,2) DEFAULT NULL");
+    // Shared/joint account support — spending_split_pct controls what fraction of spending counts as yours (default 100)
+    await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS spending_split_pct INT NOT NULL DEFAULT 100");
+    await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS is_shared BOOLEAN NOT NULL DEFAULT false");
+    // Fix check constraint to allow manual accounts (no plaid/teller enrollment)
+    await pool.query("ALTER TABLE linked_accounts DROP CONSTRAINT IF EXISTS chk_account_source");
+    await pool.query("ALTER TABLE linked_accounts ADD CONSTRAINT chk_account_source CHECK (plaid_item_id IS NOT NULL OR teller_enrollment_id IS NOT NULL OR is_manual = true)");
     // Dashboard widget order/visibility
     await pool.query(`ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS dashboard_widgets JSONB NOT NULL DEFAULT '{"pyramid":true,"accounts":true,"recentTxns":true,"monthlySpend":true,"categories":true,"merchants":true,"upcoming":true,"forecast":true,"charts":true,"calendar":true,"cashFlow":true,"savingsRate":true,"yoy":true}'::jsonb`);
     // Sheets auto-sync

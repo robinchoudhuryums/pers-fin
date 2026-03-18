@@ -672,6 +672,8 @@
             '<div class="acct-type">' + esc(a.subtype || a.type || '') + '</div>' +
             creditExtra +
             ((a.is_manual || a.provider === 'manual') ? '<button class="btn-sm" onclick="editManualBalance(' + a.id + ')" style="margin-top:4px;font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--warm);cursor:pointer;font-family:inherit;">Update Balance</button>' : '') +
+            (a.is_shared ? '<div style="margin-top:6px;font-size:10px;color:var(--teal);">Shared \u2022 Your split: ' + (a.spending_split_pct || 100) + '%</div>' : '') +
+            '<button data-shared-toggle="' + a.id + '" style="margin-top:4px;font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text-muted);cursor:pointer;font-family:inherit;">' + (a.is_shared ? 'Edit Split' : 'Mark Shared') + '</button>' +
           '</div>';
         }).join('');
 
@@ -860,6 +862,17 @@
       } catch (e) {}
     }
 
+    async function toggleShared(id) {
+      var pct = prompt('What % of spending on this account is yours?\n(e.g. 50 for a 50/50 shared card, 100 for fully yours)', '50');
+      if (pct === null) return;
+      var num = Math.max(0, Math.min(100, parseInt(pct) || 100));
+      try {
+        await apiFetch('/api/accounts/' + id + '/shared', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ is_shared: num < 100, spending_split_pct: num }) });
+        loadAccounts();
+        loadSpendingSummary();
+      } catch (e) {}
+    }
+
     async function setApr(accountId, value) {
       try {
         const apr = value === '' ? null : parseFloat(value);
@@ -904,6 +917,9 @@
     ]);
     onDelegate('accounts-grid', 'change', 'input[data-apr-account]', function() {
       setApr(parseInt(this.dataset.aprAccount), this.value);
+    });
+    onDelegate('accounts-grid', 'click', 'button[data-shared-toggle]', function() {
+      toggleShared(parseInt(this.dataset.sharedToggle));
     });
 
     // Initialize
@@ -1420,11 +1436,11 @@
         section.style.display = 'block';
         var avg = data.averages;
         var rateColor = avg.savings_rate >= 20 ? 'var(--green)' : avg.savings_rate >= 10 ? 'var(--yellow)' : avg.savings_rate > 0 ? 'var(--warm)' : 'var(--red)';
-        var html = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:12px;">';
-        html += '<div class="card"><div class="label">Avg Income</div><div class="value green">' + fmt(avg.income) + '</div></div>';
-        html += '<div class="card"><div class="label">Avg Spending</div><div class="value warm">' + fmt(avg.spending) + '</div></div>';
-        html += '<div class="card"><div class="label">Avg Saved</div><div class="value" style="color:' + (avg.saved >= 0 ? 'var(--green)' : 'var(--red)') + ';">' + fmt(avg.saved) + '</div></div>';
-        html += '<div class="card"><div class="label">Savings Rate</div><div class="value" style="color:' + rateColor + ';">' + avg.savings_rate + '%</div></div>';
+        var html = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:12px;">';
+        html += '<div class="card" style="min-width:0;overflow:hidden;"><div class="label">Avg Income</div><div class="value green" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + fmt(avg.income) + '</div></div>';
+        html += '<div class="card" style="min-width:0;overflow:hidden;"><div class="label">Avg Spending</div><div class="value warm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + fmt(avg.spending) + '</div></div>';
+        html += '<div class="card" style="min-width:0;overflow:hidden;"><div class="label">Avg Saved</div><div class="value" style="color:' + (avg.saved >= 0 ? 'var(--green)' : 'var(--red)') + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + fmt(avg.saved) + '</div></div>';
+        html += '<div class="card" style="min-width:0;overflow:hidden;"><div class="label">Savings Rate</div><div class="value" style="color:' + rateColor + ';">' + avg.savings_rate + '%</div></div>';
         html += '</div>';
         html += '<div style="font-size:12px;color:var(--text-muted);font-weight:300;margin-bottom:12px;">' + esc(data.recommendation) + '</div>';
         html += '<div class="table-wrap"><table style="width:100%;font-size:12px;border-collapse:collapse;">';

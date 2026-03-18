@@ -333,7 +333,7 @@ router.get("/api/accounts", async (_req, res) => {
               la.available_balance, la.current_balance, la.balance_currency, la.balance_updated_at, la.apr,
               COALESCE(te.institution_name, pi.institution_name, la.institution_name_manual) AS institution_name,
               CASE WHEN te.id IS NOT NULL THEN 'teller' WHEN la.is_manual THEN 'manual' ELSE 'plaid' END AS provider,
-              la.is_manual, la.credit_limit
+              la.is_manual, la.credit_limit, la.is_shared, la.spending_split_pct
        FROM linked_accounts la
        LEFT JOIN teller_enrollments te ON te.id = la.teller_enrollment_id
        LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
@@ -386,6 +386,27 @@ router.patch("/api/accounts/:id/balance", async (req, res) => {
   } catch (err) {
     console.error("update balance error:", err.message);
     res.status(500).json({ error: "Failed to update balance" });
+  }
+});
+
+// PATCH /api/accounts/:id/shared — Mark account as shared/joint with spending split
+router.patch("/api/accounts/:id/shared", async (req, res) => {
+  const { is_shared, spending_split_pct } = req.body;
+  try {
+    const updates = []; const values = []; let idx = 1;
+    if (is_shared !== undefined) { updates.push("is_shared = $" + idx++); values.push(!!is_shared); }
+    if (spending_split_pct !== undefined) {
+      const pct = Math.max(0, Math.min(100, parseInt(spending_split_pct) || 100));
+      updates.push("spending_split_pct = $" + idx++); values.push(pct);
+    }
+    if (!updates.length) return res.status(400).json({ error: "No fields to update" });
+    values.push(parseInt(req.params.id));
+    const result = await pool.query("UPDATE linked_accounts SET " + updates.join(", ") + " WHERE id = $" + idx + " RETURNING *", values);
+    if (!result.rows.length) return res.status(404).json({ error: "Account not found" });
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("update shared settings error:", err.message);
+    res.status(500).json({ error: "Failed to update shared settings" });
   }
 });
 
@@ -491,39 +512,42 @@ router.get("/api/spending-summary", async (req, res) => {
   const months = parseInt(req.query.months) || 6;
   try {
     const monthlyTrend = await pool.query(
-      `SELECT TO_CHAR(date, 'YYYY-MM') AS month,
-              SUM(amount) AS total_spend,
+      `SELECT TO_CHAR(t.date, 'YYYY-MM') AS month,
+              ROUND(SUM(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0), 2) AS total_spend,
               COUNT(*) AS txn_count,
-              ROUND(AVG(amount), 2) AS avg_transaction
-       FROM transactions
-       WHERE amount > 0 AND date >= CURRENT_DATE - ($1 || ' months')::INTERVAL
-       GROUP BY TO_CHAR(date, 'YYYY-MM')
+              ROUND(AVG(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0), 2) AS avg_transaction
+       FROM transactions t
+       LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+       WHERE t.amount > 0 AND t.date >= CURRENT_DATE - ($1 || ' months')::INTERVAL
+       GROUP BY TO_CHAR(t.date, 'YYYY-MM')
        ORDER BY month DESC`,
       [months]
     );
 
     const byCategory = await pool.query(
-      `SELECT COALESCE(category[1], 'Uncategorized') AS category,
-              SUM(amount) AS total,
+      `SELECT COALESCE(t.category[1], 'Uncategorized') AS category,
+              ROUND(SUM(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0), 2) AS total,
               COUNT(*) AS txn_count
-       FROM transactions
-       WHERE amount > 0 AND date >= CURRENT_DATE - ($1 || ' months')::INTERVAL
-       GROUP BY COALESCE(category[1], 'Uncategorized')
+       FROM transactions t
+       LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+       WHERE t.amount > 0 AND t.date >= CURRENT_DATE - ($1 || ' months')::INTERVAL
+       GROUP BY COALESCE(t.category[1], 'Uncategorized')
        ORDER BY total DESC
        LIMIT 15`,
       [months]
     );
 
     const topMerchants = await pool.query(
-      `SELECT COALESCE(merchant_name, name) AS merchant,
-              SUM(amount) AS total_spent,
+      `SELECT COALESCE(t.merchant_name, t.name) AS merchant,
+              ROUND(SUM(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0), 2) AS total_spent,
               COUNT(*) AS txn_count
-       FROM transactions
-       WHERE amount > 0 AND merchant_name IS NOT NULL
-             AND date >= CURRENT_DATE - ($1 || ' months')::INTERVAL
-             AND LOWER(COALESCE(merchant_name, name)) NOT SIMILAR TO
+       FROM transactions t
+       LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+       WHERE t.amount > 0 AND t.merchant_name IS NOT NULL
+             AND t.date >= CURRENT_DATE - ($1 || ' months')::INTERVAL
+             AND LOWER(COALESCE(t.merchant_name, t.name)) NOT SIMILAR TO
                '%(payment thank|pymt|autopay|auto pay|minimum payment|directpay|automatic payment|interest|int charge|finance charge|funds tran|funds transfer|transfer to|transfer from|ach transfer|wire transfer|internal transfer|zelle|venmo|paypal|cash app|cashapp|square cash|bank of america|wells fargo|chase bank|citi bank|citibank|capital one|us bank|pnc bank|td bank|ally bank|truist|boa transfer|online transfer|mobile transfer|bill pay|epay|credit card payment|loan payment|mortgage payment|deposit|direct dep|atm|withdrawal)%'
-       GROUP BY COALESCE(merchant_name, name)
+       GROUP BY COALESCE(t.merchant_name, t.name)
        ORDER BY total_spent DESC
        LIMIT 10`,
       [months]
@@ -819,12 +843,13 @@ router.get("/api/savings-rate", async (req, res) => {
     `, [months]);
 
     const spendResult = await pool.query(`
-      SELECT TO_CHAR(date, 'YYYY-MM') AS month,
-             SUM(amount) AS total_spend
-      FROM transactions
-      WHERE amount > 0 AND pending = false
-        AND date >= CURRENT_DATE - make_interval(months => $1)
-      GROUP BY TO_CHAR(date, 'YYYY-MM')
+      SELECT TO_CHAR(t.date, 'YYYY-MM') AS month,
+             ROUND(SUM(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0), 2) AS total_spend
+      FROM transactions t
+      LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+      WHERE t.amount > 0 AND t.pending = false
+        AND t.date >= CURRENT_DATE - make_interval(months => $1)
+      GROUP BY TO_CHAR(t.date, 'YYYY-MM')
       ORDER BY month DESC
     `, [months]);
 
