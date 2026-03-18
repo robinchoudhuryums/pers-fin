@@ -91,7 +91,7 @@ app.use(session({
 
 function requireAuth(req, res, next) {
   if (!AUTH_SECRET) return next();
-  if (["/login", "/api/login", "/api/webauthn/authenticate-options", "/api/webauthn/authenticate", "/manifest.json", "/sw.js", "/health", "/api/keep-alive-schedule", "/apple-touch-icon.svg", "/apple-touch-icon.png", "/logo.svg"].includes(req.path)) return next();
+  if (["/login", "/api/login", "/api/webauthn/authenticate-options", "/api/webauthn/authenticate", "/manifest.json", "/sw.js", "/health", "/api/keep-alive-schedule", "/apple-touch-icon.svg", "/apple-touch-icon.png", "/logo.svg", "/api/sso/validate", "/api/perfin/webhook"].includes(req.path)) return next();
   if (req.path.endsWith(".css") || req.path.endsWith(".js")) return next();
   // Allow API key authenticated requests through (validated later in API key middleware)
   if (req.path.startsWith("/api/") && (req.headers["x-api-key"] || req.query.api_key)) return next();
@@ -116,7 +116,7 @@ app.use(requireAuth);
 // ---------------------------------------------------------------------------
 app.use("/api", (req, res, next) => {
   if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return next();
-  if (req.path === "/login" || req.path === "/logout") return next();
+  if (req.path === "/login" || req.path === "/logout" || req.path === "/sso/validate") return next();
   if (req.headers["x-requested-with"] === "XMLHttpRequest") return next();
   // Also allow requests with JSON content type (also triggers CORS preflight)
   if ((req.headers["content-type"] || "").startsWith("application/json")) return next();
@@ -212,6 +212,7 @@ app.use(require("./routes/budgets"));
 app.use(require("./routes/categorize"));
 app.use(require("./routes/notifications"));
 app.use(require("./routes/investments"));
+app.use(require("./routes/persistent"));
 
 // ---------------------------------------------------------------------------
 // Prevent browser caching of HTML pages and API mutation responses
