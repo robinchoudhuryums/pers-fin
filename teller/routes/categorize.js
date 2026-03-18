@@ -156,4 +156,25 @@ router.patch("/api/transactions/:id/category", async (req, res) => {
   }
 });
 
+// PATCH /api/transactions/bulk-category — Bulk update categories
+router.patch("/api/transactions/bulk-category", async (req, res) => {
+  const { transaction_ids, category } = req.body;
+  if (!Array.isArray(transaction_ids) || !transaction_ids.length || !category) {
+    return res.status(400).json({ error: "transaction_ids array and category are required" });
+  }
+  if (transaction_ids.length > 200) {
+    return res.status(400).json({ error: "Maximum 200 transactions per batch" });
+  }
+  try {
+    const result = await pool.query(
+      `UPDATE transactions SET category = $1 WHERE transaction_id = ANY($2) RETURNING transaction_id`,
+      [`{${category}}`, transaction_ids]
+    );
+    res.json({ updated: result.rowCount });
+  } catch (err) {
+    console.error("bulk category error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
 module.exports = router;

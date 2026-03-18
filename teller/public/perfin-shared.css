@@ -73,11 +73,11 @@ a:hover { color: var(--text); }
                 display: flex; align-items: center; gap: 8px; }
 .topnav .logo .logo-icon {
   display: inline-block; width: 20px; height: 20px; flex-shrink: 0;
-  background: var(--logo-glow, #a0dad0);
+  background: var(--logo-glow, #c8a86c);
   -webkit-mask: url(/logo.svg) center / contain no-repeat;
   mask: url(/logo.svg) center / contain no-repeat;
   mask-mode: alpha; -webkit-mask-mode: alpha;
-  filter: drop-shadow(0 0 4px rgba(160,218,208,0.4));
+  filter: drop-shadow(0 0 4px rgba(200,168,108,0.4));
 }
 .topnav .nav-links { display: flex; gap: 24px; font-size: 13px; font-weight: 400;
                      letter-spacing: 0.5px; }
@@ -205,10 +205,18 @@ tr:hover { background: var(--surface); }
 .setting-control { flex-shrink: 0; margin-left: 20px; }
 
 /* Responsive */
+/* Table horizontal scroll wrapper */
+.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
 @media (max-width: 640px) {
   .topnav { flex-direction: column; gap: 12px; align-items: flex-start; }
   .topnav .nav-links { gap: 14px; flex-wrap: wrap; }
   h1 { font-size: 28px; }
   .setting-row { flex-direction: column; align-items: flex-start; gap: 10px; }
   .setting-control { margin-left: 0; }
+  /* Mobile table sizing */
+  th { padding: 6px 4px; font-size: 8px; }
+  td { padding: 8px 4px; font-size: 12px; }
+  .btn-sm { padding: 3px 8px; font-size: 9px; margin-right: 2px; }
+  .hide-mobile { display: none; }
 }

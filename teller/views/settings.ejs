@@ -206,6 +206,52 @@
     </div>
   </div>
 
+  <div class="section"><h2>CSV Import Reminders</h2>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Import Reminders</div><div class="desc">Show dashboard banner when manual accounts haven't had a CSV import recently</div></div>
+      <div class="setting-control">
+        <label class="toggle"><input type="checkbox" id="csv-reminder-toggle"><span class="slider"></span></label>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Reminder Interval</div><div class="desc">Days between reminders</div></div>
+      <div class="setting-control">
+        <select id="csv-reminder-days">
+          <option value="7">Every 7 days</option><option value="14">Every 14 days</option>
+          <option value="21">Every 21 days</option><option value="30">Every 30 days</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="section"><h2>Google Sheets Auto-Sync</h2>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Auto-Sync</div><div class="desc">Automatically sync data to Google Sheets on a schedule</div></div>
+      <div class="setting-control">
+        <label class="toggle"><input type="checkbox" id="sheets-auto-toggle"><span class="slider"></span></label>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Sync Interval</div><div class="desc">How often to auto-push to Sheets</div></div>
+      <div class="setting-control">
+        <select id="sheets-interval-select">
+          <option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option>
+        </select>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Last Auto-Sync</div><div class="desc" id="sheets-last-sync-desc">--</div></div>
+      <div class="setting-control"><span id="sheets-last-sync" style="font-size:12px;color:var(--text-muted);">Never</span></div>
+    </div>
+  </div>
+
+  <div class="section"><h2>Dashboard Widgets</h2>
+    <div class="setting-row" style="flex-direction:column;align-items:stretch;">
+      <div class="setting-info" style="margin-bottom:12px;"><div class="name">Visible Sections</div><div class="desc">Choose which dashboard sections to show</div></div>
+      <div id="widget-toggles" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;"></div>
+    </div>
+  </div>
+
   <div class="section"><h2>Data</h2>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Export Transactions</div><div class="desc">Download as CSV</div></div>
@@ -214,6 +260,14 @@
     <div class="setting-row">
       <div class="setting-info"><div class="name">Export Subscriptions</div><div class="desc">Download as CSV</div></div>
       <div class="setting-control"><a href="/api/export?type=subscriptions&api_key=<%= apiKey %>"><button class="btn">Export</button></a></div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Tax Report</div><div class="desc">Year-end deduction summary for tax prep</div></div>
+      <div class="setting-control" style="display:flex;gap:6px;">
+        <select id="tax-year-select" style="padding:8px 12px;font-size:13px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;"></select>
+        <a id="tax-csv-link" href="#"><button class="btn">CSV</button></a>
+        <a id="tax-json-link" href="#"><button class="btn">JSON</button></a>
+      </div>
     </div>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Export for Claude Chat</div><div class="desc">Download a structured data summary to paste into a Claude conversation for deep-dive analysis</div></div>
@@ -245,6 +299,15 @@
         document.getElementById('zip-input').value = s.zip_code || '';
         document.getElementById('pyramid-source-select').value = s.pyramid_data_source || 'wellness';
         document.getElementById('pyramid-color-select').value = s.pyramid_color_mode || 'single';
+        // New settings
+        document.getElementById('csv-reminder-toggle').checked = s.csv_reminder_enabled !== false;
+        document.getElementById('csv-reminder-days').value = s.csv_reminder_days || 14;
+        document.getElementById('sheets-auto-toggle').checked = s.sheets_auto_sync_enabled || false;
+        document.getElementById('sheets-interval-select').value = s.sheets_auto_sync_interval || 'weekly';
+        if (s.sheets_last_auto_sync) {
+          document.getElementById('sheets-last-sync').textContent = new Date(s.sheets_last_auto_sync).toLocaleString();
+        }
+        renderWidgetToggles(s.dashboard_widgets || {});
         // Render insight module toggles
         const mods = s.insight_modules || {};
         const avail = s.available_modules || {};
@@ -353,7 +416,7 @@
           parseFloat(t.total_cost_usd).toFixed(4) + ' estimated total</span>';
         const histEl = document.getElementById('usage-history');
         if (data.history.length === 0) { histEl.innerHTML = '<div style="font-size:12px;color:var(--text-muted);padding:8px 0;">No AI insights generated yet.</div>'; return; }
-        let html = '<table style="width:100%;font-size:12px;border-collapse:collapse;">' +
+        let html = '<div class="table-wrap"><table style="width:100%;font-size:12px;border-collapse:collapse;">' +
           '<tr style="color:var(--text-muted);text-transform:uppercase;font-size:10px;letter-spacing:1px;">' +
           '<th style="text-align:left;padding:6px 0;border-bottom:1px solid var(--border);">Date</th>' +
           '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Tokens</th>' +
@@ -366,7 +429,7 @@
             '<td style="text-align:right;padding:6px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--warm);">$' + parseFloat(row.estimated_cost_usd || 0).toFixed(4) + '</td>' +
             '<td style="text-align:right;padding:6px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--text-muted);font-size:11px;">' + esc((row.model_used || '').replace('claude-', '').split('-202')[0]) + '</td></tr>';
         });
-        html += '</table>';
+        html += '</table></div>';
         histEl.innerHTML = html;
       } catch {}
     }
@@ -516,6 +579,43 @@
       return arr;
     }
 
+    // --- Tax report year selector ---
+    (function() {
+      var sel = document.getElementById('tax-year-select');
+      var thisYear = new Date().getFullYear();
+      for (var y = thisYear; y >= thisYear - 3; y--) {
+        sel.innerHTML += '<option value="' + y + '">' + y + '</option>';
+      }
+      function updateTaxLinks() {
+        var yr = sel.value;
+        var key = '<%= apiKey %>';
+        var base = '/api/export/tax-report?year=' + yr;
+        if (key) base += '&api_key=' + key;
+        document.getElementById('tax-csv-link').href = base;
+        document.getElementById('tax-json-link').href = base + '&format=json';
+      }
+      sel.addEventListener('change', updateTaxLinks);
+      updateTaxLinks();
+    })();
+
+    // --- Widget toggles ---
+    var WIDGET_LABELS = {
+      pyramid: 'Financial Pyramid', accounts: 'Account Balances', recentTxns: 'Recent Transactions',
+      monthlySpend: 'Monthly Spending', categories: 'Categories', merchants: 'Top Merchants',
+      upcoming: 'Upcoming Charges', forecast: '30-Day Forecast', charts: 'Charts',
+      calendar: 'Bill Calendar Link', cashFlow: 'Cash Flow', savingsRate: 'Savings Rate', yoy: 'Year-over-Year'
+    };
+    function renderWidgetToggles(widgets) {
+      var container = document.getElementById('widget-toggles');
+      container.innerHTML = Object.entries(WIDGET_LABELS).map(function(e) {
+        var key = e[0], label = e[1];
+        var checked = widgets[key] !== false ? 'checked' : '';
+        return '<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;cursor:pointer;font-size:12px;">' +
+          '<input type="checkbox" ' + checked + ' data-widget="' + key + '">' +
+          '<span>' + esc(label) + '</span></label>';
+      }).join('');
+    }
+
     // --- Bind all event handlers (CSP-safe, no inline attributes) ---
     bindEvents([
       ['theme-select', 'change', function() { updateSetting('theme', this.value); }],
@@ -539,10 +639,27 @@
       ['pyramid-source-select', 'change', function() { updateSetting('pyramid_data_source', this.value); }],
       ['pyramid-color-select', 'change', function() { updateSetting('pyramid_color_mode', this.value); }],
       ['snapshot-btn', 'click', saveSnapshot],
+      ['csv-reminder-toggle', 'change', function() { updateSetting('csv_reminder_enabled', this.checked); }],
+      ['csv-reminder-days', 'change', function() { updateSetting('csv_reminder_days', parseInt(this.value)); }],
+      ['sheets-auto-toggle', 'change', function() { updateSetting('sheets_auto_sync_enabled', this.checked); }],
+      ['sheets-interval-select', 'change', function() { updateSetting('sheets_auto_sync_interval', this.value); }],
     ]);
     // Event delegation for dynamically generated module checkboxes
     onDelegate('modules-container', 'change', 'input[data-module]', function() {
       toggleModule(this.dataset.module, this.checked);
+    });
+    // Event delegation for widget toggles
+    onDelegate('widget-toggles', 'change', 'input[data-widget]', function() {
+      var key = this.dataset.widget;
+      var enabled = this.checked;
+      (async function() {
+        try {
+          var res = await apiFetch('/api/settings'); var s = await res.json();
+          var widgets = s.dashboard_widgets || {};
+          widgets[key] = enabled;
+          await updateSetting('dashboard_widgets', widgets);
+        } catch (e) { showMsg(e.message, false); }
+      })();
     });
 
     checkPushStatus();

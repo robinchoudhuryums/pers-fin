@@ -12,7 +12,7 @@ function buildIcon(size) {
   // Extract the inner content of logo.svg (everything between <svg> tags)
   const inner = logoSvgRaw.replace(/<\?xml[^?]*\?>/, "").replace(/<svg[^>]*>/, "").replace(/<\/svg>/, "").trim();
   // Re-color fills to teal and wrap in a sized SVG with dark rounded-rect background
-  const tealInner = inner.replace(/fill="currentColor"/g, `fill="#5a8f8f"`);
+  const tealInner = inner.replace(/fill="currentColor"/g, `fill="#c8a86c"`);
   return `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 ${size} ${size}'>`
     + `<rect fill='#080b12' width='${size}' height='${size}' rx='${Math.round(size * 0.2)}'/>`
     + `<g transform='translate(${size * 0.15},${size * 0.1}) scale(${(size * 0.7) / 200})'>`

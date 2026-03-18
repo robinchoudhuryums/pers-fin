@@ -100,6 +100,40 @@
   <hr class="section-divider">
 
   <div class="csv-section">
+    <h2>Manual Accounts</h2>
+    <p>Add accounts that can't be linked via Teller (e.g., Discover, local banks)</p>
+    <div class="csv-form" id="manual-acct-form">
+      <div class="field">
+        <label>Account Name</label>
+        <input type="text" id="manual-name" placeholder="e.g. Discover It Card">
+      </div>
+      <div class="field">
+        <label>Institution</label>
+        <input type="text" id="manual-institution" placeholder="e.g. Discover">
+      </div>
+      <div class="field">
+        <label>Type</label>
+        <select id="manual-type">
+          <option value="credit">Credit Card</option>
+          <option value="depository">Bank Account</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Current Balance ($)</label>
+        <input type="number" id="manual-balance" step="0.01" placeholder="0.00">
+      </div>
+      <div class="field">
+        <label>Credit Limit (optional)</label>
+        <input type="number" id="manual-limit" step="0.01" placeholder="e.g. 5000">
+      </div>
+      <button id="add-manual-acct-btn">Add Account</button>
+    </div>
+    <div id="manual-accounts-list" style="margin-top:16px;color:var(--text-muted);font-size:14px;font-weight:300;">Loading...</div>
+  </div>
+
+  <hr class="section-divider">
+
+  <div class="csv-section">
     <h2>Investment Accounts</h2>
     <p>Track brokerage, retirement, and other investment accounts. Link via Plaid or add manually.</p>
     <div style="margin-bottom:16px;">
@@ -295,6 +329,84 @@
       } catch (e) { list.textContent = 'Could not load import history.'; }
     }
 
+    // Manual accounts
+    async function loadManualAccounts() {
+      var list = document.getElementById('manual-accounts-list');
+      try {
+        var res = await apiFetch('/api/accounts');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        var allAccts = await res.json();
+        var manualAccts = allAccts.filter(function(a) { return a.is_manual; });
+        if (!manualAccts.length) { list.textContent = 'No manual accounts added yet.'; return; }
+        list.innerHTML = manualAccts.map(function(a) {
+          var bal = parseFloat(a.current_balance || 0);
+          var balStr = '$' + Math.abs(bal).toLocaleString('en-US', {minimumFractionDigits: 2});
+          if (a.type === 'credit') balStr = '-' + balStr;
+          var limitStr = a.credit_limit ? ' / Limit: $' + parseFloat(a.credit_limit).toLocaleString('en-US', {minimumFractionDigits: 2}) : '';
+          return '<div class="item">' +
+            '<div class="item-info"><strong>' + esc(a.name) + '</strong>' +
+            ' (' + esc(a.institution_name || 'Manual') + ')' +
+            ' \u2014 ' + esc(a.subtype || a.type) +
+            ' \u2014 <span style="color:' + (a.type === 'credit' ? 'var(--red)' : 'var(--green)') + ';font-weight:400;">' + balStr + '</span>' +
+            limitStr + '</div>' +
+            '<div class="item-actions" style="display:flex;gap:6px;">' +
+              '<button class="btn-unlink" style="border-color:var(--border);color:var(--warm);" data-action="update-manual" data-id="' + a.id + '">Update Balance</button>' +
+              '<button class="btn-unlink" data-action="delete-manual" data-id="' + a.id + '" data-name="' + esc(a.name) + '">Remove</button>' +
+            '</div></div>';
+        }).join('');
+      } catch (e) { list.textContent = 'Could not load manual accounts.'; }
+    }
+
+    async function addManualAccount() {
+      var name = document.getElementById('manual-name').value.trim();
+      var balance = parseFloat(document.getElementById('manual-balance').value);
+      if (!name) { showStatus('Account name is required.', false); return; }
+      try {
+        var res = await apiFetch('/api/accounts/manual', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: name,
+            institution_name: document.getElementById('manual-institution').value.trim() || null,
+            type: document.getElementById('manual-type').value,
+            current_balance: balance || 0,
+            available_balance: balance || 0,
+            credit_limit: parseFloat(document.getElementById('manual-limit').value) || null,
+          }),
+        });
+        if (res.ok) {
+          showStatus('Manual account added.', true);
+          document.getElementById('manual-name').value = '';
+          document.getElementById('manual-institution').value = '';
+          document.getElementById('manual-balance').value = '';
+          document.getElementById('manual-limit').value = '';
+          loadManualAccounts();
+        } else { var d = await res.json(); showStatus(d.error || 'Failed', false); }
+      } catch (e) { showStatus(e.message, false); }
+    }
+
+    async function updateManualBalance(id) {
+      var val = prompt('Enter current balance ($):');
+      if (val === null) return;
+      var num = parseFloat(val);
+      if (isNaN(num)) { showStatus('Invalid number.', false); return; }
+      try {
+        var res = await apiFetch('/api/accounts/' + id + '/balance', {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ current_balance: num, available_balance: num }),
+        });
+        if (res.ok) { showStatus('Balance updated.', true); loadManualAccounts(); }
+        else showStatus('Failed to update.', false);
+      } catch (e) { showStatus(e.message, false); }
+    }
+
+    async function deleteManualAccount(id, name) {
+      if (!confirm('Remove ' + name + '?')) return;
+      try {
+        await apiFetch('/api/accounts/manual/' + id, { method: 'DELETE' });
+        showStatus('Removed ' + name + '.', true); loadManualAccounts();
+      } catch (e) { showStatus(e.message, false); }
+    }
+
     // Investment accounts
     async function loadInvestments() {
       const list = document.getElementById('inv-list');
@@ -409,6 +521,7 @@
       ['csv-upload-btn', 'click', uploadCsv],
       ['plaid-inv-btn', 'click', linkPlaidInvestments],
       ['add-inv-btn', 'click', addInvestment],
+      ['add-manual-acct-btn', 'click', addManualAccount],
     ]);
     // Event delegation for dynamically generated unlink/investment buttons
     onDelegate('items-list', 'click', '[data-action="unlink"]', function() {
@@ -420,10 +533,17 @@
       if (action === 'update-inv') updateInvestment(id);
       else if (action === 'delete-inv') deleteInvestment(id, this.dataset.name);
     });
+    onDelegate('manual-accounts-list', 'click', '[data-action]', function() {
+      var action = this.dataset.action;
+      var id = parseInt(this.dataset.id);
+      if (action === 'update-manual') updateManualBalance(id);
+      else if (action === 'delete-manual') deleteManualAccount(id, this.dataset.name);
+    });
 
     checkPlaid();
     loadItems();
     loadCsvImports();
+    loadManualAccounts();
     loadInvestments();
   </script>
 </body>

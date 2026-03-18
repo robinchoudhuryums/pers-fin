@@ -17,8 +17,8 @@ try {
 // GET /api/settings
 router.get("/api/settings", async (_req, res) => {
   try {
-    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules, pyramid_data_source, pyramid_color_mode, debt_baseline_amount FROM user_settings WHERE id = 1");
-    const defaults = { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true, anomaly_detection: true, seasonal_forecast: true, debt_optimizer: true, bill_negotiation: true, income_savings: true, tax_deductions: true, goal_tracking: true }, pyramid_data_source: "wellness", pyramid_color_mode: "single", debt_baseline_amount: null };
+    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules, pyramid_data_source, pyramid_color_mode, debt_baseline_amount, sheets_auto_sync_enabled, sheets_auto_sync_interval, sheets_last_auto_sync, csv_reminder_days, csv_reminder_enabled, dashboard_widgets FROM user_settings WHERE id = 1");
+    const defaults = { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true, anomaly_detection: true, seasonal_forecast: true, debt_optimizer: true, bill_negotiation: true, income_savings: true, tax_deductions: true, goal_tracking: true }, pyramid_data_source: "wellness", pyramid_color_mode: "single", debt_baseline_amount: null, sheets_auto_sync_enabled: false, sheets_auto_sync_interval: 'weekly', sheets_last_auto_sync: null, csv_reminder_days: 14, csv_reminder_enabled: true, dashboard_widgets: {pyramid:true,accounts:true,recentTxns:true,monthlySpend:true,categories:true,merchants:true,upcoming:true,forecast:true,charts:true,calendar:true,cashFlow:true,savingsRate:true,yoy:true} };
     const row = result.rows[0] || defaults;
     if (typeof row.insight_modules === "string") row.insight_modules = JSON.parse(row.insight_modules);
     res.json({ ...defaults, ...row, available_modules: INSIGHT_MODULES });
@@ -89,6 +89,22 @@ router.patch("/api/settings", async (req, res) => {
       if (val === null || (!isNaN(val) && val >= 0)) {
         updates.push("debt_baseline_amount = $" + idx++); values.push(val);
       }
+    }
+    if (req.body.sheets_auto_sync_enabled !== undefined) {
+      updates.push("sheets_auto_sync_enabled = $" + idx++); values.push(!!req.body.sheets_auto_sync_enabled);
+    }
+    if (req.body.sheets_auto_sync_interval !== undefined && ["daily", "weekly", "monthly"].includes(req.body.sheets_auto_sync_interval)) {
+      updates.push("sheets_auto_sync_interval = $" + idx++); values.push(req.body.sheets_auto_sync_interval);
+    }
+    if (req.body.csv_reminder_days !== undefined) {
+      const val = parseInt(req.body.csv_reminder_days);
+      if (val >= 1 && val <= 90) { updates.push("csv_reminder_days = $" + idx++); values.push(val); }
+    }
+    if (req.body.csv_reminder_enabled !== undefined) {
+      updates.push("csv_reminder_enabled = $" + idx++); values.push(!!req.body.csv_reminder_enabled);
+    }
+    if (req.body.dashboard_widgets !== undefined && typeof req.body.dashboard_widgets === "object") {
+      updates.push("dashboard_widgets = $" + idx++); values.push(JSON.stringify(req.body.dashboard_widgets));
     }
     if (!updates.length) return res.status(400).json({ error: "No valid settings" });
     updates.push("updated_at = now()");
@@ -162,6 +178,66 @@ router.get("/api/export", async (req, res) => {
     res.setHeader("Content-Disposition", `attachment; filename=transactions_${months}mo.csv`);
     res.send(header + rows);
   } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// GET /api/export/tax-report — Year-end tax deduction summary
+router.get("/api/export/tax-report", async (req, res) => {
+  const year = parseInt(req.query.year) || new Date().getFullYear();
+  const format = req.query.format || "csv";
+  try {
+    const deductions = await pool.query(
+      `SELECT td.*, t.date AS txn_date
+       FROM tax_deductions td
+       LEFT JOIN transactions t ON t.transaction_id = td.transaction_id
+       WHERE td.tax_year = $1
+       ORDER BY td.category, COALESCE(t.date, td.flagged_at) DESC`,
+      [year]
+    );
+
+    if (format === "json") {
+      // Group by category
+      const byCategory = {};
+      for (const d of deductions.rows) {
+        if (!byCategory[d.category]) byCategory[d.category] = { items: [], total: 0 };
+        byCategory[d.category].items.push(d);
+        byCategory[d.category].total += parseFloat(d.amount);
+      }
+      const grandTotal = deductions.rows.reduce((s, d) => s + parseFloat(d.amount), 0);
+      return res.json({
+        tax_year: year,
+        grand_total: Math.round(grandTotal * 100) / 100,
+        categories: byCategory,
+        item_count: deductions.rows.length,
+      });
+    }
+
+    // CSV format
+    const header = "Tax Year,Date,Merchant,Amount,Category,Type,Notes,Confirmed\n";
+    const rows = deductions.rows.map(d =>
+      `${d.tax_year},${d.txn_date || ''},` +
+      `"${(d.merchant || '').replace(/"/g, '""')}",` +
+      `${d.amount},"${d.category}","${d.deduction_type || ''}",` +
+      `"${(d.notes || '').replace(/"/g, '""')}",${d.is_confirmed}`
+    ).join("\n");
+
+    // Add summary section
+    const byCategory = {};
+    for (const d of deductions.rows) {
+      if (!byCategory[d.category]) byCategory[d.category] = 0;
+      byCategory[d.category] += parseFloat(d.amount);
+    }
+    const grandTotal = deductions.rows.reduce((s, d) => s + parseFloat(d.amount), 0);
+    const summary = "\n\nSUMMARY BY CATEGORY\nCategory,Total\n" +
+      Object.entries(byCategory).map(([cat, total]) => `"${cat}",${total.toFixed(2)}`).join("\n") +
+      `\n\nGRAND TOTAL,${grandTotal.toFixed(2)}`;
+
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", `attachment; filename=tax_deductions_${year}.csv`);
+    res.send(header + rows + summary);
+  } catch (err) {
+    console.error("tax report error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
   }
 });
