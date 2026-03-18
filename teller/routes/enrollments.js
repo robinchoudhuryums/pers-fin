@@ -588,7 +588,8 @@ router.get("/api/spending-summary", async (req, res) => {
 router.get("/api/cash-flow", async (req, res) => {
   const days = Math.min(Math.max(parseInt(req.query.days) || 90, 30), 180);
   try {
-    // Get recent income patterns (last 3 months)
+    // Get recent income patterns (last 3 months) — strict keyword match only,
+    // no amount threshold (catches transfers/card payments as false income)
     const incomeResult = await pool.query(`
       SELECT COALESCE(merchant_name, name) AS source,
              ABS(amount) AS amount,
@@ -601,8 +602,9 @@ router.get("/api/cash-flow", async (req, res) => {
           OR LOWER(COALESCE(merchant_name, name, '')) LIKE '%direct dep%'
           OR LOWER(COALESCE(merchant_name, name, '')) LIKE '%salary%'
           OR LOWER(COALESCE(merchant_name, name, '')) LIKE '%employer%'
-          OR category[1] = 'Income'
-          OR ABS(amount) > 500)
+          OR category[1] = 'Income')
+        AND LOWER(COALESCE(merchant_name, name, '')) NOT SIMILAR TO
+          '%(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|credit|reversal)%'
       ORDER BY date DESC
     `);
 
@@ -650,10 +652,20 @@ router.get("/api/cash-flow", async (req, res) => {
         AND next_expected IS NOT NULL
     `);
 
-    // Build day-by-day projection
+    // Pre-compute next occurrence for each subscription (once, not per-day)
     const now = new Date();
-    const projection = [];
-    let runningBalance = 0;
+    const billSchedule = subsResult.rows.map(sub => {
+      let nextDate = new Date(sub.next_expected);
+      const cadence = parseInt(sub.cadence_days);
+      while (nextDate < now) nextDate = new Date(nextDate.getTime() + cadence * 86400000);
+      const occurrences = [];
+      const endDate = new Date(now.getTime() + (days + 1) * 86400000);
+      while (nextDate <= endDate) {
+        occurrences.push(nextDate.toISOString().split("T")[0]);
+        nextDate = new Date(nextDate.getTime() + cadence * 86400000);
+      }
+      return { name: sub.display_name, amount: parseFloat(sub.amount), dates: new Set(occurrences) };
+    });
 
     // Get current balances
     const balResult = await pool.query(`
@@ -662,29 +674,52 @@ router.get("/api/cash-flow", async (req, res) => {
       FROM linked_accounts
       WHERE available_balance IS NOT NULL OR current_balance IS NOT NULL
     `);
-    runningBalance = parseFloat(balResult.rows[0]?.cash || 0);
+    let runningBalance = parseFloat(balResult.rows[0]?.cash || 0);
 
-    // Get average daily discretionary spending (last 30 days)
+    // Get average daily discretionary spending (last 60 days, excluding subscription bills)
+    // Also apply spending split for shared accounts
     const avgSpendResult = await pool.query(`
       SELECT COALESCE(AVG(daily_total), 0) AS avg_daily
       FROM (
-        SELECT date, SUM(amount) AS daily_total
-        FROM transactions
-        WHERE amount > 0 AND pending = false
-          AND date >= CURRENT_DATE - INTERVAL '30 days'
-        GROUP BY date
+        SELECT t.date, ROUND(SUM(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0), 2) AS daily_total
+        FROM transactions t
+        LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+        WHERE t.amount > 0 AND t.pending = false
+          AND t.date >= CURRENT_DATE - INTERVAL '60 days'
+        GROUP BY t.date
       ) daily
     `);
     const avgDailySpend = parseFloat(avgSpendResult.rows[0]?.avg_daily || 0);
 
+    // Get per-day-of-week spending averages for more realistic variation
+    const dowSpendResult = await pool.query(`
+      SELECT EXTRACT(DOW FROM t.date) AS dow,
+             COALESCE(AVG(daily_total), 0) AS avg_daily
+      FROM (
+        SELECT date, SUM(amount * COALESCE(la.spending_split_pct, 100) / 100.0) AS daily_total
+        FROM transactions t
+        LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+        WHERE t.amount > 0 AND t.pending = false
+          AND t.date >= CURRENT_DATE - INTERVAL '60 days'
+        GROUP BY t.date
+      ) daily_totals
+      JOIN (SELECT generate_series(CURRENT_DATE - INTERVAL '60 days', CURRENT_DATE, '1 day'::interval)::date AS date) d USING (date)
+      CROSS JOIN LATERAL (SELECT EXTRACT(DOW FROM d.date) AS dow) x
+      GROUP BY x.dow
+    `);
+    const dowSpend = {};
+    for (const r of dowSpendResult.rows) dowSpend[parseInt(r.dow)] = parseFloat(r.avg_daily);
+
     let totalIncome = 0;
     let totalBills = 0;
     let totalDiscretionary = 0;
+    const projection = [];
 
     for (let d = 0; d < days; d++) {
       const date = new Date(now.getTime() + (d + 1) * 86400000);
       const dateStr = date.toISOString().split("T")[0];
       const dayOfMonth = date.getDate();
+      const dow = date.getDay();
       let dayIncome = 0;
       let dayBills = 0;
 
@@ -696,32 +731,31 @@ router.get("/api/cash-flow", async (req, res) => {
           const lastDate = new Date(inc.last_date);
           const daysSinceLast = Math.round((date - lastDate) / 86400000);
           if (daysSinceLast > 0 && daysSinceLast % 14 === 0) dayIncome += inc.amount;
+        } else if (inc.cadence_days === 7) {
+          const lastDate = new Date(inc.last_date);
+          const daysSinceLast = Math.round((date - lastDate) / 86400000);
+          if (daysSinceLast > 0 && daysSinceLast % 7 === 0) dayIncome += inc.amount;
         }
       }
 
-      // Check for bills
-      for (const sub of subsResult.rows) {
-        let nextDate = new Date(sub.next_expected);
-        const cadence = parseInt(sub.cadence_days);
-        while (nextDate < now) nextDate = new Date(nextDate.getTime() + cadence * 86400000);
-        while (nextDate <= date) {
-          if (nextDate.toISOString().split("T")[0] === dateStr) {
-            dayBills += parseFloat(sub.amount);
-          }
-          nextDate = new Date(nextDate.getTime() + cadence * 86400000);
-        }
+      // Check for bills (using pre-computed schedule)
+      for (const bill of billSchedule) {
+        if (bill.dates.has(dateStr)) dayBills += bill.amount;
       }
 
-      runningBalance += dayIncome - dayBills - avgDailySpend;
+      // Use day-of-week spending average if available, else overall average
+      const daySpend = dowSpend[dow] !== undefined ? dowSpend[dow] : avgDailySpend;
+
+      runningBalance += dayIncome - dayBills - daySpend;
       totalIncome += dayIncome;
       totalBills += dayBills;
-      totalDiscretionary += avgDailySpend;
+      totalDiscretionary += daySpend;
 
       projection.push({
         date: dateStr,
         income: Math.round(dayIncome * 100) / 100,
         bills: Math.round(dayBills * 100) / 100,
-        discretionary: Math.round(avgDailySpend * 100) / 100,
+        discretionary: Math.round(daySpend * 100) / 100,
         balance: Math.round(runningBalance * 100) / 100,
       });
     }
@@ -764,16 +798,17 @@ router.get("/api/spending-yoy", async (req, res) => {
   const year = parseInt(req.query.year) || new Date().getFullYear();
   try {
     const result = await pool.query(`
-      SELECT TO_CHAR(date, 'YYYY') AS year,
-             TO_CHAR(date, 'MM') AS month,
-             COALESCE(category[1], 'Uncategorized') AS category,
-             SUM(amount) AS total,
+      SELECT TO_CHAR(t.date, 'YYYY') AS year,
+             TO_CHAR(t.date, 'MM') AS month,
+             COALESCE(t.category[1], 'Uncategorized') AS category,
+             ROUND(SUM(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0), 2) AS total,
              COUNT(*) AS txn_count
-      FROM transactions
-      WHERE amount > 0 AND pending = false
-        AND EXTRACT(MONTH FROM date) = $1
-        AND EXTRACT(YEAR FROM date) >= $2 - 2
-      GROUP BY TO_CHAR(date, 'YYYY'), TO_CHAR(date, 'MM'), COALESCE(category[1], 'Uncategorized')
+      FROM transactions t
+      LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+      WHERE t.amount > 0 AND t.pending = false
+        AND EXTRACT(MONTH FROM t.date) = $1
+        AND EXTRACT(YEAR FROM t.date) >= $2 - 2
+      GROUP BY TO_CHAR(t.date, 'YYYY'), TO_CHAR(t.date, 'MM'), COALESCE(t.category[1], 'Uncategorized')
       ORDER BY year DESC, total DESC
     `, [month, year]);
 
@@ -826,6 +861,7 @@ router.get("/api/savings-rate", async (req, res) => {
   const months = parseInt(req.query.months) || 3;
   try {
     // Detect income (negative amounts = credits/income in normalized system)
+    // Strict keyword matching only — no amount threshold (avoids counting transfers/payments as income)
     const incomeResult = await pool.query(`
       SELECT TO_CHAR(date, 'YYYY-MM') AS month,
              SUM(ABS(amount)) AS total_income
@@ -836,8 +872,9 @@ router.get("/api/savings-rate", async (req, res) => {
           OR LOWER(COALESCE(merchant_name, name, '')) LIKE '%direct dep%'
           OR LOWER(COALESCE(merchant_name, name, '')) LIKE '%salary%'
           OR LOWER(COALESCE(merchant_name, name, '')) LIKE '%employer%'
-          OR category[1] = 'Income'
-          OR ABS(amount) > 500)
+          OR category[1] = 'Income')
+        AND LOWER(COALESCE(merchant_name, name, '')) NOT SIMILAR TO
+          '%(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|credit|reversal)%'
       GROUP BY TO_CHAR(date, 'YYYY-MM')
       ORDER BY month DESC
     `, [months]);

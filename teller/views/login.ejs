@@ -91,9 +91,9 @@
     .materialize-overlay.active { opacity: 1; pointer-events: all; }
     .materialize-overlay .helmet-svg { width: 120px; height: 144px; }
     .materialize-overlay .helmet-stroke {
-      fill: none; stroke: #a0dad0; stroke-width: 2;
+      fill: none; stroke: #c8a86c; stroke-width: 2;
       stroke-dasharray: 1; stroke-dashoffset: 1;
-      filter: drop-shadow(0 0 10px rgba(160,218,208,0.7)) drop-shadow(0 0 20px rgba(90,143,143,0.4));
+      filter: drop-shadow(0 0 10px rgba(200,168,108,0.7)) drop-shadow(0 0 20px rgba(200,168,108,0.4));
     }
     .materialize-overlay .helmet-fill {
       fill: #c8a86c; opacity: 0;
@@ -241,30 +241,6 @@
       100% { opacity: 0; transform: var(--burst-dir) scale(0); }
     }
 
-    /* ── Eye glow after helmet fill ── */
-    .helmet-eyes {
-      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-      width: 120px; height: 144px; pointer-events: none; opacity: 0;
-    }
-    .helmet-eyes .eye {
-      position: absolute; border-radius: 35% 35% 40% 40%; background: #fff;
-      box-shadow: 0 0 20px rgba(255,255,255,0.9), 0 0 40px rgba(200,170,110,0.7), 0 0 60px rgba(200,170,110,0.4);
-    }
-    .helmet-eyes .eye-left {
-      top: 50%; left: 28%; width: 19px; height: 12px; transform: rotate(-10deg) skewX(5deg);
-    }
-    .helmet-eyes .eye-right {
-      top: 50%; right: 28%; width: 19px; height: 12px; transform: rotate(10deg) skewX(-5deg);
-    }
-    .materialize-overlay.active .helmet-eyes {
-      animation: eyeGlow 0.5s ease 1.7s forwards;
-    }
-    @keyframes eyeGlow {
-      0% { opacity: 0; }
-      50% { opacity: 1; filter: brightness(2); }
-      100% { opacity: 0.9; filter: brightness(1.2); }
-    }
-
     /* ── Glitch / digital noise ── */
     .glitch-overlay {
       position: absolute; inset: 0; opacity: 0; pointer-events: none; mix-blend-mode: screen;
@@ -318,11 +294,6 @@
     <div class="pulse-ring"></div>
     <!-- Particle burst -->
     <div class="burst-container" id="burst-container"></div>
-    <!-- Eye glow -->
-    <div class="helmet-eyes">
-      <div class="eye eye-left"></div>
-      <div class="eye eye-right"></div>
-    </div>
     <!-- Biometric scan (shown first for FaceID flow, then shrinks into helmet) -->
     <div class="bio-scan-container" id="bio-scan">
       <div class="bio-scan-ring">
