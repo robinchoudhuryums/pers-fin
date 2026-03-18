@@ -15,7 +15,7 @@ function buildIcon(size) {
   const tealInner = inner.replace(/fill="currentColor"/g, `fill="#c8a86c"`);
   return `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 ${size} ${size}'>`
     + `<rect fill='#080b12' width='${size}' height='${size}' rx='${Math.round(size * 0.2)}'/>`
-    + `<g transform='translate(${size * 0.15},${size * 0.1}) scale(${(size * 0.7) / 200})'>`
+    + `<g transform='translate(${size * 0.15},${size * 0.15}) scale(${(size * 0.7) / 200})'>`
     + tealInner + `</g></svg>`;
 }
 
