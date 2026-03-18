@@ -241,22 +241,6 @@
       100% { opacity: 0; transform: var(--burst-dir) scale(0); }
     }
 
-    /* ── HUD status text ── */
-    .hud-text {
-      position: absolute; bottom: calc(50% - 110px);
-      font-size: 10px; font-weight: 500; letter-spacing: 3px; text-transform: uppercase;
-      color: #a0dad0; opacity: 0; pointer-events: none;
-      font-family: inherit;
-      filter: drop-shadow(0 0 6px rgba(160,218,208,0.5));
-    }
-    .materialize-overlay.active .hud-text {
-      animation: hudAppear 0.5s ease 1.5s forwards;
-    }
-    @keyframes hudAppear {
-      0% { opacity: 0; letter-spacing: 8px; filter: blur(4px) drop-shadow(0 0 6px rgba(160,218,208,0.5)); }
-      100% { opacity: 0.8; letter-spacing: 3px; filter: blur(0) drop-shadow(0 0 6px rgba(160,218,208,0.5)); }
-    }
-
     /* ── Horizontal scan line across overlay ── */
     .hud-scanline {
       position: absolute; left: 0; right: 0; height: 1px;
@@ -273,25 +257,6 @@
       100% { top: 80%; opacity: 0; }
     }
 
-    /* ── Corner brackets (HUD frame) ── */
-    .hud-corner {
-      position: absolute; width: 24px; height: 24px; opacity: 0; pointer-events: none;
-    }
-    .materialize-overlay.active .hud-corner {
-      animation: cornerAppear 0.4s ease 0.8s forwards;
-    }
-    @keyframes cornerAppear {
-      from { opacity: 0; }
-      to { opacity: 0.4; }
-    }
-    .hud-corner.tl { top: calc(50% - 90px); left: calc(50% - 80px);
-      border-top: 1px solid #a0dad0; border-left: 1px solid #a0dad0; }
-    .hud-corner.tr { top: calc(50% - 90px); right: calc(50% - 80px);
-      border-top: 1px solid #a0dad0; border-right: 1px solid #a0dad0; }
-    .hud-corner.bl { bottom: calc(50% - 90px); left: calc(50% - 80px);
-      border-bottom: 1px solid #a0dad0; border-left: 1px solid #a0dad0; }
-    .hud-corner.br { bottom: calc(50% - 90px); right: calc(50% - 80px);
-      border-bottom: 1px solid #a0dad0; border-right: 1px solid #a0dad0; }
 ` }) %>
   <!-- Materialize animation overlay -->
   <div class="materialize-overlay" id="materialize-overlay">
@@ -299,19 +264,12 @@
     <div class="overlay-particles" id="overlay-particles"></div>
     <!-- Horizontal scan line -->
     <div class="hud-scanline"></div>
-    <!-- HUD corner brackets -->
-    <div class="hud-corner tl"></div>
-    <div class="hud-corner tr"></div>
-    <div class="hud-corner bl"></div>
-    <div class="hud-corner br"></div>
     <!-- Pulse rings -->
     <div class="pulse-ring"></div>
     <div class="pulse-ring"></div>
     <div class="pulse-ring"></div>
     <!-- Particle burst -->
     <div class="burst-container" id="burst-container"></div>
-    <!-- HUD status text -->
-    <div class="hud-text" id="hud-text">System Online</div>
     <!-- Biometric scan (shown first for FaceID flow, then shrinks into helmet) -->
     <div class="bio-scan-container" id="bio-scan">
       <div class="bio-scan-ring">

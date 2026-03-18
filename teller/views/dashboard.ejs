@@ -403,27 +403,33 @@
   <!-- Recent Transactions -->
   <div class="section" style="margin-bottom:28px; animation: fadeInUp 0.4s ease both; animation-delay: 0.3s;">
     <h2>Recent Transactions</h2>
+    <div class="table-wrap">
     <table class="recent-txn-table">
-      <thead><tr><th>Date</th><th>Description</th><th>Category</th><th>Amount</th><th>Status</th></tr></thead>
+      <thead><tr><th>Date</th><th>Description</th><th>Category</th><th>Amount</th><th class="hide-mobile">Status</th></tr></thead>
       <tbody id="recent-txn-body"><tr><td colspan="5" class="empty-msg">Loading...</td></tr></tbody>
     </table>
+    </div>
   </div>
 
   <!-- Two-column: Monthly trend + Categories -->
   <div class="two-col">
     <div class="section">
       <h2>Monthly Spending</h2>
+      <div class="table-wrap">
       <table>
         <thead><tr><th>Month</th><th>Total</th><th>Txns</th><th>Avg</th></tr></thead>
         <tbody id="monthly-body"><tr><td colspan="4" class="empty-msg">Loading...</td></tr></tbody>
       </table>
+      </div>
     </div>
     <div class="section">
       <h2>Spending by Category</h2>
+      <div class="table-wrap">
       <table>
         <thead><tr><th>Category</th><th>Total</th><th style="width:30%">Share</th></tr></thead>
         <tbody id="category-body"><tr><td colspan="3" class="empty-msg">Loading...</td></tr></tbody>
       </table>
+      </div>
     </div>
   </div>
 
@@ -431,17 +437,21 @@
   <div class="two-col">
     <div class="section">
       <h2>Top Merchants</h2>
+      <div class="table-wrap">
       <table>
         <thead><tr><th>Merchant</th><th>Total</th><th>Txns</th></tr></thead>
         <tbody id="merchant-body"><tr><td colspan="3" class="empty-msg">Loading...</td></tr></tbody>
       </table>
+      </div>
     </div>
     <div class="section">
       <h2>Upcoming Charges</h2>
+      <div class="table-wrap">
       <table>
         <thead><tr><th>Service</th><th>Amount</th><th>Next</th></tr></thead>
         <tbody id="upcoming-body"><tr><td colspan="3" class="empty-msg">Loading...</td></tr></tbody>
       </table>
+      </div>
     </div>
   </div>
 
@@ -729,7 +739,7 @@
               '<td>' + esc(t.description) + '</td>' +
               '<td style="font-size:11px;color:var(--text-muted)">' + esc(t.category) + '</td>' +
               '<td class="amount ' + amtClass + '">' + fmt(t.amount) + '</td>' +
-              '<td>' + badge + '</td></tr>';
+              '<td class="hide-mobile">' + badge + '</td></tr>';
           }).join('');
         } else {
           recentBody.innerHTML = '<tr><td colspan="5" class="empty-msg">No transactions yet.</td></tr>';
@@ -808,7 +818,7 @@
         document.getElementById('forecast-summary').innerHTML =
           '<strong>' + data.charge_count + ' charges</strong> totaling <strong style="color:var(--warm);">$' + data.total_expected.toFixed(2) +
           '</strong> expected in the next ' + data.forecast_days + ' days';
-        var html = '<table style="width:100%;font-size:12px;border-collapse:collapse;">' +
+        var html = '<div class="table-wrap"><table style="width:100%;font-size:12px;border-collapse:collapse;">' +
           '<thead><tr><th style="text-align:left;padding:6px 0;border-bottom:1px solid var(--border);">Service</th>' +
           '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Amount</th>' +
           '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Date</th>' +
@@ -819,7 +829,7 @@
             '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);">' + c.date + '</td>' +
             '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--text-muted);">' + c.days_away + 'd</td></tr>';
         });
-        html += '</tbody></table>';
+        html += '</tbody></table></div>';
         document.getElementById('forecast-list').innerHTML = html;
       } catch {}
     }
