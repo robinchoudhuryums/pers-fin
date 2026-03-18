@@ -23,11 +23,11 @@
             display: flex; align-items: center; justify-content: center; gap: 8px; }
     .login-logo-icon {
       display: inline-block; width: 18px; height: 18px;
-      background: #a0dad0;
+      background: #c8a86c;
       -webkit-mask: url(/logo.svg) center / contain no-repeat;
       mask: url(/logo.svg) center / contain no-repeat;
       mask-mode: alpha; -webkit-mask-mode: alpha;
-      filter: drop-shadow(0 0 4px rgba(160,218,208,0.4));
+      filter: drop-shadow(0 0 4px rgba(200,168,108,0.4));
     }
     h1 { font-size: 26px; font-weight: 300; letter-spacing: -0.3px; margin-bottom: 6px;
          animation: fadeInUp 0.4s ease both; animation-delay: 0.15s; }
@@ -96,7 +96,7 @@
       filter: drop-shadow(0 0 10px rgba(160,218,208,0.7)) drop-shadow(0 0 20px rgba(90,143,143,0.4));
     }
     .materialize-overlay .helmet-fill {
-      fill: #a0dad0; opacity: 0;
+      fill: #c8a86c; opacity: 0;
     }
     .materialize-overlay.active .helmet-stroke {
       animation: drawHelmet 1.2s ease-out 0.15s forwards;
@@ -109,8 +109,8 @@
     }
     @keyframes fillHelmet {
       0%  { opacity: 0; filter: drop-shadow(0 0 0 transparent); }
-      60% { opacity: 0.7; filter: drop-shadow(0 0 24px rgba(160,218,208,0.6)); }
-      100% { opacity: 1; filter: drop-shadow(0 0 14px rgba(160,218,208,0.4)); }
+      60% { opacity: 0.7; filter: drop-shadow(0 0 24px rgba(200,168,108,0.6)); }
+      100% { opacity: 1; filter: drop-shadow(0 0 14px rgba(200,168,108,0.4)); }
     }
 
     /* ── Biometric scan animation ── */
@@ -241,6 +241,52 @@
       100% { opacity: 0; transform: var(--burst-dir) scale(0); }
     }
 
+    /* ── Eye glow after helmet fill ── */
+    .helmet-eyes {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      width: 120px; height: 144px; pointer-events: none; opacity: 0;
+    }
+    .helmet-eyes .eye {
+      position: absolute; border-radius: 40%; background: #fff;
+      box-shadow: 0 0 20px rgba(255,255,255,0.9), 0 0 40px rgba(200,170,110,0.7), 0 0 60px rgba(200,170,110,0.4);
+    }
+    .helmet-eyes .eye-left {
+      top: 46%; left: 22%; width: 18px; height: 10px; transform: rotate(-8deg);
+    }
+    .helmet-eyes .eye-right {
+      top: 46%; right: 22%; width: 18px; height: 10px; transform: rotate(8deg);
+    }
+    .materialize-overlay.active .helmet-eyes {
+      animation: eyeGlow 0.5s ease 1.7s forwards;
+    }
+    @keyframes eyeGlow {
+      0% { opacity: 0; }
+      50% { opacity: 1; filter: brightness(2); }
+      100% { opacity: 0.9; filter: brightness(1.2); }
+    }
+
+    /* ── Glitch / digital noise ── */
+    .glitch-overlay {
+      position: absolute; inset: 0; opacity: 0; pointer-events: none; mix-blend-mode: screen;
+      background: repeating-linear-gradient(
+        0deg,
+        rgba(160,218,208,0.03) 0px,
+        rgba(160,218,208,0.03) 1px,
+        transparent 1px,
+        transparent 3px
+      );
+    }
+    .materialize-overlay.active .glitch-overlay {
+      animation: glitchFlicker 0.3s steps(4) 0s forwards;
+    }
+    @keyframes glitchFlicker {
+      0% { opacity: 0.8; transform: translate(2px, -1px) scaleY(1.01); }
+      25% { opacity: 0.6; transform: translate(-3px, 1px) scaleY(0.99); }
+      50% { opacity: 0.9; transform: translate(1px, 2px) scaleX(1.01); }
+      75% { opacity: 0.4; transform: translate(-1px, -2px) scaleY(1.02); }
+      100% { opacity: 0; transform: translate(0, 0) scale(1); }
+    }
+
     /* ── Horizontal scan line across overlay ── */
     .hud-scanline {
       position: absolute; left: 0; right: 0; height: 1px;
@@ -262,6 +308,8 @@
   <div class="materialize-overlay" id="materialize-overlay">
     <!-- Ambient floating particles -->
     <div class="overlay-particles" id="overlay-particles"></div>
+    <!-- Glitch noise -->
+    <div class="glitch-overlay"></div>
     <!-- Horizontal scan line -->
     <div class="hud-scanline"></div>
     <!-- Pulse rings -->
@@ -270,6 +318,11 @@
     <div class="pulse-ring"></div>
     <!-- Particle burst -->
     <div class="burst-container" id="burst-container"></div>
+    <!-- Eye glow -->
+    <div class="helmet-eyes">
+      <div class="eye eye-left"></div>
+      <div class="eye eye-right"></div>
+    </div>
     <!-- Biometric scan (shown first for FaceID flow, then shrinks into helmet) -->
     <div class="bio-scan-container" id="bio-scan">
       <div class="bio-scan-ring">

@@ -632,6 +632,7 @@
             '<div class="acct-balance ' + balClass + '">' + balDisplay + '</div>' +
             '<div class="acct-type">' + esc(a.subtype || a.type || '') + '</div>' +
             creditExtra +
+            ((a.is_manual || a.provider === 'manual') ? '<button class="btn-sm" onclick="editManualBalance(' + a.id + ')" style="margin-top:4px;font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--warm);cursor:pointer;font-family:inherit;">Update Balance</button>' : '') +
           '</div>';
         }).join('');
 
@@ -660,6 +661,17 @@
       } catch (e) {
         document.getElementById('accounts-grid').innerHTML = '<div class="empty-msg">Could not load accounts: ' + esc(e.message) + '</div>';
       }
+    }
+
+    async function editManualBalance(id) {
+      var val = prompt('Enter current balance:');
+      if (val === null) return;
+      var num = parseFloat(val);
+      if (isNaN(num)) return;
+      try {
+        await apiFetch('/api/accounts/' + id + '/balance', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ current_balance: num, available_balance: num }) });
+        loadAccounts();
+      } catch (e) {}
     }
 
     async function loadSpendingSummary() {
@@ -796,6 +808,17 @@
         }
       } catch (e) { showMsg('Detection failed: ' + e.message, false); }
       btnLoading(btn, false, 'Run Detection');
+    }
+
+    async function editManualBalance(id) {
+      var val = prompt('Enter current balance:');
+      if (val === null) return;
+      var num = parseFloat(val);
+      if (isNaN(num)) return;
+      try {
+        await apiFetch('/api/accounts/' + id + '/balance', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ current_balance: num, available_balance: num }) });
+        loadAccounts();
+      } catch (e) {}
     }
 
     async function setApr(accountId, value) {

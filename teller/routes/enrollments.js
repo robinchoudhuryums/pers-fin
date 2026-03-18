@@ -331,8 +331,9 @@ router.get("/api/accounts", async (_req, res) => {
     const result = await pool.query(
       `SELECT la.id, la.account_id, la.name, la.official_name, la.type, la.subtype, la.mask,
               la.available_balance, la.current_balance, la.balance_currency, la.balance_updated_at, la.apr,
-              COALESCE(te.institution_name, pi.institution_name) AS institution_name,
-              CASE WHEN te.id IS NOT NULL THEN 'teller' ELSE 'plaid' END AS provider
+              COALESCE(te.institution_name, pi.institution_name, la.institution_name_manual) AS institution_name,
+              CASE WHEN te.id IS NOT NULL THEN 'teller' WHEN la.is_manual THEN 'manual' ELSE 'plaid' END AS provider,
+              la.is_manual, la.credit_limit
        FROM linked_accounts la
        LEFT JOIN teller_enrollments te ON te.id = la.teller_enrollment_id
        LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
@@ -342,6 +343,61 @@ router.get("/api/accounts", async (_req, res) => {
   } catch (err) {
     console.error("list accounts error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// POST /api/accounts/manual — Create a manual account
+router.post("/api/accounts/manual", async (req, res) => {
+  const { name, institution_name, type, subtype, current_balance, available_balance, credit_limit } = req.body;
+  if (!name || !type) return res.status(400).json({ error: "name and type are required" });
+  const validTypes = ["depository", "credit"];
+  if (!validTypes.includes(type)) return res.status(400).json({ error: "type must be depository or credit" });
+  try {
+    const accountId = "manual_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+    const result = await pool.query(
+      `INSERT INTO linked_accounts (account_id, name, type, subtype, is_manual, institution_name_manual, current_balance, available_balance, credit_limit, balance_updated_at)
+       VALUES ($1, $2, $3, $4, true, $5, $6, $7, $8, now()) RETURNING *`,
+      [accountId, name, type, subtype || (type === "credit" ? "credit_card" : "checking"),
+       institution_name || "Manual",
+       parseFloat(current_balance) || 0, parseFloat(available_balance) || 0,
+       credit_limit ? parseFloat(credit_limit) : null]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("create manual account error:", err.message);
+    res.status(500).json({ error: "Failed to create account" });
+  }
+});
+
+// PATCH /api/accounts/:id/balance — Update balance on any account
+router.patch("/api/accounts/:id/balance", async (req, res) => {
+  const { current_balance, available_balance, credit_limit } = req.body;
+  try {
+    const updates = []; const values = []; let idx = 1;
+    if (current_balance !== undefined) { updates.push("current_balance = $" + idx++); values.push(parseFloat(current_balance)); }
+    if (available_balance !== undefined) { updates.push("available_balance = $" + idx++); values.push(parseFloat(available_balance)); }
+    if (credit_limit !== undefined) { updates.push("credit_limit = $" + idx++); values.push(credit_limit === null ? null : parseFloat(credit_limit)); }
+    if (!updates.length) return res.status(400).json({ error: "No fields to update" });
+    updates.push("balance_updated_at = now()");
+    values.push(parseInt(req.params.id));
+    const result = await pool.query("UPDATE linked_accounts SET " + updates.join(", ") + " WHERE id = $" + idx + " RETURNING *", values);
+    if (!result.rows.length) return res.status(404).json({ error: "Account not found" });
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("update balance error:", err.message);
+    res.status(500).json({ error: "Failed to update balance" });
+  }
+});
+
+// DELETE /api/accounts/manual/:id — Delete a manual account
+router.delete("/api/accounts/manual/:id", async (req, res) => {
+  try {
+    const result = await pool.query("DELETE FROM linked_accounts WHERE id = $1 AND is_manual = true RETURNING id", [parseInt(req.params.id)]);
+    if (!result.rows.length) return res.status(404).json({ error: "Manual account not found" });
+    res.json({ deleted: true });
+  } catch (err) {
+    console.error("delete manual account error:", err.message);
+    res.status(500).json({ error: "Failed to delete account" });
   }
 });
 

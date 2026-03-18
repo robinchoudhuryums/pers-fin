@@ -73,11 +73,11 @@ a:hover { color: var(--text); }
                 display: flex; align-items: center; gap: 8px; }
 .topnav .logo .logo-icon {
   display: inline-block; width: 20px; height: 20px; flex-shrink: 0;
-  background: var(--logo-glow, #a0dad0);
+  background: var(--logo-glow, #c8a86c);
   -webkit-mask: url(/logo.svg) center / contain no-repeat;
   mask: url(/logo.svg) center / contain no-repeat;
   mask-mode: alpha; -webkit-mask-mode: alpha;
-  filter: drop-shadow(0 0 4px rgba(160,218,208,0.4));
+  filter: drop-shadow(0 0 4px rgba(200,168,108,0.4));
 }
 .topnav .nav-links { display: flex; gap: 24px; font-size: 13px; font-weight: 400;
                      letter-spacing: 0.5px; }
