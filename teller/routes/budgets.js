@@ -20,13 +20,14 @@ router.get("/api/budgets", async (_req, res) => {
     const [budgets, spending] = await Promise.all([
       pool.query("SELECT * FROM budgets ORDER BY monthly_limit DESC"),
       pool.query(
-        `SELECT COALESCE(category[1], 'Uncategorized') AS category,
-                SUM(amount) AS spent
-         FROM transactions
-         WHERE amount > 0 AND pending = false
-           AND date >= date_trunc('month', CURRENT_DATE)
-           AND date < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
-         GROUP BY COALESCE(category[1], 'Uncategorized')`
+        `SELECT COALESCE(t.category[1], 'Uncategorized') AS category,
+                ROUND(SUM(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0), 2) AS spent
+         FROM transactions t
+         LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+         WHERE t.amount > 0 AND t.pending = false
+           AND t.date >= date_trunc('month', CURRENT_DATE)
+           AND t.date < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
+         GROUP BY COALESCE(t.category[1], 'Uncategorized')`
       ),
     ]);
     const spendMap = {};
@@ -210,13 +211,14 @@ router.get("/api/budgets/alerts", async (_req, res) => {
     const [budgets, spending] = await Promise.all([
       pool.query("SELECT * FROM budgets ORDER BY monthly_limit DESC"),
       pool.query(
-        `SELECT COALESCE(category[1], 'Uncategorized') AS category,
-                SUM(amount) AS spent
-         FROM transactions
-         WHERE amount > 0 AND pending = false
-           AND date >= date_trunc('month', CURRENT_DATE)
-           AND date < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
-         GROUP BY COALESCE(category[1], 'Uncategorized')`
+        `SELECT COALESCE(t.category[1], 'Uncategorized') AS category,
+                ROUND(SUM(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0), 2) AS spent
+         FROM transactions t
+         LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+         WHERE t.amount > 0 AND t.pending = false
+           AND t.date >= date_trunc('month', CURRENT_DATE)
+           AND t.date < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
+         GROUP BY COALESCE(t.category[1], 'Uncategorized')`
       ),
     ]);
 
