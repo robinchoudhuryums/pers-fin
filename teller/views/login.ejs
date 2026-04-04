@@ -360,7 +360,7 @@
     </button>
     <% } %>
   </div>
-  <script>
+  <script nonce="<%= nonce %>">
     var AUTH_MODE = '<%= authMode %>';
     var HAS_WEBAUTHN = <%= hasWebauthn ? 'true' : 'false' %>;
     var errEl = document.getElementById('error');

@@ -5,7 +5,7 @@
 :root {
   --bg: #080b12; --surface: rgba(255,255,255,0.04); --surface-2: rgba(255,255,255,0.07);
   --border: rgba(255,255,255,0.08); --border-hover: rgba(255,255,255,0.18);
-  --text: #f0ebe3; --text-muted: rgba(240,235,227,0.5);
+  --text: #f0ebe3; --text-muted: rgba(240,235,227,0.55);
   --warm: #d4a574; --warm-glow: #c8856c; --teal: #5a8f8f;
   --green: #6fcf97; --green-bg: rgba(111,207,151,0.1);
   --red: #eb6b6b; --red-bg: rgba(235,107,107,0.1);
@@ -16,7 +16,7 @@
 [data-theme="light"] {
   --bg: #f5f2ed; --surface: rgba(0,0,0,0.03); --surface-2: rgba(0,0,0,0.06);
   --border: rgba(0,0,0,0.10); --border-hover: rgba(0,0,0,0.20);
-  --text: #1a1a2e; --text-muted: rgba(26,26,46,0.5);
+  --text: #1a1a2e; --text-muted: rgba(26,26,46,0.65);
   --warm: #b07a4a; --warm-glow: #a0684c; --teal: #3d7272;
   --green: #2d9f5f; --green-bg: rgba(45,159,95,0.1);
   --red: #c94444; --red-bg: rgba(201,68,68,0.1);

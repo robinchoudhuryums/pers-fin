@@ -264,7 +264,8 @@ router.get("/api/budgets/alerts", async (_req, res) => {
       const spent = spendMap[b.category] || 0;
       const limit = parseFloat(b.monthly_limit);
       const pctUsed = limit > 0 ? (spent / limit) * 100 : 0;
-      const pace = monthProgress > 0 ? pctUsed / (monthProgress * 100) : 0;
+      // Don't calculate pace for the first few days — too unreliable with little data
+      const pace = monthProgress >= 0.1 ? pctUsed / (monthProgress * 100) : 0;
 
       if (pctUsed >= 100) {
         alerts.push({

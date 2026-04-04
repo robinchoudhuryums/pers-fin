@@ -49,13 +49,7 @@ function getTlsAgent() {
   return tlsAgent;
 }
 
-async function tellerRequest(endpoint, accessToken, options = {}) {
-  const url = `${TELLER_API_BASE}${endpoint}`;
-  const method = options.method || "GET";
-
-  const authHeader = "Basic " + Buffer.from(accessToken + ":").toString("base64");
-  const bodyData = options.body ? JSON.stringify(options.body) : null;
-
+function tellerRequestOnce(url, authHeader, method, bodyData) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const req = https.request(
@@ -64,10 +58,10 @@ async function tellerRequest(endpoint, accessToken, options = {}) {
         path: parsed.pathname + parsed.search,
         method,
         agent: getTlsAgent(),
+        timeout: 30000,
         headers: {
           "Authorization": authHeader,
           "Content-Type": "application/json",
-          ...options.headers,
           ...(bodyData ? { "Content-Length": Buffer.byteLength(bodyData) } : {}),
         },
       },
@@ -91,10 +85,31 @@ async function tellerRequest(endpoint, accessToken, options = {}) {
         });
       }
     );
+    req.on("timeout", () => { req.destroy(); reject(new Error("Teller API request timed out")); });
     req.on("error", reject);
     if (bodyData) req.write(bodyData);
     req.end();
   });
+}
+
+async function tellerRequest(endpoint, accessToken, options = {}) {
+  const url = `${TELLER_API_BASE}${endpoint}`;
+  const method = options.method || "GET";
+  const authHeader = "Basic " + Buffer.from(accessToken + ":").toString("base64");
+  const bodyData = options.body ? JSON.stringify(options.body) : null;
+
+  const MAX_RETRIES = 3;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      return await tellerRequestOnce(url, authHeader, method, bodyData);
+    } catch (err) {
+      // Don't retry client errors (4xx) — only transient/network errors
+      if (err.status && err.status >= 400 && err.status < 500) throw err;
+      if (attempt === MAX_RETRIES) throw err;
+      const delay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
 }
 
 module.exports = {

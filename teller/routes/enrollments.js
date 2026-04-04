@@ -644,17 +644,28 @@ router.get("/api/cash-flow", async (req, res) => {
       }
     }
 
-    // Get upcoming bills from subscriptions
-    const subsResult = await pool.query(`
-      SELECT display_name, amount, cadence_days, next_expected
-      FROM detected_subscriptions
-      WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL
-        AND next_expected IS NOT NULL
-    `);
+    // Get upcoming bills from subscriptions + recurring transfers
+    const [subsResult, transfersResult] = await Promise.all([
+      pool.query(`
+        SELECT display_name, amount, cadence_days, next_expected
+        FROM detected_subscriptions
+        WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL
+          AND next_expected IS NOT NULL
+      `),
+      pool.query(`
+        SELECT display_name, amount, cadence_days, next_expected, transfer_type, direction
+        FROM recurring_transfers
+        WHERE is_active = true AND is_dismissed = false
+          AND next_expected IS NOT NULL AND direction = 'outgoing'
+      `),
+    ]);
 
-    // Pre-compute next occurrence for each subscription (once, not per-day)
+    // Combine subscriptions and outgoing recurring transfers into bill schedule
+    const allBills = [...subsResult.rows, ...transfersResult.rows];
+
+    // Pre-compute next occurrence for each bill (once, not per-day)
     const now = new Date();
-    const billSchedule = subsResult.rows.map(sub => {
+    const billSchedule = allBills.map(sub => {
       let nextDate = new Date(sub.next_expected);
       const cadence = parseInt(sub.cadence_days);
       while (nextDate < now) nextDate = new Date(nextDate.getTime() + cadence * 86400000);

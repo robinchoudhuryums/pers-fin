@@ -27,7 +27,7 @@ if (!ENCRYPTION_PASSPHRASE) {
 }
 
 // Current schema version — increment when adding new migration steps
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 async function runMigrations() {
   const client = await pool.connect();
@@ -223,6 +223,28 @@ async function runMigrations() {
       device_name TEXT DEFAULT 'Unknown Device',
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
+    // Recurring transfers — detected recurring transfers between accounts
+    await client.query(`CREATE TABLE IF NOT EXISTS recurring_transfers (
+      id SERIAL PRIMARY KEY,
+      merchant_key TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      amount NUMERIC(12,2) NOT NULL,
+      prior_amount NUMERIC(12,2),
+      cadence_days INT NOT NULL,
+      first_seen DATE NOT NULL,
+      last_transferred DATE NOT NULL,
+      next_expected DATE NOT NULL,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      is_dismissed BOOLEAN NOT NULL DEFAULT false,
+      transfer_type TEXT NOT NULL DEFAULT 'other',
+      direction TEXT NOT NULL DEFAULT 'outgoing',
+      notes TEXT,
+      amount_changed BOOLEAN NOT NULL DEFAULT false,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (merchant_key, cadence_days, direction)
+    )`);
+    await client.query("CREATE INDEX IF NOT EXISTS idx_recurring_transfers_active ON recurring_transfers (is_active, is_dismissed)");
     // Per-sistant integration: webhook target + SSO shared secret
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS persistent_url TEXT");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS persistent_webhook_secret TEXT");

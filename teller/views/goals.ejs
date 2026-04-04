@@ -58,7 +58,7 @@
 
   <a class="context-link" href="/api/context-export?api_key=<%= apiKey %>" download>Export data for Claude chat</a>
 <%- include('partials/foot', { apiKey: apiKey }) %>
-  <script>
+  <script nonce="<%= nonce %>">
     async function loadGoals() {
       try {
         const res = await apiFetch('/api/goals'); const goals = await res.json();

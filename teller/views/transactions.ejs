@@ -163,7 +163,7 @@
   </div>
 
 <%- include('partials/foot', { apiKey: apiKey }) %>
-  <script>
+  <script nonce="<%= nonce %>">
     var currentOffset = 0;
     var currentTotal = 0;
     var PAGE_SIZE = 100;

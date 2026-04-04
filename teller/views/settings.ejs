@@ -279,7 +279,7 @@
     </div>
   </div>
 <%- include('partials/foot', { apiKey: apiKey }) %>
-  <script>
+  <script nonce="<%= nonce %>">
     function applyTheme(t) { document.documentElement.setAttribute('data-theme', t); localStorage.setItem('perfin-theme', t); }
     async function loadSettings() {
       try {

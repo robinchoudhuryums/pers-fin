@@ -108,7 +108,7 @@
     <a class="export-link" href="/api/export?type=subscriptions&api_key=<%= apiKey %>">Export CSV</a>
   </div>
 <%- include('partials/foot', { apiKey: apiKey }) %>
-  <script>
+  <script nonce="<%= nonce %>">
     const tbody = document.getElementById('subs-body');
 
     function cadenceLabel(days) {
