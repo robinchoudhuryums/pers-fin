@@ -456,6 +456,38 @@ async function buildDashboard(sheets, pool) {
       AND date >= CURRENT_DATE - INTERVAL '6 months'
   `);
 
+  // Net worth history
+  const { rows: netWorthHistory } = await pool.query(`
+    SELECT snapshot_date, total_assets, total_liabilities, net_worth
+    FROM net_worth_snapshots
+    ORDER BY snapshot_date DESC
+    LIMIT 6
+  `);
+
+  // Budget status
+  const { rows: budgetData } = await pool.query(`
+    SELECT b.category, b.monthly_limit,
+           COALESCE(SUM(t.amount), 0) AS spent
+    FROM budgets b
+    LEFT JOIN transactions t ON COALESCE(t.category[1], 'Uncategorized') = b.category
+      AND t.amount > 0 AND t.pending = false
+      AND t.date >= date_trunc('month', CURRENT_DATE)
+      AND t.date < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
+    GROUP BY b.category, b.monthly_limit
+    ORDER BY b.monthly_limit DESC
+  `);
+
+  // Recurring transfers summary
+  const { rows: transferSummary } = await pool.query(`
+    SELECT transfer_type, direction,
+           COUNT(*) AS count,
+           ROUND(SUM(amount * (30.0 / GREATEST(cadence_days, 1))), 2) AS monthly_total
+    FROM recurring_transfers
+    WHERE is_active = true AND is_dismissed = false
+    GROUP BY transfer_type, direction
+    ORDER BY monthly_total DESC
+  `);
+
   const totalMonthly = activeSubs.reduce(
     (sum, s) => sum + parseFloat(s.monthly_cost || 0),
     0
@@ -524,6 +556,49 @@ async function buildDashboard(sheets, pool) {
       fmtDate(s.next_expected),
       fmtCurrency(s.monthly_cost),
     ]);
+  }
+
+  // Net worth history
+  if (netWorthHistory.length > 0) {
+    rows.push([]);
+    rows.push(["NET WORTH HISTORY", "", "", ""]);
+    rows.push(["Date", "Assets", "Liabilities", "Net Worth"]);
+    for (const nw of netWorthHistory) {
+      rows.push([
+        fmtDate(nw.snapshot_date),
+        fmtCurrency(nw.total_assets),
+        fmtCurrency(nw.total_liabilities),
+        fmtCurrency(nw.net_worth),
+      ]);
+    }
+  }
+
+  // Budget status
+  if (budgetData.length > 0) {
+    rows.push([]);
+    rows.push(["BUDGET STATUS (Current Month)", "", "", ""]);
+    rows.push(["Category", "Spent", "Budget", "% Used"]);
+    for (const b of budgetData) {
+      const spent = parseFloat(b.spent);
+      const limit = parseFloat(b.monthly_limit);
+      const pct = limit > 0 ? Math.round((spent / limit) * 100) : 0;
+      rows.push([b.category, spent, limit, pct + "%"]);
+    }
+  }
+
+  // Recurring transfers summary
+  if (transferSummary.length > 0) {
+    rows.push([]);
+    rows.push(["RECURRING TRANSFERS SUMMARY", "", "", ""]);
+    rows.push(["Type", "Direction", "Count", "Monthly Total"]);
+    for (const t of transferSummary) {
+      rows.push([
+        t.transfer_type,
+        t.direction,
+        parseInt(t.count),
+        fmtCurrency(t.monthly_total),
+      ]);
+    }
   }
 
   // Write dashboard
@@ -636,6 +711,9 @@ async function buildDashboard(sheets, pool) {
       "SPENDING BY CATEGORY",
       "TOP MERCHANTS",
       "UPCOMING SUBSCRIPTION CHARGES",
+      "NET WORTH HISTORY",
+      "BUDGET STATUS (Current Month)",
+      "RECURRING TRANSFERS SUMMARY",
     ];
     for (let r = 0; r < rows.length; r++) {
       if (rows[r][0] && sectionHeaderKeywords.includes(rows[r][0])) {
@@ -721,6 +799,204 @@ async function buildDashboard(sheets, pool) {
 }
 
 // ---------------------------------------------------------------------------
+// Sync AI Insights History
+// ---------------------------------------------------------------------------
+async function syncInsights(sheets, pool) {
+  console.log("Syncing AI insights to Google Sheets...");
+
+  const { rows } = await pool.query(`
+    SELECT insight_text, model_used, tokens_used, created_at,
+           input_tokens, output_tokens, cache_read_tokens
+    FROM financial_insights
+    WHERE insight_text NOT LIKE '[ML Categorization]%'
+    ORDER BY created_at DESC
+    LIMIT 20
+  `);
+
+  const SHEET_INSIGHTS = "AI Insights";
+  await ensureSheet(sheets, SHEET_INSIGHTS);
+
+  const headers = ["Date", "Model", "Tokens", "Insights"];
+  const data = rows.map(r => [
+    fmtDate(r.created_at),
+    r.model_used || "",
+    r.tokens_used || 0,
+    (r.insight_text || "").substring(0, 5000),
+  ]);
+
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_INSIGHTS}!A:Z`,
+  });
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_INSIGHTS}!A1`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [headers, ...data] },
+  });
+
+  const sheetId = await getSheetId(sheets, SHEET_INSIGHTS);
+  if (sheetId !== null) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SPREADSHEET_ID,
+      requestBody: {
+        requests: [
+          {
+            repeatCell: {
+              range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
+              cell: {
+                userEnteredFormat: {
+                  textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 }, fontSize: 11 },
+                  backgroundColor: { red: 0.35, green: 0.2, blue: 0.5 },
+                },
+              },
+              fields: "userEnteredFormat(textFormat,backgroundColor)",
+            },
+          },
+          {
+            updateSheetProperties: {
+              properties: { sheetId, gridProperties: { frozenRowCount: 1 } },
+              fields: "gridProperties.frozenRowCount",
+            },
+          },
+          // Wrap text in insights column
+          {
+            repeatCell: {
+              range: { sheetId, startRowIndex: 1, startColumnIndex: 3, endColumnIndex: 4 },
+              cell: {
+                userEnteredFormat: { wrapStrategy: "WRAP" },
+              },
+              fields: "userEnteredFormat.wrapStrategy",
+            },
+          },
+          // Set insights column width
+          {
+            updateDimensionProperties: {
+              range: { sheetId, dimension: "COLUMNS", startIndex: 3, endIndex: 4 },
+              properties: { pixelSize: 600 },
+              fields: "pixelSize",
+            },
+          },
+          {
+            autoResizeDimensions: {
+              dimensions: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 3 },
+            },
+          },
+        ],
+      },
+    });
+  }
+
+  console.log(`  ${rows.length} insights written.`);
+  return rows.length;
+}
+
+// ---------------------------------------------------------------------------
+// Sync Recurring Transfers
+// ---------------------------------------------------------------------------
+async function syncRecurringTransfers(sheets, pool) {
+  console.log("Syncing recurring transfers to Google Sheets...");
+
+  const { rows } = await pool.query(`
+    SELECT display_name, amount, cadence_days,
+           CASE
+             WHEN cadence_days <= 10 THEN 'Weekly'
+             WHEN cadence_days <= 20 THEN 'Bi-weekly'
+             WHEN cadence_days <= 35 THEN 'Monthly'
+             WHEN cadence_days <= 65 THEN 'Bi-monthly'
+             WHEN cadence_days <= 95 THEN 'Quarterly'
+             WHEN cadence_days <= 370 THEN 'Yearly'
+             ELSE cadence_days || ' days'
+           END AS cycle,
+           ROUND(amount * (30.0 / GREATEST(cadence_days, 1)), 2) AS monthly_equivalent,
+           transfer_type, direction, first_seen, last_transferred, next_expected,
+           is_active, is_dismissed, notes
+    FROM recurring_transfers
+    ORDER BY
+      CASE WHEN is_active AND NOT is_dismissed THEN 0 ELSE 1 END,
+      amount DESC
+  `);
+
+  const SHEET_TRANSFERS = "Recurring Transfers";
+  await ensureSheet(sheets, SHEET_TRANSFERS);
+
+  const headers = [
+    "Name", "Amount", "Cycle", "Monthly Equiv.", "Type", "Direction",
+    "First Seen", "Last Transfer", "Next Expected", "Status", "Notes",
+  ];
+
+  const data = rows.map(r => {
+    let status = "Active";
+    if (r.is_dismissed) status = "Dismissed";
+    else if (!r.is_active) status = "Inactive";
+    return [
+      r.display_name, fmtCurrency(r.amount), r.cycle,
+      fmtCurrency(r.monthly_equivalent), r.transfer_type || "other",
+      r.direction || "outgoing", fmtDate(r.first_seen),
+      fmtDate(r.last_transferred), fmtDate(r.next_expected),
+      status, r.notes || "",
+    ];
+  });
+
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_TRANSFERS}!A:Z`,
+  });
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_TRANSFERS}!A1`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [headers, ...data] },
+  });
+
+  const sheetId = await getSheetId(sheets, SHEET_TRANSFERS);
+  if (sheetId !== null) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SPREADSHEET_ID,
+      requestBody: {
+        requests: [
+          {
+            repeatCell: {
+              range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
+              cell: {
+                userEnteredFormat: {
+                  textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 }, fontSize: 11 },
+                  backgroundColor: { red: 0.2, green: 0.35, blue: 0.45 },
+                },
+              },
+              fields: "userEnteredFormat(textFormat,backgroundColor)",
+            },
+          },
+          {
+            updateSheetProperties: {
+              properties: { sheetId, gridProperties: { frozenRowCount: 1 } },
+              fields: "gridProperties.frozenRowCount",
+            },
+          },
+          ...[1, 3].map(col => ({
+            repeatCell: {
+              range: { sheetId, startRowIndex: 1, startColumnIndex: col, endColumnIndex: col + 1 },
+              cell: { userEnteredFormat: { numberFormat: { type: "CURRENCY", pattern: "$#,##0.00" } } },
+              fields: "userEnteredFormat.numberFormat",
+            },
+          })),
+          {
+            autoResizeDimensions: {
+              dimensions: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 11 },
+            },
+          },
+        ],
+      },
+    });
+  }
+
+  console.log(`  ${rows.length} recurring transfers written.`);
+  return rows.length;
+}
+
+// ---------------------------------------------------------------------------
 // API endpoint handler (called from server.js)
 // ---------------------------------------------------------------------------
 async function syncAll() {
@@ -730,11 +1006,15 @@ async function syncAll() {
   try {
     const txnCount = await syncTransactions(sheets, pool);
     const subs = await syncSubscriptions(sheets, pool);
+    const insightsCount = await syncInsights(sheets, pool);
+    const transfersCount = await syncRecurringTransfers(sheets, pool);
     await buildDashboard(sheets, pool);
 
     return {
       transactions_synced: txnCount,
       subscriptions_synced: subs.length,
+      insights_synced: insightsCount,
+      transfers_synced: transfersCount,
       timestamp: new Date().toISOString(),
     };
   } finally {

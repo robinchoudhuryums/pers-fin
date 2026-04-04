@@ -430,6 +430,68 @@ router.post("/api/insights", async (_req, res) => {
       } catch (err) { console.error("Goal tracking query error:", err.message); }
     }
 
+    // --- Module: Recurring transfer analysis (dynamic data) ---
+    try {
+      const transferData = await pool.query(
+        `SELECT display_name, amount, cadence_days, transfer_type, direction, last_transferred
+         FROM recurring_transfers
+         WHERE is_active = true AND is_dismissed = false
+         ORDER BY amount DESC`
+      );
+      if (transferData.rows.length > 0) {
+        activeModules.push("recurring_transfers");
+        const outgoing = transferData.rows.filter(r => r.direction === "outgoing");
+        const incoming = transferData.rows.filter(r => r.direction === "incoming");
+        const outTotal = outgoing.reduce((s, r) => s + parseFloat(r.amount) * 30 / r.cadence_days, 0);
+        const inTotal = incoming.reduce((s, r) => s + Math.abs(parseFloat(r.amount)) * 30 / r.cadence_days, 0);
+        userMsg += "\n\n=== RECURRING TRANSFERS ===\n" +
+          "Outgoing (" + outgoing.length + " transfers, $" + outTotal.toFixed(2) + "/mo):\n" +
+          (outgoing.length > 0 ? outgoing.map(r => r.display_name + ": $" + parseFloat(r.amount).toFixed(2) + " every " + r.cadence_days + " days (" + r.transfer_type + ")").join("\n") : "(none)") +
+          "\n\nIncoming (" + incoming.length + " transfers, $" + inTotal.toFixed(2) + "/mo):\n" +
+          (incoming.length > 0 ? incoming.map(r => r.display_name + ": $" + Math.abs(parseFloat(r.amount)).toFixed(2) + " every " + r.cadence_days + " days (" + r.transfer_type + ")").join("\n") : "(none)");
+      }
+    } catch (err) { console.error("Recurring transfers query error:", err.message); }
+
+    // --- Enrichment: Month-over-month spending trends with deltas ---
+    try {
+      if (monthlyData.rows.length >= 2) {
+        const trends = [];
+        for (let i = 1; i < monthlyData.rows.length; i++) {
+          const curr = parseFloat(monthlyData.rows[i].total);
+          const prev = parseFloat(monthlyData.rows[i - 1].total);
+          const delta = curr - prev;
+          const pctChange = prev > 0 ? Math.round((delta / prev) * 100) : 0;
+          trends.push(monthlyData.rows[i].month + ": " + (delta >= 0 ? "+" : "") + "$" + delta.toFixed(2) + " (" + (pctChange >= 0 ? "+" : "") + pctChange + "%)");
+        }
+        userMsg += "\n\n=== SPENDING TREND DELTAS (month-over-month) ===\n" + trends.join("\n");
+      }
+    } catch (err) { console.error("Trend delta error:", err.message); }
+
+    // --- Enrichment: Current budget status ---
+    try {
+      const budgetStatus = await pool.query(
+        `SELECT b.category, b.monthly_limit,
+                COALESCE(SUM(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0), 0) AS spent
+         FROM budgets b
+         LEFT JOIN transactions t ON COALESCE(t.category[1], 'Uncategorized') = b.category
+           AND t.amount > 0 AND t.pending = false
+           AND t.date >= date_trunc('month', CURRENT_DATE)
+           AND t.date < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
+         LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+         GROUP BY b.category, b.monthly_limit
+         ORDER BY b.monthly_limit DESC`
+      );
+      if (budgetStatus.rows.length > 0) {
+        userMsg += "\n\n=== BUDGET STATUS (current month) ===\n" +
+          budgetStatus.rows.map(b => {
+            const spent = parseFloat(b.spent);
+            const limit = parseFloat(b.monthly_limit);
+            const pct = limit > 0 ? Math.round((spent / limit) * 100) : 0;
+            return b.category + ": $" + spent.toFixed(2) + " / $" + limit.toFixed(2) + " (" + pct + "% used)";
+          }).join("\n");
+      }
+    } catch (err) { console.error("Budget status query error:", err.message); }
+
     // Include running summary and previous insight in user message (dynamic)
     if (runningSummary) {
       userMsg += "\n\n=== LONG-TERM CONTEXT (your cumulative memory from past analyses) ===\n" + runningSummary;

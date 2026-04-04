@@ -264,6 +264,12 @@ const INSIGHT_MODULES = {
     extra_tokens: 200,
     requires_zip: false,
   },
+  recurring_transfers: {
+    label: "Recurring transfers",
+    description: "Analyze recurring transfers (Zelle, bill payments, savings, investments)",
+    extra_tokens: 150,
+    requires_zip: false,
+  },
 };
 
 // Model ID mapping for Claude API
