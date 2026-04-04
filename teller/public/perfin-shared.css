@@ -23,6 +23,14 @@
   --yellow: #c49a2a; --yellow-bg: rgba(196,154,42,0.1);
   --blue: #4a8abf; --blue-bg: rgba(74,138,191,0.1);
 }
+/* Skip-to-content link for keyboard users */
+.skip-link {
+  position: absolute; top: -100%; left: 50%; transform: translateX(-50%);
+  padding: 8px 16px; background: var(--warm); color: var(--bg); border-radius: 0 0 8px 8px;
+  font-size: 13px; font-weight: 500; z-index: 1000; transition: top 0.2s;
+}
+.skip-link:focus { top: 0; }
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
   font-family: 'Inter', system-ui, sans-serif; background: var(--bg);

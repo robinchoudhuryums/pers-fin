@@ -2,9 +2,8 @@ name: CI
 
 on:
   pull_request:
-    branches: ['*']
   push:
-    branches: ['claude/subscription-tracker-plaid-WeQTA']
+    branches: ['claude/subscription-tracker-plaid-WeQTA', 'main', 'master']
 
 jobs:
   test:

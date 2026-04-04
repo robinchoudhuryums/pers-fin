@@ -301,6 +301,49 @@ runMigrations().then(() => {
         console.error("Sheets auto-sync error:", err.message);
       }
     }, 60 * 60 * 1000); // Check every hour
+
+    // Daily net worth auto-snapshot (checks every hour, takes one snapshot per day)
+    setInterval(async () => {
+      try {
+        // Check if we already have a snapshot for today
+        const existing = await pool.query(
+          "SELECT id FROM net_worth_snapshots WHERE snapshot_date = CURRENT_DATE LIMIT 1"
+        );
+        if (existing.rows.length > 0) return;
+        // Check if we have any accounts with balances
+        const [accounts, investments] = await Promise.all([
+          pool.query("SELECT name, type, available_balance, current_balance FROM linked_accounts WHERE available_balance IS NOT NULL OR current_balance IS NOT NULL"),
+          pool.query("SELECT name, account_type, balance FROM investment_accounts WHERE is_active = true AND balance != 0"),
+        ]);
+        if (accounts.rows.length === 0 && investments.rows.length === 0) return;
+        let totalAssets = 0, totalLiabilities = 0;
+        const breakdown = { accounts: [], investments: [] };
+        for (const a of accounts.rows) {
+          if (a.type === "credit") {
+            totalLiabilities += parseFloat(a.current_balance || 0);
+            breakdown.accounts.push({ name: a.name, type: a.type, amount: -parseFloat(a.current_balance || 0) });
+          } else {
+            const bal = parseFloat(a.available_balance || a.current_balance || 0);
+            totalAssets += bal;
+            breakdown.accounts.push({ name: a.name, type: a.type, amount: bal });
+          }
+        }
+        for (const inv of investments.rows) {
+          const bal = parseFloat(inv.balance);
+          totalAssets += bal;
+          breakdown.investments.push({ name: inv.name, type: inv.account_type, amount: bal });
+        }
+        await pool.query(
+          `INSERT INTO net_worth_snapshots (total_assets, total_liabilities, net_worth, breakdown, snapshot_date)
+           VALUES ($1, $2, $3, $4, CURRENT_DATE)
+           ON CONFLICT (snapshot_date) DO NOTHING`,
+          [totalAssets, totalLiabilities, totalAssets - totalLiabilities, JSON.stringify(breakdown)]
+        );
+        console.log("Daily net worth snapshot recorded: $" + (totalAssets - totalLiabilities).toFixed(2));
+      } catch (err) {
+        console.error("Net worth auto-snapshot error:", err.message);
+      }
+    }, 60 * 60 * 1000); // Check every hour
   });
 
   // --- Graceful shutdown ---

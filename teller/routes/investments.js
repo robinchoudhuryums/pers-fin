@@ -193,23 +193,33 @@ router.post("/api/plaid/sync-holdings", async (_req, res) => {
           totalAccounts++;
         }
 
-        for (const h of holdings) {
-          const sec = secMap[h.security_id] || {};
-          await pool.query(
-            `INSERT INTO investment_holdings (plaid_account_id, security_id, ticker, name,
-              quantity, cost_basis, current_value, security_type)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-             ON CONFLICT (plaid_account_id, security_id) DO UPDATE SET
-               quantity = $5, cost_basis = $6, current_value = $7, ticker = $3, name = $4, updated_at = now()`,
-            [
+        // Batch upsert holdings (instead of one query per holding)
+        if (holdings.length > 0) {
+          const placeholders = [];
+          const values = [];
+          let idx = 1;
+          for (const h of holdings) {
+            const sec = secMap[h.security_id] || {};
+            placeholders.push(`($${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++})`);
+            values.push(
               h.account_id, h.security_id,
               sec.ticker_symbol || null, sec.name || "Unknown",
               h.quantity, h.cost_basis || 0,
               h.institution_value || (h.quantity * (sec.close_price || 0)),
               sec.type || "unknown",
-            ]
+            );
+          }
+          await pool.query(
+            `INSERT INTO investment_holdings (plaid_account_id, security_id, ticker, name,
+              quantity, cost_basis, current_value, security_type)
+             VALUES ${placeholders.join(", ")}
+             ON CONFLICT (plaid_account_id, security_id) DO UPDATE SET
+               quantity = EXCLUDED.quantity, cost_basis = EXCLUDED.cost_basis,
+               current_value = EXCLUDED.current_value, ticker = EXCLUDED.ticker,
+               name = EXCLUDED.name, updated_at = now()`,
+            values
           );
-          totalHoldings++;
+          totalHoldings += holdings.length;
         }
       } catch (err) {
         console.error("Holdings sync error for " + item.institution_name + ":", err.message);

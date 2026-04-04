@@ -1,6 +1,6 @@
-  <nav class="topnav">
+  <nav class="topnav" aria-label="Main navigation">
     <div class="logo"><span class="logo-icon" aria-hidden="true"></span>Perfin</div>
-    <div class="nav-links">
+    <div class="nav-links" role="list">
       <a href="/dashboard"<%= activePage === 'dashboard' ? ' class="active"' : '' %>>Dashboard</a>
       <a href="/subscriptions"<%= activePage === 'subscriptions' ? ' class="active"' : '' %>>Subscriptions</a>
       <a href="/transactions"<%= activePage === 'transactions' ? ' class="active"' : '' %>>Transactions</a>
@@ -10,3 +10,4 @@
       <a href="/settings"<%= activePage === 'settings' ? ' class="active"' : '' %>>Settings</a>
     </div>
   </nav>
+  <main id="main-content">
