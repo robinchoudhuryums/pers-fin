@@ -10,6 +10,7 @@ const { pool, ENCRYPTION_PASSPHRASE } = require("../services/database");
 const { categorizeSubscription, findCancelUrl } = require("../data/reference-data");
 const { CSV_FORMATS, detectCsvFormat, parseDate, csvTransactionId } = require("../data/csv-formats");
 const { detectSubscriptions } = require("../../scripts/detect-subscriptions");
+const { detectRecurringTransfers } = require("../../scripts/detect-transfers");
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -734,6 +735,98 @@ router.delete("/api/transactions/:id", async (req, res) => {
     res.json({ deleted: true, transaction_id: req.params.id });
   } catch (err) {
     console.error("delete transaction error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// ============================================================================
+// Recurring Transfers — detection and management
+// ============================================================================
+
+// GET /api/recurring-transfers — list detected recurring transfers
+router.get("/api/recurring-transfers", async (req, res) => {
+  try {
+    const filter = req.query.filter || "active";
+    let where = "WHERE rt.is_active = true AND rt.is_dismissed = false";
+    if (filter === "dismissed") where = "WHERE rt.is_dismissed = true";
+    else if (filter === "all") where = "";
+
+    const result = await pool.query(
+      `SELECT rt.*,
+              ROUND(rt.amount * (30.0 / rt.cadence_days), 2) AS monthly_equivalent
+       FROM recurring_transfers rt
+       ${where}
+       ORDER BY rt.amount DESC`
+    );
+    const totalMonthly = result.rows.reduce((s, r) => {
+      if (!r.is_active || r.is_dismissed) return s;
+      return s + parseFloat(r.monthly_equivalent || 0);
+    }, 0);
+    res.json({
+      transfers: result.rows,
+      total_monthly: Math.round(totalMonthly * 100) / 100,
+      count: result.rows.length,
+    });
+  } catch (err) {
+    console.error("recurring-transfers list error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// POST /api/detect-transfers — run recurring transfer detection
+router.post("/api/detect-transfers", async (_req, res) => {
+  try {
+    const detected = await detectRecurringTransfers(pool);
+    res.json({ detected_count: detected.length, transfers: detected });
+  } catch (err) {
+    console.error("Transfer detection error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// PATCH /api/recurring-transfers/:id/dismiss — dismiss a recurring transfer
+router.patch("/api/recurring-transfers/:id/dismiss", async (req, res) => {
+  try {
+    const result = await pool.query(
+      "UPDATE recurring_transfers SET is_dismissed = true, updated_at = now() WHERE id = $1 RETURNING *",
+      [req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "Not found" });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// PATCH /api/recurring-transfers/:id/undismiss — restore a dismissed transfer
+router.patch("/api/recurring-transfers/:id/undismiss", async (req, res) => {
+  try {
+    const result = await pool.query(
+      "UPDATE recurring_transfers SET is_dismissed = false, updated_at = now() WHERE id = $1 RETURNING *",
+      [req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "Not found" });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// PATCH /api/recurring-transfers/:id/type — update transfer type classification
+router.patch("/api/recurring-transfers/:id/type", async (req, res) => {
+  const { transfer_type } = req.body;
+  const validTypes = ["peer_transfer", "bill_payment", "savings", "investment", "internal", "other"];
+  if (!transfer_type || !validTypes.includes(transfer_type)) {
+    return res.status(400).json({ error: `transfer_type must be one of: ${validTypes.join(", ")}` });
+  }
+  try {
+    const result = await pool.query(
+      "UPDATE recurring_transfers SET transfer_type = $1, updated_at = now() WHERE id = $2 RETURNING *",
+      [transfer_type, req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "Not found" });
+    res.json(result.rows[0]);
+  } catch (err) {
     res.status(500).json({ error: "An internal error occurred." });
   }
 });

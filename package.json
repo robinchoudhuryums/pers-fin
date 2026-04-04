@@ -6,6 +6,7 @@
     "start": "node teller/server.js",
     "start:plaid": "node plaid/server.js",
     "detect": "node scripts/detect-subscriptions.js",
+    "detect-transfers": "node scripts/detect-transfers.js",
     "sheets-sync": "node scripts/sheets-sync.js",
     "import-csv": "node scripts/import-csv-cli.js"
   },
