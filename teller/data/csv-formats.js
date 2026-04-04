@@ -16,19 +16,26 @@ const CSV_FORMATS = {
   },
   capitalone: {
     detect: (headers) => headers.includes("Transaction Date") && headers.includes("Posted Date") && (headers.includes("Debit") || headers.includes("Credit")),
-    parse: (row) => ({
-      date: row["Transaction Date"],
-      merchant_name: row["Description"],
-      amount: parseFloat(row["Debit"] || "0") || -(parseFloat(row["Credit"] || "0")),
-      category: row["Category"] || "",
-    }),
+    parse: (row) => {
+      // Capital One uses separate Debit/Credit columns; Debit = positive spending, Credit = negative (payment/refund)
+      const debit = (row["Debit"] || "").trim();
+      const credit = (row["Credit"] || "").trim();
+      const amount = debit.length > 0 ? parseFloat(debit) : -(parseFloat(credit) || 0);
+      return {
+        date: row["Transaction Date"],
+        merchant_name: row["Description"],
+        amount,
+        category: row["Category"] || "",
+      };
+    },
   },
   discover: {
     detect: (headers) => headers.includes("Trans. Date") && headers.includes("Description") && headers.includes("Amount"),
     parse: (row) => ({
       date: row["Trans. Date"],
       merchant_name: row["Description"],
-      amount: Math.abs(parseFloat(row["Amount"])),
+      // Discover: positive amounts are debits (purchases), negative are credits (payments)
+      amount: parseFloat(row["Amount"]),
       category: row["Category"] || "",
     }),
   },
@@ -69,7 +76,7 @@ const CSV_FORMATS = {
       const rawAmt = (row["Amount"] || row["Debit"] || Object.values(row)[2] || "0").toString().replace(/[$,]/g, "");
       const amount = parseFloat(rawAmt);
       const category = row["Category"] || "";
-      return { date, merchant_name: merchant, amount: Math.abs(amount), category };
+      return { date, merchant_name: merchant, amount, category };
     },
   },
 };

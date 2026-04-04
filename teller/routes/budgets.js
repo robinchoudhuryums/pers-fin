@@ -161,11 +161,22 @@ router.post("/api/budgets/suggest", async (_req, res) => {
 
     let suggestions;
     try {
-      const text = message.content[0].text.trim();
+      let text = message.content[0].text.trim();
+      const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (fenceMatch) text = fenceMatch[1].trim();
       suggestions = JSON.parse(text);
-    } catch {
+    } catch (e) {
+      console.error("Budget AI parse error:", e.message, "| Raw:", message.content[0]?.text?.slice(0, 500));
       return res.status(500).json({ error: "Failed to parse AI response" });
     }
+
+    // Validate response schema: must be array of {category, monthly_limit}
+    if (!Array.isArray(suggestions)) {
+      return res.status(500).json({ error: "AI returned unexpected format (expected JSON array)" });
+    }
+    suggestions = suggestions.filter(s =>
+      s && typeof s.category === "string" && typeof s.monthly_limit === "number" && s.monthly_limit >= 0
+    );
 
     res.json({ suggestions, tokens_used: (message.usage?.input_tokens || 0) + (message.usage?.output_tokens || 0) });
   } catch (err) {

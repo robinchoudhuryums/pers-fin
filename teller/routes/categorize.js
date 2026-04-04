@@ -66,8 +66,9 @@ router.post("/api/categorize", async (_req, res) => {
       "SELECT insights_model FROM user_settings WHERE id = 1"
     ).catch(() => ({ rows: [{ insights_model: "haiku" }] }));
 
-    // Use haiku by default for categorization (cheaper)
-    const modelId = MODEL_MAP.haiku;
+    // Use user's preferred model for categorization (default haiku — cheaper)
+    const userModel = settingsRow.rows[0]?.insights_model || "haiku";
+    const modelId = MODEL_MAP[userModel] || MODEL_MAP.haiku;
 
     const txnList = result.rows.map((t, i) =>
       (i + 1) + ". " + t.merchant + " — $" + parseFloat(t.amount).toFixed(2) + " on " + t.date
@@ -99,9 +100,16 @@ router.post("/api/categorize", async (_req, res) => {
       return res.status(500).json({ error: "Failed to parse AI response" });
     }
 
+    // Validate response schema: must be an array of {index, category}
+    if (!Array.isArray(categories)) {
+      console.error("AI response not an array:", typeof categories);
+      return res.status(500).json({ error: "AI returned unexpected format (expected JSON array)" });
+    }
+
     // Apply categories to transactions
     let updated = 0;
     for (const cat of categories) {
+      if (!cat || typeof cat.index !== "number" || typeof cat.category !== "string") continue;
       const idx = cat.index - 1;
       if (idx < 0 || idx >= result.rows.length) continue;
       if (!CATEGORIES.includes(cat.category)) continue;

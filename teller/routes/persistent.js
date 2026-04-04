@@ -171,7 +171,7 @@ router.post("/api/sso/validate", ssoLimiter, async (req, res) => {
   try {
     const r = await pool.query("SELECT session_timeout_minutes FROM user_settings WHERE id = 1");
     if (r.rows.length) timeout = r.rows[0].session_timeout_minutes;
-  } catch {}
+  } catch (err) { console.error("SSO settings query error:", err.message); }
   req.session.authenticated = true;
   req.session.lastActivity = Date.now();
   req.session.timeoutMinutes = timeout;

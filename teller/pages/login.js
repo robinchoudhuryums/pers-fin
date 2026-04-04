@@ -24,7 +24,7 @@ router.get("/login", async (_req, res) => {
   try {
     const result = await pool.query("SELECT COUNT(*) AS cnt FROM webauthn_credentials");
     hasWebauthn = parseInt(result.rows[0].cnt) > 0;
-  } catch {}
+  } catch (err) { console.error("WebAuthn check error:", err.message); }
   res.render("login", { isPin: AUTH_MODE === "pin", authMode: AUTH_MODE, hasWebauthn });
 });
 

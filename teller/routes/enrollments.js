@@ -467,7 +467,7 @@ router.post("/api/sync-balances", async (_req, res) => {
           let balances = null;
           try {
             balances = await tellerRequest(`/accounts/${acct.id}/balances`, enrollment.access_token);
-          } catch {}
+          } catch (err) { console.error("Balance fetch error for", acct.id, ":", err.message); }
 
           const available = balances?.available || acct.balance?.available || null;
           const ledger = balances?.ledger || acct.balance?.ledger || acct.balance?.current || null;
