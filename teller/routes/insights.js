@@ -90,11 +90,16 @@ router.post("/api/insights", async (_req, res) => {
   try {
     const budgetCents = parseInt(process.env.INSIGHTS_MONTHLY_BUDGET_CENTS) || 50;
     const usageResult = await pool.query(
-      "SELECT tokens_used, model_used FROM financial_insights " +
+      "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights " +
       "WHERE created_at >= date_trunc('month', CURRENT_DATE)"
     ).catch(() => ({ rows: [] }));
     let estimatedCostCents = 0;
-    usageResult.rows.forEach(r => { estimatedCostCents += estimateCostUsd(r.tokens_used || 0, r.model_used) * 100; });
+    usageResult.rows.forEach(r => {
+      const cost = r.input_tokens
+        ? estimateCostGranular({ input_tokens: r.input_tokens, output_tokens: r.output_tokens, cache_read_input_tokens: r.cache_read_tokens || 0, cache_creation_input_tokens: r.cache_creation_tokens || 0 }, r.model_used)
+        : estimateCostUsd(r.tokens_used || 0, r.model_used);
+      estimatedCostCents += cost * 100;
+    });
     if (estimatedCostCents >= budgetCents) {
       return res.status(429).json({
         error: `Monthly AI budget reached ($${(estimatedCostCents / 100).toFixed(2)} of $${(budgetCents / 100).toFixed(2)} cap). Resets next month. Adjust INSIGHTS_MONTHLY_BUDGET_CENTS in .env to raise the limit.`,
@@ -559,13 +564,18 @@ router.post("/api/insights/rebuild", async (_req, res) => {
     return res.status(501).json({ error: "Set ANTHROPIC_API_KEY in .env to enable AI insights." });
   }
   try {
-    // Check monthly budget before calling Claude
+    // Check monthly budget before calling Claude (using granular cost if available)
     const budgetCents = parseInt(process.env.INSIGHTS_MONTHLY_BUDGET_CENTS) || 50;
     const usageResult = await pool.query(
-      "SELECT tokens_used, model_used FROM financial_insights WHERE created_at >= date_trunc('month', CURRENT_DATE)"
+      "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights WHERE created_at >= date_trunc('month', CURRENT_DATE)"
     ).catch(() => ({ rows: [] }));
     let estimatedCostCents = 0;
-    usageResult.rows.forEach(r => { estimatedCostCents += estimateCostUsd(r.tokens_used || 0, r.model_used) * 100; });
+    usageResult.rows.forEach(r => {
+      const cost = r.input_tokens
+        ? estimateCostGranular({ input_tokens: r.input_tokens, output_tokens: r.output_tokens, cache_read_input_tokens: r.cache_read_tokens || 0, cache_creation_input_tokens: r.cache_creation_tokens || 0 }, r.model_used)
+        : estimateCostUsd(r.tokens_used || 0, r.model_used);
+      estimatedCostCents += cost * 100;
+    });
     if (estimatedCostCents >= budgetCents) {
       return res.status(429).json({
         error: `Monthly AI budget reached ($${(estimatedCostCents / 100).toFixed(2)} of $${(budgetCents / 100).toFixed(2)} cap). Resets next month.`,
