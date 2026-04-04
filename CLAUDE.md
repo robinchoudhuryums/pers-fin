@@ -12,16 +12,18 @@ The server was modularized from a single 4,931-line file into focused modules:
 
 ```
 teller/
-  server.js              — Bootstrap, middleware, auth, route mounting (~200 lines)
+  server.js              — Bootstrap, middleware, auth, route mounting, scheduled tasks
+                           (insights auto-trigger, net worth snapshots, budget alerts,
+                           goal milestones, Sheets auto-sync)
   data/
     reference-data.js    — Static lookup tables: electricity rates, ZIP→state, spending
                            benchmarks, cancel URLs, category rules, AI model costs,
                            insight module definitions
     csv-formats.js       — CSV format detection (Chase, CapOne, Discover, WF, Schwab, generic)
   services/
-    database.js          — Postgres pool + auto-migrations (all tables/columns)
-    teller-api.js        — mTLS HTTP client for Teller API
-    keep-alive.js        — Self-ping to prevent Render free tier sleep
+    database.js          — Postgres pool + transactional auto-migrations with schema versioning
+    teller-api.js        — mTLS HTTP client for Teller API (retry with exponential backoff)
+    keep-alive.js        — Self-ping to prevent Render free tier sleep (with fetch timeout)
   routes/
     enrollments.js       — POST /api/enroll, POST /api/sync, GET /api/items,
                            DELETE /api/enrollments/:id, GET /api/accounts,
@@ -32,7 +34,9 @@ teller/
     subscriptions.js     — GET/POST /api/subscriptions, PATCH dismiss/undismiss/cancel/
                            uncancel/category, GET /api/transactions,
                            GET /api/transactions/search, POST /api/detect,
-                           POST /api/import-csv, GET /api/csv-imports, POST /api/cleanup
+                           POST /api/import-csv, GET /api/csv-imports, POST /api/cleanup,
+                           GET /api/recurring-transfers, POST /api/detect-transfers,
+                           PATCH /api/recurring-transfers/:id/dismiss|undismiss|type
     goals.js             — GET/POST/PATCH/DELETE /api/goals, POST /api/net-worth/snapshot,
                            GET /api/net-worth/history, GET /api/context-export,
                            GET/POST /api/investment-accounts
@@ -44,7 +48,9 @@ teller/
                            GET /api/insights/usage, POST /api/insights/reset,
                            POST /api/insights/rebuild, GET/PATCH /api/tax-deductions
     categorize.js        — POST /api/categorize, GET /api/categorize/status,
-                           PATCH /api/transactions/:id/category (ML categorization via Claude)
+                           PATCH /api/transactions/:id/category,
+                           PATCH /api/transactions/bulk-category
+                           (ML categorization via Claude tool_use structured output)
     investments.js       — GET /api/plaid/status, POST /api/plaid/link-token,
                            POST /api/plaid/exchange, POST /api/plaid/sync-holdings,
                            GET /api/plaid/holdings (Plaid investment accounts)
@@ -65,27 +71,33 @@ teller/
     calendar.js          — Bill calendar page showing upcoming subscription charges
     login.js             — PIN pad or password login page (with materialize animation)
     settings.js          — Settings page (theme, AI insights, keep-alive, Per-sistant, exports)
-    pwa.js               — PWA manifest.json + service worker + icon generation
+    pwa.js               — PWA manifest.json + icon generation (icons cached at startup)
   public/
     logo.svg             — Iron Man helmet SVG logo (traced from PNG, used as nav icon, PWA icon)
-    perfin-shared.css    — Shared styles (variables, nav, cards, animations, responsive)
-    perfin-shared.js     — Shared JavaScript (apiFetch, theme, nav helpers)
+    sw.js                — Service worker (network-first with offline cache fallback, push notifications)
+    perfin-shared.css    — Shared styles (variables, nav, cards, animations, responsive, focus-visible,
+                           skip-link, WCAG AA contrast-compliant text-muted colors)
+    perfin-shared.js     — Shared JavaScript (apiFetch, theme, nav helpers, asyncAction, btnLoading)
   views/
     dashboard.ejs        — Dashboard template with 3D financial wellness pyramid
     transactions.ejs     — Transaction search/filter template
     calendar.ejs         — Bill calendar template
     login.ejs            — Login template with helmet materialize animation on success
-    partials/head.ejs    — HTML head (meta, PWA manifest, apple-touch-icon, theme)
-    partials/nav.ejs     — Top navigation bar with helmet logo icon
-    partials/foot.ejs    — Footer partial
+    partials/head.ejs    — HTML head (meta, PWA manifest, apple-touch-icon, theme, skip-link)
+    partials/nav.ejs     — Top navigation bar with helmet logo icon, <main> landmark
+    partials/foot.ejs    — Footer partial (closes <main>)
 ```
 
 **Other key files:**
 - `plaid/server.js` — Legacy Plaid server (still functional)
-- `scripts/detect-subscriptions.js` — Recurring pattern detection (30/60/90/365-day cadences)
-- `scripts/sheets-sync.js` — Google Sheets sync (server-side push)
+- `scripts/detect-subscriptions.js` — Recurring subscription detection (30/60/90/365-day cadences)
+- `scripts/detect-transfers.js` — Recurring transfer detection (7/14/30/60/90/365-day cadences,
+  6 transfer types: peer_transfer, bill_payment, savings, investment, internal, other)
+- `scripts/sheets-sync.js` — Google Sheets sync (6 tabs: Transactions, Subscriptions,
+  AI Insights, Recurring Transfers, Tax Deductions, Dashboard)
 - `apps-script/Code.gs` — Google Sheets Apps Script (standalone + server sync)
-- `tests/` — 128 tests across 5 files (node:test runner, `npm test`)
+- `tests/` — 132 tests across 6 files (node:test runner, `npm test`)
+- `.github/workflows/ci.yml` — CI pipeline (runs tests on all PRs)
 - `Dockerfile`, `fly.toml`, `render.yaml` — Deployment configs
 
 ## Features
@@ -96,11 +108,14 @@ teller/
 - **CSV import**: Auto-detect Chase, Capital One, Discover, Wells Fargo, Schwab formats
 - **Transaction deduplication**: SHA256-based duplicate detection across CSV imports and API syncs
 - **Subscription detection**: Automatic recurring charge identification (30/60/90/365-day cadences)
+- **Recurring transfer detection**: Auto-detect Zelle, Venmo, bill payments, savings transfers,
+  investment contributions, ACH/wire (7/14/30/60/90/365-day cadences, outgoing/incoming split)
 - **Utility separation**: Utilities tracked separately from optional subscriptions
 - **Shared accounts**: Joint/shared card support with configurable spending split percentage
   (`is_shared`, `spending_split_pct` on linked_accounts, applied in all spending queries via SQL JOIN)
 - **Financial goals**: Track progress toward savings/investment targets with compound interest projections
-- **Net worth tracking**: Periodic snapshots with trend history
+  (logarithmic formula), milestone push notifications at 25/50/75/100%
+- **Net worth tracking**: Automated daily snapshots with trend history
 - **Credit utilization**: Derived credit limit display, utilization percentages
 - **Tax deduction persistence**: Flagged deductions stored in `tax_deductions` table, accumulated year-round
 
@@ -121,8 +136,10 @@ teller/
 - **Budget alerts**: Spending velocity/pacing warnings with severity levels (critical >100%, warning >90%, info >75%)
 
 ### AI & Intelligence
-- **ML categorization**: Claude-powered smart transaction categorization with bulk mode (POST /api/categorize)
-- **AI Insights** (11 toggleable modules):
+- **ML categorization**: Claude-powered smart transaction categorization via tool_use structured
+  output (POST /api/categorize). Respects user's model preference from settings.
+- **AI budget suggestions**: Claude suggests budgets based on 3-month spending history via tool_use.
+- **AI Insights** (12 toggleable modules, auto-triggered based on cadence setting):
   - Utility rate comparison (vs state/national averages, requires ZIP)
   - Spending benchmarks (vs BLS Consumer Expenditure Survey)
   - Savings & wealth-building suggestions
@@ -134,7 +151,14 @@ teller/
   - Income & savings rate analysis
   - Tax deduction flags (persistent year-round accumulation for tax filing)
   - Goal tracking (with real-world economic context)
+  - Recurring transfers (Zelle, bill payments, savings, investment patterns)
+- **AI context enrichment**: Insights prompt includes month-over-month trend deltas,
+  current budget status (spent vs limits), and recurring transfer data
+- **Auto-trigger**: Insights auto-generate based on `insights_cadence_days` setting (checked every 6 hours)
+- **Cost tracking**: Granular token-level pricing (input/output/cache) for accurate budget enforcement
 - **Context export**: Structured financial data (markdown/JSON) for pasting into Claude chat deep-dives
+- **Real-time anomaly alerts**: Push notifications for charges 3x+ above merchant average during sync
+- **Budget threshold alerts**: Push notifications at 90% (warning) and 100%+ (exceeded) every 3 hours
 
 ### UI & UX
 - **Authentication**: SESSION_PASSWORD (text) or SESSION_PIN (numeric PIN pad), configurable timeout
@@ -142,10 +166,16 @@ teller/
 - **Branding**: Iron Man helmet logo (SVG traced from PNG) — nav bar icon (CSS mask), PWA icon, login page
 - **Dark/Light theme**: Toggle in Settings, persisted to DB + localStorage
 - **PWA**: Installable home screen app (manifest.json + service worker, helmet icon centered on home screen)
-- **Web Push notifications**: VAPID-based push notifications for alerts
-- **Keep-alive**: Timezone-aware self-ping to prevent Render free tier sleep
-- **Per-model cost tracking**: Usage history with dynamic pricing (Haiku/Sonnet/Opus)
-- **Google Sheets sync**: Auto-sync transactions and dashboard data to Google Sheets
+- **Web Push notifications**: VAPID-based push notifications for anomalies, budget alerts,
+  goal milestones
+- **Accessibility**: Skip-to-content link, `<main>` landmark, chart aria-labels, :focus-visible
+  styles, WCAG AA contrast-compliant text colors
+- **CSP nonces**: Per-request cryptographic nonces for all inline scripts (no 'unsafe-inline')
+- **Keep-alive**: Timezone-aware self-ping to prevent Render free tier sleep (10s timeout)
+- **Per-model cost tracking**: Usage history with granular pricing (Haiku/Sonnet/Opus)
+- **Google Sheets sync**: Auto-sync to 6 tabs — Transactions, Subscriptions, AI Insights,
+  Recurring Transfers, Tax Deductions, Dashboard (with net worth, budgets, goals, conditional
+  formatting for over-budget categories)
 
 ### Per-sistant Integration (Companion App)
 - **Cross-app SSO**: HMAC-signed token exchange (60-second expiry) for seamless auth between apps
@@ -186,18 +216,23 @@ cd teller && npm install && node server.js
 - Env vars configured in Render dashboard
 - PEM files added as Secret Files in Render
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 128 tests passing across 5 test files
+- 132 tests passing across 6 test files
 
 ## Commands
 ```bash
 cd teller && npm install && node server.js    # Run locally
-npm test                                       # Run 128 tests
+npm test                                       # Run 132 tests
 
 # Key API endpoints
 POST /api/enroll           # store Teller access token after Connect
 POST /api/sync             # pull transactions for all enrollments
 POST /api/sync-balances    # fetch latest account balances
 POST /api/detect           # run subscription detection
+POST /api/detect-transfers # run recurring transfer detection
+GET  /api/recurring-transfers # list recurring transfers (query: filter=active|dismissed|all)
+PATCH /api/recurring-transfers/:id/dismiss   # dismiss a recurring transfer
+PATCH /api/recurring-transfers/:id/undismiss # restore a dismissed transfer
+PATCH /api/recurring-transfers/:id/type      # reclassify transfer type
 GET  /api/transactions     # list transactions (query: months, limit, offset)
 GET  /api/transactions/search # search/filter (query: q, category, account_id, min/max_amount, start/end_date)
 GET  /api/subscriptions    # list detected subscriptions
@@ -229,9 +264,10 @@ GET  /api/insights/status  # AI API config + usage stats
 GET  /api/insights/usage   # AI usage history
 POST /api/insights/reset   # clear long-term AI context
 POST /api/insights/rebuild # rebuild context from all history
-POST /api/categorize       # ML categorize transactions via Claude (bulk support)
+POST /api/categorize       # ML categorize transactions via Claude (tool_use structured output)
 GET  /api/categorize/status # ML categorization status
 PATCH /api/transactions/:id/category # manually set transaction category
+PATCH /api/transactions/bulk-category # bulk update categories
 POST /api/import-csv       # import bank CSV file (with deduplication)
 GET  /api/csv-imports      # list CSV import history
 GET  /api/export           # download transactions/subscriptions CSV
@@ -284,17 +320,53 @@ GET  /health               # health check
 - `SSO_SECRET` — shared HMAC secret for cross-app SSO token exchange
 
 ## Database
-- Auto-migration runs on server startup — no manual SQL needed
+- Auto-migration runs on server startup in a transaction (BEGIN/COMMIT/ROLLBACK) — no manual SQL needed
+- Schema versioning via `schema_migrations` table (current version: 2)
 - Schema files in `db/` for reference only
 - Key tables: `teller_enrollments`, `linked_accounts`, `transactions`, `detected_subscriptions`,
-  `user_settings` (single-row), `financial_insights`, `financial_goals`, `net_worth_snapshots`,
-  `tax_deductions`, `csv_imports`
+  `recurring_transfers`, `user_settings` (single-row), `financial_insights`, `financial_goals`,
+  `net_worth_snapshots`, `tax_deductions`, `csv_imports`, `budgets`, `push_subscriptions`,
+  `webauthn_credentials`, `investment_accounts`, `investment_holdings`, `plaid_investment_items`,
+  `schema_migrations`
 - `user_settings`: single-row pattern (CHECK id = 1) for app preferences
 - `linked_accounts` columns include: `is_shared BOOLEAN`, `spending_split_pct INT DEFAULT 100`,
   `is_manual BOOLEAN` — constraint `chk_account_source` allows `plaid_item_id IS NOT NULL OR
   teller_enrollment_id IS NOT NULL OR is_manual = true`
 - `user_settings` includes Per-sistant config: `persistent_url TEXT`, `persistent_webhook_secret TEXT`,
   `persistent_webhook_enabled BOOLEAN`
+
+## Recurring Transfer Detection
+Transfers are identified by keyword matching on merchant_name/name fields:
+- **peer_transfer**: zelle, venmo, cash app, paypal
+- **bill_payment**: autopay, minimum payment, credit card payment, loan payment, mortgage payment
+- **savings**: savings, emergency fund
+- **investment**: vanguard, fidelity, schwab, robinhood, betterment, 401k
+- **internal**: funds transfer, ach transfer, wire transfer, online transfer
+- Detection algorithm reuses subscription detection gap analysis (findModeAmount, addDays)
+  with wider 15% amount tolerance and 7/14-day cadences for weekly/biweekly patterns
+- Outgoing and incoming transactions analyzed as separate streams
+- Outgoing recurring transfers integrated into cash flow forecast
+
+## Security
+- **CSP nonces**: Per-request `crypto.randomBytes(16)` nonce for all inline scripts.
+  No `'unsafe-inline'` in `scriptSrc`. Nonce passed via `res.locals.nonce` to EJS templates.
+- **CORS**: Rejects cross-origin requests when `ALLOWED_ORIGINS` not configured
+- **API key**: Header-only (`X-API-Key`), no query string support
+- **Token encryption**: pgcrypto `pgp_sym_encrypt` for Teller/Plaid access tokens at rest
+- **Session**: Secure cookies, pgSession store, configurable timeout, CSRF custom header check
+- **Rate limiting**: General (100/15min), tight (5/1min) for sync/detect, login (10/15min),
+  SSO validate (10/15min)
+- **Teller API**: mTLS client certificates, retry with exponential backoff (1s/2s/4s), 30s timeout
+- **Subscription matching**: Word boundary regex to prevent false positives
+
+## Scheduled Tasks (server.js intervals)
+All run automatically after server startup:
+- **Keep-alive ping**: every 14 min (timezone-aware active hours, 10s timeout)
+- **Sheets auto-sync**: every 1 hour (daily/weekly/monthly cadence from settings)
+- **Net worth snapshot**: every 1 hour (one per day, skips if exists)
+- **Goal milestones**: every 6 hours (push notifications at 25/50/75/100%)
+- **AI insights auto-trigger**: every 6 hours (respects `insights_cadence_days` setting)
+- **Budget alerts**: every 3 hours (push notifications at 90% and 100%+ thresholds)
 
 ## Shared Account Spending Split
 All spending queries apply the split percentage for shared/joint accounts via SQL JOIN:
@@ -324,5 +396,8 @@ Income is identified by keyword matching on transaction descriptions (NOT amount
 
 ## Priority Next Features
 1. **Mobile app** — React Native or Capacitor wrapper for native experience
-2. **Recurring transfer tracking** — Auto-detect and categorize recurring transfers between accounts
-3. **Multi-user support** — Shared household finance tracking with role-based access
+2. **Multi-user support** — Shared household finance tracking with role-based access
+3. **AI recommendation tracking** — Track which past suggestions were implemented/dismissed,
+   create feedback loop for future insights
+4. **Structured running summary** — Replace plain-text AI memory with categorized JSON
+   (trends, completed goals, pending actions, alerts)
