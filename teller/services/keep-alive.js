@@ -46,9 +46,9 @@ function startKeepAlive(port) {
       return;
     }
     try {
-      await fetch(pingUrl);
+      await fetch(pingUrl, { signal: AbortSignal.timeout(10000) });
     } catch {
-      // Silently ignore
+      // Silently ignore — ping failures are expected when server is waking up
     }
   }, INTERVAL);
   keepAliveInterval.unref(); // Don't prevent process exit

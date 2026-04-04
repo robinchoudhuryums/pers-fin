@@ -132,7 +132,14 @@ function categorizeSubscription(merchantName) {
   if (!merchantName) return "other";
   const lower = merchantName.toLowerCase();
   for (const [category, keywords] of Object.entries(CATEGORY_RULES)) {
-    if (keywords.some(kw => lower.includes(kw))) return category;
+    if (keywords.some(kw => {
+      // Multi-word keywords: use simple includes (e.g. "apple tv", "planet fitness")
+      if (kw.includes(" ")) return lower.includes(kw);
+      // Single-word keywords: match word boundaries to avoid partial matches
+      // (e.g. "visa" shouldn't match "supervision")
+      const re = new RegExp("\\b" + kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b");
+      return re.test(lower);
+    })) return category;
   }
   return "other";
 }
@@ -141,7 +148,13 @@ function findCancelUrl(merchantName) {
   if (!merchantName) return null;
   const lower = merchantName.toLowerCase();
   for (const [key, url] of Object.entries(CANCEL_URLS)) {
-    if (lower.includes(key)) return url;
+    // Use word boundary matching to avoid partial matches
+    if (key.includes(" ")) {
+      if (lower.includes(key)) return url;
+    } else {
+      const re = new RegExp("\\b" + key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b");
+      if (re.test(lower)) return url;
+    }
   }
   return null;
 }

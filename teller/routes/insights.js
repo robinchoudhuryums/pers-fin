@@ -497,6 +497,20 @@ router.post("/api/insights/rebuild", async (_req, res) => {
     return res.status(501).json({ error: "Set ANTHROPIC_API_KEY in .env to enable AI insights." });
   }
   try {
+    // Check monthly budget before calling Claude
+    const budgetCents = parseInt(process.env.INSIGHTS_MONTHLY_BUDGET_CENTS) || 50;
+    const usageResult = await pool.query(
+      "SELECT tokens_used, model_used FROM financial_insights WHERE created_at >= date_trunc('month', CURRENT_DATE)"
+    ).catch(() => ({ rows: [] }));
+    let estimatedCostCents = 0;
+    usageResult.rows.forEach(r => { estimatedCostCents += estimateCostUsd(r.tokens_used || 0, r.model_used) * 100; });
+    if (estimatedCostCents >= budgetCents) {
+      return res.status(429).json({
+        error: `Monthly AI budget reached ($${(estimatedCostCents / 100).toFixed(2)} of $${(budgetCents / 100).toFixed(2)} cap). Resets next month.`,
+        budget_cents: budgetCents,
+      });
+    }
+
     const [allInsights, settingsRow] = await Promise.all([
       pool.query("SELECT insight_text, created_at FROM financial_insights ORDER BY created_at ASC"),
       pool.query("SELECT insights_model FROM user_settings WHERE id = 1").catch(() => ({ rows: [{ insights_model: "sonnet" }] })),
