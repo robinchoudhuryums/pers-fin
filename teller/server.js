@@ -389,6 +389,83 @@ runMigrations().then(() => {
         console.error("Goal milestone check error:", err.message);
       }
     }, 6 * 60 * 60 * 1000); // Check every 6 hours
+
+    // Auto-trigger AI insights based on cadence setting (checks every 6 hours)
+    setInterval(async () => {
+      try {
+        if (!process.env.ANTHROPIC_API_KEY) return;
+        const settings = await pool.query(
+          "SELECT insights_enabled, insights_cadence_days, insights_last_run FROM user_settings WHERE id = 1"
+        );
+        const s = settings.rows[0];
+        if (!s || !s.insights_enabled) return;
+        const cadenceDays = s.insights_cadence_days || 30;
+        const lastRun = s.insights_last_run ? new Date(s.insights_last_run) : null;
+        const now = new Date();
+        if (!lastRun || (now - lastRun) / 86400000 >= cadenceDays) {
+          // Trigger insights generation via internal fetch
+          const port = process.env.PORT || 3000;
+          try {
+            const r = await fetch(`http://localhost:${port}/api/insights`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
+            });
+            if (r.ok) console.log("Auto-triggered AI insights (cadence: " + cadenceDays + " days).");
+            else console.log("Auto-trigger insights skipped:", (await r.json()).error);
+          } catch (err) { console.error("Auto-trigger insights fetch error:", err.message); }
+        }
+      } catch (err) {
+        console.error("Insights auto-trigger error:", err.message);
+      }
+    }, 6 * 60 * 60 * 1000); // Check every 6 hours
+
+    // Budget alert push notifications (checks every 3 hours)
+    setInterval(async () => {
+      try {
+        const [budgets, spending] = await Promise.all([
+          pool.query("SELECT category, monthly_limit FROM budgets"),
+          pool.query(
+            `SELECT COALESCE(t.category[1], 'Uncategorized') AS category,
+                    ROUND(SUM(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0), 2) AS spent
+             FROM transactions t
+             LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+             WHERE t.amount > 0 AND t.pending = false
+               AND t.date >= date_trunc('month', CURRENT_DATE)
+               AND t.date < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
+             GROUP BY COALESCE(t.category[1], 'Uncategorized')`
+          ),
+        ]);
+        if (budgets.rows.length === 0) return;
+        const spendMap = {};
+        for (const r of spending.rows) spendMap[r.category] = parseFloat(r.spent);
+
+        const { sendToAll } = require("./routes/notifications");
+        for (const b of budgets.rows) {
+          const spent = spendMap[b.category] || 0;
+          const limit = parseFloat(b.monthly_limit);
+          if (limit <= 0) continue;
+          const pct = Math.round((spent / limit) * 100);
+          // Only notify at 90% and 100% thresholds
+          if (pct >= 100) {
+            await sendToAll({
+              title: "Budget exceeded: " + b.category,
+              body: "$" + spent.toFixed(2) + " spent of $" + limit.toFixed(2) + " budget (" + pct + "%)",
+              tag: "budget-over-" + b.category.toLowerCase().replace(/\s+/g, "-"),
+              data: { url: "/budgets" },
+            });
+          } else if (pct >= 90) {
+            await sendToAll({
+              title: "Budget warning: " + b.category,
+              body: "$" + spent.toFixed(2) + " of $" + limit.toFixed(2) + " (" + pct + "% — approaching limit)",
+              tag: "budget-warn-" + b.category.toLowerCase().replace(/\s+/g, "-"),
+              data: { url: "/budgets" },
+            });
+          }
+        }
+      } catch (err) {
+        console.error("Budget alert notification error:", err.message);
+      }
+    }, 3 * 60 * 60 * 1000); // Check every 3 hours
   });
 
   // --- Graceful shutdown ---

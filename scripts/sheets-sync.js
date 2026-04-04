@@ -477,6 +477,14 @@ async function buildDashboard(sheets, pool) {
     ORDER BY b.monthly_limit DESC
   `);
 
+  // Financial goals
+  const { rows: goalsData } = await pool.query(`
+    SELECT name, type, target_amount, current_amount, monthly_contribution, target_date
+    FROM financial_goals
+    WHERE is_active = true
+    ORDER BY target_amount DESC
+  `);
+
   // Recurring transfers summary
   const { rows: transferSummary } = await pool.query(`
     SELECT transfer_type, direction,
@@ -574,10 +582,12 @@ async function buildDashboard(sheets, pool) {
   }
 
   // Budget status
+  let budgetStartRow = -1;
   if (budgetData.length > 0) {
     rows.push([]);
     rows.push(["BUDGET STATUS (Current Month)", "", "", ""]);
     rows.push(["Category", "Spent", "Budget", "% Used"]);
+    budgetStartRow = rows.length; // first data row (after header)
     for (const b of budgetData) {
       const spent = parseFloat(b.spent);
       const limit = parseFloat(b.monthly_limit);
@@ -597,6 +607,25 @@ async function buildDashboard(sheets, pool) {
         t.direction,
         parseInt(t.count),
         fmtCurrency(t.monthly_total),
+      ]);
+    }
+  }
+
+  // Financial goals
+  if (goalsData.length > 0) {
+    rows.push([]);
+    rows.push(["FINANCIAL GOALS", "", "", "", ""]);
+    rows.push(["Goal", "Current", "Target", "% Complete", "Monthly Contribution"]);
+    for (const g of goalsData) {
+      const current = parseFloat(g.current_amount);
+      const target = parseFloat(g.target_amount);
+      const pct = target > 0 ? Math.round((current / target) * 100) : 0;
+      rows.push([
+        g.name,
+        current,
+        target,
+        pct + "%",
+        parseFloat(g.monthly_contribution || 0),
       ]);
     }
   }
@@ -714,6 +743,7 @@ async function buildDashboard(sheets, pool) {
       "NET WORTH HISTORY",
       "BUDGET STATUS (Current Month)",
       "RECURRING TRANSFERS SUMMARY",
+      "FINANCIAL GOALS",
     ];
     for (let r = 0; r < rows.length; r++) {
       if (rows[r][0] && sectionHeaderKeywords.includes(rows[r][0])) {
@@ -779,6 +809,36 @@ async function buildDashboard(sheets, pool) {
           },
         });
       }
+    }
+
+    // Budget conditional formatting: red for over-budget, yellow for 80%+
+    if (budgetStartRow >= 0 && budgetData.length > 0) {
+      requests.push(
+        {
+          addConditionalFormatRule: {
+            rule: {
+              ranges: [{ sheetId, startRowIndex: budgetStartRow, endRowIndex: budgetStartRow + budgetData.length, startColumnIndex: 0, endColumnIndex: 4 }],
+              booleanRule: {
+                condition: { type: "CUSTOM_FORMULA", values: [{ userEnteredValue: `=$B${budgetStartRow + 1}>=$C${budgetStartRow + 1}` }] },
+                format: { backgroundColor: { red: 0.96, green: 0.85, blue: 0.85 } },
+              },
+            },
+            index: 0,
+          },
+        },
+        {
+          addConditionalFormatRule: {
+            rule: {
+              ranges: [{ sheetId, startRowIndex: budgetStartRow, endRowIndex: budgetStartRow + budgetData.length, startColumnIndex: 0, endColumnIndex: 4 }],
+              booleanRule: {
+                condition: { type: "CUSTOM_FORMULA", values: [{ userEnteredValue: `=AND($B${budgetStartRow + 1}>=$C${budgetStartRow + 1}*0.8,$B${budgetStartRow + 1}<$C${budgetStartRow + 1})` }] },
+                format: { backgroundColor: { red: 1, green: 0.96, blue: 0.85 } },
+              },
+            },
+            index: 1,
+          },
+        }
+      );
     }
 
     // Hide gridlines for cleaner look
@@ -997,6 +1057,113 @@ async function syncRecurringTransfers(sheets, pool) {
 }
 
 // ---------------------------------------------------------------------------
+// Sync Tax Deductions
+// ---------------------------------------------------------------------------
+async function syncTaxDeductions(sheets, pool) {
+  console.log("Syncing tax deductions to Google Sheets...");
+
+  const year = new Date().getFullYear();
+  const { rows } = await pool.query(
+    `SELECT merchant, amount, category, deduction_type, is_confirmed, notes, flagged_at
+     FROM tax_deductions
+     WHERE tax_year = $1
+     ORDER BY amount DESC`,
+    [year]
+  );
+
+  const SHEET_TAX = "Tax Deductions " + year;
+  await ensureSheet(sheets, SHEET_TAX);
+
+  const headers = ["Merchant", "Amount", "Category", "Type", "Confirmed", "Notes", "Flagged"];
+  const total = rows.reduce((s, r) => s + parseFloat(r.amount), 0);
+  const confirmed = rows.filter(r => r.is_confirmed);
+  const confirmedTotal = confirmed.reduce((s, r) => s + parseFloat(r.amount), 0);
+
+  const data = rows.map(r => [
+    r.merchant, fmtCurrency(r.amount), r.category || "",
+    r.deduction_type || "", r.is_confirmed ? "Yes" : "No",
+    r.notes || "", fmtDate(r.flagged_at),
+  ]);
+
+  // Add summary row
+  data.push([]);
+  data.push(["TOTAL (all flagged)", total, "", "", "", "", ""]);
+  data.push(["TOTAL (confirmed)", confirmedTotal, "", "", confirmed.length + " items", "", ""]);
+
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_TAX}!A:Z`,
+  });
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_TAX}!A1`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [headers, ...data] },
+  });
+
+  const sheetId = await getSheetId(sheets, SHEET_TAX);
+  if (sheetId !== null) {
+    const requests = [
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
+          cell: {
+            userEnteredFormat: {
+              textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 }, fontSize: 11 },
+              backgroundColor: { red: 0.4, green: 0.27, blue: 0.17 },
+            },
+          },
+          fields: "userEnteredFormat(textFormat,backgroundColor)",
+        },
+      },
+      {
+        updateSheetProperties: {
+          properties: { sheetId, gridProperties: { frozenRowCount: 1 } },
+          fields: "gridProperties.frozenRowCount",
+        },
+      },
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: 1, startColumnIndex: 1, endColumnIndex: 2 },
+          cell: { userEnteredFormat: { numberFormat: { type: "CURRENCY", pattern: "$#,##0.00" } } },
+          fields: "userEnteredFormat.numberFormat",
+        },
+      },
+      {
+        autoResizeDimensions: {
+          dimensions: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 7 },
+        },
+      },
+    ];
+
+    // Highlight confirmed rows green
+    if (rows.length > 0) {
+      requests.push({
+        addConditionalFormatRule: {
+          rule: {
+            ranges: [{ sheetId, startRowIndex: 1, endRowIndex: rows.length + 1, startColumnIndex: 0, endColumnIndex: 7 }],
+            booleanRule: {
+              condition: { type: "CUSTOM_FORMULA", values: [{ userEnteredValue: `=$E2="Yes"` }] },
+              format: { backgroundColor: { red: 0.88, green: 0.95, blue: 0.88 } },
+            },
+          },
+          index: 0,
+        },
+      });
+    }
+
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SPREADSHEET_ID,
+      requestBody: { requests },
+    });
+  }
+
+  console.log(`  ${rows.length} tax deductions written.`);
+  return rows.length;
+}
+
+// ---------------------------------------------------------------------------
 // API endpoint handler (called from server.js)
 // ---------------------------------------------------------------------------
 async function syncAll() {
@@ -1008,6 +1175,7 @@ async function syncAll() {
     const subs = await syncSubscriptions(sheets, pool);
     const insightsCount = await syncInsights(sheets, pool);
     const transfersCount = await syncRecurringTransfers(sheets, pool);
+    const taxCount = await syncTaxDeductions(sheets, pool);
     await buildDashboard(sheets, pool);
 
     return {
@@ -1015,6 +1183,7 @@ async function syncAll() {
       subscriptions_synced: subs.length,
       insights_synced: insightsCount,
       transfers_synced: transfersCount,
+      tax_deductions_synced: taxCount,
       timestamp: new Date().toISOString(),
     };
   } finally {
