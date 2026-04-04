@@ -106,8 +106,8 @@ function parseDate(dateStr) {
   return isoDate;
 }
 
-function csvTransactionId(accountLabel, date, amount, merchant, rowIdx) {
-  const raw = `${accountLabel}|${date}|${amount}|${merchant || ""}|${rowIdx}`;
+function csvTransactionId(accountLabel, date, amount, merchant) {
+  const raw = `${accountLabel}|${date}|${amount}|${merchant || ""}`;
   return "csv_" + crypto.createHash("sha256").update(raw).digest("hex");
 }
 

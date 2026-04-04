@@ -145,7 +145,12 @@ router.post("/api/sso/generate", (req, res) => {
   res.json({ token: `${payload}:${signature}`, expires_in: 60 });
 });
 
-router.post("/api/sso/validate", async (req, res) => {
+const ssoLimiter = require("express-rate-limit")({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: { error: "Too many SSO attempts, please try again later." },
+});
+router.post("/api/sso/validate", ssoLimiter, async (req, res) => {
   if (!AUTH_SECRET) return res.status(400).json({ error: "Auth not configured." });
   const { token } = req.body;
   if (!token) return res.status(400).json({ error: "Token required." });

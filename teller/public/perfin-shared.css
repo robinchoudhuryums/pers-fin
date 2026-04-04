@@ -204,6 +204,16 @@ tr:hover { background: var(--surface); }
 .setting-info .desc { font-size: 12px; color: var(--text-muted); font-weight: 300; }
 .setting-control { flex-shrink: 0; margin-left: 20px; }
 
+/* Focus indicators for keyboard navigation */
+.btn:focus-visible, .btn-sm:focus-visible, .actions button:focus-visible, .actions select:focus-visible {
+  outline: 2px solid var(--warm); outline-offset: 2px;
+}
+a:focus-visible { outline: 2px solid var(--warm); outline-offset: 2px; }
+.toggle input:focus-visible + .slider { outline: 2px solid var(--warm); outline-offset: 2px; }
+input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--warm); outline-offset: 1px;
+}
+
 /* Responsive */
 /* Table horizontal scroll wrapper */
 .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }

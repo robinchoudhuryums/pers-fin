@@ -124,7 +124,7 @@ router.post("/api/webauthn/register", async (req, res) => {
     const credentialIdBase64 = Buffer.from(credential.id).toString("base64url");
     const publicKeyBase64 = Buffer.from(credential.publicKey).toString("base64url");
 
-    const deviceName = req.body.deviceName || credentialDeviceType || "Biometric Device";
+    const deviceName = (req.body.deviceName || credentialDeviceType || "Biometric Device").slice(0, 100);
 
     await pool.query(
       `INSERT INTO webauthn_credentials (credential_id, public_key, counter, device_name)
