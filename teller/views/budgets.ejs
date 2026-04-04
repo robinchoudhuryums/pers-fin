@@ -57,7 +57,7 @@
   <div id="suggest-container" style="display:none;"></div>
   <div id="budgets-list"><div style="color:var(--text-muted);font-size:13px;">Loading...</div></div>
 <%- include('partials/foot', { apiKey: apiKey }) %>
-  <script>
+  <script nonce="<%= nonce %>">
     function toggleForm() {
       var f = document.getElementById('add-form');
       f.style.display = f.style.display === 'none' ? 'block' : 'none';

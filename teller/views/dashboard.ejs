@@ -502,8 +502,8 @@
 
 <%- include('partials/foot', { apiKey: apiKey }) %>
   <script src="/vendor/chart.umd.js"></script>
-  <script>if(typeof Chart==='undefined'){var s=document.createElement('script');s.src='/vendor/chart.umd.js?v=<%= v %>';document.head.appendChild(s);}</script>
-  <script>
+  <script nonce="<%= nonce %>">if(typeof Chart==='undefined'){var s=document.createElement('script');s.src='/vendor/chart.umd.js?v=<%= v %>';document.head.appendChild(s);}</script>
+  <script nonce="<%= nonce %>">
     const barColors = ['#c8856c','#d4a574','#5a8f8f','#6fcf97','#7fb5e6','#f0c36d','#eb6b6b','#b07cc6','#e8a87c','#85dcb0','#7bb5d4','#d4a0a0','#9fd4c9','#c4b28f','#a8c3d4'];
 
     // Build true 3D pyramid geometry — frustum layers with trapezoidal faces
@@ -671,7 +671,7 @@
             '<div class="acct-balance ' + balClass + '">' + balDisplay + '</div>' +
             '<div class="acct-type">' + esc(a.subtype || a.type || '') + '</div>' +
             creditExtra +
-            ((a.is_manual || a.provider === 'manual') ? '<button class="btn-sm" onclick="editManualBalance(' + a.id + ')" style="margin-top:4px;font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--warm);cursor:pointer;font-family:inherit;">Update Balance</button>' : '') +
+            ((a.is_manual || a.provider === 'manual') ? '<button class="btn-sm" data-edit-balance="' + a.id + '" style="margin-top:4px;font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--warm);cursor:pointer;font-family:inherit;">Update Balance</button>' : '') +
             (a.is_shared ? '<div style="margin-top:6px;font-size:10px;color:var(--teal);">Shared \u2022 Your split: ' + (a.spending_split_pct || 100) + '%</div>' : '') +
             '<button data-shared-toggle="' + a.id + '" style="margin-top:4px;font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text-muted);cursor:pointer;font-family:inherit;">' + (a.is_shared ? 'Edit Split' : 'Mark Shared') + '</button>' +
           '</div>';
@@ -920,6 +920,9 @@
     });
     onDelegate('accounts-grid', 'click', 'button[data-shared-toggle]', function() {
       toggleShared(parseInt(this.dataset.sharedToggle));
+    });
+    onDelegate('accounts-grid', 'click', 'button[data-edit-balance]', function() {
+      editManualBalance(parseInt(this.dataset.editBalance));
     });
 
     // Initialize
