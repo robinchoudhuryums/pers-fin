@@ -49,11 +49,36 @@
       btn._origText = btn.textContent;
       btn.disabled = true;
       btn.classList.add('btn-loading');
+      // Disable sibling buttons in the same action bar to prevent double-submits
+      var parent = btn.closest('.actions');
+      if (parent) {
+        parent.querySelectorAll('button, select').forEach(function(el) {
+          if (el !== btn) { el._wasDisabled = el.disabled; el.disabled = true; }
+        });
+      }
     } else {
       btn.disabled = false;
       btn.classList.remove('btn-loading');
       btn.textContent = originalText || btn._origText || btn.textContent;
+      var parent = btn.closest('.actions');
+      if (parent) {
+        parent.querySelectorAll('button, select').forEach(function(el) {
+          if (el !== btn) el.disabled = el._wasDisabled || false;
+        });
+      }
     }
+  }
+
+  // --- Async action wrapper: handles loading state + error display ---
+  function asyncAction(btn, fn) {
+    if (btn.disabled) return;
+    btnLoading(btn, true);
+    Promise.resolve(fn()).then(function() {
+      btnLoading(btn, false);
+    }).catch(function(err) {
+      btnLoading(btn, false);
+      showMsg(err.message || 'An error occurred', false);
+    });
   }
 
   // --- Formatters ---
@@ -99,6 +124,7 @@
   win.fmt = fmt;
   win.fmtDate = fmtDate;
   win.fmtMonth = fmtMonth;
+  win.asyncAction = asyncAction;
   win.registerSW = registerSW;
   win.bindEvents = bindEvents;
   win.onDelegate = onDelegate;

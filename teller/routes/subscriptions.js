@@ -383,7 +383,7 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
         const date = parseDate(parsed.date);
         if (!date || isNaN(parsed.amount) || parsed.amount === 0) { skipped++; continue; }
 
-        const txnId = csvTransactionId(accountLabel, date, parsed.amount, parsed.merchant_name, i);
+        const txnId = csvTransactionId(accountLabel, date, parsed.amount, parsed.merchant_name);
 
         const result = await client.query(
           `INSERT INTO transactions (account_id, transaction_id, amount, date, merchant_name, name, category, pending)

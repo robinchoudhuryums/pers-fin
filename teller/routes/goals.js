@@ -21,15 +21,25 @@ router.get("/api/goals", async (_req, res) => {
       let months_to_goal = null;
       if (monthly > 0 && remaining > 0) {
         if (rate > 0) {
-          let bal = current; let m = 0;
-          while (bal < target && m < 1200) { bal = bal * (1 + rate) + monthly; m++; }
-          months_to_goal = m;
+          // Compound interest formula: n = ln((FV*r + PMT) / (PV*r + PMT)) / ln(1 + r)
+          // where FV = target, PV = current, PMT = monthly, r = monthly rate
+          const numerator = Math.log((target * rate + monthly) / (current * rate + monthly));
+          const denominator = Math.log(1 + rate);
+          months_to_goal = denominator > 0 ? Math.ceil(numerator / denominator) : Math.ceil(remaining / monthly);
+          // Clamp to reasonable max (100 years)
+          if (months_to_goal > 1200 || months_to_goal < 0) months_to_goal = null;
         } else {
           months_to_goal = Math.ceil(remaining / monthly);
         }
       }
-      return { ...g, percent_complete: pct, remaining, months_to_goal,
-        estimated_date: months_to_goal ? new Date(Date.now() + months_to_goal * 30.44 * 86400000).toISOString().split("T")[0] : null };
+      // Calculate estimated date using proper month addition
+      let estimated_date = null;
+      if (months_to_goal) {
+        const d = new Date();
+        d.setMonth(d.getMonth() + months_to_goal);
+        estimated_date = d.toISOString().split("T")[0];
+      }
+      return { ...g, percent_complete: pct, remaining, months_to_goal, estimated_date };
     });
     res.json(goals);
   } catch (err) {

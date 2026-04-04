@@ -94,7 +94,7 @@ function requireAuth(req, res, next) {
   if (["/login", "/api/login", "/api/webauthn/authenticate-options", "/api/webauthn/authenticate", "/manifest.json", "/sw.js", "/health", "/api/keep-alive-schedule", "/apple-touch-icon.svg", "/apple-touch-icon.png", "/logo.svg", "/api/sso/validate", "/api/perfin/webhook"].includes(req.path)) return next();
   if (req.path.endsWith(".css") || req.path.endsWith(".js")) return next();
   // Allow API key authenticated requests through (validated later in API key middleware)
-  if (req.path.startsWith("/api/") && (req.headers["x-api-key"] || req.query.api_key)) return next();
+  if (req.path.startsWith("/api/") && req.headers["x-api-key"]) return next();
   if (req.session && req.session.authenticated) {
     const timeout = (req.session.timeoutMinutes || 15) * 60 * 1000;
     if (Date.now() - req.session.lastActivity < timeout) {
@@ -121,8 +121,7 @@ app.use("/api", (req, res, next) => {
   // Also allow requests with JSON content type (also triggers CORS preflight)
   if ((req.headers["content-type"] || "").startsWith("application/json")) return next();
   // Allow API key authenticated requests (e.g., external tools)
-  const apiKey = req.headers["x-api-key"] || req.query.api_key;
-  if (apiKey) return next();
+  if (req.headers["x-api-key"]) return next();
   return res.status(403).json({ error: "CSRF validation failed. Include X-Requested-With header." });
 });
 
@@ -154,9 +153,10 @@ const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
   : [];
 app.use(cors({
   origin: (origin, cb) => {
-    if (!origin || ALLOWED_ORIGINS.length === 0 || ALLOWED_ORIGINS.includes(origin)) {
-      return cb(null, true);
-    }
+    // Allow same-origin requests (no origin header) always.
+    // If ALLOWED_ORIGINS is not configured, only same-origin requests are allowed.
+    if (!origin) return cb(null, true);
+    if (ALLOWED_ORIGINS.length > 0 && ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
     cb(new Error("Not allowed by CORS"));
   },
   credentials: true,
@@ -191,7 +191,7 @@ app.use("/api", (req, res, next) => {
   if (!API_KEY) return next();
   if (req.path === "/login" || req.path === "/logout") return next();
   if (req.session && req.session.authenticated) return next();
-  const provided = req.headers["x-api-key"] || req.query.api_key;
+  const provided = req.headers["x-api-key"];
   const providedBuf = Buffer.from(provided || "");
   const keyBuf = Buffer.from(API_KEY);
   if (!provided || providedBuf.length !== keyBuf.length || !crypto.timingSafeEqual(providedBuf, keyBuf)) {
@@ -301,6 +301,90 @@ runMigrations().then(() => {
         console.error("Sheets auto-sync error:", err.message);
       }
     }, 60 * 60 * 1000); // Check every hour
+
+    // Daily net worth auto-snapshot (checks every hour, takes one snapshot per day)
+    setInterval(async () => {
+      try {
+        // Check if we already have a snapshot for today
+        const existing = await pool.query(
+          "SELECT id FROM net_worth_snapshots WHERE snapshot_date = CURRENT_DATE LIMIT 1"
+        );
+        if (existing.rows.length > 0) return;
+        // Check if we have any accounts with balances
+        const [accounts, investments] = await Promise.all([
+          pool.query("SELECT name, type, available_balance, current_balance FROM linked_accounts WHERE available_balance IS NOT NULL OR current_balance IS NOT NULL"),
+          pool.query("SELECT name, account_type, balance FROM investment_accounts WHERE is_active = true AND balance != 0"),
+        ]);
+        if (accounts.rows.length === 0 && investments.rows.length === 0) return;
+        let totalAssets = 0, totalLiabilities = 0;
+        const breakdown = { accounts: [], investments: [] };
+        for (const a of accounts.rows) {
+          if (a.type === "credit") {
+            totalLiabilities += parseFloat(a.current_balance || 0);
+            breakdown.accounts.push({ name: a.name, type: a.type, amount: -parseFloat(a.current_balance || 0) });
+          } else {
+            const bal = parseFloat(a.available_balance || a.current_balance || 0);
+            totalAssets += bal;
+            breakdown.accounts.push({ name: a.name, type: a.type, amount: bal });
+          }
+        }
+        for (const inv of investments.rows) {
+          const bal = parseFloat(inv.balance);
+          totalAssets += bal;
+          breakdown.investments.push({ name: inv.name, type: inv.account_type, amount: bal });
+        }
+        await pool.query(
+          `INSERT INTO net_worth_snapshots (total_assets, total_liabilities, net_worth, breakdown, snapshot_date)
+           VALUES ($1, $2, $3, $4, CURRENT_DATE)
+           ON CONFLICT (snapshot_date) DO NOTHING`,
+          [totalAssets, totalLiabilities, totalAssets - totalLiabilities, JSON.stringify(breakdown)]
+        );
+        console.log("Daily net worth snapshot recorded: $" + (totalAssets - totalLiabilities).toFixed(2));
+      } catch (err) {
+        console.error("Net worth auto-snapshot error:", err.message);
+      }
+    }, 60 * 60 * 1000); // Check every hour
+
+    // Goal milestone notifications (checks every 6 hours)
+    setInterval(async () => {
+      try {
+        const goals = await pool.query(
+          "SELECT id, name, target_amount, current_amount FROM financial_goals WHERE is_active = true"
+        );
+        const MILESTONES = [25, 50, 75, 100];
+        for (const g of goals.rows) {
+          const target = parseFloat(g.target_amount);
+          if (target <= 0) continue;
+          const pct = Math.floor((parseFloat(g.current_amount) / target) * 100);
+          for (const m of MILESTONES) {
+            if (pct >= m) {
+              // Check if we already notified for this milestone (stored as notes prefix)
+              const key = `milestone_${m}`;
+              const check = await pool.query(
+                "SELECT notes FROM financial_goals WHERE id = $1", [g.id]
+              );
+              const notes = check.rows[0]?.notes || "";
+              if (notes.includes(key)) continue;
+              // Send notification
+              try {
+                const { sendToAll } = require("./routes/notifications");
+                await sendToAll({
+                  title: pct >= 100 ? "Goal reached!" : "Goal milestone: " + m + "%",
+                  body: g.name + ": " + pct + "% complete" + (pct >= 100 ? " — congratulations!" : ""),
+                  tag: "goal-" + g.id,
+                  data: { url: "/goals" },
+                });
+              } catch {}
+              // Mark milestone as notified
+              const newNotes = (notes ? notes + " " : "") + key;
+              await pool.query("UPDATE financial_goals SET notes = $1 WHERE id = $2", [newNotes, g.id]);
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Goal milestone check error:", err.message);
+      }
+    }, 6 * 60 * 60 * 1000); // Check every 6 hours
   });
 
   // --- Graceful shutdown ---

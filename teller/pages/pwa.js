@@ -19,11 +19,15 @@ function buildIcon(size) {
     + tealInner + `</g></svg>`;
 }
 
+// Cache icons at startup — logo never changes at runtime
+const cachedIcon512 = buildIcon(512);
+const cachedIcon180 = buildIcon(180);
+
 // ---------------------------------------------------------------------------
 // PWA manifest and service worker
 // ---------------------------------------------------------------------------
 router.get("/manifest.json", (_req, res) => {
-  const svgIcon = "data:image/svg+xml," + encodeURIComponent(buildIcon(512));
+  const svgIcon = "data:image/svg+xml," + encodeURIComponent(cachedIcon512);
   res.json({
     name: "Perfin — Personal Finance",
     short_name: "Perfin",
@@ -38,12 +42,12 @@ router.get("/manifest.json", (_req, res) => {
   });
 });
 
-// Apple touch icon — served as SVG
+// Apple touch icon — served as SVG (cached at startup)
 router.get("/apple-touch-icon.svg", (_req, res) => {
-  res.type("image/svg+xml").send(buildIcon(180));
+  res.type("image/svg+xml").send(cachedIcon180);
 });
 router.get("/apple-touch-icon.png", (_req, res) => {
-  res.type("image/svg+xml").send(buildIcon(180));
+  res.type("image/svg+xml").send(cachedIcon180);
 });
 
 router.get("/sw.js", (_req, res) => {

@@ -34,7 +34,7 @@ router.get("/api/insights/status", async (_req, res) => {
         : estimateCostUsd(r.tokens_used || 0, r.model_used);
       estimatedCostCents += cost * 100;
     });
-  } catch {}
+  } catch (err) { console.error("Insights status query error:", err.message); }
   res.json({
     configured,
     reason: configured ? null : (!Anthropic ? "SDK not installed" : "ANTHROPIC_API_KEY not set in .env"),
@@ -71,7 +71,7 @@ router.get("/api/insights/usage", async (_req, res) => {
       totals: { total_runs: allRows.rows.length, total_tokens: totalTokens, total_cost_usd: parseFloat(totalCost.toFixed(4)) },
       cost_rates: MODEL_COST_PER_M,
     });
-  } catch { res.json({ history: [], totals: { total_runs: 0, total_tokens: 0, total_cost_usd: 0 }, cost_rates: MODEL_COST_PER_M }); }
+  } catch (err) { console.error("Insights usage query error:", err.message); res.json({ history: [], totals: { total_runs: 0, total_tokens: 0, total_cost_usd: 0 }, cost_rates: MODEL_COST_PER_M }); }
 });
 
 // GET /api/insights
@@ -79,7 +79,7 @@ router.get("/api/insights", async (_req, res) => {
   try {
     const result = await pool.query("SELECT * FROM financial_insights ORDER BY created_at DESC LIMIT 5");
     res.json(result.rows);
-  } catch { res.json([]); }
+  } catch (err) { console.error("Insights list query error:", err.message); res.json([]); }
 });
 
 // POST /api/insights — generate via Claude
@@ -286,7 +286,7 @@ router.post("/api/insights", async (_req, res) => {
         } else {
           userMsg += "\n\n=== ANOMALY DETECTION DATA ===\nNo unusual transactions detected in the last 2 months.";
         }
-      } catch { /* skip on query error */ }
+      } catch (err) { console.error("Anomaly detection query error:", err.message); }
     }
 
     // --- Module: Seasonal forecasting (dynamic data) ---
@@ -308,7 +308,7 @@ router.post("/api/insights", async (_req, res) => {
           userMsg += "\n\n=== SEASONAL SPENDING HISTORY (24 months) ===\n" +
             seasonalData.rows.map(r => r.month_name + " " + r.year + ": $" + parseFloat(r.total).toFixed(2)).join("\n");
         }
-      } catch { /* skip on query error */ }
+      } catch (err) { console.error("Seasonal forecast query error:", err.message); }
     }
 
     // --- Module: Debt payoff optimizer (dynamic data) ---
@@ -344,7 +344,7 @@ router.post("/api/insights", async (_req, res) => {
             "\nTotal credit limit: $" + totalLimit.toFixed(2) +
             "\nOverall utilization: " + overallUtil + "%";
         }
-      } catch { /* skip on query error */ }
+      } catch (err) { console.error("Debt optimizer query error:", err.message); }
     }
 
     // --- Module: Income & savings rate (dynamic data) ---
@@ -369,7 +369,7 @@ router.post("/api/insights", async (_req, res) => {
               return r.month + ": Income $" + inc.toFixed(2) + ", Spending $" + spend.toFixed(2) + ", Savings rate " + rate + "%";
             }).join("\n");
         }
-      } catch { /* skip */ }
+      } catch (err) { console.error("Income/savings query error:", err.message); }
     }
 
     // --- Module: Tax deduction flags (dynamic data) ---
@@ -406,7 +406,7 @@ router.post("/api/insights", async (_req, res) => {
             ).catch(() => {});
           }
         }
-      } catch { /* skip */ }
+      } catch (err) { console.error("Tax deductions query error:", err.message); }
     }
 
     // --- Module: Goal tracking (dynamic data) ---
@@ -427,7 +427,7 @@ router.post("/api/insights", async (_req, res) => {
               return line;
             }).join("\n");
         }
-      } catch { /* skip */ }
+      } catch (err) { console.error("Goal tracking query error:", err.message); }
     }
 
     // Include running summary and previous insight in user message (dynamic)

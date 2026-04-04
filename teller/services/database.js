@@ -26,11 +26,25 @@ if (!ENCRYPTION_PASSPHRASE) {
   console.warn("WARNING: TOKEN_ENCRYPTION_PASSPHRASE is not set. Token encryption will fail.");
 }
 
+// Current schema version — increment when adding new migration steps
+const SCHEMA_VERSION = 1;
+
 async function runMigrations() {
+  const client = await pool.connect();
   try {
-    await pool.query("CREATE EXTENSION IF NOT EXISTS pgcrypto");
+    await client.query("BEGIN");
+    await client.query("CREATE EXTENSION IF NOT EXISTS pgcrypto");
+
+    // Schema versioning — track which migration version has been applied
+    await client.query(`CREATE TABLE IF NOT EXISTS schema_migrations (
+      version INT PRIMARY KEY,
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+    const versionResult = await client.query("SELECT MAX(version) AS v FROM schema_migrations");
+    const currentVersion = versionResult.rows[0]?.v || 0;
+
     // 005_settings.sql
-    await pool.query(`
+    await client.query(`
       CREATE TABLE IF NOT EXISTS user_settings (
         id                      INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
         session_timeout_minutes INT NOT NULL DEFAULT 15,
@@ -41,40 +55,40 @@ async function runMigrations() {
         updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()
       )
     `);
-    await pool.query("INSERT INTO user_settings (id) VALUES (1) ON CONFLICT DO NOTHING");
-    await pool.query("CREATE TABLE IF NOT EXISTS financial_insights (id SERIAL PRIMARY KEY, insight_text TEXT NOT NULL, period_start DATE, period_end DATE, model_used TEXT, tokens_used INT, created_at TIMESTAMPTZ NOT NULL DEFAULT now())");
+    await client.query("INSERT INTO user_settings (id) VALUES (1) ON CONFLICT DO NOTHING");
+    await client.query("CREATE TABLE IF NOT EXISTS financial_insights (id SERIAL PRIMARY KEY, insight_text TEXT NOT NULL, period_start DATE, period_end DATE, model_used TEXT, tokens_used INT, created_at TIMESTAMPTZ NOT NULL DEFAULT now())");
     // 006_insights_memory.sql
-    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_running_summary TEXT DEFAULT NULL");
-    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_model TEXT NOT NULL DEFAULT 'sonnet'");
-    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_cadence_days INT NOT NULL DEFAULT 30");
-    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS zip_code TEXT DEFAULT NULL");
-    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insight_modules JSONB NOT NULL DEFAULT '{\"utility_comparison\":true,\"spending_benchmarks\":true,\"savings_suggestions\":true,\"subscription_audit\":true,\"anomaly_detection\":true,\"seasonal_forecast\":true,\"debt_optimizer\":true,\"bill_negotiation\":true,\"income_savings\":true,\"tax_deductions\":true,\"goal_tracking\":true}'::jsonb");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_running_summary TEXT DEFAULT NULL");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_model TEXT NOT NULL DEFAULT 'sonnet'");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_cadence_days INT NOT NULL DEFAULT 30");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS zip_code TEXT DEFAULT NULL");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insight_modules JSONB NOT NULL DEFAULT '{\"utility_comparison\":true,\"spending_benchmarks\":true,\"savings_suggestions\":true,\"subscription_audit\":true,\"anomaly_detection\":true,\"seasonal_forecast\":true,\"debt_optimizer\":true,\"bill_negotiation\":true,\"income_savings\":true,\"tax_deductions\":true,\"goal_tracking\":true}'::jsonb");
     // 003_dashboard_features.sql
-    await pool.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS is_dismissed BOOLEAN NOT NULL DEFAULT false");
-    await pool.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'detected'");
-    await pool.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ");
-    await pool.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS cancel_confirmed BOOLEAN NOT NULL DEFAULT false");
-    await pool.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS notes TEXT");
-    await pool.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'subscription'");
+    await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS is_dismissed BOOLEAN NOT NULL DEFAULT false");
+    await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'detected'");
+    await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ");
+    await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS cancel_confirmed BOOLEAN NOT NULL DEFAULT false");
+    await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS notes TEXT");
+    await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'subscription'");
     // 004_balances.sql
-    await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS available_balance NUMERIC(12,2)");
-    await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS current_balance NUMERIC(12,2)");
-    await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS balance_currency TEXT DEFAULT 'USD'");
-    await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS balance_updated_at TIMESTAMPTZ");
-    await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS apr NUMERIC(5,2)");
+    await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS available_balance NUMERIC(12,2)");
+    await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS current_balance NUMERIC(12,2)");
+    await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS balance_currency TEXT DEFAULT 'USD'");
+    await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS balance_updated_at TIMESTAMPTZ");
+    await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS apr NUMERIC(5,2)");
     // keep-alive settings
-    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS keep_alive_enabled BOOLEAN NOT NULL DEFAULT false");
-    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS keep_alive_start INT NOT NULL DEFAULT 6");
-    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS keep_alive_end INT NOT NULL DEFAULT 0");
-    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS keep_alive_timezone TEXT NOT NULL DEFAULT 'America/New_York'");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS keep_alive_enabled BOOLEAN NOT NULL DEFAULT false");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS keep_alive_start INT NOT NULL DEFAULT 6");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS keep_alive_end INT NOT NULL DEFAULT 0");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS keep_alive_timezone TEXT NOT NULL DEFAULT 'America/New_York'");
     // Pyramid visualization settings
-    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS pyramid_data_source TEXT NOT NULL DEFAULT 'wellness'");
-    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS pyramid_color_mode TEXT NOT NULL DEFAULT 'single'");
-    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS debt_baseline_amount NUMERIC(12,2) DEFAULT NULL");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS pyramid_data_source TEXT NOT NULL DEFAULT 'wellness'");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS pyramid_color_mode TEXT NOT NULL DEFAULT 'single'");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS debt_baseline_amount NUMERIC(12,2) DEFAULT NULL");
     // 002_csv_import.sql
-    await pool.query("CREATE TABLE IF NOT EXISTS csv_imports (id SERIAL PRIMARY KEY, filename TEXT NOT NULL, institution TEXT NOT NULL, account_label TEXT, rows_imported INT NOT NULL DEFAULT 0, rows_skipped INT NOT NULL DEFAULT 0, imported_at TIMESTAMPTZ NOT NULL DEFAULT now())");
+    await client.query("CREATE TABLE IF NOT EXISTS csv_imports (id SERIAL PRIMARY KEY, filename TEXT NOT NULL, institution TEXT NOT NULL, account_label TEXT, rows_imported INT NOT NULL DEFAULT 0, rows_skipped INT NOT NULL DEFAULT 0, imported_at TIMESTAMPTZ NOT NULL DEFAULT now())");
     // Financial goals
-    await pool.query(`CREATE TABLE IF NOT EXISTS financial_goals (
+    await client.query(`CREATE TABLE IF NOT EXISTS financial_goals (
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL,
       type TEXT NOT NULL DEFAULT 'savings',
@@ -89,7 +103,7 @@ async function runMigrations() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
     // Net worth snapshots
-    await pool.query(`CREATE TABLE IF NOT EXISTS net_worth_snapshots (
+    await client.query(`CREATE TABLE IF NOT EXISTS net_worth_snapshots (
       id SERIAL PRIMARY KEY,
       total_assets NUMERIC(14,2) NOT NULL DEFAULT 0,
       total_liabilities NUMERIC(14,2) NOT NULL DEFAULT 0,
@@ -100,7 +114,7 @@ async function runMigrations() {
       UNIQUE(snapshot_date)
     )`);
     // Tax deduction tracking — persistent year-round accumulation
-    await pool.query(`CREATE TABLE IF NOT EXISTS tax_deductions (
+    await client.query(`CREATE TABLE IF NOT EXISTS tax_deductions (
       id SERIAL PRIMARY KEY,
       tax_year INT NOT NULL DEFAULT EXTRACT(YEAR FROM CURRENT_DATE),
       transaction_id TEXT REFERENCES transactions(transaction_id),
@@ -114,10 +128,10 @@ async function runMigrations() {
       UNIQUE(transaction_id, tax_year)
     )`);
     // Partial unique index for AI-detected deductions (no transaction_id)
-    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_tax_deductions_merchant_year
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_tax_deductions_merchant_year
       ON tax_deductions (merchant, tax_year) WHERE transaction_id IS NULL`);
     // Investment / manual accounts (brokerage, retirement, etc.)
-    await pool.query(`CREATE TABLE IF NOT EXISTS investment_accounts (
+    await client.query(`CREATE TABLE IF NOT EXISTS investment_accounts (
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL,
       institution TEXT,
@@ -129,7 +143,7 @@ async function runMigrations() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
     // Budgets
-    await pool.query(`CREATE TABLE IF NOT EXISTS budgets (
+    await client.query(`CREATE TABLE IF NOT EXISTS budgets (
       id SERIAL PRIMARY KEY,
       category TEXT NOT NULL UNIQUE,
       monthly_limit NUMERIC(12,2) NOT NULL,
@@ -139,14 +153,14 @@ async function runMigrations() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
     // Push notification subscriptions
-    await pool.query(`CREATE TABLE IF NOT EXISTS push_subscriptions (
+    await client.query(`CREATE TABLE IF NOT EXISTS push_subscriptions (
       id SERIAL PRIMARY KEY,
       endpoint TEXT NOT NULL UNIQUE,
       keys JSONB NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
     // Plaid investment items
-    await pool.query(`CREATE TABLE IF NOT EXISTS plaid_investment_items (
+    await client.query(`CREATE TABLE IF NOT EXISTS plaid_investment_items (
       id SERIAL PRIMARY KEY,
       item_id TEXT NOT NULL UNIQUE,
       institution_name TEXT NOT NULL DEFAULT 'Unknown',
@@ -155,9 +169,9 @@ async function runMigrations() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
     // Add plaid_account_id to investment_accounts
-    await pool.query("ALTER TABLE investment_accounts ADD COLUMN IF NOT EXISTS plaid_account_id TEXT UNIQUE");
+    await client.query("ALTER TABLE investment_accounts ADD COLUMN IF NOT EXISTS plaid_account_id TEXT UNIQUE");
     // Investment holdings
-    await pool.query(`CREATE TABLE IF NOT EXISTS investment_holdings (
+    await client.query(`CREATE TABLE IF NOT EXISTS investment_holdings (
       id SERIAL PRIMARY KEY,
       plaid_account_id TEXT NOT NULL,
       security_id TEXT NOT NULL,
@@ -172,36 +186,36 @@ async function runMigrations() {
       UNIQUE(plaid_account_id, security_id)
     )`);
     // Granular token tracking for prompt caching
-    await pool.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS input_tokens INT");
-    await pool.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS output_tokens INT");
-    await pool.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS cache_read_tokens INT");
-    await pool.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS cache_creation_tokens INT");
+    await client.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS input_tokens INT");
+    await client.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS output_tokens INT");
+    await client.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS cache_read_tokens INT");
+    await client.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS cache_creation_tokens INT");
     // Manual accounts support
-    await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS is_manual BOOLEAN NOT NULL DEFAULT false");
-    await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS institution_name_manual TEXT DEFAULT NULL");
-    await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS credit_limit NUMERIC(12,2) DEFAULT NULL");
+    await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS is_manual BOOLEAN NOT NULL DEFAULT false");
+    await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS institution_name_manual TEXT DEFAULT NULL");
+    await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS credit_limit NUMERIC(12,2) DEFAULT NULL");
     // Shared/joint account support — spending_split_pct controls what fraction of spending counts as yours (default 100)
-    await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS spending_split_pct INT NOT NULL DEFAULT 100");
-    await pool.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS is_shared BOOLEAN NOT NULL DEFAULT false");
+    await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS spending_split_pct INT NOT NULL DEFAULT 100");
+    await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS is_shared BOOLEAN NOT NULL DEFAULT false");
     // Fix check constraint to allow manual accounts (no plaid/teller enrollment)
-    await pool.query("ALTER TABLE linked_accounts DROP CONSTRAINT IF EXISTS chk_account_source");
-    await pool.query("ALTER TABLE linked_accounts ADD CONSTRAINT chk_account_source CHECK (plaid_item_id IS NOT NULL OR teller_enrollment_id IS NOT NULL OR is_manual = true)");
+    await client.query("ALTER TABLE linked_accounts DROP CONSTRAINT IF EXISTS chk_account_source");
+    await client.query("ALTER TABLE linked_accounts ADD CONSTRAINT chk_account_source CHECK (plaid_item_id IS NOT NULL OR teller_enrollment_id IS NOT NULL OR is_manual = true)");
     // Dashboard widget order/visibility
-    await pool.query(`ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS dashboard_widgets JSONB NOT NULL DEFAULT '{"pyramid":true,"accounts":true,"recentTxns":true,"monthlySpend":true,"categories":true,"merchants":true,"upcoming":true,"forecast":true,"charts":true,"calendar":true,"cashFlow":true,"savingsRate":true,"yoy":true}'::jsonb`);
+    await client.query(`ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS dashboard_widgets JSONB NOT NULL DEFAULT '{"pyramid":true,"accounts":true,"recentTxns":true,"monthlySpend":true,"categories":true,"merchants":true,"upcoming":true,"forecast":true,"charts":true,"calendar":true,"cashFlow":true,"savingsRate":true,"yoy":true}'::jsonb`);
     // Sheets auto-sync
-    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sheets_auto_sync_enabled BOOLEAN NOT NULL DEFAULT false");
-    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sheets_auto_sync_interval TEXT NOT NULL DEFAULT 'weekly'");
-    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sheets_last_auto_sync TIMESTAMPTZ DEFAULT NULL");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sheets_auto_sync_enabled BOOLEAN NOT NULL DEFAULT false");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sheets_auto_sync_interval TEXT NOT NULL DEFAULT 'weekly'");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sheets_last_auto_sync TIMESTAMPTZ DEFAULT NULL");
     // CSV import reminder
-    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS csv_reminder_days INT NOT NULL DEFAULT 14");
-    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS csv_reminder_enabled BOOLEAN NOT NULL DEFAULT true");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS csv_reminder_days INT NOT NULL DEFAULT 14");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS csv_reminder_enabled BOOLEAN NOT NULL DEFAULT true");
     // Performance indexes
-    await pool.query("CREATE INDEX IF NOT EXISTS idx_transactions_date_pending ON transactions (date, pending)");
-    await pool.query("CREATE INDEX IF NOT EXISTS idx_linked_accounts_account_id ON linked_accounts (account_id)");
-    await pool.query("CREATE INDEX IF NOT EXISTS idx_detected_subscriptions_active ON detected_subscriptions (is_active, is_dismissed, cancelled_at)");
-    await pool.query("CREATE INDEX IF NOT EXISTS idx_financial_goals_active ON financial_goals (is_active)");
+    await client.query("CREATE INDEX IF NOT EXISTS idx_transactions_date_pending ON transactions (date, pending)");
+    await client.query("CREATE INDEX IF NOT EXISTS idx_linked_accounts_account_id ON linked_accounts (account_id)");
+    await client.query("CREATE INDEX IF NOT EXISTS idx_detected_subscriptions_active ON detected_subscriptions (is_active, is_dismissed, cancelled_at)");
+    await client.query("CREATE INDEX IF NOT EXISTS idx_financial_goals_active ON financial_goals (is_active)");
     // WebAuthn credentials (FaceID / biometric login)
-    await pool.query(`CREATE TABLE IF NOT EXISTS webauthn_credentials (
+    await client.query(`CREATE TABLE IF NOT EXISTS webauthn_credentials (
       id SERIAL PRIMARY KEY,
       credential_id TEXT NOT NULL UNIQUE,
       public_key TEXT NOT NULL,
@@ -210,12 +224,24 @@ async function runMigrations() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
     // Per-sistant integration: webhook target + SSO shared secret
-    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS persistent_url TEXT");
-    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS persistent_webhook_secret TEXT");
-    await pool.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS persistent_webhook_enabled BOOLEAN NOT NULL DEFAULT false");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS persistent_url TEXT");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS persistent_webhook_secret TEXT");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS persistent_webhook_enabled BOOLEAN NOT NULL DEFAULT false");
+
+    // Record schema version
+    if (currentVersion < SCHEMA_VERSION) {
+      await client.query(
+        "INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING",
+        [SCHEMA_VERSION]
+      );
+    }
+    await client.query("COMMIT");
     console.log("Migrations complete.");
   } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
     console.error("Migration error (non-fatal):", err.message);
+  } finally {
+    client.release();
   }
 }
 
