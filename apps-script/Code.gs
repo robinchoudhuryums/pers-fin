@@ -4,6 +4,16 @@
 // Personal finance subscription tracker for Google Sheets.
 // Works both standalone (CSV imports) and synced with the Teller server.
 //
+// NOTE: CSV format definitions and subscription detection logic below are
+// intentionally duplicated from the Node.js server (teller/data/csv-formats.js,
+// scripts/detect-subscriptions.js). This is necessary because Apps Script runs
+// in Google's V8 runtime and cannot import Node modules. When updating CSV
+// parsing or detection logic, keep both copies in sync.
+//
+// RECOMMENDED: Use "Sync from Server" instead of standalone CSV imports — it
+// pulls already-parsed transactions from the Teller server, avoiding the
+// duplication issue entirely.
+//
 // Setup:
 //   1. Open your Google Sheet
 //   2. Extensions > Apps Script
@@ -81,19 +91,26 @@ const CSV_FORMATS = {
   },
   capitalone: {
     detect: (headers) => headers.includes("Transaction Date") && headers.includes("Posted Date") && (headers.includes("Debit") || headers.includes("Credit")),
-    parse: (row, headers) => ({
-      date: row[headers.indexOf("Transaction Date")],
-      merchant: row[headers.indexOf("Description")],
-      amount: parseFloat(row[headers.indexOf("Debit")] || "0") || -(parseFloat(row[headers.indexOf("Credit")] || "0")),
-      category: row[headers.indexOf("Category")] || "",
-    }),
+    parse: (row, headers) => {
+      // Check string presence (not truthiness) so $0.00 debits don't fall through
+      const debit = (row[headers.indexOf("Debit")] || "").trim();
+      const credit = (row[headers.indexOf("Credit")] || "").trim();
+      const amount = debit.length > 0 ? parseFloat(debit) : -(parseFloat(credit) || 0);
+      return {
+        date: row[headers.indexOf("Transaction Date")],
+        merchant: row[headers.indexOf("Description")],
+        amount,
+        category: row[headers.indexOf("Category")] || "",
+      };
+    },
   },
   discover: {
     detect: (headers) => headers.includes("Trans. Date") && headers.includes("Post Date") && headers.includes("Description") && headers.includes("Amount"),
     parse: (row, headers) => ({
       date: row[headers.indexOf("Trans. Date")],
       merchant: row[headers.indexOf("Description")],
-      amount: Math.abs(parseFloat(row[headers.indexOf("Amount")])),
+      // Preserve sign: positive = debit/purchase, negative = credit/payment
+      amount: parseFloat(row[headers.indexOf("Amount")]),
       category: row[headers.indexOf("Category")] || "",
     }),
   },

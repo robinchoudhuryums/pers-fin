@@ -26,11 +26,23 @@ if (!ENCRYPTION_PASSPHRASE) {
   console.warn("WARNING: TOKEN_ENCRYPTION_PASSPHRASE is not set. Token encryption will fail.");
 }
 
+// Current schema version — increment when adding new migration steps
+const SCHEMA_VERSION = 1;
+
 async function runMigrations() {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     await client.query("CREATE EXTENSION IF NOT EXISTS pgcrypto");
+
+    // Schema versioning — track which migration version has been applied
+    await client.query(`CREATE TABLE IF NOT EXISTS schema_migrations (
+      version INT PRIMARY KEY,
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+    const versionResult = await client.query("SELECT MAX(version) AS v FROM schema_migrations");
+    const currentVersion = versionResult.rows[0]?.v || 0;
+
     // 005_settings.sql
     await client.query(`
       CREATE TABLE IF NOT EXISTS user_settings (
@@ -215,6 +227,14 @@ async function runMigrations() {
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS persistent_url TEXT");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS persistent_webhook_secret TEXT");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS persistent_webhook_enabled BOOLEAN NOT NULL DEFAULT false");
+
+    // Record schema version
+    if (currentVersion < SCHEMA_VERSION) {
+      await client.query(
+        "INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING",
+        [SCHEMA_VERSION]
+      );
+    }
     await client.query("COMMIT");
     console.log("Migrations complete.");
   } catch (err) {

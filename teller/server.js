@@ -344,6 +344,47 @@ runMigrations().then(() => {
         console.error("Net worth auto-snapshot error:", err.message);
       }
     }, 60 * 60 * 1000); // Check every hour
+
+    // Goal milestone notifications (checks every 6 hours)
+    setInterval(async () => {
+      try {
+        const goals = await pool.query(
+          "SELECT id, name, target_amount, current_amount FROM financial_goals WHERE is_active = true"
+        );
+        const MILESTONES = [25, 50, 75, 100];
+        for (const g of goals.rows) {
+          const target = parseFloat(g.target_amount);
+          if (target <= 0) continue;
+          const pct = Math.floor((parseFloat(g.current_amount) / target) * 100);
+          for (const m of MILESTONES) {
+            if (pct >= m) {
+              // Check if we already notified for this milestone (stored as notes prefix)
+              const key = `milestone_${m}`;
+              const check = await pool.query(
+                "SELECT notes FROM financial_goals WHERE id = $1", [g.id]
+              );
+              const notes = check.rows[0]?.notes || "";
+              if (notes.includes(key)) continue;
+              // Send notification
+              try {
+                const { sendToAll } = require("./routes/notifications");
+                await sendToAll({
+                  title: pct >= 100 ? "Goal reached!" : "Goal milestone: " + m + "%",
+                  body: g.name + ": " + pct + "% complete" + (pct >= 100 ? " — congratulations!" : ""),
+                  tag: "goal-" + g.id,
+                  data: { url: "/goals" },
+                });
+              } catch {}
+              // Mark milestone as notified
+              const newNotes = (notes ? notes + " " : "") + key;
+              await pool.query("UPDATE financial_goals SET notes = $1 WHERE id = $2", [newNotes, g.id]);
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Goal milestone check error:", err.message);
+      }
+    }, 6 * 60 * 60 * 1000); // Check every 6 hours
   });
 
   // --- Graceful shutdown ---

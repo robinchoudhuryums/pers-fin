@@ -142,6 +142,31 @@ router.post("/api/budgets/suggest", async (_req, res) => {
 
     const modelId = MODEL_MAP[settingsRow.rows[0]?.insights_model] || MODEL_MAP.haiku;
     const client = new Anthropic();
+
+    // Use tool_use for structured output — guarantees valid JSON schema
+    const suggestTool = {
+      name: "suggest_budgets",
+      description: "Suggest monthly budgets for spending categories",
+      input_schema: {
+        type: "object",
+        properties: {
+          suggestions: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                category: { type: "string" },
+                monthly_limit: { type: "number" },
+                notes: { type: "string" },
+              },
+              required: ["category", "monthly_limit", "notes"],
+            },
+          },
+        },
+        required: ["suggestions"],
+      },
+    };
+
     const message = await client.messages.create({
       model: modelId, max_tokens: 1000,
       system: [{ type: "text", text:
@@ -152,29 +177,21 @@ router.post("/api/budgets/suggest", async (_req, res) => {
         "- For discretionary categories (entertainment, shopping, dining), suggest budgets 10-20% below the average to encourage savings\n" +
         "- Round to the nearest $5 or $10 for cleanliness\n" +
         "- Skip categories with very low spending (<$10/mo avg)\n\n" +
-        "Respond ONLY with a JSON array of objects with keys: category (string), monthly_limit (number), notes (string with brief rationale). " +
-        "No markdown, no extra text — just the JSON array.",
+        "Use the suggest_budgets tool to return your results.",
         cache_control: { type: "ephemeral" },
       }],
+      tools: [suggestTool],
+      tool_choice: { type: "tool", name: "suggest_budgets" },
       messages: [{ role: "user", content: "Spending history (last 3 months):\n" + catSummary }],
     });
 
-    let suggestions;
-    try {
-      let text = message.content[0].text.trim();
-      const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-      if (fenceMatch) text = fenceMatch[1].trim();
-      suggestions = JSON.parse(text);
-    } catch (e) {
-      console.error("Budget AI parse error:", e.message, "| Raw:", message.content[0]?.text?.slice(0, 500));
-      return res.status(500).json({ error: "Failed to parse AI response" });
+    // Extract structured output from tool_use block
+    const toolBlock = message.content.find(b => b.type === "tool_use");
+    if (!toolBlock || !toolBlock.input || !Array.isArray(toolBlock.input.suggestions)) {
+      console.error("Budget AI did not return expected tool_use block");
+      return res.status(500).json({ error: "AI returned unexpected format" });
     }
-
-    // Validate response schema: must be array of {category, monthly_limit}
-    if (!Array.isArray(suggestions)) {
-      return res.status(500).json({ error: "AI returned unexpected format (expected JSON array)" });
-    }
-    suggestions = suggestions.filter(s =>
+    let suggestions = toolBlock.input.suggestions.filter(s =>
       s && typeof s.category === "string" && typeof s.monthly_limit === "number" && s.monthly_limit >= 0
     );
 

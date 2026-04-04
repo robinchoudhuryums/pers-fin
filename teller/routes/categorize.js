@@ -75,36 +75,50 @@ router.post("/api/categorize", async (_req, res) => {
     ).join("\n");
 
     const client = new Anthropic();
+
+    // Use tool_use for structured output — guarantees valid JSON schema
+    const categorizeTool = {
+      name: "categorize_transactions",
+      description: "Assign a category to each transaction",
+      input_schema: {
+        type: "object",
+        properties: {
+          categories: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                index: { type: "number", description: "1-based transaction index" },
+                category: { type: "string", enum: CATEGORIES },
+              },
+              required: ["index", "category"],
+            },
+          },
+        },
+        required: ["categories"],
+      },
+    };
+
     const message = await client.messages.create({
       model: modelId, max_tokens: 2000,
       system: [{ type: "text", text:
-        "Categorize each transaction into exactly one category from this list:\n" +
-        CATEGORIES.join(", ") + "\n\n" +
-        "Respond ONLY with a JSON array of objects with keys: index (number, 1-based), category (string from the list above). " +
-        "No markdown, no extra text — just the JSON array.",
+        "Categorize each transaction into exactly one category. Use the categorize_transactions tool to return your results.",
         cache_control: { type: "ephemeral" },
       }],
+      tools: [categorizeTool],
+      tool_choice: { type: "tool", name: "categorize_transactions" },
       messages: [{ role: "user", content: "Transactions:\n" + txnList }],
     });
 
     const tokensUsed = (message.usage?.input_tokens || 0) + (message.usage?.output_tokens || 0);
-    let categories;
-    try {
-      let text = message.content[0].text.trim();
-      // Strip markdown fences if Claude wraps the JSON
-      const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-      if (fenceMatch) text = fenceMatch[1].trim();
-      categories = JSON.parse(text);
-    } catch (e) {
-      console.error("AI response parse error:", e.message, "| Raw:", message.content[0]?.text?.slice(0, 500));
-      return res.status(500).json({ error: "Failed to parse AI response" });
-    }
 
-    // Validate response schema: must be an array of {index, category}
-    if (!Array.isArray(categories)) {
-      console.error("AI response not an array:", typeof categories);
-      return res.status(500).json({ error: "AI returned unexpected format (expected JSON array)" });
+    // Extract structured output from tool_use block
+    const toolBlock = message.content.find(b => b.type === "tool_use");
+    if (!toolBlock || !toolBlock.input || !Array.isArray(toolBlock.input.categories)) {
+      console.error("AI did not return expected tool_use block");
+      return res.status(500).json({ error: "AI returned unexpected format" });
     }
+    const categories = toolBlock.input.categories;
 
     // Apply categories to transactions
     let updated = 0;
