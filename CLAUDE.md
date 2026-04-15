@@ -8,7 +8,7 @@ Plaid (legacy/investments) for bank account linking via mTLS. Companion app to *
 and combined weekly summary email.
 
 ## Architecture (Modular)
-The server was modularized from a single 4,931-line file into focused modules:
+The server is split into focused modules under `teller/`:
 
 ```
 teller/
@@ -74,7 +74,9 @@ teller/
     pwa.js               — PWA manifest.json + icon generation (icons cached at startup)
   public/
     logo.svg             — Iron Man helmet SVG logo (traced from PNG, used as nav icon, PWA icon)
-    sw.js                — Service worker (network-first with offline cache fallback, push notifications)
+    sw.js                — Service worker (network-first with offline cache fallback for static assets;
+                           `/api/*` is intentionally NOT cached — stale balances are worse than a clear
+                           network error. Precaches CSS/JS/SVG on install. Push notifications.)
     perfin-shared.css    — Shared styles (variables, nav, cards, animations, responsive, focus-visible,
                            skip-link, WCAG AA contrast-compliant text-muted colors)
     perfin-shared.js     — Shared JavaScript (apiFetch, theme, nav helpers, asyncAction, btnLoading)
@@ -95,9 +97,19 @@ teller/
   6 transfer types: peer_transfer, bill_payment, savings, investment, internal, other)
 - `scripts/sheets-sync.js` — Google Sheets sync (6 tabs: Transactions, Subscriptions,
   AI Insights, Recurring Transfers, Tax Deductions, Dashboard)
+- `scripts/import-csv-cli.js` — Standalone CLI for importing bank CSVs (mirror of the
+  `/api/import-csv` route — note format detection drift between the two; see audit H8)
+- `scripts/retention-cleanup.sql` — Reference SQL for the manual cleanup queries
+  exposed by `POST /api/cleanup`
 - `apps-script/Code.gs` — Google Sheets Apps Script (standalone + server sync)
-- `tests/` — 132 tests across 6 files (node:test runner, `npm test`)
-- `.github/workflows/ci.yml` — CI pipeline (runs tests on all PRs)
+- `tests/` — 139 tests across 7 files (node:test runner, `npm test`).
+  Includes `tests/audit-regressions.test.js` which pins documented behavior
+  for auth, SSO, template hygiene, and exclusion rules. Run `npm install`
+  at the repo root before `npm test` (root `package.json` declares the
+  test-time deps separately from `teller/`).
+- `.github/workflows/ci.yml` — CI pipeline (runs `npm ci` at root + `teller/`, then `npm test`)
+- `.claude/commands/` — Project slash-command prompts: `/broad-scan`, `/broad-implement`,
+  `/test-sync`, `/sync-docs`
 - `Dockerfile`, `fly.toml`, `render.yaml` — Deployment configs
 
 ## Features
@@ -133,7 +145,7 @@ teller/
   income detection (keyword matching, excludes transfers/payments/refunds), bill scheduling
 - **Savings rate**: Income vs spending analysis with configurable lookback (default 3 months)
 - **Year-over-year comparisons**: Month-by-month spending comparison vs prior year
-- **Budget alerts**: Spending velocity/pacing warnings with severity levels (critical >100%, warning >90%, info >75%)
+- **Budget alerts** (`GET /api/budgets/alerts`): Spending velocity/pacing warnings with severity levels — `critical` ≥100% (over budget), `warning` ≥80% (approaching limit), `info` when pace > 1.2× and ≥50% (spending faster than the month's progress). Note: the 3-hour scheduled push-notification path uses the simpler 90% / 100% thresholds; only the in-app endpoint applies the pace heuristic.
 
 ### AI & Intelligence
 - **ML categorization**: Claude-powered smart transaction categorization via tool_use structured
@@ -165,7 +177,9 @@ teller/
 - **Login animation**: Iron Man helmet materialize effect on successful login (gold-amber stroke-draw → fill → redirect)
 - **Branding**: Iron Man helmet logo (SVG traced from PNG) — nav bar icon (CSS mask), PWA icon, login page
 - **Dark/Light theme**: Toggle in Settings, persisted to DB + localStorage
-- **PWA**: Installable home screen app (manifest.json + service worker, helmet icon centered on home screen)
+- **PWA**: Installable home screen app (manifest.json + service worker, helmet icon centered on home screen).
+  Service worker uses network-first, caches successful same-origin static GETs, and explicitly
+  skips `/api/*` so the dashboard never serves stale balances when offline.
 - **Web Push notifications**: VAPID-based push notifications for anomalies, budget alerts,
   goal milestones
 - **Accessibility**: Skip-to-content link, `<main>` landmark, chart aria-labels, :focus-visible
@@ -191,8 +205,14 @@ teller/
 ### Render (Free, recommended — currently deployed)
 1. Connect GitHub repo in Render dashboard
 2. Create Web Service from `render.yaml` blueprint
-3. Add Secret Files: `/etc/secrets/certificate.pem`, `/etc/secrets/private_key.pem`
-4. Set env vars (see Environment Variables below)
+3. Provide the Teller mTLS cert via env vars (this is what `render.yaml` configures —
+   `services/teller-api.js` reads them directly, no Secret-Files step needed):
+   - `TELLER_CERT` = `base64 < certificate.pem`
+   - `TELLER_KEY`  = `base64 < private_key.pem`
+   *(Alternative: upload as Render Secret Files and set
+   `TELLER_CERT_PATH=/etc/secrets/certificate.pem` and `TELLER_KEY_PATH=/etc/secrets/private_key.pem` —
+   the code defaults to `./certificate.pem` so the path env vars are required if you go this route.)*
+4. Set remaining env vars (see Environment Variables below)
 5. Access at `https://pers-fin-tracker.onrender.com`
 
 ### Fly.io (~$2/mo)
@@ -212,16 +232,19 @@ cd teller && npm install && node server.js
 
 ## Current Status
 - Deployed on Render (free tier, sleeps after 15 min idle)
-- Render deploys from default branch (`claude/subscription-tracker-plaid-WeQTA`)
+- Render deploys from `claude/subscription-tracker-plaid-WeQTA` (configured in Render dashboard).
+  Active development happens on `claude/audit-documentation-SX9kS`.
 - Env vars configured in Render dashboard
-- PEM files added as Secret Files in Render
+- Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`); `services/teller-api.js`
+  reads them directly. Secret-Files path also supported if `TELLER_CERT_PATH` env vars are set.
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 132 tests passing across 6 test files
+- 139 tests passing across 7 test files
 
 ## Commands
 ```bash
 cd teller && npm install && node server.js    # Run locally
-npm test                                       # Run 132 tests
+npm install                                    # ALSO required at repo root for tests
+npm test                                       # Run 139 tests
 
 # Key API endpoints
 POST /api/enroll           # store Teller access token after Connect
@@ -235,10 +258,18 @@ PATCH /api/recurring-transfers/:id/undismiss # restore a dismissed transfer
 PATCH /api/recurring-transfers/:id/type      # reclassify transfer type
 GET  /api/transactions     # list transactions (query: months, limit, offset)
 GET  /api/transactions/search # search/filter (query: q, category, account_id, min/max_amount, start/end_date)
+GET  /api/transactions/duplicates # find candidate duplicate transactions across accounts
+DELETE /api/transactions/:id # delete a single transaction (deduplication tool)
+GET  /api/forecast         # 7-90 day projection of recurring subscription charges
+GET  /api/bill-calendar    # monthly calendar of expected charges + recurring income (query: year, month)
+GET  /api/csv-reminder     # list manual accounts overdue for a CSV refresh
 GET  /api/subscriptions    # list detected subscriptions
 GET  /api/accounts         # list linked accounts with balances (includes is_shared, spending_split_pct)
 PATCH /api/accounts/:id    # update account details
 PATCH /api/accounts/:id/shared # mark account as shared/joint (body: is_shared, spending_split_pct)
+PATCH /api/accounts/:id/balance # update balance fields (current_balance, available_balance, credit_limit)
+POST /api/accounts/manual  # create a manual (non-Teller, non-Plaid) account
+DELETE /api/accounts/manual/:id # delete a manual account
 GET  /api/spending-summary # monthly trends, categories, top merchants (split-adjusted)
 GET  /api/cash-flow        # rolling cash flow projection (query: days, default 90)
 GET  /api/savings-rate     # income vs spending analysis (query: months, default 3)
@@ -283,6 +314,17 @@ POST /api/notifications/subscribe # register push subscription
 DELETE /api/notifications/subscribe # unregister push subscription
 POST /api/notifications/test # send test push notification
 
+# Tax export
+GET  /api/export/tax-report # year-end deduction summary (query: year, format=csv|json)
+
+# WebAuthn / biometric login
+POST /api/webauthn/register-options    # generate registration challenge (auth required)
+POST /api/webauthn/register            # verify and store new credential (auth required)
+POST /api/webauthn/authenticate-options # generate auth challenge (no session needed)
+POST /api/webauthn/authenticate        # verify biometric and create session
+GET  /api/webauthn/credentials         # list registered credentials (auth required)
+DELETE /api/webauthn/credentials/:id   # remove a credential (auth required)
+
 # Per-sistant integration endpoints
 POST /api/persistent/webhook/test  # test webhook connectivity to Per-sistant
 POST /api/persistent/webhook/send  # manually trigger webhook event
@@ -308,6 +350,9 @@ GET  /health               # health check
 - `TOKEN_ENCRYPTION_PASSPHRASE` — passphrase for encrypting access tokens at rest
 - `TELLER_APPLICATION_ID` — Teller app ID
 - `TELLER_ENV` — Teller environment (sandbox/development/production)
+- `TELLER_CERT` / `TELLER_KEY` — base64-encoded mTLS PEMs (Render)
+- `TELLER_CERT_PATH` / `TELLER_KEY_PATH` — file paths (default `./certificate.pem` / `./private_key.pem`)
+- `TELLER_CERT_CONTENT` / `TELLER_KEY_CONTENT` — raw PEM contents written to disk by `docker-entrypoint.sh` at container start
 - `SESSION_PASSWORD` — text password for login (omit to disable auth)
 - `SESSION_PIN` — numeric PIN for PIN pad login (alternative to password)
 - `SESSION_SECRET` — session cookie secret (auto-generated if not set)
@@ -315,13 +360,24 @@ GET  /health               # health check
 - `INSIGHTS_MONTHLY_BUDGET_CENTS` — monthly API spending cap (default: 50 = $0.50)
 - `API_KEY` — optional API key for /api/* endpoints (dev mode if not set)
 - `ALLOWED_ORIGINS` — comma-separated CORS origins
+- `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` — Web Push keypair (generate via `npx web-push generate-vapid-keys`); without these `/api/notifications/*` returns 501
+- `VAPID_EMAIL` — contact `mailto:` URL for the Web Push subscriber (default `mailto:admin@perfin.app`)
+- `PLAID_CLIENT_ID`, `PLAID_SECRET_SANDBOX|DEV|PROD` — optional, enables Plaid investment-account linking via `routes/investments.js`
 - `PERSISTENT_URL` — URL of companion Per-sistant instance (also stored in user_settings)
 - `PERSISTENT_WEBHOOK_SECRET` — HMAC secret for signing webhook payloads to Per-sistant
-- `SSO_SECRET` — shared HMAC secret for cross-app SSO token exchange
+- `SSO_SECRET` — shared HMAC secret for cross-app SSO token exchange. **Required** if Per-sistant integration is in use; both apps must set the same value. Endpoints return 500 if unset.
 
 ## Database
-- Auto-migration runs on server startup in a transaction (BEGIN/COMMIT/ROLLBACK) — no manual SQL needed
-- Schema versioning via `schema_migrations` table (current version: 2)
+- Auto-migration runs on server startup in a transaction (BEGIN/COMMIT/ROLLBACK) — no
+  manual SQL needed. Migration failures are now fatal (the process throws and exits)
+  rather than logging a "non-fatal" warning while leaving the schema half-applied.
+- Migration creates base tables (`plaid_items`, `teller_enrollments`, `linked_accounts`,
+  `sync_cursors`, `transactions`, `detected_subscriptions`, `csv_imports`) idempotently
+  via `CREATE TABLE IF NOT EXISTS` before the per-feature `ALTER TABLE` steps.
+- Schema versioning via `schema_migrations` table exists (current value: 2) but is
+  effectively dormant — every migration step uses `IF NOT EXISTS` / `IF NOT EXISTS`
+  guards and runs unconditionally. The `schema_migrations` row is recorded for
+  observability only; it does not gate any migration logic today.
 - Schema files in `db/` for reference only
 - Key tables: `teller_enrollments`, `linked_accounts`, `transactions`, `detected_subscriptions`,
   `recurring_transfers`, `user_settings` (single-row), `financial_insights`, `financial_goals`,
@@ -382,8 +438,29 @@ Income is identified by keyword matching on transaction descriptions (NOT amount
 - Excludes: payment, transfer, pymt, zelle, venmo, paypal, cash app, refund, credit, reversal
 - Used in: cash flow projection, savings rate calculation
 
+## Key Design Decisions
+- **Test deps live in two places.** `teller/package.json` holds runtime deps;
+  the repo-root `package.json` re-declares the subset that tests directly import
+  (`pg`, `express`, `multer`, `csv-parse`, `supertest`). CI runs `npm ci` in
+  both. Local devs must `npm install` at the root before `npm test`.
+- **Source-pinned regression tests.** `tests/audit-regressions.test.js` includes
+  smoke tests that read source files with `fs.readFileSync` and assert against
+  patterns (e.g., `persistent.js` references `process.env.SSO_SECRET` and never
+  the legacy `SESSION_SECRET + AUTH_SECRET`). These are intentionally weaker
+  than runtime tests but they avoid pulling `express-rate-limit` and other
+  deps that aren't installed at the repo root, while still catching the most
+  common regression: a code reviewer reverting a fix.
+- **Service worker excludes `/api/*`.** The SW caches static assets but never
+  API responses. A stale balance shown after the network drops would mislead
+  the user worse than a clear "offline" error.
+- **API key authenticates external tools, not browser users.** Browsers
+  authenticate via session cookie; the `X-API-Key` header path exists for
+  cron and external integrations. The dashboard never injects the key into
+  the DOM and never appends it to a URL.
+
 ## Git
-- Default branch: `claude/subscription-tracker-plaid-WeQTA`
+- Active development branch: `claude/audit-documentation-SX9kS`
+- Render's deploy branch (in `render.yaml` / Render dashboard): `claude/subscription-tracker-plaid-WeQTA`
 - PEM files and `.env` are in `.gitignore`
 
 ## Companion App: Per-sistant

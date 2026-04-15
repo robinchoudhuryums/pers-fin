@@ -38,7 +38,7 @@ Personal finance tracker that detects recurring charges, compares spending to be
 | `teller/routes/goals.js` | Financial goals, net worth, context export, investment accounts |
 | `teller/routes/budgets.js` | Budget CRUD, AI suggestions, accept |
 | `teller/routes/settings.js` | User settings, sheets sync, CSV export |
-| `teller/routes/insights.js` | AI insights (11 modules), tax deductions |
+| `teller/routes/insights.js` | AI insights (12 modules), tax deductions |
 | `teller/routes/categorize.js` | ML transaction categorization via Claude |
 | `teller/routes/investments.js` | Plaid investment accounts (holdings, sync) |
 | `teller/routes/notifications.js` | Web Push notifications (VAPID) |
@@ -50,7 +50,8 @@ Personal finance tracker that detects recurring charges, compares spending to be
 | `scripts/detect-subscriptions.js` | Recurring charge detection algorithm |
 | `scripts/sheets-sync.js` | Google Sheets sync + dashboard builder |
 | `apps-script/Code.gs` | Google Sheets Apps Script (standalone + server sync) |
-| `tests/` | Test suite (node:test, 97 tests) |
+| `tests/` | Test suite (node:test, 139 tests across 7 files) |
+| `tests/audit-regressions.test.js` | Pinned regression tests for documented behavior (auth, SSO, templates, exclusion rules) |
 | `Dockerfile` | Container build |
 | `render.yaml` | Render deployment blueprint |
 | `fly.toml` | Fly.io deployment config |
@@ -84,7 +85,7 @@ Requires Teller mTLS certificate files (`certificate.pem`, `private_key.pem`) in
 3. Share your spreadsheet with the service account email (as Editor)
 4. Set `GOOGLE_SHEETS_ID` and `GOOGLE_SERVICE_ACCOUNT_KEY` in `.env`
 
-The sync creates three sheets: **Transactions**, **Subscriptions**, and **Dashboard**.
+The sync writes six tabs: **Transactions**, **Subscriptions**, **AI Insights**, **Recurring Transfers**, **Tax Deductions**, and **Dashboard**.
 
 ### 5. Deployment
 
@@ -103,7 +104,7 @@ docker compose up --build
 npm test
 ```
 
-Tests cover the detection algorithm, CSV parsing, date handling, API logic, and cost calculations. No database required — all tests run against pure functions and mock data.
+139 tests across 7 files covering detection, CSV parsing, date handling, API logic, cost calculations, and pinned regression tests for auth/SSO/template/exclusion behavior. No database required — all tests run against pure functions and mock data. Note: run `npm install` at the repo root before `npm test` (the root `package.json` lists `pg`/`express`/etc. that the tests import directly).
 
 ## API Endpoints
 
@@ -128,7 +129,7 @@ Tests cover the detection algorithm, CSV parsing, date handling, API logic, and 
 | `GET` | `/api/context-export` | Structured data dump for Claude chat (markdown/JSON) |
 | `GET` | `/api/tax-deductions` | Accumulated tax-deductible transactions (by year) |
 | `GET/PATCH` | `/api/settings` | Retrieve/update user settings |
-| `POST` | `/api/insights` | Generate new AI insights via Claude (11 modules) |
+| `POST` | `/api/insights` | Generate new AI insights via Claude (12 modules) |
 | `GET` | `/api/insights/status` | AI API config + budget stats |
 | `POST` | `/api/insights/reset` | Clear long-term AI context memory |
 | `POST` | `/api/insights/rebuild` | Rebuild AI context from all history |
@@ -167,6 +168,8 @@ Two login modes — set one in your environment variables:
 
 Sessions expire after a configurable timeout (default 15 minutes, adjustable in Settings from 1–1440 minutes). Omit both to run without authentication (dev mode).
 
+**Biometric login (FaceID / Touch ID / Windows Hello):** Once logged in with PIN/password, register a passkey from Settings. Subsequent visits show a "Sign in with Biometrics" button on the login page — no PIN entry required. Implemented via WebAuthn (`@simplewebauthn/server`); credentials are stored in the `webauthn_credentials` table and can be revoked from Settings.
+
 ### Dark/Light Theme
 Toggle between Night Mode (default) and Day Mode in Settings. Preference is stored in the database and persisted via localStorage.
 
@@ -185,7 +188,7 @@ Claude-powered smart categorization beyond keyword matching (POST /api/categoriz
 ### Web Push Notifications
 VAPID-based push notifications for alerts (anomalies, upcoming charges, goal milestones).
 
-### AI Financial Insights (11 Toggleable Modules)
+### AI Financial Insights (12 Toggleable Modules)
 Set `ANTHROPIC_API_KEY` in `.env` to enable AI-powered financial analysis via Claude.
 
 The AI maintains a **persistent running summary** across analyses — a cumulative memory of your spending baselines, trends, and progress on past recommendations. Insights improve over time as the AI tracks changes month-to-month.
@@ -202,6 +205,7 @@ The AI maintains a **persistent running summary** across analyses — a cumulati
 9. **Income & savings rate** — track savings rate vs 50/30/20 rule
 10. **Tax deduction flags** — flag deductible transactions, persist year-round for tax filing
 11. **Goal tracking** — progress assessment with real-world economic context
+12. **Recurring transfers** — analyze Zelle, bill payments, savings, and investment patterns
 
 - **Model selector**: Haiku (~$0.005/run), Sonnet (~$0.02/run), or Opus (~$0.10/run)
 - **Cadence**: Weekly, biweekly, monthly, every 2 months, or quarterly
@@ -232,7 +236,7 @@ Installable as a home screen icon with Iron Man helmet branding:
 
 ## How Detection Works
 
-1. Pulls all non-pending debit transactions from the last 12 months
+1. Pulls all non-pending debit transactions from the last 36 months
 2. Groups by `merchant_name` (falls back to normalized `name` when null)
 3. For each merchant, checks if 3+ charges appear at ~30, ~60, ~90, or ~365 day intervals
 4. Allows ±25% tolerance on timing and ±10% on amount (catches price creep)
