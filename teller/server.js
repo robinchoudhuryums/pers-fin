@@ -434,6 +434,7 @@ runMigrations().then(() => {
              FROM transactions t
              LEFT JOIN linked_accounts la ON la.account_id = t.account_id
              WHERE t.amount > 0 AND t.pending = false
+               AND COALESCE(t.is_reimbursed, false) = false
                AND t.date >= date_trunc('month', CURRENT_DATE)
                AND t.date < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
              GROUP BY COALESCE(t.category[1], 'Uncategorized')`
@@ -473,6 +474,43 @@ runMigrations().then(() => {
         console.error("Budget alert notification error:", err.message);
       }
     }, 3 * 60 * 60 * 1000); // Check every 3 hours
+
+    // Bank auto-sync (Phase A): every 1 hour, check whether the configured
+    // interval has elapsed and call syncAllEnrollments + syncAllBalances
+    // in-process. Called directly (not via HTTP fetch) so API_KEY-protected
+    // deployments don't 401 against themselves, and so the work runs even
+    // when the anomaly/push path is unavailable.
+    setInterval(async () => {
+      try {
+        const settings = await pool.query(
+          "SELECT auto_sync_enabled, auto_sync_interval_hours, last_auto_sync_at FROM user_settings WHERE id = 1"
+        );
+        const s = settings.rows[0];
+        if (!s || !s.auto_sync_enabled) return;
+        const intervalHours = Math.max(1, Math.min(168, parseInt(s.auto_sync_interval_hours) || 6));
+        const lastSync = s.last_auto_sync_at ? new Date(s.last_auto_sync_at) : null;
+        const now = new Date();
+        const dueMs = intervalHours * 60 * 60 * 1000;
+        if (lastSync && (now - lastSync) < dueMs) return;
+
+        const { syncAllEnrollments, syncAllBalances } = require("./routes/enrollments");
+        let txnResult = null, balResult = null;
+        try { txnResult = await syncAllEnrollments(); }
+        catch (e) { console.error("Auto-sync transactions error:", e.message); }
+        try { balResult = await syncAllBalances(); }
+        catch (e) { console.error("Auto-sync balances error:", e.message); }
+
+        await pool.query("UPDATE user_settings SET last_auto_sync_at = now() WHERE id = 1").catch(() => {});
+        console.log(
+          "Auto-sync complete: " +
+            (txnResult ? `${txnResult.transactions_added} txns added` : "txn sync failed") +
+            ", " +
+            (balResult ? `${balResult.accounts_updated} balances updated` : "balance sync failed")
+        );
+      } catch (err) {
+        console.error("Auto-sync scheduler error:", err.message);
+      }
+    }, 60 * 60 * 1000); // Check every 1 hour
   });
 
   // --- Graceful shutdown ---

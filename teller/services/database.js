@@ -295,6 +295,22 @@ async function runMigrations() {
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sheets_auto_sync_enabled BOOLEAN NOT NULL DEFAULT false");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sheets_auto_sync_interval TEXT NOT NULL DEFAULT 'weekly'");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sheets_last_auto_sync TIMESTAMPTZ DEFAULT NULL");
+    // Bank transaction auto-sync (Phase A) — scheduler calls syncAllEnrollments
+    // in-process every auto_sync_interval_hours when enabled.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS auto_sync_enabled BOOLEAN NOT NULL DEFAULT false");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS auto_sync_interval_hours INT NOT NULL DEFAULT 6");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_auto_sync_at TIMESTAMPTZ DEFAULT NULL");
+    // Transaction user-edits (Phase B1): overrides live in user_* columns so
+    // re-syncing from Teller doesn't clobber the user's edits to merchant_name
+    // or notes.
+    await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS user_merchant_name TEXT");
+    await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS user_notes TEXT");
+    // Reimbursement flag (Phase B2): reimbursed transactions are excluded from
+    // spending/budget/cash-flow/savings-rate aggregations so e.g. work travel
+    // that the employer repaid doesn't eat into the user's entertainment budget.
+    await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS is_reimbursed BOOLEAN NOT NULL DEFAULT false");
+    await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS reimbursed_at TIMESTAMPTZ");
+    await client.query("CREATE INDEX IF NOT EXISTS idx_transactions_reimbursed ON transactions (is_reimbursed) WHERE is_reimbursed = true");
     // CSV import reminder
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS csv_reminder_days INT NOT NULL DEFAULT 14");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS csv_reminder_enabled BOOLEAN NOT NULL DEFAULT true");

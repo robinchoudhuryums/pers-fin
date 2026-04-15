@@ -172,102 +172,102 @@ async function syncEnrollment(enrollment) {
   return { added };
 }
 
+// syncAllEnrollments — in-process sync of every non-suspended Teller enrollment.
+// Used by both POST /api/sync (HTTP handler) and the scheduled auto-sync task
+// in server.js. Returns { enrollments_synced, transactions_added, errors }.
+async function syncAllEnrollments() {
+  const { rows: enrollments } = await pool.query(
+    `SELECT te.id, te.enrollment_id, te.institution_name,
+            pgp_sym_decrypt(te.access_token_enc, $1) AS access_token,
+            te.last_synced_txn_date
+     FROM teller_enrollments te
+     WHERE te.status != 'SUSPENDED'
+     ORDER BY te.id`,
+    [ENCRYPTION_PASSPHRASE]
+  );
+
+  let totalAdded = 0;
+  const errors = [];
+
+  for (const enrollment of enrollments) {
+    try {
+      const result = await syncEnrollment(enrollment);
+      totalAdded += result.added;
+    } catch (err) {
+      console.error(`Sync error for ${enrollment.institution_name}:`, err.message);
+      if (err.status === 401 || err.status === 403) {
+        await pool.query(
+          `UPDATE teller_enrollments SET status = 'DISCONNECTED', updated_at = now()
+           WHERE id = $1`,
+          [enrollment.id]
+        );
+      }
+      errors.push({ institution: enrollment.institution_name, error: err.message });
+    }
+  }
+
+  // Anomaly detection + push notifications. Correctness details:
+  //   1. Baseline average excludes the trailing 7 days so the candidate
+  //      doesn't inflate its own baseline.
+  //   2. Only transactions inserted since last_anomaly_check_at are considered,
+  //      so the same anomaly doesn't re-push on subsequent syncs.
+  if (totalAdded > 0) {
+    try {
+      const settings = await pool.query("SELECT last_anomaly_check_at FROM user_settings WHERE id = 1");
+      const watermark = settings.rows[0]?.last_anomaly_check_at || null;
+      const anomalies = await pool.query(
+        `SELECT t.merchant_name, t.name, t.amount, t.date, avg_tbl.avg_amount
+         FROM transactions t
+         JOIN (
+           SELECT COALESCE(merchant_name, name) AS merchant,
+                  AVG(amount) AS avg_amount, COUNT(*) AS txn_count
+           FROM transactions
+           WHERE amount > 0 AND pending = false
+             AND date >= CURRENT_DATE - INTERVAL '12 months'
+             AND date <  CURRENT_DATE - INTERVAL '7 days'
+           GROUP BY COALESCE(merchant_name, name)
+           HAVING COUNT(*) >= 3
+         ) avg_tbl ON COALESCE(t.merchant_name, t.name) = avg_tbl.merchant
+         WHERE t.amount > 0 AND t.pending = false
+           AND t.date >= CURRENT_DATE - INTERVAL '3 days'
+           AND t.amount > avg_tbl.avg_amount * 3
+           AND ($1::timestamptz IS NULL OR t.created_at > $1)
+         ORDER BY t.amount DESC
+         LIMIT 5`,
+        [watermark]
+      );
+      if (anomalies.rows.length > 0) {
+        try {
+          const { sendToAll } = require("./notifications");
+          for (const a of anomalies.rows) {
+            const merchant = a.merchant_name || a.name;
+            await sendToAll({
+              title: "Unusual charge detected",
+              body: merchant + ": $" + parseFloat(a.amount).toFixed(2) + " (avg: $" + parseFloat(a.avg_amount).toFixed(2) + ")",
+              tag: "anomaly-" + merchant.toLowerCase().replace(/\s+/g, "-"),
+              data: { url: "/transactions" },
+            });
+          }
+        } catch {}
+      }
+      await pool.query("UPDATE user_settings SET last_anomaly_check_at = now() WHERE id = 1").catch(() => {});
+    } catch (err) {
+      console.error("Post-sync anomaly check error:", err.message);
+    }
+  }
+
+  return {
+    enrollments_synced: enrollments.length - errors.length,
+    transactions_added: totalAdded,
+    errors: errors.length > 0 ? errors : undefined,
+  };
+}
+
 // POST /api/sync
 router.post("/api/sync", async (req, res) => {
   try {
-    const { rows: enrollments } = await pool.query(
-      `SELECT te.id, te.enrollment_id, te.institution_name,
-              pgp_sym_decrypt(te.access_token_enc, $1) AS access_token,
-              te.last_synced_txn_date
-       FROM teller_enrollments te
-       WHERE te.status != 'SUSPENDED'
-       ORDER BY te.id`,
-      [ENCRYPTION_PASSPHRASE]
-    );
-
-    let totalAdded = 0;
-    const errors = [];
-
-    for (const enrollment of enrollments) {
-      try {
-        const result = await syncEnrollment(enrollment);
-        totalAdded += result.added;
-      } catch (err) {
-        console.error(`Sync error for ${enrollment.institution_name}:`, err.message);
-        if (err.status === 401 || err.status === 403) {
-          await pool.query(
-            `UPDATE teller_enrollments SET status = 'DISCONNECTED', updated_at = now()
-             WHERE id = $1`,
-            [enrollment.id]
-          );
-        }
-        errors.push({
-          institution: enrollment.institution_name,
-          error: err.message,
-        });
-      }
-    }
-
-    // After sync, check for anomalies in newly synced transactions and send push notifications.
-    // Two correctness measures vs prior versions:
-    //   1. The merchant-baseline average excludes transactions from the last 7 days, so the
-    //      candidate anomaly doesn't drag its own baseline upward.
-    //   2. We only consider transactions whose row was INSERTED since the last anomaly check
-    //      (`last_anomaly_check_at` watermark on user_settings) — that prevents the same
-    //      anomaly from notifying again on every subsequent /api/sync call.
-    if (totalAdded > 0) {
-      try {
-        const settings = await pool.query("SELECT last_anomaly_check_at FROM user_settings WHERE id = 1");
-        const watermark = settings.rows[0]?.last_anomaly_check_at || null;
-        const anomalies = await pool.query(
-          `SELECT t.merchant_name, t.name, t.amount, t.date, avg_tbl.avg_amount
-           FROM transactions t
-           JOIN (
-             SELECT COALESCE(merchant_name, name) AS merchant,
-                    AVG(amount) AS avg_amount, COUNT(*) AS txn_count
-             FROM transactions
-             WHERE amount > 0 AND pending = false
-               AND date >= CURRENT_DATE - INTERVAL '12 months'
-               AND date <  CURRENT_DATE - INTERVAL '7 days'
-             GROUP BY COALESCE(merchant_name, name)
-             HAVING COUNT(*) >= 3
-           ) avg_tbl ON COALESCE(t.merchant_name, t.name) = avg_tbl.merchant
-           WHERE t.amount > 0 AND t.pending = false
-             AND t.date >= CURRENT_DATE - INTERVAL '3 days'
-             AND t.amount > avg_tbl.avg_amount * 3
-             AND ($1::timestamptz IS NULL OR t.created_at > $1)
-           ORDER BY t.amount DESC
-           LIMIT 5`,
-          [watermark]
-        );
-        if (anomalies.rows.length > 0) {
-          try {
-            const { sendToAll } = require("./notifications");
-            for (const a of anomalies.rows) {
-              const merchant = a.merchant_name || a.name;
-              await sendToAll({
-                title: "Unusual charge detected",
-                body: merchant + ": $" + parseFloat(a.amount).toFixed(2) + " (avg: $" + parseFloat(a.avg_amount).toFixed(2) + ")",
-                tag: "anomaly-" + merchant.toLowerCase().replace(/\s+/g, "-"),
-                data: { url: "/transactions" },
-              });
-            }
-          } catch {}
-        }
-        // Always advance the watermark, even when no anomalies fired — otherwise a quiet
-        // sync window after one anomaly would re-evaluate the same transactions on the
-        // next call (different anomaly query, same transactions).
-        await pool.query("UPDATE user_settings SET last_anomaly_check_at = now() WHERE id = 1").catch(() => {});
-      } catch (err) {
-        console.error("Post-sync anomaly check error:", err.message);
-      }
-    }
-
-    res.json({
-      enrollments_synced: enrollments.length - errors.length,
-      transactions_added: totalAdded,
-      errors: errors.length > 0 ? errors : undefined,
-    });
+    const result = await syncAllEnrollments();
+    res.json(result);
   } catch (err) {
     console.error("Sync error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
@@ -502,60 +502,68 @@ router.patch("/api/accounts/:id", async (req, res) => {
   }
 });
 
+// syncAllBalances — in-process balance refresh for all connected Teller
+// enrollments. Used by both POST /api/sync-balances and the scheduled
+// auto-sync task in server.js.
+async function syncAllBalances() {
+  const enrollments = await pool.query(
+    `SELECT id, enrollment_id, institution_name,
+            pgp_sym_decrypt(access_token_enc, $1) AS access_token
+     FROM teller_enrollments WHERE status = 'GOOD'`,
+    [ENCRYPTION_PASSPHRASE]
+  );
+
+  let updated = 0;
+  const errors = [];
+
+  for (const enrollment of enrollments.rows) {
+    try {
+      const accounts = await tellerRequest("/accounts", enrollment.access_token);
+      for (const acct of accounts) {
+        let balances = null;
+        try {
+          balances = await tellerRequest(`/accounts/${acct.id}/balances`, enrollment.access_token);
+        } catch (err) { console.error("Balance fetch error for", acct.id, ":", err.message); }
+
+        const available = balances?.available || acct.balance?.available || null;
+        const ledger = balances?.ledger || acct.balance?.ledger || acct.balance?.current || null;
+
+        if (available !== null || ledger !== null) {
+          await pool.query(
+            `UPDATE linked_accounts
+             SET available_balance = $1, current_balance = $2, balance_updated_at = now()
+             WHERE account_id = $3`,
+            [available ? parseFloat(available) : null, ledger ? parseFloat(ledger) : null, acct.id]
+          );
+          updated++;
+        }
+      }
+    } catch (err) {
+      errors.push({ institution: enrollment.institution_name, error: err.message });
+    }
+  }
+
+  // Auto-snapshot net worth after balance sync
+  try {
+    const allAccts = await pool.query("SELECT type, available_balance, current_balance FROM linked_accounts WHERE available_balance IS NOT NULL OR current_balance IS NOT NULL");
+    let assets = 0, liabilities = 0;
+    for (const a of allAccts.rows) {
+      if (a.type === "credit") liabilities += parseFloat(a.current_balance || 0);
+      else assets += parseFloat(a.available_balance || a.current_balance || 0);
+    }
+    await pool.query(
+      "INSERT INTO net_worth_snapshots (total_assets, total_liabilities, net_worth, snapshot_date) VALUES ($1, $2, $3, CURRENT_DATE) ON CONFLICT (snapshot_date) DO UPDATE SET total_assets=$1, total_liabilities=$2, net_worth=$3",
+      [assets, liabilities, assets - liabilities]
+    );
+  } catch { /* non-critical */ }
+  return { accounts_updated: updated, errors: errors.length > 0 ? errors : undefined };
+}
+
 // POST /api/sync-balances
 router.post("/api/sync-balances", async (_req, res) => {
   try {
-    const enrollments = await pool.query(
-      `SELECT id, enrollment_id, institution_name,
-              pgp_sym_decrypt(access_token_enc, $1) AS access_token
-       FROM teller_enrollments WHERE status = 'GOOD'`,
-      [ENCRYPTION_PASSPHRASE]
-    );
-
-    let updated = 0;
-    const errors = [];
-
-    for (const enrollment of enrollments.rows) {
-      try {
-        const accounts = await tellerRequest("/accounts", enrollment.access_token);
-        for (const acct of accounts) {
-          let balances = null;
-          try {
-            balances = await tellerRequest(`/accounts/${acct.id}/balances`, enrollment.access_token);
-          } catch (err) { console.error("Balance fetch error for", acct.id, ":", err.message); }
-
-          const available = balances?.available || acct.balance?.available || null;
-          const ledger = balances?.ledger || acct.balance?.ledger || acct.balance?.current || null;
-
-          if (available !== null || ledger !== null) {
-            await pool.query(
-              `UPDATE linked_accounts
-               SET available_balance = $1, current_balance = $2, balance_updated_at = now()
-               WHERE account_id = $3`,
-              [available ? parseFloat(available) : null, ledger ? parseFloat(ledger) : null, acct.id]
-            );
-            updated++;
-          }
-        }
-      } catch (err) {
-        errors.push({ institution: enrollment.institution_name, error: err.message });
-      }
-    }
-
-    // Auto-snapshot net worth after balance sync
-    try {
-      const allAccts = await pool.query("SELECT type, available_balance, current_balance FROM linked_accounts WHERE available_balance IS NOT NULL OR current_balance IS NOT NULL");
-      let assets = 0, liabilities = 0;
-      for (const a of allAccts.rows) {
-        if (a.type === "credit") liabilities += parseFloat(a.current_balance || 0);
-        else assets += parseFloat(a.available_balance || a.current_balance || 0);
-      }
-      await pool.query(
-        "INSERT INTO net_worth_snapshots (total_assets, total_liabilities, net_worth, snapshot_date) VALUES ($1, $2, $3, CURRENT_DATE) ON CONFLICT (snapshot_date) DO UPDATE SET total_assets=$1, total_liabilities=$2, net_worth=$3",
-        [assets, liabilities, assets - liabilities]
-      );
-    } catch { /* non-critical */ }
-    res.json({ accounts_updated: updated, errors: errors.length > 0 ? errors : undefined });
+    const result = await syncAllBalances();
+    res.json(result);
   } catch (err) {
     console.error("sync-balances error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
@@ -573,7 +581,8 @@ router.get("/api/spending-summary", async (req, res) => {
               ROUND(AVG(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0), 2) AS avg_transaction
        FROM transactions t
        LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-       WHERE t.amount > 0 AND t.date >= CURRENT_DATE - ($1 || ' months')::INTERVAL
+       WHERE t.amount > 0 AND COALESCE(t.is_reimbursed, false) = false
+         AND t.date >= CURRENT_DATE - ($1 || ' months')::INTERVAL
        GROUP BY TO_CHAR(t.date, 'YYYY-MM')
        ORDER BY month DESC`,
       [months]
@@ -585,7 +594,8 @@ router.get("/api/spending-summary", async (req, res) => {
               COUNT(*) AS txn_count
        FROM transactions t
        LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-       WHERE t.amount > 0 AND t.date >= CURRENT_DATE - ($1 || ' months')::INTERVAL
+       WHERE t.amount > 0 AND COALESCE(t.is_reimbursed, false) = false
+         AND t.date >= CURRENT_DATE - ($1 || ' months')::INTERVAL
        GROUP BY COALESCE(t.category[1], 'Uncategorized')
        ORDER BY total DESC
        LIMIT 15`,
@@ -596,17 +606,21 @@ router.get("/api/spending-summary", async (req, res) => {
     // "pymt", and "epay" can't substring-match legitimate merchants (AT&T,
     // Atmos Energy, etc.). Multi-word phrases still work because \y anchors
     // at the phrase edges, not inside the phrase.
+    // Group by the user's overridden merchant name when set, so renames like
+    // "AMAZON MKTP*4321" -> "Amazon" collapse multiple rows into one merchant.
+    // Reimbursed transactions are excluded from the total (Phase B2).
     const topMerchants = await pool.query(
-      `SELECT COALESCE(t.merchant_name, t.name) AS merchant,
+      `SELECT COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS merchant,
               ROUND(SUM(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0), 2) AS total_spent,
               COUNT(*) AS txn_count
        FROM transactions t
        LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-       WHERE t.amount > 0 AND t.merchant_name IS NOT NULL
+       WHERE t.amount > 0 AND COALESCE(t.is_reimbursed, false) = false
+             AND t.merchant_name IS NOT NULL
              AND t.date >= CURRENT_DATE - ($1 || ' months')::INTERVAL
-             AND COALESCE(t.merchant_name, t.name) !~*
+             AND COALESCE(t.user_merchant_name, t.merchant_name, t.name) !~*
                '\y(payment thank|pymt|autopay|auto pay|minimum payment|directpay|automatic payment|interest|int charge|finance charge|funds tran|funds transfer|transfer to|transfer from|ach transfer|wire transfer|internal transfer|zelle|venmo|paypal|cash app|cashapp|square cash|bank of america|wells fargo|chase bank|citi bank|citibank|capital one|us bank|pnc bank|td bank|ally bank|truist|boa transfer|online transfer|mobile transfer|bill pay|epay|credit card payment|loan payment|mortgage payment|deposit|direct dep|atm|withdrawal)\y'
-       GROUP BY COALESCE(t.merchant_name, t.name)
+       GROUP BY COALESCE(t.user_merchant_name, t.merchant_name, t.name)
        ORDER BY total_spent DESC
        LIMIT 10`,
       [months]
@@ -622,8 +636,8 @@ router.get("/api/spending-summary", async (req, res) => {
     );
 
     const recentTxns = await pool.query(
-      `SELECT COALESCE(merchant_name, name) AS description,
-              amount, date, pending,
+      `SELECT COALESCE(user_merchant_name, merchant_name, name) AS description,
+              amount, date, pending, is_reimbursed,
               COALESCE(category[1], 'Uncategorized') AS category
        FROM transactions
        ORDER BY date DESC, created_at DESC
@@ -755,6 +769,7 @@ router.get("/api/cash-flow", async (req, res) => {
         FROM transactions t
         LEFT JOIN linked_accounts la ON la.account_id = t.account_id
         WHERE t.amount > 0 AND t.pending = false
+          AND COALESCE(t.is_reimbursed, false) = false
           AND t.date >= CURRENT_DATE - INTERVAL '60 days'
         GROUP BY t.date
       ) daily
@@ -776,6 +791,7 @@ router.get("/api/cash-flow", async (req, res) => {
         FROM transactions t
         LEFT JOIN linked_accounts la ON la.account_id = t.account_id
         WHERE t.amount > 0 AND t.pending = false
+          AND COALESCE(t.is_reimbursed, false) = false
           AND t.date >= CURRENT_DATE - INTERVAL '60 days'
         GROUP BY t.date
       )
@@ -884,6 +900,7 @@ router.get("/api/spending-yoy", async (req, res) => {
       FROM transactions t
       LEFT JOIN linked_accounts la ON la.account_id = t.account_id
       WHERE t.amount > 0 AND t.pending = false
+        AND COALESCE(t.is_reimbursed, false) = false
         AND EXTRACT(MONTH FROM t.date) = $1
         AND EXTRACT(YEAR FROM t.date) >= $2 - 2
       GROUP BY TO_CHAR(t.date, 'YYYY'), TO_CHAR(t.date, 'MM'), COALESCE(t.category[1], 'Uncategorized')
@@ -963,6 +980,7 @@ router.get("/api/savings-rate", async (req, res) => {
       FROM transactions t
       LEFT JOIN linked_accounts la ON la.account_id = t.account_id
       WHERE t.amount > 0 AND t.pending = false
+        AND COALESCE(t.is_reimbursed, false) = false
         AND t.date >= CURRENT_DATE - make_interval(months => $1)
       GROUP BY TO_CHAR(t.date, 'YYYY-MM')
       ORDER BY month DESC
@@ -1062,3 +1080,5 @@ router.get("/api/csv-reminder", async (_req, res) => {
 });
 
 module.exports = router;
+module.exports.syncAllEnrollments = syncAllEnrollments;
+module.exports.syncAllBalances = syncAllBalances;

@@ -310,6 +310,7 @@ router.post("/api/insights", async (_req, res) => {
                   SUM(amount) AS total
            FROM transactions
            WHERE amount > 0 AND pending = false
+             AND COALESCE(is_reimbursed, false) = false
              AND date >= CURRENT_DATE - INTERVAL '24 months'
            GROUP BY EXTRACT(MONTH FROM date), TO_CHAR(date, 'Mon'), EXTRACT(YEAR FROM date)
            ORDER BY year, month_num`
@@ -394,6 +395,7 @@ router.post("/api/insights", async (_req, res) => {
           `SELECT COALESCE(merchant_name, name) AS merchant, SUM(amount) AS total, COUNT(*) AS txn_count
            FROM transactions
            WHERE pending = false AND amount > 0
+             AND COALESCE(is_reimbursed, false) = false
              AND date >= date_trunc('year', CURRENT_DATE)
              AND COALESCE(merchant_name, name) ~* $1
            GROUP BY COALESCE(merchant_name, name)
@@ -485,6 +487,7 @@ router.post("/api/insights", async (_req, res) => {
          FROM budgets b
          LEFT JOIN transactions t ON COALESCE(t.category[1], 'Uncategorized') = b.category
            AND t.amount > 0 AND t.pending = false
+           AND COALESCE(t.is_reimbursed, false) = false
            AND t.date >= date_trunc('month', CURRENT_DATE)
            AND t.date < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
          LEFT JOIN linked_accounts la ON la.account_id = t.account_id

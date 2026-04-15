@@ -234,7 +234,7 @@ router.get("/api/transactions/search", async (req, res) => {
 
     const [result, countResult] = await Promise.all([
       pool.query(`
-        SELECT t.transaction_id, t.date, COALESCE(t.merchant_name, t.name) AS merchant,
+        SELECT t.transaction_id, t.date, COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS merchant, t.user_notes, t.is_reimbursed,
                t.amount, la.name AS account_name, la.type AS account_type,
                COALESCE(pi.institution_name, te.institution_name, la.institution_name_manual, 'CSV Import') AS institution_name,
                t.category[1] AS category, t.pending
@@ -271,7 +271,9 @@ router.get("/api/transactions", async (req, res) => {
       SELECT
         t.transaction_id,
         t.date,
-        COALESCE(t.merchant_name, t.name) AS merchant,
+        COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS merchant,
+        t.user_notes,
+        t.is_reimbursed,
         t.amount,
         la.name AS account_name,
         la.type AS account_type,
@@ -729,6 +731,41 @@ router.get("/api/transactions/duplicates", async (_req, res) => {
       console.error("duplicates error:", err2.message);
       res.status(500).json({ error: "An internal error occurred." });
     }
+  }
+});
+
+// PATCH /api/transactions/:id — user overrides (merchant_name, notes, is_reimbursed).
+// User edits are stored in `user_*` columns so a subsequent sync from Teller
+// does not clobber them. `merchant_name` in the PATCH body writes to
+// `user_merchant_name`; the raw `merchant_name` column keeps Teller's value.
+router.patch("/api/transactions/:id", async (req, res) => {
+  const { merchant_name, notes, is_reimbursed } = req.body;
+  const updates = []; const values = []; let idx = 1;
+  if (merchant_name !== undefined) {
+    const v = typeof merchant_name === "string" ? merchant_name.trim() : null;
+    updates.push("user_merchant_name = $" + idx++); values.push(v || null);
+  }
+  if (notes !== undefined) {
+    const v = typeof notes === "string" ? notes : null;
+    updates.push("user_notes = $" + idx++); values.push(v || null);
+  }
+  if (is_reimbursed !== undefined) {
+    const flag = !!is_reimbursed;
+    updates.push("is_reimbursed = $" + idx++); values.push(flag);
+    updates.push("reimbursed_at = " + (flag ? "now()" : "NULL"));
+  }
+  if (!updates.length) return res.status(400).json({ error: "No valid fields to update" });
+  values.push(req.params.id);
+  try {
+    const result = await pool.query(
+      "UPDATE transactions SET " + updates.join(", ") + " WHERE transaction_id = $" + idx + " RETURNING transaction_id, user_merchant_name, user_notes, is_reimbursed, reimbursed_at",
+      values
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "Transaction not found" });
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("patch transaction error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 

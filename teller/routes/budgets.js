@@ -25,6 +25,7 @@ router.get("/api/budgets", async (_req, res) => {
          FROM transactions t
          LEFT JOIN linked_accounts la ON la.account_id = t.account_id
          WHERE t.amount > 0 AND t.pending = false
+           AND COALESCE(t.is_reimbursed, false) = false
            AND t.date >= date_trunc('month', CURRENT_DATE)
            AND t.date < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
          GROUP BY COALESCE(t.category[1], 'Uncategorized')`
@@ -111,6 +112,7 @@ router.post("/api/budgets/suggest", async (_req, res) => {
                 COUNT(*) AS txn_count
          FROM transactions
          WHERE amount > 0 AND pending = false
+           AND COALESCE(is_reimbursed, false) = false
            AND date >= CURRENT_DATE - INTERVAL '3 months'
          GROUP BY COALESCE(category[1], 'Uncategorized'), TO_CHAR(date, 'YYYY-MM')
          ORDER BY category, month`
@@ -244,6 +246,7 @@ router.get("/api/budgets/alerts", async (_req, res) => {
          FROM transactions t
          LEFT JOIN linked_accounts la ON la.account_id = t.account_id
          WHERE t.amount > 0 AND t.pending = false
+           AND COALESCE(t.is_reimbursed, false) = false
            AND t.date >= date_trunc('month', CURRENT_DATE)
            AND t.date < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
          GROUP BY COALESCE(t.category[1], 'Uncategorized')`

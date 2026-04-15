@@ -37,6 +37,13 @@ const INCOME_PREDICATE = `
 // configured share.
 const SPLIT_AMOUNT = "t.amount * COALESCE(la.spending_split_pct, 100) / 100.0";
 
+// Reimbursed exclusion — use inside any spending aggregation so transactions
+// the user has flagged as reimbursed don't count against their budgets/cash
+// flow/savings rate. Column lives on transactions, so table alias is optional;
+// callers that don't alias the transactions table can use NOT_REIMBURSED_UNALIASED.
+const NOT_REIMBURSED = "COALESCE(t.is_reimbursed, false) = false";
+const NOT_REIMBURSED_UNALIASED = "COALESCE(is_reimbursed, false) = false";
+
 /**
  * Monthly spending totals for the last N months, split-adjusted.
  * Returns rows: { month: 'YYYY-MM', total_spend: NUMERIC, txn_count: INT }
@@ -49,6 +56,7 @@ async function getMonthlySpending(pool, months = 6) {
      FROM transactions t
      LEFT JOIN linked_accounts la ON la.account_id = t.account_id
      WHERE t.amount > 0 AND t.pending = false
+       AND COALESCE(t.is_reimbursed, false) = false
        AND t.date >= CURRENT_DATE - make_interval(months => $1)
      GROUP BY TO_CHAR(t.date, 'YYYY-MM')
      ORDER BY month`,
@@ -103,6 +111,8 @@ async function getMonthlyIncomeAndSpending(pool, months = 6) {
 module.exports = {
   INCOME_PREDICATE,
   SPLIT_AMOUNT,
+  NOT_REIMBURSED,
+  NOT_REIMBURSED_UNALIASED,
   getMonthlySpending,
   getMonthlyIncome,
   getMonthlyIncomeAndSpending,

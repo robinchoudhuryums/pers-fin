@@ -224,6 +224,31 @@
     </div>
   </div>
 
+  <div class="section"><h2>Bank Auto-Sync</h2>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Automatic Transaction Sync</div><div class="desc">Pull new transactions and account balances on a schedule without clicking Sync</div></div>
+      <div class="setting-control">
+        <label class="toggle"><input type="checkbox" id="auto-sync-toggle"><span class="slider"></span></label>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Sync Interval</div><div class="desc">How often to fetch new transactions (process must be awake — enable Keep-Alive on free-tier Render)</div></div>
+      <div class="setting-control">
+        <select id="auto-sync-interval-select">
+          <option value="1">Every hour</option>
+          <option value="3">Every 3 hours</option>
+          <option value="6" selected>Every 6 hours</option>
+          <option value="12">Every 12 hours</option>
+          <option value="24">Daily</option>
+        </select>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Last Auto-Sync</div><div class="desc">Most recent scheduled sync run</div></div>
+      <div class="setting-control"><span id="auto-sync-last" style="font-size:12px;color:var(--text-muted);">Never</span></div>
+    </div>
+  </div>
+
   <div class="section"><h2>Google Sheets Auto-Sync</h2>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Auto-Sync</div><div class="desc">Automatically sync data to Google Sheets on a schedule</div></div>
@@ -307,6 +332,12 @@
         if (s.sheets_last_auto_sync) {
           document.getElementById('sheets-last-sync').textContent = new Date(s.sheets_last_auto_sync).toLocaleString();
         }
+        // Bank auto-sync
+        document.getElementById('auto-sync-toggle').checked = !!s.auto_sync_enabled;
+        document.getElementById('auto-sync-interval-select').value = String(s.auto_sync_interval_hours || 6);
+        document.getElementById('auto-sync-last').textContent = s.last_auto_sync_at
+          ? new Date(s.last_auto_sync_at).toLocaleString()
+          : 'Never';
         renderWidgetToggles(s.dashboard_widgets || {});
         // Render insight module toggles
         const mods = s.insight_modules || {};
@@ -641,6 +672,8 @@
       ['csv-reminder-days', 'change', function() { updateSetting('csv_reminder_days', parseInt(this.value)); }],
       ['sheets-auto-toggle', 'change', function() { updateSetting('sheets_auto_sync_enabled', this.checked); }],
       ['sheets-interval-select', 'change', function() { updateSetting('sheets_auto_sync_interval', this.value); }],
+      ['auto-sync-toggle', 'change', function() { updateSetting('auto_sync_enabled', this.checked); }],
+      ['auto-sync-interval-select', 'change', function() { updateSetting('auto_sync_interval_hours', parseInt(this.value)); }],
     ]);
     // Event delegation for dynamically generated module checkboxes
     onDelegate('modules-container', 'change', 'input[data-module]', function() {
