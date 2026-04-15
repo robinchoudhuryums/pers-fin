@@ -334,12 +334,34 @@ async function runMigrations() {
       UNIQUE (merchant_key, cadence_days, direction)
     )`);
     await client.query("CREATE INDEX IF NOT EXISTS idx_recurring_transfers_active ON recurring_transfers (is_active, is_dismissed)");
-    // Per-sistant integration: webhook target + SSO shared secret
+    // Per-sistant integration: webhook target + enabled flag.
+    // (The webhook HMAC secret is added below as encrypted BYTEA — older DBs
+    // may have a plaintext TEXT column from before; that path migrates it.)
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS persistent_url TEXT");
-    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS persistent_webhook_secret TEXT");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS persistent_webhook_enabled BOOLEAN NOT NULL DEFAULT false");
     // Anomaly notification dedupe — only fire on transactions inserted after this watermark
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_anomaly_check_at TIMESTAMPTZ");
+    // Encrypt-at-rest for the Per-sistant webhook HMAC secret. Older deployments
+    // stored it as plain TEXT in `persistent_webhook_secret`; we add a BYTEA
+    // column, copy any existing plaintext into it (encrypted), then drop the old
+    // TEXT column. Idempotent: if the TEXT column is already gone we just keep
+    // the BYTEA column.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS persistent_webhook_secret_enc BYTEA");
+    if (ENCRYPTION_PASSPHRASE) {
+      const hasOldCol = await client.query(
+        "SELECT 1 FROM information_schema.columns WHERE table_name = 'user_settings' AND column_name = 'persistent_webhook_secret'"
+      );
+      if (hasOldCol.rows.length > 0) {
+        await client.query(
+          `UPDATE user_settings
+             SET persistent_webhook_secret_enc = pgp_sym_encrypt(persistent_webhook_secret, $1)
+           WHERE persistent_webhook_secret IS NOT NULL
+             AND persistent_webhook_secret_enc IS NULL`,
+          [ENCRYPTION_PASSPHRASE]
+        );
+        await client.query("ALTER TABLE user_settings DROP COLUMN persistent_webhook_secret");
+      }
+    }
 
     // Record schema version
     if (currentVersion < SCHEMA_VERSION) {

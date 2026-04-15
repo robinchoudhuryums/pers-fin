@@ -4,7 +4,7 @@
 
 const express = require("express");
 const router = express.Router();
-const { pool } = require("../services/database");
+const { pool, ENCRYPTION_PASSPHRASE } = require("../services/database");
 const { INSIGHT_MODULES } = require("../data/reference-data");
 
 let sheetsSync;
@@ -111,7 +111,15 @@ router.patch("/api/settings", async (req, res) => {
       updates.push("persistent_url = $" + idx++); values.push(req.body.persistent_url || null);
     }
     if (req.body.persistent_webhook_secret !== undefined) {
-      updates.push("persistent_webhook_secret = $" + idx++); values.push(req.body.persistent_webhook_secret || null);
+      // Stored encrypted at rest with TOKEN_ENCRYPTION_PASSPHRASE. Empty string
+      // clears the secret (NULL).
+      const v = req.body.persistent_webhook_secret;
+      if (v) {
+        updates.push("persistent_webhook_secret_enc = pgp_sym_encrypt($" + idx++ + ", $" + idx++ + ")");
+        values.push(v, ENCRYPTION_PASSPHRASE || "");
+      } else {
+        updates.push("persistent_webhook_secret_enc = NULL");
+      }
     }
     if (req.body.persistent_webhook_enabled !== undefined) {
       updates.push("persistent_webhook_enabled = $" + idx++); values.push(!!req.body.persistent_webhook_enabled);

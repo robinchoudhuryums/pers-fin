@@ -339,13 +339,20 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
 
   try {
     const content = req.file.buffer.toString("utf-8");
-    const records = parse(content, { columns: true, skip_empty_lines: true, trim: true, bom: true });
+    let records = parse(content, { columns: true, skip_empty_lines: true, trim: true, bom: true });
     if (!records.length) return res.status(400).json({ error: "CSV file is empty or unparseable" });
 
     const headers = Object.keys(records[0]);
     const formatName = detectCsvFormat(headers);
     const fmt = CSV_FORMATS[formatName];
     if (!fmt) return res.status(400).json({ error: `Unrecognized CSV format: ${formatName}` });
+
+    // Headerless formats (Wells Fargo) need a re-parse with explicit columns so
+    // each record is keyed by the declared column names rather than the values
+    // that columns:true mis-promoted to headers.
+    if (fmt.headerless && fmt.columns) {
+      records = parse(content, { columns: fmt.columns, skip_empty_lines: true, trim: true, bom: true });
+    }
 
     const client = await pool.connect();
     try {
@@ -378,7 +385,8 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
         const row = records[i];
         let parsed;
         try {
-          parsed = fmt.parse(row, headers);
+          // For headerless formats, row is keyed by fmt.columns after the re-parse above.
+          parsed = fmt.parse(row, fmt.headerless ? fmt.columns : headers);
         } catch { skipped++; continue; }
 
         const date = parseDate(parsed.date);

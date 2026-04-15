@@ -5,6 +5,7 @@
 const express = require("express");
 const router = express.Router();
 const { pool } = require("../services/database");
+const { getMonthlySpending, getMonthlyIncomeAndSpending } = require("../services/financial-queries");
 const {
   MODEL_COST_PER_M, modelFamily, estimateCostUsd, estimateCostGranular,
   STATE_ELECTRICITY_RATES, US_AVG_ELECTRICITY_RATE,
@@ -107,12 +108,17 @@ router.post("/api/insights", async (_req, res) => {
       });
     }
 
-    const [monthlyData, subData, prevInsight, settingsRow] = await Promise.all([
-      pool.query(
-        "SELECT TO_CHAR(date, 'YYYY-MM') AS month, SUM(amount) AS total, COUNT(*) AS txns " +
-        "FROM transactions WHERE amount > 0 AND date >= CURRENT_DATE - INTERVAL '6 months' " +
-        "GROUP BY TO_CHAR(date, 'YYYY-MM') ORDER BY month"
-      ),
+    // Use the shared split-adjusted spending query so the AI sees the same
+    // monthly numbers as /api/spending-summary and the dashboard.
+    const monthlySpendRows = await getMonthlySpending(pool, 6);
+    const monthlyData = {
+      rows: monthlySpendRows.map(r => ({
+        month: r.month,
+        total: r.total_spend,
+        txns: r.txn_count,
+      })),
+    };
+    const [subData, prevInsight, settingsRow] = await Promise.all([
       pool.query(
         "SELECT display_name, amount, cadence_days, category FROM detected_subscriptions " +
         "WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL ORDER BY amount DESC"
@@ -353,25 +359,19 @@ router.post("/api/insights", async (_req, res) => {
     }
 
     // --- Module: Income & savings rate (dynamic data) ---
+    // Uses the shared income predicate (payroll/direct-dep/salary keywords,
+    // excluding transfers/payments/refunds) so the AI sees the same numbers
+    // as /api/savings-rate. Spending is split-adjusted for shared accounts.
     if (modules.income_savings !== false) {
       try {
-        const incomeData = await pool.query(
-          `SELECT TO_CHAR(date, 'YYYY-MM') AS month,
-                  SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) AS income,
-                  SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) AS spending
-           FROM transactions
-           WHERE pending = false AND date >= CURRENT_DATE - INTERVAL '6 months'
-           GROUP BY TO_CHAR(date, 'YYYY-MM') ORDER BY month`
-        );
-        const hasIncome = incomeData.rows.some(r => parseFloat(r.income) > 0);
+        const incomeRows = await getMonthlyIncomeAndSpending(pool, 6);
+        const hasIncome = incomeRows.some(r => r.income > 0);
         if (hasIncome) {
           activeModules.push("income_savings");
           userMsg += "\n\n=== INCOME & SAVINGS RATE DATA ===\n" +
-            incomeData.rows.map(r => {
-              const inc = parseFloat(r.income);
-              const spend = parseFloat(r.spending);
-              const rate = inc > 0 ? Math.round((1 - spend / inc) * 100) : 0;
-              return r.month + ": Income $" + inc.toFixed(2) + ", Spending $" + spend.toFixed(2) + ", Savings rate " + rate + "%";
+            incomeRows.map(r => {
+              const rate = r.income > 0 ? Math.round((1 - r.spending / r.income) * 100) : 0;
+              return r.month + ": Income $" + r.income.toFixed(2) + ", Spending $" + r.spending.toFixed(2) + ", Savings rate " + rate + "%";
             }).join("\n");
         }
       } catch (err) { console.error("Income/savings query error:", err.message); }
