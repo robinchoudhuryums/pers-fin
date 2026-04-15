@@ -357,6 +357,18 @@ describe("isExcludedMerchant", () => {
     assert.ok(!isExcludedMerchant("CHATGPT SUBSCRIPTION"));
   });
 
+  // Regression: "interest" exclusion keyword used to substring-match
+  // "internet" and silently hide every ISP/internet bill from detection.
+  // Word-boundary matching prevents the collision.
+  it("does NOT exclude internet/ISP bills (interest vs internet)", () => {
+    assert.ok(!isExcludedMerchant("COMCAST INTERNET"));
+    assert.ok(!isExcludedMerchant("ATT INTERNET 1000"));
+    assert.ok(!isExcludedMerchant("Spectrum Internet"));
+    assert.ok(!isExcludedMerchant("xfinity internet svc"));
+    // But genuine interest charges still excluded
+    assert.ok(isExcludedMerchant("CHASE INTEREST CHARGE"));
+  });
+
   it("handles null/empty input", () => {
     assert.ok(!isExcludedMerchant(null));
     assert.ok(!isExcludedMerchant(""));
