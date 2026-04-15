@@ -172,9 +172,10 @@ teller/
 - **Auto-trigger**: Insights auto-generate based on `insights_cadence_days` setting (checked every 6 hours)
 - **Cost tracking**: Granular token-level pricing — `input_tokens` from Anthropic's API (already excludes cache tokens) is multiplied by the input rate; `cache_read_input_tokens` and `cache_creation_input_tokens` are billed separately at their own rates. This restores accurate `INSIGHTS_MONTHLY_BUDGET_CENTS` enforcement when prompt caching is active.
 - **Insight inputs are split-adjusted**: AI insights see the same `spending_split_pct`-adjusted monthly spend totals and the same keyword-filtered income that the dashboard and `/api/savings-rate` show, via `services/financial-queries.js`.
+- **Running-summary truncation handling**: When the model hits its `max_tokens` ceiling mid-response, the prior `insights_running_summary` is preserved rather than overwritten with a partial update. `POST /api/insights` returns `stop_reason` (from Anthropic) and `summary_status` (`"updated"`, `"preserved_due_to_truncation"`, or `"preserved_no_delimiter"`) so callers can surface when long-term memory didn't advance.
 - **Context export**: Structured financial data (markdown/JSON) for pasting into Claude chat deep-dives
 - **Real-time anomaly alerts**: Push notifications for charges 3x+ above merchant average during sync
-- **Budget threshold alerts**: Push notifications at 90% (warning) and 100%+ (exceeded) every 3 hours
+- **Budget threshold alerts**: Push notifications at 80% (warning) and 100%+ (exceeded) every 3 hours
 
 ### UI & UX
 - **Authentication**: SESSION_PASSWORD (text) or SESSION_PIN (numeric PIN pad), configurable timeout
@@ -476,6 +477,20 @@ Income is identified by keyword matching on transaction descriptions (NOT amount
   of the same logic in `routes/enrollments.js` (`/api/savings-rate`,
   `/api/cash-flow`) and the spending-summary path are equivalent today —
   any new financial endpoint should use this module instead of re-inlining.
+- **Substring-safe keyword exclusions.** All merchant/transaction keyword
+  filters use word-boundary matching — `\b` in JavaScript regex, `\y` in
+  Postgres regex (`~*` / `!~*`). The reason: short tokens like `atm`,
+  `pymt`, `interest`, `epay`, and `vision` previously substring-matched
+  legitimate merchants (AT&T, Atmos Energy, internet ISPs, television-
+  related merchants) and either hid them from dashboards or persisted false
+  tax deductions. Multi-word phrases still work because `\b` / `\y` anchor
+  at phrase edges, not inside the phrase. Sites that follow this pattern:
+  `scripts/detect-subscriptions.js` `isExcludedMerchant`,
+  `teller/data/reference-data.js` `categorizeSubscription` /
+  `findCancelUrl`, `routes/insights.js` tax-deduction regex,
+  `routes/enrollments.js` top-merchants exclusion. **When adding a new
+  keyword filter, do not use `LIKE '%kw%'` or `SIMILAR TO '%kw%'`** — use
+  `~*` / `!~*` with `\y(kw1|kw2|...)\y`.
 
 ## Git
 - Active development branch: `claude/audit-documentation-SX9kS`
