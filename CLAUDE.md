@@ -24,6 +24,9 @@ teller/
     database.js          — Postgres pool + transactional auto-migrations with schema versioning
     teller-api.js        — mTLS HTTP client for Teller API (retry with exponential backoff)
     keep-alive.js        — Self-ping to prevent Render free tier sleep (with fetch timeout)
+    financial-queries.js — Shared income/spending SQL helpers (split-adjusted spending,
+                           keyword-filtered income) — single source of truth used by
+                           AI insights so the numbers match the dashboard
   routes/
     enrollments.js       — POST /api/enroll, POST /api/sync, GET /api/items,
                            DELETE /api/enrollments/:id, GET /api/accounts,
@@ -145,7 +148,7 @@ teller/
   income detection (keyword matching, excludes transfers/payments/refunds), bill scheduling
 - **Savings rate**: Income vs spending analysis with configurable lookback (default 3 months)
 - **Year-over-year comparisons**: Month-by-month spending comparison vs prior year
-- **Budget alerts** (`GET /api/budgets/alerts`): Spending velocity/pacing warnings with severity levels — `critical` ≥100% (over budget), `warning` ≥80% (approaching limit), `info` when pace > 1.2× and ≥50% (spending faster than the month's progress). Note: the 3-hour scheduled push-notification path uses the simpler 90% / 100% thresholds; only the in-app endpoint applies the pace heuristic.
+- **Budget alerts** (`GET /api/budgets/alerts`): Spending velocity/pacing warnings with severity levels — `critical` ≥100% (over budget), `warning` ≥80% (approaching limit), `info` when pace > 1.2× and ≥50% (spending faster than the month's progress). The 3-hour scheduled push-notification path uses the same 80% / 100% thresholds; the in-app `info`/pace heuristic is intentionally not pushed (too noisy as a notification).
 
 ### AI & Intelligence
 - **ML categorization**: Claude-powered smart transaction categorization via tool_use structured
@@ -156,18 +159,19 @@ teller/
   - Spending benchmarks (vs BLS Consumer Expenditure Survey)
   - Savings & wealth-building suggestions
   - Subscription audit (overlaps, alternatives)
-  - Anomaly detection (transactions 2x+ above merchant average)
+  - Anomaly detection (transactions 2x+ above merchant average; baseline excludes the trailing 7 days so the candidate doesn't inflate its own baseline)
   - Seasonal forecasting (24-month pattern analysis)
   - Debt payoff optimizer (avalanche vs snowball, credit score projections)
   - Bill negotiation tips
   - Income & savings rate analysis
-  - Tax deduction flags (persistent year-round accumulation for tax filing)
+  - Tax deduction flags (word-boundary keyword matching to avoid substring false positives like "interest"→"internet"; persistent year-round accumulation for tax filing)
   - Goal tracking (with real-world economic context)
   - Recurring transfers (Zelle, bill payments, savings, investment patterns)
 - **AI context enrichment**: Insights prompt includes month-over-month trend deltas,
   current budget status (spent vs limits), and recurring transfer data
 - **Auto-trigger**: Insights auto-generate based on `insights_cadence_days` setting (checked every 6 hours)
-- **Cost tracking**: Granular token-level pricing (input/output/cache) for accurate budget enforcement
+- **Cost tracking**: Granular token-level pricing — `input_tokens` from Anthropic's API (already excludes cache tokens) is multiplied by the input rate; `cache_read_input_tokens` and `cache_creation_input_tokens` are billed separately at their own rates. This restores accurate `INSIGHTS_MONTHLY_BUDGET_CENTS` enforcement when prompt caching is active.
+- **Insight inputs are split-adjusted**: AI insights see the same `spending_split_pct`-adjusted monthly spend totals and the same keyword-filtered income that the dashboard and `/api/savings-rate` show, via `services/financial-queries.js`.
 - **Context export**: Structured financial data (markdown/JSON) for pasting into Claude chat deep-dives
 - **Real-time anomaly alerts**: Push notifications for charges 3x+ above merchant average during sync
 - **Budget threshold alerts**: Push notifications at 90% (warning) and 100%+ (exceeded) every 3 hours
@@ -388,8 +392,13 @@ GET  /health               # health check
 - `linked_accounts` columns include: `is_shared BOOLEAN`, `spending_split_pct INT DEFAULT 100`,
   `is_manual BOOLEAN` — constraint `chk_account_source` allows `plaid_item_id IS NOT NULL OR
   teller_enrollment_id IS NOT NULL OR is_manual = true`
-- `user_settings` includes Per-sistant config: `persistent_url TEXT`, `persistent_webhook_secret TEXT`,
-  `persistent_webhook_enabled BOOLEAN`
+- `user_settings` includes Per-sistant config: `persistent_url TEXT`,
+  `persistent_webhook_secret_enc BYTEA` (encrypted at rest with `pgp_sym_encrypt`,
+  same passphrase as Teller/Plaid tokens), `persistent_webhook_enabled BOOLEAN`
+- `user_settings.last_anomaly_check_at TIMESTAMPTZ` — watermark used by the post-sync
+  anomaly notifier (`POST /api/sync`) to dedupe push notifications. Only transactions
+  whose `created_at > last_anomaly_check_at` are considered candidates, so the same
+  anomaly never re-pushes on subsequent syncs.
 
 ## Recurring Transfer Detection
 Transfers are identified by keyword matching on merchant_name/name fields:
@@ -400,6 +409,8 @@ Transfers are identified by keyword matching on merchant_name/name fields:
 - **internal**: funds transfer, ach transfer, wire transfer, online transfer
 - Detection algorithm reuses subscription detection gap analysis (findModeAmount, addDays)
   with wider 15% amount tolerance and 7/14-day cadences for weekly/biweekly patterns
+- Cadences ≥60 days (bi-monthly, quarterly, yearly) require only 2+ occurrences;
+  shorter cadences (7/14/30) require 3+ occurrences
 - Outgoing and incoming transactions analyzed as separate streams
 - Outgoing recurring transfers integrated into cash flow forecast
 
@@ -408,7 +419,7 @@ Transfers are identified by keyword matching on merchant_name/name fields:
   No `'unsafe-inline'` in `scriptSrc`. Nonce passed via `res.locals.nonce` to EJS templates.
 - **CORS**: Rejects cross-origin requests when `ALLOWED_ORIGINS` not configured
 - **API key**: Header-only (`X-API-Key`), no query string support
-- **Token encryption**: pgcrypto `pgp_sym_encrypt` for Teller/Plaid access tokens at rest
+- **Token encryption**: pgcrypto `pgp_sym_encrypt` for Teller/Plaid access tokens AND the Per-sistant webhook HMAC secret (`persistent_webhook_secret_enc`) at rest, all keyed by `TOKEN_ENCRYPTION_PASSPHRASE`
 - **Session**: Secure cookies, pgSession store, configurable timeout, CSRF custom header check
 - **Rate limiting**: General (100/15min), tight (5/1min) for sync/detect, login (10/15min),
   SSO validate (10/15min)
@@ -422,7 +433,7 @@ All run automatically after server startup:
 - **Net worth snapshot**: every 1 hour (one per day, skips if exists)
 - **Goal milestones**: every 6 hours (push notifications at 25/50/75/100%)
 - **AI insights auto-trigger**: every 6 hours (respects `insights_cadence_days` setting)
-- **Budget alerts**: every 3 hours (push notifications at 90% and 100%+ thresholds)
+- **Budget alerts**: every 3 hours (push notifications at 80% and 100%+ thresholds, aligned with the in-app `/api/budgets/alerts` `warning`/`critical` levels). The in-app `info`/pace heuristic is intentionally not pushed (too noisy as a notification).
 
 ## Shared Account Spending Split
 All spending queries apply the split percentage for shared/joint accounts via SQL JOIN:
@@ -457,6 +468,14 @@ Income is identified by keyword matching on transaction descriptions (NOT amount
   authenticate via session cookie; the `X-API-Key` header path exists for
   cron and external integrations. The dashboard never injects the key into
   the DOM and never appends it to a URL.
+- **Shared financial queries.** `services/financial-queries.js` is the
+  source of truth for "income" and "spending" computations: keyword-filtered
+  payroll/direct-dep income (excluding transfers/payments/refunds) and
+  `spending_split_pct`-adjusted spending. AI insights routes through it so
+  Claude sees the same numbers the dashboard shows. Existing inline copies
+  of the same logic in `routes/enrollments.js` (`/api/savings-rate`,
+  `/api/cash-flow`) and the spending-summary path are equivalent today —
+  any new financial endpoint should use this module instead of re-inlining.
 
 ## Git
 - Active development branch: `claude/audit-documentation-SX9kS`
