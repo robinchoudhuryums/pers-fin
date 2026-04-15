@@ -380,20 +380,25 @@ router.post("/api/insights", async (_req, res) => {
     // --- Module: Tax deduction flags (dynamic data) ---
     if (modules.tax_deductions !== false) {
       try {
+        // Word-boundary matching prevents substring false positives like
+        // "interest" → "internet", "office" → "Box Office", "vision" → "television".
+        // Multi-word phrases still match because \y is a word-boundary anchor at the
+        // edges of the phrase, not inside it.
         const taxKeywords = ["doctor", "medical", "pharmacy", "hospital", "dental", "vision", "health",
           "charity", "donation", "goodwill", "salvation army", "red cross",
           "tuition", "university", "college", "education", "student",
           "office", "supplies", "home office", "business",
           "mortgage", "interest", "property tax", "state tax"];
+        const taxRegex = "\\y(" + taxKeywords.join("|") + ")\\y";
         const taxData = await pool.query(
           `SELECT COALESCE(merchant_name, name) AS merchant, SUM(amount) AS total, COUNT(*) AS txn_count
            FROM transactions
            WHERE pending = false AND amount > 0
              AND date >= date_trunc('year', CURRENT_DATE)
-             AND (${taxKeywords.map((_, i) => "LOWER(COALESCE(merchant_name, name)) LIKE $" + (i + 1)).join(" OR ")})
+             AND COALESCE(merchant_name, name) ~* $1
            GROUP BY COALESCE(merchant_name, name)
            ORDER BY total DESC LIMIT 15`,
-          taxKeywords.map(k => "%" + k + "%")
+          [taxRegex]
         );
         if (taxData.rows.length > 0) {
           activeModules.push("tax_deductions");

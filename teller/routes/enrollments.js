@@ -208,9 +208,17 @@ router.post("/api/sync", async (req, res) => {
       }
     }
 
-    // After sync, check for anomalies in newly synced transactions and send push notifications
+    // After sync, check for anomalies in newly synced transactions and send push notifications.
+    // Two correctness measures vs prior versions:
+    //   1. The merchant-baseline average excludes transactions from the last 7 days, so the
+    //      candidate anomaly doesn't drag its own baseline upward.
+    //   2. We only consider transactions whose row was INSERTED since the last anomaly check
+    //      (`last_anomaly_check_at` watermark on user_settings) — that prevents the same
+    //      anomaly from notifying again on every subsequent /api/sync call.
     if (totalAdded > 0) {
       try {
+        const settings = await pool.query("SELECT last_anomaly_check_at FROM user_settings WHERE id = 1");
+        const watermark = settings.rows[0]?.last_anomaly_check_at || null;
         const anomalies = await pool.query(
           `SELECT t.merchant_name, t.name, t.amount, t.date, avg_tbl.avg_amount
            FROM transactions t
@@ -218,15 +226,19 @@ router.post("/api/sync", async (req, res) => {
              SELECT COALESCE(merchant_name, name) AS merchant,
                     AVG(amount) AS avg_amount, COUNT(*) AS txn_count
              FROM transactions
-             WHERE amount > 0 AND pending = false AND date >= CURRENT_DATE - INTERVAL '12 months'
+             WHERE amount > 0 AND pending = false
+               AND date >= CURRENT_DATE - INTERVAL '12 months'
+               AND date <  CURRENT_DATE - INTERVAL '7 days'
              GROUP BY COALESCE(merchant_name, name)
              HAVING COUNT(*) >= 3
            ) avg_tbl ON COALESCE(t.merchant_name, t.name) = avg_tbl.merchant
            WHERE t.amount > 0 AND t.pending = false
              AND t.date >= CURRENT_DATE - INTERVAL '3 days'
              AND t.amount > avg_tbl.avg_amount * 3
+             AND ($1::timestamptz IS NULL OR t.created_at > $1)
            ORDER BY t.amount DESC
-           LIMIT 5`
+           LIMIT 5`,
+          [watermark]
         );
         if (anomalies.rows.length > 0) {
           try {
@@ -242,6 +254,10 @@ router.post("/api/sync", async (req, res) => {
             }
           } catch {}
         }
+        // Always advance the watermark, even when no anomalies fired — otherwise a quiet
+        // sync window after one anomaly would re-evaluate the same transactions on the
+        // next call (different anomaly query, same transactions).
+        await pool.query("UPDATE user_settings SET last_anomaly_check_at = now() WHERE id = 1").catch(() => {});
       } catch (err) {
         console.error("Post-sync anomaly check error:", err.message);
       }
@@ -741,21 +757,29 @@ router.get("/api/cash-flow", async (req, res) => {
     `);
     const avgDailySpend = parseFloat(avgSpendResult.rows[0]?.avg_daily || 0);
 
-    // Get per-day-of-week spending averages for more realistic variation
+    // Get per-day-of-week spending averages for more realistic variation.
+    // Generate every date in the 60-day window so that days with zero spending
+    // are still included in each DOW's average — otherwise days with no debits
+    // would skew the per-DOW means upward.
     const dowSpendResult = await pool.query(`
-      SELECT EXTRACT(DOW FROM t.date) AS dow,
-             COALESCE(AVG(daily_total), 0) AS avg_daily
-      FROM (
-        SELECT date, SUM(amount * COALESCE(la.spending_split_pct, 100) / 100.0) AS daily_total
+      WITH date_series AS (
+        SELECT d::date AS date
+        FROM generate_series(CURRENT_DATE - INTERVAL '60 days', CURRENT_DATE, '1 day'::interval) d
+      ),
+      daily_totals AS (
+        SELECT t.date,
+               SUM(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0) AS daily_total
         FROM transactions t
         LEFT JOIN linked_accounts la ON la.account_id = t.account_id
         WHERE t.amount > 0 AND t.pending = false
           AND t.date >= CURRENT_DATE - INTERVAL '60 days'
         GROUP BY t.date
-      ) daily_totals
-      JOIN (SELECT generate_series(CURRENT_DATE - INTERVAL '60 days', CURRENT_DATE, '1 day'::interval)::date AS date) d USING (date)
-      CROSS JOIN LATERAL (SELECT EXTRACT(DOW FROM d.date) AS dow) x
-      GROUP BY x.dow
+      )
+      SELECT EXTRACT(DOW FROM ds.date) AS dow,
+             COALESCE(AVG(COALESCE(dt.daily_total, 0)), 0) AS avg_daily
+      FROM date_series ds
+      LEFT JOIN daily_totals dt USING (date)
+      GROUP BY EXTRACT(DOW FROM ds.date)
     `);
     const dowSpend = {};
     for (const r of dowSpendResult.rows) dowSpend[parseInt(r.dow)] = parseFloat(r.avg_daily);
