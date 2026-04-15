@@ -184,6 +184,12 @@ router.patch("/api/transactions/bulk-category", async (req, res) => {
   if (!Array.isArray(transaction_ids) || !transaction_ids.length || !category) {
     return res.status(400).json({ error: "transaction_ids array and category are required" });
   }
+  // Validate against the whitelist so user input can't slip unexpected strings
+  // into the Postgres array literal `{<value>}`. Matches the single-PATCH guard
+  // at the endpoint above.
+  if (!CATEGORIES.includes(category)) {
+    return res.status(400).json({ error: `Invalid category. Must be one of: ${CATEGORIES.join(", ")}` });
+  }
   if (transaction_ids.length > 200) {
     return res.status(400).json({ error: "Maximum 200 transactions per batch" });
   }

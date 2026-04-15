@@ -7,14 +7,22 @@
 const express = require("express");
 const crypto = require("crypto");
 const router = express.Router();
-const { pool } = require("../services/database");
+const { pool, ENCRYPTION_PASSPHRASE } = require("../services/database");
 
 // ---------------------------------------------------------------------------
 // Helper: get Per-sistant config from DB
+// The webhook secret is stored encrypted (pgp_sym_encrypt with
+// TOKEN_ENCRYPTION_PASSPHRASE); we decrypt on read.
 // ---------------------------------------------------------------------------
 async function getPersistentConfig() {
   try {
-    const r = await pool.query("SELECT persistent_url, persistent_webhook_secret, persistent_webhook_enabled FROM user_settings WHERE id = 1");
+    const r = await pool.query(
+      `SELECT persistent_url,
+              pgp_sym_decrypt(persistent_webhook_secret_enc, $1) AS persistent_webhook_secret,
+              persistent_webhook_enabled
+         FROM user_settings WHERE id = 1`,
+      [ENCRYPTION_PASSPHRASE || ""]
+    );
     const s = r.rows[0];
     if (!s || !s.persistent_url) return null;
     const url = s.persistent_url.replace(/\/+$/, "");
@@ -22,7 +30,7 @@ async function getPersistentConfig() {
       const u = new URL(url);
       if (u.protocol !== "http:" && u.protocol !== "https:") return null;
     } catch { return null; }
-    return { url, secret: s.persistent_webhook_secret, enabled: s.persistent_webhook_enabled };
+    return { url, secret: s.persistent_webhook_secret || null, enabled: s.persistent_webhook_enabled };
   } catch {
     return null;
   }

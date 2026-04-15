@@ -73,10 +73,46 @@ router.post("/api/goals", async (req, res) => {
 
 // PATCH /api/goals/:id
 router.patch("/api/goals/:id", async (req, res) => {
-  const ALLOWED_FIELDS = new Set(["name", "type", "target_amount", "current_amount", "monthly_contribution", "target_date", "interest_rate", "notes", "is_active"]);
+  // Per-field coercion so numeric fields don't slip through as strings and
+  // surface non-numeric input as a generic 500. Matches the POST handler's
+  // validation rules.
+  const NUM_NONNEG = (v) => {
+    const n = parseFloat(v);
+    if (isNaN(n) || n < 0) throw new Error("must be a non-negative number");
+    return n;
+  };
+  const NUM_POS = (v) => {
+    const n = parseFloat(v);
+    if (isNaN(n) || n <= 0) throw new Error("must be a positive number");
+    return n;
+  };
+  const RATE = (v) => {
+    const n = parseFloat(v);
+    if (isNaN(n) || n < 0 || n > 100) throw new Error("must be between 0 and 100");
+    return n;
+  };
+  const FIELD_COERCERS = {
+    name: (v) => String(v),
+    type: (v) => String(v),
+    target_amount: NUM_POS,
+    current_amount: NUM_NONNEG,
+    monthly_contribution: NUM_NONNEG,
+    target_date: (v) => (v === null || v === "") ? null : String(v),
+    interest_rate: RATE,
+    notes: (v) => v === null ? null : String(v),
+    is_active: (v) => !!v,
+  };
+
   const updates = []; const values = []; let idx = 1;
-  for (const f of ALLOWED_FIELDS) {
-    if (req.body[f] !== undefined) { updates.push(`"${f}" = $` + idx++); values.push(req.body[f]); }
+  try {
+    for (const [f, coerce] of Object.entries(FIELD_COERCERS)) {
+      if (req.body[f] !== undefined) {
+        updates.push(`"${f}" = $` + idx++);
+        values.push(coerce(req.body[f]));
+      }
+    }
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
   }
   if (!updates.length) return res.status(400).json({ error: "No valid fields" });
   updates.push("updated_at = now()");

@@ -180,7 +180,12 @@ function estimateCostUsd(tokens, modelStr) {
   return (tokens / 1_000_000) * (MODEL_COST_PER_M[family]?.blended || 8);
 }
 
-// Granular cost calculation using separate input/output/cached token counts
+// Granular cost calculation using separate input/output/cached token counts.
+// Per Anthropic's API, `usage.input_tokens` reports ONLY the non-cached input —
+// cache reads and cache creations are billed separately via their own counters.
+// Earlier versions of this function subtracted them again, which collapsed the
+// regular-input portion to ~0 on cached requests and silently understated cost
+// (and therefore failed to enforce INSIGHTS_MONTHLY_BUDGET_CENTS).
 function estimateCostGranular(usage, modelStr) {
   const family = modelFamily(modelStr);
   const rates = MODEL_COST_PER_M[family] || MODEL_COST_PER_M.sonnet;
@@ -188,9 +193,7 @@ function estimateCostGranular(usage, modelStr) {
   const outputTokens = usage.output_tokens || 0;
   const cacheRead = usage.cache_read_input_tokens || 0;
   const cacheCreation = usage.cache_creation_input_tokens || 0;
-  // input_tokens from API includes cache_read + cache_creation; subtract them for non-cached input
-  const regularInput = Math.max(0, inputTokens - cacheRead - cacheCreation);
-  return (regularInput / 1_000_000) * rates.input +
+  return (inputTokens / 1_000_000) * rates.input +
     (outputTokens / 1_000_000) * rates.output +
     (cacheRead / 1_000_000) * rates.cache_read +
     (cacheCreation / 1_000_000) * rates.cache_write;

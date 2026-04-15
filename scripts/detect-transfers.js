@@ -99,7 +99,7 @@ async function detectRecurringTransfers(externalPool) {
     const TOLERANCE = 0.25;
     const AMOUNT_TOLERANCE = 0.15; // Slightly more tolerant for transfers (amounts vary more)
     const MIN_OCCURRENCES = 3;
-    const MIN_OCCURRENCES_LONG = 2; // For 90+ day cadences
+    const MIN_OCCURRENCES_LONG = 2; // For 60+ day cadences (bi-monthly, quarterly, yearly)
 
     const detected = [];
 
@@ -115,7 +115,7 @@ async function detectRecurringTransfers(externalPool) {
         stream.sort((a, b) => new Date(a.date) - new Date(b.date));
 
         for (const targetCadence of CADENCES) {
-          const minOcc = targetCadence >= 90 ? MIN_OCCURRENCES_LONG : MIN_OCCURRENCES;
+          const minOcc = targetCadence >= 60 ? MIN_OCCURRENCES_LONG : MIN_OCCURRENCES;
           const minGap = targetCadence * (1 - TOLERANCE);
           const maxGap = targetCadence * (1 + TOLERANCE);
 

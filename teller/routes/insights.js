@@ -5,6 +5,7 @@
 const express = require("express");
 const router = express.Router();
 const { pool } = require("../services/database");
+const { getMonthlySpending, getMonthlyIncomeAndSpending } = require("../services/financial-queries");
 const {
   MODEL_COST_PER_M, modelFamily, estimateCostUsd, estimateCostGranular,
   STATE_ELECTRICITY_RATES, US_AVG_ELECTRICITY_RATE,
@@ -107,12 +108,17 @@ router.post("/api/insights", async (_req, res) => {
       });
     }
 
-    const [monthlyData, subData, prevInsight, settingsRow] = await Promise.all([
-      pool.query(
-        "SELECT TO_CHAR(date, 'YYYY-MM') AS month, SUM(amount) AS total, COUNT(*) AS txns " +
-        "FROM transactions WHERE amount > 0 AND date >= CURRENT_DATE - INTERVAL '6 months' " +
-        "GROUP BY TO_CHAR(date, 'YYYY-MM') ORDER BY month"
-      ),
+    // Use the shared split-adjusted spending query so the AI sees the same
+    // monthly numbers as /api/spending-summary and the dashboard.
+    const monthlySpendRows = await getMonthlySpending(pool, 6);
+    const monthlyData = {
+      rows: monthlySpendRows.map(r => ({
+        month: r.month,
+        total: r.total_spend,
+        txns: r.txn_count,
+      })),
+    };
+    const [subData, prevInsight, settingsRow] = await Promise.all([
       pool.query(
         "SELECT display_name, amount, cadence_days, category FROM detected_subscriptions " +
         "WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL ORDER BY amount DESC"
@@ -353,25 +359,19 @@ router.post("/api/insights", async (_req, res) => {
     }
 
     // --- Module: Income & savings rate (dynamic data) ---
+    // Uses the shared income predicate (payroll/direct-dep/salary keywords,
+    // excluding transfers/payments/refunds) so the AI sees the same numbers
+    // as /api/savings-rate. Spending is split-adjusted for shared accounts.
     if (modules.income_savings !== false) {
       try {
-        const incomeData = await pool.query(
-          `SELECT TO_CHAR(date, 'YYYY-MM') AS month,
-                  SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) AS income,
-                  SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) AS spending
-           FROM transactions
-           WHERE pending = false AND date >= CURRENT_DATE - INTERVAL '6 months'
-           GROUP BY TO_CHAR(date, 'YYYY-MM') ORDER BY month`
-        );
-        const hasIncome = incomeData.rows.some(r => parseFloat(r.income) > 0);
+        const incomeRows = await getMonthlyIncomeAndSpending(pool, 6);
+        const hasIncome = incomeRows.some(r => r.income > 0);
         if (hasIncome) {
           activeModules.push("income_savings");
           userMsg += "\n\n=== INCOME & SAVINGS RATE DATA ===\n" +
-            incomeData.rows.map(r => {
-              const inc = parseFloat(r.income);
-              const spend = parseFloat(r.spending);
-              const rate = inc > 0 ? Math.round((1 - spend / inc) * 100) : 0;
-              return r.month + ": Income $" + inc.toFixed(2) + ", Spending $" + spend.toFixed(2) + ", Savings rate " + rate + "%";
+            incomeRows.map(r => {
+              const rate = r.income > 0 ? Math.round((1 - r.spending / r.income) * 100) : 0;
+              return r.month + ": Income $" + r.income.toFixed(2) + ", Spending $" + r.spending.toFixed(2) + ", Savings rate " + rate + "%";
             }).join("\n");
         }
       } catch (err) { console.error("Income/savings query error:", err.message); }
@@ -380,20 +380,25 @@ router.post("/api/insights", async (_req, res) => {
     // --- Module: Tax deduction flags (dynamic data) ---
     if (modules.tax_deductions !== false) {
       try {
+        // Word-boundary matching prevents substring false positives like
+        // "interest" → "internet", "office" → "Box Office", "vision" → "television".
+        // Multi-word phrases still match because \y is a word-boundary anchor at the
+        // edges of the phrase, not inside it.
         const taxKeywords = ["doctor", "medical", "pharmacy", "hospital", "dental", "vision", "health",
           "charity", "donation", "goodwill", "salvation army", "red cross",
           "tuition", "university", "college", "education", "student",
           "office", "supplies", "home office", "business",
           "mortgage", "interest", "property tax", "state tax"];
+        const taxRegex = "\\y(" + taxKeywords.join("|") + ")\\y";
         const taxData = await pool.query(
           `SELECT COALESCE(merchant_name, name) AS merchant, SUM(amount) AS total, COUNT(*) AS txn_count
            FROM transactions
            WHERE pending = false AND amount > 0
              AND date >= date_trunc('year', CURRENT_DATE)
-             AND (${taxKeywords.map((_, i) => "LOWER(COALESCE(merchant_name, name)) LIKE $" + (i + 1)).join(" OR ")})
+             AND COALESCE(merchant_name, name) ~* $1
            GROUP BY COALESCE(merchant_name, name)
            ORDER BY total DESC LIMIT 15`,
-          taxKeywords.map(k => "%" + k + "%")
+          [taxRegex]
         );
         if (taxData.rows.length > 0) {
           activeModules.push("tax_deductions");
@@ -508,7 +513,12 @@ router.post("/api/insights", async (_req, res) => {
     }
 
     const client = new Anthropic();
-    const maxTokens = Math.min(4096, 1500 + activeModules.length * 200);
+    // Allocate enough headroom for both the insights block AND the running
+    // summary. Previously a formula of `1500 + activeModules*200` could run out
+    // before Claude emitted the `---RUNNING_SUMMARY---` delimiter, silently
+    // discarding the summary update (we'd fall back to the prior summary and
+    // the long-term memory would stop advancing).
+    const maxTokens = Math.min(8192, 2000 + activeModules.length * 250);
     const message = await client.messages.create({
       model: modelId, max_tokens: maxTokens,
       system: [{ type: "text", text: systemText, cache_control: { type: "ephemeral" } }],
@@ -518,20 +528,38 @@ router.post("/api/insights", async (_req, res) => {
     const usage = message.usage || {};
     const tokensUsed = (usage.input_tokens || 0) + (usage.output_tokens || 0);
     const delimIdx = fullResponse.indexOf("---RUNNING_SUMMARY---");
+    const hitTokenCap = message.stop_reason === "max_tokens";
     let insightText, newSummary;
+    let summaryStatus = "updated";
     if (delimIdx !== -1) {
       insightText = fullResponse.substring(0, delimIdx).trim();
       newSummary = fullResponse.substring(delimIdx + "---RUNNING_SUMMARY---".length).trim();
+      // If we hit the cap *and* the post-delimiter text looks truncated
+      // (no terminal punctuation / too short), keep the prior summary rather
+      // than overwriting with half a sentence.
+      if (hitTokenCap && newSummary.length < 40) {
+        console.warn("Insights: stop_reason=max_tokens with a short summary body — keeping prior running_summary.");
+        newSummary = runningSummary;
+        summaryStatus = "preserved_due_to_truncation";
+      }
     } else {
       insightText = fullResponse.trim();
       newSummary = runningSummary;
+      // Delimiter missing because Claude ran out of tokens before writing it —
+      // surface this so the operator knows long-term memory is frozen.
+      summaryStatus = hitTokenCap
+        ? "preserved_due_to_truncation"
+        : "preserved_no_delimiter";
+      if (hitTokenCap) {
+        console.warn("Insights: stop_reason=max_tokens before running-summary delimiter. Consider raising max_tokens or trimming module set.");
+      }
     }
     const actualModel = message.model || modelId;
     await pool.query(
       "INSERT INTO financial_insights (insight_text, period_start, period_end, model_used, tokens_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens) VALUES ($1, CURRENT_DATE - INTERVAL '6 months', CURRENT_DATE, $2, $3, $4, $5, $6, $7)",
       [insightText, actualModel, tokensUsed, usage.input_tokens || 0, usage.output_tokens || 0, usage.cache_read_input_tokens || 0, usage.cache_creation_input_tokens || 0]
     );
-    if (newSummary) {
+    if (summaryStatus === "updated" && newSummary) {
       await pool.query(
         "UPDATE user_settings SET insights_running_summary = $1, insights_last_run = now() WHERE id = 1",
         [newSummary]
@@ -540,7 +568,15 @@ router.post("/api/insights", async (_req, res) => {
       await pool.query("UPDATE user_settings SET insights_last_run = now() WHERE id = 1").catch(() => {});
     }
     const costUsd = estimateCostGranular(usage, actualModel);
-    res.json({ insight: insightText, tokens_used: tokensUsed, modules_used: activeModules, cache_read_tokens: usage.cache_read_input_tokens || 0, estimated_cost_usd: parseFloat(costUsd.toFixed(6)) });
+    res.json({
+      insight: insightText,
+      tokens_used: tokensUsed,
+      modules_used: activeModules,
+      cache_read_tokens: usage.cache_read_input_tokens || 0,
+      estimated_cost_usd: parseFloat(costUsd.toFixed(6)),
+      stop_reason: message.stop_reason,
+      summary_status: summaryStatus,
+    });
   } catch (err) {
     console.error("Insights error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });

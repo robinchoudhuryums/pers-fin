@@ -449,7 +449,10 @@ runMigrations().then(() => {
           const limit = parseFloat(b.monthly_limit);
           if (limit <= 0) continue;
           const pct = Math.round((spent / limit) * 100);
-          // Only notify at 90% and 100% thresholds
+          // Thresholds aligned with /api/budgets/alerts: 100% = critical (over budget),
+          // 80% = warning (approaching limit). The `info`/pace heuristic from the in-app
+          // endpoint is intentionally NOT pushed — it would be too noisy as a notification.
+          // Notification `tag` dedupes repeated pushes for the same category at the OS level.
           if (pct >= 100) {
             await sendToAll({
               title: "Budget exceeded: " + b.category,
@@ -457,7 +460,7 @@ runMigrations().then(() => {
               tag: "budget-over-" + b.category.toLowerCase().replace(/\s+/g, "-"),
               data: { url: "/budgets" },
             });
-          } else if (pct >= 90) {
+          } else if (pct >= 80) {
             await sendToAll({
               title: "Budget warning: " + b.category,
               body: "$" + spent.toFixed(2) + " of $" + limit.toFixed(2) + " (" + pct + "% — approaching limit)",

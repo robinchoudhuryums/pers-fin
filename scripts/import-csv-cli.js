@@ -28,6 +28,11 @@ const crypto = require("crypto");
 const { Pool } = require("pg");
 const { parse } = require("csv-parse/sync");
 
+// CSV_FORMATS is the single source of truth in teller/data/csv-formats.js;
+// this CLI used to redefine it inline (and drift). We now import it so any
+// future bank-format change propagates to both the API route and the CLI.
+const { CSV_FORMATS, detectCsvFormat, parseDate, csvTransactionId } = require("../teller/data/csv-formats");
+
 const ENCRYPTION_PASSPHRASE = process.env.TOKEN_ENCRYPTION_PASSPHRASE;
 const pool = new Pool({
   connectionString: process.env.NEON_DATABASE_URL,
@@ -35,90 +40,6 @@ const pool = new Pool({
   max: 2,
   connectionTimeoutMillis: 10000,
 });
-
-// ---------------------------------------------------------------------------
-// CSV format definitions (same as server.js)
-// ---------------------------------------------------------------------------
-const CSV_FORMATS = {
-  chase: {
-    detect: (headers) => headers.includes("Transaction Date") && headers.includes("Post Date") && headers.includes("Description"),
-    parse: (row) => ({
-      date: row["Transaction Date"],
-      merchant_name: row["Description"],
-      amount: -parseFloat(row["Amount"]),
-      category: row["Category"] || null,
-    }),
-  },
-  wellsfargo: {
-    detect: (headers) => headers.length >= 5 && !headers.includes("Transaction Date") && !headers.includes("Category"),
-    parseHeaderless: true,
-    parse: (row, columns) => ({
-      date: columns[0],
-      merchant_name: columns[4] || columns[3] || null,
-      amount: -parseFloat(columns[1]),
-      category: null,
-    }),
-  },
-  capitalone: {
-    detect: (headers) => headers.includes("Transaction Date") && headers.includes("Posted Date") && (headers.includes("Debit") || headers.includes("Credit")),
-    parse: (row) => ({
-      date: row["Transaction Date"],
-      merchant_name: row["Description"],
-      amount: parseFloat(row["Debit"] || "0") || -(parseFloat(row["Credit"] || "0")),
-      category: row["Category"] || null,
-    }),
-  },
-  discover: {
-    detect: (headers) => headers.includes("Trans. Date") && headers.includes("Post Date") && headers.includes("Description") && headers.includes("Amount"),
-    parse: (row) => ({
-      date: row["Trans. Date"],
-      merchant_name: row["Description"],
-      amount: Math.abs(parseFloat(row["Amount"])),
-      category: row["Category"] || null,
-    }),
-  },
-  schwab: {
-    detect: (headers) => headers.includes("Date") && headers.includes("Description") && (headers.includes("Withdrawal") || headers.includes("Amount")),
-    parse: (row) => ({
-      date: row["Date"],
-      merchant_name: row["Description"],
-      amount: Math.abs(parseFloat(row["Withdrawal"] || row["Amount"] || "0")),
-      category: row["Type"] || null,
-    }),
-  },
-  generic: {
-    detect: () => true,
-    parse: (row) => {
-      const date = row["Date"] || row["Transaction Date"] || row["date"] || Object.values(row)[0];
-      const desc = row["Description"] || row["Merchant"] || row["Name"] || row["description"] || Object.values(row).find(v => typeof v === "string" && v.length > 3 && isNaN(v));
-      const amtStr = row["Amount"] || row["Debit"] || row["amount"] || Object.values(row).find(v => !isNaN(parseFloat(v)));
-      return {
-        date,
-        merchant_name: desc || null,
-        amount: Math.abs(parseFloat(amtStr) || 0),
-        category: row["Category"] || row["category"] || null,
-      };
-    },
-  },
-};
-
-function detectCsvFormat(headers) {
-  for (const [name, fmt] of Object.entries(CSV_FORMATS)) {
-    if (name !== "generic" && fmt.detect(headers)) return name;
-  }
-  return "generic";
-}
-
-function parseDate(dateStr) {
-  if (!dateStr) return null;
-  const cleaned = dateStr.trim();
-  const slashMatch = cleaned.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (slashMatch) return `${slashMatch[3]}-${slashMatch[1].padStart(2, "0")}-${slashMatch[2].padStart(2, "0")}`;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(cleaned)) return cleaned;
-  const d = new Date(cleaned);
-  if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
-  return null;
-}
 
 // ---------------------------------------------------------------------------
 // Detect institution from filename prefix
@@ -154,16 +75,14 @@ async function importCsvFile(filePath) {
   const filename = path.basename(filePath);
   const content = fs.readFileSync(filePath, "utf-8");
 
+  // Initial parse with columns:true to read headers (or to let the headerless
+  // detector below infer the format from row count + absence of expected names).
   let records;
   try {
     records = parse(content, { columns: true, skip_empty_lines: true, trim: true, bom: true });
-  } catch {
-    try {
-      records = parse(content, { columns: false, skip_empty_lines: true, trim: true, bom: true });
-    } catch (e2) {
-      console.error(`  ✗ Could not parse ${filename}: ${e2.message}`);
-      return null;
-    }
+  } catch (e2) {
+    console.error(`  ✗ Could not parse ${filename}: ${e2.message}`);
+    return null;
   }
 
   if (!records.length) {
@@ -171,14 +90,24 @@ async function importCsvFile(filePath) {
     return null;
   }
 
-  // Detect format
-  const hasHeaders = !Array.isArray(records[0]);
-  const headers = hasHeaders ? Object.keys(records[0]) : [];
-
-  // Try filename first, then content-based detection
+  // Detect format: filename hint > content detection.
+  const headers = Object.keys(records[0]);
   const filenameBank = institutionFromFilename(filename);
-  const format = filenameBank || (hasHeaders ? detectCsvFormat(headers) : "wellsfargo");
-  const fmt = CSV_FORMATS[format];
+  const format = filenameBank || detectCsvFormat(headers);
+  let fmt = CSV_FORMATS[format];
+
+  // Headerless formats (e.g., Wells Fargo) ship without a header row. When detected,
+  // re-parse with the format's `columns` definition so each record is keyed by the
+  // declared column names. Without this, fmt.parse would receive the wrong shape and
+  // every row would silently fail validation.
+  if (fmt && fmt.headerless && fmt.columns) {
+    try {
+      records = parse(content, { columns: fmt.columns, skip_empty_lines: true, trim: true, bom: true });
+    } catch (e2) {
+      console.error(`  ✗ Could not re-parse ${filename} as headerless ${format}: ${e2.message}`);
+      return null;
+    }
+  }
 
   const institution = INSTITUTION_LABELS[format] || INSTITUTION_LABELS[filenameBank] || "CSV Import";
   const accountLabel = `${institution} Account`;
@@ -217,7 +146,9 @@ async function importCsvFile(filePath) {
       const row = records[i];
       let parsed;
       try {
-        parsed = hasHeaders ? fmt.parse(row) : fmt.parse(row, row);
+        // The teller/data/csv-formats.js parsers all share the (row, headers)
+        // signature; for headerless formats, headers === fmt.columns.
+        parsed = fmt.parse(row, fmt.headerless ? fmt.columns : Object.keys(row));
       } catch {
         skipped++;
         continue;
