@@ -99,6 +99,34 @@
     }
   }
 
+  // --- Install prompt capture (Phase D) ---
+  // Browsers fire `beforeinstallprompt` when the PWA becomes installable;
+  // we stash the event so a user-initiated button click can trigger the
+  // prompt later. Chrome/Edge/Android support this; iOS Safari does not —
+  // there we fall back to Add-to-Home-Screen instructions in the UI.
+  win._perfinInstallPrompt = null;
+  win.addEventListener('beforeinstallprompt', function(e) {
+    e.preventDefault();
+    win._perfinInstallPrompt = e;
+    win.dispatchEvent(new Event('perfin:installable'));
+  });
+  win.addEventListener('appinstalled', function() {
+    win._perfinInstallPrompt = null;
+    win.dispatchEvent(new Event('perfin:installed'));
+  });
+  function perfinPromptInstall() {
+    var p = win._perfinInstallPrompt;
+    if (!p) return Promise.resolve({ outcome: 'unavailable' });
+    p.prompt();
+    return p.userChoice.then(function(result) {
+      win._perfinInstallPrompt = null;
+      return result;
+    });
+  }
+  function perfinIsInstalled() {
+    return win.matchMedia && win.matchMedia('(display-mode: standalone)').matches;
+  }
+
   // --- CSP-safe event binding helpers ---
   // Bind multiple [id, event, handler] tuples
   function bindEvents(bindings) {
@@ -128,4 +156,6 @@
   win.registerSW = registerSW;
   win.bindEvents = bindEvents;
   win.onDelegate = onDelegate;
+  win.perfinPromptInstall = perfinPromptInstall;
+  win.perfinIsInstalled = perfinIsInstalled;
 })(window);

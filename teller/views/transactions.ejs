@@ -38,6 +38,27 @@
                 border-radius: var(--radius); margin-bottom: 8px; font-size: 13px; font-weight: 300;
                 display: flex; justify-content: space-between; align-items: center; }
     .dup-info { flex: 1; }
+    /* Split modal */
+    .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100;
+      display: flex; align-items: center; justify-content: center; }
+    .modal { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 20px; max-width: 560px; width: calc(100% - 40px); max-height: 85vh; overflow: auto; }
+    .modal h3 { margin: 0 0 10px; font-weight: 400; }
+    .modal .parent-info { font-size: 12px; color: var(--text-muted); margin-bottom: 16px; }
+    .modal .split-row { display: grid; grid-template-columns: 100px 1fr 24px; gap: 6px; margin-bottom: 6px; align-items: center; }
+    .modal .split-row input, .modal .split-row select { padding: 6px 10px; font-size: 13px; border: 1px solid var(--border);
+      border-radius: 6px; background: transparent; color: var(--text); font-family: inherit; }
+    .modal .split-row .del { background: transparent; border: 0; color: var(--text-muted); cursor: pointer; font-size: 16px; }
+    .modal .totals { margin: 12px 0; font-size: 12px; color: var(--text-muted); }
+    .modal .totals .ok { color: var(--green); }
+    .modal .totals .bad { color: var(--red); }
+    .modal .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+    .row-actions { display: flex; gap: 4px; }
+    .row-actions .btn-xs { padding: 3px 8px; font-size: 11px; border: 1px solid var(--border); border-radius: 6px;
+      background: transparent; color: var(--text-muted); cursor: pointer; }
+    .row-actions .btn-xs:hover { color: var(--text); border-color: var(--warm); }
+    tr.has-splits td { border-bottom: 0; }
+    tr.split-line td { font-size: 12px; color: var(--text-muted); padding-left: 36px; }
     @media (max-width: 640px) {
       #search-input { width: 100%; }
       .search-bar { flex-direction: column; }
@@ -146,10 +167,11 @@
           <th>Category</th>
           <th>Amount</th>
           <th class="hide-mobile">Account</th>
+          <th style="width:70px;"></th>
         </tr>
       </thead>
       <tbody id="txn-body">
-        <tr><td colspan="6" class="empty">Loading...</td></tr>
+        <tr><td colspan="7" class="empty">Loading...</td></tr>
       </tbody>
     </table>
   </div>
@@ -207,7 +229,7 @@
 
         var tbody = document.getElementById('txn-body');
         if (!data.transactions.length) {
-          tbody.innerHTML = '<tr><td colspan="6" class="empty">No transactions match your filters.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="7" class="empty">No transactions match your filters.</td></tr>';
           document.getElementById('pagination').innerHTML = '';
           return;
         }
@@ -215,13 +237,19 @@
         tbody.innerHTML = data.transactions.map(function(t) {
           var amt = parseFloat(t.amount);
           var amtClass = amt > 0 ? 'debit' : 'credit';
+          var reimbursedBadge = t.is_reimbursed ? ' <span style="font-size:10px;color:var(--teal);border:1px solid var(--teal);padding:1px 4px;border-radius:4px;">REIMBURSED</span>' : '';
           return '<tr>' +
             '<td><input type="checkbox" class="txn-check" data-id="' + esc(t.transaction_id) + '"></td>' +
             '<td>' + fmtDate(t.date) + '</td>' +
-            '<td>' + esc(t.merchant) + '</td>' +
+            '<td>' + esc(t.merchant) + reimbursedBadge + '</td>' +
             '<td><span class="txn-cat">' + esc(t.category || 'Uncategorized') + '</span></td>' +
             '<td class="amount ' + amtClass + '">' + fmt(Math.abs(amt)) + '</td>' +
             '<td class="hide-mobile" style="font-size:11px;color:var(--text-muted);">' + esc(t.account_name || '') + '</td>' +
+            '<td class="row-actions">' +
+              (amt > 0 && !t.pending
+                ? '<button class="btn-xs" data-action="split" data-id="' + esc(t.transaction_id) + '" data-amount="' + esc(String(Math.abs(amt))) + '" data-merchant="' + esc(t.merchant || '') + '">Split</button>'
+                : '') +
+            '</td>' +
             '</tr>';
         }).join('');
 
@@ -336,6 +364,118 @@
     onDelegate('pagination', 'click', '#prev-page', function() { searchTransactions(Math.max(0, currentOffset - PAGE_SIZE)); });
     onDelegate('pagination', 'click', '#next-page', function() { searchTransactions(currentOffset + PAGE_SIZE); });
     onDelegate('dup-list', 'click', '[data-action="delete-dup"]', function() { deleteDuplicate(this.dataset.id); });
+
+    // --- Split modal (Phase B3) ---------------------------------------------
+    // The modal collects N (amount, category, notes) rows; the user can
+    // add/remove rows and a running total tells them when their splits sum to
+    // the parent amount (within $0.01). Save POSTs the full set and replaces
+    // any existing splits for that transaction.
+    var SPLIT_CATEGORIES = ['Food & Drink','Groceries','Transportation','Gas & Fuel','Shopping','Entertainment',
+      'Health & Fitness','Healthcare','Housing','Utilities','Insurance','Education','Travel',
+      'Personal Care','Gifts & Donations','Fees & Charges','Transfer','Income','Investment','Subscription','Other'];
+
+    function categorySelect(selected) {
+      return '<select>' + SPLIT_CATEGORIES.map(function(c) {
+        return '<option value="' + esc(c) + '"' + (c === selected ? ' selected' : '') + '>' + esc(c) + '</option>';
+      }).join('') + '</select>';
+    }
+
+    async function openSplitModal(txnId, parentAmount, merchant) {
+      var existing = [];
+      try {
+        var r = await apiFetch('/api/transactions/' + encodeURIComponent(txnId) + '/splits');
+        if (r.ok) existing = (await r.json()).splits || [];
+      } catch (_) {}
+
+      var rows = existing.length
+        ? existing.map(function(s) { return { amount: s.amount, category: s.category || 'Other', notes: s.notes || '' }; })
+        : [{ amount: parentAmount, category: 'Other', notes: '' }];
+
+      var backdrop = document.createElement('div');
+      backdrop.className = 'modal-backdrop';
+      backdrop.innerHTML =
+        '<div class="modal" role="dialog" aria-label="Split transaction">' +
+          '<h3>Split: ' + esc(merchant) + '</h3>' +
+          '<div class="parent-info">Parent transaction: ' + fmt(parentAmount) + '. Splits must sum to this amount (±$0.01).</div>' +
+          '<div id="split-rows"></div>' +
+          '<button class="btn btn-sm" id="add-split-row" type="button">+ Add row</button>' +
+          '<div class="totals" id="split-totals"></div>' +
+          '<div class="actions">' +
+            '<button class="btn" id="cancel-split">Cancel</button>' +
+            (existing.length ? '<button class="btn" id="clear-splits">Remove all splits</button>' : '') +
+            '<button class="btn primary" id="save-splits">Save splits</button>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(backdrop);
+
+      function renderRows() {
+        document.getElementById('split-rows').innerHTML = rows.map(function(r, i) {
+          return '<div class="split-row" data-row="' + i + '">' +
+            '<input type="number" step="0.01" min="0" class="row-amt" value="' + esc(String(r.amount)) + '">' +
+            categorySelect(r.category) +
+            '<button type="button" class="del" data-action="remove-row">×</button>' +
+          '</div>';
+        }).join('');
+        // Reattach select values (innerHTML re-render loses non-attribute state)
+        document.querySelectorAll('#split-rows .split-row').forEach(function(el, i) {
+          var sel = el.querySelector('select');
+          sel.value = rows[i].category;
+          sel.addEventListener('change', function() { rows[i].category = this.value; });
+          el.querySelector('.row-amt').addEventListener('input', function() {
+            rows[i].amount = parseFloat(this.value) || 0;
+            updateTotals();
+          });
+          el.querySelector('[data-action="remove-row"]').addEventListener('click', function() {
+            rows.splice(i, 1); renderRows(); updateTotals();
+          });
+        });
+        updateTotals();
+      }
+      function updateTotals() {
+        var sum = rows.reduce(function(s, r) { return s + (parseFloat(r.amount) || 0); }, 0);
+        var diff = sum - parentAmount;
+        var ok = Math.abs(diff) <= 0.01;
+        document.getElementById('split-totals').innerHTML =
+          'Sum: ' + fmt(sum) + ' / ' + fmt(parentAmount) +
+          ' &mdash; <span class="' + (ok ? 'ok' : 'bad') + '">' +
+          (ok ? '✓ matches' : (diff > 0 ? '$' + diff.toFixed(2) + ' over' : '$' + Math.abs(diff).toFixed(2) + ' under')) +
+          '</span>';
+      }
+
+      function close() { document.body.removeChild(backdrop); }
+
+      backdrop.addEventListener('click', function(e) { if (e.target === backdrop) close(); });
+      document.getElementById('cancel-split').addEventListener('click', close);
+      document.getElementById('add-split-row').addEventListener('click', function() {
+        rows.push({ amount: 0, category: 'Other', notes: '' }); renderRows();
+      });
+      var clearBtn = document.getElementById('clear-splits');
+      if (clearBtn) clearBtn.addEventListener('click', async function() {
+        if (!confirm('Remove all splits and revert to the parent transaction?')) return;
+        try {
+          var r = await apiFetch('/api/transactions/' + encodeURIComponent(txnId) + '/splits', { method: 'DELETE' });
+          if (r.ok) { showMsg('Splits removed.', true); close(); searchTransactions(currentOffset); }
+          else showMsg('Failed to remove splits.', false);
+        } catch (e) { showMsg(e.message, false); }
+      });
+      document.getElementById('save-splits').addEventListener('click', async function() {
+        try {
+          var r = await apiFetch('/api/transactions/' + encodeURIComponent(txnId) + '/splits', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ splits: rows.map(function(x) { return { amount: x.amount, category: x.category, notes: x.notes }; }) }),
+          });
+          var d = await r.json();
+          if (r.ok) { showMsg('Splits saved.', true); close(); searchTransactions(currentOffset); }
+          else showMsg(d.error || 'Failed', false);
+        } catch (e) { showMsg(e.message, false); }
+      });
+      renderRows();
+    }
+
+    onDelegate('txn-body', 'click', '[data-action="split"]', function() {
+      openSplitModal(this.dataset.id, parseFloat(this.dataset.amount), this.dataset.merchant);
+    });
 
     // Set default date range to last 6 months
     var now = new Date();

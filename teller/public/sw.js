@@ -2,12 +2,14 @@
 // Service Worker — Perfin PWA
 // ============================================================================
 
-const CACHE = 'perfin-v2';
+const CACHE = 'perfin-v3';
+const OFFLINE_URL = '/offline.html';
 const PRECACHE = [
   '/perfin-shared.js',
   '/perfin-shared.css',
   '/logo.svg',
   '/manifest.json',
+  OFFLINE_URL,
 ];
 
 self.addEventListener('install', (e) => {
@@ -35,7 +37,10 @@ self.addEventListener('fetch', (e) => {
   // and a stale balance is worse than a clear network error.
   if (u.pathname.startsWith('/api/')) return;
   // Network-first with cache fallback. On successful fetch, write into the
-  // cache so a later offline fetch can serve it.
+  // cache so a later offline fetch can serve it. When the network fails AND
+  // the cache doesn't have the requested URL AND it's a navigation (HTML
+  // request), serve /offline.html so the user sees a branded page instead of
+  // the browser's generic "No internet" error.
   e.respondWith(
     fetch(e.request)
       .then((r) => {
@@ -45,7 +50,16 @@ self.addEventListener('fetch', (e) => {
         }
         return r;
       })
-      .catch(() => caches.match(e.request))
+      .catch(async () => {
+        const cached = await caches.match(e.request);
+        if (cached) return cached;
+        if (e.request.mode === 'navigate') {
+          const offline = await caches.match(OFFLINE_URL);
+          if (offline) return offline;
+        }
+        // Fall through: let the browser produce its default network-error page
+        return Response.error();
+      })
   );
 });
 

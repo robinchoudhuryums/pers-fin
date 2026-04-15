@@ -108,6 +108,54 @@ async function getMonthlyIncomeAndSpending(pool, months = 6) {
   }));
 }
 
+/**
+ * Spending-by-category for the current month, honoring transaction_splits
+ * (Phase B3). When a transaction has splits, each split contributes its own
+ * category/amount (replacing the parent row); when it has none, the parent
+ * row's `category[1]` is used.
+ *
+ * The spending split percentage and reimbursed filter apply to BOTH paths:
+ * a reimbursed parent excludes all its splits, and spending_split_pct applies
+ * equally to each split.
+ *
+ * Returns rows: { category: TEXT, spent: NUMERIC }
+ */
+async function getCategorySpendingThisMonth(pool) {
+  const result = await pool.query(`
+    WITH parent_no_splits AS (
+      SELECT COALESCE(t.category[1], 'Uncategorized') AS category,
+             t.amount * COALESCE(la.spending_split_pct, 100) / 100.0 AS amount
+      FROM transactions t
+      LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+      WHERE t.amount > 0 AND t.pending = false
+        AND COALESCE(t.is_reimbursed, false) = false
+        AND t.date >= date_trunc('month', CURRENT_DATE)
+        AND t.date <  date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
+        AND NOT EXISTS (SELECT 1 FROM transaction_splits s WHERE s.parent_transaction_id = t.transaction_id)
+    ),
+    from_splits AS (
+      SELECT COALESCE(s.category, t.category[1], 'Uncategorized') AS category,
+             s.amount * COALESCE(la.spending_split_pct, 100) / 100.0 AS amount
+      FROM transaction_splits s
+      JOIN transactions t ON t.transaction_id = s.parent_transaction_id
+      LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+      WHERE t.amount > 0 AND t.pending = false
+        AND COALESCE(t.is_reimbursed, false) = false
+        AND t.date >= date_trunc('month', CURRENT_DATE)
+        AND t.date <  date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
+    ),
+    all_lines AS (
+      SELECT category, amount FROM parent_no_splits
+      UNION ALL
+      SELECT category, amount FROM from_splits
+    )
+    SELECT category, ROUND(SUM(amount), 2) AS spent
+    FROM all_lines
+    GROUP BY category
+  `);
+  return result.rows;
+}
+
 module.exports = {
   INCOME_PREDICATE,
   SPLIT_AMOUNT,
@@ -116,4 +164,5 @@ module.exports = {
   getMonthlySpending,
   getMonthlyIncome,
   getMonthlyIncomeAndSpending,
+  getCategorySpendingThisMonth,
 };

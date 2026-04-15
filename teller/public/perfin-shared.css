@@ -92,6 +92,15 @@ a:hover { color: var(--text); }
 .topnav .nav-links a { color: var(--text-muted); }
 .topnav .nav-links a:hover { color: var(--text); }
 .topnav .nav-links a.active { color: var(--warm); }
+.topnav .nav-sync-badge { font-size: 11px; color: var(--text-muted); opacity: 0.75;
+  padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; white-space: nowrap; }
+.topnav .nav-sync-badge:empty { display: none; }
+
+/* Ensure interactive controls hit the 44x44 CSS-px touch target on mobile */
+button, .btn, .btn-sm, select, input[type="checkbox"].toggle, .toggle, a.btn, input[type="submit"] { min-height: 40px; }
+@media (max-width: 640px) {
+  button, .btn, select, input[type="submit"] { min-height: 44px; }
+}
 
 /* Headings */
 h1 { font-size: 42px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 8px;

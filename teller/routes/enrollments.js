@@ -588,15 +588,37 @@ router.get("/api/spending-summary", async (req, res) => {
       [months]
     );
 
+    // Category breakdown honors transaction_splits (Phase B3): when a
+    // transaction has splits, each split contributes to its own category
+    // instead of the parent row's category. Parents without splits contribute
+    // the full amount to the parent's category[1].
     const byCategory = await pool.query(
-      `SELECT COALESCE(t.category[1], 'Uncategorized') AS category,
-              ROUND(SUM(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0), 2) AS total,
-              COUNT(*) AS txn_count
-       FROM transactions t
-       LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-       WHERE t.amount > 0 AND COALESCE(t.is_reimbursed, false) = false
-         AND t.date >= CURRENT_DATE - ($1 || ' months')::INTERVAL
-       GROUP BY COALESCE(t.category[1], 'Uncategorized')
+      `WITH parent_no_splits AS (
+         SELECT COALESCE(t.category[1], 'Uncategorized') AS category,
+                t.amount * COALESCE(la.spending_split_pct, 100) / 100.0 AS amount,
+                1 AS line_count
+         FROM transactions t
+         LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+         WHERE t.amount > 0 AND COALESCE(t.is_reimbursed, false) = false
+           AND t.date >= CURRENT_DATE - ($1 || ' months')::INTERVAL
+           AND NOT EXISTS (SELECT 1 FROM transaction_splits s WHERE s.parent_transaction_id = t.transaction_id)
+       ),
+       from_splits AS (
+         SELECT COALESCE(s.category, t.category[1], 'Uncategorized') AS category,
+                s.amount * COALESCE(la.spending_split_pct, 100) / 100.0 AS amount,
+                1 AS line_count
+         FROM transaction_splits s
+         JOIN transactions t ON t.transaction_id = s.parent_transaction_id
+         LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+         WHERE t.amount > 0 AND COALESCE(t.is_reimbursed, false) = false
+           AND t.date >= CURRENT_DATE - ($1 || ' months')::INTERVAL
+       ),
+       all_lines AS (
+         SELECT * FROM parent_no_splits UNION ALL SELECT * FROM from_splits
+       )
+       SELECT category, ROUND(SUM(amount), 2) AS total, SUM(line_count) AS txn_count
+       FROM all_lines
+       GROUP BY category
        ORDER BY total DESC
        LIMIT 15`,
       [months]

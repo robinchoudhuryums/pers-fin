@@ -63,6 +63,13 @@
     </div>
   </div>
 
+  <div class="section" id="install-section" style="display:none;"><h2>Install App</h2>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Add to Home Screen</div><div class="desc" id="install-desc">Install Perfin as a standalone app for faster access and offline fallback</div></div>
+      <div class="setting-control"><button class="btn primary" id="install-btn">Install</button></div>
+    </div>
+  </div>
+
   <div class="section"><h2>Security</h2>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Session Timeout</div><div class="desc">Minutes before requiring password again (1-1440)</div></div>
@@ -674,7 +681,38 @@
       ['sheets-interval-select', 'change', function() { updateSetting('sheets_auto_sync_interval', this.value); }],
       ['auto-sync-toggle', 'change', function() { updateSetting('auto_sync_enabled', this.checked); }],
       ['auto-sync-interval-select', 'change', function() { updateSetting('auto_sync_interval_hours', parseInt(this.value)); }],
+      ['install-btn', 'click', async function() {
+        const result = await perfinPromptInstall();
+        if (result && result.outcome === 'accepted') showMsg('Installing Perfin…', true);
+        else if (result && result.outcome === 'unavailable') showMsg('Install prompt not available — use your browser menu: Share → Add to Home Screen (iOS) or ⋮ → Install (Chrome).', false);
+      }],
     ]);
+
+    // Install prompt visibility:
+    // - Already installed?   Hide the section.
+    // - Browser emitted beforeinstallprompt? Show "Install" button.
+    // - Neither (iOS Safari / not eligible)? Show instructions instead.
+    (function() {
+      var section = document.getElementById('install-section');
+      if (!section) return;
+      if (perfinIsInstalled()) { section.style.display = 'none'; return; }
+      function show(ready) {
+        section.style.display = '';
+        var desc = document.getElementById('install-desc');
+        var btn = document.getElementById('install-btn');
+        if (ready) {
+          btn.style.display = '';
+          desc.textContent = 'Install Perfin as a standalone app for faster access and offline fallback';
+        } else {
+          btn.style.display = 'none';
+          desc.textContent = 'On iOS Safari, tap Share → "Add to Home Screen". On Android Chrome, use ⋮ → "Install app".';
+        }
+      }
+      if (window._perfinInstallPrompt) show(true);
+      else show(false);
+      window.addEventListener('perfin:installable', function() { show(true); });
+      window.addEventListener('perfin:installed', function() { section.style.display = 'none'; });
+    })();
     // Event delegation for dynamically generated module checkboxes
     onDelegate('modules-container', 'change', 'input[data-module]', function() {
       toggleModule(this.dataset.module, this.checked);

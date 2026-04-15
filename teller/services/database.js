@@ -311,6 +311,23 @@ async function runMigrations() {
     await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS is_reimbursed BOOLEAN NOT NULL DEFAULT false");
     await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS reimbursed_at TIMESTAMPTZ");
     await client.query("CREATE INDEX IF NOT EXISTS idx_transactions_reimbursed ON transactions (is_reimbursed) WHERE is_reimbursed = true");
+
+    // Transaction splits (Phase B3): a single Teller transaction can be
+    // subdivided into N (amount, category, merchant, notes) child rows so a
+    // $120 Costco run showing up as "Groceries" can be split into groceries,
+    // gas, and household. When splits exist they REPLACE the parent row in
+    // category/merchant aggregations (see `routes/subscriptions.js` list
+    // endpoints and `services/financial-queries.js`).
+    await client.query(`CREATE TABLE IF NOT EXISTS transaction_splits (
+      id                     SERIAL PRIMARY KEY,
+      parent_transaction_id  TEXT NOT NULL REFERENCES transactions(transaction_id) ON DELETE CASCADE,
+      amount                 NUMERIC(12,2) NOT NULL,
+      category               TEXT,
+      merchant_name          TEXT,
+      notes                  TEXT,
+      created_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+    await client.query("CREATE INDEX IF NOT EXISTS idx_transaction_splits_parent ON transaction_splits (parent_transaction_id)");
     // CSV import reminder
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS csv_reminder_days INT NOT NULL DEFAULT 14");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS csv_reminder_enabled BOOLEAN NOT NULL DEFAULT true");
@@ -319,6 +336,20 @@ async function runMigrations() {
     await client.query("CREATE INDEX IF NOT EXISTS idx_linked_accounts_account_id ON linked_accounts (account_id)");
     await client.query("CREATE INDEX IF NOT EXISTS idx_detected_subscriptions_active ON detected_subscriptions (is_active, is_dismissed, cancelled_at)");
     await client.query("CREATE INDEX IF NOT EXISTS idx_financial_goals_active ON financial_goals (is_active)");
+    // Phase C — link a goal to a specific savings/investment account. When set,
+    // current_amount is computed as (account_balance - goal_baseline_amount) so
+    // the goal auto-advances with the real account balance instead of requiring
+    // manual edits. Mutually exclusive: at most one of funding_account_id /
+    // funding_investment_id may be set.
+    await client.query("ALTER TABLE financial_goals ADD COLUMN IF NOT EXISTS funding_account_id INT REFERENCES linked_accounts(id) ON DELETE SET NULL");
+    await client.query("ALTER TABLE financial_goals ADD COLUMN IF NOT EXISTS funding_investment_id INT REFERENCES investment_accounts(id) ON DELETE SET NULL");
+    await client.query("ALTER TABLE financial_goals ADD COLUMN IF NOT EXISTS goal_baseline_amount NUMERIC(14,2)");
+    await client.query(`DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_goal_funding_exclusive') THEN
+        ALTER TABLE financial_goals ADD CONSTRAINT chk_goal_funding_exclusive
+          CHECK (NOT (funding_account_id IS NOT NULL AND funding_investment_id IS NOT NULL));
+      END IF;
+    END $$;`);
     // WebAuthn credentials (FaceID / biometric login)
     await client.query(`CREATE TABLE IF NOT EXISTS webauthn_credentials (
       id SERIAL PRIMARY KEY,

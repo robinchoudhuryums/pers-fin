@@ -82,9 +82,15 @@
             '<div class="goal-progress"><div class="goal-amounts"><span>' + fmt(g.current_amount) + '</span><span style="color:' + color + ';font-weight:500;">' + pct + '%</span><span>' + fmt(g.target_amount) + '</span></div>' +
             '<div class="progress-bar"><div class="progress-fill" style="width:' + Math.min(100, pct) + '%;background:' + color + ';"></div></div></div>' +
             '<div class="goal-meta">' + meta.map(m => '<span>' + m + '</span>').join('') + '</div>' +
+            (g.funding_source
+              ? '<div style="font-size:11px;color:var(--teal);margin-top:6px;">🔗 Auto-tracked from ' + esc(g.funding_source.name) + ' (bal: ' + fmt(g.funding_source.balance) + ')</div>'
+              : '') +
             (g.notes ? '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;">' + esc(g.notes) + '</div>' : '') +
             '<div class="goal-actions">' +
-              '<button class="btn-sm" data-action="update" data-id="' + g.id + '">Update Amount</button>' +
+              (g.funding_source
+                ? '<button class="btn-sm" data-action="unlink" data-id="' + g.id + '">Unlink Account</button>'
+                : '<button class="btn-sm" data-action="update" data-id="' + g.id + '">Update Amount</button>' +
+                  '<button class="btn-sm" data-action="link" data-id="' + g.id + '">Link Account</button>') +
               '<button class="btn-sm danger" data-action="delete" data-id="' + g.id + '">Delete</button>' +
             '</div></div>';
         }).join('');
@@ -120,6 +126,47 @@
       } catch (e) { showMsg(e.message, false); }
     }
 
+    async function linkAccount(id) {
+      let options;
+      try {
+        const r = await apiFetch('/api/goals/funding-options');
+        options = await r.json();
+      } catch (e) { showMsg('Could not load funding options: ' + e.message, false); return; }
+      const all = [
+        ...options.linked_accounts.map(a => ({ kind: 'account', id: a.id, label: a.name + ' (' + a.type + ') — bal: ' + fmt(a.balance) })),
+        ...options.investment_accounts.map(a => ({ kind: 'investment', id: a.id, label: a.name + ' (' + a.type + ') — bal: ' + fmt(a.balance) })),
+      ];
+      if (!all.length) { showMsg('No eligible accounts. Link a depository or investment account first.', false); return; }
+      const menu = all.map((o, i) => (i + 1) + '. ' + o.label).join('\n');
+      const choice = prompt('Link this goal to which account?\n\n' + menu + '\n\nEnter the number:');
+      if (!choice) return;
+      const idx = parseInt(choice) - 1;
+      if (idx < 0 || idx >= all.length) { showMsg('Invalid selection.', false); return; }
+      const sel = all[idx];
+      const body = sel.kind === 'account'
+        ? { funding_account_id: sel.id, funding_investment_id: null }
+        : { funding_account_id: null, funding_investment_id: sel.id };
+      try {
+        const res = await apiFetch('/api/goals/' + id, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        if (res.ok) { showMsg('Account linked. Goal now tracks this balance.', true); loadGoals(); }
+        else { const d = await res.json().catch(function() { return {}; }); showMsg(d.error || 'Failed to link', false); }
+      } catch (e) { showMsg(e.message, false); }
+    }
+
+    async function unlinkAccount(id) {
+      if (!confirm('Unlink this account? The goal will revert to manual tracking.')) return;
+      try {
+        const res = await apiFetch('/api/goals/' + id, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ funding_account_id: null, funding_investment_id: null }),
+        });
+        if (res.ok) { showMsg('Unlinked.', true); loadGoals(); }
+        else showMsg('Failed to unlink.', false);
+      } catch (e) { showMsg(e.message, false); }
+    }
+
     async function deleteGoal(id) {
       if (!confirm('Delete this goal?')) return;
       try {
@@ -141,6 +188,8 @@
       var action = this.dataset.action;
       var id = parseInt(this.dataset.id);
       if (action === 'update') updateAmount(id);
+      else if (action === 'link') linkAccount(id);
+      else if (action === 'unlink') unlinkAccount(id);
       else if (action === 'delete') deleteGoal(id);
     });
 

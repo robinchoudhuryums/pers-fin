@@ -426,23 +426,14 @@ runMigrations().then(() => {
     // Budget alert push notifications (checks every 3 hours)
     setInterval(async () => {
       try {
+        const { getCategorySpendingThisMonth } = require("./services/financial-queries");
         const [budgets, spending] = await Promise.all([
           pool.query("SELECT category, monthly_limit FROM budgets"),
-          pool.query(
-            `SELECT COALESCE(t.category[1], 'Uncategorized') AS category,
-                    ROUND(SUM(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0), 2) AS spent
-             FROM transactions t
-             LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-             WHERE t.amount > 0 AND t.pending = false
-               AND COALESCE(t.is_reimbursed, false) = false
-               AND t.date >= date_trunc('month', CURRENT_DATE)
-               AND t.date < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
-             GROUP BY COALESCE(t.category[1], 'Uncategorized')`
-          ),
+          getCategorySpendingThisMonth(pool), // honors splits + reimbursed
         ]);
         if (budgets.rows.length === 0) return;
         const spendMap = {};
-        for (const r of spending.rows) spendMap[r.category] = parseFloat(r.spent);
+        for (const r of spending) spendMap[r.category] = parseFloat(r.spent);
 
         const { sendToAll } = require("./routes/notifications");
         for (const b of budgets.rows) {

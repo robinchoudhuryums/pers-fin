@@ -5,6 +5,7 @@
 const express = require("express");
 const router = express.Router();
 const { pool } = require("../services/database");
+const { getCategorySpendingThisMonth } = require("../services/financial-queries");
 const { MODEL_MAP } = require("../data/reference-data");
 
 let Anthropic;
@@ -19,20 +20,12 @@ router.get("/api/budgets", async (_req, res) => {
   try {
     const [budgets, spending] = await Promise.all([
       pool.query("SELECT * FROM budgets ORDER BY monthly_limit DESC"),
-      pool.query(
-        `SELECT COALESCE(t.category[1], 'Uncategorized') AS category,
-                ROUND(SUM(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0), 2) AS spent
-         FROM transactions t
-         LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-         WHERE t.amount > 0 AND t.pending = false
-           AND COALESCE(t.is_reimbursed, false) = false
-           AND t.date >= date_trunc('month', CURRENT_DATE)
-           AND t.date < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
-         GROUP BY COALESCE(t.category[1], 'Uncategorized')`
-      ),
+      // Uses the shared helper so split transactions are counted per-split
+      // category rather than the parent's category (Phase B3).
+      getCategorySpendingThisMonth(pool),
     ]);
     const spendMap = {};
-    for (const r of spending.rows) spendMap[r.category] = parseFloat(r.spent);
+    for (const r of spending) spendMap[r.category] = parseFloat(r.spent);
     const result = budgets.rows.map(b => ({
       ...b,
       spent: spendMap[b.category] || 0,
@@ -240,17 +233,7 @@ router.get("/api/budgets/alerts", async (_req, res) => {
   try {
     const [budgets, spending] = await Promise.all([
       pool.query("SELECT * FROM budgets ORDER BY monthly_limit DESC"),
-      pool.query(
-        `SELECT COALESCE(t.category[1], 'Uncategorized') AS category,
-                ROUND(SUM(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0), 2) AS spent
-         FROM transactions t
-         LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-         WHERE t.amount > 0 AND t.pending = false
-           AND COALESCE(t.is_reimbursed, false) = false
-           AND t.date >= date_trunc('month', CURRENT_DATE)
-           AND t.date < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
-         GROUP BY COALESCE(t.category[1], 'Uncategorized')`
-      ),
+      getCategorySpendingThisMonth(pool), // Phase B3: honors splits
     ]);
 
     const today = new Date();
@@ -260,7 +243,7 @@ router.get("/api/budgets/alerts", async (_req, res) => {
     const monthProgress = dayOfMonth / daysInMonth;
 
     const spendMap = {};
-    for (const r of spending.rows) spendMap[r.category] = parseFloat(r.spent);
+    for (const r of spending) spendMap[r.category] = parseFloat(r.spent);
 
     const alerts = [];
     for (const b of budgets.rows) {
