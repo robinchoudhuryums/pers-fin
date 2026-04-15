@@ -25,24 +25,30 @@ teller/
     teller-api.js        — mTLS HTTP client for Teller API (retry with exponential backoff)
     keep-alive.js        — Self-ping to prevent Render free tier sleep (with fetch timeout)
     financial-queries.js — Shared income/spending SQL helpers (split-adjusted spending,
-                           keyword-filtered income) — single source of truth used by
-                           AI insights so the numbers match the dashboard
+                           keyword-filtered income, current-month per-category spending
+                           that honors transaction_splits) — single source of truth used
+                           by AI insights and budgets so the numbers match the dashboard
   routes/
     enrollments.js       — POST /api/enroll, POST /api/sync, GET /api/items,
                            DELETE /api/enrollments/:id, GET /api/accounts,
                            PATCH /api/accounts/:id, PATCH /api/accounts/:id/shared,
                            POST /api/sync-balances, GET /api/spending-summary,
                            GET /api/cash-flow, GET /api/savings-rate,
-                           GET /api/spending-yoy
+                           GET /api/spending-yoy.
+                           Also exports `syncAllEnrollments` and `syncAllBalances` for
+                           the scheduled bank-auto-sync task in `server.js` (in-process,
+                           no HTTP self-fetch).
     subscriptions.js     — GET/POST /api/subscriptions, PATCH dismiss/undismiss/cancel/
                            uncancel/category, GET /api/transactions,
                            GET /api/transactions/search, POST /api/detect,
                            POST /api/import-csv, GET /api/csv-imports, POST /api/cleanup,
                            GET /api/recurring-transfers, POST /api/detect-transfers,
-                           PATCH /api/recurring-transfers/:id/dismiss|undismiss|type
-    goals.js             — GET/POST/PATCH/DELETE /api/goals, POST /api/net-worth/snapshot,
-                           GET /api/net-worth/history, GET /api/context-export,
-                           GET/POST /api/investment-accounts
+                           PATCH /api/recurring-transfers/:id/dismiss|undismiss|type,
+                           PATCH /api/transactions/:id (merchant_name, notes, is_reimbursed),
+                           GET/POST/DELETE /api/transactions/:id/splits
+    goals.js             — GET/POST/PATCH/DELETE /api/goals, GET /api/goals/funding-options,
+                           POST /api/net-worth/snapshot, GET /api/net-worth/history,
+                           GET /api/context-export, GET/POST /api/investment-accounts
     budgets.js           — GET/POST/PATCH/DELETE /api/budgets, POST /api/budgets/suggest,
                            POST /api/budgets/accept, GET /api/budgets/alerts
     settings.js          — GET/PATCH /api/settings, POST /api/sheets/sync,
@@ -77,19 +83,28 @@ teller/
     pwa.js               — PWA manifest.json + icon generation (icons cached at startup)
   public/
     logo.svg             — Iron Man helmet SVG logo (traced from PNG, used as nav icon, PWA icon)
-    sw.js                — Service worker (network-first with offline cache fallback for static assets;
-                           `/api/*` is intentionally NOT cached — stale balances are worse than a clear
-                           network error. Precaches CSS/JS/SVG on install. Push notifications.)
-    perfin-shared.css    — Shared styles (variables, nav, cards, animations, responsive, focus-visible,
-                           skip-link, WCAG AA contrast-compliant text-muted colors)
-    perfin-shared.js     — Shared JavaScript (apiFetch, theme, nav helpers, asyncAction, btnLoading)
+    offline.html         — Branded offline fallback page served by the SW when navigation
+                           fails and no cache hit exists
+    sw.js                — Service worker (cache `perfin-v3`, network-first with offline
+                           fallback. Precaches CSS/JS/SVG/offline.html on install. `/api/*`
+                           is intentionally NOT cached — stale balances are worse than a
+                           clear network error. Push notifications.)
+    perfin-shared.css    — Shared styles (variables, nav, cards, animations, responsive,
+                           focus-visible, skip-link, WCAG AA contrast text colors,
+                           40/44px touch-target minimums on buttons)
+    perfin-shared.js     — Shared JavaScript (apiFetch, theme, nav helpers, asyncAction,
+                           btnLoading, beforeinstallprompt capture + perfinPromptInstall /
+                           perfinIsInstalled exports)
   views/
     dashboard.ejs        — Dashboard template with 3D financial wellness pyramid
-    transactions.ejs     — Transaction search/filter template
+    transactions.ejs     — Transaction search/filter template, per-row Split modal
+                           (Phase B3) and REIMBURSED badge (Phase B2)
     calendar.ejs         — Bill calendar template
     login.ejs            — Login template with helmet materialize animation on success
-    partials/head.ejs    — HTML head (meta, PWA manifest, apple-touch-icon, theme, skip-link)
-    partials/nav.ejs     — Top navigation bar with helmet logo icon, <main> landmark
+    partials/head.ejs    — HTML head (meta, PWA manifest, apple-touch-icon, viewport-fit,
+                           dual light/dark theme-color, skip-link)
+    partials/nav.ejs     — Top navigation bar with helmet logo icon, "Synced Xm ago"
+                           badge populated from /api/settings.last_auto_sync_at, <main> landmark
     partials/foot.ejs    — Footer partial (closes <main>)
 ```
 
@@ -119,9 +134,32 @@ teller/
 
 ### Core Financial
 - **Bank linking**: Teller Connect UI + mTLS API for transaction sync
+- **Bank auto-sync** (Phase A): opt-in scheduled sync every 1/3/6/12/24 hours.
+  Settings toggle drives an in-process scheduler that calls `syncAllEnrollments`
+  + `syncAllBalances` directly (no HTTP self-fetch). Default: disabled.
 - **Investment accounts**: Plaid API integration for brokerage/retirement/crypto holdings
 - **CSV import**: Auto-detect Chase, Capital One, Discover, Wells Fargo, Schwab formats
 - **Transaction deduplication**: SHA256-based duplicate detection across CSV imports and API syncs
+- **Transaction editing** (Phase B1): rename merchants and add notes via
+  `PATCH /api/transactions/:id`. User overrides live in `user_merchant_name` /
+  `user_notes` columns so re-syncs from Teller don't clobber edits. The display
+  layer uses `COALESCE(user_merchant_name, merchant_name, name)` everywhere,
+  so renames also collapse duplicate merchant rows in top-merchants ranking.
+- **Reimbursed flag** (Phase B2): mark transactions as reimbursed (work travel,
+  medical, friend-paid bills) via the same PATCH endpoint. Excluded from every
+  spending aggregation: `/api/spending-summary`, `/api/budgets`,
+  `/api/budgets/alerts`, `/api/cash-flow`, `/api/spending-yoy`,
+  `/api/savings-rate`, AI insights seasonal/tax/budget-status, scheduled
+  budget-alert push, and `getCategorySpendingThisMonth`. Anomaly detection
+  baselines deliberately still include reimbursed rows (a reimbursed charge
+  is still a valid "what's typical for this merchant" data point).
+- **Split transactions** (Phase B3): subdivide a single transaction into N
+  `(amount, category, merchant_name, notes)` lines via
+  `POST /api/transactions/:id/splits` (max 20 per parent, sum must match parent
+  ±$0.01). Splits REPLACE the parent row in per-category aggregations; total
+  amounts (monthly trend, cash flow, savings rate) are unchanged because splits
+  sum to the parent. Powered by `getCategorySpendingThisMonth` in
+  `services/financial-queries.js`.
 - **Subscription detection**: Automatic recurring charge identification (30/60/90/365-day cadences)
 - **Recurring transfer detection**: Auto-detect Zelle, Venmo, bill payments, savings transfers,
   investment contributions, ACH/wire (7/14/30/60/90/365-day cadences, outgoing/incoming split)
@@ -130,6 +168,13 @@ teller/
   (`is_shared`, `spending_split_pct` on linked_accounts, applied in all spending queries via SQL JOIN)
 - **Financial goals**: Track progress toward savings/investment targets with compound interest projections
   (logarithmic formula), milestone push notifications at 25/50/75/100%
+- **Goal funding from accounts** (Phase C): link a goal to a depository or
+  investment account; `current_amount` is auto-derived as
+  `account_balance - goal_baseline_amount` so the goal advances without manual
+  edits. Linking infers the baseline so existing progress is preserved
+  (a $3k-saved-of-$4k goal linked to a $5k savings account stays at 75%).
+  CHECK constraint enforces only one funding source per goal. The original
+  manually-entered value still surfaces as `current_amount_manual`.
 - **Net worth tracking**: Automated daily snapshots with trend history
 - **Credit utilization**: Derived credit limit display, utilization percentages
 - **Tax deduction persistence**: Flagged deductions stored in `tax_deductions` table, accumulated year-round
@@ -183,8 +228,21 @@ teller/
 - **Branding**: Iron Man helmet logo (SVG traced from PNG) — nav bar icon (CSS mask), PWA icon, login page
 - **Dark/Light theme**: Toggle in Settings, persisted to DB + localStorage
 - **PWA**: Installable home screen app (manifest.json + service worker, helmet icon centered on home screen).
-  Service worker uses network-first, caches successful same-origin static GETs, and explicitly
-  skips `/api/*` so the dashboard never serves stale balances when offline.
+  Service worker (cache `perfin-v3`) uses network-first, caches successful same-origin
+  static GETs, and explicitly skips `/api/*` so the dashboard never serves stale balances
+  when offline.
+- **Offline fallback page** (Phase D): when navigation fails and no cache hit exists,
+  the SW serves `/offline.html` — a branded "You're offline" page with a Retry
+  button — instead of the browser's generic error.
+- **Install prompt** (Phase D): `perfin-shared.js` captures `beforeinstallprompt`;
+  Settings shows an "Install App" section with a button when the browser is ready,
+  hides itself when already installed (`display-mode: standalone`), and falls back
+  to iOS Add-to-Home-Screen instructions when neither path is available.
+- **Mobile polish** (Phase D): viewport-fit=cover for iOS notch, dual light/dark
+  `theme-color` meta, 40/44px (desktop/mobile) touch-target minimums on buttons.
+- **"Last synced" nav badge** (Phase D): top nav shows "Synced 47m ago" populated
+  from `/api/settings.last_auto_sync_at` so users can see at a glance whether the
+  data is fresh.
 - **Web Push notifications**: VAPID-based push notifications for anomalies, budget alerts,
   goal milestones
 - **Accessibility**: Skip-to-content link, `<main>` landmark, chart aria-labels, :focus-visible
@@ -264,7 +322,11 @@ PATCH /api/recurring-transfers/:id/type      # reclassify transfer type
 GET  /api/transactions     # list transactions (query: months, limit, offset)
 GET  /api/transactions/search # search/filter (query: q, category, account_id, min/max_amount, start/end_date)
 GET  /api/transactions/duplicates # find candidate duplicate transactions across accounts
+PATCH /api/transactions/:id # user overrides: merchant_name, notes, is_reimbursed (Phase B1/B2)
 DELETE /api/transactions/:id # delete a single transaction (deduplication tool)
+GET  /api/transactions/:id/splits # list splits for a transaction (Phase B3)
+POST /api/transactions/:id/splits # replace splits, validates sum matches parent ±$0.01
+DELETE /api/transactions/:id/splits # clear all splits, revert to parent-row aggregation
 GET  /api/forecast         # 7-90 day projection of recurring subscription charges
 GET  /api/bill-calendar    # monthly calendar of expected charges + recurring income (query: year, month)
 GET  /api/csv-reminder     # list manual accounts overdue for a CSV refresh
@@ -279,7 +341,9 @@ GET  /api/spending-summary # monthly trends, categories, top merchants (split-ad
 GET  /api/cash-flow        # rolling cash flow projection (query: days, default 90)
 GET  /api/savings-rate     # income vs spending analysis (query: months, default 3)
 GET  /api/spending-yoy     # year-over-year comparison (query: month, year)
-GET  /api/goals            # list financial goals with projections
+GET  /api/goals            # list financial goals with projections (current_amount is
+                           # derived from the funding account when one is linked)
+GET  /api/goals/funding-options # depository + investment accounts a goal can link to (Phase C)
 POST /api/goals            # create a financial goal
 GET  /api/investment-accounts # list manual investment accounts
 POST /api/investment-accounts # add manual investment account
@@ -384,8 +448,9 @@ GET  /health               # health check
   guards and runs unconditionally. The `schema_migrations` row is recorded for
   observability only; it does not gate any migration logic today.
 - Schema files in `db/` for reference only
-- Key tables: `teller_enrollments`, `linked_accounts`, `transactions`, `detected_subscriptions`,
-  `recurring_transfers`, `user_settings` (single-row), `financial_insights`, `financial_goals`,
+- Key tables: `teller_enrollments`, `linked_accounts`, `transactions`,
+  `transaction_splits`, `detected_subscriptions`, `recurring_transfers`,
+  `user_settings` (single-row), `financial_insights`, `financial_goals`,
   `net_worth_snapshots`, `tax_deductions`, `csv_imports`, `budgets`, `push_subscriptions`,
   `webauthn_credentials`, `investment_accounts`, `investment_holdings`, `plaid_investment_items`,
   `schema_migrations`
@@ -393,6 +458,26 @@ GET  /health               # health check
 - `linked_accounts` columns include: `is_shared BOOLEAN`, `spending_split_pct INT DEFAULT 100`,
   `is_manual BOOLEAN` — constraint `chk_account_source` allows `plaid_item_id IS NOT NULL OR
   teller_enrollment_id IS NOT NULL OR is_manual = true`
+- `transactions` user-edit columns (Phase B1/B2): `user_merchant_name TEXT` and
+  `user_notes TEXT` hold user overrides separately from the raw Teller fields so a
+  re-sync doesn't clobber them; `is_reimbursed BOOLEAN DEFAULT false` and
+  `reimbursed_at TIMESTAMPTZ` flag transactions that the user (or an employer)
+  paid back, which excludes them from every spending aggregation.
+  Index `idx_transactions_reimbursed` is partial (only indexes rows where
+  is_reimbursed = true) to keep the common false case cheap.
+- `transaction_splits` (Phase B3): subdivides a single Teller transaction into
+  multiple `(amount, category, merchant_name, notes)` rows that REPLACE the
+  parent in per-category aggregations. `parent_transaction_id` references
+  `transactions(transaction_id)` with `ON DELETE CASCADE`. Indexed by parent.
+- `financial_goals` funding columns (Phase C): `funding_account_id INT REFERENCES
+  linked_accounts(id)`, `funding_investment_id INT REFERENCES investment_accounts(id)`,
+  `goal_baseline_amount NUMERIC(14,2)`. CHECK `chk_goal_funding_exclusive`
+  enforces that at most one of the two FK columns is non-null. When a funding
+  source is linked, GET `/api/goals` computes `current_amount =
+  account_balance - goal_baseline_amount` instead of returning the stored value.
+- `user_settings` Phase A auto-sync: `auto_sync_enabled BOOLEAN DEFAULT false`,
+  `auto_sync_interval_hours INT DEFAULT 6`, `last_auto_sync_at TIMESTAMPTZ`.
+  Drives the in-process scheduled sync task in `server.js`.
 - `user_settings` includes Per-sistant config: `persistent_url TEXT`,
   `persistent_webhook_secret_enc BYTEA` (encrypted at rest with `pgp_sym_encrypt`,
   same passphrase as Teller/Plaid tokens), `persistent_webhook_enabled BOOLEAN`
@@ -435,6 +520,13 @@ All run automatically after server startup:
 - **Goal milestones**: every 6 hours (push notifications at 25/50/75/100%)
 - **AI insights auto-trigger**: every 6 hours (respects `insights_cadence_days` setting)
 - **Budget alerts**: every 3 hours (push notifications at 80% and 100%+ thresholds, aligned with the in-app `/api/budgets/alerts` `warning`/`critical` levels). The in-app `info`/pace heuristic is intentionally not pushed (too noisy as a notification).
+- **Bank auto-sync** (Phase A): every 1 hour, checks `auto_sync_enabled` and whether
+  `auto_sync_interval_hours` has elapsed since `last_auto_sync_at`. When due, calls
+  `syncAllEnrollments()` then `syncAllBalances()` in-process — never via HTTP self-fetch,
+  so API_KEY-protected deployments don't 401 against themselves. Updates
+  `last_auto_sync_at` on every check (success or partial failure).
+  Note: on Render free tier, scheduled syncs only fire while the process is awake;
+  enable `keep_alive_enabled` if you need guaranteed cadence.
 
 ## Shared Account Spending Split
 All spending queries apply the split percentage for shared/joint accounts via SQL JOIN:
@@ -491,6 +583,38 @@ Income is identified by keyword matching on transaction descriptions (NOT amount
   `routes/enrollments.js` top-merchants exclusion. **When adding a new
   keyword filter, do not use `LIKE '%kw%'` or `SIMILAR TO '%kw%'`** — use
   `~*` / `!~*` with `\y(kw1|kw2|...)\y`.
+- **User overrides on synced transactions live in `user_*` columns.**
+  When a user edits the merchant name or notes on a Teller-sourced
+  transaction, the override goes to `transactions.user_merchant_name` /
+  `user_notes`; the raw Teller fields are never touched. Display layers use
+  `COALESCE(user_merchant_name, merchant_name, name)`. The next sync from
+  Teller therefore can't fight the user — `INSERT … ON CONFLICT … DO
+  UPDATE SET merchant_name = EXCLUDED.merchant_name` only updates the raw
+  field and leaves the user override intact.
+- **Goal `current_amount` is derived when funding-linked.** If a goal has
+  `funding_account_id` (or `funding_investment_id`) set, GET `/api/goals`
+  computes `current_amount = account_balance - goal_baseline_amount` rather
+  than reading the stored value. Don't write to `current_amount` directly
+  on linked goals — it'll be overwritten on next read. The stored value
+  surfaces as `current_amount_manual` for transparency. Linking infers a
+  baseline (`account_balance - existing_current_amount`) so the user's
+  pre-link progress is preserved.
+- **Transaction splits replace parent in category aggregations.** When
+  `transaction_splits` rows exist for a parent, every per-category SQL
+  aggregation in budgets/spending-summary/scheduled-push uses the splits'
+  `(amount, category)` instead of the parent row. Total aggregations
+  (monthly trend, cash flow, savings rate) are unchanged because splits
+  sum to the parent's amount. New per-category endpoints should call
+  `getCategorySpendingThisMonth(pool)` rather than re-implementing the
+  CTE — that helper already handles splits + reimbursed + spending-split.
+- **The scheduler calls helpers in-process, not via HTTP self-fetch.**
+  `routes/enrollments.js` exports `syncAllEnrollments` and `syncAllBalances`
+  specifically so the scheduled bank-auto-sync task in `server.js` can
+  invoke them directly. The earlier insights auto-trigger (cycle 1, C2)
+  taught us the lesson: an HTTP self-fetch hits the API_KEY middleware and
+  401s itself when the deployment is configured with `API_KEY`. Future
+  scheduled tasks that need to invoke route logic should follow the same
+  "extract handler into helper, export, reuse" pattern.
 
 ## Git
 - Active development branch: `claude/audit-documentation-SX9kS`
