@@ -133,15 +133,17 @@ router.get("/api/persistent/productivity-context", async (req, res) => {
 const SESSION_PASSWORD = process.env.SESSION_PASSWORD;
 const SESSION_PIN = process.env.SESSION_PIN;
 const AUTH_SECRET = SESSION_PASSWORD || SESSION_PIN || null;
-const SESSION_SECRET = process.env.SESSION_SECRET || "";
+// SSO_SECRET is the documented shared secret between Perfin and Per-sistant.
+// Both sides must set the same value or token validation will fail.
+const SSO_SECRET = process.env.SSO_SECRET || null;
 
 router.post("/api/sso/generate", (req, res) => {
   if (!AUTH_SECRET) return res.status(400).json({ error: "Auth not configured." });
+  if (!SSO_SECRET) return res.status(500).json({ error: "SSO_SECRET not configured." });
   if (!req.session || !req.session.authenticated) return res.status(401).json({ error: "Not authenticated." });
   const timestamp = Date.now();
   const payload = `sso:${timestamp}`;
-  const secret = SESSION_SECRET + AUTH_SECRET;
-  const signature = crypto.createHmac("sha256", secret).update(payload).digest("hex");
+  const signature = crypto.createHmac("sha256", SSO_SECRET).update(payload).digest("hex");
   res.json({ token: `${payload}:${signature}`, expires_in: 60 });
 });
 
@@ -152,6 +154,7 @@ const ssoLimiter = require("express-rate-limit")({
 });
 router.post("/api/sso/validate", ssoLimiter, async (req, res) => {
   if (!AUTH_SECRET) return res.status(400).json({ error: "Auth not configured." });
+  if (!SSO_SECRET) return res.status(500).json({ error: "SSO_SECRET not configured." });
   const { token } = req.body;
   if (!token) return res.status(400).json({ error: "Token required." });
   const parts = token.split(":");
@@ -160,8 +163,7 @@ router.post("/api/sso/validate", ssoLimiter, async (req, res) => {
   const providedSig = parts[2];
   if (Date.now() - timestamp > 60000) return res.status(401).json({ error: "Token expired." });
   const payload = `sso:${timestamp}`;
-  const secret = SESSION_SECRET + AUTH_SECRET;
-  const expected = crypto.createHmac("sha256", secret).update(payload).digest("hex");
+  const expected = crypto.createHmac("sha256", SSO_SECRET).update(payload).digest("hex");
   const sigBuf = Buffer.from(providedSig);
   const expBuf = Buffer.from(expected);
   if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {

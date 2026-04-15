@@ -226,7 +226,14 @@ function isExcludedMerchant(merchantKey) {
   if (!merchantKey) return false;
   const lower = merchantKey.toLowerCase();
   for (const keywords of Object.values(EXCLUSION_PATTERNS)) {
-    if (keywords.some(kw => lower.includes(kw))) return true;
+    if (keywords.some(kw => {
+      // Multi-word keywords: substring match is fine (low false-positive risk).
+      if (kw.includes(" ")) return lower.includes(kw);
+      // Single-word keywords: word-boundary match so e.g. "interest" doesn't
+      // also match "internet" and exclude legitimate ISP charges.
+      const re = new RegExp("\\b" + kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b");
+      return re.test(lower);
+    })) return true;
   }
   return false;
 }
