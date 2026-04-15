@@ -513,7 +513,12 @@ router.post("/api/insights", async (_req, res) => {
     }
 
     const client = new Anthropic();
-    const maxTokens = Math.min(4096, 1500 + activeModules.length * 200);
+    // Allocate enough headroom for both the insights block AND the running
+    // summary. Previously a formula of `1500 + activeModules*200` could run out
+    // before Claude emitted the `---RUNNING_SUMMARY---` delimiter, silently
+    // discarding the summary update (we'd fall back to the prior summary and
+    // the long-term memory would stop advancing).
+    const maxTokens = Math.min(8192, 2000 + activeModules.length * 250);
     const message = await client.messages.create({
       model: modelId, max_tokens: maxTokens,
       system: [{ type: "text", text: systemText, cache_control: { type: "ephemeral" } }],
@@ -523,20 +528,38 @@ router.post("/api/insights", async (_req, res) => {
     const usage = message.usage || {};
     const tokensUsed = (usage.input_tokens || 0) + (usage.output_tokens || 0);
     const delimIdx = fullResponse.indexOf("---RUNNING_SUMMARY---");
+    const hitTokenCap = message.stop_reason === "max_tokens";
     let insightText, newSummary;
+    let summaryStatus = "updated";
     if (delimIdx !== -1) {
       insightText = fullResponse.substring(0, delimIdx).trim();
       newSummary = fullResponse.substring(delimIdx + "---RUNNING_SUMMARY---".length).trim();
+      // If we hit the cap *and* the post-delimiter text looks truncated
+      // (no terminal punctuation / too short), keep the prior summary rather
+      // than overwriting with half a sentence.
+      if (hitTokenCap && newSummary.length < 40) {
+        console.warn("Insights: stop_reason=max_tokens with a short summary body — keeping prior running_summary.");
+        newSummary = runningSummary;
+        summaryStatus = "preserved_due_to_truncation";
+      }
     } else {
       insightText = fullResponse.trim();
       newSummary = runningSummary;
+      // Delimiter missing because Claude ran out of tokens before writing it —
+      // surface this so the operator knows long-term memory is frozen.
+      summaryStatus = hitTokenCap
+        ? "preserved_due_to_truncation"
+        : "preserved_no_delimiter";
+      if (hitTokenCap) {
+        console.warn("Insights: stop_reason=max_tokens before running-summary delimiter. Consider raising max_tokens or trimming module set.");
+      }
     }
     const actualModel = message.model || modelId;
     await pool.query(
       "INSERT INTO financial_insights (insight_text, period_start, period_end, model_used, tokens_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens) VALUES ($1, CURRENT_DATE - INTERVAL '6 months', CURRENT_DATE, $2, $3, $4, $5, $6, $7)",
       [insightText, actualModel, tokensUsed, usage.input_tokens || 0, usage.output_tokens || 0, usage.cache_read_input_tokens || 0, usage.cache_creation_input_tokens || 0]
     );
-    if (newSummary) {
+    if (summaryStatus === "updated" && newSummary) {
       await pool.query(
         "UPDATE user_settings SET insights_running_summary = $1, insights_last_run = now() WHERE id = 1",
         [newSummary]
@@ -545,7 +568,15 @@ router.post("/api/insights", async (_req, res) => {
       await pool.query("UPDATE user_settings SET insights_last_run = now() WHERE id = 1").catch(() => {});
     }
     const costUsd = estimateCostGranular(usage, actualModel);
-    res.json({ insight: insightText, tokens_used: tokensUsed, modules_used: activeModules, cache_read_tokens: usage.cache_read_input_tokens || 0, estimated_cost_usd: parseFloat(costUsd.toFixed(6)) });
+    res.json({
+      insight: insightText,
+      tokens_used: tokensUsed,
+      modules_used: activeModules,
+      cache_read_tokens: usage.cache_read_input_tokens || 0,
+      estimated_cost_usd: parseFloat(costUsd.toFixed(6)),
+      stop_reason: message.stop_reason,
+      summary_status: summaryStatus,
+    });
   } catch (err) {
     console.error("Insights error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });

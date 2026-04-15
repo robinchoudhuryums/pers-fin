@@ -78,7 +78,7 @@ router.post("/api/notifications/test", async (_req, res) => {
         await webpush.sendNotification(sub, JSON.stringify({
           title: "Perfin",
           body: "Push notifications are working!",
-          icon: "/manifest.json",
+          icon: "/logo.svg",
           tag: "test",
         }));
         sent++;

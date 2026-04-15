@@ -592,6 +592,10 @@ router.get("/api/spending-summary", async (req, res) => {
       [months]
     );
 
+    // Exclusion list uses word-boundary regex (\y) so short tokens like "atm",
+    // "pymt", and "epay" can't substring-match legitimate merchants (AT&T,
+    // Atmos Energy, etc.). Multi-word phrases still work because \y anchors
+    // at the phrase edges, not inside the phrase.
     const topMerchants = await pool.query(
       `SELECT COALESCE(t.merchant_name, t.name) AS merchant,
               ROUND(SUM(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0), 2) AS total_spent,
@@ -600,8 +604,8 @@ router.get("/api/spending-summary", async (req, res) => {
        LEFT JOIN linked_accounts la ON la.account_id = t.account_id
        WHERE t.amount > 0 AND t.merchant_name IS NOT NULL
              AND t.date >= CURRENT_DATE - ($1 || ' months')::INTERVAL
-             AND LOWER(COALESCE(t.merchant_name, t.name)) NOT SIMILAR TO
-               '%(payment thank|pymt|autopay|auto pay|minimum payment|directpay|automatic payment|interest|int charge|finance charge|funds tran|funds transfer|transfer to|transfer from|ach transfer|wire transfer|internal transfer|zelle|venmo|paypal|cash app|cashapp|square cash|bank of america|wells fargo|chase bank|citi bank|citibank|capital one|us bank|pnc bank|td bank|ally bank|truist|boa transfer|online transfer|mobile transfer|bill pay|epay|credit card payment|loan payment|mortgage payment|deposit|direct dep|atm|withdrawal)%'
+             AND COALESCE(t.merchant_name, t.name) !~*
+               '\y(payment thank|pymt|autopay|auto pay|minimum payment|directpay|automatic payment|interest|int charge|finance charge|funds tran|funds transfer|transfer to|transfer from|ach transfer|wire transfer|internal transfer|zelle|venmo|paypal|cash app|cashapp|square cash|bank of america|wells fargo|chase bank|citi bank|citibank|capital one|us bank|pnc bank|td bank|ally bank|truist|boa transfer|online transfer|mobile transfer|bill pay|epay|credit card payment|loan payment|mortgage payment|deposit|direct dep|atm|withdrawal)\y'
        GROUP BY COALESCE(t.merchant_name, t.name)
        ORDER BY total_spent DESC
        LIMIT 10`,

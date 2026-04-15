@@ -158,9 +158,8 @@ async function syncTransactions(sheets, pool) {
               range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
               cell: {
                 userEnteredFormat: {
-                  textFormat: { bold: true, fontSize: 11 },
                   backgroundColor: { red: 0.2, green: 0.3, blue: 0.55 },
-                  textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 }, fontSize: 11 },
+                  textFormat: { bold: true, fontSize: 11, foregroundColor: { red: 1, green: 1, blue: 1 } },
                 },
               },
               fields: "userEnteredFormat(textFormat,backgroundColor)",
