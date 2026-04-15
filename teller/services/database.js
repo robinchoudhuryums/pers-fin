@@ -43,6 +43,95 @@ async function runMigrations() {
     const versionResult = await client.query("SELECT MAX(version) AS v FROM schema_migrations");
     const currentVersion = versionResult.rows[0]?.v || 0;
 
+    // ------------------------------------------------------------------
+    // Base tables (001_schema.sql + 002_csv_import.sql + 003_teller.sql)
+    // These must exist before the ALTER TABLEs below can run on a fresh DB.
+    // ------------------------------------------------------------------
+    await client.query(`CREATE TABLE IF NOT EXISTS plaid_items (
+      id               SERIAL PRIMARY KEY,
+      item_id          TEXT UNIQUE NOT NULL,
+      institution_id   TEXT,
+      institution_name TEXT NOT NULL,
+      access_token_enc BYTEA NOT NULL,
+      status           TEXT NOT NULL DEFAULT 'GOOD',
+      consent_expires_at TIMESTAMPTZ,
+      created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+    await client.query(`CREATE TABLE IF NOT EXISTS teller_enrollments (
+      id                   SERIAL PRIMARY KEY,
+      enrollment_id        TEXT UNIQUE NOT NULL,
+      institution_name     TEXT NOT NULL,
+      access_token_enc     BYTEA NOT NULL,
+      status               TEXT NOT NULL DEFAULT 'GOOD',
+      last_synced_txn_date DATE,
+      created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+    await client.query(`CREATE TABLE IF NOT EXISTS linked_accounts (
+      id                   SERIAL PRIMARY KEY,
+      plaid_item_id        INT REFERENCES plaid_items(id) ON DELETE CASCADE,
+      teller_enrollment_id INT REFERENCES teller_enrollments(id) ON DELETE CASCADE,
+      account_id           TEXT UNIQUE NOT NULL,
+      name                 TEXT NOT NULL,
+      official_name        TEXT,
+      type                 TEXT,
+      subtype              TEXT,
+      mask                 TEXT,
+      created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+    await client.query(`CREATE TABLE IF NOT EXISTS sync_cursors (
+      plaid_item_id  INT PRIMARY KEY REFERENCES plaid_items(id) ON DELETE CASCADE,
+      cursor         TEXT NOT NULL DEFAULT '',
+      last_synced_at TIMESTAMPTZ
+    )`);
+    await client.query(`CREATE TABLE IF NOT EXISTS transactions (
+      id                        SERIAL PRIMARY KEY,
+      account_id                TEXT NOT NULL REFERENCES linked_accounts(account_id),
+      transaction_id            TEXT UNIQUE NOT NULL,
+      amount                    NUMERIC(12,2) NOT NULL,
+      iso_currency_code         TEXT DEFAULT 'USD',
+      date                      DATE NOT NULL,
+      authorized_date           DATE,
+      merchant_name             TEXT,
+      name                      TEXT,
+      category                  TEXT[],
+      personal_finance_category JSONB,
+      pending                   BOOLEAN NOT NULL DEFAULT false,
+      created_at                TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_txn_account_date ON transactions (account_id, date DESC)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_txn_merchant ON transactions (merchant_name) WHERE merchant_name IS NOT NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_txn_date ON transactions (date)`);
+    await client.query(`CREATE TABLE IF NOT EXISTS detected_subscriptions (
+      id             SERIAL PRIMARY KEY,
+      merchant_key   TEXT NOT NULL,
+      display_name   TEXT NOT NULL,
+      amount         NUMERIC(12,2) NOT NULL,
+      prior_amount   NUMERIC(12,2),
+      cadence_days   INT NOT NULL,
+      first_seen     DATE NOT NULL,
+      last_charged   DATE NOT NULL,
+      next_expected  DATE NOT NULL,
+      is_active      BOOLEAN NOT NULL DEFAULT true,
+      is_new         BOOLEAN NOT NULL DEFAULT true,
+      amount_changed BOOLEAN NOT NULL DEFAULT false,
+      created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (merchant_key, cadence_days)
+    )`);
+    await client.query(`CREATE TABLE IF NOT EXISTS csv_imports (
+      id            SERIAL PRIMARY KEY,
+      filename      TEXT NOT NULL,
+      institution   TEXT NOT NULL,
+      account_label TEXT,
+      rows_imported INT NOT NULL DEFAULT 0,
+      rows_skipped  INT NOT NULL DEFAULT 0,
+      imported_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+    // Allow Plaid linkage to be optional (Teller and CSV accounts don't have one)
+    await client.query(`ALTER TABLE linked_accounts ALTER COLUMN plaid_item_id DROP NOT NULL`);
+
     // 005_settings.sql
     await client.query(`
       CREATE TABLE IF NOT EXISTS user_settings (
@@ -62,7 +151,7 @@ async function runMigrations() {
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_model TEXT NOT NULL DEFAULT 'sonnet'");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_cadence_days INT NOT NULL DEFAULT 30");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS zip_code TEXT DEFAULT NULL");
-    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insight_modules JSONB NOT NULL DEFAULT '{\"utility_comparison\":true,\"spending_benchmarks\":true,\"savings_suggestions\":true,\"subscription_audit\":true,\"anomaly_detection\":true,\"seasonal_forecast\":true,\"debt_optimizer\":true,\"bill_negotiation\":true,\"income_savings\":true,\"tax_deductions\":true,\"goal_tracking\":true}'::jsonb");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insight_modules JSONB NOT NULL DEFAULT '{\"utility_comparison\":true,\"spending_benchmarks\":true,\"savings_suggestions\":true,\"subscription_audit\":true,\"anomaly_detection\":true,\"seasonal_forecast\":true,\"debt_optimizer\":true,\"bill_negotiation\":true,\"income_savings\":true,\"tax_deductions\":true,\"goal_tracking\":true,\"recurring_transfers\":true}'::jsonb");
     // 003_dashboard_features.sql
     await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS is_dismissed BOOLEAN NOT NULL DEFAULT false");
     await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'detected'");
@@ -261,7 +350,8 @@ async function runMigrations() {
     console.log("Migrations complete.");
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
-    console.error("Migration error (non-fatal):", err.message);
+    console.error("FATAL: Migration failed:", err.message);
+    throw err;
   } finally {
     client.release();
   }

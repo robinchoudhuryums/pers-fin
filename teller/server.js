@@ -403,15 +403,19 @@ runMigrations().then(() => {
         const lastRun = s.insights_last_run ? new Date(s.insights_last_run) : null;
         const now = new Date();
         if (!lastRun || (now - lastRun) / 86400000 >= cadenceDays) {
-          // Trigger insights generation via internal fetch
+          // Trigger insights generation via internal fetch.
+          // Pass X-API-Key when API_KEY is configured so the request authenticates;
+          // otherwise the request would always 401 and scheduled insights would silently never run.
           const port = process.env.PORT || 3000;
+          const headers = { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" };
+          if (API_KEY) headers["X-API-Key"] = API_KEY;
           try {
             const r = await fetch(`http://localhost:${port}/api/insights`, {
               method: "POST",
-              headers: { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
+              headers,
             });
             if (r.ok) console.log("Auto-triggered AI insights (cadence: " + cadenceDays + " days).");
-            else console.log("Auto-trigger insights skipped:", (await r.json()).error);
+            else console.log("Auto-trigger insights skipped:", (await r.json().catch(() => ({}))).error);
           } catch (err) { console.error("Auto-trigger insights fetch error:", err.message); }
         }
       } catch (err) {

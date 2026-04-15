@@ -150,20 +150,8 @@ describe("Subscription API handler logic", () => {
   });
 
   describe("Cancel URL lookup", () => {
-    const CANCEL_URLS = {
-      "netflix": "https://www.netflix.com/cancelplan",
-      "spotify": "https://www.spotify.com/account/subscription/",
-      "hbo max": "https://www.max.com/account",
-    };
-
-    function findCancelUrl(merchantName) {
-      if (!merchantName) return null;
-      const lower = merchantName.toLowerCase();
-      for (const [key, url] of Object.entries(CANCEL_URLS)) {
-        if (lower.includes(key)) return url;
-      }
-      return null;
-    }
+    // Use the production findCancelUrl so test changes track real behavior.
+    const { findCancelUrl } = require("../teller/data/reference-data");
 
     it("finds Netflix cancel URL", () => {
       assert.equal(findCancelUrl("NETFLIX.COM"), "https://www.netflix.com/cancelplan");

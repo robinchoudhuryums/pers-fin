@@ -28,8 +28,19 @@ router.get("/login", async (_req, res) => {
   res.render("login", { isPin: AUTH_MODE === "pin", authMode: AUTH_MODE, hasWebauthn });
 });
 
+// Helper: load configured session timeout (minutes) from user_settings, falling back to 15
+async function loadSessionTimeout() {
+  try {
+    const r = await pool.query("SELECT session_timeout_minutes FROM user_settings WHERE id = 1");
+    const v = r.rows[0]?.session_timeout_minutes;
+    return Number.isFinite(parseInt(v)) ? parseInt(v) : 15;
+  } catch {
+    return 15;
+  }
+}
+
 // POST /api/login
-router.post("/api/login", (req, res) => {
+router.post("/api/login", async (req, res) => {
   if (!AUTH_SECRET) return res.json({ ok: true });
   const { password } = req.body;
   if (!password) return res.status(400).json({ error: (AUTH_MODE === "pin" ? "PIN" : "Password") + " required" });
@@ -40,7 +51,7 @@ router.post("/api/login", (req, res) => {
   }
   req.session.authenticated = true;
   req.session.lastActivity = Date.now();
-  req.session.timeoutMinutes = 15;
+  req.session.timeoutMinutes = await loadSessionTimeout();
   res.json({ ok: true });
 });
 
@@ -227,7 +238,7 @@ router.post("/api/webauthn/authenticate", async (req, res) => {
     delete req.session.webauthnChallenge;
     req.session.authenticated = true;
     req.session.lastActivity = Date.now();
-    req.session.timeoutMinutes = 15;
+    req.session.timeoutMinutes = await loadSessionTimeout();
     res.json({ ok: true });
   } catch (err) {
     console.error("WebAuthn authenticate error:", err.message);

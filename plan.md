@@ -1,5 +1,12 @@
 # Implementation Plan: Steps 4-7 + Google Sheets Integration
 
+> **STATUS: HISTORICAL — COMPLETED.** This document captures the original
+> n8n + Plaid build plan from before the project pivoted to a Teller-first
+> architecture with a richer Express dashboard. The steps below have all
+> shipped (with substantial rework). Refer to **CLAUDE.md** and **README.md**
+> for the current architecture and feature set; treat this file as a
+> reference for *why* things look the way they do, not as the active plan.
+
 ## Step 4: Email Digest Template
 **Status: Already complete.** The `n8n-workflows/weekly-digest.json` Build Digest Email node already has a full HTML template with:
 - Monthly cost summary
