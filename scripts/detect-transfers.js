@@ -194,7 +194,12 @@ async function detectRecurringTransfers(externalPool) {
            amount = EXCLUDED.amount,
            last_transferred = EXCLUDED.last_transferred,
            next_expected = EXCLUDED.next_expected,
-           is_active = true,
+           -- Respect user-driven state: don't reactivate dismissed transfers.
+           -- Mirrors the subscription detection logic in detect-subscriptions.js.
+           is_active = CASE
+                          WHEN recurring_transfers.is_dismissed = true THEN false
+                          ELSE true
+                        END,
            transfer_type = EXCLUDED.transfer_type,
            amount_changed = (EXCLUDED.amount != recurring_transfers.amount),
            updated_at = now()`,

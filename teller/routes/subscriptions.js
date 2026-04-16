@@ -195,7 +195,7 @@ router.get("/api/transactions/search", async (req, res) => {
     let idx = 1;
 
     if (q) {
-      conditions.push(`(LOWER(COALESCE(t.merchant_name, t.name, '')) LIKE $${idx})`);
+      conditions.push(`(LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name, '')) LIKE $${idx})`);
       values.push("%" + q.toLowerCase() + "%");
       idx++;
     }
@@ -672,9 +672,7 @@ router.get("/api/bill-calendar", async (req, res) => {
       FROM transactions
       WHERE amount < 0 AND pending = false
         AND date >= CURRENT_DATE - INTERVAL '3 months'
-        AND (LOWER(COALESCE(merchant_name, name, '')) LIKE '%payroll%'
-          OR LOWER(COALESCE(merchant_name, name, '')) LIKE '%direct dep%'
-          OR LOWER(COALESCE(merchant_name, name, '')) LIKE '%salary%'
+        AND (COALESCE(merchant_name, name, '') ~* '\\y(payroll|direct dep|salary)\\y'
           OR category[1] = 'Income')
       GROUP BY COALESCE(merchant_name, name), ABS(amount)
       HAVING COUNT(*) >= 2

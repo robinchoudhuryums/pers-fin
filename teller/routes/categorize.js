@@ -182,10 +182,21 @@ router.post("/api/categorize", async (_req, res) => {
       updated++;
     }
 
-    // Track cost in insights table for usage monitoring
+    // Track cost in insights table for usage monitoring (with granular token counts)
+    const usage = message.usage || {};
     await pool.query(
-      "INSERT INTO financial_insights (insight_text, model_used, tokens_used) VALUES ($1, $2, $3)",
-      ["[ML Categorization] Categorized " + updated + " transactions", message.model || modelId, tokensUsed]
+      `INSERT INTO financial_insights
+         (insight_text, model_used, tokens_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        "[ML Categorization] Categorized " + updated + " transactions",
+        message.model || modelId,
+        tokensUsed,
+        usage.input_tokens || null,
+        usage.output_tokens || null,
+        usage.cache_read_input_tokens || null,
+        usage.cache_creation_input_tokens || null,
+      ]
     ).catch(() => {});
 
     const leftoverCount = await pool.query(

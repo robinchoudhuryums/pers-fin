@@ -50,7 +50,7 @@ router.get("/api/insights/status", async (_req, res) => {
 router.get("/api/insights/usage", async (_req, res) => {
   try {
     const result = await pool.query(
-      "SELECT id, tokens_used, model_used, created_at FROM financial_insights ORDER BY created_at DESC LIMIT 20"
+      "SELECT id, tokens_used, model_used, created_at, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights ORDER BY created_at DESC LIMIT 20"
     );
     const history = result.rows.map(r => {
       // Use granular cost if we have separate token counts, otherwise fall back to blended
@@ -93,7 +93,7 @@ router.post("/api/insights", async (_req, res) => {
     const usageResult = await pool.query(
       "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights " +
       "WHERE created_at >= date_trunc('month', CURRENT_DATE)"
-    ).catch(() => ({ rows: [] }));
+    );
     let estimatedCostCents = 0;
     usageResult.rows.forEach(r => {
       const cost = r.input_tokens
@@ -608,7 +608,7 @@ router.post("/api/insights/rebuild", async (_req, res) => {
     const budgetCents = parseInt(process.env.INSIGHTS_MONTHLY_BUDGET_CENTS) || 50;
     const usageResult = await pool.query(
       "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights WHERE created_at >= date_trunc('month', CURRENT_DATE)"
-    ).catch(() => ({ rows: [] }));
+    );
     let estimatedCostCents = 0;
     usageResult.rows.forEach(r => {
       const cost = r.input_tokens
