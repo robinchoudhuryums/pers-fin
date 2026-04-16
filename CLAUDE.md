@@ -138,7 +138,7 @@ teller/
 - `scripts/retention-cleanup.sql` — Reference SQL for the manual cleanup queries
   exposed by `POST /api/cleanup`
 - `apps-script/Code.gs` — Google Sheets Apps Script (standalone + server sync)
-- `tests/` — 139 tests across 7 files (node:test runner, `npm test`).
+- `tests/` — 195 tests across 9 files (node:test runner, `npm test`).
   Includes `tests/audit-regressions.test.js` which pins documented behavior
   for auth, SSO, template hygiene, and exclusion rules. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
@@ -373,13 +373,13 @@ cd teller && npm install && node server.js
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`); `services/teller-api.js`
   reads them directly. Secret-Files path also supported if `TELLER_CERT_PATH` env vars are set.
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 139 tests passing across 7 test files
+- 195 tests passing across 9 test files
 
 ## Commands
 ```bash
 cd teller && npm install && node server.js    # Run locally
 npm install                                    # ALSO required at repo root for tests
-npm test                                       # Run 139 tests
+npm test                                       # Run 195 tests
 
 # Key API endpoints
 POST /api/enroll           # store Teller access token after Connect
