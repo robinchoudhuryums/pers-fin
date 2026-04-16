@@ -410,6 +410,75 @@ async function runMigrations() {
       }
     }
 
+    // ---- Merchant categorization rules engine ----
+    await client.query(`CREATE TABLE IF NOT EXISTS categorization_rules (
+      id SERIAL PRIMARY KEY,
+      merchant_pattern TEXT NOT NULL,
+      category TEXT NOT NULL,
+      match_type TEXT NOT NULL DEFAULT 'contains',
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      times_applied INT NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(merchant_pattern, category)
+    )`);
+    await client.query("CREATE INDEX IF NOT EXISTS idx_categorization_rules_active ON categorization_rules (is_active) WHERE is_active = true");
+
+    // ---- Budget rollover / monthly snapshots ----
+    await client.query("ALTER TABLE budgets ADD COLUMN IF NOT EXISTS rollover_enabled BOOLEAN NOT NULL DEFAULT false");
+    await client.query("ALTER TABLE budgets ADD COLUMN IF NOT EXISTS budget_type TEXT NOT NULL DEFAULT 'recurring'");
+    await client.query("ALTER TABLE budgets ADD COLUMN IF NOT EXISTS effective_month TEXT DEFAULT NULL");
+    await client.query(`CREATE TABLE IF NOT EXISTS budget_snapshots (
+      id SERIAL PRIMARY KEY,
+      budget_id INT NOT NULL REFERENCES budgets(id) ON DELETE CASCADE,
+      month TEXT NOT NULL,
+      monthly_limit NUMERIC(12,2) NOT NULL,
+      spent NUMERIC(12,2) NOT NULL DEFAULT 0,
+      rollover_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(budget_id, month)
+    )`);
+
+    // ---- Calendar manual bills ----
+    await client.query(`CREATE TABLE IF NOT EXISTS manual_bills (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      amount NUMERIC(12,2) NOT NULL,
+      due_day INT NOT NULL,
+      cadence TEXT NOT NULL DEFAULT 'monthly',
+      category TEXT NOT NULL DEFAULT 'bill',
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      notes TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+    await client.query(`CREATE TABLE IF NOT EXISTS bill_payments (
+      id SERIAL PRIMARY KEY,
+      bill_source TEXT NOT NULL,
+      bill_id INT NOT NULL,
+      paid_date DATE NOT NULL,
+      paid_amount NUMERIC(12,2),
+      notes TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(bill_source, bill_id, paid_date)
+    )`);
+
+    // ---- Unified notification log ----
+    await client.query(`CREATE TABLE IF NOT EXISTS notification_log (
+      id SERIAL PRIMARY KEY,
+      type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      data JSONB,
+      is_read BOOLEAN NOT NULL DEFAULT false,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+    await client.query("CREATE INDEX IF NOT EXISTS idx_notification_log_unread ON notification_log (is_read, created_at DESC) WHERE is_read = false");
+
+    // ---- Data freshness tracking ----
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_balance_sync_at TIMESTAMPTZ DEFAULT NULL");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_txn_sync_at TIMESTAMPTZ DEFAULT NULL");
+
     // Record schema version
     if (currentVersion < SCHEMA_VERSION) {
       await client.query(

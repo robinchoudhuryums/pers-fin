@@ -20,6 +20,8 @@
     .cal-event.bill { background: rgba(235,107,107,0.15); color: var(--red); }
     .cal-event.income { background: rgba(111,207,151,0.15); color: var(--green); }
     .cal-event.utility { background: rgba(127,181,230,0.15); color: var(--blue); }
+    .cal-event.paid { opacity: 0.5; text-decoration: line-through; }
+    .modal { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 100; }
     .day-total { font-size: 9px; color: var(--text-muted); margin-top: 4px; font-weight: 500; }
     @media (max-width: 640px) {
       .cal-grid { grid-template-columns: repeat(7, 1fr); gap: 1px; }
@@ -38,6 +40,26 @@
     <button class="btn btn-sm" id="prev-month">&larr; Prev</button>
     <h2 id="month-title">Loading...</h2>
     <button class="btn btn-sm" id="next-month">Next &rarr;</button>
+    <button class="btn btn-sm" id="add-bill-btn" style="margin-left:auto;">+ Add Bill</button>
+  </div>
+
+  <!-- Add Bill Modal -->
+  <div id="add-bill-modal" class="modal" style="display:none;">
+    <div class="card" style="max-width:400px; margin:80px auto; padding:24px;">
+      <h3 style="margin-top:0;">Add Manual Bill</h3>
+      <div style="display:flex; flex-direction:column; gap:12px;">
+        <input id="bill-name" placeholder="Bill name (e.g. Rent)" />
+        <input id="bill-amount" type="number" step="0.01" min="0" placeholder="Amount" />
+        <label style="font-size:12px;color:var(--text-muted);">Due day of month</label>
+        <input id="bill-day" type="number" min="1" max="31" placeholder="Day (1-31)" />
+        <select id="bill-cadence"><option value="monthly">Monthly</option><option value="quarterly">Quarterly</option><option value="yearly">Yearly</option></select>
+        <select id="bill-category"><option value="bill">Bill</option><option value="utility">Utility</option><option value="subscription">Subscription</option><option value="insurance">Insurance</option><option value="housing">Housing</option></select>
+        <div style="display:flex; gap:8px; justify-content:flex-end;">
+          <button class="btn btn-sm" id="bill-cancel">Cancel</button>
+          <button class="btn btn-sm" id="bill-save" style="background:var(--teal);color:#000;">Save</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div class="cal-summary">
@@ -92,8 +114,14 @@
           for (var j = 0; j < Math.min(day.events.length, 3); j++) {
             var ev = day.events[j];
             var evCls = ev.is_income ? 'income' : (ev.category === 'utility' ? 'utility' : 'bill');
+            if (ev.is_paid) evCls += ' paid';
             var prefix = ev.is_income ? '+' : '-';
-            html += '<div class="cal-event ' + evCls + '" title="' + esc(ev.name) + ': $' + Math.abs(ev.amount).toFixed(2) + '">' +
+            var paidAttr = '';
+            if (ev.bill_source && ev.bill_id && !ev.is_income) {
+              paidAttr = ' data-source="' + esc(ev.bill_source) + '" data-bid="' + ev.bill_id + '" data-date="' + day.date + '" style="cursor:pointer;"';
+            }
+            html += '<div class="cal-event ' + evCls + '"' + paidAttr + ' title="' + esc(ev.name) + ': $' + Math.abs(ev.amount).toFixed(2) + (ev.is_paid ? ' (Paid)' : '') + '">' +
+              (ev.is_paid ? '✓ ' : '') +
               esc(ev.name.length > 12 ? ev.name.substring(0, 11) + '…' : ev.name) +
               ' ' + prefix + '$' + Math.abs(ev.amount).toFixed(0) + '</div>';
           }
@@ -115,6 +143,32 @@
       }
     }
 
+    // Click on a bill event to toggle paid status
+    onDelegate('cal-grid', 'click', '.cal-event[data-source]', async function() {
+      var source = this.getAttribute('data-source');
+      var bid = this.getAttribute('data-bid');
+      var date = this.getAttribute('data-date');
+      if (!source || !bid || !date) return;
+      var isPaid = this.classList.contains('paid');
+      try {
+        if (isPaid) {
+          // Find and delete the payment
+          var pRes = await apiFetch('/api/bill-payments?year=' + calYear + '&month=' + calMonth);
+          var payments = await pRes.json();
+          var match = payments.find(function(p) { return p.bill_source === source && p.bill_id == bid && p.paid_date.startsWith(date); });
+          if (match) await apiFetch('/api/bill-payments/' + match.id, { method: 'DELETE' });
+        } else {
+          await apiFetch('/api/bill-payments', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ bill_source: source, bill_id: parseInt(bid), paid_date: date }),
+          });
+        }
+        loadCalendar();
+      } catch (e) { showMsg(e.message, false); }
+    });
+
+    // Add Bill modal
     bindEvents([
       ['prev-month', 'click', function() {
         calMonth--; if (calMonth < 1) { calMonth = 12; calYear--; }
@@ -123,6 +177,34 @@
       ['next-month', 'click', function() {
         calMonth++; if (calMonth > 12) { calMonth = 1; calYear++; }
         loadCalendar();
+      }],
+      ['add-bill-btn', 'click', function() {
+        document.getElementById('add-bill-modal').style.display = '';
+      }],
+      ['bill-cancel', 'click', function() {
+        document.getElementById('add-bill-modal').style.display = 'none';
+      }],
+      ['bill-save', 'click', async function() {
+        var name = document.getElementById('bill-name').value.trim();
+        var amount = document.getElementById('bill-amount').value;
+        var day = document.getElementById('bill-day').value;
+        var cadence = document.getElementById('bill-cadence').value;
+        var category = document.getElementById('bill-category').value;
+        if (!name || !amount || !day) { showMsg('Name, amount, and day are required', false); return; }
+        try {
+          var r = await apiFetch('/api/manual-bills', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name, amount: parseFloat(amount), due_day: parseInt(day), cadence: cadence, category: category }),
+          });
+          if (!r.ok) { var d = await r.json(); throw new Error(d.error); }
+          document.getElementById('add-bill-modal').style.display = 'none';
+          document.getElementById('bill-name').value = '';
+          document.getElementById('bill-amount').value = '';
+          document.getElementById('bill-day').value = '';
+          showMsg('Bill added', true);
+          loadCalendar();
+        } catch (e) { showMsg(e.message, false); }
       }],
     ]);
 

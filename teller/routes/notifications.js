@@ -95,8 +95,65 @@ router.post("/api/notifications/test", async (_req, res) => {
   }
 });
 
+// ============================================================================
+// Notification Log — in-app notification history
+// ============================================================================
+
+// GET /api/notifications — list notification history
+router.get("/api/notifications", async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+  const unreadOnly = req.query.unread === "true";
+  try {
+    const condition = unreadOnly ? "WHERE is_read = false" : "";
+    const result = await pool.query(
+      `SELECT * FROM notification_log ${condition} ORDER BY created_at DESC LIMIT $1`,
+      [limit]
+    );
+    const unreadCount = await pool.query(
+      "SELECT COUNT(*) AS count FROM notification_log WHERE is_read = false"
+    );
+    res.json({
+      notifications: result.rows,
+      unread_count: parseInt(unreadCount.rows[0].count),
+    });
+  } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// PATCH /api/notifications/:id/read — mark a notification as read
+router.patch("/api/notifications/:id/read", async (req, res) => {
+  try {
+    await pool.query("UPDATE notification_log SET is_read = true WHERE id = $1", [req.params.id]);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// POST /api/notifications/read-all — mark all notifications as read
+router.post("/api/notifications/read-all", async (_req, res) => {
+  try {
+    await pool.query("UPDATE notification_log SET is_read = true WHERE is_read = false");
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
 // Utility: send notification to all subscribers (called internally)
+// Also logs to notification_log for in-app history.
 async function sendToAll(payload) {
+  // Always log to notification_log, even if push isn't configured
+  try {
+    await pool.query(
+      "INSERT INTO notification_log (type, title, body, data) VALUES ($1, $2, $3, $4)",
+      [payload.tag || "general", payload.title || "", payload.body || "", JSON.stringify(payload.data || {})]
+    );
+  } catch (err) {
+    console.error("notification_log insert error:", err.message);
+  }
+
   if (!pushConfigured()) return { sent: 0, failed: 0 };
   try {
     const result = await pool.query("SELECT endpoint, keys FROM push_subscriptions");

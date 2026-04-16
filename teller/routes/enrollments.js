@@ -269,6 +269,10 @@ async function syncAllEnrollments() {
 router.post("/api/sync", async (req, res) => {
   try {
     const result = await syncAllEnrollments();
+    // Update data freshness timestamp
+    await pool.query(
+      "UPDATE user_settings SET last_txn_sync_at = now() WHERE id = 1"
+    ).catch(() => {});
     res.json(result);
   } catch (err) {
     console.error("Sync error:", err.message);
@@ -565,6 +569,10 @@ async function syncAllBalances() {
 router.post("/api/sync-balances", async (_req, res) => {
   try {
     const result = await syncAllBalances();
+    // Update data freshness timestamp
+    await pool.query(
+      "UPDATE user_settings SET last_balance_sync_at = now() WHERE id = 1"
+    ).catch(() => {});
     res.json(result);
   } catch (err) {
     console.error("sync-balances error:", err.message);

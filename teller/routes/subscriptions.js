@@ -609,6 +609,61 @@ router.get("/api/bill-calendar", async (req, res) => {
       }
     }
 
+    // Manual bills
+    const manualBills = await pool.query(
+      "SELECT * FROM manual_bills WHERE is_active = true"
+    );
+    for (const bill of manualBills.rows) {
+      const amount = parseFloat(bill.amount);
+      const day = Math.min(bill.due_day, daysInMonth);
+      // Check if this bill applies to this month based on cadence
+      const billCreated = new Date(bill.created_at);
+      const monthDiff = (year - billCreated.getFullYear()) * 12 + (month - 1 - billCreated.getMonth());
+      const applies = bill.cadence === "monthly" ||
+        (bill.cadence === "quarterly" && monthDiff % 3 === 0) ||
+        (bill.cadence === "yearly" && monthDiff % 12 === 0);
+      if (applies) {
+        calendar[day].push({
+          name: bill.name,
+          amount,
+          category: bill.category,
+          bill_source: "manual",
+          bill_id: bill.id,
+        });
+      }
+    }
+
+    // Add bill_source/bill_id to subscription events for payment tracking
+    for (const sub of subs.rows) {
+      for (let d = 1; d <= daysInMonth; d++) {
+        for (const ev of calendar[d]) {
+          if (ev.name === sub.display_name && !ev.bill_source) {
+            ev.bill_source = "subscription";
+            ev.bill_id = sub.id;
+          }
+        }
+      }
+    }
+
+    // Load payments for this month to mark paid bills
+    const payments = await pool.query(
+      "SELECT * FROM bill_payments WHERE paid_date >= $1 AND paid_date <= $2",
+      [startDate, endDate]
+    );
+    const paidSet = new Set();
+    for (const p of payments.rows) {
+      paidSet.add(p.bill_source + ":" + p.bill_id + ":" + p.paid_date);
+    }
+    // Mark events as paid
+    for (let d = 1; d <= daysInMonth; d++) {
+      for (const ev of calendar[d]) {
+        if (ev.bill_source && ev.bill_id) {
+          const dateStr = `${year}-${String(month).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+          ev.is_paid = paidSet.has(ev.bill_source + ":" + ev.bill_id + ":" + dateStr);
+        }
+      }
+    }
+
     // Income deposits (detected from recent patterns)
     const incomeResult = await pool.query(`
       SELECT COALESCE(merchant_name, name) AS source,
@@ -962,6 +1017,139 @@ router.patch("/api/recurring-transfers/:id/type", async (req, res) => {
     );
     if (!result.rows.length) return res.status(404).json({ error: "Not found" });
     res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// ============================================================================
+// Manual Bills — user-created expected charges for the calendar
+// ============================================================================
+
+// GET /api/manual-bills — list all manual bills
+router.get("/api/manual-bills", async (_req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT * FROM manual_bills WHERE is_active = true ORDER BY due_day, name"
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// POST /api/manual-bills — create a manual bill
+router.post("/api/manual-bills", async (req, res) => {
+  const { name, amount, due_day, cadence, category, notes } = req.body;
+  if (!name || amount == null || !due_day) {
+    return res.status(400).json({ error: "name, amount, and due_day are required" });
+  }
+  const parsedDay = parseInt(due_day);
+  if (parsedDay < 1 || parsedDay > 31) return res.status(400).json({ error: "due_day must be 1-31" });
+  const parsedAmount = parseFloat(amount);
+  if (isNaN(parsedAmount) || parsedAmount <= 0) return res.status(400).json({ error: "amount must be positive" });
+  const validCadences = ["monthly", "quarterly", "yearly"];
+  const billCadence = validCadences.includes(cadence) ? cadence : "monthly";
+  try {
+    const result = await pool.query(
+      `INSERT INTO manual_bills (name, amount, due_day, cadence, category, notes)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING *`,
+      [name.trim(), parsedAmount, parsedDay, billCadence, category || "bill", notes || null]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// PATCH /api/manual-bills/:id — update a manual bill
+router.patch("/api/manual-bills/:id", async (req, res) => {
+  const { name, amount, due_day, cadence, category, notes, is_active } = req.body;
+  const updates = []; const values = []; let idx = 1;
+  if (name !== undefined) { updates.push("name = $" + idx++); values.push(name.trim()); }
+  if (amount !== undefined) { updates.push("amount = $" + idx++); values.push(parseFloat(amount)); }
+  if (due_day !== undefined) { const d = parseInt(due_day); if (d >= 1 && d <= 31) { updates.push("due_day = $" + idx++); values.push(d); } }
+  if (cadence !== undefined && ["monthly", "quarterly", "yearly"].includes(cadence)) { updates.push("cadence = $" + idx++); values.push(cadence); }
+  if (category !== undefined) { updates.push("category = $" + idx++); values.push(category); }
+  if (notes !== undefined) { updates.push("notes = $" + idx++); values.push(notes || null); }
+  if (is_active !== undefined) { updates.push("is_active = $" + idx++); values.push(!!is_active); }
+  if (!updates.length) return res.status(400).json({ error: "No valid fields" });
+  updates.push("updated_at = now()");
+  values.push(req.params.id);
+  try {
+    const result = await pool.query(
+      "UPDATE manual_bills SET " + updates.join(", ") + " WHERE id = $" + idx + " RETURNING *",
+      values
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "Not found" });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// DELETE /api/manual-bills/:id — delete a manual bill
+router.delete("/api/manual-bills/:id", async (req, res) => {
+  try {
+    await pool.query("DELETE FROM manual_bills WHERE id = $1", [req.params.id]);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// ============================================================================
+// Bill Payments — mark bills as paid
+// ============================================================================
+
+// POST /api/bill-payments — mark a bill as paid for a date
+router.post("/api/bill-payments", async (req, res) => {
+  const { bill_source, bill_id, paid_date, paid_amount, notes } = req.body;
+  if (!bill_source || !bill_id || !paid_date) {
+    return res.status(400).json({ error: "bill_source, bill_id, and paid_date are required" });
+  }
+  if (!["subscription", "manual"].includes(bill_source)) {
+    return res.status(400).json({ error: "bill_source must be 'subscription' or 'manual'" });
+  }
+  try {
+    const result = await pool.query(
+      `INSERT INTO bill_payments (bill_source, bill_id, paid_date, paid_amount, notes)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (bill_source, bill_id, paid_date) DO UPDATE SET
+         paid_amount = COALESCE($4, bill_payments.paid_amount), notes = $5
+       RETURNING *`,
+      [bill_source, parseInt(bill_id), paid_date, paid_amount ? parseFloat(paid_amount) : null, notes || null]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// DELETE /api/bill-payments/:id — unmark a bill payment
+router.delete("/api/bill-payments/:id", async (req, res) => {
+  try {
+    await pool.query("DELETE FROM bill_payments WHERE id = $1", [req.params.id]);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// GET /api/bill-payments — list payments for a month
+router.get("/api/bill-payments", async (req, res) => {
+  const year = parseInt(req.query.year) || new Date().getFullYear();
+  const month = parseInt(req.query.month) || new Date().getMonth() + 1;
+  const startDate = `${year}-${String(month).padStart(2, "0")}-01`;
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const endDate = `${year}-${String(month).padStart(2, "0")}-${String(daysInMonth).padStart(2, "0")}`;
+  try {
+    const result = await pool.query(
+      "SELECT * FROM bill_payments WHERE paid_date >= $1 AND paid_date <= $2 ORDER BY paid_date",
+      [startDate, endDate]
+    );
+    res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: "An internal error occurred." });
   }
