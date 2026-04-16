@@ -44,6 +44,9 @@
     .modal { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius);
       padding: 20px; max-width: 560px; width: calc(100% - 40px); max-height: 85vh; overflow: auto; }
     .modal h3 { margin: 0 0 10px; font-weight: 400; }
+    .modal .edit-field { margin-bottom: 12px; }
+    .modal .edit-field label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); display: block; margin-bottom: 4px; }
+    .modal .edit-field input { width: 100%; padding: 8px 10px; font-size: 13px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text); font-family: inherit; box-sizing: border-box; }
     .modal .parent-info { font-size: 12px; color: var(--text-muted); margin-bottom: 16px; }
     .modal .split-row { display: grid; grid-template-columns: 100px 1fr 24px; gap: 6px; margin-bottom: 6px; align-items: center; }
     .modal .split-row input, .modal .split-row select { padding: 6px 10px; font-size: 13px; border: 1px solid var(--border);
@@ -246,6 +249,7 @@
             '<td class="amount ' + amtClass + '">' + fmt(Math.abs(amt)) + '</td>' +
             '<td class="hide-mobile" style="font-size:11px;color:var(--text-muted);">' + esc(t.account_name || '') + '</td>' +
             '<td class="row-actions">' +
+              '<button class="btn-xs" data-action="edit" data-id="' + esc(t.transaction_id) + '" data-merchant="' + esc(t.merchant || '') + '" data-notes="' + esc(t.user_notes || '') + '" data-reimbursed="' + (t.is_reimbursed ? '1' : '0') + '">Edit</button>' +
               (amt > 0 && !t.pending
                 ? '<button class="btn-xs" data-action="split" data-id="' + esc(t.transaction_id) + '" data-amount="' + esc(String(Math.abs(amt))) + '" data-merchant="' + esc(t.merchant || '') + '">Split</button>'
                 : '') +
@@ -475,6 +479,55 @@
 
     onDelegate('txn-body', 'click', '[data-action="split"]', function() {
       openSplitModal(this.dataset.id, parseFloat(this.dataset.amount), this.dataset.merchant);
+    });
+
+    // --- Edit modal (Phase B1 merchant rename + notes, Phase B2 reimbursed) --
+    onDelegate('txn-body', 'click', '[data-action="edit"]', function() {
+      var txnId = this.dataset.id;
+      var currentMerchant = this.dataset.merchant || '';
+      var currentNotes = this.dataset.notes || '';
+      var currentReimbursed = this.dataset.reimbursed === '1';
+
+      var backdrop = document.createElement('div');
+      backdrop.className = 'modal-backdrop';
+      backdrop.innerHTML =
+        '<div class="modal" role="dialog" aria-label="Edit transaction">' +
+          '<h3>Edit Transaction</h3>' +
+          '<div class="edit-field"><label>Merchant Name</label>' +
+            '<input id="edit-merchant" value="' + esc(currentMerchant) + '" placeholder="Override merchant name"></div>' +
+          '<div class="edit-field"><label>Notes</label>' +
+            '<input id="edit-notes" value="' + esc(currentNotes) + '" placeholder="Add a note"></div>' +
+          '<div class="edit-field" style="display:flex;gap:8px;align-items:center;">' +
+            '<label style="margin:0;" for="edit-reimbursed">Reimbursed</label>' +
+            '<input type="checkbox" id="edit-reimbursed"' + (currentReimbursed ? ' checked' : '') + ' style="width:auto;min-height:auto;">' +
+            '<span style="font-size:11px;color:var(--text-muted);">Excludes this transaction from spending totals</span>' +
+          '</div>' +
+          '<div class="actions">' +
+            '<button class="btn" id="edit-cancel">Cancel</button>' +
+            '<button class="btn primary" id="edit-save">Save</button>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(backdrop);
+
+      backdrop.addEventListener('click', function(e) { if (e.target === backdrop) { document.body.removeChild(backdrop); } });
+      document.getElementById('edit-cancel').addEventListener('click', function() { document.body.removeChild(backdrop); });
+      document.getElementById('edit-save').addEventListener('click', async function() {
+        var body = {};
+        var newMerchant = document.getElementById('edit-merchant').value.trim();
+        var newNotes = document.getElementById('edit-notes').value.trim();
+        var newReimbursed = document.getElementById('edit-reimbursed').checked;
+        if (newMerchant !== currentMerchant) body.merchant_name = newMerchant || null;
+        if (newNotes !== currentNotes) body.notes = newNotes || null;
+        if (newReimbursed !== currentReimbursed) body.is_reimbursed = newReimbursed;
+        if (!Object.keys(body).length) { document.body.removeChild(backdrop); return; }
+        try {
+          var r = await apiFetch('/api/transactions/' + encodeURIComponent(txnId), {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+          });
+          if (r.ok) { showMsg('Transaction updated.', true); document.body.removeChild(backdrop); searchTransactions(currentOffset); }
+          else { var d = await r.json().catch(function() { return {}; }); showMsg(d.error || 'Failed', false); }
+        } catch (e) { showMsg(e.message, false); }
+      });
     });
 
     // Set default date range to last 6 months

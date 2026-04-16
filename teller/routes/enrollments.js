@@ -6,6 +6,7 @@ const express = require("express");
 const router = express.Router();
 const { pool, ENCRYPTION_PASSPHRASE } = require("../services/database");
 const { tellerRequest } = require("../services/teller-api");
+const { INCOME_PREDICATE, getMonthlySpending, getMonthlyIncome } = require("../services/financial-queries");
 
 // POST /api/enroll — store Teller Connect enrollment
 router.post("/api/enroll", async (req, res) => {
@@ -686,6 +687,8 @@ router.get("/api/cash-flow", async (req, res) => {
   try {
     // Get recent income patterns (last 3 months) — strict keyword match only,
     // no amount threshold (catches transfers/card payments as false income)
+    // Uses INCOME_PREDICATE from services/financial-queries.js so the keyword
+    // filter is shared with /api/savings-rate and AI insights (eliminates drift).
     const incomeResult = await pool.query(`
       SELECT COALESCE(merchant_name, name) AS source,
              ABS(amount) AS amount,
@@ -694,13 +697,7 @@ router.get("/api/cash-flow", async (req, res) => {
       FROM transactions
       WHERE amount < 0 AND pending = false
         AND date >= CURRENT_DATE - INTERVAL '3 months'
-        AND (LOWER(COALESCE(merchant_name, name, '')) LIKE '%payroll%'
-          OR LOWER(COALESCE(merchant_name, name, '')) LIKE '%direct dep%'
-          OR LOWER(COALESCE(merchant_name, name, '')) LIKE '%salary%'
-          OR LOWER(COALESCE(merchant_name, name, '')) LIKE '%employer%'
-          OR category[1] = 'Income')
-        AND LOWER(COALESCE(merchant_name, name, '')) NOT SIMILAR TO
-          '%(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|credit|reversal)%'
+        AND ${INCOME_PREDICATE}
       ORDER BY date DESC
     `);
 
@@ -994,44 +991,20 @@ router.get("/api/spending-yoy", async (req, res) => {
 });
 
 // GET /api/savings-rate — Income detection + savings rate calculation
+// Uses shared helpers from services/financial-queries.js so numbers agree
+// with insights and the dashboard (eliminates inline SQL drift).
 router.get("/api/savings-rate", async (req, res) => {
   const months = parseInt(req.query.months) || 3;
   try {
-    // Detect income (negative amounts = credits/income in normalized system)
-    // Strict keyword matching only — no amount threshold (avoids counting transfers/payments as income)
-    const incomeResult = await pool.query(`
-      SELECT TO_CHAR(date, 'YYYY-MM') AS month,
-             SUM(ABS(amount)) AS total_income
-      FROM transactions
-      WHERE amount < 0 AND pending = false
-        AND date >= CURRENT_DATE - make_interval(months => $1)
-        AND (LOWER(COALESCE(merchant_name, name, '')) LIKE '%payroll%'
-          OR LOWER(COALESCE(merchant_name, name, '')) LIKE '%direct dep%'
-          OR LOWER(COALESCE(merchant_name, name, '')) LIKE '%salary%'
-          OR LOWER(COALESCE(merchant_name, name, '')) LIKE '%employer%'
-          OR category[1] = 'Income')
-        AND LOWER(COALESCE(merchant_name, name, '')) NOT SIMILAR TO
-          '%(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|credit|reversal)%'
-      GROUP BY TO_CHAR(date, 'YYYY-MM')
-      ORDER BY month DESC
-    `, [months]);
-
-    const spendResult = await pool.query(`
-      SELECT TO_CHAR(t.date, 'YYYY-MM') AS month,
-             ROUND(SUM(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0), 2) AS total_spend
-      FROM transactions t
-      LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-      WHERE t.amount > 0 AND t.pending = false
-        AND COALESCE(t.is_reimbursed, false) = false
-        AND t.date >= CURRENT_DATE - make_interval(months => $1)
-      GROUP BY TO_CHAR(t.date, 'YYYY-MM')
-      ORDER BY month DESC
-    `, [months]);
+    const [incomeRows, spendRows] = await Promise.all([
+      getMonthlyIncome(pool, months),
+      getMonthlySpending(pool, months),
+    ]);
 
     const incomeMap = {};
-    for (const r of incomeResult.rows) incomeMap[r.month] = parseFloat(r.total_income);
+    for (const r of incomeRows) incomeMap[r.month] = parseFloat(r.total_income);
     const spendMap = {};
-    for (const r of spendResult.rows) spendMap[r.month] = parseFloat(r.total_spend);
+    for (const r of spendRows) spendMap[r.month] = parseFloat(r.total_spend);
 
     const allMonths = [...new Set([...Object.keys(incomeMap), ...Object.keys(spendMap)])].sort().reverse();
     const monthly = allMonths.map(m => {
