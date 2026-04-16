@@ -157,3 +157,94 @@ describe("C3 — login honors user_settings.session_timeout_minutes", () => {
     else process.env.SESSION_PIN = originalPin;
   });
 });
+
+// ---------------------------------------------------------------------------
+// F4 — Recurring transfer detection preserves is_dismissed on re-detection
+// ---------------------------------------------------------------------------
+describe("F4 — detect-transfers.js preserves is_dismissed state", () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, "..", "scripts", "detect-transfers.js"),
+    "utf-8"
+  );
+
+  it("ON CONFLICT UPDATE checks is_dismissed before setting is_active", () => {
+    assert.ok(/is_dismissed\s*=\s*true\s+THEN\s+false/i.test(src),
+      "detect-transfers.js must keep is_active=false when is_dismissed=true on re-detection");
+  });
+
+  it("does NOT unconditionally set is_active = true in the upsert", () => {
+    // The old code had a bare `is_active = true` without a CASE.
+    // After F4, it should be wrapped in a CASE ... WHEN ... END.
+    const upsertSection = src.slice(src.indexOf("ON CONFLICT"));
+    assert.ok(!/is_active\s*=\s*true\s*[,\n]/.test(upsertSection),
+      "is_active should be set via CASE, not unconditionally to true");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F10 — Subscription detection preserves is_dismissed on re-detection
+// ---------------------------------------------------------------------------
+describe("F10 — detect-subscriptions.js preserves is_dismissed state", () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, "..", "scripts", "detect-subscriptions.js"),
+    "utf-8"
+  );
+
+  it("ON CONFLICT UPDATE checks is_dismissed before setting is_active", () => {
+    assert.ok(/is_dismissed\s*=\s*true\s+THEN\s+false/i.test(src),
+      "detect-subscriptions.js must keep is_active=false when is_dismissed=true on re-detection");
+  });
+
+  it("also checks cancelled_at", () => {
+    assert.ok(/cancelled_at\s+IS\s+NOT\s+NULL\s+THEN\s+false/i.test(src),
+      "detect-subscriptions.js must keep is_active=false when cancelled_at IS NOT NULL");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F6 — Budget enforcement does NOT silently bypass on DB error
+// ---------------------------------------------------------------------------
+describe("F6 — insights.js budget enforcement does not swallow DB errors", () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, "..", "teller", "routes", "insights.js"),
+    "utf-8"
+  );
+
+  it("budget usage query does NOT have .catch(() => ({ rows: [] }))", () => {
+    // The dangerous pattern: .catch(() => ({ rows: [] })) on the budget check query
+    // would allow unlimited AI spend on transient DB failures.
+    const budgetQueryRegion = src.slice(
+      src.indexOf("INSIGHTS_MONTHLY_BUDGET_CENTS"),
+      src.indexOf("INSIGHTS_MONTHLY_BUDGET_CENTS") + 2000
+    );
+    assert.ok(!budgetQueryRegion.includes('.catch(() => ({ rows: [] }))'),
+      "POST /api/insights budget query must not swallow errors with empty-rows fallback");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F24 — AI prompt sanitizes user-controlled strings
+// ---------------------------------------------------------------------------
+describe("F24 — insights.js sanitizes user data in AI prompt", () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, "..", "teller", "routes", "insights.js"),
+    "utf-8"
+  );
+
+  it("defines sanitizeForPrompt function", () => {
+    assert.ok(/function\s+sanitizeForPrompt/.test(src),
+      "insights.js must define sanitizeForPrompt()");
+  });
+
+  it("sanitizeForPrompt strips RUNNING_SUMMARY delimiter pattern", () => {
+    assert.ok(/RUNNING_SUMMARY/i.test(src.slice(src.indexOf("sanitizeForPrompt"), src.indexOf("sanitizeForPrompt") + 300)),
+      "sanitizeForPrompt should handle RUNNING_SUMMARY patterns");
+  });
+
+  it("uses sanitizeForPrompt on merchant/goal/transfer names", () => {
+    // Count usages of sanitizeForPrompt( in the dynamic data section
+    const matches = src.match(/sanitizeForPrompt\(/g) || [];
+    assert.ok(matches.length >= 5,
+      `sanitizeForPrompt should be called 5+ times on user data (found ${matches.length})`);
+  });
+});
