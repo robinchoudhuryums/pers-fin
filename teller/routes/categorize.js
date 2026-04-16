@@ -5,7 +5,7 @@
 const express = require("express");
 const router = express.Router();
 const { pool } = require("../services/database");
-const { MODEL_MAP, estimateCostUsd } = require("../data/reference-data");
+const { MODEL_MAP, estimateCostUsd, estimateCostGranular } = require("../data/reference-data");
 
 let Anthropic;
 try {
@@ -106,6 +106,25 @@ router.post("/api/categorize", async (_req, res) => {
         tokens_used: 0,
         remaining: parseInt(leftover.rows[0].uncategorized),
         estimated_cost: 0,
+      });
+    }
+
+    // Check monthly AI budget before calling Claude (shared cap with /api/insights)
+    const budgetCents = parseInt(process.env.INSIGHTS_MONTHLY_BUDGET_CENTS) || 50;
+    const usageResult = await pool.query(
+      "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights WHERE created_at >= date_trunc('month', CURRENT_DATE)"
+    );
+    let estimatedCostCents = 0;
+    usageResult.rows.forEach(r => {
+      const cost = r.input_tokens
+        ? estimateCostGranular({ input_tokens: r.input_tokens, output_tokens: r.output_tokens, cache_read_input_tokens: r.cache_read_tokens || 0, cache_creation_input_tokens: r.cache_creation_tokens || 0 }, r.model_used)
+        : estimateCostUsd(r.tokens_used || 0, r.model_used);
+      estimatedCostCents += cost * 100;
+    });
+    if (estimatedCostCents >= budgetCents) {
+      return res.status(429).json({
+        error: `Monthly AI budget reached ($${(estimatedCostCents / 100).toFixed(2)} of $${(budgetCents / 100).toFixed(2)} cap). Rules applied ${ruleApplied} transactions. Raise INSIGHTS_MONTHLY_BUDGET_CENTS to continue with AI.`,
+        categorized_by_rules: ruleApplied,
       });
     }
 

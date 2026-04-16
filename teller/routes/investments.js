@@ -143,7 +143,7 @@ router.post("/api/plaid/exchange", async (req, res) => {
           sec.name || "Unknown",
           h.quantity,
           h.cost_basis || 0,
-          h.institution_value || (h.quantity * (sec.close_price || 0)),
+          h.institution_value || (sec.close_price ? h.quantity * sec.close_price : null),
           sec.type || "unknown",
         ]
       );
@@ -205,7 +205,7 @@ router.post("/api/plaid/sync-holdings", async (_req, res) => {
               h.account_id, h.security_id,
               sec.ticker_symbol || null, sec.name || "Unknown",
               h.quantity, h.cost_basis || 0,
-              h.institution_value || (h.quantity * (sec.close_price || 0)),
+              h.institution_value || (sec.close_price ? h.quantity * sec.close_price : null),
               sec.type || "unknown",
             );
           }

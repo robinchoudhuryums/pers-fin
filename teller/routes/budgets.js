@@ -219,7 +219,8 @@ router.post("/api/budgets/suggest", async (_req, res) => {
       return res.status(500).json({ error: "AI returned unexpected format" });
     }
     let suggestions = toolBlock.input.suggestions.filter(s =>
-      s && typeof s.category === "string" && typeof s.monthly_limit === "number" && s.monthly_limit >= 0
+      s && typeof s.category === "string" && typeof s.monthly_limit === "number"
+      && s.monthly_limit >= 0 && s.monthly_limit <= 100000 && isFinite(s.monthly_limit)
     );
 
     res.json({ suggestions, tokens_used: (message.usage?.input_tokens || 0) + (message.usage?.output_tokens || 0) });

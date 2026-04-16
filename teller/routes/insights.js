@@ -284,16 +284,17 @@ router.post("/api/insights", async (_req, res) => {
                   avg_tbl.avg_amount, avg_tbl.txn_count
            FROM transactions t
            JOIN (
-             SELECT COALESCE(merchant_name, name) AS merchant,
+             SELECT LOWER(COALESCE(merchant_name, name)) AS merchant,
                     AVG(amount) AS avg_amount,
                     STDDEV(amount) AS std_amount,
                     COUNT(*) AS txn_count
              FROM transactions
              WHERE amount > 0 AND pending = false
                AND date >= CURRENT_DATE - INTERVAL '12 months'
-             GROUP BY COALESCE(merchant_name, name)
+               AND date <  CURRENT_DATE - INTERVAL '7 days'
+             GROUP BY LOWER(COALESCE(merchant_name, name))
              HAVING COUNT(*) >= 3
-           ) avg_tbl ON COALESCE(t.merchant_name, t.name) = avg_tbl.merchant
+           ) avg_tbl ON LOWER(COALESCE(t.merchant_name, t.name)) = avg_tbl.merchant
            WHERE t.amount > 0 AND t.pending = false
              AND t.date >= CURRENT_DATE - INTERVAL '2 months'
              AND t.amount > avg_tbl.avg_amount * 2

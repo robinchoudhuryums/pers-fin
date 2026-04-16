@@ -99,13 +99,13 @@ async function tellerRequest(endpoint, accessToken, options = {}) {
   const bodyData = options.body ? JSON.stringify(options.body) : null;
 
   const MAX_RETRIES = 3;
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
       return await tellerRequestOnce(url, authHeader, method, bodyData);
     } catch (err) {
       // Don't retry client errors (4xx) — only transient/network errors
       if (err.status && err.status >= 400 && err.status < 500) throw err;
-      if (attempt === MAX_RETRIES) throw err;
+      if (attempt === MAX_RETRIES - 1) throw err;
       const delay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
       await new Promise(r => setTimeout(r, delay));
     }

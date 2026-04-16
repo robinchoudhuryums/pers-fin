@@ -805,7 +805,11 @@ router.patch("/api/transactions/:id", async (req, res) => {
   if (is_reimbursed !== undefined) {
     const flag = !!is_reimbursed;
     updates.push("is_reimbursed = $" + idx++); values.push(flag);
-    updates.push("reimbursed_at = " + (flag ? "now()" : "NULL"));
+    if (flag) {
+      updates.push("reimbursed_at = now()");
+    } else {
+      updates.push("reimbursed_at = $" + idx++); values.push(null);
+    }
   }
   if (!updates.length) return res.status(400).json({ error: "No valid fields to update" });
   values.push(req.params.id);

@@ -47,6 +47,8 @@ async function sendPerSistantWebhook(event, data) {
   const headers = { "Content-Type": "application/json" };
   if (config.secret) {
     headers["x-webhook-signature"] = crypto.createHmac("sha256", config.secret).update(body).digest("hex");
+  } else {
+    console.warn("Webhook sent without HMAC signature — PERSISTENT_WEBHOOK_SECRET not configured");
   }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8000);
@@ -184,18 +186,21 @@ router.post("/api/sso/validate", ssoLimiter, async (req, res) => {
   const nonce = parts[2];
   const providedSig = parts[3];
   if (Date.now() - timestamp > 60000) return res.status(401).json({ error: "Token expired." });
-  // Replay check: reject if this nonce has been used before
+  // Replay check: reject if this nonce has been used before.
+  // Reserve the nonce immediately (atomic check-and-set) to prevent concurrent
+  // requests with the same token from both passing the check. If signature
+  // verification fails, we remove the reservation so the nonce isn't burned.
   if (_usedNonces.has(nonce)) return res.status(401).json({ error: "Token already used." });
+  _usedNonces.set(nonce, Date.now()); // Reserve immediately
   const payload = `sso:${timestamp}:${nonce}`;
   const expected = crypto.createHmac("sha256", SSO_SECRET).update(payload).digest("hex");
   const sigBuf = Buffer.from(providedSig);
   const expBuf = Buffer.from(expected);
   if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+    _usedNonces.delete(nonce); // Release reservation — bad signature shouldn't burn nonce
     return res.status(401).json({ error: "Invalid token." });
   }
-  // Mark nonce as consumed AFTER signature validation so timing attacks
-  // can't burn legitimate nonces by submitting bad signatures.
-  _usedNonces.set(nonce, Date.now());
+  // Nonce stays consumed — signature is valid, token is now used.
   let timeout = 15;
   try {
     const r = await pool.query("SELECT session_timeout_minutes FROM user_settings WHERE id = 1");
