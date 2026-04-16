@@ -171,7 +171,8 @@ async function sendToAll(payload) {
       }
     }
     return { sent, failed };
-  } catch {
+  } catch (err) {
+    console.error("sendToAll push delivery error:", err.message);
     return { sent: 0, failed: 0 };
   }
 }

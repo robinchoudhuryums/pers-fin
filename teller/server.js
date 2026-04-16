@@ -491,7 +491,8 @@ runMigrations().then(() => {
         try { balResult = await syncAllBalances(); }
         catch (e) { console.error("Auto-sync balances error:", e.message); }
 
-        await pool.query("UPDATE user_settings SET last_auto_sync_at = now() WHERE id = 1").catch(() => {});
+        await pool.query("UPDATE user_settings SET last_auto_sync_at = now() WHERE id = 1")
+          .catch(e => console.error("Auto-sync timestamp update failed:", e.message));
         console.log(
           "Auto-sync complete: " +
             (txnResult ? `${txnResult.transactions_added} txns added` : "txn sync failed") +

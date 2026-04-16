@@ -172,9 +172,10 @@ async function detectSubscriptions(externalPool) {
            -- dismissed subscriptions. If the user marked it cancelled
            -- (cancelled_at IS NOT NULL) it stays inactive even if the
            -- merchant charges again. If the user dismissed it, keep it
-           -- dismissed rather than silently un-dismissing.
+           -- inactive rather than silently reactivating.
            is_active      = CASE
                               WHEN detected_subscriptions.cancelled_at IS NOT NULL THEN false
+                              WHEN detected_subscriptions.is_dismissed = true THEN false
                               ELSE true
                             END,
            amount_changed = (EXCLUDED.amount != detected_subscriptions.amount),
