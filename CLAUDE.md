@@ -138,7 +138,7 @@ teller/
 - `scripts/retention-cleanup.sql` — Reference SQL for the manual cleanup queries
   exposed by `POST /api/cleanup`
 - `apps-script/Code.gs` — Google Sheets Apps Script (standalone + server sync)
-- `tests/` — 139 tests across 7 files (node:test runner, `npm test`).
+- `tests/` — 195 tests across 9 files (node:test runner, `npm test`).
   Includes `tests/audit-regressions.test.js` which pins documented behavior
   for auth, SSO, template hygiene, and exclusion rules. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
@@ -247,6 +247,8 @@ teller/
   Respects user's model preference from settings.
   Model ID mapping (`data/reference-data.js`): haiku → `claude-haiku-4-5`,
   sonnet → `claude-sonnet-4-6`, opus → `claude-opus-4-6`.
+  Shares the `INSIGHTS_MONTHLY_BUDGET_CENTS` cap with `/api/insights` — returns 429
+  when the monthly AI budget is exhausted (rules still apply for free).
 - **AI budget suggestions**: Claude suggests budgets based on 3-month spending history via tool_use.
 - **AI Insights** (12 toggleable modules, auto-triggered based on cadence setting):
   - Utility rate comparison (vs state/national averages, requires ZIP)
@@ -271,7 +273,7 @@ teller/
   This ensures `max_tokens` is correctly allocated and `modules_used` in the response
   reflects all enabled modules even if a module's data query fails silently.
 - **Auto-trigger**: Insights auto-generate based on `insights_cadence_days` setting (checked every 6 hours)
-- **Cost tracking**: Granular token-level pricing — `input_tokens` from Anthropic's API (already excludes cache tokens) is multiplied by the input rate; `cache_read_input_tokens` and `cache_creation_input_tokens` are billed separately at their own rates. This restores accurate `INSIGHTS_MONTHLY_BUDGET_CENTS` enforcement when prompt caching is active.
+- **Cost tracking**: Granular token-level pricing — `input_tokens` from Anthropic's API (already excludes cache tokens) is multiplied by the input rate; `cache_read_input_tokens` and `cache_creation_input_tokens` are billed separately at their own rates. This restores accurate `INSIGHTS_MONTHLY_BUDGET_CENTS` enforcement when prompt caching is active. The monthly budget is shared between `/api/insights` and `/api/categorize` — both check the same cap before calling Claude.
 - **Insight inputs are split-adjusted**: AI insights see the same `spending_split_pct`-adjusted monthly spend totals and the same keyword-filtered income that the dashboard and `/api/savings-rate` show, via `services/financial-queries.js`.
 - **Running-summary truncation handling**: When the model hits its `max_tokens` ceiling mid-response, the prior `insights_running_summary` is preserved rather than overwritten with a partial update. `POST /api/insights` returns `stop_reason` (from Anthropic) and `summary_status` (`"updated"`, `"preserved_due_to_truncation"`, or `"preserved_no_delimiter"`) so callers can surface when long-term memory didn't advance.
 - **Context export**: Structured financial data (markdown/JSON) for pasting into Claude chat deep-dives
@@ -373,13 +375,13 @@ cd teller && npm install && node server.js
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`); `services/teller-api.js`
   reads them directly. Secret-Files path also supported if `TELLER_CERT_PATH` env vars are set.
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 139 tests passing across 7 test files
+- 195 tests passing across 9 test files
 
 ## Commands
 ```bash
 cd teller && npm install && node server.js    # Run locally
 npm install                                    # ALSO required at repo root for tests
-npm test                                       # Run 139 tests
+npm test                                       # Run 195 tests
 
 # Key API endpoints
 POST /api/enroll           # store Teller access token after Connect
@@ -628,6 +630,10 @@ Transfers are identified by keyword matching on merchant_name/name fields:
 - **SSO replay protection**: Each SSO token embeds a 24-byte random nonce; validate tracks
   used nonces in an in-memory Map (2-minute TTL cleanup) and rejects duplicates. Nonce is
   consumed after signature verification so timing attacks can't burn legitimate nonces.
+  Additionally, the nonce is *reserved* immediately before HMAC verification (atomic
+  check-and-set) to prevent concurrent requests with the same token from both passing.
+  If signature verification fails, the reservation is released so legitimate nonces
+  aren't burned by bad signatures.
 - **WebAuthn rpID**: Derived per-request from `req.hostname` (not cached at module scope),
   so deployments behind proxies with multiple hostnames or DNS changes work correctly.
 - **Teller API**: mTLS client certificates, retry with exponential backoff (1s/2s/4s), 30s timeout
@@ -641,10 +647,13 @@ Transfers are identified by keyword matching on merchant_name/name fields:
 All run automatically after server startup:
 - **Keep-alive ping**: every 14 min (timezone-aware active hours, 10s timeout)
 - **Sheets auto-sync**: every 1 hour (daily/weekly/monthly cadence from settings)
-- **Net worth snapshot**: every 1 hour (one per day, skips if exists)
+- **Net worth snapshot**: every 1 hour (one per day, updates if exists so late-arriving transactions are reflected)
 - **Goal milestones**: every 6 hours (push notifications at 25/50/75/100%)
 - **AI insights auto-trigger**: every 6 hours (respects `insights_cadence_days` setting)
 - **Budget alerts**: every 3 hours (push notifications at 80% and 100%+ thresholds, aligned with the in-app `/api/budgets/alerts` `warning`/`critical` levels). The in-app `info`/pace heuristic is intentionally not pushed (too noisy as a notification).
+- **Budget snapshot auto-trigger**: every 6 hours, checks if today is the 1st of the
+  month. If so, creates a snapshot for the previous month (spending + rollover amounts)
+  so budget rollover advances automatically. Idempotent — skips if snapshot already exists.
 - **Bank auto-sync** (Phase A): every 1 hour, checks `auto_sync_enabled` and whether
   `auto_sync_interval_hours` has elapsed since `last_auto_sync_at`. When due, calls
   `syncAllEnrollments()` then `syncAllBalances()` in-process — never via HTTP self-fetch,
@@ -729,7 +738,9 @@ descriptions (NOT amount thresholds). Defined in `services/financial-queries.js`
   on linked goals — it'll be overwritten on next read. The stored value
   surfaces as `current_amount_manual` for transparency. Linking infers a
   baseline (`account_balance - existing_current_amount`) so the user's
-  pre-link progress is preserved.
+  pre-link progress is preserved. If baseline inference fails (account
+  not found, DB error), the funding link is silently dropped from the
+  PATCH to prevent `current_amount = balance - 0` from inflating progress.
 - **Transaction splits replace parent in category aggregations.** When
   `transaction_splits` rows exist for a parent, every per-category SQL
   aggregation in budgets/spending-summary/scheduled-push uses the splits'

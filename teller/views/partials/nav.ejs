@@ -41,8 +41,9 @@
         var r = await apiFetch('/api/settings');
         if (!r.ok) return;
         var s = await r.json();
-        // Show the most recent sync timestamp
-        var latestSync = s.last_auto_sync_at || s.last_txn_sync_at || s.last_balance_sync_at;
+        // Show the most recent sync timestamp (max of all sources)
+        var candidates = [s.last_auto_sync_at, s.last_txn_sync_at, s.last_balance_sync_at].filter(Boolean);
+        var latestSync = candidates.length ? candidates.reduce(function(a, b) { return new Date(a) > new Date(b) ? a : b; }) : null;
         if (latestSync) el.textContent = 'Synced ' + fmtAgo(latestSync);
         // Build detailed tooltip
         var tips = [];

@@ -340,7 +340,11 @@ runMigrations().then(() => {
         await pool.query(
           `INSERT INTO net_worth_snapshots (total_assets, total_liabilities, net_worth, breakdown, snapshot_date)
            VALUES ($1, $2, $3, $4, CURRENT_DATE)
-           ON CONFLICT (snapshot_date) DO NOTHING`,
+           ON CONFLICT (snapshot_date) DO UPDATE SET
+             total_assets = EXCLUDED.total_assets,
+             total_liabilities = EXCLUDED.total_liabilities,
+             net_worth = EXCLUDED.net_worth,
+             breakdown = EXCLUDED.breakdown`,
           [totalAssets, totalLiabilities, totalAssets - totalLiabilities, JSON.stringify(breakdown)]
         );
         console.log("Daily net worth snapshot recorded: $" + (totalAssets - totalLiabilities).toFixed(2));
@@ -465,6 +469,43 @@ runMigrations().then(() => {
         console.error("Budget alert notification error:", err.message);
       }
     }, 3 * 60 * 60 * 1000); // Check every 3 hours
+
+    // Budget snapshot auto-trigger: on the 1st of each month, auto-create a
+    // snapshot for the previous month so rollover amounts advance.
+    setInterval(async () => {
+      try {
+        const today = new Date();
+        if (today.getDate() !== 1) return; // Only run on the 1st
+        // Compute previous month key (YYYY-MM)
+        const prev = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+        const prevMonth = prev.getFullYear() + "-" + String(prev.getMonth() + 1).padStart(2, "0");
+        // Check if snapshot already exists for this month
+        const existing = await pool.query(
+          "SELECT 1 FROM budget_snapshots WHERE month = $1 LIMIT 1", [prevMonth]
+        );
+        if (existing.rows.length > 0) return; // Already done
+        const [budgets, spending] = await Promise.all([
+          pool.query("SELECT * FROM budgets"),
+          getCategorySpendingThisMonth(pool),
+        ]);
+        const spendMap = {};
+        for (const r of spending) spendMap[r.category] = parseFloat(r.spent);
+        for (const b of budgets.rows) {
+          const spent = spendMap[b.category] || 0;
+          const limit = parseFloat(b.monthly_limit);
+          const rollover = b.rollover_enabled ? Math.max(0, limit - spent) : 0;
+          await pool.query(
+            `INSERT INTO budget_snapshots (budget_id, month, monthly_limit, spent, rollover_amount)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (budget_id, month) DO NOTHING`,
+            [b.id, prevMonth, limit, spent, rollover]
+          );
+        }
+        console.log("Auto budget snapshot created for", prevMonth);
+      } catch (err) {
+        console.error("Budget snapshot auto-trigger error:", err.message);
+      }
+    }, 6 * 60 * 60 * 1000); // Check every 6 hours (only acts on the 1st)
 
     // Bank auto-sync (Phase A): every 1 hour, check whether the configured
     // interval has elapsed and call syncAllEnrollments + syncAllBalances

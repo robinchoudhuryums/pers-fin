@@ -230,9 +230,29 @@ router.patch("/api/goals/:id", async (req, res) => {
         const inferredBaseline = Math.max(0, accountBalance - goalCurrent);
         updates.push(`"goal_baseline_amount" = $` + idx++);
         values.push(inferredBaseline);
+      } else {
+        // Account or goal not found — can't infer baseline, skip the funding link
+        console.error("funding baseline inference: account or goal not found, skipping link");
+        if (linkingAccount) {
+          const faIdx = updates.findIndex(u => u.includes("funding_account_id"));
+          if (faIdx >= 0) { updates.splice(faIdx, 1); values.splice(faIdx, 1); idx--; }
+        }
+        if (linkingInvestment) {
+          const fiIdx = updates.findIndex(u => u.includes("funding_investment_id"));
+          if (fiIdx >= 0) { updates.splice(fiIdx, 1); values.splice(fiIdx, 1); idx--; }
+        }
       }
     } catch (err) {
       console.error("funding baseline inference error:", err.message);
+      // Don't link without a baseline — remove the funding fields from the update
+      if (linkingAccount) {
+        const faIdx = updates.findIndex(u => u.includes("funding_account_id"));
+        if (faIdx >= 0) { updates.splice(faIdx, 1); values.splice(faIdx, 1); idx--; }
+      }
+      if (linkingInvestment) {
+        const fiIdx = updates.findIndex(u => u.includes("funding_investment_id"));
+        if (fiIdx >= 0) { updates.splice(fiIdx, 1); values.splice(fiIdx, 1); idx--; }
+      }
     }
   }
   // Unlinking: if caller explicitly set funding_* to null, also clear the baseline.
