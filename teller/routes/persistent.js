@@ -145,12 +145,24 @@ const AUTH_SECRET = SESSION_PASSWORD || SESSION_PIN || null;
 // Both sides must set the same value or token validation will fail.
 const SSO_SECRET = process.env.SSO_SECRET || null;
 
+// In-memory nonce tracking prevents token replay within the 60-second TTL.
+// Tokens include a random nonce; validate records used nonces and rejects
+// duplicates. The Map self-cleans every 2 minutes so memory is bounded.
+const _usedNonces = new Map();
+setInterval(() => {
+  const cutoff = Date.now() - 120000; // keep nonces for 2× the TTL
+  for (const [nonce, ts] of _usedNonces) {
+    if (ts < cutoff) _usedNonces.delete(nonce);
+  }
+}, 120000).unref();
+
 router.post("/api/sso/generate", (req, res) => {
   if (!AUTH_SECRET) return res.status(400).json({ error: "Auth not configured." });
   if (!SSO_SECRET) return res.status(500).json({ error: "SSO_SECRET not configured." });
   if (!req.session || !req.session.authenticated) return res.status(401).json({ error: "Not authenticated." });
   const timestamp = Date.now();
-  const payload = `sso:${timestamp}`;
+  const nonce = crypto.randomBytes(12).toString("hex");
+  const payload = `sso:${timestamp}:${nonce}`;
   const signature = crypto.createHmac("sha256", SSO_SECRET).update(payload).digest("hex");
   res.json({ token: `${payload}:${signature}`, expires_in: 60 });
 });
@@ -165,18 +177,25 @@ router.post("/api/sso/validate", ssoLimiter, async (req, res) => {
   if (!SSO_SECRET) return res.status(500).json({ error: "SSO_SECRET not configured." });
   const { token } = req.body;
   if (!token) return res.status(400).json({ error: "Token required." });
+  // Token format: sso:<timestamp>:<nonce>:<signature>
   const parts = token.split(":");
-  if (parts.length !== 3 || parts[0] !== "sso") return res.status(401).json({ error: "Invalid token format." });
+  if (parts.length !== 4 || parts[0] !== "sso") return res.status(401).json({ error: "Invalid token format." });
   const timestamp = parseInt(parts[1], 10);
-  const providedSig = parts[2];
+  const nonce = parts[2];
+  const providedSig = parts[3];
   if (Date.now() - timestamp > 60000) return res.status(401).json({ error: "Token expired." });
-  const payload = `sso:${timestamp}`;
+  // Replay check: reject if this nonce has been used before
+  if (_usedNonces.has(nonce)) return res.status(401).json({ error: "Token already used." });
+  const payload = `sso:${timestamp}:${nonce}`;
   const expected = crypto.createHmac("sha256", SSO_SECRET).update(payload).digest("hex");
   const sigBuf = Buffer.from(providedSig);
   const expBuf = Buffer.from(expected);
   if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
     return res.status(401).json({ error: "Invalid token." });
   }
+  // Mark nonce as consumed AFTER signature validation so timing attacks
+  // can't burn legitimate nonces by submitting bad signatures.
+  _usedNonces.set(nonce, Date.now());
   let timeout = 15;
   try {
     const r = await pool.query("SELECT session_timeout_minutes FROM user_settings WHERE id = 1");

@@ -9,5 +9,28 @@
       <a href="/"<%= activePage === 'accounts' ? ' class="active"' : '' %>>Accounts</a>
       <a href="/settings"<%= activePage === 'settings' ? ' class="active"' : '' %>>Settings</a>
     </div>
+    <div class="nav-sync-badge" id="nav-sync-badge" title="Most recent sync — updated by auto-sync or the Sync button"></div>
   </nav>
   <main id="main-content">
+  <script nonce="<%= nonce %>">
+    // Populate the "Last synced Xm ago" badge from /api/settings.last_auto_sync_at.
+    // Purely informational — no action; graceful no-op if the API call fails.
+    (async function() {
+      var el = document.getElementById('nav-sync-badge');
+      if (!el) return;
+      function fmtAgo(iso) {
+        if (!iso) return '';
+        var s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+        if (s < 60) return 'just synced';
+        if (s < 3600) return Math.floor(s / 60) + 'm ago';
+        if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+        return Math.floor(s / 86400) + 'd ago';
+      }
+      try {
+        var r = await apiFetch('/api/settings');
+        if (!r.ok) return;
+        var s = await r.json();
+        if (s.last_auto_sync_at) el.textContent = 'Synced ' + fmtAgo(s.last_auto_sync_at);
+      } catch (_) {}
+    })();
+  </script>

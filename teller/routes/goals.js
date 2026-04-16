@@ -8,12 +8,43 @@ const { pool } = require("../services/database");
 const { zipToState } = require("../data/reference-data");
 
 // GET /api/goals
+// When a goal is linked to a funding account (Phase C), current_amount is
+// derived as (funding_account.current_balance - goal_baseline_amount) so the
+// goal auto-advances with the real account balance. When unlinked, the
+// stored current_amount is returned as before. The raw stored value is
+// exposed as `current_amount_manual` so the UI can show both.
 router.get("/api/goals", async (_req, res) => {
   try {
-    const result = await pool.query("SELECT * FROM financial_goals WHERE is_active = true ORDER BY target_date ASC NULLS LAST");
+    const result = await pool.query(
+      `SELECT g.*,
+              la.name  AS funding_account_name,
+              la.type  AS funding_account_type,
+              COALESCE(la.available_balance, la.current_balance) AS funding_account_balance,
+              ia.name    AS funding_investment_name,
+              ia.account_type AS funding_investment_type,
+              ia.balance AS funding_investment_balance
+       FROM financial_goals g
+       LEFT JOIN linked_accounts    la ON la.id = g.funding_account_id
+       LEFT JOIN investment_accounts ia ON ia.id = g.funding_investment_id
+       WHERE g.is_active = true
+       ORDER BY g.target_date ASC NULLS LAST`
+    );
     const goals = result.rows.map(g => {
       const target = parseFloat(g.target_amount);
-      const current = parseFloat(g.current_amount);
+      const manualCurrent = parseFloat(g.current_amount || 0);
+      let current = manualCurrent;
+      let funding_source = null;
+      if (g.funding_account_id && g.funding_account_balance !== null) {
+        const bal = parseFloat(g.funding_account_balance);
+        const baseline = parseFloat(g.goal_baseline_amount || 0);
+        current = Math.max(0, bal - baseline);
+        funding_source = { kind: "account", id: g.funding_account_id, name: g.funding_account_name, balance: bal, baseline };
+      } else if (g.funding_investment_id && g.funding_investment_balance !== null) {
+        const bal = parseFloat(g.funding_investment_balance);
+        const baseline = parseFloat(g.goal_baseline_amount || 0);
+        current = Math.max(0, bal - baseline);
+        funding_source = { kind: "investment", id: g.funding_investment_id, name: g.funding_investment_name, balance: bal, baseline };
+      }
       const monthly = parseFloat(g.monthly_contribution || 0);
       const rate = parseFloat(g.interest_rate || 0) / 100 / 12;
       const pct = target > 0 ? Math.round((current / target) * 100) : 0;
@@ -39,10 +70,50 @@ router.get("/api/goals", async (_req, res) => {
         d.setMonth(d.getMonth() + months_to_goal);
         estimated_date = d.toISOString().split("T")[0];
       }
-      return { ...g, percent_complete: pct, remaining, months_to_goal, estimated_date };
+      return {
+        ...g,
+        current_amount: current,
+        current_amount_manual: manualCurrent,
+        percent_complete: pct,
+        remaining,
+        months_to_goal,
+        estimated_date,
+        funding_source,
+      };
     });
     res.json(goals);
   } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// GET /api/goals/funding-options — list accounts a goal can be linked to.
+// Returns depository/investment accounts with their current balance so the
+// Settings UI can show a dropdown with balances.
+router.get("/api/goals/funding-options", async (_req, res) => {
+  try {
+    const [linked, investments] = await Promise.all([
+      pool.query(
+        `SELECT id, name, type, subtype,
+                COALESCE(available_balance, current_balance) AS balance
+         FROM linked_accounts
+         WHERE type IN ('depository')
+           AND (available_balance IS NOT NULL OR current_balance IS NOT NULL)
+         ORDER BY name`
+      ),
+      pool.query(
+        `SELECT id, name, account_type, balance
+         FROM investment_accounts
+         WHERE is_active = true
+         ORDER BY name`
+      ),
+    ]);
+    res.json({
+      linked_accounts: linked.rows.map(r => ({ id: r.id, name: r.name, type: r.type, subtype: r.subtype, balance: parseFloat(r.balance) })),
+      investment_accounts: investments.rows.map(r => ({ id: r.id, name: r.name, type: r.account_type, balance: parseFloat(r.balance) })),
+    });
+  } catch (err) {
+    console.error("funding-options error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
   }
 });
@@ -91,6 +162,22 @@ router.patch("/api/goals/:id", async (req, res) => {
     if (isNaN(n) || n < 0 || n > 100) throw new Error("must be between 0 and 100");
     return n;
   };
+  // Phase C: funding_account_id / funding_investment_id (nullable, mutually
+  // exclusive via DB CHECK). When setting either, the caller may also pass
+  // goal_baseline_amount to anchor the "starting point" of the linked balance;
+  // without it, we'll set the baseline to the current account balance below.
+  const NULL_OR_POS_INT = (v) => {
+    if (v === null || v === "") return null;
+    const n = parseInt(v);
+    if (!Number.isInteger(n) || n <= 0) throw new Error("must be a positive integer or null");
+    return n;
+  };
+  const NUM_NONNEG_OR_NULL = (v) => {
+    if (v === null || v === "") return null;
+    const n = parseFloat(v);
+    if (isNaN(n) || n < 0) throw new Error("must be a non-negative number or null");
+    return n;
+  };
   const FIELD_COERCERS = {
     name: (v) => String(v),
     type: (v) => String(v),
@@ -101,20 +188,61 @@ router.patch("/api/goals/:id", async (req, res) => {
     interest_rate: RATE,
     notes: (v) => v === null ? null : String(v),
     is_active: (v) => !!v,
+    funding_account_id: NULL_OR_POS_INT,
+    funding_investment_id: NULL_OR_POS_INT,
+    goal_baseline_amount: NUM_NONNEG_OR_NULL,
   };
 
   const updates = []; const values = []; let idx = 1;
+  const coercedBody = {};
   try {
     for (const [f, coerce] of Object.entries(FIELD_COERCERS)) {
       if (req.body[f] !== undefined) {
+        coercedBody[f] = coerce(req.body[f]);
         updates.push(`"${f}" = $` + idx++);
-        values.push(coerce(req.body[f]));
+        values.push(coercedBody[f]);
       }
     }
   } catch (err) {
     return res.status(400).json({ error: err.message });
   }
   if (!updates.length) return res.status(400).json({ error: "No valid fields" });
+
+  // Phase C: if the caller is linking a funding source for the first time and
+  // didn't supply a baseline, compute one so that the goal's current progress
+  // is preserved. baseline = account_balance - (current stored current_amount).
+  // This way a user with $3k already saved and a $4k target who links to a
+  // $5k savings account won't reset to 0 progress.
+  const linkingAccount = coercedBody.funding_account_id !== undefined && coercedBody.funding_account_id !== null;
+  const linkingInvestment = coercedBody.funding_investment_id !== undefined && coercedBody.funding_investment_id !== null;
+  const baselineSupplied = coercedBody.goal_baseline_amount !== undefined;
+  if ((linkingAccount || linkingInvestment) && !baselineSupplied) {
+    try {
+      const [acctRow, goalRow] = await Promise.all([
+        linkingAccount
+          ? pool.query("SELECT COALESCE(available_balance, current_balance) AS balance FROM linked_accounts WHERE id = $1", [coercedBody.funding_account_id])
+          : pool.query("SELECT balance FROM investment_accounts WHERE id = $1", [coercedBody.funding_investment_id]),
+        pool.query("SELECT current_amount FROM financial_goals WHERE id = $1", [req.params.id]),
+      ]);
+      if (acctRow.rows.length && goalRow.rows.length) {
+        const accountBalance = parseFloat(acctRow.rows[0].balance || 0);
+        const goalCurrent = parseFloat(goalRow.rows[0].current_amount || 0);
+        const inferredBaseline = Math.max(0, accountBalance - goalCurrent);
+        updates.push(`"goal_baseline_amount" = $` + idx++);
+        values.push(inferredBaseline);
+      }
+    } catch (err) {
+      console.error("funding baseline inference error:", err.message);
+    }
+  }
+  // Unlinking: if caller explicitly set funding_* to null, also clear the baseline.
+  if ((req.body.funding_account_id === null || req.body.funding_account_id === "") &&
+      (req.body.funding_investment_id === null || req.body.funding_investment_id === "" || req.body.funding_investment_id === undefined)) {
+    if (!baselineSupplied) {
+      updates.push(`"goal_baseline_amount" = NULL`);
+    }
+  }
+
   updates.push("updated_at = now()");
   values.push(req.params.id);
   try {
@@ -122,6 +250,10 @@ router.patch("/api/goals/:id", async (req, res) => {
     if (!result.rows.length) return res.status(404).json({ error: "Not found" });
     res.json(result.rows[0]);
   } catch (err) {
+    // CHECK constraint: can't set both funding_account_id and funding_investment_id
+    if (err.code === "23514") {
+      return res.status(400).json({ error: "A goal can be linked to either a bank account OR an investment account, not both." });
+    }
     res.status(500).json({ error: "An internal error occurred." });
   }
 });

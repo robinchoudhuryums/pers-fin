@@ -13,9 +13,15 @@ try {
 module.exports = function(authConfig) {
   const { AUTH_MODE, AUTH_SECRET, SESSION_PASSWORD, SESSION_PIN } = authConfig;
 
-  // Derive RP ID and origin from request on first use
-  let rpID = null;
-  let rpOrigin = null;
+  // Derive WebAuthn RP ID and origin from the current request every time,
+  // not from a module-scoped latch. The old approach stored the first
+  // request's hostname and reused it forever — behind a reverse proxy with
+  // multiple hostnames this silently broke for everyone after the first user.
+  function getRp(req) {
+    const id = req.hostname;
+    const origin = `${req.protocol}://${req.hostname}${req.hostname === "localhost" ? ":" + (process.env.PORT || 3000) : ""}`;
+    return { id, origin };
+  }
 
 router.get("/login", async (_req, res) => {
   if (!AUTH_SECRET) return res.redirect("/dashboard");
@@ -72,10 +78,7 @@ router.post("/api/webauthn/register-options", async (req, res) => {
     return res.status(401).json({ error: "Must be logged in to register biometric" });
   }
   try {
-    if (!rpID) {
-      rpID = req.hostname;
-      rpOrigin = `${req.protocol}://${req.hostname}${req.hostname === "localhost" ? ":" + (process.env.PORT || 3000) : ""}`;
-    }
+    const rp = getRp(req);
     // Get existing credentials to exclude
     const existing = await pool.query("SELECT credential_id FROM webauthn_credentials");
     const excludeCredentials = existing.rows.map(r => ({
@@ -85,7 +88,7 @@ router.post("/api/webauthn/register-options", async (req, res) => {
 
     const options = await simplewebauthn.generateRegistrationOptions({
       rpName: "Perfin",
-      rpID,
+      rpID: rp.id,
       userName: "perfin-user",
       userDisplayName: "Perfin User",
       attestationType: "none",
@@ -116,15 +119,12 @@ router.post("/api/webauthn/register", async (req, res) => {
   if (!challenge) return res.status(400).json({ error: "No registration challenge found" });
 
   try {
-    if (!rpID) {
-      rpID = req.hostname;
-      rpOrigin = `${req.protocol}://${req.hostname}${req.hostname === "localhost" ? ":" + (process.env.PORT || 3000) : ""}`;
-    }
+    const rp = getRp(req);
     const verification = await simplewebauthn.verifyRegistrationResponse({
       response: req.body,
       expectedChallenge: challenge,
-      expectedOrigin: rpOrigin,
-      expectedRPID: rpID,
+      expectedOrigin: rp.origin,
+      expectedRPID: rp.id,
     });
 
     if (!verification.verified || !verification.registrationInfo) {
@@ -160,10 +160,7 @@ router.post("/api/webauthn/register", async (req, res) => {
 router.post("/api/webauthn/authenticate-options", async (req, res) => {
   if (!simplewebauthn) return res.status(501).json({ error: "WebAuthn not available" });
   try {
-    if (!rpID) {
-      rpID = req.hostname;
-      rpOrigin = `${req.protocol}://${req.hostname}${req.hostname === "localhost" ? ":" + (process.env.PORT || 3000) : ""}`;
-    }
+    const rp = getRp(req);
     const creds = await pool.query("SELECT credential_id FROM webauthn_credentials");
     if (creds.rows.length === 0) {
       return res.status(404).json({ error: "No biometric credentials registered" });
@@ -175,7 +172,7 @@ router.post("/api/webauthn/authenticate-options", async (req, res) => {
     }));
 
     const options = await simplewebauthn.generateAuthenticationOptions({
-      rpID,
+      rpID: rp.id,
       allowCredentials,
       userVerification: "required",
     });
@@ -197,10 +194,7 @@ router.post("/api/webauthn/authenticate", async (req, res) => {
   if (!challenge) return res.status(400).json({ error: "No authentication challenge found" });
 
   try {
-    if (!rpID) {
-      rpID = req.hostname;
-      rpOrigin = `${req.protocol}://${req.hostname}${req.hostname === "localhost" ? ":" + (process.env.PORT || 3000) : ""}`;
-    }
+    const rp = getRp(req);
     // Look up the credential
     const credIdFromBody = req.body.id;
     const credRow = await pool.query(
@@ -215,8 +209,8 @@ router.post("/api/webauthn/authenticate", async (req, res) => {
     const verification = await simplewebauthn.verifyAuthenticationResponse({
       response: req.body,
       expectedChallenge: challenge,
-      expectedOrigin: rpOrigin,
-      expectedRPID: rpID,
+      expectedOrigin: rp.origin,
+      expectedRPID: rp.id,
       credential: {
         id: storedCred.credential_id,
         publicKey: Buffer.from(storedCred.public_key, "base64url"),

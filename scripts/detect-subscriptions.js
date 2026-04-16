@@ -168,7 +168,15 @@ async function detectSubscriptions(externalPool) {
            amount         = EXCLUDED.amount,
            last_charged   = EXCLUDED.last_charged,
            next_expected  = EXCLUDED.next_expected,
-           is_active      = true,
+           -- Respect user-driven state: don't reactivate cancelled or
+           -- dismissed subscriptions. If the user marked it cancelled
+           -- (cancelled_at IS NOT NULL) it stays inactive even if the
+           -- merchant charges again. If the user dismissed it, keep it
+           -- dismissed rather than silently un-dismissing.
+           is_active      = CASE
+                              WHEN detected_subscriptions.cancelled_at IS NOT NULL THEN false
+                              ELSE true
+                            END,
            amount_changed = (EXCLUDED.amount != detected_subscriptions.amount),
            is_new         = false,
            updated_at     = now()`,

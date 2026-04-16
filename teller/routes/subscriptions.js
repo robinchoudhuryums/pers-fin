@@ -234,7 +234,7 @@ router.get("/api/transactions/search", async (req, res) => {
 
     const [result, countResult] = await Promise.all([
       pool.query(`
-        SELECT t.transaction_id, t.date, COALESCE(t.merchant_name, t.name) AS merchant,
+        SELECT t.transaction_id, t.date, COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS merchant, t.user_notes, t.is_reimbursed,
                t.amount, la.name AS account_name, la.type AS account_type,
                COALESCE(pi.institution_name, te.institution_name, la.institution_name_manual, 'CSV Import') AS institution_name,
                t.category[1] AS category, t.pending
@@ -271,7 +271,9 @@ router.get("/api/transactions", async (req, res) => {
       SELECT
         t.transaction_id,
         t.date,
-        COALESCE(t.merchant_name, t.name) AS merchant,
+        COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS merchant,
+        t.user_notes,
+        t.is_reimbursed,
         t.amount,
         la.name AS account_name,
         la.type AS account_type,
@@ -729,6 +731,132 @@ router.get("/api/transactions/duplicates", async (_req, res) => {
       console.error("duplicates error:", err2.message);
       res.status(500).json({ error: "An internal error occurred." });
     }
+  }
+});
+
+// PATCH /api/transactions/:id — user overrides (merchant_name, notes, is_reimbursed).
+// User edits are stored in `user_*` columns so a subsequent sync from Teller
+// does not clobber them. `merchant_name` in the PATCH body writes to
+// `user_merchant_name`; the raw `merchant_name` column keeps Teller's value.
+router.patch("/api/transactions/:id", async (req, res) => {
+  const { merchant_name, notes, is_reimbursed } = req.body;
+  const updates = []; const values = []; let idx = 1;
+  if (merchant_name !== undefined) {
+    const v = typeof merchant_name === "string" ? merchant_name.trim() : null;
+    updates.push("user_merchant_name = $" + idx++); values.push(v || null);
+  }
+  if (notes !== undefined) {
+    const v = typeof notes === "string" ? notes : null;
+    updates.push("user_notes = $" + idx++); values.push(v || null);
+  }
+  if (is_reimbursed !== undefined) {
+    const flag = !!is_reimbursed;
+    updates.push("is_reimbursed = $" + idx++); values.push(flag);
+    updates.push("reimbursed_at = " + (flag ? "now()" : "NULL"));
+  }
+  if (!updates.length) return res.status(400).json({ error: "No valid fields to update" });
+  values.push(req.params.id);
+  try {
+    const result = await pool.query(
+      "UPDATE transactions SET " + updates.join(", ") + " WHERE transaction_id = $" + idx + " RETURNING transaction_id, user_merchant_name, user_notes, is_reimbursed, reimbursed_at",
+      values
+    );
+    if (!result.rows.length) return res.status(404).json({ error: "Transaction not found" });
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("patch transaction error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// GET /api/transactions/:id/splits — list the splits for a transaction (if any)
+router.get("/api/transactions/:id/splits", async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT id, parent_transaction_id, amount, category, merchant_name, notes, created_at FROM transaction_splits WHERE parent_transaction_id = $1 ORDER BY id",
+      [req.params.id]
+    );
+    res.json({ splits: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// POST /api/transactions/:id/splits — replace the splits for a transaction.
+// Body: { splits: [{ amount, category, merchant_name, notes }, ...] }
+// All splits must sum (±$0.01) to the parent transaction's amount; otherwise
+// we 400 rather than silently accepting inconsistent data. Posting with an
+// empty array clears existing splits (equivalent to DELETE below).
+router.post("/api/transactions/:id/splits", async (req, res) => {
+  const { splits } = req.body;
+  if (!Array.isArray(splits)) return res.status(400).json({ error: "splits array is required" });
+  if (splits.length > 20) return res.status(400).json({ error: "Max 20 splits per transaction" });
+  try {
+    const txn = await pool.query("SELECT amount, pending FROM transactions WHERE transaction_id = $1", [req.params.id]);
+    if (!txn.rows.length) return res.status(404).json({ error: "Transaction not found" });
+    if (txn.rows[0].pending) return res.status(400).json({ error: "Cannot split a pending transaction" });
+    const parentAmount = parseFloat(txn.rows[0].amount);
+
+    if (splits.length > 0) {
+      let sum = 0;
+      for (const s of splits) {
+        const n = parseFloat(s.amount);
+        if (isNaN(n) || n <= 0) return res.status(400).json({ error: "Each split amount must be a positive number" });
+        sum += n;
+      }
+      if (Math.abs(sum - parentAmount) > 0.011) {
+        return res.status(400).json({
+          error: `Splits sum to $${sum.toFixed(2)} but parent transaction is $${parentAmount.toFixed(2)} — must match within $0.01`,
+        });
+      }
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("DELETE FROM transaction_splits WHERE parent_transaction_id = $1", [req.params.id]);
+      for (const s of splits) {
+        await client.query(
+          `INSERT INTO transaction_splits (parent_transaction_id, amount, category, merchant_name, notes)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [
+            req.params.id,
+            parseFloat(s.amount),
+            s.category ? String(s.category) : null,
+            s.merchant_name ? String(s.merchant_name) : null,
+            s.notes ? String(s.notes) : null,
+          ]
+        );
+      }
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    const saved = await pool.query(
+      "SELECT id, parent_transaction_id, amount, category, merchant_name, notes, created_at FROM transaction_splits WHERE parent_transaction_id = $1 ORDER BY id",
+      [req.params.id]
+    );
+    res.json({ splits: saved.rows });
+  } catch (err) {
+    console.error("split transaction error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// DELETE /api/transactions/:id/splits — remove all splits, revert to parent-row aggregation
+router.delete("/api/transactions/:id/splits", async (req, res) => {
+  try {
+    const result = await pool.query(
+      "DELETE FROM transaction_splits WHERE parent_transaction_id = $1 RETURNING id",
+      [req.params.id]
+    );
+    res.json({ deleted: result.rowCount });
+  } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
