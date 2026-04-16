@@ -181,9 +181,9 @@ teller/
   sum to the parent. Powered by `getCategorySpendingThisMonth` in
   `services/financial-queries.js`.
 - **Subscription detection**: Automatic recurring charge identification (30/60/90/365-day cadences).
-  The upsert respects user state: if the user cancelled a subscription (`cancelled_at IS NOT NULL`),
-  detection will not re-activate it even if the merchant charges again. Dismissed subs (`is_dismissed`)
-  are also preserved across detect runs.
+  The upsert respects user state via an `is_active` CASE: if the user cancelled a subscription
+  (`cancelled_at IS NOT NULL`) or dismissed it (`is_dismissed = true`), detection will not
+  re-activate it even if the merchant charges again.
 - **Recurring transfer detection**: Auto-detect Zelle, Venmo, bill payments, savings transfers,
   investment contributions, ACH/wire (7/14/30/60/90/365-day cadences, outgoing/incoming split)
 - **Utility separation**: Utilities tracked separately from optional subscriptions
@@ -253,7 +253,10 @@ teller/
   - Spending benchmarks (vs BLS Consumer Expenditure Survey)
   - Savings & wealth-building suggestions
   - Subscription audit (overlaps, alternatives)
-  - Anomaly detection (transactions 2x+ above merchant average; baseline excludes the trailing 7 days so the candidate doesn't inflate its own baseline)
+  - Anomaly detection (transactions 2x+ above merchant average for AI analysis;
+    3x+ threshold for real-time push alerts during sync. Baseline excludes the
+    trailing 7 days so the candidate doesn't inflate its own baseline.
+    Merchant grouping is case-insensitive via `LOWER()`.)
   - Seasonal forecasting (24-month pattern analysis)
   - Debt payoff optimizer (avalanche vs snowball, credit score projections)
   - Bill negotiation tips
@@ -262,13 +265,18 @@ teller/
   - Goal tracking (with real-world economic context)
   - Recurring transfers (Zelle, bill payments, savings, investment patterns)
 - **AI context enrichment**: Insights prompt includes month-over-month trend deltas,
-  current budget status (spent vs limits), and recurring transfer data
+  current budget status (spent vs limits), and recurring transfer data.
+  Module tracking: all enabled modules are registered in `activeModules` when their
+  system prompt instructions are added (not conditionally when data queries succeed).
+  This ensures `max_tokens` is correctly allocated and `modules_used` in the response
+  reflects all enabled modules even if a module's data query fails silently.
 - **Auto-trigger**: Insights auto-generate based on `insights_cadence_days` setting (checked every 6 hours)
 - **Cost tracking**: Granular token-level pricing — `input_tokens` from Anthropic's API (already excludes cache tokens) is multiplied by the input rate; `cache_read_input_tokens` and `cache_creation_input_tokens` are billed separately at their own rates. This restores accurate `INSIGHTS_MONTHLY_BUDGET_CENTS` enforcement when prompt caching is active.
 - **Insight inputs are split-adjusted**: AI insights see the same `spending_split_pct`-adjusted monthly spend totals and the same keyword-filtered income that the dashboard and `/api/savings-rate` show, via `services/financial-queries.js`.
 - **Running-summary truncation handling**: When the model hits its `max_tokens` ceiling mid-response, the prior `insights_running_summary` is preserved rather than overwritten with a partial update. `POST /api/insights` returns `stop_reason` (from Anthropic) and `summary_status` (`"updated"`, `"preserved_due_to_truncation"`, or `"preserved_no_delimiter"`) so callers can surface when long-term memory didn't advance.
 - **Context export**: Structured financial data (markdown/JSON) for pasting into Claude chat deep-dives
 - **Real-time anomaly alerts**: Push notifications for charges 3x+ above merchant average during sync
+  (case-insensitive merchant grouping; separate from the 2x AI analysis threshold)
 - **Budget threshold alerts**: Push notifications at 80% (warning) and 100%+ (exceeded) every 3 hours
 
 ### UI & UX
@@ -604,6 +612,9 @@ Transfers are identified by keyword matching on merchant_name/name fields:
   shorter cadences (7/14/30) require 3+ occurrences
 - Outgoing and incoming transactions analyzed as separate streams
 - Outgoing recurring transfers integrated into cash flow forecast
+- User-dismissed transfers are preserved across detection runs: the upsert's
+  `is_active` CASE checks `is_dismissed` and keeps dismissed transfers inactive,
+  mirroring the subscription detection logic
 
 ## Security
 - **CSP nonces**: Per-request `crypto.randomBytes(16)` nonce for all inline scripts.
@@ -620,6 +631,10 @@ Transfers are identified by keyword matching on merchant_name/name fields:
 - **WebAuthn rpID**: Derived per-request from `req.hostname` (not cached at module scope),
   so deployments behind proxies with multiple hostnames or DNS changes work correctly.
 - **Teller API**: mTLS client certificates, retry with exponential backoff (1s/2s/4s), 30s timeout
+- **AI prompt sanitization**: `sanitizeForPrompt()` in `routes/insights.js` strips
+  `---RUNNING_SUMMARY---` patterns and consecutive dashes from user-controlled strings
+  (merchant names, goal names, transfer display names) before interpolating them into the
+  AI prompt. Prevents delimiter corruption that could break running-summary parsing.
 - **Subscription matching**: Word boundary regex to prevent false positives
 
 ## Scheduled Tasks (server.js intervals)
@@ -647,10 +662,12 @@ This affects: spending-summary (monthly_trend, byCategory, topMerchants), saving
 spending-yoy, budgets, budget alerts, and cash flow.
 
 ## Income Detection
-Income is identified by keyword matching on transaction descriptions (NOT amount thresholds):
-- Matches: payroll, direct dep, salary, wage, employer name patterns
-- Excludes: payment, transfer, pymt, zelle, venmo, paypal, cash app, refund, credit, reversal
-- Used in: cash flow projection, savings rate calculation
+Income is identified by word-boundary keyword matching (`\y` in Postgres) on transaction
+descriptions (NOT amount thresholds). Defined in `services/financial-queries.js` as
+`INCOME_PREDICATE`:
+- Matches: `\y(payroll|direct dep|salary|employer)\y` or `category[1] = 'Income'`
+- Excludes: `\y(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|credit|reversal)\y`
+- Used in: cash flow projection, savings rate, AI insights income module, bill-calendar income
 
 ## Key Design Decisions
 - **Test deps live in two places.** `teller/package.json` holds runtime deps;
@@ -690,6 +707,7 @@ Income is identified by keyword matching on transaction descriptions (NOT amount
   related merchants) and either hid them from dashboards or persisted false
   tax deductions. Multi-word phrases still work because `\b` / `\y` anchor
   at phrase edges, not inside the phrase. Sites that follow this pattern:
+  `services/financial-queries.js` `INCOME_PREDICATE`,
   `scripts/detect-subscriptions.js` `isExcludedMerchant`,
   `teller/data/reference-data.js` `categorizeSubscription` /
   `findCancelUrl`, `routes/insights.js` tax-deduction regex,
