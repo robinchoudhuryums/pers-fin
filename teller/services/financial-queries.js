@@ -22,13 +22,9 @@
 // Explicitly excluded:  payment, transfer, pymt, zelle, venmo, paypal,
 //                       cash app, refund, credit, reversal
 const INCOME_PREDICATE = `
-  (LOWER(COALESCE(merchant_name, name, '')) LIKE '%payroll%'
-    OR LOWER(COALESCE(merchant_name, name, '')) LIKE '%direct dep%'
-    OR LOWER(COALESCE(merchant_name, name, '')) LIKE '%salary%'
-    OR LOWER(COALESCE(merchant_name, name, '')) LIKE '%employer%'
+  (COALESCE(merchant_name, name, '') ~* '\\y(payroll|direct dep|salary|employer)\\y'
     OR category[1] = 'Income')
-  AND LOWER(COALESCE(merchant_name, name, '')) NOT SIMILAR TO
-    '%(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|credit|reversal)%'
+  AND COALESCE(merchant_name, name, '') !~* '\\y(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|credit|reversal)\\y'
 `;
 
 // Spending split SQL fragment — multiplies each transaction's amount by the

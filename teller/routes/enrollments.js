@@ -220,15 +220,15 @@ async function syncAllEnrollments() {
         `SELECT t.merchant_name, t.name, t.amount, t.date, avg_tbl.avg_amount
          FROM transactions t
          JOIN (
-           SELECT COALESCE(merchant_name, name) AS merchant,
+           SELECT LOWER(COALESCE(merchant_name, name)) AS merchant,
                   AVG(amount) AS avg_amount, COUNT(*) AS txn_count
            FROM transactions
            WHERE amount > 0 AND pending = false
              AND date >= CURRENT_DATE - INTERVAL '12 months'
              AND date <  CURRENT_DATE - INTERVAL '7 days'
-           GROUP BY COALESCE(merchant_name, name)
+           GROUP BY LOWER(COALESCE(merchant_name, name))
            HAVING COUNT(*) >= 3
-         ) avg_tbl ON COALESCE(t.merchant_name, t.name) = avg_tbl.merchant
+         ) avg_tbl ON LOWER(COALESCE(t.merchant_name, t.name)) = avg_tbl.merchant
          WHERE t.amount > 0 AND t.pending = false
            AND COALESCE(t.is_reimbursed, false) = false
            AND t.date >= CURRENT_DATE - INTERVAL '3 days'
@@ -269,6 +269,10 @@ async function syncAllEnrollments() {
 router.post("/api/sync", async (req, res) => {
   try {
     const result = await syncAllEnrollments();
+    // Update data freshness timestamp
+    await pool.query(
+      "UPDATE user_settings SET last_txn_sync_at = now() WHERE id = 1"
+    ).catch(() => {});
     res.json(result);
   } catch (err) {
     console.error("Sync error:", err.message);
@@ -565,6 +569,10 @@ async function syncAllBalances() {
 router.post("/api/sync-balances", async (_req, res) => {
   try {
     const result = await syncAllBalances();
+    // Update data freshness timestamp
+    await pool.query(
+      "UPDATE user_settings SET last_balance_sync_at = now() WHERE id = 1"
+    ).catch(() => {});
     res.json(result);
   } catch (err) {
     console.error("sync-balances error:", err.message);

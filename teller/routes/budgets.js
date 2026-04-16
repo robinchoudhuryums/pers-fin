@@ -15,25 +15,49 @@ try {
   Anthropic = null;
 }
 
+// Current month key (YYYY-MM)
+function currentMonthKey() {
+  const d = new Date();
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+}
+
 // GET /api/budgets — list all budgets with current month spending
-router.get("/api/budgets", async (_req, res) => {
+router.get("/api/budgets", async (req, res) => {
+  const queryMonth = req.query.month || currentMonthKey();
   try {
-    const [budgets, spending] = await Promise.all([
+    const [budgets, spending, snapshots] = await Promise.all([
       pool.query("SELECT * FROM budgets ORDER BY monthly_limit DESC"),
       // Uses the shared helper so split transactions are counted per-split
       // category rather than the parent's category (Phase B3).
       getCategorySpendingThisMonth(pool),
+      pool.query("SELECT * FROM budget_snapshots WHERE month = $1", [queryMonth]),
     ]);
     const spendMap = {};
     for (const r of spending) spendMap[r.category] = parseFloat(r.spent);
-    const result = budgets.rows.map(b => ({
-      ...b,
-      spent: spendMap[b.category] || 0,
-      remaining: parseFloat(b.monthly_limit) - (spendMap[b.category] || 0),
-      percent_used: parseFloat(b.monthly_limit) > 0
-        ? Math.round(((spendMap[b.category] || 0) / parseFloat(b.monthly_limit)) * 100)
-        : 0,
-    }));
+    const snapMap = {};
+    for (const s of snapshots.rows) snapMap[s.budget_id] = s;
+
+    const result = budgets.rows.map(b => {
+      const spent = spendMap[b.category] || 0;
+      const limit = parseFloat(b.monthly_limit);
+      // If rollover is enabled and there's a snapshot, add rollover to effective limit
+      const snap = snapMap[b.id];
+      const rollover = (b.rollover_enabled && snap) ? parseFloat(snap.rollover_amount || 0) : 0;
+      const effectiveLimit = limit + rollover;
+      // One-time budgets only apply to their effective_month
+      if (b.budget_type === "one_time" && b.effective_month && b.effective_month !== queryMonth) {
+        return null; // Don't show one-time budgets for other months
+      }
+      return {
+        ...b,
+        spent,
+        remaining: effectiveLimit - spent,
+        percent_used: effectiveLimit > 0
+          ? Math.round((spent / effectiveLimit) * 100) : 0,
+        rollover_amount: rollover,
+        effective_limit: effectiveLimit,
+      };
+    }).filter(Boolean);
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: "An internal error occurred." });
@@ -42,17 +66,20 @@ router.get("/api/budgets", async (_req, res) => {
 
 // POST /api/budgets — create or update a budget
 router.post("/api/budgets", async (req, res) => {
-  const { category, monthly_limit, notes } = req.body;
+  const { category, monthly_limit, notes, rollover_enabled, budget_type, effective_month } = req.body;
   if (!category || monthly_limit == null) return res.status(400).json({ error: "category and monthly_limit are required" });
   const parsedLimit = parseFloat(monthly_limit);
   if (isNaN(parsedLimit) || parsedLimit < 0) return res.status(400).json({ error: "monthly_limit must be a non-negative number" });
+  const validTypes = ["recurring", "one_time"];
+  const type = validTypes.includes(budget_type) ? budget_type : "recurring";
   try {
     const result = await pool.query(
-      `INSERT INTO budgets (category, monthly_limit, notes)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (category) DO UPDATE SET monthly_limit = $2, notes = $3, is_ai_suggested = false, updated_at = now()
+      `INSERT INTO budgets (category, monthly_limit, notes, rollover_enabled, budget_type, effective_month)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (category) DO UPDATE SET monthly_limit = $2, notes = $3, is_ai_suggested = false,
+         rollover_enabled = $4, budget_type = $5, effective_month = $6, updated_at = now()
        RETURNING *`,
-      [category, parsedLimit, notes || null]
+      [category, parsedLimit, notes || null, !!rollover_enabled, type, type === "one_time" ? (effective_month || currentMonthKey()) : null]
     );
     res.json(result.rows[0]);
   } catch (err) {
@@ -62,10 +89,15 @@ router.post("/api/budgets", async (req, res) => {
 
 // PATCH /api/budgets/:id — update a budget
 router.patch("/api/budgets/:id", async (req, res) => {
-  const { monthly_limit, notes } = req.body;
+  const { monthly_limit, notes, rollover_enabled, budget_type, effective_month } = req.body;
   const updates = []; const values = []; let idx = 1;
   if (monthly_limit !== undefined) { updates.push("monthly_limit = $" + idx++); values.push(parseFloat(monthly_limit)); }
   if (notes !== undefined) { updates.push("notes = $" + idx++); values.push(notes); }
+  if (rollover_enabled !== undefined) { updates.push("rollover_enabled = $" + idx++); values.push(!!rollover_enabled); }
+  if (budget_type !== undefined && ["recurring", "one_time"].includes(budget_type)) {
+    updates.push("budget_type = $" + idx++); values.push(budget_type);
+  }
+  if (effective_month !== undefined) { updates.push("effective_month = $" + idx++); values.push(effective_month || null); }
   if (!updates.length) return res.status(400).json({ error: "No valid fields" });
   updates.push("is_ai_suggested = false", "updated_at = now()");
   values.push(req.params.id);
@@ -305,6 +337,57 @@ router.get("/api/budgets/alerts", async (_req, res) => {
     });
   } catch (err) {
     console.error("budget alerts error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// POST /api/budgets/snapshot — create monthly snapshot and compute rollovers
+// Typically called at month-end (or auto-triggered by scheduler).
+router.post("/api/budgets/snapshot", async (req, res) => {
+  const month = req.body.month || currentMonthKey();
+  try {
+    const [budgets, spending] = await Promise.all([
+      pool.query("SELECT * FROM budgets"),
+      getCategorySpendingThisMonth(pool),
+    ]);
+    const spendMap = {};
+    for (const r of spending) spendMap[r.category] = parseFloat(r.spent);
+
+    let created = 0;
+    for (const b of budgets.rows) {
+      const spent = spendMap[b.category] || 0;
+      const limit = parseFloat(b.monthly_limit);
+      const rollover = b.rollover_enabled ? Math.max(0, limit - spent) : 0;
+
+      await pool.query(
+        `INSERT INTO budget_snapshots (budget_id, month, monthly_limit, spent, rollover_amount)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (budget_id, month) DO UPDATE SET
+           monthly_limit = $3, spent = $4, rollover_amount = $5`,
+        [b.id, month, limit, spent, rollover]
+      );
+      created++;
+    }
+    res.json({ snapshots_created: created, month });
+  } catch (err) {
+    console.error("budget snapshot error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// GET /api/budgets/history — get budget snapshots for trend analysis
+router.get("/api/budgets/history", async (req, res) => {
+  const months = Math.max(1, Math.min(parseInt(req.query.months) || 6, 24));
+  try {
+    const result = await pool.query(
+      `SELECT bs.*, b.category FROM budget_snapshots bs
+       JOIN budgets b ON b.id = bs.budget_id
+       WHERE bs.month >= TO_CHAR(CURRENT_DATE - make_interval(months => $1), 'YYYY-MM')
+       ORDER BY bs.month DESC, b.category`,
+      [months]
+    );
+    res.json(result.rows);
+  } catch (err) {
     res.status(500).json({ error: "An internal error occurred." });
   }
 });

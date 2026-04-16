@@ -50,7 +50,7 @@ router.get("/api/insights/status", async (_req, res) => {
 router.get("/api/insights/usage", async (_req, res) => {
   try {
     const result = await pool.query(
-      "SELECT id, tokens_used, model_used, created_at FROM financial_insights ORDER BY created_at DESC LIMIT 20"
+      "SELECT id, tokens_used, model_used, created_at, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights ORDER BY created_at DESC LIMIT 20"
     );
     const history = result.rows.map(r => {
       // Use granular cost if we have separate token counts, otherwise fall back to blended
@@ -93,7 +93,7 @@ router.post("/api/insights", async (_req, res) => {
     const usageResult = await pool.query(
       "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights " +
       "WHERE created_at >= date_trunc('month', CURRENT_DATE)"
-    ).catch(() => ({ rows: [] }));
+    );
     let estimatedCostCents = 0;
     usageResult.rows.forEach(r => {
       const cost = r.input_tokens
@@ -182,18 +182,21 @@ router.post("/api/insights", async (_req, res) => {
         "and suggest cheaper alternatives where well-known options exist. Be specific about potential monthly savings.";
     }
     if (modules.anomaly_detection !== false) {
+      activeModules.push("anomaly_detection");
       systemText += "\n\n=== ANOMALY DETECTION INSTRUCTIONS ===\n" +
         "When anomaly data is present: Flag anomalies. For each, suggest whether it's likely a one-time event, price increase, " +
         "or potentially unauthorized. Recommend specific action if warranted (e.g. dispute, check account, update budget).\n" +
         "When no anomalies are present: Note positively that spending patterns are consistent.";
     }
     if (modules.seasonal_forecast !== false) {
+      activeModules.push("seasonal_forecast");
       systemText += "\n\n=== SEASONAL FORECASTING INSTRUCTIONS ===\n" +
         "When seasonal history is provided: Identify seasonal patterns (e.g. holiday spending spikes, summer utility increases, " +
         "back-to-school, annual renewals). Predict the likely spend for the next 1-2 months based on these patterns. " +
         "If certain months are consistently high, warn the user in advance and suggest preparing a buffer.";
     }
     if (modules.debt_optimizer !== false) {
+      activeModules.push("debt_optimizer");
       systemText += "\n\n=== DEBT PAYOFF OPTIMIZER INSTRUCTIONS ===\n" +
         "When credit card data is provided, give a personalized debt payoff analysis:\n" +
         "1. CREDIT SCORE IMPACT: Explain current utilization impact on credit score (FICO uses 30% weight for utilization). " +
@@ -214,6 +217,7 @@ router.post("/api/insights", async (_req, res) => {
         "Be specific about which bills to target and the typical script/approach.";
     }
     if (modules.income_savings !== false) {
+      activeModules.push("income_savings");
       systemText += "\n\n=== INCOME & SAVINGS RATE INSTRUCTIONS ===\n" +
         "When income data is provided: Analyze the savings rate trend. The recommended savings rate is 20%+ (50/30/20 rule). " +
         "If below target, identify the top category driving overspending. " +
@@ -221,6 +225,7 @@ router.post("/api/insights", async (_req, res) => {
         "Suggest a specific, achievable savings rate improvement target.";
     }
     if (modules.tax_deductions !== false) {
+      activeModules.push("tax_deductions");
       systemText += "\n\n=== TAX DEDUCTION INSTRUCTIONS ===\n" +
         "When tax-deductible transactions are provided: Review for potential deductions. " +
         "Categorize as: medical (Schedule A), charitable (Schedule A), education (1098-T/LLC), " +
@@ -228,6 +233,7 @@ router.post("/api/insights", async (_req, res) => {
         "Only flag deductions likely to exceed the standard deduction threshold. Remind user to consult a tax professional.";
     }
     if (modules.goal_tracking !== false) {
+      activeModules.push("goal_tracking");
       systemText += "\n\n=== GOAL TRACKING INSTRUCTIONS ===\n" +
         "When financial goals are provided: Assess progress on each goal. For savings goals, calculate if the current contribution rate is on track. " +
         "For retirement goals, use the expected return to project growth. If a goal is behind schedule, suggest specific adjustments " +
@@ -239,13 +245,22 @@ router.post("/api/insights", async (_req, res) => {
         "For retirement goals, factor in realistic return expectations given current market conditions rather than historical averages.";
     }
 
+    // ---- Sanitize user-controlled strings to prevent prompt injection ----
+    // The running-summary delimiter (---RUNNING_SUMMARY---) is parsed from the
+    // model's response. If a merchant name, goal name, or transfer name contains
+    // this pattern, it could corrupt summary parsing. Strip it.
+    function sanitizeForPrompt(s) {
+      if (!s) return "";
+      return String(s).replace(/---+RUNNING_SUMMARY---+/gi, "[redacted]").replace(/---+/g, "--");
+    }
+
     // ---- Build DYNAMIC user message (changes each request) ----
     let userMsg = "=== CURRENT DATA ===\n" +
       "Monthly Spending (6mo):\n" + monthlyData.rows.map(r => r.month + ": $" + parseFloat(r.total).toFixed(2) + " (" + r.txns + " txns)").join("\n") +
       "\n\nActive Subscriptions (" + subs.length + " total, $" + subTotal.toFixed(2) + "/mo):\n" +
-      subs.map(r => r.display_name + ": $" + parseFloat(r.amount).toFixed(2) + " every " + r.cadence_days + " days").join("\n") +
+      subs.map(r => sanitizeForPrompt(r.display_name) + ": $" + parseFloat(r.amount).toFixed(2) + " every " + r.cadence_days + " days").join("\n") +
       "\n\nUtility Bills (" + utils.length + " total, $" + utilTotal.toFixed(2) + "/mo):\n" +
-      (utils.length > 0 ? utils.map(r => r.display_name + ": $" + parseFloat(r.amount).toFixed(2) + " every " + r.cadence_days + " days").join("\n") : "(none detected)");
+      (utils.length > 0 ? utils.map(r => sanitizeForPrompt(r.display_name) + ": $" + parseFloat(r.amount).toFixed(2) + " every " + r.cadence_days + " days").join("\n") : "(none detected)");
 
     // --- Module: Utility rate comparison (dynamic data in user msg) ---
     if (modules.utility_comparison !== false && zipCode && utils.length > 0) {
@@ -285,12 +300,11 @@ router.post("/api/insights", async (_req, res) => {
            ORDER BY t.date DESC
            LIMIT 10`
         );
-        activeModules.push("anomaly_detection");
         if (anomalyData.rows.length > 0) {
           userMsg += "\n\n=== ANOMALY DETECTION DATA ===\n" +
             "Recent transactions significantly above their merchant's typical amount:\n" +
             anomalyData.rows.map(r =>
-              (r.merchant_name || r.name) + ": $" + parseFloat(r.amount).toFixed(2) +
+              sanitizeForPrompt(r.merchant_name || r.name) + ": $" + parseFloat(r.amount).toFixed(2) +
               " on " + r.date + " (usual avg: $" + parseFloat(r.avg_amount).toFixed(2) +
               " over " + r.txn_count + " transactions)"
             ).join("\n");
@@ -316,7 +330,6 @@ router.post("/api/insights", async (_req, res) => {
            ORDER BY year, month_num`
         );
         if (seasonalData.rows.length >= 6) {
-          activeModules.push("seasonal_forecast");
           userMsg += "\n\n=== SEASONAL SPENDING HISTORY (24 months) ===\n" +
             seasonalData.rows.map(r => r.month_name + " " + r.year + ": $" + parseFloat(r.total).toFixed(2)).join("\n");
         }
@@ -335,7 +348,6 @@ router.post("/api/insights", async (_req, res) => {
         );
         const cards = creditAccounts.rows.filter(r => parseFloat(r.current_balance || 0) > 0);
         if (cards.length > 0) {
-          activeModules.push("debt_optimizer");
           let cardLines = cards.map(c => {
             const owed = parseFloat(c.current_balance || 0);
             const avail = parseFloat(c.available_balance || 0);
@@ -368,7 +380,6 @@ router.post("/api/insights", async (_req, res) => {
         const incomeRows = await getMonthlyIncomeAndSpending(pool, 6);
         const hasIncome = incomeRows.some(r => r.income > 0);
         if (hasIncome) {
-          activeModules.push("income_savings");
           userMsg += "\n\n=== INCOME & SAVINGS RATE DATA ===\n" +
             incomeRows.map(r => {
               const rate = r.income > 0 ? Math.round((1 - r.spending / r.income) * 100) : 0;
@@ -403,9 +414,8 @@ router.post("/api/insights", async (_req, res) => {
           [taxRegex]
         );
         if (taxData.rows.length > 0) {
-          activeModules.push("tax_deductions");
           userMsg += "\n\n=== POTENTIAL TAX-DEDUCTIBLE TRANSACTIONS (YTD) ===\n" +
-            taxData.rows.map(r => r.merchant + ": $" + parseFloat(r.total).toFixed(2) + " (" + r.txn_count + " transactions)").join("\n");
+            taxData.rows.map(r => sanitizeForPrompt(r.merchant) + ": $" + parseFloat(r.total).toFixed(2) + " (" + r.txn_count + " transactions)").join("\n");
 
           // Persist flagged deductions to tax_deductions table for year-round accumulation
           for (const row of taxData.rows) {
@@ -426,13 +436,12 @@ router.post("/api/insights", async (_req, res) => {
       try {
         const goalsData = await pool.query("SELECT name, type, target_amount, current_amount, monthly_contribution, target_date, interest_rate FROM financial_goals WHERE is_active = true");
         if (goalsData.rows.length > 0) {
-          activeModules.push("goal_tracking");
           userMsg += "\n\n=== FINANCIAL GOALS ===\n" +
             goalsData.rows.map(g => {
               const target = parseFloat(g.target_amount);
               const current = parseFloat(g.current_amount);
               const pct = target > 0 ? Math.round(current / target * 100) : 0;
-              let line = g.name + " (" + g.type + "): $" + current.toFixed(2) + " / $" + target.toFixed(2) + " (" + pct + "%)";
+              let line = sanitizeForPrompt(g.name) + " (" + g.type + "): $" + current.toFixed(2) + " / $" + target.toFixed(2) + " (" + pct + "%)";
               if (g.monthly_contribution > 0) line += ", contributing $" + parseFloat(g.monthly_contribution).toFixed(2) + "/mo";
               if (g.target_date) line += ", target date: " + g.target_date;
               if (g.interest_rate > 0) line += ", expected return: " + g.interest_rate + "%/yr";
@@ -458,9 +467,9 @@ router.post("/api/insights", async (_req, res) => {
         const inTotal = incoming.reduce((s, r) => s + Math.abs(parseFloat(r.amount)) * 30 / r.cadence_days, 0);
         userMsg += "\n\n=== RECURRING TRANSFERS ===\n" +
           "Outgoing (" + outgoing.length + " transfers, $" + outTotal.toFixed(2) + "/mo):\n" +
-          (outgoing.length > 0 ? outgoing.map(r => r.display_name + ": $" + parseFloat(r.amount).toFixed(2) + " every " + r.cadence_days + " days (" + r.transfer_type + ")").join("\n") : "(none)") +
+          (outgoing.length > 0 ? outgoing.map(r => sanitizeForPrompt(r.display_name) + ": $" + parseFloat(r.amount).toFixed(2) + " every " + r.cadence_days + " days (" + r.transfer_type + ")").join("\n") : "(none)") +
           "\n\nIncoming (" + incoming.length + " transfers, $" + inTotal.toFixed(2) + "/mo):\n" +
-          (incoming.length > 0 ? incoming.map(r => r.display_name + ": $" + Math.abs(parseFloat(r.amount)).toFixed(2) + " every " + r.cadence_days + " days (" + r.transfer_type + ")").join("\n") : "(none)");
+          (incoming.length > 0 ? incoming.map(r => sanitizeForPrompt(r.display_name) + ": $" + Math.abs(parseFloat(r.amount)).toFixed(2) + " every " + r.cadence_days + " days (" + r.transfer_type + ")").join("\n") : "(none)");
       }
     } catch (err) { console.error("Recurring transfers query error:", err.message); }
 
@@ -608,7 +617,7 @@ router.post("/api/insights/rebuild", async (_req, res) => {
     const budgetCents = parseInt(process.env.INSIGHTS_MONTHLY_BUDGET_CENTS) || 50;
     const usageResult = await pool.query(
       "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights WHERE created_at >= date_trunc('month', CURRENT_DATE)"
-    ).catch(() => ({ rows: [] }));
+    );
     let estimatedCostCents = 0;
     usageResult.rows.forEach(r => {
       const cost = r.input_tokens

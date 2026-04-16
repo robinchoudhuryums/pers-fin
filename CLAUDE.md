@@ -45,26 +45,36 @@ teller/
                            GET /api/recurring-transfers, POST /api/detect-transfers,
                            PATCH /api/recurring-transfers/:id/dismiss|undismiss|type,
                            PATCH /api/transactions/:id (merchant_name, notes, is_reimbursed),
-                           GET/POST/DELETE /api/transactions/:id/splits
+                           GET/POST/DELETE /api/transactions/:id/splits,
+                           GET/POST/PATCH/DELETE /api/manual-bills,
+                           GET/POST/DELETE /api/bill-payments
     goals.js             — GET/POST/PATCH/DELETE /api/goals, GET /api/goals/funding-options,
                            POST /api/net-worth/snapshot, GET /api/net-worth/history,
                            GET /api/context-export, GET/POST /api/investment-accounts
     budgets.js           — GET/POST/PATCH/DELETE /api/budgets, POST /api/budgets/suggest,
-                           POST /api/budgets/accept, GET /api/budgets/alerts
+                           POST /api/budgets/accept, GET /api/budgets/alerts,
+                           POST /api/budgets/snapshot, GET /api/budgets/history
     settings.js          — GET/PATCH /api/settings, POST /api/sheets/sync,
-                           POST /api/sheets/dashboard, GET /api/export
+                           POST /api/sheets/dashboard, GET /api/export,
+                           GET /api/data-freshness
     insights.js          — GET/POST /api/insights, GET /api/insights/status,
                            GET /api/insights/usage, POST /api/insights/reset,
                            POST /api/insights/rebuild, GET/PATCH /api/tax-deductions
     categorize.js        — POST /api/categorize, GET /api/categorize/status,
                            PATCH /api/transactions/:id/category,
-                           PATCH /api/transactions/bulk-category
-                           (ML categorization via Claude tool_use structured output)
+                           PATCH /api/transactions/bulk-category,
+                           GET/POST/DELETE /api/categorization-rules,
+                           POST /api/categorization-rules/apply,
+                           POST /api/categorization-rules/from-transaction
+                           (ML categorization via Claude tool_use structured output,
+                           with user-defined rules applied first before AI)
     investments.js       — GET /api/plaid/status, POST /api/plaid/link-token,
                            POST /api/plaid/exchange, POST /api/plaid/sync-holdings,
                            GET /api/plaid/holdings (Plaid investment accounts)
     notifications.js     — GET /api/notifications/vapid, POST/DELETE /api/notifications/subscribe,
-                           POST /api/notifications/test (Web Push notifications)
+                           POST /api/notifications/test, GET /api/notifications,
+                           PATCH /api/notifications/:id/read, POST /api/notifications/read-all
+                           (Web Push notifications + in-app notification log)
     persistent.js        — Per-sistant integration: webhooks, SSO, productivity context
                            POST /api/persistent/webhook/test, POST /api/persistent/webhook/send,
                            GET /api/persistent/status, GET /api/persistent/productivity-context,
@@ -77,7 +87,8 @@ teller/
     goals.js             — Financial goals tracking page
     budgets.js           — Budget tracking page with AI suggestions and alerts
     transactions.js      — Transaction search/filter page with full-text search
-    calendar.js          — Bill calendar page showing upcoming subscription charges
+    calendar.js          — Bill calendar page with subscription charges, manual bills,
+                           and click-to-mark-paid functionality
     login.js             — PIN pad or password login page (with materialize animation)
     settings.js          — Settings page (theme, AI insights, keep-alive, Per-sistant, exports)
     pwa.js               — PWA manifest.json + icon generation (icons cached at startup)
@@ -99,12 +110,19 @@ teller/
     dashboard.ejs        — Dashboard template with 3D financial wellness pyramid
     transactions.ejs     — Transaction search/filter template, per-row Split modal
                            (Phase B3) and REIMBURSED badge (Phase B2)
-    calendar.ejs         — Bill calendar template
+    calendar.ejs         — Bill calendar template with Add Bill modal and paid-state toggling
+    budgets.ejs          — Budget tracking template with progress bars and alerts
+    goals.ejs            — Financial goals template with progress and projections
+    settings.ejs         — Settings template (theme, AI, keep-alive, sync, exports)
+    subscriptions.ejs    — Subscription/utility management template
+    accounts.ejs         — Teller Connect enrollment + CSV import template
     login.ejs            — Login template with helmet materialize animation on success
     partials/head.ejs    — HTML head (meta, PWA manifest, apple-touch-icon, viewport-fit,
                            dual light/dark theme-color, skip-link)
     partials/nav.ejs     — Top navigation bar with helmet logo icon, "Synced Xm ago"
-                           badge populated from /api/settings.last_auto_sync_at, <main> landmark
+                           badge with color-coded staleness (green/yellow/red) and per-source
+                           tooltip, notification bell with unread count + dropdown panel,
+                           <main> landmark
     partials/foot.ejs    — Footer partial (closes <main>)
 ```
 
@@ -163,9 +181,9 @@ teller/
   sum to the parent. Powered by `getCategorySpendingThisMonth` in
   `services/financial-queries.js`.
 - **Subscription detection**: Automatic recurring charge identification (30/60/90/365-day cadences).
-  The upsert respects user state: if the user cancelled a subscription (`cancelled_at IS NOT NULL`),
-  detection will not re-activate it even if the merchant charges again. Dismissed subs (`is_dismissed`)
-  are also preserved across detect runs.
+  The upsert respects user state via an `is_active` CASE: if the user cancelled a subscription
+  (`cancelled_at IS NOT NULL`) or dismissed it (`is_dismissed = true`), detection will not
+  re-activate it even if the merchant charges again.
 - **Recurring transfer detection**: Auto-detect Zelle, Venmo, bill payments, savings transfers,
   investment contributions, ACH/wire (7/14/30/60/90/365-day cadences, outgoing/incoming split)
 - **Utility separation**: Utilities tracked separately from optional subscriptions
@@ -183,6 +201,25 @@ teller/
 - **Net worth tracking**: Automated daily snapshots with trend history
 - **Credit utilization**: Derived credit limit display, utilization percentages
 - **Tax deduction persistence**: Flagged deductions stored in `tax_deductions` table, accumulated year-round
+- **Manual bills**: User-created expected charges for the bill calendar (name, amount,
+  due_day 1-31, cadence monthly/quarterly/yearly, category). CRUD via
+  `/api/manual-bills`. Integrated into `/api/bill-calendar` alongside detected
+  subscriptions.
+- **Bill payment tracking**: Mark bills (both detected subscriptions and manual) as paid
+  for specific dates via `/api/bill-payments`. Calendar shows paid state with
+  strikethrough + checkmark. Click to toggle paid/unpaid.
+- **Merchant categorization rules**: Persistent merchant→category rules applied before
+  AI categorization to reduce API costs. CRUD via `/api/categorization-rules`.
+  Match types: `contains`, `exact`, `starts_with`. `POST /api/categorize` applies
+  rules first, then sends only unmatched transactions to Claude. Rules can be
+  created from a manual categorization via `POST /api/categorization-rules/from-transaction`.
+  `POST /api/categorization-rules/apply` bulk-applies all active rules.
+- **Budget rollover**: Budgets can enable `rollover_enabled` to carry unused budget
+  to the next month. `budget_type` can be `recurring` (perpetual) or `one_time`
+  (applies only to `effective_month`). Monthly snapshots via `POST /api/budgets/snapshot`
+  capture spending + rollover amounts. History via `GET /api/budgets/history`.
+  `GET /api/budgets` returns `effective_limit` (base + rollover) and accepts
+  `?month=YYYY-MM` query parameter.
 
 ### Dashboard & Views
 - **Dashboard**: Monthly spending trend (line chart), category breakdown (doughnut), account balances,
@@ -193,7 +230,9 @@ teller/
   filters/shadows on small screens, `prefers-reduced-motion` support).
 - **Transaction search**: Full-text search with filters — category, account, amount range, date range
   (GET /api/transactions/search)
-- **Bill calendar**: Monthly calendar view of upcoming subscription/bill charges projected from cadences
+- **Bill calendar**: Monthly calendar view of upcoming charges — detected subscriptions
+  projected from cadences, user-created manual bills, and detected income. Click events
+  to toggle paid/unpaid status. "Add Bill" modal for creating manual expected charges.
 - **Cash flow forecast**: Rolling 30–180 day projection with day-of-week spending averages,
   income detection (keyword matching, excludes transfers/payments/refunds), bill scheduling
 - **Savings rate**: Income vs spending analysis with configurable lookback (default 3 months)
@@ -202,7 +241,10 @@ teller/
 
 ### AI & Intelligence
 - **ML categorization**: Claude-powered smart transaction categorization via tool_use structured
-  output (POST /api/categorize). Respects user's model preference from settings.
+  output (POST /api/categorize). User-defined categorization rules are applied first
+  (free, instant) before sending remaining uncategorized transactions to Claude (paid).
+  Response includes `categorized_by_rules` and `categorized_by_ai` counts.
+  Respects user's model preference from settings.
   Model ID mapping (`data/reference-data.js`): haiku → `claude-haiku-4-5`,
   sonnet → `claude-sonnet-4-6`, opus → `claude-opus-4-6`.
 - **AI budget suggestions**: Claude suggests budgets based on 3-month spending history via tool_use.
@@ -211,7 +253,10 @@ teller/
   - Spending benchmarks (vs BLS Consumer Expenditure Survey)
   - Savings & wealth-building suggestions
   - Subscription audit (overlaps, alternatives)
-  - Anomaly detection (transactions 2x+ above merchant average; baseline excludes the trailing 7 days so the candidate doesn't inflate its own baseline)
+  - Anomaly detection (transactions 2x+ above merchant average for AI analysis;
+    3x+ threshold for real-time push alerts during sync. Baseline excludes the
+    trailing 7 days so the candidate doesn't inflate its own baseline.
+    Merchant grouping is case-insensitive via `LOWER()`.)
   - Seasonal forecasting (24-month pattern analysis)
   - Debt payoff optimizer (avalanche vs snowball, credit score projections)
   - Bill negotiation tips
@@ -220,13 +265,18 @@ teller/
   - Goal tracking (with real-world economic context)
   - Recurring transfers (Zelle, bill payments, savings, investment patterns)
 - **AI context enrichment**: Insights prompt includes month-over-month trend deltas,
-  current budget status (spent vs limits), and recurring transfer data
+  current budget status (spent vs limits), and recurring transfer data.
+  Module tracking: all enabled modules are registered in `activeModules` when their
+  system prompt instructions are added (not conditionally when data queries succeed).
+  This ensures `max_tokens` is correctly allocated and `modules_used` in the response
+  reflects all enabled modules even if a module's data query fails silently.
 - **Auto-trigger**: Insights auto-generate based on `insights_cadence_days` setting (checked every 6 hours)
 - **Cost tracking**: Granular token-level pricing — `input_tokens` from Anthropic's API (already excludes cache tokens) is multiplied by the input rate; `cache_read_input_tokens` and `cache_creation_input_tokens` are billed separately at their own rates. This restores accurate `INSIGHTS_MONTHLY_BUDGET_CENTS` enforcement when prompt caching is active.
 - **Insight inputs are split-adjusted**: AI insights see the same `spending_split_pct`-adjusted monthly spend totals and the same keyword-filtered income that the dashboard and `/api/savings-rate` show, via `services/financial-queries.js`.
 - **Running-summary truncation handling**: When the model hits its `max_tokens` ceiling mid-response, the prior `insights_running_summary` is preserved rather than overwritten with a partial update. `POST /api/insights` returns `stop_reason` (from Anthropic) and `summary_status` (`"updated"`, `"preserved_due_to_truncation"`, or `"preserved_no_delimiter"`) so callers can surface when long-term memory didn't advance.
 - **Context export**: Structured financial data (markdown/JSON) for pasting into Claude chat deep-dives
 - **Real-time anomaly alerts**: Push notifications for charges 3x+ above merchant average during sync
+  (case-insensitive merchant grouping; separate from the 2x AI analysis threshold)
 - **Budget threshold alerts**: Push notifications at 80% (warning) and 100%+ (exceeded) every 3 hours
 
 ### UI & UX
@@ -247,9 +297,21 @@ teller/
   to iOS Add-to-Home-Screen instructions when neither path is available.
 - **Mobile polish** (Phase D): viewport-fit=cover for iOS notch, dual light/dark
   `theme-color` meta, 40/44px (desktop/mobile) touch-target minimums on buttons.
-- **"Last synced" nav badge** (Phase D): top nav shows "Synced 47m ago" populated
-  from `/api/settings.last_auto_sync_at` so users can see at a glance whether the
-  data is fresh.
+- **"Last synced" nav badge** (Phase D): top nav shows "Synced 47m ago" with color-coded
+  staleness: green (<6h), yellow (6-24h), red (>24h). Tooltip shows per-source
+  freshness (transactions, balances, auto-sync). Populated from the most recent of
+  `last_auto_sync_at`, `last_txn_sync_at`, `last_balance_sync_at`.
+- **Unified notification center**: In-app notification history via `notification_log`
+  table. Nav bar bell icon shows unread count badge. Clicking opens a dropdown panel
+  listing recent notifications with timestamps. Click to mark read, "Mark all read"
+  button. `sendToAll()` logs every push notification to the table, so notifications
+  are preserved even if the user hasn't enabled push or dismissed the browser alert.
+  API: `GET /api/notifications`, `PATCH /api/notifications/:id/read`,
+  `POST /api/notifications/read-all`.
+- **Data freshness API**: `GET /api/data-freshness` returns per-source timestamps
+  (transactions, balances, auto-sync, insights) with age in seconds and staleness
+  flag (>24h). `POST /api/sync` updates `last_txn_sync_at`;
+  `POST /api/sync-balances` updates `last_balance_sync_at`.
 - **Web Push notifications**: VAPID-based push notifications for anomalies, budget alerts,
   goal milestones
 - **Accessibility**: Skip-to-content link, `<main>` landmark, chart aria-labels, :focus-visible
@@ -306,7 +368,7 @@ cd teller && npm install && node server.js
 ## Current Status
 - Deployed on Render (free tier, sleeps after 15 min idle)
 - Render deploys from `claude/subscription-tracker-plaid-WeQTA` (configured in Render dashboard).
-  Active development happens on `claude/audit-documentation-SX9kS`.
+  Active development happens on `claude/broad-scan-feature-bb7QT`.
 - Env vars configured in Render dashboard
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`); `services/teller-api.js`
   reads them directly. Secret-Files path also supported if `TELLER_CERT_PATH` env vars are set.
@@ -339,6 +401,13 @@ POST /api/transactions/:id/splits # replace splits, validates sum matches parent
 DELETE /api/transactions/:id/splits # clear all splits, revert to parent-row aggregation
 GET  /api/forecast         # 7-90 day projection of recurring subscription charges
 GET  /api/bill-calendar    # monthly calendar of expected charges + recurring income (query: year, month)
+GET  /api/manual-bills     # list all active manual bills
+POST /api/manual-bills     # create a manual bill (body: name, amount, due_day, cadence, category)
+PATCH /api/manual-bills/:id # update a manual bill
+DELETE /api/manual-bills/:id # delete a manual bill
+GET  /api/bill-payments    # list payments for a month (query: year, month)
+POST /api/bill-payments    # mark a bill as paid (body: bill_source, bill_id, paid_date)
+DELETE /api/bill-payments/:id # unmark a bill payment
 GET  /api/csv-reminder     # list manual accounts overdue for a CSV refresh
 GET  /api/subscriptions    # list detected subscriptions
 GET  /api/accounts         # list linked accounts with balances (includes is_shared, spending_split_pct)
@@ -362,22 +431,30 @@ GET  /api/context-export   # structured data dump for Claude chat
 GET  /api/tax-deductions   # accumulated tax-deductible transactions
 GET  /api/settings         # retrieve user settings
 PATCH /api/settings        # update user settings
-GET  /api/budgets          # list budgets with current spending (split-adjusted)
-POST /api/budgets          # create budget
+GET  /api/data-freshness   # per-source sync timestamps with staleness flags
+GET  /api/budgets          # list budgets with current spending (query: month=YYYY-MM)
+POST /api/budgets          # create budget (body: rollover_enabled, budget_type, effective_month)
 PATCH /api/budgets/:id     # update budget
 DELETE /api/budgets/:id    # delete budget
 POST /api/budgets/suggest  # AI budget suggestions
 POST /api/budgets/accept   # accept AI-suggested budget
 GET  /api/budgets/alerts   # spending velocity warnings (critical/warning/info)
+POST /api/budgets/snapshot # create monthly snapshot + compute rollovers (body: month)
+GET  /api/budgets/history  # budget snapshots for trend analysis (query: months)
 POST /api/insights         # generate new AI insights
 GET  /api/insights/status  # AI API config + usage stats
 GET  /api/insights/usage   # AI usage history
 POST /api/insights/reset   # clear long-term AI context
 POST /api/insights/rebuild # rebuild context from all history
-POST /api/categorize       # ML categorize transactions via Claude (tool_use structured output)
+POST /api/categorize       # ML categorize transactions (rules first, then Claude AI)
 GET  /api/categorize/status # ML categorization status
 PATCH /api/transactions/:id/category # manually set transaction category
 PATCH /api/transactions/bulk-category # bulk update categories
+GET  /api/categorization-rules       # list all categorization rules
+POST /api/categorization-rules       # create a rule (body: merchant_pattern, category, match_type)
+DELETE /api/categorization-rules/:id # delete a rule
+POST /api/categorization-rules/apply # apply all active rules to uncategorized transactions
+POST /api/categorization-rules/from-transaction # create rule from a manual categorization
 POST /api/import-csv       # import bank CSV file (with deduplication)
 GET  /api/csv-imports      # list CSV import history
 GET  /api/export           # download transactions/subscriptions CSV
@@ -392,6 +469,9 @@ GET  /api/notifications/vapid # get VAPID public key for push
 POST /api/notifications/subscribe # register push subscription
 DELETE /api/notifications/subscribe # unregister push subscription
 POST /api/notifications/test # send test push notification
+GET  /api/notifications      # list notification log (query: limit, unread=true)
+PATCH /api/notifications/:id/read # mark notification as read
+POST /api/notifications/read-all  # mark all notifications as read
 
 # Tax export
 GET  /api/export/tax-report # year-end deduction summary (query: year, format=csv|json)
@@ -461,9 +541,10 @@ GET  /health               # health check
 - Key tables: `teller_enrollments`, `linked_accounts`, `transactions`,
   `transaction_splits`, `detected_subscriptions`, `recurring_transfers`,
   `user_settings` (single-row), `financial_insights`, `financial_goals`,
-  `net_worth_snapshots`, `tax_deductions`, `csv_imports`, `budgets`, `push_subscriptions`,
-  `webauthn_credentials`, `investment_accounts`, `investment_holdings`, `plaid_investment_items`,
-  `schema_migrations`
+  `net_worth_snapshots`, `tax_deductions`, `csv_imports`, `budgets`, `budget_snapshots`,
+  `push_subscriptions`, `webauthn_credentials`, `investment_accounts`, `investment_holdings`,
+  `plaid_investment_items`, `plaid_items`, `sync_cursors`, `schema_migrations`,
+  `categorization_rules`, `manual_bills`, `bill_payments`, `notification_log`
 - `user_settings`: single-row pattern (CHECK id = 1) for app preferences
 - `linked_accounts` columns include: `is_shared BOOLEAN`, `spending_split_pct INT DEFAULT 100`,
   `is_manual BOOLEAN` — constraint `chk_account_source` allows `plaid_item_id IS NOT NULL OR
@@ -495,6 +576,28 @@ GET  /health               # health check
   anomaly notifier (`POST /api/sync`) to dedupe push notifications. Only transactions
   whose `created_at > last_anomaly_check_at` are considered candidates, so the same
   anomaly never re-pushes on subsequent syncs.
+- `user_settings` data freshness: `last_txn_sync_at TIMESTAMPTZ` (updated by
+  `POST /api/sync`), `last_balance_sync_at TIMESTAMPTZ` (updated by
+  `POST /api/sync-balances`). The nav badge uses the most recent of these plus
+  `last_auto_sync_at` to display staleness.
+- `budgets` rollover columns: `rollover_enabled BOOLEAN DEFAULT false`,
+  `budget_type TEXT DEFAULT 'recurring'` (recurring or one_time),
+  `effective_month TEXT` (YYYY-MM, only used for one_time budgets).
+- `budget_snapshots`: monthly spending snapshots per budget for trend analysis.
+  Columns: `budget_id`, `month` (YYYY-MM), `monthly_limit`, `spent`, `rollover_amount`.
+  UNIQUE on (budget_id, month). Created via `POST /api/budgets/snapshot`.
+- `categorization_rules`: persistent merchant→category rules. Columns: `merchant_pattern`,
+  `category`, `match_type` (contains/exact/starts_with), `is_active`, `times_applied`.
+  UNIQUE on (merchant_pattern, category). Applied before AI in `POST /api/categorize`.
+- `manual_bills`: user-created expected charges for the bill calendar. Columns: `name`,
+  `amount`, `due_day` (1-31), `cadence` (monthly/quarterly/yearly), `category`,
+  `is_active`, `notes`. Integrated into `/api/bill-calendar`.
+- `bill_payments`: tracks which bills have been paid. Columns: `bill_source`
+  (subscription or manual), `bill_id`, `paid_date`, `paid_amount`, `notes`.
+  UNIQUE on (bill_source, bill_id, paid_date). Calendar shows paid state.
+- `notification_log`: in-app notification history. Columns: `type`, `title`, `body`,
+  `data` (JSONB), `is_read`. `sendToAll()` inserts here on every push notification.
+  Indexed on (is_read, created_at DESC) for fast unread queries.
 
 ## Recurring Transfer Detection
 Transfers are identified by keyword matching on merchant_name/name fields:
@@ -509,6 +612,9 @@ Transfers are identified by keyword matching on merchant_name/name fields:
   shorter cadences (7/14/30) require 3+ occurrences
 - Outgoing and incoming transactions analyzed as separate streams
 - Outgoing recurring transfers integrated into cash flow forecast
+- User-dismissed transfers are preserved across detection runs: the upsert's
+  `is_active` CASE checks `is_dismissed` and keeps dismissed transfers inactive,
+  mirroring the subscription detection logic
 
 ## Security
 - **CSP nonces**: Per-request `crypto.randomBytes(16)` nonce for all inline scripts.
@@ -525,6 +631,10 @@ Transfers are identified by keyword matching on merchant_name/name fields:
 - **WebAuthn rpID**: Derived per-request from `req.hostname` (not cached at module scope),
   so deployments behind proxies with multiple hostnames or DNS changes work correctly.
 - **Teller API**: mTLS client certificates, retry with exponential backoff (1s/2s/4s), 30s timeout
+- **AI prompt sanitization**: `sanitizeForPrompt()` in `routes/insights.js` strips
+  `---RUNNING_SUMMARY---` patterns and consecutive dashes from user-controlled strings
+  (merchant names, goal names, transfer display names) before interpolating them into the
+  AI prompt. Prevents delimiter corruption that could break running-summary parsing.
 - **Subscription matching**: Word boundary regex to prevent false positives
 
 ## Scheduled Tasks (server.js intervals)
@@ -552,10 +662,12 @@ This affects: spending-summary (monthly_trend, byCategory, topMerchants), saving
 spending-yoy, budgets, budget alerts, and cash flow.
 
 ## Income Detection
-Income is identified by keyword matching on transaction descriptions (NOT amount thresholds):
-- Matches: payroll, direct dep, salary, wage, employer name patterns
-- Excludes: payment, transfer, pymt, zelle, venmo, paypal, cash app, refund, credit, reversal
-- Used in: cash flow projection, savings rate calculation
+Income is identified by word-boundary keyword matching (`\y` in Postgres) on transaction
+descriptions (NOT amount thresholds). Defined in `services/financial-queries.js` as
+`INCOME_PREDICATE`:
+- Matches: `\y(payroll|direct dep|salary|employer)\y` or `category[1] = 'Income'`
+- Excludes: `\y(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|credit|reversal)\y`
+- Used in: cash flow projection, savings rate, AI insights income module, bill-calendar income
 
 ## Key Design Decisions
 - **Test deps live in two places.** `teller/package.json` holds runtime deps;
@@ -595,6 +707,7 @@ Income is identified by keyword matching on transaction descriptions (NOT amount
   related merchants) and either hid them from dashboards or persisted false
   tax deductions. Multi-word phrases still work because `\b` / `\y` anchor
   at phrase edges, not inside the phrase. Sites that follow this pattern:
+  `services/financial-queries.js` `INCOME_PREDICATE`,
   `scripts/detect-subscriptions.js` `isExcludedMerchant`,
   `teller/data/reference-data.js` `categorizeSubscription` /
   `findCancelUrl`, `routes/insights.js` tax-deduction regex,
@@ -625,6 +738,27 @@ Income is identified by keyword matching on transaction descriptions (NOT amount
   sum to the parent's amount. New per-category endpoints should call
   `getCategorySpendingThisMonth(pool)` rather than re-implementing the
   CTE — that helper already handles splits + reimbursed + spending-split.
+- **Categorization rules first, then AI.** When `POST /api/categorize` is
+  called, user-defined rules from `categorization_rules` are applied first
+  (free, instant, pattern matching) before sending remaining uncategorized
+  transactions to Claude (paid API call). This means a user who creates a
+  rule for "Amazon" → "Shopping" will never pay for AI to categorize Amazon
+  transactions. Rules are matched against `COALESCE(user_merchant_name,
+  merchant_name, name)` so user-renamed merchants are also handled.
+- **Budget rollover uses snapshots, not running totals.** The rollover
+  amount is computed by `POST /api/budgets/snapshot` as `MAX(0, limit - spent)`
+  and stored in `budget_snapshots`. `GET /api/budgets` adds the most recent
+  snapshot's `rollover_amount` to the base `monthly_limit` to produce
+  `effective_limit`. One-time budgets (`budget_type = 'one_time'`) share the
+  `UNIQUE(category)` constraint with recurring budgets — you can't have both
+  a recurring and one-time budget for the same category. Convert via PATCH.
+- **Notification log as audit trail.** `sendToAll()` always writes to
+  `notification_log` even when push isn't configured. This means the in-app
+  notification center works independently of web push — users who haven't
+  granted push permissions or whose push subscriptions expired still see
+  their anomaly alerts, budget warnings, and goal milestones in the nav
+  bell dropdown. The log is append-only; old notifications are never deleted
+  automatically.
 - **The scheduler calls helpers in-process, not via HTTP self-fetch.**
   `routes/enrollments.js` exports `syncAllEnrollments` and `syncAllBalances`
   specifically so the scheduled bank-auto-sync task in `server.js` can
@@ -635,7 +769,7 @@ Income is identified by keyword matching on transaction descriptions (NOT amount
   "extract handler into helper, export, reuse" pattern.
 
 ## Git
-- Active development branch: `claude/audit-documentation-SX9kS`
+- Active development branch: `claude/broad-scan-feature-bb7QT`
 - Render's deploy branch (in `render.yaml` / Render dashboard): `claude/subscription-tracker-plaid-WeQTA`
 - PEM files and `.env` are in `.gitignore`
 
@@ -650,7 +784,9 @@ Income is identified by keyword matching on transaction descriptions (NOT amount
 ## Priority Next Features
 1. **Mobile app** — React Native or Capacitor wrapper for native experience
 2. **Multi-user support** — Shared household finance tracking with role-based access
-3. **AI recommendation tracking** — Track which past suggestions were implemented/dismissed,
-   create feedback loop for future insights
+3. **Onboarding flow** — Guided "Getting Started" checklist (link account → sync →
+   categorize → set budgets) visible until all steps complete
 4. **Structured running summary** — Replace plain-text AI memory with categorized JSON
    (trends, completed goals, pending actions, alerts)
+5. **Budget snapshot auto-trigger** — Add monthly scheduled task to `server.js` that
+   calls `POST /api/budgets/snapshot` at month boundaries

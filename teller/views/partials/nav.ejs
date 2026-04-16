@@ -10,7 +10,18 @@
       <a href="/settings"<%= activePage === 'settings' ? ' class="active"' : '' %>>Settings</a>
     </div>
     <div class="nav-sync-badge" id="nav-sync-badge" title="Most recent sync — updated by auto-sync or the Sync button"></div>
+    <div class="nav-notification-bell" id="nav-notif-bell" title="Notifications" style="cursor:pointer;position:relative;padding:4px 8px;">
+      🔔<span id="nav-notif-count" style="display:none;position:absolute;top:-2px;right:0;background:var(--red);color:#fff;border-radius:50%;font-size:9px;min-width:16px;height:16px;line-height:16px;text-align:center;"></span>
+    </div>
   </nav>
+  <!-- Notification dropdown panel -->
+  <div id="notif-panel" style="display:none;position:fixed;top:48px;right:8px;width:340px;max-height:400px;overflow-y:auto;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.3);z-index:99;padding:0;">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border);">
+      <strong style="font-size:14px;">Notifications</strong>
+      <button id="notif-mark-all" style="font-size:11px;background:none;border:none;color:var(--teal);cursor:pointer;padding:0;">Mark all read</button>
+    </div>
+    <div id="notif-list" style="padding:0;"></div>
+  </div>
   <main id="main-content">
   <script nonce="<%= nonce %>">
     // Populate the "Last synced Xm ago" badge from /api/settings.last_auto_sync_at.
@@ -30,7 +41,104 @@
         var r = await apiFetch('/api/settings');
         if (!r.ok) return;
         var s = await r.json();
-        if (s.last_auto_sync_at) el.textContent = 'Synced ' + fmtAgo(s.last_auto_sync_at);
+        // Show the most recent sync timestamp
+        var latestSync = s.last_auto_sync_at || s.last_txn_sync_at || s.last_balance_sync_at;
+        if (latestSync) el.textContent = 'Synced ' + fmtAgo(latestSync);
+        // Build detailed tooltip
+        var tips = [];
+        if (s.last_txn_sync_at) tips.push('Transactions: ' + fmtAgo(s.last_txn_sync_at));
+        if (s.last_balance_sync_at) tips.push('Balances: ' + fmtAgo(s.last_balance_sync_at));
+        if (s.last_auto_sync_at) tips.push('Auto-sync: ' + fmtAgo(s.last_auto_sync_at));
+        if (tips.length) el.title = tips.join('\n');
+        // Visual staleness — warn if data is older than 24 hours
+        if (latestSync) {
+          var ageHrs = (Date.now() - new Date(latestSync).getTime()) / 3600000;
+          if (ageHrs > 24) el.style.color = 'var(--red)';
+          else if (ageHrs > 6) el.style.color = 'var(--yellow, #f0c36d)';
+        }
       } catch (_) {}
+    })();
+
+    // Notification bell — load unread count and toggle panel
+    (async function() {
+      var bell = document.getElementById('nav-notif-bell');
+      var badge = document.getElementById('nav-notif-count');
+      var panel = document.getElementById('notif-panel');
+      var list = document.getElementById('notif-list');
+      if (!bell || !panel) return;
+
+      async function loadNotifs() {
+        try {
+          var r = await apiFetch('/api/notifications?limit=20');
+          if (!r.ok) return;
+          var data = await r.json();
+          if (data.unread_count > 0) {
+            badge.textContent = data.unread_count > 9 ? '9+' : data.unread_count;
+            badge.style.display = '';
+          } else {
+            badge.style.display = 'none';
+          }
+          if (panel.style.display !== 'none') renderList(data.notifications);
+        } catch (_) {}
+      }
+
+      function renderList(notifs) {
+        if (!notifs.length) { list.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:13px;">No notifications</div>'; return; }
+        list.innerHTML = notifs.map(function(n) {
+          var ago = fmtAgo(n.created_at);
+          var bg = n.is_read ? '' : 'background:rgba(95,191,191,0.05);';
+          return '<div data-nid="' + n.id + '" style="padding:10px 16px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px;' + bg + '">' +
+            '<div style="font-weight:' + (n.is_read ? '400' : '600') + ';">' + esc(n.title) + '</div>' +
+            '<div style="color:var(--text-muted);margin-top:2px;">' + esc(n.body) + '</div>' +
+            '<div style="color:var(--text-muted);font-size:10px;margin-top:4px;">' + ago + '</div>' +
+          '</div>';
+        }).join('');
+      }
+
+      function fmtAgo(iso) {
+        if (!iso) return '';
+        var s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+        if (s < 60) return 'just now';
+        if (s < 3600) return Math.floor(s / 60) + 'm ago';
+        if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+        return Math.floor(s / 86400) + 'd ago';
+      }
+
+      bell.addEventListener('click', async function(e) {
+        e.stopPropagation();
+        if (panel.style.display === 'none') {
+          panel.style.display = '';
+          try {
+            var r = await apiFetch('/api/notifications?limit=20');
+            if (r.ok) { var data = await r.json(); renderList(data.notifications); }
+          } catch (_) {}
+        } else {
+          panel.style.display = 'none';
+        }
+      });
+
+      document.addEventListener('click', function(e) {
+        if (!panel.contains(e.target) && !bell.contains(e.target)) panel.style.display = 'none';
+      });
+
+      // Click notification to mark read
+      list.addEventListener('click', async function(e) {
+        var item = e.target.closest('[data-nid]');
+        if (!item) return;
+        var nid = item.getAttribute('data-nid');
+        try {
+          await apiFetch('/api/notifications/' + nid + '/read', { method: 'PATCH' });
+          loadNotifs();
+        } catch (_) {}
+      });
+
+      document.getElementById('notif-mark-all').addEventListener('click', async function() {
+        try {
+          await apiFetch('/api/notifications/read-all', { method: 'POST' });
+          loadNotifs();
+        } catch (_) {}
+      });
+
+      loadNotifs();
     })();
   </script>
