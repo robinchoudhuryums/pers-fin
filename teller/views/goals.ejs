@@ -133,26 +133,43 @@
         options = await r.json();
       } catch (e) { showMsg('Could not load funding options: ' + e.message, false); return; }
       const all = [
-        ...options.linked_accounts.map(a => ({ kind: 'account', id: a.id, label: a.name + ' (' + a.type + ') — bal: ' + fmt(a.balance) })),
-        ...options.investment_accounts.map(a => ({ kind: 'investment', id: a.id, label: a.name + ' (' + a.type + ') — bal: ' + fmt(a.balance) })),
+        ...options.linked_accounts.map(a => ({ kind: 'account', id: a.id, label: a.name + ' (' + a.type + ') — ' + fmt(a.balance) })),
+        ...options.investment_accounts.map(a => ({ kind: 'investment', id: a.id, label: a.name + ' (' + a.type + ') — ' + fmt(a.balance) })),
       ];
       if (!all.length) { showMsg('No eligible accounts. Link a depository or investment account first.', false); return; }
-      const menu = all.map((o, i) => (i + 1) + '. ' + o.label).join('\n');
-      const choice = prompt('Link this goal to which account?\n\n' + menu + '\n\nEnter the number:');
-      if (!choice) return;
-      const idx = parseInt(choice) - 1;
-      if (idx < 0 || idx >= all.length) { showMsg('Invalid selection.', false); return; }
-      const sel = all[idx];
-      const body = sel.kind === 'account'
-        ? { funding_account_id: sel.id, funding_investment_id: null }
-        : { funding_account_id: null, funding_investment_id: sel.id };
-      try {
-        const res = await apiFetch('/api/goals/' + id, {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-        });
-        if (res.ok) { showMsg('Account linked. Goal now tracks this balance.', true); loadGoals(); }
-        else { const d = await res.json().catch(function() { return {}; }); showMsg(d.error || 'Failed to link', false); }
-      } catch (e) { showMsg(e.message, false); }
+
+      // Build an inline <select> dropdown instead of prompt() for better
+      // mobile UX and accessibility.
+      var container = document.getElementById('link-picker-' + id);
+      if (container) { container.remove(); return; } // toggle off if already open
+      var card = document.querySelector('[data-action="link"][data-id="' + id + '"]').closest('.goal-card');
+      if (!card) return;
+      var picker = document.createElement('div');
+      picker.id = 'link-picker-' + id;
+      picker.style.cssText = 'margin-top:10px;display:flex;gap:6px;align-items:center;';
+      picker.innerHTML =
+        '<select style="flex:1;padding:8px 10px;font-size:13px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;">' +
+        all.map(function(o, i) { return '<option value="' + i + '">' + esc(o.label) + '</option>'; }).join('') +
+        '</select>' +
+        '<button class="btn-sm primary" id="link-confirm-' + id + '">Link</button>' +
+        '<button class="btn-sm" id="link-cancel-' + id + '">Cancel</button>';
+      card.appendChild(picker);
+
+      document.getElementById('link-cancel-' + id).addEventListener('click', function() { picker.remove(); });
+      document.getElementById('link-confirm-' + id).addEventListener('click', async function() {
+        var sel = all[parseInt(picker.querySelector('select').value)];
+        if (!sel) return;
+        var body = sel.kind === 'account'
+          ? { funding_account_id: sel.id, funding_investment_id: null }
+          : { funding_account_id: null, funding_investment_id: sel.id };
+        try {
+          var res = await apiFetch('/api/goals/' + id, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+          });
+          if (res.ok) { showMsg('Account linked. Goal now tracks this balance.', true); loadGoals(); }
+          else { var d = await res.json().catch(function() { return {}; }); showMsg(d.error || 'Failed to link', false); }
+        } catch (e) { showMsg(e.message, false); }
+      });
     }
 
     async function unlinkAccount(id) {

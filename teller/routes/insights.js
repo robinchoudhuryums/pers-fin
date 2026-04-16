@@ -479,21 +479,22 @@ router.post("/api/insights", async (_req, res) => {
       }
     } catch (err) { console.error("Trend delta error:", err.message); }
 
-    // --- Enrichment: Current budget status ---
+    // --- Enrichment: Current budget status (honors splits via shared helper) ---
     try {
-      const budgetStatus = await pool.query(
-        `SELECT b.category, b.monthly_limit,
-                COALESCE(SUM(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0), 0) AS spent
-         FROM budgets b
-         LEFT JOIN transactions t ON COALESCE(t.category[1], 'Uncategorized') = b.category
-           AND t.amount > 0 AND t.pending = false
-           AND COALESCE(t.is_reimbursed, false) = false
-           AND t.date >= date_trunc('month', CURRENT_DATE)
-           AND t.date < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
-         LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-         GROUP BY b.category, b.monthly_limit
-         ORDER BY b.monthly_limit DESC`
-      );
+      const { getCategorySpendingThisMonth } = require("../services/financial-queries");
+      const [budgetRows, catSpending] = await Promise.all([
+        pool.query("SELECT category, monthly_limit FROM budgets ORDER BY monthly_limit DESC"),
+        getCategorySpendingThisMonth(pool),
+      ]);
+      const catMap = {};
+      for (const r of catSpending) catMap[r.category] = parseFloat(r.spent);
+      const budgetStatus = {
+        rows: budgetRows.rows.map(b => ({
+          category: b.category,
+          monthly_limit: b.monthly_limit,
+          spent: catMap[b.category] || 0,
+        })),
+      };
       if (budgetStatus.rows.length > 0) {
         userMsg += "\n\n=== BUDGET STATUS (current month) ===\n" +
           budgetStatus.rows.map(b => {

@@ -229,6 +229,7 @@ async function syncAllEnrollments() {
            HAVING COUNT(*) >= 3
          ) avg_tbl ON COALESCE(t.merchant_name, t.name) = avg_tbl.merchant
          WHERE t.amount > 0 AND t.pending = false
+           AND COALESCE(t.is_reimbursed, false) = false
            AND t.date >= CURRENT_DATE - INTERVAL '3 days'
            AND t.amount > avg_tbl.avg_amount * 3
            AND ($1::timestamptz IS NULL OR t.created_at > $1)
@@ -913,19 +914,38 @@ router.get("/api/spending-yoy", async (req, res) => {
   const month = parseInt(req.query.month) || new Date().getMonth() + 1;
   const year = parseInt(req.query.year) || new Date().getFullYear();
   try {
+    // Phase B3: honor transaction_splits for per-category breakdowns.
     const result = await pool.query(`
-      SELECT TO_CHAR(t.date, 'YYYY') AS year,
-             TO_CHAR(t.date, 'MM') AS month,
-             COALESCE(t.category[1], 'Uncategorized') AS category,
-             ROUND(SUM(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0), 2) AS total,
+      WITH parent_no_splits AS (
+        SELECT t.date, COALESCE(t.category[1], 'Uncategorized') AS category,
+               t.amount * COALESCE(la.spending_split_pct, 100) / 100.0 AS amount
+        FROM transactions t
+        LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+        WHERE t.amount > 0 AND t.pending = false
+          AND COALESCE(t.is_reimbursed, false) = false
+          AND EXTRACT(MONTH FROM t.date) = $1
+          AND EXTRACT(YEAR FROM t.date) >= $2 - 2
+          AND NOT EXISTS (SELECT 1 FROM transaction_splits s WHERE s.parent_transaction_id = t.transaction_id)
+      ),
+      from_splits AS (
+        SELECT t.date, COALESCE(s.category, t.category[1], 'Uncategorized') AS category,
+               s.amount * COALESCE(la.spending_split_pct, 100) / 100.0 AS amount
+        FROM transaction_splits s
+        JOIN transactions t ON t.transaction_id = s.parent_transaction_id
+        LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+        WHERE t.amount > 0 AND t.pending = false
+          AND COALESCE(t.is_reimbursed, false) = false
+          AND EXTRACT(MONTH FROM t.date) = $1
+          AND EXTRACT(YEAR FROM t.date) >= $2 - 2
+      ),
+      all_lines AS (SELECT * FROM parent_no_splits UNION ALL SELECT * FROM from_splits)
+      SELECT TO_CHAR(date, 'YYYY') AS year,
+             TO_CHAR(date, 'MM') AS month,
+             category,
+             ROUND(SUM(amount), 2) AS total,
              COUNT(*) AS txn_count
-      FROM transactions t
-      LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-      WHERE t.amount > 0 AND t.pending = false
-        AND COALESCE(t.is_reimbursed, false) = false
-        AND EXTRACT(MONTH FROM t.date) = $1
-        AND EXTRACT(YEAR FROM t.date) >= $2 - 2
-      GROUP BY TO_CHAR(t.date, 'YYYY'), TO_CHAR(t.date, 'MM'), COALESCE(t.category[1], 'Uncategorized')
+      FROM all_lines
+      GROUP BY TO_CHAR(date, 'YYYY'), TO_CHAR(date, 'MM'), category
       ORDER BY year DESC, total DESC
     `, [month, year]);
 
