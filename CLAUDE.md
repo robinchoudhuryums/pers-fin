@@ -145,6 +145,8 @@ teller/
   `user_notes` columns so re-syncs from Teller don't clobber edits. The display
   layer uses `COALESCE(user_merchant_name, merchant_name, name)` everywhere,
   so renames also collapse duplicate merchant rows in top-merchants ranking.
+  The Transactions page provides an Edit modal per row (merchant name, notes,
+  reimbursed toggle) that calls the same PATCH endpoint.
 - **Reimbursed flag** (Phase B2): mark transactions as reimbursed (work travel,
   medical, friend-paid bills) via the same PATCH endpoint. Excluded from every
   spending aggregation: `/api/spending-summary`, `/api/budgets`,
@@ -160,7 +162,10 @@ teller/
   amounts (monthly trend, cash flow, savings rate) are unchanged because splits
   sum to the parent. Powered by `getCategorySpendingThisMonth` in
   `services/financial-queries.js`.
-- **Subscription detection**: Automatic recurring charge identification (30/60/90/365-day cadences)
+- **Subscription detection**: Automatic recurring charge identification (30/60/90/365-day cadences).
+  The upsert respects user state: if the user cancelled a subscription (`cancelled_at IS NOT NULL`),
+  detection will not re-activate it even if the merchant charges again. Dismissed subs (`is_dismissed`)
+  are also preserved across detect runs.
 - **Recurring transfer detection**: Auto-detect Zelle, Venmo, bill payments, savings transfers,
   investment contributions, ACH/wire (7/14/30/60/90/365-day cadences, outgoing/incoming split)
 - **Utility separation**: Utilities tracked separately from optional subscriptions
@@ -198,6 +203,8 @@ teller/
 ### AI & Intelligence
 - **ML categorization**: Claude-powered smart transaction categorization via tool_use structured
   output (POST /api/categorize). Respects user's model preference from settings.
+  Model ID mapping (`data/reference-data.js`): haiku → `claude-haiku-4-5`,
+  sonnet → `claude-sonnet-4-6`, opus → `claude-opus-4-6`.
 - **AI budget suggestions**: Claude suggests budgets based on 3-month spending history via tool_use.
 - **AI Insights** (12 toggleable modules, auto-triggered based on cadence setting):
   - Utility rate comparison (vs state/national averages, requires ZIP)
@@ -255,7 +262,10 @@ teller/
   formatting for over-budget categories)
 
 ### Per-sistant Integration (Companion App)
-- **Cross-app SSO**: HMAC-signed token exchange (60-second expiry) for seamless auth between apps
+- **Cross-app SSO**: HMAC-signed token exchange (60-second expiry) with per-token nonce
+  for replay protection. Token format: `sso:<timestamp>:<nonce>:<signature>`. Each nonce
+  is single-use (tracked in-memory, 2-minute TTL cleanup). Both Perfin and Per-sistant
+  must deploy the same token format — mixed-version deployments will reject cross-app tokens.
 - **Webhook system**: HMAC-signed event notifications (anomaly_detected, budget_exceeded,
   new_subscription, goal_milestone, csv_reminder) sent to Per-sistant
 - **Productivity context**: Fetches task/review stats from Per-sistant for AI enrichment
@@ -509,6 +519,11 @@ Transfers are identified by keyword matching on merchant_name/name fields:
 - **Session**: Secure cookies, pgSession store, configurable timeout, CSRF custom header check
 - **Rate limiting**: General (100/15min), tight (5/1min) for sync/detect, login (10/15min),
   SSO validate (10/15min)
+- **SSO replay protection**: Each SSO token embeds a 24-byte random nonce; validate tracks
+  used nonces in an in-memory Map (2-minute TTL cleanup) and rejects duplicates. Nonce is
+  consumed after signature verification so timing attacks can't burn legitimate nonces.
+- **WebAuthn rpID**: Derived per-request from `req.hostname` (not cached at module scope),
+  so deployments behind proxies with multiple hostnames or DNS changes work correctly.
 - **Teller API**: mTLS client certificates, retry with exponential backoff (1s/2s/4s), 30s timeout
 - **Subscription matching**: Word boundary regex to prevent false positives
 
@@ -564,11 +579,14 @@ Income is identified by keyword matching on transaction descriptions (NOT amount
 - **Shared financial queries.** `services/financial-queries.js` is the
   source of truth for "income" and "spending" computations: keyword-filtered
   payroll/direct-dep income (excluding transfers/payments/refunds) and
-  `spending_split_pct`-adjusted spending. AI insights routes through it so
-  Claude sees the same numbers the dashboard shows. Existing inline copies
-  of the same logic in `routes/enrollments.js` (`/api/savings-rate`,
-  `/api/cash-flow`) and the spending-summary path are equivalent today —
-  any new financial endpoint should use this module instead of re-inlining.
+  `spending_split_pct`-adjusted spending that honors transaction_splits.
+  AI insights routes through it so Claude sees the same numbers the
+  dashboard shows. `/api/savings-rate` calls `getMonthlyIncome` +
+  `getMonthlySpending`; `/api/cash-flow` uses the shared `INCOME_PREDICATE`
+  constant; `/api/budgets` and the scheduled budget-alert push use
+  `getCategorySpendingThisMonth`. The spending-summary monthly-trend path
+  still inlines equivalent SQL — any new financial endpoint should use
+  this module instead of re-inlining.
 - **Substring-safe keyword exclusions.** All merchant/transaction keyword
   filters use word-boundary matching — `\b` in JavaScript regex, `\y` in
   Postgres regex (`~*` / `!~*`). The reason: short tokens like `atm`,
