@@ -155,16 +155,24 @@ app.use(helmet({
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(",").map(s => s.trim())
   : [];
-app.use(cors({
-  origin: (origin, cb) => {
-    // Allow same-origin requests (no origin header) always.
-    // If ALLOWED_ORIGINS is not configured, only same-origin requests are allowed.
-    if (!origin) return cb(null, true);
-    if (ALLOWED_ORIGINS.length > 0 && ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
-    cb(new Error("Not allowed by CORS"));
-  },
-  credentials: true,
-}));
+app.use((req, res, next) => {
+  cors({
+    origin: (origin, cb) => {
+      // Allow requests with no origin header (same-origin in older browsers, curl, server-to-server)
+      if (!origin) return cb(null, true);
+      // Same-origin: browser sends Origin on POST/PATCH/DELETE even for same-origin requests.
+      // Compare origin's host to the request Host header to auto-allow.
+      try {
+        const originHost = new URL(origin).host;
+        if (originHost === req.headers.host) return cb(null, true);
+      } catch {}
+      // Explicit allowlist
+      if (ALLOWED_ORIGINS.length > 0 && ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+      cb(new Error("Not allowed by CORS"));
+    },
+    credentials: true,
+  })(req, res, next);
+});
 
 // Rate limiting
 const generalLimiter = rateLimit({
