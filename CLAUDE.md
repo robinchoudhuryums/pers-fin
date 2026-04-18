@@ -28,6 +28,9 @@ teller/
                            keyword-filtered income, current-month per-category spending
                            that honors transaction_splits) — single source of truth used
                            by AI insights and budgets so the numbers match the dashboard
+    ai-audit.js        — Post-generation insight auditing (4 tiers: arithmetic
+                           validation, entity existence, trend direction, consistency).
+                           Stores results in ai_audit_log table.
   routes/
     enrollments.js       — POST /api/enroll, POST /api/sync, GET /api/items,
                            DELETE /api/enrollments/:id, GET /api/accounts,
@@ -59,7 +62,8 @@ teller/
                            GET /api/data-freshness
     insights.js          — GET/POST /api/insights, GET /api/insights/status,
                            GET /api/insights/usage, POST /api/insights/reset,
-                           POST /api/insights/rebuild, GET/PATCH /api/tax-deductions
+                           POST /api/insights/rebuild, GET /api/insights/audit,
+                           GET/PATCH /api/tax-deductions
     categorize.js        — POST /api/categorize, GET /api/categorize/status,
                            PATCH /api/transactions/:id/category,
                            PATCH /api/transactions/bulk-category,
@@ -138,7 +142,7 @@ teller/
 - `scripts/retention-cleanup.sql` — Reference SQL for the manual cleanup queries
   exposed by `POST /api/cleanup`
 - `apps-script/Code.gs` — Google Sheets Apps Script (standalone + server sync)
-- `tests/` — 195 tests across 9 files (node:test runner, `npm test`).
+- `tests/` — 210 tests across 10 files (node:test runner, `npm test`).
   Includes `tests/audit-regressions.test.js` which pins documented behavior
   for auth, SSO, template hygiene, and exclusion rules. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
@@ -276,6 +280,19 @@ teller/
 - **Cost tracking**: Granular token-level pricing — `input_tokens` from Anthropic's API (already excludes cache tokens) is multiplied by the input rate; `cache_read_input_tokens` and `cache_creation_input_tokens` are billed separately at their own rates. This restores accurate `INSIGHTS_MONTHLY_BUDGET_CENTS` enforcement when prompt caching is active. The monthly budget is shared between `/api/insights` and `/api/categorize` — both check the same cap before calling Claude.
 - **Insight inputs are split-adjusted**: AI insights see the same `spending_split_pct`-adjusted monthly spend totals and the same keyword-filtered income that the dashboard and `/api/savings-rate` show, via `services/financial-queries.js`.
 - **Running-summary truncation handling**: When the model hits its `max_tokens` ceiling mid-response, the prior `insights_running_summary` is preserved rather than overwritten with a partial update. `POST /api/insights` returns `stop_reason` (from Anthropic) and `summary_status` (`"updated"`, `"preserved_due_to_truncation"`, or `"preserved_no_delimiter"`) so callers can surface when long-term memory didn't advance.
+- **AI insight auditing**: Post-generation validation via `services/ai-audit.js`. Four tiers:
+  (1) arithmetic — dollar amounts and percentages compared to actual DB data, critical >20% off,
+  warning >5%; (2) entity existence — merchant/goal/subscription names verified against DB,
+  hallucinated entities flagged; (3) trend direction — "X is up/down" claims compared to actual
+  month-over-month data; (4) consistency — detects self-contradictions within the same report.
+  Results stored in `ai_audit_log` table. Critical findings trigger in-app notification.
+  Module auto-disable requires user confirmation. `GET /api/insights/audit` returns findings
+  and per-module stats.
+- **Insight email via Per-sistant**: After each scheduled insight generation, Perfin sends
+  an `insights_generated` webhook to Per-sistant with `{ subject, html_body, plain_text }`.
+  HTML email is pre-rendered in Perfin with app-matching dark theme (gold/amber accents,
+  Arc Reactor branding). Includes audit findings section if critical issues detected.
+  Per-sistant receives the webhook and forwards to its email service.
 - **Context export**: Structured financial data (markdown/JSON) for pasting into Claude chat deep-dives
 - **Real-time anomaly alerts**: Push notifications for charges 3x+ above merchant average during sync
   (case-insensitive merchant grouping; separate from the 2x AI analysis threshold)
@@ -375,13 +392,13 @@ cd teller && npm install && node server.js
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`); `services/teller-api.js`
   reads them directly. Secret-Files path also supported if `TELLER_CERT_PATH` env vars are set.
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 195 tests passing across 9 test files
+- 210 tests passing across 10 test files
 
 ## Commands
 ```bash
 cd teller && npm install && node server.js    # Run locally
 npm install                                    # ALSO required at repo root for tests
-npm test                                       # Run 195 tests
+npm test                                       # Run 210 tests
 
 # Key API endpoints
 POST /api/enroll           # store Teller access token after Connect
@@ -448,6 +465,7 @@ GET  /api/insights/status  # AI API config + usage stats
 GET  /api/insights/usage   # AI usage history
 POST /api/insights/reset   # clear long-term AI context
 POST /api/insights/rebuild # rebuild context from all history
+GET  /api/insights/audit   # audit log + per-module accuracy stats
 POST /api/categorize       # ML categorize transactions (rules first, then Claude AI)
 GET  /api/categorize/status # ML categorization status
 PATCH /api/transactions/:id/category # manually set transaction category
@@ -546,7 +564,8 @@ GET  /health               # health check
   `net_worth_snapshots`, `tax_deductions`, `csv_imports`, `budgets`, `budget_snapshots`,
   `push_subscriptions`, `webauthn_credentials`, `investment_accounts`, `investment_holdings`,
   `plaid_investment_items`, `plaid_items`, `sync_cursors`, `schema_migrations`,
-  `categorization_rules`, `manual_bills`, `bill_payments`, `notification_log`
+  `categorization_rules`, `manual_bills`, `bill_payments`, `notification_log`,
+  `ai_audit_log`
 - `user_settings`: single-row pattern (CHECK id = 1) for app preferences
 - `linked_accounts` columns include: `is_shared BOOLEAN`, `spending_split_pct INT DEFAULT 100`,
   `is_manual BOOLEAN` — constraint `chk_account_source` allows `plaid_item_id IS NOT NULL OR
@@ -600,6 +619,10 @@ GET  /health               # health check
 - `notification_log`: in-app notification history. Columns: `type`, `title`, `body`,
   `data` (JSONB), `is_read`. `sendToAll()` inserts here on every push notification.
   Indexed on (is_read, created_at DESC) for fast unread queries.
+- `ai_audit_log`: post-generation insight validation results. Columns: `insight_id`
+  (FK to financial_insights), `module`, `severity` (critical/warning/info),
+  `check_type` (tier1-4), `claim_text`, `expected_value`, `actual_value`.
+  Indexed on (insight_id, severity).
 
 ## Recurring Transfer Detection
 Transfers are identified by keyword matching on merchant_name/name fields:
@@ -649,7 +672,10 @@ All run automatically after server startup:
 - **Sheets auto-sync**: every 1 hour (daily/weekly/monthly cadence from settings)
 - **Net worth snapshot**: every 1 hour (one per day, updates if exists so late-arriving transactions are reflected)
 - **Goal milestones**: every 6 hours (push notifications at 25/50/75/100%)
-- **AI insights auto-trigger**: every 6 hours (respects `insights_cadence_days` setting)
+- **AI insights auto-trigger**: every 6 hours (respects `insights_cadence_days` setting).
+  Pre-analysis sync chain: syncAllEnrollments → syncAllBalances → detect subscriptions →
+  detect transfers → categorize → generate insights → audit → email webhook.
+  Ensures AI analyzes freshest data. Auto-categorization runs as part of this pipeline.
 - **Budget alerts**: every 3 hours (push notifications at 80% and 100%+ thresholds, aligned with the in-app `/api/budgets/alerts` `warning`/`critical` levels). The in-app `info`/pace heuristic is intentionally not pushed (too noisy as a notification).
 - **Budget snapshot auto-trigger**: every 6 hours, checks if today is the 1st of the
   month. If so, creates a snapshot for the previous month (spending + rollover amounts)
@@ -661,6 +687,9 @@ All run automatically after server startup:
   `last_auto_sync_at` on every check (success or partial failure).
   Note: on Render free tier, scheduled syncs only fire while the process is awake;
   enable `keep_alive_enabled` if you need guaranteed cadence.
+- **CSV import reminders**: every 24 hours, checks manual (CSV-only) accounts
+  whose most recent CSV import is older than `csv_reminder_days` setting.
+  Sends notification listing specific account names needing a fresh upload.
 
 ## Shared Account Spending Split
 All spending queries apply the split percentage for shared/joint accounts via SQL JOIN:

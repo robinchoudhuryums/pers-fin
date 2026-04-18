@@ -402,7 +402,9 @@ runMigrations().then(() => {
       }
     }, 6 * 60 * 60 * 1000); // Check every 6 hours
 
-    // Auto-trigger AI insights based on cadence setting (checks every 6 hours)
+    // Auto-trigger AI insights based on cadence setting (checks every 6 hours).
+    // Before running insights, sync transactions + balances + subscription detection
+    // so the AI analyzes the freshest data.
     setInterval(async () => {
       try {
         if (!process.env.ANTHROPIC_API_KEY) return;
@@ -415,20 +417,24 @@ runMigrations().then(() => {
         const lastRun = s.insights_last_run ? new Date(s.insights_last_run) : null;
         const now = new Date();
         if (!lastRun || (now - lastRun) / 86400000 >= cadenceDays) {
-          // Trigger insights generation via internal fetch.
-          // Pass X-API-Key when API_KEY is configured so the request authenticates;
-          // otherwise the request would always 401 and scheduled insights would silently never run.
+          // Pre-analysis sync chain: fresh data before AI analysis
+          const { syncAllEnrollments, syncAllBalances } = require("./routes/enrollments");
+          try { await syncAllEnrollments(); } catch (e) { console.error("Pre-insights sync error:", e.message); }
+          try { await syncAllBalances(); } catch (e) { console.error("Pre-insights balance error:", e.message); }
+          // Run subscription + transfer detection
           const port = process.env.PORT || 3000;
           const headers = { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" };
           if (API_KEY) headers["X-API-Key"] = API_KEY;
+          try { await fetch(`http://localhost:${port}/api/detect`, { method: "POST", headers }); } catch {}
+          try { await fetch(`http://localhost:${port}/api/detect-transfers`, { method: "POST", headers }); } catch {}
+          // Now run AI insights with fresh data
           try {
-            const r = await fetch(`http://localhost:${port}/api/insights`, {
-              method: "POST",
-              headers,
-            });
+            const r = await fetch(`http://localhost:${port}/api/insights`, { method: "POST", headers });
             if (r.ok) console.log("Auto-triggered AI insights (cadence: " + cadenceDays + " days).");
             else console.log("Auto-trigger insights skipped:", (await r.json().catch(() => ({}))).error);
           } catch (err) { console.error("Auto-trigger insights fetch error:", err.message); }
+          // Also run auto-categorization if there are uncategorized transactions
+          try { await fetch(`http://localhost:${port}/api/categorize`, { method: "POST", headers }); } catch {}
         }
       } catch (err) {
         console.error("Insights auto-trigger error:", err.message);
@@ -542,16 +548,61 @@ runMigrations().then(() => {
 
         await pool.query("UPDATE user_settings SET last_auto_sync_at = now() WHERE id = 1")
           .catch(e => console.error("Auto-sync timestamp update failed:", e.message));
-        console.log(
-          "Auto-sync complete: " +
-            (txnResult ? `${txnResult.transactions_added} txns added` : "txn sync failed") +
-            ", " +
-            (balResult ? `${balResult.accounts_updated} balances updated` : "balance sync failed")
-        );
+        const syncMsg = (txnResult ? `${txnResult.transactions_added} txns added` : "txn sync failed") +
+          ", " + (balResult ? `${balResult.accounts_updated} balances updated` : "balance sync failed");
+        console.log("Auto-sync complete: " + syncMsg);
+        // Notify user if enabled
+        if (s.sync_notifications_enabled !== false) {
+          try {
+            const { sendToAll } = require("./routes/notifications");
+            await sendToAll({
+              title: "Auto-sync complete",
+              body: syncMsg,
+              tag: "auto-sync",
+              data: { url: "/dashboard" },
+            });
+          } catch {}
+        }
       } catch (err) {
         console.error("Auto-sync scheduler error:", err.message);
       }
     }, 60 * 60 * 1000); // Check every 1 hour
+
+    // CSV import reminder: check if manual (CSV-only) accounts are overdue for refresh
+    setInterval(async () => {
+      try {
+        const settings = await pool.query(
+          "SELECT csv_reminder_enabled, csv_reminder_days, sync_notifications_enabled FROM user_settings WHERE id = 1"
+        );
+        const s = settings.rows[0];
+        if (!s || !s.csv_reminder_enabled) return;
+        const days = parseInt(s.csv_reminder_days) || 14;
+        // Find manual accounts whose most recent CSV import is older than csv_reminder_days
+        const staleAccounts = await pool.query(`
+          SELECT la.name, la.institution_name_manual AS institution,
+                 MAX(ci.imported_at) AS last_import
+          FROM linked_accounts la
+          LEFT JOIN csv_imports ci ON LOWER(ci.institution) = LOWER(COALESCE(la.institution_name_manual, la.name))
+          WHERE la.is_manual = true
+          GROUP BY la.id, la.name, la.institution_name_manual
+          HAVING MAX(ci.imported_at) IS NULL
+             OR MAX(ci.imported_at) < now() - make_interval(days => $1)
+        `, [days]);
+        if (staleAccounts.rows.length > 0) {
+          const { sendToAll } = require("./routes/notifications");
+          const names = staleAccounts.rows.map(r => r.institution || r.name).join(", ");
+          await sendToAll({
+            title: "CSV import reminder",
+            body: `${staleAccounts.rows.length} account(s) need a fresh CSV upload: ${names}`,
+            tag: "csv-reminder",
+            data: { url: "/" },
+          });
+        }
+      } catch (err) {
+        console.error("CSV reminder scheduler error:", err.message);
+      }
+    }, 24 * 60 * 60 * 1000); // Check every 24 hours
+
   });
 
   // --- Graceful shutdown ---
