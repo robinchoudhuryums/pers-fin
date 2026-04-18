@@ -10,8 +10,13 @@
       <a href="/settings"<%= activePage === 'settings' ? ' class="active"' : '' %>>Settings</a>
     </div>
     <div class="nav-sync-badge" id="nav-sync-badge" title="Most recent sync — updated by auto-sync or the Sync button"></div>
-    <div class="nav-notification-bell" id="nav-notif-bell" title="Notifications" style="cursor:pointer;position:relative;padding:4px 8px;">
-      🔔<span id="nav-notif-count" style="display:none;position:absolute;top:-2px;right:0;background:var(--red);color:#fff;border-radius:50%;font-size:9px;min-width:16px;height:16px;line-height:16px;text-align:center;"></span>
+    <div class="nav-notification-bell" id="nav-notif-bell" title="Notifications" style="cursor:pointer;position:relative;padding:4px 8px;display:flex;align-items:center;">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none" style="display:block;">
+        <circle cx="10" cy="10" r="8.5" stroke="var(--warm, #d4a574)" stroke-width="1.5" fill="none"/>
+        <circle cx="10" cy="10" r="4" stroke="var(--warm, #d4a574)" stroke-width="1.2" fill="none"/>
+        <circle cx="10" cy="10" r="1.5" fill="var(--warm, #d4a574)"/>
+      </svg>
+      <span id="nav-notif-count" style="display:none;position:absolute;top:-2px;right:-2px;background:var(--red);color:#fff;border-radius:50%;font-size:9px;min-width:16px;height:16px;line-height:16px;text-align:center;"></span>
     </div>
   </nav>
   <!-- Notification dropdown panel -->

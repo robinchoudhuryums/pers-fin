@@ -1,5 +1,6 @@
 <%- include('partials/head', { title: 'Settings', extraStyles: `
-    .container { max-width: 640px; }
+    .container { max-width: 860px; }
+    @media (max-width: 640px) { .container { max-width: 100%; } }
     .insight-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
       padding: 20px; margin-top: 12px; backdrop-filter: blur(12px); }
     .insight-card h3 { font-size: 14px; font-weight: 400; margin-bottom: 10px; }
@@ -19,6 +20,7 @@
   <p class="subtitle">Preferences and configuration</p>
   <div id="status-msg" class="status-msg"></div>
 
+  <h3 class="settings-group-title" style="font-size:12px;text-transform:uppercase;letter-spacing:1.5px;color:var(--warm, #d4a574);margin:24px 0 12px;font-weight:500;">Appearance &amp; Display</h3>
   <div class="section"><h2>Appearance</h2>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Theme</div><div class="desc">Switch between dark (night) and light (day) mode</div></div>
@@ -70,6 +72,7 @@
     </div>
   </div>
 
+  <h3 class="settings-group-title" style="font-size:12px;text-transform:uppercase;letter-spacing:1.5px;color:var(--warm, #d4a574);margin:24px 0 12px;font-weight:500;">Security</h3>
   <div class="section"><h2>Security</h2>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Session Timeout</div><div class="desc">Minutes before requiring password again (1-1440)</div></div>
@@ -83,6 +86,7 @@
     </div>
   </div>
 
+  <h3 class="settings-group-title" style="font-size:12px;text-transform:uppercase;letter-spacing:1.5px;color:var(--warm, #d4a574);margin:24px 0 12px;font-weight:500;">AI &amp; Intelligence</h3>
   <div class="section"><h2>AI Insights</h2>
     <div class="setting-row">
       <div class="setting-info"><div class="name">API Status</div><div class="desc" id="api-status-desc">Checking...</div></div>
@@ -162,6 +166,7 @@
     <div id="usage-history" style="max-height:260px;overflow-y:auto;"></div>
   </div>
 
+  <h3 class="settings-group-title" style="font-size:12px;text-transform:uppercase;letter-spacing:1.5px;color:var(--warm, #d4a574);margin:24px 0 12px;font-weight:500;">Notifications &amp; Automation</h3>
   <div class="section"><h2>Push Notifications</h2>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Enable Notifications</div><div class="desc" id="push-desc">Get alerts for anomalies, upcoming charges, and goal milestones</div></div>
@@ -254,6 +259,12 @@
       <div class="setting-info"><div class="name">Last Auto-Sync</div><div class="desc">Most recent scheduled sync run</div></div>
       <div class="setting-control"><span id="auto-sync-last" style="font-size:12px;color:var(--text-muted);">Never</span></div>
     </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Sync Notifications</div><div class="desc">Show a notification after each auto-sync completes</div></div>
+      <div class="setting-control">
+        <label class="toggle"><input type="checkbox" id="sync-notif-toggle" checked><span class="slider"></span></label>
+      </div>
+    </div>
   </div>
 
   <div class="section"><h2>Google Sheets Auto-Sync</h2>
@@ -284,6 +295,7 @@
     </div>
   </div>
 
+  <h3 class="settings-group-title" style="font-size:12px;text-transform:uppercase;letter-spacing:1.5px;color:var(--warm, #d4a574);margin:24px 0 12px;font-weight:500;">Data &amp; Export</h3>
   <div class="section"><h2>Data</h2>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Export Transactions</div><div class="desc">Download as CSV</div></div>
@@ -299,6 +311,7 @@
         <select id="tax-year-select" style="padding:8px 12px;font-size:13px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;"></select>
         <a id="tax-csv-link" href="#"><button class="btn">CSV</button></a>
         <a id="tax-json-link" href="#"><button class="btn">JSON</button></a>
+        <a id="tax-pdf-link" href="#"><button class="btn">PDF</button></a>
       </div>
     </div>
     <div class="setting-row">
@@ -342,6 +355,7 @@
         // Bank auto-sync
         document.getElementById('auto-sync-toggle').checked = !!s.auto_sync_enabled;
         document.getElementById('auto-sync-interval-select').value = String(s.auto_sync_interval_hours || 6);
+        document.getElementById('sync-notif-toggle').checked = s.sync_notifications_enabled !== false;
         document.getElementById('auto-sync-last').textContent = s.last_auto_sync_at
           ? new Date(s.last_auto_sync_at).toLocaleString()
           : 'Never';
@@ -427,8 +441,13 @@
     }
     function renderInsight(text) {
       let safe = esc(text);
-      let html = safe.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-        .replace(/^[\-\*] (.+)$/gm, '<li>$1</li>').replace(/\n/g, '<br>');
+      let html = safe
+        .replace(/^#{3}\s*(.+)$/gm, '<h4 style="margin:16px 0 8px;font-size:15px;font-weight:600;color:var(--text-primary);">$1</h4>')
+        .replace(/^#{2}\s*(.+)$/gm, '<h3 style="margin:16px 0 8px;font-size:17px;font-weight:600;color:var(--text-primary);">$1</h3>')
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/^[\-\*] (.+)$/gm, '<li>$1</li>')
+        .replace(/(<li>.*<\/li>)/gs, '<ul style="margin:4px 0 8px 16px;padding:0;">$1</ul>')
+        .replace(/\n/g, '<br>');
       document.getElementById('insights-container').innerHTML =
         '<div class="insight-card"><h3>AI Financial Insights</h3><div class="insight-text">' + html +
         '</div><div class="insight-meta">Generated just now</div></div>';
@@ -629,6 +648,7 @@
         var base = '/api/export/tax-report?year=' + yr;
         document.getElementById('tax-csv-link').href = base;
         document.getElementById('tax-json-link').href = base + '&format=json';
+        document.getElementById('tax-pdf-link').href = base + '&format=pdf';
       }
       sel.addEventListener('change', updateTaxLinks);
       updateTaxLinks();
@@ -681,6 +701,7 @@
       ['sheets-interval-select', 'change', function() { updateSetting('sheets_auto_sync_interval', this.value); }],
       ['auto-sync-toggle', 'change', function() { updateSetting('auto_sync_enabled', this.checked); }],
       ['auto-sync-interval-select', 'change', function() { updateSetting('auto_sync_interval_hours', parseInt(this.value)); }],
+      ['sync-notif-toggle', 'change', function() { updateSetting('sync_notifications_enabled', this.checked); }],
       ['install-btn', 'click', async function() {
         const result = await perfinPromptInstall();
         if (result && result.outcome === 'accepted') showMsg('Installing Perfin…', true);

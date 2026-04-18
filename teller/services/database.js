@@ -478,6 +478,8 @@ async function runMigrations() {
     // ---- Data freshness tracking ----
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_balance_sync_at TIMESTAMPTZ DEFAULT NULL");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_txn_sync_at TIMESTAMPTZ DEFAULT NULL");
+    // Sync notification toggle
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sync_notifications_enabled BOOLEAN NOT NULL DEFAULT true");
 
     // Record schema version
     if (currentVersion < SCHEMA_VERSION) {

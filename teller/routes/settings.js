@@ -17,8 +17,8 @@ try {
 // GET /api/settings
 router.get("/api/settings", async (_req, res) => {
   try {
-    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules, pyramid_data_source, pyramid_color_mode, debt_baseline_amount, sheets_auto_sync_enabled, sheets_auto_sync_interval, sheets_last_auto_sync, csv_reminder_days, csv_reminder_enabled, dashboard_widgets, persistent_url, persistent_webhook_enabled, auto_sync_enabled, auto_sync_interval_hours, last_auto_sync_at, last_balance_sync_at, last_txn_sync_at FROM user_settings WHERE id = 1");
-    const defaults = { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true, anomaly_detection: true, seasonal_forecast: true, debt_optimizer: true, bill_negotiation: true, income_savings: true, tax_deductions: true, goal_tracking: true, recurring_transfers: true }, pyramid_data_source: "wellness", pyramid_color_mode: "single", debt_baseline_amount: null, sheets_auto_sync_enabled: false, sheets_auto_sync_interval: 'weekly', sheets_last_auto_sync: null, csv_reminder_days: 14, csv_reminder_enabled: true, dashboard_widgets: {pyramid:true,accounts:true,recentTxns:true,monthlySpend:true,categories:true,merchants:true,upcoming:true,forecast:true,charts:true,calendar:true,cashFlow:true,savingsRate:true,yoy:true}, auto_sync_enabled: false, auto_sync_interval_hours: 6, last_auto_sync_at: null, last_balance_sync_at: null, last_txn_sync_at: null };
+    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules, pyramid_data_source, pyramid_color_mode, debt_baseline_amount, sheets_auto_sync_enabled, sheets_auto_sync_interval, sheets_last_auto_sync, csv_reminder_days, csv_reminder_enabled, dashboard_widgets, persistent_url, persistent_webhook_enabled, auto_sync_enabled, auto_sync_interval_hours, last_auto_sync_at, last_balance_sync_at, last_txn_sync_at, sync_notifications_enabled FROM user_settings WHERE id = 1");
+    const defaults = { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true, anomaly_detection: true, seasonal_forecast: true, debt_optimizer: true, bill_negotiation: true, income_savings: true, tax_deductions: true, goal_tracking: true, recurring_transfers: true }, pyramid_data_source: "wellness", pyramid_color_mode: "single", debt_baseline_amount: null, sheets_auto_sync_enabled: false, sheets_auto_sync_interval: 'weekly', sheets_last_auto_sync: null, csv_reminder_days: 14, csv_reminder_enabled: true, dashboard_widgets: {pyramid:true,accounts:true,recentTxns:true,monthlySpend:true,categories:true,merchants:true,upcoming:true,forecast:true,charts:true,calendar:true,cashFlow:true,savingsRate:true,yoy:true}, auto_sync_enabled: false, auto_sync_interval_hours: 6, last_auto_sync_at: null, last_balance_sync_at: null, last_txn_sync_at: null, sync_notifications_enabled: true };
     const row = result.rows[0] || defaults;
     if (typeof row.insight_modules === "string") row.insight_modules = JSON.parse(row.insight_modules);
     res.json({ ...defaults, ...row, available_modules: INSIGHT_MODULES });
@@ -131,6 +131,9 @@ router.patch("/api/settings", async (req, res) => {
     }
     if (req.body.persistent_webhook_enabled !== undefined) {
       updates.push("persistent_webhook_enabled = $" + idx++); values.push(!!req.body.persistent_webhook_enabled);
+    }
+    if (req.body.sync_notifications_enabled !== undefined) {
+      updates.push("sync_notifications_enabled = $" + idx++); values.push(!!req.body.sync_notifications_enabled);
     }
     if (!updates.length) return res.status(400).json({ error: "No valid settings" });
     updates.push("updated_at = now()");
@@ -261,6 +264,59 @@ router.get("/api/export/tax-report", async (req, res) => {
         categories: byCategory,
         item_count: deductions.rows.length,
       });
+    }
+
+    // PDF format
+    if (format === "pdf") {
+      try {
+        const PDFDocument = require("pdfkit");
+        const doc = new PDFDocument({ size: "LETTER", margins: { top: 50, bottom: 50, left: 50, right: 50 } });
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader("Content-Disposition", `attachment; filename=tax_deductions_${year}.pdf`);
+        doc.pipe(res);
+
+        // Header
+        doc.fontSize(20).fillColor("#d4a574").text("Perfin Tax Deduction Report", { align: "center" });
+        doc.moveDown(0.3);
+        doc.fontSize(12).fillColor("#888888").text(`Tax Year ${year}`, { align: "center" });
+        doc.moveDown(1);
+
+        // Group by category
+        const pdfByCategory = {};
+        for (const d of deductions.rows) {
+          if (!pdfByCategory[d.category]) pdfByCategory[d.category] = { items: [], total: 0 };
+          pdfByCategory[d.category].items.push(d);
+          pdfByCategory[d.category].total += parseFloat(d.amount);
+        }
+        const pdfGrandTotal = deductions.rows.reduce((s, d) => s + parseFloat(d.amount), 0);
+
+        for (const [cat, data] of Object.entries(pdfByCategory)) {
+          doc.fontSize(14).fillColor("#d4a574").text(cat, { underline: true });
+          doc.moveDown(0.3);
+          for (const d of data.items) {
+            const date = d.txn_date ? new Date(d.txn_date).toLocaleDateString() : "";
+            const confirmed = d.is_confirmed ? " [Confirmed]" : "";
+            doc.fontSize(10).fillColor("#cccccc")
+              .text(`  ${date}  ${d.merchant}  $${parseFloat(d.amount).toFixed(2)}${confirmed}`);
+          }
+          doc.fontSize(11).fillColor("#ffffff").text(`  Subtotal: $${data.total.toFixed(2)}`, { align: "right" });
+          doc.moveDown(0.5);
+        }
+
+        doc.moveDown(1);
+        doc.fontSize(14).fillColor("#d4a574").text(`Grand Total: $${pdfGrandTotal.toFixed(2)}`, { align: "right" });
+        doc.moveDown(0.5);
+        doc.fontSize(9).fillColor("#666666").text(
+          "This report is for informational purposes only. Consult a tax professional before filing. Generated by Perfin on " +
+          new Date().toLocaleDateString() + ".",
+          { align: "center" }
+        );
+        doc.end();
+        return;
+      } catch (pdfErr) {
+        console.error("PDF generation error:", pdfErr.message);
+        return res.status(500).json({ error: "PDF generation failed. Install pdfkit: cd teller && npm install pdfkit" });
+      }
     }
 
     // CSV format

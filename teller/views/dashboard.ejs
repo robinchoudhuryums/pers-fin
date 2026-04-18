@@ -494,6 +494,19 @@
     <div id="yoy-content"></div>
   </div>
 
+  <!-- AI Insights Widget (collapsible) -->
+  <div class="section" id="insights-widget" style="margin-bottom:28px;">
+    <details open>
+      <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;">
+        <h2 style="margin:0;">AI Financial Insights</h2>
+        <span id="insights-widget-meta" style="font-size:11px;color:var(--text-muted);"></span>
+      </summary>
+      <div id="insights-widget-body" style="margin-top:12px;font-size:13px;line-height:1.6;color:var(--text-secondary);">
+        Loading...
+      </div>
+    </details>
+  </div>
+
   <!-- Quick Links -->
   <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:24px;">
     <a href="/calendar" class="btn" style="text-decoration:none;">Bill Calendar</a>
@@ -929,6 +942,33 @@
     loadAccounts();
     loadSpendingSummary();
     loadForecast();
+
+    // Load latest AI insight for the dashboard widget
+    (async function loadInsightWidget() {
+      var body = document.getElementById('insights-widget-body');
+      var meta = document.getElementById('insights-widget-meta');
+      if (!body) return;
+      try {
+        var res = await apiFetch('/api/insights');
+        if (!res.ok) { body.textContent = 'No insights yet \u2014 generate from Settings.'; return; }
+        var data = await res.json();
+        if (!data.length) { body.textContent = 'No insights yet \u2014 generate from Settings.'; return; }
+        var latest = data[0];
+        var text = esc(latest.insight_text || '');
+        text = text
+          .replace(/^#{3}\s*(.+)$/gm, '<h4 style="margin:12px 0 6px;font-size:14px;font-weight:600;color:var(--text-primary);">$1</h4>')
+          .replace(/^#{2}\s*(.+)$/gm, '<h3 style="margin:12px 0 6px;font-size:15px;font-weight:600;color:var(--text-primary);">$1</h3>')
+          .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+          .replace(/^[\-\*] (.+)$/gm, '<li>$1</li>')
+          .replace(/(<li>.*<\/li>)/gs, '<ul style="margin:4px 0 8px 16px;padding:0;">$1</ul>')
+          .replace(/\n/g, '<br>');
+        body.innerHTML = text;
+        if (latest.created_at) {
+          var d = new Date(latest.created_at);
+          meta.textContent = '\u2014 ' + d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        }
+      } catch (e) { body.textContent = 'Unable to load insights.'; }
+    })();
 
     // PWA
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
