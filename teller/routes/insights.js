@@ -805,3 +805,4 @@ router.get("/api/insights/audit", async (_req, res) => {
 });
 
 module.exports = router;
+module.exports.renderInsightEmail = renderInsightEmail;
