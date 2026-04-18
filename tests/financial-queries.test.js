@@ -17,6 +17,7 @@ const {
   SPLIT_AMOUNT,
   NOT_REIMBURSED,
   NOT_REIMBURSED_UNALIASED,
+  NOT_TRANSFER,
   getMonthlySpending,
   getMonthlyIncome,
   getMonthlyIncomeAndSpending,
@@ -109,6 +110,81 @@ describe("INCOME_PREDICATE — combined logic", () => {
   it("ADP Payroll should match inclusion and NOT exclusion (net: income)", () => {
     assert.ok(pgRegexMatch("ADP Payroll", INCL_PATTERN));
     assert.ok(!pgRegexMatch("ADP Payroll", EXCL_PATTERN));
+  });
+});
+
+describe("INCOME_PREDICATE — expanded keywords", () => {
+  it("matches 'deposit' as a whole word", () => {
+    assert.ok(pgRegexMatch("ACH DEPOSIT", INCL_PATTERN));
+    assert.ok(pgRegexMatch("DEPOSIT FROM EMPLOYER", INCL_PATTERN));
+  });
+
+  it("matches 'direct deposit' (two-word phrase)", () => {
+    assert.ok(pgRegexMatch("DIRECT DEPOSIT EMPLOYER INC", INCL_PATTERN));
+  });
+
+  it("matches 'ach credit'", () => {
+    assert.ok(pgRegexMatch("ACH CREDIT FROM EMPLOYER", INCL_PATTERN));
+  });
+
+  it("does NOT match ATM deposits (excluded by 'atm')", () => {
+    assert.ok(pgRegexMatch("ATM DEPOSIT", EXCL_PATTERN), "ATM should trigger exclusion");
+  });
+});
+
+// Extract NOT_TRANSFER pattern for testing
+const transferMatch = NOT_TRANSFER.match(/!~\*\s*'([^']+)'/);
+const TRANSFER_PATTERN = transferMatch ? transferMatch[1] : "";
+
+describe("NOT_TRANSFER — credit card payment exclusion", () => {
+  it("excludes 'Chase' standalone (not just 'Chase Bank')", () => {
+    assert.ok(pgRegexMatch("Chase", TRANSFER_PATTERN));
+    assert.ok(pgRegexMatch("CHASE PAYMENT", TRANSFER_PATTERN));
+  });
+
+  it("excludes 'Discover'", () => {
+    assert.ok(pgRegexMatch("Discover", TRANSFER_PATTERN));
+    assert.ok(pgRegexMatch("DISCOVER CARD PAYMENT", TRANSFER_PATTERN));
+  });
+
+  it("excludes 'Capital One'", () => {
+    assert.ok(pgRegexMatch("CAPITAL ONE MOBILE PAYMENT", TRANSFER_PATTERN));
+    assert.ok(pgRegexMatch("Capital One", TRANSFER_PATTERN));
+  });
+
+  it("excludes 'American Express' and 'Amex'", () => {
+    assert.ok(pgRegexMatch("AMERICAN EXPRESS PAYMENT", TRANSFER_PATTERN));
+    assert.ok(pgRegexMatch("AMEX PAYMENT", TRANSFER_PATTERN));
+  });
+
+  it("excludes 'Wells Fargo'", () => {
+    assert.ok(pgRegexMatch("WELLS FARGO", TRANSFER_PATTERN));
+  });
+
+  it("excludes Zelle, Venmo, PayPal", () => {
+    assert.ok(pgRegexMatch("ZELLE TRANSFER", TRANSFER_PATTERN));
+    assert.ok(pgRegexMatch("Venmo Payment", TRANSFER_PATTERN));
+    assert.ok(pgRegexMatch("PayPal Transfer", TRANSFER_PATTERN));
+  });
+
+  it("does NOT exclude legitimate merchants", () => {
+    assert.ok(!pgRegexMatch("Amazon.com", TRANSFER_PATTERN));
+    assert.ok(!pgRegexMatch("Costco Wholesale", TRANSFER_PATTERN));
+    assert.ok(!pgRegexMatch("Netflix", TRANSFER_PATTERN));
+    assert.ok(!pgRegexMatch("Starbucks", TRANSFER_PATTERN));
+  });
+});
+
+describe("getMonthlySpending applies NOT_TRANSFER", () => {
+  it("SQL includes the transfer exclusion", async () => {
+    let capturedSql = "";
+    const mockPool = {
+      query: async (sql) => { capturedSql = sql; return { rows: [] }; },
+    };
+    await getMonthlySpending(mockPool, 3);
+    assert.ok(capturedSql.includes("!~*"), "spending query should use regex exclusion");
+    assert.ok(capturedSql.includes("chase"), "spending query should exclude Chase");
+    assert.ok(capturedSql.includes("discover"), "spending query should exclude Discover");
   });
 });
 

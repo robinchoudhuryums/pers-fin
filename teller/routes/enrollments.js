@@ -6,7 +6,7 @@ const express = require("express");
 const router = express.Router();
 const { pool, ENCRYPTION_PASSPHRASE } = require("../services/database");
 const { tellerRequest } = require("../services/teller-api");
-const { INCOME_PREDICATE, getMonthlySpending, getMonthlyIncome } = require("../services/financial-queries");
+const { INCOME_PREDICATE, NOT_TRANSFER, getMonthlySpending, getMonthlyIncome } = require("../services/financial-queries");
 
 // POST /api/enroll — store Teller Connect enrollment
 router.post("/api/enroll", async (req, res) => {
@@ -592,6 +592,7 @@ router.get("/api/spending-summary", async (req, res) => {
        FROM transactions t
        LEFT JOIN linked_accounts la ON la.account_id = t.account_id
        WHERE t.amount > 0 AND COALESCE(t.is_reimbursed, false) = false
+         AND ${NOT_TRANSFER}
          AND t.date >= CURRENT_DATE - ($1 || ' months')::INTERVAL
        GROUP BY TO_CHAR(t.date, 'YYYY-MM')
        ORDER BY month DESC`,
@@ -610,6 +611,7 @@ router.get("/api/spending-summary", async (req, res) => {
          FROM transactions t
          LEFT JOIN linked_accounts la ON la.account_id = t.account_id
          WHERE t.amount > 0 AND COALESCE(t.is_reimbursed, false) = false
+           AND ${NOT_TRANSFER}
            AND t.date >= CURRENT_DATE - ($1 || ' months')::INTERVAL
            AND NOT EXISTS (SELECT 1 FROM transaction_splits s WHERE s.parent_transaction_id = t.transaction_id)
        ),
@@ -621,6 +623,7 @@ router.get("/api/spending-summary", async (req, res) => {
          JOIN transactions t ON t.transaction_id = s.parent_transaction_id
          LEFT JOIN linked_accounts la ON la.account_id = t.account_id
          WHERE t.amount > 0 AND COALESCE(t.is_reimbursed, false) = false
+           AND ${NOT_TRANSFER}
            AND t.date >= CURRENT_DATE - ($1 || ' months')::INTERVAL
        ),
        all_lines AS (
@@ -649,9 +652,8 @@ router.get("/api/spending-summary", async (req, res) => {
        LEFT JOIN linked_accounts la ON la.account_id = t.account_id
        WHERE t.amount > 0 AND COALESCE(t.is_reimbursed, false) = false
              AND t.merchant_name IS NOT NULL
+             AND ${NOT_TRANSFER}
              AND t.date >= CURRENT_DATE - ($1 || ' months')::INTERVAL
-             AND COALESCE(t.user_merchant_name, t.merchant_name, t.name) !~*
-               '\y(payment thank|pymt|autopay|auto pay|minimum payment|directpay|automatic payment|interest|int charge|finance charge|funds tran|funds transfer|transfer to|transfer from|ach transfer|wire transfer|internal transfer|zelle|venmo|paypal|cash app|cashapp|square cash|bank of america|wells fargo|chase bank|citi bank|citibank|capital one|us bank|pnc bank|td bank|ally bank|truist|boa transfer|online transfer|mobile transfer|bill pay|epay|credit card payment|loan payment|mortgage payment|deposit|direct dep|atm|withdrawal)\y'
        GROUP BY COALESCE(t.user_merchant_name, t.merchant_name, t.name)
        ORDER BY total_spent DESC
        LIMIT 10`,
@@ -798,6 +800,7 @@ router.get("/api/cash-flow", async (req, res) => {
         LEFT JOIN linked_accounts la ON la.account_id = t.account_id
         WHERE t.amount > 0 AND t.pending = false
           AND COALESCE(t.is_reimbursed, false) = false
+          AND ${NOT_TRANSFER}
           AND t.date >= CURRENT_DATE - INTERVAL '60 days'
         GROUP BY t.date
       ) daily
@@ -820,6 +823,7 @@ router.get("/api/cash-flow", async (req, res) => {
         LEFT JOIN linked_accounts la ON la.account_id = t.account_id
         WHERE t.amount > 0 AND t.pending = false
           AND COALESCE(t.is_reimbursed, false) = false
+          AND ${NOT_TRANSFER}
           AND t.date >= CURRENT_DATE - INTERVAL '60 days'
         GROUP BY t.date
       )
@@ -928,6 +932,7 @@ router.get("/api/spending-yoy", async (req, res) => {
         LEFT JOIN linked_accounts la ON la.account_id = t.account_id
         WHERE t.amount > 0 AND t.pending = false
           AND COALESCE(t.is_reimbursed, false) = false
+          AND ${NOT_TRANSFER}
           AND EXTRACT(MONTH FROM t.date) = $1
           AND EXTRACT(YEAR FROM t.date) >= $2 - 2
           AND NOT EXISTS (SELECT 1 FROM transaction_splits s WHERE s.parent_transaction_id = t.transaction_id)
@@ -940,6 +945,7 @@ router.get("/api/spending-yoy", async (req, res) => {
         LEFT JOIN linked_accounts la ON la.account_id = t.account_id
         WHERE t.amount > 0 AND t.pending = false
           AND COALESCE(t.is_reimbursed, false) = false
+          AND ${NOT_TRANSFER}
           AND EXTRACT(MONTH FROM t.date) = $1
           AND EXTRACT(YEAR FROM t.date) >= $2 - 2
       ),

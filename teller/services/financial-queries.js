@@ -18,13 +18,27 @@
 // transfers/payments/refunds. Mirrors the strict filter previously inlined in
 // /api/savings-rate (routes/enrollments.js) and /api/cash-flow.
 //
-// Detected as income:   payroll, direct dep, salary, employer, or category[1]='Income'
+// Detected as income:   payroll, direct dep, salary, employer, deposit,
+//                        ach credit, or category[1]='Income'
 // Explicitly excluded:  payment, transfer, pymt, zelle, venmo, paypal,
-//                       cash app, refund, credit, reversal
+//                       cash app, refund, credit, reversal, atm
 const INCOME_PREDICATE = `
-  (COALESCE(merchant_name, name, '') ~* '\\y(payroll|direct dep|salary|employer)\\y'
+  (COALESCE(merchant_name, name, '') ~* '\\y(payroll|direct dep|direct deposit|dir dep|salary|employer|deposit|ach credit)\\y'
     OR category[1] = 'Income')
-  AND COALESCE(merchant_name, name, '') !~* '\\y(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|credit|reversal)\\y'
+  AND COALESCE(merchant_name, name, '') !~* '\\y(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|reversal|atm|withdrawal|bill pay)\\y'
+`;
+
+// Spending exclusion — filters out inter-account transfers and credit card
+// payments that would double-count spending. Applied to ALL spending
+// aggregations so monthly trends, category breakdowns, budgets, and cash
+// flow all agree on what counts as "real spending".
+//
+// Excludes: credit card payments (Chase, Capital One, Discover, Amex, etc.),
+// bank transfers (ACH, wire, Zelle, Venmo), loan/mortgage payments,
+// ATM transactions, and other non-spending movements.
+const NOT_TRANSFER = `
+  COALESCE(t.user_merchant_name, t.merchant_name, t.name, '') !~*
+    '\\y(payment thank|pymt|autopay|auto pay|minimum payment|directpay|automatic payment|interest|int charge|finance charge|funds tran|funds transfer|transfer to|transfer from|ach transfer|wire transfer|internal transfer|zelle|venmo|paypal|cash app|cashapp|square cash|bank of america|wells fargo|chase|citi|citibank|capital one|discover|amex|american express|us bank|pnc bank|td bank|ally bank|truist|boa transfer|online transfer|mobile transfer|bill pay|epay|credit card payment|card payment|cc payment|loan payment|mortgage payment|deposit|direct dep|atm|withdrawal)\\y'
 `;
 
 // Spending split SQL fragment — multiplies each transaction's amount by the
@@ -53,6 +67,7 @@ async function getMonthlySpending(pool, months = 6) {
      LEFT JOIN linked_accounts la ON la.account_id = t.account_id
      WHERE t.amount > 0 AND t.pending = false
        AND COALESCE(t.is_reimbursed, false) = false
+       AND ${NOT_TRANSFER}
        AND t.date >= CURRENT_DATE - make_interval(months => $1)
      GROUP BY TO_CHAR(t.date, 'YYYY-MM')
      ORDER BY month`,
@@ -125,6 +140,7 @@ async function getCategorySpendingThisMonth(pool) {
       LEFT JOIN linked_accounts la ON la.account_id = t.account_id
       WHERE t.amount > 0 AND t.pending = false
         AND COALESCE(t.is_reimbursed, false) = false
+        AND ${NOT_TRANSFER}
         AND t.date >= date_trunc('month', CURRENT_DATE)
         AND t.date <  date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
         AND NOT EXISTS (SELECT 1 FROM transaction_splits s WHERE s.parent_transaction_id = t.transaction_id)
@@ -137,6 +153,7 @@ async function getCategorySpendingThisMonth(pool) {
       LEFT JOIN linked_accounts la ON la.account_id = t.account_id
       WHERE t.amount > 0 AND t.pending = false
         AND COALESCE(t.is_reimbursed, false) = false
+        AND ${NOT_TRANSFER}
         AND t.date >= date_trunc('month', CURRENT_DATE)
         AND t.date <  date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
     ),
@@ -157,6 +174,7 @@ module.exports = {
   SPLIT_AMOUNT,
   NOT_REIMBURSED,
   NOT_REIMBURSED_UNALIASED,
+  NOT_TRANSFER,
   getMonthlySpending,
   getMonthlyIncome,
   getMonthlyIncomeAndSpending,
