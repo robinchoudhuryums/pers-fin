@@ -481,6 +481,20 @@ async function runMigrations() {
     // Sync notification toggle
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sync_notifications_enabled BOOLEAN NOT NULL DEFAULT true");
 
+    // ---- AI Audit Log ----
+    await client.query(`CREATE TABLE IF NOT EXISTS ai_audit_log (
+      id SERIAL PRIMARY KEY,
+      insight_id INT REFERENCES financial_insights(id) ON DELETE CASCADE,
+      module TEXT NOT NULL,
+      severity TEXT NOT NULL DEFAULT 'info',
+      check_type TEXT NOT NULL,
+      claim_text TEXT,
+      expected_value TEXT,
+      actual_value TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+    await client.query("CREATE INDEX IF NOT EXISTS idx_ai_audit_log_insight ON ai_audit_log (insight_id, severity)");
+
     // Record schema version
     if (currentVersion < SCHEMA_VERSION) {
       await client.query(
