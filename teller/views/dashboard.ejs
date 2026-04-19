@@ -475,23 +475,40 @@
     <div id="budget-alerts-list"></div>
   </div>
 
-  <!-- Savings Rate -->
+  <!-- Bill Calendar Quick View -->
+  <div class="section" id="calendar-widget" style="margin-bottom:28px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;">
+      <h2 style="margin:0;">Upcoming Bills</h2>
+      <a href="/calendar" style="color:var(--teal);font-size:12px;text-decoration:none;">Full Calendar &rarr;</a>
+    </div>
+    <div id="calendar-widget-body" style="margin-top:12px;font-size:13px;color:var(--text-muted);">Loading...</div>
+  </div>
+
+  <!-- Savings Rate (collapsible) -->
   <div class="section" id="savings-rate-section" style="display:none;margin-bottom:28px;">
-    <h2>Savings Rate</h2>
-    <div id="savings-rate-content"></div>
+    <details open>
+      <summary style="cursor:pointer;"><h2 style="margin:0;display:inline;">Savings Rate</h2></summary>
+      <div id="savings-rate-content" style="margin-top:12px;"></div>
+    </details>
   </div>
 
-  <!-- Cash Flow Forecast -->
+  <!-- Cash Flow Forecast (collapsible) -->
   <div class="section" id="cashflow-section" style="display:none;margin-bottom:28px;">
-    <h2>Cash Flow Projection</h2>
-    <div id="cashflow-summary" style="font-size:13px;color:var(--text-muted);margin-bottom:12px;"></div>
-    <div id="cashflow-list"></div>
+    <details open>
+      <summary style="cursor:pointer;"><h2 style="margin:0;display:inline;">Cash Flow Projection</h2></summary>
+      <div style="margin-top:12px;">
+        <div id="cashflow-summary" style="font-size:13px;color:var(--text-muted);margin-bottom:12px;"></div>
+        <div id="cashflow-list"></div>
+      </div>
+    </details>
   </div>
 
-  <!-- Year-over-Year Comparison -->
+  <!-- Year-over-Year Comparison (collapsible) -->
   <div class="section" id="yoy-section" style="display:none;margin-bottom:28px;">
-    <h2>Year-over-Year Comparison</h2>
-    <div id="yoy-content"></div>
+    <details open>
+      <summary style="cursor:pointer;"><h2 style="margin:0;display:inline;">Year-over-Year Comparison</h2></summary>
+      <div id="yoy-content" style="margin-top:12px;"></div>
+    </details>
   </div>
 
   <!-- AI Insights Widget (collapsible) -->
@@ -942,6 +959,39 @@
     loadAccounts();
     loadSpendingSummary();
     loadForecast();
+
+    // Load upcoming bills for calendar widget
+    (async function loadCalendarWidget() {
+      var body = document.getElementById('calendar-widget-body');
+      if (!body) return;
+      try {
+        var now = new Date();
+        var res = await apiFetch('/api/bill-calendar?year=' + now.getFullYear() + '&month=' + (now.getMonth() + 1));
+        if (!res.ok) { body.textContent = 'Unable to load.'; return; }
+        var data = await res.json();
+        var today = now.getDate();
+        var upcoming = [];
+        for (var i = 0; i < data.days.length; i++) {
+          var day = data.days[i];
+          if (day.day >= today && day.events.length > 0) {
+            for (var j = 0; j < day.events.length; j++) {
+              upcoming.push({ day: day.day, event: day.events[j] });
+            }
+          }
+          if (upcoming.length >= 6) break;
+        }
+        if (upcoming.length === 0) { body.textContent = 'No upcoming bills this month.'; return; }
+        body.innerHTML = upcoming.map(function(u) {
+          var ev = u.event;
+          var cls = ev.is_income ? 'color:var(--green)' : 'color:var(--text-muted)';
+          var prefix = ev.is_income ? '+' : '-';
+          var paid = ev.is_paid ? ' style="text-decoration:line-through;opacity:0.5;"' : '';
+          return '<div' + paid + ' style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border);font-size:12px;">' +
+            '<span>' + (ev.is_paid ? '\u2713 ' : '') + esc(ev.name) + ' <span style="color:var(--text-muted);font-size:11px;">(Day ' + u.day + ')</span></span>' +
+            '<span style="' + cls + ';">' + prefix + '$' + Math.abs(ev.amount).toFixed(2) + '</span></div>';
+        }).join('');
+      } catch (e) { body.textContent = 'Unable to load.'; }
+    })();
 
     // Load latest AI insight for the dashboard widget
     (async function loadInsightWidget() {
