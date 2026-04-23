@@ -14,18 +14,39 @@
 // showed. This module is the single source of truth.
 // ============================================================================
 
-// Income identification — keyword match on merchant/name, plus exclusions for
-// transfers/payments/refunds. Mirrors the strict filter previously inlined in
-// /api/savings-rate (routes/enrollments.js) and /api/cash-flow.
+// Income identification — mix of strict keyword matching, explicit user-
+// authorized patterns, and Plaid's own "Income" category.
 //
-// Detected as income:   payroll, direct dep, salary, employer, deposit,
-//                        ach credit, or category[1]='Income'
-// Explicitly excluded:  payment, transfer, pymt, zelle, venmo, paypal,
-//                       cash app, refund, credit, reversal, atm
+// Structured as three OR branches so each branch is independently gated:
+//   (a) Strict keyword match (payroll/direct-dep/salary/deposit/ach-credit)
+//       AND NOT excluded by the transfer/payment/refund negative filter.
+//       Keeps unknown transfers and card payments out of income.
+//   (b) User-authorized specific patterns that BYPASS the negative filter.
+//       Needed when income flows through a named transfer (e.g. paycheck
+//       lands in brokerage, user then transfers to checking, leaving a
+//       "Funds transfer from brokerage" credit that's the real paycheck
+//       from the user's perspective). The pattern must be specific enough
+//       that it won't accidentally match unrelated transfers.
+//   (c) Plaid's own category hierarchy tagging the txn as Income.
+//
+// To add another known-good income pattern, add it to (b). Keep patterns
+// narrow — "transfer from X" with X specific. A permissive "transfer from"
+// would re-classify intra-account moves as income and double-count.
+//
+// Note on double-counting: branch (b) is safe only when the source side of
+// the transfer is NOT itself classified as income. If the brokerage
+// account is also linked and receives a payroll deposit that hits branch
+// (a), the later transfer to checking under branch (b) will double the
+// paycheck. Mitigation options (for future): (i) scope branch (b) to a
+// configured paycheck-destination account; (ii) reconcile same-amount
+// credit/debit pairs within N days and keep only the earlier.
 const INCOME_PREDICATE = `
-  (COALESCE(merchant_name, name, '') ~* '\\y(payroll|direct dep|direct deposit|dir dep|salary|employer|deposit|ach credit)\\y'
-    OR category[1] = 'Income')
-  AND COALESCE(merchant_name, name, '') !~* '\\y(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|reversal|atm|withdrawal|bill pay)\\y'
+  (
+    (COALESCE(merchant_name, name, '') ~* '\\y(payroll|direct dep|direct deposit|dir dep|salary|employer|deposit|ach credit)\\y'
+      AND COALESCE(merchant_name, name, '') !~* '\\y(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|reversal|atm|withdrawal|bill pay)\\y')
+    OR COALESCE(merchant_name, name, '') ~* 'funds transfer from brokerage'
+    OR category[1] = 'Income'
+  )
 `;
 
 // Spending exclusion — filters out inter-account transfers and credit card
