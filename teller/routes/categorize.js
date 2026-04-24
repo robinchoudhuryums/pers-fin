@@ -14,24 +14,31 @@ try {
   Anthropic = null;
 }
 
-// Standard categories for classification
-const CATEGORIES = [
-  "Food & Drink", "Groceries", "Transportation", "Gas & Fuel",
-  "Shopping", "Entertainment", "Health & Fitness", "Healthcare",
-  "Housing", "Utilities", "Insurance", "Education",
-  "Travel", "Personal Care", "Gifts & Donations", "Fees & Charges",
-  "Transfer", "Income", "Investment", "Subscription",
-  "Other",
-];
+const {
+  CATEGORIES,
+  CATEGORY_DESCRIPTIONS,
+  TELLER_CATEGORY_MAP,
+  OUR_CATEGORIES_PG,
+} = require("./categorize-helpers");
 
 // GET /api/categorize/status — how many uncategorized transactions exist
+//
+// "Uncategorized" here means the transaction's current category isn't
+// one of our 21 standard categories — that includes Teller-provided
+// buckets like 'general'/'dining'/'transport'. The categorize flow can
+// handle these via Teller-map (no AI cost), user rules, or AI fallback.
 router.get("/api/categorize/status", async (_req, res) => {
   try {
     const result = await pool.query(
       `SELECT COUNT(*) AS uncategorized
        FROM transactions
-       WHERE (category IS NULL OR category = '{}' OR category[1] = 'Uncategorized')
-         AND pending = false AND amount > 0`
+       WHERE (
+         category IS NULL
+         OR category = '{}'
+         OR NOT (category[1] = ANY($1::text[]))
+       )
+         AND pending = false AND amount > 0`,
+      [OUR_CATEGORIES_PG]
     );
     res.json({
       uncategorized: parseInt(result.rows[0].uncategorized),
@@ -48,14 +55,26 @@ router.post("/api/categorize", async (_req, res) => {
     return res.status(501).json({ error: "Set ANTHROPIC_API_KEY to enable ML categorization." });
   }
   try {
-    // Get uncategorized transactions in batches of 50
+    // Pull up to 50 rows that aren't in our 21-category scheme. This
+    // includes Teller-tagged rows ('general', 'dining', etc.) so they
+    // can be re-mapped — most of them via the deterministic Teller map
+    // below (no AI call).
     const result = await pool.query(
-      `SELECT transaction_id, COALESCE(merchant_name, name) AS merchant, amount, date
+      `SELECT transaction_id,
+              COALESCE(merchant_name, name) AS merchant,
+              amount, date,
+              category,
+              personal_finance_category
        FROM transactions
-       WHERE (category IS NULL OR category = '{}' OR category[1] = 'Uncategorized')
+       WHERE (
+         category IS NULL
+         OR category = '{}'
+         OR NOT (category[1] = ANY($1::text[]))
+       )
          AND pending = false AND amount > 0
        ORDER BY date DESC
-       LIMIT 50`
+       LIMIT 50`,
+      [OUR_CATEGORIES_PG]
     );
 
     if (result.rows.length === 0) {
@@ -93,16 +112,43 @@ router.post("/api/categorize", async (_req, res) => {
       if (!matched) remaining.push(txn);
     }
 
-    // If all were handled by rules, return early (no AI cost)
-    if (remaining.length === 0) {
+    // Teller-map fast path: any row whose current category[1] maps
+    // deterministically into our scheme is assigned without calling AI.
+    // Handles the bulk of real-world rows (dining, groceries, transport…).
+    let tellerMapped = 0;
+    const afterTellerMap = [];
+    for (const txn of remaining) {
+      const tellerCat = Array.isArray(txn.category) && txn.category[0]
+        ? String(txn.category[0]).toLowerCase()
+        : null;
+      const mapped = tellerCat ? TELLER_CATEGORY_MAP[tellerCat] : null;
+      if (mapped && CATEGORIES.includes(mapped)) {
+        await pool.query(
+          "UPDATE transactions SET category = $1 WHERE transaction_id = $2",
+          [`{${mapped}}`, txn.transaction_id]
+        );
+        tellerMapped++;
+      } else {
+        afterTellerMap.push(txn);
+      }
+    }
+
+    // If everything was handled by rules + Teller-map, skip the AI call.
+    if (afterTellerMap.length === 0) {
       const leftover = await pool.query(
         `SELECT COUNT(*) AS uncategorized FROM transactions
-         WHERE (category IS NULL OR category = '{}' OR category[1] = 'Uncategorized')
-           AND pending = false AND amount > 0`
+         WHERE (
+           category IS NULL
+           OR category = '{}'
+           OR NOT (category[1] = ANY($1::text[]))
+         )
+           AND pending = false AND amount > 0`,
+        [OUR_CATEGORIES_PG]
       );
       return res.json({
-        categorized: ruleApplied,
+        categorized: ruleApplied + tellerMapped,
         categorized_by_rules: ruleApplied,
+        categorized_by_teller_map: tellerMapped,
         tokens_used: 0,
         remaining: parseInt(leftover.rows[0].uncategorized),
         estimated_cost: 0,
@@ -136,9 +182,15 @@ router.post("/api/categorize", async (_req, res) => {
     const userModel = settingsRow.rows[0]?.insights_model || "haiku";
     const modelId = MODEL_MAP[userModel] || MODEL_MAP.haiku;
 
-    const txnList = remaining.map((t, i) =>
-      (i + 1) + ". " + t.merchant + " — $" + parseFloat(t.amount).toFixed(2) + " on " + t.date
-    ).join("\n");
+    // Build the per-txn prompt lines. Include the bank's original category
+    // hint when present — it often disambiguates cryptic merchant strings
+    // (e.g. "SQ *MERCHANT" with hint "dining" is obviously Food & Drink).
+    const txnList = afterTellerMap.map((t, i) => {
+      const hint = Array.isArray(t.category) && t.category[0]
+        ? " [bank hint: " + t.category[0] + "]"
+        : "";
+      return (i + 1) + ". " + t.merchant + " — $" + parseFloat(t.amount).toFixed(2) + " on " + t.date + hint;
+    }).join("\n");
 
     const client = new Anthropic();
 
@@ -165,12 +217,20 @@ router.post("/api/categorize", async (_req, res) => {
       },
     };
 
+    // The system prompt is the big quality lever here. Listing categories
+    // with concrete examples cuts Haiku's "Other" rate dramatically and
+    // teaches it the boundary cases (Transfer vs Income, Food & Drink vs
+    // Groceries, Entertainment vs Subscription).
+    const systemPrompt =
+      "You classify personal finance transactions into exactly one of these categories. " +
+      "Pick the BEST fit based on the merchant name and bank hint. Use \"Other\" only when " +
+      "no category below clearly applies — every other choice is better than \"Other\".\n\n" +
+      "CATEGORIES:\n" + CATEGORY_DESCRIPTIONS + "\n\n" +
+      "Return your results via the categorize_transactions tool.";
+
     const message = await client.messages.create({
       model: modelId, max_tokens: 2000,
-      system: [{ type: "text", text:
-        "Categorize each transaction into exactly one category. Use the categorize_transactions tool to return your results.",
-        cache_control: { type: "ephemeral" },
-      }],
+      system: [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }],
       tools: [categorizeTool],
       tool_choice: { type: "tool", name: "categorize_transactions" },
       messages: [{ role: "user", content: "Transactions:\n" + txnList }],
@@ -186,14 +246,15 @@ router.post("/api/categorize", async (_req, res) => {
     }
     const categories = toolBlock.input.categories;
 
-    // Apply categories to transactions
+    // Apply AI-assigned categories to the rows that made it past the
+    // Teller-map fast path (afterTellerMap is the list Claude saw).
     let updated = 0;
     for (const cat of categories) {
       if (!cat || typeof cat.index !== "number" || typeof cat.category !== "string") continue;
       const idx = cat.index - 1;
-      if (idx < 0 || idx >= remaining.length) continue;
+      if (idx < 0 || idx >= afterTellerMap.length) continue;
       if (!CATEGORIES.includes(cat.category)) continue;
-      const txn = remaining[idx];
+      const txn = afterTellerMap[idx];
       await pool.query(
         "UPDATE transactions SET category = $1 WHERE transaction_id = $2",
         [`{${cat.category}}`, txn.transaction_id]
@@ -211,12 +272,18 @@ router.post("/api/categorize", async (_req, res) => {
 
     const leftoverCount = await pool.query(
       `SELECT COUNT(*) AS uncategorized FROM transactions
-       WHERE (category IS NULL OR category = '{}' OR category[1] = 'Uncategorized')
-         AND pending = false AND amount > 0`
+       WHERE (
+         category IS NULL
+         OR category = '{}'
+         OR NOT (category[1] = ANY($1::text[]))
+       )
+         AND pending = false AND amount > 0`,
+      [OUR_CATEGORIES_PG]
     );
     res.json({
-      categorized: updated + ruleApplied,
+      categorized: updated + ruleApplied + tellerMapped,
       categorized_by_rules: ruleApplied,
+      categorized_by_teller_map: tellerMapped,
       categorized_by_ai: updated,
       tokens_used: tokensUsed,
       remaining: parseInt(leftoverCount.rows[0].uncategorized),
@@ -344,13 +411,20 @@ router.post("/api/categorization-rules/apply", async (_req, res) => {
       } else {
         condition = "LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name, '')) LIKE '%' || LOWER($1) || '%'";
       }
+      // Same scheme-aware predicate as POST /api/categorize: user rules
+      // should overwrite Teller-tagged rows (e.g. 'general', 'dining')
+      // that aren't yet in our 21-category scheme, not just untagged ones.
       const result = await pool.query(
         `UPDATE transactions t SET category = $2
-         WHERE (category IS NULL OR category = '{}' OR category[1] = 'Uncategorized')
+         WHERE (
+           category IS NULL
+           OR category = '{}'
+           OR NOT (category[1] = ANY($3::text[]))
+         )
            AND pending = false AND amount > 0
            AND ${condition}
          RETURNING transaction_id`,
-        [pattern, `{${rule.category}}`]
+        [pattern, `{${rule.category}}`, OUR_CATEGORIES_PG]
       );
       if (result.rowCount > 0) {
         totalApplied += result.rowCount;
