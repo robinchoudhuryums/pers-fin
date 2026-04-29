@@ -1,0 +1,119 @@
+/* Shell-only styles. Deliberately self-contained — no shared tokens
+   imported from either sub-app, since the shell sits *outside* their
+   theme/palette systems and shouldn't drift if those change. */
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: Inter, system-ui, -apple-system, sans-serif;
+  background: #0c0e14;
+  color: #eaeaea;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* --- Login screen ---------------------------------------------------------- */
+.login-body { display: flex; align-items: center; justify-content: center; padding: 24px; }
+.login-card {
+  background: #14161e;
+  border: 1px solid #232634;
+  border-radius: 12px;
+  padding: 32px;
+  max-width: 360px;
+  width: 100%;
+}
+.login-card h1 { margin: 0 0 6px; font-weight: 400; font-size: 24px; }
+.login-card .subtitle { margin: 0 0 24px; font-size: 13px; color: #8a8e99; font-weight: 300; }
+.login-error {
+  background: rgba(235, 107, 107, 0.1);
+  border: 1px solid #663333;
+  color: #eb6b6b;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  margin-bottom: 16px;
+}
+.pin-input {
+  width: 100%;
+  padding: 12px 14px;
+  font-size: 18px;
+  letter-spacing: 8px;
+  text-align: center;
+  border: 1px solid #232634;
+  border-radius: 8px;
+  background: transparent;
+  color: #eaeaea;
+  font-family: inherit;
+  margin-bottom: 12px;
+}
+.pin-input:focus { outline: none; border-color: #d4a574; }
+
+.btn {
+  padding: 10px 16px;
+  font-size: 13px;
+  font-family: inherit;
+  border: 1px solid #232634;
+  border-radius: 8px;
+  background: transparent;
+  color: #eaeaea;
+  cursor: pointer;
+  width: 100%;
+}
+.btn.primary {
+  background: #d4a574;
+  color: #0c0e14;
+  border-color: #d4a574;
+  font-weight: 500;
+}
+.btn.primary:hover { filter: brightness(1.05); }
+
+/* --- Landing page ---------------------------------------------------------- */
+.landing-body { padding: 32px 24px; }
+.landing { max-width: 880px; margin: 0 auto; }
+.landing-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 32px;
+}
+.landing-header h1 { margin: 0; font-weight: 300; font-size: 22px; }
+.logout-form { margin: 0; }
+.logout-btn {
+  background: transparent;
+  border: 1px solid #232634;
+  color: #8a8e99;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.logout-btn:hover { color: #eaeaea; border-color: #d4a574; }
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+.tile {
+  display: block;
+  padding: 32px 24px;
+  background: #14161e;
+  border: 1px solid #232634;
+  border-radius: 12px;
+  text-decoration: none;
+  color: inherit;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+.tile:hover { border-color: #d4a574; transform: translateY(-2px); }
+.tile-icon {
+  width: 48px; height: 48px;
+  border-radius: 12px;
+  background: rgba(212, 165, 116, 0.12);
+  color: #d4a574;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px; font-weight: 500;
+  margin-bottom: 16px;
+}
+.tile h2 { margin: 0 0 6px; font-weight: 400; font-size: 18px; }
+.tile p { margin: 0; font-size: 13px; color: #8a8e99; font-weight: 300; line-height: 1.5; }
