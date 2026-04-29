@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Sign In</title>
+  <meta name="theme-color" content="#0c0e14">
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/shell-static/landing.css">
+</head>
+<body class="login-body">
+  <main class="login-card">
+    <h1>Welcome</h1>
+    <p class="subtitle">Enter your PIN to continue.</p>
+    <% if (error) { %>
+      <div class="login-error" role="alert"><%= error %></div>
+    <% } %>
+    <form method="POST" action="/login" autocomplete="off">
+      <input
+        type="password"
+        name="pin"
+        inputmode="numeric"
+        pattern="[0-9]*"
+        autofocus
+        required
+        aria-label="PIN"
+        class="pin-input"
+      >
+      <button type="submit" class="btn primary">Continue</button>
+    </form>
+  </main>
+</body>
+</html>
