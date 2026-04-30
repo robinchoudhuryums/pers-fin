@@ -1,0 +1,16 @@
+{
+  "name": "perfin-persistent-shell",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Auth + landing wrapper that mounts Perfin and Per-sistant as sub-apps under one Render service.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "cookie-parser": "^1.4.6",
+    "dotenv": "^16.4.5",
+    "ejs": "^3.1.10",
+    "express": "^4.21.2"
+  }
+}
