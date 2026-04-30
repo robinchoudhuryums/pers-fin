@@ -17,7 +17,6 @@
 //   routes/settings.js        — user settings, sheets sync, CSV export
 //   routes/insights.js        — AI insights (Claude), tax deductions
 //   pages/*.js                — HTML page generators (dashboard, subscriptions, etc.)
-//   startup.js                — migrations, cron jobs, listener, shutdown
 //
 // Run with:  node server.js
 // Requires:  .env file in repo root (see .env.example)
@@ -62,6 +61,16 @@ app.set("trust proxy", 1);
 app.use(morgan("short"));
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
+
+// Sub-app mount awareness. When this app is mounted under the unified
+// shell (e.g. app.use("/perfin", subapp)), Express sets req.baseUrl to
+// the mount path. Templates read `<%= basePath %>` to prefix URLs so
+// nav links + asset paths + form actions resolve correctly. Standalone
+// runs leave req.baseUrl as "" and basePath is a no-op.
+app.use((req, res, next) => {
+  res.locals.basePath = req.baseUrl || "";
+  next();
+});
 
 // Serve shared static assets (CSS, JS) — before auth so login page can use them
 app.use(express.static(path.join(__dirname, "public"), { maxAge: "1h" }));

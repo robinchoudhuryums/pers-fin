@@ -1,13 +1,19 @@
+<%
+  // basePath is "" standalone, "/perfin" mounted. Prefix nav hrefs so
+  // browser navigation lands on the right tool (otherwise "/dashboard"
+  // would hit the shell's landing page).
+  var __basePath = typeof basePath !== 'undefined' ? basePath : '';
+%>
   <nav class="topnav" aria-label="Main navigation">
     <div class="logo"><span class="logo-icon" aria-hidden="true"></span>Perfin</div>
     <div class="nav-links" role="list">
-      <a href="/dashboard"<%= activePage === 'dashboard' ? ' class="active"' : '' %>>Dashboard</a>
-      <a href="/subscriptions"<%= activePage === 'subscriptions' ? ' class="active"' : '' %>>Subscriptions</a>
-      <a href="/transactions"<%= activePage === 'transactions' ? ' class="active"' : '' %>>Transactions</a>
-      <a href="/goals"<%= activePage === 'goals' ? ' class="active"' : '' %>>Goals</a>
-      <a href="/budgets"<%= activePage === 'budgets' ? ' class="active"' : '' %>>Budgets</a>
-      <a href="/"<%= activePage === 'accounts' ? ' class="active"' : '' %>>Accounts</a>
-      <a href="/settings"<%= activePage === 'settings' ? ' class="active"' : '' %>>Settings</a>
+      <a href="<%= __basePath %>/dashboard"<%= activePage === 'dashboard' ? ' class="active"' : '' %>>Dashboard</a>
+      <a href="<%= __basePath %>/subscriptions"<%= activePage === 'subscriptions' ? ' class="active"' : '' %>>Subscriptions</a>
+      <a href="<%= __basePath %>/transactions"<%= activePage === 'transactions' ? ' class="active"' : '' %>>Transactions</a>
+      <a href="<%= __basePath %>/goals"<%= activePage === 'goals' ? ' class="active"' : '' %>>Goals</a>
+      <a href="<%= __basePath %>/budgets"<%= activePage === 'budgets' ? ' class="active"' : '' %>>Budgets</a>
+      <a href="<%= __basePath %>/"<%= activePage === 'accounts' ? ' class="active"' : '' %>>Accounts</a>
+      <a href="<%= __basePath %>/settings"<%= activePage === 'settings' ? ' class="active"' : '' %>>Settings</a>
     </div>
     <div class="nav-sync-badge" id="nav-sync-badge" title="Most recent sync — updated by auto-sync or the Sync button"></div>
     <div class="nav-notification-bell" id="nav-notif-bell" title="Notifications" style="cursor:pointer;position:relative;padding:4px 8px;display:flex;align-items:center;">

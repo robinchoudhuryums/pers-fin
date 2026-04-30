@@ -1,4 +1,8 @@
   </main>
   </div>
-  <script src="/perfin-shared.js?v=<%= v %>"></script>
-  <script src="/settings-rules.js?v=<%= v %>" defer></script>
+<%
+  // basePath is "" standalone, "/perfin" when mounted under the shell.
+  var __basePath = typeof basePath !== 'undefined' ? basePath : '';
+%>
+  <script src="<%= __basePath %>/perfin-shared.js?v=<%= v %>"></script>
+  <script src="<%= __basePath %>/settings-rules.js?v=<%= v %>" defer></script>

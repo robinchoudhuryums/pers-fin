@@ -1,0 +1,14 @@
+node_modules
+.git
+.env
+.env.*
+!.env.example
+uploads/*
+tests
+*.md
+.dockerignore
+Dockerfile
+docker-compose.yml
+fly.toml
+render.yaml
+CLAUDE.md

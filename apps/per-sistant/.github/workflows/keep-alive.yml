@@ -1,0 +1,72 @@
+# External keep-alive ping for Render free tier
+# Runs every 14 minutes and checks the server's configured schedule
+# before pinging. The server's keep_alive_start/end/timezone settings
+# control when pings are active — this cron just provides the external
+# trigger that Render requires (self-pings don't prevent sleep).
+#
+# Requires repository secret:
+#   SERVER_URL — e.g. https://per-sistant.onrender.com
+
+name: Keep Alive
+
+on:
+  schedule:
+    - cron: '*/14 * * * *'  # every 14 minutes
+  workflow_dispatch:          # manual trigger
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check schedule and ping
+        env:
+          SERVER_URL: ${{ secrets.SERVER_URL }}
+        run: |
+          if [ -z "$SERVER_URL" ]; then
+            echo "SERVER_URL secret not set, skipping"
+            exit 0
+          fi
+
+          # Fetch keep-alive schedule from server (may wake it from cold start)
+          SCHEDULE=$(curl -s --max-time 30 "$SERVER_URL/api/keep-alive-schedule" 2>/dev/null || echo '{}')
+          ENABLED=$(echo "$SCHEDULE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('enabled',False))" 2>/dev/null || echo "False")
+
+          if [ "$ENABLED" != "True" ]; then
+            echo "Keep-alive disabled in settings, skipping"
+            exit 0
+          fi
+
+          # Check if current time is within active hours
+          ACTIVE=$(echo "$SCHEDULE" | python3 -c "
+          import json, sys
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+
+          d = json.load(sys.stdin)
+          start = int(d.get('start', 0))
+          end = int(d.get('end', 0))
+          tz_name = d.get('timezone', 'America/New_York')
+
+          try:
+              now = datetime.now(ZoneInfo(tz_name))
+          except Exception:
+              now = datetime.now(ZoneInfo('America/New_York'))
+
+          hour = now.hour
+
+          if start == end:
+              print('True')  # 24/7
+          elif start < end:
+              print('True' if start <= hour < end else 'False')
+          else:
+              print('True' if hour >= start or hour < end else 'False')
+          " 2>/dev/null || echo "True")
+
+          if [ "$ACTIVE" != "True" ]; then
+            echo "Outside active hours, skipping"
+            exit 0
+          fi
+
+          # Ping health endpoint
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 "$SERVER_URL/api/health")
+          echo "Ping response: $HTTP_CODE"
