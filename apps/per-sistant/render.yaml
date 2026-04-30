@@ -1,0 +1,36 @@
+services:
+  - type: web
+    name: per-sistant
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NEON_DATABASE_URL
+        sync: false
+      - key: SESSION_PASSWORD
+        sync: false
+      - key: SESSION_PIN
+        sync: false
+      - key: SESSION_SECRET
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+      - key: CONTACTS
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: PERFIN_URL
+        sync: false
+      - key: PORT
+        value: "3001"
