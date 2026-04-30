@@ -19,6 +19,27 @@
     return d.innerHTML;
   }
 
+  // --- Prefix helper for sub-app mounting ---
+  // The unified shell mounts each sub-app under a prefix (e.g. /perfin).
+  // Server-rendered HTML sets window.BASE_PATH so client code can prepend
+  // it to root-relative URLs (so /api/foo → /perfin/api/foo). When the
+  // app runs standalone (no shell), BASE_PATH is unset/"" and this is a
+  // no-op — preserves the old behavior exactly.
+  //
+  // Rules:
+  //   - URLs starting with http:// or // are left alone (absolute).
+  //   - URLs not starting with / are left alone (relative — caller's choice).
+  //   - URLs already starting with the configured BASE_PATH are left alone
+  //     (lets callers pre-prefix without us doubling up).
+  function withBase(url) {
+    var base = win.BASE_PATH || '';
+    if (!base) return url;
+    if (typeof url !== 'string') return url;
+    if (url.charAt(0) !== '/' || url.charAt(1) === '/') return url;
+    if (url === base || url.indexOf(base + '/') === 0) return url;
+    return base + url;
+  }
+
   // --- API fetch with headers ---
   function apiFetch(url, opts) {
     opts = opts || {};
@@ -27,7 +48,7 @@
     if (key) {
       opts.headers['x-api-key'] = key;
     }
-    return fetch(url, opts);
+    return fetch(withBase(url), opts);
   }
 
   // --- Status message ---
@@ -84,7 +105,7 @@
   // --- Formatters ---
   function fmt(n) { return '$' + parseFloat(n || 0).toFixed(2); }
   function fmtDate(d) {
-    return d ? new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '\u2014';
+    return d ? new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—';
   }
   function fmtMonth(m) {
     var parts = m.split('-');
@@ -93,9 +114,14 @@
   }
 
   // --- PWA registration ---
+  // Service-worker scoping under sub-app mounting is handled in Phase 5;
+  // for now we just prefix the URL so /sw.js resolves under the app's
+  // mount path when one is set. Standalone behavior is unchanged.
   function registerSW() {
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js').catch(function() {});
+      var swUrl = withBase('/sw.js');
+      var scope = (win.BASE_PATH || '') + '/';
+      navigator.serviceWorker.register(swUrl, { scope: scope }).catch(function() {});
     }
   }
 
@@ -147,6 +173,7 @@
   // Export to window
   win.esc = esc;
   win.apiFetch = apiFetch;
+  win.withBase = withBase;
   win.showMsg = showMsg;
   win.btnLoading = btnLoading;
   win.fmt = fmt;
