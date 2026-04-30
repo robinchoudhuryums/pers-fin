@@ -2,20 +2,32 @@
 <html lang="en"><head>
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title><%= title %> — Perfin</title>
-  <link rel="manifest" href="/manifest.json">
-  <link rel="icon" href="/logo.svg" type="image/svg+xml">
-  <link rel="apple-touch-icon" href="/logo.svg">
+<%
+  // basePath is "" when running standalone, "/perfin" when mounted under
+  // the unified shell (set by the middleware in server.js). Prefix every
+  // root-relative URL in the head with it so manifests, icons, and
+  // stylesheets resolve correctly under either mode.
+  var __basePath = typeof basePath !== 'undefined' ? basePath : '';
+%>
+  <link rel="manifest" href="<%= __basePath %>/manifest.json">
+  <link rel="icon" href="<%= __basePath %>/logo.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="<%= __basePath %>/logo.svg">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="theme-color" content="#080b12" media="(prefers-color-scheme: dark)">
   <meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/perfin-shared.css?v=<%= v %>">
+  <link rel="stylesheet" href="<%= __basePath %>/perfin-shared.css?v=<%= v %>">
 <% if (typeof extraStyles !== 'undefined' && extraStyles) { %>
   <style><%- extraStyles %></style>
 <% } %>
-  <script nonce="<%= nonce %>">document.documentElement.setAttribute('data-theme', localStorage.getItem('perfin-theme') || 'dark');</script>
+  <script nonce="<%= nonce %>">
+    // Set BEFORE perfin-shared.js runs (which it does in foot.ejs) so the
+    // apiFetch wrapper can prepend BASE_PATH to root-relative URLs.
+    window.BASE_PATH = "<%= __basePath %>";
+    document.documentElement.setAttribute('data-theme', localStorage.getItem('perfin-theme') || 'dark');
+  </script>
 </head><body>
   <a href="#main-content" class="skip-link">Skip to content</a>
   <div class="container">
