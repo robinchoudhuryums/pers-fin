@@ -2,6 +2,7 @@
 // Per-sistant — Shared Views (CSS, JS, HTML helpers)
 // ============================================================================
 
+const { AsyncLocalStorage } = require("async_hooks");
 const { PERFIN_URL } = require("./config");
 
 const CSS_CORE = require("./views/css");
@@ -14,22 +15,46 @@ const PRIMITIVES_JS = require("./views/primitives");
 // section. Loaded globally; it no-ops off the /settings route.
 const SETTINGS_PATCH = require("./views/settings-patch");
 
+// ---------------------------------------------------------------------------
+// Sub-app mount awareness
+// ---------------------------------------------------------------------------
+// When this app is mounted under the unified shell (e.g.
+// app.use("/per-sistant", subapp)), Express sets req.baseUrl to the mount
+// path. Page handlers don't directly thread req into pageHead/navBar/
+// themeScript — they're called as `${pageHead("Foo")}` via template
+// literals — so we use AsyncLocalStorage to make basePath available to
+// the view helpers without changing every page's signature.
+//
+// server.js installs basePathMiddleware before any route handler runs;
+// inside the helpers below, basePath() returns "" for standalone or
+// "/per-sistant" when mounted.
+const _ctx = new AsyncLocalStorage();
+function basePathMiddleware(req, _res, next) {
+  _ctx.run({ basePath: req.baseUrl || "" }, () => next());
+}
+function basePath() {
+  const store = _ctx.getStore();
+  return (store && store.basePath) || "";
+}
+
 function pageHead(title) {
+  const bp = basePath();
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${title} — Per-sistant</title>
-  <link rel="manifest" href="/manifest.json">
+  <link rel="manifest" href="${bp}/manifest.json">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <link rel="apple-touch-icon" href="/icon-192.svg">
+  <link rel="apple-touch-icon" href="${bp}/icon-192.svg">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="theme-color" content="#faf7f2">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>${SHARED_CSS}${APPBAR_PICKER_CSS}</style>
+  <script>window.BASE_PATH = ${JSON.stringify(bp)};</script>
   <script>${SHARED_JS}</script>
   <script>${PRIMITIVES_JS}</script>
   <script>${SETTINGS_PATCH}</script>
@@ -81,12 +106,18 @@ const APPBAR_PICKER_CSS = `
 `;
 
 function navBar(activePath) {
+  const bp = basePath();
+  // activePath is the bare route ("/today", "/"), matched against the NAV
+  // table — independent of mount prefix, so no transformation needed here.
   const active = (NAV.find(n => n.href === activePath) || {}).id || 'dashboard';
   const links = NAV.map(n => `
-    <a href="${n.href}" class="${n.id === active ? 'active' : ''}">
+    <a href="${bp}${n.href}" class="${n.id === active ? 'active' : ''}">
       <span class="icon">${navIcon(n.id)}</span>
       <span class="label">${n.label}</span>
     </a>`).join('');
+  // Cross-tool link to Perfin. Under the unified shell PERFIN_URL is
+  // typically a same-origin path like "/perfin"; standalone deployments
+  // use a full URL. Either way, leave it untouched.
   const perfinLink = PERFIN_URL
     ? `<a href="${PERFIN_URL}" target="_blank" rel="noopener">
          <span class="icon"><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M7 4 L7 10 M4 7 L10 7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span>
@@ -115,7 +146,7 @@ function navBar(activePath) {
 <header class="appbar">
   <button class="mobile-sidebar-toggle" id="mobile-sidebar-toggle" aria-label="Menu">&#9776;</button>
   <nav class="crumbs">
-    <a href="/">Home</a>
+    <a href="${bp}/">Home</a>
     <span class="sep">&rsaquo;</span>
     <span class="here">${here}</span>
   </nav>
@@ -127,6 +158,8 @@ function navBar(activePath) {
 }
 
 function themeScript() {
+  // The fetch calls below go through the wrapper installed by views/js.js,
+  // which prepends window.BASE_PATH automatically — no manual concat needed.
   return `<script>
   (function(){
     var PALETTES = ['copper','indigo','forest','slate','plum','mono'];
@@ -206,4 +239,14 @@ function themeScript() {
 </script>`;
 }
 
-module.exports = { SHARED_CSS, SHARED_JS, PRIMITIVES_JS, SETTINGS_PATCH, pageHead, navBar, themeScript };
+module.exports = {
+  SHARED_CSS,
+  SHARED_JS,
+  PRIMITIVES_JS,
+  SETTINGS_PATCH,
+  pageHead,
+  navBar,
+  themeScript,
+  basePathMiddleware,
+  basePath,
+};
