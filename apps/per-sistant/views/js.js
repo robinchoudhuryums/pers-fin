@@ -1,10 +1,26 @@
 module.exports = `
-// CSRF: auto-inject X-Requested-With on same-origin API calls
-(function(){var _f=window.fetch;window.fetch=function(url,opts){
-  opts=opts||{};var u=typeof url==='string'?url:(url&&url.url)||'';
-  if(u.startsWith('/api/')){opts.headers=opts.headers||{};if(!opts.headers['X-Requested-With'])opts.headers['X-Requested-With']='XMLHttpRequest';}
-  return _f.call(this,url,opts);
-};})();
+// CSRF + base-path: auto-inject X-Requested-With on /api/* calls AND
+// transparently prepend window.BASE_PATH to root-relative URLs so
+// fetch("/api/foo") resolves to "/per-sistant/api/foo" when the app is
+// mounted under the unified shell. Standalone deploys leave BASE_PATH
+// unset and the wrapper is a no-op for prefixing.
+(function(){
+  var _f=window.fetch;
+  function withBase(u){
+    var b=window.BASE_PATH||'';
+    if(!b||typeof u!=='string')return u;
+    if(u.charAt(0)!=='/'||u.charAt(1)==='/')return u;
+    if(u===b||u.indexOf(b+'/')===0)return u;
+    return b+u;
+  }
+  window.withBase=withBase;
+  window.fetch=function(url,opts){
+    opts=opts||{};
+    var u=typeof url==='string'?url:(url&&url.url)||'';
+    if(u.startsWith('/api/')){opts.headers=opts.headers||{};if(!opts.headers['X-Requested-With'])opts.headers['X-Requested-With']='XMLHttpRequest';}
+    return _f.call(this,typeof url==='string'?withBase(url):url,opts);
+  };
+})();
 function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML;}
 function renderMd(s){
   if(!s)return'';
@@ -61,9 +77,14 @@ document.addEventListener('touchend',function(e){
   var dx=e.changedTouches[0].screenX-_touchStartX,dy=e.changedTouches[0].screenY-_touchStartY;
   if(Math.abs(dx)>100&&Math.abs(dx)>Math.abs(dy)*1.5){
     var pages=['/','/todos','/emails','/notes','/calendar','/contacts','/review','/analytics','/settings'];
-    var cur=pages.indexOf(location.pathname);if(cur<0)return;
-    if(dx<0&&cur<pages.length-1)location.href=pages[cur+1];
-    else if(dx>0&&cur>0)location.href=pages[cur-1];
+    // Strip BASE_PATH so the lookup matches the bare route table; rejoin
+    // it on navigation. Standalone (BASE_PATH === "") this is a no-op.
+    var b=window.BASE_PATH||'';
+    var path=location.pathname;
+    if(b && path.indexOf(b)===0) path=path.slice(b.length)||'/';
+    var cur=pages.indexOf(path);if(cur<0)return;
+    if(dx<0&&cur<pages.length-1)location.href=b+pages[cur+1];
+    else if(dx>0&&cur>0)location.href=b+pages[cur-1];
   }
 },{passive:true});
 // Voice input (Web Speech API)
