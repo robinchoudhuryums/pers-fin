@@ -36,6 +36,12 @@ app.use(express.json({
 }));
 app.use(express.urlencoded({ extended: false, limit: "1mb" }));
 
+// Sub-app mount awareness — installed before any view-rendering route so
+// view helpers (pageHead, navBar, themeScript) can read req.baseUrl via
+// AsyncLocalStorage. Standalone runs leave req.baseUrl === "" and the
+// helpers emit identical URLs to before.
+app.use(views.basePathMiddleware);
+
 // ---------------------------------------------------------------------------
 // Middleware (session, auth, CSRF, security, rate limiting)
 // ---------------------------------------------------------------------------
