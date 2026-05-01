@@ -6,7 +6,7 @@ const express = require("express");
 const router = express.Router();
 const { pool, ENCRYPTION_PASSPHRASE } = require("../services/database");
 const { tellerRequest } = require("../services/teller-api");
-const { INCOME_PREDICATE, NOT_TRANSFER, getMonthlySpending, getMonthlyIncome } = require("../services/financial-queries");
+const { INCOME_PREDICATE, NOT_TRANSFER, INVESTMENT_ACCOUNT_TYPES, getMonthlySpending, getMonthlyIncome } = require("../services/financial-queries");
 
 // POST /api/enroll — store Teller Connect enrollment
 router.post("/api/enroll", async (req, res) => {
@@ -392,12 +392,18 @@ router.delete("/api/items/:id", async (req, res) => {
 // GET /api/accounts
 router.get("/api/accounts", async (_req, res) => {
   try {
+    // is_investment flags Teller-linked brokerage / IRA / 401k / HSA / 529 /
+    // pension accounts so the UI can group them as "Investments" instead of
+    // showing them mixed in with cash/credit. Teller exposes balance only
+    // (no holdings / cost basis) — see services/financial-queries.js
+    // INVESTMENT_ACCOUNT_TYPES for the detection list.
     const result = await pool.query(
       `SELECT la.id, la.account_id, la.name, la.official_name, la.type, la.subtype, la.mask,
               la.available_balance, la.current_balance, la.balance_currency, la.balance_updated_at, la.apr,
               COALESCE(te.institution_name, pi.institution_name, la.institution_name_manual) AS institution_name,
               CASE WHEN te.id IS NOT NULL THEN 'teller' WHEN la.is_manual THEN 'manual' ELSE 'plaid' END AS provider,
-              la.is_manual, la.credit_limit, la.is_shared, la.spending_split_pct
+              la.is_manual, la.credit_limit, la.is_shared, la.spending_split_pct,
+              ${INVESTMENT_ACCOUNT_TYPES} AS is_investment
        FROM linked_accounts la
        LEFT JOIN teller_enrollments te ON te.id = la.teller_enrollment_id
        LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id

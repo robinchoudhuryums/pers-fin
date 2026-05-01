@@ -87,7 +87,9 @@ teller/
                            with user-defined rules applied first before AI)
     investments.js       — GET /api/plaid/status, POST /api/plaid/link-token,
                            POST /api/plaid/exchange, POST /api/plaid/sync-holdings,
-                           GET /api/plaid/holdings (Plaid investment accounts)
+                           GET /api/plaid/holdings (Plaid investment accounts).
+                           GET /api/investments returns the unified picture
+                           across Teller-linked, manual, and Plaid sources.
     notifications.js     — GET /api/notifications/vapid, POST/DELETE /api/notifications/subscribe,
                            POST /api/notifications/test, GET /api/notifications,
                            PATCH /api/notifications/:id/read, POST /api/notifications/read-all
@@ -172,7 +174,19 @@ teller/
 - **Bank auto-sync** (Phase A): opt-in scheduled sync every 1/3/6/12/24 hours.
   Settings toggle drives an in-process scheduler that calls `syncAllEnrollments`
   + `syncAllBalances` directly (no HTTP self-fetch). Default: disabled.
-- **Investment accounts**: Plaid API integration for brokerage/retirement/crypto holdings
+- **Investment accounts** (three sources, unified via `GET /api/investments`):
+  - **Teller-linked** brokerage / IRA / 401k / 403b / 529 / HSA / Roth IRA /
+    pension accounts enrolled via Teller Connect. Live in `linked_accounts`
+    (the standard Teller table). Account-level balance only — Teller's API
+    does NOT expose holdings or cost basis. Detection list:
+    `services/financial-queries.js INVESTMENT_ACCOUNT_TYPES`. Shows up in
+    goal funding-options, contributes to net worth, syncs balance via the
+    standard `syncAllBalances` path.
+  - **Plaid-linked**: full holdings sync (qty / cost basis / current value
+    per security). Stored in `investment_accounts` + `investment_holdings`.
+    Endpoints: `/api/plaid/{status,link-token,exchange,sync-holdings,holdings}`.
+  - **Manual**: user-entered via `POST /api/investment-accounts`. Stored in
+    `investment_accounts` with no `plaid_account_id`.
 - **CSV import**: Auto-detect Chase, Capital One, Discover, Wells Fargo, Schwab formats
 - **Transaction deduplication**: SHA256-based duplicate detection across CSV imports and API syncs
 - **Transaction editing** (Phase B1): rename merchants and add notes via
@@ -501,8 +515,10 @@ GET  /api/goals            # list financial goals with projections (current_amou
                            # derived from the funding account when one is linked)
 GET  /api/goals/funding-options # depository + investment accounts a goal can link to (Phase C)
 POST /api/goals            # create a financial goal
-GET  /api/investment-accounts # list manual investment accounts
+GET  /api/investment-accounts # list manual investment accounts (manual + Plaid-synced rows in investment_accounts)
 POST /api/investment-accounts # add manual investment account
+GET  /api/investments         # unified investment list across Teller-linked + Plaid + manual sources
+                              # (returns total_value, by_source totals, accounts[] with source/supports_holdings flags)
 GET  /api/net-worth/history # net worth snapshots over time
 GET  /api/context-export   # structured data dump for Claude chat
 GET  /api/tax-deductions   # accumulated tax-deductible transactions

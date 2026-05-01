@@ -6,6 +6,7 @@ const express = require("express");
 const router = express.Router();
 const { pool } = require("../services/database");
 const { zipToState } = require("../data/reference-data");
+const { INVESTMENT_ACCOUNT_TYPES } = require("../services/financial-queries");
 
 // GET /api/goals
 // When a goal is linked to a funding account (Phase C), current_amount is
@@ -134,16 +135,28 @@ router.get("/api/goals", async (_req, res) => {
 });
 
 // GET /api/goals/funding-options — list accounts a goal can be linked to.
-// Returns depository/investment accounts with their current balance so the
-// Settings UI can show a dropdown with balances.
+// Returns depository accounts (checking/savings), Teller-linked investment
+// accounts (brokerage/IRA/401k/HSA/etc.), and manual+Plaid investment_accounts
+// rows with their current balances. Goals reference linked_accounts via
+// funding_account_id, so Teller investments — which live in linked_accounts —
+// link through the same FK; investment_accounts (manual + Plaid) use
+// funding_investment_id. The UI merges all three groups into one dropdown.
 router.get("/api/goals/funding-options", async (_req, res) => {
   try {
-    const [linked, investments] = await Promise.all([
+    const [linked, tellerInvestments, investments] = await Promise.all([
       pool.query(
         `SELECT id, name, type, subtype,
                 COALESCE(available_balance, current_balance) AS balance
-         FROM linked_accounts
+         FROM linked_accounts la
          WHERE type IN ('depository')
+           AND (available_balance IS NOT NULL OR current_balance IS NOT NULL)
+         ORDER BY name`
+      ),
+      pool.query(
+        `SELECT id, name, type, subtype,
+                COALESCE(available_balance, current_balance) AS balance
+         FROM linked_accounts la
+         WHERE ${INVESTMENT_ACCOUNT_TYPES}
            AND (available_balance IS NOT NULL OR current_balance IS NOT NULL)
          ORDER BY name`
       ),
@@ -154,8 +167,13 @@ router.get("/api/goals/funding-options", async (_req, res) => {
          ORDER BY name`
       ),
     ]);
+    // Teller-linked investments are returned via the same `linked_accounts`
+    // key as depository (they're both rows from the linked_accounts table)
+    // so the UI can merge them into a single dropdown without changes. The
+    // type/subtype labels distinguish them visually.
+    const allLinked = [...linked.rows, ...tellerInvestments.rows];
     res.json({
-      linked_accounts: linked.rows.map(r => ({ id: r.id, name: r.name, type: r.type, subtype: r.subtype, balance: parseFloat(r.balance) })),
+      linked_accounts: allLinked.map(r => ({ id: r.id, name: r.name, type: r.type, subtype: r.subtype, balance: parseFloat(r.balance) })),
       investment_accounts: investments.rows.map(r => ({ id: r.id, name: r.name, type: r.account_type, balance: parseFloat(r.balance) })),
     });
   } catch (err) {

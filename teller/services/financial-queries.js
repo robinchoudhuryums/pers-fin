@@ -75,6 +75,22 @@ const SPLIT_AMOUNT = "t.amount * COALESCE(la.spending_split_pct, 100) / 100.0";
 const NOT_REIMBURSED = "COALESCE(t.is_reimbursed, false) = false";
 const NOT_REIMBURSED_UNALIASED = "COALESCE(is_reimbursed, false) = false";
 
+// Investment-account detection — covers Teller-linked accounts enrolled as
+// brokerage / IRA / 401k / 529 / HSA / pension / etc. Teller's API doesn't
+// expose holdings or cost basis like Plaid does (only account-level balance),
+// so the analytics surface is shallower for Teller-linked investments — but
+// they participate fully in net worth, goal funding, and balance sync.
+//
+// Use this fragment with `linked_accounts` aliased as `la` (the convention
+// across the rest of this codebase) or pass the alias via .replace().
+const INVESTMENT_ACCOUNT_TYPES = `(
+  la.type = 'investment'
+  OR LOWER(COALESCE(la.subtype, '')) IN (
+    'brokerage', 'ira', '401k', '403b', '529', 'roth_ira', 'retirement',
+    'hsa', 'sep_ira', 'simple_ira', 'pension', 'investment'
+  )
+)`;
+
 /**
  * Monthly spending totals for the last N months, split-adjusted.
  * Returns rows: { month: 'YYYY-MM', total_spend: NUMERIC, txn_count: INT }
@@ -253,6 +269,7 @@ module.exports = {
   NOT_REIMBURSED,
   NOT_REIMBURSED_UNALIASED,
   NOT_TRANSFER,
+  INVESTMENT_ACCOUNT_TYPES,
   getMonthlySpending,
   getMonthlyIncome,
   getMonthlyIncomeAndSpending,
