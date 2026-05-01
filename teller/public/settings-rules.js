@@ -22,14 +22,24 @@
     var section = anchor.closest(".section");
     if (!section) return;
 
-    var panel = document.createElement("div");
+    // Use a <details> element so the section is natively collapsible. The
+    // browser handles open/close; we just style <summary> to look like the
+    // section header. `open` defaults to true so the panel matches its prior
+    // expanded behavior — users who don't care about rules can click the
+    // header once to collapse it permanently (the open state isn't persisted
+    // across reloads, which is intentional: it's a glance UI, not a setting).
+    var panel = document.createElement("details");
     panel.className = "section";
+    panel.open = true;
     panel.innerHTML =
-      '<h2 style="display:flex;justify-content:space-between;align-items:center;">' +
-        '<span>Categorization Rules</span>' +
+      '<summary style="cursor:pointer;list-style:none;display:flex;justify-content:space-between;align-items:center;padding:0;margin:0;">' +
+        '<span style="display:flex;align-items:center;gap:10px;font-size:14px;font-weight:400;color:var(--text);">' +
+          '<span class="rules-caret" aria-hidden="true" style="display:inline-block;width:10px;font-size:10px;color:var(--text-muted);transition:transform 0.15s;">&#9656;</span>' +
+          'Categorization Rules' +
+        '</span>' +
         '<span id="rules-count" style="font-size:11px;font-weight:300;color:var(--text-muted);">--</span>' +
-      '</h2>' +
-      '<p style="font-size:12px;color:var(--text-muted);font-weight:300;margin:0 0 12px;">' +
+      '</summary>' +
+      '<p style="font-size:12px;color:var(--text-muted);font-weight:300;margin:12px 0;">' +
         'Merchant→category rules saved via the "Remember this merchant" checkbox on the Transactions page. ' +
         'Rules run before the ML classifier, so matched merchants never cost an AI call.' +
       '</p>' +
@@ -45,6 +55,15 @@
       '<div id="rules-list" style="margin-top:12px;"></div>';
 
     section.insertAdjacentElement("afterend", panel);
+
+    // Inline style for the caret rotation when open. ::-webkit-details-marker
+    // is hidden via list-style:none above; we draw our own caret instead so
+    // its position is consistent across browsers.
+    var caretStyle = document.createElement("style");
+    caretStyle.textContent =
+      "details.section[open] .rules-caret { transform: rotate(90deg); }" +
+      "details.section > summary::-webkit-details-marker { display: none; }";
+    document.head.appendChild(caretStyle);
 
     var listEl = document.getElementById("rules-list");
     var countEl = document.getElementById("rules-count");
@@ -135,6 +154,10 @@
       var btn = e.target.closest('[data-action="delete-rule"]');
       if (btn) deleteRule(btn.dataset.id);
     });
+    // Stop the apply button click from also toggling the <details> open/close
+    // (clicks inside <summary> normally do; we want them confined to the
+    // header text).
+    applyBtn.addEventListener("click", function(e) { e.stopPropagation(); });
 
     loadRules();
   });
