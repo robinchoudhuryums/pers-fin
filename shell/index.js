@@ -35,6 +35,14 @@ app.use("/shell-static", express.static(path.join(__dirname, "public"), {
 }));
 
 // --- Public routes (no auth) ------------------------------------------------
+// PWA manifest at /manifest.json so the spec-required reference from
+// the login/landing <head> resolves. Sub-app manifests live under
+// their mount prefix (/perfin/manifest.json, /per-sistant/manifest.json)
+// and don't collide with this one.
+app.get("/manifest.json", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "manifest.json"));
+});
+
 app.get("/login", (req, res) => {
   if (auth.isValidSession(req.cookies[auth.COOKIE_NAME])) return res.redirect("/");
   res.render("login", { error: null });
@@ -53,9 +61,9 @@ app.use(auth.requireAuth);
 // --- Landing tile picker ----------------------------------------------------
 app.get("/", (_req, res) => res.render("landing"));
 
-// --- Sub-app mounts (wired in Phase 2) --------------------------------------
+// --- Sub-app mounts (wired in Phase 6) --------------------------------------
 // const perfinApp = require("../teller/server").app;
-// const persistentApp = require("../persistent/server").app;
+// const persistentApp = require("../apps/per-sistant/server").app;
 // app.use("/perfin", perfinApp);
 // app.use("/per-sistant", persistentApp);
 
