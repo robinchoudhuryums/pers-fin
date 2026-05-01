@@ -162,6 +162,9 @@ When mounted under the unified shell, all of these are accessed via the `/perfin
 | `GET` | `/api/transactions` | List transactions (query: months, limit, offset) |
 | `GET` | `/api/accounts` | List linked accounts with balances |
 | `GET` | `/api/spending-summary` | Monthly trends, categories, top merchants |
+| `GET` | `/api/income-summary` | Income trend + top sources + by_account (query: months) |
+| `GET` | `/api/accounts/:id/balance-history` | Daily balance series (query: source=linked\|investment, months) |
+| `GET` | `/api/investments` | Unified investment list across Teller-linked + Plaid + manual sources |
 | `GET` | `/api/subscriptions` | List subscriptions (filter: active/dismissed/cancelled/all) |
 | `POST` | `/api/subscriptions` | Add manual subscription |
 | `PATCH` | `/api/subscriptions/:id/dismiss` | Dismiss a subscription |
@@ -180,6 +183,8 @@ When mounted under the unified shell, all of these are accessed via the `/perfin
 | `POST` | `/api/insights/rebuild` | Rebuild AI context from all history |
 | `POST` | `/api/categorize` | ML categorize transactions via Claude |
 | `GET` | `/api/categorize/status` | ML categorization status |
+| `GET` | `/api/categorize/review-queue` | Candidates the next AI categorize would send to Claude |
+| `POST` | `/api/categorize/review` | Apply user decision (sets user_category, optionally creates rule) |
 | `GET/POST/DELETE` | `/api/categorization-rules` | Persistent merchant→category rules |
 | `POST` | `/api/categorization-rules/from-transaction` | Create rule from a transaction (used by Edit modal "Remember") |
 | `POST` | `/api/categorization-rules/apply` | Run all active rules against uncategorized rows |
@@ -200,6 +205,10 @@ When mounted under the unified shell, all of these are accessed via the `/perfin
 | `POST` | `/api/sheets/sync` | Sync all data to Google Sheets |
 | `GET` | `/api/export` | Download transactions/subscriptions CSV |
 | `GET` | `/dashboard` | Main dashboard UI |
+| `GET` | `/accounts/:id/history` | Per-account balance chart (query: source=linked\|investment, months) |
+| `GET` | `/api/shell/webauthn/available` | Probe whether biometric credentials exist (shell-layer, pre-auth) |
+| `POST` | `/api/shell/webauthn/authenticate-options` | Start biometric auth flow (shell-layer, pre-auth) |
+| `POST` | `/api/shell/webauthn/authenticate` | Verify biometric + set shell session cookie |
 | `GET` | `/subscriptions` | Subscription management |
 | `GET` | `/transactions` | Transactions page (search + edit + categorize) |
 | `GET` | `/goals` | Financial goals page |

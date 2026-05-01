@@ -108,6 +108,8 @@ teller/
     transactions.js      — Transaction search/filter page with full-text search
     calendar.js          — Bill calendar page with subscription charges, manual bills,
                            and click-to-mark-paid functionality
+    account-history.js   — `/accounts/:id/history` page — Chart.js line chart backed
+                           by GET /api/accounts/:id/balance-history (linked or investment source)
     login.js             — PIN pad or password login page (with materialize animation)
     settings.js          — Settings page (theme, AI insights, keep-alive, Per-sistant, exports)
     pwa.js               — PWA manifest.json + icon generation (icons cached at startup)
@@ -130,6 +132,7 @@ teller/
     transactions.ejs     — Transaction search/filter template, per-row Split modal
                            (Phase B3) and REIMBURSED badge (Phase B2)
     calendar.ejs         — Bill calendar template with Add Bill modal and paid-state toggling
+    account-history.ejs  — Per-account balance history chart (range selector, summary cards)
     budgets.ejs          — Budget tracking template with progress bars and alerts
     goals.ejs            — Financial goals template with progress and projections
     settings.ejs         — Settings template (theme, AI, keep-alive, sync, exports)
@@ -143,6 +146,28 @@ teller/
                            tooltip, notification bell with unread count + dropdown panel,
                            <main> landmark
     partials/foot.ejs    — Footer partial (closes <main>)
+```
+
+The unified shell adds:
+
+```
+shell/
+  index.js                     — PIN gate, sub-app mounts, cross-pool wiring,
+                                 keep-alive, graceful shutdown
+  middleware/
+    auth.js                    — HMAC-signed cookie session (SHELL_PIN + SHELL_SECRET);
+                                 exports COOKIE_NAME, makeSession, requireAuth, etc.
+    webauthn.js                — Shell-side biometric login: hosts
+                                 `/api/shell/webauthn/{available,authenticate-options,authenticate}`
+                                 mounted BEFORE requireAuth; reads
+                                 `webauthn_credentials` from Perfin's pool;
+                                 sets the shell session cookie on success
+  views/
+    login.ejs                  — PIN form + biometric button (feature-detected)
+    landing.ejs                — Post-login tile picker
+  public/
+    landing.css                — Shell-only styles
+    manifest.json              — Unified PWA manifest
 ```
 
 **Other key files:**
@@ -255,6 +280,33 @@ teller/
 ### Dashboard & Views
 - **Dashboard**: Monthly spending trend (line chart), category breakdown (doughnut), account balances,
   3D financial wellness pyramid, savings rate widget, cash flow forecast widget, Per-sistant productivity widget
+- **Grouped accounts grid**: The dashboard accounts list groups under section
+  headers — Cash (depository), Credit, Investments, Other — using the
+  `is_investment` flag returned from `GET /api/accounts`. Teller-linked
+  brokerage / IRA / 401k accounts surface under their own header instead of
+  being mixed in with checking/savings.
+- **Investments widget**: Total invested across all sources, per-source
+  breakdown (Teller / Plaid / Manual), and per-account cards with inline SVG
+  sparklines (computed client-side from `/api/accounts/:id/balance-history`,
+  no Chart.js dependency). Each card has a "View history →" link to the
+  full chart page at `/accounts/:id/history`. Auto-hides when no investment
+  accounts exist. Toggleable from Settings (key: `investments`, default on).
+- **Review Uncategorized widget** (engagement loop): Surfaces 5-8 transactions
+  that would otherwise be sent to Claude on the next AI categorize call.
+  Each row has a category dropdown (pre-filled with the deterministic
+  Teller-map suggestion when available) + "Remember" checkbox + Apply
+  button. Apply sets `user_category` and (when "Remember" is checked)
+  inserts a `categorization_rules` row. Auto-hides when the queue is empty.
+  Toggleable (key: `reviewQueue`).
+- **Per-account history chart page** (`/accounts/:id/history`): Chart.js line
+  chart with range selector (3 / 6 / 12 / 24 / 60 months) + 5 summary cards
+  (current, range start, change $, change %, snapshot count). Reads from
+  `account_balance_snapshots` via `GET /api/accounts/:id/balance-history`.
+  Empty state when fewer than 2 snapshots exist (history accumulates daily
+  on every balance sync).
+- **AI audit-accuracy card**: Settings → AI shows the percentage of insight
+  runs (last 90 days) with zero critical findings, color-coded green/yellow/red,
+  with severity counts. Backed by `/api/insights/status.audit_accuracy`.
 - **3D Financial Pyramid**: Interactive spinning pyramid with 4 frustum layers, neon wireframe edges,
   holographic effects. Layers computed by JS (`buildPyramidGeometry()`) with proper taper geometry.
   Configurable data sources: wellness, debt payoff, goal progress, etc. Mobile-optimized (reduced
@@ -298,7 +350,14 @@ teller/
   - Debt payoff optimizer (avalanche vs snowball, credit score projections)
   - Bill negotiation tips
   - Income & savings rate analysis
-  - Tax deduction flags (word-boundary keyword matching to avoid substring false positives like "interest"→"internet"; persistent year-round accumulation for tax filing)
+  - Tax deduction flags — word-boundary keyword matching with a multi-word-phrase
+    preference: bare ambiguous keywords (`office`, `interest`, `mortgage`, `vision`,
+    `business`, `education`, `student`, `supplies`) were dropped in favor of
+    specific phrases (`mortgage interest`, `student loan interest`, `home office`,
+    `office supplies`, `office depot`, `business expense`). This eliminates
+    false positives where credit-card finance charges flagged as `interest`
+    deductions and Box-Office tickets flagged as `office` deductions.
+    Persistent year-round accumulation in `tax_deductions` for tax filing.
   - Goal tracking (with real-world economic context)
   - Recurring transfers (Zelle, bill payments, savings, investment patterns)
 - **AI context enrichment**: Insights prompt includes month-over-month trend deltas,
@@ -308,9 +367,9 @@ teller/
   This ensures `max_tokens` is correctly allocated and `modules_used` in the response
   reflects all enabled modules even if a module's data query fails silently.
 - **Auto-trigger**: Insights auto-generate based on `insights_cadence_days` setting (checked every 6 hours)
-- **Cost tracking**: Granular token-level pricing — `input_tokens` from Anthropic's API (already excludes cache tokens) is multiplied by the input rate; `cache_read_input_tokens` and `cache_creation_input_tokens` are billed separately at their own rates. This restores accurate `INSIGHTS_MONTHLY_BUDGET_CENTS` enforcement when prompt caching is active. The monthly budget is shared between `/api/insights` and `/api/categorize` — both check the same cap before calling Claude.
+- **Cost tracking**: Granular token-level pricing — `input_tokens` from Anthropic's API (already excludes cache tokens) is multiplied by the input rate; `cache_read_input_tokens` and `cache_creation_input_tokens` are billed separately at their own rates. This restores accurate `INSIGHTS_MONTHLY_BUDGET_CENTS` enforcement when prompt caching is active. The monthly budget is shared between `/api/insights` and `/api/categorize` — both check the same cap before calling Claude AND `/api/categorize` writes a `financial_insights` row with `entry_type='categorize'` after each AI call so its spend counts toward the cap (not just the read side). Display queries that surface "AI Insights" filter `entry_type='insight'` to keep categorize tracking rows out of the user-facing feed.
 - **Insight inputs are split-adjusted**: AI insights see the same `spending_split_pct`-adjusted monthly spend totals and the same keyword-filtered income that the dashboard and `/api/savings-rate` show, via `services/financial-queries.js`.
-- **Running-summary truncation handling**: When the model hits its `max_tokens` ceiling mid-response, the prior `insights_running_summary` is preserved rather than overwritten with a partial update. `POST /api/insights` returns `stop_reason` (from Anthropic) and `summary_status` (`"updated"`, `"preserved_due_to_truncation"`, or `"preserved_no_delimiter"`) so callers can surface when long-term memory didn't advance.
+- **Structured running summary**: AI long-term memory is structured JSON, not plain text. `POST /api/insights` uses Anthropic tool_use (`generate_financial_insight` tool, forced via `tool_choice`) to return BOTH the user-facing `insights_text` AND a typed `summary` object with four arrays: `trends`, `completed_goals`, `pending_actions`, `alerts`. The summary is saved to `user_settings.insights_running_summary_json` (JSONB); the legacy `insights_running_summary` TEXT column gets a human-readable rendering for backward-compat callers. `sanitizeStructuredSummary` enforces shape/length bounds (max items per array, string lengths, enum values) so a pathological tool response can't pollute long-term memory. The response includes `summary_status` — `"updated"` (normal), `"preserved_due_to_truncation"` (tool block missing because hit max_tokens), `"preserved_no_tool_block"` (model didn't comply with tool_choice — rare), or `"preserved_validation_failed"` (sanitizer rejected the shape) — so callers can surface when long-term memory didn't advance. `GET /api/insights/status` returns the full `running_summary` object plus a `running_summary_counts` block (`{trends, completed_goals, pending_actions, alerts}`) so dashboards can show "tracking 3 trends · 2 goals · 5 actions · 1 alert" without a second fetch.
 - **AI insight auditing**: Post-generation validation via `services/ai-audit.js`. Four tiers:
   (1) arithmetic — dollar amounts and percentages compared to actual DB data, critical >20% off,
   warning >5%; (2) entity existence — merchant/goal/subscription names verified against DB,
@@ -362,14 +421,18 @@ teller/
   API: `GET /api/notifications`, `PATCH /api/notifications/:id/read`,
   `POST /api/notifications/read-all`.
 - **Data freshness API**: `GET /api/data-freshness` returns per-source timestamps
-  (transactions, balances, auto-sync, insights) with age in seconds and staleness
-  flag (>24h). `POST /api/sync` updates `last_txn_sync_at`;
-  `POST /api/sync-balances` updates `last_balance_sync_at`.
+  (transactions, balances, auto-sync, insights) with `age_seconds`, a boolean
+  `stale` flag (>24h), and an explicit `level` (`"fresh"` <6h / `"aging"` 6-24h /
+  `"stale"` >24h or never synced). The response also includes a top-level
+  `thresholds: { fresh_seconds, stale_seconds }` block so the nav badge's
+  green/yellow/red mapping doesn't need to repeat threshold constants.
+  `POST /api/sync` updates `last_txn_sync_at`; `POST /api/sync-balances`
+  updates `last_balance_sync_at`.
 - **Web Push notifications**: VAPID-based push notifications for anomalies, budget alerts,
   goal milestones
 - **Accessibility**: Skip-to-content link, `<main>` landmark, chart aria-labels, :focus-visible
   styles, WCAG AA contrast-compliant text colors
-- **CSP nonces**: Per-request cryptographic nonces for all inline scripts (no 'unsafe-inline')
+- **CSP nonces**: Per-request cryptographic nonces for all inline scripts (no `'unsafe-inline'` in `scriptSrc`). Style policy is split: `styleSrcElem` is nonce-gated for `<style>` blocks while `styleSrcAttr` keeps `'unsafe-inline'` for inline `style=""` attributes.
 - **Keep-alive**: Timezone-aware self-ping to prevent Render free tier sleep (10s timeout)
 - **Per-model cost tracking**: Usage history with granular pricing (Haiku/Sonnet/Opus)
 - **Google Sheets sync**: Auto-sync to 6 tabs — Transactions, Subscriptions, AI Insights,
@@ -510,8 +573,13 @@ DELETE /api/accounts/manual/:id # delete a manual account
 GET  /api/spending-summary # monthly trends, categories, top merchants (split-adjusted)
 GET  /api/cash-flow        # rolling cash flow projection (query: days, default 90)
 GET  /api/savings-rate     # income vs spending analysis (query: months, default 3)
+GET  /api/income-summary   # income trend + top sources + by_account (query: months, default 6)
 GET  /api/spending-yoy     # year-over-year comparison (query: month, year)
-GET  /api/goals            # list financial goals with projections (current_amount is
+GET  /api/accounts/:id/balance-history # daily balance series for an account (query: source=linked|investment, months)
+GET  /api/goals            # list financial goals with projections; each goal includes
+                           # `suggested_transfers[]` matching active recurring transfers
+                           # whose type aligns with the funding source and whose monthly
+                           # amount is within ±25% of monthly_contribution (current_amount is
                            # derived from the funding account when one is linked)
 GET  /api/goals/funding-options # depository + investment accounts a goal can link to (Phase C)
 POST /api/goals            # create a financial goal
@@ -536,12 +604,15 @@ POST /api/budgets/snapshot # create monthly snapshot + compute rollovers (body: 
 GET  /api/budgets/history  # budget snapshots for trend analysis (query: months)
 POST /api/insights         # generate new AI insights
 GET  /api/insights/status  # AI API config + usage stats + audit_accuracy (90d clean-run %)
+                           # + running_summary (structured JSON) + running_summary_counts
 GET  /api/insights/usage   # AI usage history
 POST /api/insights/reset   # clear long-term AI context
 POST /api/insights/rebuild # rebuild context from all history
 GET  /api/insights/audit   # audit log + per-module stats + 90-day accuracy summary
 POST /api/categorize       # ML categorize transactions (rules first, then Claude AI)
 GET  /api/categorize/status # ML categorization status
+GET  /api/categorize/review-queue # candidates the next AI categorize would send to Claude
+POST /api/categorize/review # apply a single user decision (sets user_category, optionally creates rule)
 PATCH /api/transactions/:id/category # manually set transaction category — writes user_category
 PATCH /api/transactions/bulk-category # bulk update categories — writes user_category
 GET  /api/categorization-rules       # list all categorization rules
@@ -570,15 +641,22 @@ POST /api/notifications/read-all  # mark all notifications as read
 # Tax export
 GET  /api/export/tax-report # year-end deduction summary (query: year, format=csv|json)
 
-# WebAuthn / biometric login (standalone Perfin only — under the unified shell
-# the shell PIN gate intercepts before any /perfin/* request can reach these,
-# so embedded deployments expose PIN as the only auth surface)
+# WebAuthn / biometric login — Perfin sub-app endpoints (registration always
+# happens here; standalone deployments also use these for the auth flow).
 POST /api/webauthn/register-options    # generate registration challenge (auth required)
 POST /api/webauthn/register            # verify and store new credential (auth required)
 POST /api/webauthn/authenticate-options # generate auth challenge (no session needed)
-POST /api/webauthn/authenticate        # verify biometric and create session
+POST /api/webauthn/authenticate        # verify biometric and create session (standalone)
 GET  /api/webauthn/credentials         # list registered credentials (auth required)
 DELETE /api/webauthn/credentials/:id   # remove a credential (auth required)
+
+# Shell-layer biometric login (unified-shell deployments). Mounted BEFORE the
+# shell's PIN gate so users can authenticate via FaceID/passkey without first
+# entering the PIN. Reads `webauthn_credentials` from Perfin's pool via the
+# cross-pool wiring; on successful verify, sets the shell signed-cookie session.
+GET  /api/shell/webauthn/available             # does any credential exist? (drives login UI)
+POST /api/shell/webauthn/authenticate-options  # generate auth challenge
+POST /api/shell/webauthn/authenticate          # verify + set shell session cookie
 
 # Per-sistant integration endpoints
 POST /api/persistent/webhook/test  # test webhook connectivity to Per-sistant
@@ -589,15 +667,16 @@ POST /api/sso/generate             # create HMAC-signed SSO token (60s expiry)
 POST /api/sso/validate             # validate SSO token, create session
 
 # Pages
-GET  /dashboard            # main dashboard UI
-GET  /subscriptions        # subscription management
-GET  /transactions         # transaction search/filter page
-GET  /calendar             # bill calendar page
-GET  /goals                # financial goals page
-GET  /budgets              # budget tracking page
-GET  /settings             # settings page
-GET  /login                # login page (if auth enabled)
-GET  /health               # health check
+GET  /dashboard                 # main dashboard UI
+GET  /subscriptions             # subscription management
+GET  /transactions              # transaction search/filter page
+GET  /calendar                  # bill calendar page
+GET  /goals                     # financial goals page
+GET  /budgets                   # budget tracking page
+GET  /settings                  # settings page
+GET  /accounts/:id/history      # per-account balance chart (query: source=linked|investment, months)
+GET  /login                     # login page (if auth enabled)
+GET  /health                    # health check
 ```
 
 ## Environment Variables
@@ -670,7 +749,7 @@ standalone-mode fallback if either app is run on its own Render service.
   `push_subscriptions`, `webauthn_credentials`, `investment_accounts`, `investment_holdings`,
   `plaid_investment_items`, `plaid_items`, `sync_cursors`, `schema_migrations`,
   `categorization_rules`, `manual_bills`, `bill_payments`, `notification_log`,
-  `ai_audit_log`
+  `ai_audit_log`, `account_balance_snapshots`
 - `user_settings`: single-row pattern (CHECK id = 1) for app preferences
 - `linked_accounts` columns include: `is_shared BOOLEAN`, `spending_split_pct INT DEFAULT 100`,
   `is_manual BOOLEAN` — constraint `chk_account_source` allows `plaid_item_id IS NOT NULL OR
@@ -742,6 +821,24 @@ standalone-mode fallback if either app is run on its own Render service.
   budget cost queries do NOT filter — both `'insight'` and `'categorize'` rows
   count toward `INSIGHTS_MONTHLY_BUDGET_CENTS`. Without this, categorize was
   read-only against the cap (checked it but never charged itself).
+- `user_settings.insights_running_summary_json JSONB`: structured AI long-term
+  memory — `{ trends, completed_goals, pending_actions, alerts }`. Replaces the
+  legacy plain-text `insights_running_summary` (TEXT column still populated
+  with a human-readable rendering for backward compat). Written by every
+  successful POST `/api/insights` and cleared by POST `/api/insights/reset`.
+  Validated through `sanitizeStructuredSummary` (max items per array, string
+  length caps, enum guardrails) so a pathological tool response can't pollute
+  long-term memory.
+- `account_balance_snapshots`: daily per-account balance history for charting
+  performance over time. Columns: `source TEXT CHECK IN ('linked','investment')`,
+  `source_id INT`, `snapshot_date DATE`, `balance NUMERIC(14,2)`,
+  `available_balance`, `current_balance`. UNIQUE (source, source_id,
+  snapshot_date) so intra-day re-syncs upsert one row per account per day.
+  Polymorphic source — `'linked'` references `linked_accounts.id` (covers
+  Teller-linked accounts), `'investment'` references `investment_accounts.id`
+  (covers manual + Plaid). Lack of FK is deliberate — both source tables
+  exist independently. Written from `syncAllBalances` and the Plaid
+  `/api/plaid/sync-holdings` path; read by `GET /api/accounts/:id/balance-history`.
 
 ## Recurring Transfer Detection
 Transfers are identified by keyword matching on merchant_name/name fields:
@@ -769,19 +866,34 @@ Subscription and transfer detection now key on
 `detected_subscriptions` and `recurring_transfers` keyed by the raw
 `merchant_name` will not match the new key, so on the first detection run
 after the upgrade a user with active `user_merchant_name` overrides may see
-a parallel duplicate row appear under the new (merged) name. The old rows
-remain `is_active = true` until the per-table staleness sweep retires them
-(120 days for subscriptions; transfers age out via the same upsert
-`is_active` CASE). To resolve immediately, dismiss the duplicates from the
-UI or run `POST /api/cleanup`.
+a parallel duplicate row appear under the new (merged) name.
+
+An idempotent cleanup runs on every startup as part of the migration step:
+it deactivates any subscription/transfer row whose `merchant_key` matches
+`transactions.merchant_name` AND whose underlying transactions have a
+differing `user_merchant_name` override set. This auto-retires the orphans
+without waiting for the 120-day staleness sweep. The UPDATE is a no-op when
+no orphans exist, so the migration stays cheap. Users who still see
+duplicates after a restart (e.g. orphans without matching transaction rows)
+can dismiss them from the UI or run `POST /api/cleanup`.
 
 ## Security
 - **CSP nonces**: Per-request `crypto.randomBytes(16)` nonce for all inline scripts.
   No `'unsafe-inline'` in `scriptSrc`. Nonce passed via `res.locals.nonce` to EJS templates.
+  Style policy is split (CSP Level 3): `styleSrcElem` requires the nonce on
+  `<style>` blocks (the only such block lives in `partials/head.ejs` and now
+  carries `nonce="<%= nonce %>"`). `styleSrcAttr` keeps `'unsafe-inline'` so the
+  hundreds of inline `style="..."` attributes across templates continue to
+  work; migrating each one is out of scope for now.
 - **CORS**: Rejects cross-origin requests when `ALLOWED_ORIGINS` not configured
 - **API key**: Header-only (`X-API-Key`), no query string support
 - **Token encryption**: pgcrypto `pgp_sym_encrypt` for Teller/Plaid access tokens AND the Per-sistant webhook HMAC secret (`persistent_webhook_secret_enc`) at rest, all keyed by `TOKEN_ENCRYPTION_PASSPHRASE`
-- **Session**: Secure cookies, pgSession store, configurable timeout, CSRF custom header check
+- **Session**: Secure cookies, configurable timeout, CSRF custom header check.
+  The pgSession store only attaches when `AUTH_SECRET` is set
+  (`SESSION_PASSWORD` or `SESSION_PIN` configured). Under the unified shell
+  (where the shell PIN gate handles auth) and standalone-without-auth
+  configurations, the per-app session never gets written, so the in-memory
+  default suffices and the `session` table is no longer maintained for nothing.
 - **Rate limiting**: General (100/15min), tight (5/1min) for sync/detect, login (10/15min),
   SSO validate (10/15min)
 - **SSO replay protection**: Each SSO token embeds a 24-byte random nonce; validate tracks
@@ -794,10 +906,18 @@ UI or run `POST /api/cleanup`.
 - **WebAuthn rpID**: Derived per-request from `req.hostname` (not cached at module scope),
   so deployments behind proxies with multiple hostnames or DNS changes work correctly.
 - **Teller API**: mTLS client certificates, retry with exponential backoff (1s/2s/4s), 30s timeout
-- **AI prompt sanitization**: `sanitizeForPrompt()` in `routes/insights.js` strips
-  `---RUNNING_SUMMARY---` patterns and consecutive dashes from user-controlled strings
-  (merchant names, goal names, transfer display names) before interpolating them into the
-  AI prompt. Prevents delimiter corruption that could break running-summary parsing.
+- **AI prompt sanitization**: Two layers. First, `sanitizeForPrompt()` in
+  `routes/insights.js` strips `---RUNNING_SUMMARY---` patterns and consecutive
+  dashes from user-controlled strings (merchant names, goal names, transfer
+  display names) before interpolating them into the AI prompt. The original
+  rationale (delimiter parsing of running-summary output) is now obsolete
+  since tool_use replaced delimiter parsing, but the function is kept as
+  defense-in-depth against general prompt injection. Second,
+  `sanitizeStructuredSummary()` enforces hard shape/length bounds (max items
+  per array, string length caps, enum guardrails) on the structured summary
+  the AI returns via tool_use, so a pathological tool response can't pollute
+  long-term memory. When validation fails the prior summary is preserved
+  and the response carries `summary_status: "preserved_validation_failed"`.
 - **Subscription matching**: Word boundary regex to prevent false positives
 
 ## Scheduled Tasks (intervals)
@@ -823,6 +943,10 @@ embedded mode).
   `syncAllEnrollments()` then `syncAllBalances()` in-process — never via HTTP self-fetch,
   so API_KEY-protected deployments don't 401 against themselves. Updates
   `last_auto_sync_at` on every check (success or partial failure).
+  Push notification only fires when at least one transaction was added, at
+  least one balance was updated, or a sync failed — silent successful syncs
+  no longer produce hourly notification noise. Failed syncs still notify
+  under "Auto-sync issue" so the user knows the data isn't fresh.
   Note: on Render free tier, scheduled syncs only fire while the process is awake;
   enable `keep_alive_enabled` if you need guaranteed cadence.
 - **CSV import reminders**: every 24 hours, checks manual (CSV-only) accounts
@@ -932,6 +1056,30 @@ descriptions (NOT amount thresholds). Defined in `services/financial-queries.js`
   rule for "Amazon" → "Shopping" will never pay for AI to categorize Amazon
   transactions. Rules are matched against `COALESCE(user_merchant_name,
   merchant_name, name)` so user-renamed merchants are also handled.
+- **Categorization engagement loop drives AI cost down.** The dashboard's
+  "Review Uncategorized" widget (`GET /api/categorize/review-queue`) shows
+  the same set of transactions that would otherwise go to Claude on the
+  next AI run. The user picks a category (with a Teller-map suggestion
+  pre-filled), optionally checks "Remember" to create a `categorization_rules`
+  row via `POST /api/categorize/review`, and the rule base grows. Each rule
+  added means future AI cost drops because more rows hit the rule path
+  before reaching Claude. Long-term, the AI is reserved for genuinely
+  novel merchants.
+- **Goal-funding suggestions surface auto-link opportunities.** `GET /api/goals`
+  returns `suggested_transfers[]` per goal — the top 5 active recurring
+  outgoing transfers whose `transfer_type` matches the goal's funding-source
+  kind (savings or investment) and whose monthly amount is within ±25% of
+  `monthly_contribution`. Suggestion only — the UI can prompt "Auto-link
+  this $500/mo Schwab transfer to House Down Payment?" without auto-linking.
+- **Per-account balance history is polymorphic.** `account_balance_snapshots`
+  uses a `(source, source_id)` polymorphic reference instead of two parallel
+  tables. `source='linked'` rows reference `linked_accounts.id` (Teller-linked
+  accounts including investments); `source='investment'` rows reference
+  `investment_accounts.id` (Plaid + manual). The lack of FK is deliberate —
+  both source tables exist with their own lifecycles, and a polymorphic
+  UNIQUE keeps lookups O(1) per (source, source_id, date). Snapshots are
+  written from `syncAllBalances` and Plaid `sync-holdings`; one row per
+  account per day via `ON CONFLICT DO UPDATE`.
 - **Budget rollover uses snapshots, not running totals.** The rollover
   amount is computed by `POST /api/budgets/snapshot` as `MAX(0, limit - spent)`
   and stored in `budget_snapshots`. `GET /api/budgets` adds the most recent
@@ -988,7 +1136,5 @@ descriptions (NOT amount thresholds). Defined in `services/financial-queries.js`
 2. **Multi-user support** — Shared household finance tracking with role-based access
 3. **Onboarding flow** — Guided "Getting Started" checklist (link account → sync →
    categorize → set budgets) visible until all steps complete
-4. **Structured running summary** — Replace plain-text AI memory with categorized JSON
-   (trends, completed goals, pending actions, alerts)
-5. **Investment performance & allocation** — Plaid syncs holdings (qty, cost basis,
+4. **Investment performance & allocation** — Plaid syncs holdings (qty, cost basis,
    current value); compute returns, asset allocation, and goal-vs-portfolio drift

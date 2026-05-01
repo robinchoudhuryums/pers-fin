@@ -337,4 +337,7 @@ and signal handlers are owned by the shell when embedded.
 - Dashboard widget shows Perfin subscription data when `PERFIN_URL` is set
 
 ## Git
-- Default branch: `claude/personal-assistant-tool-KdEYQ`
+- Branch management lives at the parent `pers-fin` repo level under the
+  unified shell. The historical `claude/personal-assistant-tool-KdEYQ`
+  branch was the standalone Per-sistant default before subtree-merge.
+  See the parent CLAUDE.md "Git" section for the current active branch.
