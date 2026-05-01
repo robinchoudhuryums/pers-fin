@@ -1,36 +1,58 @@
-# Render deployment blueprint for pers-fin subscription tracker
+# Render deployment blueprint for the unified pers-fin + per-sistant shell.
 # Deploy: Connect GitHub repo in Render dashboard, or `render blueprint apply`
 #
-# After deploy, set these env vars in the dashboard:
-#   TELLER_CERT — base64-encoded certificate.pem  (run: base64 < certificate.pem)
-#   TELLER_KEY  — base64-encoded private_key.pem   (run: base64 < private_key.pem)
+# Architecture (post-merge):
+#   shell/index.js          PIN gate + landing tile picker; mounts sub-apps
+#   teller/server.js        Perfin sub-app, mounted at /perfin
+#   apps/per-sistant/...    Per-sistant sub-app, mounted at /per-sistant
+#
+# After deploy, set these in the dashboard:
+#   SHELL_PIN                — unified PIN that fronts both apps
+#   SHELL_SECRET             — random ~32+ chars; signs the shell session cookie
+#                              (rotate to invalidate every active session)
+#   PERSISTENT_DATABASE_URL  — Per-sistant's Neon DB URL (Perfin uses NEON_DATABASE_URL)
+#   TELLER_CERT              — base64-encoded certificate.pem  (run: base64 < certificate.pem)
+#   TELLER_KEY               — base64-encoded private_key.pem   (run: base64 < private_key.pem)
 
 services:
   - type: web
     name: pers-fin-tracker
     runtime: node
     plan: free
-    buildCommand: cd teller && npm install && cd .. && npm install
-    startCommand: node teller/server.js
+    # npm workspaces: a single root install walks shell, teller, and
+    # apps/per-sistant in one shot. Per-package node_modules are nested
+    # only where versions diverge (notably express v4 vs v5).
+    buildCommand: npm install
+    startCommand: npm start
     envVars:
       - key: PORT
         value: 3000
+      # --- Shell (unified PIN auth + landing) ---
+      - key: SHELL_PIN
+        sync: false  # PIN that fronts both apps
+      - key: SHELL_SECRET
+        sync: false  # signs the shell session cookie; openssl rand -hex 32
+      # --- Teller (Perfin sub-app) ---
       - key: TELLER_CERT
         sync: false  # base64-encoded certificate.pem
       - key: TELLER_KEY
         sync: false  # base64-encoded private_key.pem
-      - key: API_KEY
-        sync: false  # secret key to protect /api/* endpoints
-      - key: ALLOWED_ORIGINS
-        sync: false  # comma-separated allowed CORS origins (optional)
       - key: TELLER_ENV
         value: development
       - key: TELLER_APPLICATION_ID
         sync: false  # set manually in dashboard
+      - key: API_KEY
+        sync: false  # secret key to protect /api/* endpoints (optional under shell)
+      - key: ALLOWED_ORIGINS
+        sync: false  # comma-separated allowed CORS origins (optional)
+      # --- Databases (one per sub-app) ---
       - key: NEON_DATABASE_URL
-        sync: false
+        sync: false  # Perfin's Neon DB
+      - key: PERSISTENT_DATABASE_URL
+        sync: false  # Per-sistant's Neon DB (separate database)
       - key: TOKEN_ENCRYPTION_PASSPHRASE
         sync: false
+      # --- Google Sheets sync (Perfin) ---
       - key: GOOGLE_SHEETS_ID
         sync: false
       - key: GOOGLE_SERVICE_ACCOUNT_KEY
