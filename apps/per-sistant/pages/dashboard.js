@@ -1,4 +1,4 @@
-const { pageHead, navBar, themeScript } = require("../views");
+const { pageHead, navBar, themeScript, basePath } = require("../views");
 const DASHBOARD_JS = require("./dashboard-script");
 
 module.exports = function() {
@@ -111,7 +111,7 @@ ${navBar("/")}
       <div class="section" style="margin-bottom:20px;">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
           <h2 style="margin-bottom:0;">Calendar</h2>
-          <a href="/calendar" class="mono-label" style="color:var(--muted);">Full view &rarr;</a>
+          <a href="${basePath()}/calendar" class="mono-label" style="color:var(--muted);">Full view &rarr;</a>
         </div>
         <div id="mini-cal-header" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
           <button id="mini-cal-prev" class="btn" style="padding:4px 10px;">&larr;</button>
