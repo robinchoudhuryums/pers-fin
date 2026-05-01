@@ -118,15 +118,21 @@ router.get("/api/insights/usage", async (_req, res) => {
 // GET /api/insights
 router.get("/api/insights", async (_req, res) => {
   try {
-    const result = await pool.query("SELECT * FROM financial_insights ORDER BY created_at DESC LIMIT 5");
+    // entry_type filter excludes /api/categorize tracking rows from the user-facing feed.
+    const result = await pool.query("SELECT * FROM financial_insights WHERE entry_type = 'insight' ORDER BY created_at DESC LIMIT 5");
     res.json(result.rows);
   } catch (err) { console.error("Insights list query error:", err.message); res.json([]); }
 });
 
-// POST /api/insights — generate via Claude
-router.post("/api/insights", async (_req, res) => {
+// generateInsights — orchestration extracted from POST /api/insights so the
+// scheduler in startup.js can invoke it in-process (an HTTP self-fetch from
+// the auto-trigger 401s under the unified shell). Returns either:
+//   { ok: false, status, error }                 — early bail / failure
+//   { ok: true, insight, modules_used, ... }     — same body the HTTP handler
+//                                                  used to JSON-encode
+async function generateInsights() {
   if (!Anthropic || !process.env.ANTHROPIC_API_KEY) {
-    return res.status(501).json({ error: "Set ANTHROPIC_API_KEY in .env to enable AI insights." });
+    return { ok: false, status: 501, error: "Set ANTHROPIC_API_KEY in .env to enable AI insights." };
   }
   try {
     const budgetCents = parseInt(process.env.INSIGHTS_MONTHLY_BUDGET_CENTS) || 50;
@@ -142,10 +148,12 @@ router.post("/api/insights", async (_req, res) => {
       estimatedCostCents += cost * 100;
     });
     if (estimatedCostCents >= budgetCents) {
-      return res.status(429).json({
+      return {
+        ok: false,
+        status: 429,
         error: `Monthly AI budget reached ($${(estimatedCostCents / 100).toFixed(2)} of $${(budgetCents / 100).toFixed(2)} cap). Resets next month. Adjust INSIGHTS_MONTHLY_BUDGET_CENTS in .env to raise the limit.`,
         budget_cents: budgetCents,
-      });
+      };
     }
 
     // Use the shared split-adjusted spending query so the AI sees the same
@@ -164,7 +172,7 @@ router.post("/api/insights", async (_req, res) => {
         "WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL ORDER BY amount DESC"
       ),
       pool.query(
-        "SELECT insight_text, created_at FROM financial_insights ORDER BY created_at DESC LIMIT 1"
+        "SELECT insight_text, created_at FROM financial_insights WHERE entry_type = 'insight' ORDER BY created_at DESC LIMIT 1"
       ).catch(() => ({ rows: [] })),
       pool.query(
         "SELECT insights_running_summary, insights_model, insights_cadence_days, zip_code, insight_modules FROM user_settings WHERE id = 1"
@@ -660,7 +668,8 @@ router.post("/api/insights", async (_req, res) => {
     }
 
     const costUsd = estimateCostGranular(usage, actualModel);
-    res.json({
+    return {
+      ok: true,
       insight: insightText,
       tokens_used: tokensUsed,
       modules_used: activeModules,
@@ -669,11 +678,22 @@ router.post("/api/insights", async (_req, res) => {
       stop_reason: message.stop_reason,
       summary_status: summaryStatus,
       audit: auditResult ? auditResult.summary : null,
-    });
+    };
   } catch (err) {
     console.error("Insights error:", err.message);
-    res.status(500).json({ error: "An internal error occurred." });
+    return { ok: false, status: 500, error: "An internal error occurred." };
   }
+}
+
+// POST /api/insights — HTTP wrapper around generateInsights().
+router.post("/api/insights", async (_req, res) => {
+  const result = await generateInsights();
+  if (!result.ok) {
+    const { status, ...body } = result;
+    return res.status(status || 500).json(body);
+  }
+  const { ok, ...body } = result;
+  res.json(body);
 });
 
 // POST /api/insights/reset
@@ -713,7 +733,7 @@ router.post("/api/insights/rebuild", async (_req, res) => {
     }
 
     const [allInsights, settingsRow] = await Promise.all([
-      pool.query("SELECT insight_text, created_at FROM financial_insights ORDER BY created_at ASC"),
+      pool.query("SELECT insight_text, created_at FROM financial_insights WHERE entry_type = 'insight' ORDER BY created_at ASC"),
       pool.query("SELECT insights_model FROM user_settings WHERE id = 1").catch(() => ({ rows: [{ insights_model: "sonnet" }] })),
     ]);
     if (allInsights.rows.length === 0) {
@@ -806,3 +826,4 @@ router.get("/api/insights/audit", async (_req, res) => {
 
 module.exports = router;
 module.exports.renderInsightEmail = renderInsightEmail;
+module.exports.generateInsights = generateInsights;

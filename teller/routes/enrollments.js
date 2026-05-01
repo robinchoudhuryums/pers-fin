@@ -605,7 +605,7 @@ router.get("/api/spending-summary", async (req, res) => {
     // the full amount to the parent's category[1].
     const byCategory = await pool.query(
       `WITH parent_no_splits AS (
-         SELECT COALESCE(t.category[1], 'Uncategorized') AS category,
+         SELECT COALESCE(t.user_category, t.category[1], 'Uncategorized') AS category,
                 t.amount * COALESCE(la.spending_split_pct, 100) / 100.0 AS amount,
                 1 AS line_count
          FROM transactions t
@@ -616,7 +616,7 @@ router.get("/api/spending-summary", async (req, res) => {
            AND NOT EXISTS (SELECT 1 FROM transaction_splits s WHERE s.parent_transaction_id = t.transaction_id)
        ),
        from_splits AS (
-         SELECT COALESCE(s.category, t.category[1], 'Uncategorized') AS category,
+         SELECT COALESCE(s.category, t.user_category, t.category[1], 'Uncategorized') AS category,
                 s.amount * COALESCE(la.spending_split_pct, 100) / 100.0 AS amount,
                 1 AS line_count
          FROM transaction_splits s
@@ -672,7 +672,7 @@ router.get("/api/spending-summary", async (req, res) => {
     const recentTxns = await pool.query(
       `SELECT COALESCE(user_merchant_name, merchant_name, name) AS description,
               amount, date, pending, is_reimbursed,
-              COALESCE(category[1], 'Uncategorized') AS category
+              COALESCE(user_category, category[1], 'Uncategorized') AS category
        FROM transactions
        ORDER BY date DESC, created_at DESC
        LIMIT 10`
@@ -926,7 +926,7 @@ router.get("/api/spending-yoy", async (req, res) => {
     // Phase B3: honor transaction_splits for per-category breakdowns.
     const result = await pool.query(`
       WITH parent_no_splits AS (
-        SELECT t.date, COALESCE(t.category[1], 'Uncategorized') AS category,
+        SELECT t.date, COALESCE(t.user_category, t.category[1], 'Uncategorized') AS category,
                t.amount * COALESCE(la.spending_split_pct, 100) / 100.0 AS amount
         FROM transactions t
         LEFT JOIN linked_accounts la ON la.account_id = t.account_id
@@ -938,7 +938,7 @@ router.get("/api/spending-yoy", async (req, res) => {
           AND NOT EXISTS (SELECT 1 FROM transaction_splits s WHERE s.parent_transaction_id = t.transaction_id)
       ),
       from_splits AS (
-        SELECT t.date, COALESCE(s.category, t.category[1], 'Uncategorized') AS category,
+        SELECT t.date, COALESCE(s.category, t.user_category, t.category[1], 'Uncategorized') AS category,
                s.amount * COALESCE(la.spending_split_pct, 100) / 100.0 AS amount
         FROM transaction_splits s
         JOIN transactions t ON t.transaction_id = s.parent_transaction_id

@@ -23,11 +23,12 @@ const API_KEY = process.env.API_KEY;
 // Captured so shutdown (or the shell) can clearInterval them.
 const intervalHandles = [];
 
-// NOTE: a few of these jobs make in-process fetches to
-// http://localhost:PORT/api/... When this app is mounted at a prefix
-// (e.g. /perfin) under the unified shell, those URLs need to gain the
-// prefix or be replaced with direct function calls. Tracked by the
-// URL-sweep phase of the merge plan.
+// All scheduled jobs invoke route logic via exported helpers (in-process)
+// rather than HTTP self-fetches. An HTTP fetch to http://localhost:PORT/api/...
+// hits the unified shell's auth gate (no shell session cookie on the in-process
+// fetch) and 401s — so the auto-trigger silently failed under the deployed shell
+// for every cycle. Use the "extract handler → export → reuse" pattern when
+// adding new scheduled tasks.
 
 function startBackgroundJobs() {
   // Sheets auto-sync check (every hour)
@@ -151,19 +152,26 @@ function startBackgroundJobs() {
       const now = new Date();
       if (!lastRun || (now - lastRun) / 86400000 >= cadenceDays) {
         const { syncAllEnrollments, syncAllBalances } = require("./routes/enrollments");
+        const { runSubscriptionDetection } = require("./routes/subscriptions");
+        const { detectRecurringTransfers } = require("../scripts/detect-transfers");
+        const { runCategorize } = require("./routes/categorize");
+        const { generateInsights } = require("./routes/insights");
+
         try { await syncAllEnrollments(); } catch (e) { console.error("Pre-insights sync error:", e.message); }
         try { await syncAllBalances(); } catch (e) { console.error("Pre-insights balance error:", e.message); }
-        const port = process.env.PORT || 3000;
-        const headers = { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" };
-        if (API_KEY) headers["X-API-Key"] = API_KEY;
-        try { await fetch(`http://localhost:${port}/api/detect`, { method: "POST", headers }); } catch {}
-        try { await fetch(`http://localhost:${port}/api/detect-transfers`, { method: "POST", headers }); } catch {}
+        try { await runSubscriptionDetection(); } catch (e) { console.error("Pre-insights detect error:", e.message); }
+        try { await detectRecurringTransfers(pool); } catch (e) { console.error("Pre-insights detect-transfers error:", e.message); }
+        // Categorize BEFORE generating insights so the AI sees freshly
+        // categorized rows (matches the documented chain in CLAUDE.md).
         try {
-          const r = await fetch(`http://localhost:${port}/api/insights`, { method: "POST", headers });
-          if (r.ok) console.log("Auto-triggered AI insights (cadence: " + cadenceDays + " days).");
-          else console.log("Auto-trigger insights skipped:", (await r.json().catch(() => ({}))).error);
-        } catch (err) { console.error("Auto-trigger insights fetch error:", err.message); }
-        try { await fetch(`http://localhost:${port}/api/categorize`, { method: "POST", headers }); } catch {}
+          const cat = await runCategorize();
+          if (!cat.ok) console.log("Auto-trigger categorize skipped:", cat.error);
+        } catch (e) { console.error("Pre-insights categorize error:", e.message); }
+        try {
+          const ins = await generateInsights();
+          if (ins.ok) console.log("Auto-triggered AI insights (cadence: " + cadenceDays + " days).");
+          else console.log("Auto-trigger insights skipped:", ins.error);
+        } catch (err) { console.error("Auto-trigger insights error:", err.message); }
       }
     } catch (err) {
       console.error("Insights auto-trigger error:", err.message);
@@ -220,10 +228,13 @@ function startBackgroundJobs() {
         "SELECT 1 FROM budget_snapshots WHERE month = $1 LIMIT 1", [prevMonth]
       );
       if (existing.rows.length > 0) return;
-      const { getCategorySpendingThisMonth } = require("./services/financial-queries");
+      const { getCategorySpendingForMonth } = require("./services/financial-queries");
+      // Pull spending FOR last month, not this (new) month — getCategorySpendingThisMonth
+      // would query the just-rolled-over current month and snapshot near-zero spending,
+      // which made every rollover-enabled budget carry forward its full limit.
       const [budgets, spending] = await Promise.all([
         pool.query("SELECT * FROM budgets"),
-        getCategorySpendingThisMonth(pool),
+        getCategorySpendingForMonth(pool, prevMonth),
       ]);
       const spendMap = {};
       for (const r of spending) spendMap[r.category] = parseFloat(r.spent);

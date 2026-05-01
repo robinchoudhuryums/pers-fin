@@ -200,7 +200,9 @@ router.get("/api/transactions/search", async (req, res) => {
       idx++;
     }
     if (category) {
-      conditions.push(`t.category[1] = $${idx}`);
+      // Honor user_category override so manually-recategorized rows surface
+      // under the user's chosen category, not Teller's stale value.
+      conditions.push(`COALESCE(t.user_category, t.category[1]) = $${idx}`);
       values.push(category);
       idx++;
     }
@@ -237,7 +239,7 @@ router.get("/api/transactions/search", async (req, res) => {
         SELECT t.transaction_id, t.date, COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS merchant, t.user_notes, t.is_reimbursed,
                t.amount, la.name AS account_name, la.type AS account_type,
                COALESCE(pi.institution_name, te.institution_name, la.institution_name_manual, 'CSV Import') AS institution_name,
-               t.category[1] AS category, t.pending
+               COALESCE(t.user_category, t.category[1]) AS category, t.pending
         FROM transactions t
         JOIN linked_accounts la ON la.account_id = t.account_id
         LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
@@ -278,7 +280,7 @@ router.get("/api/transactions", async (req, res) => {
         la.name AS account_name,
         la.type AS account_type,
         COALESCE(pi.institution_name, te.institution_name, 'CSV Import') AS institution_name,
-        t.category[1] AS category,
+        COALESCE(t.user_category, t.category[1]) AS category,
         t.personal_finance_category->>'primary' AS pfc_primary,
         t.personal_finance_category->>'detailed' AS pfc_detailed,
         t.pending
@@ -311,21 +313,28 @@ router.get("/api/transactions", async (req, res) => {
   }
 });
 
-// POST /api/detect
+// runSubscriptionDetection — orchestration extracted from POST /api/detect so
+// the scheduler can invoke detection in-process. Returns the same shape the
+// HTTP handler used to send: { detected_count, subscriptions }.
+async function runSubscriptionDetection() {
+  const detected = await detectSubscriptions(pool);
+  for (const sub of detected) {
+    const cat = categorizeSubscription(sub.display_name);
+    const dbCategory = cat === "utility" ? "utility" : "subscription";
+    if (dbCategory !== "subscription") {
+      await pool.query(
+        "UPDATE detected_subscriptions SET category = $1 WHERE merchant_key = $2 AND category = 'subscription'",
+        [dbCategory, sub.merchant_key]
+      );
+    }
+  }
+  return { detected_count: detected.length, subscriptions: detected };
+}
+
+// POST /api/detect — HTTP wrapper around runSubscriptionDetection().
 router.post("/api/detect", async (_req, res) => {
   try {
-    const detected = await detectSubscriptions(pool);
-    for (const sub of detected) {
-      const cat = categorizeSubscription(sub.display_name);
-      const dbCategory = cat === "utility" ? "utility" : "subscription";
-      if (dbCategory !== "subscription") {
-        await pool.query(
-          "UPDATE detected_subscriptions SET category = $1 WHERE merchant_key = $2 AND category = 'subscription'",
-          [dbCategory, sub.merchant_key]
-        );
-      }
-    }
-    res.json({ detected_count: detected.length, subscriptions: detected });
+    res.json(await runSubscriptionDetection());
   } catch (err) {
     console.error("Detection error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
@@ -673,7 +682,7 @@ router.get("/api/bill-calendar", async (req, res) => {
       WHERE amount < 0 AND pending = false
         AND date >= CURRENT_DATE - INTERVAL '3 months'
         AND (COALESCE(merchant_name, name, '') ~* '\\y(payroll|direct dep|salary)\\y'
-          OR category[1] = 'Income')
+          OR COALESCE(user_category, category[1]) = 'Income')
       GROUP BY COALESCE(merchant_name, name), ABS(amount)
       HAVING COUNT(*) >= 2
     `);
@@ -1158,3 +1167,4 @@ router.get("/api/bill-payments", async (req, res) => {
 });
 
 module.exports = router;
+module.exports.runSubscriptionDetection = runSubscriptionDetection;

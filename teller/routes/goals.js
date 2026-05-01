@@ -193,20 +193,24 @@ router.patch("/api/goals/:id", async (req, res) => {
     goal_baseline_amount: NUM_NONNEG_OR_NULL,
   };
 
-  const updates = []; const values = []; let idx = 1;
+  // Build the field assignments as {field, value} pairs first; render placeholders
+  // last so any conditional drop/add (baseline inference) can't desync $N indexes
+  // from the values array. Earlier code spliced from updates+values mid-build,
+  // which left stale $N references in the surviving placeholder strings — the
+  // UPDATE silently committed with values written to the wrong columns.
+  const fieldAssignments = [];
   const coercedBody = {};
   try {
     for (const [f, coerce] of Object.entries(FIELD_COERCERS)) {
       if (req.body[f] !== undefined) {
         coercedBody[f] = coerce(req.body[f]);
-        updates.push(`"${f}" = $` + idx++);
-        values.push(coercedBody[f]);
+        fieldAssignments.push({ field: f, value: coercedBody[f] });
       }
     }
   } catch (err) {
     return res.status(400).json({ error: err.message });
   }
-  if (!updates.length) return res.status(400).json({ error: "No valid fields" });
+  if (!fieldAssignments.length) return res.status(400).json({ error: "No valid fields" });
 
   // Phase C: if the caller is linking a funding source for the first time and
   // didn't supply a baseline, compute one so that the goal's current progress
@@ -216,7 +220,9 @@ router.patch("/api/goals/:id", async (req, res) => {
   const linkingAccount = coercedBody.funding_account_id !== undefined && coercedBody.funding_account_id !== null;
   const linkingInvestment = coercedBody.funding_investment_id !== undefined && coercedBody.funding_investment_id !== null;
   const baselineSupplied = coercedBody.goal_baseline_amount !== undefined;
+  let appendBaselineNull = false;
   if ((linkingAccount || linkingInvestment) && !baselineSupplied) {
+    let inferredBaseline = null;
     try {
       const [acctRow, goalRow] = await Promise.all([
         linkingAccount
@@ -227,46 +233,44 @@ router.patch("/api/goals/:id", async (req, res) => {
       if (acctRow.rows.length && goalRow.rows.length) {
         const accountBalance = parseFloat(acctRow.rows[0].balance || 0);
         const goalCurrent = parseFloat(goalRow.rows[0].current_amount || 0);
-        const inferredBaseline = Math.max(0, accountBalance - goalCurrent);
-        updates.push(`"goal_baseline_amount" = $` + idx++);
-        values.push(inferredBaseline);
+        inferredBaseline = Math.max(0, accountBalance - goalCurrent);
       } else {
-        // Account or goal not found — can't infer baseline, skip the funding link
         console.error("funding baseline inference: account or goal not found, skipping link");
-        if (linkingAccount) {
-          const faIdx = updates.findIndex(u => u.includes("funding_account_id"));
-          if (faIdx >= 0) { updates.splice(faIdx, 1); values.splice(faIdx, 1); idx--; }
-        }
-        if (linkingInvestment) {
-          const fiIdx = updates.findIndex(u => u.includes("funding_investment_id"));
-          if (fiIdx >= 0) { updates.splice(fiIdx, 1); values.splice(fiIdx, 1); idx--; }
-        }
       }
     } catch (err) {
       console.error("funding baseline inference error:", err.message);
-      // Don't link without a baseline — remove the funding fields from the update
-      if (linkingAccount) {
-        const faIdx = updates.findIndex(u => u.includes("funding_account_id"));
-        if (faIdx >= 0) { updates.splice(faIdx, 1); values.splice(faIdx, 1); idx--; }
-      }
-      if (linkingInvestment) {
-        const fiIdx = updates.findIndex(u => u.includes("funding_investment_id"));
-        if (fiIdx >= 0) { updates.splice(fiIdx, 1); values.splice(fiIdx, 1); idx--; }
+    }
+    if (inferredBaseline !== null) {
+      fieldAssignments.push({ field: "goal_baseline_amount", value: inferredBaseline });
+    } else {
+      // Don't link without a baseline — drop the funding fields from this UPDATE so
+      // current_amount can't be silently reset (current = balance - 0 = full balance).
+      for (let i = fieldAssignments.length - 1; i >= 0; i--) {
+        if (fieldAssignments[i].field === "funding_account_id" || fieldAssignments[i].field === "funding_investment_id") {
+          fieldAssignments.splice(i, 1);
+        }
       }
     }
   }
   // Unlinking: if caller explicitly set funding_* to null, also clear the baseline.
   if ((req.body.funding_account_id === null || req.body.funding_account_id === "") &&
       (req.body.funding_investment_id === null || req.body.funding_investment_id === "" || req.body.funding_investment_id === undefined)) {
-    if (!baselineSupplied) {
-      updates.push(`"goal_baseline_amount" = NULL`);
-    }
+    if (!baselineSupplied) appendBaselineNull = true;
   }
 
+  if (!fieldAssignments.length && !appendBaselineNull) {
+    return res.status(400).json({ error: "No valid fields" });
+  }
+
+  // Render placeholders from the final fieldAssignments — $N === position + 1.
+  const updates = fieldAssignments.map((a, i) => `"${a.field}" = $${i + 1}`);
+  const values = fieldAssignments.map(a => a.value);
+  if (appendBaselineNull) updates.push(`"goal_baseline_amount" = NULL`);
   updates.push("updated_at = now()");
   values.push(req.params.id);
+  const idParamIdx = values.length;
   try {
-    const result = await pool.query("UPDATE financial_goals SET " + updates.join(", ") + " WHERE id = $" + idx + " RETURNING *", values);
+    const result = await pool.query("UPDATE financial_goals SET " + updates.join(", ") + " WHERE id = $" + idParamIdx + " RETURNING *", values);
     if (!result.rows.length) return res.status(404).json({ error: "Not found" });
     res.json(result.rows[0]);
   } catch (err) {

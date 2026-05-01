@@ -279,6 +279,11 @@ async function runMigrations() {
     await client.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS output_tokens INT");
     await client.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS cache_read_tokens INT");
     await client.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS cache_creation_tokens INT");
+    // Entry-type discriminator so /api/categorize can write tracking rows that
+    // count against the shared monthly AI budget without showing up in the
+    // user-facing "AI Insights" feed. Display queries filter entry_type='insight';
+    // cost-cap queries don't filter (both feature areas count toward the cap).
+    await client.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS entry_type TEXT NOT NULL DEFAULT 'insight'");
     // Manual accounts support
     await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS is_manual BOOLEAN NOT NULL DEFAULT false");
     await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS institution_name_manual TEXT DEFAULT NULL");
@@ -311,6 +316,10 @@ async function runMigrations() {
     await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS is_reimbursed BOOLEAN NOT NULL DEFAULT false");
     await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS reimbursed_at TIMESTAMPTZ");
     await client.query("CREATE INDEX IF NOT EXISTS idx_transactions_reimbursed ON transactions (is_reimbursed) WHERE is_reimbursed = true");
+    // User category override: manual category edits survive Teller re-sync because
+    // the upsert only writes to `category` (Teller's slot). Display layers use
+    // COALESCE(user_category, category[1]).
+    await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS user_category TEXT");
 
     // Transaction splits (Phase B3): a single Teller transaction can be
     // subdivided into N (amount, category, merchant, notes) child rows so a

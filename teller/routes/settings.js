@@ -216,7 +216,7 @@ router.get("/api/export", async (req, res) => {
     const result = await pool.query(
       `SELECT t.date, COALESCE(t.merchant_name, t.name) AS merchant, t.amount, la.name AS account,
               COALESCE(pi.institution_name, te.institution_name, 'CSV') AS institution,
-              t.category[1] AS category
+              COALESCE(t.user_category, t.category[1]) AS category
        FROM transactions t
        JOIN linked_accounts la ON la.account_id = t.account_id
        LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
