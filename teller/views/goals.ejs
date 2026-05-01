@@ -56,7 +56,7 @@
 
   <div id="goals-list"><div style="color:var(--text-muted);font-size:13px;">Loading...</div></div>
 
-  <a class="context-link" href="/api/context-export" download>Export data for Claude chat</a>
+  <a class="context-link" href="<%= basePath %>/api/context-export" download>Export data for Claude chat</a>
 <%- include('partials/foot', { apiKey: apiKey }) %>
   <script nonce="<%= nonce %>">
     async function loadGoals() {

@@ -479,7 +479,7 @@
   <div class="section" id="calendar-widget" style="margin-bottom:28px;">
     <div style="display:flex;align-items:center;justify-content:space-between;">
       <h2 style="margin:0;">Upcoming Bills</h2>
-      <a href="/calendar" style="color:var(--teal);font-size:12px;text-decoration:none;">Full Calendar &rarr;</a>
+      <a href="<%= basePath %>/calendar" style="color:var(--teal);font-size:12px;text-decoration:none;">Full Calendar &rarr;</a>
     </div>
     <div id="calendar-widget-body" style="margin-top:12px;font-size:13px;color:var(--text-muted);">Loading...</div>
   </div>
@@ -526,12 +526,12 @@
 
   <!-- Quick Links -->
   <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:24px;">
-    <a href="/calendar" class="btn" style="text-decoration:none;">Bill Calendar</a>
-    <a href="/transactions" class="btn" style="text-decoration:none;">Search Transactions</a>
+    <a href="<%= basePath %>/calendar" class="btn" style="text-decoration:none;">Bill Calendar</a>
+    <a href="<%= basePath %>/transactions" class="btn" style="text-decoration:none;">Search Transactions</a>
   </div>
 
 <%- include('partials/foot', { apiKey: apiKey }) %>
-  <script src="/vendor/chart.umd.js"></script>
+  <script src="<%= basePath %>/vendor/chart.umd.js"></script>
   <script nonce="<%= nonce %>">if(typeof Chart==='undefined'){var s=document.createElement('script');s.src='/vendor/chart.umd.js?v=<%= v %>';document.head.appendChild(s);}</script>
   <script nonce="<%= nonce %>">
     const barColors = ['#c8856c','#d4a574','#5a8f8f','#6fcf97','#7fb5e6','#f0c36d','#eb6b6b','#b07cc6','#e8a87c','#85dcb0','#7bb5d4','#d4a0a0','#9fd4c9','#c4b28f','#a8c3d4'];

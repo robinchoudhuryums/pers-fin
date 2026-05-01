@@ -4,7 +4,12 @@
 // Extracted from pages/settings.js so the shell stays under the stream
 // timeout threshold. Legacy --surface/--warm/--teal/--red/--green/--blue
 // tokens swapped to --paper-2/--accent/--good/--warn/--muted/--line.
+//
+// All fetch('/api/...') calls flow through the wrapper installed by
+// views/js.js, which prepends window.BASE_PATH automatically. Only the
+// post-logout location redirect needs explicit BP concatenation.
 module.exports = `
+var BP = window.BASE_PATH || '';
 function applyTheme(t) {
   var effective = t;
   if (t === 'auto') effective = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
@@ -292,7 +297,7 @@ async function saveSlack() {
 
 async function logout() {
   await fetch('/api/logout', {method:'POST'});
-  location.href = '/login';
+  location.href = BP + '/login';
 }
 
 // Keep-alive hour selectors

@@ -1,4 +1,4 @@
-const { pageHead, navBar, themeScript } = require("../views");
+const { pageHead, navBar, themeScript, basePath } = require("../views");
 
 module.exports = function() {
   return (req, res) => {
@@ -15,7 +15,7 @@ ${navBar("/calendar")}
     <span id="cal-title" class="mono-label" style="padding:0 10px;font-size:12px;color:var(--ink);"></span>
     <button id="btn-next-month">Next &rarr;</button>
     <div style="flex:1"></div>
-    <a href="/api/calendar.ics" class="btn" download>Export iCal</a>
+    <a href="${basePath()}/api/calendar.ics" class="btn" download>Export iCal</a>
     <button id="btn-today">Today</button>
   </div>
 

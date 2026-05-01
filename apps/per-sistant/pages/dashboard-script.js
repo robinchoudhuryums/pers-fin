@@ -7,7 +7,13 @@
 //
 // Tree/dragon/work-mode removed (warm-paper refresh); legacy --warm/--teal/
 // --red/--blue/--green tokens swapped to --accent/--good/--warn.
+//
+// All fetch('/api/...') calls flow through the wrapper installed by
+// views/js.js, which prepends window.BASE_PATH automatically. Only the
+// non-fetch URL touch points (HTML hrefs in template strings, location.href
+// redirects) need explicit window.BASE_PATH concatenation here.
 module.exports = `
+var BP = window.BASE_PATH || '';
 var searchTimeout = null;
 function doSearch(q) {
   clearTimeout(searchTimeout);
@@ -17,7 +23,7 @@ function doSearch(q) {
     if (!results.length) { document.getElementById('search-results').innerHTML='<div class="empty-msg">No results</div>'; }
     else {
       document.getElementById('search-results').innerHTML = results.map(r => {
-        var href = r.type==='todo'?'/todos':r.type==='email'?'/emails':r.type==='note'?'/notes':'/contacts';
+        var href = BP + (r.type==='todo'?'/todos':r.type==='email'?'/emails':r.type==='note'?'/notes':'/contacts');
         var actions = '';
         if (r.type === 'todo' && !r.completed) {
           actions = '<div style="display:flex;gap:6px;margin-top:6px;"><button data-action="search-complete" data-id="'+r.id+'" data-recurring="'+!!r.recurring+'" class="btn">Complete</button></div>';
@@ -65,7 +71,7 @@ function renderDashTasks() {
     withDue.slice(0,10).forEach(t => { html += renderDashTodo(t); });
   } else {
     allTodos.slice(0,10).forEach(t => { html += renderDashTodo(t); });
-    if (allTodos.length > 10) html += '<div style="font-size:11px;color:var(--muted);padding:8px 0;text-align:center;"><a href="/todos">View all '+allTodos.length+' tasks &rarr;</a></div>';
+    if (allTodos.length > 10) html += '<div style="font-size:11px;color:var(--muted);padding:8px 0;text-align:center;"><a href="'+BP+'/todos">View all '+allTodos.length+' tasks &rarr;</a></div>';
   }
   container.innerHTML = html;
 }
@@ -171,7 +177,7 @@ async function load() {
     if (d.notifications && d.notifications.length && 'Notification' in window && Notification.permission === 'granted') {
       var important = d.notifications.filter(n => n.type === 'overdue' || n.type === 'streak_at_risk');
       important.slice(0,3).forEach(n => {
-        new Notification('Per-sistant', { body: (n.type==='overdue'?'Overdue: ':'Streak at risk: ')+n.title, icon: '/icon-192.svg' });
+        new Notification('Per-sistant', { body: (n.type==='overdue'?'Overdue: ':'Streak at risk: ')+n.title, icon: BP+'/icon-192.svg' });
       });
     }
   }).catch(function(){});
@@ -387,10 +393,10 @@ function miniCalNext() {
 document.addEventListener('keydown', function(e) {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
   if (e.key === '/') { e.preventDefault(); document.getElementById('global-search').focus(); }
-  else if (e.key === 'n' || e.key === 'N') { location.href = '/todos'; }
-  else if (e.key === 'e' || e.key === 'E') { location.href = '/emails'; }
-  else if (e.key === 'c' || e.key === 'C') { location.href = '/calendar'; }
-  else if (e.key === 'r' || e.key === 'R') { location.href = '/review'; }
+  else if (e.key === 'n' || e.key === 'N') { location.href = BP + '/todos'; }
+  else if (e.key === 'e' || e.key === 'E') { location.href = BP + '/emails'; }
+  else if (e.key === 'c' || e.key === 'C') { location.href = BP + '/calendar'; }
+  else if (e.key === 'r' || e.key === 'R') { location.href = BP + '/review'; }
 });
 
 bindEvents([
