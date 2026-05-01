@@ -423,7 +423,7 @@
         await updateSetting('insight_modules', mods);
       } catch (e) { showMsg(e.message, false); }
     }
-    async function logout() { await fetch('/api/logout', { method: 'POST' }); window.location.href = '/login'; }
+    async function logout() { await fetch('/api/logout', { method: 'POST' }); window.location.href = '<%= basePath %>/login'; }
     async function generateInsights() {
       const btn = document.getElementById('insights-btn');
       btn.classList.add('btn-loading'); btn.disabled = true;

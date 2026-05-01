@@ -390,7 +390,7 @@
           void helmetSvg.offsetWidth;
           // Helmet draws after scan shrinks, then HUD effects play
           setTimeout(function() {
-            window.location.href = '/dashboard';
+            window.location.href = '<%= basePath %>/dashboard';
           }, 2200);
         }, 500);
       }, 600);
@@ -432,7 +432,7 @@
       bioScan.style.display = 'none';
       overlay.classList.add('active');
       setTimeout(function() {
-        window.location.href = '/dashboard';
+        window.location.href = '<%= basePath %>/dashboard';
       }, 2200);
     }
 
