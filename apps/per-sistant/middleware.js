@@ -92,6 +92,11 @@ function setup(app) {
 }
 
 function requireAuth(req, res, next) {
+  // Embedded under the unified shell — the shell's PIN gate has already
+  // verified the user. Skip our per-app session check entirely; otherwise
+  // every request would redirect to /login (which the shell shadows) and
+  // produce an infinite bounce back to the landing page.
+  if (req.app.get("embedded")) return next();
   if (!AUTH_SECRET) return next();
   if (["/login", "/api/login", "/manifest.json", "/sw.js", "/api/health", "/api/keep-alive-schedule"].includes(req.path)) return next();
   if (req.path.startsWith("/icon-")) return next();
