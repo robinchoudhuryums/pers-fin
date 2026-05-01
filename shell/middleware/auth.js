@@ -102,7 +102,9 @@ function handleLogout(_req, res) {
 
 module.exports = {
   COOKIE_NAME,
+  SESSION_TTL_MS,
   isValidSession,
+  makeSession,
   requireAuth,
   handleLogin,
   handleLogout,

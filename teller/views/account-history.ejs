@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<%- include('partials/head', { title: 'Account History' }) %>
+</head>
+<body>
+<%- include('partials/nav') %>
+<div class="container" style="max-width:980px;">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">
+    <div>
+      <h1 id="account-title" style="margin:0;">Account History</h1>
+      <div id="account-subtitle" style="font-size:13px;color:var(--text-muted);margin-top:4px;">Loading…</div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <label style="font-size:11px;color:var(--text-muted);">Range</label>
+      <select id="range-select" style="padding:6px 10px;font-size:12px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);font-family:inherit;">
+        <option value="3">3 months</option>
+        <option value="6">6 months</option>
+        <option value="12" selected>12 months</option>
+        <option value="24">24 months</option>
+        <option value="60">5 years</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="section" style="margin-bottom:18px;">
+    <div id="summary-row" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:14px;">
+      <div class="card"><div class="label">Current</div><div id="m-current" class="value">—</div></div>
+      <div class="card"><div class="label">Range Start</div><div id="m-start" class="value">—</div></div>
+      <div class="card"><div class="label">Change ($)</div><div id="m-delta" class="value">—</div></div>
+      <div class="card"><div class="label">Change (%)</div><div id="m-pct" class="value">—</div></div>
+      <div class="card"><div class="label">Snapshots</div><div id="m-count" class="value">—</div></div>
+    </div>
+  </div>
+
+  <div class="section" style="margin-bottom:18px;">
+    <div style="position:relative;height:340px;">
+      <canvas id="balance-chart"></canvas>
+    </div>
+    <div id="empty-msg" style="display:none;text-align:center;padding:40px;color:var(--text-muted);font-size:13px;">
+      No balance history yet. Snapshots are written daily on every balance sync — check back after the next <code>POST /api/sync-balances</code>.
+    </div>
+  </div>
+
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:24px;">
+    <a href="<%= basePath %>/dashboard" class="btn" style="text-decoration:none;">Dashboard</a>
+    <a href="<%= basePath %>/accounts" class="btn" style="text-decoration:none;">Accounts</a>
+  </div>
+
+<%- include('partials/foot', { apiKey: apiKey }) %>
+  <script src="<%= basePath %>/vendor/chart.umd.js"></script>
+  <script nonce="<%= nonce %>">
+    (function() {
+      // Parse URL: /accounts/:id/history?source=linked|investment
+      var pathParts = window.location.pathname.split('/').filter(Boolean);
+      // Strip any /perfin prefix when running embedded under the shell.
+      var accountId = null;
+      for (var i = 0; i < pathParts.length; i++) {
+        if (pathParts[i] === 'accounts' && pathParts[i + 1]) {
+          accountId = parseInt(pathParts[i + 1], 10);
+          break;
+        }
+      }
+      var qs = new URLSearchParams(window.location.search);
+      var source = qs.get('source') === 'investment' ? 'investment' : 'linked';
+      var rangeSel = document.getElementById('range-select');
+      var chart = null;
+
+      if (!accountId) {
+        document.getElementById('account-subtitle').textContent = 'Invalid account id in URL.';
+        return;
+      }
+
+      function fmt(n) {
+        if (n === null || n === undefined || isNaN(n)) return '—';
+        var s = '$' + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        return n < 0 ? '-' + s : s;
+      }
+
+      // Fetch the account name once for the title — covers Teller-linked
+      // (in /api/accounts) and investment_accounts (manual + Plaid) sources.
+      async function loadAccountTitle() {
+        try {
+          if (source === 'linked') {
+            var r = await apiFetch('/api/accounts');
+            if (r.ok) {
+              var all = await r.json();
+              var acct = all.find(function(a) { return a.id === accountId; });
+              if (acct) {
+                document.getElementById('account-title').textContent = acct.name;
+                document.getElementById('account-subtitle').textContent =
+                  (acct.institution_name || 'Unknown') + ' · ' + (acct.subtype || acct.type || '');
+                return;
+              }
+            }
+          } else {
+            var r2 = await apiFetch('/api/investment-accounts');
+            if (r2.ok) {
+              var inv = await r2.json();
+              var ia = inv.find(function(a) { return a.id === accountId; });
+              if (ia) {
+                document.getElementById('account-title').textContent = ia.name;
+                document.getElementById('account-subtitle').textContent =
+                  (ia.institution || 'Investment') + ' · ' + (ia.account_type || '');
+                return;
+              }
+            }
+          }
+          document.getElementById('account-subtitle').textContent = 'Account #' + accountId + ' (' + source + ')';
+        } catch (e) {
+          document.getElementById('account-subtitle').textContent = 'Account #' + accountId;
+        }
+      }
+
+      async function loadHistory() {
+        var months = parseInt(rangeSel.value, 10) || 12;
+        try {
+          var r = await apiFetch('/api/accounts/' + accountId + '/balance-history?source=' + source + '&months=' + months);
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          var data = await r.json();
+          var snaps = data.snapshots || [];
+          if (snaps.length < 2) {
+            // Hide chart, show empty-state. Still update summary cards if
+            // there's a single point so the user sees the most recent value.
+            document.getElementById('balance-chart').parentElement.style.display = 'none';
+            document.getElementById('empty-msg').style.display = 'block';
+            if (snaps.length === 1) {
+              document.getElementById('m-current').textContent = fmt(snaps[0].balance);
+              document.getElementById('m-count').textContent = '1';
+            } else {
+              document.getElementById('m-count').textContent = '0';
+            }
+            return;
+          }
+          document.getElementById('balance-chart').parentElement.style.display = 'block';
+          document.getElementById('empty-msg').style.display = 'none';
+
+          var labels = snaps.map(function(s) { return s.snapshot_date; });
+          var values = snaps.map(function(s) { return s.balance; });
+          var current = values[values.length - 1];
+          var startVal = values[0];
+          var delta = current - startVal;
+          var pct = startVal !== 0 ? (delta / Math.abs(startVal)) * 100 : null;
+
+          document.getElementById('m-current').textContent = fmt(current);
+          document.getElementById('m-start').textContent = fmt(startVal);
+          var deltaEl = document.getElementById('m-delta');
+          deltaEl.textContent = (delta >= 0 ? '+' : '') + fmt(delta);
+          deltaEl.style.color = delta >= 0 ? 'var(--green)' : 'var(--red)';
+          var pctEl = document.getElementById('m-pct');
+          pctEl.textContent = pct === null ? '—' : (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%';
+          pctEl.style.color = pct >= 0 ? 'var(--green)' : 'var(--red)';
+          document.getElementById('m-count').textContent = snaps.length;
+
+          if (chart) chart.destroy();
+          var ctx = document.getElementById('balance-chart').getContext('2d');
+          var lineColor = delta >= 0 ? 'rgba(111, 207, 151, 0.9)' : 'rgba(235, 107, 107, 0.9)';
+          var fillColor = delta >= 0 ? 'rgba(111, 207, 151, 0.12)' : 'rgba(235, 107, 107, 0.12)';
+          chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+              labels: labels,
+              datasets: [{
+                label: 'Balance',
+                data: values,
+                borderColor: lineColor,
+                backgroundColor: fillColor,
+                fill: true,
+                tension: 0.25,
+                pointRadius: snaps.length > 60 ? 0 : 2,
+                pointHoverRadius: 4,
+                borderWidth: 2,
+              }],
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              interaction: { mode: 'index', intersect: false },
+              plugins: {
+                legend: { display: false },
+                tooltip: {
+                  callbacks: {
+                    label: function(c) { return ' ' + fmt(c.parsed.y); },
+                  },
+                },
+              },
+              scales: {
+                x: {
+                  ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8, color: 'rgba(180,180,180,0.6)' },
+                  grid: { display: false },
+                },
+                y: {
+                  ticks: { color: 'rgba(180,180,180,0.6)', callback: function(v) { return fmt(v); } },
+                  grid: { color: 'rgba(128,128,128,0.08)' },
+                },
+              },
+            },
+          });
+        } catch (e) {
+          document.getElementById('empty-msg').textContent = 'Could not load history: ' + (e.message || e);
+          document.getElementById('empty-msg').style.display = 'block';
+          document.getElementById('balance-chart').parentElement.style.display = 'none';
+        }
+      }
+
+      rangeSel.addEventListener('change', loadHistory);
+      loadAccountTitle();
+      loadHistory();
+    })();
+  </script>
+</body>
+</html>

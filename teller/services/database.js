@@ -295,7 +295,7 @@ async function runMigrations() {
     await client.query("ALTER TABLE linked_accounts DROP CONSTRAINT IF EXISTS chk_account_source");
     await client.query("ALTER TABLE linked_accounts ADD CONSTRAINT chk_account_source CHECK (plaid_item_id IS NOT NULL OR teller_enrollment_id IS NOT NULL OR is_manual = true)");
     // Dashboard widget order/visibility
-    await client.query(`ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS dashboard_widgets JSONB NOT NULL DEFAULT '{"pyramid":true,"accounts":true,"recentTxns":true,"monthlySpend":true,"categories":true,"merchants":true,"upcoming":true,"forecast":true,"charts":true,"calendar":true,"cashFlow":true,"savingsRate":true,"yoy":true,"investments":true}'::jsonb`);
+    await client.query(`ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS dashboard_widgets JSONB NOT NULL DEFAULT '{"pyramid":true,"accounts":true,"recentTxns":true,"monthlySpend":true,"categories":true,"merchants":true,"upcoming":true,"forecast":true,"charts":true,"calendar":true,"cashFlow":true,"savingsRate":true,"yoy":true,"investments":true,"reviewQueue":true}'::jsonb`);
     // Sheets auto-sync
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sheets_auto_sync_enabled BOOLEAN NOT NULL DEFAULT false");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sheets_auto_sync_interval TEXT NOT NULL DEFAULT 'weekly'");
@@ -534,6 +534,11 @@ async function runMigrations() {
       UPDATE user_settings
       SET dashboard_widgets = '{"investments":true}'::jsonb || dashboard_widgets
       WHERE NOT (dashboard_widgets ? 'investments')
+    `);
+    await client.query(`
+      UPDATE user_settings
+      SET dashboard_widgets = '{"reviewQueue":true}'::jsonb || dashboard_widgets
+      WHERE NOT (dashboard_widgets ? 'reviewQueue')
     `);
 
     // One-shot cleanup: detection-key migration orphans

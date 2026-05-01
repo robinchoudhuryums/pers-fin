@@ -285,6 +285,7 @@ app.use(require("./pages/login")(authConfig));
 app.use(require("./pages/settings")(pageConfig));
 app.use(require("./pages/transactions")(pageConfig));
 app.use(require("./pages/calendar")(pageConfig));
+app.use(require("./pages/account-history")(pageConfig));
 app.use(require("./pages/pwa"));
 
 // ---------------------------------------------------------------------------

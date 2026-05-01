@@ -23,6 +23,7 @@ const express = require("express");
 const cookieParser = require("cookie-parser");
 const path = require("path");
 const auth = require("./middleware/auth");
+const webauthn = require("./middleware/webauthn");
 const { startKeepAlive } = require("../teller/services/keep-alive");
 
 const app = express();
@@ -31,6 +32,7 @@ app.set("view engine", "ejs");
 app.set("views", path.join(__dirname, "views"));
 
 app.use(cookieParser());
+app.use(express.json({ limit: "64kb" }));
 app.use(express.urlencoded({ extended: false, limit: "64kb" }));
 
 // Shell-only static assets are scoped under /shell-static so they can't
@@ -38,6 +40,14 @@ app.use(express.urlencoded({ extended: false, limit: "64kb" }));
 app.use("/shell-static", express.static(path.join(__dirname, "public"), {
   maxAge: process.env.NODE_ENV === "production" ? "1d" : 0,
 }));
+
+// --- Sub-app modules -------------------------------------------------------
+// Loaded here (before requireAuth) so the shell-side WebAuthn endpoints can
+// share Perfin's pg Pool — they need to read `webauthn_credentials`, which
+// only Perfin's database has. require() loads the modules without firing
+// their listeners (server.js wraps that in `if (require.main === module)`).
+const perfin = require("../teller/server");
+const persistent = require("../apps/per-sistant/server");
 
 // --- Public routes (no auth) ------------------------------------------------
 // Manifest is served pre-auth so install prompts work on the login page.
@@ -52,6 +62,13 @@ app.get("/login", (req, res) => {
 app.post("/login", auth.handleLogin);
 app.post("/logout", auth.handleLogout);
 
+// Biometric login — mounted BEFORE requireAuth so users can authenticate via
+// FaceID / passkey without first entering the PIN. The endpoints query
+// Perfin's webauthn_credentials table directly via the wired pool. On
+// successful verify, the shell session cookie is set and the client can
+// proceed to the landing page like a regular PIN login.
+webauthn.attach(app, perfin.pool);
+
 // --- Auth gate --------------------------------------------------------------
 // Everything past this point requires a valid signed session cookie. Sub-apps
 // trust this gate and don't run their own login flows; their /login routes
@@ -62,13 +79,9 @@ app.use(auth.requireAuth);
 app.get("/", (_req, res) => res.render("landing"));
 
 // --- Sub-app mounts ---------------------------------------------------------
-// require() loads each sub-app's Express instance without firing its
-// listener (server.js wraps that in `if (require.main === module)`).
 // We then call start({ standalone: false }) so migrations and cron jobs
 // run, but the sub-app doesn't bind a port or install signal handlers —
 // we own those at the shell level.
-const perfin = require("../teller/server");
-const persistent = require("../apps/per-sistant/server");
 
 // Tell each sub-app it's running embedded so its own auth middleware
 // can bail early. The shell's PIN gate above is the sole authentication

@@ -475,6 +475,22 @@
     <div id="budget-alerts-list"></div>
   </div>
 
+  <!-- Review Uncategorized (engagement loop — turn AI cost into rules) -->
+  <div class="section" id="review-queue-section" style="display:none;margin-bottom:28px;">
+    <details open>
+      <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;justify-content:space-between;">
+        <h2 style="margin:0;display:inline;">Review Uncategorized</h2>
+        <span id="review-queue-count" style="font-size:11px;color:var(--text-muted);"></span>
+      </summary>
+      <div id="review-queue-body" style="margin-top:12px;font-size:13px;">
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;">
+          These would otherwise be sent to Claude on the next AI categorize run. Pick a category — check "Remember" to create a rule and skip future AI cost for the same merchant.
+        </div>
+        <div id="review-queue-list"></div>
+      </div>
+    </details>
+  </div>
+
   <!-- Investments (Teller-linked + Plaid + manual, unified) -->
   <div class="section" id="investments-section" style="margin-bottom:28px;">
     <details open>
@@ -1725,12 +1741,17 @@
           var holdingsBadge = a.supports_holdings
             ? '<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:var(--green-bg);color:var(--green);margin-left:4px;">holdings</span>'
             : '';
+          // History pages exist for both linked and investment sources;
+          // 'manual' rows live in investment_accounts, so source=investment.
+          var histSource = a.source === 'teller' ? 'linked' : 'investment';
+          var histHref = (window.BASE_PATH || '') + '/accounts/' + a.id + '/history?source=' + histSource;
           return '<div class="acct-card" style="padding:10px;">' +
             '<div class="acct-inst" style="font-size:10px;">' + esc(a.institution || a.source) + holdingsBadge + '</div>' +
             '<div class="acct-name" style="font-size:13px;">' + esc(a.name) + '</div>' +
             '<div class="acct-balance positive" style="font-size:18px;">' + fmt(a.balance) + '</div>' +
             '<div class="acct-type" style="font-size:10px;">' + esc(a.account_type || '') + '</div>' +
             '<div id="' + sparkId + '" style="height:20px;"></div>' +
+            '<a href="' + histHref + '" style="display:block;margin-top:6px;font-size:10px;color:var(--teal);text-decoration:none;">View history &rarr;</a>' +
           '</div>';
         }).join('');
 
@@ -1754,6 +1775,91 @@
       } catch (e) { /* non-critical */ }
     }
 
+    // Categorization engagement loop — surfaces transactions that would
+    // otherwise go to AI on the next /api/categorize call. User can review
+    // 5-10 at a time, set a category, and optionally create a rule so the
+    // same merchant pattern auto-categorizes next time. Drives down AI cost
+    // over time as the rule base grows.
+    var REVIEW_CATEGORIES = [
+      "Food & Drink", "Groceries", "Transportation", "Gas & Fuel",
+      "Shopping", "Entertainment", "Health & Fitness", "Healthcare",
+      "Housing", "Utilities", "Insurance", "Education",
+      "Travel", "Personal Care", "Gifts & Donations", "Fees & Charges",
+      "Transfer", "Income", "Investment", "Subscription", "Other",
+    ];
+    async function loadReviewQueue() {
+      try {
+        var res = await apiFetch('/api/categorize/review-queue?limit=8');
+        if (!res.ok) return;
+        var data = await res.json();
+        var section = document.getElementById('review-queue-section');
+        if (!data.transactions || data.transactions.length === 0) {
+          section.style.display = 'none';
+          return;
+        }
+        section.style.display = 'block';
+        document.getElementById('review-queue-count').textContent =
+          data.count + (data.count === 1 ? ' transaction' : ' transactions');
+        renderReviewQueue(data.transactions);
+      } catch (e) { /* non-critical */ }
+    }
+    function renderReviewQueue(txns) {
+      var listEl = document.getElementById('review-queue-list');
+      var optHtml = REVIEW_CATEGORIES.map(function(c) {
+        return '<option value="' + esc(c) + '">' + esc(c) + '</option>';
+      }).join('');
+      listEl.innerHTML = txns.map(function(t) {
+        var rid = 'rev-' + t.transaction_id.replace(/[^a-zA-Z0-9]/g, '_');
+        var defaultCat = t.suggested_category || REVIEW_CATEGORIES[0];
+        var hint = t.hint ? ' <span style="font-size:10px;color:var(--text-muted);">[' + esc(t.hint) + ']</span>' : '';
+        return '<div id="' + rid + '" style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);font-size:12px;">' +
+          '<div style="flex:1;min-width:0;">' +
+            '<div style="font-weight:500;color:var(--text);">' + esc(t.merchant || '(no merchant)') + hint + '</div>' +
+            '<div style="font-size:11px;color:var(--text-muted);">' + esc(t.date) + ' &middot; ' + fmt(t.amount) + '</div>' +
+          '</div>' +
+          '<select data-cat-select="' + esc(t.transaction_id) + '" style="padding:4px 6px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);font-family:inherit;">' +
+            optHtml.replace('value="' + esc(defaultCat) + '"', 'value="' + esc(defaultCat) + '" selected') +
+          '</select>' +
+          '<label style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--text-muted);cursor:pointer;">' +
+            '<input type="checkbox" data-cat-rule="' + esc(t.transaction_id) + '" checked> Remember' +
+          '</label>' +
+          '<button data-cat-apply="' + esc(t.transaction_id) + '" style="padding:4px 10px;font-size:11px;border:1px solid var(--green);border-radius:4px;background:transparent;color:var(--green);cursor:pointer;font-family:inherit;">Apply</button>' +
+        '</div>';
+      }).join('');
+    }
+    onDelegate('review-queue-list', 'click', '[data-cat-apply]', async function() {
+      var txnId = this.getAttribute('data-cat-apply');
+      var sel = document.querySelector('[data-cat-select="' + txnId.replace(/"/g, '\\"') + '"]');
+      var ruleCb = document.querySelector('[data-cat-rule="' + txnId.replace(/"/g, '\\"') + '"]');
+      if (!sel) return;
+      var category = sel.value;
+      var createRule = ruleCb ? ruleCb.checked : false;
+      this.disabled = true;
+      this.textContent = 'Applying…';
+      try {
+        var res = await apiFetch('/api/categorize/review', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            transaction_id: txnId,
+            category: category,
+            create_rule: createRule,
+            match_type: 'contains',
+          }),
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        // Remove the row and re-fetch the queue if it's now empty.
+        var rid = 'rev-' + txnId.replace(/[^a-zA-Z0-9]/g, '_');
+        var row = document.getElementById(rid);
+        if (row) row.remove();
+        var remaining = document.querySelectorAll('#review-queue-list > div').length;
+        if (remaining === 0) loadReviewQueue();
+      } catch (e) {
+        this.disabled = false;
+        this.textContent = 'Apply';
+      }
+    });
+
     // Dashboard widget visibility
     async function applyWidgetVisibility() {
       try {
@@ -1772,6 +1878,7 @@
           cashFlow: '#cashflow-section',
           yoy: '#yoy-section',
           investments: '#investments-section',
+          reviewQueue: '#review-queue-section',
         };
         Object.entries(map).forEach(function(e) {
           var key = e[0], selector = e[1];
@@ -1791,6 +1898,7 @@
     loadCashFlow();
     loadYoY();
     loadInvestments();
+    loadReviewQueue();
 
     computeWellness();
 

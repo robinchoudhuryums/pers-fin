@@ -334,6 +334,102 @@ router.post("/api/categorize", async (_req, res) => {
   res.json(body);
 });
 
+// GET /api/categorize/review-queue — Surfaces transactions that would otherwise
+// go to AI on the next /api/categorize call. Engagement-loop entry point: the
+// user reviews 5-10 uncertain rows, optionally creates rules, and the rule
+// base grows. Future AI calls cost less because more rows hit the rule path
+// before reaching Claude.
+//
+// Returns: { transactions: [{ transaction_id, merchant, amount, date,
+//                              suggested_category, hint }], count }
+// `suggested_category` is filled from the deterministic Teller-map when
+// available (so the user sees a sensible default in the dropdown); `hint` is
+// the raw Teller category[0] for context.
+router.get("/api/categorize/review-queue", async (req, res) => {
+  const limit = Math.max(1, Math.min(parseInt(req.query.limit) || 10, 50));
+  try {
+    const result = await pool.query(
+      `SELECT transaction_id,
+              COALESCE(user_merchant_name, merchant_name, name) AS merchant,
+              amount, date, category, personal_finance_category
+       FROM transactions
+       WHERE user_category IS NULL
+         AND (category IS NULL
+              OR category = '{}'
+              OR NOT (category[1] = ANY($1::text[])))
+         AND pending = false AND amount > 0
+       ORDER BY date DESC
+       LIMIT $2`,
+      [OUR_CATEGORIES_PG, limit]
+    );
+    // Fold the Teller-map fast path into a `suggested_category` so the UI
+    // can show a sensible default in the dropdown without a second round-trip.
+    const transactions = result.rows.map(t => {
+      const tellerCat = Array.isArray(t.category) && t.category[0]
+        ? String(t.category[0]).toLowerCase()
+        : null;
+      const mapped = tellerCat ? TELLER_CATEGORY_MAP[tellerCat] : null;
+      return {
+        transaction_id: t.transaction_id,
+        merchant: t.merchant,
+        amount: parseFloat(t.amount),
+        date: t.date,
+        suggested_category: mapped && CATEGORIES.includes(mapped) ? mapped : null,
+        hint: tellerCat,
+      };
+    });
+    res.json({ transactions, count: transactions.length });
+  } catch (err) {
+    console.error("review-queue error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// POST /api/categorize/review — Apply a single user-driven categorization
+// decision. Atomically sets user_category on the transaction and (optionally)
+// creates a categorization_rules row so the same merchant pattern is auto-
+// categorized next time. This is the "remember this merchant" workflow.
+//
+// Body: { transaction_id, category, create_rule?: bool, match_type?: 'contains'|'exact'|'starts_with' }
+router.post("/api/categorize/review", async (req, res) => {
+  const { transaction_id, category, create_rule, match_type } = req.body;
+  if (!transaction_id || !category) {
+    return res.status(400).json({ error: "transaction_id and category are required" });
+  }
+  if (!CATEGORIES.includes(category)) {
+    return res.status(400).json({ error: `Invalid category. Must be one of: ${CATEGORIES.join(", ")}` });
+  }
+  const validTypes = ["contains", "exact", "starts_with"];
+  const ruleType = validTypes.includes(match_type) ? match_type : "contains";
+  try {
+    // Set user_category — the same path PATCH /api/transactions/:id/category uses.
+    const upd = await pool.query(
+      "UPDATE transactions SET user_category = $1 WHERE transaction_id = $2 RETURNING transaction_id, COALESCE(user_merchant_name, merchant_name, name) AS merchant",
+      [category, transaction_id]
+    );
+    if (!upd.rows.length) return res.status(404).json({ error: "Transaction not found" });
+    const merchant = upd.rows[0].merchant;
+
+    let ruleCreated = false;
+    if (create_rule && merchant) {
+      // Same insert path as POST /api/categorization-rules. ON CONFLICT DO UPDATE
+      // so re-applying the same merchant→category pair doesn't error.
+      await pool.query(
+        `INSERT INTO categorization_rules (merchant_pattern, category, match_type)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (merchant_pattern, category) DO UPDATE SET
+           match_type = $3, is_active = true, updated_at = now()`,
+        [merchant.trim(), category, ruleType]
+      );
+      ruleCreated = true;
+    }
+    res.json({ ok: true, transaction_id, category, rule_created: ruleCreated });
+  } catch (err) {
+    console.error("review apply error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
 // PATCH /api/transactions/:id/category — manually set a transaction's category.
 // User overrides go to `user_category` (NOT `category`) so a subsequent Teller
 // re-sync — which UPSERTs `category = EXCLUDED.category` — can't overwrite the
