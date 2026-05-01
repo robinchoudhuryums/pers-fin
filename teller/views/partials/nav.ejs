@@ -3,6 +3,10 @@
   // browser navigation lands on the right tool (otherwise "/dashboard"
   // would hit the shell's landing page).
   var __basePath = typeof basePath !== 'undefined' ? basePath : '';
+  // `embedded` is set by the basePath middleware in server.js when this
+  // app is mounted under the unified shell. Used to show the cross-app
+  // link to Per-sistant.
+  var __embedded = typeof embedded !== 'undefined' && embedded;
 %>
   <nav class="topnav" aria-label="Main navigation">
     <div class="logo"><span class="logo-icon" aria-hidden="true"></span>Perfin</div>
@@ -15,6 +19,9 @@
       <a href="<%= __basePath %>/"<%= activePage === 'accounts' ? ' class="active"' : '' %>>Accounts</a>
       <a href="<%= __basePath %>/settings"<%= activePage === 'settings' ? ' class="active"' : '' %>>Settings</a>
     </div>
+<% if (__embedded) { %>
+    <a href="/per-sistant" class="cross-app-link" title="Switch to Per-sistant" style="font-size:12px;color:var(--text-muted);text-decoration:none;padding:4px 10px;border:1px solid var(--border);border-radius:6px;margin-right:8px;white-space:nowrap;">Per-sistant &rarr;</a>
+<% } %>
     <div class="nav-sync-badge" id="nav-sync-badge" title="Most recent sync — updated by auto-sync or the Sync button"></div>
     <div class="nav-notification-bell" id="nav-notif-bell" title="Notifications" style="cursor:pointer;position:relative;padding:4px 8px;display:flex;align-items:center;">
       <svg width="20" height="20" viewBox="0 0 20 20" fill="none" style="display:block;">
