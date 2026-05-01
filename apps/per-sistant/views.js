@@ -60,7 +60,7 @@ function pageHead(title) {
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <style>${SHARED_CSS}${APPBAR_PICKER_CSS}</style>
+  <style>${SHARED_CSS}${NAV_CHROME_CSS}</style>
   <script>window.BASE_PATH = ${JSON.stringify(bp)};</script>
   <script>${SHARED_JS}</script>
   <script>${PRIMITIVES_JS}</script>
@@ -98,17 +98,39 @@ function navIcon(id) {
   }
 }
 
-const APPBAR_PICKER_CSS = `
+// CSS for nav chrome — mode toggle (now in sidebar foot) + Perfin
+// cross-app link (now in appbar's ui-controls slot). Selectors aren't
+// scoped to .appbar so the mode toggle styles apply in either location.
+const NAV_CHROME_CSS = `
 .appbar .ui-controls { display: flex; align-items: center; gap: 10px; }
-.appbar .mode-toggle {
+.mode-toggle {
   background: transparent; border: 1px solid var(--line); cursor: pointer;
   padding: 5px 10px; border-radius: 2px; color: var(--muted);
   font-family: var(--mono); font-size: 10px; font-weight: 500;
   letter-spacing: 0.1em; text-transform: uppercase;
 }
-.appbar .mode-toggle:hover { background: var(--paper-2); color: var(--ink); }
+.mode-toggle:hover { background: var(--paper-2); color: var(--ink); }
+
+/* Sidebar foot stacks mode toggle above the collapse button */
+.sidebar-foot { display: flex; flex-direction: column; gap: 6px; padding: 0 10px 10px; }
+.sidebar-foot .mode-toggle { width: 100%; }
+
+/* Cross-app link in the appbar — mirror the mode toggle's chrome */
+.appbar .cross-app-link {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 10px; border: 1px solid var(--line); border-radius: 2px;
+  color: var(--muted); text-decoration: none;
+  font-family: var(--mono); font-size: 10px; font-weight: 500;
+  letter-spacing: 0.1em; text-transform: uppercase;
+}
+.appbar .cross-app-link:hover { background: var(--paper-2); color: var(--ink); }
+.appbar .cross-app-link .icon { display: inline-flex; }
+
 @media (max-width: 480px) {
-  .appbar .mode-toggle { padding: 4px 8px; font-size: 9px; }
+  .mode-toggle { padding: 4px 8px; font-size: 9px; }
+  .appbar .cross-app-link { padding: 4px 8px; font-size: 9px; }
+  /* Collapse the cross-link to icon-only on small screens */
+  .appbar .cross-app-link .label { display: none; }
 }
 `;
 
@@ -123,17 +145,17 @@ function navBar(activePath) {
       <span class="icon">${navIcon(n.id)}</span>
       <span class="label">${n.label}</span>
     </a>`).join('');
-  // Cross-tool link to Perfin. Two cases:
-  // - Embedded under the unified shell: link points to /perfin (same
-  //   origin) and stays in-app — no target="_blank". This is what the
-  //   user means by "switch to the other tool".
-  // - Standalone deploy with PERFIN_URL set: external URL, opens in a
-  //   new tab so the user doesn't lose their per-sistant context.
-  // - Standalone with PERFIN_URL unset: no link.
+  // Cross-tool link to Perfin — lives in the appbar's ui-controls slot
+  // (top-right). Behavior:
+  // - Embedded under the unified shell: link → /perfin, in-app navigation.
+  // - Standalone deploy with PERFIN_URL set: external URL, opens in a new
+  //   tab so the user doesn't lose their per-sistant context.
+  // - Standalone with PERFIN_URL unset: nothing renders; the slot stays
+  //   empty and the appbar's right side is just empty space.
   const perfinHref = isEmbedded ? "/perfin" : PERFIN_URL;
   const perfinTarget = isEmbedded ? "" : ' target="_blank" rel="noopener"';
   const perfinLink = perfinHref
-    ? `<a href="${perfinHref}"${perfinTarget}>
+    ? `<a href="${perfinHref}"${perfinTarget} class="cross-app-link" aria-label="Switch to Perfin">
          <span class="icon"><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M7 4 L7 10 M4 7 L10 7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span>
          <span class="label">Perfin</span>
        </a>` : '';
@@ -149,9 +171,9 @@ function navBar(activePath) {
   </div>
   <nav class="sidebar-nav">
     ${links}
-    ${perfinLink ? '<div class="sep"></div>' + perfinLink : ''}
   </nav>
   <div class="sidebar-foot">
+    <button id="mode-toggle" class="mode-toggle" aria-label="Toggle light/dark mode">Light</button>
     <button id="sidebar-collapse-btn" class="collapse-btn" aria-label="Collapse sidebar">
       <span>&#8249;</span><span class="lbl">Collapse</span>
     </button>
@@ -166,7 +188,7 @@ function navBar(activePath) {
   </nav>
   <div class="spacer"></div>
   <div class="ui-controls">
-    <button id="mode-toggle" class="mode-toggle" aria-label="Toggle light/dark mode">Light</button>
+    ${perfinLink}
   </div>
 </header>`;
 }
