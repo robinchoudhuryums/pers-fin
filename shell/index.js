@@ -69,6 +69,15 @@ app.get("/", (_req, res) => res.render("landing"));
 const perfin = require("../teller/server");
 const persistent = require("../apps/per-sistant/server");
 
+// Tell each sub-app it's running embedded so its own auth middleware
+// can bail early. The shell's PIN gate above is the sole authentication
+// checkpoint when running this way; sub-apps would otherwise demand a
+// per-app session that nobody ever creates and bounce the user back to
+// /login (which the shell shadows, producing an infinite redirect loop
+// that manifests as "clicking the tile does nothing").
+perfin.app.set("embedded", true);
+persistent.app.set("embedded", true);
+
 app.use("/perfin", perfin.app);
 app.use("/per-sistant", persistent.app);
 
