@@ -1,17 +1,21 @@
 // ============================================================================
 // Shell — landing + auth wrapper for Perfin and Per-sistant
 // ============================================================================
-// Scaffolding only. Mount points for the two sub-apps are commented out;
-// uncomment once you've co-located the per-sistant codebase (e.g. under
-// apps/per-sistant/ or alongside teller/) AND refactored its server.js to
-// `module.exports = { app }` instead of calling app.listen() at the
-// bottom. Same for teller/server.js.
+// Single Node process that:
+//   - Authenticates via PIN at /login (cookie session signed with SHELL_SECRET).
+//   - Renders a tile picker at /.
+//   - Mounts Perfin at /perfin and Per-sistant at /per-sistant.
+//   - Triggers each sub-app's migrations + cron jobs in embedded mode so
+//     the sub-app's own listener doesn't fire (the shell owns the port).
 //
 // Run with:        node shell/index.js
-// Required env:    SHELL_PIN          — the unified PIN
-//                  SHELL_SECRET       — random string used to sign cookies
-// Optional env:    SHELL_PORT         — defaults to PORT or 3000
-//                  NODE_ENV=production — enables Secure cookie flag
+// Required env:    SHELL_PIN                — the unified PIN
+//                  SHELL_SECRET             — random string used to sign cookies
+//                  NEON_DATABASE_URL        — Perfin's Neon DB
+//                  PERSISTENT_DATABASE_URL  — Per-sistant's Neon DB
+// Optional env:    SHELL_PORT               — defaults to PORT or 3000
+//                  NODE_ENV=production      — enables Secure cookie flag
+//                  + every env var the two sub-apps already consume.
 
 require("dotenv").config();
 
@@ -35,10 +39,7 @@ app.use("/shell-static", express.static(path.join(__dirname, "public"), {
 }));
 
 // --- Public routes (no auth) ------------------------------------------------
-// PWA manifest at /manifest.json so the spec-required reference from
-// the login/landing <head> resolves. Sub-app manifests live under
-// their mount prefix (/perfin/manifest.json, /per-sistant/manifest.json)
-// and don't collide with this one.
+// Manifest is served pre-auth so install prompts work on the login page.
 app.get("/manifest.json", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "manifest.json"));
 });
@@ -51,29 +52,70 @@ app.post("/login", auth.handleLogin);
 app.post("/logout", auth.handleLogout);
 
 // --- Auth gate --------------------------------------------------------------
-// Everything past this point requires a valid signed session cookie. The
-// sub-apps trust this gate and should not run their own login flows; their
-// existing /login routes will be shadowed by ours since we mount them
-// under prefix paths (/perfin/login, /per-sistant/login) that never get
-// hit organically.
+// Everything past this point requires a valid signed session cookie. Sub-apps
+// trust this gate and don't run their own login flows; their /login routes
+// are shadowed by ours since the shell owns / and /login.
 app.use(auth.requireAuth);
 
 // --- Landing tile picker ----------------------------------------------------
 app.get("/", (_req, res) => res.render("landing"));
 
-// --- Sub-app mounts (wired in Phase 6) --------------------------------------
-// const perfinApp = require("../teller/server").app;
-// const persistentApp = require("../apps/per-sistant/server").app;
-// app.use("/perfin", perfinApp);
-// app.use("/per-sistant", persistentApp);
+// --- Sub-app mounts ---------------------------------------------------------
+// require() loads each sub-app's Express instance without firing its
+// listener (server.js wraps that in `if (require.main === module)`).
+// We then call start({ standalone: false }) so migrations and cron jobs
+// run, but the sub-app doesn't bind a port or install signal handlers —
+// we own those at the shell level.
+const perfin = require("../teller/server");
+const persistent = require("../apps/per-sistant/server");
+
+app.use("/perfin", perfin.app);
+app.use("/per-sistant", persistent.app);
 
 // 404 fallback for authenticated users hitting an unknown path
 app.use((_req, res) => res.status(404).send("Not found"));
 
-const PORT = parseInt(process.env.SHELL_PORT || process.env.PORT || "3000", 10);
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Shell listening on http://localhost:${PORT}`);
-  if (!process.env.SHELL_PIN || !process.env.SHELL_SECRET) {
-    console.warn("WARNING: SHELL_PIN and SHELL_SECRET must both be set for login to work.");
+// ---------------------------------------------------------------------------
+// Lifecycle
+// ---------------------------------------------------------------------------
+async function start() {
+  // Sub-app startup tasks (migrations + cron) run before we begin accepting
+  // requests so a hot-restart doesn't briefly serve traffic against an
+  // un-migrated DB. Each sub-app exports start() — see teller/startup.js
+  // and apps/per-sistant/server.js for what runs in embedded mode.
+  console.log("Starting Perfin (embedded)…");
+  await perfin.start(perfin.app, { standalone: false });
+  console.log("Starting Per-sistant (embedded)…");
+  await persistent.start({ standalone: false });
+
+  const PORT = parseInt(process.env.SHELL_PORT || process.env.PORT || "3000", 10);
+  const server = app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Shell listening on http://localhost:${PORT}`);
+    if (!process.env.SHELL_PIN || !process.env.SHELL_SECRET) {
+      console.warn("WARNING: SHELL_PIN and SHELL_SECRET must both be set for login to work.");
+    }
+  });
+
+  // Graceful shutdown — close the listener, then drain both DB pools.
+  function shutdown(signal) {
+    console.log(`\n${signal} received — shutting down gracefully…`);
+    server.close(async () => {
+      try {
+        await perfin.pool.end().catch(() => null);
+        await persistent.pool.end().catch(() => null);
+        console.log("Database pools closed.");
+        process.exit(0);
+      } catch {
+        process.exit(1);
+      }
+    });
+    setTimeout(() => { console.error("Forced shutdown after timeout."); process.exit(1); }, 10000).unref();
   }
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
+}
+
+start().catch(err => {
+  console.error("Shell startup failed:", err);
+  process.exit(1);
 });

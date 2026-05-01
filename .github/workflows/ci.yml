@@ -14,9 +14,9 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
-          cache-dependency-path: |
-            teller/package-lock.json
-            package-lock.json
-      - run: cd teller && npm ci
+          cache-dependency-path: package-lock.json
+      # Workspaces — single install at the root walks shell, teller, and
+      # apps/per-sistant. Sub-package installs (cd teller && npm ci) are
+      # no longer needed and would warn about missing per-package lockfiles.
       - run: npm ci
       - run: npm test
