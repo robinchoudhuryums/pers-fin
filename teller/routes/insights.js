@@ -5,8 +5,8 @@
 const express = require("express");
 const router = express.Router();
 const { pool } = require("../services/database");
-const { getMonthlySpending, getMonthlyIncomeAndSpending } = require("../services/financial-queries");
-const { auditInsight, getAuditStats } = require("../services/ai-audit");
+const { getMonthlySpending, getMonthlyIncomeAndSpending, NOT_TRANSFER } = require("../services/financial-queries");
+const { auditInsight, getAuditStats, getAuditAccuracy } = require("../services/ai-audit");
 const {
   MODEL_COST_PER_M, modelFamily, estimateCostUsd, estimateCostGranular,
   STATE_ELECTRICITY_RATES, US_AVG_ELECTRICITY_RATE,
@@ -76,6 +76,11 @@ router.get("/api/insights/status", async (_req, res) => {
       estimatedCostCents += cost * 100;
     });
   } catch (err) { console.error("Insights status query error:", err.message); }
+  // Audit accuracy: surface the % of insight runs (last 90 days) with zero
+  // critical findings so the user can see how trustworthy the AI's recent
+  // analyses have been. The data has been collected since the audit pipeline
+  // shipped; this just exposes it on the status endpoint.
+  const accuracy = await getAuditAccuracy(90);
   res.json({
     configured,
     reason: configured ? null : (!Anthropic ? "SDK not installed" : "ANTHROPIC_API_KEY not set in .env"),
@@ -83,6 +88,7 @@ router.get("/api/insights/status", async (_req, res) => {
     budget_cents: budgetCents,
     budget_remaining_cents: Math.round((budgetCents - estimatedCostCents) * 100) / 100,
     cost_rates: MODEL_COST_PER_M,
+    audit_accuracy: accuracy,
   });
 });
 
@@ -327,25 +333,38 @@ async function generateInsights() {
     // --- Module: Anomaly detection (dynamic data) ---
     if (modules.anomaly_detection !== false) {
       try {
+        // Numbers shown to the AI now match the dashboard:
+        //   - Group by COALESCE(user_merchant_name, merchant_name, name) so user-
+        //     merged merchants don't fragment baselines.
+        //   - Apply spending_split_pct on both baseline AVG and candidate amount
+        //     so shared/joint accounts contribute the user's share, not the full
+        //     transaction amount.
+        //   - Exclude reimbursed rows from CANDIDATES (baselines still include
+        //     reimbursed per CLAUDE.md — a reimbursed charge is still typical).
         const anomalyData = await pool.query(
-          `SELECT t.merchant_name, t.name, t.amount, t.date,
+          `SELECT t.merchant_name, t.name, t.user_merchant_name,
+                  ROUND(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0, 2) AS amount,
+                  t.date,
                   avg_tbl.avg_amount, avg_tbl.txn_count
            FROM transactions t
+           LEFT JOIN linked_accounts la ON la.account_id = t.account_id
            JOIN (
-             SELECT LOWER(COALESCE(merchant_name, name)) AS merchant,
-                    AVG(amount) AS avg_amount,
-                    STDDEV(amount) AS std_amount,
+             SELECT LOWER(COALESCE(t2.user_merchant_name, t2.merchant_name, t2.name)) AS merchant,
+                    AVG(t2.amount * COALESCE(la2.spending_split_pct, 100) / 100.0) AS avg_amount,
+                    STDDEV(t2.amount * COALESCE(la2.spending_split_pct, 100) / 100.0) AS std_amount,
                     COUNT(*) AS txn_count
-             FROM transactions
-             WHERE amount > 0 AND pending = false
-               AND date >= CURRENT_DATE - INTERVAL '12 months'
-               AND date <  CURRENT_DATE - INTERVAL '7 days'
-             GROUP BY LOWER(COALESCE(merchant_name, name))
+             FROM transactions t2
+             LEFT JOIN linked_accounts la2 ON la2.account_id = t2.account_id
+             WHERE t2.amount > 0 AND t2.pending = false
+               AND t2.date >= CURRENT_DATE - INTERVAL '12 months'
+               AND t2.date <  CURRENT_DATE - INTERVAL '7 days'
+             GROUP BY LOWER(COALESCE(t2.user_merchant_name, t2.merchant_name, t2.name))
              HAVING COUNT(*) >= 3
-           ) avg_tbl ON LOWER(COALESCE(t.merchant_name, t.name)) = avg_tbl.merchant
+           ) avg_tbl ON LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name)) = avg_tbl.merchant
            WHERE t.amount > 0 AND t.pending = false
+             AND COALESCE(t.is_reimbursed, false) = false
              AND t.date >= CURRENT_DATE - INTERVAL '2 months'
-             AND t.amount > avg_tbl.avg_amount * 2
+             AND (t.amount * COALESCE(la.spending_split_pct, 100) / 100.0) > avg_tbl.avg_amount * 2
            ORDER BY t.date DESC
            LIMIT 10`
         );
@@ -353,7 +372,7 @@ async function generateInsights() {
           userMsg += "\n\n=== ANOMALY DETECTION DATA ===\n" +
             "Recent transactions significantly above their merchant's typical amount:\n" +
             anomalyData.rows.map(r =>
-              sanitizeForPrompt(r.merchant_name || r.name) + ": $" + parseFloat(r.amount).toFixed(2) +
+              sanitizeForPrompt(r.user_merchant_name || r.merchant_name || r.name) + ": $" + parseFloat(r.amount).toFixed(2) +
               " on " + r.date + " (usual avg: $" + parseFloat(r.avg_amount).toFixed(2) +
               " over " + r.txn_count + " transactions)"
             ).join("\n");
@@ -366,16 +385,22 @@ async function generateInsights() {
     // --- Module: Seasonal forecasting (dynamic data) ---
     if (modules.seasonal_forecast !== false) {
       try {
+        // Use shared NOT_TRANSFER + spending_split_pct so seasonal numbers
+        // shown to the AI match the "Monthly Spending (6mo)" block earlier in
+        // the same prompt — the previous query was a raw SUM that included
+        // credit-card payments, ACH transfers, and 100% of joint-account spend.
         const seasonalData = await pool.query(
-          `SELECT EXTRACT(MONTH FROM date)::int AS month_num,
-                  TO_CHAR(date, 'Mon') AS month_name,
-                  EXTRACT(YEAR FROM date)::int AS year,
-                  SUM(amount) AS total
-           FROM transactions
-           WHERE amount > 0 AND pending = false
-             AND COALESCE(is_reimbursed, false) = false
-             AND date >= CURRENT_DATE - INTERVAL '24 months'
-           GROUP BY EXTRACT(MONTH FROM date), TO_CHAR(date, 'Mon'), EXTRACT(YEAR FROM date)
+          `SELECT EXTRACT(MONTH FROM t.date)::int AS month_num,
+                  TO_CHAR(t.date, 'Mon') AS month_name,
+                  EXTRACT(YEAR FROM t.date)::int AS year,
+                  ROUND(SUM(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0), 2) AS total
+           FROM transactions t
+           LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+           WHERE t.amount > 0 AND t.pending = false
+             AND COALESCE(t.is_reimbursed, false) = false
+             AND ${NOT_TRANSFER}
+             AND t.date >= CURRENT_DATE - INTERVAL '24 months'
+           GROUP BY EXTRACT(MONTH FROM t.date), TO_CHAR(t.date, 'Mon'), EXTRACT(YEAR FROM t.date)
            ORDER BY year, month_num`
         );
         if (seasonalData.rows.length >= 6) {
@@ -808,7 +833,7 @@ router.patch("/api/tax-deductions/:id", async (req, res) => {
   }
 });
 
-// GET /api/insights/audit — audit log and per-module accuracy stats
+// GET /api/insights/audit — audit log, per-run stats, and 90-day accuracy summary
 router.get("/api/insights/audit", async (_req, res) => {
   try {
     const recent = await pool.query(
@@ -817,8 +842,11 @@ router.get("/api/insights/audit", async (_req, res) => {
        LEFT JOIN financial_insights fi ON fi.id = al.insight_id
        ORDER BY al.created_at DESC LIMIT 50`
     );
-    const stats = await getAuditStats(10);
-    res.json({ findings: recent.rows, stats });
+    const [stats, accuracy] = await Promise.all([
+      getAuditStats(10),
+      getAuditAccuracy(90),
+    ]);
+    res.json({ findings: recent.rows, stats, accuracy });
   } catch (err) {
     res.status(500).json({ error: "An internal error occurred." });
   }

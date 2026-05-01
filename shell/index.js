@@ -23,6 +23,7 @@ const express = require("express");
 const cookieParser = require("cookie-parser");
 const path = require("path");
 const auth = require("./middleware/auth");
+const { startKeepAlive } = require("../teller/services/keep-alive");
 
 const app = express();
 app.set("trust proxy", 1);
@@ -78,6 +79,15 @@ const persistent = require("../apps/per-sistant/server");
 perfin.app.set("embedded", true);
 persistent.app.set("embedded", true);
 
+// Cross-pool wiring: the cross-app integration endpoints used to fetch
+// http://localhost:PORT/api/... at the OTHER sub-app, which 401s through the
+// shell auth gate (the in-process fetch carries no shell session cookie).
+// Hand each sub-app a reference to the other's pg Pool so they can query
+// directly when running embedded. Standalone deployments leave these unset
+// and the routes fall back to HTTP fetches.
+perfin.app.set("persistentPool", persistent.pool);
+persistent.app.set("perfinPool", perfin.pool);
+
 app.use("/perfin", perfin.app);
 app.use("/per-sistant", persistent.app);
 
@@ -103,6 +113,13 @@ async function start() {
     if (!process.env.SHELL_PIN || !process.env.SHELL_SECRET) {
       console.warn("WARNING: SHELL_PIN and SHELL_SECRET must both be set for login to work.");
     }
+    // Start keep-alive at the shell layer. Sub-apps in embedded mode no longer
+    // own the listener, so their startup.js skips startKeepAlive — without this
+    // the keep_alive_enabled setting was wired to nothing and scheduled jobs
+    // never fired on Render free tier between user sessions. Keep-alive reads
+    // its enable flag and active-hours from Perfin's user_settings each tick,
+    // so settings changes still take effect immediately.
+    startKeepAlive(PORT);
   });
 
   // Graceful shutdown — close the listener, then drain both DB pools.

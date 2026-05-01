@@ -33,11 +33,16 @@ async function detectSubscriptions(externalPool) {
     // ------------------------------------------------------------------
     // 1. Fetch recent transactions grouped by merchant
     // ------------------------------------------------------------------
+    // Group by the user's overridden merchant name when set so renames the user
+    // has applied (e.g. "AMAZON MKTP*4321" -> "Amazon") collapse multi-variant
+    // transactions into a single subscription detection. Same pattern the
+    // display layers use — the previous query grouped by raw merchant_name and
+    // re-fragmented user-merged merchants on every detect run.
     const { rows: txns } = await pool.query(`
       SELECT
         transaction_id,
-        COALESCE(merchant_name, LOWER(REGEXP_REPLACE(name, '[^a-zA-Z0-9 ]', '', 'g'))) AS merchant_key,
-        COALESCE(merchant_name, name) AS display_name,
+        COALESCE(user_merchant_name, merchant_name, LOWER(REGEXP_REPLACE(name, '[^a-zA-Z0-9 ]', '', 'g'))) AS merchant_key,
+        COALESCE(user_merchant_name, merchant_name, name) AS display_name,
         amount,
         date
       FROM transactions

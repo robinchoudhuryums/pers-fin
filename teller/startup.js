@@ -54,13 +54,15 @@ function startBackgroundJobs() {
     }
   }, 60 * 60 * 1000));
 
-  // Daily net worth auto-snapshot (checks every hour, takes one snapshot per day)
+  // Hourly net worth auto-snapshot. The INSERT below uses ON CONFLICT
+  // (snapshot_date) DO UPDATE so a same-day re-run rewrites the row with
+  // the latest balances — important when a balance sync arrives mid-day
+  // and the snapshot would otherwise lock in stale numbers from this
+  // morning. (CLAUDE.md describes this as "updates if exists so late-
+  // arriving transactions are reflected"; the previous early-return
+  // contradicted that.)
   intervalHandles.push(setInterval(async () => {
     try {
-      const existing = await pool.query(
-        "SELECT id FROM net_worth_snapshots WHERE snapshot_date = CURRENT_DATE LIMIT 1"
-      );
-      if (existing.rows.length > 0) return;
       const [accounts, investments] = await Promise.all([
         pool.query("SELECT name, type, available_balance, current_balance FROM linked_accounts WHERE available_balance IS NOT NULL OR current_balance IS NOT NULL"),
         pool.query("SELECT name, account_type, balance FROM investment_accounts WHERE is_active = true AND balance != 0"),
@@ -306,15 +308,21 @@ function startBackgroundJobs() {
       const s = settings.rows[0];
       if (!s || !s.csv_reminder_enabled) return;
       const days = parseInt(s.csv_reminder_days) || 14;
+      // Match the LATERAL JOIN logic in GET /api/csv-reminder so the push
+      // notification reflects the same stale-account list the UI shows. The
+      // previous join used a single COALESCE(institution_name_manual, name)
+      // path and missed accounts where csv_imports.account_label matches.
       const staleAccounts = await pool.query(`
-        SELECT la.name, la.institution_name_manual AS institution,
-               MAX(ci.imported_at) AS last_import
+        SELECT la.name, la.institution_name_manual AS institution, ci.imported_at AS last_import
         FROM linked_accounts la
-        LEFT JOIN csv_imports ci ON LOWER(ci.institution) = LOWER(COALESCE(la.institution_name_manual, la.name))
+        LEFT JOIN LATERAL (
+          SELECT imported_at FROM csv_imports
+          WHERE LOWER(institution) = LOWER(COALESCE(la.institution_name_manual, ''))
+             OR LOWER(account_label) = LOWER(la.name)
+          ORDER BY imported_at DESC LIMIT 1
+        ) ci ON true
         WHERE la.is_manual = true
-        GROUP BY la.id, la.name, la.institution_name_manual
-        HAVING MAX(ci.imported_at) IS NULL
-           OR MAX(ci.imported_at) < now() - make_interval(days => $1)
+          AND (ci.imported_at IS NULL OR ci.imported_at < now() - make_interval(days => $1))
       `, [days]);
       if (staleAccounts.rows.length > 0) {
         const { sendToAll } = require("./routes/notifications");

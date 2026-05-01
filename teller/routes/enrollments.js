@@ -216,19 +216,22 @@ async function syncAllEnrollments() {
     try {
       const settings = await pool.query("SELECT last_anomaly_check_at FROM user_settings WHERE id = 1");
       const watermark = settings.rows[0]?.last_anomaly_check_at || null;
+      // Group merchants by user_merchant_name when the user has set one, so a
+      // user-merged merchant ('Amazon' replacing 'AMAZON MKTP*4321' / 'AMZN.COM')
+      // accumulates a single baseline rather than three under-the-threshold ones.
       const anomalies = await pool.query(
-        `SELECT t.merchant_name, t.name, t.amount, t.date, avg_tbl.avg_amount
+        `SELECT t.merchant_name, t.name, t.user_merchant_name, t.amount, t.date, avg_tbl.avg_amount
          FROM transactions t
          JOIN (
-           SELECT LOWER(COALESCE(merchant_name, name)) AS merchant,
+           SELECT LOWER(COALESCE(user_merchant_name, merchant_name, name)) AS merchant,
                   AVG(amount) AS avg_amount, COUNT(*) AS txn_count
            FROM transactions
            WHERE amount > 0 AND pending = false
              AND date >= CURRENT_DATE - INTERVAL '12 months'
              AND date <  CURRENT_DATE - INTERVAL '7 days'
-           GROUP BY LOWER(COALESCE(merchant_name, name))
+           GROUP BY LOWER(COALESCE(user_merchant_name, merchant_name, name))
            HAVING COUNT(*) >= 3
-         ) avg_tbl ON LOWER(COALESCE(t.merchant_name, t.name)) = avg_tbl.merchant
+         ) avg_tbl ON LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name)) = avg_tbl.merchant
          WHERE t.amount > 0 AND t.pending = false
            AND COALESCE(t.is_reimbursed, false) = false
            AND t.date >= CURRENT_DATE - INTERVAL '3 days'
@@ -242,7 +245,7 @@ async function syncAllEnrollments() {
         try {
           const { sendToAll } = require("./notifications");
           for (const a of anomalies.rows) {
-            const merchant = a.merchant_name || a.name;
+            const merchant = a.user_merchant_name || a.merchant_name || a.name;
             await sendToAll({
               title: "Unusual charge detected",
               body: merchant + ": $" + parseFloat(a.amount).toFixed(2) + " (avg: $" + parseFloat(a.avg_amount).toFixed(2) + ")",

@@ -11,6 +11,7 @@ const { categorizeSubscription, findCancelUrl } = require("../data/reference-dat
 const { CSV_FORMATS, detectCsvFormat, parseDate, csvTransactionId } = require("../data/csv-formats");
 const { detectSubscriptions } = require("../../scripts/detect-subscriptions");
 const { detectRecurringTransfers } = require("../../scripts/detect-transfers");
+const { INCOME_PREDICATE } = require("../services/financial-queries");
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -673,7 +674,11 @@ router.get("/api/bill-calendar", async (req, res) => {
       }
     }
 
-    // Income deposits (detected from recent patterns)
+    // Income deposits (detected from recent patterns) — uses the shared
+    // INCOME_PREDICATE from services/financial-queries.js so the calendar
+    // shows the same income events the cash-flow forecast and savings-rate
+    // dashboards use. Previously a narrower inline regex meant some payroll
+    // events showed up only on the calendar, not in cash-flow (and vice versa).
     const incomeResult = await pool.query(`
       SELECT COALESCE(merchant_name, name) AS source,
              ABS(amount) AS amount,
@@ -681,8 +686,7 @@ router.get("/api/bill-calendar", async (req, res) => {
       FROM transactions
       WHERE amount < 0 AND pending = false
         AND date >= CURRENT_DATE - INTERVAL '3 months'
-        AND (COALESCE(merchant_name, name, '') ~* '\\y(payroll|direct dep|salary)\\y'
-          OR COALESCE(user_category, category[1]) = 'Income')
+        AND ${INCOME_PREDICATE}
       GROUP BY COALESCE(merchant_name, name), ABS(amount)
       HAVING COUNT(*) >= 2
     `);

@@ -9,6 +9,46 @@ module.exports = function ({ pool, config }) {
   const WEBHOOK_SECRET = process.env.PERSISTENT_WEBHOOK_SECRET || null;
 
   router.get("/api/perfin/stats", async (req, res) => {
+    // Embedded mode: query Perfin's DB directly. The HTTP-fetch path below
+    // 401s through the shell auth gate when both apps share a process, so
+    // the widget showed "not connected" indefinitely.
+    const perfinPool = req.app.get("perfinPool");
+    if (perfinPool) {
+      try {
+        const result = await perfinPool.query(`
+          SELECT display_name, amount, cadence_days, next_expected
+          FROM detected_subscriptions
+          WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL
+        `);
+        const now = new Date();
+        const subs = result.rows;
+        const totalMonthly = subs
+          .filter(s => parseInt(s.cadence_days) <= 31)
+          .reduce((sum, s) => sum + parseFloat(s.amount || 0), 0);
+        const upcoming = subs.filter(s => {
+          if (!s.next_expected) return false;
+          const next = new Date(s.next_expected);
+          const diff = (next - now) / 86400000;
+          return diff >= 0 && diff <= 7;
+        }).map(s => ({
+          display_name: s.display_name,
+          amount: s.amount,
+          cadence_days: s.cadence_days,
+          next_expected: s.next_expected,
+        }));
+        return res.json({
+          connected: true,
+          total_subscriptions: subs.length,
+          monthly_cost: totalMonthly.toFixed(2),
+          upcoming_this_week: upcoming.length,
+          upcoming,
+        });
+      } catch (err) {
+        console.error("perfin stats (embedded) error:", err.message);
+        return res.json({ connected: false });
+      }
+    }
+    // Standalone fallback — HTTP fetch against a separately-deployed Perfin.
     const perfinUrl = PERFIN_URL || (await pool.query("SELECT perfin_url FROM user_settings WHERE id = 1").catch(() => ({rows:[]}))).rows[0]?.perfin_url;
     if (!perfinUrl) return res.json({ connected: false });
     // Validate URL to prevent SSRF

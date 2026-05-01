@@ -68,13 +68,15 @@ async function detectRecurringTransfers(externalPool) {
   });
 
   try {
-    // Fetch all non-pending transactions from last 36 months
-    // Include both positive (outgoing) and negative (incoming) transfers
+    // Fetch all non-pending transactions from last 36 months. Group by the
+    // user's overridden merchant name when set so user renames don't fragment
+    // detection across merchant-string variants (matches detect-subscriptions).
+    // Include both positive (outgoing) and negative (incoming) transfers.
     const { rows: txns } = await pool.query(`
       SELECT
         transaction_id,
-        COALESCE(merchant_name, LOWER(REGEXP_REPLACE(name, '[^a-zA-Z0-9 ]', '', 'g'))) AS merchant_key,
-        COALESCE(merchant_name, name) AS display_name,
+        COALESCE(user_merchant_name, merchant_name, LOWER(REGEXP_REPLACE(name, '[^a-zA-Z0-9 ]', '', 'g'))) AS merchant_key,
+        COALESCE(user_merchant_name, merchant_name, name) AS display_name,
         amount,
         date
       FROM transactions
