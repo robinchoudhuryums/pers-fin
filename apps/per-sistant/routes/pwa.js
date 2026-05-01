@@ -1,6 +1,13 @@
 // ============================================================================
 // Per-sistant — PWA Routes (manifest, service worker, icons)
 // ============================================================================
+// All resources are generated per-request so they can be served correctly
+// when the app is mounted under the unified shell (e.g. /per-sistant). The
+// route handlers read req.baseUrl and bake the prefix into:
+//   - the manifest's start_url, scope, and icon paths
+//   - the service worker's PAGES precache list
+// Standalone deployments leave req.baseUrl === "" and the output is
+// identical to the prior static behavior.
 
 const express = require("express");
 const fs = require("fs");
@@ -16,25 +23,31 @@ module.exports = function ({}) {
   } catch (e) { /* fallback to default below */ }
 
   router.get("/manifest.json", (req, res) => {
+    const bp = req.baseUrl || "";
     res.json({
       name: "Per-sistant",
       short_name: "Per-sistant",
       description: "Personal assistant — tasks, emails, notes",
-      start_url: "/",
+      start_url: bp + "/",
+      scope: bp + "/",
       display: "standalone",
       background_color: "#0a0b14",
       theme_color: "#0a0b14",
       icons: [
-        { src: "/icon-192.svg", sizes: "192x192", type: "image/svg+xml" },
-        { src: "/icon-512.svg", sizes: "512x512", type: "image/svg+xml" },
+        { src: bp + "/icon-192.svg", sizes: "192x192", type: "image/svg+xml" },
+        { src: bp + "/icon-512.svg", sizes: "512x512", type: "image/svg+xml" },
       ],
     });
   });
 
   router.get("/sw.js", (req, res) => {
+    const bp = req.baseUrl || "";
+    // BASE is injected via JSON.stringify so quotes are correct in either
+    // the empty-string standalone case or the "/per-sistant" mounted case.
     res.type("application/javascript").send(`
-    const CACHE = 'per-sistant-v2';
-    const PAGES = ['/', '/todos', '/emails', '/notes', '/calendar', '/contacts', '/review', '/analytics', '/settings'];
+    const BASE = ${JSON.stringify(bp)};
+    const CACHE = 'per-sistant-v3';
+    const PAGES = [BASE+'/', BASE+'/todos', BASE+'/emails', BASE+'/notes', BASE+'/calendar', BASE+'/contacts', BASE+'/review', BASE+'/analytics', BASE+'/settings'];
     const OFFLINE_KEY = 'per-sistant-offline-queue';
 
     self.addEventListener('install', e => {
@@ -48,7 +61,7 @@ module.exports = function ({}) {
     self.addEventListener('fetch', e => {
       const url = new URL(e.request.url);
       // API requests: network-first, cache fallback for GET
-      if (url.pathname.startsWith('/api/')) {
+      if (url.pathname.startsWith(BASE + '/api/')) {
         if (e.request.method === 'GET') {
           e.respondWith(
             fetch(e.request).then(r => {
