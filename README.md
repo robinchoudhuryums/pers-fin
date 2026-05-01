@@ -1,33 +1,48 @@
-# Personal Finance Tracker (Perfin)
+# Personal Finance Tracker (Perfin) + Personal Assistant (Per-sistant)
 
-Personal finance tracker that detects recurring charges, compares spending to benchmarks, tracks financial goals, and provides AI-powered insights. Uses **Teller API** (primary) and Plaid (legacy/investments) for bank account linking via mTLS. Features a web dashboard with spending charts, 3D financial wellness pyramid, dark/light theme, PIN/password-protected sessions with Iron Man helmet branding, and installable as a mobile home-screen app (PWA).
+Single Node process that hosts two related personal tools behind one PIN gate:
+
+- **Perfin** — finance tracker. Detects recurring charges, compares spending to benchmarks, tracks financial goals, runs AI-powered insights via Claude. Uses **Teller API** for bank links via mTLS, plus Plaid for investment holdings.
+- **Per-sistant** — personal assistant. Tasks, scheduled emails, notes, calendar, and an AI daily briefing.
+
+A small **shell** authenticates the user with a unified PIN, renders a tile picker, then routes traffic to whichever sub-app is selected. Both sub-apps mount under their own URL prefix (`/perfin` and `/per-sistant`) and continue to keep their own databases, routes, and migrations.
 
 ## Architecture
 
 ```
-┌──────────────┐     ┌──────────────────┐     ┌──────────────┐
-│Teller Connect│────>│  Express Server  │────>│ Neon Postgres│
-│  (browser)   │     │  (mTLS + API)    │     │  (pgBouncer) │
-└──────────────┘     └──────────────────┘     └──────┬───────┘
-                              │                       │
-                     ┌────────┴────────┐              │
-                     │  Claude API     │              │
-                     │  (AI Insights)  │              │
-                     └─────────────────┘              │
-                                                      │
-                     ┌──────────────────┐             │
-                     │  Google Sheets   │<────────────┘
-                     │  • Transactions  │
-                     │  • Subscriptions │
-                     │  • Dashboard     │
-                     └──────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│  shell/index.js  (Express; PIN auth + landing tile picker) │
+│      │                                                      │
+│      ├── /perfin       ─►  teller/server.js                │
+│      │                          │                          │
+│      │                          ├──► Teller API (mTLS)     │
+│      │                          ├──► Plaid (investments)   │
+│      │                          ├──► Claude API (insights) │
+│      │                          ├──► Google Sheets (sync)  │
+│      │                          └──► Neon Postgres         │
+│      │                                                      │
+│      └── /per-sistant  ─►  apps/per-sistant/server.js      │
+│                                 │                          │
+│                                 ├──► Claude API (briefing) │
+│                                 ├──► SMTP (email schedule) │
+│                                 └──► Neon Postgres (sep DB)│
+└────────────────────────────────────────────────────────────┘
 ```
+
+Every sub-app remains independently runnable for local debug — `node teller/server.js` and `node apps/per-sistant/server.js` still start standalone listeners. The shell just imports them as modules and hands them traffic via Express's sub-app mount mechanism. Sub-apps detect they're running embedded via an `app.get("embedded")` flag and bypass their own auth gates accordingly.
 
 ## Files
 
 | Path | Description |
 |------|-------------|
-| `teller/server.js` | Bootstrap: middleware, auth, route mounting (190 lines) |
+| `shell/index.js` | Unified PIN gate, landing tile picker, sub-app mounts |
+| `shell/middleware/auth.js` | HMAC-signed cookie session (SHELL_PIN + SHELL_SECRET) |
+| `shell/views/login.ejs` | PIN entry screen |
+| `shell/views/landing.ejs` | Post-login tile picker |
+| `shell/public/manifest.json` | Unified PWA manifest |
+| `package.json` | npm workspaces declaration; `npm start` runs the shell |
+| `teller/server.js` | Perfin sub-app: middleware, auth, route mounting |
+| `teller/startup.js` | Migrations, cron jobs, listener, shutdown (extracted from server.js) |
 | `teller/data/reference-data.js` | Static lookups: electricity rates, categories, AI costs |
 | `teller/data/csv-formats.js` | CSV format detection (Chase, CapOne, Discover, WF, Schwab) |
 | `teller/services/database.js` | Postgres pool + auto-migrations |
@@ -40,20 +55,31 @@ Personal finance tracker that detects recurring charges, compares spending to be
 | `teller/routes/settings.js` | User settings, sheets sync, CSV export |
 | `teller/routes/insights.js` | AI insights (12 modules), tax deductions |
 | `teller/routes/categorize.js` | ML transaction categorization via Claude |
+| `teller/routes/categorize-helpers.js` | Categories, descriptions, Teller→ours map |
 | `teller/routes/investments.js` | Plaid investment accounts (holdings, sync) |
 | `teller/routes/notifications.js` | Web Push notifications (VAPID) |
 | `teller/pages/*.js` | HTML page generators (dashboard, subscriptions, etc.) |
-| `teller/public/logo.svg` | Iron Man helmet SVG logo (nav icon, PWA icon) |
+| `teller/public/transactions.js` | Transactions page client (Edit modal w/ "remember merchant") |
+| `teller/public/settings-rules.js` | Categorization rules panel (collapsible) on Settings |
+| `teller/public/perfin-shared.js` | Shared client utilities (esc, apiFetch, withBase, ...) |
 | `teller/public/perfin-shared.css` | Shared styles (variables, nav, cards, animations) |
+| `teller/public/sw.js` | Perfin Service Worker (network-first, offline fallback) |
+| `teller/public/chart.umd.js` | Bundled Chart.js (committed copy; served at /vendor/chart.umd.js) |
 | `teller/views/*.ejs` | EJS templates (dashboard, login, partials) |
-| `plaid/server.js` | Legacy Plaid server (still functional) |
+| `apps/per-sistant/server.js` | Per-sistant sub-app: routes + page handlers + cron jobs |
+| `apps/per-sistant/db.js` | Postgres pool — uses PERSISTENT_DATABASE_URL when set |
+| `apps/per-sistant/middleware.js` | Session, auth, CSRF, security, rate limiting |
+| `apps/per-sistant/views.js` | Shared HTML helpers (pageHead, navBar, themeScript) |
+| `apps/per-sistant/routes/*.js` | API routes (todos, emails, notes, AI, calendar, ...) |
+| `apps/per-sistant/pages/*.js` | Page handlers (template literal HTML) |
+| `apps/per-sistant/routes/pwa.js` | Per-sistant manifest + Service Worker (basePath-aware) |
+| `plaid/server.js` | Legacy standalone Plaid server (still functional) |
 | `scripts/detect-subscriptions.js` | Recurring charge detection algorithm |
 | `scripts/sheets-sync.js` | Google Sheets sync + dashboard builder |
 | `apps-script/Code.gs` | Google Sheets Apps Script (standalone + server sync) |
-| `tests/` | Test suite (node:test, 139 tests across 7 files) |
-| `tests/audit-regressions.test.js` | Pinned regression tests for documented behavior (auth, SSO, templates, exclusion rules) |
+| `tests/` | Test suite (node:test, 139+ tests) |
 | `Dockerfile` | Container build |
-| `render.yaml` | Render deployment blueprint |
+| `render.yaml` | Render deployment blueprint (unified shell) |
 | `fly.toml` | Fly.io deployment config |
 
 ## Setup
@@ -62,21 +88,36 @@ Personal finance tracker that detects recurring charges, compares spending to be
 
 ```bash
 cp .env.example .env
-# Fill in Teller, Neon, and optional credentials (Anthropic, Google Sheets)
+# Required: SHELL_PIN, SHELL_SECRET, NEON_DATABASE_URL,
+#           PERSISTENT_DATABASE_URL, TELLER_APPLICATION_ID, TELLER_CERT*
+# Optional: ANTHROPIC_API_KEY, GOOGLE_SHEETS_ID, SMTP_*, VAPID_*, etc.
 ```
 
-### 2. Database
+### 2. Databases
 
-The server runs **auto-migration on startup** — all required tables and columns are created automatically. No manual SQL execution needed.
+Each sub-app runs its own auto-migrations against its own Neon database on startup:
 
-### 3. Teller Server (Primary)
+- `NEON_DATABASE_URL` — Perfin's database
+- `PERSISTENT_DATABASE_URL` — Per-sistant's database (separate)
+
+No manual SQL execution needed.
+
+### 3. Install + Run
 
 ```bash
-cd teller && npm install && node server.js
-# Open http://localhost:3000
+npm install        # walks all three workspaces (shell, teller, apps/per-sistant)
+npm start          # boots the unified shell (node shell/index.js)
+# Open http://localhost:3000 → PIN screen → tile picker → either app
 ```
 
-Requires Teller mTLS certificate files (`certificate.pem`, `private_key.pem`) in the project root.
+Standalone mode for local debugging:
+
+```bash
+npm run start:perfin      # legacy: just the Perfin app on its own port
+npm run start:persistent  # legacy: just the Per-sistant app on its own port
+```
+
+The Teller mTLS certificate (`certificate.pem`, `private_key.pem`) lives in the project root.
 
 ### 4. Google Sheets Integration (Optional)
 
@@ -89,9 +130,9 @@ The sync writes six tabs: **Transactions**, **Subscriptions**, **AI Insights**, 
 
 ### 5. Deployment
 
-**Render (free):** See `render.yaml` — add PEM files as Secret Files, set env vars in dashboard.
+**Render (free tier):** see `render.yaml`. The shell takes one Render service; the build is `npm install` and the start command is `npm start`. Set `SHELL_PIN`, `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`, plus the existing Perfin env vars in the dashboard.
 
-**Fly.io (~$2/mo):** See `fly.toml` — set secrets via `fly secrets set`.
+**Fly.io (~$2/mo):** see `fly.toml` — set secrets via `fly secrets set`.
 
 **Docker:**
 ```bash
@@ -104,9 +145,11 @@ docker compose up --build
 npm test
 ```
 
-139 tests across 7 files covering detection, CSV parsing, date handling, API logic, cost calculations, and pinned regression tests for auth/SSO/template/exclusion behavior. No database required — all tests run against pure functions and mock data. Note: run `npm install` at the repo root before `npm test` (the root `package.json` lists `pg`/`express`/etc. that the tests import directly).
+139+ tests across files covering detection, CSV parsing, date handling, API logic, cost calculations, and pinned regression tests for auth/SSO/template/exclusion behavior. No database required — all tests run against pure functions and mock data.
 
 ## API Endpoints
+
+When mounted under the unified shell, all of these are accessed via the `/perfin` prefix (e.g. `/perfin/api/sync`). Standalone Perfin keeps the unprefixed paths.
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -135,6 +178,9 @@ npm test
 | `POST` | `/api/insights/rebuild` | Rebuild AI context from all history |
 | `POST` | `/api/categorize` | ML categorize transactions via Claude |
 | `GET` | `/api/categorize/status` | ML categorization status |
+| `GET/POST/DELETE` | `/api/categorization-rules` | Persistent merchant→category rules |
+| `POST` | `/api/categorization-rules/from-transaction` | Create rule from a transaction (used by Edit modal "Remember") |
+| `POST` | `/api/categorization-rules/apply` | Run all active rules against uncategorized rows |
 | `PATCH` | `/api/transactions/:id/category` | Update transaction category |
 | `GET/POST/PATCH/DELETE` | `/api/budgets` | Budget CRUD |
 | `POST` | `/api/budgets/suggest` | AI budget suggestions |
@@ -151,44 +197,63 @@ npm test
 | `POST` | `/api/notifications/test` | Send test push notification |
 | `POST` | `/api/sheets/sync` | Sync all data to Google Sheets |
 | `GET` | `/api/export` | Download transactions/subscriptions CSV |
-| `POST` | `/api/login` | Authenticate session |
 | `GET` | `/dashboard` | Main dashboard UI |
 | `GET` | `/subscriptions` | Subscription management |
+| `GET` | `/transactions` | Transactions page (search + edit + categorize) |
 | `GET` | `/goals` | Financial goals page |
 | `GET` | `/budgets` | Budget tracking page |
-| `GET` | `/settings` | Settings page |
+| `GET` | `/settings` | Settings page (incl. collapsible Categorization Rules) |
 | `GET` | `/health` | Health check |
+
+Per-sistant exposes its own set of routes (todos, emails, notes, AI briefing, calendar, etc.) under `/per-sistant/...`. See `apps/per-sistant/CLAUDE.md` for the per-app reference.
 
 ## Features
 
 ### Authentication
-Two login modes — set one in your environment variables:
-- **`SESSION_PASSWORD`** — text password, shows a standard password input
-- **`SESSION_PIN`** — numeric PIN (any length), shows a PIN pad with dot indicators
 
-Sessions expire after a configurable timeout (default 15 minutes, adjustable in Settings from 1–1440 minutes). Omit both to run without authentication (dev mode).
+The unified shell owns the only login screen and authenticates via PIN:
 
-**Biometric login (FaceID / Touch ID / Windows Hello):** Once logged in with PIN/password, register a passkey from Settings. Subsequent visits show a "Sign in with Biometrics" button on the login page — no PIN entry required. Implemented via WebAuthn (`@simplewebauthn/server`); credentials are stored in the `webauthn_credentials` table and can be revoked from Settings.
+- **`SHELL_PIN`** — numeric PIN that fronts both apps. Validated against a constant-time compare with a soft 750ms throttle on incorrect attempts.
+- **`SHELL_SECRET`** — random ~32+ char string. Signs the shell session cookie. Rotating it invalidates every active session.
+
+Sessions last 7 days by default (configurable in `shell/middleware/auth.js`). Standalone Perfin still supports its legacy `SESSION_PASSWORD` / `SESSION_PIN` modes plus biometric login (WebAuthn) — those are bypassed when running embedded under the shell.
+
+### Cross-app navigation
+
+Each sub-app has a small "switch to the other tool" link in its global nav. From Perfin, the link sits in the topnav next to the notification bell. From Per-sistant, it's in the appbar's top-right (where the Light/Dark toggle used to live, which is now in the sidebar foot). Both stay in-app because the destination is same-origin.
 
 ### Dark/Light Theme
+
 Toggle between Night Mode (default) and Day Mode in Settings. Preference is stored in the database and persisted via localStorage.
 
 ### Dashboard
+
 Two interactive charts (Chart.js):
 - **Monthly Spending Trend** — line chart of total spending over the last 6 months
 - **Spending by Category** — doughnut chart of top 8 spending categories
 - **3D Financial Wellness Pyramid** — interactive CSS 3D pyramid with 4 frustum layers, neon wireframe edges, holographic effects. Mobile-optimized with `prefers-reduced-motion` support.
 
+### Transactions page (manual categorization with memory)
+
+The Edit modal includes a category dropdown plus a "Remember this merchant" checkbox. Setting a category and ticking the box creates a persistent merchant→category rule (stored in `categorization_rules`); future imports of the same merchant auto-categorize without an AI call. Saved rules are visible/manageable in **Settings → Categorization Rules** (collapsible).
+
 ### Investment Accounts
+
 Track brokerage, retirement, and crypto holdings via Plaid API integration. Holdings sync with market values.
 
 ### ML Transaction Categorization
-Claude-powered smart categorization beyond keyword matching (POST /api/categorize).
+
+Three-tier categorization pipeline:
+1. **User rules** (saved from the "Remember" checkbox) — free, instant.
+2. **Teller-tag fast path** — deterministic mapping from Teller's own categories (`dining` → `Food & Drink`, etc.) — free, instant.
+3. **AI fallback** — Claude classifies anything left over with rich category descriptions and the bank's own hint as context.
 
 ### Web Push Notifications
-VAPID-based push notifications for alerts (anomalies, upcoming charges, goal milestones).
+
+VAPID-based push notifications for alerts (anomalies, upcoming charges, goal milestones). Requires `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_EMAIL`.
 
 ### AI Financial Insights (12 Toggleable Modules)
+
 Set `ANTHROPIC_API_KEY` in `.env` to enable AI-powered financial analysis via Claude.
 
 The AI maintains a **persistent running summary** across analyses — a cumulative memory of your spending baselines, trends, and progress on past recommendations. Insights improve over time as the AI tracks changes month-to-month.
@@ -212,29 +277,35 @@ The AI maintains a **persistent running summary** across analyses — a cumulati
 - **Reset/Rebuild**: Clear or regenerate long-term memory from Settings
 
 ### Financial Goals
+
 Track progress toward savings targets (house, car, retirement, etc.) with compound interest projections, monthly contribution tracking, and AI-powered progress assessment.
 
 ### Net Worth Tracking
+
 Automatic snapshots after balance sync, with historical trend data.
 
 ### Context Export
+
 Export all financial data as structured markdown or JSON — paste into Claude chat for deep-dive questions about your finances.
 
 ### Tax Deduction Tracking
+
 AI-flagged deductions are accumulated year-round in a persistent table, available for review at tax filing time.
 
 ### Branding
-Iron Man helmet logo (SVG traced from PNG) used throughout:
+
+Iron Man helmet logo (SVG traced from PNG) used throughout Perfin:
 - **Nav bar** — teal helmet icon via CSS mask
 - **PWA icon** — helmet on dark background for home screen
-- **Login** — helmet materialize animation (stroke-draw → fill → redirect) on successful PIN/password entry
+- **Login** — helmet materialize animation (now sits behind the unified shell's PIN screen for standalone Perfin only)
 
 ### Mobile App (PWA)
-Installable as a home screen icon with Iron Man helmet branding:
+
+The unified shell installs as a single PWA with its own icon and start URL (`/`). Each sub-app's manifest still works under its prefix if you want to install it separately, but the recommended install is the shell.
 - **iPhone**: Open in Safari → Share → "Add to Home Screen"
 - **Android**: Chrome → Menu → "Install app"
 
-## How Detection Works
+## How Subscription Detection Works
 
 1. Pulls all non-pending debit transactions from the last 36 months
 2. Groups by `merchant_name` (falls back to normalized `name` when null)
@@ -246,14 +317,18 @@ Installable as a home screen icon with Iron Man helmet branding:
 
 | Variable | Description |
 |----------|-------------|
-| `NEON_DATABASE_URL` | Neon PostgreSQL connection string |
+| `SHELL_PIN` | Unified PIN that fronts both apps (set on the Render service) |
+| `SHELL_SECRET` | Random ~32+ char string; signs the shell session cookie |
+| `NEON_DATABASE_URL` | Perfin's Neon PostgreSQL connection string |
+| `PERSISTENT_DATABASE_URL` | Per-sistant's Neon PostgreSQL connection string (separate DB) |
 | `TOKEN_ENCRYPTION_PASSPHRASE` | Encrypts stored access tokens |
 | `TELLER_APPLICATION_ID` | Teller app ID for Connect widget |
 | `TELLER_ENV` | Teller environment (development/production) |
-| `SESSION_PASSWORD` | Text password for login (optional) |
-| `SESSION_PIN` | Numeric PIN for PIN pad login (optional) |
-| `SESSION_SECRET` | Session cookie secret (auto-generated if not set) |
-| `ANTHROPIC_API_KEY` | Enables AI financial insights via Claude (optional) |
-| `INSIGHTS_MONTHLY_BUDGET_CENTS` | Monthly API spending cap, default 50 = $0.50 |
-| `GOOGLE_SHEETS_ID` | Google Sheets spreadsheet ID (optional) |
-| `GOOGLE_SERVICE_ACCOUNT_KEY` | Google service account JSON key (optional) |
+| `TELLER_CERT_PATH` / `TELLER_KEY_PATH` | Local file paths for mTLS PEMs (or use base64 vars under Render) |
+| `SESSION_PASSWORD` / `SESSION_PIN` / `SESSION_SECRET` | Legacy standalone-Perfin auth (bypassed when embedded under the shell) |
+| `ANTHROPIC_API_KEY` | Enables AI features in both apps |
+| `INSIGHTS_MONTHLY_BUDGET_CENTS` | Perfin AI spending cap, default 50 = $0.50/month |
+| `GOOGLE_SHEETS_ID` | Google Sheets spreadsheet ID (Perfin sync, optional) |
+| `GOOGLE_SERVICE_ACCOUNT_KEY` | Google service account JSON key (Perfin sync, optional) |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | Per-sistant email scheduling |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_EMAIL` | Push notifications (Perfin) |
