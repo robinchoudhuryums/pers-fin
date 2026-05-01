@@ -100,6 +100,11 @@ app.use(session({
 }));
 
 function requireAuth(req, res, next) {
+  // Embedded under the unified shell — the shell's PIN gate has already
+  // verified the user. Skip our per-app session check entirely; otherwise
+  // every request would redirect to /login (which the shell shadows) and
+  // produce an infinite bounce back to the landing page.
+  if (req.app.get("embedded")) return next();
   if (!AUTH_SECRET) return next();
   if (["/login", "/api/login", "/api/webauthn/authenticate-options", "/api/webauthn/authenticate", "/manifest.json", "/sw.js", "/health", "/api/keep-alive-schedule", "/apple-touch-icon.svg", "/apple-touch-icon.png", "/logo.svg", "/api/sso/validate", "/api/perfin/webhook"].includes(req.path)) return next();
   if (req.path.endsWith(".css") || req.path.endsWith(".js")) return next();
@@ -210,6 +215,10 @@ app.use("/api/enroll", tightLimiter);
 // API key authentication
 const API_KEY = process.env.API_KEY;
 app.use("/api", (req, res, next) => {
+  // Embedded mode: shell auth has already gated this request, so skip
+  // the API_KEY requirement that would otherwise fire for browser fetches
+  // (which carry shell_session cookies, not x-api-key headers).
+  if (req.app.get("embedded")) return next();
   if (!API_KEY) return next();
   if (req.path === "/login" || req.path === "/logout") return next();
   if (req.session && req.session.authenticated) return next();
