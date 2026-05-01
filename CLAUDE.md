@@ -1,14 +1,27 @@
 # CLAUDE.md — Project Context for Claude Code
 
 ## Project Overview
-Personal finance tracker that detects recurring charges, compares spending to benchmarks,
-tracks financial goals, and provides AI-powered insights. Uses **Teller API** (primary) and
-Plaid (legacy/investments) for bank account linking via mTLS. Companion app to **Per-sistant**
-(personal assistant/task manager) — shared design system, cross-app SSO, webhook integration,
-and combined weekly summary email.
+Single Node process that hosts two related personal tools behind one PIN gate:
+
+- **Perfin** — finance tracker. Detects recurring charges, compares spending to
+  benchmarks, tracks financial goals, runs AI-powered insights via Claude. Uses
+  **Teller API** for bank links via mTLS, plus Plaid for investment holdings.
+- **Per-sistant** — personal assistant. Tasks, scheduled emails, notes,
+  calendar, AI daily briefing.
+
+A `shell/` Express app authenticates the user with `SHELL_PIN`, renders a tile
+picker landing page, then mounts each sub-app under its own URL prefix:
+`/perfin/*` → `teller/server.js`, `/per-sistant/*` → `apps/per-sistant/server.js`.
+Each sub-app keeps its own database, routes, and migrations; the shell just
+owns the listener, the auth gate, and the cross-app navigation. Sub-apps
+detect they're running embedded via `req.app.get("embedded")` and skip their
+own auth checks. Each can still boot standalone for local debug
+(`npm run start:perfin`, `npm run start:persistent`).
+
+See README.md for the full unified-shell architecture diagram and rationale.
 
 ## Architecture (Modular)
-The server is split into focused modules under `teller/`:
+The Perfin sub-app is split into focused modules under `teller/`:
 
 ```
 teller/
@@ -343,36 +356,57 @@ teller/
   formatting for over-budget categories)
 
 ### Per-sistant Integration (Companion App)
-- **Cross-app SSO**: HMAC-signed token exchange (60-second expiry) with per-token nonce
-  for replay protection. Token format: `sso:<timestamp>:<nonce>:<signature>`. Each nonce
-  is single-use (tracked in-memory, 2-minute TTL cleanup). Both Perfin and Per-sistant
-  must deploy the same token format — mixed-version deployments will reject cross-app tokens.
-- **Webhook system**: HMAC-signed event notifications (anomaly_detected, budget_exceeded,
-  new_subscription, goal_milestone, csv_reminder) sent to Per-sistant
-- **Productivity context**: Fetches task/review stats from Per-sistant for AI enrichment
-- **Combined weekly summary**: Single email combining finances + productivity (sent by Per-sistant,
-  with fallback — if one data source fails, the other still sends)
-- **Navigation**: Cross-linked nav bars between apps when URLs configured
+Under the unified shell both apps run in the same Node process, so most of
+what used to be a network/HMAC integration is now a function call or a
+shared session cookie. Cross-app surface area today:
+- **Shared auth**: shell PIN gate fronts both apps; sub-app `requireAuth`
+  bails on `req.app.get("embedded")`.
+- **Cross-app navigation**: in-nav "switch to other tool" link in each app's
+  layout, only rendered when embedded. Same-origin, in-app navigation.
+- **Insight email pipeline**: Perfin's scheduled insight generation sends an
+  `insights_generated` event with `{ subject, html_body, plain_text }` to
+  Per-sistant's webhook receiver, which forwards to its email service.
+  Code: `teller/routes/persistent.js` (`sendPerSistantWebhook()`). Currently
+  still goes via HTTP self-fetch — could be refactored to a direct function
+  call now that both apps share a process.
+- **Productivity context** (`GET /api/persistent/productivity-context`):
+  Perfin fetches task/review stats from Per-sistant for AI insights prompt
+  enrichment. Same transitional self-fetch pattern.
+
+**Legacy two-services integration** (still in code as standalone fallback):
+- **Cross-app SSO**: HMAC-signed token exchange (60s expiry, per-token nonce
+  for replay protection). Format: `sso:<timestamp>:<nonce>:<signature>`.
+  Required `SSO_SECRET` set on both apps. Unused under the unified shell.
+- **Webhook system**: HMAC-signed event notifications (anomaly_detected,
+  budget_exceeded, new_subscription, goal_milestone, csv_reminder). Now
+  in-process; signing layer remains for the standalone fallback.
 
 ## Deployment
 
 ### Render (Free, recommended — currently deployed)
 1. Connect GitHub repo in Render dashboard
 2. Create Web Service from `render.yaml` blueprint
-3. Provide the Teller mTLS cert via env vars (this is what `render.yaml` configures —
-   `services/teller-api.js` reads them directly, no Secret-Files step needed):
+3. Build/start commands (the YAML defaults are correct under the unified shell):
+   - **Build**: `npm install` (workspace-aware install at the root; walks
+     shell/, teller/, apps/per-sistant/ in one pass)
+   - **Start**: `npm start` → `node shell/index.js`
+4. Provide the Teller mTLS cert via env vars:
    - `TELLER_CERT` = `base64 < certificate.pem`
    - `TELLER_KEY`  = `base64 < private_key.pem`
-   *(Alternative: upload as Render Secret Files and set
-   `TELLER_CERT_PATH=/etc/secrets/certificate.pem` and `TELLER_KEY_PATH=/etc/secrets/private_key.pem` —
-   the code defaults to `./certificate.pem` so the path env vars are required if you go this route.)*
-4. Set remaining env vars (see Environment Variables below)
-5. Access at `https://pers-fin-tracker.onrender.com`
+   *(Alternative: Render Secret Files + `TELLER_CERT_PATH` / `TELLER_KEY_PATH` env vars.)*
+5. Set the unified-shell env vars (`SHELL_PIN`, `SHELL_SECRET`,
+   `PERSISTENT_DATABASE_URL`) plus the existing Perfin/Per-sistant ones
+   (see Environment Variables below)
+6. Access at `https://pers-fin-tracker.onrender.com` — lands on the PIN
+   page, then the tile picker
 
 ### Fly.io (~$2/mo)
 ```bash
 fly launch --name pers-fin-tracker
-fly secrets set NEON_DATABASE_URL="postgres://..." TOKEN_ENCRYPTION_PASSPHRASE="..."
+fly secrets set SHELL_PIN="1234" SHELL_SECRET="$(openssl rand -hex 32)"
+fly secrets set NEON_DATABASE_URL="postgres://..." \
+                PERSISTENT_DATABASE_URL="postgres://..." \
+                TOKEN_ENCRYPTION_PASSPHRASE="..."
 fly secrets set TELLER_APPLICATION_ID="app_pplg2et45b7bl1scna000" TELLER_ENV="development"
 fly secrets set TELLER_CERT=$(base64 < certificate.pem) TELLER_KEY=$(base64 < private_key.pem)
 fly deploy
@@ -380,19 +414,24 @@ fly deploy
 
 ### Local
 ```bash
-cd teller && npm install && node server.js
-# Open http://localhost:3000
+npm install            # walks all three workspaces
+npm start              # boots the unified shell (node shell/index.js)
+# Open http://localhost:3000 → PIN → tile picker → either app
+
+# Standalone debug (skip the shell entirely):
+npm run start:perfin       # node teller/server.js
+npm run start:persistent   # node apps/per-sistant/server.js
 ```
 
 ## Current Status
-- Deployed on Render (free tier, sleeps after 15 min idle)
-- Render deploys from `claude/subscription-tracker-plaid-WeQTA` (configured in Render dashboard).
-  Active development happens on `claude/broad-scan-feature-bb7QT`.
-- Env vars configured in Render dashboard
-- Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`); `services/teller-api.js`
-  reads them directly. Secret-Files path also supported if `TELLER_CERT_PATH` env vars are set.
+- Deployed on Render (free tier, sleeps after 15 min idle) — single service
+  hosting both apps via `node shell/index.js`
+- Render deploys from `main`
+- Env vars configured in Render dashboard, including `SHELL_PIN`,
+  `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
+- Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 210 tests passing across 10 test files
+- 210+ tests passing across 10+ test files
 
 ## Commands
 ```bash
@@ -525,26 +564,51 @@ GET  /health               # health check
 ```
 
 ## Environment Variables
-- `NEON_DATABASE_URL` — Neon PostgreSQL connection string
+
+### Shell (unified PIN gate)
+- `SHELL_PIN` — unified PIN that fronts both apps. Constant-time compare with a 750ms throttle on incorrect attempts.
+- `SHELL_SECRET` — random ~32+ char string (`openssl rand -hex 32`). Signs the shell session cookie. Rotating it invalidates every active session.
+- `SHELL_PORT` — optional listener port override (defaults to `PORT` or `3000`)
+
+### Databases (one per sub-app)
+- `NEON_DATABASE_URL` — Perfin's Neon PostgreSQL connection string
+- `PERSISTENT_DATABASE_URL` — Per-sistant's Neon DB (separate). Falls back to `NEON_DATABASE_URL` for standalone Per-sistant deployments.
 - `TOKEN_ENCRYPTION_PASSPHRASE` — passphrase for encrypting access tokens at rest
+
+### Teller (Perfin)
 - `TELLER_APPLICATION_ID` — Teller app ID
 - `TELLER_ENV` — Teller environment (sandbox/development/production)
 - `TELLER_CERT` / `TELLER_KEY` — base64-encoded mTLS PEMs (Render)
 - `TELLER_CERT_PATH` / `TELLER_KEY_PATH` — file paths (default `./certificate.pem` / `./private_key.pem`)
 - `TELLER_CERT_CONTENT` / `TELLER_KEY_CONTENT` — raw PEM contents written to disk by `docker-entrypoint.sh` at container start
-- `SESSION_PASSWORD` — text password for login (omit to disable auth)
-- `SESSION_PIN` — numeric PIN for PIN pad login (alternative to password)
+
+### Per-app auth (legacy, bypassed when embedded under shell)
+- `SESSION_PASSWORD` — text password for standalone Perfin login
+- `SESSION_PIN` — numeric PIN for standalone Perfin PIN pad login
 - `SESSION_SECRET` — session cookie secret (auto-generated if not set)
-- `ANTHROPIC_API_KEY` — enables AI financial insights via Claude
-- `INSIGHTS_MONTHLY_BUDGET_CENTS` — monthly API spending cap (default: 50 = $0.50)
-- `API_KEY` — optional API key for /api/* endpoints (dev mode if not set)
-- `ALLOWED_ORIGINS` — comma-separated CORS origins
-- `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` — Web Push keypair (generate via `npx web-push generate-vapid-keys`); without these `/api/notifications/*` returns 501
-- `VAPID_EMAIL` — contact `mailto:` URL for the Web Push subscriber (default `mailto:admin@perfin.app`)
-- `PLAID_CLIENT_ID`, `PLAID_SECRET_SANDBOX|DEV|PROD` — optional, enables Plaid investment-account linking via `routes/investments.js`
-- `PERSISTENT_URL` — URL of companion Per-sistant instance (also stored in user_settings)
-- `PERSISTENT_WEBHOOK_SECRET` — HMAC secret for signing webhook payloads to Per-sistant
-- `SSO_SECRET` — shared HMAC secret for cross-app SSO token exchange. **Required** if Per-sistant integration is in use; both apps must set the same value. Endpoints return 500 if unset.
+- `API_KEY` — optional `X-API-Key` for /api/* endpoints; bypassed in embedded mode (browser fetches use the shell session cookie)
+- `ALLOWED_ORIGINS` — comma-separated CORS origins (Perfin)
+
+### AI / Insights (Perfin)
+- `ANTHROPIC_API_KEY` — enables AI features in both apps
+- `INSIGHTS_MONTHLY_BUDGET_CENTS` — monthly API spending cap (default 50 = $0.50); shared between `/api/insights` and `/api/categorize`
+
+### Push notifications (Perfin)
+- `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` — Web Push keypair (`npx web-push generate-vapid-keys`); without these `/api/notifications/*` returns 501
+- `VAPID_EMAIL` — contact `mailto:` URL (default `mailto:admin@perfin.app`)
+
+### Investments (Perfin, optional)
+- `PLAID_CLIENT_ID`, `PLAID_SECRET_SANDBOX|DEV|PROD` — Plaid investment-account linking
+
+### SMTP (Per-sistant — email scheduling)
+- `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM`
+
+### Cross-app integration (legacy, two-Render-services era)
+Unused under the unified shell — both apps run in-process. Documented as the
+standalone-mode fallback if either app is run on its own Render service.
+- `PERSISTENT_URL` — URL of standalone Per-sistant instance
+- `PERSISTENT_WEBHOOK_SECRET` — HMAC secret for signing webhook payloads
+- `SSO_SECRET` — shared HMAC secret for cross-app SSO token exchange
 
 ## Database
 - Auto-migration runs on server startup in a transaction (BEGIN/COMMIT/ROLLBACK) — no
@@ -814,12 +878,18 @@ descriptions (NOT amount thresholds). Defined in `services/financial-queries.js`
 - PEM files and `.env` are in `.gitignore`
 
 ## Companion App: Per-sistant
-- **Repo**: `/home/user/per-sistant` (or `per-sistant` on GitHub)
-- **Purpose**: Personal assistant — task management, email scheduling, notes, AI productivity
-- **Integration**: Webhooks (HMAC-signed), SSO, combined weekly summary email, calendar bill projection,
-  AI context enrichment (Per-sistant AI queries include financial data from Perfin)
-- **Config**: Set `PERSISTENT_URL` env var or configure in Settings page
-- See Per-sistant's CLAUDE.md for its full architecture
+- **Location**: `apps/per-sistant/` (subtree-merged into this repo; original
+  per-sistant history preserved). Originally lived at `github.com/robinchoudhuryums/per-sistant`.
+- **Purpose**: Personal assistant — task management, email scheduling, notes,
+  AI productivity briefings, calendar.
+- **Integration under unified shell**: see "Per-sistant Integration" section
+  above. Sub-app mounts at `/per-sistant/*`, shares the shell's session cookie,
+  runs its own migrations against `PERSISTENT_DATABASE_URL`.
+- **Per-app docs**: `apps/per-sistant/CLAUDE.md` for route-by-route architecture,
+  `apps/per-sistant/README.md` for a public overview.
+- **Standalone fallback**: `npm run start:persistent` boots it on its own
+  port (3001) using the legacy `NEON_DATABASE_URL` fallback, useful for
+  isolated debugging.
 
 ## Priority Next Features
 1. **Mobile app** — React Native or Capacitor wrapper for native experience
