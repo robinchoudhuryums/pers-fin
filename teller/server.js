@@ -67,16 +67,23 @@ app.use(express.urlencoded({ extended: false }));
 // the mount path. Templates read `<%= basePath %>` to prefix URLs so
 // nav links + asset paths + form actions resolve correctly. Standalone
 // runs leave req.baseUrl as "" and basePath is a no-op.
+//
+// `embedded` mirrors the app-level flag the shell sets when mounting;
+// templates (e.g. nav.ejs) can read it to show cross-app navigation.
 app.use((req, res, next) => {
   res.locals.basePath = req.baseUrl || "";
+  res.locals.embedded = !!req.app.get("embedded");
   next();
 });
 
 // Serve shared static assets (CSS, JS) — before auth so login page can use them
 app.use(express.static(path.join(__dirname, "public"), { maxAge: "1h" }));
-// Serve Chart.js from node_modules (more reliable than CDN)
+// Serve Chart.js from node_modules. require.resolve walks Node's module
+// resolution so this works whether chart.js is hoisted to the root
+// node_modules under workspaces (the unified shell setup) or nested
+// under teller/node_modules in older standalone installs.
 app.get("/vendor/chart.umd.js", (_req, res) => {
-  res.sendFile(path.join(__dirname, "node_modules/chart.js/dist/chart.umd.js"));
+  res.sendFile(require.resolve("chart.js/dist/chart.umd.js"));
 });
 
 // ---------------------------------------------------------------------------
