@@ -31,6 +31,8 @@ A small **shell** authenticates the user with a unified PIN, renders a tile pick
 
 Every sub-app remains independently runnable for local debug — `node teller/server.js` and `node apps/per-sistant/server.js` still start standalone listeners. The shell just imports them as modules and hands them traffic via Express's sub-app mount mechanism. Sub-apps detect they're running embedded via an `app.get("embedded")` flag and bypass their own auth gates accordingly.
 
+Under the unified shell the cross-app integration endpoints (Per-sistant's Perfin widget, Perfin's productivity-context enrichment, status checks) query each other's database directly via cross-pool wiring (`req.app.get("perfinPool")` / `("persistentPool")`); HTTP self-fetches are preserved as the standalone fallback path only.
+
 ## Files
 
 | Path | Description |
@@ -77,7 +79,7 @@ Every sub-app remains independently runnable for local debug — `node teller/se
 | `scripts/detect-subscriptions.js` | Recurring charge detection algorithm |
 | `scripts/sheets-sync.js` | Google Sheets sync + dashboard builder |
 | `apps-script/Code.gs` | Google Sheets Apps Script (standalone + server sync) |
-| `tests/` | Test suite (node:test, 139+ tests) |
+| `tests/` | Test suite (node:test, 241 tests across 11 files) |
 | `Dockerfile` | Container build |
 | `render.yaml` | Render deployment blueprint (unified shell) |
 | `fly.toml` | Fly.io deployment config |
@@ -145,7 +147,7 @@ docker compose up --build
 npm test
 ```
 
-139+ tests across files covering detection, CSV parsing, date handling, API logic, cost calculations, and pinned regression tests for auth/SSO/template/exclusion behavior. No database required — all tests run against pure functions and mock data.
+241 tests across 11 files covering detection, CSV parsing, date handling, API logic, cost calculations, financial-queries semantics, AI-audit pattern extraction, and pinned regression tests for auth/SSO/template/exclusion behavior. No database required — all tests run against pure functions and mock data.
 
 ## API Endpoints
 

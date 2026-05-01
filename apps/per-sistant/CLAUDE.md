@@ -279,7 +279,32 @@ GET    /sw.js               # Service worker
 ## Database
 - Auto-migration runs on server startup — no manual SQL execution needed
 - `user_settings` table: single-row pattern (CHECK id = 1), includes ai_model_* columns
+- `user_settings.perfin_webhook_recipient TEXT`: destination email address for
+  inbound `insights_generated` webhooks from Perfin. `routes/perfin.js` reads
+  this to decide who to mail the rendered insight HTML to; falls back to
+  `SMTP_FROM` / `SMTP_USER` if unset, or saves the email as a draft if no
+  destination resolves.
 - Tables: `todos`, `emails`, `notes`, `contacts`, `user_settings`, `subtasks`, `email_templates`, `todo_templates`, `weekly_reviews`, `task_dependencies`, `automations`, `attachments`
+
+## Embedded Mode (under the unified shell)
+When loaded by `shell/index.js` instead of run standalone, the Per-sistant app
+runs as an Express sub-app mounted at `/per-sistant`. Three things change:
+
+- **Auth bails early.** `middleware.requireAuth` returns immediately when
+  `req.app.get("embedded")` is true; the shell's PIN gate has already
+  authenticated the user.
+- **Cross-pool wiring.** The shell does
+  `persistent.app.set("perfinPool", perfin.pool)`, so any route can
+  `req.app.get("perfinPool")` to query Perfin's database directly. The Perfin
+  widget at `routes/perfin.js` uses this for an embedded fast-path; the HTTP
+  fetch path is preserved only as the standalone fallback.
+- **basePath middleware.** `views.basePathMiddleware` (in `server.js`) makes
+  `req.baseUrl` available to view helpers via AsyncLocalStorage so emitted
+  URLs gain the `/per-sistant` prefix without each helper threading the
+  parameter through manually.
+
+Migrations and cron jobs run in both modes; only the listener, keep-alive,
+and signal handlers are owned by the shell when embedded.
 
 ## AI Features & Models
 - 9 AI features, each independently configurable: Haiku (fast/cheap), Sonnet (smarter), or Off

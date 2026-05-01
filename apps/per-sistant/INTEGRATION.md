@@ -1,5 +1,15 @@
 # Perfin → Per-sistant Integration
 
+> **Note:** this document describes the **standalone two-service** integration
+> (Perfin and Per-sistant deployed as separate Render services that talk over
+> HTTP). Under the unified shell — the current default deployment — both apps
+> run in the same Node process. Most cross-app surface area is now in-process
+> (see `apps/per-sistant/CLAUDE.md` § "Embedded Mode" and the root
+> `CLAUDE.md` § "Per-sistant Integration"). The webhook receiver below still
+> uses HTTP because it's HMAC-verified and the verification path expects a
+> real HTTP request shape; everything else (productivity-context, Perfin
+> stats widget, status checks) uses cross-pool queries when embedded.
+
 This branch closes the webhook gap between Perfin and Per-sistant. Before
 this, Perfin was posting `insights_generated` webhooks to
 `POST /api/perfin/webhook` but Per-sistant had no such endpoint, so every

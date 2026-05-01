@@ -113,7 +113,7 @@ teller/
     logo.svg             — Iron Man helmet SVG logo (traced from PNG, used as nav icon, PWA icon)
     offline.html         — Branded offline fallback page served by the SW when navigation
                            fails and no cache hit exists
-    sw.js                — Service worker (cache `perfin-v3`, network-first with offline
+    sw.js                — Service worker (cache `perfin-v4`, network-first with offline
                            fallback. Precaches CSS/JS/SVG/offline.html on install. `/api/*`
                            is intentionally NOT cached — stale balances are worse than a
                            clear network error. Push notifications.)
@@ -155,7 +155,7 @@ teller/
 - `scripts/retention-cleanup.sql` — Reference SQL for the manual cleanup queries
   exposed by `POST /api/cleanup`
 - `apps-script/Code.gs` — Google Sheets Apps Script (standalone + server sync)
-- `tests/` — 210 tests across 10 files (node:test runner, `npm test`).
+- `tests/` — 241 tests across 11 files (node:test runner, `npm test`).
   Includes `tests/audit-regressions.test.js` which pins documented behavior
   for auth, SSO, template hygiene, and exclusion rules. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
@@ -275,7 +275,11 @@ teller/
   - Anomaly detection (transactions 2x+ above merchant average for AI analysis;
     3x+ threshold for real-time push alerts during sync. Baseline excludes the
     trailing 7 days so the candidate doesn't inflate its own baseline.
-    Merchant grouping is case-insensitive via `LOWER()`.)
+    Merchant grouping uses `LOWER(COALESCE(user_merchant_name, merchant_name, name))`
+    so user-merged merchant variants share a single baseline. The AI insights
+    candidate query also joins `linked_accounts` to apply `spending_split_pct`
+    on both the baseline AVG and the candidate amount, and excludes reimbursed
+    candidates — so the dollar figures shown to Claude match the dashboard.)
   - Seasonal forecasting (24-month pattern analysis)
   - Debt payoff optimizer (avalanche vs snowball, credit score projections)
   - Bill negotiation tips
@@ -299,8 +303,11 @@ teller/
   hallucinated entities flagged; (3) trend direction — "X is up/down" claims compared to actual
   month-over-month data; (4) consistency — detects self-contradictions within the same report.
   Results stored in `ai_audit_log` table. Critical findings trigger in-app notification.
-  Module auto-disable requires user confirmation. `GET /api/insights/audit` returns findings
-  and per-module stats.
+  Module auto-disable requires user confirmation. `GET /api/insights/audit` returns
+  `{ findings, stats, accuracy }`; `GET /api/insights/status` includes an
+  `audit_accuracy` block — both surfaced via `getAuditAccuracy(days=90)`, which
+  returns `{ total_audited_runs, clean_runs, accuracy_pct, findings_by_severity,
+  findings_by_tier }` over the trailing 90 days. "Clean" = zero critical findings.
 - **Insight email via Per-sistant**: After each scheduled insight generation, Perfin sends
   an `insights_generated` webhook to Per-sistant with `{ subject, html_body, plain_text }`.
   HTML email is pre-rendered in Perfin with app-matching dark theme (gold/amber accents,
@@ -317,7 +324,7 @@ teller/
 - **Branding**: Iron Man helmet logo (SVG traced from PNG) — nav bar icon (CSS mask), PWA icon, login page
 - **Dark/Light theme**: Toggle in Settings, persisted to DB + localStorage
 - **PWA**: Installable home screen app (manifest.json + service worker, helmet icon centered on home screen).
-  Service worker (cache `perfin-v3`) uses network-first, caches successful same-origin
+  Service worker (cache `perfin-v4`) uses network-first, caches successful same-origin
   static GETs, and explicitly skips `/api/*` so the dashboard never serves stale balances
   when offline.
 - **Offline fallback page** (Phase D): when navigation fails and no cache hit exists,
@@ -363,15 +370,27 @@ shared session cookie. Cross-app surface area today:
   bails on `req.app.get("embedded")`.
 - **Cross-app navigation**: in-nav "switch to other tool" link in each app's
   layout, only rendered when embedded. Same-origin, in-app navigation.
+- **Cross-pool wiring**: `shell/index.js` does
+  `perfin.app.set("persistentPool", persistent.pool)` and the reverse, so
+  routes in either app can query the other's database directly via
+  `req.app.get("perfinPool")` / `("persistentPool")` instead of HTTP
+  self-fetching. Self-fetches 401 through the shell auth gate (the
+  in-process fetch carries no shell session cookie), so the wired-pool
+  path is the load-bearing design under the unified shell.
 - **Insight email pipeline**: Perfin's scheduled insight generation sends an
   `insights_generated` event with `{ subject, html_body, plain_text }` to
   Per-sistant's webhook receiver, which forwards to its email service.
-  Code: `teller/routes/persistent.js` (`sendPerSistantWebhook()`). Currently
-  still goes via HTTP self-fetch — could be refactored to a direct function
-  call now that both apps share a process.
+  Code: `teller/routes/persistent.js` (`sendPerSistantWebhook()`). Still
+  goes via HTTP because Per-sistant's webhook receiver is HMAC-verified and
+  the verification path expects a real HTTP request shape.
 - **Productivity context** (`GET /api/persistent/productivity-context`):
   Perfin fetches task/review stats from Per-sistant for AI insights prompt
-  enrichment. Same transitional self-fetch pattern.
+  enrichment. Embedded fast-path queries Per-sistant's pool directly via
+  `queryPersistentStats` / `queryPersistentReview`; HTTP fetch is the
+  standalone fallback.
+- **Per-sistant's Perfin widget** (`GET /api/perfin/stats`): symmetric — the
+  embedded fast-path queries Perfin's `detected_subscriptions` directly;
+  HTTP fetch is the standalone fallback.
 
 **Legacy two-services integration** (still in code as standalone fallback):
 - **Cross-app SSO**: HMAC-signed token exchange (60s expiry, per-token nonce
@@ -431,13 +450,13 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 210+ tests passing across 10+ test files
+- 241 tests passing across 11 test files
 
 ## Commands
 ```bash
 cd teller && npm install && node server.js    # Run locally
 npm install                                    # ALSO required at repo root for tests
-npm test                                       # Run 210 tests
+npm test                                       # Run 241 tests
 
 # Key API endpoints
 POST /api/enroll           # store Teller access token after Connect
@@ -500,15 +519,15 @@ GET  /api/budgets/alerts   # spending velocity warnings (critical/warning/info)
 POST /api/budgets/snapshot # create monthly snapshot + compute rollovers (body: month)
 GET  /api/budgets/history  # budget snapshots for trend analysis (query: months)
 POST /api/insights         # generate new AI insights
-GET  /api/insights/status  # AI API config + usage stats
+GET  /api/insights/status  # AI API config + usage stats + audit_accuracy (90d clean-run %)
 GET  /api/insights/usage   # AI usage history
 POST /api/insights/reset   # clear long-term AI context
 POST /api/insights/rebuild # rebuild context from all history
-GET  /api/insights/audit   # audit log + per-module accuracy stats
+GET  /api/insights/audit   # audit log + per-module stats + 90-day accuracy summary
 POST /api/categorize       # ML categorize transactions (rules first, then Claude AI)
 GET  /api/categorize/status # ML categorization status
-PATCH /api/transactions/:id/category # manually set transaction category
-PATCH /api/transactions/bulk-category # bulk update categories
+PATCH /api/transactions/:id/category # manually set transaction category — writes user_category
+PATCH /api/transactions/bulk-category # bulk update categories — writes user_category
 GET  /api/categorization-rules       # list all categorization rules
 POST /api/categorization-rules       # create a rule (body: merchant_pattern, category, match_type)
 DELETE /api/categorization-rules/:id # delete a rule
@@ -535,7 +554,9 @@ POST /api/notifications/read-all  # mark all notifications as read
 # Tax export
 GET  /api/export/tax-report # year-end deduction summary (query: year, format=csv|json)
 
-# WebAuthn / biometric login
+# WebAuthn / biometric login (standalone Perfin only — under the unified shell
+# the shell PIN gate intercepts before any /perfin/* request can reach these,
+# so embedded deployments expose PIN as the only auth surface)
 POST /api/webauthn/register-options    # generate registration challenge (auth required)
 POST /api/webauthn/register            # verify and store new credential (auth required)
 POST /api/webauthn/authenticate-options # generate auth challenge (no session needed)
@@ -597,8 +618,12 @@ GET  /health               # health check
 - `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` — Web Push keypair (`npx web-push generate-vapid-keys`); without these `/api/notifications/*` returns 501
 - `VAPID_EMAIL` — contact `mailto:` URL (default `mailto:admin@perfin.app`)
 
+### Keep-alive (Perfin / shell)
+- `RENDER_EXTERNAL_URL` — auto-set by Render; the keep-alive self-ping uses it as the target URL when present, falling back to `http://localhost:PORT` for local runs. Operators don't set this manually.
+
 ### Investments (Perfin, optional)
 - `PLAID_CLIENT_ID`, `PLAID_SECRET_SANDBOX|DEV|PROD` — Plaid investment-account linking
+- `PLAID_ENV` — `sandbox` (default), `development`, or `production`; selects which `PLAID_SECRET_*` is used
 
 ### SMTP (Per-sistant — email scheduling)
 - `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM`
@@ -634,13 +659,19 @@ standalone-mode fallback if either app is run on its own Render service.
 - `linked_accounts` columns include: `is_shared BOOLEAN`, `spending_split_pct INT DEFAULT 100`,
   `is_manual BOOLEAN` — constraint `chk_account_source` allows `plaid_item_id IS NOT NULL OR
   teller_enrollment_id IS NOT NULL OR is_manual = true`
-- `transactions` user-edit columns (Phase B1/B2): `user_merchant_name TEXT` and
+- `transactions` user-edit columns (Phase B1/B2/B4): `user_merchant_name TEXT` and
   `user_notes TEXT` hold user overrides separately from the raw Teller fields so a
   re-sync doesn't clobber them; `is_reimbursed BOOLEAN DEFAULT false` and
   `reimbursed_at TIMESTAMPTZ` flag transactions that the user (or an employer)
   paid back, which excludes them from every spending aggregation.
   Index `idx_transactions_reimbursed` is partial (only indexes rows where
   is_reimbursed = true) to keep the common false case cheap.
+  Phase B4: `user_category TEXT` holds manual category overrides. `PATCH
+  /api/transactions/:id/category` and bulk-category write here (NOT
+  `category`), so a Teller re-sync — which UPSERTs `category = EXCLUDED.category`
+  — can't overwrite user choices. Display layers use
+  `COALESCE(user_category, category[1])` everywhere, including the rules-apply
+  candidate filter so user-overridden rows aren't re-categorized.
 - `transaction_splits` (Phase B3): subdivides a single Teller transaction into
   multiple `(amount, category, merchant_name, notes)` rows that REPLACE the
   parent in per-category aggregations. `parent_transaction_id` references
@@ -687,6 +718,14 @@ standalone-mode fallback if either app is run on its own Render service.
   (FK to financial_insights), `module`, `severity` (critical/warning/info),
   `check_type` (tier1-4), `claim_text`, `expected_value`, `actual_value`.
   Indexed on (insight_id, severity).
+- `financial_insights.entry_type TEXT NOT NULL DEFAULT 'insight'`: discriminator
+  that lets `/api/categorize` write its AI usage rows to the same table without
+  shadowing the user-facing "AI Insights" feed. Display queries (`GET
+  /api/insights`, the previous-insight reference inside `POST /api/insights`,
+  `/api/insights/rebuild`) filter `entry_type = 'insight'`. The shared monthly-
+  budget cost queries do NOT filter — both `'insight'` and `'categorize'` rows
+  count toward `INSIGHTS_MONTHLY_BUDGET_CENTS`. Without this, categorize was
+  read-only against the cap (checked it but never charged itself).
 
 ## Recurring Transfer Detection
 Transfers are identified by keyword matching on merchant_name/name fields:
@@ -695,6 +734,9 @@ Transfers are identified by keyword matching on merchant_name/name fields:
 - **savings**: savings, emergency fund
 - **investment**: vanguard, fidelity, schwab, robinhood, betterment, 401k
 - **internal**: funds transfer, ach transfer, wire transfer, online transfer
+- Merchant grouping uses `COALESCE(user_merchant_name, merchant_name, name)`
+  (parallel to subscription detection) so user-merged merchant variants share a
+  single recurring-transfer entry instead of fragmenting across raw merchant strings.
 - Detection algorithm reuses subscription detection gap analysis (findModeAmount, addDays)
   with wider 15% amount tolerance and 7/14-day cadences for weekly/biweekly patterns
 - Cadences ≥60 days (bi-monthly, quarterly, yearly) require only 2+ occurrences;
@@ -704,6 +746,18 @@ Transfers are identified by keyword matching on merchant_name/name fields:
 - User-dismissed transfers are preserved across detection runs: the upsert's
   `is_active` CASE checks `is_dismissed` and keeps dismissed transfers inactive,
   mirroring the subscription detection logic
+
+### Detection-key migration window
+Subscription and transfer detection now key on
+`COALESCE(user_merchant_name, merchant_name, name)`. Pre-existing rows in
+`detected_subscriptions` and `recurring_transfers` keyed by the raw
+`merchant_name` will not match the new key, so on the first detection run
+after the upgrade a user with active `user_merchant_name` overrides may see
+a parallel duplicate row appear under the new (merged) name. The old rows
+remain `is_active = true` until the per-table staleness sweep retires them
+(120 days for subscriptions; transfers age out via the same upsert
+`is_active` CASE). To resolve immediately, dismiss the duplicates from the
+UI or run `POST /api/cleanup`.
 
 ## Security
 - **CSP nonces**: Per-request `crypto.randomBytes(16)` nonce for all inline scripts.
@@ -730,11 +784,15 @@ Transfers are identified by keyword matching on merchant_name/name fields:
   AI prompt. Prevents delimiter corruption that could break running-summary parsing.
 - **Subscription matching**: Word boundary regex to prevent false positives
 
-## Scheduled Tasks (server.js intervals)
-All run automatically after server startup:
-- **Keep-alive ping**: every 14 min (timezone-aware active hours, 10s timeout)
+## Scheduled Tasks (intervals)
+All run automatically after server startup. Per-app jobs live in
+`teller/startup.js`; keep-alive runs at the shell layer (`shell/index.js`)
+under the unified shell so the timezone-aware self-ping fires regardless of
+which sub-app owns its own listener (sub-app `startKeepAlive` is no-op in
+embedded mode).
+- **Keep-alive ping** (shell layer): every 14 min (timezone-aware active hours, 10s timeout); reads `keep_alive_enabled` and active-hours from Perfin's `user_settings` each tick
 - **Sheets auto-sync**: every 1 hour (daily/weekly/monthly cadence from settings)
-- **Net worth snapshot**: every 1 hour (one per day, updates if exists so late-arriving transactions are reflected)
+- **Net worth snapshot**: every 1 hour (`ON CONFLICT (snapshot_date) DO UPDATE` so a same-day re-run rewrites the row with the latest balances — late-arriving syncs are reflected immediately)
 - **Goal milestones**: every 6 hours (push notifications at 25/50/75/100%)
 - **AI insights auto-trigger**: every 6 hours (respects `insights_cadence_days` setting).
   Pre-analysis sync chain: syncAllEnrollments → syncAllBalances → detect subscriptions →
@@ -795,12 +853,21 @@ descriptions (NOT amount thresholds). Defined in `services/financial-queries.js`
   payroll/direct-dep income (excluding transfers/payments/refunds) and
   `spending_split_pct`-adjusted spending that honors transaction_splits.
   AI insights routes through it so Claude sees the same numbers the
-  dashboard shows. `/api/savings-rate` calls `getMonthlyIncome` +
-  `getMonthlySpending`; `/api/cash-flow` uses the shared `INCOME_PREDICATE`
-  constant; `/api/budgets` and the scheduled budget-alert push use
-  `getCategorySpendingThisMonth`. The spending-summary monthly-trend path
-  still inlines equivalent SQL — any new financial endpoint should use
-  this module instead of re-inlining.
+  dashboard shows. Helpers:
+  - `getMonthlyIncome(pool, months)` — keyword-filtered income, last N months
+  - `getMonthlySpending(pool, months)` — split-adjusted spending, last N months
+  - `getCategorySpendingThisMonth(pool)` — current-month per-category spend
+    (anchored to Postgres `CURRENT_DATE` so month-end semantics match the SQL)
+  - `getCategorySpendingForMonth(pool, monthStr)` — same shape, but for an
+    arbitrary `'YYYY-MM'` month; used by `GET /api/budgets?month=...`,
+    `POST /api/budgets/snapshot`, and the budget-snapshot auto-trigger so
+    snapshots record the correct month's spending instead of always-this-month.
+  Constants: `INCOME_PREDICATE`, `NOT_TRANSFER`, `SPLIT_AMOUNT`, `NOT_REIMBURSED`.
+  `/api/savings-rate` calls `getMonthlyIncome` + `getMonthlySpending`;
+  `/api/cash-flow` uses `INCOME_PREDICATE`; `/api/budgets/alerts` and the
+  scheduled budget-alert push use `getCategorySpendingThisMonth`. The
+  spending-summary monthly-trend path still inlines equivalent SQL — any new
+  financial endpoint should use this module instead of re-inlining.
 - **Substring-safe keyword exclusions.** All merchant/transaction keyword
   filters use word-boundary matching — `\b` in JavaScript regex, `\y` in
   Postgres regex (`~*` / `!~*`). The reason: short tokens like `atm`,
@@ -864,17 +931,26 @@ descriptions (NOT amount thresholds). Defined in `services/financial-queries.js`
   bell dropdown. The log is append-only; old notifications are never deleted
   automatically.
 - **The scheduler calls helpers in-process, not via HTTP self-fetch.**
-  `routes/enrollments.js` exports `syncAllEnrollments` and `syncAllBalances`
-  specifically so the scheduled bank-auto-sync task in `server.js` can
-  invoke them directly. The earlier insights auto-trigger (cycle 1, C2)
-  taught us the lesson: an HTTP self-fetch hits the API_KEY middleware and
-  401s itself when the deployment is configured with `API_KEY`. Future
+  Every route module that the scheduler invokes exports a callable helper
+  alongside its Express router:
+  - `routes/enrollments.js` → `syncAllEnrollments`, `syncAllBalances`
+  - `routes/subscriptions.js` → `runSubscriptionDetection`
+  - `routes/categorize.js` → `runCategorize`
+  - `routes/insights.js` → `generateInsights`
+  The HTTP route handlers are thin wrappers around the helpers. The whole
+  AI-insights chain (detect → detect-transfers → categorize → insights →
+  audit → email webhook) runs in-process from `teller/startup.js`. Earlier
+  versions of the auto-trigger used HTTP self-fetches that 401'd through
+  the API_KEY middleware (in standalone mode) and through the shell auth
+  gate (in embedded mode); the helper-export pattern fixes both. Future
   scheduled tasks that need to invoke route logic should follow the same
-  "extract handler into helper, export, reuse" pattern.
+  "extract handler into helper, export, reuse" pattern. Helpers return a
+  `{ ok, status?, ...body }` discriminated union so HTTP wrappers can map
+  to `res.status().json()` and direct callers can branch on `result.ok`.
 
 ## Git
-- Active development branch: `claude/broad-scan-feature-bb7QT`
-- Render's deploy branch (in `render.yaml` / Render dashboard): `claude/subscription-tracker-plaid-WeQTA`
+- Active development branch: `claude/broad-scan-feature-wodFz`
+- Render deploys from `main` (configured in the Render dashboard, not in `render.yaml`)
 - PEM files and `.env` are in `.gitignore`
 
 ## Companion App: Per-sistant
@@ -898,5 +974,5 @@ descriptions (NOT amount thresholds). Defined in `services/financial-queries.js`
    categorize → set budgets) visible until all steps complete
 4. **Structured running summary** — Replace plain-text AI memory with categorized JSON
    (trends, completed goals, pending actions, alerts)
-5. **Budget snapshot auto-trigger** — Add monthly scheduled task to `server.js` that
-   calls `POST /api/budgets/snapshot` at month boundaries
+5. **Investment performance & allocation** — Plaid syncs holdings (qty, cost basis,
+   current value); compute returns, asset allocation, and goal-vs-portfolio drift
