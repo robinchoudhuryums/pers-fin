@@ -1,14 +1,26 @@
 {
   "name": "pers-fin",
+  "version": "1.0.0",
   "private": true,
+  "description": "Unified host for Perfin (personal finance) and Per-sistant (personal assistant). The shell handles auth + landing; sub-apps mount under /perfin and /per-sistant.",
+  "workspaces": [
+    "shell",
+    "teller",
+    "apps/per-sistant"
+  ],
   "scripts": {
     "test": "node --test tests/*.test.js",
-    "start": "node teller/server.js",
+    "start": "node shell/index.js",
+    "start:perfin": "node teller/server.js",
+    "start:persistent": "node apps/per-sistant/server.js",
     "start:plaid": "node plaid/server.js",
     "detect": "node scripts/detect-subscriptions.js",
     "detect-transfers": "node scripts/detect-transfers.js",
     "sheets-sync": "node scripts/sheets-sync.js",
     "import-csv": "node scripts/import-csv-cli.js"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "dependencies": {
     "googleapis": "^144.0.0",
