@@ -1,14 +1,25 @@
 // ============================================================================
 // Per-sistant — Database Pool & Migrations
 // ============================================================================
+// Connection string lookup order:
+//   1. PERSISTENT_DATABASE_URL — used when this app is mounted under the
+//      unified shell alongside Perfin, which uses NEON_DATABASE_URL for
+//      its own (different) Neon database.
+//   2. NEON_DATABASE_URL — used in the standalone deployment of
+//      per-sistant where there's no naming collision.
+// Both apps coexisting in one process need distinct env vars; standalone
+// deploys keep working with NEON_DATABASE_URL alone.
 
 const { Pool } = require("pg");
 const fs = require("fs");
 const path = require("path");
 
+const CONNECTION_STRING =
+  process.env.PERSISTENT_DATABASE_URL || process.env.NEON_DATABASE_URL;
+
 const pool = new Pool({
-  connectionString: process.env.NEON_DATABASE_URL,
-  ssl: process.env.NEON_DATABASE_URL ? { rejectUnauthorized: false } : false,
+  connectionString: CONNECTION_STRING,
+  ssl: CONNECTION_STRING ? { rejectUnauthorized: false } : false,
   max: 10,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
