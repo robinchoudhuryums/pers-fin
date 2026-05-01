@@ -5,7 +5,7 @@
 const express = require("express");
 const router = express.Router();
 const { pool } = require("../services/database");
-const { getCategorySpendingThisMonth } = require("../services/financial-queries");
+const { getCategorySpendingThisMonth, getCategorySpendingForMonth } = require("../services/financial-queries");
 const { MODEL_MAP } = require("../data/reference-data");
 
 let Anthropic;
@@ -27,9 +27,10 @@ router.get("/api/budgets", async (req, res) => {
   try {
     const [budgets, spending, snapshots] = await Promise.all([
       pool.query("SELECT * FROM budgets ORDER BY monthly_limit DESC"),
-      // Uses the shared helper so split transactions are counted per-split
-      // category rather than the parent's category (Phase B3).
-      getCategorySpendingThisMonth(pool),
+      // Pull spending FOR the queried month so ?month=YYYY-MM compares the right
+      // numbers — the previous helper always returned the current month, which
+      // gave nonsense data when callers asked for a historical month.
+      getCategorySpendingForMonth(pool, queryMonth),
       pool.query("SELECT * FROM budget_snapshots WHERE month = $1", [queryMonth]),
     ]);
     const spendMap = {};
@@ -131,7 +132,7 @@ router.post("/api/budgets/suggest", async (_req, res) => {
   try {
     const [spendingData, settingsRow, existingBudgets] = await Promise.all([
       pool.query(
-        `SELECT COALESCE(category[1], 'Uncategorized') AS category,
+        `SELECT COALESCE(user_category, category[1], 'Uncategorized') AS category,
                 TO_CHAR(date, 'YYYY-MM') AS month,
                 SUM(amount) AS total,
                 COUNT(*) AS txn_count
@@ -139,7 +140,7 @@ router.post("/api/budgets/suggest", async (_req, res) => {
          WHERE amount > 0 AND pending = false
            AND COALESCE(is_reimbursed, false) = false
            AND date >= CURRENT_DATE - INTERVAL '3 months'
-         GROUP BY COALESCE(category[1], 'Uncategorized'), TO_CHAR(date, 'YYYY-MM')
+         GROUP BY COALESCE(user_category, category[1], 'Uncategorized'), TO_CHAR(date, 'YYYY-MM')
          ORDER BY category, month`
       ),
       pool.query("SELECT insights_model FROM user_settings WHERE id = 1").catch(() => ({ rows: [{ insights_model: "haiku" }] })),
@@ -346,10 +347,14 @@ router.get("/api/budgets/alerts", async (_req, res) => {
 // Typically called at month-end (or auto-triggered by scheduler).
 router.post("/api/budgets/snapshot", async (req, res) => {
   const month = req.body.month || currentMonthKey();
+  if (!/^\d{4}-\d{2}$/.test(month)) {
+    return res.status(400).json({ error: "month must be 'YYYY-MM'" });
+  }
   try {
     const [budgets, spending] = await Promise.all([
       pool.query("SELECT * FROM budgets"),
-      getCategorySpendingThisMonth(pool),
+      // Snapshot the spending IN the requested month, not always-this-month.
+      getCategorySpendingForMonth(pool, month),
     ]);
     const spendMap = {};
     for (const r of spending) spendMap[r.category] = parseFloat(r.spent);

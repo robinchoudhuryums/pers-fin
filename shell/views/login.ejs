@@ -29,6 +29,94 @@
       >
       <button type="submit" class="btn primary">Continue</button>
     </form>
+    <button type="button" id="biometric-btn" class="btn" style="display:none;margin-top:12px;width:100%;background:transparent;border:1px solid currentColor;">
+      Use Biometric
+    </button>
+    <div id="biometric-status" style="margin-top:8px;font-size:12px;text-align:center;"></div>
   </main>
+  <script>
+    // Helpers — base64url ↔ Uint8Array. WebAuthn responses use base64url.
+    function b64uToBuf(s) {
+      var pad = '===='.slice(0, (4 - s.length % 4) % 4);
+      var b64 = (s + pad).replace(/-/g, '+').replace(/_/g, '/');
+      var bin = atob(b64);
+      var buf = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+      return buf.buffer;
+    }
+    function bufToB64u(buf) {
+      var bytes = new Uint8Array(buf);
+      var bin = '';
+      for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+
+    // Probe whether any credentials are registered. If so, reveal the button.
+    (async function checkBiometricAvailability() {
+      if (!window.PublicKeyCredential) return; // browser doesn't support WebAuthn
+      try {
+        var r = await fetch('/api/shell/webauthn/available');
+        if (!r.ok) return;
+        var d = await r.json();
+        if (d.available) {
+          document.getElementById('biometric-btn').style.display = 'block';
+        }
+      } catch {}
+    })();
+
+    document.getElementById('biometric-btn').addEventListener('click', async function() {
+      var btn = this;
+      var status = document.getElementById('biometric-status');
+      btn.disabled = true;
+      status.textContent = 'Waiting for biometric…';
+      try {
+        // Step 1: get challenge + allow-list from server.
+        var optsRes = await fetch('/api/shell/webauthn/authenticate-options', { method: 'POST' });
+        if (!optsRes.ok) {
+          var err = await optsRes.json().catch(function() { return {}; });
+          throw new Error(err.error || 'Could not start biometric login');
+        }
+        var opts = await optsRes.json();
+        // Convert base64url challenge + allowed credential ids back to ArrayBuffers
+        // for the browser WebAuthn API.
+        opts.challenge = b64uToBuf(opts.challenge);
+        if (opts.allowCredentials) {
+          opts.allowCredentials = opts.allowCredentials.map(function(c) {
+            return Object.assign({}, c, { id: b64uToBuf(c.id) });
+          });
+        }
+        // Step 2: invoke the platform authenticator.
+        var assertion = await navigator.credentials.get({ publicKey: opts });
+        // Step 3: serialize the assertion and post it back for verify.
+        var verifyBody = {
+          id: assertion.id,
+          rawId: bufToB64u(assertion.rawId),
+          type: assertion.type,
+          response: {
+            clientDataJSON: bufToB64u(assertion.response.clientDataJSON),
+            authenticatorData: bufToB64u(assertion.response.authenticatorData),
+            signature: bufToB64u(assertion.response.signature),
+            userHandle: assertion.response.userHandle ? bufToB64u(assertion.response.userHandle) : null,
+          },
+          clientExtensionResults: assertion.getClientExtensionResults ? assertion.getClientExtensionResults() : {},
+          authenticatorAttachment: assertion.authenticatorAttachment || null,
+        };
+        var verifyRes = await fetch('/api/shell/webauthn/authenticate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(verifyBody),
+        });
+        if (!verifyRes.ok) {
+          var verr = await verifyRes.json().catch(function() { return {}; });
+          throw new Error(verr.error || 'Verification failed');
+        }
+        status.textContent = 'Verified. Redirecting…';
+        window.location.href = '/';
+      } catch (e) {
+        status.textContent = 'Biometric login failed: ' + (e.message || e);
+        btn.disabled = false;
+      }
+    });
+  </script>
 </body>
 </html>

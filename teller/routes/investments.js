@@ -1,12 +1,23 @@
 // ============================================================================
-// Routes: Plaid Investment Account Integration
+// Routes: Investment Accounts (Plaid holdings + Teller-linked + manual)
 // ============================================================================
-// Uses Plaid API for investment accounts (brokerage, retirement, crypto)
-// while Teller handles regular bank accounts (checking, savings, credit).
+// Three sources contribute to the user's investment picture:
+//   1. Plaid: full holdings sync (qty / cost basis / current value per security)
+//      via /api/plaid/* endpoints below. Plaid syncs into investment_accounts
+//      + investment_holdings.
+//   2. Teller-linked: brokerage / IRA / 401k / HSA / 529 / etc. enrolled via
+//      Teller Connect. They live in linked_accounts (the standard Teller
+//      table) — the API returns account-level balance only; Teller's API
+//      doesn't expose holdings or cost basis like Plaid does.
+//   3. Manual: user-entered accounts via POST /api/investment-accounts (in
+//      routes/goals.js). Stored in investment_accounts with no plaid_account_id.
+//
+// GET /api/investments below returns all three unified for dashboards/widgets.
 
 const express = require("express");
 const router = express.Router();
 const { pool, ENCRYPTION_PASSPHRASE } = require("../services/database");
+const { INVESTMENT_ACCOUNT_TYPES } = require("../services/financial-queries");
 
 let PlaidApi, Configuration, PlaidEnvironments, Products, CountryCode;
 try {
@@ -185,12 +196,27 @@ router.post("/api/plaid/sync-holdings", async (_req, res) => {
         for (const acct of accounts) {
           if (acct.type !== "investment") continue;
           const balance = acct.balances?.current || 0;
-          await pool.query(
+          // RETURNING the investment_accounts.id so the snapshot below can
+          // attribute history to the right account (we key by plaid_account_id
+          // here but the snapshot table uses the local SERIAL id).
+          const updRes = await pool.query(
             `UPDATE investment_accounts SET balance = $1, updated_at = now()
-             WHERE plaid_account_id = $2`,
+             WHERE plaid_account_id = $2
+             RETURNING id`,
             [balance, acct.account_id]
           );
           totalAccounts++;
+          const invAcctId = updRes.rows[0]?.id;
+          if (invAcctId) {
+            await pool.query(
+              `INSERT INTO account_balance_snapshots
+                 (source, source_id, snapshot_date, balance)
+               VALUES ('investment', $1, CURRENT_DATE, $2)
+               ON CONFLICT (source, source_id, snapshot_date) DO UPDATE SET
+                 balance = EXCLUDED.balance`,
+              [invAcctId, balance]
+            ).catch(e => console.error("balance snapshot insert (plaid) error:", e.message));
+          }
         }
 
         // Batch upsert holdings (instead of one query per holding)
@@ -244,6 +270,97 @@ router.get("/api/plaid/holdings", async (_req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// GET /api/investments — Unified investment-account list across all three
+// sources (Teller-linked, manual, Plaid). Each row has a `source` field so
+// callers can branch on capabilities — only Plaid rows have an associated
+// `holdings` array; Teller and manual rows expose account-level balance
+// only.
+//
+// Response shape:
+//   {
+//     total_value: number,                   // sum across all sources
+//     by_source: { teller, manual, plaid },  // per-source totals
+//     accounts: [{
+//       source: "teller" | "manual" | "plaid",
+//       id: number,                          // primary key in source table
+//       name: string,
+//       institution: string | null,
+//       account_type: string,                // brokerage / ira / 401k / etc.
+//       balance: number,
+//       supports_holdings: boolean,          // only true for Plaid rows
+//       account_id?: string,                 // Teller account id (linked_accounts.account_id)
+//       balance_updated_at?: string,
+//     }, ...]
+//   }
+router.get("/api/investments", async (_req, res) => {
+  try {
+    const [teller, investments] = await Promise.all([
+      pool.query(
+        `SELECT la.id, la.account_id, la.name, la.type, la.subtype,
+                COALESCE(la.available_balance, la.current_balance, 0) AS balance,
+                la.balance_updated_at,
+                COALESCE(te.institution_name, la.institution_name_manual) AS institution_name
+         FROM linked_accounts la
+         LEFT JOIN teller_enrollments te ON te.id = la.teller_enrollment_id
+         WHERE ${INVESTMENT_ACCOUNT_TYPES}
+         ORDER BY balance DESC`
+      ),
+      pool.query(
+        `SELECT id, name, institution, account_type, balance, plaid_account_id, updated_at
+         FROM investment_accounts
+         WHERE is_active = true
+         ORDER BY balance DESC`
+      ),
+    ]);
+
+    const accounts = [];
+
+    for (const r of teller.rows) {
+      accounts.push({
+        source: "teller",
+        id: r.id,
+        account_id: r.account_id,
+        name: r.name,
+        institution: r.institution_name,
+        account_type: r.subtype || r.type || "investment",
+        balance: parseFloat(r.balance),
+        balance_updated_at: r.balance_updated_at,
+        supports_holdings: false,
+      });
+    }
+    for (const r of investments.rows) {
+      const plaidLinked = !!r.plaid_account_id;
+      accounts.push({
+        source: plaidLinked ? "plaid" : "manual",
+        id: r.id,
+        name: r.name,
+        institution: r.institution,
+        account_type: r.account_type,
+        balance: parseFloat(r.balance),
+        balance_updated_at: r.updated_at,
+        supports_holdings: plaidLinked,
+      });
+    }
+
+    const by_source = { teller: 0, manual: 0, plaid: 0 };
+    for (const a of accounts) by_source[a.source] += a.balance;
+    const total_value = by_source.teller + by_source.manual + by_source.plaid;
+
+    res.json({
+      total_value: Math.round(total_value * 100) / 100,
+      by_source: {
+        teller: Math.round(by_source.teller * 100) / 100,
+        manual: Math.round(by_source.manual * 100) / 100,
+        plaid: Math.round(by_source.plaid * 100) / 100,
+      },
+      accounts: accounts.sort((a, b) => b.balance - a.balance),
+    });
+  } catch (err) {
+    console.error("investments unified list error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
   }
 });

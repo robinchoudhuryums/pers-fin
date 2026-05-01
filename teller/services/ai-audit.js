@@ -280,4 +280,87 @@ async function getAuditStats(limit = 10) {
   }
 }
 
-module.exports = { auditInsight, getAuditStats, extractDollarClaims, extractPercentClaims, extractMerchantNames, extractTrendClaims, findContradictions };
+/**
+ * Compute high-level AI-accuracy metrics from `ai_audit_log` cross-referenced
+ * with `financial_insights`. Surfaced in /api/insights/status and the audit
+ * endpoint so the AI's verifiability is visible (rather than buried in a raw
+ * findings table). Numbers cover the trailing 90 days.
+ *
+ * Returns:
+ *   {
+ *     total_audited_runs: int,
+ *     clean_runs: int (no critical findings),
+ *     accuracy_pct: number 0-100 (clean_runs / total_audited_runs),
+ *     findings_by_severity: { critical, warning, info },
+ *     findings_by_tier: { tier1, tier2, tier3, tier4 },
+ *   }
+ */
+async function getAuditAccuracy(days = 90) {
+  try {
+    // Count audited insight runs (distinct insight_id with at least one audit
+    // row) and runs without any critical finding.
+    const runs = await pool.query(`
+      WITH recent_audits AS (
+        SELECT al.insight_id, MAX(CASE WHEN al.severity = 'critical' THEN 1 ELSE 0 END) AS has_critical
+        FROM ai_audit_log al
+        JOIN financial_insights fi ON fi.id = al.insight_id AND fi.entry_type = 'insight'
+        WHERE al.created_at >= CURRENT_DATE - make_interval(days => $1)
+        GROUP BY al.insight_id
+      ),
+      audited_inserted AS (
+        SELECT id FROM financial_insights
+        WHERE entry_type = 'insight'
+          AND created_at >= CURRENT_DATE - make_interval(days => $1)
+      )
+      SELECT
+        (SELECT COUNT(*) FROM audited_inserted) AS total_runs,
+        COALESCE(SUM(CASE WHEN ra.has_critical = 0 THEN 1 ELSE 0 END), 0) AS clean_runs
+      FROM audited_inserted ai
+      LEFT JOIN recent_audits ra ON ra.insight_id = ai.id
+    `, [days]);
+    const totals = runs.rows[0] || { total_runs: 0, clean_runs: 0 };
+
+    const sev = await pool.query(`
+      SELECT severity, COUNT(*) AS cnt
+      FROM ai_audit_log
+      WHERE created_at >= CURRENT_DATE - make_interval(days => $1)
+      GROUP BY severity
+    `, [days]);
+    const findings_by_severity = { critical: 0, warning: 0, info: 0 };
+    for (const r of sev.rows) findings_by_severity[r.severity] = parseInt(r.cnt, 10);
+
+    const tier = await pool.query(`
+      SELECT check_type, COUNT(*) AS cnt
+      FROM ai_audit_log
+      WHERE created_at >= CURRENT_DATE - make_interval(days => $1)
+      GROUP BY check_type
+    `, [days]);
+    const findings_by_tier = { tier1: 0, tier2: 0, tier3: 0, tier4: 0 };
+    for (const r of tier.rows) {
+      if (findings_by_tier[r.check_type] !== undefined) findings_by_tier[r.check_type] = parseInt(r.cnt, 10);
+    }
+
+    const totalRuns = parseInt(totals.total_runs, 10) || 0;
+    const cleanRuns = parseInt(totals.clean_runs, 10) || 0;
+    return {
+      window_days: days,
+      total_audited_runs: totalRuns,
+      clean_runs: cleanRuns,
+      accuracy_pct: totalRuns > 0 ? Math.round((cleanRuns / totalRuns) * 1000) / 10 : null,
+      findings_by_severity,
+      findings_by_tier,
+    };
+  } catch (err) {
+    console.error("getAuditAccuracy error:", err.message);
+    return {
+      window_days: days,
+      total_audited_runs: 0,
+      clean_runs: 0,
+      accuracy_pct: null,
+      findings_by_severity: { critical: 0, warning: 0, info: 0 },
+      findings_by_tier: { tier1: 0, tier2: 0, tier3: 0, tier4: 0 },
+    };
+  }
+}
+
+module.exports = { auditInsight, getAuditStats, getAuditAccuracy, extractDollarClaims, extractPercentClaims, extractMerchantNames, extractTrendClaims, findContradictions };

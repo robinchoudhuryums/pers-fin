@@ -33,9 +33,10 @@ router.get("/api/categorize/status", async (_req, res) => {
       `SELECT COUNT(*) AS uncategorized
        FROM transactions
        WHERE (
-         category IS NULL
-         OR category = '{}'
-         OR NOT (category[1] = ANY($1::text[]))
+         user_category IS NULL
+         AND (category IS NULL
+              OR category = '{}'
+              OR NOT (category[1] = ANY($1::text[])))
        )
          AND pending = false AND amount > 0`,
       [OUR_CATEGORIES_PG]
@@ -49,10 +50,14 @@ router.get("/api/categorize/status", async (_req, res) => {
   }
 });
 
-// POST /api/categorize — batch-categorize uncategorized transactions using Claude
-router.post("/api/categorize", async (_req, res) => {
+// runCategorize — orchestration extracted from POST /api/categorize so the
+// scheduler in startup.js can invoke it in-process. Returns:
+//   { ok: false, status: 501|429|500, error }            — early bail
+//   { ok: true, categorized, categorized_by_rules, ... } — normal result
+// The route handler maps this to an HTTP response.
+async function runCategorize() {
   if (!Anthropic || !process.env.ANTHROPIC_API_KEY) {
-    return res.status(501).json({ error: "Set ANTHROPIC_API_KEY to enable ML categorization." });
+    return { ok: false, status: 501, error: "Set ANTHROPIC_API_KEY to enable ML categorization." };
   }
   try {
     // Pull up to 50 rows that aren't in our 21-category scheme. This
@@ -67,9 +72,10 @@ router.post("/api/categorize", async (_req, res) => {
               personal_finance_category
        FROM transactions
        WHERE (
-         category IS NULL
-         OR category = '{}'
-         OR NOT (category[1] = ANY($1::text[]))
+         user_category IS NULL
+         AND (category IS NULL
+              OR category = '{}'
+              OR NOT (category[1] = ANY($1::text[])))
        )
          AND pending = false AND amount > 0
        ORDER BY date DESC
@@ -78,7 +84,7 @@ router.post("/api/categorize", async (_req, res) => {
     );
 
     if (result.rows.length === 0) {
-      return res.json({ categorized: 0, message: "No uncategorized transactions found." });
+      return { ok: true, categorized: 0, message: "No uncategorized transactions found." };
     }
 
     // Apply user-defined categorization rules first (cheaper than AI)
@@ -145,14 +151,15 @@ router.post("/api/categorize", async (_req, res) => {
            AND pending = false AND amount > 0`,
         [OUR_CATEGORIES_PG]
       );
-      return res.json({
+      return {
+        ok: true,
         categorized: ruleApplied + tellerMapped,
         categorized_by_rules: ruleApplied,
         categorized_by_teller_map: tellerMapped,
         tokens_used: 0,
         remaining: parseInt(leftover.rows[0].uncategorized),
         estimated_cost: 0,
-      });
+      };
     }
 
     // Check monthly AI budget before calling Claude (shared cap with /api/insights)
@@ -168,10 +175,12 @@ router.post("/api/categorize", async (_req, res) => {
       estimatedCostCents += cost * 100;
     });
     if (estimatedCostCents >= budgetCents) {
-      return res.status(429).json({
+      return {
+        ok: false,
+        status: 429,
         error: `Monthly AI budget reached ($${(estimatedCostCents / 100).toFixed(2)} of $${(budgetCents / 100).toFixed(2)} cap). Rules applied ${ruleApplied} transactions. Raise INSIGHTS_MONTHLY_BUDGET_CENTS to continue with AI.`,
         categorized_by_rules: ruleApplied,
-      });
+      };
     }
 
     const settingsRow = await pool.query(
@@ -242,7 +251,7 @@ router.post("/api/categorize", async (_req, res) => {
     const toolBlock = message.content.find(b => b.type === "tool_use");
     if (!toolBlock || !toolBlock.input || !Array.isArray(toolBlock.input.categories)) {
       console.error("AI did not return expected tool_use block");
-      return res.status(500).json({ error: "AI returned unexpected format" });
+      return { ok: false, status: 500, error: "AI returned unexpected format" };
     }
     const categories = toolBlock.input.categories;
 
@@ -262,25 +271,44 @@ router.post("/api/categorize", async (_req, res) => {
       updated++;
     }
 
-    // We deliberately do NOT write a bookkeeping row into financial_insights
-    // here. That table is surfaced as "AI Financial Insights" on the dashboard
-    // and settings page, and the most-recent row is what users see — so
-    // writing "[ML Categorization] Categorized N transactions" rows shadows
-    // the real analysis text. Categorize-specific cost tracking can be added
-    // later via its own table if it becomes material (haiku ~$0.002/batch).
+    // Record token usage so the categorize spend counts against the shared
+    // INSIGHTS_MONTHLY_BUDGET_CENTS cap. Earlier code skipped the write to
+    // avoid shadowing the user-facing "AI Insights" feed — but the cap was
+    // checked-not-charged, so categorize was effectively uncapped. The
+    // entry_type discriminator lets the dashboard hide these rows while the
+    // cost-cap queries still see them.
     const usage = message.usage || {};
+    const tokensUsedForRow = (usage.input_tokens || 0) + (usage.output_tokens || 0);
+    const actualModel = message.model || modelId;
+    await pool.query(
+      `INSERT INTO financial_insights
+         (insight_text, model_used, tokens_used, input_tokens, output_tokens,
+          cache_read_tokens, cache_creation_tokens, entry_type)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'categorize')`,
+      [
+        `[ML Categorization] ${updated} txn(s) categorized by AI`,
+        actualModel,
+        tokensUsedForRow,
+        usage.input_tokens || 0,
+        usage.output_tokens || 0,
+        usage.cache_read_input_tokens || 0,
+        usage.cache_creation_input_tokens || 0,
+      ]
+    ).catch(err => console.error("categorize usage tracking insert failed:", err.message));
 
     const leftoverCount = await pool.query(
       `SELECT COUNT(*) AS uncategorized FROM transactions
        WHERE (
-         category IS NULL
-         OR category = '{}'
-         OR NOT (category[1] = ANY($1::text[]))
+         user_category IS NULL
+         AND (category IS NULL
+              OR category = '{}'
+              OR NOT (category[1] = ANY($1::text[])))
        )
          AND pending = false AND amount > 0`,
       [OUR_CATEGORIES_PG]
     );
-    res.json({
+    return {
+      ok: true,
       categorized: updated + ruleApplied + tellerMapped,
       categorized_by_rules: ruleApplied,
       categorized_by_teller_map: tellerMapped,
@@ -288,22 +316,132 @@ router.post("/api/categorize", async (_req, res) => {
       tokens_used: tokensUsed,
       remaining: parseInt(leftoverCount.rows[0].uncategorized),
       estimated_cost: parseFloat(estimateCostUsd(tokensUsed, modelId).toFixed(4)),
-    });
+    };
   } catch (err) {
     console.error("Categorize error:", err.message);
+    return { ok: false, status: 500, error: "An internal error occurred." };
+  }
+}
+
+// POST /api/categorize — HTTP wrapper around runCategorize().
+router.post("/api/categorize", async (_req, res) => {
+  const result = await runCategorize();
+  if (!result.ok) {
+    const { status, ...body } = result;
+    return res.status(status || 500).json(body);
+  }
+  const { ok, ...body } = result;
+  res.json(body);
+});
+
+// GET /api/categorize/review-queue — Surfaces transactions that would otherwise
+// go to AI on the next /api/categorize call. Engagement-loop entry point: the
+// user reviews 5-10 uncertain rows, optionally creates rules, and the rule
+// base grows. Future AI calls cost less because more rows hit the rule path
+// before reaching Claude.
+//
+// Returns: { transactions: [{ transaction_id, merchant, amount, date,
+//                              suggested_category, hint }], count }
+// `suggested_category` is filled from the deterministic Teller-map when
+// available (so the user sees a sensible default in the dropdown); `hint` is
+// the raw Teller category[0] for context.
+router.get("/api/categorize/review-queue", async (req, res) => {
+  const limit = Math.max(1, Math.min(parseInt(req.query.limit) || 10, 50));
+  try {
+    const result = await pool.query(
+      `SELECT transaction_id,
+              COALESCE(user_merchant_name, merchant_name, name) AS merchant,
+              amount, date, category, personal_finance_category
+       FROM transactions
+       WHERE user_category IS NULL
+         AND (category IS NULL
+              OR category = '{}'
+              OR NOT (category[1] = ANY($1::text[])))
+         AND pending = false AND amount > 0
+       ORDER BY date DESC
+       LIMIT $2`,
+      [OUR_CATEGORIES_PG, limit]
+    );
+    // Fold the Teller-map fast path into a `suggested_category` so the UI
+    // can show a sensible default in the dropdown without a second round-trip.
+    const transactions = result.rows.map(t => {
+      const tellerCat = Array.isArray(t.category) && t.category[0]
+        ? String(t.category[0]).toLowerCase()
+        : null;
+      const mapped = tellerCat ? TELLER_CATEGORY_MAP[tellerCat] : null;
+      return {
+        transaction_id: t.transaction_id,
+        merchant: t.merchant,
+        amount: parseFloat(t.amount),
+        date: t.date,
+        suggested_category: mapped && CATEGORIES.includes(mapped) ? mapped : null,
+        hint: tellerCat,
+      };
+    });
+    res.json({ transactions, count: transactions.length });
+  } catch (err) {
+    console.error("review-queue error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
-// PATCH /api/transactions/:id/category — manually set a transaction's category
+// POST /api/categorize/review — Apply a single user-driven categorization
+// decision. Atomically sets user_category on the transaction and (optionally)
+// creates a categorization_rules row so the same merchant pattern is auto-
+// categorized next time. This is the "remember this merchant" workflow.
+//
+// Body: { transaction_id, category, create_rule?: bool, match_type?: 'contains'|'exact'|'starts_with' }
+router.post("/api/categorize/review", async (req, res) => {
+  const { transaction_id, category, create_rule, match_type } = req.body;
+  if (!transaction_id || !category) {
+    return res.status(400).json({ error: "transaction_id and category are required" });
+  }
+  if (!CATEGORIES.includes(category)) {
+    return res.status(400).json({ error: `Invalid category. Must be one of: ${CATEGORIES.join(", ")}` });
+  }
+  const validTypes = ["contains", "exact", "starts_with"];
+  const ruleType = validTypes.includes(match_type) ? match_type : "contains";
+  try {
+    // Set user_category — the same path PATCH /api/transactions/:id/category uses.
+    const upd = await pool.query(
+      "UPDATE transactions SET user_category = $1 WHERE transaction_id = $2 RETURNING transaction_id, COALESCE(user_merchant_name, merchant_name, name) AS merchant",
+      [category, transaction_id]
+    );
+    if (!upd.rows.length) return res.status(404).json({ error: "Transaction not found" });
+    const merchant = upd.rows[0].merchant;
+
+    let ruleCreated = false;
+    if (create_rule && merchant) {
+      // Same insert path as POST /api/categorization-rules. ON CONFLICT DO UPDATE
+      // so re-applying the same merchant→category pair doesn't error.
+      await pool.query(
+        `INSERT INTO categorization_rules (merchant_pattern, category, match_type)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (merchant_pattern, category) DO UPDATE SET
+           match_type = $3, is_active = true, updated_at = now()`,
+        [merchant.trim(), category, ruleType]
+      );
+      ruleCreated = true;
+    }
+    res.json({ ok: true, transaction_id, category, rule_created: ruleCreated });
+  } catch (err) {
+    console.error("review apply error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// PATCH /api/transactions/:id/category — manually set a transaction's category.
+// User overrides go to `user_category` (NOT `category`) so a subsequent Teller
+// re-sync — which UPSERTs `category = EXCLUDED.category` — can't overwrite the
+// user's choice. Display layers use COALESCE(user_category, category[1]).
 router.patch("/api/transactions/:id/category", async (req, res) => {
   const { category } = req.body;
   if (!category) return res.status(400).json({ error: "category is required" });
   if (!CATEGORIES.includes(category)) return res.status(400).json({ error: `Invalid category. Must be one of: ${CATEGORIES.join(", ")}` });
   try {
     const result = await pool.query(
-      "UPDATE transactions SET category = $1 WHERE transaction_id = $2 RETURNING transaction_id, category",
-      [`{${category}}`, req.params.id]
+      "UPDATE transactions SET user_category = $1 WHERE transaction_id = $2 RETURNING transaction_id, user_category",
+      [category, req.params.id]
     );
     if (!result.rows.length) return res.status(404).json({ error: "Transaction not found" });
     res.json(result.rows[0]);
@@ -312,15 +450,13 @@ router.patch("/api/transactions/:id/category", async (req, res) => {
   }
 });
 
-// PATCH /api/transactions/bulk-category — Bulk update categories
+// PATCH /api/transactions/bulk-category — Bulk update categories.
+// Same user-override semantics as the single PATCH above.
 router.patch("/api/transactions/bulk-category", async (req, res) => {
   const { transaction_ids, category } = req.body;
   if (!Array.isArray(transaction_ids) || !transaction_ids.length || !category) {
     return res.status(400).json({ error: "transaction_ids array and category are required" });
   }
-  // Validate against the whitelist so user input can't slip unexpected strings
-  // into the Postgres array literal `{<value>}`. Matches the single-PATCH guard
-  // at the endpoint above.
   if (!CATEGORIES.includes(category)) {
     return res.status(400).json({ error: `Invalid category. Must be one of: ${CATEGORIES.join(", ")}` });
   }
@@ -329,8 +465,8 @@ router.patch("/api/transactions/bulk-category", async (req, res) => {
   }
   try {
     const result = await pool.query(
-      `UPDATE transactions SET category = $1 WHERE transaction_id = ANY($2) RETURNING transaction_id`,
-      [`{${category}}`, transaction_ids]
+      `UPDATE transactions SET user_category = $1 WHERE transaction_id = ANY($2) RETURNING transaction_id`,
+      [category, transaction_ids]
     );
     res.json({ updated: result.rowCount });
   } catch (err) {
@@ -411,16 +547,16 @@ router.post("/api/categorization-rules/apply", async (_req, res) => {
       } else {
         condition = "LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name, '')) LIKE '%' || LOWER($1) || '%'";
       }
-      // Same scheme-aware predicate as POST /api/categorize: user rules
-      // should overwrite Teller-tagged rows (e.g. 'general', 'dining')
-      // that aren't yet in our 21-category scheme, not just untagged ones.
+      // Same scheme-aware predicate as POST /api/categorize. Skip rows where
+      // the user has manually set user_category — their choice wins.
       const result = await pool.query(
         `UPDATE transactions t SET category = $2
-         WHERE (
-           category IS NULL
-           OR category = '{}'
-           OR NOT (category[1] = ANY($3::text[]))
-         )
+         WHERE user_category IS NULL
+           AND (
+             category IS NULL
+             OR category = '{}'
+             OR NOT (category[1] = ANY($3::text[]))
+           )
            AND pending = false AND amount > 0
            AND ${condition}
          RETURNING transaction_id`,
@@ -479,3 +615,4 @@ router.post("/api/categorization-rules/from-transaction", async (req, res) => {
 });
 
 module.exports = router;
+module.exports.runCategorize = runCategorize;

@@ -11,6 +11,7 @@ const { categorizeSubscription, findCancelUrl } = require("../data/reference-dat
 const { CSV_FORMATS, detectCsvFormat, parseDate, csvTransactionId } = require("../data/csv-formats");
 const { detectSubscriptions } = require("../../scripts/detect-subscriptions");
 const { detectRecurringTransfers } = require("../../scripts/detect-transfers");
+const { INCOME_PREDICATE } = require("../services/financial-queries");
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -200,7 +201,9 @@ router.get("/api/transactions/search", async (req, res) => {
       idx++;
     }
     if (category) {
-      conditions.push(`t.category[1] = $${idx}`);
+      // Honor user_category override so manually-recategorized rows surface
+      // under the user's chosen category, not Teller's stale value.
+      conditions.push(`COALESCE(t.user_category, t.category[1]) = $${idx}`);
       values.push(category);
       idx++;
     }
@@ -237,7 +240,7 @@ router.get("/api/transactions/search", async (req, res) => {
         SELECT t.transaction_id, t.date, COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS merchant, t.user_notes, t.is_reimbursed,
                t.amount, la.name AS account_name, la.type AS account_type,
                COALESCE(pi.institution_name, te.institution_name, la.institution_name_manual, 'CSV Import') AS institution_name,
-               t.category[1] AS category, t.pending
+               COALESCE(t.user_category, t.category[1]) AS category, t.pending
         FROM transactions t
         JOIN linked_accounts la ON la.account_id = t.account_id
         LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
@@ -278,7 +281,7 @@ router.get("/api/transactions", async (req, res) => {
         la.name AS account_name,
         la.type AS account_type,
         COALESCE(pi.institution_name, te.institution_name, 'CSV Import') AS institution_name,
-        t.category[1] AS category,
+        COALESCE(t.user_category, t.category[1]) AS category,
         t.personal_finance_category->>'primary' AS pfc_primary,
         t.personal_finance_category->>'detailed' AS pfc_detailed,
         t.pending
@@ -311,21 +314,34 @@ router.get("/api/transactions", async (req, res) => {
   }
 });
 
-// POST /api/detect
+// runSubscriptionDetection — orchestration extracted from POST /api/detect so
+// the scheduler can invoke detection in-process. Returns the same shape the
+// HTTP handler used to send: { detected_count, subscriptions }.
+async function runSubscriptionDetection() {
+  const detected = await detectSubscriptions(pool);
+  for (const sub of detected) {
+    const cat = categorizeSubscription(sub.display_name);
+    const dbCategory = cat === "utility" ? "utility" : "subscription";
+    // Only promote 'subscription' → 'utility' on re-detection. The WHERE
+    // clause's `category = 'subscription'` guard intentionally preserves
+    // any user-set classification: a row already marked 'utility' (either
+    // by an earlier auto-detect or via PATCH /api/subscriptions/:id/category)
+    // is never re-flipped, even if categorizeSubscription happens to
+    // re-classify the merchant differently on a later run.
+    if (dbCategory !== "subscription") {
+      await pool.query(
+        "UPDATE detected_subscriptions SET category = $1 WHERE merchant_key = $2 AND category = 'subscription'",
+        [dbCategory, sub.merchant_key]
+      );
+    }
+  }
+  return { detected_count: detected.length, subscriptions: detected };
+}
+
+// POST /api/detect — HTTP wrapper around runSubscriptionDetection().
 router.post("/api/detect", async (_req, res) => {
   try {
-    const detected = await detectSubscriptions(pool);
-    for (const sub of detected) {
-      const cat = categorizeSubscription(sub.display_name);
-      const dbCategory = cat === "utility" ? "utility" : "subscription";
-      if (dbCategory !== "subscription") {
-        await pool.query(
-          "UPDATE detected_subscriptions SET category = $1 WHERE merchant_key = $2 AND category = 'subscription'",
-          [dbCategory, sub.merchant_key]
-        );
-      }
-    }
-    res.json({ detected_count: detected.length, subscriptions: detected });
+    res.json(await runSubscriptionDetection());
   } catch (err) {
     console.error("Detection error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
@@ -573,9 +589,13 @@ router.get("/api/bill-calendar", async (req, res) => {
     const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
     const endDate = `${year}-${String(month).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`;
 
-    // Get active subscriptions
+    // Get active subscriptions. Include `id` so each event can carry its own
+    // bill_id at insertion time — earlier code SELECTed without id and then
+    // back-patched bill_source via an O(days × subs × events) loop matching by
+    // display_name (which silently mistagged manual bills sharing a name and
+    // left bill_id undefined when sub.id was missing from the SELECT).
     const subs = await pool.query(`
-      SELECT display_name, amount, cadence_days, next_expected, category
+      SELECT id, display_name, amount, cadence_days, next_expected, category
       FROM detected_subscriptions
       WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL
         AND next_expected IS NOT NULL
@@ -596,7 +616,8 @@ router.get("/api/bill-calendar", async (req, res) => {
         nextDate = new Date(nextDate.getTime() + cadence * 86400000);
       }
 
-      // Place within this month
+      // Place within this month — set bill_source/bill_id at insertion so
+      // payment-tracking has correct identity from the start.
       const monthEnd = new Date(endDate);
       while (nextDate <= monthEnd) {
         const day = nextDate.getDate();
@@ -604,6 +625,8 @@ router.get("/api/bill-calendar", async (req, res) => {
           name: sub.display_name,
           amount,
           category: sub.category,
+          bill_source: "subscription",
+          bill_id: sub.id,
         });
         nextDate = new Date(nextDate.getTime() + cadence * 86400000);
       }
@@ -633,18 +656,6 @@ router.get("/api/bill-calendar", async (req, res) => {
       }
     }
 
-    // Add bill_source/bill_id to subscription events for payment tracking
-    for (const sub of subs.rows) {
-      for (let d = 1; d <= daysInMonth; d++) {
-        for (const ev of calendar[d]) {
-          if (ev.name === sub.display_name && !ev.bill_source) {
-            ev.bill_source = "subscription";
-            ev.bill_id = sub.id;
-          }
-        }
-      }
-    }
-
     // Load payments for this month to mark paid bills
     const payments = await pool.query(
       "SELECT * FROM bill_payments WHERE paid_date >= $1 AND paid_date <= $2",
@@ -664,7 +675,11 @@ router.get("/api/bill-calendar", async (req, res) => {
       }
     }
 
-    // Income deposits (detected from recent patterns)
+    // Income deposits (detected from recent patterns) — uses the shared
+    // INCOME_PREDICATE from services/financial-queries.js so the calendar
+    // shows the same income events the cash-flow forecast and savings-rate
+    // dashboards use. Previously a narrower inline regex meant some payroll
+    // events showed up only on the calendar, not in cash-flow (and vice versa).
     const incomeResult = await pool.query(`
       SELECT COALESCE(merchant_name, name) AS source,
              ABS(amount) AS amount,
@@ -672,8 +687,7 @@ router.get("/api/bill-calendar", async (req, res) => {
       FROM transactions
       WHERE amount < 0 AND pending = false
         AND date >= CURRENT_DATE - INTERVAL '3 months'
-        AND (COALESCE(merchant_name, name, '') ~* '\\y(payroll|direct dep|salary)\\y'
-          OR category[1] = 'Income')
+        AND ${INCOME_PREDICATE}
       GROUP BY COALESCE(merchant_name, name), ABS(amount)
       HAVING COUNT(*) >= 2
     `);
@@ -1158,3 +1172,4 @@ router.get("/api/bill-payments", async (req, res) => {
 });
 
 module.exports = router;
+module.exports.runSubscriptionDetection = runSubscriptionDetection;

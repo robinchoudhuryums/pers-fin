@@ -82,10 +82,64 @@ router.post("/api/persistent/webhook/send", async (req, res) => {
   res.json(result);
 });
 
+// Direct in-process queries against the Per-sistant DB — used when both apps
+// share a process (the unified shell wires `persistentPool` onto Perfin's app).
+// HTTP self-fetches were silently 401ing through the shell's auth gate.
+async function queryPersistentStats(persistentPool) {
+  const [todos, emails, notes] = await Promise.all([
+    persistentPool.query(
+      "SELECT count(*) FILTER (WHERE NOT completed) as pending, count(*) FILTER (WHERE completed) as done, count(*) FILTER (WHERE NOT completed AND priority = 'urgent') as urgent, count(*) FILTER (WHERE NOT completed AND due_date <= CURRENT_DATE) as overdue FROM todos WHERE deleted_at IS NULL"
+    ),
+    persistentPool.query(
+      "SELECT count(*) FILTER (WHERE status = 'draft') as drafts, count(*) FILTER (WHERE status = 'scheduled') as scheduled, count(*) FILTER (WHERE status = 'sent') as sent FROM emails WHERE deleted_at IS NULL"
+    ),
+    persistentPool.query(
+      "SELECT count(*) as total FROM notes WHERE deleted_at IS NULL"
+    ),
+  ]);
+  return { todos: todos.rows[0], emails: emails.rows[0], notes: notes.rows[0] };
+}
+
+async function queryPersistentReview(persistentPool) {
+  const now = new Date();
+  const dayOfWeek = now.getDay();
+  const weekStart = new Date(now);
+  weekStart.setDate(now.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1));
+  weekStart.setHours(0, 0, 0, 0);
+  const weekEnd = new Date(weekStart);
+  weekEnd.setDate(weekStart.getDate() + 7);
+  const ws = weekStart.toISOString().split("T")[0];
+  const we = weekEnd.toISOString().split("T")[0];
+  const [completed, created, sent, overdue] = await Promise.all([
+    persistentPool.query("SELECT count(*) AS cnt FROM todos WHERE deleted_at IS NULL AND completed_at >= $1 AND completed_at < $2", [ws, we]),
+    persistentPool.query("SELECT count(*) AS cnt FROM todos WHERE deleted_at IS NULL AND created_at >= $1 AND created_at < $2", [ws, we]),
+    persistentPool.query("SELECT count(*) AS cnt FROM emails WHERE deleted_at IS NULL AND sent_at >= $1 AND sent_at < $2", [ws, we]),
+    persistentPool.query("SELECT count(*) AS cnt FROM todos WHERE deleted_at IS NULL AND due_date < $1 AND NOT completed", [ws]),
+  ]);
+  return {
+    tasks_completed_count: parseInt(completed.rows[0].cnt, 10),
+    tasks_created_count: parseInt(created.rows[0].cnt, 10),
+    emails_sent_count: parseInt(sent.rows[0].cnt, 10),
+    overdue_count: parseInt(overdue.rows[0].cnt, 10),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // GET /api/persistent/status — Check Per-sistant connectivity
 // ---------------------------------------------------------------------------
 router.get("/api/persistent/status", async (req, res) => {
+  // Embedded fast path — both apps share a process; if Per-sistant's pool is
+  // wired into req.app, it's "connected" by definition.
+  const persistentPool = req.app.get("persistentPool");
+  if (persistentPool) {
+    const cfg = await getPersistentConfig();
+    return res.json({
+      connected: true,
+      embedded: true,
+      uptime: Math.floor(process.uptime()),
+      webhook_enabled: cfg ? cfg.enabled : false,
+    });
+  }
   const config = await getPersistentConfig();
   if (!config) return res.json({ connected: false });
   const controller = new AbortController();
@@ -106,6 +160,37 @@ router.get("/api/persistent/status", async (req, res) => {
 // GET /api/persistent/productivity-context — Fetch task context for AI insights
 // ---------------------------------------------------------------------------
 router.get("/api/persistent/productivity-context", async (req, res) => {
+  // Embedded fast path: query Per-sistant's DB directly. The HTTP fetch path
+  // 401s through the shell auth gate when both apps share a process, which
+  // silently degraded the AI insights productivity-context enrichment to
+  // an empty object.
+  const persistentPool = req.app.get("persistentPool");
+  if (persistentPool) {
+    try {
+      const [stats, review] = await Promise.all([
+        queryPersistentStats(persistentPool).catch(() => null),
+        queryPersistentReview(persistentPool).catch(() => null),
+      ]);
+      const context = { connected: true, embedded: true };
+      if (stats) {
+        context.tasks = stats.todos;
+        context.emails = stats.emails;
+        context.notes = stats.notes;
+      }
+      if (review) {
+        context.week = {
+          tasks_completed: review.tasks_completed_count,
+          tasks_created: review.tasks_created_count,
+          emails_sent: review.emails_sent_count,
+          overdue: review.overdue_count,
+        };
+      }
+      return res.json(context);
+    } catch (err) {
+      console.error("productivity-context (embedded) error:", err.message);
+      return res.json({ connected: false });
+    }
+  }
   const config = await getPersistentConfig();
   if (!config) return res.json({ connected: false });
   const controller = new AbortController();

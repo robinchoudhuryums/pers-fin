@@ -92,12 +92,14 @@ app.get("/vendor/chart.umd.js", (_req, res) => {
 // ---------------------------------------------------------------------------
 // Session middleware
 // ---------------------------------------------------------------------------
-app.use(session({
-  store: new pgSession({
-    pool,
-    tableName: "session",
-    createTableIfMissing: true,
-  }),
+// Only use the pg-backed store when this app actually authenticates users
+// itself (AUTH_SECRET set means SESSION_PASSWORD or SESSION_PIN is configured).
+// Under the unified shell, the shell's PIN gate handles auth and the per-app
+// session never gets a value written — the pgSession 'session' table was
+// dead weight, and the Plaid table-create migration was an unnecessary side
+// effect. Standalone deployments without auth configured (AUTH_SECRET null)
+// are similarly read-only on the session, so the in-memory default suffices.
+const sessionConfig = {
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
@@ -107,7 +109,15 @@ app.use(session({
     sameSite: "lax",
     maxAge: 24 * 60 * 60 * 1000, // 24 hours
   },
-}));
+};
+if (AUTH_SECRET) {
+  sessionConfig.store = new pgSession({
+    pool,
+    tableName: "session",
+    createTableIfMissing: true,
+  });
+}
+app.use(session(sessionConfig));
 
 function requireAuth(req, res, next) {
   // Embedded under the unified shell — the shell's PIN gate has already
@@ -116,7 +126,7 @@ function requireAuth(req, res, next) {
   // produce an infinite bounce back to the landing page.
   if (req.app.get("embedded")) return next();
   if (!AUTH_SECRET) return next();
-  if (["/login", "/api/login", "/api/webauthn/authenticate-options", "/api/webauthn/authenticate", "/manifest.json", "/sw.js", "/health", "/api/keep-alive-schedule", "/apple-touch-icon.svg", "/apple-touch-icon.png", "/logo.svg", "/api/sso/validate", "/api/perfin/webhook"].includes(req.path)) return next();
+  if (["/login", "/api/login", "/api/webauthn/authenticate-options", "/api/webauthn/authenticate", "/manifest.json", "/sw.js", "/health", "/api/keep-alive-schedule", "/apple-touch-icon.svg", "/apple-touch-icon.png", "/logo.svg", "/api/sso/validate"].includes(req.path)) return next();
   if (req.path.endsWith(".css") || req.path.endsWith(".js")) return next();
   // Allow API key authenticated requests through (validated later in API key middleware)
   if (req.path.startsWith("/api/") && req.headers["x-api-key"]) return next();
@@ -166,7 +176,16 @@ app.use(helmet({
       scriptSrc: ["'self'", (req, res) => `'nonce-${res.locals.nonce}'`, "https://cdn.teller.io", "https://*.teller.io", "https://cdn.jsdelivr.net", "https://*.jsdelivr.net", "https://cdn.plaid.com"],
       connectSrc: ["'self'", "https://teller.io", "https://*.teller.io", "https://*.plaid.com", "https://fonts.googleapis.com", "https://fonts.gstatic.com"],
       frameSrc: ["https://teller.io", "https://*.teller.io", "https://cdn.plaid.com"],
+      // Style policy is split (CSP Level 3): <style> blocks require the
+      // per-request nonce so an XSS-injected <style> can't smuggle CSS that
+      // exfiltrates data via background-image fetches; inline `style=""`
+      // attributes still need 'unsafe-inline' because hundreds of templates
+      // use them and migrating each one is out of scope for this round.
+      // styleSrc remains as a fallback for browsers that don't honor the
+      // split directives.
       styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      styleSrcElem: ["'self'", (req, res) => `'nonce-${res.locals.nonce}'`, "https://fonts.googleapis.com"],
+      styleSrcAttr: ["'unsafe-inline'"],
       fontSrc: ["'self'", "https://fonts.gstatic.com"],
       workerSrc: ["'self'"],
     },
@@ -285,6 +304,7 @@ app.use(require("./pages/login")(authConfig));
 app.use(require("./pages/settings")(pageConfig));
 app.use(require("./pages/transactions")(pageConfig));
 app.use(require("./pages/calendar")(pageConfig));
+app.use(require("./pages/account-history")(pageConfig));
 app.use(require("./pages/pwa"));
 
 // ---------------------------------------------------------------------------

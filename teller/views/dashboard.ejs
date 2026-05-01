@@ -475,6 +475,36 @@
     <div id="budget-alerts-list"></div>
   </div>
 
+  <!-- Review Uncategorized (engagement loop — turn AI cost into rules) -->
+  <div class="section" id="review-queue-section" style="display:none;margin-bottom:28px;">
+    <details open>
+      <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;justify-content:space-between;">
+        <h2 style="margin:0;display:inline;">Review Uncategorized</h2>
+        <span id="review-queue-count" style="font-size:11px;color:var(--text-muted);"></span>
+      </summary>
+      <div id="review-queue-body" style="margin-top:12px;font-size:13px;">
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;">
+          These would otherwise be sent to Claude on the next AI categorize run. Pick a category — check "Remember" to create a rule and skip future AI cost for the same merchant.
+        </div>
+        <div id="review-queue-list"></div>
+      </div>
+    </details>
+  </div>
+
+  <!-- Investments (Teller-linked + Plaid + manual, unified) -->
+  <div class="section" id="investments-section" style="margin-bottom:28px;">
+    <details open>
+      <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;justify-content:space-between;">
+        <h2 style="margin:0;display:inline;">Investments</h2>
+        <span id="investments-total" style="font-size:14px;color:var(--green);font-weight:500;">--</span>
+      </summary>
+      <div style="margin-top:12px;">
+        <div id="investments-by-source" style="display:flex;gap:18px;flex-wrap:wrap;font-size:11px;color:var(--text-muted);margin-bottom:12px;"></div>
+        <div id="investments-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;"></div>
+      </div>
+    </details>
+  </div>
+
   <!-- Bill Calendar Quick View -->
   <div class="section" id="calendar-widget" style="margin-bottom:28px;">
     <div style="display:flex;align-items:center;justify-content:space-between;">
@@ -530,7 +560,7 @@
     <a href="<%= basePath %>/transactions" class="btn" style="text-decoration:none;">Search Transactions</a>
   </div>
 
-<%- include('partials/foot', { apiKey: apiKey }) %>
+<%- include('partials/foot') %>
   <script src="<%= basePath %>/vendor/chart.umd.js"></script>
   <script nonce="<%= nonce %>">if(typeof Chart==='undefined'){var s=document.createElement('script');s.src='/vendor/chart.umd.js?v=<%= v %>';document.head.appendChild(s);}</script>
   <script nonce="<%= nonce %>">
@@ -674,7 +704,10 @@
         let netBalance = 0;
         const hasBalances = accounts.some(a => a.available_balance !== null || a.current_balance !== null) || investments.length > 0;
 
-        let html = accounts.map(a => {
+        // Render a single account card. Pulled out of the grouping render
+        // below so cash/credit/investment branches can share the same
+        // markup without duplicating the per-card HTML.
+        function renderAcctCard(a) {
           const isCredit = a.type === 'credit';
           const bal = isCredit
             ? parseFloat(a.current_balance || 0)
@@ -705,19 +738,51 @@
             (a.is_shared ? '<div style="margin-top:6px;font-size:10px;color:var(--teal);">Shared \u2022 Your split: ' + (a.spending_split_pct || 100) + '%</div>' : '') +
             '<button data-shared-toggle="' + a.id + '" style="margin-top:4px;font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text-muted);cursor:pointer;font-family:inherit;">' + (a.is_shared ? 'Edit Split' : 'Mark Shared') + '</button>' +
           '</div>';
-        }).join('');
+        }
 
-        html += investments.map(inv => {
-          const bal = parseFloat(inv.balance);
-          netBalance += bal;
-          const balClass = bal > 0 ? 'positive' : bal < 0 ? 'negative' : 'neutral';
-          return '<div class="acct-card">' +
-            '<div class="acct-inst">' + esc(inv.institution || 'Investment') + '</div>' +
-            '<div class="acct-name">' + esc(inv.name) + '</div>' +
-            '<div class="acct-balance ' + balClass + '">' + fmt(bal) + '</div>' +
-            '<div class="acct-type">' + esc(inv.account_type) + '</div>' +
-          '</div>';
-        }).join('');
+        // Group accounts: Cash (depository, non-investment), Credit, Investments,
+        // Other. is_investment comes from the new SQL fragment in the API
+        // response so Teller-linked brokerage/IRA/401k accounts surface under
+        // their own header instead of mixed in with checking/savings.
+        const cashAccts = accounts.filter(a => !a.is_investment && a.type === 'depository');
+        const creditAccts = accounts.filter(a => a.type === 'credit');
+        const investmentAccts = accounts.filter(a => a.is_investment);
+        const otherAccts = accounts.filter(a => !a.is_investment && a.type !== 'depository' && a.type !== 'credit');
+
+        const groupHeader = (label, count) =>
+          '<div style="grid-column:1/-1;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);margin:8px 0 4px;padding-top:8px;border-top:1px solid var(--border);">' +
+          label + ' <span style="color:var(--text-secondary);font-weight:400;">(' + count + ')</span></div>';
+
+        let html = '';
+        if (cashAccts.length) {
+          html += groupHeader('Cash', cashAccts.length);
+          html += cashAccts.map(renderAcctCard).join('');
+        }
+        if (creditAccts.length) {
+          html += groupHeader('Credit', creditAccts.length);
+          html += creditAccts.map(renderAcctCard).join('');
+        }
+        if (investmentAccts.length || investments.length) {
+          html += groupHeader('Investments', investmentAccts.length + investments.length);
+          html += investmentAccts.map(renderAcctCard).join('');
+          // Manual + Plaid investments live in the investment_accounts table
+          // (not linked_accounts) so they need their own simpler card render.
+          html += investments.map(inv => {
+            const bal = parseFloat(inv.balance);
+            netBalance += bal;
+            const balClass = bal > 0 ? 'positive' : bal < 0 ? 'negative' : 'neutral';
+            return '<div class="acct-card">' +
+              '<div class="acct-inst">' + esc(inv.institution || 'Investment') + '</div>' +
+              '<div class="acct-name">' + esc(inv.name) + '</div>' +
+              '<div class="acct-balance ' + balClass + '">' + fmt(bal) + '</div>' +
+              '<div class="acct-type">' + esc(inv.account_type) + '</div>' +
+            '</div>';
+          }).join('');
+        }
+        if (otherAccts.length) {
+          html += groupHeader('Other', otherAccts.length);
+          html += otherAccts.map(renderAcctCard).join('');
+        }
 
         grid.innerHTML = html;
 
@@ -1629,6 +1694,172 @@
       } catch (e) { /* non-critical */ }
     }
 
+    // Render a tiny inline SVG sparkline from a series of numbers. Returns
+    // an HTML string. No Chart.js dependency — keeps this widget cheap.
+    function renderSparkline(values, width, height) {
+      if (!values || values.length < 2) return '';
+      var w = width || 80, h = height || 20;
+      var min = Math.min.apply(null, values);
+      var max = Math.max.apply(null, values);
+      var range = max - min || 1;
+      var step = w / (values.length - 1);
+      var points = values.map(function(v, i) {
+        var x = (i * step).toFixed(1);
+        var y = (h - ((v - min) / range) * h).toFixed(1);
+        return x + ',' + y;
+      }).join(' ');
+      var trend = values[values.length - 1] >= values[0] ? 'var(--green)' : 'var(--red)';
+      return '<svg width="' + w + '" height="' + h + '" style="display:block;margin-top:4px;">' +
+        '<polyline points="' + points + '" fill="none" stroke="' + trend + '" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    }
+
+    async function loadInvestments() {
+      try {
+        var res = await apiFetch('/api/investments');
+        if (!res.ok) return;
+        var data = await res.json();
+        if (!data.accounts || data.accounts.length === 0) {
+          // Hide the entire section if no investment accounts exist
+          var sec = document.getElementById('investments-section');
+          if (sec) sec.style.display = 'none';
+          return;
+        }
+        document.getElementById('investments-total').textContent = fmt(data.total_value);
+        // Per-source totals
+        var bySrc = data.by_source || {};
+        var srcEl = document.getElementById('investments-by-source');
+        var srcParts = [];
+        if (bySrc.teller > 0) srcParts.push('<span>Teller: <strong style="color:var(--text);">' + fmt(bySrc.teller) + '</strong></span>');
+        if (bySrc.plaid > 0) srcParts.push('<span>Plaid: <strong style="color:var(--text);">' + fmt(bySrc.plaid) + '</strong></span>');
+        if (bySrc.manual > 0) srcParts.push('<span>Manual: <strong style="color:var(--text);">' + fmt(bySrc.manual) + '</strong></span>');
+        srcEl.innerHTML = srcParts.join('');
+
+        // Per-account list (initial render — sparklines fetch lazily below)
+        var listEl = document.getElementById('investments-list');
+        listEl.innerHTML = data.accounts.map(function(a) {
+          var sparkId = 'spark-' + a.source + '-' + a.id;
+          var holdingsBadge = a.supports_holdings
+            ? '<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:var(--green-bg);color:var(--green);margin-left:4px;">holdings</span>'
+            : '';
+          // History pages exist for both linked and investment sources;
+          // 'manual' rows live in investment_accounts, so source=investment.
+          var histSource = a.source === 'teller' ? 'linked' : 'investment';
+          var histHref = (window.BASE_PATH || '') + '/accounts/' + a.id + '/history?source=' + histSource;
+          return '<div class="acct-card" style="padding:10px;">' +
+            '<div class="acct-inst" style="font-size:10px;">' + esc(a.institution || a.source) + holdingsBadge + '</div>' +
+            '<div class="acct-name" style="font-size:13px;">' + esc(a.name) + '</div>' +
+            '<div class="acct-balance positive" style="font-size:18px;">' + fmt(a.balance) + '</div>' +
+            '<div class="acct-type" style="font-size:10px;">' + esc(a.account_type || '') + '</div>' +
+            '<div id="' + sparkId + '" style="height:20px;"></div>' +
+            '<a href="' + histHref + '" style="display:block;margin-top:6px;font-size:10px;color:var(--teal);text-decoration:none;">View history &rarr;</a>' +
+          '</div>';
+        }).join('');
+
+        // Lazy-load sparklines per account from balance-history endpoint.
+        // Cap concurrency loosely by serializing — investment accounts are
+        // typically <10 per user so this is fine without a queue.
+        for (var i = 0; i < data.accounts.length; i++) {
+          (function(a) {
+            var url = '/api/accounts/' + a.id + '/balance-history?source=' + a.source + '&months=6';
+            apiFetch(url).then(function(r) {
+              if (!r.ok) return;
+              return r.json();
+            }).then(function(hist) {
+              if (!hist || !hist.snapshots || hist.snapshots.length < 2) return;
+              var values = hist.snapshots.map(function(s) { return s.balance; });
+              var el = document.getElementById('spark-' + a.source + '-' + a.id);
+              if (el) el.innerHTML = renderSparkline(values, 200, 20);
+            }).catch(function() {});
+          })(data.accounts[i]);
+        }
+      } catch (e) { /* non-critical */ }
+    }
+
+    // Categorization engagement loop — surfaces transactions that would
+    // otherwise go to AI on the next /api/categorize call. User can review
+    // 5-10 at a time, set a category, and optionally create a rule so the
+    // same merchant pattern auto-categorizes next time. Drives down AI cost
+    // over time as the rule base grows.
+    var REVIEW_CATEGORIES = [
+      "Food & Drink", "Groceries", "Transportation", "Gas & Fuel",
+      "Shopping", "Entertainment", "Health & Fitness", "Healthcare",
+      "Housing", "Utilities", "Insurance", "Education",
+      "Travel", "Personal Care", "Gifts & Donations", "Fees & Charges",
+      "Transfer", "Income", "Investment", "Subscription", "Other",
+    ];
+    async function loadReviewQueue() {
+      try {
+        var res = await apiFetch('/api/categorize/review-queue?limit=8');
+        if (!res.ok) return;
+        var data = await res.json();
+        var section = document.getElementById('review-queue-section');
+        if (!data.transactions || data.transactions.length === 0) {
+          section.style.display = 'none';
+          return;
+        }
+        section.style.display = 'block';
+        document.getElementById('review-queue-count').textContent =
+          data.count + (data.count === 1 ? ' transaction' : ' transactions');
+        renderReviewQueue(data.transactions);
+      } catch (e) { /* non-critical */ }
+    }
+    function renderReviewQueue(txns) {
+      var listEl = document.getElementById('review-queue-list');
+      var optHtml = REVIEW_CATEGORIES.map(function(c) {
+        return '<option value="' + esc(c) + '">' + esc(c) + '</option>';
+      }).join('');
+      listEl.innerHTML = txns.map(function(t) {
+        var rid = 'rev-' + t.transaction_id.replace(/[^a-zA-Z0-9]/g, '_');
+        var defaultCat = t.suggested_category || REVIEW_CATEGORIES[0];
+        var hint = t.hint ? ' <span style="font-size:10px;color:var(--text-muted);">[' + esc(t.hint) + ']</span>' : '';
+        return '<div id="' + rid + '" style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);font-size:12px;">' +
+          '<div style="flex:1;min-width:0;">' +
+            '<div style="font-weight:500;color:var(--text);">' + esc(t.merchant || '(no merchant)') + hint + '</div>' +
+            '<div style="font-size:11px;color:var(--text-muted);">' + esc(t.date) + ' &middot; ' + fmt(t.amount) + '</div>' +
+          '</div>' +
+          '<select data-cat-select="' + esc(t.transaction_id) + '" style="padding:4px 6px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);font-family:inherit;">' +
+            optHtml.replace('value="' + esc(defaultCat) + '"', 'value="' + esc(defaultCat) + '" selected') +
+          '</select>' +
+          '<label style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--text-muted);cursor:pointer;">' +
+            '<input type="checkbox" data-cat-rule="' + esc(t.transaction_id) + '" checked> Remember' +
+          '</label>' +
+          '<button data-cat-apply="' + esc(t.transaction_id) + '" style="padding:4px 10px;font-size:11px;border:1px solid var(--green);border-radius:4px;background:transparent;color:var(--green);cursor:pointer;font-family:inherit;">Apply</button>' +
+        '</div>';
+      }).join('');
+    }
+    onDelegate('review-queue-list', 'click', '[data-cat-apply]', async function() {
+      var txnId = this.getAttribute('data-cat-apply');
+      var sel = document.querySelector('[data-cat-select="' + txnId.replace(/"/g, '\\"') + '"]');
+      var ruleCb = document.querySelector('[data-cat-rule="' + txnId.replace(/"/g, '\\"') + '"]');
+      if (!sel) return;
+      var category = sel.value;
+      var createRule = ruleCb ? ruleCb.checked : false;
+      this.disabled = true;
+      this.textContent = 'Applying…';
+      try {
+        var res = await apiFetch('/api/categorize/review', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            transaction_id: txnId,
+            category: category,
+            create_rule: createRule,
+            match_type: 'contains',
+          }),
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        // Remove the row and re-fetch the queue if it's now empty.
+        var rid = 'rev-' + txnId.replace(/[^a-zA-Z0-9]/g, '_');
+        var row = document.getElementById(rid);
+        if (row) row.remove();
+        var remaining = document.querySelectorAll('#review-queue-list > div').length;
+        if (remaining === 0) loadReviewQueue();
+      } catch (e) {
+        this.disabled = false;
+        this.textContent = 'Apply';
+      }
+    });
+
     // Dashboard widget visibility
     async function applyWidgetVisibility() {
       try {
@@ -1646,6 +1877,8 @@
           savingsRate: '#savings-rate-section',
           cashFlow: '#cashflow-section',
           yoy: '#yoy-section',
+          investments: '#investments-section',
+          reviewQueue: '#review-queue-section',
         };
         Object.entries(map).forEach(function(e) {
           var key = e[0], selector = e[1];
@@ -1664,6 +1897,8 @@
     loadSavingsRate();
     loadCashFlow();
     loadYoY();
+    loadInvestments();
+    loadReviewQueue();
 
     computeWellness();
 

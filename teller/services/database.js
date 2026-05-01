@@ -148,6 +148,12 @@ async function runMigrations() {
     await client.query("CREATE TABLE IF NOT EXISTS financial_insights (id SERIAL PRIMARY KEY, insight_text TEXT NOT NULL, period_start DATE, period_end DATE, model_used TEXT, tokens_used INT, created_at TIMESTAMPTZ NOT NULL DEFAULT now())");
     // 006_insights_memory.sql
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_running_summary TEXT DEFAULT NULL");
+    // Structured running summary (S5): replaces the plain-text running summary
+    // with categorized JSON {trends, completed_goals, pending_actions, alerts}.
+    // Both columns coexist — the JSON is the source of truth going forward;
+    // the TEXT column gets a human-readable rendering for backward-compat and
+    // for any consumer that hasn't been updated yet.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_running_summary_json JSONB DEFAULT NULL");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_model TEXT NOT NULL DEFAULT 'sonnet'");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_cadence_days INT NOT NULL DEFAULT 30");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS zip_code TEXT DEFAULT NULL");
@@ -279,6 +285,11 @@ async function runMigrations() {
     await client.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS output_tokens INT");
     await client.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS cache_read_tokens INT");
     await client.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS cache_creation_tokens INT");
+    // Entry-type discriminator so /api/categorize can write tracking rows that
+    // count against the shared monthly AI budget without showing up in the
+    // user-facing "AI Insights" feed. Display queries filter entry_type='insight';
+    // cost-cap queries don't filter (both feature areas count toward the cap).
+    await client.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS entry_type TEXT NOT NULL DEFAULT 'insight'");
     // Manual accounts support
     await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS is_manual BOOLEAN NOT NULL DEFAULT false");
     await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS institution_name_manual TEXT DEFAULT NULL");
@@ -290,7 +301,7 @@ async function runMigrations() {
     await client.query("ALTER TABLE linked_accounts DROP CONSTRAINT IF EXISTS chk_account_source");
     await client.query("ALTER TABLE linked_accounts ADD CONSTRAINT chk_account_source CHECK (plaid_item_id IS NOT NULL OR teller_enrollment_id IS NOT NULL OR is_manual = true)");
     // Dashboard widget order/visibility
-    await client.query(`ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS dashboard_widgets JSONB NOT NULL DEFAULT '{"pyramid":true,"accounts":true,"recentTxns":true,"monthlySpend":true,"categories":true,"merchants":true,"upcoming":true,"forecast":true,"charts":true,"calendar":true,"cashFlow":true,"savingsRate":true,"yoy":true}'::jsonb`);
+    await client.query(`ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS dashboard_widgets JSONB NOT NULL DEFAULT '{"pyramid":true,"accounts":true,"recentTxns":true,"monthlySpend":true,"categories":true,"merchants":true,"upcoming":true,"forecast":true,"charts":true,"calendar":true,"cashFlow":true,"savingsRate":true,"yoy":true,"investments":true,"reviewQueue":true}'::jsonb`);
     // Sheets auto-sync
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sheets_auto_sync_enabled BOOLEAN NOT NULL DEFAULT false");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sheets_auto_sync_interval TEXT NOT NULL DEFAULT 'weekly'");
@@ -311,6 +322,10 @@ async function runMigrations() {
     await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS is_reimbursed BOOLEAN NOT NULL DEFAULT false");
     await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS reimbursed_at TIMESTAMPTZ");
     await client.query("CREATE INDEX IF NOT EXISTS idx_transactions_reimbursed ON transactions (is_reimbursed) WHERE is_reimbursed = true");
+    // User category override: manual category edits survive Teller re-sync because
+    // the upsert only writes to `category` (Teller's slot). Display layers use
+    // COALESCE(user_category, category[1]).
+    await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS user_category TEXT");
 
     // Transaction splits (Phase B3): a single Teller transaction can be
     // subdivided into N (amount, category, merchant, notes) child rows so a
@@ -494,6 +509,73 @@ async function runMigrations() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
     await client.query("CREATE INDEX IF NOT EXISTS idx_ai_audit_log_insight ON ai_audit_log (insight_id, severity)");
+
+    // ---- Account balance history (per-account daily snapshots) ----
+    // Captures balance over time for each account so the UI can show
+    // performance for investment accounts (and arbitrary balance trends for
+    // any account). Polymorphic: source='linked' rows reference linked_accounts.id,
+    // source='investment' rows reference investment_accounts.id. The lack of FK
+    // is deliberate — both source tables exist with their own lifecycles, and a
+    // polymorphic UNIQUE keeps lookups O(1) per (source, source_id, date).
+    // Writes happen at the end of syncAllBalances and POST /api/plaid/sync-holdings,
+    // both of which are the only paths that update account balances.
+    await client.query(`CREATE TABLE IF NOT EXISTS account_balance_snapshots (
+      id SERIAL PRIMARY KEY,
+      source TEXT NOT NULL CHECK (source IN ('linked', 'investment')),
+      source_id INT NOT NULL,
+      snapshot_date DATE NOT NULL DEFAULT CURRENT_DATE,
+      balance NUMERIC(14,2) NOT NULL,
+      available_balance NUMERIC(14,2),
+      current_balance NUMERIC(14,2),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(source, source_id, snapshot_date)
+    )`);
+    await client.query("CREATE INDEX IF NOT EXISTS idx_acct_balance_snapshots_lookup ON account_balance_snapshots (source, source_id, snapshot_date DESC)");
+
+    // ---- Add 'investments' to dashboard_widgets default for new users ----
+    // For existing rows: merge the new key into the JSONB without overwriting
+    // user customizations to other keys. jsonb concat (||) is right-precedence,
+    // so we put the existing JSON on the right to preserve user-set values.
+    await client.query(`
+      UPDATE user_settings
+      SET dashboard_widgets = '{"investments":true}'::jsonb || dashboard_widgets
+      WHERE NOT (dashboard_widgets ? 'investments')
+    `);
+    await client.query(`
+      UPDATE user_settings
+      SET dashboard_widgets = '{"reviewQueue":true}'::jsonb || dashboard_widgets
+      WHERE NOT (dashboard_widgets ? 'reviewQueue')
+    `);
+
+    // One-shot cleanup: detection-key migration orphans
+    // When detection started keying on COALESCE(user_merchant_name, merchant_name, name)
+    // instead of raw merchant_name, pre-existing detected_subscriptions /
+    // recurring_transfers rows keyed by the raw merchant_name were left active
+    // alongside the new rows keyed by the user-overridden name. Both UPDATEs are
+    // idempotent: if no orphans exist (no user_merchant_name overrides applied
+    // to merchants that have detected rows under the raw name), nothing changes.
+    await client.query(`
+      UPDATE detected_subscriptions ds
+      SET is_active = false, updated_at = now()
+      WHERE ds.is_active = true
+        AND EXISTS (
+          SELECT 1 FROM transactions t
+          WHERE t.merchant_name = ds.merchant_key
+            AND t.user_merchant_name IS NOT NULL
+            AND t.user_merchant_name != ds.merchant_key
+        )
+    `);
+    await client.query(`
+      UPDATE recurring_transfers rt
+      SET is_active = false, updated_at = now()
+      WHERE rt.is_active = true
+        AND EXISTS (
+          SELECT 1 FROM transactions t
+          WHERE t.merchant_name = rt.merchant_key
+            AND t.user_merchant_name IS NOT NULL
+            AND t.user_merchant_name != rt.merchant_key
+        )
+    `);
 
     // Record schema version
     if (currentVersion < SCHEMA_VERSION) {

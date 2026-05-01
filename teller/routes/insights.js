@@ -5,8 +5,8 @@
 const express = require("express");
 const router = express.Router();
 const { pool } = require("../services/database");
-const { getMonthlySpending, getMonthlyIncomeAndSpending } = require("../services/financial-queries");
-const { auditInsight, getAuditStats } = require("../services/ai-audit");
+const { getMonthlySpending, getMonthlyIncomeAndSpending, NOT_TRANSFER } = require("../services/financial-queries");
+const { auditInsight, getAuditStats, getAuditAccuracy } = require("../services/ai-audit");
 const {
   MODEL_COST_PER_M, modelFamily, estimateCostUsd, estimateCostGranular,
   STATE_ELECTRICITY_RATES, US_AVG_ELECTRICITY_RATE,
@@ -19,6 +19,148 @@ try {
   Anthropic = require("@anthropic-ai/sdk").default || require("@anthropic-ai/sdk");
 } catch {
   Anthropic = null;
+}
+
+// Tool definition for structured insight generation. The model is forced to
+// emit BOTH an insights_text string and a typed `summary` object. The latter
+// becomes long-term memory — JSON instead of the legacy plain-text running
+// summary, so callers can show counts, render lists, and audit drift.
+const INSIGHT_TOOL = {
+  name: "generate_financial_insight",
+  description: "Generate user-facing insight text and an updated structured running summary for long-term memory.",
+  input_schema: {
+    type: "object",
+    properties: {
+      insights_text: {
+        type: "string",
+        description: "3-5 markdown bullet-point insights with specific dollar amounts.",
+      },
+      summary: {
+        type: "object",
+        description: "Updated structured cumulative summary. Carry forward existing items and update / add / remove based on current data.",
+        properties: {
+          trends: {
+            type: "array",
+            description: "Long-term direction observations (max 8).",
+            items: {
+              type: "object",
+              properties: {
+                category: { type: "string" },
+                direction: { type: "string", enum: ["up", "down", "stable"] },
+                magnitude: { type: "string" },
+                since_when: { type: "string" },
+              },
+              required: ["category", "direction"],
+            },
+          },
+          completed_goals: {
+            type: "array",
+            description: "Goals the user has completed (max 10).",
+            items: {
+              type: "object",
+              properties: {
+                goal_name: { type: "string" },
+                completed_date: { type: "string" },
+              },
+              required: ["goal_name"],
+            },
+          },
+          pending_actions: {
+            type: "array",
+            description: "Concrete actions previously recommended that are NOT yet completed (max 10).",
+            items: {
+              type: "object",
+              properties: {
+                description: { type: "string" },
+                urgency: { type: "string", enum: ["high", "medium", "low"] },
+                first_recommended: { type: "string" },
+              },
+              required: ["description"],
+            },
+          },
+          alerts: {
+            type: "array",
+            description: "Active concerns the user should be aware of (max 5).",
+            items: {
+              type: "object",
+              properties: {
+                type: { type: "string" },
+                message: { type: "string" },
+                severity: { type: "string", enum: ["critical", "warning", "info"] },
+              },
+              required: ["message"],
+            },
+          },
+        },
+        required: ["trends", "completed_goals", "pending_actions", "alerts"],
+      },
+    },
+    required: ["insights_text", "summary"],
+  },
+};
+
+// Coerce + cap arrays + drop unknown keys so a pathological tool response
+// can't leak unbounded data into long-term memory or break renderers. Returns
+// null when the shape is unrecoverable, so the caller can preserve the prior
+// summary instead of overwriting with garbage.
+function sanitizeStructuredSummary(s) {
+  if (!s || typeof s !== "object") return null;
+  function arr(v, max) { return Array.isArray(v) ? v.slice(0, max) : []; }
+  function str(v, max) { return typeof v === "string" ? v.slice(0, max || 200) : ""; }
+  const safeEnum = (v, allowed) => allowed.includes(v) ? v : null;
+  return {
+    trends: arr(s.trends, 8).map(t => ({
+      category: str(t && t.category, 80),
+      direction: safeEnum(t && t.direction, ["up", "down", "stable"]) || "stable",
+      magnitude: str(t && t.magnitude, 80),
+      since_when: str(t && t.since_when, 40),
+    })).filter(t => t.category),
+    completed_goals: arr(s.completed_goals, 10).map(g => ({
+      goal_name: str(g && g.goal_name, 120),
+      completed_date: str(g && g.completed_date, 40),
+    })).filter(g => g.goal_name),
+    pending_actions: arr(s.pending_actions, 10).map(a => ({
+      description: str(a && a.description, 240),
+      urgency: safeEnum(a && a.urgency, ["high", "medium", "low"]) || "medium",
+      first_recommended: str(a && a.first_recommended, 40),
+    })).filter(a => a.description),
+    alerts: arr(s.alerts, 5).map(a => ({
+      type: str(a && a.type, 60),
+      message: str(a && a.message, 240),
+      severity: safeEnum(a && a.severity, ["critical", "warning", "info"]) || "info",
+    })).filter(a => a.message),
+  };
+}
+
+// Render the structured summary back to readable bullets for the AI prompt
+// AND for the backward-compat plain-text column. The same function serves
+// both — model and human read the same shape.
+function renderStructuredSummaryForPrompt(s) {
+  if (!s) return null;
+  const sections = [];
+  if (s.trends && s.trends.length) {
+    sections.push("Trends being tracked:\n" + s.trends.map(t =>
+      "- " + t.category + ": " + (t.direction || "stable") +
+      (t.magnitude ? " (" + t.magnitude + ")" : "") +
+      (t.since_when ? " since " + t.since_when : "")
+    ).join("\n"));
+  }
+  if (s.completed_goals && s.completed_goals.length) {
+    sections.push("Completed goals:\n" + s.completed_goals.map(g =>
+      "- " + g.goal_name + (g.completed_date ? " (" + g.completed_date + ")" : "")
+    ).join("\n"));
+  }
+  if (s.pending_actions && s.pending_actions.length) {
+    sections.push("Pending actions:\n" + s.pending_actions.map(a =>
+      "- " + a.description + (a.urgency ? " [" + a.urgency + "]" : "")
+    ).join("\n"));
+  }
+  if (s.alerts && s.alerts.length) {
+    sections.push("Active alerts:\n" + s.alerts.map(a =>
+      "- " + a.message + (a.severity ? " [" + a.severity + "]" : "")
+    ).join("\n"));
+  }
+  return sections.length ? sections.join("\n\n") : null;
 }
 
 // Render insight text as styled HTML email matching app aesthetic
@@ -76,6 +218,28 @@ router.get("/api/insights/status", async (_req, res) => {
       estimatedCostCents += cost * 100;
     });
   } catch (err) { console.error("Insights status query error:", err.message); }
+  // Audit accuracy + structured running summary: both surfaced so the
+  // Settings/dashboard UI can show "AI accuracy 87%" plus "tracking 3 trends,
+  // 2 completed goals, 5 pending actions, 1 alert" without a second fetch.
+  const accuracy = await getAuditAccuracy(90);
+  let runningSummaryJson = null;
+  let summaryCounts = { trends: 0, completed_goals: 0, pending_actions: 0, alerts: 0 };
+  try {
+    const sumRow = await pool.query(
+      "SELECT insights_running_summary_json FROM user_settings WHERE id = 1"
+    );
+    let raw = sumRow.rows[0] && sumRow.rows[0].insights_running_summary_json;
+    if (typeof raw === "string") { try { raw = JSON.parse(raw); } catch { raw = null; } }
+    if (raw && typeof raw === "object") {
+      runningSummaryJson = raw;
+      summaryCounts = {
+        trends: Array.isArray(raw.trends) ? raw.trends.length : 0,
+        completed_goals: Array.isArray(raw.completed_goals) ? raw.completed_goals.length : 0,
+        pending_actions: Array.isArray(raw.pending_actions) ? raw.pending_actions.length : 0,
+        alerts: Array.isArray(raw.alerts) ? raw.alerts.length : 0,
+      };
+    }
+  } catch (err) { console.error("running summary read error:", err.message); }
   res.json({
     configured,
     reason: configured ? null : (!Anthropic ? "SDK not installed" : "ANTHROPIC_API_KEY not set in .env"),
@@ -83,6 +247,9 @@ router.get("/api/insights/status", async (_req, res) => {
     budget_cents: budgetCents,
     budget_remaining_cents: Math.round((budgetCents - estimatedCostCents) * 100) / 100,
     cost_rates: MODEL_COST_PER_M,
+    audit_accuracy: accuracy,
+    running_summary: runningSummaryJson,
+    running_summary_counts: summaryCounts,
   });
 });
 
@@ -118,15 +285,21 @@ router.get("/api/insights/usage", async (_req, res) => {
 // GET /api/insights
 router.get("/api/insights", async (_req, res) => {
   try {
-    const result = await pool.query("SELECT * FROM financial_insights ORDER BY created_at DESC LIMIT 5");
+    // entry_type filter excludes /api/categorize tracking rows from the user-facing feed.
+    const result = await pool.query("SELECT * FROM financial_insights WHERE entry_type = 'insight' ORDER BY created_at DESC LIMIT 5");
     res.json(result.rows);
   } catch (err) { console.error("Insights list query error:", err.message); res.json([]); }
 });
 
-// POST /api/insights — generate via Claude
-router.post("/api/insights", async (_req, res) => {
+// generateInsights — orchestration extracted from POST /api/insights so the
+// scheduler in startup.js can invoke it in-process (an HTTP self-fetch from
+// the auto-trigger 401s under the unified shell). Returns either:
+//   { ok: false, status, error }                 — early bail / failure
+//   { ok: true, insight, modules_used, ... }     — same body the HTTP handler
+//                                                  used to JSON-encode
+async function generateInsights() {
   if (!Anthropic || !process.env.ANTHROPIC_API_KEY) {
-    return res.status(501).json({ error: "Set ANTHROPIC_API_KEY in .env to enable AI insights." });
+    return { ok: false, status: 501, error: "Set ANTHROPIC_API_KEY in .env to enable AI insights." };
   }
   try {
     const budgetCents = parseInt(process.env.INSIGHTS_MONTHLY_BUDGET_CENTS) || 50;
@@ -142,10 +315,12 @@ router.post("/api/insights", async (_req, res) => {
       estimatedCostCents += cost * 100;
     });
     if (estimatedCostCents >= budgetCents) {
-      return res.status(429).json({
+      return {
+        ok: false,
+        status: 429,
         error: `Monthly AI budget reached ($${(estimatedCostCents / 100).toFixed(2)} of $${(budgetCents / 100).toFixed(2)} cap). Resets next month. Adjust INSIGHTS_MONTHLY_BUDGET_CENTS in .env to raise the limit.`,
         budget_cents: budgetCents,
-      });
+      };
     }
 
     // Use the shared split-adjusted spending query so the AI sees the same
@@ -164,14 +339,18 @@ router.post("/api/insights", async (_req, res) => {
         "WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL ORDER BY amount DESC"
       ),
       pool.query(
-        "SELECT insight_text, created_at FROM financial_insights ORDER BY created_at DESC LIMIT 1"
+        "SELECT insight_text, created_at FROM financial_insights WHERE entry_type = 'insight' ORDER BY created_at DESC LIMIT 1"
       ).catch(() => ({ rows: [] })),
       pool.query(
-        "SELECT insights_running_summary, insights_model, insights_cadence_days, zip_code, insight_modules FROM user_settings WHERE id = 1"
-      ).catch(() => ({ rows: [{ insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30, zip_code: null, insight_modules: {} }] })),
+        "SELECT insights_running_summary, insights_running_summary_json, insights_model, insights_cadence_days, zip_code, insight_modules FROM user_settings WHERE id = 1"
+      ).catch(() => ({ rows: [{ insights_running_summary: null, insights_running_summary_json: null, insights_model: "sonnet", insights_cadence_days: 30, zip_code: null, insight_modules: {} }] })),
     ]);
     const settings = settingsRow.rows[0] || {};
     const runningSummary = settings.insights_running_summary || null;
+    let runningSummaryJson = settings.insights_running_summary_json || null;
+    if (typeof runningSummaryJson === "string") {
+      try { runningSummaryJson = JSON.parse(runningSummaryJson); } catch { runningSummaryJson = null; }
+    }
     const zipCode = settings.zip_code || null;
     let modules = settings.insight_modules || {};
     if (typeof modules === "string") modules = JSON.parse(modules);
@@ -186,14 +365,15 @@ router.post("/api/insights", async (_req, res) => {
     const activeModules = [];
 
     // ---- Build STATIC system prompt (cacheable across requests) ----
-    let systemText = "You are a personal finance advisor providing ongoing monthly analysis. You have two tasks:\n\n" +
-      "TASK 1: Analyze the data below and give 3-5 concise, actionable insights with specific dollar amounts. Use markdown bullet points. Reference long-term context where relevant.\n\n" +
-      "TASK 2: After your insights, output a delimiter line containing exactly '---RUNNING_SUMMARY---' followed by an updated cumulative summary (max 200 words). This summary should capture:\n" +
-      "- Baseline spending levels and trends (e.g. 'avg monthly spend ~$X, trending up/down')\n" +
-      "- Key subscriptions and any changes noticed over time\n" +
-      "- Progress on past recommendations (what improved, what didn't)\n" +
-      "- Any recurring patterns or concerns worth tracking long-term\n" +
-      "This summary persists across sessions as your long-term memory. Update it — don't just append.";
+    let systemText = "You are a personal finance advisor providing ongoing monthly analysis.\n" +
+      "Use the `generate_financial_insight` tool to return BOTH:\n" +
+      "  (a) `insights_text` — 3-5 concise, actionable markdown bullet-point insights with specific dollar amounts. Reference long-term context where relevant.\n" +
+      "  (b) `summary` — an UPDATED structured running summary (long-term memory) with four arrays:\n" +
+      "      - trends: long-term direction observations (max 8). Each: { category, direction (up/down/stable), magnitude, since_when }. Carry forward + update + drop as needed.\n" +
+      "      - completed_goals: goals the user has completed (max 10). Each: { goal_name, completed_date }.\n" +
+      "      - pending_actions: concrete actions previously recommended that are NOT YET completed (max 10). Drop items the user has acted on. Each: { description, urgency (high/medium/low), first_recommended }.\n" +
+      "      - alerts: active concerns the user should be aware of (max 5). Each: { type, message, severity (critical/warning/info) }. Remove items when the underlying issue resolves.\n" +
+      "The summary persists across sessions as your long-term memory — UPDATE the existing entries (don't just append) based on the current data.";
 
     // Add static module instructions to system prompt
     if (modules.spending_benchmarks !== false) {
@@ -319,25 +499,38 @@ router.post("/api/insights", async (_req, res) => {
     // --- Module: Anomaly detection (dynamic data) ---
     if (modules.anomaly_detection !== false) {
       try {
+        // Numbers shown to the AI now match the dashboard:
+        //   - Group by COALESCE(user_merchant_name, merchant_name, name) so user-
+        //     merged merchants don't fragment baselines.
+        //   - Apply spending_split_pct on both baseline AVG and candidate amount
+        //     so shared/joint accounts contribute the user's share, not the full
+        //     transaction amount.
+        //   - Exclude reimbursed rows from CANDIDATES (baselines still include
+        //     reimbursed per CLAUDE.md — a reimbursed charge is still typical).
         const anomalyData = await pool.query(
-          `SELECT t.merchant_name, t.name, t.amount, t.date,
+          `SELECT t.merchant_name, t.name, t.user_merchant_name,
+                  ROUND(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0, 2) AS amount,
+                  t.date,
                   avg_tbl.avg_amount, avg_tbl.txn_count
            FROM transactions t
+           LEFT JOIN linked_accounts la ON la.account_id = t.account_id
            JOIN (
-             SELECT LOWER(COALESCE(merchant_name, name)) AS merchant,
-                    AVG(amount) AS avg_amount,
-                    STDDEV(amount) AS std_amount,
+             SELECT LOWER(COALESCE(t2.user_merchant_name, t2.merchant_name, t2.name)) AS merchant,
+                    AVG(t2.amount * COALESCE(la2.spending_split_pct, 100) / 100.0) AS avg_amount,
+                    STDDEV(t2.amount * COALESCE(la2.spending_split_pct, 100) / 100.0) AS std_amount,
                     COUNT(*) AS txn_count
-             FROM transactions
-             WHERE amount > 0 AND pending = false
-               AND date >= CURRENT_DATE - INTERVAL '12 months'
-               AND date <  CURRENT_DATE - INTERVAL '7 days'
-             GROUP BY LOWER(COALESCE(merchant_name, name))
+             FROM transactions t2
+             LEFT JOIN linked_accounts la2 ON la2.account_id = t2.account_id
+             WHERE t2.amount > 0 AND t2.pending = false
+               AND t2.date >= CURRENT_DATE - INTERVAL '12 months'
+               AND t2.date <  CURRENT_DATE - INTERVAL '7 days'
+             GROUP BY LOWER(COALESCE(t2.user_merchant_name, t2.merchant_name, t2.name))
              HAVING COUNT(*) >= 3
-           ) avg_tbl ON LOWER(COALESCE(t.merchant_name, t.name)) = avg_tbl.merchant
+           ) avg_tbl ON LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name)) = avg_tbl.merchant
            WHERE t.amount > 0 AND t.pending = false
+             AND COALESCE(t.is_reimbursed, false) = false
              AND t.date >= CURRENT_DATE - INTERVAL '2 months'
-             AND t.amount > avg_tbl.avg_amount * 2
+             AND (t.amount * COALESCE(la.spending_split_pct, 100) / 100.0) > avg_tbl.avg_amount * 2
            ORDER BY t.date DESC
            LIMIT 10`
         );
@@ -345,7 +538,7 @@ router.post("/api/insights", async (_req, res) => {
           userMsg += "\n\n=== ANOMALY DETECTION DATA ===\n" +
             "Recent transactions significantly above their merchant's typical amount:\n" +
             anomalyData.rows.map(r =>
-              sanitizeForPrompt(r.merchant_name || r.name) + ": $" + parseFloat(r.amount).toFixed(2) +
+              sanitizeForPrompt(r.user_merchant_name || r.merchant_name || r.name) + ": $" + parseFloat(r.amount).toFixed(2) +
               " on " + r.date + " (usual avg: $" + parseFloat(r.avg_amount).toFixed(2) +
               " over " + r.txn_count + " transactions)"
             ).join("\n");
@@ -358,16 +551,22 @@ router.post("/api/insights", async (_req, res) => {
     // --- Module: Seasonal forecasting (dynamic data) ---
     if (modules.seasonal_forecast !== false) {
       try {
+        // Use shared NOT_TRANSFER + spending_split_pct so seasonal numbers
+        // shown to the AI match the "Monthly Spending (6mo)" block earlier in
+        // the same prompt — the previous query was a raw SUM that included
+        // credit-card payments, ACH transfers, and 100% of joint-account spend.
         const seasonalData = await pool.query(
-          `SELECT EXTRACT(MONTH FROM date)::int AS month_num,
-                  TO_CHAR(date, 'Mon') AS month_name,
-                  EXTRACT(YEAR FROM date)::int AS year,
-                  SUM(amount) AS total
-           FROM transactions
-           WHERE amount > 0 AND pending = false
-             AND COALESCE(is_reimbursed, false) = false
-             AND date >= CURRENT_DATE - INTERVAL '24 months'
-           GROUP BY EXTRACT(MONTH FROM date), TO_CHAR(date, 'Mon'), EXTRACT(YEAR FROM date)
+          `SELECT EXTRACT(MONTH FROM t.date)::int AS month_num,
+                  TO_CHAR(t.date, 'Mon') AS month_name,
+                  EXTRACT(YEAR FROM t.date)::int AS year,
+                  ROUND(SUM(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0), 2) AS total
+           FROM transactions t
+           LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+           WHERE t.amount > 0 AND t.pending = false
+             AND COALESCE(t.is_reimbursed, false) = false
+             AND ${NOT_TRANSFER}
+             AND t.date >= CURRENT_DATE - INTERVAL '24 months'
+           GROUP BY EXTRACT(MONTH FROM t.date), TO_CHAR(t.date, 'Mon'), EXTRACT(YEAR FROM t.date)
            ORDER BY year, month_num`
         );
         if (seasonalData.rows.length >= 6) {
@@ -433,15 +632,24 @@ router.post("/api/insights", async (_req, res) => {
     // --- Module: Tax deduction flags (dynamic data) ---
     if (modules.tax_deductions !== false) {
       try {
-        // Word-boundary matching prevents substring false positives like
-        // "interest" → "internet", "office" → "Box Office", "vision" → "television".
-        // Multi-word phrases still match because \y is a word-boundary anchor at the
-        // edges of the phrase, not inside it.
-        const taxKeywords = ["doctor", "medical", "pharmacy", "hospital", "dental", "vision", "health",
+        // Word-boundary matching anchors at word edges (Postgres `\y`), so short
+        // tokens can't substring-match unrelated merchants. We also avoid bare
+        // ambiguous words ("office" → "Box Office", "interest" → "interest charge"
+        // on a credit card statement, "supplies" → "Pet Supplies", "business" →
+        // "Business Casual" retailer) by preferring multi-word phrases:
+        //   - medical:    specific medical-context words only
+        //   - charity:    named charities are self-evident
+        //   - education:  "student loan" rather than bare "student"
+        //   - business:   only multi-word "home office" / "office supplies" /
+        //                 "business expense" — drops bare "office"/"supplies"/"business"
+        //   - tax:        "mortgage interest" / "student loan interest" rather
+        //                 than bare "mortgage" / "interest" (which match payments
+        //                 and credit-card finance charges that aren't deductible)
+        const taxKeywords = ["doctor", "medical", "pharmacy", "hospital", "dental",
           "charity", "donation", "goodwill", "salvation army", "red cross",
-          "tuition", "university", "college", "education", "student",
-          "office", "supplies", "home office", "business",
-          "mortgage", "interest", "property tax", "state tax"];
+          "tuition", "university", "college", "student loan",
+          "home office", "office supplies", "office depot", "business expense",
+          "mortgage interest", "student loan interest", "property tax", "state tax"];
         const taxRegex = "\\y(" + taxKeywords.join("|") + ")\\y";
         const taxData = await pool.query(
           `SELECT COALESCE(merchant_name, name) AS merchant, SUM(amount) AS total, COUNT(*) AS txn_count
@@ -466,7 +674,7 @@ router.post("/api/insights", async (_req, res) => {
                ON CONFLICT (merchant, tax_year) WHERE transaction_id IS NULL
                DO UPDATE SET amount = EXCLUDED.amount, flagged_at = now()`,
               [row.merchant, parseFloat(row.total)]
-            ).catch(() => {});
+            ).catch(err => console.error("tax_deductions upsert error for", row.merchant, ":", err.message));
           }
         }
       } catch (err) { console.error("Tax deductions query error:", err.message); }
@@ -556,8 +764,15 @@ router.post("/api/insights", async (_req, res) => {
       }
     } catch (err) { console.error("Budget status query error:", err.message); }
 
-    // Include running summary and previous insight in user message (dynamic)
-    if (runningSummary) {
+    // Include long-term context — prefer the structured summary when
+    // available; fall back to the legacy text column for sessions that
+    // haven't yet migrated. The structured form is rendered into readable
+    // bullets here; the next AI run replaces it with an updated structured
+    // summary via the tool. Eventually the text column will be retired.
+    if (runningSummaryJson) {
+      const rendered = renderStructuredSummaryForPrompt(runningSummaryJson);
+      if (rendered) userMsg += "\n\n=== LONG-TERM CONTEXT (cumulative memory from past analyses) ===\n" + rendered;
+    } else if (runningSummary) {
       userMsg += "\n\n=== LONG-TERM CONTEXT (your cumulative memory from past analyses) ===\n" + runningSummary;
     }
     if (prevInsight.rows.length > 0) {
@@ -567,60 +782,65 @@ router.post("/api/insights", async (_req, res) => {
     }
 
     const client = new Anthropic();
-    // Allocate enough headroom for both the insights block AND the running
-    // summary. Previously a formula of `1500 + activeModules*200` could run out
-    // before Claude emitted the `---RUNNING_SUMMARY---` delimiter, silently
-    // discarding the summary update (we'd fall back to the prior summary and
-    // the long-term memory would stop advancing).
+    // Tool-use replaces the previous `---RUNNING_SUMMARY---` delimiter
+    // pattern. The model is forced (via tool_choice) to produce a structured
+    // response with both insights_text and a typed summary, so we never have
+    // to text-parse a delimiter and the long-term memory is auditable JSON.
     const maxTokens = Math.min(8192, 2000 + activeModules.length * 250);
     const message = await client.messages.create({
       model: modelId, max_tokens: maxTokens,
       system: [{ type: "text", text: systemText, cache_control: { type: "ephemeral" } }],
+      tools: [INSIGHT_TOOL],
+      tool_choice: { type: "tool", name: "generate_financial_insight" },
       messages: [{ role: "user", content: userMsg }],
     });
-    const fullResponse = message.content[0].text;
     const usage = message.usage || {};
     const tokensUsed = (usage.input_tokens || 0) + (usage.output_tokens || 0);
-    const delimIdx = fullResponse.indexOf("---RUNNING_SUMMARY---");
     const hitTokenCap = message.stop_reason === "max_tokens";
-    let insightText, newSummary;
+    const toolBlock = message.content.find(b => b.type === "tool_use");
+    let insightText = "";
+    let newSummaryJson = null;
     let summaryStatus = "updated";
-    if (delimIdx !== -1) {
-      insightText = fullResponse.substring(0, delimIdx).trim();
-      newSummary = fullResponse.substring(delimIdx + "---RUNNING_SUMMARY---".length).trim();
-      // If we hit the cap *and* the post-delimiter text looks truncated
-      // (no terminal punctuation / too short), keep the prior summary rather
-      // than overwriting with half a sentence.
-      if (hitTokenCap && newSummary.length < 40) {
-        console.warn("Insights: stop_reason=max_tokens with a short summary body — keeping prior running_summary.");
-        newSummary = runningSummary;
-        summaryStatus = "preserved_due_to_truncation";
+    if (toolBlock && toolBlock.input && typeof toolBlock.input.insights_text === "string" && toolBlock.input.summary) {
+      insightText = String(toolBlock.input.insights_text).trim();
+      newSummaryJson = sanitizeStructuredSummary(toolBlock.input.summary);
+      if (!newSummaryJson) {
+        // Validation rejected the model's summary shape — preserve prior.
+        newSummaryJson = runningSummaryJson;
+        summaryStatus = "preserved_validation_failed";
+        console.warn("Insights: structured summary failed validation; keeping prior summary.");
       }
     } else {
-      insightText = fullResponse.trim();
-      newSummary = runningSummary;
-      // Delimiter missing because Claude ran out of tokens before writing it —
-      // surface this so the operator knows long-term memory is frozen.
-      summaryStatus = hitTokenCap
-        ? "preserved_due_to_truncation"
-        : "preserved_no_delimiter";
+      // No tool block at all (rare with tool_choice forced) — fall back to
+      // any text content the model returned, keep prior summary.
+      const textBlock = message.content.find(b => b.type === "text");
+      insightText = (textBlock && textBlock.text ? textBlock.text : "").trim();
+      newSummaryJson = runningSummaryJson;
+      summaryStatus = hitTokenCap ? "preserved_due_to_truncation" : "preserved_no_tool_block";
       if (hitTokenCap) {
-        console.warn("Insights: stop_reason=max_tokens before running-summary delimiter. Consider raising max_tokens or trimming module set.");
+        console.warn("Insights: stop_reason=max_tokens before tool block emitted. Consider raising max_tokens or trimming module set.");
+      } else {
+        console.warn("Insights: no tool_use block in response; long-term memory not advanced.");
       }
     }
+    // Backward-compat: render the structured summary to text for the legacy
+    // `insights_running_summary` column so any consumer not yet updated to
+    // read JSON still sees a meaningful long-term memory string.
+    const newSummaryText = newSummaryJson ? renderStructuredSummaryForPrompt(newSummaryJson) : null;
     const actualModel = message.model || modelId;
     const insightRow = await pool.query(
       "INSERT INTO financial_insights (insight_text, period_start, period_end, model_used, tokens_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens) VALUES ($1, CURRENT_DATE - INTERVAL '6 months', CURRENT_DATE, $2, $3, $4, $5, $6, $7) RETURNING id",
       [insightText, actualModel, tokensUsed, usage.input_tokens || 0, usage.output_tokens || 0, usage.cache_read_input_tokens || 0, usage.cache_creation_input_tokens || 0]
     );
     const insightId = insightRow.rows[0]?.id || null;
-    if (summaryStatus === "updated" && newSummary) {
+    if (summaryStatus === "updated" && newSummaryJson) {
       await pool.query(
-        "UPDATE user_settings SET insights_running_summary = $1, insights_last_run = now() WHERE id = 1",
-        [newSummary]
-      ).catch(() => {});
+        "UPDATE user_settings SET insights_running_summary = $1, insights_running_summary_json = $2, insights_last_run = now() WHERE id = 1",
+        [newSummaryText, newSummaryJson]
+      ).catch(err => console.error("insights_running_summary update failed:", err.message));
     } else {
-      await pool.query("UPDATE user_settings SET insights_last_run = now() WHERE id = 1").catch(() => {});
+      await pool.query("UPDATE user_settings SET insights_last_run = now() WHERE id = 1")
+        .catch(err => console.error("insights_last_run update failed:", err.message));
     }
 
     // Run audit against the insight
@@ -660,7 +880,8 @@ router.post("/api/insights", async (_req, res) => {
     }
 
     const costUsd = estimateCostGranular(usage, actualModel);
-    res.json({
+    return {
+      ok: true,
       insight: insightText,
       tokens_used: tokensUsed,
       modules_used: activeModules,
@@ -669,17 +890,31 @@ router.post("/api/insights", async (_req, res) => {
       stop_reason: message.stop_reason,
       summary_status: summaryStatus,
       audit: auditResult ? auditResult.summary : null,
-    });
+    };
   } catch (err) {
     console.error("Insights error:", err.message);
-    res.status(500).json({ error: "An internal error occurred." });
+    return { ok: false, status: 500, error: "An internal error occurred." };
   }
+}
+
+// POST /api/insights — HTTP wrapper around generateInsights().
+router.post("/api/insights", async (_req, res) => {
+  const result = await generateInsights();
+  if (!result.ok) {
+    const { status, ...body } = result;
+    return res.status(status || 500).json(body);
+  }
+  const { ok, ...body } = result;
+  res.json(body);
 });
 
 // POST /api/insights/reset
 router.post("/api/insights/reset", async (_req, res) => {
   try {
-    await pool.query("UPDATE user_settings SET insights_running_summary = NULL WHERE id = 1");
+    // Clear both legacy text and structured JSON so a reset is total.
+    await pool.query(
+      "UPDATE user_settings SET insights_running_summary = NULL, insights_running_summary_json = NULL WHERE id = 1"
+    );
     res.json({ ok: true, message: "Long-term AI context cleared. Next analysis starts fresh." });
   } catch (err) {
     console.error("Insights reset error:", err.message);
@@ -713,7 +948,7 @@ router.post("/api/insights/rebuild", async (_req, res) => {
     }
 
     const [allInsights, settingsRow] = await Promise.all([
-      pool.query("SELECT insight_text, created_at FROM financial_insights ORDER BY created_at ASC"),
+      pool.query("SELECT insight_text, created_at FROM financial_insights WHERE entry_type = 'insight' ORDER BY created_at ASC"),
       pool.query("SELECT insights_model FROM user_settings WHERE id = 1").catch(() => ({ rows: [{ insights_model: "sonnet" }] })),
     ]);
     if (allInsights.rows.length === 0) {
@@ -726,26 +961,44 @@ router.post("/api/insights/rebuild", async (_req, res) => {
       timeline += "[" + date + "]: " + ins.insight_text.substring(0, 400) + (ins.insight_text.length > 400 ? "..." : "") + "\n\n";
     });
     const client = new Anthropic();
+    // Rebuild also uses the structured-output tool so the rebuilt summary
+    // matches the same shape new runs produce — without this, a /rebuild
+    // would overwrite JSON with text and the next /api/insights call would
+    // see no structured context.
     const message = await client.messages.create({
-      model: modelId, max_tokens: 500,
+      model: modelId, max_tokens: 1500,
       system: [{ type: "text", text:
-        "You are a personal finance advisor. Synthesize a chronological timeline of past financial analyses into a single cumulative summary (max 200 words) that captures:\n" +
-        "- Baseline spending levels and long-term trends\n" +
-        "- Key subscriptions and how they've changed over time\n" +
-        "- Progress on past recommendations (what improved, what didn't)\n" +
-        "- Recurring patterns or concerns worth continuing to track\n\n" +
-        "This summary will serve as persistent memory for future analyses.",
+        "You are a personal finance advisor. Synthesize a chronological timeline of past financial analyses into a structured cumulative summary that future analyses will use as persistent memory. Use the `generate_financial_insight` tool to return:\n" +
+        "  - insights_text: a brief 1-2 sentence acknowledgement that the rebuild is complete (this won't be displayed prominently).\n" +
+        "  - summary: structured cumulative memory with trends / completed_goals / pending_actions / alerts arrays as defined in the tool schema. Cover the user's baseline spending levels, long-term trends, key subscriptions and changes, progress on past recommendations, and any recurring concerns worth tracking.",
         cache_control: { type: "ephemeral" },
       }],
+      tools: [INSIGHT_TOOL],
+      tool_choice: { type: "tool", name: "generate_financial_insight" },
       messages: [{ role: "user", content: "=== ALL PAST ANALYSES ===\n" + timeline }],
     });
-    const newSummary = message.content[0].text.trim();
     const usage = message.usage || {};
     const tokensUsed = (usage.input_tokens || 0) + (usage.output_tokens || 0);
+    const toolBlock = message.content.find(b => b.type === "tool_use");
+    if (!toolBlock || !toolBlock.input || !toolBlock.input.summary) {
+      return res.status(500).json({ error: "Rebuild did not return expected structured summary." });
+    }
+    const newSummaryJson = sanitizeStructuredSummary(toolBlock.input.summary);
+    if (!newSummaryJson) {
+      return res.status(500).json({ error: "Rebuild summary failed validation." });
+    }
+    const newSummaryText = renderStructuredSummaryForPrompt(newSummaryJson) || "";
     await pool.query(
-      "UPDATE user_settings SET insights_running_summary = $1 WHERE id = 1", [newSummary]
+      "UPDATE user_settings SET insights_running_summary = $1, insights_running_summary_json = $2 WHERE id = 1",
+      [newSummaryText, newSummaryJson]
     );
-    res.json({ ok: true, message: "Long-term context rebuilt from " + allInsights.rows.length + " historical analyses.", summary: newSummary, tokens_used: tokensUsed });
+    res.json({
+      ok: true,
+      message: "Long-term context rebuilt from " + allInsights.rows.length + " historical analyses.",
+      summary: newSummaryJson,
+      summary_text: newSummaryText,
+      tokens_used: tokensUsed,
+    });
   } catch (err) {
     console.error("Rebuild error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
@@ -788,7 +1041,7 @@ router.patch("/api/tax-deductions/:id", async (req, res) => {
   }
 });
 
-// GET /api/insights/audit — audit log and per-module accuracy stats
+// GET /api/insights/audit — audit log, per-run stats, and 90-day accuracy summary
 router.get("/api/insights/audit", async (_req, res) => {
   try {
     const recent = await pool.query(
@@ -797,8 +1050,11 @@ router.get("/api/insights/audit", async (_req, res) => {
        LEFT JOIN financial_insights fi ON fi.id = al.insight_id
        ORDER BY al.created_at DESC LIMIT 50`
     );
-    const stats = await getAuditStats(10);
-    res.json({ findings: recent.rows, stats });
+    const [stats, accuracy] = await Promise.all([
+      getAuditStats(10),
+      getAuditAccuracy(90),
+    ]);
+    res.json({ findings: recent.rows, stats, accuracy });
   } catch (err) {
     res.status(500).json({ error: "An internal error occurred." });
   }
@@ -806,3 +1062,4 @@ router.get("/api/insights/audit", async (_req, res) => {
 
 module.exports = router;
 module.exports.renderInsightEmail = renderInsightEmail;
+module.exports.generateInsights = generateInsights;

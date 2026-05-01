@@ -1,11 +1,9 @@
 const express = require("express");
 const router = express.Router();
 
-module.exports = function(config) {
-  const { API_KEY } = config;
-router.get("/dashboard", (req, res) => {
-  res.render("dashboard", { apiKey: API_KEY || "" });
-});
-
+module.exports = function() {
+  router.get("/dashboard", (_req, res) => {
+    res.render("dashboard");
+  });
   return router;
 };

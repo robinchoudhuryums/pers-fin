@@ -23,11 +23,12 @@ const API_KEY = process.env.API_KEY;
 // Captured so shutdown (or the shell) can clearInterval them.
 const intervalHandles = [];
 
-// NOTE: a few of these jobs make in-process fetches to
-// http://localhost:PORT/api/... When this app is mounted at a prefix
-// (e.g. /perfin) under the unified shell, those URLs need to gain the
-// prefix or be replaced with direct function calls. Tracked by the
-// URL-sweep phase of the merge plan.
+// All scheduled jobs invoke route logic via exported helpers (in-process)
+// rather than HTTP self-fetches. An HTTP fetch to http://localhost:PORT/api/...
+// hits the unified shell's auth gate (no shell session cookie on the in-process
+// fetch) and 401s — so the auto-trigger silently failed under the deployed shell
+// for every cycle. Use the "extract handler → export → reuse" pattern when
+// adding new scheduled tasks.
 
 function startBackgroundJobs() {
   // Sheets auto-sync check (every hour)
@@ -53,13 +54,15 @@ function startBackgroundJobs() {
     }
   }, 60 * 60 * 1000));
 
-  // Daily net worth auto-snapshot (checks every hour, takes one snapshot per day)
+  // Hourly net worth auto-snapshot. The INSERT below uses ON CONFLICT
+  // (snapshot_date) DO UPDATE so a same-day re-run rewrites the row with
+  // the latest balances — important when a balance sync arrives mid-day
+  // and the snapshot would otherwise lock in stale numbers from this
+  // morning. (CLAUDE.md describes this as "updates if exists so late-
+  // arriving transactions are reflected"; the previous early-return
+  // contradicted that.)
   intervalHandles.push(setInterval(async () => {
     try {
-      const existing = await pool.query(
-        "SELECT id FROM net_worth_snapshots WHERE snapshot_date = CURRENT_DATE LIMIT 1"
-      );
-      if (existing.rows.length > 0) return;
       const [accounts, investments] = await Promise.all([
         pool.query("SELECT name, type, available_balance, current_balance FROM linked_accounts WHERE available_balance IS NOT NULL OR current_balance IS NOT NULL"),
         pool.query("SELECT name, account_type, balance FROM investment_accounts WHERE is_active = true AND balance != 0"),
@@ -151,19 +154,26 @@ function startBackgroundJobs() {
       const now = new Date();
       if (!lastRun || (now - lastRun) / 86400000 >= cadenceDays) {
         const { syncAllEnrollments, syncAllBalances } = require("./routes/enrollments");
+        const { runSubscriptionDetection } = require("./routes/subscriptions");
+        const { detectRecurringTransfers } = require("../scripts/detect-transfers");
+        const { runCategorize } = require("./routes/categorize");
+        const { generateInsights } = require("./routes/insights");
+
         try { await syncAllEnrollments(); } catch (e) { console.error("Pre-insights sync error:", e.message); }
         try { await syncAllBalances(); } catch (e) { console.error("Pre-insights balance error:", e.message); }
-        const port = process.env.PORT || 3000;
-        const headers = { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" };
-        if (API_KEY) headers["X-API-Key"] = API_KEY;
-        try { await fetch(`http://localhost:${port}/api/detect`, { method: "POST", headers }); } catch {}
-        try { await fetch(`http://localhost:${port}/api/detect-transfers`, { method: "POST", headers }); } catch {}
+        try { await runSubscriptionDetection(); } catch (e) { console.error("Pre-insights detect error:", e.message); }
+        try { await detectRecurringTransfers(pool); } catch (e) { console.error("Pre-insights detect-transfers error:", e.message); }
+        // Categorize BEFORE generating insights so the AI sees freshly
+        // categorized rows (matches the documented chain in CLAUDE.md).
         try {
-          const r = await fetch(`http://localhost:${port}/api/insights`, { method: "POST", headers });
-          if (r.ok) console.log("Auto-triggered AI insights (cadence: " + cadenceDays + " days).");
-          else console.log("Auto-trigger insights skipped:", (await r.json().catch(() => ({}))).error);
-        } catch (err) { console.error("Auto-trigger insights fetch error:", err.message); }
-        try { await fetch(`http://localhost:${port}/api/categorize`, { method: "POST", headers }); } catch {}
+          const cat = await runCategorize();
+          if (!cat.ok) console.log("Auto-trigger categorize skipped:", cat.error);
+        } catch (e) { console.error("Pre-insights categorize error:", e.message); }
+        try {
+          const ins = await generateInsights();
+          if (ins.ok) console.log("Auto-triggered AI insights (cadence: " + cadenceDays + " days).");
+          else console.log("Auto-trigger insights skipped:", ins.error);
+        } catch (err) { console.error("Auto-trigger insights error:", err.message); }
       }
     } catch (err) {
       console.error("Insights auto-trigger error:", err.message);
@@ -220,10 +230,13 @@ function startBackgroundJobs() {
         "SELECT 1 FROM budget_snapshots WHERE month = $1 LIMIT 1", [prevMonth]
       );
       if (existing.rows.length > 0) return;
-      const { getCategorySpendingThisMonth } = require("./services/financial-queries");
+      const { getCategorySpendingForMonth } = require("./services/financial-queries");
+      // Pull spending FOR last month, not this (new) month — getCategorySpendingThisMonth
+      // would query the just-rolled-over current month and snapshot near-zero spending,
+      // which made every rollover-enabled budget carry forward its full limit.
       const [budgets, spending] = await Promise.all([
         pool.query("SELECT * FROM budgets"),
-        getCategorySpendingThisMonth(pool),
+        getCategorySpendingForMonth(pool, prevMonth),
       ]);
       const spendMap = {};
       for (const r of spending) spendMap[r.category] = parseFloat(r.spent);
@@ -270,11 +283,19 @@ function startBackgroundJobs() {
       const syncMsg = (txnResult ? `${txnResult.transactions_added} txns added` : "txn sync failed") +
         ", " + (balResult ? `${balResult.accounts_updated} balances updated` : "balance sync failed");
       console.log("Auto-sync complete: " + syncMsg);
-      if (s.sync_notifications_enabled !== false) {
+      // Only push a notification when something actually changed OR a sync
+      // failed — silent successful syncs (0 txns, 0 balance updates) used to
+      // produce hourly noise notifications. Failed syncs should still notify
+      // so the user knows the data isn't fresh.
+      const txnsAdded = txnResult ? txnResult.transactions_added : 0;
+      const balancesUpdated = balResult ? balResult.accounts_updated : 0;
+      const anyFailed = !txnResult || !balResult;
+      const anyChanged = txnsAdded > 0 || balancesUpdated > 0;
+      if (s.sync_notifications_enabled !== false && (anyChanged || anyFailed)) {
         try {
           const { sendToAll } = require("./routes/notifications");
           await sendToAll({
-            title: "Auto-sync complete",
+            title: anyFailed ? "Auto-sync issue" : "Auto-sync complete",
             body: syncMsg,
             tag: "auto-sync",
             data: { url: "/dashboard" },
@@ -295,15 +316,21 @@ function startBackgroundJobs() {
       const s = settings.rows[0];
       if (!s || !s.csv_reminder_enabled) return;
       const days = parseInt(s.csv_reminder_days) || 14;
+      // Match the LATERAL JOIN logic in GET /api/csv-reminder so the push
+      // notification reflects the same stale-account list the UI shows. The
+      // previous join used a single COALESCE(institution_name_manual, name)
+      // path and missed accounts where csv_imports.account_label matches.
       const staleAccounts = await pool.query(`
-        SELECT la.name, la.institution_name_manual AS institution,
-               MAX(ci.imported_at) AS last_import
+        SELECT la.name, la.institution_name_manual AS institution, ci.imported_at AS last_import
         FROM linked_accounts la
-        LEFT JOIN csv_imports ci ON LOWER(ci.institution) = LOWER(COALESCE(la.institution_name_manual, la.name))
+        LEFT JOIN LATERAL (
+          SELECT imported_at FROM csv_imports
+          WHERE LOWER(institution) = LOWER(COALESCE(la.institution_name_manual, ''))
+             OR LOWER(account_label) = LOWER(la.name)
+          ORDER BY imported_at DESC LIMIT 1
+        ) ci ON true
         WHERE la.is_manual = true
-        GROUP BY la.id, la.name, la.institution_name_manual
-        HAVING MAX(ci.imported_at) IS NULL
-           OR MAX(ci.imported_at) < now() - make_interval(days => $1)
+          AND (ci.imported_at IS NULL OR ci.imported_at < now() - make_interval(days => $1))
       `, [days]);
       if (staleAccounts.rows.length > 0) {
         const { sendToAll } = require("./routes/notifications");

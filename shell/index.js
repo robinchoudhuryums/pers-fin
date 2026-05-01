@@ -23,6 +23,8 @@ const express = require("express");
 const cookieParser = require("cookie-parser");
 const path = require("path");
 const auth = require("./middleware/auth");
+const webauthn = require("./middleware/webauthn");
+const { startKeepAlive } = require("../teller/services/keep-alive");
 
 const app = express();
 app.set("trust proxy", 1);
@@ -30,6 +32,7 @@ app.set("view engine", "ejs");
 app.set("views", path.join(__dirname, "views"));
 
 app.use(cookieParser());
+app.use(express.json({ limit: "64kb" }));
 app.use(express.urlencoded({ extended: false, limit: "64kb" }));
 
 // Shell-only static assets are scoped under /shell-static so they can't
@@ -37,6 +40,14 @@ app.use(express.urlencoded({ extended: false, limit: "64kb" }));
 app.use("/shell-static", express.static(path.join(__dirname, "public"), {
   maxAge: process.env.NODE_ENV === "production" ? "1d" : 0,
 }));
+
+// --- Sub-app modules -------------------------------------------------------
+// Loaded here (before requireAuth) so the shell-side WebAuthn endpoints can
+// share Perfin's pg Pool — they need to read `webauthn_credentials`, which
+// only Perfin's database has. require() loads the modules without firing
+// their listeners (server.js wraps that in `if (require.main === module)`).
+const perfin = require("../teller/server");
+const persistent = require("../apps/per-sistant/server");
 
 // --- Public routes (no auth) ------------------------------------------------
 // Manifest is served pre-auth so install prompts work on the login page.
@@ -51,6 +62,13 @@ app.get("/login", (req, res) => {
 app.post("/login", auth.handleLogin);
 app.post("/logout", auth.handleLogout);
 
+// Biometric login — mounted BEFORE requireAuth so users can authenticate via
+// FaceID / passkey without first entering the PIN. The endpoints query
+// Perfin's webauthn_credentials table directly via the wired pool. On
+// successful verify, the shell session cookie is set and the client can
+// proceed to the landing page like a regular PIN login.
+webauthn.attach(app, perfin.pool);
+
 // --- Auth gate --------------------------------------------------------------
 // Everything past this point requires a valid signed session cookie. Sub-apps
 // trust this gate and don't run their own login flows; their /login routes
@@ -61,13 +79,9 @@ app.use(auth.requireAuth);
 app.get("/", (_req, res) => res.render("landing"));
 
 // --- Sub-app mounts ---------------------------------------------------------
-// require() loads each sub-app's Express instance without firing its
-// listener (server.js wraps that in `if (require.main === module)`).
 // We then call start({ standalone: false }) so migrations and cron jobs
 // run, but the sub-app doesn't bind a port or install signal handlers —
 // we own those at the shell level.
-const perfin = require("../teller/server");
-const persistent = require("../apps/per-sistant/server");
 
 // Tell each sub-app it's running embedded so its own auth middleware
 // can bail early. The shell's PIN gate above is the sole authentication
@@ -77,6 +91,15 @@ const persistent = require("../apps/per-sistant/server");
 // that manifests as "clicking the tile does nothing").
 perfin.app.set("embedded", true);
 persistent.app.set("embedded", true);
+
+// Cross-pool wiring: the cross-app integration endpoints used to fetch
+// http://localhost:PORT/api/... at the OTHER sub-app, which 401s through the
+// shell auth gate (the in-process fetch carries no shell session cookie).
+// Hand each sub-app a reference to the other's pg Pool so they can query
+// directly when running embedded. Standalone deployments leave these unset
+// and the routes fall back to HTTP fetches.
+perfin.app.set("persistentPool", persistent.pool);
+persistent.app.set("perfinPool", perfin.pool);
 
 app.use("/perfin", perfin.app);
 app.use("/per-sistant", persistent.app);
@@ -103,6 +126,13 @@ async function start() {
     if (!process.env.SHELL_PIN || !process.env.SHELL_SECRET) {
       console.warn("WARNING: SHELL_PIN and SHELL_SECRET must both be set for login to work.");
     }
+    // Start keep-alive at the shell layer. Sub-apps in embedded mode no longer
+    // own the listener, so their startup.js skips startKeepAlive — without this
+    // the keep_alive_enabled setting was wired to nothing and scheduled jobs
+    // never fired on Render free tier between user sessions. Keep-alive reads
+    // its enable flag and active-hours from Perfin's user_settings each tick,
+    // so settings changes still take effect immediately.
+    startKeepAlive(PORT);
   });
 
   // Graceful shutdown — close the listener, then drain both DB pools.

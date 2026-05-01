@@ -6,7 +6,7 @@ const express = require("express");
 const router = express.Router();
 const { pool, ENCRYPTION_PASSPHRASE } = require("../services/database");
 const { tellerRequest } = require("../services/teller-api");
-const { INCOME_PREDICATE, NOT_TRANSFER, getMonthlySpending, getMonthlyIncome } = require("../services/financial-queries");
+const { INCOME_PREDICATE, NOT_TRANSFER, INVESTMENT_ACCOUNT_TYPES, getMonthlySpending, getMonthlyIncome } = require("../services/financial-queries");
 
 // POST /api/enroll — store Teller Connect enrollment
 router.post("/api/enroll", async (req, res) => {
@@ -216,19 +216,22 @@ async function syncAllEnrollments() {
     try {
       const settings = await pool.query("SELECT last_anomaly_check_at FROM user_settings WHERE id = 1");
       const watermark = settings.rows[0]?.last_anomaly_check_at || null;
+      // Group merchants by user_merchant_name when the user has set one, so a
+      // user-merged merchant ('Amazon' replacing 'AMAZON MKTP*4321' / 'AMZN.COM')
+      // accumulates a single baseline rather than three under-the-threshold ones.
       const anomalies = await pool.query(
-        `SELECT t.merchant_name, t.name, t.amount, t.date, avg_tbl.avg_amount
+        `SELECT t.merchant_name, t.name, t.user_merchant_name, t.amount, t.date, avg_tbl.avg_amount
          FROM transactions t
          JOIN (
-           SELECT LOWER(COALESCE(merchant_name, name)) AS merchant,
+           SELECT LOWER(COALESCE(user_merchant_name, merchant_name, name)) AS merchant,
                   AVG(amount) AS avg_amount, COUNT(*) AS txn_count
            FROM transactions
            WHERE amount > 0 AND pending = false
              AND date >= CURRENT_DATE - INTERVAL '12 months'
              AND date <  CURRENT_DATE - INTERVAL '7 days'
-           GROUP BY LOWER(COALESCE(merchant_name, name))
+           GROUP BY LOWER(COALESCE(user_merchant_name, merchant_name, name))
            HAVING COUNT(*) >= 3
-         ) avg_tbl ON LOWER(COALESCE(t.merchant_name, t.name)) = avg_tbl.merchant
+         ) avg_tbl ON LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name)) = avg_tbl.merchant
          WHERE t.amount > 0 AND t.pending = false
            AND COALESCE(t.is_reimbursed, false) = false
            AND t.date >= CURRENT_DATE - INTERVAL '3 days'
@@ -242,7 +245,7 @@ async function syncAllEnrollments() {
         try {
           const { sendToAll } = require("./notifications");
           for (const a of anomalies.rows) {
-            const merchant = a.merchant_name || a.name;
+            const merchant = a.user_merchant_name || a.merchant_name || a.name;
             await sendToAll({
               title: "Unusual charge detected",
               body: merchant + ": $" + parseFloat(a.amount).toFixed(2) + " (avg: $" + parseFloat(a.avg_amount).toFixed(2) + ")",
@@ -389,12 +392,18 @@ router.delete("/api/items/:id", async (req, res) => {
 // GET /api/accounts
 router.get("/api/accounts", async (_req, res) => {
   try {
+    // is_investment flags Teller-linked brokerage / IRA / 401k / HSA / 529 /
+    // pension accounts so the UI can group them as "Investments" instead of
+    // showing them mixed in with cash/credit. Teller exposes balance only
+    // (no holdings / cost basis) — see services/financial-queries.js
+    // INVESTMENT_ACCOUNT_TYPES for the detection list.
     const result = await pool.query(
       `SELECT la.id, la.account_id, la.name, la.official_name, la.type, la.subtype, la.mask,
               la.available_balance, la.current_balance, la.balance_currency, la.balance_updated_at, la.apr,
               COALESCE(te.institution_name, pi.institution_name, la.institution_name_manual) AS institution_name,
               CASE WHEN te.id IS NOT NULL THEN 'teller' WHEN la.is_manual THEN 'manual' ELSE 'plaid' END AS provider,
-              la.is_manual, la.credit_limit, la.is_shared, la.spending_split_pct
+              la.is_manual, la.credit_limit, la.is_shared, la.spending_split_pct,
+              ${INVESTMENT_ACCOUNT_TYPES} AS is_investment
        FROM linked_accounts la
        LEFT JOIN teller_enrollments te ON te.id = la.teller_enrollment_id
        LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
@@ -535,13 +544,35 @@ async function syncAllBalances() {
         const ledger = balances?.ledger || acct.balance?.ledger || acct.balance?.current || null;
 
         if (available !== null || ledger !== null) {
-          await pool.query(
+          const availNum = available ? parseFloat(available) : null;
+          const ledgerNum = ledger ? parseFloat(ledger) : null;
+          // Persist current values to linked_accounts AND append a daily
+          // history row so we can chart per-account performance over time.
+          // RETURNING gets the linked_accounts.id we need for the snapshot
+          // FK without a second SELECT round-trip. The snapshot UPSERT keeps
+          // intra-day re-syncs to one row per account per day.
+          const updateResult = await pool.query(
             `UPDATE linked_accounts
              SET available_balance = $1, current_balance = $2, balance_updated_at = now()
-             WHERE account_id = $3`,
-            [available ? parseFloat(available) : null, ledger ? parseFloat(ledger) : null, acct.id]
+             WHERE account_id = $3
+             RETURNING id`,
+            [availNum, ledgerNum, acct.id]
           );
           updated++;
+          const linkedAcctId = updateResult.rows[0]?.id;
+          if (linkedAcctId) {
+            const dailyBalance = ledgerNum !== null ? ledgerNum : availNum;
+            await pool.query(
+              `INSERT INTO account_balance_snapshots
+                 (source, source_id, snapshot_date, balance, available_balance, current_balance)
+               VALUES ('linked', $1, CURRENT_DATE, $2, $3, $4)
+               ON CONFLICT (source, source_id, snapshot_date) DO UPDATE SET
+                 balance = EXCLUDED.balance,
+                 available_balance = EXCLUDED.available_balance,
+                 current_balance = EXCLUDED.current_balance`,
+              [linkedAcctId, dailyBalance, availNum, ledgerNum]
+            ).catch(e => console.error("balance snapshot insert error:", e.message));
+          }
         }
       }
     } catch (err) {
@@ -605,7 +636,7 @@ router.get("/api/spending-summary", async (req, res) => {
     // the full amount to the parent's category[1].
     const byCategory = await pool.query(
       `WITH parent_no_splits AS (
-         SELECT COALESCE(t.category[1], 'Uncategorized') AS category,
+         SELECT COALESCE(t.user_category, t.category[1], 'Uncategorized') AS category,
                 t.amount * COALESCE(la.spending_split_pct, 100) / 100.0 AS amount,
                 1 AS line_count
          FROM transactions t
@@ -616,7 +647,7 @@ router.get("/api/spending-summary", async (req, res) => {
            AND NOT EXISTS (SELECT 1 FROM transaction_splits s WHERE s.parent_transaction_id = t.transaction_id)
        ),
        from_splits AS (
-         SELECT COALESCE(s.category, t.category[1], 'Uncategorized') AS category,
+         SELECT COALESCE(s.category, t.user_category, t.category[1], 'Uncategorized') AS category,
                 s.amount * COALESCE(la.spending_split_pct, 100) / 100.0 AS amount,
                 1 AS line_count
          FROM transaction_splits s
@@ -672,7 +703,7 @@ router.get("/api/spending-summary", async (req, res) => {
     const recentTxns = await pool.query(
       `SELECT COALESCE(user_merchant_name, merchant_name, name) AS description,
               amount, date, pending, is_reimbursed,
-              COALESCE(category[1], 'Uncategorized') AS category
+              COALESCE(user_category, category[1], 'Uncategorized') AS category
        FROM transactions
        ORDER BY date DESC, created_at DESC
        LIMIT 10`
@@ -926,7 +957,7 @@ router.get("/api/spending-yoy", async (req, res) => {
     // Phase B3: honor transaction_splits for per-category breakdowns.
     const result = await pool.query(`
       WITH parent_no_splits AS (
-        SELECT t.date, COALESCE(t.category[1], 'Uncategorized') AS category,
+        SELECT t.date, COALESCE(t.user_category, t.category[1], 'Uncategorized') AS category,
                t.amount * COALESCE(la.spending_split_pct, 100) / 100.0 AS amount
         FROM transactions t
         LEFT JOIN linked_accounts la ON la.account_id = t.account_id
@@ -938,7 +969,7 @@ router.get("/api/spending-yoy", async (req, res) => {
           AND NOT EXISTS (SELECT 1 FROM transaction_splits s WHERE s.parent_transaction_id = t.transaction_id)
       ),
       from_splits AS (
-        SELECT t.date, COALESCE(s.category, t.category[1], 'Uncategorized') AS category,
+        SELECT t.date, COALESCE(s.category, t.user_category, t.category[1], 'Uncategorized') AS category,
                s.amount * COALESCE(la.spending_split_pct, 100) / 100.0 AS amount
         FROM transaction_splits s
         JOIN transactions t ON t.transaction_id = s.parent_transaction_id
@@ -1104,6 +1135,114 @@ router.get("/api/csv-reminder", async (_req, res) => {
     });
   } catch (err) {
     console.error("csv-reminder error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// GET /api/accounts/:id/balance-history — Daily balance series for charting.
+// `source` query param defaults to 'linked' (linked_accounts row); pass
+// 'investment' to read snapshots for an investment_accounts row instead.
+// Returns { source, account_id, snapshots: [{ snapshot_date, balance, ... }] }
+// ordered oldest-first so charting libraries render left-to-right.
+router.get("/api/accounts/:id/balance-history", async (req, res) => {
+  const months = Math.max(1, Math.min(parseInt(req.query.months) || 12, 60));
+  const source = req.query.source === "investment" ? "investment" : "linked";
+  const accountId = parseInt(req.params.id);
+  if (!Number.isFinite(accountId) || accountId <= 0) {
+    return res.status(400).json({ error: "id must be a positive integer" });
+  }
+  try {
+    const result = await pool.query(
+      `SELECT snapshot_date, balance, available_balance, current_balance
+       FROM account_balance_snapshots
+       WHERE source = $1 AND source_id = $2
+         AND snapshot_date >= CURRENT_DATE - make_interval(months => $3)
+       ORDER BY snapshot_date ASC`,
+      [source, accountId, months]
+    );
+    res.json({
+      source,
+      account_id: accountId,
+      months,
+      snapshots: result.rows.map(r => ({
+        snapshot_date: r.snapshot_date,
+        balance: parseFloat(r.balance),
+        available_balance: r.available_balance !== null ? parseFloat(r.available_balance) : null,
+        current_balance: r.current_balance !== null ? parseFloat(r.current_balance) : null,
+      })),
+    });
+  } catch (err) {
+    console.error("balance-history error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// GET /api/income-summary — Monthly income trend + top sources + by-account.
+// Symmetric to /api/spending-summary so the dashboard can show income with
+// the same depth as spending (previously only /api/savings-rate exposed
+// income, and only as an aggregate). Uses the shared INCOME_PREDICATE so the
+// numbers agree with cash-flow, savings-rate, and AI insights.
+router.get("/api/income-summary", async (req, res) => {
+  const months = Math.max(1, Math.min(parseInt(req.query.months) || 6, 24));
+  try {
+    const [monthlyTrend, bySource, byAccount] = await Promise.all([
+      pool.query(
+        `SELECT TO_CHAR(date, 'YYYY-MM') AS month,
+                ROUND(SUM(ABS(amount)), 2) AS total_income,
+                COUNT(*) AS deposit_count
+         FROM transactions
+         WHERE amount < 0 AND pending = false
+           AND date >= CURRENT_DATE - make_interval(months => $1)
+           AND ${INCOME_PREDICATE}
+         GROUP BY TO_CHAR(date, 'YYYY-MM')
+         ORDER BY month`,
+        [months]
+      ),
+      pool.query(
+        `SELECT COALESCE(merchant_name, name) AS source,
+                ROUND(SUM(ABS(amount)), 2) AS total_income,
+                COUNT(*) AS deposit_count,
+                MAX(date) AS last_seen
+         FROM transactions
+         WHERE amount < 0 AND pending = false
+           AND date >= CURRENT_DATE - make_interval(months => $1)
+           AND ${INCOME_PREDICATE}
+         GROUP BY COALESCE(merchant_name, name)
+         ORDER BY total_income DESC
+         LIMIT 10`,
+        [months]
+      ),
+      pool.query(
+        `SELECT la.name AS account_name,
+                COALESCE(te.institution_name, pi.institution_name, la.institution_name_manual) AS institution_name,
+                ROUND(SUM(ABS(t.amount)), 2) AS total_income,
+                COUNT(*) AS deposit_count
+         FROM transactions t
+         JOIN linked_accounts la ON la.account_id = t.account_id
+         LEFT JOIN teller_enrollments te ON te.id = la.teller_enrollment_id
+         LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
+         WHERE t.amount < 0 AND t.pending = false
+           AND t.date >= CURRENT_DATE - make_interval(months => $1)
+           AND ${INCOME_PREDICATE}
+         GROUP BY la.id, la.name, te.institution_name, pi.institution_name, la.institution_name_manual
+         ORDER BY total_income DESC`,
+        [months]
+      ),
+    ]);
+
+    const totalIncome = monthlyTrend.rows.reduce((s, r) => s + parseFloat(r.total_income), 0);
+    const avgMonthly = monthlyTrend.rows.length > 0 ? totalIncome / monthlyTrend.rows.length : 0;
+
+    res.json({
+      months,
+      total_income: Math.round(totalIncome * 100) / 100,
+      avg_monthly_income: Math.round(avgMonthly * 100) / 100,
+      monthly_trend: monthlyTrend.rows,
+      top_sources: bySource.rows,
+      by_account: byAccount.rows,
+    });
+  } catch (err) {
+    console.error("income-summary error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
   }
 });

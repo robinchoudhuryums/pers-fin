@@ -6,6 +6,7 @@ const express = require("express");
 const router = express.Router();
 const { pool } = require("../services/database");
 const { zipToState } = require("../data/reference-data");
+const { INVESTMENT_ACCOUNT_TYPES } = require("../services/financial-queries");
 
 // GET /api/goals
 // When a goal is linked to a funding account (Phase C), current_amount is
@@ -15,20 +16,40 @@ const { zipToState } = require("../data/reference-data");
 // exposed as `current_amount_manual` so the UI can show both.
 router.get("/api/goals", async (_req, res) => {
   try {
-    const result = await pool.query(
-      `SELECT g.*,
-              la.name  AS funding_account_name,
-              la.type  AS funding_account_type,
-              COALESCE(la.available_balance, la.current_balance) AS funding_account_balance,
-              ia.name    AS funding_investment_name,
-              ia.account_type AS funding_investment_type,
-              ia.balance AS funding_investment_balance
-       FROM financial_goals g
-       LEFT JOIN linked_accounts    la ON la.id = g.funding_account_id
-       LEFT JOIN investment_accounts ia ON ia.id = g.funding_investment_id
-       WHERE g.is_active = true
-       ORDER BY g.target_date ASC NULLS LAST`
-    );
+    // Pull active recurring transfers once and match them against each goal's
+    // funding source + monthly_contribution. Match heuristic:
+    //   - savings goals match transfer_type='savings'
+    //   - investment-backed goals match transfer_type='investment'
+    //   - amount within ±25% of monthly_contribution (when set)
+    // Suggestion only — surfaced as `suggested_transfers` on each goal so the
+    // UI can prompt "Want to link this $500/mo Schwab transfer?" without
+    // auto-linking anything.
+    const [result, transfers] = await Promise.all([
+      pool.query(
+        `SELECT g.*,
+                la.name  AS funding_account_name,
+                la.type  AS funding_account_type,
+                la.subtype AS funding_account_subtype,
+                COALESCE(la.available_balance, la.current_balance) AS funding_account_balance,
+                ia.name    AS funding_investment_name,
+                ia.account_type AS funding_investment_type,
+                ia.balance AS funding_investment_balance
+         FROM financial_goals g
+         LEFT JOIN linked_accounts    la ON la.id = g.funding_account_id
+         LEFT JOIN investment_accounts ia ON ia.id = g.funding_investment_id
+         WHERE g.is_active = true
+         ORDER BY g.target_date ASC NULLS LAST`
+      ),
+      pool.query(
+        `SELECT id, display_name, amount, cadence_days, transfer_type,
+                ROUND(amount * (30.0 / NULLIF(cadence_days, 0)), 2) AS monthly_equivalent
+         FROM recurring_transfers
+         WHERE is_active = true AND is_dismissed = false
+           AND direction = 'outgoing'
+           AND transfer_type IN ('savings', 'investment')
+         ORDER BY amount DESC`
+      ),
+    ]);
     const goals = result.rows.map(g => {
       const target = parseFloat(g.target_amount);
       const manualCurrent = parseFloat(g.current_amount || 0);
@@ -70,6 +91,31 @@ router.get("/api/goals", async (_req, res) => {
         d.setMonth(d.getMonth() + months_to_goal);
         estimated_date = d.toISOString().split("T")[0];
       }
+      // Suggested transfers — recurring outgoing transfers whose type aligns
+      // with this goal's funding source and whose monthly_equivalent is in
+      // the right ballpark vs the configured monthly_contribution.
+      let suggested_transfers = [];
+      if (funding_source) {
+        const wantedType = funding_source.kind === "investment" ? "investment" : "savings";
+        const target = monthly > 0 ? monthly : null;
+        suggested_transfers = transfers.rows
+          .filter(t => t.transfer_type === wantedType)
+          .filter(t => {
+            if (!target) return true; // no monthly contribution set — show all type-matched
+            const me = parseFloat(t.monthly_equivalent);
+            if (!isFinite(me) || me <= 0) return false;
+            return Math.abs(me - target) / target <= 0.25;
+          })
+          .slice(0, 5)
+          .map(t => ({
+            id: t.id,
+            display_name: t.display_name,
+            amount: parseFloat(t.amount),
+            cadence_days: t.cadence_days,
+            transfer_type: t.transfer_type,
+            monthly_equivalent: parseFloat(t.monthly_equivalent),
+          }));
+      }
       return {
         ...g,
         current_amount: current,
@@ -79,6 +125,7 @@ router.get("/api/goals", async (_req, res) => {
         months_to_goal,
         estimated_date,
         funding_source,
+        suggested_transfers,
       };
     });
     res.json(goals);
@@ -88,16 +135,28 @@ router.get("/api/goals", async (_req, res) => {
 });
 
 // GET /api/goals/funding-options — list accounts a goal can be linked to.
-// Returns depository/investment accounts with their current balance so the
-// Settings UI can show a dropdown with balances.
+// Returns depository accounts (checking/savings), Teller-linked investment
+// accounts (brokerage/IRA/401k/HSA/etc.), and manual+Plaid investment_accounts
+// rows with their current balances. Goals reference linked_accounts via
+// funding_account_id, so Teller investments — which live in linked_accounts —
+// link through the same FK; investment_accounts (manual + Plaid) use
+// funding_investment_id. The UI merges all three groups into one dropdown.
 router.get("/api/goals/funding-options", async (_req, res) => {
   try {
-    const [linked, investments] = await Promise.all([
+    const [linked, tellerInvestments, investments] = await Promise.all([
       pool.query(
         `SELECT id, name, type, subtype,
                 COALESCE(available_balance, current_balance) AS balance
-         FROM linked_accounts
+         FROM linked_accounts la
          WHERE type IN ('depository')
+           AND (available_balance IS NOT NULL OR current_balance IS NOT NULL)
+         ORDER BY name`
+      ),
+      pool.query(
+        `SELECT id, name, type, subtype,
+                COALESCE(available_balance, current_balance) AS balance
+         FROM linked_accounts la
+         WHERE ${INVESTMENT_ACCOUNT_TYPES}
            AND (available_balance IS NOT NULL OR current_balance IS NOT NULL)
          ORDER BY name`
       ),
@@ -108,8 +167,13 @@ router.get("/api/goals/funding-options", async (_req, res) => {
          ORDER BY name`
       ),
     ]);
+    // Teller-linked investments are returned via the same `linked_accounts`
+    // key as depository (they're both rows from the linked_accounts table)
+    // so the UI can merge them into a single dropdown without changes. The
+    // type/subtype labels distinguish them visually.
+    const allLinked = [...linked.rows, ...tellerInvestments.rows];
     res.json({
-      linked_accounts: linked.rows.map(r => ({ id: r.id, name: r.name, type: r.type, subtype: r.subtype, balance: parseFloat(r.balance) })),
+      linked_accounts: allLinked.map(r => ({ id: r.id, name: r.name, type: r.type, subtype: r.subtype, balance: parseFloat(r.balance) })),
       investment_accounts: investments.rows.map(r => ({ id: r.id, name: r.name, type: r.account_type, balance: parseFloat(r.balance) })),
     });
   } catch (err) {
@@ -193,20 +257,24 @@ router.patch("/api/goals/:id", async (req, res) => {
     goal_baseline_amount: NUM_NONNEG_OR_NULL,
   };
 
-  const updates = []; const values = []; let idx = 1;
+  // Build the field assignments as {field, value} pairs first; render placeholders
+  // last so any conditional drop/add (baseline inference) can't desync $N indexes
+  // from the values array. Earlier code spliced from updates+values mid-build,
+  // which left stale $N references in the surviving placeholder strings — the
+  // UPDATE silently committed with values written to the wrong columns.
+  const fieldAssignments = [];
   const coercedBody = {};
   try {
     for (const [f, coerce] of Object.entries(FIELD_COERCERS)) {
       if (req.body[f] !== undefined) {
         coercedBody[f] = coerce(req.body[f]);
-        updates.push(`"${f}" = $` + idx++);
-        values.push(coercedBody[f]);
+        fieldAssignments.push({ field: f, value: coercedBody[f] });
       }
     }
   } catch (err) {
     return res.status(400).json({ error: err.message });
   }
-  if (!updates.length) return res.status(400).json({ error: "No valid fields" });
+  if (!fieldAssignments.length) return res.status(400).json({ error: "No valid fields" });
 
   // Phase C: if the caller is linking a funding source for the first time and
   // didn't supply a baseline, compute one so that the goal's current progress
@@ -216,7 +284,9 @@ router.patch("/api/goals/:id", async (req, res) => {
   const linkingAccount = coercedBody.funding_account_id !== undefined && coercedBody.funding_account_id !== null;
   const linkingInvestment = coercedBody.funding_investment_id !== undefined && coercedBody.funding_investment_id !== null;
   const baselineSupplied = coercedBody.goal_baseline_amount !== undefined;
+  let appendBaselineNull = false;
   if ((linkingAccount || linkingInvestment) && !baselineSupplied) {
+    let inferredBaseline = null;
     try {
       const [acctRow, goalRow] = await Promise.all([
         linkingAccount
@@ -227,46 +297,44 @@ router.patch("/api/goals/:id", async (req, res) => {
       if (acctRow.rows.length && goalRow.rows.length) {
         const accountBalance = parseFloat(acctRow.rows[0].balance || 0);
         const goalCurrent = parseFloat(goalRow.rows[0].current_amount || 0);
-        const inferredBaseline = Math.max(0, accountBalance - goalCurrent);
-        updates.push(`"goal_baseline_amount" = $` + idx++);
-        values.push(inferredBaseline);
+        inferredBaseline = Math.max(0, accountBalance - goalCurrent);
       } else {
-        // Account or goal not found — can't infer baseline, skip the funding link
         console.error("funding baseline inference: account or goal not found, skipping link");
-        if (linkingAccount) {
-          const faIdx = updates.findIndex(u => u.includes("funding_account_id"));
-          if (faIdx >= 0) { updates.splice(faIdx, 1); values.splice(faIdx, 1); idx--; }
-        }
-        if (linkingInvestment) {
-          const fiIdx = updates.findIndex(u => u.includes("funding_investment_id"));
-          if (fiIdx >= 0) { updates.splice(fiIdx, 1); values.splice(fiIdx, 1); idx--; }
-        }
       }
     } catch (err) {
       console.error("funding baseline inference error:", err.message);
-      // Don't link without a baseline — remove the funding fields from the update
-      if (linkingAccount) {
-        const faIdx = updates.findIndex(u => u.includes("funding_account_id"));
-        if (faIdx >= 0) { updates.splice(faIdx, 1); values.splice(faIdx, 1); idx--; }
-      }
-      if (linkingInvestment) {
-        const fiIdx = updates.findIndex(u => u.includes("funding_investment_id"));
-        if (fiIdx >= 0) { updates.splice(fiIdx, 1); values.splice(fiIdx, 1); idx--; }
+    }
+    if (inferredBaseline !== null) {
+      fieldAssignments.push({ field: "goal_baseline_amount", value: inferredBaseline });
+    } else {
+      // Don't link without a baseline — drop the funding fields from this UPDATE so
+      // current_amount can't be silently reset (current = balance - 0 = full balance).
+      for (let i = fieldAssignments.length - 1; i >= 0; i--) {
+        if (fieldAssignments[i].field === "funding_account_id" || fieldAssignments[i].field === "funding_investment_id") {
+          fieldAssignments.splice(i, 1);
+        }
       }
     }
   }
   // Unlinking: if caller explicitly set funding_* to null, also clear the baseline.
   if ((req.body.funding_account_id === null || req.body.funding_account_id === "") &&
       (req.body.funding_investment_id === null || req.body.funding_investment_id === "" || req.body.funding_investment_id === undefined)) {
-    if (!baselineSupplied) {
-      updates.push(`"goal_baseline_amount" = NULL`);
-    }
+    if (!baselineSupplied) appendBaselineNull = true;
   }
 
+  if (!fieldAssignments.length && !appendBaselineNull) {
+    return res.status(400).json({ error: "No valid fields" });
+  }
+
+  // Render placeholders from the final fieldAssignments — $N === position + 1.
+  const updates = fieldAssignments.map((a, i) => `"${a.field}" = $${i + 1}`);
+  const values = fieldAssignments.map(a => a.value);
+  if (appendBaselineNull) updates.push(`"goal_baseline_amount" = NULL`);
   updates.push("updated_at = now()");
   values.push(req.params.id);
+  const idParamIdx = values.length;
   try {
-    const result = await pool.query("UPDATE financial_goals SET " + updates.join(", ") + " WHERE id = $" + idx + " RETURNING *", values);
+    const result = await pool.query("UPDATE financial_goals SET " + updates.join(", ") + " WHERE id = $" + idParamIdx + " RETURNING *", values);
     if (!result.rows.length) return res.status(404).json({ error: "Not found" });
     res.json(result.rows[0]);
   } catch (err) {

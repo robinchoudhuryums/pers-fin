@@ -45,7 +45,7 @@ const INCOME_PREDICATE = `
     (COALESCE(merchant_name, name, '') ~* '\\y(payroll|direct dep|direct deposit|dir dep|salary|employer|deposit|ach credit)\\y'
       AND COALESCE(merchant_name, name, '') !~* '\\y(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|reversal|atm|withdrawal|bill pay)\\y')
     OR COALESCE(merchant_name, name, '') ~* 'funds transfer from brokerage'
-    OR category[1] = 'Income'
+    OR COALESCE(user_category, category[1]) = 'Income'
   )
 `;
 
@@ -74,6 +74,22 @@ const SPLIT_AMOUNT = "t.amount * COALESCE(la.spending_split_pct, 100) / 100.0";
 // callers that don't alias the transactions table can use NOT_REIMBURSED_UNALIASED.
 const NOT_REIMBURSED = "COALESCE(t.is_reimbursed, false) = false";
 const NOT_REIMBURSED_UNALIASED = "COALESCE(is_reimbursed, false) = false";
+
+// Investment-account detection — covers Teller-linked accounts enrolled as
+// brokerage / IRA / 401k / 529 / HSA / pension / etc. Teller's API doesn't
+// expose holdings or cost basis like Plaid does (only account-level balance),
+// so the analytics surface is shallower for Teller-linked investments — but
+// they participate fully in net worth, goal funding, and balance sync.
+//
+// Use this fragment with `linked_accounts` aliased as `la` (the convention
+// across the rest of this codebase) or pass the alias via .replace().
+const INVESTMENT_ACCOUNT_TYPES = `(
+  la.type = 'investment'
+  OR LOWER(COALESCE(la.subtype, '')) IN (
+    'brokerage', 'ira', '401k', '403b', '529', 'roth_ira', 'retirement',
+    'hsa', 'sep_ira', 'simple_ira', 'pension', 'investment'
+  )
+)`;
 
 /**
  * Monthly spending totals for the last N months, split-adjusted.
@@ -141,21 +157,78 @@ async function getMonthlyIncomeAndSpending(pool, months = 6) {
 }
 
 /**
- * Spending-by-category for the current month, honoring transaction_splits
- * (Phase B3). When a transaction has splits, each split contributes its own
- * category/amount (replacing the parent row); when it has none, the parent
- * row's `category[1]` is used.
- *
- * The spending split percentage and reimbursed filter apply to BOTH paths:
- * a reimbursed parent excludes all its splits, and spending_split_pct applies
- * equally to each split.
+ * Spending-by-category for an arbitrary month (YYYY-MM). When a transaction
+ * has splits, each split contributes its own category/amount (replacing the
+ * parent row); when it has none, the parent row's `category[1]` is used.
+ * Honors spending_split_pct and the reimbursed exclusion on both paths.
  *
  * Returns rows: { category: TEXT, spent: NUMERIC }
+ */
+async function getCategorySpendingForMonth(pool, monthStr) {
+  // monthStr is 'YYYY-MM'. The first-of-month date is the inclusive lower bound;
+  // the upper bound is the first of the following month (exclusive). Postgres
+  // accepts the YYYY-MM-DD literal here.
+  if (!/^\d{4}-\d{2}$/.test(String(monthStr || ""))) {
+    throw new Error("getCategorySpendingForMonth: month must be 'YYYY-MM'");
+  }
+  const monthStart = monthStr + "-01";
+  const result = await pool.query(`
+    WITH bounds AS (
+      SELECT $1::date AS month_start,
+             ($1::date + INTERVAL '1 month')::date AS month_end
+    ),
+    parent_no_splits AS (
+      SELECT COALESCE(t.user_category, t.category[1], 'Uncategorized') AS category,
+             t.amount * COALESCE(la.spending_split_pct, 100) / 100.0 AS amount
+      FROM transactions t
+      LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+      CROSS JOIN bounds b
+      WHERE t.amount > 0 AND t.pending = false
+        AND COALESCE(t.is_reimbursed, false) = false
+        AND ${NOT_TRANSFER}
+        AND t.date >= b.month_start
+        AND t.date <  b.month_end
+        AND NOT EXISTS (SELECT 1 FROM transaction_splits s WHERE s.parent_transaction_id = t.transaction_id)
+    ),
+    from_splits AS (
+      SELECT COALESCE(s.category, t.user_category, t.category[1], 'Uncategorized') AS category,
+             s.amount * COALESCE(la.spending_split_pct, 100) / 100.0 AS amount
+      FROM transaction_splits s
+      JOIN transactions t ON t.transaction_id = s.parent_transaction_id
+      LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+      CROSS JOIN bounds b
+      WHERE t.amount > 0 AND t.pending = false
+        AND COALESCE(t.is_reimbursed, false) = false
+        AND ${NOT_TRANSFER}
+        AND t.date >= b.month_start
+        AND t.date <  b.month_end
+    ),
+    all_lines AS (
+      SELECT category, amount FROM parent_no_splits
+      UNION ALL
+      SELECT category, amount FROM from_splits
+    )
+    SELECT category, ROUND(SUM(amount), 2) AS spent
+    FROM all_lines
+    GROUP BY category
+  `, [monthStart]);
+  return result.rows;
+}
+
+/**
+ * Spending-by-category for the current month. Anchored to Postgres CURRENT_DATE
+ * (not JS Date) so the boundary at month-end stays consistent with the rest of
+ * the SQL in this codebase. Used by /api/insights, /api/budgets/alerts, and the
+ * scheduled budget-alert push — all of which mean "this calendar month, now".
+ *
+ * Kept structurally identical to its pre-existing implementation; the new
+ * `getCategorySpendingForMonth` exists alongside it for callers that need to
+ * snapshot a specific historical month.
  */
 async function getCategorySpendingThisMonth(pool) {
   const result = await pool.query(`
     WITH parent_no_splits AS (
-      SELECT COALESCE(t.category[1], 'Uncategorized') AS category,
+      SELECT COALESCE(t.user_category, t.category[1], 'Uncategorized') AS category,
              t.amount * COALESCE(la.spending_split_pct, 100) / 100.0 AS amount
       FROM transactions t
       LEFT JOIN linked_accounts la ON la.account_id = t.account_id
@@ -167,7 +240,7 @@ async function getCategorySpendingThisMonth(pool) {
         AND NOT EXISTS (SELECT 1 FROM transaction_splits s WHERE s.parent_transaction_id = t.transaction_id)
     ),
     from_splits AS (
-      SELECT COALESCE(s.category, t.category[1], 'Uncategorized') AS category,
+      SELECT COALESCE(s.category, t.user_category, t.category[1], 'Uncategorized') AS category,
              s.amount * COALESCE(la.spending_split_pct, 100) / 100.0 AS amount
       FROM transaction_splits s
       JOIN transactions t ON t.transaction_id = s.parent_transaction_id
@@ -196,8 +269,10 @@ module.exports = {
   NOT_REIMBURSED,
   NOT_REIMBURSED_UNALIASED,
   NOT_TRANSFER,
+  INVESTMENT_ACCOUNT_TYPES,
   getMonthlySpending,
   getMonthlyIncome,
   getMonthlyIncomeAndSpending,
   getCategorySpendingThisMonth,
+  getCategorySpendingForMonth,
 };

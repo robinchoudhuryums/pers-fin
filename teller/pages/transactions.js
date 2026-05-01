@@ -1,9 +1,9 @@
 // Page: Transactions search, filter, and bulk categorization
-module.exports = function(config) {
+module.exports = function() {
   const express = require("express");
   const router = express.Router();
   router.get("/transactions", (_req, res) => {
-    res.render("transactions", { apiKey: config.API_KEY });
+    res.render("transactions");
   });
   return router;
 };
