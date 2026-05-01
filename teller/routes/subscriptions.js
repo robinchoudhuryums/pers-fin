@@ -322,6 +322,12 @@ async function runSubscriptionDetection() {
   for (const sub of detected) {
     const cat = categorizeSubscription(sub.display_name);
     const dbCategory = cat === "utility" ? "utility" : "subscription";
+    // Only promote 'subscription' → 'utility' on re-detection. The WHERE
+    // clause's `category = 'subscription'` guard intentionally preserves
+    // any user-set classification: a row already marked 'utility' (either
+    // by an earlier auto-detect or via PATCH /api/subscriptions/:id/category)
+    // is never re-flipped, even if categorizeSubscription happens to
+    // re-classify the merchant differently on a later run.
     if (dbCategory !== "subscription") {
       await pool.query(
         "UPDATE detected_subscriptions SET category = $1 WHERE merchant_key = $2 AND category = 'subscription'",

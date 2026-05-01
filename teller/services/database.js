@@ -148,6 +148,12 @@ async function runMigrations() {
     await client.query("CREATE TABLE IF NOT EXISTS financial_insights (id SERIAL PRIMARY KEY, insight_text TEXT NOT NULL, period_start DATE, period_end DATE, model_used TEXT, tokens_used INT, created_at TIMESTAMPTZ NOT NULL DEFAULT now())");
     // 006_insights_memory.sql
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_running_summary TEXT DEFAULT NULL");
+    // Structured running summary (S5): replaces the plain-text running summary
+    // with categorized JSON {trends, completed_goals, pending_actions, alerts}.
+    // Both columns coexist — the JSON is the source of truth going forward;
+    // the TEXT column gets a human-readable rendering for backward-compat and
+    // for any consumer that hasn't been updated yet.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_running_summary_json JSONB DEFAULT NULL");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_model TEXT NOT NULL DEFAULT 'sonnet'");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_cadence_days INT NOT NULL DEFAULT 30");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS zip_code TEXT DEFAULT NULL");

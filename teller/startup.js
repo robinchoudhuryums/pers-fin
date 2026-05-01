@@ -283,11 +283,19 @@ function startBackgroundJobs() {
       const syncMsg = (txnResult ? `${txnResult.transactions_added} txns added` : "txn sync failed") +
         ", " + (balResult ? `${balResult.accounts_updated} balances updated` : "balance sync failed");
       console.log("Auto-sync complete: " + syncMsg);
-      if (s.sync_notifications_enabled !== false) {
+      // Only push a notification when something actually changed OR a sync
+      // failed — silent successful syncs (0 txns, 0 balance updates) used to
+      // produce hourly noise notifications. Failed syncs should still notify
+      // so the user knows the data isn't fresh.
+      const txnsAdded = txnResult ? txnResult.transactions_added : 0;
+      const balancesUpdated = balResult ? balResult.accounts_updated : 0;
+      const anyFailed = !txnResult || !balResult;
+      const anyChanged = txnsAdded > 0 || balancesUpdated > 0;
+      if (s.sync_notifications_enabled !== false && (anyChanged || anyFailed)) {
         try {
           const { sendToAll } = require("./routes/notifications");
           await sendToAll({
-            title: "Auto-sync complete",
+            title: anyFailed ? "Auto-sync issue" : "Auto-sync complete",
             body: syncMsg,
             tag: "auto-sync",
             data: { url: "/dashboard" },

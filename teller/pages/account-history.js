@@ -9,7 +9,7 @@ module.exports = function(config) {
   const express = require("express");
   const router = express.Router();
   router.get("/accounts/:id/history", (_req, res) => {
-    res.render("account-history", { apiKey: config.API_KEY });
+    res.render("account-history");
   });
   return router;
 };

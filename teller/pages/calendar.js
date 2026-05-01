@@ -1,9 +1,9 @@
 // Page: Bill Calendar — monthly view of expected charges and income
-module.exports = function(config) {
+module.exports = function() {
   const express = require("express");
   const router = express.Router();
   router.get("/calendar", (_req, res) => {
-    res.render("calendar", { apiKey: config.API_KEY });
+    res.render("calendar");
   });
   return router;
 };

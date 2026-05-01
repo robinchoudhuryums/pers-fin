@@ -20,7 +20,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="<%= __basePath %>/perfin-shared.css?v=<%= v %>">
 <% if (typeof extraStyles !== 'undefined' && extraStyles) { %>
-  <style><%- extraStyles %></style>
+  <style nonce="<%= nonce %>"><%- extraStyles %></style>
 <% } %>
   <script nonce="<%= nonce %>">
     // Set BEFORE perfin-shared.js runs (which it does in foot.ejs) so the

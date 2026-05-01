@@ -333,7 +333,7 @@
       <div class="setting-control"><button class="btn" id="snapshot-btn">Snapshot</button></div>
     </div>
   </div>
-<%- include('partials/foot', { apiKey: apiKey }) %>
+<%- include('partials/foot') %>
   <script nonce="<%= nonce %>">
     function applyTheme(t) { document.documentElement.setAttribute('data-theme', t); localStorage.setItem('perfin-theme', t); }
     async function loadSettings() {
@@ -387,11 +387,25 @@
           }).join('');
         }
         applyTheme(s.theme || 'dark');
-        // Show memory status
+        // Show memory status \u2014 prefer the structured summary's per-section
+        // counts when available so the user sees what the AI is tracking
+        // ("3 trends \u00b7 2 goals \u00b7 5 actions \u00b7 1 alert") rather than a vague
+        // word count. Falls back to legacy text-summary word count.
         const memEl = document.getElementById('memory-status');
         if (memEl) {
-          if (s.insights_running_summary) {
-            memEl.innerHTML = '<span style="color:var(--green);">Active</span> (' + s.insights_running_summary.split(/\s+/).length + ' words)';
+          var j = s.insights_running_summary_json;
+          if (typeof j === 'string') { try { j = JSON.parse(j); } catch { j = null; } }
+          if (j && typeof j === 'object') {
+            var t = (j.trends || []).length, g = (j.completed_goals || []).length,
+                a = (j.pending_actions || []).length, al = (j.alerts || []).length;
+            memEl.innerHTML =
+              '<span style="color:var(--green);">Active</span> &middot; ' +
+              t + ' trend' + (t === 1 ? '' : 's') + ' &middot; ' +
+              g + ' goal' + (g === 1 ? '' : 's') + ' &middot; ' +
+              a + ' action' + (a === 1 ? '' : 's') + ' &middot; ' +
+              al + ' alert' + (al === 1 ? '' : 's');
+          } else if (s.insights_running_summary) {
+            memEl.innerHTML = '<span style="color:var(--green);">Active</span> (' + s.insights_running_summary.split(/\s+/).length + ' words, legacy text format)';
           } else {
             memEl.textContent = 'Not yet initialized \u2014 runs after first analysis';
           }
