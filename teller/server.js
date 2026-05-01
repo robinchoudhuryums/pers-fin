@@ -78,12 +78,15 @@ app.use((req, res, next) => {
 
 // Serve shared static assets (CSS, JS) — before auth so login page can use them
 app.use(express.static(path.join(__dirname, "public"), { maxAge: "1h" }));
-// Serve Chart.js from node_modules. require.resolve walks Node's module
-// resolution so this works whether chart.js is hoisted to the root
-// node_modules under workspaces (the unified shell setup) or nested
-// under teller/node_modules in older standalone installs.
+// Serve Chart.js from the committed copy in teller/public/. Earlier this
+// route used require.resolve("chart.js/...") to find the npm-installed
+// version, but with workspaces the hoisting destination was inconsistent
+// across deploys and the page kept reporting "Chart library failed to
+// load." The committed file always exists at a known path, so just send
+// that. (Trade-off: the in-repo binary needs a manual refresh when chart.js
+// is upgraded, but it's been stable for a long time.)
 app.get("/vendor/chart.umd.js", (_req, res) => {
-  res.sendFile(require.resolve("chart.js/dist/chart.umd.js"));
+  res.sendFile(path.join(__dirname, "public", "chart.umd.js"));
 });
 
 // ---------------------------------------------------------------------------
