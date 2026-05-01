@@ -22,19 +22,26 @@ const SETTINGS_PATCH = require("./views/settings-patch");
 // app.use("/per-sistant", subapp)), Express sets req.baseUrl to the mount
 // path. Page handlers don't directly thread req into pageHead/navBar/
 // themeScript — they're called as `${pageHead("Foo")}` via template
-// literals — so we use AsyncLocalStorage to make basePath available to
-// the view helpers without changing every page's signature.
+// literals — so we use AsyncLocalStorage to make basePath + embedded
+// available to the view helpers without changing every page's signature.
 //
 // server.js installs basePathMiddleware before any route handler runs;
 // inside the helpers below, basePath() returns "" for standalone or
-// "/per-sistant" when mounted.
+// "/per-sistant" when mounted, and embedded() reflects the shell flag.
 const _ctx = new AsyncLocalStorage();
 function basePathMiddleware(req, _res, next) {
-  _ctx.run({ basePath: req.baseUrl || "" }, () => next());
+  _ctx.run({
+    basePath: req.baseUrl || "",
+    embedded: !!req.app.get("embedded"),
+  }, () => next());
 }
 function basePath() {
   const store = _ctx.getStore();
   return (store && store.basePath) || "";
+}
+function embedded() {
+  const store = _ctx.getStore();
+  return !!(store && store.embedded);
 }
 
 function pageHead(title) {
@@ -107,6 +114,7 @@ const APPBAR_PICKER_CSS = `
 
 function navBar(activePath) {
   const bp = basePath();
+  const isEmbedded = embedded();
   // activePath is the bare route ("/today", "/"), matched against the NAV
   // table — independent of mount prefix, so no transformation needed here.
   const active = (NAV.find(n => n.href === activePath) || {}).id || 'dashboard';
@@ -115,11 +123,17 @@ function navBar(activePath) {
       <span class="icon">${navIcon(n.id)}</span>
       <span class="label">${n.label}</span>
     </a>`).join('');
-  // Cross-tool link to Perfin. Under the unified shell PERFIN_URL is
-  // typically a same-origin path like "/perfin"; standalone deployments
-  // use a full URL. Either way, leave it untouched.
-  const perfinLink = PERFIN_URL
-    ? `<a href="${PERFIN_URL}" target="_blank" rel="noopener">
+  // Cross-tool link to Perfin. Two cases:
+  // - Embedded under the unified shell: link points to /perfin (same
+  //   origin) and stays in-app — no target="_blank". This is what the
+  //   user means by "switch to the other tool".
+  // - Standalone deploy with PERFIN_URL set: external URL, opens in a
+  //   new tab so the user doesn't lose their per-sistant context.
+  // - Standalone with PERFIN_URL unset: no link.
+  const perfinHref = isEmbedded ? "/perfin" : PERFIN_URL;
+  const perfinTarget = isEmbedded ? "" : ' target="_blank" rel="noopener"';
+  const perfinLink = perfinHref
+    ? `<a href="${perfinHref}"${perfinTarget}>
          <span class="icon"><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M7 4 L7 10 M4 7 L10 7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span>
          <span class="label">Perfin</span>
        </a>` : '';
@@ -249,4 +263,5 @@ module.exports = {
   themeScript,
   basePathMiddleware,
   basePath,
+  embedded,
 };
