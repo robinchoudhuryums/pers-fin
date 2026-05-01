@@ -504,6 +504,36 @@ async function runMigrations() {
     )`);
     await client.query("CREATE INDEX IF NOT EXISTS idx_ai_audit_log_insight ON ai_audit_log (insight_id, severity)");
 
+    // ---- One-shot cleanup: detection-key migration orphans ----
+    // When detection started keying on COALESCE(user_merchant_name, merchant_name, name)
+    // instead of raw merchant_name, pre-existing detected_subscriptions /
+    // recurring_transfers rows keyed by the raw merchant_name were left active
+    // alongside the new rows keyed by the user-overridden name. Both UPDATEs are
+    // idempotent: if no orphans exist (no user_merchant_name overrides applied
+    // to merchants that have detected rows under the raw name), nothing changes.
+    await client.query(`
+      UPDATE detected_subscriptions ds
+      SET is_active = false, updated_at = now()
+      WHERE ds.is_active = true
+        AND EXISTS (
+          SELECT 1 FROM transactions t
+          WHERE t.merchant_name = ds.merchant_key
+            AND t.user_merchant_name IS NOT NULL
+            AND t.user_merchant_name != ds.merchant_key
+        )
+    `);
+    await client.query(`
+      UPDATE recurring_transfers rt
+      SET is_active = false, updated_at = now()
+      WHERE rt.is_active = true
+        AND EXISTS (
+          SELECT 1 FROM transactions t
+          WHERE t.merchant_name = rt.merchant_key
+            AND t.user_merchant_name IS NOT NULL
+            AND t.user_merchant_name != rt.merchant_key
+        )
+    `);
+
     // Record schema version
     if (currentVersion < SCHEMA_VERSION) {
       await client.query(

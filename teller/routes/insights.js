@@ -466,15 +466,24 @@ async function generateInsights() {
     // --- Module: Tax deduction flags (dynamic data) ---
     if (modules.tax_deductions !== false) {
       try {
-        // Word-boundary matching prevents substring false positives like
-        // "interest" → "internet", "office" → "Box Office", "vision" → "television".
-        // Multi-word phrases still match because \y is a word-boundary anchor at the
-        // edges of the phrase, not inside it.
-        const taxKeywords = ["doctor", "medical", "pharmacy", "hospital", "dental", "vision", "health",
+        // Word-boundary matching anchors at word edges (Postgres `\y`), so short
+        // tokens can't substring-match unrelated merchants. We also avoid bare
+        // ambiguous words ("office" → "Box Office", "interest" → "interest charge"
+        // on a credit card statement, "supplies" → "Pet Supplies", "business" →
+        // "Business Casual" retailer) by preferring multi-word phrases:
+        //   - medical:    specific medical-context words only
+        //   - charity:    named charities are self-evident
+        //   - education:  "student loan" rather than bare "student"
+        //   - business:   only multi-word "home office" / "office supplies" /
+        //                 "business expense" — drops bare "office"/"supplies"/"business"
+        //   - tax:        "mortgage interest" / "student loan interest" rather
+        //                 than bare "mortgage" / "interest" (which match payments
+        //                 and credit-card finance charges that aren't deductible)
+        const taxKeywords = ["doctor", "medical", "pharmacy", "hospital", "dental",
           "charity", "donation", "goodwill", "salvation army", "red cross",
-          "tuition", "university", "college", "education", "student",
-          "office", "supplies", "home office", "business",
-          "mortgage", "interest", "property tax", "state tax"];
+          "tuition", "university", "college", "student loan",
+          "home office", "office supplies", "office depot", "business expense",
+          "mortgage interest", "student loan interest", "property tax", "state tax"];
         const taxRegex = "\\y(" + taxKeywords.join("|") + ")\\y";
         const taxData = await pool.query(
           `SELECT COALESCE(merchant_name, name) AS merchant, SUM(amount) AS total, COUNT(*) AS txn_count

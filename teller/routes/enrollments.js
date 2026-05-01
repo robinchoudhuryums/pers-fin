@@ -1111,6 +1111,76 @@ router.get("/api/csv-reminder", async (_req, res) => {
   }
 });
 
+// GET /api/income-summary — Monthly income trend + top sources + by-account.
+// Symmetric to /api/spending-summary so the dashboard can show income with
+// the same depth as spending (previously only /api/savings-rate exposed
+// income, and only as an aggregate). Uses the shared INCOME_PREDICATE so the
+// numbers agree with cash-flow, savings-rate, and AI insights.
+router.get("/api/income-summary", async (req, res) => {
+  const months = Math.max(1, Math.min(parseInt(req.query.months) || 6, 24));
+  try {
+    const [monthlyTrend, bySource, byAccount] = await Promise.all([
+      pool.query(
+        `SELECT TO_CHAR(date, 'YYYY-MM') AS month,
+                ROUND(SUM(ABS(amount)), 2) AS total_income,
+                COUNT(*) AS deposit_count
+         FROM transactions
+         WHERE amount < 0 AND pending = false
+           AND date >= CURRENT_DATE - make_interval(months => $1)
+           AND ${INCOME_PREDICATE}
+         GROUP BY TO_CHAR(date, 'YYYY-MM')
+         ORDER BY month`,
+        [months]
+      ),
+      pool.query(
+        `SELECT COALESCE(merchant_name, name) AS source,
+                ROUND(SUM(ABS(amount)), 2) AS total_income,
+                COUNT(*) AS deposit_count,
+                MAX(date) AS last_seen
+         FROM transactions
+         WHERE amount < 0 AND pending = false
+           AND date >= CURRENT_DATE - make_interval(months => $1)
+           AND ${INCOME_PREDICATE}
+         GROUP BY COALESCE(merchant_name, name)
+         ORDER BY total_income DESC
+         LIMIT 10`,
+        [months]
+      ),
+      pool.query(
+        `SELECT la.name AS account_name,
+                COALESCE(te.institution_name, pi.institution_name, la.institution_name_manual) AS institution_name,
+                ROUND(SUM(ABS(t.amount)), 2) AS total_income,
+                COUNT(*) AS deposit_count
+         FROM transactions t
+         JOIN linked_accounts la ON la.account_id = t.account_id
+         LEFT JOIN teller_enrollments te ON te.id = la.teller_enrollment_id
+         LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
+         WHERE t.amount < 0 AND t.pending = false
+           AND t.date >= CURRENT_DATE - make_interval(months => $1)
+           AND ${INCOME_PREDICATE}
+         GROUP BY la.id, la.name, te.institution_name, pi.institution_name, la.institution_name_manual
+         ORDER BY total_income DESC`,
+        [months]
+      ),
+    ]);
+
+    const totalIncome = monthlyTrend.rows.reduce((s, r) => s + parseFloat(r.total_income), 0);
+    const avgMonthly = monthlyTrend.rows.length > 0 ? totalIncome / monthlyTrend.rows.length : 0;
+
+    res.json({
+      months,
+      total_income: Math.round(totalIncome * 100) / 100,
+      avg_monthly_income: Math.round(avgMonthly * 100) / 100,
+      monthly_trend: monthlyTrend.rows,
+      top_sources: bySource.rows,
+      by_account: byAccount.rows,
+    });
+  } catch (err) {
+    console.error("income-summary error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
 module.exports = router;
 module.exports.syncAllEnrollments = syncAllEnrollments;
 module.exports.syncAllBalances = syncAllBalances;

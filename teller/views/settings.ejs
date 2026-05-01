@@ -139,6 +139,16 @@
       <div class="setting-control"><span id="memory-status" style="font-size:12px;color:var(--text-muted);">--</span></div>
     </div>
     <div class="setting-row">
+      <div class="setting-info">
+        <div class="name">AI Accuracy</div>
+        <div class="desc" id="audit-accuracy-desc">Share of recent insight runs (last 90 days) with zero critical findings from the post-generation auditor</div>
+      </div>
+      <div class="setting-control" style="text-align:right;">
+        <span id="audit-accuracy-pct" style="font-size:14px;font-weight:600;color:var(--text-muted);">--</span>
+        <div id="audit-accuracy-detail" style="font-size:11px;color:var(--text-muted);margin-top:2px;">No audited runs yet</div>
+      </div>
+    </div>
+    <div class="setting-row">
       <div class="setting-info"><div class="name">Reset AI Context</div><div class="desc">Clear long-term memory — next analysis starts fresh with no prior context</div></div>
       <div class="setting-control"><button class="btn danger" id="reset-btn">Reset</button></div>
     </div>
@@ -404,6 +414,30 @@
           badge.style.background = 'var(--yellow-bg)'; badge.style.color = 'var(--yellow)';
           desc.textContent = st.reason + ' \u2014 insights will not run until configured';
           if (budgetEl) budgetEl.textContent = 'N/A';
+        }
+        // Audit accuracy panel \u2014 surfaces post-generation validation results
+        // collected by services/ai-audit.js. "Clean" = zero critical findings.
+        const acc = st.audit_accuracy;
+        const accEl = document.getElementById('audit-accuracy-pct');
+        const detEl = document.getElementById('audit-accuracy-detail');
+        if (acc && accEl && detEl) {
+          if (acc.total_audited_runs === 0 || acc.accuracy_pct === null) {
+            accEl.textContent = '\u2014';
+            accEl.style.color = 'var(--text-muted)';
+            detEl.textContent = 'No audited runs in the last ' + acc.window_days + ' days';
+          } else {
+            accEl.textContent = acc.accuracy_pct.toFixed(1) + '%';
+            // Color code: green \u226590, yellow 70-89, red <70
+            const color = acc.accuracy_pct >= 90 ? 'var(--green)'
+              : acc.accuracy_pct >= 70 ? 'var(--yellow)'
+              : 'var(--red)';
+            accEl.style.color = color;
+            const sev = acc.findings_by_severity || {};
+            const parts = [acc.clean_runs + ' of ' + acc.total_audited_runs + ' runs clean'];
+            if (sev.critical) parts.push(sev.critical + ' critical');
+            if (sev.warning) parts.push(sev.warning + ' warning');
+            detEl.textContent = parts.join(' \u00b7 ');
+          }
         }
       } catch {}
     }

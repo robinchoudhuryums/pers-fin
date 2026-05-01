@@ -15,20 +15,40 @@ const { zipToState } = require("../data/reference-data");
 // exposed as `current_amount_manual` so the UI can show both.
 router.get("/api/goals", async (_req, res) => {
   try {
-    const result = await pool.query(
-      `SELECT g.*,
-              la.name  AS funding_account_name,
-              la.type  AS funding_account_type,
-              COALESCE(la.available_balance, la.current_balance) AS funding_account_balance,
-              ia.name    AS funding_investment_name,
-              ia.account_type AS funding_investment_type,
-              ia.balance AS funding_investment_balance
-       FROM financial_goals g
-       LEFT JOIN linked_accounts    la ON la.id = g.funding_account_id
-       LEFT JOIN investment_accounts ia ON ia.id = g.funding_investment_id
-       WHERE g.is_active = true
-       ORDER BY g.target_date ASC NULLS LAST`
-    );
+    // Pull active recurring transfers once and match them against each goal's
+    // funding source + monthly_contribution. Match heuristic:
+    //   - savings goals match transfer_type='savings'
+    //   - investment-backed goals match transfer_type='investment'
+    //   - amount within ±25% of monthly_contribution (when set)
+    // Suggestion only — surfaced as `suggested_transfers` on each goal so the
+    // UI can prompt "Want to link this $500/mo Schwab transfer?" without
+    // auto-linking anything.
+    const [result, transfers] = await Promise.all([
+      pool.query(
+        `SELECT g.*,
+                la.name  AS funding_account_name,
+                la.type  AS funding_account_type,
+                la.subtype AS funding_account_subtype,
+                COALESCE(la.available_balance, la.current_balance) AS funding_account_balance,
+                ia.name    AS funding_investment_name,
+                ia.account_type AS funding_investment_type,
+                ia.balance AS funding_investment_balance
+         FROM financial_goals g
+         LEFT JOIN linked_accounts    la ON la.id = g.funding_account_id
+         LEFT JOIN investment_accounts ia ON ia.id = g.funding_investment_id
+         WHERE g.is_active = true
+         ORDER BY g.target_date ASC NULLS LAST`
+      ),
+      pool.query(
+        `SELECT id, display_name, amount, cadence_days, transfer_type,
+                ROUND(amount * (30.0 / NULLIF(cadence_days, 0)), 2) AS monthly_equivalent
+         FROM recurring_transfers
+         WHERE is_active = true AND is_dismissed = false
+           AND direction = 'outgoing'
+           AND transfer_type IN ('savings', 'investment')
+         ORDER BY amount DESC`
+      ),
+    ]);
     const goals = result.rows.map(g => {
       const target = parseFloat(g.target_amount);
       const manualCurrent = parseFloat(g.current_amount || 0);
@@ -70,6 +90,31 @@ router.get("/api/goals", async (_req, res) => {
         d.setMonth(d.getMonth() + months_to_goal);
         estimated_date = d.toISOString().split("T")[0];
       }
+      // Suggested transfers — recurring outgoing transfers whose type aligns
+      // with this goal's funding source and whose monthly_equivalent is in
+      // the right ballpark vs the configured monthly_contribution.
+      let suggested_transfers = [];
+      if (funding_source) {
+        const wantedType = funding_source.kind === "investment" ? "investment" : "savings";
+        const target = monthly > 0 ? monthly : null;
+        suggested_transfers = transfers.rows
+          .filter(t => t.transfer_type === wantedType)
+          .filter(t => {
+            if (!target) return true; // no monthly contribution set — show all type-matched
+            const me = parseFloat(t.monthly_equivalent);
+            if (!isFinite(me) || me <= 0) return false;
+            return Math.abs(me - target) / target <= 0.25;
+          })
+          .slice(0, 5)
+          .map(t => ({
+            id: t.id,
+            display_name: t.display_name,
+            amount: parseFloat(t.amount),
+            cadence_days: t.cadence_days,
+            transfer_type: t.transfer_type,
+            monthly_equivalent: parseFloat(t.monthly_equivalent),
+          }));
+      }
       return {
         ...g,
         current_amount: current,
@@ -79,6 +124,7 @@ router.get("/api/goals", async (_req, res) => {
         months_to_goal,
         estimated_date,
         funding_source,
+        suggested_transfers,
       };
     });
     res.json(goals);

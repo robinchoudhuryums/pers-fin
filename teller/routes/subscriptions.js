@@ -583,9 +583,13 @@ router.get("/api/bill-calendar", async (req, res) => {
     const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
     const endDate = `${year}-${String(month).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`;
 
-    // Get active subscriptions
+    // Get active subscriptions. Include `id` so each event can carry its own
+    // bill_id at insertion time — earlier code SELECTed without id and then
+    // back-patched bill_source via an O(days × subs × events) loop matching by
+    // display_name (which silently mistagged manual bills sharing a name and
+    // left bill_id undefined when sub.id was missing from the SELECT).
     const subs = await pool.query(`
-      SELECT display_name, amount, cadence_days, next_expected, category
+      SELECT id, display_name, amount, cadence_days, next_expected, category
       FROM detected_subscriptions
       WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL
         AND next_expected IS NOT NULL
@@ -606,7 +610,8 @@ router.get("/api/bill-calendar", async (req, res) => {
         nextDate = new Date(nextDate.getTime() + cadence * 86400000);
       }
 
-      // Place within this month
+      // Place within this month — set bill_source/bill_id at insertion so
+      // payment-tracking has correct identity from the start.
       const monthEnd = new Date(endDate);
       while (nextDate <= monthEnd) {
         const day = nextDate.getDate();
@@ -614,6 +619,8 @@ router.get("/api/bill-calendar", async (req, res) => {
           name: sub.display_name,
           amount,
           category: sub.category,
+          bill_source: "subscription",
+          bill_id: sub.id,
         });
         nextDate = new Date(nextDate.getTime() + cadence * 86400000);
       }
@@ -640,18 +647,6 @@ router.get("/api/bill-calendar", async (req, res) => {
           bill_source: "manual",
           bill_id: bill.id,
         });
-      }
-    }
-
-    // Add bill_source/bill_id to subscription events for payment tracking
-    for (const sub of subs.rows) {
-      for (let d = 1; d <= daysInMonth; d++) {
-        for (const ev of calendar[d]) {
-          if (ev.name === sub.display_name && !ev.bill_source) {
-            ev.bill_source = "subscription";
-            ev.bill_id = sub.id;
-          }
-        }
       }
     }
 
