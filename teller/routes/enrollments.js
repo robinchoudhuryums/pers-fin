@@ -544,13 +544,35 @@ async function syncAllBalances() {
         const ledger = balances?.ledger || acct.balance?.ledger || acct.balance?.current || null;
 
         if (available !== null || ledger !== null) {
-          await pool.query(
+          const availNum = available ? parseFloat(available) : null;
+          const ledgerNum = ledger ? parseFloat(ledger) : null;
+          // Persist current values to linked_accounts AND append a daily
+          // history row so we can chart per-account performance over time.
+          // RETURNING gets the linked_accounts.id we need for the snapshot
+          // FK without a second SELECT round-trip. The snapshot UPSERT keeps
+          // intra-day re-syncs to one row per account per day.
+          const updateResult = await pool.query(
             `UPDATE linked_accounts
              SET available_balance = $1, current_balance = $2, balance_updated_at = now()
-             WHERE account_id = $3`,
-            [available ? parseFloat(available) : null, ledger ? parseFloat(ledger) : null, acct.id]
+             WHERE account_id = $3
+             RETURNING id`,
+            [availNum, ledgerNum, acct.id]
           );
           updated++;
+          const linkedAcctId = updateResult.rows[0]?.id;
+          if (linkedAcctId) {
+            const dailyBalance = ledgerNum !== null ? ledgerNum : availNum;
+            await pool.query(
+              `INSERT INTO account_balance_snapshots
+                 (source, source_id, snapshot_date, balance, available_balance, current_balance)
+               VALUES ('linked', $1, CURRENT_DATE, $2, $3, $4)
+               ON CONFLICT (source, source_id, snapshot_date) DO UPDATE SET
+                 balance = EXCLUDED.balance,
+                 available_balance = EXCLUDED.available_balance,
+                 current_balance = EXCLUDED.current_balance`,
+              [linkedAcctId, dailyBalance, availNum, ledgerNum]
+            ).catch(e => console.error("balance snapshot insert error:", e.message));
+          }
         }
       }
     } catch (err) {
@@ -1113,6 +1135,44 @@ router.get("/api/csv-reminder", async (_req, res) => {
     });
   } catch (err) {
     console.error("csv-reminder error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// GET /api/accounts/:id/balance-history — Daily balance series for charting.
+// `source` query param defaults to 'linked' (linked_accounts row); pass
+// 'investment' to read snapshots for an investment_accounts row instead.
+// Returns { source, account_id, snapshots: [{ snapshot_date, balance, ... }] }
+// ordered oldest-first so charting libraries render left-to-right.
+router.get("/api/accounts/:id/balance-history", async (req, res) => {
+  const months = Math.max(1, Math.min(parseInt(req.query.months) || 12, 60));
+  const source = req.query.source === "investment" ? "investment" : "linked";
+  const accountId = parseInt(req.params.id);
+  if (!Number.isFinite(accountId) || accountId <= 0) {
+    return res.status(400).json({ error: "id must be a positive integer" });
+  }
+  try {
+    const result = await pool.query(
+      `SELECT snapshot_date, balance, available_balance, current_balance
+       FROM account_balance_snapshots
+       WHERE source = $1 AND source_id = $2
+         AND snapshot_date >= CURRENT_DATE - make_interval(months => $3)
+       ORDER BY snapshot_date ASC`,
+      [source, accountId, months]
+    );
+    res.json({
+      source,
+      account_id: accountId,
+      months,
+      snapshots: result.rows.map(r => ({
+        snapshot_date: r.snapshot_date,
+        balance: parseFloat(r.balance),
+        available_balance: r.available_balance !== null ? parseFloat(r.available_balance) : null,
+        current_balance: r.current_balance !== null ? parseFloat(r.current_balance) : null,
+      })),
+    });
+  } catch (err) {
+    console.error("balance-history error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
   }
 });

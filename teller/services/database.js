@@ -295,7 +295,7 @@ async function runMigrations() {
     await client.query("ALTER TABLE linked_accounts DROP CONSTRAINT IF EXISTS chk_account_source");
     await client.query("ALTER TABLE linked_accounts ADD CONSTRAINT chk_account_source CHECK (plaid_item_id IS NOT NULL OR teller_enrollment_id IS NOT NULL OR is_manual = true)");
     // Dashboard widget order/visibility
-    await client.query(`ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS dashboard_widgets JSONB NOT NULL DEFAULT '{"pyramid":true,"accounts":true,"recentTxns":true,"monthlySpend":true,"categories":true,"merchants":true,"upcoming":true,"forecast":true,"charts":true,"calendar":true,"cashFlow":true,"savingsRate":true,"yoy":true}'::jsonb`);
+    await client.query(`ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS dashboard_widgets JSONB NOT NULL DEFAULT '{"pyramid":true,"accounts":true,"recentTxns":true,"monthlySpend":true,"categories":true,"merchants":true,"upcoming":true,"forecast":true,"charts":true,"calendar":true,"cashFlow":true,"savingsRate":true,"yoy":true,"investments":true}'::jsonb`);
     // Sheets auto-sync
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sheets_auto_sync_enabled BOOLEAN NOT NULL DEFAULT false");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sheets_auto_sync_interval TEXT NOT NULL DEFAULT 'weekly'");
@@ -504,7 +504,39 @@ async function runMigrations() {
     )`);
     await client.query("CREATE INDEX IF NOT EXISTS idx_ai_audit_log_insight ON ai_audit_log (insight_id, severity)");
 
-    // ---- One-shot cleanup: detection-key migration orphans ----
+    // ---- Account balance history (per-account daily snapshots) ----
+    // Captures balance over time for each account so the UI can show
+    // performance for investment accounts (and arbitrary balance trends for
+    // any account). Polymorphic: source='linked' rows reference linked_accounts.id,
+    // source='investment' rows reference investment_accounts.id. The lack of FK
+    // is deliberate — both source tables exist with their own lifecycles, and a
+    // polymorphic UNIQUE keeps lookups O(1) per (source, source_id, date).
+    // Writes happen at the end of syncAllBalances and POST /api/plaid/sync-holdings,
+    // both of which are the only paths that update account balances.
+    await client.query(`CREATE TABLE IF NOT EXISTS account_balance_snapshots (
+      id SERIAL PRIMARY KEY,
+      source TEXT NOT NULL CHECK (source IN ('linked', 'investment')),
+      source_id INT NOT NULL,
+      snapshot_date DATE NOT NULL DEFAULT CURRENT_DATE,
+      balance NUMERIC(14,2) NOT NULL,
+      available_balance NUMERIC(14,2),
+      current_balance NUMERIC(14,2),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(source, source_id, snapshot_date)
+    )`);
+    await client.query("CREATE INDEX IF NOT EXISTS idx_acct_balance_snapshots_lookup ON account_balance_snapshots (source, source_id, snapshot_date DESC)");
+
+    // ---- Add 'investments' to dashboard_widgets default for new users ----
+    // For existing rows: merge the new key into the JSONB without overwriting
+    // user customizations to other keys. jsonb concat (||) is right-precedence,
+    // so we put the existing JSON on the right to preserve user-set values.
+    await client.query(`
+      UPDATE user_settings
+      SET dashboard_widgets = '{"investments":true}'::jsonb || dashboard_widgets
+      WHERE NOT (dashboard_widgets ? 'investments')
+    `);
+
+    // One-shot cleanup: detection-key migration orphans
     // When detection started keying on COALESCE(user_merchant_name, merchant_name, name)
     // instead of raw merchant_name, pre-existing detected_subscriptions /
     // recurring_transfers rows keyed by the raw merchant_name were left active

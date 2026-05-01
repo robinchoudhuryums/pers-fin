@@ -196,12 +196,27 @@ router.post("/api/plaid/sync-holdings", async (_req, res) => {
         for (const acct of accounts) {
           if (acct.type !== "investment") continue;
           const balance = acct.balances?.current || 0;
-          await pool.query(
+          // RETURNING the investment_accounts.id so the snapshot below can
+          // attribute history to the right account (we key by plaid_account_id
+          // here but the snapshot table uses the local SERIAL id).
+          const updRes = await pool.query(
             `UPDATE investment_accounts SET balance = $1, updated_at = now()
-             WHERE plaid_account_id = $2`,
+             WHERE plaid_account_id = $2
+             RETURNING id`,
             [balance, acct.account_id]
           );
           totalAccounts++;
+          const invAcctId = updRes.rows[0]?.id;
+          if (invAcctId) {
+            await pool.query(
+              `INSERT INTO account_balance_snapshots
+                 (source, source_id, snapshot_date, balance)
+               VALUES ('investment', $1, CURRENT_DATE, $2)
+               ON CONFLICT (source, source_id, snapshot_date) DO UPDATE SET
+                 balance = EXCLUDED.balance`,
+              [invAcctId, balance]
+            ).catch(e => console.error("balance snapshot insert (plaid) error:", e.message));
+          }
         }
 
         // Batch upsert holdings (instead of one query per holding)
