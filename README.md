@@ -128,7 +128,7 @@ The Teller mTLS certificate (`certificate.pem`, `private_key.pem`) lives in the 
 3. Share your spreadsheet with the service account email (as Editor)
 4. Set `GOOGLE_SHEETS_ID` and `GOOGLE_SERVICE_ACCOUNT_KEY` in `.env`
 
-The sync writes six tabs: **Transactions**, **Subscriptions**, **AI Insights**, **Recurring Transfers**, **Tax Deductions**, and **Dashboard**.
+The sync writes seven tabs: **Transactions**, **Subscriptions**, **Utilities**, **AI Insights**, **Recurring Transfers**, **Tax Deductions**, and **Dashboard**. The Utilities tab consolidates auto-detected utility subscriptions and user-entered manual bills (category=utility) with a TOTAL roll-up row.
 
 ### 5. Deployment
 

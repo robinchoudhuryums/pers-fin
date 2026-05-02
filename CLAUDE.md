@@ -175,8 +175,8 @@ shell/
 - `scripts/detect-subscriptions.js` — Recurring subscription detection (30/60/90/365-day cadences)
 - `scripts/detect-transfers.js` — Recurring transfer detection (7/14/30/60/90/365-day cadences,
   6 transfer types: peer_transfer, bill_payment, savings, investment, internal, other)
-- `scripts/sheets-sync.js` — Google Sheets sync (6 tabs: Transactions, Subscriptions,
-  AI Insights, Recurring Transfers, Tax Deductions, Dashboard)
+- `scripts/sheets-sync.js` — Google Sheets sync (7 tabs: Transactions, Subscriptions,
+  Utilities, AI Insights, Recurring Transfers, Tax Deductions, Dashboard)
 - `scripts/import-csv-cli.js` — Standalone CLI for importing bank CSVs (mirror of the
   `/api/import-csv` route — note format detection drift between the two; see audit H8)
 - `scripts/retention-cleanup.sql` — Reference SQL for the manual cleanup queries
@@ -307,6 +307,23 @@ shell/
 - **AI audit-accuracy card**: Settings → AI shows the percentage of insight
   runs (last 90 days) with zero critical findings, color-coded green/yellow/red,
   with severity counts. Backed by `/api/insights/status.audit_accuracy`.
+- **AI Memory widget**: Renders the structured running summary's actual
+  contents (not just counts) on the dashboard — four cards for Trends (with
+  up/down/stable arrows + magnitude + since_when), Pending Actions
+  (urgency-colored), Alerts (severity-colored), and Completed Goals. Backed
+  by `/api/insights/status.running_summary`. Auto-hides when the summary is
+  empty. Toggleable from Settings (`aiMemory` widget key, default on).
+- **Quick Add Bill modal** (Upcoming Bills widget): "+ Add Bill" button on
+  the dashboard's Upcoming Bills widget header opens an inline modal with
+  five fields (name, amount, due_day, cadence, category) and POSTs to
+  `/api/manual-bills`. Mobile-first: 44px tap targets, full-width inputs,
+  numeric `inputmode` hints, autofocus on first field, click-outside + Esc
+  to dismiss. Defaults to `category=utility` since utilities are the most
+  common manual entry. Triggers a page reload on save so the new bill
+  surfaces in the widget immediately; the next Sheets sync picks it up via
+  the existing one-way DB-as-source-of-truth flow. Distinct from the
+  Calendar page's existing Add Bill modal — both write to the same
+  `manual_bills` table.
 - **3D Financial Pyramid**: Interactive spinning pyramid with 4 frustum layers, neon wireframe edges,
   holographic effects. Layers computed by JS (`buildPyramidGeometry()`) with proper taper geometry.
   Configurable data sources: wellness, debt payoff, goal progress, etc. Mobile-optimized (reduced
@@ -435,9 +452,12 @@ shell/
 - **CSP nonces**: Per-request cryptographic nonces for all inline scripts (no `'unsafe-inline'` in `scriptSrc`). Style policy is split: `styleSrcElem` is nonce-gated for `<style>` blocks while `styleSrcAttr` keeps `'unsafe-inline'` for inline `style=""` attributes.
 - **Keep-alive**: Timezone-aware self-ping to prevent Render free tier sleep (10s timeout)
 - **Per-model cost tracking**: Usage history with granular pricing (Haiku/Sonnet/Opus)
-- **Google Sheets sync**: Auto-sync to 6 tabs — Transactions, Subscriptions, AI Insights,
-  Recurring Transfers, Tax Deductions, Dashboard (with net worth, budgets, goals, conditional
-  formatting for over-budget categories)
+- **Google Sheets sync**: Auto-sync to 7 tabs — Transactions, Subscriptions,
+  Utilities, AI Insights, Recurring Transfers, Tax Deductions, Dashboard (with
+  net worth, budgets, goals, conditional formatting for over-budget categories).
+  The Utilities tab consolidates auto-detected utility subscriptions and
+  user-entered manual_bills with `category='utility'`, with a TOTAL roll-up
+  row showing combined active monthly + yearly spend.
 
 ### Per-sistant Integration (Companion App)
 Under the unified shell both apps run in the same Node process, so most of
@@ -467,7 +487,10 @@ shared session cookie. Cross-app surface area today:
   standalone fallback.
 - **Per-sistant's Perfin widget** (`GET /api/perfin/stats`): symmetric — the
   embedded fast-path queries Perfin's `detected_subscriptions` directly;
-  HTTP fetch is the standalone fallback.
+  HTTP fetch is the standalone fallback. The fallback now correctly
+  unwraps Perfin's `{subscriptions, summary}` response shape (an earlier
+  version assumed a bare array and crashed silently, so the widget always
+  showed "not connected" in standalone Per-sistant deployments).
 
 **Legacy two-services integration** (still in code as standalone fallback):
 - **Cross-app SSO**: HMAC-signed token exchange (60s expiry, per-token nonce
@@ -905,6 +928,14 @@ can dismiss them from the UI or run `POST /api/cleanup`.
   aren't burned by bad signatures.
 - **WebAuthn rpID**: Derived per-request from `req.hostname` (not cached at module scope),
   so deployments behind proxies with multiple hostnames or DNS changes work correctly.
+- **Biometric registration UI**: Settings → Security → "Biometric Login"
+  section lists registered credentials and provides Register / Remove
+  buttons via the existing `/api/webauthn/*` endpoints. Section auto-hides
+  on browsers without `window.PublicKeyCredential` or when the WebAuthn
+  SDK isn't installed (server returns 501). Works under both standalone
+  and unified-shell deployments — registration always happens against
+  Perfin's webauthn_credentials table; the shell-layer login endpoints
+  read from that same pool.
 - **Teller API**: mTLS client certificates, retry with exponential backoff (1s/2s/4s), 30s timeout
 - **AI prompt sanitization**: Two layers. First, `sanitizeForPrompt()` in
   `routes/insights.js` strips `---RUNNING_SUMMARY---` patterns and consecutive
@@ -962,12 +993,34 @@ This affects: spending-summary (monthly_trend, byCategory, topMerchants), saving
 spending-yoy, budgets, budget alerts, and cash flow.
 
 ## Income Detection
-Income is identified by word-boundary keyword matching (`\y` in Postgres) on transaction
-descriptions (NOT amount thresholds). Defined in `services/financial-queries.js` as
-`INCOME_PREDICATE`:
-- Matches: `\y(payroll|direct dep|salary|employer)\y` or `category[1] = 'Income'`
-- Excludes: `\y(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|credit|reversal)\y`
-- Used in: cash flow projection, savings rate, AI insights income module, bill-calendar income
+Income is identified via three OR'd branches in
+`services/financial-queries.js INCOME_PREDICATE`. All matching uses Postgres
+word-boundary regex (`\y`) on transaction `merchant_name` / `name` (NOT amount
+thresholds). Each branch is independently gated:
+
+**Branch (a) — strict keyword match with negative filter.** Matches deposits
+that look like payroll/direct-dep traffic AND are NOT excluded as transfers:
+- Includes: `\y(payroll|direct dep|direct deposit|dir dep|salary|employer|deposit|ach credit)\y`
+- Excludes: `\y(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|reversal|atm|withdrawal|bill pay)\y`
+
+**Branch (b) — user-authorized brokerage transfer pattern.** Matches the
+specific case of paychecks landing in a brokerage account and the user then
+transferring to checking, leaving a "Funds transfer from brokerage" credit
+that's the real paycheck from the user's perspective. To avoid double-
+counting when both ends are linked, branch (b) requires NO matching debit
+on a different account within ±2 days (subquery uses `__t2` alias and
+unqualified outer references so it works regardless of how the caller
+aliases the outer `transactions` table).
+
+**Branch (c) — explicit category match.** `COALESCE(user_category, category[1]) = 'Income'`
+covers Plaid's own taxonomy AND any row the user manually overrode to
+'Income' via `PATCH /api/transactions/:id/category`.
+
+Constants exported from the same module: `INCOME_PREDICATE` (full predicate),
+`NOT_TRANSFER` (the negative-filter list reused by spending queries),
+`SPLIT_AMOUNT`, `NOT_REIMBURSED`, `INVESTMENT_ACCOUNT_TYPES`. Used by
+`/api/cash-flow`, `/api/savings-rate`, `/api/income-summary`, AI insights
+income module, and bill-calendar income detection.
 
 ## Key Design Decisions
 - **Test deps live in two places.** `teller/package.json` holds runtime deps;
@@ -1030,7 +1083,14 @@ descriptions (NOT amount thresholds). Defined in `services/financial-queries.js`
   `COALESCE(user_merchant_name, merchant_name, name)`. The next sync from
   Teller therefore can't fight the user — `INSERT … ON CONFLICT … DO
   UPDATE SET merchant_name = EXCLUDED.merchant_name` only updates the raw
-  field and leaves the user override intact.
+  field and leaves the user override intact. The same pattern applies to
+  `user_category` (manual category overrides set via `PATCH
+  /api/transactions/:id/category`): every display query — including the
+  in-app routes (`/api/transactions`, `/api/spending-summary`,
+  `/api/spending-yoy`, the financial-queries helpers) AND the Google Sheets
+  exporter (`scripts/sheets-sync.js`) — reads the override via
+  `COALESCE(user_category, category[1])` so a Teller re-sync can't clobber
+  manual categorizations.
 - **Goal `current_amount` is derived when funding-linked.** If a goal has
   `funding_account_id` (or `funding_investment_id`) set, GET `/api/goals`
   computes `current_amount = account_balance - goal_baseline_amount` rather
