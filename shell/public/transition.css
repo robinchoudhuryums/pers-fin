@@ -1,0 +1,182 @@
+/* ============================================================================
+   App-transition overlay
+   ----------------------------------------------------------------------------
+   Played when:
+     - a user clicks a tile on the shell's landing page,
+     - or clicks the cross-app icon in either sub-app's nav.
+   Two variants, parallel skeletons:
+     .atrans--warm   → Iron Man helmet (Perfin), gold/copper palette
+     .atrans--cosmic → mask-crop image (Per-sistant), purple/gold palette
+   Loaded only under the unified shell (cross-app links don't render in
+   standalone mode, so the 404 case can't happen).
+   ============================================================================ */
+
+.atrans-overlay {
+  position: fixed; inset: 0; z-index: 9999;
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.25s ease;
+  background: radial-gradient(ellipse at center, #0c0e14 0%, #060709 75%);
+}
+.atrans-overlay.active { opacity: 1; pointer-events: all; }
+.atrans-overlay.fading { opacity: 0; }
+
+.atrans-stage {
+  position: relative; width: 240px; height: 240px;
+  display: flex; align-items: center; justify-content: center;
+}
+
+/* Backdrop nebula glow */
+.atrans-nebula {
+  position: absolute; left: 50%; top: 50%;
+  width: 340px; height: 340px;
+  transform: translate(-50%,-50%);
+  filter: blur(22px);
+  opacity: 0;
+  pointer-events: none;
+}
+.atrans-overlay.active .atrans-nebula {
+  animation: atrans-nebula 3.4s ease-in-out 0.05s infinite;
+}
+.atrans--warm .atrans-nebula {
+  background:
+    radial-gradient(circle at 30% 35%, rgba(212,165,116,0.65) 0%, transparent 55%),
+    radial-gradient(circle at 70% 65%, rgba(200,133,108,0.5) 0%, transparent 55%),
+    radial-gradient(circle at 50% 50%, rgba(255,205,140,0.18) 0%, transparent 70%);
+}
+.atrans--cosmic .atrans-nebula {
+  background:
+    radial-gradient(circle at 30% 35%, rgba(168,140,220,0.55) 0%, transparent 55%),
+    radial-gradient(circle at 70% 65%, rgba(212,165,116,0.40) 0%, transparent 55%),
+    radial-gradient(circle at 50% 50%, rgba(95,191,191,0.18) 0%, transparent 70%);
+}
+@keyframes atrans-nebula {
+  0%, 100% { opacity: 0.55; transform: translate(-50%,-50%) scale(1); }
+  50%      { opacity: 0.85; transform: translate(-50%,-50%) scale(1.08); }
+}
+
+/* Slow rotating ring */
+.atrans-ring {
+  position: absolute; left: 50%; top: 50%;
+  width: 210px; height: 210px;
+  border-radius: 50%;
+  transform: translate(-50%,-50%);
+  pointer-events: none;
+  opacity: 0;
+}
+.atrans-overlay.active .atrans-ring {
+  animation: atrans-ring-fade 0.4s ease 0.1s forwards, atrans-ring-spin 12s linear infinite;
+}
+.atrans--warm .atrans-ring   { border: 1px solid rgba(212,165,116,0.45); }
+.atrans--cosmic .atrans-ring { border: 1px solid rgba(168,140,220,0.35); }
+.atrans-ring::before {
+  content: ''; position: absolute; left: 50%; top: -3px;
+  width: 6px; height: 6px; border-radius: 50%; transform: translateX(-50%);
+}
+.atrans--warm .atrans-ring::before {
+  background: rgba(255,205,140,0.95);
+  box-shadow: 0 0 8px rgba(212,165,116,0.85);
+}
+.atrans--cosmic .atrans-ring::before {
+  background: rgba(212,165,116,0.95);
+  box-shadow: 0 0 8px rgba(168,140,220,0.85);
+}
+@keyframes atrans-ring-fade { to { opacity: 1; } }
+@keyframes atrans-ring-spin {
+  from { transform: translate(-50%,-50%) rotate(0deg); }
+  to   { transform: translate(-50%,-50%) rotate(360deg); }
+}
+
+/* Twinkling stars (cosmic only — warm gets ember sparks via the same node) */
+.atrans-stars {
+  position: absolute; left: 50%; top: 50%;
+  width: 380px; height: 380px;
+  transform: translate(-50%,-50%);
+  pointer-events: none;
+}
+.atrans-stars span {
+  position: absolute; width: 2px; height: 2px;
+  background: #fff; border-radius: 50%;
+  box-shadow: 0 0 4px rgba(255,255,255,0.7);
+  opacity: 0;
+}
+.atrans-overlay.active .atrans-stars span {
+  animation: atrans-twinkle 2.4s ease-in-out infinite;
+}
+.atrans--warm .atrans-stars span {
+  background: #ffcd8c;
+  box-shadow: 0 0 4px rgba(255,205,140,0.85);
+}
+@keyframes atrans-twinkle {
+  0%, 100% { opacity: 0.15; transform: scale(0.8); }
+  50%      { opacity: 1;    transform: scale(1.2); }
+}
+
+/* Art (image or CSS-masked div, both clip-path-revealed) */
+.atrans-art-wrap {
+  position: relative; width: 170px; height: 170px;
+}
+.atrans-art {
+  position: absolute; inset: 0;
+  clip-path: inset(0 0 100% 0);
+  opacity: 0;
+}
+.atrans-overlay.active .atrans-art {
+  animation: atrans-reveal 1.2s cubic-bezier(0.4, 0, 0.2, 1) 0.15s forwards,
+             atrans-halo 2.6s ease-in-out 1.4s infinite;
+}
+.atrans-art img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.atrans-art--mask {
+  -webkit-mask: var(--atrans-mask) center/contain no-repeat;
+  mask: var(--atrans-mask) center/contain no-repeat;
+}
+.atrans--warm .atrans-art--mask { background: #e7b67c; }
+@keyframes atrans-reveal {
+  0%   { clip-path: inset(0 0 100% 0); opacity: 0; }
+  8%   { opacity: 1; }
+  100% { clip-path: inset(0); opacity: 1; }
+}
+@keyframes atrans-halo {
+  0%, 100% { filter: drop-shadow(0 0 12px var(--atrans-halo-1)) drop-shadow(0 0 24px var(--atrans-halo-2)); }
+  50%      { filter: drop-shadow(0 0 28px var(--atrans-halo-1)) drop-shadow(0 0 48px var(--atrans-halo-2)); }
+}
+.atrans--warm   { --atrans-halo-1: rgba(212,165,116,0.7); --atrans-halo-2: rgba(255,205,140,0.4); }
+.atrans--cosmic { --atrans-halo-1: rgba(168,140,220,0.55); --atrans-halo-2: rgba(212,165,116,0.35); }
+
+/* Glowing horizontal scan line riding the reveal edge */
+.atrans-scanline {
+  position: absolute; left: -8%; right: -8%; top: 0; height: 2px;
+  pointer-events: none; opacity: 0;
+}
+.atrans--warm .atrans-scanline {
+  background: linear-gradient(90deg,
+    transparent 0%, rgba(255,205,140,0.9) 30%,
+    rgba(212,165,116,1) 50%, rgba(255,205,140,0.9) 70%, transparent 100%);
+  box-shadow: 0 0 12px rgba(255,205,140,0.9), 0 0 24px rgba(212,165,116,0.6);
+}
+.atrans--cosmic .atrans-scanline {
+  background: linear-gradient(90deg,
+    transparent 0%, rgba(168,140,220,0.9) 30%,
+    rgba(212,165,116,1) 50%, rgba(168,140,220,0.9) 70%, transparent 100%);
+  box-shadow: 0 0 12px rgba(168,140,220,0.9), 0 0 24px rgba(212,165,116,0.6);
+}
+.atrans-overlay.active .atrans-scanline {
+  animation: atrans-scan 1.2s cubic-bezier(0.4, 0, 0.2, 1) 0.15s forwards;
+}
+@keyframes atrans-scan {
+  0%   { top: 0%; opacity: 0; }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { top: 100%; opacity: 0; }
+}
+
+/* Reduced motion: skip the reveal, show the art statically while transition runs */
+@media (prefers-reduced-motion: reduce) {
+  .atrans-overlay.active .atrans-art,
+  .atrans-overlay.active .atrans-scanline,
+  .atrans-overlay.active .atrans-nebula,
+  .atrans-overlay.active .atrans-ring,
+  .atrans-overlay.active .atrans-stars span { animation: none !important; }
+  .atrans-overlay.active .atrans-art { clip-path: inset(0); opacity: 1; }
+  .atrans-overlay.active .atrans-scanline { display: none; }
+}
