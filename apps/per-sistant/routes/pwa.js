@@ -10,22 +10,16 @@
 // identical to the prior static behavior.
 
 const express = require("express");
-const fs = require("fs");
 const path = require("path");
 
 module.exports = function ({}) {
   const router = express.Router();
 
-  // Load custom icon SVG at startup
-  let customIcon = '';
-  try {
-    customIcon = fs.readFileSync(path.join(__dirname, '..', 'vision icon.svg'), 'utf8');
-  } catch (e) { /* fallback to default below */ }
-
   // PNG icons live alongside server.js — favicon.io-generated set used for the
-  // iPhone home-screen icon and Android Chrome PWA install. Resolved once at
-  // module load and served via res.sendFile so the file is read fresh per
-  // request (cached by Express's static handling).
+  // iPhone home-screen icon, Android Chrome PWA install, and now the
+  // browser-tab favicon (no SVG variant — see pageHead comment in views.js).
+  // Resolved once at module load and served via res.sendFile so the file is
+  // read fresh per request (cached by Express's static handling).
   const PNG_DIR = path.join(__dirname, '..');
   const APPLE_TOUCH_PNG = path.join(PNG_DIR, 'apple-touch-icon.png');
   const ICON_192_PNG = path.join(PNG_DIR, 'android-chrome-192x192.png');
@@ -46,13 +40,12 @@ module.exports = function ({}) {
       background_color: "#0a0b14",
       theme_color: "#0a0b14",
       icons: [
-        // PNG entries listed first so Android/Chrome's PWA installer picks
-        // them as primary; SVG entries kept as a fallback for browsers that
-        // prefer scalable formats.
+        // PNG-only set — the legacy SVG entries were the old vision icon
+        // and have been removed. Both PNGs are the same artwork (the
+        // mask-crop image) at different resolutions. The 512 is marked
+        // any-maskable for Android adaptive-icon platforms.
         { src: bp + "/android-chrome-192x192.png", sizes: "192x192", type: "image/png" },
         { src: bp + "/android-chrome-512x512.png", sizes: "512x512", type: "image/png", purpose: "any maskable" },
-        { src: bp + "/icon-192.svg", sizes: "192x192", type: "image/svg+xml" },
-        { src: bp + "/icon-512.svg", sizes: "512x512", type: "image/svg+xml" },
       ],
     });
   });
@@ -63,7 +56,7 @@ module.exports = function ({}) {
     // the empty-string standalone case or the "/per-sistant" mounted case.
     res.type("application/javascript").send(`
     const BASE = ${JSON.stringify(bp)};
-    const CACHE = 'per-sistant-v5';
+    const CACHE = 'per-sistant-v6';
     const PAGES = [BASE+'/', BASE+'/todos', BASE+'/emails', BASE+'/notes', BASE+'/calendar', BASE+'/contacts', BASE+'/review', BASE+'/analytics', BASE+'/settings'];
     const OFFLINE_KEY = 'per-sistant-offline-queue';
 
@@ -132,16 +125,6 @@ module.exports = function ({}) {
     });
   `);
   });
-
-  // SVG icon
-  const SVG_ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="64" fill="#0a0b14"/>
-  <text x="256" y="340" font-family="Inter,sans-serif" font-size="280" font-weight="300" fill="#a08cd4" text-anchor="middle">P</text>
-</svg>`;
-
-  const icon = customIcon || SVG_ICON;
-  router.get("/icon-192.svg", (req, res) => res.type("image/svg+xml").send(icon));
-  router.get("/icon-512.svg", (req, res) => res.type("image/svg+xml").send(icon));
 
   // PNG icons (favicon.io-generated set). Long max-age cache because the
   // file content is fingerprinted by name; rotating to a new design will

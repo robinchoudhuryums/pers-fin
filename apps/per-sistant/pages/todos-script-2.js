@@ -51,7 +51,7 @@ function checkLocationReminders() {
       todos.filter(t => t.location_lat && t.location_lng).forEach(t => {
         var dist = haversine(pos.coords.latitude, pos.coords.longitude, t.location_lat, t.location_lng);
         if (dist <= (t.location_radius || 200)) {
-          new Notification('Per-sistant Reminder', { body: t.title + (t.location_name ? ' (near ' + t.location_name + ')' : ''), icon: '/icon-192.svg' });
+          new Notification('Per-sistant Reminder', { body: t.title + (t.location_name ? ' (near ' + t.location_name + ')' : ''), icon: (window.BASE_PATH || '') + '/android-chrome-192x192.png' });
         }
       });
     } catch {}

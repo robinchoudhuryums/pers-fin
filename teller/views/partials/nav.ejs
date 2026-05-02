@@ -20,7 +20,7 @@
       <a href="<%= __basePath %>/settings"<%= activePage === 'settings' ? ' class="active"' : '' %>>Settings</a>
     </div>
 <% if (__embedded) { %>
-    <a href="/per-sistant" class="cross-app-link" id="cross-app-link" title="Switch to Per-sistant" aria-label="Switch to Per-sistant" style="display:inline-flex;align-items:center;justify-content:center;padding:4px;border:1px solid var(--border);border-radius:6px;margin-right:8px;line-height:0;">
+    <a href="/per-sistant" class="cross-app-link" id="cross-app-link" data-atrans="cosmic" title="Switch to Per-sistant" aria-label="Switch to Per-sistant" style="display:inline-flex;align-items:center;justify-content:center;padding:4px;border:1px solid var(--border);border-radius:6px;margin-right:8px;line-height:0;">
       <img src="/per-sistant/android-chrome-mask-crop.png" alt="" aria-hidden="true" width="22" height="22" style="display:block;object-fit:contain;">
     </a>
 <% } %>
@@ -35,46 +35,22 @@
     </div>
   </nav>
 <% if (__embedded) { %>
-  <!-- Cross-app cosmic transition overlay (Perfin → Per-sistant) -->
+  <!-- Cross-app cosmic transition overlay (Perfin → Per-sistant). Decorations
+       are populated by transition.js on init. The cross-app link gets a
+       data-atrans="cosmic" attribute below to bind the click handler. -->
   <div class="atrans-overlay atrans--cosmic" id="atrans-cosmic" aria-hidden="true">
     <div class="atrans-stage">
-      <div class="atrans-stars" data-atrans-stars></div>
+      <div class="atrans-stars"></div>
       <div class="atrans-nebula"></div>
       <div class="atrans-ring"></div>
       <div class="atrans-art-wrap">
         <div class="atrans-art"><img src="/per-sistant/android-chrome-mask-crop.png" alt="" aria-hidden="true"></div>
+        <div class="atrans-scanline-trail"></div>
         <div class="atrans-scanline"></div>
       </div>
     </div>
   </div>
-  <script nonce="<%= nonce %>">
-    (function() {
-      var box = document.querySelector('#atrans-cosmic [data-atrans-stars]');
-      if (box) {
-        var html = '';
-        for (var i = 0; i < 32; i++) {
-          var x = Math.random() * 100, y = Math.random() * 100;
-          var size = (Math.random() * 1.6 + 1).toFixed(2);
-          var delay = (Math.random() * 2.4).toFixed(2);
-          var dur = (Math.random() * 1.6 + 1.6).toFixed(2);
-          html += '<span style="left:' + x.toFixed(1) + '%;top:' + y.toFixed(1) +
-                  '%;width:' + size + 'px;height:' + size +
-                  'px;animation-delay:' + delay + 's;animation-duration:' + dur + 's;"></span>';
-        }
-        box.innerHTML = html;
-      }
-      var link = document.getElementById('cross-app-link');
-      var overlay = document.getElementById('atrans-cosmic');
-      if (link && overlay) {
-        link.addEventListener('click', function(e) {
-          if (e.ctrlKey || e.metaKey || e.shiftKey || e.button === 1) return;
-          e.preventDefault();
-          overlay.classList.add('active');
-          setTimeout(function() { window.location.href = link.href; }, 1350);
-        });
-      }
-    })();
-  </script>
+  <script src="/shell-static/transition.js" defer></script>
 <% } %>
   <!-- Notification dropdown panel -->
   <div id="notif-panel" style="display:none;position:fixed;top:48px;right:8px;width:340px;max-height:400px;overflow-y:auto;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.3);z-index:99;padding:0;">

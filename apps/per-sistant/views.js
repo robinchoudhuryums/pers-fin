@@ -47,11 +47,13 @@ function embedded() {
 function pageHead(title) {
   const bp = basePath();
   const isEmbedded = embedded();
-  // Cross-app transition overlay stylesheet — only loaded when embedded
-  // under the unified shell, since /shell-static is only mounted there
-  // and the cross-app link only renders in embedded mode.
-  const transitionCss = isEmbedded
-    ? `\n  <link rel="stylesheet" href="/shell-static/transition.css">`
+  // Cross-app Iron Man materialize animation — only loaded when embedded
+  // under the unified shell (the cross-app link only renders there, and
+  // /shell-static is only mounted by the shell). The standalone Perfin
+  // login uses its own inline copy of the same animation.
+  const materializeAssets = isEmbedded
+    ? `\n  <link rel="stylesheet" href="/shell-static/perfin-materialize.css">` +
+      `\n  <script src="/shell-static/perfin-materialize.js" defer></script>`
     : "";
   return `<!DOCTYPE html>
 <html lang="en">
@@ -62,18 +64,20 @@ function pageHead(title) {
   <link rel="manifest" href="${bp}/manifest.json">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
-  <!-- iPhone home-screen icon — favicon.io-generated PNG. iOS auto-rounds
-       corners; the source PNG is opaque/edge-to-edge so the rounded mask
-       doesn't double-clip. Keeping the SVG as a generic icon fallback. -->
+  <!-- Favicon set: favicon.io-generated PNGs, all pointing at the same
+       mask-crop artwork. iOS uses apple-touch-icon for the home screen
+       (auto-rounded). Chrome/Firefox/Edge/Safari pick the 192/512 PNGs
+       for the tab/bookmark icon. No SVG entry — the only SVG we ever
+       served was the legacy vision icon, which doesn't match the
+       current aesthetic. -->
   <link rel="apple-touch-icon" sizes="180x180" href="${bp}/apple-touch-icon.png">
   <link rel="icon" type="image/png" sizes="192x192" href="${bp}/android-chrome-192x192.png">
   <link rel="icon" type="image/png" sizes="512x512" href="${bp}/android-chrome-512x512.png">
-  <link rel="icon" type="image/svg+xml" href="${bp}/icon-192.svg">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="theme-color" content="#faf7f2">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">${transitionCss}
+  <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">${materializeAssets}
   <style>${SHARED_CSS}${NAV_CHROME_CSS}</style>
   <script>window.BASE_PATH = ${JSON.stringify(bp)};</script>
   <script>${SHARED_JS}</script>
@@ -175,54 +179,15 @@ function navBar(activePath) {
   // under the unified shell (/perfin/logo.svg); cross-origin in standalone
   // (PERFIN_URL/logo.svg) — img tag handles either fine.
   const perfinIconSrc = `${perfinHref}/logo.svg`;
-  const perfinLinkId = isEmbedded ? ' id="cross-app-link"' : '';
+  // Mark for Iron Man materialize animation only under the unified shell.
+  // Standalone deploys link out to PERFIN_URL (different origin) and the
+  // shell-only materialize.js isn't loaded there anyway.
+  const materializeAttr = isEmbedded ? ' data-perfin-materialize' : '';
   const perfinLink = perfinHref
-    ? `<a href="${perfinHref}"${perfinTarget} class="cross-app-link cross-app-icon-link"${perfinLinkId} aria-label="Switch to Perfin">
+    ? `<a href="${perfinHref}"${perfinTarget}${materializeAttr} class="cross-app-link cross-app-icon-link" aria-label="Switch to Perfin">
          <span class="icon"><img src="${perfinIconSrc}" alt="" aria-hidden="true" width="20" height="20"></span>
          <span class="label">Perfin</span>
        </a>` : '';
-  // Cross-app warm transition overlay — only when embedded. Uses the Iron
-  // Man logo.svg as a CSS mask so we can color it gold without bundling
-  // a duplicate asset.
-  const transitionOverlay = isEmbedded
-    ? `<div class="atrans-overlay atrans--warm" id="atrans-warm" aria-hidden="true">
-         <div class="atrans-stage">
-           <div class="atrans-stars" data-atrans-stars></div>
-           <div class="atrans-nebula"></div>
-           <div class="atrans-ring"></div>
-           <div class="atrans-art-wrap">
-             <div class="atrans-art atrans-art--mask" style="--atrans-mask: url(/perfin/logo.svg);"></div>
-             <div class="atrans-scanline"></div>
-           </div>
-         </div>
-       </div>
-       <script>(function(){
-         var box = document.querySelector('#atrans-warm [data-atrans-stars]');
-         if (box) {
-           var html = '';
-           for (var i = 0; i < 32; i++) {
-             var x = Math.random() * 100, y = Math.random() * 100;
-             var size = (Math.random() * 1.6 + 1).toFixed(2);
-             var delay = (Math.random() * 2.4).toFixed(2);
-             var dur = (Math.random() * 1.6 + 1.6).toFixed(2);
-             html += '<span style="left:' + x.toFixed(1) + '%;top:' + y.toFixed(1) +
-                     '%;width:' + size + 'px;height:' + size +
-                     'px;animation-delay:' + delay + 's;animation-duration:' + dur + 's;"></span>';
-           }
-           box.innerHTML = html;
-         }
-         var link = document.getElementById('cross-app-link');
-         var overlay = document.getElementById('atrans-warm');
-         if (link && overlay) {
-           link.addEventListener('click', function(e) {
-             if (e.ctrlKey || e.metaKey || e.shiftKey || e.button === 1) return;
-             e.preventDefault();
-             overlay.classList.add('active');
-             setTimeout(function(){ window.location.href = link.href; }, 1350);
-           });
-         }
-       })();</script>`
-    : '';
   const here = (NAV.find(n => n.href === activePath) || {}).label || 'Per-sistant';
   return `
 <aside class="sidebar">
@@ -254,8 +219,7 @@ function navBar(activePath) {
   <div class="ui-controls">
     ${perfinLink}
   </div>
-</header>
-${transitionOverlay}`;
+</header>`;
 }
 
 function themeScript() {
