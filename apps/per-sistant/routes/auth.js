@@ -7,12 +7,6 @@ module.exports = function ({ pool, views, config }) {
   const { pageHead, themeScript } = views;
   const { AUTH_SECRET, AUTH_MODE, SESSION_PASSWORD, SESSION_PIN } = config;
 
-  // Load vision icon for login animation
-  let visionIconSvg = '';
-  try {
-    visionIconSvg = fs.readFileSync(path.join(__dirname, '..', 'vision icon.svg'), 'utf8');
-  } catch (e) { /* no icon available */ }
-
   router.get("/login", (req, res) => {
     if (!AUTH_SECRET) return res.redirect("/");
     const isPIN = AUTH_MODE === "pin";
@@ -117,42 +111,148 @@ ${themeScript()}
     color: var(--muted); border-color: transparent;
   }
   .pin-key.fn:hover { color: var(--ink); border-color: var(--line); }
-  @keyframes loginIconPulse {
-    0% { transform: scale(0.3); opacity: 0; }
-    40% { transform: scale(1.05); opacity: 1; }
-    60% { transform: scale(0.98); opacity: 1; }
-    80% { transform: scale(1); opacity: 1; }
-    100% { transform: scale(1); opacity: 0; }
-  }
-  @keyframes loginGlow {
-    0% { box-shadow: 0 0 0 0 rgba(0,0,0,0); }
-    50% { box-shadow: 0 0 60px 20px color-mix(in oklch, var(--accent) 30%, transparent); }
-    100% { box-shadow: 0 0 80px 30px rgba(0,0,0,0); }
-  }
+  /* ── Cosmic login reveal ── */
   @keyframes loginFadeOut {
     0% { opacity: 1; }
     100% { opacity: 0; }
   }
+  @keyframes cosmicMaskReveal {
+    0%   { clip-path: inset(0 0 100% 0); opacity: 0; }
+    8%   { opacity: 1; }
+    100% { clip-path: inset(0 0 0% 0); opacity: 1; }
+  }
+  @keyframes cosmicScanLine {
+    0%   { top: 0%; opacity: 0; }
+    8%   { opacity: 1; }
+    92%  { opacity: 1; }
+    100% { top: 100%; opacity: 0; }
+  }
+  @keyframes cosmicHaloIn {
+    0%   { opacity: 0; transform: translate(-50%,-50%) scale(0.8); }
+    100% { opacity: 1; transform: translate(-50%,-50%) scale(1); }
+  }
+  @keyframes cosmicHaloPulse {
+    0%, 100% { filter: drop-shadow(0 0 12px rgba(168,140,220,0.45)) drop-shadow(0 0 24px rgba(212,165,116,0.25)); }
+    50%      { filter: drop-shadow(0 0 28px rgba(168,140,220,0.75)) drop-shadow(0 0 48px rgba(212,165,116,0.45)); }
+  }
+  @keyframes cosmicNebula {
+    0%, 100% { opacity: 0.55; transform: translate(-50%,-50%) scale(1); }
+    50%      { opacity: 0.85; transform: translate(-50%,-50%) scale(1.08); }
+  }
+  @keyframes cosmicRingSpin {
+    from { transform: translate(-50%,-50%) rotate(0deg); }
+    to   { transform: translate(-50%,-50%) rotate(360deg); }
+  }
+  @keyframes cosmicTwinkle {
+    0%, 100% { opacity: 0.15; transform: scale(0.8); }
+    50%      { opacity: 1;    transform: scale(1.2); }
+  }
   .login-success-overlay {
     display: none; position: fixed; inset: 0;
-    background: var(--paper); z-index: 1000;
+    background: radial-gradient(ellipse at center,
+      color-mix(in oklch, var(--paper) 92%, #0b0820) 0%,
+      var(--paper) 75%);
+    z-index: 1000;
     align-items: center; justify-content: center;
-    flex-direction: column; gap: 24px;
+    flex-direction: column; gap: 36px;
   }
-  .login-success-overlay.active { display: flex; animation: loginFadeOut 0.5s ease 1.6s forwards; }
-  .login-success-overlay .icon-container {
-    width: 120px; height: 120px; border-radius: 24px; overflow: hidden;
-    animation: loginIconPulse 2s ease forwards, loginGlow 2s ease forwards;
+  .login-success-overlay.active { display: flex; animation: loginFadeOut 0.5s ease 2.6s forwards; }
+  .cosmic-stage {
+    position: relative; width: 220px; height: 220px;
+    display: flex; align-items: center; justify-content: center;
   }
-  .login-success-overlay .icon-container svg { width: 100%; height: 100%; }
+  /* Nebula glow — soft radial pulse behind the mask */
+  .cosmic-nebula {
+    position: absolute; left: 50%; top: 50%;
+    width: 320px; height: 320px;
+    transform: translate(-50%,-50%);
+    background:
+      radial-gradient(circle at 30% 35%, rgba(168,140,220,0.55) 0%, transparent 55%),
+      radial-gradient(circle at 70% 65%, rgba(212,165,116,0.40) 0%, transparent 55%),
+      radial-gradient(circle at 50% 50%, rgba(95,191,191,0.18) 0%, transparent 70%);
+    filter: blur(20px);
+    animation: cosmicNebula 3.4s ease-in-out infinite;
+    pointer-events: none;
+  }
+  /* Slow rotating ring behind the mask */
+  .cosmic-ring {
+    position: absolute; left: 50%; top: 50%;
+    width: 200px; height: 200px;
+    border: 1px solid rgba(168,140,220,0.35);
+    border-radius: 50%;
+    transform: translate(-50%,-50%);
+    animation: cosmicRingSpin 12s linear infinite;
+    pointer-events: none;
+  }
+  .cosmic-ring::before {
+    content: ''; position: absolute; left: 50%; top: -3px;
+    width: 6px; height: 6px; background: rgba(212,165,116,0.9);
+    border-radius: 50%; transform: translateX(-50%);
+    box-shadow: 0 0 8px rgba(212,165,116,0.8);
+  }
+  /* Starfield container — stars are individual divs to allow stagger */
+  .cosmic-stars {
+    position: absolute; left: 50%; top: 50%;
+    width: 380px; height: 380px;
+    transform: translate(-50%,-50%);
+    pointer-events: none;
+  }
+  .cosmic-stars span {
+    position: absolute; width: 2px; height: 2px;
+    background: #fff; border-radius: 50%;
+    box-shadow: 0 0 4px rgba(255,255,255,0.7);
+    animation: cosmicTwinkle 2.4s ease-in-out infinite;
+  }
+  /* Mask wrapper */
+  .cosmic-mask-wrap {
+    position: relative; width: 160px; height: 160px;
+    transform: translate(-50%,-50%); left: 50%; top: 50%;
+    animation: cosmicHaloIn 0.6s ease forwards, cosmicHaloPulse 2.6s ease-in-out 0.6s infinite;
+  }
+  .cosmic-mask-wrap img {
+    width: 100%; height: 100%; object-fit: contain; display: block;
+    /* Top-to-bottom reveal */
+    animation: cosmicMaskReveal 1.4s cubic-bezier(0.4, 0, 0.2, 1) 0.2s both;
+  }
+  /* Glowing horizontal scan line riding the reveal edge */
+  .cosmic-scanline {
+    position: absolute; left: -8%; right: -8%; top: 0; height: 2px;
+    background: linear-gradient(90deg,
+      transparent 0%,
+      rgba(168,140,220,0.9) 30%,
+      rgba(212,165,116,1) 50%,
+      rgba(168,140,220,0.9) 70%,
+      transparent 100%);
+    box-shadow: 0 0 12px rgba(168,140,220,0.9), 0 0 24px rgba(212,165,116,0.6);
+    animation: cosmicScanLine 1.4s cubic-bezier(0.4, 0, 0.2, 1) 0.2s forwards;
+    pointer-events: none;
+  }
   .login-success-overlay .welcome-text {
     font-family: var(--mono); font-size: 10px; color: var(--muted);
-    letter-spacing: 0.2em; text-transform: uppercase; opacity: 0;
-    animation: fadeInUp 0.4s ease 0.4s forwards;
+    letter-spacing: 0.3em; text-transform: uppercase; opacity: 0;
+    animation: fadeInUp 0.5s ease 1.5s forwards;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .cosmic-mask-wrap img,
+    .cosmic-scanline,
+    .cosmic-nebula,
+    .cosmic-ring,
+    .cosmic-stars span,
+    .cosmic-mask-wrap { animation: none !important; }
+    .cosmic-mask-wrap img { clip-path: inset(0); opacity: 1; }
+    .cosmic-scanline { display: none; }
   }
 </style>
   <div class="login-success-overlay" id="login-success">
-    <div class="icon-container">${visionIconSvg}</div>
+    <div class="cosmic-stage">
+      <div class="cosmic-stars" id="cosmic-stars"></div>
+      <div class="cosmic-nebula"></div>
+      <div class="cosmic-ring"></div>
+      <div class="cosmic-mask-wrap">
+        <img src="/android-chrome-mask-crop.png" alt="" aria-hidden="true">
+        <div class="cosmic-scanline"></div>
+      </div>
+    </div>
     <div class="welcome-text">Welcome back</div>
   </div>
   <div class="login-card">
@@ -173,6 +273,27 @@ ${themeScript()}
     `}
   </div>
   <script>
+    // Generate randomized starfield for the cosmic login reveal. Stars are
+    // scattered across the 380x380 backdrop with staggered twinkle delays so
+    // they don't all flash in lockstep. Cap the count modestly to keep the
+    // overlay cheap on low-end devices.
+    (function() {
+      var box = document.getElementById('cosmic-stars');
+      if (!box) return;
+      var count = 32;
+      var html = '';
+      for (var i = 0; i < count; i++) {
+        var x = Math.random() * 100;
+        var y = Math.random() * 100;
+        var size = (Math.random() * 1.6 + 1).toFixed(2);
+        var delay = (Math.random() * 2.4).toFixed(2);
+        var dur = (Math.random() * 1.6 + 1.6).toFixed(2);
+        html += '<span style="left:' + x.toFixed(1) + '%;top:' + y.toFixed(1) +
+                '%;width:' + size + 'px;height:' + size +
+                'px;animation-delay:' + delay + 's;animation-duration:' + dur + 's;"></span>';
+      }
+      box.innerHTML = html;
+    })();
     var errEl = document.getElementById('error');
     async function doLogin(value) {
       try {
@@ -183,9 +304,10 @@ ${themeScript()}
         var data = await res.json();
         if (res.ok) {
           var overlay = document.getElementById('login-success');
-          if (overlay.querySelector('svg')) {
+          if (overlay && overlay.querySelector('.cosmic-mask-wrap')) {
             overlay.classList.add('active');
-            setTimeout(function() { window.location.href = '/'; }, 2000);
+            // Cosmic reveal: ~1.6s reveal + 1s halo hold + 0.5s fadeout
+            setTimeout(function() { window.location.href = '/'; }, 3000);
           } else {
             window.location.href = '/';
           }

@@ -19,6 +19,15 @@
   <meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="<%= __basePath %>/perfin-shared.css?v=<%= v %>">
+<%
+  // Cross-app transition overlay stylesheet — only loaded when embedded
+  // under the unified shell, since the cross-app link only renders there
+  // and /shell-static is only mounted by the shell.
+  var __embedded = typeof embedded !== 'undefined' && embedded;
+%>
+<% if (__embedded) { %>
+  <link rel="stylesheet" href="/shell-static/transition.css">
+<% } %>
 <% if (typeof extraStyles !== 'undefined' && extraStyles) { %>
   <style nonce="<%= nonce %>"><%- extraStyles %></style>
 <% } %>

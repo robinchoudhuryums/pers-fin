@@ -213,11 +213,4 @@ tr:hover td { background: var(--paper-2); }
   text-align: center; padding: 40px; color: var(--muted);
   font-size: 13px; font-style: italic;
 }
-
-/* ----- Hide legacy decorative elements globally ----- */
-.tree-widget, .tree-container, .tree-glow, .tree-svg,
-.tree-particle, .falling-petal, .tree-leaf, #dragon-zzz,
-.work-mode-toggle, .mobile-fab, .bottom-nav {
-  display: none !important;
-}
 `;

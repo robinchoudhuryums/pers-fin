@@ -174,12 +174,6 @@ Personal assistant tool for task management, email scheduling, and note-taking. 
 - **Geofencing**: Set location (name + coordinates + radius) on tasks
 - **Periodic checking**: Browser-based geofence monitoring with notifications
 
-### Dashboard Visuals
-- **Animated bonsai tree**: Isometric cherry blossom tree with energy pulse trunk, moss on branches, and falling petal animations
-- **Haku dragon**: Sleeping dragon beside the bonsai tree (converted from PNG reference to SVG paths) with breathing animation, zzz indicators, and streak-based golden glow
-- **SVG mountain landscape**: Multi-layered parallax background with mountain peaks, rolling hills, tree line, and foreground ridge (dark/light theme variants)
-- **Floating particles**: CSS-animated cherry blossom petals and light particles
-
 ### AI Features (9 total)
 All AI features are optional and independently configurable. Choose **Haiku** (fast, ~$0.0003/call), **Sonnet** (smarter, ~$0.002/call), or **Off** for each feature in Settings.
 
