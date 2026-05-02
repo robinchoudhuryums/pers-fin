@@ -60,9 +60,14 @@ module.exports = function ({ pool, config }) {
       const r = await fetch(`${perfinUrl}/api/subscriptions?filter=active`, { signal: controller.signal });
       clearTimeout(timeout);
       if (!r.ok) return res.json({ connected: false });
-      const subs = await r.json();
+      // Perfin's GET /api/subscriptions returns `{ subscriptions: [...], summary: {...} }`,
+      // not a bare array. Earlier code assumed an array and `subs.filter()` threw,
+      // so the standalone widget path silently returned `{connected: false}`.
+      const body = await r.json();
+      const subs = Array.isArray(body) ? body : (body.subscriptions || []);
       const totalMonthly = subs.filter(s => s.cadence_days <= 31).reduce((sum, s) => sum + parseFloat(s.amount || 0), 0);
       const upcoming = subs.filter(s => {
+        if (!s.next_expected) return false;
         const next = new Date(s.next_expected);
         const now = new Date();
         const diff = (next - now) / 86400000;
