@@ -22,6 +22,15 @@ module.exports = function ({}) {
     customIcon = fs.readFileSync(path.join(__dirname, '..', 'vision icon.svg'), 'utf8');
   } catch (e) { /* fallback to default below */ }
 
+  // PNG icons live alongside server.js — favicon.io-generated set used for the
+  // iPhone home-screen icon and Android Chrome PWA install. Resolved once at
+  // module load and served via res.sendFile so the file is read fresh per
+  // request (cached by Express's static handling).
+  const PNG_DIR = path.join(__dirname, '..');
+  const APPLE_TOUCH_PNG = path.join(PNG_DIR, 'apple-touch-icon.png');
+  const ICON_192_PNG = path.join(PNG_DIR, 'android-chrome-192x192.png');
+  const ICON_512_PNG = path.join(PNG_DIR, 'android-chrome-512x512.png');
+
   router.get("/manifest.json", (req, res) => {
     const bp = req.baseUrl || "";
     res.json({
@@ -34,6 +43,11 @@ module.exports = function ({}) {
       background_color: "#0a0b14",
       theme_color: "#0a0b14",
       icons: [
+        // PNG entries listed first so Android/Chrome's PWA installer picks
+        // them as primary; SVG entries kept as a fallback for browsers that
+        // prefer scalable formats.
+        { src: bp + "/android-chrome-192x192.png", sizes: "192x192", type: "image/png" },
+        { src: bp + "/android-chrome-512x512.png", sizes: "512x512", type: "image/png", purpose: "any maskable" },
         { src: bp + "/icon-192.svg", sizes: "192x192", type: "image/svg+xml" },
         { src: bp + "/icon-512.svg", sizes: "512x512", type: "image/svg+xml" },
       ],
@@ -46,7 +60,7 @@ module.exports = function ({}) {
     // the empty-string standalone case or the "/per-sistant" mounted case.
     res.type("application/javascript").send(`
     const BASE = ${JSON.stringify(bp)};
-    const CACHE = 'per-sistant-v3';
+    const CACHE = 'per-sistant-v4';
     const PAGES = [BASE+'/', BASE+'/todos', BASE+'/emails', BASE+'/notes', BASE+'/calendar', BASE+'/contacts', BASE+'/review', BASE+'/analytics', BASE+'/settings'];
     const OFFLINE_KEY = 'per-sistant-offline-queue';
 
@@ -125,6 +139,24 @@ module.exports = function ({}) {
   const icon = customIcon || SVG_ICON;
   router.get("/icon-192.svg", (req, res) => res.type("image/svg+xml").send(icon));
   router.get("/icon-512.svg", (req, res) => res.type("image/svg+xml").send(icon));
+
+  // PNG icons (favicon.io-generated set). Long max-age cache because the
+  // file content is fingerprinted by name; rotating to a new design will
+  // either replace the bytes (and the SW cache version bump below
+  // invalidates) or drop in differently-named files.
+  function sendPng(filePath) {
+    return (req, res) => {
+      res.setHeader("Cache-Control", "public, max-age=86400");
+      res.sendFile(filePath, (err) => {
+        if (err) {
+          if (!res.headersSent) res.status(404).end();
+        }
+      });
+    };
+  }
+  router.get("/apple-touch-icon.png", sendPng(APPLE_TOUCH_PNG));
+  router.get("/android-chrome-192x192.png", sendPng(ICON_192_PNG));
+  router.get("/android-chrome-512x512.png", sendPng(ICON_512_PNG));
 
   return router;
 };
