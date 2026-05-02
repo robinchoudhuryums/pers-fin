@@ -2,13 +2,12 @@
    App-transition overlay
    ----------------------------------------------------------------------------
    Played when:
-     - a user clicks a tile on the shell's landing page,
-     - or clicks the cross-app icon in either sub-app's nav.
-   Two variants, parallel skeletons:
-     .atrans--warm   → Iron Man helmet (Perfin), gold/copper palette
-     .atrans--cosmic → mask-crop image (Per-sistant), purple/gold palette
-   Loaded only under the unified shell (cross-app links don't render in
-   standalone mode, so the 404 case can't happen).
+     - a user clicks the Per-sistant tile on the shell's landing page,
+     - or clicks the Per-sistant cross-app icon in Perfin's nav.
+   Cosmic palette: purple/gold nebula, twinkling stars, scan-line reveal of
+   the mask-crop image. Loaded only under the unified shell (cross-app
+   links don't render in standalone mode, so /shell-static is always
+   reachable when the overlay is in play).
    ============================================================================ */
 
 .atrans-overlay {
@@ -34,21 +33,13 @@
   filter: blur(22px);
   opacity: 0;
   pointer-events: none;
-}
-.atrans-overlay.active .atrans-nebula {
-  animation: atrans-nebula 3.4s ease-in-out 0.05s infinite;
-}
-.atrans--warm .atrans-nebula {
-  background:
-    radial-gradient(circle at 30% 35%, rgba(212,165,116,0.65) 0%, transparent 55%),
-    radial-gradient(circle at 70% 65%, rgba(200,133,108,0.5) 0%, transparent 55%),
-    radial-gradient(circle at 50% 50%, rgba(255,205,140,0.18) 0%, transparent 70%);
-}
-.atrans--cosmic .atrans-nebula {
   background:
     radial-gradient(circle at 30% 35%, rgba(168,140,220,0.55) 0%, transparent 55%),
     radial-gradient(circle at 70% 65%, rgba(212,165,116,0.40) 0%, transparent 55%),
     radial-gradient(circle at 50% 50%, rgba(95,191,191,0.18) 0%, transparent 70%);
+}
+.atrans-overlay.active .atrans-nebula {
+  animation: atrans-nebula 3.4s ease-in-out 0.05s infinite;
 }
 @keyframes atrans-nebula {
   0%, 100% { opacity: 0.55; transform: translate(-50%,-50%) scale(1); }
@@ -59,6 +50,7 @@
 .atrans-ring {
   position: absolute; left: 50%; top: 50%;
   width: 210px; height: 210px;
+  border: 1px solid rgba(168,140,220,0.35);
   border-radius: 50%;
   transform: translate(-50%,-50%);
   pointer-events: none;
@@ -67,17 +59,9 @@
 .atrans-overlay.active .atrans-ring {
   animation: atrans-ring-fade 0.4s ease 0.1s forwards, atrans-ring-spin 12s linear infinite;
 }
-.atrans--warm .atrans-ring   { border: 1px solid rgba(212,165,116,0.45); }
-.atrans--cosmic .atrans-ring { border: 1px solid rgba(168,140,220,0.35); }
 .atrans-ring::before {
   content: ''; position: absolute; left: 50%; top: -3px;
   width: 6px; height: 6px; border-radius: 50%; transform: translateX(-50%);
-}
-.atrans--warm .atrans-ring::before {
-  background: rgba(255,205,140,0.95);
-  box-shadow: 0 0 8px rgba(212,165,116,0.85);
-}
-.atrans--cosmic .atrans-ring::before {
   background: rgba(212,165,116,0.95);
   box-shadow: 0 0 8px rgba(168,140,220,0.85);
 }
@@ -87,7 +71,7 @@
   to   { transform: translate(-50%,-50%) rotate(360deg); }
 }
 
-/* Twinkling stars (cosmic only — warm gets ember sparks via the same node) */
+/* Twinkling stars */
 .atrans-stars {
   position: absolute; left: 50%; top: 50%;
   width: 380px; height: 380px;
@@ -103,16 +87,12 @@
 .atrans-overlay.active .atrans-stars span {
   animation: atrans-twinkle 2.4s ease-in-out infinite;
 }
-.atrans--warm .atrans-stars span {
-  background: #ffcd8c;
-  box-shadow: 0 0 4px rgba(255,205,140,0.85);
-}
 @keyframes atrans-twinkle {
   0%, 100% { opacity: 0.15; transform: scale(0.8); }
   50%      { opacity: 1;    transform: scale(1.2); }
 }
 
-/* Art (image or CSS-masked div, both clip-path-revealed) */
+/* Image revealed top-to-bottom via clip-path */
 .atrans-art-wrap {
   position: relative; width: 170px; height: 170px;
 }
@@ -126,35 +106,20 @@
              atrans-halo 2.6s ease-in-out 1.4s infinite;
 }
 .atrans-art img { width: 100%; height: 100%; object-fit: contain; display: block; }
-.atrans-art--mask {
-  -webkit-mask: var(--atrans-mask) center/contain no-repeat;
-  mask: var(--atrans-mask) center/contain no-repeat;
-}
-.atrans--warm .atrans-art--mask { background: #e7b67c; }
 @keyframes atrans-reveal {
   0%   { clip-path: inset(0 0 100% 0); opacity: 0; }
   8%   { opacity: 1; }
   100% { clip-path: inset(0); opacity: 1; }
 }
 @keyframes atrans-halo {
-  0%, 100% { filter: drop-shadow(0 0 12px var(--atrans-halo-1)) drop-shadow(0 0 24px var(--atrans-halo-2)); }
-  50%      { filter: drop-shadow(0 0 28px var(--atrans-halo-1)) drop-shadow(0 0 48px var(--atrans-halo-2)); }
+  0%, 100% { filter: drop-shadow(0 0 12px rgba(168,140,220,0.55)) drop-shadow(0 0 24px rgba(212,165,116,0.35)); }
+  50%      { filter: drop-shadow(0 0 28px rgba(168,140,220,0.55)) drop-shadow(0 0 48px rgba(212,165,116,0.35)); }
 }
-.atrans--warm   { --atrans-halo-1: rgba(212,165,116,0.7); --atrans-halo-2: rgba(255,205,140,0.4); }
-.atrans--cosmic { --atrans-halo-1: rgba(168,140,220,0.55); --atrans-halo-2: rgba(212,165,116,0.35); }
 
 /* Glowing horizontal scan line riding the reveal edge */
 .atrans-scanline {
   position: absolute; left: -8%; right: -8%; top: 0; height: 2px;
   pointer-events: none; opacity: 0;
-}
-.atrans--warm .atrans-scanline {
-  background: linear-gradient(90deg,
-    transparent 0%, rgba(255,205,140,0.9) 30%,
-    rgba(212,165,116,1) 50%, rgba(255,205,140,0.9) 70%, transparent 100%);
-  box-shadow: 0 0 12px rgba(255,205,140,0.9), 0 0 24px rgba(212,165,116,0.6);
-}
-.atrans--cosmic .atrans-scanline {
   background: linear-gradient(90deg,
     transparent 0%, rgba(168,140,220,0.9) 30%,
     rgba(212,165,116,1) 50%, rgba(168,140,220,0.9) 70%, transparent 100%);

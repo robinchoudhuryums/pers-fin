@@ -19,7 +19,7 @@
       </form>
     </header>
     <div class="tiles">
-      <a href="/perfin" class="tile" data-atrans="warm">
+      <a href="/perfin" class="tile">
         <div class="tile-icon">$</div>
         <h2>Perfin</h2>
         <p>Personal finance, transactions, and AI insights.</p>
@@ -32,18 +32,7 @@
     </div>
   </main>
 
-  <!-- Tile-transition overlays (lazy-activated on click) -->
-  <div class="atrans-overlay atrans--warm" id="atrans-warm" aria-hidden="true">
-    <div class="atrans-stage">
-      <div class="atrans-stars" data-stars></div>
-      <div class="atrans-nebula"></div>
-      <div class="atrans-ring"></div>
-      <div class="atrans-art-wrap">
-        <div class="atrans-art atrans-art--mask" style="--atrans-mask: url(/perfin/logo.svg);"></div>
-        <div class="atrans-scanline"></div>
-      </div>
-    </div>
-  </div>
+  <!-- Tile-transition overlay (lazy-activated on click of a [data-atrans] tile) -->
   <div class="atrans-overlay atrans--cosmic" id="atrans-cosmic" aria-hidden="true">
     <div class="atrans-stage">
       <div class="atrans-stars" data-stars></div>
