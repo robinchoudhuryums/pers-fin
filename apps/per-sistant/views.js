@@ -132,6 +132,9 @@ const NAV_CHROME_CSS = `
 }
 .appbar .cross-app-link:hover { background: var(--paper-2); color: var(--ink); }
 .appbar .cross-app-link .icon { display: inline-flex; }
+.appbar .cross-app-icon-link .icon img {
+  width: 20px; height: 20px; object-fit: contain; display: block;
+}
 
 @media (max-width: 480px) {
   .mode-toggle { padding: 4px 8px; font-size: 9px; }
@@ -161,16 +164,20 @@ function navBar(activePath) {
   //   empty and the appbar's right side is just empty space.
   const perfinHref = isEmbedded ? "/perfin" : PERFIN_URL;
   const perfinTarget = isEmbedded ? "" : ' target="_blank" rel="noopener"';
+  // Use Perfin's own Iron Man helmet SVG as the cross-app icon. Same-origin
+  // under the unified shell (/perfin/logo.svg); cross-origin in standalone
+  // (PERFIN_URL/logo.svg) — img tag handles either fine.
+  const perfinIconSrc = `${perfinHref}/logo.svg`;
   const perfinLink = perfinHref
-    ? `<a href="${perfinHref}"${perfinTarget} class="cross-app-link" aria-label="Switch to Perfin">
-         <span class="icon"><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M7 4 L7 10 M4 7 L10 7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span>
+    ? `<a href="${perfinHref}"${perfinTarget} class="cross-app-link cross-app-icon-link" aria-label="Switch to Perfin">
+         <span class="icon"><img src="${perfinIconSrc}" alt="" aria-hidden="true" width="20" height="20"></span>
          <span class="label">Perfin</span>
        </a>` : '';
   const here = (NAV.find(n => n.href === activePath) || {}).label || 'Per-sistant';
   return `
 <aside class="sidebar">
   <div class="sidebar-brand">
-    <div class="glyph">P</div>
+    <div class="glyph"><img src="${bp}/android-chrome-mask-crop.png" alt="" aria-hidden="true"></div>
     <div>
       <div class="name">Per-sistant</div>
       <div class="tag">personal assistant</div>

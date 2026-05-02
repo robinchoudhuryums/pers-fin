@@ -30,6 +30,9 @@ module.exports = function ({}) {
   const APPLE_TOUCH_PNG = path.join(PNG_DIR, 'apple-touch-icon.png');
   const ICON_192_PNG = path.join(PNG_DIR, 'android-chrome-192x192.png');
   const ICON_512_PNG = path.join(PNG_DIR, 'android-chrome-512x512.png');
+  // mask-crop is a transparent-bg variant of the same artwork used as a small
+  // corner glyph (sidebar brand) and as the cross-app icon shown from Perfin.
+  const MASK_CROP_PNG = path.join(PNG_DIR, 'android-chrome-mask-crop.png');
 
   router.get("/manifest.json", (req, res) => {
     const bp = req.baseUrl || "";
@@ -60,7 +63,7 @@ module.exports = function ({}) {
     // the empty-string standalone case or the "/per-sistant" mounted case.
     res.type("application/javascript").send(`
     const BASE = ${JSON.stringify(bp)};
-    const CACHE = 'per-sistant-v4';
+    const CACHE = 'per-sistant-v5';
     const PAGES = [BASE+'/', BASE+'/todos', BASE+'/emails', BASE+'/notes', BASE+'/calendar', BASE+'/contacts', BASE+'/review', BASE+'/analytics', BASE+'/settings'];
     const OFFLINE_KEY = 'per-sistant-offline-queue';
 
@@ -157,6 +160,7 @@ module.exports = function ({}) {
   router.get("/apple-touch-icon.png", sendPng(APPLE_TOUCH_PNG));
   router.get("/android-chrome-192x192.png", sendPng(ICON_192_PNG));
   router.get("/android-chrome-512x512.png", sendPng(ICON_512_PNG));
+  router.get("/android-chrome-mask-crop.png", sendPng(MASK_CROP_PNG));
 
   return router;
 };

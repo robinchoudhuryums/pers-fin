@@ -20,7 +20,9 @@
       <a href="<%= __basePath %>/settings"<%= activePage === 'settings' ? ' class="active"' : '' %>>Settings</a>
     </div>
 <% if (__embedded) { %>
-    <a href="/per-sistant" class="cross-app-link" title="Switch to Per-sistant" style="font-size:12px;color:var(--text-muted);text-decoration:none;padding:4px 10px;border:1px solid var(--border);border-radius:6px;margin-right:8px;white-space:nowrap;">Per-sistant &rarr;</a>
+    <a href="/per-sistant" class="cross-app-link" title="Switch to Per-sistant" aria-label="Switch to Per-sistant" style="display:inline-flex;align-items:center;justify-content:center;padding:4px;border:1px solid var(--border);border-radius:6px;margin-right:8px;line-height:0;">
+      <img src="/per-sistant/android-chrome-mask-crop.png" alt="" aria-hidden="true" width="22" height="22" style="display:block;object-fit:contain;">
+    </a>
 <% } %>
     <div class="nav-sync-badge" id="nav-sync-badge" title="Most recent sync — updated by auto-sync or the Sync button"></div>
     <div class="nav-notification-bell" id="nav-notif-bell" title="Notifications" style="cursor:pointer;position:relative;padding:4px 8px;display:flex;align-items:center;">

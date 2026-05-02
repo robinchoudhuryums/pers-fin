@@ -62,10 +62,11 @@ body.sidebar-collapsed .sidebar { width: 56px; }
 }
 body.sidebar-collapsed .sidebar-brand { padding: 18px 12px; }
 .sidebar-brand .glyph {
-  width: 28px; height: 28px; background: var(--ink); color: var(--paper);
-  font-family: var(--display); font-size: 14px; font-weight: 600;
+  width: 28px; height: 28px; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
-  border-radius: 3px; flex-shrink: 0;
+}
+.sidebar-brand .glyph img {
+  width: 100%; height: 100%; object-fit: contain; display: block;
 }
 .sidebar-brand .name {
   font-family: var(--display); font-size: 13px; font-weight: 600;
