@@ -177,7 +177,7 @@ async function load() {
     if (d.notifications && d.notifications.length && 'Notification' in window && Notification.permission === 'granted') {
       var important = d.notifications.filter(n => n.type === 'overdue' || n.type === 'streak_at_risk');
       important.slice(0,3).forEach(n => {
-        new Notification('Per-sistant', { body: (n.type==='overdue'?'Overdue: ':'Streak at risk: ')+n.title, icon: BP+'/icon-192.svg' });
+        new Notification('Per-sistant', { body: (n.type==='overdue'?'Overdue: ':'Streak at risk: ')+n.title, icon: BP+'/android-chrome-192x192.png' });
       });
     }
   }).catch(function(){});
