@@ -12,7 +12,6 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **AI**: `ai.js` (Anthropic Claude client, model helpers, caching) — 9 features with per-feature model selection
 - **Helpers**: `helpers.js` (recurrence, webhooks, Slack, automations)
 - **Views**: `views.js` + `views/css.js` + `views/js.js` (shared HTML/CSS/JS helpers)
-- **Dragon**: `dragon-svg.js` (Haku dragon SVG paths + mask, converted from PNG reference)
 - **Routes**: `routes/` (21 route modules — auth, todos, emails, notes, contacts, settings, etc.)
 - **Pages**: `pages/` (9 page modules — dashboard, todos, emails, notes, contacts, calendar, review, analytics, settings)
 - **Email**: nodemailer (SMTP) with scheduled sending via node-cron
@@ -86,7 +85,6 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **Helmet CSP**: Content Security Policy via helmet with strict directives; all inline event handlers migrated to CSP-safe event delegation (`bindEvents()`/`onDelegate()` pattern)
 - **Event Delegation**: All pages use `bindEvents()` for static elements and `onDelegate()` for dynamic content — zero inline `onclick`/`onchange` attributes; enables `script-src-attr: 'none'` CSP
 - **Constant-Time Auth**: `crypto.timingSafeEqual` for password/PIN comparison; PIN pad shows fixed 8-dot display regardless of actual PIN length
-- **Dashboard Visuals**: Animated isometric bonsai tree with cherry blossoms, falling petals, moss, and energy pulse effects; Haku dragon (converted from PNG reference) sleeping beside tree with breathing animation, zzz indicators, glow aura, and streak-based glow; SVG mountain landscape background with parallax layers and trees
 - **Keep-Alive**: Self-ping system to prevent Render free tier from sleeping (14-minute interval)
 
 ## Key Files
@@ -99,7 +97,6 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `middleware.js` — session, auth, CSRF, helmet, rate limiting
 - `helpers.js` — advanceRecurrence, webhooks, Slack, automations
 - `views.js` — pageHead, navBar, themeScript (imports from `views/`)
-- `dragon-svg.js` — Haku dragon SVG paths (112 body paths, 1 mask cutout, converted from PNG)
 - `routes/` — 21 API route modules (auth, todos, emails, notes, contacts, etc.)
 - `pages/` — 9 page rendering modules (dashboard, todos, emails, notes, etc.)
 - `db/001_schema.sql` — database schema (todos, emails, notes, contacts, settings)
@@ -320,15 +317,6 @@ and signal handlers are owned by the shell when embedded.
 - Accent colors: warm, teal, green, red, yellow, blue
 - Glassmorphism cards with backdrop-filter blur
 - Radial gradient ambient lighting effects
-
-## Dashboard Visuals (Bonsai Tree + Haku Dragon)
-- **Bonsai tree**: Isometric animated SVG on dashboard — cherry blossom canopy, moss on branches, falling petals, energy pulse trunk animation; sits on an isometric platform with pot
-- **Haku dragon**: Sleeping beside the bonsai tree (to the right, above); converted from user-provided PNG reference image to SVG paths in `dragon-svg.js`; uses SVG mask to cut out background gaps between limbs; has breathing animation, zzz sleep indicators, glow aura, and streak-based golden glow
-- **Dragon positioning**: `translate(188,68) scale(0.17)` in a 280x280 viewBox with `overflow: visible` on container; original dragon dimensions 900x835
-- **Dragon colors**: Body is white/gray (#E3E3E3, #C7CACF, etc.), green tail feathers (#3FB3A0 main, #299687 details), teal accents (#49B6A6, #41B2A0), blue details (#0961A5, #1065A6)
-- **Background**: SVG mountain landscape with 6 parallax layers (far peaks, mid-range hills, rolling foothills, tree line with polygon trees, foreground ridge); dark theme uses navy blues, light theme uses muted grays at lower opacity
-- **Tree particles**: CSS-animated floating particles and falling cherry blossom petals via `.tree-particle` and `.falling-petal` classes
-- **All visuals in**: `pages/dashboard.js` (SVG markup + JS interaction), `views/css.js` (animations, styles, background SVG), `dragon-svg.js` (dragon paths)
 
 ## Companion App
 - **Perfin**: Personal finance tracker (separate repo: `pers-fin`)
