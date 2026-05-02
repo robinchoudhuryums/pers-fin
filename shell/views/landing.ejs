@@ -34,16 +34,16 @@
   </main>
 
   <!-- Tile-transition overlay (lazy-activated on click of a [data-atrans] tile).
-       Decorations (stars, shooting stars, constellation, tagline) are
-       populated by transition.js on init. -->
+       Decorations (stars, rising particles) are populated by transition.js
+       on init. -->
   <div class="atrans-overlay atrans--cosmic" id="atrans-cosmic" aria-hidden="true">
+    <div class="atrans-particles"></div>
     <div class="atrans-stage">
       <div class="atrans-stars"></div>
       <div class="atrans-nebula"></div>
       <div class="atrans-ring"></div>
       <div class="atrans-art-wrap">
         <div class="atrans-art"><img src="/per-sistant/android-chrome-mask-crop.png" alt="" aria-hidden="true"></div>
-        <div class="atrans-scanline-trail"></div>
         <div class="atrans-scanline"></div>
       </div>
     </div>

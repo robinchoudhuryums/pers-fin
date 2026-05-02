@@ -2,9 +2,9 @@
 // Cosmic transition overlay — auto-init module.
 // ----------------------------------------------------------------------------
 // Loaded under the unified shell on the landing page and on every Perfin
-// page (when embedded). Scans for [data-atrans] elements, builds the
-// per-stage decorations (stars, constellation, shooting stars, tagline)
-// and binds click handlers that show the matching .atrans-overlay before
+// page (when embedded). Scans for [data-atrans] elements, populates
+// the per-overlay decorations (twinkling stars + rising particles) and
+// binds click handlers that show the matching .atrans-overlay before
 // navigating.
 // ============================================================================
 (function() {
@@ -24,96 +24,44 @@
     box.dataset.populated = '1';
   }
 
-  // Two diagonal streaks crossing the backdrop during the reveal — staggered
-  // so they don't fire simultaneously. Each one travels from upper-left to
-  // lower-right with slight angle variance.
-  function spawnShootingStars(stage) {
-    if (stage.dataset.shootingPopulated) return;
-    for (var i = 0; i < 2; i++) {
-      var s = document.createElement('div');
-      s.className = 'atrans-shooting-star';
-      var startTop = 10 + Math.random() * 40;
-      var delay = (0.25 + i * 0.5 + Math.random() * 0.2).toFixed(2);
-      var dur = (1.0 + Math.random() * 0.3).toFixed(2);
-      s.style.cssText =
-        'top:' + startTop + '%;left:-10%;' +
-        '--shoot-delay:' + delay + 's;' +
-        '--shoot-dur:' + dur + 's;';
-      stage.appendChild(s);
+  // Rising particles, overlay-wide. Parallels Perfin's materialize particle
+  // effect but denser (60 vs 20) and using the cosmic gold/purple palette.
+  // Each particle gets randomized position, size, color, duration, and delay
+  // so the field doesn't pulse in unison.
+  function populateParticles(box) {
+    if (box.dataset.populated) return;
+    var COUNT = 60;
+    for (var p = 0; p < COUNT; p++) {
+      var dot = document.createElement('div');
+      dot.className = 'atrans-particle';
+      var size = (1 + Math.random() * 2.2).toFixed(2);
+      var leftPct = (Math.random() * 100).toFixed(1);
+      var bottomPct = (Math.random() * 60).toFixed(1);
+      var dur = (2.6 + Math.random() * 3.5).toFixed(2);
+      var delay = (Math.random() * 4.5).toFixed(2);
+      // ~65% warm gold, ~35% soft purple — keeps the palette cohesive with
+      // the scan line and halo while adding subtle variety.
+      var warm = Math.random() < 0.65;
+      var color = warm ? 'rgba(212,165,116,0.95)' : 'rgba(168,140,220,0.95)';
+      var glowColor = warm ? 'rgba(212,165,116,0.65)' : 'rgba(168,140,220,0.65)';
+      var glowSize = (parseFloat(size) * 2.2).toFixed(1);
+      dot.style.cssText =
+        'left:' + leftPct + '%;' +
+        'bottom:' + bottomPct + '%;' +
+        'width:' + size + 'px;height:' + size + 'px;' +
+        'background:' + color + ';' +
+        'box-shadow:0 0 ' + glowSize + 'px ' + glowColor + ';' +
+        '--p-dur:' + dur + 's;--p-delay:' + delay + 's;';
+      box.appendChild(dot);
     }
-    stage.dataset.shootingPopulated = '1';
-  }
-
-  // Connect 4-6 nearby star pairs with thin glowing lines drawn via
-  // stroke-dashoffset. Picks pairs within a sane distance band so we
-  // get visual constellations rather than a tangle.
-  function drawConstellation(stage, starsBox) {
-    if (stage.dataset.constellationPopulated) return;
-    var stars = Array.from(starsBox.querySelectorAll('span'));
-    if (stars.length < 4) return;
-    var svgNs = 'http://www.w3.org/2000/svg';
-    var svg = document.createElementNS(svgNs, 'svg');
-    svg.setAttribute('class', 'atrans-constellation');
-    svg.setAttribute('viewBox', '0 0 100 100');
-    svg.setAttribute('preserveAspectRatio', 'none');
-
-    var used = {};
-    var keyOf = function(a, b) { return Math.min(a, b) + '-' + Math.max(a, b); };
-    var lines = 0, attempts = 0;
-    while (lines < 5 && attempts < 80) {
-      attempts++;
-      var i = Math.floor(Math.random() * stars.length);
-      var j = Math.floor(Math.random() * stars.length);
-      if (i === j) continue;
-      var k = keyOf(i, j);
-      if (used[k]) continue;
-      var ax = parseFloat(stars[i].style.left);
-      var ay = parseFloat(stars[i].style.top);
-      var bx = parseFloat(stars[j].style.left);
-      var by = parseFloat(stars[j].style.top);
-      var d = Math.hypot(ax - bx, ay - by);
-      if (d < 12 || d > 38) continue;
-      var line = document.createElementNS(svgNs, 'line');
-      line.setAttribute('x1', ax);
-      line.setAttribute('y1', ay);
-      line.setAttribute('x2', bx);
-      line.setAttribute('y2', by);
-      line.setAttribute('pathLength', '1');
-      line.style.animationDelay = (0.55 + lines * 0.12).toFixed(2) + 's';
-      svg.appendChild(line);
-      used[k] = 1;
-      lines++;
-    }
-    stage.appendChild(svg);
-    stage.dataset.constellationPopulated = '1';
-  }
-
-  // "PER-SISTANT" letter-by-letter under the mask. Each letter gets its own
-  // span with a CSS-var index for staggered fade-in via animation-delay.
-  function spawnTagline(stage) {
-    if (stage.dataset.taglinePopulated) return;
-    var text = 'PER–SISTANT'; // en-dash for visual balance
-    var el = document.createElement('div');
-    el.className = 'atrans-tagline';
-    for (var i = 0; i < text.length; i++) {
-      var sp = document.createElement('span');
-      sp.textContent = text[i] === ' ' ? ' ' : text[i];
-      sp.style.setProperty('--i', i);
-      el.appendChild(sp);
-    }
-    stage.appendChild(el);
-    stage.dataset.taglinePopulated = '1';
+    box.dataset.populated = '1';
   }
 
   function decorateOverlay(overlay) {
-    var stage = overlay.querySelector('.atrans-stage');
     var stars = overlay.querySelector('.atrans-stars');
     if (stars) populateStars(stars);
-    if (stage) {
-      spawnShootingStars(stage);
-      if (stars) drawConstellation(stage, stars);
-      spawnTagline(stage);
-    }
+    var particles = overlay.querySelector('.atrans-particles');
+    if (particles) populateParticles(particles);
   }
 
   function init() {
@@ -131,11 +79,9 @@
         if (!overlay) return; // fall through to default link nav
         e.preventDefault();
         overlay.classList.add('active');
-        // ~1.7s reveal then navigate (tagline finishes fading in around 2.0s
-        // so the destination first paint takes over before the tagline's
-        // last letter fully settles — feels snappier than waiting for full
-        // letter-out).
-        setTimeout(function() { window.location.href = trigger.href; }, 1700);
+        // ~1.35s reveal then navigate; the destination's first paint covers
+        // the overlay so a fade-out isn't strictly necessary.
+        setTimeout(function() { window.location.href = trigger.href; }, 1350);
       });
     });
   }
