@@ -475,6 +475,24 @@
     <div id="budget-alerts-list"></div>
   </div>
 
+  <!-- AI Memory — surfaces the structured running summary so the user can
+       see what the AI is currently tracking (post-S5 visibility). Auto-hides
+       when no summary exists. -->
+  <div class="section" id="ai-memory-section" style="display:none;margin-bottom:28px;">
+    <details>
+      <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;justify-content:space-between;">
+        <h2 style="margin:0;display:inline;">AI Memory</h2>
+        <span id="ai-memory-counts" style="font-size:11px;color:var(--text-muted);"></span>
+      </summary>
+      <div style="margin-top:12px;font-size:12px;">
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;">
+          Long-term context the AI uses on every analysis. Updated automatically when you generate insights.
+        </div>
+        <div id="ai-memory-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;"></div>
+      </div>
+    </details>
+  </div>
+
   <!-- Review Uncategorized (engagement loop — turn AI cost into rules) -->
   <div class="section" id="review-queue-section" style="display:none;margin-bottom:28px;">
     <details open>
@@ -1860,6 +1878,72 @@
       }
     });
 
+    // AI Memory widget — renders the structured running summary's actual
+    // trends / pending_actions / alerts / completed_goals lists. Until now
+    // the user only saw counts in Settings; this surfaces the content the
+    // AI is actually reasoning over so users can verify or correct it.
+    async function loadAiMemory() {
+      try {
+        var res = await apiFetch('/api/insights/status');
+        if (!res.ok) return;
+        var st = await res.json();
+        var s = st.running_summary;
+        var counts = st.running_summary_counts || {};
+        var section = document.getElementById('ai-memory-section');
+        var total = (counts.trends || 0) + (counts.completed_goals || 0) + (counts.pending_actions || 0) + (counts.alerts || 0);
+        if (!s || total === 0) {
+          section.style.display = 'none';
+          return;
+        }
+        section.style.display = 'block';
+        var countLabel = (counts.trends || 0) + ' trend' + (counts.trends === 1 ? '' : 's') + ' · ' +
+          (counts.completed_goals || 0) + ' goal' + (counts.completed_goals === 1 ? '' : 's') + ' · ' +
+          (counts.pending_actions || 0) + ' action' + (counts.pending_actions === 1 ? '' : 's') + ' · ' +
+          (counts.alerts || 0) + ' alert' + (counts.alerts === 1 ? '' : 's');
+        document.getElementById('ai-memory-counts').textContent = countLabel;
+
+        function listCard(title, items, render, emptyMsg) {
+          var body = items && items.length
+            ? '<ul style="margin:0;padding-left:16px;line-height:1.5;">' + items.map(render).join('') + '</ul>'
+            : '<div style="color:var(--text-muted);font-style:italic;">' + emptyMsg + '</div>';
+          return '<div class="card" style="padding:12px;">' +
+            '<div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);margin-bottom:8px;">' + esc(title) + '</div>' +
+            body + '</div>';
+        }
+
+        var trendsHtml = listCard('Trends', s.trends, function(t) {
+          var arrow = t.direction === 'up' ? '↑' : t.direction === 'down' ? '↓' : '→';
+          var arrowColor = t.direction === 'up' ? 'var(--green)' : t.direction === 'down' ? 'var(--red)' : 'var(--text-muted)';
+          return '<li><strong>' + esc(t.category) + '</strong> <span style="color:' + arrowColor + ';">' + arrow + '</span>' +
+            (t.magnitude ? ' <span style="color:var(--text-muted);">' + esc(t.magnitude) + '</span>' : '') +
+            (t.since_when ? ' <span style="font-size:10px;color:var(--text-muted);">since ' + esc(t.since_when) + '</span>' : '') +
+            '</li>';
+        }, 'No trends tracked yet');
+
+        var actionsHtml = listCard('Pending Actions', s.pending_actions, function(a) {
+          var urgencyColor = a.urgency === 'high' ? 'var(--red)' : a.urgency === 'medium' ? 'var(--warm)' : 'var(--text-muted)';
+          return '<li>' + esc(a.description) +
+            (a.urgency ? ' <span style="font-size:10px;color:' + urgencyColor + ';font-weight:500;">[' + esc(a.urgency) + ']</span>' : '') +
+            '</li>';
+        }, 'No pending actions');
+
+        var alertsHtml = listCard('Alerts', s.alerts, function(a) {
+          var sevColor = a.severity === 'critical' ? 'var(--red)' : a.severity === 'warning' ? 'var(--warm)' : 'var(--text-muted)';
+          return '<li>' + esc(a.message) +
+            (a.severity ? ' <span style="font-size:10px;color:' + sevColor + ';font-weight:500;">[' + esc(a.severity) + ']</span>' : '') +
+            '</li>';
+        }, 'No active alerts');
+
+        var goalsHtml = listCard('Completed Goals', s.completed_goals, function(g) {
+          return '<li>' + esc(g.goal_name) +
+            (g.completed_date ? ' <span style="font-size:10px;color:var(--text-muted);">' + esc(g.completed_date) + '</span>' : '') +
+            '</li>';
+        }, 'No completed goals yet');
+
+        document.getElementById('ai-memory-grid').innerHTML = trendsHtml + actionsHtml + alertsHtml + goalsHtml;
+      } catch (e) { /* non-critical */ }
+    }
+
     // Dashboard widget visibility
     async function applyWidgetVisibility() {
       try {
@@ -1879,6 +1963,7 @@
           yoy: '#yoy-section',
           investments: '#investments-section',
           reviewQueue: '#review-queue-section',
+          aiMemory: '#ai-memory-section',
         };
         Object.entries(map).forEach(function(e) {
           var key = e[0], selector = e[1];
@@ -1899,6 +1984,7 @@
     loadYoY();
     loadInvestments();
     loadReviewQueue();
+    loadAiMemory();
 
     computeWellness();
 

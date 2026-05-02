@@ -86,6 +86,20 @@
     </div>
   </div>
 
+  <div class="section" id="biometric-section" style="display:none;"><h2>Biometric Login</h2>
+    <div class="setting-row" style="flex-direction:column;align-items:stretch;">
+      <div class="setting-info" style="margin-bottom:10px;">
+        <div class="name">Registered Devices</div>
+        <div class="desc" id="biometric-desc">Use FaceID, TouchID, or a passkey to sign in. Registered credentials work for both standalone and shell login.</div>
+      </div>
+      <div id="biometric-list" style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">Loading…</div>
+      <div style="display:flex;gap:10px;">
+        <button class="btn primary" id="biometric-register-btn">Register This Device</button>
+      </div>
+      <div id="biometric-status" style="margin-top:8px;font-size:12px;"></div>
+    </div>
+  </div>
+
   <h3 class="settings-group-title" style="font-size:12px;text-transform:uppercase;letter-spacing:1.5px;color:var(--warm, #d4a574);margin:24px 0 12px;font-weight:500;">AI &amp; Intelligence</h3>
   <div class="section"><h2>AI Insights</h2>
     <div class="setting-row">
@@ -709,7 +723,8 @@
       upcoming: 'Upcoming Charges', forecast: '30-Day Forecast', charts: 'Charts',
       calendar: 'Bill Calendar Link', cashFlow: 'Cash Flow', savingsRate: 'Savings Rate', yoy: 'Year-over-Year',
       investments: 'Investments',
-      reviewQueue: 'Review Uncategorized'
+      reviewQueue: 'Review Uncategorized',
+      aiMemory: 'AI Memory'
     };
     function renderWidgetToggles(widgets) {
       var container = document.getElementById('widget-toggles');
@@ -722,12 +737,123 @@
       }).join('');
     }
 
+    // ---- WebAuthn registration UI ----
+    // Lists registered credentials and runs the platform-authenticator
+    // handshake to enroll a new one. Hidden on browsers without WebAuthn
+    // support. Uses the existing /api/webauthn/* endpoints (registration
+    // requires an authenticated session, which the user already has by
+    // virtue of being on this Settings page).
+    function _b64uToBuf(s) {
+      var pad = '===='.slice(0, (4 - s.length % 4) % 4);
+      var b64 = (s + pad).replace(/-/g, '+').replace(/_/g, '/');
+      var bin = atob(b64);
+      var buf = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+      return buf.buffer;
+    }
+    function _bufToB64u(buf) {
+      var bytes = new Uint8Array(buf);
+      var bin = '';
+      for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+    async function loadBiometricCredentials() {
+      var section = document.getElementById('biometric-section');
+      if (!window.PublicKeyCredential) { section.style.display = 'none'; return; }
+      section.style.display = 'block';
+      var listEl = document.getElementById('biometric-list');
+      try {
+        var res = await apiFetch('/api/webauthn/credentials');
+        if (!res.ok) {
+          // 501 means SDK not installed — hide section. Other errors: show
+          // them so the operator can debug.
+          if (res.status === 501) { section.style.display = 'none'; return; }
+          listEl.textContent = 'Could not load credentials.';
+          return;
+        }
+        var creds = await res.json();
+        if (!Array.isArray(creds) || creds.length === 0) {
+          listEl.innerHTML = '<em>No biometric devices registered yet.</em>';
+          return;
+        }
+        listEl.innerHTML = creds.map(function(c) {
+          return '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);">' +
+            '<div><strong>' + esc(c.device_name || 'Biometric Device') + '</strong>' +
+            ' <span style="color:var(--text-muted);font-size:11px;">registered ' + new Date(c.created_at).toLocaleDateString() + '</span></div>' +
+            '<button class="btn-sm" data-bio-remove="' + c.id + '" data-bio-name="' + esc(c.device_name || 'this device') + '" style="font-size:11px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--red);cursor:pointer;font-family:inherit;">Remove</button>' +
+            '</div>';
+        }).join('');
+      } catch (e) {
+        listEl.textContent = 'Could not load credentials: ' + e.message;
+      }
+    }
+    async function registerBiometric() {
+      var btn = document.getElementById('biometric-register-btn');
+      var status = document.getElementById('biometric-status');
+      btn.disabled = true;
+      status.textContent = 'Waiting for biometric prompt…';
+      try {
+        var optsRes = await apiFetch('/api/webauthn/register-options', { method: 'POST' });
+        if (!optsRes.ok) {
+          var err = await optsRes.json().catch(function() { return {}; });
+          throw new Error(err.error || 'Could not start registration');
+        }
+        var opts = await optsRes.json();
+        // Convert base64url fields to ArrayBuffers for the WebAuthn API.
+        opts.challenge = _b64uToBuf(opts.challenge);
+        if (opts.user && opts.user.id) opts.user.id = _b64uToBuf(opts.user.id);
+        if (Array.isArray(opts.excludeCredentials)) {
+          opts.excludeCredentials = opts.excludeCredentials.map(function(c) {
+            return Object.assign({}, c, { id: _b64uToBuf(c.id) });
+          });
+        }
+        var attestation = await navigator.credentials.create({ publicKey: opts });
+        var verifyBody = {
+          id: attestation.id,
+          rawId: _bufToB64u(attestation.rawId),
+          type: attestation.type,
+          response: {
+            clientDataJSON: _bufToB64u(attestation.response.clientDataJSON),
+            attestationObject: _bufToB64u(attestation.response.attestationObject),
+          },
+          clientExtensionResults: attestation.getClientExtensionResults ? attestation.getClientExtensionResults() : {},
+          authenticatorAttachment: attestation.authenticatorAttachment || null,
+          deviceName: navigator.userAgent.includes('iPhone') ? 'iPhone' : navigator.userAgent.includes('Mac') ? 'Mac' : navigator.userAgent.includes('Android') ? 'Android' : 'This Device',
+        };
+        var verifyRes = await apiFetch('/api/webauthn/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(verifyBody),
+        });
+        if (!verifyRes.ok) {
+          var verr = await verifyRes.json().catch(function() { return {}; });
+          throw new Error(verr.error || 'Registration verification failed');
+        }
+        status.style.color = 'var(--green)';
+        status.textContent = 'Registered. You can now sign in with biometrics.';
+        loadBiometricCredentials();
+      } catch (e) {
+        status.style.color = 'var(--red)';
+        status.textContent = 'Registration failed: ' + (e.message || e);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+    async function removeBiometricCredential(id, name) {
+      if (!confirm('Remove biometric for ' + name + '?')) return;
+      try {
+        var res = await apiFetch('/api/webauthn/credentials/' + encodeURIComponent(id), { method: 'DELETE' });
+        if (res.ok) loadBiometricCredentials();
+      } catch (e) { /* ignore */ }
+    }
+
     // --- Bind all event handlers (CSP-safe, no inline attributes) ---
     bindEvents([
       ['theme-select', 'change', function() { updateSetting('theme', this.value); }],
       ['months-select', 'change', function() { updateSetting('dashboard_months', parseInt(this.value)); }],
       ['timeout-input', 'change', function() { updateSetting('session_timeout_minutes', parseInt(this.value)); }],
       ['logout-btn', 'click', logout],
+      ['biometric-register-btn', 'click', registerBiometric],
       ['insights-toggle', 'change', function() { updateSetting('insights_enabled', this.checked); }],
       ['insights-btn', 'click', generateInsights],
       ['model-select', 'change', function() { updateSetting('insights_model', this.value); }],
@@ -801,8 +927,11 @@
         } catch (e) { showMsg(e.message, false); }
       })();
     });
+    onDelegate('biometric-list', 'click', '[data-bio-remove]', function() {
+      removeBiometricCredential(this.getAttribute('data-bio-remove'), this.getAttribute('data-bio-name'));
+    });
 
     checkPushStatus();
-    loadSettings(); loadInsights(); loadUsageHistory(); loadCatStatus();
+    loadSettings(); loadInsights(); loadUsageHistory(); loadCatStatus(); loadBiometricCredentials();
   </script>
 </body></html>

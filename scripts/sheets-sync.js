@@ -102,7 +102,7 @@ async function syncTransactions(sheets, pool) {
       la.name AS account_name,
       la.type AS account_type,
       COALESCE(pi.institution_name, te.institution_name, 'CSV Import') AS institution_name,
-      t.category[1] AS category,
+      COALESCE(t.user_category, t.category[1]) AS category,
       t.personal_finance_category->>'primary' AS pfc_primary,
       t.personal_finance_category->>'detailed' AS pfc_detailed
     FROM transactions t
@@ -410,7 +410,7 @@ async function buildDashboard(sheets, pool) {
 
   const { rows: categorySummary } = await pool.query(`
     SELECT
-      COALESCE(personal_finance_category->>'primary', category[1], 'Uncategorized') AS category,
+      COALESCE(user_category, personal_finance_category->>'primary', category[1], 'Uncategorized') AS category,
       SUM(amount) AS total,
       COUNT(*) AS txn_count
     FROM transactions
@@ -468,7 +468,7 @@ async function buildDashboard(sheets, pool) {
     SELECT b.category, b.monthly_limit,
            COALESCE(SUM(t.amount), 0) AS spent
     FROM budgets b
-    LEFT JOIN transactions t ON COALESCE(t.category[1], 'Uncategorized') = b.category
+    LEFT JOIN transactions t ON COALESCE(t.user_category, t.category[1], 'Uncategorized') = b.category
       AND t.amount > 0 AND t.pending = false
       AND t.date >= date_trunc('month', CURRENT_DATE)
       AND t.date < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'

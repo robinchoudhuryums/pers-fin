@@ -33,18 +33,31 @@
 // narrow — "transfer from X" with X specific. A permissive "transfer from"
 // would re-classify intra-account moves as income and double-count.
 //
-// Note on double-counting: branch (b) is safe only when the source side of
-// the transfer is NOT itself classified as income. If the brokerage
-// account is also linked and receives a payroll deposit that hits branch
-// (a), the later transfer to checking under branch (b) will double the
-// paycheck. Mitigation options (for future): (i) scope branch (b) to a
-// configured paycheck-destination account; (ii) reconcile same-amount
-// credit/debit pairs within N days and keep only the earlier.
+// Double-counting mitigation: branch (b) used to fire any time the
+// "funds transfer from brokerage" merchant string appeared, which double-
+// counted income when both ends of the transfer were linked (the original
+// payroll deposit on brokerage already matched branch (a); the later
+// brokerage→checking transfer matched branch (b) on the destination side).
+// Now branch (b) ALSO requires NO matching debit (positive amount) on a
+// different account within ±2 days of the credit. The subquery's outer
+// references (`account_id`, `amount`, `date`) resolve to the outer
+// transactions row whether the caller aliases it as `t` or uses bare
+// `transactions`, because they're unqualified and only the outer query has
+// those columns in scope.
 const INCOME_PREDICATE = `
   (
     (COALESCE(merchant_name, name, '') ~* '\\y(payroll|direct dep|direct deposit|dir dep|salary|employer|deposit|ach credit)\\y'
       AND COALESCE(merchant_name, name, '') !~* '\\y(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|reversal|atm|withdrawal|bill pay)\\y')
-    OR COALESCE(merchant_name, name, '') ~* 'funds transfer from brokerage'
+    OR (
+      COALESCE(merchant_name, name, '') ~* 'funds transfer from brokerage'
+      AND NOT EXISTS (
+        SELECT 1 FROM transactions __t2
+        WHERE __t2.account_id <> account_id
+          AND __t2.amount = ABS(amount)
+          AND __t2.pending = false
+          AND __t2.date BETWEEN date - INTERVAL '2 days' AND date + INTERVAL '2 days'
+      )
+    )
     OR COALESCE(user_category, category[1]) = 'Income'
   )
 `;
