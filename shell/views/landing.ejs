@@ -9,6 +9,7 @@
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/shell-static/landing.css">
   <link rel="stylesheet" href="/shell-static/transition.css">
+  <link rel="stylesheet" href="/shell-static/perfin-materialize.css">
 </head>
 <body class="landing-body">
   <main class="landing">
@@ -19,7 +20,7 @@
       </form>
     </header>
     <div class="tiles">
-      <a href="/perfin" class="tile">
+      <a href="/perfin" class="tile" data-perfin-materialize>
         <div class="tile-icon">$</div>
         <h2>Perfin</h2>
         <p>Personal finance, transactions, and AI insights.</p>
@@ -32,52 +33,23 @@
     </div>
   </main>
 
-  <!-- Tile-transition overlay (lazy-activated on click of a [data-atrans] tile) -->
+  <!-- Tile-transition overlay (lazy-activated on click of a [data-atrans] tile).
+       Decorations (stars, shooting stars, constellation, tagline) are
+       populated by transition.js on init. -->
   <div class="atrans-overlay atrans--cosmic" id="atrans-cosmic" aria-hidden="true">
     <div class="atrans-stage">
-      <div class="atrans-stars" data-stars></div>
+      <div class="atrans-stars"></div>
       <div class="atrans-nebula"></div>
       <div class="atrans-ring"></div>
       <div class="atrans-art-wrap">
         <div class="atrans-art"><img src="/per-sistant/android-chrome-mask-crop.png" alt="" aria-hidden="true"></div>
+        <div class="atrans-scanline-trail"></div>
         <div class="atrans-scanline"></div>
       </div>
     </div>
   </div>
 
-  <script>
-    (function() {
-      // Populate twinkling stars in any .atrans-stars container.
-      document.querySelectorAll('[data-stars]').forEach(function(box) {
-        var html = '';
-        for (var i = 0; i < 32; i++) {
-          var x = Math.random() * 100, y = Math.random() * 100;
-          var size = (Math.random() * 1.6 + 1).toFixed(2);
-          var delay = (Math.random() * 2.4).toFixed(2);
-          var dur = (Math.random() * 1.6 + 1.6).toFixed(2);
-          html += '<span style="left:' + x.toFixed(1) + '%;top:' + y.toFixed(1) +
-                  '%;width:' + size + 'px;height:' + size +
-                  'px;animation-delay:' + delay + 's;animation-duration:' + dur + 's;"></span>';
-        }
-        box.innerHTML = html;
-      });
-
-      // Tile click → play matching overlay → navigate.
-      document.querySelectorAll('.tile[data-atrans]').forEach(function(tile) {
-        tile.addEventListener('click', function(e) {
-          // Allow ctrl/cmd/middle-click to open in a new tab without animation.
-          if (e.ctrlKey || e.metaKey || e.shiftKey || e.button === 1) return;
-          e.preventDefault();
-          var variant = tile.getAttribute('data-atrans');
-          var overlay = document.getElementById('atrans-' + variant);
-          if (!overlay) { window.location.href = tile.href; return; }
-          overlay.classList.add('active');
-          // ~1.35s reveal then navigate; the destination's first paint covers
-          // the overlay so a fade-out isn't strictly necessary.
-          setTimeout(function() { window.location.href = tile.href; }, 1350);
-        });
-      });
-    })();
-  </script>
+  <script src="/shell-static/transition.js" defer></script>
+  <script src="/shell-static/perfin-materialize.js" defer></script>
 </body>
 </html>

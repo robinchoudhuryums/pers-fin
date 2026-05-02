@@ -46,6 +46,15 @@ function embedded() {
 
 function pageHead(title) {
   const bp = basePath();
+  const isEmbedded = embedded();
+  // Cross-app Iron Man materialize animation — only loaded when embedded
+  // under the unified shell (the cross-app link only renders there, and
+  // /shell-static is only mounted by the shell). The standalone Perfin
+  // login uses its own inline copy of the same animation.
+  const materializeAssets = isEmbedded
+    ? `\n  <link rel="stylesheet" href="/shell-static/perfin-materialize.css">` +
+      `\n  <script src="/shell-static/perfin-materialize.js" defer></script>`
+    : "";
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -66,7 +75,7 @@ function pageHead(title) {
   <meta name="theme-color" content="#faf7f2">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">${materializeAssets}
   <style>${SHARED_CSS}${NAV_CHROME_CSS}</style>
   <script>window.BASE_PATH = ${JSON.stringify(bp)};</script>
   <script>${SHARED_JS}</script>
@@ -168,8 +177,12 @@ function navBar(activePath) {
   // under the unified shell (/perfin/logo.svg); cross-origin in standalone
   // (PERFIN_URL/logo.svg) — img tag handles either fine.
   const perfinIconSrc = `${perfinHref}/logo.svg`;
+  // Mark for Iron Man materialize animation only under the unified shell.
+  // Standalone deploys link out to PERFIN_URL (different origin) and the
+  // shell-only materialize.js isn't loaded there anyway.
+  const materializeAttr = isEmbedded ? ' data-perfin-materialize' : '';
   const perfinLink = perfinHref
-    ? `<a href="${perfinHref}"${perfinTarget} class="cross-app-link cross-app-icon-link" aria-label="Switch to Perfin">
+    ? `<a href="${perfinHref}"${perfinTarget}${materializeAttr} class="cross-app-link cross-app-icon-link" aria-label="Switch to Perfin">
          <span class="icon"><img src="${perfinIconSrc}" alt="" aria-hidden="true" width="20" height="20"></span>
          <span class="label">Perfin</span>
        </a>` : '';

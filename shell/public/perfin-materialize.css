@@ -1,0 +1,139 @@
+/* ============================================================================
+   Perfin materialize overlay — shared by tile click + cross-app entry.
+   ----------------------------------------------------------------------------
+   Mirrors the standalone Perfin login animation in teller/views/login.ejs:
+   stroke-draw → fill → pulse rings → particle burst → glitch → HUD scan.
+   Selectors are scoped under .materialize-overlay so they don't bleed when
+   loaded alongside other animations.
+   ============================================================================ */
+
+.materialize-overlay {
+  position: fixed; inset: 0; z-index: 9999;
+  display: flex; align-items: center; justify-content: center; flex-direction: column;
+  background: #080b12; opacity: 0; pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+.materialize-overlay.active { opacity: 1; pointer-events: all; }
+.materialize-overlay .helmet-svg { width: 120px; height: 144px; position: relative; z-index: 2; }
+.materialize-overlay .helmet-stroke {
+  fill: none; stroke: #c8a86c; stroke-width: 2;
+  stroke-dasharray: 1; stroke-dashoffset: 1;
+  filter: drop-shadow(0 0 10px rgba(200,168,108,0.7)) drop-shadow(0 0 20px rgba(200,168,108,0.4));
+}
+.materialize-overlay .helmet-fill {
+  fill: #c8a86c; opacity: 0;
+}
+.materialize-overlay.active .helmet-stroke {
+  animation: matHelmetDraw 1.2s ease-out 0.15s forwards;
+}
+.materialize-overlay.active .helmet-fill {
+  animation: matHelmetFill 0.6s ease-in 1.1s forwards;
+}
+@keyframes matHelmetDraw {
+  to { stroke-dashoffset: 0; }
+}
+@keyframes matHelmetFill {
+  0%   { opacity: 0; filter: drop-shadow(0 0 0 transparent); }
+  60%  { opacity: 0.7; filter: drop-shadow(0 0 24px rgba(200,168,108,0.6)); }
+  100% { opacity: 1; filter: drop-shadow(0 0 14px rgba(200,168,108,0.4)); }
+}
+
+/* Ambient floating particles (rise from below) */
+.materialize-overlay .overlay-particles {
+  position: absolute; inset: 0; overflow: hidden; pointer-events: none;
+}
+.materialize-overlay .overlay-particle {
+  position: absolute; width: 2px; height: 2px; border-radius: 50%;
+  background: #a0dad0; opacity: 0;
+}
+.materialize-overlay.active .overlay-particle {
+  animation: matFloatParticle var(--dur) ease-in-out var(--delay) infinite;
+}
+@keyframes matFloatParticle {
+  0%   { opacity: 0; transform: translateY(0) scale(0.5); }
+  20%  { opacity: 0.6; }
+  80%  { opacity: 0.3; }
+  100% { opacity: 0; transform: translateY(-120px) scale(0); }
+}
+
+/* Pulse rings — expand from helmet center after fill completes */
+.materialize-overlay .pulse-ring {
+  position: absolute; width: 80px; height: 80px; border-radius: 50%;
+  border: 1px solid rgba(160,218,208,0.5); opacity: 0; pointer-events: none;
+}
+.materialize-overlay.active .pulse-ring {
+  animation: matPulseExpand 1s ease-out forwards;
+}
+.materialize-overlay .pulse-ring:nth-of-type(1) { animation-delay: 1.2s !important; }
+.materialize-overlay .pulse-ring:nth-of-type(2) { animation-delay: 1.4s !important; }
+.materialize-overlay .pulse-ring:nth-of-type(3) { animation-delay: 1.6s !important; }
+@keyframes matPulseExpand {
+  0%   { opacity: 0.6; transform: scale(1); }
+  100% { opacity: 0; transform: scale(4); }
+}
+
+/* Particle burst — explode outward at fill completion */
+.materialize-overlay .burst-container {
+  position: absolute; pointer-events: none;
+}
+.materialize-overlay .burst-particle {
+  position: absolute; width: 3px; height: 3px; border-radius: 50%;
+  background: #a0dad0; opacity: 0;
+}
+.materialize-overlay.active .burst-particle {
+  animation: matBurstOut 0.8s ease-out 1.5s forwards;
+}
+@keyframes matBurstOut {
+  0%   { opacity: 1; transform: translate(0,0) scale(1); }
+  100% { opacity: 0; transform: var(--burst-dir) scale(0); }
+}
+
+/* Glitch / digital noise overlay */
+.materialize-overlay .glitch-overlay {
+  position: absolute; inset: 0; opacity: 0; pointer-events: none; mix-blend-mode: screen;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(160,218,208,0.03) 0px,
+    rgba(160,218,208,0.03) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+}
+.materialize-overlay.active .glitch-overlay {
+  animation: matGlitchFlicker 0.3s steps(4) 0s forwards;
+}
+@keyframes matGlitchFlicker {
+  0%   { opacity: 0.8; transform: translate(2px, -1px) scaleY(1.01); }
+  25%  { opacity: 0.6; transform: translate(-3px, 1px) scaleY(0.99); }
+  50%  { opacity: 0.9; transform: translate(1px, 2px) scaleX(1.01); }
+  75%  { opacity: 0.4; transform: translate(-1px, -2px) scaleY(1.02); }
+  100% { opacity: 0; transform: translate(0, 0) scale(1); }
+}
+
+/* Horizontal HUD scan line */
+.materialize-overlay .hud-scanline {
+  position: absolute; left: 0; right: 0; height: 1px;
+  background: linear-gradient(90deg, transparent 0%, rgba(160,218,208,0.3) 20%, rgba(160,218,208,0.6) 50%, rgba(160,218,208,0.3) 80%, transparent 100%);
+  opacity: 0; pointer-events: none;
+}
+.materialize-overlay.active .hud-scanline {
+  animation: matScanDown 1.8s ease-in-out 0.1s forwards;
+}
+@keyframes matScanDown {
+  0%   { top: 20%; opacity: 0; }
+  10%  { opacity: 0.7; }
+  90%  { opacity: 0.3; }
+  100% { top: 80%; opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .materialize-overlay.active .helmet-stroke,
+  .materialize-overlay.active .helmet-fill,
+  .materialize-overlay.active .overlay-particle,
+  .materialize-overlay.active .pulse-ring,
+  .materialize-overlay.active .burst-particle,
+  .materialize-overlay.active .glitch-overlay,
+  .materialize-overlay.active .hud-scanline { animation: none !important; }
+  .materialize-overlay.active .helmet-stroke { stroke-dashoffset: 0; }
+  .materialize-overlay.active .helmet-fill { opacity: 1; }
+}
