@@ -525,11 +525,49 @@
 
   <!-- Bill Calendar Quick View -->
   <div class="section" id="calendar-widget" style="margin-bottom:28px;">
-    <div style="display:flex;align-items:center;justify-content:space-between;">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
       <h2 style="margin:0;">Upcoming Bills</h2>
-      <a href="<%= basePath %>/calendar" style="color:var(--teal);font-size:12px;text-decoration:none;">Full Calendar &rarr;</a>
+      <div style="display:flex;align-items:center;gap:12px;">
+        <button class="btn-sm" id="quick-add-bill-btn" style="font-size:12px;padding:6px 12px;border:1px solid var(--teal);border-radius:6px;background:transparent;color:var(--teal);cursor:pointer;font-family:inherit;min-height:36px;">+ Add Bill</button>
+        <a href="<%= basePath %>/calendar" style="color:var(--teal);font-size:12px;text-decoration:none;">Full Calendar &rarr;</a>
+      </div>
     </div>
     <div id="calendar-widget-body" style="margin-top:12px;font-size:13px;color:var(--text-muted);">Loading...</div>
+  </div>
+
+  <!-- Quick Add Bill modal — opens from the Upcoming Bills widget. POSTs
+       directly to /api/manual-bills then refreshes the widget. Mobile-
+       optimized: large tap targets, autofocus on first field, full-width
+       inputs. -->
+  <div id="quick-add-bill-modal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px);">
+    <div style="max-width:420px;margin:60px auto;padding:24px;background:var(--surface, var(--bg));border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+      <h3 style="margin:0 0 6px;">Add Bill</h3>
+      <div style="font-size:11px;color:var(--text-muted);margin-bottom:16px;">For utilities, rent, or anything not auto-detected from transactions.</div>
+      <div style="display:flex;flex-direction:column;gap:12px;">
+        <input id="qab-name" placeholder="Bill name (e.g. Electricity)" style="padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;" autocomplete="off">
+        <input id="qab-amount" type="number" step="0.01" min="0" inputmode="decimal" placeholder="Amount ($)" style="padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
+        <div style="display:flex;gap:8px;">
+          <input id="qab-day" type="number" min="1" max="31" inputmode="numeric" placeholder="Due day (1-31)" style="flex:1;padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
+          <select id="qab-cadence" style="flex:1;padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
+            <option value="monthly">Monthly</option>
+            <option value="quarterly">Quarterly</option>
+            <option value="yearly">Yearly</option>
+          </select>
+        </div>
+        <select id="qab-category" style="padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
+          <option value="utility">Utility</option>
+          <option value="bill">Bill</option>
+          <option value="subscription">Subscription</option>
+          <option value="insurance">Insurance</option>
+          <option value="housing">Housing</option>
+        </select>
+        <div id="qab-status" style="font-size:12px;min-height:18px;"></div>
+        <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:4px;">
+          <button class="btn-sm" id="qab-cancel" style="font-size:13px;padding:10px 16px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-family:inherit;min-height:40px;">Cancel</button>
+          <button class="btn-sm" id="qab-save" style="font-size:13px;padding:10px 16px;border:1px solid var(--teal);border-radius:6px;background:var(--teal);color:#000;cursor:pointer;font-family:inherit;font-weight:500;min-height:40px;">Save Bill</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Savings Rate (collapsible) -->
@@ -1074,6 +1112,86 @@
             '<span style="' + cls + ';">' + prefix + '$' + Math.abs(ev.amount).toFixed(2) + '</span></div>';
         }).join('');
       } catch (e) { body.textContent = 'Unable to load.'; }
+    })();
+
+    // Quick Add Bill modal — captures bills not in transaction history (e.g.
+    // utilities paid by mailed check, or upcoming bills the user wants to
+    // pre-record before they post). POSTs to the existing /api/manual-bills
+    // endpoint so the new row flows into bill-calendar, the upcoming-bills
+    // widget, and the next Sheets sync without any new server-side wiring.
+    (function wireQuickAddBill() {
+      var modal = document.getElementById('quick-add-bill-modal');
+      var openBtn = document.getElementById('quick-add-bill-btn');
+      var saveBtn = document.getElementById('qab-save');
+      var cancelBtn = document.getElementById('qab-cancel');
+      if (!modal || !openBtn) return;
+
+      function openModal() {
+        document.getElementById('qab-name').value = '';
+        document.getElementById('qab-amount').value = '';
+        document.getElementById('qab-day').value = '';
+        document.getElementById('qab-cadence').value = 'monthly';
+        document.getElementById('qab-category').value = 'utility';
+        document.getElementById('qab-status').textContent = '';
+        document.getElementById('qab-status').style.color = '';
+        modal.style.display = 'block';
+        // Autofocus on first field after the modal becomes visible. setTimeout
+        // because mobile Safari occasionally drops focus when display flips
+        // from none → block in the same tick.
+        setTimeout(function() { document.getElementById('qab-name').focus(); }, 50);
+      }
+      function closeModal() { modal.style.display = 'none'; }
+      function showStatus(msg, ok) {
+        var el = document.getElementById('qab-status');
+        el.textContent = msg;
+        el.style.color = ok ? 'var(--green)' : 'var(--red)';
+      }
+
+      openBtn.addEventListener('click', openModal);
+      cancelBtn.addEventListener('click', closeModal);
+      // Close when clicking the dim backdrop (not the card itself).
+      modal.addEventListener('click', function(e) { if (e.target === modal) closeModal(); });
+      // Esc to close.
+      document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape' && modal.style.display !== 'none') closeModal();
+      });
+
+      saveBtn.addEventListener('click', async function() {
+        var name = document.getElementById('qab-name').value.trim();
+        var amount = parseFloat(document.getElementById('qab-amount').value);
+        var dueDay = parseInt(document.getElementById('qab-day').value, 10);
+        var cadence = document.getElementById('qab-cadence').value;
+        var category = document.getElementById('qab-category').value;
+        if (!name) { showStatus('Bill name is required.', false); return; }
+        if (!isFinite(amount) || amount <= 0) { showStatus('Amount must be > 0.', false); return; }
+        if (!isFinite(dueDay) || dueDay < 1 || dueDay > 31) { showStatus('Due day must be 1-31.', false); return; }
+        saveBtn.disabled = true;
+        saveBtn.textContent = 'Saving…';
+        try {
+          var res = await apiFetch('/api/manual-bills', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name, amount: amount, due_day: dueDay, cadence: cadence, category: category }),
+          });
+          if (!res.ok) {
+            var err = await res.json().catch(function() { return {}; });
+            throw new Error(err.error || ('HTTP ' + res.status));
+          }
+          showStatus('Saved. Refreshing…', true);
+          setTimeout(function() {
+            closeModal();
+            // Refresh the upcoming-bills widget so the new bill appears
+            // immediately. The Sheets sync (if scheduled) will pick it up
+            // on its next tick.
+            location.reload();
+          }, 600);
+        } catch (e) {
+          showStatus('Failed: ' + (e.message || e), false);
+        } finally {
+          saveBtn.disabled = false;
+          saveBtn.textContent = 'Save Bill';
+        }
+      });
     })();
 
     // Load latest AI insight for the dashboard widget

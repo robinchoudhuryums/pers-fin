@@ -952,6 +952,196 @@ async function syncInsights(sheets, pool) {
 }
 
 // ---------------------------------------------------------------------------
+// Sync Utilities — dedicated tab consolidating auto-detected utility
+// subscriptions AND user-entered manual_bills with category='utility'.
+// Modeled after syncSubscriptions but narrower to the utility category so
+// the user has a single sheet to consult for "what utility bills are
+// coming up." Both sources land in one table with a `Source` column.
+// ---------------------------------------------------------------------------
+async function syncUtilities(sheets, pool) {
+  console.log("Syncing utilities to Google Sheets...");
+
+  const { rows } = await pool.query(`
+    SELECT
+      'auto' AS source,
+      display_name AS name,
+      amount,
+      CASE
+        WHEN cadence_days <= 35 THEN 'Monthly'
+        WHEN cadence_days <= 65 THEN 'Bi-monthly'
+        WHEN cadence_days <= 95 THEN 'Quarterly'
+        WHEN cadence_days <= 370 THEN 'Yearly'
+        ELSE cadence_days || ' days'
+      END AS cycle,
+      CASE
+        WHEN cadence_days > 0 THEN ROUND(amount * (30.0 / cadence_days), 2)
+        ELSE amount
+      END AS monthly_cost,
+      CASE
+        WHEN cadence_days > 0 THEN ROUND(amount * (365.0 / cadence_days), 2)
+        ELSE amount * 12
+      END AS yearly_cost,
+      next_expected AS next_due,
+      CASE
+        WHEN cancelled_at IS NOT NULL THEN 'Cancelled'
+        WHEN is_dismissed THEN 'Dismissed'
+        WHEN NOT is_active THEN 'Inactive'
+        ELSE 'Active'
+      END AS status,
+      notes
+    FROM detected_subscriptions
+    WHERE category = 'utility'
+
+    UNION ALL
+
+    SELECT
+      'manual' AS source,
+      name,
+      amount,
+      CASE cadence
+        WHEN 'monthly' THEN 'Monthly'
+        WHEN 'quarterly' THEN 'Quarterly'
+        WHEN 'yearly' THEN 'Yearly'
+        ELSE cadence
+      END AS cycle,
+      CASE cadence
+        WHEN 'monthly' THEN amount
+        WHEN 'quarterly' THEN ROUND(amount / 3.0, 2)
+        WHEN 'yearly' THEN ROUND(amount / 12.0, 2)
+        ELSE amount
+      END AS monthly_cost,
+      CASE cadence
+        WHEN 'monthly' THEN amount * 12
+        WHEN 'quarterly' THEN amount * 4
+        WHEN 'yearly' THEN amount
+        ELSE amount * 12
+      END AS yearly_cost,
+      -- next_due for manual bills: due_day in the current or next month based
+      -- on whether today has passed the due_day. Sheets users want a date,
+      -- not just a day number.
+      CASE
+        WHEN due_day >= EXTRACT(DAY FROM CURRENT_DATE)::int THEN
+          make_date(EXTRACT(YEAR FROM CURRENT_DATE)::int, EXTRACT(MONTH FROM CURRENT_DATE)::int,
+                    LEAST(due_day, EXTRACT(DAY FROM (date_trunc('month', CURRENT_DATE) + INTERVAL '1 month - 1 day'))::int))
+        ELSE
+          make_date(
+            EXTRACT(YEAR FROM CURRENT_DATE + INTERVAL '1 month')::int,
+            EXTRACT(MONTH FROM CURRENT_DATE + INTERVAL '1 month')::int,
+            LEAST(due_day, EXTRACT(DAY FROM (date_trunc('month', CURRENT_DATE + INTERVAL '1 month') + INTERVAL '1 month - 1 day'))::int)
+          )
+      END AS next_due,
+      CASE WHEN is_active THEN 'Active' ELSE 'Inactive' END AS status,
+      notes
+    FROM manual_bills
+    WHERE category = 'utility'
+
+    ORDER BY
+      CASE WHEN status = 'Active' THEN 0 ELSE 1 END,
+      next_due NULLS LAST
+  `);
+
+  const SHEET_UTILITIES = "Utilities";
+  await ensureSheet(sheets, SHEET_UTILITIES);
+
+  const headers = [
+    "Name", "Amount", "Cycle", "Monthly Cost", "Yearly Cost",
+    "Next Due", "Source", "Status", "Notes",
+  ];
+
+  const data = rows.map((r) => [
+    r.name,
+    fmtCurrency(r.amount),
+    r.cycle,
+    fmtCurrency(r.monthly_cost),
+    fmtCurrency(r.yearly_cost),
+    fmtDate(r.next_due),
+    r.source === "auto" ? "Auto-detected" : "Manual",
+    r.status,
+    r.notes || "",
+  ]);
+
+  // Roll-up summary row at the bottom for at-a-glance totals.
+  let monthlyTotal = 0, yearlyTotal = 0;
+  for (const r of rows) {
+    if (r.status === "Active") {
+      monthlyTotal += parseFloat(r.monthly_cost) || 0;
+      yearlyTotal += parseFloat(r.yearly_cost) || 0;
+    }
+  }
+  if (data.length > 0) {
+    data.push([]);
+    data.push([
+      "TOTAL (Active)",
+      "",
+      "",
+      fmtCurrency(monthlyTotal),
+      fmtCurrency(yearlyTotal),
+      "",
+      "",
+      `${rows.filter(r => r.status === "Active").length} active`,
+      "",
+    ]);
+  }
+
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_UTILITIES}!A:Z`,
+  });
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_UTILITIES}!A1`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [headers, ...data] },
+  });
+
+  const sheetId = await getSheetId(sheets, SHEET_UTILITIES);
+  if (sheetId !== null) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SPREADSHEET_ID,
+      requestBody: {
+        requests: [
+          {
+            repeatCell: {
+              range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
+              cell: {
+                userEnteredFormat: {
+                  textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 }, fontSize: 11 },
+                  backgroundColor: { red: 0.32, green: 0.55, blue: 0.55 },
+                },
+              },
+              fields: "userEnteredFormat(textFormat,backgroundColor)",
+            },
+          },
+          {
+            updateSheetProperties: {
+              properties: { sheetId, gridProperties: { frozenRowCount: 1 } },
+              fields: "gridProperties.frozenRowCount",
+            },
+          },
+          // Currency formatting for Amount, Monthly Cost, Yearly Cost columns
+          ...[1, 3, 4].map(col => ({
+            repeatCell: {
+              range: { sheetId, startRowIndex: 1, startColumnIndex: col, endColumnIndex: col + 1 },
+              cell: { userEnteredFormat: { numberFormat: { type: "CURRENCY", pattern: "$#,##0.00" } } },
+              fields: "userEnteredFormat.numberFormat",
+            },
+          })),
+          {
+            autoResizeDimensions: {
+              dimensions: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 9 },
+            },
+          },
+        ],
+      },
+    });
+  }
+
+  console.log(`Synced ${rows.length} utilities to Google Sheets`);
+  return rows.length;
+}
+
+// ---------------------------------------------------------------------------
 // Sync Recurring Transfers
 // ---------------------------------------------------------------------------
 async function syncRecurringTransfers(sheets, pool) {
@@ -1172,6 +1362,7 @@ async function syncAll() {
   try {
     const txnCount = await syncTransactions(sheets, pool);
     const subs = await syncSubscriptions(sheets, pool);
+    const utilCount = await syncUtilities(sheets, pool);
     const insightsCount = await syncInsights(sheets, pool);
     const transfersCount = await syncRecurringTransfers(sheets, pool);
     const taxCount = await syncTaxDeductions(sheets, pool);
@@ -1180,6 +1371,7 @@ async function syncAll() {
     return {
       transactions_synced: txnCount,
       subscriptions_synced: subs.length,
+      utilities_synced: utilCount,
       insights_synced: insightsCount,
       transfers_synced: transfersCount,
       tax_deductions_synced: taxCount,
