@@ -52,8 +52,8 @@ function pageHead(title) {
   // /shell-static is only mounted by the shell). The standalone Perfin
   // login uses its own inline copy of the same animation.
   const materializeAssets = isEmbedded
-    ? `\n  <link rel="stylesheet" href="/shell-static/perfin-materialize.css">` +
-      `\n  <script src="/shell-static/perfin-materialize.js" defer></script>`
+    ? `\n  <link rel="stylesheet" href="/shell-static/perfin-materialize.css?v=2">` +
+      `\n  <script src="/shell-static/perfin-materialize.js?v=2" defer></script>`
     : "";
   return `<!DOCTYPE html>
 <html lang="en">

@@ -37,8 +37,14 @@ app.use(express.urlencoded({ extended: false, limit: "64kb" }));
 
 // Shell-only static assets are scoped under /shell-static so they can't
 // collide with either sub-app's /public namespace once those are mounted.
+// `maxAge: 0` + ETag means the browser always revalidates but a 304 keeps
+// the request cheap (~100B). Earlier we used `1d`, which caused stale
+// transition.css / transition.js to stick around on production after edits;
+// short cache + ETag avoids needing manual ?v= bumps on every change.
 app.use("/shell-static", express.static(path.join(__dirname, "public"), {
-  maxAge: process.env.NODE_ENV === "production" ? "1d" : 0,
+  maxAge: 0,
+  etag: true,
+  lastModified: true,
 }));
 
 // --- Sub-app modules -------------------------------------------------------
