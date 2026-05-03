@@ -43,9 +43,11 @@ module.exports = function ({}) {
         // PNG-only set — the legacy SVG entries were the old vision icon
         // and have been removed. Both PNGs are the same artwork (the
         // mask-crop image) at different resolutions. The 512 is marked
-        // any-maskable for Android adaptive-icon platforms.
-        { src: bp + "/android-chrome-192x192.png", sizes: "192x192", type: "image/png" },
-        { src: bp + "/android-chrome-512x512.png", sizes: "512x512", type: "image/png", purpose: "any maskable" },
+        // any-maskable for Android adaptive-icon platforms. ?v=2 busts
+        // OS-level icon caches that survive PWA reinstall (notably iOS
+        // Safari's apple-touch-icon cache).
+        { src: bp + "/android-chrome-192x192.png?v=2", sizes: "192x192", type: "image/png" },
+        { src: bp + "/android-chrome-512x512.png?v=2", sizes: "512x512", type: "image/png", purpose: "any maskable" },
       ],
     });
   });
@@ -56,7 +58,7 @@ module.exports = function ({}) {
     // the empty-string standalone case or the "/per-sistant" mounted case.
     res.type("application/javascript").send(`
     const BASE = ${JSON.stringify(bp)};
-    const CACHE = 'per-sistant-v6';
+    const CACHE = 'per-sistant-v7';
     const PAGES = [BASE+'/', BASE+'/todos', BASE+'/emails', BASE+'/notes', BASE+'/calendar', BASE+'/contacts', BASE+'/review', BASE+'/analytics', BASE+'/settings'];
     const OFFLINE_KEY = 'per-sistant-offline-queue';
 

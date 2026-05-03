@@ -67,12 +67,12 @@ function pageHead(title) {
   <!-- Favicon set: favicon.io-generated PNGs, all pointing at the same
        mask-crop artwork. iOS uses apple-touch-icon for the home screen
        (auto-rounded). Chrome/Firefox/Edge/Safari pick the 192/512 PNGs
-       for the tab/bookmark icon. No SVG entry — the only SVG we ever
-       served was the legacy vision icon, which doesn't match the
-       current aesthetic. -->
-  <link rel="apple-touch-icon" sizes="180x180" href="${bp}/apple-touch-icon.png">
-  <link rel="icon" type="image/png" sizes="192x192" href="${bp}/android-chrome-192x192.png">
-  <link rel="icon" type="image/png" sizes="512x512" href="${bp}/android-chrome-512x512.png">
+       for the tab/bookmark icon. The ?v=2 query string busts iOS Safari's
+       OS-level apple-touch-icon cache after the artwork swap — bump on
+       future icon changes. -->
+  <link rel="apple-touch-icon" sizes="180x180" href="${bp}/apple-touch-icon.png?v=2">
+  <link rel="icon" type="image/png" sizes="192x192" href="${bp}/android-chrome-192x192.png?v=2">
+  <link rel="icon" type="image/png" sizes="512x512" href="${bp}/android-chrome-512x512.png?v=2">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="theme-color" content="#faf7f2">
   <link rel="preconnect" href="https://fonts.googleapis.com">
