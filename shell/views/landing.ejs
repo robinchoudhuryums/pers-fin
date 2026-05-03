@@ -6,7 +6,16 @@
   <title>Choose a tool</title>
   <meta name="theme-color" content="#0c0e14">
   <link rel="manifest" href="/manifest.json">
-  <link rel="icon" href="data:,">
+  <!-- Home-screen icons: served from the shell at root paths so iOS's
+       "Add to Home Screen" from the landing page uses the mask-crop
+       artwork as the home-screen icon. ?v=2 busts iOS's sticky
+       apple-touch-icon cache; bump on future icon swaps. -->
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2">
+  <link rel="icon" type="image/png" sizes="192x192" href="/android-chrome-192x192.png?v=2">
+  <link rel="icon" type="image/png" sizes="512x512" href="/android-chrome-512x512.png?v=2">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="stylesheet" href="/shell-static/landing.css">
   <link rel="stylesheet" href="/shell-static/transition.css?v=2">
   <link rel="stylesheet" href="/shell-static/perfin-materialize.css?v=2">

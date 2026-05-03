@@ -61,6 +61,27 @@ app.get("/manifest.json", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "manifest.json"));
 });
 
+// PWA icons served at root so iOS's "Add to Home Screen" auto-discovers
+// /apple-touch-icon.png from /login (pre-auth) and from the landing page.
+// Same artwork as the Per-sistant PWA — sourced from apps/per-sistant/ to
+// avoid duplicating the bytes. Mounted before requireAuth so iOS's icon
+// fetch (which can happen out-of-band, without the session cookie) doesn't
+// hit the PIN gate.
+const ICON_SRC_DIR = path.join(__dirname, "..", "apps", "per-sistant");
+function sendShellIcon(filename) {
+  return (_req, res) => {
+    res.setHeader("Cache-Control", "public, max-age=0, must-revalidate");
+    res.sendFile(path.join(ICON_SRC_DIR, filename), (err) => {
+      if (err && !res.headersSent) res.status(404).end();
+    });
+  };
+}
+app.get("/apple-touch-icon.png", sendShellIcon("apple-touch-icon.png"));
+// Older iOS versions also probe -precomposed; serve the same file.
+app.get("/apple-touch-icon-precomposed.png", sendShellIcon("apple-touch-icon.png"));
+app.get("/android-chrome-192x192.png", sendShellIcon("android-chrome-192x192.png"));
+app.get("/android-chrome-512x512.png", sendShellIcon("android-chrome-512x512.png"));
+
 app.get("/login", (req, res) => {
   if (auth.isValidSession(req.cookies[auth.COOKIE_NAME])) return res.redirect("/");
   res.render("login", { error: null });
