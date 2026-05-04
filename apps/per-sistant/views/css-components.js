@@ -118,13 +118,22 @@ tr:hover td { background: var(--paper-2); }
 .badge.blocking { color: var(--ink); border-color: var(--ink); }
 
 /* ----- Status messages ----- */
+/* Toast-style: pinned to top-right of viewport so feedback for actions
+   taken low on a long page is visible without scrolling. */
 .status-msg {
-  padding: 12px 14px; border-radius: 2px; margin-bottom: 16px;
+  position: fixed; top: 16px; right: 16px; left: auto; z-index: 1000;
+  max-width: 420px; min-width: 240px;
+  padding: 12px 14px; border-radius: 2px;
   font-size: 13px; display: none;
   border: 1px solid var(--line);
+  background: var(--paper-card);
+  box-shadow: 0 6px 24px rgba(0,0,0,0.25);
 }
-.status-msg.success { display: block; color: var(--good); border-color: var(--good); background: color-mix(in oklch, var(--good) 6%, transparent); }
-.status-msg.error   { display: block; color: var(--warn); border-color: var(--warn); background: color-mix(in oklch, var(--warn) 6%, transparent); }
+.status-msg.success { display: block; color: var(--good); border-color: var(--good); background: color-mix(in oklch, var(--good) 8%, var(--paper-card)); }
+.status-msg.error   { display: block; color: var(--warn); border-color: var(--warn); background: color-mix(in oklch, var(--warn) 8%, var(--paper-card)); }
+@media (max-width: 640px) {
+  .status-msg { left: 16px; right: 16px; max-width: none; min-width: 0; }
+}
 
 /* ----- Modal ----- */
 .modal-overlay {

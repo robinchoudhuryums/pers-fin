@@ -147,13 +147,23 @@ h1 { font-size: 42px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 8
   background-repeat: no-repeat; background-position: right 10px center; background-color: transparent; }
 .actions select option { background: #131620; color: var(--text); }
 
-/* Status messages */
-.status-msg { padding: 14px 18px; border-radius: 8px; margin-bottom: 20px; display: none;
-              font-size: 13px; font-weight: 400; }
+/* Status messages — toast-style, pinned to the top-right of the viewport
+   so feedback for actions taken low on a long page (e.g. Settings buttons
+   like "Run detection") is visible without scrolling back to the top. The
+   slideDown keyframe still animates it in. On mobile the toast stretches
+   full-width with side margins. */
+.status-msg { position: fixed; top: 16px; right: 16px; left: auto; z-index: 1000;
+              max-width: 420px; min-width: 240px;
+              padding: 14px 18px; border-radius: 8px; display: none;
+              font-size: 13px; font-weight: 400;
+              box-shadow: 0 6px 24px rgba(0,0,0,0.35); }
 .status-msg.success { background: var(--green-bg); border: 1px solid rgba(111,207,151,0.15);
                       color: var(--green); display: block; animation: slideDown 0.3s ease both; }
 .status-msg.error { background: var(--red-bg); border: 1px solid rgba(235,107,107,0.15);
                     color: var(--red); display: block; animation: slideDown 0.3s ease both; }
+@media (max-width: 640px) {
+  .status-msg { left: 16px; right: 16px; max-width: none; min-width: 0; }
+}
 
 /* Sections */
 .section { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
