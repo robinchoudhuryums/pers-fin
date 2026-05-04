@@ -96,6 +96,17 @@ app.post("/logout", auth.handleLogout);
 // proceed to the landing page like a regular PIN login.
 webauthn.attach(app, perfin.pool);
 
+// Hand the auth module Perfin's pool so it can read the user-tunable
+// shell_idle_timeout_minutes setting from user_settings. Without this, auth
+// falls back to a fixed default. Must run before requireAuth is mounted so
+// the very first request after boot can hit the cached/initialized value.
+auth.init({ pool: perfin.pool });
+// Expose the cache invalidator on Perfin's app so /api/settings can drop
+// the 60s read-cache on the idle-timeout column the moment the user
+// changes it — otherwise their new value wouldn't apply to the next
+// cookie refresh until the cache TTL expires.
+perfin.app.set("shellAuthInvalidator", () => auth.invalidateIdleCache());
+
 // --- Auth gate --------------------------------------------------------------
 // Everything past this point requires a valid signed session cookie. Sub-apps
 // trust this gate and don't run their own login flows; their /login routes

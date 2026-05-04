@@ -176,6 +176,12 @@ async function runMigrations() {
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS keep_alive_start INT NOT NULL DEFAULT 6");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS keep_alive_end INT NOT NULL DEFAULT 0");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS keep_alive_timezone TEXT NOT NULL DEFAULT 'America/New_York'");
+    // Shell-layer idle-session timeout. Read by shell/middleware/auth.js to
+    // refresh the session cookie's expiration on each authenticated request
+    // (sliding window). 60-minute default; UI exposes it as a Settings input.
+    // Enforce a sane lower bound at write time, not here, so existing rows
+    // don't break if the bound shifts.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS shell_idle_timeout_minutes INT NOT NULL DEFAULT 60");
     // Pyramid visualization settings
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS pyramid_data_source TEXT NOT NULL DEFAULT 'wellness'");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS pyramid_color_mode TEXT NOT NULL DEFAULT 'single'");

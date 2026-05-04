@@ -81,6 +81,12 @@
       </div>
     </div>
     <div class="setting-row">
+      <div class="setting-info"><div class="name">App Idle Timeout</div><div class="desc">Minutes of inactivity before the unified-shell PIN is required again. Refreshes on every request you make, so an active session never times out mid-use. (5-10080)</div></div>
+      <div class="setting-control">
+        <input type="number" id="shell-idle-input" min="5" max="10080" value="60">
+      </div>
+    </div>
+    <div class="setting-row">
       <div class="setting-info"><div class="name">Sign Out</div><div class="desc">End your current session</div></div>
       <div class="setting-control"><button class="btn danger" id="logout-btn">Sign Out</button></div>
     </div>
@@ -357,6 +363,7 @@
         document.getElementById('theme-select').value = s.theme || 'dark';
         document.getElementById('months-select').value = s.dashboard_months || 6;
         document.getElementById('timeout-input').value = s.session_timeout_minutes || 15;
+        document.getElementById('shell-idle-input').value = s.shell_idle_timeout_minutes || 60;
         document.getElementById('insights-toggle').checked = s.insights_enabled || false;
         document.getElementById('model-select').value = s.insights_model || 'sonnet';
         document.getElementById('cadence-select').value = s.insights_cadence_days || 30;
@@ -852,6 +859,7 @@
       ['theme-select', 'change', function() { updateSetting('theme', this.value); }],
       ['months-select', 'change', function() { updateSetting('dashboard_months', parseInt(this.value)); }],
       ['timeout-input', 'change', function() { updateSetting('session_timeout_minutes', parseInt(this.value)); }],
+      ['shell-idle-input', 'change', function() { updateSetting('shell_idle_timeout_minutes', parseInt(this.value)); }],
       ['logout-btn', 'click', logout],
       ['biometric-register-btn', 'click', registerBiometric],
       ['insights-toggle', 'change', function() { updateSetting('insights_enabled', this.checked); }],

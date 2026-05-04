@@ -1,10 +1,15 @@
 // ============================================================================
-// Shell auth — PIN check + signed session cookie
+// Shell auth — PIN check + sliding-expiration session cookie
 // ============================================================================
 // Stateless: the cookie carries an expiration timestamp signed with
-// SHELL_SECRET. No DB needed. Rotating SHELL_SECRET invalidates every
-// active session; rotating SHELL_PIN does not (since PIN isn't in the
-// cookie).
+// SHELL_SECRET. No DB needed for the auth check itself — but the idle
+// window length is read from Perfin's user_settings table (cached for 60s)
+// so it can be tuned from the Settings page without a redeploy. Each
+// authenticated request refreshes the cookie's expiration to (now + idleMs),
+// so an active user never gets logged out mid-session, while an idle user
+// is re-prompted after the configured window. Rotating SHELL_SECRET
+// invalidates every active session; rotating SHELL_PIN does not (since PIN
+// isn't in the cookie).
 //
 // Why constant-time compare even for a 4-digit PIN: a fast string compare
 // can leak the matching prefix length under a timing attack. The PIN is a
@@ -14,8 +19,47 @@
 const crypto = require("crypto");
 
 const COOKIE_NAME = "shell_session";
-const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days; tweak in env later
+const DEFAULT_IDLE_MS = 60 * 60 * 1000;          // 60 min if DB lookup fails
+const IDLE_CACHE_TTL_MS = 60 * 1000;             // re-read setting every 60s
 const FAIL_DELAY_MS = 750;                       // soft brute-force throttle
+
+// Pool pulled in via init() so the auth module isn't import-time coupled
+// to Perfin's database setup. When unset (or DB unavailable) we fall back
+// to DEFAULT_IDLE_MS — still a usable session, just non-tunable.
+let _pool = null;
+let _cachedIdleMs = DEFAULT_IDLE_MS;
+let _cacheExpiresAt = 0;
+
+function init({ pool } = {}) {
+  _pool = pool || null;
+  // Reset cache so the first request after init re-reads fresh.
+  _cacheExpiresAt = 0;
+}
+
+function invalidateIdleCache() {
+  _cacheExpiresAt = 0;
+}
+
+async function getIdleMs() {
+  if (Date.now() < _cacheExpiresAt) return _cachedIdleMs;
+  if (_pool) {
+    try {
+      const r = await _pool.query("SELECT shell_idle_timeout_minutes FROM user_settings WHERE id = 1");
+      const min = r.rows.length ? Number(r.rows[0].shell_idle_timeout_minutes) : null;
+      if (Number.isFinite(min) && min >= 5 && min <= 10080) {
+        _cachedIdleMs = min * 60 * 1000;
+      } else {
+        _cachedIdleMs = DEFAULT_IDLE_MS;
+      }
+    } catch {
+      _cachedIdleMs = DEFAULT_IDLE_MS;
+    }
+  } else {
+    _cachedIdleMs = DEFAULT_IDLE_MS;
+  }
+  _cacheExpiresAt = Date.now() + IDLE_CACHE_TTL_MS;
+  return _cachedIdleMs;
+}
 
 function sign(value) {
   if (!process.env.SHELL_SECRET) throw new Error("SHELL_SECRET not set");
@@ -46,19 +90,43 @@ function isValidSession(signed) {
   return Number.isFinite(expires) && expires > Date.now();
 }
 
-function makeSession() {
-  return sign(String(Date.now() + SESSION_TTL_MS));
+function makeSession(idleMs) {
+  return sign(String(Date.now() + (idleMs || DEFAULT_IDLE_MS)));
 }
 
-function requireAuth(req, res, next) {
-  if (isValidSession(req.cookies[COOKIE_NAME])) return next();
-  // Browsers get a redirect, API clients get JSON. Sub-apps mounted past
-  // this gate will inherit the same behavior automatically.
-  if (req.method === "GET" && req.accepts("html")) return res.redirect("/login");
-  res.status(401).json({ error: "Authentication required" });
+function setSessionCookie(res, idleMs) {
+  res.cookie(COOKIE_NAME, makeSession(idleMs), {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: idleMs,
+    path: "/",
+  });
 }
 
-function handleLogin(req, res) {
+async function requireAuth(req, res, next) {
+  if (!isValidSession(req.cookies[COOKIE_NAME])) {
+    // Browsers get a redirect, API clients get JSON. Sub-apps mounted past
+    // this gate will inherit the same behavior automatically.
+    if (req.method === "GET" && req.accepts("html")) return res.redirect("/login");
+    return res.status(401).json({ error: "Authentication required" });
+  }
+  // Sliding window: refresh cookie expiration on every authenticated request.
+  // The DB read for the idle window is cached (60s), so the typical request
+  // path is just an HMAC verify + cookie set — no extra round-trip.
+  try {
+    const idleMs = await getIdleMs();
+    setSessionCookie(res, idleMs);
+  } catch {
+    // If anything goes sideways (DB blip, etc.), fall back to default and
+    // continue — better to keep the user signed in with the default window
+    // than to fail-closed and force a re-login on a transient error.
+    setSessionCookie(res, DEFAULT_IDLE_MS);
+  }
+  next();
+}
+
+async function handleLogin(req, res) {
   const submitted = String(req.body.pin || "");
   const expected = process.env.SHELL_PIN || "";
 
@@ -81,13 +149,8 @@ function handleLogin(req, res) {
     );
   }
 
-  res.cookie(COOKIE_NAME, makeSession(), {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    maxAge: SESSION_TTL_MS,
-    path: "/",
-  });
+  const idleMs = await getIdleMs();
+  setSessionCookie(res, idleMs);
 
   // Allow ?return_to=/perfin/today on the form so a redirected request
   // bounces back to where the user wanted to go after login.
@@ -102,9 +165,12 @@ function handleLogout(_req, res) {
 
 module.exports = {
   COOKIE_NAME,
-  SESSION_TTL_MS,
+  DEFAULT_IDLE_MS,
+  init,
+  invalidateIdleCache,
   isValidSession,
   makeSession,
+  setSessionCookie,
   requireAuth,
   handleLogin,
   handleLogout,
