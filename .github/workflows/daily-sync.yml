@@ -17,13 +17,19 @@ jobs:
     steps:
       - name: Wake server (Render free tier cold start)
         run: |
-          curl -s -o /dev/null -w "%{http_code}" "${{ secrets.SERVER_URL }}/dashboard" || true
+          # /health is public on the shell — no auth, no DB hit, just confirms
+          # the process is up. Sleep gives the cold start a few seconds to
+          # warm DB pools before the real work starts.
+          curl -s -o /dev/null -w "%{http_code}" "${{ secrets.SERVER_URL }}/health" || true
           sleep 10
 
       - name: Sync transactions
         run: |
+          # Endpoints live under /perfin/* now that Perfin runs as a sub-app
+          # behind the unified shell. The shell's requireAuth honors x-api-key
+          # the same way Perfin's standalone middleware did.
           STATUS=$(curl -s -o /tmp/sync.json -w "%{http_code}" \
-            -X POST "${{ secrets.SERVER_URL }}/api/sync" \
+            -X POST "${{ secrets.SERVER_URL }}/perfin/api/sync" \
             -H "x-api-key: ${{ secrets.API_KEY }}" \
             -H "Content-Type: application/json")
           echo "Sync status: $STATUS"
@@ -33,7 +39,7 @@ jobs:
       - name: Run subscription detection
         run: |
           STATUS=$(curl -s -o /tmp/detect.json -w "%{http_code}" \
-            -X POST "${{ secrets.SERVER_URL }}/api/detect" \
+            -X POST "${{ secrets.SERVER_URL }}/perfin/api/detect" \
             -H "x-api-key: ${{ secrets.API_KEY }}" \
             -H "Content-Type: application/json")
           echo "Detection status: $STATUS"
@@ -42,7 +48,7 @@ jobs:
       - name: Check for new/changed subscriptions
         id: check
         run: |
-          curl -s "${{ secrets.SERVER_URL }}/api/subscriptions?filter=all" \
+          curl -s "${{ secrets.SERVER_URL }}/perfin/api/subscriptions?filter=all" \
             -H "x-api-key: ${{ secrets.API_KEY }}" | \
             python3 -c "
           import json, sys

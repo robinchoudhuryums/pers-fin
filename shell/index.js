@@ -82,6 +82,12 @@ app.get("/apple-touch-icon-precomposed.png", sendShellIcon("apple-touch-icon.png
 app.get("/android-chrome-192x192.png", sendShellIcon("android-chrome-192x192.png"));
 app.get("/android-chrome-512x512.png", sendShellIcon("android-chrome-512x512.png"));
 
+// Public health endpoint for external monitoring (Render, Uptime Robot,
+// the keep-alive workflow). Returns 200 if the process is up; doesn't
+// touch the DB so a brief DB blip doesn't surface here as a false negative.
+// Mounted before requireAuth.
+app.get("/health", (_req, res) => res.json({ ok: true }));
+
 app.get("/login", (req, res) => {
   if (auth.isValidSession(req.cookies[auth.COOKIE_NAME])) return res.redirect("/");
   res.render("login", { error: null });

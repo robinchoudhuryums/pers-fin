@@ -104,7 +104,27 @@ function setSessionCookie(res, idleMs) {
   });
 }
 
+function isValidApiKey(req) {
+  // Non-interactive clients (cron, CI workflows, etc.) authenticate with
+  // x-api-key against the same API_KEY env var Perfin uses. Validated here
+  // so the request can bypass the PIN cookie check entirely. Sub-apps see
+  // req.app.get("embedded")=true and skip their own API_KEY enforcement,
+  // trusting that the shell already verified.
+  const expected = process.env.API_KEY;
+  if (!expected) return false;
+  const provided = req.headers["x-api-key"];
+  if (!provided) return false;
+  const providedBuf = Buffer.from(String(provided));
+  const expectedBuf = Buffer.from(expected);
+  if (providedBuf.length !== expectedBuf.length) return false;
+  try { return crypto.timingSafeEqual(providedBuf, expectedBuf); } catch { return false; }
+}
+
 async function requireAuth(req, res, next) {
+  // API key bypass for cron + CI. No cookie refresh — these aren't browser
+  // sessions and the headers carry every time.
+  if (isValidApiKey(req)) return next();
+
   if (!isValidSession(req.cookies[COOKIE_NAME])) {
     // Browsers get a redirect, API clients get JSON. Sub-apps mounted past
     // this gate will inherit the same behavior automatically.
