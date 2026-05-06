@@ -27,8 +27,15 @@ jobs:
             exit 0
           fi
 
-          # Fetch keep-alive schedule from server (may wake it from cold start)
-          SCHEDULE=$(curl -s --max-time 30 "$SERVER_URL/api/keep-alive-schedule" 2>/dev/null || echo '{}')
+          # Fetch keep-alive schedule from server (may wake it from cold start).
+          # Endpoint lives under /perfin/* now that Perfin runs as a sub-app
+          # behind the unified shell. The schedule route is public on the
+          # Perfin side, but the shell auth gate fronts it — the shell treats
+          # /perfin/api/keep-alive-schedule as auth-required, so we send the
+          # API key the same way the daily-sync workflow does.
+          SCHEDULE=$(curl -s --max-time 30 \
+            -H "x-api-key: ${{ secrets.API_KEY }}" \
+            "$SERVER_URL/perfin/api/keep-alive-schedule" 2>/dev/null || echo '{}')
           ENABLED=$(echo "$SCHEDULE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('enabled',False))" 2>/dev/null || echo "False")
 
           if [ "$ENABLED" != "True" ]; then
