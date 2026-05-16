@@ -11,13 +11,18 @@
 
 if (!process.env.NEON_DATABASE_URL) process.env.NEON_DATABASE_URL = "postgres://mock:mock@localhost/mock";
 
-const { describe, it, before, beforeEach } = require("node:test");
+const { describe, it, before, after, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
 const express = require("express");
 const supertest = require("supertest");
 
 // Shared pool stub — each test rebinds .query/.connect before exercising.
+// The original `pool.query` is restored in afterEach so test files that
+// load this file's modules concurrently (node:test runs files in parallel
+// worker threads by default — each file gets its own module cache — but
+// belt-and-suspenders) don't leak stubs into each other's runs.
 let dbModule;
+let originalPoolQuery;
 
 function loadRouter(routePath) {
   // Clear require cache so a re-import picks up freshly-stubbed dbModule.
@@ -33,8 +38,18 @@ function makeApp(routePath) {
   return app;
 }
 
+afterEach(() => {
+  // Restore the singleton's query after every test so nothing leaks into
+  // a sibling test (or — under parallel execution — a sibling file that
+  // happens to share the same module-cache scope).
+  if (dbModule && originalPoolQuery) {
+    dbModule.pool.query = originalPoolQuery;
+  }
+});
+
 before(() => {
   dbModule = require("../teller/services/database");
+  originalPoolQuery = dbModule.pool.query;
 });
 
 // ---------------------------------------------------------------------------
@@ -136,6 +151,48 @@ describe("GET /api/insights/feedback-summary", () => {
     const app = makeApp("../teller/routes/insights");
     await supertest(app).get("/api/insights/feedback-summary?days=99999").expect(200);
     assert.ok(capturedParams[0] <= 365, "days should be clamped to <= 365");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/insights/trust-overview (follow-on combo endpoint)
+// ---------------------------------------------------------------------------
+describe("GET /api/insights/trust-overview", () => {
+  it("merges audit accuracy + feedback counts into one payload", async () => {
+    dbModule.pool.query = async (sql) => {
+      if (sql.includes("financial_insights") && sql.includes("user_feedback")) {
+        return { rows: [
+          { user_feedback: "positive", cnt: "8" },
+          { user_feedback: "negative", cnt: "2" },
+        ]};
+      }
+      if (sql.includes("ai_audit_log")) {
+        // getAuditAccuracy queries audit log + insights inside the helper —
+        // returning empty rows is enough to drive it to the zero-state path.
+        return { rows: [] };
+      }
+      return { rows: [] };
+    };
+    const app = makeApp("../teller/routes/insights");
+    const res = await supertest(app).get("/api/insights/trust-overview").expect(200);
+    assert.equal(res.body.window_days, 90);
+    assert.ok(res.body.audit_accuracy);
+    assert.equal(res.body.user_feedback.positive, 8);
+    assert.equal(res.body.user_feedback.negative, 2);
+    assert.equal(res.body.user_feedback.total, 10);
+  });
+
+  it("honors ?days query and clamps absurd values", async () => {
+    let capturedDays;
+    dbModule.pool.query = async (sql, params) => {
+      if (sql.includes("user_feedback") && Array.isArray(params)) {
+        capturedDays = params[0];
+      }
+      return { rows: [] };
+    };
+    const app = makeApp("../teller/routes/insights");
+    await supertest(app).get("/api/insights/trust-overview?days=99999").expect(200);
+    assert.ok(capturedDays <= 365, `days should be clamped (got ${capturedDays})`);
   });
 });
 

@@ -1438,6 +1438,47 @@ router.get("/api/insights/feedback-summary", async (req, res) => {
   }
 });
 
+// GET /api/insights/trust-overview — combines audit accuracy + user feedback
+// summary in a single payload for the Settings → AI card. Saves the dashboard
+// a round-trip; the underlying signals were always available separately via
+// /api/insights/audit (audit accuracy) and /api/insights/feedback-summary
+// (user thumbs counts).
+//
+// Response: {
+//   audit_accuracy: { total_audited_runs, clean_runs, accuracy_pct,
+//                     findings_by_severity, findings_by_tier },
+//   user_feedback:  { positive, negative, mixed, total, window_days },
+//   window_days: 90  // matches both sub-windows by default
+// }
+router.get("/api/insights/trust-overview", async (req, res) => {
+  const days = Math.min(365, Math.max(1, parseInt(req.query.days, 10) || 90));
+  try {
+    const [accuracy, fbRows] = await Promise.all([
+      getAuditAccuracy(days),
+      pool.query(
+        `SELECT user_feedback, COUNT(*) AS cnt
+         FROM financial_insights
+         WHERE entry_type = 'insight'
+           AND user_feedback IS NOT NULL
+           AND user_feedback_at >= now() - make_interval(days => $1)
+         GROUP BY user_feedback`,
+        [days]
+      ).catch(() => ({ rows: [] })),
+    ]);
+    const fb = { positive: 0, negative: 0, mixed: 0, window_days: days };
+    for (const r of fbRows.rows) fb[r.user_feedback] = parseInt(r.cnt, 10);
+    fb.total = fb.positive + fb.negative + fb.mixed;
+    res.json({
+      window_days: days,
+      audit_accuracy: accuracy,
+      user_feedback: fb,
+    });
+  } catch (err) {
+    console.error("Trust overview error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
 // GET /api/insights/audit — audit log, per-run stats, and 90-day accuracy summary
 router.get("/api/insights/audit", async (_req, res) => {
   try {

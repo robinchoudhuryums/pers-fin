@@ -149,10 +149,12 @@ docker compose up --build
 ## Running Tests
 
 ```bash
-npm test
+npm test                  # full suite: Perfin + Per-sistant
+npm run test:perfin       # Perfin tests only
+npm run test:persistent   # Per-sistant tests only
 ```
 
-241 tests across 11 files covering detection, CSV parsing, date handling, API logic, cost calculations, financial-queries semantics, AI-audit pattern extraction, and pinned regression tests for auth/SSO/template/exclusion behavior. No database required — all tests run against pure functions and mock data.
+~500 tests covering detection, CSV parsing, date handling, API logic, cost calculations, financial-queries semantics, AI-audit pattern extraction, pinned regression tests for auth/SSO/template/exclusion behavior, and integration tests for the feedback, whats-new, performance, and trust-overview endpoints. No database required — all tests run against pure functions and mock pools.
 
 ## API Endpoints
 

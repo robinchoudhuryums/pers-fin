@@ -78,9 +78,11 @@ teller/
                            POST /api/insights/rebuild, GET /api/insights/audit,
                            PATCH /api/insights/:id/feedback,
                            GET /api/insights/feedback-summary,
+                           GET /api/insights/trust-overview,
                            GET/PATCH /api/tax-deductions
-                           (also exports runWeeklyDigest helper used by
-                           the weekly-digest scheduled task in startup.js)
+                           (also exports runWeeklyDigest + runDailyDigest
+                           helpers used by the digest scheduled tasks in
+                           startup.js)
     categorize.js        — POST /api/categorize, GET /api/categorize/status,
                            PATCH /api/transactions/:id/category,
                            PATCH /api/transactions/bulk-category,
@@ -109,7 +111,11 @@ teller/
     whats-new.js         — GET /api/whats-new, POST /api/whats-new/seen
                            ("since you last looked" dashboard widget feed —
                            new transactions, balance deltas, new subscriptions,
-                           and recent notifications since last_dashboard_view_at)
+                           and recent notifications since last_dashboard_view_at).
+                           Also exports gatherWhatsNew(since) — the shared
+                           aggregator used by both the HTTP route and the
+                           daily-digest runner in insights.js so the dashboard
+                           widget and email digest see the same data shape.
   pages/
     dashboard.js         — Dashboard page (Chart.js charts, 3D pyramid, account list, balances,
                            savings rate widget, cash flow widget, Per-sistant widget)
@@ -225,11 +231,16 @@ shell/
 - `scripts/retention-cleanup.sql` — Reference SQL for the manual cleanup queries
   exposed by `POST /api/cleanup`
 - `apps-script/Code.gs` — Google Sheets Apps Script (standalone + server sync)
-- `tests/` — 241 tests across 11 files (node:test runner, `npm test`).
-  Includes `tests/audit-regressions.test.js` which pins documented behavior
-  for auth, SSO, template hygiene, and exclusion rules. Run `npm install`
+- `tests/` — Perfin test suite (node:test runner). Includes
+  `tests/audit-regressions.test.js` which pins documented behavior for
+  auth, SSO, template hygiene, exclusion rules, and the S1-S4 / #8 / #19
+  feature contracts, and `tests/new-endpoints.integration.test.js` which
+  uses a mock-pool + supertest pattern to exercise the feedback, whats-new,
+  performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
-  test-time deps separately from `teller/`).
+  test-time deps separately from `teller/`). `npm test` now runs both
+  Perfin and Per-sistant test files (~505 tests); use
+  `npm run test:perfin` or `npm run test:persistent` for scoped runs.
 - `.github/workflows/ci.yml` — CI pipeline (single `npm ci` at root via npm workspaces, then `npm test`)
 - `.claude/commands/` — Project slash-command prompts: `/broad-scan`, `/broad-implement`,
   `/test-sync`, `/sync-docs`
@@ -342,6 +353,16 @@ shell/
   (collapsible). Backed by `GET /api/investments/performance`. Auto-hides
   for users with no Plaid holdings since Teller-linked accounts don't
   expose cost basis. Toggleable (key: `investmentReturns`, default on).
+  When the user has set target weights via Settings → Target Allocation,
+  per-asset-class rows also carry `target_pct` + `drift_pct` (actual −
+  target); under-weight classes the user wants exposure to but doesn't
+  hold are surfaced as synthetic zero-holding rows.
+- **Target Allocation editor** (Settings → Target Allocation): per-
+  asset-class target weights as `{security_type: pct}` rows the user
+  can add/edit/remove. Sum indicator turns green at ≈100%, red above
+  100%, muted otherwise (the API doesn't require sum = 100). Saved to
+  `user_settings.target_allocation_pct` via PATCH /api/settings. Drives
+  the drift fields on `GET /api/investments/performance`.
 - **Since-you-last-looked widget**: aggregates new transactions, balance
   deltas (oldest snapshot ≤ watermark vs latest, dropped if |Δ| < $0.01),
   new subscriptions, and recent notifications since `last_dashboard_view_at`.
@@ -493,6 +514,17 @@ shell/
   Requires Per-sistant webhook configured (same path as
   `insights_generated`); without it `sendPerSistantWebhook` short-circuits
   and the digest is a no-op.
+- **Daily activity digest**: opt-in once-per-day digest of yesterday's
+  new transactions, balance deltas, new subscriptions, and notifications.
+  Fires the `daily_summary` webhook event with `{ subject, html_body,
+  plain_text }`, rendered by `renderDailyDigestEmail()` from
+  `gatherWhatsNew(now - 24h)` — same aggregator the dashboard's "Since
+  you last looked" widget uses, so both surfaces see the same data shape.
+  No AI call. Opt-in: Settings → AI Insights → "Daily Activity Digest"
+  toggle (default off). Hourly scheduler; `runDailyDigest` dedupes via
+  a 20-hour gate from `last_daily_digest_at` and skips silently when
+  `gatherWhatsNew` returns zero counts. Same Per-sistant prereq as
+  weekly digest — without webhook config, it's a no-op.
 - **Context export**: Structured financial data (markdown/JSON) for pasting into Claude chat deep-dives
 - **Real-time anomaly alerts**: Push notifications for charges 3x+ above merchant average during sync
   (case-insensitive merchant grouping; separate from the 2x AI analysis threshold)
@@ -642,14 +674,16 @@ on the operator's machine (or fed via env vars) before the app boots:
    `errors: [{ institution, error: "decryption_failed" }]` per affected
    item rather than silently returning zero accounts.
 
-The **weekly digest** (Settings → AI Insights → "Weekly Digest Email") has
-a soft prerequisite: Per-sistant must be configured with `persistent_url`
-and a webhook secret. Without those, the scheduler still runs but
-`sendPerSistantWebhook` short-circuits with
+Both the **weekly digest** (Settings → AI Insights → "Weekly Digest
+Email") and the **daily activity digest** ("Daily Activity Digest"
+toggle) have a soft prerequisite: Per-sistant must be configured with
+`persistent_url` and a webhook secret. Without those, the schedulers
+still run but `sendPerSistantWebhook` short-circuits with
 `{ sent: false, reason: "not_configured" | "missing_secret" }` and the
-digest is a no-op. The toggle does NOT pre-flight this — operators
-enabling the digest should verify the Per-sistant integration first
-under Settings → Integrations.
+digests are a no-op. The weekly toggle surfaces an inline warning when
+the prereq is missing; the daily toggle inherits the same constraint.
+Operators enabling either should verify the Per-sistant integration
+first under Settings → Integrations.
 
 ### Render (Free, recommended — currently deployed)
 1. Connect GitHub repo in Render dashboard
@@ -705,7 +739,9 @@ npm run start:persistent   # node apps/per-sistant/server.js
 ```bash
 cd teller && npm install && node server.js    # Run locally
 npm install                                    # ALSO required at repo root for tests
-npm test                                       # Run 241 tests
+npm test                                       # Run all tests (Perfin + Per-sistant)
+npm run test:perfin                            # Perfin tests only (tests/*.test.js)
+npm run test:persistent                        # Per-sistant tests only
 
 # Key API endpoints
 POST /api/enroll           # store Teller access token after Connect
@@ -788,6 +824,8 @@ GET  /api/insights/audit   # audit log + per-module stats + 90-day accuracy summ
 PATCH /api/insights/:id/feedback # set thumbs-up/down/mixed + optional correction note
                                   # (body: { feedback: 'positive'|'negative'|'mixed'|null, text? })
 GET  /api/insights/feedback-summary # positive/negative/mixed counts (query: days, default 90)
+GET  /api/insights/trust-overview # merged audit_accuracy + user_feedback for the Settings AI card
+                                   # (query: days, default 90 — clamped 1-365)
 POST /api/categorize       # ML categorize transactions (rules first, then Claude AI)
 GET  /api/categorize/status # ML categorization status
 GET  /api/categorize/review-queue # candidates the next AI categorize would send to Claude
@@ -827,7 +865,9 @@ PATCH /api/notifications/:id/read # mark notification as read
 POST /api/notifications/read-all  # mark all notifications as read
 
 # Tax export
-GET  /api/export/tax-report # year-end deduction summary (query: year, format=csv|json)
+GET  /api/export/tax-report # year-end deduction summary (query: year, format=csv|json|pdf)
+                            # PDF format renders via pdfkit with per-category breakdown
+                            # and grand-total summary
 
 # WebAuthn / biometric login — Perfin sub-app endpoints (registration always
 # happens here; standalone deployments also use these for the auth flow).
@@ -1014,6 +1054,19 @@ standalone-mode fallback if either app is run on its own Render service.
   AI Insights. The hourly scheduler in `startup.js` calls `runWeeklyDigest()`
   on the configured day; the helper gates on a 6-day window from
   `last_weekly_digest_at` to dedupe multiple ticks within the day.
+- `user_settings.daily_digest_enabled BOOLEAN NOT NULL DEFAULT false`,
+  `last_daily_digest_at TIMESTAMPTZ`: opt-in once-per-day "yesterday's
+  activity" email channel (#19). Toggle in Settings → AI Insights. The
+  hourly scheduler calls `runDailyDigest()`; the helper dedupes with a
+  20-hour gate from `last_daily_digest_at` and skips silently when
+  `gatherWhatsNew(now - 24h)` returns zero counts.
+- `user_settings.target_allocation_pct JSONB NOT NULL DEFAULT '{}'::jsonb`:
+  per-asset-class target weights for the Investments performance card.
+  Keys are lowercase `security_type` (etf, equity, bond, etc.); values
+  are 0-100 numeric. `GET /api/investments/performance` joins these to
+  the actual portfolio breakdown and emits `target_pct` + `drift_pct`
+  per asset class. Empty `{}` → no drift fields on the response. Set
+  via Settings → Target Allocation form.
 - `user_settings` data freshness: `last_txn_sync_at TIMESTAMPTZ` (updated by
   `POST /api/sync`), `last_balance_sync_at TIMESTAMPTZ` (updated by
   `POST /api/sync-balances`). The nav badge uses the most recent of these plus
@@ -1216,6 +1269,13 @@ embedded mode).
   ticks on the configured day are idempotent). On success, fires the
   `weekly_summary` webhook to Per-sistant and bumps the watermark. No
   AI call — body is rendered from `insights_running_summary_json`.
+- **Daily digest**: every 1 hour, invokes `runDailyDigest()` in
+  `routes/insights.js`. The helper bails if `daily_digest_enabled` is
+  false, dedupes via a 20-hour window from `last_daily_digest_at` (so
+  one digest per "day" lands regardless of clock-edge ticks), and skips
+  silently when `gatherWhatsNew(now - 24h)` returns zero counts (no
+  point mailing an empty "yesterday" digest). On send, fires the
+  `daily_summary` webhook to Per-sistant. No AI call.
 
 ## Shared Account Spending Split
 All spending queries apply the split percentage for shared/joint accounts via SQL JOIN:
@@ -1433,6 +1493,14 @@ income module, and bill-calendar income detection.
   Claude's outputs. Mixing the two would let one bad insight permanently
   pollute long-term memory. If feedback should ever start retracting
   alerts or pending_actions, that's a separate tool-use schema change.
+- **Dashboard widget and email digest share one aggregator.**
+  `gatherWhatsNew(since)` in `routes/whats-new.js` is the single source
+  of "what changed since X". The HTTP `GET /api/whats-new` route calls
+  it with the `last_dashboard_view_at` watermark for the dashboard
+  widget; `runDailyDigest()` in `routes/insights.js` calls it with
+  `now - 24h` for the daily email digest. Both surfaces always agree
+  on what counts as "new" because there's only one query. Any change
+  to scope (e.g. capping txn count) lands in one place.
 - **Sliding-window shell session, idle window read from DB.** The shell
   PIN cookie's `maxAge` is refreshed on every authenticated request to
   `now + idleMs`. An active session never times out mid-use; an idle one
