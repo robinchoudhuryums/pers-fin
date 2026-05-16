@@ -281,6 +281,13 @@ GET    /sw.js               # Service worker
   this to decide who to mail the rendered insight HTML to; falls back to
   `SMTP_FROM` / `SMTP_USER` if unset, or saves the email as a draft if no
   destination resolves.
+- Perfin also emits a `weekly_summary` webhook (different event name, same
+  `{ subject, html_body, plain_text }` payload shape) for the opt-in
+  weekly digest channel. `routes/perfin.js` should treat it the same way
+  as `insights_generated` — render the HTML, mail to
+  `perfin_webhook_recipient`. If the handler currently switch-cases on
+  event name and only handles `insights_generated`, add a parallel case
+  for `weekly_summary` or generalize the dispatch.
 - Tables: `todos`, `emails`, `notes`, `contacts`, `user_settings`, `subtasks`, `email_templates`, `todo_templates`, `weekly_reviews`, `task_dependencies`, `automations`, `attachments`
 
 ## Embedded Mode (under the unified shell)
