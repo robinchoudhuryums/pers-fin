@@ -1221,8 +1221,10 @@
       } catch (e) { body.textContent = 'Unable to load insights.'; }
     })();
 
-    // PWA
-    if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+    // PWA — use the shared helper so the SW URL + scope respect BASE_PATH
+    // under the unified shell. Hardcoding '/sw.js' here registered at root
+    // scope under /perfin/* and 404'd because the shell doesn't serve /sw.js.
+    if (typeof registerSW === 'function') registerSW();
 
     // ── Financial Pyramid — Separated Layers ──────────────────
     // Multi-color palette for layers (used in multi-color mode)

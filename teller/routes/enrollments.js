@@ -241,6 +241,12 @@ async function syncAllEnrollments() {
          LIMIT 5`,
         [watermark]
       );
+      // Track whether the notify loop itself failed. If it did, leave the
+      // watermark alone so the next sync re-considers the same candidates —
+      // otherwise a transient sendToAll error would permanently silence the
+      // anomaly (the watermark advances past the row's created_at, and the
+      // next pass filters it out).
+      let notifyFailed = false;
       if (anomalies.rows.length > 0) {
         try {
           const { sendToAll } = require("./notifications");
@@ -253,9 +259,15 @@ async function syncAllEnrollments() {
               data: { url: "/transactions" },
             });
           }
-        } catch {}
+        } catch (notifyErr) {
+          notifyFailed = true;
+          console.error("Anomaly notification dispatch error:", notifyErr.message);
+        }
       }
-      await pool.query("UPDATE user_settings SET last_anomaly_check_at = now() WHERE id = 1").catch(() => {});
+      if (!notifyFailed) {
+        await pool.query("UPDATE user_settings SET last_anomaly_check_at = now() WHERE id = 1")
+          .catch(err => console.error("Anomaly watermark update error:", err.message));
+      }
     } catch (err) {
       console.error("Post-sync anomaly check error:", err.message);
     }
