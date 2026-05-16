@@ -14,6 +14,11 @@
 //
 // POST /api/whats-new/seen advances the watermark — call this from the
 // dashboard once the user has acknowledged the panel.
+//
+// gatherWhatsNew(since) is the shared aggregator — used by the HTTP route
+// (with the user_settings watermark) and by the daily-digest helper (#19,
+// with a 24h-fixed lookback) so the dashboard widget and the email always
+// see the same data shape.
 
 const express = require("express");
 const router = express.Router();
@@ -33,94 +38,98 @@ async function getWatermark() {
   return new Date(Date.now() - DEFAULT_LOOKBACK_HOURS * 60 * 60 * 1000);
 }
 
+async function gatherWhatsNew(since) {
+  const [newTxns, newSubs, newNotifs, balanceWindow] = await Promise.all([
+    pool.query(
+      `SELECT t.transaction_id, t.date, t.amount,
+              COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS merchant,
+              COALESCE(t.user_category, t.category[1]) AS category,
+              la.name AS account_name
+       FROM transactions t
+       LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+       WHERE t.created_at > $1 AND t.pending = false
+       ORDER BY t.date DESC, t.created_at DESC
+       LIMIT $2`,
+      [since, NEW_TXN_LIMIT]
+    ),
+    pool.query(
+      `SELECT id, display_name, amount, cadence_days, category, first_seen
+       FROM detected_subscriptions
+       WHERE created_at > $1
+         AND is_active = true
+         AND is_dismissed = false
+       ORDER BY created_at DESC
+       LIMIT $2`,
+      [since, NEW_SUB_LIMIT]
+    ),
+    pool.query(
+      `SELECT id, type, title, body, data, is_read, created_at
+       FROM notification_log
+       WHERE created_at > $1
+       ORDER BY created_at DESC
+       LIMIT $2`,
+      [since, NEW_NOTIF_LIMIT]
+    ),
+    // For each account that has a snapshot before AND on/after the
+    // watermark, compute the delta. CTE picks the latest snapshot at or
+    // before `since` (the baseline) and the latest overall (the current).
+    pool.query(
+      `WITH baselines AS (
+         SELECT DISTINCT ON (source, source_id)
+                source, source_id, balance AS baseline_balance
+         FROM account_balance_snapshots
+         WHERE snapshot_date <= $1::date
+         ORDER BY source, source_id, snapshot_date DESC
+       ),
+       currents AS (
+         SELECT DISTINCT ON (source, source_id)
+                source, source_id, balance AS current_balance,
+                snapshot_date AS current_date
+         FROM account_balance_snapshots
+         ORDER BY source, source_id, snapshot_date DESC
+       )
+       SELECT c.source, c.source_id, c.current_date,
+              b.baseline_balance, c.current_balance,
+              COALESCE(la.name, ia.name) AS account_name,
+              (c.current_balance - b.baseline_balance) AS delta
+       FROM currents c
+       JOIN baselines b ON b.source = c.source AND b.source_id = c.source_id
+       LEFT JOIN linked_accounts     la ON c.source = 'linked'     AND la.id = c.source_id
+       LEFT JOIN investment_accounts ia ON c.source = 'investment' AND ia.id = c.source_id
+       WHERE c.current_date > $1::date
+         AND ABS(c.current_balance - b.baseline_balance) >= 0.01
+       ORDER BY ABS(c.current_balance - b.baseline_balance) DESC
+       LIMIT 10`,
+      [since]
+    ),
+  ]);
+
+  return {
+    since: since.toISOString(),
+    counts: {
+      transactions: newTxns.rows.length,
+      subscriptions: newSubs.rows.length,
+      notifications: newNotifs.rows.length,
+      balance_changes: balanceWindow.rows.length,
+    },
+    transactions: newTxns.rows,
+    subscriptions: newSubs.rows,
+    notifications: newNotifs.rows,
+    balance_changes: balanceWindow.rows.map(r => ({
+      account_name: r.account_name,
+      source: r.source,
+      baseline_balance: parseFloat(r.baseline_balance),
+      current_balance: parseFloat(r.current_balance),
+      delta: parseFloat(r.delta),
+    })),
+  };
+}
+
 router.get("/api/whats-new", async (_req, res) => {
   try {
     const since = await getWatermark();
-
-    const [newTxns, newSubs, newNotifs, balanceWindow] = await Promise.all([
-      pool.query(
-        `SELECT t.transaction_id, t.date, t.amount,
-                COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS merchant,
-                COALESCE(t.user_category, t.category[1]) AS category,
-                la.name AS account_name
-         FROM transactions t
-         LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-         WHERE t.created_at > $1 AND t.pending = false
-         ORDER BY t.date DESC, t.created_at DESC
-         LIMIT $2`,
-        [since, NEW_TXN_LIMIT]
-      ),
-      pool.query(
-        `SELECT id, display_name, amount, cadence_days, category, first_seen
-         FROM detected_subscriptions
-         WHERE created_at > $1
-           AND is_active = true
-           AND is_dismissed = false
-         ORDER BY created_at DESC
-         LIMIT $2`,
-        [since, NEW_SUB_LIMIT]
-      ),
-      pool.query(
-        `SELECT id, type, title, body, data, is_read, created_at
-         FROM notification_log
-         WHERE created_at > $1
-         ORDER BY created_at DESC
-         LIMIT $2`,
-        [since, NEW_NOTIF_LIMIT]
-      ),
-      // For each account that has a snapshot before AND on/after the
-      // watermark, compute the delta. CTE picks the latest snapshot at or
-      // before `since` (the baseline) and the latest overall (the current).
-      pool.query(
-        `WITH baselines AS (
-           SELECT DISTINCT ON (source, source_id)
-                  source, source_id, balance AS baseline_balance
-           FROM account_balance_snapshots
-           WHERE snapshot_date <= $1::date
-           ORDER BY source, source_id, snapshot_date DESC
-         ),
-         currents AS (
-           SELECT DISTINCT ON (source, source_id)
-                  source, source_id, balance AS current_balance,
-                  snapshot_date AS current_date
-           FROM account_balance_snapshots
-           ORDER BY source, source_id, snapshot_date DESC
-         )
-         SELECT c.source, c.source_id, c.current_date,
-                b.baseline_balance, c.current_balance,
-                COALESCE(la.name, ia.name) AS account_name,
-                (c.current_balance - b.baseline_balance) AS delta
-         FROM currents c
-         JOIN baselines b ON b.source = c.source AND b.source_id = c.source_id
-         LEFT JOIN linked_accounts     la ON c.source = 'linked'     AND la.id = c.source_id
-         LEFT JOIN investment_accounts ia ON c.source = 'investment' AND ia.id = c.source_id
-         WHERE c.current_date > $1::date
-           AND ABS(c.current_balance - b.baseline_balance) >= 0.01
-         ORDER BY ABS(c.current_balance - b.baseline_balance) DESC
-         LIMIT 10`,
-        [since]
-      ),
-    ]);
-
-    res.json({
-      since: since.toISOString(),
-      counts: {
-        transactions: newTxns.rows.length,
-        subscriptions: newSubs.rows.length,
-        notifications: newNotifs.rows.length,
-        balance_changes: balanceWindow.rows.length,
-      },
-      transactions: newTxns.rows,
-      subscriptions: newSubs.rows,
-      notifications: newNotifs.rows,
-      balance_changes: balanceWindow.rows.map(r => ({
-        account_name: r.account_name,
-        source: r.source,
-        baseline_balance: parseFloat(r.baseline_balance),
-        current_balance: parseFloat(r.current_balance),
-        delta: parseFloat(r.delta),
-      })),
-    });
+    const data = await gatherWhatsNew(since);
+    res.json(data);
   } catch (err) {
     console.error("/api/whats-new error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
@@ -143,3 +152,4 @@ router.post("/api/whats-new/seen", async (_req, res) => {
 });
 
 module.exports = router;
+module.exports.gatherWhatsNew = gatherWhatsNew;

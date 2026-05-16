@@ -17,7 +17,7 @@ try {
 // GET /api/settings
 router.get("/api/settings", async (_req, res) => {
   try {
-    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary, insights_running_summary_json, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules, pyramid_data_source, pyramid_color_mode, debt_baseline_amount, sheets_auto_sync_enabled, sheets_auto_sync_interval, sheets_last_auto_sync, csv_reminder_days, csv_reminder_enabled, dashboard_widgets, persistent_url, persistent_webhook_enabled, auto_sync_enabled, auto_sync_interval_hours, last_auto_sync_at, last_balance_sync_at, last_txn_sync_at, sync_notifications_enabled, shell_idle_timeout_minutes, weekly_digest_enabled, weekly_digest_day, last_weekly_digest_at FROM user_settings WHERE id = 1");
+    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary, insights_running_summary_json, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules, pyramid_data_source, pyramid_color_mode, debt_baseline_amount, sheets_auto_sync_enabled, sheets_auto_sync_interval, sheets_last_auto_sync, csv_reminder_days, csv_reminder_enabled, dashboard_widgets, persistent_url, persistent_webhook_enabled, auto_sync_enabled, auto_sync_interval_hours, last_auto_sync_at, last_balance_sync_at, last_txn_sync_at, sync_notifications_enabled, shell_idle_timeout_minutes, weekly_digest_enabled, weekly_digest_day, last_weekly_digest_at, daily_digest_enabled, last_daily_digest_at, target_allocation_pct FROM user_settings WHERE id = 1");
     const defaults = { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true, anomaly_detection: true, seasonal_forecast: true, debt_optimizer: true, bill_negotiation: true, income_savings: true, tax_deductions: true, goal_tracking: true, recurring_transfers: true }, pyramid_data_source: "wellness", pyramid_color_mode: "single", debt_baseline_amount: null, sheets_auto_sync_enabled: false, sheets_auto_sync_interval: 'weekly', sheets_last_auto_sync: null, csv_reminder_days: 14, csv_reminder_enabled: true, dashboard_widgets: {pyramid:true,accounts:true,recentTxns:true,monthlySpend:true,categories:true,merchants:true,upcoming:true,forecast:true,charts:true,calendar:true,cashFlow:true,savingsRate:true,yoy:true}, auto_sync_enabled: false, auto_sync_interval_hours: 6, last_auto_sync_at: null, last_balance_sync_at: null, last_txn_sync_at: null, sync_notifications_enabled: true };
     const row = result.rows[0] || defaults;
     if (typeof row.insight_modules === "string") row.insight_modules = JSON.parse(row.insight_modules);
@@ -142,6 +142,29 @@ router.patch("/api/settings", async (req, res) => {
     if (req.body.weekly_digest_day !== undefined) {
       const d = parseInt(req.body.weekly_digest_day);
       if (d >= 0 && d <= 6) { updates.push("weekly_digest_day = $" + idx++); values.push(d); }
+    }
+    // Daily digest (#19)
+    if (req.body.daily_digest_enabled !== undefined) {
+      updates.push("daily_digest_enabled = $" + idx++); values.push(!!req.body.daily_digest_enabled);
+    }
+    // Target allocation (#8). Validate shape: plain object, values numeric
+    // 0-100. Sum doesn't have to equal 100 — drift is still meaningful with
+    // partial coverage. Empty {} clears it.
+    if (req.body.target_allocation_pct !== undefined) {
+      const t = req.body.target_allocation_pct;
+      if (t === null || (typeof t === "object" && !Array.isArray(t))) {
+        const clean = {};
+        let valid = true;
+        for (const [k, v] of Object.entries(t || {})) {
+          const n = Number(v);
+          if (!Number.isFinite(n) || n < 0 || n > 100) { valid = false; break; }
+          clean[String(k).toLowerCase()] = n;
+        }
+        if (valid) {
+          updates.push("target_allocation_pct = $" + idx++);
+          values.push(JSON.stringify(clean));
+        }
+      }
     }
     // Shell-layer idle-session timeout (minutes). Sliding window — the shell's
     // requireAuth refreshes the cookie on every request with this many minutes

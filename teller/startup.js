@@ -333,6 +333,23 @@ function startBackgroundJobs() {
     }
   }, 60 * 60 * 1000));
 
+  // Daily digest email (#19). Hourly tick — runDailyDigest itself gates with
+  // a 20h window from last_daily_digest_at so we get one digest per day
+  // regardless of process restarts or timezone-edge ticks. Skips silently
+  // when there's nothing new (no point in an empty "yesterday" mail).
+  intervalHandles.push(setInterval(async () => {
+    try {
+      const { runDailyDigest } = require("./routes/insights");
+      const result = await runDailyDigest();
+      if (result.sent) console.log("Daily digest sent.");
+      else if (result.reason && result.reason !== "already_sent_today" && result.reason !== "disabled" && result.reason !== "nothing_new") {
+        console.log("Daily digest skipped:", result.reason);
+      }
+    } catch (err) {
+      console.error("Daily digest scheduler error:", err.message);
+    }
+  }, 60 * 60 * 1000));
+
   // CSV import reminder (every 24 hours)
   intervalHandles.push(setInterval(async () => {
     try {

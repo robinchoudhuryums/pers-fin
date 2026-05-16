@@ -164,6 +164,15 @@
       </div>
     </div>
     <div class="setting-row">
+      <div class="setting-info">
+        <div class="name">Daily Activity Digest</div>
+        <div class="desc">Mail a once-per-day digest of new transactions, balance changes, new subscriptions, and notifications from the last 24h. Skipped silently when nothing's new.</div>
+      </div>
+      <div class="setting-control">
+        <label class="toggle"><input type="checkbox" id="daily-digest-toggle"><span class="slider"></span></label>
+      </div>
+    </div>
+    <div class="setting-row">
       <div class="setting-info"><div class="name">ZIP Code</div><div class="desc">For regional rate comparisons (utility costs vs your area's average)</div></div>
       <div class="setting-control">
         <input type="text" id="zip-input" maxlength="5" placeholder="e.g. 10001" style="width:80px;padding:8px 12px;font-size:13px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;text-align:center;">
@@ -420,6 +429,9 @@
           var hasWebhook = !!(s.persistent_url && s.persistent_webhook_enabled);
           digestPrereq.style.display = hasWebhook ? 'none' : 'block';
         }
+        // #19: daily digest control
+        var dailyToggle = document.getElementById('daily-digest-toggle');
+        if (dailyToggle) dailyToggle.checked = !!s.daily_digest_enabled;
         document.getElementById('auto-sync-last').textContent = s.last_auto_sync_at
           ? new Date(s.last_auto_sync_at).toLocaleString()
           : 'Never';
@@ -921,6 +933,7 @@
       ['sync-notif-toggle', 'change', function() { updateSetting('sync_notifications_enabled', this.checked); }],
       ['weekly-digest-toggle', 'change', function() { updateSetting('weekly_digest_enabled', this.checked); }],
       ['weekly-digest-day-select', 'change', function() { updateSetting('weekly_digest_day', parseInt(this.value)); }],
+      ['daily-digest-toggle', 'change', function() { updateSetting('daily_digest_enabled', this.checked); }],
       ['install-btn', 'click', async function() {
         const result = await perfinPromptInstall();
         if (result && result.outcome === 'accepted') showMsg('Installing Perfin…', true);

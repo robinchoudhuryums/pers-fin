@@ -113,12 +113,13 @@ module.exports = function ({ pool, config }) {
     if (event === "test") {
       return res.json({ ok: true, message: "Perfin → Per-sistant webhook OK." });
     }
-    if (event === "insights_generated" || event === "weekly_summary") {
-      // Both events share the same { subject, html_body, plain_text } shape.
+    if (event === "insights_generated" || event === "weekly_summary" || event === "daily_summary") {
+      // All three events share the same { subject, html_body, plain_text } shape.
       // insights_generated fires per scheduled-cadence insight run; weekly_summary
-      // is a standing once-per-week digest rendered from the running_summary.
-      // We mail both the same way — the difference is just the subject line and
-      // payload contents, which Perfin's side already composes.
+      // is a once-per-week digest from the running_summary; daily_summary is the
+      // optional once-per-day "what changed yesterday" digest from gatherWhatsNew.
+      // We mail all three the same way — the difference is just the subject line
+      // and payload contents, which Perfin's side already composes.
       try {
         const setR = await pool.query("SELECT perfin_webhook_recipient FROM user_settings WHERE id = 1").catch(() => ({ rows: [] }));
         const recipient = (setR.rows[0] && setR.rows[0].perfin_webhook_recipient)
@@ -127,7 +128,14 @@ module.exports = function ({ pool, config }) {
           || null;
         const fallbackSubject = event === "weekly_summary"
           ? "Perfin: Your Weekly Financial Digest"
-          : "Perfin AI Financial Analysis";
+          : event === "daily_summary"
+            ? "Perfin: Yesterday's Activity"
+            : "Perfin AI Financial Analysis";
+        const sendNameByEvent = {
+          weekly_summary: "Perfin Weekly Digest",
+          daily_summary:  "Perfin Daily Digest",
+          insights_generated: "Perfin Insights",
+        };
         const subject = data.subject || fallbackSubject;
         const body = data.plain_text || "(no body)";
         const html = data.html_body || null;
@@ -141,7 +149,7 @@ module.exports = function ({ pool, config }) {
         }
         await pool.query(
           "INSERT INTO emails (recipient_name, recipient_email, subject, body, body_html, status, scheduled_at) VALUES ($1, $2, $3, $4, $5, 'scheduled', now())",
-          [event === "weekly_summary" ? "Perfin Digest" : "Perfin Insights", recipient, subject, body, html]
+          [sendNameByEvent[event] || "Perfin", recipient, subject, body, html]
         );
         return res.json({ ok: true, stored: "scheduled", recipient });
       } catch (err) {

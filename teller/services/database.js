@@ -563,6 +563,25 @@ async function runMigrations() {
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS weekly_digest_day INT NOT NULL DEFAULT 1");  // 0=Sun, 1=Mon, ...
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_weekly_digest_at TIMESTAMPTZ");
 
+    // ---- Target allocation (#8) ----
+    // Per-asset-class target weights as JSONB, e.g. {"equity": 70, "etf": 20, "bond": 10}.
+    // Sums should be 100 ± float-noise but the API tolerates anything for input —
+    // /api/investments/performance computes drift = actual_pct - target_pct so a
+    // miscalibrated target still produces a useful (just biased) drift signal.
+    // Empty object means "no targets configured" → drift fields omitted from
+    // the response.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS target_allocation_pct JSONB NOT NULL DEFAULT '{}'::jsonb");
+
+    // ---- Daily "what changed" digest (#19) ----
+    // Opt-in mail of the last 24h of activity (new txns, balance deltas,
+    // new subscriptions, notifications). Independent of the dashboard
+    // widget's last_dashboard_view_at watermark — the daily digest always
+    // looks back exactly 24h regardless of when the user last opened the
+    // dashboard. Hourly scheduler ticks; runDailyDigest dedupes with a
+    // 20-hour gate from last_daily_digest_at.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS daily_digest_enabled BOOLEAN NOT NULL DEFAULT false");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_daily_digest_at TIMESTAMPTZ");
+
     // ---- Add 'investments' to dashboard_widgets default for new users ----
     // For existing rows: merge the new key into the JSONB without overwriting
     // user customizations to other keys. jsonb concat (||) is right-precedence,
