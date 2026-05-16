@@ -85,7 +85,7 @@ Under the unified shell the cross-app integration endpoints (Per-sistant's Perfi
 | `scripts/sheets-sync.js` | Google Sheets sync + dashboard builder |
 | `apps-script/Code.gs` | Google Sheets Apps Script (standalone + server sync) |
 | `tests/` | Test suite (node:test, 241 tests across 11 files) |
-| `Dockerfile` | Container build |
+| `Dockerfile` | Container build — installs all workspaces and boots `node shell/index.js` |
 | `render.yaml` | Render deployment blueprint (unified shell) |
 | `fly.toml` | Fly.io deployment config |
 
@@ -124,7 +124,7 @@ npm run start:perfin      # legacy: just the Perfin app on its own port
 npm run start:persistent  # legacy: just the Per-sistant app on its own port
 ```
 
-The Teller mTLS certificate (`certificate.pem`, `private_key.pem`) lives in the project root.
+The Teller mTLS certificate (`certificate.pem`, `private_key.pem`) is **not** committed — place them in the project root before booting, or set `TELLER_CERT_PATH` / `TELLER_KEY_PATH` env vars (or base64-encoded `TELLER_CERT` / `TELLER_KEY` env vars on Render). Earlier git history still contains the original PEMs from before they were un-tracked; treat them as compromised and rotate the cert in the Teller dashboard if relying on this repo's history.
 
 ### 4. Google Sheets Integration (Optional)
 
@@ -245,7 +245,7 @@ The unified shell owns the only login screen and authenticates via PIN:
 - **`SHELL_PIN`** — numeric PIN that fronts both apps. Validated against a constant-time compare with a soft 750ms throttle on incorrect attempts.
 - **`SHELL_SECRET`** — random ~32+ char string. Signs the shell session cookie. Rotating it invalidates every active session.
 
-Sessions use a sliding idle window — the cookie's expiration is refreshed on every authenticated request. The default idle window is **60 minutes** and is configurable from Settings → Security → "App Idle Timeout" (5–10080 minutes, stored in `user_settings.shell_idle_timeout_minutes`). An active user never times out mid-use; an idle one is re-prompted after the window. Non-browser clients (cron, GitHub Actions) can authenticate via `x-api-key: $API_KEY` instead of the PIN cookie. Standalone Perfin still supports its legacy `SESSION_PASSWORD` / `SESSION_PIN` modes plus biometric login (WebAuthn) — those are bypassed when running embedded under the shell.
+Sessions use a sliding idle window — the cookie's expiration is refreshed on every authenticated request. The default idle window is **60 minutes** and is configurable from Settings → Security → "App Idle Timeout" (5–10080 minutes, stored in `user_settings.shell_idle_timeout_minutes`). An active user never times out mid-use; an idle one is re-prompted after the window. Non-browser clients (cron, GitHub Actions) can authenticate via `x-api-key: $API_KEY` instead of the PIN cookie. Standalone Perfin still supports its legacy `SESSION_PASSWORD` / `SESSION_PIN` auth modes — those are bypassed when running embedded under the shell. Biometric login (WebAuthn) is supported in both deployments: standalone Perfin hosts `/api/webauthn/*` directly, and the unified shell hosts its own `/api/shell/webauthn/*` endpoints (mounted before the PIN gate) that read from the same `webauthn_credentials` table via Perfin's pool.
 
 ### Cross-app navigation
 

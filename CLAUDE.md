@@ -218,10 +218,12 @@ shell/
   for auth, SSO, template hygiene, and exclusion rules. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`).
-- `.github/workflows/ci.yml` — CI pipeline (runs `npm ci` at root + `teller/`, then `npm test`)
+- `.github/workflows/ci.yml` — CI pipeline (single `npm ci` at root via npm workspaces, then `npm test`)
 - `.claude/commands/` — Project slash-command prompts: `/broad-scan`, `/broad-implement`,
   `/test-sync`, `/sync-docs`
-- `Dockerfile`, `fly.toml`, `render.yaml` — Deployment configs
+- `Dockerfile`, `fly.toml`, `render.yaml` — Deployment configs (the Dockerfile
+  installs all workspaces and boots `node shell/index.js`; render.yaml uses
+  `npm install` + `npm start` and bypasses the Dockerfile)
 
 ## Features
 
@@ -390,10 +392,14 @@ shell/
     3x+ threshold for real-time push alerts during sync. Baseline excludes the
     trailing 7 days so the candidate doesn't inflate its own baseline.
     Merchant grouping uses `LOWER(COALESCE(user_merchant_name, merchant_name, name))`
-    so user-merged merchant variants share a single baseline. The AI insights
-    candidate query also joins `linked_accounts` to apply `spending_split_pct`
-    on both the baseline AVG and the candidate amount, and excludes reimbursed
-    candidates — so the dollar figures shown to Claude match the dashboard.)
+    so user-merged merchant variants share a single baseline. Both the AI
+    insights candidate query and the real-time post-sync push baseline apply
+    `NOT_TRANSFER` (the same negative filter the rest of the spending pipeline
+    uses) so transfer/payment merchants don't skew their own baselines. The
+    AI insights candidate query also joins `linked_accounts` to apply
+    `spending_split_pct` on both the baseline AVG and the candidate amount,
+    and excludes reimbursed candidates — so the dollar figures shown to Claude
+    match the dashboard.)
   - Seasonal forecasting (24-month pattern analysis)
   - Debt payoff optimizer (avalanche vs snowball, credit score projections)
   - Bill negotiation tips
@@ -433,7 +439,11 @@ shell/
   an `insights_generated` webhook to Per-sistant with `{ subject, html_body, plain_text }`.
   HTML email is pre-rendered in Perfin with app-matching dark theme (gold/amber accents,
   Arc Reactor branding). Includes audit findings section if critical issues detected.
-  Per-sistant receives the webhook and forwards to its email service.
+  Per-sistant receives the webhook and forwards to its email service. If
+  `persistent_webhook_secret_enc` is unset, `sendPerSistantWebhook` hard-refuses
+  to dispatch (returns `{ sent: false, reason: "missing_secret" }`) — the
+  receiver was already rejecting unsigned posts, so failures are now visible
+  to the caller instead of being warned-and-dropped opaquely.
 - **Context export**: Structured financial data (markdown/JSON) for pasting into Claude chat deep-dives
 - **Real-time anomaly alerts**: Push notifications for charges 3x+ above merchant average during sync
   (case-insensitive merchant grouping; separate from the 2x AI analysis threshold)
@@ -554,9 +564,34 @@ shared session cookie. Cross-app surface area today:
   Required `SSO_SECRET` set on both apps. Unused under the unified shell.
 - **Webhook system**: HMAC-signed event notifications (anomaly_detected,
   budget_exceeded, new_subscription, goal_milestone, csv_reminder). Now
-  in-process; signing layer remains for the standalone fallback.
+  in-process; signing layer remains for the standalone fallback. Dispatch
+  is refused (`{ sent: false, reason: "missing_secret" }`) when the shared
+  secret isn't configured so misconfiguration surfaces immediately rather
+  than being silently rejected at the receiver.
 
 ## Deployment
+
+### Operator state to provide manually
+Two pieces of secret state are NOT version-controlled and must be placed
+on the operator's machine (or fed via env vars) before the app boots:
+
+1. **Teller mTLS PEMs** — `certificate.pem` and `private_key.pem` at the
+   repo root (or `TELLER_CERT_PATH` / `TELLER_KEY_PATH` env vars; or
+   base64'd `TELLER_CERT` / `TELLER_KEY` env vars on Render). These
+   files used to be checked in but were `git rm --cached`'d. The old
+   committed copies remain in earlier git history (merge 08ff2ff) and
+   should be **considered compromised** — rotate the cert in the Teller
+   dashboard before relying on them, and treat scrubbing history
+   (`git filter-repo` / BFG) as a one-time destructive action that needs
+   to happen out-of-band.
+2. **`TOKEN_ENCRYPTION_PASSPHRASE`** — used by `pgp_sym_encrypt` to store
+   Teller access tokens, Plaid access tokens, and the Per-sistant webhook
+   HMAC secret. Rotating it invalidates all stored ciphertext; the
+   remediation is to re-link affected institutions (Teller Connect re-run
+   for Teller items, Plaid Link re-run for Plaid items). After a rotation
+   mismatch, `POST /api/plaid/sync-holdings` will surface
+   `errors: [{ institution, error: "decryption_failed" }]` per affected
+   item rather than silently returning zero accounts.
 
 ### Render (Free, recommended — currently deployed)
 1. Connect GitHub repo in Render dashboard
@@ -659,7 +694,11 @@ GET  /api/goals            # list financial goals with projections; each goal in
                            # `suggested_transfers[]` matching active recurring transfers
                            # whose type aligns with the funding source and whose monthly
                            # amount is within ±25% of monthly_contribution (current_amount is
-                           # derived from the funding account when one is linked)
+                           # derived from the funding account when one is linked).
+                           # Response also carries `funding_status` (linked|orphaned|none)
+                           # and `current_amount_manual` — when the FK is set but the
+                           # account is gone (orphaned), current_amount falls back to
+                           # current_amount_manual so pre-link progress is preserved.
 GET  /api/goals/funding-options # depository + investment accounts a goal can link to (Phase C)
 POST /api/goals            # create a financial goal
 GET  /api/investment-accounts # list manual investment accounts (manual + Plaid-synced rows in investment_accounts)
@@ -679,7 +718,7 @@ DELETE /api/budgets/:id    # delete budget
 POST /api/budgets/suggest  # AI budget suggestions
 POST /api/budgets/accept   # accept AI-suggested budget
 GET  /api/budgets/alerts   # spending velocity warnings (critical/warning/info)
-POST /api/budgets/snapshot # create monthly snapshot + compute rollovers (body: month)
+POST /api/budgets/snapshot # create monthly snapshot + compute rollovers (body: month=YYYY-MM, 01-12)
 GET  /api/budgets/history  # budget snapshots for trend analysis (query: months)
 POST /api/insights         # generate new AI insights
 GET  /api/insights/status  # AI API config + usage stats + audit_accuracy (90d clean-run %)
@@ -708,6 +747,10 @@ GET  /api/plaid/status     # Plaid investment API status
 POST /api/plaid/link-token # create Plaid Link token for investments
 POST /api/plaid/exchange   # exchange public token for access token
 POST /api/plaid/sync-holdings # sync investment holdings
+                               # Response: { accounts_updated, holdings_updated, errors[]? }
+                               # Per-item failures (including NULL access_token from a
+                               # pgp_sym_decrypt mismatch) surface as
+                               # `errors: [{ institution, error: "decryption_failed" | ... }]`
 GET  /api/plaid/holdings   # list investment holdings
 GET  /api/notifications/vapid # get VAPID public key for push
 POST /api/notifications/subscribe # register push subscription
@@ -886,7 +929,9 @@ standalone-mode fallback if either app is run on its own Render service.
 - `user_settings.last_anomaly_check_at TIMESTAMPTZ` — watermark used by the post-sync
   anomaly notifier (`POST /api/sync`) to dedupe push notifications. Only transactions
   whose `created_at > last_anomaly_check_at` are considered candidates, so the same
-  anomaly never re-pushes on subsequent syncs.
+  anomaly never re-pushes on subsequent syncs. If the notify dispatch throws,
+  the watermark is held back so the next sync re-considers the same candidates —
+  a transient `sendToAll` error no longer permanently silences the anomaly.
 - `user_settings` data freshness: `last_txn_sync_at TIMESTAMPTZ` (updated by
   `POST /api/sync`), `last_balance_sync_at TIMESTAMPTZ` (updated by
   `POST /api/sync-balances`). The nav badge uses the most recent of these plus
@@ -946,6 +991,10 @@ standalone-mode fallback if either app is run on its own Render service.
   (covers manual + Plaid). Lack of FK is deliberate — both source tables
   exist independently. Written from `syncAllBalances` and the Plaid
   `/api/plaid/sync-holdings` path; read by `GET /api/accounts/:id/balance-history`.
+  Plaid sync collects its per-account snapshot rows during the sync loop and
+  flushes them as a single batched INSERT … ON CONFLICT DO UPDATE so either
+  all of today's Plaid snapshots land or none do; Teller's `syncAllBalances`
+  still inserts per-row.
 
 ## Recurring Transfer Detection
 Transfers are identified by keyword matching on merchant_name/name fields:
@@ -1021,18 +1070,21 @@ can dismiss them from the UI or run `POST /api/cleanup`.
   Perfin's webauthn_credentials table; the shell-layer login endpoints
   read from that same pool.
 - **Teller API**: mTLS client certificates, retry with exponential backoff (1s/2s/4s), 30s timeout
-- **AI prompt sanitization**: Two layers. First, `sanitizeForPrompt()` in
-  `routes/insights.js` strips `---RUNNING_SUMMARY---` patterns and consecutive
-  dashes from user-controlled strings (merchant names, goal names, transfer
-  display names) before interpolating them into the AI prompt. The original
-  rationale (delimiter parsing of running-summary output) is now obsolete
-  since tool_use replaced delimiter parsing, but the function is kept as
-  defense-in-depth against general prompt injection. Second,
-  `sanitizeStructuredSummary()` enforces hard shape/length bounds (max items
-  per array, string length caps, enum guardrails) on the structured summary
-  the AI returns via tool_use, so a pathological tool response can't pollute
-  long-term memory. When validation fails the prior summary is preserved
-  and the response carries `summary_status: "preserved_validation_failed"`.
+- **AI prompt sanitization**: Two layers, with different scopes. First,
+  `sanitizeForPrompt()` in `routes/insights.js` strips `---RUNNING_SUMMARY---`
+  patterns and consecutive dashes from user-controlled strings (merchant
+  names, goal names, transfer display names) before interpolating them into
+  the AI prompt. It is **not** a general prompt-injection defense — payloads
+  like "ignore previous instructions" pass through unchanged. Its only job
+  is neutralizing structural markers that could mimic a parsed delimiter,
+  in case the tool_use-replaced delimiter-parsing path ever re-enters the
+  codebase. Perfin is a single-operator app, so the only attacker is the
+  operator. Second, `sanitizeStructuredSummary()` enforces hard shape/length
+  bounds (max items per array, string length caps, enum guardrails) on the
+  structured summary the AI returns via tool_use, so a pathological tool
+  response can't pollute long-term memory. When validation fails the prior
+  summary is preserved and the response carries
+  `summary_status: "preserved_validation_failed"`.
 - **Subscription matching**: Word boundary regex to prevent false positives
 
 ## Scheduled Tasks (intervals)
@@ -1107,10 +1159,15 @@ Constants exported from the same module: `INCOME_PREDICATE` (full predicate),
 income module, and bill-calendar income detection.
 
 ## Key Design Decisions
-- **Test deps live in two places.** `teller/package.json` holds runtime deps;
-  the repo-root `package.json` re-declares the subset that tests directly import
-  (`pg`, `express`, `multer`, `csv-parse`, `supertest`). CI runs `npm ci` in
-  both. Local devs must `npm install` at the root before `npm test`.
+- **Test-time devDeps re-declared at the root.** Tests in `tests/` directly
+  `require('express')`, `require('pg')`, etc., so the repo-root `package.json`
+  re-declares the subset that tests directly import (`pg`, `express`,
+  `multer`, `csv-parse`, `supertest`). The root's `express` is pinned to v4
+  to match `teller/` so tests run against the same Express version the
+  primary tested module uses at runtime; `apps/per-sistant/` declares v5 in
+  its own workspace. CI runs a single `npm ci` at the root — npm workspaces
+  walks shell/, teller/, and apps/per-sistant/ in one pass. Local devs must
+  `npm install` at the root before `npm test`.
 - **Source-pinned regression tests.** `tests/audit-regressions.test.js` includes
   smoke tests that read source files with `fs.readFileSync` and assert against
   patterns (e.g., `persistent.js` references `process.env.SSO_SECRET` and never
@@ -1255,6 +1312,10 @@ income module, and bill-calendar income detection.
   "extract handler into helper, export, reuse" pattern. Helpers return a
   `{ ok, status?, ...body }` discriminated union so HTTP wrappers can map
   to `res.status().json()` and direct callers can branch on `result.ok`.
+  Outbound HTTP helpers (`sendPerSistantWebhook`) follow a parallel
+  contract: `{ sent: bool, status?, reason?, error? }`. `reason` is an
+  enum-style string (`"not_configured"`, `"missing_secret"`) so callers
+  can branch on the specific failure mode rather than parsing logs.
 - **Sliding-window shell session, idle window read from DB.** The shell
   PIN cookie's `maxAge` is refreshed on every authenticated request to
   `now + idleMs`. An active session never times out mid-use; an idle one
