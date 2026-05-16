@@ -184,8 +184,27 @@ router.post("/api/plaid/sync-holdings", async (_req, res) => {
     );
 
     let totalAccounts = 0, totalHoldings = 0;
+    const errors = [];
+    // Buffer per-account snapshot tuples and flush as a single batched INSERT
+    // after the loop. Each snapshot used to be its own query with a swallowed
+    // .catch(), so a mid-sync DB blip could leave a partial set of snapshots
+    // for one day — showing a phantom spike or drop on the history chart.
+    // A single INSERT … VALUES ($1, $2, …), ($n, $n+1, …) is atomic in
+    // Postgres: either all of today's snapshots land or none do.
+    const snapshotRows = [];
     for (const item of items.rows) {
       try {
+        // pgp_sym_decrypt returns NULL when the passphrase is wrong (or empty)
+        // instead of throwing — without this check the route used to call
+        // Plaid with `access_token: null`, which Plaid 400s on, get caught
+        // below, and ultimately return 200 with `accounts_updated: 0` and no
+        // surface on the failure. Now we record a structured error per item.
+        if (!item.access_token) {
+          const msg = `Could not decrypt access token for ${item.institution_name} — check TOKEN_ENCRYPTION_PASSPHRASE`;
+          console.error(msg);
+          errors.push({ institution: item.institution_name, error: "decryption_failed" });
+          continue;
+        }
         const holdingsRes = await client.investmentsHoldingsGet({ access_token: item.access_token });
         const accounts = holdingsRes.data.accounts || [];
         const holdings = holdingsRes.data.holdings || [];
@@ -208,14 +227,7 @@ router.post("/api/plaid/sync-holdings", async (_req, res) => {
           totalAccounts++;
           const invAcctId = updRes.rows[0]?.id;
           if (invAcctId) {
-            await pool.query(
-              `INSERT INTO account_balance_snapshots
-                 (source, source_id, snapshot_date, balance)
-               VALUES ('investment', $1, CURRENT_DATE, $2)
-               ON CONFLICT (source, source_id, snapshot_date) DO UPDATE SET
-                 balance = EXCLUDED.balance`,
-              [invAcctId, balance]
-            ).catch(e => console.error("balance snapshot insert (plaid) error:", e.message));
+            snapshotRows.push({ invAcctId, balance });
           }
         }
 
@@ -249,10 +261,39 @@ router.post("/api/plaid/sync-holdings", async (_req, res) => {
         }
       } catch (err) {
         console.error("Holdings sync error for " + item.institution_name + ":", err.message);
+        errors.push({ institution: item.institution_name, error: err.message });
       }
     }
 
-    res.json({ accounts_updated: totalAccounts, holdings_updated: totalHoldings });
+    // Atomic snapshot flush — single multi-row INSERT, all rows succeed or
+    // all fail. ON CONFLICT DO UPDATE keeps the same-date upsert semantics
+    // the per-row inserts had.
+    if (snapshotRows.length > 0) {
+      try {
+        const placeholders = [];
+        const values = [];
+        let idx = 1;
+        for (const s of snapshotRows) {
+          placeholders.push(`('investment', $${idx++}, CURRENT_DATE, $${idx++})`);
+          values.push(s.invAcctId, s.balance);
+        }
+        await pool.query(
+          `INSERT INTO account_balance_snapshots (source, source_id, snapshot_date, balance)
+           VALUES ${placeholders.join(", ")}
+           ON CONFLICT (source, source_id, snapshot_date) DO UPDATE SET balance = EXCLUDED.balance`,
+          values
+        );
+      } catch (err) {
+        console.error("Balance snapshot batched insert (plaid) error:", err.message);
+        errors.push({ stage: "balance_snapshot", error: err.message });
+      }
+    }
+
+    res.json({
+      accounts_updated: totalAccounts,
+      holdings_updated: totalHoldings,
+      errors: errors.length > 0 ? errors : undefined,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -361,6 +402,155 @@ router.get("/api/investments", async (_req, res) => {
     });
   } catch (err) {
     console.error("investments unified list error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// GET /api/investments/performance — aggregate returns + asset allocation
+//
+// Pulls from `investment_holdings` (only Plaid-linked holdings have cost
+// basis + current value at the security level — Teller-linked investments
+// are account-balance-only and have no return-per-security data).
+//
+// Response:
+//   {
+//     total_value, total_cost_basis, total_return, total_return_pct,
+//     holdings_count, accounts_count,
+//     by_asset_class: [
+//       { security_type, value, cost_basis, return, return_pct, pct_of_portfolio }, ...
+//     ],
+//     top_winners: [{ name, ticker, value, cost_basis, return, return_pct }, ...] (top 5),
+//     top_losers:  [{ ... }, ...] (top 5),
+//   }
+//
+// Auto-hides on the dashboard when total_value === 0 (no Plaid holdings).
+router.get("/api/investments/performance", async (_req, res) => {
+  try {
+    const [holdings, targetsRow] = await Promise.all([
+      pool.query(
+        `SELECT h.name, h.ticker, h.quantity, h.cost_basis, h.current_value,
+                h.security_type, h.plaid_account_id, ia.name AS account_name
+         FROM investment_holdings h
+         LEFT JOIN investment_accounts ia ON ia.plaid_account_id = h.plaid_account_id
+         WHERE COALESCE(ia.is_active, true) = true`
+      ),
+      // #8: user-configured target allocation per asset class (security_type).
+      // JSONB defaults to '{}'::jsonb so this never errors; empty object → no
+      // target_pct/drift_pct fields on the response.
+      pool.query("SELECT target_allocation_pct FROM user_settings WHERE id = 1")
+        .catch(() => ({ rows: [{ target_allocation_pct: {} }] })),
+    ]);
+    let targets = targetsRow.rows[0]?.target_allocation_pct || {};
+    if (typeof targets === "string") {
+      try { targets = JSON.parse(targets); } catch { targets = {}; }
+    }
+    // Normalize keys to lowercase to match the by-asset-class keys we build
+    // below (which lowercase security_type). Numbers cast through Number()
+    // so a string "70" still works.
+    const targetMap = {};
+    for (const [k, v] of Object.entries(targets || {})) {
+      const n = Number(v);
+      if (Number.isFinite(n)) targetMap[String(k).toLowerCase()] = n;
+    }
+    const hasTargets = Object.keys(targetMap).length > 0;
+
+    let totalValue = 0;
+    let totalCostBasis = 0;
+    const byClass = {};
+    const enrichedHoldings = [];
+
+    for (const h of holdings.rows) {
+      const value = parseFloat(h.current_value || 0);
+      const cost = parseFloat(h.cost_basis || 0);
+      const ret = value - cost;
+      const retPct = cost > 0 ? (ret / cost) * 100 : null;
+      totalValue += value;
+      totalCostBasis += cost;
+      const cls = (h.security_type || "unknown").toLowerCase();
+      if (!byClass[cls]) byClass[cls] = { security_type: cls, value: 0, cost_basis: 0 };
+      byClass[cls].value += value;
+      byClass[cls].cost_basis += cost;
+      enrichedHoldings.push({
+        name: h.name,
+        ticker: h.ticker,
+        account_name: h.account_name,
+        value,
+        cost_basis: cost,
+        return: ret,
+        return_pct: retPct,
+      });
+    }
+
+    const totalReturn = totalValue - totalCostBasis;
+    const totalReturnPct = totalCostBasis > 0 ? (totalReturn / totalCostBasis) * 100 : null;
+
+    const byAssetClass = Object.values(byClass).map(c => {
+      const ret = c.value - c.cost_basis;
+      const retPct = c.cost_basis > 0 ? (ret / c.cost_basis) * 100 : null;
+      const pctOfPortfolio = totalValue > 0 ? (c.value / totalValue) * 100 : 0;
+      const row = {
+        security_type: c.security_type,
+        value: c.value,
+        cost_basis: c.cost_basis,
+        return: ret,
+        return_pct: retPct,
+        pct_of_portfolio: pctOfPortfolio,
+      };
+      // #8: attach target_pct + drift_pct when the user has configured a
+      // target allocation. drift = actual − target (positive = overweight).
+      if (hasTargets) {
+        const target = targetMap[c.security_type];
+        if (Number.isFinite(target)) {
+          row.target_pct = target;
+          row.drift_pct = pctOfPortfolio - target;
+        }
+      }
+      return row;
+    }).sort((a, b) => b.value - a.value);
+
+    // #8: surface asset classes the user wants exposure to but currently
+    // holds none of (zero-weight in actual portfolio). These need their own
+    // rows since the loop above only iterates classes present in holdings.
+    if (hasTargets) {
+      const presentClasses = new Set(byAssetClass.map(c => c.security_type));
+      for (const [cls, target] of Object.entries(targetMap)) {
+        if (!presentClasses.has(cls)) {
+          byAssetClass.push({
+            security_type: cls,
+            value: 0,
+            cost_basis: 0,
+            return: 0,
+            return_pct: null,
+            pct_of_portfolio: 0,
+            target_pct: target,
+            drift_pct: -target,  // underweight by the full target
+          });
+        }
+      }
+    }
+
+    // Sort holdings by return_pct, filter to those with valid (non-null) pct
+    const withPct = enrichedHoldings.filter(h => h.return_pct !== null);
+    const topWinners = withPct.slice().sort((a, b) => b.return_pct - a.return_pct).slice(0, 5);
+    const topLosers  = withPct.slice().sort((a, b) => a.return_pct - b.return_pct).slice(0, 5);
+
+    // Distinct account count
+    const accountIds = new Set();
+    for (const h of holdings.rows) if (h.plaid_account_id) accountIds.add(h.plaid_account_id);
+
+    res.json({
+      total_value: totalValue,
+      total_cost_basis: totalCostBasis,
+      total_return: totalReturn,
+      total_return_pct: totalReturnPct,
+      holdings_count: holdings.rows.length,
+      accounts_count: accountIds.size,
+      by_asset_class: byAssetClass,
+      top_winners: topWinners,
+      top_losers: topLosers,
+    });
+  } catch (err) {
+    console.error("Investment performance error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
   }
 });

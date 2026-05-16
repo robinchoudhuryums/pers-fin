@@ -133,15 +133,14 @@ function attach(app, perfinPool) {
         [verification.authenticationInfo.newCounter, stored_cred.credential_id]
       );
 
-      // Set the shell session cookie — same shape the PIN flow sets.
+      // Set the shell session cookie — same shape the PIN flow sets, including
+      // the user-tunable shell_idle_timeout_minutes window. An earlier version
+      // referenced an undefined auth.SESSION_TTL_MS and called makeSession()
+      // with no idleMs, which produced a session-only cookie (cleared on
+      // browser close) and ignored the Settings idle timeout.
       res.clearCookie(CHALLENGE_COOKIE, { path: "/" });
-      res.cookie(auth.COOKIE_NAME, auth.makeSession(), {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "lax",
-        maxAge: auth.SESSION_TTL_MS,
-        path: "/",
-      });
+      const idleMs = await auth.getIdleMs();
+      auth.setSessionCookie(res, idleMs);
       res.json({ ok: true });
     } catch (err) {
       console.error("Shell WebAuthn authenticate error:", err.message);

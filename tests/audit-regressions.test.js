@@ -248,3 +248,172 @@ describe("F24 — insights.js sanitizes user data in AI prompt", () => {
       `sanitizeForPrompt should be called 5+ times on user data (found ${matches.length})`);
   });
 });
+
+// ---------------------------------------------------------------------------
+// S1 / S3 / S4 — Trust loop, whats-new watermark, performance endpoint
+// ---------------------------------------------------------------------------
+describe("S1 — insight feedback loop", () => {
+  const insightsSrc = fs.readFileSync(
+    path.join(__dirname, "..", "teller", "routes", "insights.js"),
+    "utf-8"
+  );
+  const dbSrc = fs.readFileSync(
+    path.join(__dirname, "..", "teller", "services", "database.js"),
+    "utf-8"
+  );
+
+  it("defines PATCH /api/insights/:id/feedback endpoint", () => {
+    assert.ok(/router\.patch\(\s*["']\/api\/insights\/:id\/feedback["']/.test(insightsSrc),
+      "PATCH /api/insights/:id/feedback must be defined");
+  });
+
+  it("defines GET /api/insights/feedback-summary endpoint", () => {
+    assert.ok(/router\.get\(\s*["']\/api\/insights\/feedback-summary["']/.test(insightsSrc),
+      "GET /api/insights/feedback-summary must be defined");
+  });
+
+  it("feedback enum is enforced at the DB CHECK constraint", () => {
+    assert.ok(/CHECK\s*\([^)]*user_feedback[^)]*'positive'[^)]*'negative'[^)]*'mixed'/.test(dbSrc),
+      "user_feedback column must be CHECK-constrained to positive/negative/mixed/NULL");
+  });
+
+  it("generateInsights renders feedback into the next prompt", () => {
+    assert.ok(/=== USER FEEDBACK ON RECENT INSIGHTS ===/.test(insightsSrc),
+      "Prompt must include a USER FEEDBACK section header");
+  });
+
+  it("prompt instructs Claude to drop retracted items from the summary", () => {
+    assert.ok(/(?:DROP|retract)/i.test(
+        insightsSrc.slice(
+          insightsSrc.indexOf("=== USER FEEDBACK ON RECENT INSIGHTS ==="),
+          insightsSrc.indexOf("=== USER FEEDBACK ON RECENT INSIGHTS ===") + 600
+        )),
+      "Prompt should explicitly allow Claude to drop or retract previous-summary items");
+  });
+});
+
+describe("S3 — whats-new watermark + endpoint shape", () => {
+  const whatsNewSrc = fs.readFileSync(
+    path.join(__dirname, "..", "teller", "routes", "whats-new.js"),
+    "utf-8"
+  );
+  const dbSrc = fs.readFileSync(
+    path.join(__dirname, "..", "teller", "services", "database.js"),
+    "utf-8"
+  );
+
+  it("defines GET /api/whats-new and POST /api/whats-new/seen", () => {
+    assert.ok(/router\.get\(\s*["']\/api\/whats-new["']/.test(whatsNewSrc),
+      "GET /api/whats-new must be defined");
+    assert.ok(/router\.post\(\s*["']\/api\/whats-new\/seen["']/.test(whatsNewSrc),
+      "POST /api/whats-new/seen must be defined");
+  });
+
+  it("scopes queries with last_dashboard_view_at watermark", () => {
+    assert.ok(/last_dashboard_view_at/.test(whatsNewSrc),
+      "whats-new must read last_dashboard_view_at from user_settings");
+    assert.ok(/last_dashboard_view_at/.test(dbSrc),
+      "database.js must declare user_settings.last_dashboard_view_at");
+  });
+
+  it("drops near-zero balance deltas to avoid float noise", () => {
+    assert.ok(/ABS\([^)]*balance[^)]*\)\s*>=\s*0\.01/i.test(whatsNewSrc),
+      "balance delta query must threshold |delta| >= 0.01 so float noise doesn't surface");
+  });
+});
+
+describe("S4 — investment performance endpoint shape", () => {
+  const invSrc = fs.readFileSync(
+    path.join(__dirname, "..", "teller", "routes", "investments.js"),
+    "utf-8"
+  );
+
+  it("defines GET /api/investments/performance", () => {
+    assert.ok(/router\.get\(\s*["']\/api\/investments\/performance["']/.test(invSrc),
+      "GET /api/investments/performance must be defined");
+  });
+
+  it("response includes asset-class breakdown + winners + losers", () => {
+    // Source-pin the response field names so a refactor that renames them
+    // forces a deliberate test update.
+    const perfBlock = invSrc.slice(invSrc.indexOf("/api/investments/performance"));
+    for (const field of ["total_return", "total_return_pct", "by_asset_class", "top_winners", "top_losers"]) {
+      assert.ok(perfBlock.includes(field),
+        `performance response must include ${field}`);
+    }
+  });
+
+  it("guards against division by zero when cost_basis is 0", () => {
+    const perfBlock = invSrc.slice(invSrc.indexOf("/api/investments/performance"));
+    assert.ok(/cost\s*>\s*0\s*\?[^:]*:\s*null/i.test(perfBlock) ||
+              /cost_basis\s*>\s*0\s*\?[^:]*:\s*null/i.test(perfBlock),
+      "return_pct should fall back to null when cost basis is 0");
+  });
+});
+
+describe("S2 — weekly digest scheduler + dispatch", () => {
+  const insightsSrc = fs.readFileSync(
+    path.join(__dirname, "..", "teller", "routes", "insights.js"),
+    "utf-8"
+  );
+  const startupSrc = fs.readFileSync(
+    path.join(__dirname, "..", "teller", "startup.js"),
+    "utf-8"
+  );
+  const perfinReceiverSrc = fs.readFileSync(
+    path.join(__dirname, "..", "apps", "per-sistant", "routes", "perfin.js"),
+    "utf-8"
+  );
+
+  it("exports runWeeklyDigest + renderWeeklyDigestEmail", () => {
+    assert.ok(/module\.exports\.runWeeklyDigest/.test(insightsSrc),
+      "runWeeklyDigest must be exported for the scheduler");
+    assert.ok(/module\.exports\.renderWeeklyDigestEmail/.test(insightsSrc),
+      "renderWeeklyDigestEmail must be exported");
+  });
+
+  it("runWeeklyDigest gates with a 6-day window", () => {
+    const fnBlock = insightsSrc.slice(insightsSrc.indexOf("async function runWeeklyDigest"));
+    assert.ok(/ageDays\s*<\s*6|6\s*days?/i.test(fnBlock),
+      "runWeeklyDigest must dedupe with a 6-day window from last_weekly_digest_at");
+  });
+
+  it("startup.js wires the weekly digest interval", () => {
+    assert.ok(/runWeeklyDigest/.test(startupSrc),
+      "startup.js must invoke runWeeklyDigest from a scheduled interval");
+  });
+
+  it("Per-sistant webhook receiver handles weekly_summary alongside insights_generated", () => {
+    assert.ok(/weekly_summary/.test(perfinReceiverSrc),
+      "apps/per-sistant/routes/perfin.js must route the weekly_summary event " +
+      "(otherwise the digest gets ignored at the receiver)");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F17 / #4 — Budget month validators reject impossible months
+// ---------------------------------------------------------------------------
+describe("Budget month validators", () => {
+  const budgetsSrc = fs.readFileSync(
+    path.join(__dirname, "..", "teller", "routes", "budgets.js"),
+    "utf-8"
+  );
+  const financialQueriesSrc = fs.readFileSync(
+    path.join(__dirname, "..", "teller", "services", "financial-queries.js"),
+    "utf-8"
+  );
+
+  it("GET /api/budgets validates ?month against 01-12", () => {
+    // The regex landed in two places (GET + POST/snapshot) — both should
+    // use the same strict pattern.
+    const strict = /\\d\{4\}-\(0\[1-9\]\|1\[0-2\]\)/;
+    const matches = budgetsSrc.match(/\\d\{4\}-\(0\[1-9\]\|1\[0-2\]\)/g) || [];
+    assert.ok(matches.length >= 2,
+      `Both GET /api/budgets and POST /api/budgets/snapshot must use the 01-12 regex (found ${matches.length})`);
+  });
+
+  it("getCategorySpendingForMonth defends against impossible months too", () => {
+    assert.ok(/\\d\{4\}-\(0\[1-9\]\|1\[0-2\]\)/.test(financialQueriesSrc),
+      "getCategorySpendingForMonth must validate its month arg with the same regex");
+  });
+});

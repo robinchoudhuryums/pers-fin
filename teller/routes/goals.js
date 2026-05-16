@@ -55,16 +55,34 @@ router.get("/api/goals", async (_req, res) => {
       const manualCurrent = parseFloat(g.current_amount || 0);
       let current = manualCurrent;
       let funding_source = null;
-      if (g.funding_account_id && g.funding_account_balance !== null) {
-        const bal = parseFloat(g.funding_account_balance);
-        const baseline = parseFloat(g.goal_baseline_amount || 0);
-        current = Math.max(0, bal - baseline);
-        funding_source = { kind: "account", id: g.funding_account_id, name: g.funding_account_name, balance: bal, baseline };
-      } else if (g.funding_investment_id && g.funding_investment_balance !== null) {
-        const bal = parseFloat(g.funding_investment_balance);
-        const baseline = parseFloat(g.goal_baseline_amount || 0);
-        current = Math.max(0, bal - baseline);
-        funding_source = { kind: "investment", id: g.funding_investment_id, name: g.funding_investment_name, balance: bal, baseline };
+      // funding_status: 'linked' when an account is linked AND its balance is
+      // readable; 'orphaned' when the FK is set but the LEFT JOIN returned NULL
+      // (account deleted, deactivated, or otherwise missing); 'none' when no
+      // funding source is configured. The orphan path falls back to the stored
+      // current_amount_manual so the goal's pre-link progress isn't lost.
+      let funding_status = "none";
+      if (g.funding_account_id) {
+        if (g.funding_account_balance !== null) {
+          const bal = parseFloat(g.funding_account_balance);
+          const baseline = parseFloat(g.goal_baseline_amount || 0);
+          current = Math.max(0, bal - baseline);
+          funding_source = { kind: "account", id: g.funding_account_id, name: g.funding_account_name, balance: bal, baseline };
+          funding_status = "linked";
+        } else {
+          funding_source = { kind: "account", id: g.funding_account_id, name: null, balance: null, baseline: parseFloat(g.goal_baseline_amount || 0) };
+          funding_status = "orphaned";
+        }
+      } else if (g.funding_investment_id) {
+        if (g.funding_investment_balance !== null) {
+          const bal = parseFloat(g.funding_investment_balance);
+          const baseline = parseFloat(g.goal_baseline_amount || 0);
+          current = Math.max(0, bal - baseline);
+          funding_source = { kind: "investment", id: g.funding_investment_id, name: g.funding_investment_name, balance: bal, baseline };
+          funding_status = "linked";
+        } else {
+          funding_source = { kind: "investment", id: g.funding_investment_id, name: null, balance: null, baseline: parseFloat(g.goal_baseline_amount || 0) };
+          funding_status = "orphaned";
+        }
       }
       const monthly = parseFloat(g.monthly_contribution || 0);
       const rate = parseFloat(g.interest_rate || 0) / 100 / 12;
@@ -125,6 +143,7 @@ router.get("/api/goals", async (_req, res) => {
         months_to_goal,
         estimated_date,
         funding_source,
+        funding_status,
         suggested_transfers,
       };
     });

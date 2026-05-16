@@ -307,6 +307,49 @@ function startBackgroundJobs() {
     }
   }, 60 * 60 * 1000));
 
+  // Weekly digest email (S2: daily check; runWeeklyDigest itself gates to
+  // once per 6+ days). Independent of /api/insights cadence — fires on the
+  // configured weekly_digest_day even when the per-insight email channel is
+  // quiet. Bails immediately if weekly_digest_enabled is false.
+  intervalHandles.push(setInterval(async () => {
+    try {
+      const settings = await pool.query(
+        "SELECT weekly_digest_enabled, weekly_digest_day FROM user_settings WHERE id = 1"
+      );
+      const s = settings.rows[0];
+      if (!s || !s.weekly_digest_enabled) return;
+      const today = new Date();
+      // 0=Sun, 1=Mon, etc. Default 1 (Monday). The 6-day gate inside
+      // runWeeklyDigest handles dedup across multiple ticks per day.
+      if (today.getDay() !== (s.weekly_digest_day ?? 1)) return;
+      const { runWeeklyDigest } = require("./routes/insights");
+      const result = await runWeeklyDigest();
+      if (result.sent) console.log("Weekly digest sent.");
+      else if (result.reason && result.reason !== "already_sent_this_week" && result.reason !== "disabled") {
+        console.log("Weekly digest skipped:", result.reason);
+      }
+    } catch (err) {
+      console.error("Weekly digest scheduler error:", err.message);
+    }
+  }, 60 * 60 * 1000));
+
+  // Daily digest email (#19). Hourly tick — runDailyDigest itself gates with
+  // a 20h window from last_daily_digest_at so we get one digest per day
+  // regardless of process restarts or timezone-edge ticks. Skips silently
+  // when there's nothing new (no point in an empty "yesterday" mail).
+  intervalHandles.push(setInterval(async () => {
+    try {
+      const { runDailyDigest } = require("./routes/insights");
+      const result = await runDailyDigest();
+      if (result.sent) console.log("Daily digest sent.");
+      else if (result.reason && result.reason !== "already_sent_today" && result.reason !== "disabled" && result.reason !== "nothing_new") {
+        console.log("Daily digest skipped:", result.reason);
+      }
+    } catch (err) {
+      console.error("Daily digest scheduler error:", err.message);
+    }
+  }, 60 * 60 * 1000));
+
   // CSV import reminder (every 24 hours)
   intervalHandles.push(setInterval(async () => {
     try {

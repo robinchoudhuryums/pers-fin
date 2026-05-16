@@ -223,17 +223,19 @@ async function syncAllEnrollments() {
         `SELECT t.merchant_name, t.name, t.user_merchant_name, t.amount, t.date, avg_tbl.avg_amount
          FROM transactions t
          JOIN (
-           SELECT LOWER(COALESCE(user_merchant_name, merchant_name, name)) AS merchant,
-                  AVG(amount) AS avg_amount, COUNT(*) AS txn_count
-           FROM transactions
-           WHERE amount > 0 AND pending = false
-             AND date >= CURRENT_DATE - INTERVAL '12 months'
-             AND date <  CURRENT_DATE - INTERVAL '7 days'
-           GROUP BY LOWER(COALESCE(user_merchant_name, merchant_name, name))
+           SELECT LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name)) AS merchant,
+                  AVG(t.amount) AS avg_amount, COUNT(*) AS txn_count
+           FROM transactions t
+           WHERE t.amount > 0 AND t.pending = false
+             AND t.date >= CURRENT_DATE - INTERVAL '12 months'
+             AND t.date <  CURRENT_DATE - INTERVAL '7 days'
+             AND ${NOT_TRANSFER}
+           GROUP BY LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name))
            HAVING COUNT(*) >= 3
          ) avg_tbl ON LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name)) = avg_tbl.merchant
          WHERE t.amount > 0 AND t.pending = false
            AND COALESCE(t.is_reimbursed, false) = false
+           AND ${NOT_TRANSFER}
            AND t.date >= CURRENT_DATE - INTERVAL '3 days'
            AND t.amount > avg_tbl.avg_amount * 3
            AND ($1::timestamptz IS NULL OR t.created_at > $1)
@@ -241,6 +243,12 @@ async function syncAllEnrollments() {
          LIMIT 5`,
         [watermark]
       );
+      // Track whether the notify loop itself failed. If it did, leave the
+      // watermark alone so the next sync re-considers the same candidates —
+      // otherwise a transient sendToAll error would permanently silence the
+      // anomaly (the watermark advances past the row's created_at, and the
+      // next pass filters it out).
+      let notifyFailed = false;
       if (anomalies.rows.length > 0) {
         try {
           const { sendToAll } = require("./notifications");
@@ -253,9 +261,15 @@ async function syncAllEnrollments() {
               data: { url: "/transactions" },
             });
           }
-        } catch {}
+        } catch (notifyErr) {
+          notifyFailed = true;
+          console.error("Anomaly notification dispatch error:", notifyErr.message);
+        }
       }
-      await pool.query("UPDATE user_settings SET last_anomaly_check_at = now() WHERE id = 1").catch(() => {});
+      if (!notifyFailed) {
+        await pool.query("UPDATE user_settings SET last_anomaly_check_at = now() WHERE id = 1")
+          .catch(err => console.error("Anomaly watermark update error:", err.message));
+      }
     } catch (err) {
       console.error("Post-sync anomaly check error:", err.message);
     }

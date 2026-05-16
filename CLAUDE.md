@@ -76,7 +76,13 @@ teller/
     insights.js          — GET/POST /api/insights, GET /api/insights/status,
                            GET /api/insights/usage, POST /api/insights/reset,
                            POST /api/insights/rebuild, GET /api/insights/audit,
+                           PATCH /api/insights/:id/feedback,
+                           GET /api/insights/feedback-summary,
+                           GET /api/insights/trust-overview,
                            GET/PATCH /api/tax-deductions
+                           (also exports runWeeklyDigest + runDailyDigest
+                           helpers used by the digest scheduled tasks in
+                           startup.js)
     categorize.js        — POST /api/categorize, GET /api/categorize/status,
                            PATCH /api/transactions/:id/category,
                            PATCH /api/transactions/bulk-category,
@@ -90,6 +96,10 @@ teller/
                            GET /api/plaid/holdings (Plaid investment accounts).
                            GET /api/investments returns the unified picture
                            across Teller-linked, manual, and Plaid sources.
+                           GET /api/investments/performance aggregates returns,
+                           asset-class allocation, and top winners/losers from
+                           Plaid-tracked holdings only (Teller-linked lacks
+                           cost basis from Teller's API).
     notifications.js     — GET /api/notifications/vapid, POST/DELETE /api/notifications/subscribe,
                            POST /api/notifications/test, GET /api/notifications,
                            PATCH /api/notifications/:id/read, POST /api/notifications/read-all
@@ -98,6 +108,14 @@ teller/
                            POST /api/persistent/webhook/test, POST /api/persistent/webhook/send,
                            GET /api/persistent/status, GET /api/persistent/productivity-context,
                            POST /api/sso/generate, POST /api/sso/validate
+    whats-new.js         — GET /api/whats-new, POST /api/whats-new/seen
+                           ("since you last looked" dashboard widget feed —
+                           new transactions, balance deltas, new subscriptions,
+                           and recent notifications since last_dashboard_view_at).
+                           Also exports gatherWhatsNew(since) — the shared
+                           aggregator used by both the HTTP route and the
+                           daily-digest runner in insights.js so the dashboard
+                           widget and email digest see the same data shape.
   pages/
     dashboard.js         — Dashboard page (Chart.js charts, 3D pyramid, account list, balances,
                            savings rate widget, cash flow widget, Per-sistant widget)
@@ -213,15 +231,22 @@ shell/
 - `scripts/retention-cleanup.sql` — Reference SQL for the manual cleanup queries
   exposed by `POST /api/cleanup`
 - `apps-script/Code.gs` — Google Sheets Apps Script (standalone + server sync)
-- `tests/` — 241 tests across 11 files (node:test runner, `npm test`).
-  Includes `tests/audit-regressions.test.js` which pins documented behavior
-  for auth, SSO, template hygiene, and exclusion rules. Run `npm install`
+- `tests/` — Perfin test suite (node:test runner). Includes
+  `tests/audit-regressions.test.js` which pins documented behavior for
+  auth, SSO, template hygiene, exclusion rules, and the S1-S4 / #8 / #19
+  feature contracts, and `tests/new-endpoints.integration.test.js` which
+  uses a mock-pool + supertest pattern to exercise the feedback, whats-new,
+  performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
-  test-time deps separately from `teller/`).
-- `.github/workflows/ci.yml` — CI pipeline (runs `npm ci` at root + `teller/`, then `npm test`)
+  test-time deps separately from `teller/`). `npm test` now runs both
+  Perfin and Per-sistant test files (~505 tests); use
+  `npm run test:perfin` or `npm run test:persistent` for scoped runs.
+- `.github/workflows/ci.yml` — CI pipeline (single `npm ci` at root via npm workspaces, then `npm test`)
 - `.claude/commands/` — Project slash-command prompts: `/broad-scan`, `/broad-implement`,
   `/test-sync`, `/sync-docs`
-- `Dockerfile`, `fly.toml`, `render.yaml` — Deployment configs
+- `Dockerfile`, `fly.toml`, `render.yaml` — Deployment configs (the Dockerfile
+  installs all workspaces and boots `node shell/index.js`; render.yaml uses
+  `npm install` + `npm start` and bypasses the Dockerfile)
 
 ## Features
 
@@ -322,6 +347,29 @@ shell/
   no Chart.js dependency). Each card has a "View history →" link to the
   full chart page at `/accounts/:id/history`. Auto-hides when no investment
   accounts exist. Toggleable from Settings (key: `investments`, default on).
+  When Plaid holdings exist, a **performance sub-card** renders inside the
+  widget showing total return ($ + %), per-asset-class allocation bars
+  (security_type → % of portfolio), and top winners/losers by return_pct
+  (collapsible). Backed by `GET /api/investments/performance`. Auto-hides
+  for users with no Plaid holdings since Teller-linked accounts don't
+  expose cost basis. Toggleable (key: `investmentReturns`, default on).
+  When the user has set target weights via Settings → Target Allocation,
+  per-asset-class rows also carry `target_pct` + `drift_pct` (actual −
+  target); under-weight classes the user wants exposure to but doesn't
+  hold are surfaced as synthetic zero-holding rows.
+- **Target Allocation editor** (Settings → Target Allocation): per-
+  asset-class target weights as `{security_type: pct}` rows the user
+  can add/edit/remove. Sum indicator turns green at ≈100%, red above
+  100%, muted otherwise (the API doesn't require sum = 100). Saved to
+  `user_settings.target_allocation_pct` via PATCH /api/settings. Drives
+  the drift fields on `GET /api/investments/performance`.
+- **Since-you-last-looked widget**: aggregates new transactions, balance
+  deltas (oldest snapshot ≤ watermark vs latest, dropped if |Δ| < $0.01),
+  new subscriptions, and recent notifications since `last_dashboard_view_at`.
+  Backed by `GET /api/whats-new`; advances the watermark 4 s after first
+  render via `POST /api/whats-new/seen` so a quick nav-away doesn't lose
+  the unseen state. Auto-hides when nothing's new. Toggleable
+  (key: `whatsNew`, default on).
 - **Review Uncategorized widget** (engagement loop): Surfaces 5-8 transactions
   that would otherwise be sent to Claude on the next AI categorize call.
   Each row has a category dropdown (pre-filled with the deterministic
@@ -338,6 +386,16 @@ shell/
 - **AI audit-accuracy card**: Settings → AI shows the percentage of insight
   runs (last 90 days) with zero critical findings, color-coded green/yellow/red,
   with severity counts. Backed by `/api/insights/status.audit_accuracy`.
+- **Insight feedback loop**: dashboard's AI Insights widget grew per-insight
+  thumbs-up / thumbs-down / mixed buttons plus an optional correction
+  textarea. The last 5 rated insights are pulled into the next
+  `generateInsights()` call as a `=== USER FEEDBACK ON RECENT INSIGHTS ===`
+  section so Claude can adjust tone or double-check claims the user
+  flagged. The feedback is NOT written into `insights_running_summary_json`
+  — Claude sees the raw user signals each run and decides whether to act
+  on them. Endpoints: `PATCH /api/insights/:id/feedback` (set
+  positive/negative/mixed + optional text), `GET /api/insights/feedback-summary`
+  (counts over a configurable day window, default 90).
 - **AI Memory widget**: Renders the structured running summary's actual
   contents (not just counts) on the dashboard — four cards for Trends (with
   up/down/stable arrows + magnitude + since_when), Pending Actions
@@ -390,10 +448,14 @@ shell/
     3x+ threshold for real-time push alerts during sync. Baseline excludes the
     trailing 7 days so the candidate doesn't inflate its own baseline.
     Merchant grouping uses `LOWER(COALESCE(user_merchant_name, merchant_name, name))`
-    so user-merged merchant variants share a single baseline. The AI insights
-    candidate query also joins `linked_accounts` to apply `spending_split_pct`
-    on both the baseline AVG and the candidate amount, and excludes reimbursed
-    candidates — so the dollar figures shown to Claude match the dashboard.)
+    so user-merged merchant variants share a single baseline. Both the AI
+    insights candidate query and the real-time post-sync push baseline apply
+    `NOT_TRANSFER` (the same negative filter the rest of the spending pipeline
+    uses) so transfer/payment merchants don't skew their own baselines. The
+    AI insights candidate query also joins `linked_accounts` to apply
+    `spending_split_pct` on both the baseline AVG and the candidate amount,
+    and excludes reimbursed candidates — so the dollar figures shown to Claude
+    match the dashboard.)
   - Seasonal forecasting (24-month pattern analysis)
   - Debt payoff optimizer (avalanche vs snowball, credit score projections)
   - Bill negotiation tips
@@ -433,7 +495,36 @@ shell/
   an `insights_generated` webhook to Per-sistant with `{ subject, html_body, plain_text }`.
   HTML email is pre-rendered in Perfin with app-matching dark theme (gold/amber accents,
   Arc Reactor branding). Includes audit findings section if critical issues detected.
-  Per-sistant receives the webhook and forwards to its email service.
+  Per-sistant receives the webhook and forwards to its email service. If
+  `persistent_webhook_secret_enc` is unset, `sendPerSistantWebhook` hard-refuses
+  to dispatch (returns `{ sent: false, reason: "missing_secret" }`) — the
+  receiver was already rejecting unsigned posts, so failures are now visible
+  to the caller instead of being warned-and-dropped opaquely.
+- **Weekly digest email**: standing once-per-week Monday-morning channel
+  (independent of `insights_cadence_days`). Fires the `weekly_summary`
+  webhook event with `{ subject, html_body, plain_text }`, rendered by
+  `renderWeeklyDigestEmail()` directly from `insights_running_summary_json`
+  — no AI call. The HTML lists trends (with up/down arrows), pending
+  actions (urgency-colored), active alerts (severity-colored), and
+  recently completed goals. Opt-in: Settings → AI Insights → "Weekly
+  Digest Email" toggle (default off); day-of-week configurable
+  (`weekly_digest_day`, default Monday). The scheduler ticks hourly but
+  `runWeeklyDigest` itself gates with a 6-day window from
+  `last_weekly_digest_at` so the daily-aligned check is idempotent.
+  Requires Per-sistant webhook configured (same path as
+  `insights_generated`); without it `sendPerSistantWebhook` short-circuits
+  and the digest is a no-op.
+- **Daily activity digest**: opt-in once-per-day digest of yesterday's
+  new transactions, balance deltas, new subscriptions, and notifications.
+  Fires the `daily_summary` webhook event with `{ subject, html_body,
+  plain_text }`, rendered by `renderDailyDigestEmail()` from
+  `gatherWhatsNew(now - 24h)` — same aggregator the dashboard's "Since
+  you last looked" widget uses, so both surfaces see the same data shape.
+  No AI call. Opt-in: Settings → AI Insights → "Daily Activity Digest"
+  toggle (default off). Hourly scheduler; `runDailyDigest` dedupes via
+  a 20-hour gate from `last_daily_digest_at` and skips silently when
+  `gatherWhatsNew` returns zero counts. Same Per-sistant prereq as
+  weekly digest — without webhook config, it's a no-op.
 - **Context export**: Structured financial data (markdown/JSON) for pasting into Claude chat deep-dives
 - **Real-time anomaly alerts**: Push notifications for charges 3x+ above merchant average during sync
   (case-insensitive merchant grouping; separate from the 2x AI analysis threshold)
@@ -554,9 +645,45 @@ shared session cookie. Cross-app surface area today:
   Required `SSO_SECRET` set on both apps. Unused under the unified shell.
 - **Webhook system**: HMAC-signed event notifications (anomaly_detected,
   budget_exceeded, new_subscription, goal_milestone, csv_reminder). Now
-  in-process; signing layer remains for the standalone fallback.
+  in-process; signing layer remains for the standalone fallback. Dispatch
+  is refused (`{ sent: false, reason: "missing_secret" }`) when the shared
+  secret isn't configured so misconfiguration surfaces immediately rather
+  than being silently rejected at the receiver.
 
 ## Deployment
+
+### Operator state to provide manually
+Two pieces of secret state are NOT version-controlled and must be placed
+on the operator's machine (or fed via env vars) before the app boots:
+
+1. **Teller mTLS PEMs** — `certificate.pem` and `private_key.pem` at the
+   repo root (or `TELLER_CERT_PATH` / `TELLER_KEY_PATH` env vars; or
+   base64'd `TELLER_CERT` / `TELLER_KEY` env vars on Render). These
+   files used to be checked in but were `git rm --cached`'d. The old
+   committed copies remain in earlier git history (merge 08ff2ff) and
+   should be **considered compromised** — rotate the cert in the Teller
+   dashboard before relying on them, and treat scrubbing history
+   (`git filter-repo` / BFG) as a one-time destructive action that needs
+   to happen out-of-band.
+2. **`TOKEN_ENCRYPTION_PASSPHRASE`** — used by `pgp_sym_encrypt` to store
+   Teller access tokens, Plaid access tokens, and the Per-sistant webhook
+   HMAC secret. Rotating it invalidates all stored ciphertext; the
+   remediation is to re-link affected institutions (Teller Connect re-run
+   for Teller items, Plaid Link re-run for Plaid items). After a rotation
+   mismatch, `POST /api/plaid/sync-holdings` will surface
+   `errors: [{ institution, error: "decryption_failed" }]` per affected
+   item rather than silently returning zero accounts.
+
+Both the **weekly digest** (Settings → AI Insights → "Weekly Digest
+Email") and the **daily activity digest** ("Daily Activity Digest"
+toggle) have a soft prerequisite: Per-sistant must be configured with
+`persistent_url` and a webhook secret. Without those, the schedulers
+still run but `sendPerSistantWebhook` short-circuits with
+`{ sent: false, reason: "not_configured" | "missing_secret" }` and the
+digests are a no-op. The weekly toggle surfaces an inline warning when
+the prereq is missing; the daily toggle inherits the same constraint.
+Operators enabling either should verify the Per-sistant integration
+first under Settings → Integrations.
 
 ### Render (Free, recommended — currently deployed)
 1. Connect GitHub repo in Render dashboard
@@ -612,7 +739,9 @@ npm run start:persistent   # node apps/per-sistant/server.js
 ```bash
 cd teller && npm install && node server.js    # Run locally
 npm install                                    # ALSO required at repo root for tests
-npm test                                       # Run 241 tests
+npm test                                       # Run all tests (Perfin + Per-sistant)
+npm run test:perfin                            # Perfin tests only (tests/*.test.js)
+npm run test:persistent                        # Per-sistant tests only
 
 # Key API endpoints
 POST /api/enroll           # store Teller access token after Connect
@@ -659,7 +788,11 @@ GET  /api/goals            # list financial goals with projections; each goal in
                            # `suggested_transfers[]` matching active recurring transfers
                            # whose type aligns with the funding source and whose monthly
                            # amount is within ±25% of monthly_contribution (current_amount is
-                           # derived from the funding account when one is linked)
+                           # derived from the funding account when one is linked).
+                           # Response also carries `funding_status` (linked|orphaned|none)
+                           # and `current_amount_manual` — when the FK is set but the
+                           # account is gone (orphaned), current_amount falls back to
+                           # current_amount_manual so pre-link progress is preserved.
 GET  /api/goals/funding-options # depository + investment accounts a goal can link to (Phase C)
 POST /api/goals            # create a financial goal
 GET  /api/investment-accounts # list manual investment accounts (manual + Plaid-synced rows in investment_accounts)
@@ -679,7 +812,7 @@ DELETE /api/budgets/:id    # delete budget
 POST /api/budgets/suggest  # AI budget suggestions
 POST /api/budgets/accept   # accept AI-suggested budget
 GET  /api/budgets/alerts   # spending velocity warnings (critical/warning/info)
-POST /api/budgets/snapshot # create monthly snapshot + compute rollovers (body: month)
+POST /api/budgets/snapshot # create monthly snapshot + compute rollovers (body: month=YYYY-MM, 01-12)
 GET  /api/budgets/history  # budget snapshots for trend analysis (query: months)
 POST /api/insights         # generate new AI insights
 GET  /api/insights/status  # AI API config + usage stats + audit_accuracy (90d clean-run %)
@@ -688,6 +821,11 @@ GET  /api/insights/usage   # AI usage history
 POST /api/insights/reset   # clear long-term AI context
 POST /api/insights/rebuild # rebuild context from all history
 GET  /api/insights/audit   # audit log + per-module stats + 90-day accuracy summary
+PATCH /api/insights/:id/feedback # set thumbs-up/down/mixed + optional correction note
+                                  # (body: { feedback: 'positive'|'negative'|'mixed'|null, text? })
+GET  /api/insights/feedback-summary # positive/negative/mixed counts (query: days, default 90)
+GET  /api/insights/trust-overview # merged audit_accuracy + user_feedback for the Settings AI card
+                                   # (query: days, default 90 — clamped 1-365)
 POST /api/categorize       # ML categorize transactions (rules first, then Claude AI)
 GET  /api/categorize/status # ML categorization status
 GET  /api/categorize/review-queue # candidates the next AI categorize would send to Claude
@@ -708,7 +846,16 @@ GET  /api/plaid/status     # Plaid investment API status
 POST /api/plaid/link-token # create Plaid Link token for investments
 POST /api/plaid/exchange   # exchange public token for access token
 POST /api/plaid/sync-holdings # sync investment holdings
+                               # Response: { accounts_updated, holdings_updated, errors[]? }
+                               # Per-item failures (including NULL access_token from a
+                               # pgp_sym_decrypt mismatch) surface as
+                               # `errors: [{ institution, error: "decryption_failed" | ... }]`
 GET  /api/plaid/holdings   # list investment holdings
+GET  /api/investments/performance # portfolio returns + asset-class allocation + top winners/losers
+                                  # (Plaid holdings only; auto-hides on dashboard when empty)
+GET  /api/whats-new        # "since you last looked" feed — new transactions, balance deltas,
+                           # new subscriptions, and recent notifications since last_dashboard_view_at
+POST /api/whats-new/seen   # advance last_dashboard_view_at to now (idempotent)
 GET  /api/notifications/vapid # get VAPID public key for push
 POST /api/notifications/subscribe # register push subscription
 DELETE /api/notifications/subscribe # unregister push subscription
@@ -718,7 +865,9 @@ PATCH /api/notifications/:id/read # mark notification as read
 POST /api/notifications/read-all  # mark all notifications as read
 
 # Tax export
-GET  /api/export/tax-report # year-end deduction summary (query: year, format=csv|json)
+GET  /api/export/tax-report # year-end deduction summary (query: year, format=csv|json|pdf)
+                            # PDF format renders via pdfkit with per-category breakdown
+                            # and grand-total summary
 
 # WebAuthn / biometric login — Perfin sub-app endpoints (registration always
 # happens here; standalone deployments also use these for the auth flow).
@@ -886,7 +1035,38 @@ standalone-mode fallback if either app is run on its own Render service.
 - `user_settings.last_anomaly_check_at TIMESTAMPTZ` — watermark used by the post-sync
   anomaly notifier (`POST /api/sync`) to dedupe push notifications. Only transactions
   whose `created_at > last_anomaly_check_at` are considered candidates, so the same
-  anomaly never re-pushes on subsequent syncs.
+  anomaly never re-pushes on subsequent syncs. If the notify dispatch throws,
+  the watermark is held back so the next sync re-considers the same candidates —
+  a transient `sendToAll` error no longer permanently silences the anomaly.
+- `user_settings.last_dashboard_view_at TIMESTAMPTZ` — watermark for the
+  "Since you last looked" dashboard widget. Read by `GET /api/whats-new`
+  to scope the response (new txns / new subs / balance deltas /
+  notifications since this timestamp). Bumped by `POST /api/whats-new/seen`,
+  which the widget fires 4 s after first render so a quick nav-away
+  doesn't lose the unseen state. Defaults to "24 h ago" on first load
+  so brand-new installations return one day of context rather than
+  an empty card.
+- `user_settings.weekly_digest_enabled BOOLEAN NOT NULL DEFAULT false`,
+  `weekly_digest_day INT NOT NULL DEFAULT 1` (0=Sun..6=Sat),
+  `last_weekly_digest_at TIMESTAMPTZ`: opt-in standing weekly-summary
+  email channel (S2). Independent of the per-insight
+  `insights_generated` email. Toggle + day selector live in Settings →
+  AI Insights. The hourly scheduler in `startup.js` calls `runWeeklyDigest()`
+  on the configured day; the helper gates on a 6-day window from
+  `last_weekly_digest_at` to dedupe multiple ticks within the day.
+- `user_settings.daily_digest_enabled BOOLEAN NOT NULL DEFAULT false`,
+  `last_daily_digest_at TIMESTAMPTZ`: opt-in once-per-day "yesterday's
+  activity" email channel (#19). Toggle in Settings → AI Insights. The
+  hourly scheduler calls `runDailyDigest()`; the helper dedupes with a
+  20-hour gate from `last_daily_digest_at` and skips silently when
+  `gatherWhatsNew(now - 24h)` returns zero counts.
+- `user_settings.target_allocation_pct JSONB NOT NULL DEFAULT '{}'::jsonb`:
+  per-asset-class target weights for the Investments performance card.
+  Keys are lowercase `security_type` (etf, equity, bond, etc.); values
+  are 0-100 numeric. `GET /api/investments/performance` joins these to
+  the actual portfolio breakdown and emits `target_pct` + `drift_pct`
+  per asset class. Empty `{}` → no drift fields on the response. Set
+  via Settings → Target Allocation form.
 - `user_settings` data freshness: `last_txn_sync_at TIMESTAMPTZ` (updated by
   `POST /api/sync`), `last_balance_sync_at TIMESTAMPTZ` (updated by
   `POST /api/sync-balances`). The nav badge uses the most recent of these plus
@@ -928,6 +1108,14 @@ standalone-mode fallback if either app is run on its own Render service.
   budget cost queries do NOT filter — both `'insight'` and `'categorize'` rows
   count toward `INSIGHTS_MONTHLY_BUDGET_CENTS`. Without this, categorize was
   read-only against the cap (checked it but never charged itself).
+- `financial_insights.user_feedback TEXT`, `user_feedback_text TEXT`,
+  `user_feedback_at TIMESTAMPTZ`: per-row trust-loop signal set by the
+  dashboard's thumbs-up/down/mixed buttons. `user_feedback` is enum-guarded
+  via `CHECK (user_feedback IS NULL OR user_feedback IN ('positive',
+  'negative', 'mixed'))`. `generateInsights()` pulls the latest 5 rated
+  insights and renders them into the next prompt under a
+  `=== USER FEEDBACK ON RECENT INSIGHTS ===` block so Claude can adjust.
+  Cleared by passing `feedback: null` to `PATCH /api/insights/:id/feedback`.
 - `user_settings.insights_running_summary_json JSONB`: structured AI long-term
   memory — `{ trends, completed_goals, pending_actions, alerts }`. Replaces the
   legacy plain-text `insights_running_summary` (TEXT column still populated
@@ -946,6 +1134,10 @@ standalone-mode fallback if either app is run on its own Render service.
   (covers manual + Plaid). Lack of FK is deliberate — both source tables
   exist independently. Written from `syncAllBalances` and the Plaid
   `/api/plaid/sync-holdings` path; read by `GET /api/accounts/:id/balance-history`.
+  Plaid sync collects its per-account snapshot rows during the sync loop and
+  flushes them as a single batched INSERT … ON CONFLICT DO UPDATE so either
+  all of today's Plaid snapshots land or none do; Teller's `syncAllBalances`
+  still inserts per-row.
 
 ## Recurring Transfer Detection
 Transfers are identified by keyword matching on merchant_name/name fields:
@@ -1021,18 +1213,21 @@ can dismiss them from the UI or run `POST /api/cleanup`.
   Perfin's webauthn_credentials table; the shell-layer login endpoints
   read from that same pool.
 - **Teller API**: mTLS client certificates, retry with exponential backoff (1s/2s/4s), 30s timeout
-- **AI prompt sanitization**: Two layers. First, `sanitizeForPrompt()` in
-  `routes/insights.js` strips `---RUNNING_SUMMARY---` patterns and consecutive
-  dashes from user-controlled strings (merchant names, goal names, transfer
-  display names) before interpolating them into the AI prompt. The original
-  rationale (delimiter parsing of running-summary output) is now obsolete
-  since tool_use replaced delimiter parsing, but the function is kept as
-  defense-in-depth against general prompt injection. Second,
-  `sanitizeStructuredSummary()` enforces hard shape/length bounds (max items
-  per array, string length caps, enum guardrails) on the structured summary
-  the AI returns via tool_use, so a pathological tool response can't pollute
-  long-term memory. When validation fails the prior summary is preserved
-  and the response carries `summary_status: "preserved_validation_failed"`.
+- **AI prompt sanitization**: Two layers, with different scopes. First,
+  `sanitizeForPrompt()` in `routes/insights.js` strips `---RUNNING_SUMMARY---`
+  patterns and consecutive dashes from user-controlled strings (merchant
+  names, goal names, transfer display names) before interpolating them into
+  the AI prompt. It is **not** a general prompt-injection defense — payloads
+  like "ignore previous instructions" pass through unchanged. Its only job
+  is neutralizing structural markers that could mimic a parsed delimiter,
+  in case the tool_use-replaced delimiter-parsing path ever re-enters the
+  codebase. Perfin is a single-operator app, so the only attacker is the
+  operator. Second, `sanitizeStructuredSummary()` enforces hard shape/length
+  bounds (max items per array, string length caps, enum guardrails) on the
+  structured summary the AI returns via tool_use, so a pathological tool
+  response can't pollute long-term memory. When validation fails the prior
+  summary is preserved and the response carries
+  `summary_status: "preserved_validation_failed"`.
 - **Subscription matching**: Word boundary regex to prevent false positives
 
 ## Scheduled Tasks (intervals)
@@ -1067,6 +1262,20 @@ embedded mode).
 - **CSV import reminders**: every 24 hours, checks manual (CSV-only) accounts
   whose most recent CSV import is older than `csv_reminder_days` setting.
   Sends notification listing specific account names needing a fresh upload.
+- **Weekly digest**: every 1 hour, checks `weekly_digest_enabled` and that
+  today matches `weekly_digest_day` (0=Sun..6=Sat). When both match,
+  invokes `runWeeklyDigest()` in `routes/insights.js`, which itself gates
+  on a 6-day window from `last_weekly_digest_at` (so multiple hourly
+  ticks on the configured day are idempotent). On success, fires the
+  `weekly_summary` webhook to Per-sistant and bumps the watermark. No
+  AI call — body is rendered from `insights_running_summary_json`.
+- **Daily digest**: every 1 hour, invokes `runDailyDigest()` in
+  `routes/insights.js`. The helper bails if `daily_digest_enabled` is
+  false, dedupes via a 20-hour window from `last_daily_digest_at` (so
+  one digest per "day" lands regardless of clock-edge ticks), and skips
+  silently when `gatherWhatsNew(now - 24h)` returns zero counts (no
+  point mailing an empty "yesterday" digest). On send, fires the
+  `daily_summary` webhook to Per-sistant. No AI call.
 
 ## Shared Account Spending Split
 All spending queries apply the split percentage for shared/joint accounts via SQL JOIN:
@@ -1107,10 +1316,15 @@ Constants exported from the same module: `INCOME_PREDICATE` (full predicate),
 income module, and bill-calendar income detection.
 
 ## Key Design Decisions
-- **Test deps live in two places.** `teller/package.json` holds runtime deps;
-  the repo-root `package.json` re-declares the subset that tests directly import
-  (`pg`, `express`, `multer`, `csv-parse`, `supertest`). CI runs `npm ci` in
-  both. Local devs must `npm install` at the root before `npm test`.
+- **Test-time devDeps re-declared at the root.** Tests in `tests/` directly
+  `require('express')`, `require('pg')`, etc., so the repo-root `package.json`
+  re-declares the subset that tests directly import (`pg`, `express`,
+  `multer`, `csv-parse`, `supertest`). The root's `express` is pinned to v4
+  to match `teller/` so tests run against the same Express version the
+  primary tested module uses at runtime; `apps/per-sistant/` declares v5 in
+  its own workspace. CI runs a single `npm ci` at the root — npm workspaces
+  walks shell/, teller/, and apps/per-sistant/ in one pass. Local devs must
+  `npm install` at the root before `npm test`.
 - **Source-pinned regression tests.** `tests/audit-regressions.test.js` includes
   smoke tests that read source files with `fs.readFileSync` and assert against
   patterns (e.g., `persistent.js` references `process.env.SSO_SECRET` and never
@@ -1255,6 +1469,38 @@ income module, and bill-calendar income detection.
   "extract handler into helper, export, reuse" pattern. Helpers return a
   `{ ok, status?, ...body }` discriminated union so HTTP wrappers can map
   to `res.status().json()` and direct callers can branch on `result.ok`.
+  Outbound HTTP helpers (`sendPerSistantWebhook`) follow a parallel
+  contract: `{ sent: bool, status?, reason?, error? }`. `reason` is an
+  enum-style string (`"not_configured"`, `"missing_secret"`) so callers
+  can branch on the specific failure mode rather than parsing logs.
+- **"Since last X" watermarks live in `user_settings`, not in cookies.**
+  The anomaly notifier (`last_anomaly_check_at`) and the "since you last
+  looked" dashboard widget (`last_dashboard_view_at`) both use a single
+  TIMESTAMPTZ column on the single-row `user_settings` table to scope
+  their respective queries. Storing server-side keeps the dedup logic
+  intact across devices and across PIN re-logins, and the single-user
+  app design means we never need a per-user dimension. New "since last X"
+  features should follow the same pattern instead of inventing a cookie
+  or local-storage equivalent.
+- **AI user feedback feeds the next prompt, not the running summary.**
+  When the user thumbs-down an insight via `PATCH /api/insights/:id/feedback`,
+  the rating + optional note are stored on the `financial_insights` row.
+  `generateInsights()` pulls the last 5 rated rows and renders a
+  `=== USER FEEDBACK ON RECENT INSIGHTS ===` section into the prompt for
+  the next run; the structured `insights_running_summary_json` is **not**
+  rewritten. Rationale: the summary is Claude's representation of the
+  state of the user's finances; user feedback is a meta-signal about
+  Claude's outputs. Mixing the two would let one bad insight permanently
+  pollute long-term memory. If feedback should ever start retracting
+  alerts or pending_actions, that's a separate tool-use schema change.
+- **Dashboard widget and email digest share one aggregator.**
+  `gatherWhatsNew(since)` in `routes/whats-new.js` is the single source
+  of "what changed since X". The HTTP `GET /api/whats-new` route calls
+  it with the `last_dashboard_view_at` watermark for the dashboard
+  widget; `runDailyDigest()` in `routes/insights.js` calls it with
+  `now - 24h` for the daily email digest. Both surfaces always agree
+  on what counts as "new" because there's only one query. Any change
+  to scope (e.g. capping txn count) lands in one place.
 - **Sliding-window shell session, idle window read from DB.** The shell
   PIN cookie's `maxAge` is refreshed on every authenticated request to
   `now + idleMs`. An active session never times out mid-use; an idle one

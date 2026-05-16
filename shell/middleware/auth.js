@@ -191,6 +191,7 @@ module.exports = {
   isValidSession,
   makeSession,
   setSessionCookie,
+  getIdleMs,
   requireAuth,
   handleLogin,
   handleLogout,

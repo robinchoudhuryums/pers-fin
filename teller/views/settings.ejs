@@ -141,6 +141,38 @@
       </div>
     </div>
     <div class="setting-row">
+      <div class="setting-info">
+        <div class="name">Weekly Digest Email</div>
+        <div class="desc">Mail a digest of the running summary (trends, pending actions, alerts) once per week via Per-sistant.</div>
+        <div id="weekly-digest-prereq" style="display:none;margin-top:6px;font-size:11px;padding:6px 10px;border-radius:6px;background:rgba(235,107,107,0.08);border:1px solid rgba(235,107,107,0.3);color:var(--red, #eb6b6b);">
+          Per-sistant webhook isn't configured — digest will silently no-op until you set the URL + secret in Per-sistant integration below.
+        </div>
+      </div>
+      <div class="setting-control">
+        <label class="toggle"><input type="checkbox" id="weekly-digest-toggle"><span class="slider"></span></label>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Digest Day</div><div class="desc">Day of week the digest fires (when enabled).</div></div>
+      <div class="setting-control">
+        <select id="weekly-digest-day-select">
+          <option value="0">Sunday</option><option value="1">Monday</option>
+          <option value="2">Tuesday</option><option value="3">Wednesday</option>
+          <option value="4">Thursday</option><option value="5">Friday</option>
+          <option value="6">Saturday</option>
+        </select>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info">
+        <div class="name">Daily Activity Digest</div>
+        <div class="desc">Mail a once-per-day digest of new transactions, balance changes, new subscriptions, and notifications from the last 24h. Skipped silently when nothing's new.</div>
+      </div>
+      <div class="setting-control">
+        <label class="toggle"><input type="checkbox" id="daily-digest-toggle"><span class="slider"></span></label>
+      </div>
+    </div>
+    <div class="setting-row">
       <div class="setting-info"><div class="name">ZIP Code</div><div class="desc">For regional rate comparisons (utility costs vs your area's average)</div></div>
       <div class="setting-control">
         <input type="text" id="zip-input" maxlength="5" placeholder="e.g. 10001" style="width:80px;padding:8px 12px;font-size:13px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;text-align:center;">
@@ -325,6 +357,35 @@
     </div>
   </div>
 
+  <!-- Target allocation (Follow-on for #8). API-only until now; this form
+       lets the user enter target percentages per security_type (etf, equity,
+       bond, etc.) so /api/investments/performance can compute drift. -->
+  <div class="section" id="target-allocation-section"><h2>Target Allocation</h2>
+    <div class="setting-row" style="flex-direction:column;align-items:stretch;">
+      <div class="setting-info" style="margin-bottom:8px;">
+        <div class="name">Target asset-class weights</div>
+        <div class="desc">
+          Set target % per asset class (security_type from your Plaid holdings).
+          The Investments widget will surface drift = actual − target for each class.
+          Values are 0-100; sum doesn't have to equal 100, but a balanced sum tends to be most useful.
+        </div>
+      </div>
+      <div id="target-alloc-rows" style="display:flex;flex-direction:column;gap:8px;"></div>
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
+        <input id="target-alloc-new-class" placeholder="asset class (e.g. equity)"
+               style="flex:1 1 160px;min-width:140px;padding:8px 10px;background:transparent;color:var(--text);border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:13px;">
+        <input id="target-alloc-new-pct" type="number" min="0" max="100" step="0.1" placeholder="%"
+               style="width:80px;padding:8px 10px;background:transparent;color:var(--text);border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:13px;text-align:center;">
+        <button class="btn" id="target-alloc-add-btn" style="min-width:90px;">+ Add</button>
+      </div>
+      <div style="margin-top:10px;display:flex;align-items:center;gap:12px;">
+        <button class="btn primary" id="target-alloc-save-btn">Save</button>
+        <span id="target-alloc-status" style="font-size:11px;color:var(--text-muted);"></span>
+        <span id="target-alloc-sum" style="font-size:11px;color:var(--text-muted);margin-left:auto;"></span>
+      </div>
+    </div>
+  </div>
+
   <h3 class="settings-group-title" style="font-size:12px;text-transform:uppercase;letter-spacing:1.5px;color:var(--warm, #d4a574);margin:24px 0 12px;font-weight:500;">Data &amp; Export</h3>
   <div class="section"><h2>Data</h2>
     <div class="setting-row">
@@ -387,6 +448,24 @@
         document.getElementById('auto-sync-toggle').checked = !!s.auto_sync_enabled;
         document.getElementById('auto-sync-interval-select').value = String(s.auto_sync_interval_hours || 6);
         document.getElementById('sync-notif-toggle').checked = s.sync_notifications_enabled !== false;
+        // S2: weekly digest controls. Show a prereq warning when the
+        // Per-sistant webhook isn't configured (#16) — without it the
+        // digest silently no-ops at the sender.
+        document.getElementById('weekly-digest-toggle').checked = !!s.weekly_digest_enabled;
+        document.getElementById('weekly-digest-day-select').value = String(s.weekly_digest_day ?? 1);
+        var digestPrereq = document.getElementById('weekly-digest-prereq');
+        if (digestPrereq) {
+          var hasWebhook = !!(s.persistent_url && s.persistent_webhook_enabled);
+          digestPrereq.style.display = hasWebhook ? 'none' : 'block';
+        }
+        // #19: daily digest control
+        var dailyToggle = document.getElementById('daily-digest-toggle');
+        if (dailyToggle) dailyToggle.checked = !!s.daily_digest_enabled;
+        // Follow-on for #8: target allocation editor
+        var ta = s.target_allocation_pct;
+        if (typeof ta === 'string') { try { ta = JSON.parse(ta); } catch { ta = {}; } }
+        TARGET_ALLOC = ta || {};
+        renderTargetAlloc();
         document.getElementById('auto-sync-last').textContent = s.last_auto_sync_at
           ? new Date(s.last_auto_sync_at).toLocaleString()
           : 'Never';
@@ -744,6 +823,104 @@
       }).join('');
     }
 
+    // ---- Target allocation editor (Follow-on for #8) ----
+    // In-memory model is a plain object {asset_class: pct}. Rows are
+    // rendered from it; add/remove mutate the model and re-render. Save
+    // PATCHes the whole map.
+    var TARGET_ALLOC = {};
+    function renderTargetAlloc() {
+      var rows = document.getElementById('target-alloc-rows');
+      var sum = document.getElementById('target-alloc-sum');
+      if (!rows) return;
+      var entries = Object.entries(TARGET_ALLOC);
+      if (entries.length === 0) {
+        rows.innerHTML = '<div style="font-size:12px;color:var(--text-muted);font-style:italic;">No targets set — add a class below to start tracking drift.</div>';
+        if (sum) sum.textContent = '';
+        return;
+      }
+      rows.innerHTML = entries.map(function(e) {
+        var cls = e[0], pct = e[1];
+        return '<div style="display:flex;align-items:center;gap:8px;">' +
+          '<span style="flex:1 1 auto;text-transform:capitalize;font-size:13px;color:var(--text);">' + esc(cls) + '</span>' +
+          '<input type="number" min="0" max="100" step="0.1" value="' + Number(pct) +
+            '" data-target-class="' + esc(cls) + '" ' +
+            'style="width:80px;padding:6px 8px;background:transparent;color:var(--text);border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:12px;text-align:center;">' +
+          '<span style="font-size:11px;color:var(--text-muted);">%</span>' +
+          '<button class="btn btn-sm" data-remove-class="' + esc(cls) + '" title="Remove" style="min-width:36px;">×</button>' +
+        '</div>';
+      }).join('');
+      var total = entries.reduce(function(s, e) { return s + Number(e[1]); }, 0);
+      if (sum) {
+        sum.textContent = 'sum: ' + total.toFixed(1) + '%';
+        sum.style.color = Math.abs(total - 100) < 0.5 ? 'var(--green)' :
+                          (total > 100 ? 'var(--red)' : 'var(--text-muted)');
+      }
+      // Wire input changes back to the model
+      rows.querySelectorAll('input[data-target-class]').forEach(function(inp) {
+        inp.addEventListener('input', function() {
+          var cls = this.getAttribute('data-target-class');
+          var v = parseFloat(this.value);
+          if (Number.isFinite(v)) TARGET_ALLOC[cls] = v;
+          var tot = Object.values(TARGET_ALLOC).reduce(function(s, x) { return s + Number(x); }, 0);
+          if (sum) {
+            sum.textContent = 'sum: ' + tot.toFixed(1) + '%';
+            sum.style.color = Math.abs(tot - 100) < 0.5 ? 'var(--green)' :
+                              (tot > 100 ? 'var(--red)' : 'var(--text-muted)');
+          }
+        });
+      });
+      rows.querySelectorAll('button[data-remove-class]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var cls = this.getAttribute('data-remove-class');
+          delete TARGET_ALLOC[cls];
+          renderTargetAlloc();
+        });
+      });
+    }
+
+    (function wireTargetAlloc() {
+      var addBtn = document.getElementById('target-alloc-add-btn');
+      var saveBtn = document.getElementById('target-alloc-save-btn');
+      var classInput = document.getElementById('target-alloc-new-class');
+      var pctInput = document.getElementById('target-alloc-new-pct');
+      var status = document.getElementById('target-alloc-status');
+      if (!addBtn || !saveBtn) return;
+      addBtn.addEventListener('click', function() {
+        var cls = (classInput.value || '').trim().toLowerCase();
+        var pct = parseFloat(pctInput.value);
+        if (!cls) { if (status) status.textContent = 'asset class required'; return; }
+        if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+          if (status) status.textContent = 'percent must be 0-100'; return;
+        }
+        TARGET_ALLOC[cls] = pct;
+        classInput.value = ''; pctInput.value = '';
+        if (status) status.textContent = '';
+        renderTargetAlloc();
+      });
+      saveBtn.addEventListener('click', async function() {
+        saveBtn.disabled = true;
+        if (status) status.textContent = 'Saving…';
+        try {
+          var res = await apiFetch('/api/settings', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target_allocation_pct: TARGET_ALLOC }),
+          });
+          if (!res.ok) {
+            var err = await res.json().catch(function() { return {}; });
+            if (status) status.textContent = err.error || 'Save failed';
+          } else {
+            if (status) status.textContent = 'Saved ✓';
+            setTimeout(function() { if (status) status.textContent = ''; }, 2000);
+          }
+        } catch (e) {
+          if (status) status.textContent = 'Save failed: ' + e.message;
+        } finally {
+          saveBtn.disabled = false;
+        }
+      });
+    })();
+
     // ---- WebAuthn registration UI ----
     // Lists registered credentials and runs the platform-authenticator
     // handshake to enroll a new one. Hidden on browsers without WebAuthn
@@ -886,6 +1063,9 @@
       ['auto-sync-toggle', 'change', function() { updateSetting('auto_sync_enabled', this.checked); }],
       ['auto-sync-interval-select', 'change', function() { updateSetting('auto_sync_interval_hours', parseInt(this.value)); }],
       ['sync-notif-toggle', 'change', function() { updateSetting('sync_notifications_enabled', this.checked); }],
+      ['weekly-digest-toggle', 'change', function() { updateSetting('weekly_digest_enabled', this.checked); }],
+      ['weekly-digest-day-select', 'change', function() { updateSetting('weekly_digest_day', parseInt(this.value)); }],
+      ['daily-digest-toggle', 'change', function() { updateSetting('daily_digest_enabled', this.checked); }],
       ['install-btn', 'click', async function() {
         const result = await perfinPromptInstall();
         if (result && result.outcome === 'accepted') showMsg('Installing Perfin…', true);

@@ -42,14 +42,26 @@ async function getPersistentConfig() {
 async function sendPerSistantWebhook(event, data) {
   const config = await getPersistentConfig();
   if (!config || !config.enabled) return { sent: false, reason: "not_configured" };
+  // Refuse to dispatch without the shared HMAC secret. The Per-sistant
+  // receiver rejects unsigned requests (returns 503), so sending unsigned
+  // was always a silent failure: insight emails would disappear with no
+  // surface on the Perfin side and a 503 logged only on the receiver.
+  // Now we short-circuit with an explicit reason so callers (and the
+  // /api/insights/status feed eventually) can tell why delivery failed.
+  if (!config.secret) {
+    console.error(
+      `sendPerSistantWebhook[${event}]: refusing to send unsigned — ` +
+      "persistent_webhook_secret not configured. Set it via Settings → " +
+      "Per-sistant integration so the receiver can verify the HMAC."
+    );
+    return { sent: false, reason: "missing_secret" };
+  }
   const payload = { event, data, timestamp: new Date().toISOString() };
   const body = JSON.stringify(payload);
-  const headers = { "Content-Type": "application/json" };
-  if (config.secret) {
-    headers["x-webhook-signature"] = crypto.createHmac("sha256", config.secret).update(body).digest("hex");
-  } else {
-    console.warn("Webhook sent without HMAC signature — PERSISTENT_WEBHOOK_SECRET not configured");
-  }
+  const headers = {
+    "Content-Type": "application/json",
+    "x-webhook-signature": crypto.createHmac("sha256", config.secret).update(body).digest("hex"),
+  };
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8000);
   try {
@@ -57,9 +69,13 @@ async function sendPerSistantWebhook(event, data) {
       method: "POST", headers, body, signal: controller.signal,
     });
     clearTimeout(timeout);
+    if (!r.ok) {
+      console.error(`sendPerSistantWebhook[${event}]: receiver returned ${r.status}`);
+    }
     return { sent: r.ok, status: r.status };
   } catch (err) {
     clearTimeout(timeout);
+    console.error(`sendPerSistantWebhook[${event}]: ${err.message}`);
     return { sent: false, error: err.message };
   }
 }
