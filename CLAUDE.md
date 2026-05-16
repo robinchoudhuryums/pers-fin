@@ -114,7 +114,12 @@ teller/
     settings.js          — Settings page (theme, AI insights, keep-alive, Per-sistant, exports)
     pwa.js               — PWA manifest.json + icon generation (icons cached at startup)
   public/
-    logo.svg             — Iron Man helmet SVG logo (traced from PNG, used as nav icon, PWA icon)
+    logo.svg             — Iron Man helmet SVG logo (traced from PNG). Used as the
+                           Perfin nav icon (CSS-masked, gold-tinted), the standalone
+                           Perfin PWA icon, and the source of the helmet shape that
+                           perfin-materialize.js inlines for the tile-click animation.
+                           NOT the unified-shell PWA icon — that's the mask-crop PNG
+                           served from shell/public/manifest.json.
     offline.html         — Branded offline fallback page served by the SW when navigation
                            fails and no cache hit exists
     sw.js                — Service worker (cache `perfin-v4`, network-first with offline
@@ -153,10 +158,19 @@ The unified shell adds:
 ```
 shell/
   index.js                     — PIN gate, sub-app mounts, cross-pool wiring,
-                                 keep-alive, graceful shutdown
+                                 keep-alive, graceful shutdown, public PWA-icon
+                                 + /health routes mounted before the auth gate
   middleware/
-    auth.js                    — HMAC-signed cookie session (SHELL_PIN + SHELL_SECRET);
-                                 exports COOKIE_NAME, makeSession, requireAuth, etc.
+    auth.js                    — Shell auth: HMAC-signed cookie session
+                                 (SHELL_PIN + SHELL_SECRET) with sliding-window
+                                 idle timeout (default 60 min, tunable from
+                                 Settings via user_settings.shell_idle_timeout_minutes,
+                                 60s in-memory cache). Also honors `x-api-key`
+                                 against process.env.API_KEY for cron / CI
+                                 clients. Exports init({pool}), requireAuth,
+                                 handleLogin, handleLogout, invalidateIdleCache,
+                                 makeSession, setSessionCookie, isValidSession,
+                                 COOKIE_NAME, DEFAULT_IDLE_MS.
     webauthn.js                — Shell-side biometric login: hosts
                                  `/api/shell/webauthn/{available,authenticate-options,authenticate}`
                                  mounted BEFORE requireAuth; reads
@@ -167,7 +181,24 @@ shell/
     landing.ejs                — Post-login tile picker
   public/
     landing.css                — Shell-only styles
-    manifest.json              — Unified PWA manifest
+    manifest.json              — Unified PWA manifest (mask-crop PNG icons,
+                                 not the placeholder SVG it had originally)
+    transition.css             — Cosmic mask-reveal transition (Per-sistant
+                                 entry from landing tile + Perfin nav's
+                                 cross-app icon). Scoped under .atrans-*.
+    transition.js              — Auto-init module: scans for [data-atrans]
+                                 triggers, populates twinkling stars +
+                                 rising particles in any .atrans-overlay,
+                                 binds click→activate→navigate.
+    perfin-materialize.css     — Iron Man helmet stroke-draw + fill + pulse
+                                 ring + particle burst + HUD scan animation
+                                 (Perfin entry from landing tile + Per-sistant
+                                 nav's cross-app icon). Mirrors the standalone
+                                 Perfin login animation but scoped under
+                                 .materialize-overlay so the two never collide.
+    perfin-materialize.js      — Auto-init module: scans for
+                                 [data-perfin-materialize] triggers, builds
+                                 the helmet-SVG overlay lazily on first click.
 ```
 
 **Other key files:**
@@ -409,9 +440,34 @@ shell/
 - **Budget threshold alerts**: Push notifications at 80% (warning) and 100%+ (exceeded) every 3 hours
 
 ### UI & UX
-- **Authentication**: SESSION_PASSWORD (text) or SESSION_PIN (numeric PIN pad), configurable timeout
-- **Login animation**: Iron Man helmet materialize effect on successful login (gold-amber stroke-draw → fill → redirect)
-- **Branding**: Iron Man helmet logo (SVG traced from PNG) — nav bar icon (CSS mask), PWA icon, login page
+- **Authentication (standalone)**: SESSION_PASSWORD (text) or SESSION_PIN
+  (numeric PIN pad), configurable timeout. Bypassed under the unified shell.
+- **Authentication (unified shell)**: SHELL_PIN with sliding-window idle
+  timeout (default 60 min, tunable from Settings → Security → "App Idle
+  Timeout"). Cookie refreshed on every authenticated request so an active
+  user never times out mid-use; idle past the window → re-prompted.
+- **Login animation (standalone Perfin)**: Iron Man helmet materialize on
+  successful login (gold-amber stroke-draw → fill → particle burst → HUD
+  scan → redirect). Lives inline in `teller/views/login.ejs`.
+- **Tile-click + cross-app transition animations (unified shell)**: the
+  same Iron Man materialize plays when entering Perfin from the landing
+  tile or from Per-sistant's nav cross-app icon; a parallel cosmic mask-
+  crop reveal (scan-line + nebula + rising particles) plays when entering
+  Per-sistant from the landing tile or Perfin's nav cross-app icon.
+  Implemented as shared shell static modules (`shell/public/
+  perfin-materialize.{css,js}` and `transition.{css,js}`) wired via
+  `data-perfin-materialize` / `data-atrans="cosmic"` attributes.
+- **Branding (Perfin)**: Iron Man helmet logo (SVG traced from PNG) — nav
+  bar icon (CSS mask), standalone Perfin PWA icon, login animation source.
+- **Branding (unified shell PWA)**: mask-crop PNG (1024×1024). Served from
+  shell at root paths so iOS auto-discovers from any page. Distinct from
+  Perfin's per-app icon — adding from a Perfin page still gets the helmet
+  bookmark.
+- **Status messages**: `.status-msg` (Perfin shared sheet + Per-sistant
+  shared sheet) renders as a fixed-position toast in the top-right
+  corner, with the existing `slideDown` keyframe. Visible regardless of
+  page scroll so feedback from buttons low on long pages (e.g. Settings →
+  "Run detection") doesn't require scrolling back up.
 - **Dark/Light theme**: Toggle in Settings, persisted to DB + localStorage
 - **PWA**: Installable home screen app (manifest.json + service worker, helmet icon centered on home screen).
   Service worker (cache `perfin-v4`) uses network-first, caches successful same-origin
@@ -699,8 +755,24 @@ GET  /budgets                   # budget tracking page
 GET  /settings                  # settings page
 GET  /accounts/:id/history      # per-account balance chart (query: source=linked|investment, months)
 GET  /login                     # login page (if auth enabled)
-GET  /health                    # health check
+GET  /health                    # health check (Perfin standalone) — also
+                                # served by the shell at the same path; the
+                                # shell version is public (pre-auth) and
+                                # doesn't touch the DB
+
+# Shell-level public endpoints (no auth, mounted before requireAuth):
+GET  /health                              # process-up probe (shell, JSON)
+GET  /manifest.json                       # unified-shell PWA manifest
+GET  /apple-touch-icon.png                # iOS home-screen icon (mask-crop PNG)
+GET  /apple-touch-icon-precomposed.png    # older-iOS probe path; same bytes
+GET  /android-chrome-192x192.png          # PWA icon, 192 (mask-crop PNG)
+GET  /android-chrome-512x512.png          # PWA icon, 512 (mask-crop PNG)
 ```
+
+`PATCH /api/settings` accepts a new `shell_idle_timeout_minutes` field
+(integer, 5-10080 minutes) that drives the shell's sliding-window auth.
+After the PATCH a hook fires `auth.invalidateIdleCache()` so the new
+value applies on the very next request, not after the 60s cache lag.
 
 ## Environment Variables
 
@@ -721,11 +793,16 @@ GET  /health                    # health check
 - `TELLER_CERT_PATH` / `TELLER_KEY_PATH` — file paths (default `./certificate.pem` / `./private_key.pem`)
 - `TELLER_CERT_CONTENT` / `TELLER_KEY_CONTENT` — raw PEM contents written to disk by `docker-entrypoint.sh` at container start
 
-### Per-app auth (legacy, bypassed when embedded under shell)
+### Per-app auth (mostly bypassed when embedded under shell)
 - `SESSION_PASSWORD` — text password for standalone Perfin login
 - `SESSION_PIN` — numeric PIN for standalone Perfin PIN pad login
 - `SESSION_SECRET` — session cookie secret (auto-generated if not set)
-- `API_KEY` — optional `X-API-Key` for /api/* endpoints; bypassed in embedded mode (browser fetches use the shell session cookie)
+- `API_KEY` — `X-API-Key` for non-browser clients (cron, GitHub Actions like
+  daily-sync.yml and keep-alive.yml). Under the unified shell, the shell's
+  `requireAuth` itself validates the header (constant-time compare) as an
+  alternate credential path parallel to the PIN cookie — sub-apps then see
+  `req.app.get("embedded")=true` and skip their own check, trusting the
+  shell. Browsers don't need it; they use the shell session cookie.
 - `ALLOWED_ORIGINS` — comma-separated CORS origins (Perfin)
 
 ### AI / Insights (Perfin)
@@ -814,6 +891,13 @@ standalone-mode fallback if either app is run on its own Render service.
   `POST /api/sync`), `last_balance_sync_at TIMESTAMPTZ` (updated by
   `POST /api/sync-balances`). The nav badge uses the most recent of these plus
   `last_auto_sync_at` to display staleness.
+- `user_settings.shell_idle_timeout_minutes INT NOT NULL DEFAULT 60`: how
+  many minutes of inactivity before the unified-shell PIN is required again
+  (sliding window — every authenticated request resets the timer). Read by
+  `shell/middleware/auth.js` with a 60s in-memory cache; the cache is
+  invalidated on `PATCH /api/settings` via a hook the shell registers on
+  Perfin's Express app. Bounded 5–10080 minutes (5 min … 7 days) at the
+  PATCH layer.
 - `budgets` rollover columns: `rollover_enabled BOOLEAN DEFAULT false`,
   `budget_type TEXT DEFAULT 'recurring'` (recurring or one_time),
   `effective_month TEXT` (YYYY-MM, only used for one_time budgets).
@@ -1171,9 +1255,56 @@ income module, and bill-calendar income detection.
   "extract handler into helper, export, reuse" pattern. Helpers return a
   `{ ok, status?, ...body }` discriminated union so HTTP wrappers can map
   to `res.status().json()` and direct callers can branch on `result.ok`.
+- **Sliding-window shell session, idle window read from DB.** The shell
+  PIN cookie's `maxAge` is refreshed on every authenticated request to
+  `now + idleMs`. An active session never times out mid-use; an idle one
+  expires after the configured window. `idleMs` comes from
+  `user_settings.shell_idle_timeout_minutes` via a 60s in-memory cache
+  that `PATCH /api/settings` invalidates so changes take effect on the
+  next request. Falls back to a 60-minute default if the DB lookup blips
+  (fail-open: better to keep an active user signed in on a transient
+  error than fail-closed and force re-login). Replaces an earlier fixed
+  7-day cookie TTL that gave no idle behavior at all.
+- **Shell auth honors `x-api-key` as an alternate credential.** Non-
+  browser clients (cron, GitHub Actions like daily-sync.yml and
+  keep-alive.yml) send `x-api-key: $API_KEY`. The shell's `requireAuth`
+  short-circuits on a valid header (constant-time compare against
+  `process.env.API_KEY`) before checking the PIN cookie. Sub-apps still
+  skip their own API_KEY check in embedded mode — the shell already
+  enforced it, so the request is trusted past the gate. This is also
+  why `/perfin/api/sync` works from cron even though it's behind the
+  shell auth gate.
+- **Cross-app transition animations are auto-init modules.** Both the
+  cosmic mask reveal (Per-sistant entry) and the Iron Man materialize
+  (Perfin entry) live as CSS+JS pairs under `shell/public/`. Each JS
+  file scans for a marker attribute on init (`[data-atrans]` for cosmic,
+  `[data-perfin-materialize]` for Iron Man), populates per-overlay
+  decorations once, and binds click handlers that activate the overlay
+  then navigate. Pages that want the animation just add the attribute
+  to the link — no inline `<script>`. Loaded from `/shell-static/*`
+  which is mounted before the auth gate.
+- **`/shell-static/*` uses `maxAge: 0 + ETag`, not a long cache.** An
+  earlier 1-day cache caused stale transition.css/transition.js after
+  prod deploys. ETag revalidation keeps the per-request cost tiny
+  (~100B for a 304) and avoids the need to bump `?v=` on every edit.
+- **Shell serves PWA icons at root paths.** `/apple-touch-icon.png`,
+  `/apple-touch-icon-precomposed.png`, `/android-chrome-192x192.png`,
+  `/android-chrome-512x512.png` mounted before the auth gate, sourcing
+  bytes from `apps/per-sistant/*.png` so there's one copy. iOS Safari's
+  "Add to Home Screen" auto-discovers `/apple-touch-icon.png` from any
+  origin path — so from `/login`, the landing, or any Perfin/Per-sistant
+  page, the unified-shell PWA always installs with the mask-crop icon.
+  Perfin's own pages still declare `<link rel="apple-touch-icon">`
+  pointing at its helmet SVG, so an "Add to Home Screen" tap from deep
+  inside Perfin still gets the helmet bookmark (different visual identity
+  per app — a feature, not a bug).
+- **Status messages render as fixed-position toasts.** `.status-msg`
+  (Perfin shared + Per-sistant) is `position: fixed; top: 16px; right:
+  16px;` so action feedback for buttons low on a long page (Settings →
+  "Run detection") shows up regardless of scroll position. No JS change
+  — every existing `showStatus(...)` call site keeps working.
 
 ## Git
-- Active development branch: `claude/broad-scan-feature-wodFz`
 - Render deploys from `main` (configured in the Render dashboard, not in `render.yaml`)
 - PEM files and `.env` are in `.gitignore`
 
