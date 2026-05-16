@@ -2,22 +2,26 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Install root deps (pg, googleapis for scripts)
+# The repo is an npm workspaces project: a single `npm install` at the root
+# walks shell/, teller/, and apps/per-sistant/ and installs each workspace's
+# deps. Copy all workspace package manifests up front so the install layer
+# caches when only source changes.
 COPY package.json package-lock.json* ./
-RUN npm install --production
-
-# Install Teller server deps
+COPY shell/package.json shell/package-lock.json* ./shell/
 COPY teller/package.json teller/package-lock.json* ./teller/
-RUN cd teller && npm install --production
-
-# Install Plaid server deps (kept for optional use)
+COPY apps/per-sistant/package.json apps/per-sistant/package-lock.json* ./apps/per-sistant/
 COPY plaid/package.json plaid/package-lock.json* ./plaid/
-RUN cd plaid && npm install --production
 
-# Copy source
-COPY scripts/ ./scripts/
+RUN npm install --omit=dev --workspaces --include-workspace-root
+
+# Copy source. The unified shell at shell/index.js is the entry point;
+# it require()s teller/ and apps/per-sistant/ as sub-apps and mounts them
+# behind a PIN gate. The legacy Plaid app stays for optional standalone use.
+COPY shell/ ./shell/
 COPY teller/ ./teller/
+COPY apps/per-sistant/ ./apps/per-sistant/
 COPY plaid/ ./plaid/
+COPY scripts/ ./scripts/
 COPY db/ ./db/
 COPY n8n-workflows/ ./n8n-workflows/
 COPY apps-script/ ./apps-script/
@@ -35,4 +39,7 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
   CMD node -e "require('http').get('http://localhost:3000/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1))"
 
 ENTRYPOINT ["./docker-entrypoint.sh"]
-CMD ["node", "teller/server.js"]
+# Boot the unified shell — it mounts Perfin (teller) at /perfin and
+# Per-sistant at /per-sistant behind a PIN gate. Override with CMD
+# ["node", "teller/server.js"] for legacy standalone Perfin.
+CMD ["node", "shell/index.js"]

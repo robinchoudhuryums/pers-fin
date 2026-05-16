@@ -184,8 +184,27 @@ router.post("/api/plaid/sync-holdings", async (_req, res) => {
     );
 
     let totalAccounts = 0, totalHoldings = 0;
+    const errors = [];
+    // Buffer per-account snapshot tuples and flush as a single batched INSERT
+    // after the loop. Each snapshot used to be its own query with a swallowed
+    // .catch(), so a mid-sync DB blip could leave a partial set of snapshots
+    // for one day — showing a phantom spike or drop on the history chart.
+    // A single INSERT … VALUES ($1, $2, …), ($n, $n+1, …) is atomic in
+    // Postgres: either all of today's snapshots land or none do.
+    const snapshotRows = [];
     for (const item of items.rows) {
       try {
+        // pgp_sym_decrypt returns NULL when the passphrase is wrong (or empty)
+        // instead of throwing — without this check the route used to call
+        // Plaid with `access_token: null`, which Plaid 400s on, get caught
+        // below, and ultimately return 200 with `accounts_updated: 0` and no
+        // surface on the failure. Now we record a structured error per item.
+        if (!item.access_token) {
+          const msg = `Could not decrypt access token for ${item.institution_name} — check TOKEN_ENCRYPTION_PASSPHRASE`;
+          console.error(msg);
+          errors.push({ institution: item.institution_name, error: "decryption_failed" });
+          continue;
+        }
         const holdingsRes = await client.investmentsHoldingsGet({ access_token: item.access_token });
         const accounts = holdingsRes.data.accounts || [];
         const holdings = holdingsRes.data.holdings || [];
@@ -208,14 +227,7 @@ router.post("/api/plaid/sync-holdings", async (_req, res) => {
           totalAccounts++;
           const invAcctId = updRes.rows[0]?.id;
           if (invAcctId) {
-            await pool.query(
-              `INSERT INTO account_balance_snapshots
-                 (source, source_id, snapshot_date, balance)
-               VALUES ('investment', $1, CURRENT_DATE, $2)
-               ON CONFLICT (source, source_id, snapshot_date) DO UPDATE SET
-                 balance = EXCLUDED.balance`,
-              [invAcctId, balance]
-            ).catch(e => console.error("balance snapshot insert (plaid) error:", e.message));
+            snapshotRows.push({ invAcctId, balance });
           }
         }
 
@@ -249,10 +261,39 @@ router.post("/api/plaid/sync-holdings", async (_req, res) => {
         }
       } catch (err) {
         console.error("Holdings sync error for " + item.institution_name + ":", err.message);
+        errors.push({ institution: item.institution_name, error: err.message });
       }
     }
 
-    res.json({ accounts_updated: totalAccounts, holdings_updated: totalHoldings });
+    // Atomic snapshot flush — single multi-row INSERT, all rows succeed or
+    // all fail. ON CONFLICT DO UPDATE keeps the same-date upsert semantics
+    // the per-row inserts had.
+    if (snapshotRows.length > 0) {
+      try {
+        const placeholders = [];
+        const values = [];
+        let idx = 1;
+        for (const s of snapshotRows) {
+          placeholders.push(`('investment', $${idx++}, CURRENT_DATE, $${idx++})`);
+          values.push(s.invAcctId, s.balance);
+        }
+        await pool.query(
+          `INSERT INTO account_balance_snapshots (source, source_id, snapshot_date, balance)
+           VALUES ${placeholders.join(", ")}
+           ON CONFLICT (source, source_id, snapshot_date) DO UPDATE SET balance = EXCLUDED.balance`,
+          values
+        );
+      } catch (err) {
+        console.error("Balance snapshot batched insert (plaid) error:", err.message);
+        errors.push({ stage: "balance_snapshot", error: err.message });
+      }
+    }
+
+    res.json({
+      accounts_updated: totalAccounts,
+      holdings_updated: totalHoldings,
+      errors: errors.length > 0 ? errors : undefined,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

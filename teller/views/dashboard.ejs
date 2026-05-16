@@ -618,7 +618,7 @@
 
 <%- include('partials/foot') %>
   <script src="<%= basePath %>/vendor/chart.umd.js"></script>
-  <script nonce="<%= nonce %>">if(typeof Chart==='undefined'){var s=document.createElement('script');s.src='/vendor/chart.umd.js?v=<%= v %>';document.head.appendChild(s);}</script>
+  <script nonce="<%= nonce %>">if(typeof Chart==='undefined'){var s=document.createElement('script');s.src='<%= basePath %>/vendor/chart.umd.js?v=<%= v %>';document.head.appendChild(s);}</script>
   <script nonce="<%= nonce %>">
     const barColors = ['#c8856c','#d4a574','#5a8f8f','#6fcf97','#7fb5e6','#f0c36d','#eb6b6b','#b07cc6','#e8a87c','#85dcb0','#7bb5d4','#d4a0a0','#9fd4c9','#c4b28f','#a8c3d4'];
 

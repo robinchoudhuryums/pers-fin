@@ -347,8 +347,10 @@ router.get("/api/budgets/alerts", async (_req, res) => {
 // Typically called at month-end (or auto-triggered by scheduler).
 router.post("/api/budgets/snapshot", async (req, res) => {
   const month = req.body.month || currentMonthKey();
-  if (!/^\d{4}-\d{2}$/.test(month)) {
-    return res.status(400).json({ error: "month must be 'YYYY-MM'" });
+  // Reject '9999-99' and other shape-valid-but-impossible months;
+  // getCategorySpendingForMonth would otherwise build a malformed date string.
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
+    return res.status(400).json({ error: "month must be 'YYYY-MM' with month 01-12" });
   }
   try {
     const [budgets, spending] = await Promise.all([

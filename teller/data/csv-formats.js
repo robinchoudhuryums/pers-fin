@@ -113,8 +113,19 @@ function parseDate(dateStr) {
   return isoDate;
 }
 
+// Build the dedup hash from (accountLabel, date, amount, merchant). Fields
+// are joined with `|`, so any `|` inside a field would shift downstream
+// boundaries and let two distinct tuples hash to the same value (e.g.
+// accountLabel="X|Y", date="Z" vs accountLabel="X", date="Y|Z"). We escape
+// literal pipes in each field before joining so the delimiter is
+// unambiguous. Fields without `|` produce the same hash as before — that's
+// the typical case, so existing csv_* IDs in the database remain stable
+// and dedup against re-imports of the same rows continues to work. Only
+// rows containing `|` (rare, but the bug class) get a different hash;
+// those rows were collision-prone under the old scheme anyway.
 function csvTransactionId(accountLabel, date, amount, merchant) {
-  const raw = `${accountLabel}|${date}|${amount}|${merchant || ""}`;
+  const esc = (v) => String(v == null ? "" : v).replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
+  const raw = `${esc(accountLabel)}|${esc(date)}|${esc(amount)}|${esc(merchant)}`;
   return "csv_" + crypto.createHash("sha256").update(raw).digest("hex");
 }
 

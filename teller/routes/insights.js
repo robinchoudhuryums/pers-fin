@@ -465,10 +465,14 @@ async function generateInsights() {
         "For retirement goals, factor in realistic return expectations given current market conditions rather than historical averages.";
     }
 
-    // ---- Sanitize user-controlled strings to prevent prompt injection ----
-    // The running-summary delimiter (---RUNNING_SUMMARY---) is parsed from the
-    // model's response. If a merchant name, goal name, or transfer name contains
-    // this pattern, it could corrupt summary parsing. Strip it.
+    // ---- Sanitize delimiter patterns in user-controlled strings ----
+    // NOT a general prompt-injection defense — only neutralizes the
+    // ---RUNNING_SUMMARY--- delimiter and long dash runs that could mimic
+    // structural markers. Tool_use replaced the delimiter parsing path, but
+    // we still strip the patterns in case a delimited fallback ever re-enters
+    // the codebase. A malicious string like "ignore previous instructions"
+    // passes through unchanged; this is a personal single-user app so the
+    // only attacker is the operator.
     function sanitizeForPrompt(s) {
       if (!s) return "";
       return String(s).replace(/---+RUNNING_SUMMARY---+/gi, "[redacted]").replace(/---+/g, "--");
