@@ -406,4 +406,102 @@ router.get("/api/investments", async (_req, res) => {
   }
 });
 
+// GET /api/investments/performance — aggregate returns + asset allocation
+//
+// Pulls from `investment_holdings` (only Plaid-linked holdings have cost
+// basis + current value at the security level — Teller-linked investments
+// are account-balance-only and have no return-per-security data).
+//
+// Response:
+//   {
+//     total_value, total_cost_basis, total_return, total_return_pct,
+//     holdings_count, accounts_count,
+//     by_asset_class: [
+//       { security_type, value, cost_basis, return, return_pct, pct_of_portfolio }, ...
+//     ],
+//     top_winners: [{ name, ticker, value, cost_basis, return, return_pct }, ...] (top 5),
+//     top_losers:  [{ ... }, ...] (top 5),
+//   }
+//
+// Auto-hides on the dashboard when total_value === 0 (no Plaid holdings).
+router.get("/api/investments/performance", async (_req, res) => {
+  try {
+    const holdings = await pool.query(
+      `SELECT h.name, h.ticker, h.quantity, h.cost_basis, h.current_value,
+              h.security_type, h.plaid_account_id, ia.name AS account_name
+       FROM investment_holdings h
+       LEFT JOIN investment_accounts ia ON ia.plaid_account_id = h.plaid_account_id
+       WHERE COALESCE(ia.is_active, true) = true`
+    );
+
+    let totalValue = 0;
+    let totalCostBasis = 0;
+    const byClass = {};
+    const enrichedHoldings = [];
+
+    for (const h of holdings.rows) {
+      const value = parseFloat(h.current_value || 0);
+      const cost = parseFloat(h.cost_basis || 0);
+      const ret = value - cost;
+      const retPct = cost > 0 ? (ret / cost) * 100 : null;
+      totalValue += value;
+      totalCostBasis += cost;
+      const cls = (h.security_type || "unknown").toLowerCase();
+      if (!byClass[cls]) byClass[cls] = { security_type: cls, value: 0, cost_basis: 0 };
+      byClass[cls].value += value;
+      byClass[cls].cost_basis += cost;
+      enrichedHoldings.push({
+        name: h.name,
+        ticker: h.ticker,
+        account_name: h.account_name,
+        value,
+        cost_basis: cost,
+        return: ret,
+        return_pct: retPct,
+      });
+    }
+
+    const totalReturn = totalValue - totalCostBasis;
+    const totalReturnPct = totalCostBasis > 0 ? (totalReturn / totalCostBasis) * 100 : null;
+
+    const byAssetClass = Object.values(byClass).map(c => {
+      const ret = c.value - c.cost_basis;
+      const retPct = c.cost_basis > 0 ? (ret / c.cost_basis) * 100 : null;
+      const pctOfPortfolio = totalValue > 0 ? (c.value / totalValue) * 100 : 0;
+      return {
+        security_type: c.security_type,
+        value: c.value,
+        cost_basis: c.cost_basis,
+        return: ret,
+        return_pct: retPct,
+        pct_of_portfolio: pctOfPortfolio,
+      };
+    }).sort((a, b) => b.value - a.value);
+
+    // Sort holdings by return_pct, filter to those with valid (non-null) pct
+    const withPct = enrichedHoldings.filter(h => h.return_pct !== null);
+    const topWinners = withPct.slice().sort((a, b) => b.return_pct - a.return_pct).slice(0, 5);
+    const topLosers  = withPct.slice().sort((a, b) => a.return_pct - b.return_pct).slice(0, 5);
+
+    // Distinct account count
+    const accountIds = new Set();
+    for (const h of holdings.rows) if (h.plaid_account_id) accountIds.add(h.plaid_account_id);
+
+    res.json({
+      total_value: totalValue,
+      total_cost_basis: totalCostBasis,
+      total_return: totalReturn,
+      total_return_pct: totalReturnPct,
+      holdings_count: holdings.rows.length,
+      accounts_count: accountIds.size,
+      by_asset_class: byAssetClass,
+      top_winners: topWinners,
+      top_losers: topLosers,
+    });
+  } catch (err) {
+    console.error("Investment performance error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
 module.exports = router;

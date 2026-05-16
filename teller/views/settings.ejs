@@ -141,6 +141,23 @@
       </div>
     </div>
     <div class="setting-row">
+      <div class="setting-info"><div class="name">Weekly Digest Email</div><div class="desc">Mail a digest of the running summary (trends, pending actions, alerts) once per week via Per-sistant. Requires Per-sistant webhook configured.</div></div>
+      <div class="setting-control">
+        <label class="toggle"><input type="checkbox" id="weekly-digest-toggle"><span class="slider"></span></label>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Digest Day</div><div class="desc">Day of week the digest fires (when enabled).</div></div>
+      <div class="setting-control">
+        <select id="weekly-digest-day-select">
+          <option value="0">Sunday</option><option value="1">Monday</option>
+          <option value="2">Tuesday</option><option value="3">Wednesday</option>
+          <option value="4">Thursday</option><option value="5">Friday</option>
+          <option value="6">Saturday</option>
+        </select>
+      </div>
+    </div>
+    <div class="setting-row">
       <div class="setting-info"><div class="name">ZIP Code</div><div class="desc">For regional rate comparisons (utility costs vs your area's average)</div></div>
       <div class="setting-control">
         <input type="text" id="zip-input" maxlength="5" placeholder="e.g. 10001" style="width:80px;padding:8px 12px;font-size:13px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;text-align:center;">
@@ -387,6 +404,9 @@
         document.getElementById('auto-sync-toggle').checked = !!s.auto_sync_enabled;
         document.getElementById('auto-sync-interval-select').value = String(s.auto_sync_interval_hours || 6);
         document.getElementById('sync-notif-toggle').checked = s.sync_notifications_enabled !== false;
+        // S2: weekly digest controls
+        document.getElementById('weekly-digest-toggle').checked = !!s.weekly_digest_enabled;
+        document.getElementById('weekly-digest-day-select').value = String(s.weekly_digest_day ?? 1);
         document.getElementById('auto-sync-last').textContent = s.last_auto_sync_at
           ? new Date(s.last_auto_sync_at).toLocaleString()
           : 'Never';
@@ -886,6 +906,8 @@
       ['auto-sync-toggle', 'change', function() { updateSetting('auto_sync_enabled', this.checked); }],
       ['auto-sync-interval-select', 'change', function() { updateSetting('auto_sync_interval_hours', parseInt(this.value)); }],
       ['sync-notif-toggle', 'change', function() { updateSetting('sync_notifications_enabled', this.checked); }],
+      ['weekly-digest-toggle', 'change', function() { updateSetting('weekly_digest_enabled', this.checked); }],
+      ['weekly-digest-day-select', 'change', function() { updateSetting('weekly_digest_day', parseInt(this.value)); }],
       ['install-btn', 'click', async function() {
         const result = await perfinPromptInstall();
         if (result && result.outcome === 'accepted') showMsg('Installing Perfin…', true);

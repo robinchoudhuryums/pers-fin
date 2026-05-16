@@ -538,6 +538,31 @@ async function runMigrations() {
     )`);
     await client.query("CREATE INDEX IF NOT EXISTS idx_acct_balance_snapshots_lookup ON account_balance_snapshots (source, source_id, snapshot_date DESC)");
 
+    // ---- Insight user-feedback loop (S1: trust loop) ----
+    // Per-insight thumbs-up/down + optional free-form correction, fed back
+    // into the next insight's prompt so Claude learns from user pushback.
+    // Severity-graded into a small enum so /api/insights/feedback-summary
+    // can show "X positive / Y negative / Z mixed" without scanning blobs.
+    await client.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS user_feedback TEXT CHECK (user_feedback IS NULL OR user_feedback IN ('positive', 'negative', 'mixed'))");
+    await client.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS user_feedback_text TEXT");
+    await client.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS user_feedback_at TIMESTAMPTZ");
+
+    // ---- "What changed since last sync" view (S3) ----
+    // Watermark for the dashboard's "since you last looked" widget. POSTed
+    // to /api/whats-new/seen on dashboard load; the widget queries
+    // /api/whats-new which aggregates new txns, balance deltas, new
+    // subscriptions/anomalies/notifications since this timestamp.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_dashboard_view_at TIMESTAMPTZ");
+
+    // ---- Weekly digest scheduler (S2) ----
+    // Independent of the per-insight `insights_generated` email — this is a
+    // standing Monday-morning digest rendered from the structured running
+    // summary (trends, pending_actions, alerts). The toggle lets users
+    // opt out without disabling the insights_generated channel.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS weekly_digest_enabled BOOLEAN NOT NULL DEFAULT false");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS weekly_digest_day INT NOT NULL DEFAULT 1");  // 0=Sun, 1=Mon, ...
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_weekly_digest_at TIMESTAMPTZ");
+
     // ---- Add 'investments' to dashboard_widgets default for new users ----
     // For existing rows: merge the new key into the JSONB without overwriting
     // user customizations to other keys. jsonb concat (||) is right-precedence,
@@ -556,6 +581,11 @@ async function runMigrations() {
       UPDATE user_settings
       SET dashboard_widgets = '{"aiMemory":true}'::jsonb || dashboard_widgets
       WHERE NOT (dashboard_widgets ? 'aiMemory')
+    `);
+    await client.query(`
+      UPDATE user_settings
+      SET dashboard_widgets = '{"whatsNew":true,"investmentReturns":true}'::jsonb || dashboard_widgets
+      WHERE NOT (dashboard_widgets ? 'whatsNew') OR NOT (dashboard_widgets ? 'investmentReturns')
     `);
 
     // One-shot cleanup: detection-key migration orphans

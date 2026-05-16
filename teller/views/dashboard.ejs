@@ -518,8 +518,41 @@
       </summary>
       <div style="margin-top:12px;">
         <div id="investments-by-source" style="display:flex;gap:18px;flex-wrap:wrap;font-size:11px;color:var(--text-muted);margin-bottom:12px;"></div>
+        <!-- S4: portfolio return + asset allocation. Only renders when Plaid
+             holdings exist (cost_basis / current_value per security). -->
+        <div id="investments-performance" style="display:none;margin-bottom:14px;padding:12px;background:var(--bg-elevated);border:1px solid var(--card-border);border-radius:8px;">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:8px;">
+            <span style="font-size:13px;color:var(--text-muted);">Total return</span>
+            <span id="invperf-return" style="font-size:14px;font-weight:500;"></span>
+          </div>
+          <div id="invperf-allocation" style="margin-top:8px;display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--text-secondary);"></div>
+          <details style="margin-top:10px;">
+            <summary style="cursor:pointer;font-size:11px;color:var(--text-muted);">Top winners &amp; losers</summary>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px;font-size:11px;">
+              <div>
+                <div style="color:var(--green);margin-bottom:4px;">Winners</div>
+                <div id="invperf-winners"></div>
+              </div>
+              <div>
+                <div style="color:var(--red);margin-bottom:4px;">Losers</div>
+                <div id="invperf-losers"></div>
+              </div>
+            </div>
+          </details>
+        </div>
         <div id="investments-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;"></div>
       </div>
+    </details>
+  </div>
+
+  <!-- S3: What's new since last visit -->
+  <div class="section" id="whats-new-widget" style="margin-bottom:28px;display:none;">
+    <details open>
+      <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;">
+        <h2 style="margin:0;">Since you last looked</h2>
+        <span id="whats-new-since" style="font-size:11px;color:var(--text-muted);"></span>
+      </summary>
+      <div id="whats-new-body" style="margin-top:12px;display:flex;flex-direction:column;gap:10px;font-size:13px;"></div>
     </details>
   </div>
 
@@ -606,6 +639,23 @@
       </summary>
       <div id="insights-widget-body" style="margin-top:12px;font-size:13px;line-height:1.6;color:var(--text-secondary);">
         Loading...
+      </div>
+      <!-- S1: per-insight feedback (thumbs up/down + optional correction) -->
+      <div id="insights-widget-feedback" style="display:none;margin-top:14px;padding-top:12px;border-top:1px solid var(--card-border);">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <span style="font-size:12px;color:var(--text-muted);">Was this useful?</span>
+          <button class="btn btn-sm" data-fb="positive" title="Mark as helpful" style="min-width:44px;">👍</button>
+          <button class="btn btn-sm" data-fb="negative" title="Mark as incorrect or unhelpful" style="min-width:44px;">👎</button>
+          <button class="btn btn-sm" data-fb="mixed" title="Mixed — partly useful, partly off" style="min-width:44px;">±</button>
+          <button class="btn btn-sm btn-link" id="insights-feedback-note-toggle" style="font-size:11px;">add note…</button>
+          <span id="insights-feedback-status" style="font-size:11px;color:var(--text-muted);"></span>
+        </div>
+        <div id="insights-feedback-note-wrap" style="display:none;margin-top:8px;">
+          <textarea id="insights-feedback-note" rows="2"
+            placeholder="What was wrong? (e.g. 'numbers were off', 'wrong merchant attribution')"
+            style="width:100%;font-size:12px;padding:6px 8px;background:var(--bg-elevated);color:var(--text-primary);border:1px solid var(--card-border);border-radius:6px;"></textarea>
+          <button class="btn btn-sm" id="insights-feedback-note-save" style="margin-top:6px;">Save note</button>
+        </div>
       </div>
     </details>
   </div>
@@ -1198,6 +1248,8 @@
     (async function loadInsightWidget() {
       var body = document.getElementById('insights-widget-body');
       var meta = document.getElementById('insights-widget-meta');
+      var fbWrap = document.getElementById('insights-widget-feedback');
+      var fbStatus = document.getElementById('insights-feedback-status');
       if (!body) return;
       try {
         var res = await apiFetch('/api/insights');
@@ -1218,7 +1270,184 @@
           var d = new Date(latest.created_at);
           meta.textContent = '\u2014 ' + d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
         }
+
+        // S1: feedback panel. Pre-fills if the user already rated this insight.
+        if (fbWrap) {
+          fbWrap.style.display = 'block';
+          fbWrap.dataset.insightId = latest.id;
+          var current = latest.user_feedback || '';
+          fbWrap.querySelectorAll('button[data-fb]').forEach(function(b) {
+            b.style.opacity = (b.dataset.fb === current) ? '1' : '0.55';
+            b.style.outline = (b.dataset.fb === current) ? '2px solid var(--accent)' : 'none';
+          });
+          var noteField = document.getElementById('insights-feedback-note');
+          if (noteField) noteField.value = latest.user_feedback_text || '';
+          if (fbStatus && current) fbStatus.textContent = 'Marked ' + current;
+        }
       } catch (e) { body.textContent = 'Unable to load insights.'; }
+    })();
+
+    // S1: wire feedback buttons. Each click PATCHes the insight, refreshes
+    // the highlighted state, and (for negative/mixed) reveals the note
+    // textarea. Clicking the currently-active button clears feedback.
+    (function wireInsightFeedback() {
+      var fbWrap = document.getElementById('insights-widget-feedback');
+      var noteWrap = document.getElementById('insights-feedback-note-wrap');
+      var noteToggle = document.getElementById('insights-feedback-note-toggle');
+      var noteField = document.getElementById('insights-feedback-note');
+      var noteSave = document.getElementById('insights-feedback-note-save');
+      var status = document.getElementById('insights-feedback-status');
+      if (!fbWrap) return;
+      async function send(feedback, text) {
+        var id = fbWrap.dataset.insightId;
+        if (!id) return;
+        try {
+          var res = await apiFetch('/api/insights/' + id + '/feedback', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ feedback: feedback, text: text || null }),
+          });
+          if (!res.ok) { if (status) status.textContent = 'Failed to save'; return; }
+          var body = await res.json();
+          fbWrap.querySelectorAll('button[data-fb]').forEach(function(b) {
+            b.style.opacity = (b.dataset.fb === body.user_feedback) ? '1' : '0.55';
+            b.style.outline = (b.dataset.fb === body.user_feedback) ? '2px solid var(--accent)' : 'none';
+          });
+          if (status) status.textContent = body.user_feedback ? 'Marked ' + body.user_feedback : 'Cleared';
+        } catch (e) { if (status) status.textContent = 'Failed to save'; }
+      }
+      fbWrap.querySelectorAll('button[data-fb]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          // Click currently active = clear; otherwise set to clicked value.
+          var current = fbWrap.querySelector('button[data-fb][style*="2px solid"]');
+          var newVal = (current && current.dataset.fb === btn.dataset.fb) ? null : btn.dataset.fb;
+          if (newVal === 'negative' || newVal === 'mixed') {
+            noteWrap.style.display = 'block';
+          }
+          send(newVal, noteField ? noteField.value : null);
+        });
+      });
+      if (noteToggle) noteToggle.addEventListener('click', function(e) {
+        e.preventDefault();
+        noteWrap.style.display = noteWrap.style.display === 'none' ? 'block' : 'none';
+      });
+      if (noteSave) noteSave.addEventListener('click', function() {
+        var current = fbWrap.querySelector('button[data-fb][style*="2px solid"]');
+        var val = current ? current.dataset.fb : 'mixed';
+        send(val, noteField.value);
+      });
+    })();
+
+    // S4: Investment performance widget — auto-hides when no Plaid holdings
+    (async function loadInvestmentPerformance() {
+      var box = document.getElementById('investments-performance');
+      if (!box) return;
+      try {
+        var res = await apiFetch('/api/investments/performance');
+        if (!res.ok) return;
+        var data = await res.json();
+        if (!data.holdings_count || data.total_value <= 0) return;
+        box.style.display = 'block';
+        var retEl = document.getElementById('invperf-return');
+        var sign = data.total_return >= 0 ? '+' : '';
+        var color = data.total_return >= 0 ? 'var(--green)' : 'var(--red)';
+        var pctTxt = (data.total_return_pct === null || data.total_return_pct === undefined) ? '' :
+          ' (' + sign + data.total_return_pct.toFixed(2) + '%)';
+        retEl.style.color = color;
+        retEl.textContent = '$' + sign + data.total_return.toFixed(2) + pctTxt +
+          '  ·  $' + data.total_value.toFixed(2) + ' / $' + data.total_cost_basis.toFixed(2) + ' cost';
+        var allocEl = document.getElementById('invperf-allocation');
+        allocEl.innerHTML = (data.by_asset_class || []).slice(0, 6).map(function(c) {
+          var w = Math.max(1, c.pct_of_portfolio || 0);
+          return '<div style="display:flex;align-items:center;gap:8px;">' +
+            '<span style="display:inline-block;min-width:80px;text-transform:capitalize;">' + esc(c.security_type) + '</span>' +
+            '<span style="display:inline-block;height:8px;background:var(--accent);width:' + w.toFixed(1) + '%;max-width:60%;border-radius:2px;"></span>' +
+            '<span style="color:var(--text-muted);">' + w.toFixed(1) + '%</span>' +
+          '</div>';
+        }).join('');
+        var winEl = document.getElementById('invperf-winners');
+        var loseEl = document.getElementById('invperf-losers');
+        function holdingRow(h) {
+          var sign = h.return_pct >= 0 ? '+' : '';
+          var col = h.return_pct >= 0 ? 'var(--green)' : 'var(--red)';
+          return '<div style="margin:2px 0;color:var(--text-secondary);">' +
+            esc(h.ticker || h.name) + ' <span style="color:' + col + ';">' + sign + (h.return_pct == null ? '?' : h.return_pct.toFixed(1)) + '%</span></div>';
+        }
+        winEl.innerHTML = (data.top_winners || []).map(holdingRow).join('') || '<div style="color:var(--text-muted);">—</div>';
+        loseEl.innerHTML = (data.top_losers || []).map(holdingRow).join('') || '<div style="color:var(--text-muted);">—</div>';
+      } catch (e) { /* silently hide */ }
+    })();
+
+    // S3: "What's new since last visit" widget. Reads /api/whats-new (which
+    // honors last_dashboard_view_at) and POSTs /seen on first render so the
+    // window slides forward. Auto-hides when there's nothing new.
+    (async function loadWhatsNew() {
+      var wrap = document.getElementById('whats-new-widget');
+      var body = document.getElementById('whats-new-body');
+      var since = document.getElementById('whats-new-since');
+      if (!wrap || !body) return;
+      try {
+        var res = await apiFetch('/api/whats-new');
+        if (!res.ok) return;
+        var data = await res.json();
+        var total = (data.counts.transactions || 0) + (data.counts.subscriptions || 0) +
+                    (data.counts.notifications || 0) + (data.counts.balance_changes || 0);
+        if (!total) return;
+        wrap.style.display = 'block';
+        if (data.since) {
+          var d = new Date(data.since);
+          since.textContent = '— since ' + d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+        }
+        var html = [];
+        function pill(label, n, color) {
+          return '<span style="display:inline-block;padding:2px 8px;background:' + color + ';color:#fff;border-radius:10px;font-size:11px;margin-right:6px;">' + label + ': ' + n + '</span>';
+        }
+        html.push('<div style="margin-bottom:4px;">' +
+          (data.counts.transactions ? pill('New txns', data.counts.transactions, 'var(--accent)') : '') +
+          (data.counts.balance_changes ? pill('Balance Δ', data.counts.balance_changes, 'var(--teal)') : '') +
+          (data.counts.subscriptions ? pill('New subs', data.counts.subscriptions, 'var(--yellow)') : '') +
+          (data.counts.notifications ? pill('Alerts', data.counts.notifications, 'var(--red)') : '') +
+        '</div>');
+        if ((data.balance_changes || []).length) {
+          html.push('<div><strong style="font-size:12px;color:var(--text-secondary);">Balance changes</strong>');
+          for (var i = 0; i < Math.min(5, data.balance_changes.length); i++) {
+            var bc = data.balance_changes[i];
+            var sgn = bc.delta >= 0 ? '+' : '';
+            var col = bc.delta >= 0 ? 'var(--green)' : 'var(--red)';
+            html.push('<div style="font-size:12px;color:var(--text-muted);">' +
+              esc(bc.account_name || ('Account #' + bc.source_id)) +
+              ' <span style="color:' + col + ';">' + sgn + '$' + Math.abs(bc.delta).toFixed(2) + '</span>' +
+              ' <span style="color:var(--text-muted);">($' + bc.baseline_balance.toFixed(2) + ' → $' + bc.current_balance.toFixed(2) + ')</span>' +
+            '</div>');
+          }
+          html.push('</div>');
+        }
+        if ((data.subscriptions || []).length) {
+          html.push('<div><strong style="font-size:12px;color:var(--text-secondary);">New subscriptions</strong>');
+          for (var j = 0; j < Math.min(5, data.subscriptions.length); j++) {
+            var s = data.subscriptions[j];
+            html.push('<div style="font-size:12px;color:var(--text-muted);">' + esc(s.display_name) +
+              ' <span style="color:var(--yellow);">$' + parseFloat(s.amount).toFixed(2) + '</span>' +
+              ' every ' + s.cadence_days + 'd</div>');
+          }
+          html.push('</div>');
+        }
+        if ((data.notifications || []).length) {
+          html.push('<div><strong style="font-size:12px;color:var(--text-secondary);">Recent notifications</strong>');
+          for (var k = 0; k < Math.min(5, data.notifications.length); k++) {
+            var n = data.notifications[k];
+            html.push('<div style="font-size:12px;color:var(--text-muted);">' + esc(n.title) +
+              ' <span style="color:var(--text-secondary);">— ' + esc(n.body) + '</span></div>');
+          }
+          html.push('</div>');
+        }
+        body.innerHTML = html.join('');
+        // Advance the watermark after a short delay so navigating away
+        // immediately doesn't lose the unseen state. Fire-and-forget.
+        setTimeout(function() {
+          apiFetch('/api/whats-new/seen', { method: 'POST' }).catch(function() {});
+        }, 4000);
+      } catch (e) { /* silently hide */ }
     })();
 
     // PWA — use the shared helper so the SW URL + scope respect BASE_PATH
