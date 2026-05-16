@@ -24,6 +24,11 @@ function currentMonthKey() {
 // GET /api/budgets — list all budgets with current month spending
 router.get("/api/budgets", async (req, res) => {
   const queryMonth = req.query.month || currentMonthKey();
+  // Same validator as POST /api/budgets/snapshot — reject 9999-99 etc. so
+  // getCategorySpendingForMonth doesn't 500 on a malformed date string.
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(queryMonth)) {
+    return res.status(400).json({ error: "month must be 'YYYY-MM' with month 01-12" });
+  }
   try {
     const [budgets, spending, snapshots] = await Promise.all([
       pool.query("SELECT * FROM budgets ORDER BY monthly_limit DESC"),

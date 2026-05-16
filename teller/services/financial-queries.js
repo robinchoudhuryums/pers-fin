@@ -180,9 +180,11 @@ async function getMonthlyIncomeAndSpending(pool, months = 6) {
 async function getCategorySpendingForMonth(pool, monthStr) {
   // monthStr is 'YYYY-MM'. The first-of-month date is the inclusive lower bound;
   // the upper bound is the first of the following month (exclusive). Postgres
-  // accepts the YYYY-MM-DD literal here.
-  if (!/^\d{4}-\d{2}$/.test(String(monthStr || ""))) {
-    throw new Error("getCategorySpendingForMonth: month must be 'YYYY-MM'");
+  // accepts the YYYY-MM-DD literal here. Reject impossible months (9999-99 etc.)
+  // at the helper boundary so a careless caller can't hand Postgres a malformed
+  // date and get a 500.
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(String(monthStr || ""))) {
+    throw new Error("getCategorySpendingForMonth: month must be 'YYYY-MM' with month 01-12");
   }
   const monthStart = monthStr + "-01";
   const result = await pool.query(`

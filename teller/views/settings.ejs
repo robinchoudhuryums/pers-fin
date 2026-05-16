@@ -141,7 +141,13 @@
       </div>
     </div>
     <div class="setting-row">
-      <div class="setting-info"><div class="name">Weekly Digest Email</div><div class="desc">Mail a digest of the running summary (trends, pending actions, alerts) once per week via Per-sistant. Requires Per-sistant webhook configured.</div></div>
+      <div class="setting-info">
+        <div class="name">Weekly Digest Email</div>
+        <div class="desc">Mail a digest of the running summary (trends, pending actions, alerts) once per week via Per-sistant.</div>
+        <div id="weekly-digest-prereq" style="display:none;margin-top:6px;font-size:11px;padding:6px 10px;border-radius:6px;background:rgba(235,107,107,0.08);border:1px solid rgba(235,107,107,0.3);color:var(--red, #eb6b6b);">
+          Per-sistant webhook isn't configured — digest will silently no-op until you set the URL + secret in Per-sistant integration below.
+        </div>
+      </div>
       <div class="setting-control">
         <label class="toggle"><input type="checkbox" id="weekly-digest-toggle"><span class="slider"></span></label>
       </div>
@@ -404,9 +410,16 @@
         document.getElementById('auto-sync-toggle').checked = !!s.auto_sync_enabled;
         document.getElementById('auto-sync-interval-select').value = String(s.auto_sync_interval_hours || 6);
         document.getElementById('sync-notif-toggle').checked = s.sync_notifications_enabled !== false;
-        // S2: weekly digest controls
+        // S2: weekly digest controls. Show a prereq warning when the
+        // Per-sistant webhook isn't configured (#16) — without it the
+        // digest silently no-ops at the sender.
         document.getElementById('weekly-digest-toggle').checked = !!s.weekly_digest_enabled;
         document.getElementById('weekly-digest-day-select').value = String(s.weekly_digest_day ?? 1);
+        var digestPrereq = document.getElementById('weekly-digest-prereq');
+        if (digestPrereq) {
+          var hasWebhook = !!(s.persistent_url && s.persistent_webhook_enabled);
+          digestPrereq.style.display = hasWebhook ? 'none' : 'block';
+        }
         document.getElementById('auto-sync-last').textContent = s.last_auto_sync_at
           ? new Date(s.last_auto_sync_at).toLocaleString()
           : 'Never';

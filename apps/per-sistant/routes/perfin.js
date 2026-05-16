@@ -113,14 +113,22 @@ module.exports = function ({ pool, config }) {
     if (event === "test") {
       return res.json({ ok: true, message: "Perfin → Per-sistant webhook OK." });
     }
-    if (event === "insights_generated") {
+    if (event === "insights_generated" || event === "weekly_summary") {
+      // Both events share the same { subject, html_body, plain_text } shape.
+      // insights_generated fires per scheduled-cadence insight run; weekly_summary
+      // is a standing once-per-week digest rendered from the running_summary.
+      // We mail both the same way — the difference is just the subject line and
+      // payload contents, which Perfin's side already composes.
       try {
         const setR = await pool.query("SELECT perfin_webhook_recipient FROM user_settings WHERE id = 1").catch(() => ({ rows: [] }));
         const recipient = (setR.rows[0] && setR.rows[0].perfin_webhook_recipient)
           || process.env.SMTP_FROM
           || process.env.SMTP_USER
           || null;
-        const subject = data.subject || "Perfin AI Financial Analysis";
+        const fallbackSubject = event === "weekly_summary"
+          ? "Perfin: Your Weekly Financial Digest"
+          : "Perfin AI Financial Analysis";
+        const subject = data.subject || fallbackSubject;
         const body = data.plain_text || "(no body)";
         const html = data.html_body || null;
         if (!recipient) {
@@ -133,12 +141,12 @@ module.exports = function ({ pool, config }) {
         }
         await pool.query(
           "INSERT INTO emails (recipient_name, recipient_email, subject, body, body_html, status, scheduled_at) VALUES ($1, $2, $3, $4, $5, 'scheduled', now())",
-          ["Perfin Insights", recipient, subject, body, html]
+          [event === "weekly_summary" ? "Perfin Digest" : "Perfin Insights", recipient, subject, body, html]
         );
         return res.json({ ok: true, stored: "scheduled", recipient });
       } catch (err) {
-        console.error("Perfin webhook insights_generated error:", err.message);
-        return res.status(500).json({ error: "Failed to store insight email." });
+        console.error(`Perfin webhook ${event} error:`, err.message);
+        return res.status(500).json({ error: "Failed to store email." });
       }
     }
     res.json({ ok: true, ignored: event });

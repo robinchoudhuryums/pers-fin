@@ -314,12 +314,21 @@ async function runWeeklyDigest() {
 }
 
 function renderInsightEmail(text, modules, auditResult) {
+  // HTML-escape FIRST so user/model text can't inject tags, THEN apply the
+  // markdown patterns to the escaped output. Wrap consecutive <li> rows in
+  // a <ul> so the resulting HTML is well-formed (some mail clients refuse
+  // to render bare list items). The dashboard widget does the same wrap.
   let body = text
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     .replace(/^### (.+)$/gm, '<h3 style="color:#d4a574;font-size:16px;margin:18px 0 8px;font-weight:600;">$1</h3>')
     .replace(/^## (.+)$/gm, '<h2 style="color:#d4a574;font-size:18px;margin:20px 0 10px;font-weight:600;">$1</h2>')
     .replace(/\*\*(.+?)\*\*/g, '<strong style="color:#ffffff;">$1</strong>')
     .replace(/^[\-\*] (.+)$/gm, '<li style="margin:4px 0;color:#cccccc;">$1</li>')
+    // Wrap each run of consecutive <li> blocks in a single <ul>. The
+    // alternative — leaving bare <li> — works in most browsers but several
+    // email clients (Outlook desktop, older Gmail) skip rendering.
+    .replace(/(<li[^>]*>[\s\S]*?<\/li>(?:\s*<li[^>]*>[\s\S]*?<\/li>)*)/g,
+             '<ul style="margin:8px 0;padding-left:20px;">$1</ul>')
     .replace(/\n/g, "<br>");
 
   let auditSection = "";
@@ -962,7 +971,8 @@ async function generateInsights() {
       }
       if (lines.length > 0) {
         userMsg += "\n\n=== USER FEEDBACK ON RECENT INSIGHTS ===\n" +
-          "Treat these signals as guidance: avoid repeating patterns the user pushed back on; double-check arithmetic and entity references where they flagged inaccuracies.\n" +
+          "Treat these signals as guidance: avoid repeating patterns the user pushed back on; double-check arithmetic and entity references where they flagged inaccuracies. " +
+          "You may revise or DROP entries from the previous structured summary (pending_actions, alerts) if user feedback indicates they were wrong — the summary you emit replaces the prior one wholesale, so omitting a retracted item is the correct way to retract.\n" +
           lines.join("\n");
       }
     }
