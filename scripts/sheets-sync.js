@@ -78,6 +78,41 @@ async function getSheetId(sheets, title) {
   return sheet ? sheet.properties.sheetId : null;
 }
 
+// #9: sheet protection. Adds a warning-only protection over the entire
+// sheet so the user gets a confirmation prompt before editing (and isn't
+// permanently locked out). Idempotent: removes any prior protection with
+// the same marker description before adding fresh, so repeated syncs
+// don't stack up duplicates.
+const PROTECTION_DESCRIPTION = "Perfin sync — edits overwritten on next sync";
+async function applyProtection(sheets, sheetId) {
+  if (sheetId === null) return;
+  // Find existing protections matching our description
+  const meta = await sheets.spreadsheets.get({
+    spreadsheetId: SPREADSHEET_ID,
+    fields: "sheets(properties(sheetId),protectedRanges(protectedRangeId,description))",
+  });
+  const targetSheet = meta.data.sheets.find(s => s.properties.sheetId === sheetId);
+  const existing = (targetSheet?.protectedRanges || [])
+    .filter(p => p.description === PROTECTION_DESCRIPTION);
+  const requests = [];
+  for (const p of existing) {
+    requests.push({ deleteProtectedRange: { protectedRangeId: p.protectedRangeId } });
+  }
+  requests.push({
+    addProtectedRange: {
+      protectedRange: {
+        range: { sheetId },
+        description: PROTECTION_DESCRIPTION,
+        warningOnly: true,
+      },
+    },
+  });
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: SPREADSHEET_ID,
+    requestBody: { requests },
+  });
+}
+
 function fmtCurrency(val) {
   return typeof val === "number" ? val : parseFloat(val) || 0;
 }
@@ -94,41 +129,76 @@ function fmtDate(d) {
 async function syncTransactions(sheets, pool) {
   console.log("Syncing transactions to Google Sheets...");
 
+  // Transactions + their splits in one ordered set. Parent rows show normally;
+  // child split rows are interleaved right after their parent with "↳ " prefix
+  // on the merchant column. Sort key: (date DESC, parent_id, sort_within ASC)
+  // so splits land immediately below their parent.
   const { rows } = await pool.query(`
-    SELECT
-      t.date,
-      COALESCE(t.merchant_name, t.name) AS merchant,
-      t.amount,
-      la.name AS account_name,
-      la.type AS account_type,
-      COALESCE(pi.institution_name, te.institution_name, 'CSV Import') AS institution_name,
-      COALESCE(t.user_category, t.category[1]) AS category,
-      t.personal_finance_category->>'primary' AS pfc_primary,
-      t.personal_finance_category->>'detailed' AS pfc_detailed
-    FROM transactions t
-    JOIN linked_accounts la ON la.account_id = t.account_id
-    LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
-    LEFT JOIN teller_enrollments te ON te.id = la.teller_enrollment_id
-    WHERE t.pending = false
-    ORDER BY t.date DESC
+    WITH base AS (
+      SELECT
+        t.date, t.transaction_id, t.amount,
+        COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS merchant,
+        la.name AS account_name,
+        la.type AS account_type,
+        COALESCE(pi.institution_name, te.institution_name, 'CSV Import') AS institution_name,
+        COALESCE(t.user_category, t.category[1]) AS category,
+        t.user_category IS NOT NULL AS user_categorized,
+        COALESCE(t.is_reimbursed, false) AS is_reimbursed,
+        t.reimbursed_at,
+        t.personal_finance_category->>'detailed' AS pfc_detailed
+      FROM transactions t
+      JOIN linked_accounts la ON la.account_id = t.account_id
+      LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
+      LEFT JOIN teller_enrollments te ON te.id = la.teller_enrollment_id
+      WHERE t.pending = false
+    ),
+    parents AS (
+      SELECT
+        date AS sort_date, transaction_id AS group_key, 0 AS sort_within,
+        'parent' AS row_type, date, transaction_id, amount, merchant,
+        account_name, account_type, institution_name, category, pfc_detailed,
+        user_categorized, is_reimbursed, reimbursed_at
+      FROM base
+    ),
+    split_rows AS (
+      SELECT
+        b.date AS sort_date, b.transaction_id AS group_key,
+        ROW_NUMBER() OVER (PARTITION BY ts.parent_transaction_id ORDER BY ts.id) AS sort_within,
+        'split' AS row_type, b.date, b.transaction_id, ts.amount,
+        COALESCE(ts.merchant_name, b.merchant) AS merchant,
+        b.account_name, b.account_type, b.institution_name,
+        ts.category, NULL::text AS pfc_detailed,
+        false AS user_categorized,
+        b.is_reimbursed, b.reimbursed_at
+      FROM transaction_splits ts
+      JOIN base b ON b.transaction_id = ts.parent_transaction_id
+    )
+    SELECT * FROM parents
+    UNION ALL
+    SELECT * FROM split_rows
+    ORDER BY sort_date DESC, group_key, sort_within
   `);
 
   await ensureSheet(sheets, SHEET_TRANSACTIONS);
 
   const headers = [
     "Date", "Merchant", "Amount", "Account", "Account Type",
-    "Institution", "Category", "Category (Detailed)", "Month",
+    "Institution", "Category", "Category (Detailed)", "Source",
+    "Reimbursed", "Reimbursed At", "Month",
   ];
 
   const data = rows.map((r) => [
     fmtDate(r.date),
-    r.merchant || "",
+    r.row_type === "split" ? "  ↳ " + (r.merchant || "") : (r.merchant || ""),
     fmtCurrency(r.amount),
-    r.account_name || "",
-    r.account_type || "",
-    r.institution_name || "",
-    r.pfc_primary || r.category || "",
+    r.row_type === "split" ? "" : (r.account_name || ""),
+    r.row_type === "split" ? "" : (r.account_type || ""),
+    r.row_type === "split" ? "" : (r.institution_name || ""),
+    r.category || "",
     r.pfc_detailed || "",
+    r.row_type === "split" ? "split" : (r.user_categorized ? "user" : "auto"),
+    r.is_reimbursed ? "Yes" : "",
+    r.reimbursed_at ? fmtDate(r.reimbursed_at) : "",
     fmtDate(r.date).slice(0, 7), // YYYY-MM for pivot/grouping
   ]);
 
@@ -148,67 +218,101 @@ async function syncTransactions(sheets, pool) {
   // Format headers
   const sheetId = await getSheetId(sheets, SHEET_TRANSACTIONS);
   if (sheetId !== null) {
+    const requests = [
+      // Bold headers
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
+          cell: {
+            userEnteredFormat: {
+              backgroundColor: { red: 0.2, green: 0.3, blue: 0.55 },
+              textFormat: { bold: true, fontSize: 11, foregroundColor: { red: 1, green: 1, blue: 1 } },
+            },
+          },
+          fields: "userEnteredFormat(textFormat,backgroundColor)",
+        },
+      },
+      // Freeze header row
+      {
+        updateSheetProperties: {
+          properties: { sheetId, gridProperties: { frozenRowCount: 1 } },
+          fields: "gridProperties.frozenRowCount",
+        },
+      },
+      // Amount column currency format (col C = index 2)
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: 1, startColumnIndex: 2, endColumnIndex: 3 },
+          cell: {
+            userEnteredFormat: {
+              numberFormat: { type: "CURRENCY", pattern: "$#,##0.00" },
+            },
+          },
+          fields: "userEnteredFormat.numberFormat",
+        },
+      },
+      // Auto-resize columns (12 columns)
+      {
+        autoResizeDimensions: {
+          dimensions: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 12 },
+        },
+      },
+      // Alternating row colors
+      {
+        addBanding: {
+          bandedRange: {
+            range: { sheetId, startRowIndex: 0, endRowIndex: data.length + 1, startColumnIndex: 0, endColumnIndex: 12 },
+            rowProperties: {
+              headerColor: { red: 0.2, green: 0.3, blue: 0.55 },
+              firstBandColor: { red: 1, green: 1, blue: 1 },
+              secondBandColor: { red: 0.94, green: 0.95, blue: 0.97 },
+            },
+          },
+        },
+      },
+    ];
+
+    // Conditional: shade split rows so the parent→child visual hierarchy
+    // is obvious without indentation alone carrying the weight.
+    if (data.length > 0) {
+      requests.push({
+        addConditionalFormatRule: {
+          rule: {
+            ranges: [{ sheetId, startRowIndex: 1, endRowIndex: data.length + 1, startColumnIndex: 0, endColumnIndex: 12 }],
+            booleanRule: {
+              condition: { type: "CUSTOM_FORMULA", values: [{ userEnteredValue: `=$I2="split"` }] },
+              format: {
+                backgroundColor: { red: 0.97, green: 0.94, blue: 0.88 },
+                textFormat: { italic: true, foregroundColor: { red: 0.35, green: 0.35, blue: 0.35 } },
+              },
+            },
+          },
+          index: 0,
+        },
+      });
+      // Reimbursed rows get a green tint so "you got paid back for this"
+      // pops in the historic view.
+      requests.push({
+        addConditionalFormatRule: {
+          rule: {
+            ranges: [{ sheetId, startRowIndex: 1, endRowIndex: data.length + 1, startColumnIndex: 0, endColumnIndex: 12 }],
+            booleanRule: {
+              condition: { type: "CUSTOM_FORMULA", values: [{ userEnteredValue: `=$J2="Yes"` }] },
+              format: { backgroundColor: { red: 0.88, green: 0.95, blue: 0.88 } },
+            },
+          },
+          index: 0,
+        },
+      });
+    }
+
     await sheets.spreadsheets.batchUpdate({
       spreadsheetId: SPREADSHEET_ID,
-      requestBody: {
-        requests: [
-          // Bold headers
-          {
-            repeatCell: {
-              range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
-              cell: {
-                userEnteredFormat: {
-                  backgroundColor: { red: 0.2, green: 0.3, blue: 0.55 },
-                  textFormat: { bold: true, fontSize: 11, foregroundColor: { red: 1, green: 1, blue: 1 } },
-                },
-              },
-              fields: "userEnteredFormat(textFormat,backgroundColor)",
-            },
-          },
-          // Freeze header row
-          {
-            updateSheetProperties: {
-              properties: { sheetId, gridProperties: { frozenRowCount: 1 } },
-              fields: "gridProperties.frozenRowCount",
-            },
-          },
-          // Amount column currency format (col C = index 2)
-          {
-            repeatCell: {
-              range: { sheetId, startRowIndex: 1, startColumnIndex: 2, endColumnIndex: 3 },
-              cell: {
-                userEnteredFormat: {
-                  numberFormat: { type: "CURRENCY", pattern: "$#,##0.00" },
-                },
-              },
-              fields: "userEnteredFormat.numberFormat",
-            },
-          },
-          // Auto-resize columns
-          {
-            autoResizeDimensions: {
-              dimensions: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 9 },
-            },
-          },
-          // Alternating row colors
-          {
-            addBanding: {
-              bandedRange: {
-                range: { sheetId, startRowIndex: 0, endRowIndex: data.length + 1, startColumnIndex: 0, endColumnIndex: 9 },
-                rowProperties: {
-                  headerColor: { red: 0.2, green: 0.3, blue: 0.55 },
-                  firstBandColor: { red: 1, green: 1, blue: 1 },
-                  secondBandColor: { red: 0.94, green: 0.95, blue: 0.97 },
-                },
-              },
-            },
-          },
-        ],
-      },
+      requestBody: { requests },
     });
   }
 
-  console.log(`  ${rows.length} transactions written.`);
+  console.log(`  ${rows.length} transaction rows (incl. splits) written.`);
   return rows.length;
 }
 
@@ -256,14 +360,22 @@ async function syncSubscriptions(sheets, pool) {
 
   const headers = [
     "Service", "Amount", "Cycle", "Monthly Cost", "Yearly Cost",
-    "First Seen", "Last Charged", "Next Charge", "Status", "Source", "Notes",
+    "First Seen", "Last Charged", "Next Charge", "Days Until", "Status", "Source", "Notes",
   ];
 
-  const data = rows.map((r) => {
+  const data = rows.map((r, idx) => {
     let status = "Active";
     if (r.is_cancelled) status = "Cancelled";
     else if (r.is_dismissed) status = "Dismissed";
     else if (!r.is_active) status = "Inactive";
+
+    // Days Until = Sheets formula referencing the Next Charge cell. Avoids
+    // a server-side computation that would drift as soon as the user opens
+    // the sheet on a different day. row index is 1-based in Sheets and we
+    // need +2 (1 for the header row, 1 for 1-based indexing).
+    const sheetRow = idx + 2;
+    // Empty when Next Charge is blank (e.g. cancelled subs).
+    const daysFormula = `=IF(H${sheetRow}="","", IFERROR(DATEVALUE(H${sheetRow}) - TODAY(),""))`;
 
     return [
       r.display_name,
@@ -274,6 +386,7 @@ async function syncSubscriptions(sheets, pool) {
       fmtDate(r.first_seen),
       fmtDate(r.last_charged),
       fmtDate(r.next_expected),
+      daysFormula,
       status,
       r.source || "detected",
       r.notes || "",
@@ -327,17 +440,17 @@ async function syncSubscriptions(sheets, pool) {
           fields: "userEnteredFormat.numberFormat",
         },
       })),
-      // Auto-resize
+      // Auto-resize (12 cols now — Days Until column inserted at idx 8)
       {
         autoResizeDimensions: {
-          dimensions: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 11 },
+          dimensions: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 12 },
         },
       },
       // Alternating rows
       {
         addBanding: {
           bandedRange: {
-            range: { sheetId, startRowIndex: 0, endRowIndex: data.length + 1, startColumnIndex: 0, endColumnIndex: 11 },
+            range: { sheetId, startRowIndex: 0, endRowIndex: data.length + 1, startColumnIndex: 0, endColumnIndex: 12 },
             rowProperties: {
               headerColor: { red: 0.17, green: 0.37, blue: 0.27 },
               firstBandColor: { red: 1, green: 1, blue: 1 },
@@ -348,15 +461,16 @@ async function syncSubscriptions(sheets, pool) {
       },
     ];
 
-    // Conditional formatting: red bg for "Cancelled", yellow for "Dismissed"
+    // Conditional formatting: red bg for "Cancelled", yellow for "Dismissed".
+    // Status is now col J (idx 9) — was col I before Days Until was inserted.
     if (data.length > 0) {
       requests.push(
         {
           addConditionalFormatRule: {
             rule: {
-              ranges: [{ sheetId, startRowIndex: 1, endRowIndex: data.length + 1, startColumnIndex: 0, endColumnIndex: 11 }],
+              ranges: [{ sheetId, startRowIndex: 1, endRowIndex: data.length + 1, startColumnIndex: 0, endColumnIndex: 12 }],
               booleanRule: {
-                condition: { type: "CUSTOM_FORMULA", values: [{ userEnteredValue: `=$I2="Cancelled"` }] },
+                condition: { type: "CUSTOM_FORMULA", values: [{ userEnteredValue: `=$J2="Cancelled"` }] },
                 format: { backgroundColor: { red: 0.96, green: 0.87, blue: 0.87 } },
               },
             },
@@ -366,13 +480,26 @@ async function syncSubscriptions(sheets, pool) {
         {
           addConditionalFormatRule: {
             rule: {
-              ranges: [{ sheetId, startRowIndex: 1, endRowIndex: data.length + 1, startColumnIndex: 0, endColumnIndex: 11 }],
+              ranges: [{ sheetId, startRowIndex: 1, endRowIndex: data.length + 1, startColumnIndex: 0, endColumnIndex: 12 }],
               booleanRule: {
-                condition: { type: "CUSTOM_FORMULA", values: [{ userEnteredValue: `=$I2="Dismissed"` }] },
+                condition: { type: "CUSTOM_FORMULA", values: [{ userEnteredValue: `=$J2="Dismissed"` }] },
                 format: { backgroundColor: { red: 1, green: 0.96, blue: 0.87 } },
               },
             },
             index: 1,
+          },
+        },
+        // Highlight imminent charges (next 7 days). Days Until = col I (idx 8).
+        {
+          addConditionalFormatRule: {
+            rule: {
+              ranges: [{ sheetId, startRowIndex: 1, endRowIndex: data.length + 1, startColumnIndex: 8, endColumnIndex: 9 }],
+              booleanRule: {
+                condition: { type: "CUSTOM_FORMULA", values: [{ userEnteredValue: `=AND(ISNUMBER($I2), $I2>=0, $I2<=7)` }] },
+                format: { backgroundColor: { red: 1, green: 0.93, blue: 0.78 }, textFormat: { bold: true } },
+              },
+            },
+            index: 2,
           },
         }
       );
@@ -382,6 +509,9 @@ async function syncSubscriptions(sheets, pool) {
       spreadsheetId: SPREADSHEET_ID,
       requestBody: { requests },
     });
+    // #9: warn-only protection on this sheet so accidental edits prompt
+    // a confirmation. Sync still overwrites on next run.
+    await applyProtection(sheets, sheetId);
   }
 
   console.log(`  ${rows.length} subscriptions written.`);
@@ -420,6 +550,28 @@ async function buildDashboard(sheets, pool) {
     ORDER BY total DESC
     LIMIT 15
   `);
+
+  // Category × month pivot for sparklines + heatmap (#6, #7). One SUM
+  // per (category, month) over the same 6-month window so the visible
+  // category list's "Trend" column has data to graph.
+  const { rows: categoryByMonth } = await pool.query(`
+    SELECT
+      COALESCE(user_category, personal_finance_category->>'primary', category[1], 'Uncategorized') AS category,
+      TO_CHAR(date, 'YYYY-MM') AS month,
+      SUM(amount) AS total
+    FROM transactions
+    WHERE pending = false AND amount > 0
+      AND date >= CURRENT_DATE - INTERVAL '6 months'
+    GROUP BY 1, 2
+  `);
+  // Build a {category: {month: total}} map for fast lookup, and the list
+  // of months oldest-to-newest matching what we'll show as columns.
+  const catMonthMap = {};
+  for (const r of categoryByMonth) {
+    if (!catMonthMap[r.category]) catMonthMap[r.category] = {};
+    catMonthMap[r.category][r.month] = parseFloat(r.total);
+  }
+  const sparklineMonths = (monthlySummary || []).map(m => m.month).slice().reverse();
 
   const { rows: topMerchants } = await pool.query(`
     SELECT
@@ -507,12 +659,22 @@ async function buildDashboard(sheets, pool) {
   await ensureSheet(sheets, SHEET_DASHBOARD);
 
   // Build dashboard rows
-  const now = new Date().toLocaleString("en-US", { timeZone: "America/New_York" });
+  const now = new Date();
+  const nowStr = now.toLocaleString("en-US", { timeZone: "America/New_York" });
+  // Day-of-week + relative phrasing make the freshness immediately
+  // glanceable ("Synced Mon, May 17 at 8:42 AM"). Sheets users open the
+  // dashboard sometimes hours/days after the last sync, so the absolute
+  // timestamp is the most useful signal — a relative-time string would
+  // drift the moment they open it.
+  const friendlyTime = now.toLocaleString("en-US", {
+    timeZone: "America/New_York",
+    weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+  });
   const rows = [];
 
   // Title
   rows.push(["PERSONAL FINANCE DASHBOARD", "", "", "", "", ""]);
-  rows.push([`Last updated: ${now}`, "", "", "", "", ""]);
+  rows.push([`Synced ${friendlyTime}  (server time: ${nowStr})`, "", "", "", "", ""]);
   rows.push([]);
 
   // Summary cards row
@@ -535,14 +697,48 @@ async function buildDashboard(sheets, pool) {
   }
   rows.push([]);
 
-  // Category breakdown
+  // Category breakdown — now with per-month columns + sparkline trend.
+  // Layout: Category | Total | Transactions | M-5 | M-4 | M-3 | M-2 | M-1 | M | Trend
+  // sparklineMonths is oldest-to-newest so the trend reads left-to-right.
   const catStartRow = rows.length;
-  rows.push(["SPENDING BY CATEGORY", "", ""]);
-  rows.push(["Category", "Total", "Transactions"]);
+  const monthHeaderCols = sparklineMonths.length;       // typically 6
+  const firstMonthCol = 3;                              // Category=0, Total=1, Txns=2, M-5=3
+  const lastMonthCol  = firstMonthCol + monthHeaderCols - 1;
+  const trendCol      = lastMonthCol + 1;
+  rows.push(["SPENDING BY CATEGORY", ...Array(2 + monthHeaderCols).fill("")]);
+  rows.push([
+    "Category", "Total", "Transactions",
+    ...sparklineMonths,
+    "Trend",
+  ]);
   const totalCatSpend = categorySummary.reduce((s, c) => s + parseFloat(c.total), 0);
-  for (const c of categorySummary) {
-    rows.push([c.category, fmtCurrency(c.total), parseInt(c.txn_count)]);
+  const catHeaderSheetRow = catStartRow + 2;            // 1-based sheet row of header
+  for (let i = 0; i < categorySummary.length; i++) {
+    const c = categorySummary[i];
+    const sheetRow = catHeaderSheetRow + 1 + i;         // 1-based row of this data row
+    const monthCells = sparklineMonths.map(m => {
+      const v = catMonthMap[c.category]?.[m];
+      return v === undefined ? 0 : v;
+    });
+    // Sparkline references the same row's month columns. We can compute
+    // the column-letter range from indexes (firstMonthCol..lastMonthCol).
+    const colLetter = (n) => String.fromCharCode(65 + n);  // 0->A, 3->D, etc.
+    const sparkRange = `${colLetter(firstMonthCol)}${sheetRow}:${colLetter(lastMonthCol)}${sheetRow}`;
+    const sparkline = `=SPARKLINE(${sparkRange}, {"charttype","line"; "linewidth",2; "color","#5a8f8f"})`;
+    rows.push([
+      c.category,
+      fmtCurrency(c.total),
+      parseInt(c.txn_count),
+      ...monthCells,
+      sparkline,
+    ]);
   }
+  // Record the data range so the formatting pass below can apply
+  // currency formatting + heatmap conditional formatting to it.
+  const catDataStartSheetRow = catHeaderSheetRow + 1;      // 1-based
+  const catDataEndSheetRow   = catHeaderSheetRow + categorySummary.length;
+  const catHeatmapFirstColIdx = firstMonthCol;             // 0-based
+  const catHeatmapLastColIdx  = lastMonthCol;
   rows.push([]);
 
   // Top merchants
@@ -676,10 +872,16 @@ async function buildDashboard(sheets, pool) {
           range: { sheetId, startRowIndex: 1, endRowIndex: 2 },
           cell: {
             userEnteredFormat: {
-              textFormat: { italic: true, fontSize: 10, foregroundColor: { red: 0.5, green: 0.5, blue: 0.5 } },
+              // #11: Last-synced line is now slightly more prominent
+              // (sized up + teal) so freshness is glanceable.
+              textFormat: {
+                bold: true, italic: false, fontSize: 11,
+                foregroundColor: { red: 0.16, green: 0.42, blue: 0.42 },
+              },
+              backgroundColor: { red: 0.94, green: 0.97, blue: 0.97 },
             },
           },
-          fields: "userEnteredFormat.textFormat",
+          fields: "userEnteredFormat(textFormat,backgroundColor)",
         },
       },
       // Summary card labels (row 4) — bold, dark bg
@@ -810,6 +1012,46 @@ async function buildDashboard(sheets, pool) {
       }
     }
 
+    // Category × month heatmap (#7): green-to-red color scale across the
+    // per-month spending cells so high-spend cells visually pop. Skips
+    // when no category data.
+    if (categorySummary.length > 0 && monthHeaderCols > 0) {
+      requests.push({
+        addConditionalFormatRule: {
+          rule: {
+            ranges: [{
+              sheetId,
+              // catDataStartSheetRow is 1-based; conditional ranges are 0-based
+              startRowIndex: catDataStartSheetRow - 1,
+              endRowIndex: catDataEndSheetRow,
+              startColumnIndex: catHeatmapFirstColIdx,
+              endColumnIndex: catHeatmapLastColIdx + 1,
+            }],
+            gradientRule: {
+              minpoint: { color: { red: 0.91, green: 0.96, blue: 0.92 }, type: "MIN" },
+              midpoint: { color: { red: 1.0,  green: 0.97, blue: 0.78 }, type: "PERCENTILE", value: "50" },
+              maxpoint: { color: { red: 0.96, green: 0.80, blue: 0.78 }, type: "MAX" },
+            },
+          },
+          index: 0,
+        },
+      });
+      // Currency format on month columns
+      requests.push({
+        repeatCell: {
+          range: {
+            sheetId,
+            startRowIndex: catDataStartSheetRow - 1,
+            endRowIndex: catDataEndSheetRow,
+            startColumnIndex: catHeatmapFirstColIdx,
+            endColumnIndex: catHeatmapLastColIdx + 1,
+          },
+          cell: { userEnteredFormat: { numberFormat: { type: "CURRENCY", pattern: "$#,##0" } } },
+          fields: "userEnteredFormat.numberFormat",
+        },
+      });
+    }
+
     // Budget conditional formatting: red for over-budget, yellow for 80%+
     if (budgetStartRow >= 0 && budgetData.length > 0) {
       requests.push(
@@ -863,25 +1105,73 @@ async function buildDashboard(sheets, pool) {
 async function syncInsights(sheets, pool) {
   console.log("Syncing AI insights to Google Sheets...");
 
-  const { rows } = await pool.query(`
-    SELECT insight_text, model_used, tokens_used, created_at,
-           input_tokens, output_tokens, cache_read_tokens
-    FROM financial_insights
-    WHERE insight_text NOT LIKE '[ML Categorization]%'
-    ORDER BY created_at DESC
-    LIMIT 20
-  `);
+  // Pull the structured running summary (S5: JSONB on user_settings) in
+  // parallel with the insight rows. Both render into the AI Insights tab —
+  // the summary as section sub-tables, insights as the main grid.
+  const [insightsRes, settingsRes] = await Promise.all([
+    pool.query(`
+      SELECT id, insight_text, model_used, tokens_used, created_at,
+             user_feedback, user_feedback_text, user_feedback_at
+      FROM financial_insights
+      WHERE entry_type = 'insight'
+      ORDER BY created_at DESC
+      LIMIT 20
+    `),
+    pool.query("SELECT insights_running_summary_json FROM user_settings WHERE id = 1"),
+  ]);
+  const rows = insightsRes.rows;
+  let summary = settingsRes.rows[0]?.insights_running_summary_json;
+  if (typeof summary === "string") {
+    try { summary = JSON.parse(summary); } catch { summary = null; }
+  }
+  summary = summary || { trends: [], pending_actions: [], alerts: [], completed_goals: [] };
 
   const SHEET_INSIGHTS = "AI Insights";
   await ensureSheet(sheets, SHEET_INSIGHTS);
 
-  const headers = ["Date", "Model", "Tokens", "Insights"];
+  const headers = ["Date", "Model", "Tokens", "Feedback", "Feedback Note", "Insight"];
   const data = rows.map(r => [
     fmtDate(r.created_at),
     r.model_used || "",
     r.tokens_used || 0,
+    r.user_feedback || "",
+    r.user_feedback_text || "",
     (r.insight_text || "").substring(0, 5000),
   ]);
+
+  // Append the structured running summary as sub-tables AFTER the main grid.
+  // Each section's data block is preceded by a section title + headers row.
+  const allRows = [headers, ...data];
+  allRows.push([]);
+  allRows.push(["RUNNING SUMMARY (cumulative AI memory)", "", "", "", "", ""]);
+  allRows.push([]);
+
+  function section(title, columns, items, formatItem) {
+    allRows.push([title, ...Array(columns.length - 1).fill("")]);
+    allRows.push(columns);
+    if (!items || items.length === 0) {
+      allRows.push(["(none)", ...Array(columns.length - 1).fill("")]);
+    } else {
+      for (const it of items) allRows.push(formatItem(it));
+    }
+    allRows.push([]);
+  }
+
+  section("Trends", ["Category", "Direction", "Magnitude", "Since", "", ""],
+    summary.trends || [],
+    t => [t.category || "", t.direction || "", t.magnitude || "", t.since_when || "", "", ""]);
+
+  section("Pending Actions", ["Description", "Urgency", "", "", "", ""],
+    summary.pending_actions || [],
+    a => [a.description || "", a.urgency || "", "", "", "", ""]);
+
+  section("Active Alerts", ["Message", "Severity", "", "", "", ""],
+    summary.alerts || [],
+    a => [a.message || "", a.severity || "", "", "", "", ""]);
+
+  section("Completed Goals", ["Goal", "Completed", "", "", "", ""],
+    summary.completed_goals || [],
+    g => [g.goal_name || "", g.completed_date || "", "", "", "", ""]);
 
   await sheets.spreadsheets.values.clear({
     spreadsheetId: SPREADSHEET_ID,
@@ -892,62 +1182,91 @@ async function syncInsights(sheets, pool) {
     spreadsheetId: SPREADSHEET_ID,
     range: `${SHEET_INSIGHTS}!A1`,
     valueInputOption: "USER_ENTERED",
-    requestBody: { values: [headers, ...data] },
+    requestBody: { values: allRows },
   });
 
   const sheetId = await getSheetId(sheets, SHEET_INSIGHTS);
   if (sheetId !== null) {
+    const requests = [
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
+          cell: {
+            userEnteredFormat: {
+              textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 }, fontSize: 11 },
+              backgroundColor: { red: 0.35, green: 0.2, blue: 0.5 },
+            },
+          },
+          fields: "userEnteredFormat(textFormat,backgroundColor)",
+        },
+      },
+      {
+        updateSheetProperties: {
+          properties: { sheetId, gridProperties: { frozenRowCount: 1 } },
+          fields: "gridProperties.frozenRowCount",
+        },
+      },
+      // Wrap text in Feedback Note (col E = idx 4) + Insight (col F = idx 5)
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: 1, startColumnIndex: 4, endColumnIndex: 6 },
+          cell: { userEnteredFormat: { wrapStrategy: "WRAP" } },
+          fields: "userEnteredFormat.wrapStrategy",
+        },
+      },
+      // Insight column width
+      {
+        updateDimensionProperties: {
+          range: { sheetId, dimension: "COLUMNS", startIndex: 5, endIndex: 6 },
+          properties: { pixelSize: 600 },
+          fields: "pixelSize",
+        },
+      },
+      // Feedback Note width
+      {
+        updateDimensionProperties: {
+          range: { sheetId, dimension: "COLUMNS", startIndex: 4, endIndex: 5 },
+          properties: { pixelSize: 280 },
+          fields: "pixelSize",
+        },
+      },
+      {
+        autoResizeDimensions: {
+          dimensions: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 4 },
+        },
+      },
+    ];
+
+    // Feedback row coloring (only over the insight grid, not the summary
+    // section). Insight grid spans rows 1..data.length.
+    if (data.length > 0) {
+      for (const [fb, color] of [
+        ["positive", { red: 0.88, green: 0.95, blue: 0.88 }],
+        ["negative", { red: 0.95, green: 0.85, blue: 0.85 }],
+        ["mixed",    { red: 0.98, green: 0.93, blue: 0.78 }],
+      ]) {
+        requests.push({
+          addConditionalFormatRule: {
+            rule: {
+              ranges: [{ sheetId, startRowIndex: 1, endRowIndex: data.length + 1, startColumnIndex: 0, endColumnIndex: 6 }],
+              booleanRule: {
+                condition: { type: "CUSTOM_FORMULA", values: [{ userEnteredValue: `=$D2="${fb}"` }] },
+                format: { backgroundColor: color },
+              },
+            },
+            index: 0,
+          },
+        });
+      }
+    }
+
     await sheets.spreadsheets.batchUpdate({
       spreadsheetId: SPREADSHEET_ID,
-      requestBody: {
-        requests: [
-          {
-            repeatCell: {
-              range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
-              cell: {
-                userEnteredFormat: {
-                  textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 }, fontSize: 11 },
-                  backgroundColor: { red: 0.35, green: 0.2, blue: 0.5 },
-                },
-              },
-              fields: "userEnteredFormat(textFormat,backgroundColor)",
-            },
-          },
-          {
-            updateSheetProperties: {
-              properties: { sheetId, gridProperties: { frozenRowCount: 1 } },
-              fields: "gridProperties.frozenRowCount",
-            },
-          },
-          // Wrap text in insights column
-          {
-            repeatCell: {
-              range: { sheetId, startRowIndex: 1, startColumnIndex: 3, endColumnIndex: 4 },
-              cell: {
-                userEnteredFormat: { wrapStrategy: "WRAP" },
-              },
-              fields: "userEnteredFormat.wrapStrategy",
-            },
-          },
-          // Set insights column width
-          {
-            updateDimensionProperties: {
-              range: { sheetId, dimension: "COLUMNS", startIndex: 3, endIndex: 4 },
-              properties: { pixelSize: 600 },
-              fields: "pixelSize",
-            },
-          },
-          {
-            autoResizeDimensions: {
-              dimensions: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 3 },
-            },
-          },
-        ],
-      },
+      requestBody: { requests },
     });
   }
 
-  console.log(`  ${rows.length} insights written.`);
+  console.log(`  ${rows.length} insights + structured running summary written.`);
   return rows.length;
 }
 
@@ -1239,6 +1558,8 @@ async function syncRecurringTransfers(sheets, pool) {
         ],
       },
     });
+    // #9: warn-only protection
+    await applyProtection(sheets, sheetId);
   }
 
   console.log(`  ${rows.length} recurring transfers written.`);
@@ -1346,6 +1667,8 @@ async function syncTaxDeductions(sheets, pool) {
       spreadsheetId: SPREADSHEET_ID,
       requestBody: { requests },
     });
+    // #9: warn-only protection
+    await applyProtection(sheets, sheetId);
   }
 
   console.log(`  ${rows.length} tax deductions written.`);
