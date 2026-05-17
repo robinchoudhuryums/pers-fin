@@ -582,6 +582,23 @@ async function runMigrations() {
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS daily_digest_enabled BOOLEAN NOT NULL DEFAULT false");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_daily_digest_at TIMESTAMPTZ");
 
+    // ---- Watchlist ----
+    // User-curated list of merchants / categories / keywords to monitor.
+    // Rendered into the Watchlist sheet tab on each Sheets sync, with the
+    // last 90 days of matching transactions. type is a 3-value enum;
+    // value is the literal merchant name, category name, or keyword to
+    // ILIKE-match against transactions.
+    await client.query(`CREATE TABLE IF NOT EXISTS watchlist_items (
+      id         SERIAL PRIMARY KEY,
+      type       TEXT NOT NULL CHECK (type IN ('merchant','category','keyword')),
+      value      TEXT NOT NULL,
+      notes      TEXT,
+      is_active  BOOLEAN NOT NULL DEFAULT true,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(type, value)
+    )`);
+    await client.query("CREATE INDEX IF NOT EXISTS idx_watchlist_active ON watchlist_items (is_active, type)");
+
     // ---- Add 'investments' to dashboard_widgets default for new users ----
     // For existing rows: merge the new key into the JSONB without overwriting
     // user customizations to other keys. jsonb concat (||) is right-precedence,

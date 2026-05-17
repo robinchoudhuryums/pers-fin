@@ -133,7 +133,13 @@ The Teller mTLS certificate (`certificate.pem`, `private_key.pem`) is **not** co
 3. Share your spreadsheet with the service account email (as Editor)
 4. Set `GOOGLE_SHEETS_ID` and `GOOGLE_SERVICE_ACCOUNT_KEY` in `.env`
 
-The sync writes seven tabs: **Transactions**, **Subscriptions**, **Utilities**, **AI Insights**, **Recurring Transfers**, **Tax Deductions**, and **Dashboard**. The Utilities tab consolidates auto-detected utility subscriptions and user-entered manual bills (category=utility) with a TOTAL roll-up row.
+The sync writes **16+ tabs**:
+
+- **Core 7**: Transactions (splits inline + categorization Source column + Reimbursed columns), Subscriptions (with Days Until countdown), Utilities, AI Insights (with structured running-summary sub-tables + per-insight feedback), Recurring Transfers, Tax Deductions, Dashboard (with category sparklines + heatmap).
+- **Strategic adds**: Investments (Plaid holdings + returns), Net Worth History (monthly), Income (monthly totals + top sources), AI Trust (audit findings + ratings), Categorization Rules, Manual Bills (all categories), Bill Payments Log (with variance flagging), Important Dates (90-day upcoming events), Watchlist (user-curated merchant/category/keyword monitor).
+- **Per-month archives**: as each month completes, an immutable `YYYY-MM Transactions` tab is created. Never overwritten on subsequent syncs.
+
+Subscriptions / Tax Deductions / Recurring Transfers / Per-month archives / Watchlist are protected with a warning-only confirmation prompt so accidental edits surface a confirmation (sync still overwrites on next run). Dashboard CSV upload uses a partial-sync endpoint (`/api/sheets/sync-transactions`) so new transactions appear in Sheets in ~5s instead of the full ~30-60s `syncAll`.
 
 ### 5. Deployment
 

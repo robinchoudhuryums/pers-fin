@@ -245,6 +245,25 @@ router.post("/api/sheets/sync", async (_req, res) => {
   }
 });
 
+// POST /api/sheets/sync-transactions — fast partial sync, refreshes only the
+// Transactions tab. Used by the dashboard CSV upload modal so the user sees
+// new transactions in the sheet quickly without a full ~30-60s syncAll.
+router.post("/api/sheets/sync-transactions", async (_req, res) => {
+  if (!sheetsSync) {
+    return res.status(501).json({ error: "Google Sheets integration not available. Install googleapis: npm install googleapis" });
+  }
+  if (!process.env.GOOGLE_SHEETS_ID || !process.env.GOOGLE_SERVICE_ACCOUNT_KEY) {
+    return res.status(400).json({ error: "Set GOOGLE_SHEETS_ID and GOOGLE_SERVICE_ACCOUNT_KEY in .env" });
+  }
+  try {
+    const result = await sheetsSync.syncTransactionsOnly();
+    res.json(result);
+  } catch (err) {
+    console.error("Sheets sync-transactions error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
 // POST /api/sheets/dashboard
 router.post("/api/sheets/dashboard", async (_req, res) => {
   if (!sheetsSync) {

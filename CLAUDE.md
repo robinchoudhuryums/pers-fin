@@ -116,6 +116,10 @@ teller/
                            aggregator used by both the HTTP route and the
                            daily-digest runner in insights.js so the dashboard
                            widget and email digest see the same data shape.
+    watchlist.js         — GET/POST /api/watchlist, PATCH/DELETE /api/watchlist/:id
+                           (user-curated merchant/category/keyword monitor.
+                           Items rendered into the Watchlist sheet tab + matching
+                           transactions over the last 90 days)
   pages/
     dashboard.js         — Dashboard page (Chart.js charts, 3D pyramid, account list, balances,
                            savings rate widget, cash flow widget, Per-sistant widget)
@@ -224,8 +228,20 @@ shell/
 - `scripts/detect-subscriptions.js` — Recurring subscription detection (30/60/90/365-day cadences)
 - `scripts/detect-transfers.js` — Recurring transfer detection (7/14/30/60/90/365-day cadences,
   6 transfer types: peer_transfer, bill_payment, savings, investment, internal, other)
-- `scripts/sheets-sync.js` — Google Sheets sync (7 tabs: Transactions, Subscriptions,
-  Utilities, AI Insights, Recurring Transfers, Tax Deductions, Dashboard)
+- `scripts/sheets-sync.js` — Google Sheets sync (16+ tabs).
+  Core 7: Transactions (with splits inline + Source/Reimbursed columns),
+  Subscriptions (with Days Until countdown), Utilities, AI Insights
+  (with structured running summary + user feedback), Recurring Transfers,
+  Tax Deductions, Dashboard (with category sparklines + heatmap).
+  Strategic adds: Investments, Net Worth History (monthly), Income,
+  AI Trust, Categorization Rules, Manual Bills (all categories),
+  Bill Payments Log, Important Dates (90-day upcoming), Watchlist
+  (user-curated merchant/category/keyword monitor). Plus immutable
+  per-month archive tabs (`YYYY-MM Transactions`) created once per
+  completed month. Intentionally standalone — does not import the
+  route/services layer, so `INCOME_PREDICATE` is duplicated from
+  `services/financial-queries.js` (single-source-of-truth comment
+  flags the drift risk).
 - `scripts/import-csv-cli.js` — Standalone CLI for importing bank CSVs (mirror of the
   `/api/import-csv` route — note format detection drift between the two; see audit H8)
 - `scripts/retention-cleanup.sql` — Reference SQL for the manual cleanup queries
@@ -599,12 +615,72 @@ shell/
 - **CSP nonces**: Per-request cryptographic nonces for all inline scripts (no `'unsafe-inline'` in `scriptSrc`). Style policy is split: `styleSrcElem` is nonce-gated for `<style>` blocks while `styleSrcAttr` keeps `'unsafe-inline'` for inline `style=""` attributes.
 - **Keep-alive**: Timezone-aware self-ping to prevent Render free tier sleep (10s timeout)
 - **Per-model cost tracking**: Usage history with granular pricing (Haiku/Sonnet/Opus)
-- **Google Sheets sync**: Auto-sync to 7 tabs — Transactions, Subscriptions,
-  Utilities, AI Insights, Recurring Transfers, Tax Deductions, Dashboard (with
-  net worth, budgets, goals, conditional formatting for over-budget categories).
-  The Utilities tab consolidates auto-detected utility subscriptions and
-  user-entered manual_bills with `category='utility'`, with a TOTAL roll-up
-  row showing combined active monthly + yearly spend.
+- **Google Sheets sync**: Auto-sync to 16+ tabs. Core 7 plus strategic
+  additions render every aspect of the DB into Sheets-native views.
+  - **Transactions**: split rows interleaved below their parent via CTE
+    UNION; `Source` column (user / auto / split); `Reimbursed` columns;
+    italic-tan formatting on splits; green tint on reimbursed.
+  - **Subscriptions**: `Days Until` countdown column (Sheets `=DAYS`
+    formula so it stays accurate when reopened); imminent ≤7 day
+    highlight; warning-only sheet protection.
+  - **Utilities**: auto-detected utility subscriptions + `manual_bills`
+    with `category='utility'`, TOTAL roll-up combining monthly + yearly.
+  - **AI Insights**: main grid (date / model / tokens / feedback /
+    feedback note / insight) + four sub-tables below from the structured
+    `insights_running_summary_json` (Trends, Pending Actions, Active
+    Alerts, Completed Goals); per-feedback row coloring.
+  - **Recurring Transfers**: warning-only protection.
+  - **Tax Deductions**: warning-only protection.
+  - **Dashboard**: net worth, budgets, goals, over-budget conditional
+    formatting; SPENDING BY CATEGORY section gained 6 per-month columns
+    + SPARKLINE Trend column + gradient heatmap conditional formatting
+    over the month cells; "Synced [day, time]" banner restyled.
+  - **Investments** (new): Plaid holdings with cost basis, current
+    value, return $, return % (green positive / red negative), grand
+    total. Teller-linked accounts excluded (no Teller cost-basis API).
+  - **Net Worth History** (new): one row per month (last snapshot per
+    YYYY-MM via DISTINCT ON), month-over-month delta column.
+  - **Income** (new): monthly totals (24mo) + top sources (12mo) using
+    the canonical `INCOME_PREDICATE` (inlined to keep the script
+    standalone — sole intentional duplication).
+  - **AI Trust** (new): 50 most-recent `ai_audit_log` findings
+    (severity-colored) + 50 most-recent user feedback ratings on
+    insights (feedback-colored).
+  - **Categorization Rules** (new): user merchant→category map sorted
+    by `times_applied`; inactive rules greyed out.
+  - **Manual Bills** (new): all categories (not just utility), with
+    monthly-equivalent TOTAL (quarterly /3, yearly /12).
+  - **Bill Payments Log** (new): joins `bill_payments` to both
+    `detected_subscriptions` and `manual_bills` depending on
+    `bill_source`; variance column flags >10% deviation.
+  - **Important Dates** (new): 90-day upcoming-events view UNIONing
+    subscription next-charge dates, manual-bill due dates (computed
+    from `due_day` + `cadence` with month-end safety via
+    `LEAST(due_day, 28)`), recurring-transfer projections
+    (`last_seen + cadence_days`), and goal `target_date`. Days Away is
+    a Sheets formula. Today=red, ≤7 days=amber.
+  - **Watchlist** (new): user-curated merchant / category / keyword
+    monitor backed by the `watchlist_items` DB table. Tab shows each
+    item + its last-90-day matching transactions. Items edited via
+    Settings → Watchlist; the tab itself is read-only with warning-only
+    protection. Empty-state writes a guidance row.
+  - **Per-month archive tabs** (new): once a month is complete (not the
+    current month), `syncMonthArchives()` creates a dedicated
+    `YYYY-MM Transactions` tab with all that month's transactions +
+    totals, then never touches it again (idempotent via tab-existence
+    check; warning-only protected). Immutable audit trail per month for
+    disputes / taxes / historical lookups.
+
+  Triggered by:
+  - Scheduled `sheets-auto-sync` job (configurable cadence: daily / weekly
+    / monthly via `sheets_auto_sync_interval`).
+  - `POST /api/sheets/sync` (full syncAll — ~30-60s on a large
+    spreadsheet).
+  - `POST /api/sheets/sync-transactions` — partial-sync endpoint that
+    only refreshes the Transactions tab (~5s). Called by the dashboard
+    CSV upload modal so users see uploaded transactions in Sheets
+    quickly.
+  - `POST /api/sheets/dashboard` — Dashboard tab only.
 
 ### Per-sistant Integration (Companion App)
 Under the unified shell both apps run in the same Node process, so most of
@@ -840,8 +916,13 @@ POST /api/categorization-rules/from-transaction # create rule from a manual cate
 POST /api/import-csv       # import bank CSV file (with deduplication)
 GET  /api/csv-imports      # list CSV import history
 GET  /api/export           # download transactions/subscriptions CSV
-POST /api/sheets/sync      # sync to Google Sheets
+POST /api/sheets/sync      # full sync to Google Sheets (all 16+ tabs, ~30-60s)
+POST /api/sheets/sync-transactions # partial sync — Transactions tab only (~5s); called from CSV upload modal
 POST /api/sheets/dashboard # sync dashboard data to Sheets
+GET  /api/watchlist        # list watchlist items (merchant/category/keyword)
+POST /api/watchlist        # add watchlist item (body: type, value, notes?)
+PATCH /api/watchlist/:id   # toggle is_active or update notes
+DELETE /api/watchlist/:id  # remove watchlist item
 GET  /api/plaid/status     # Plaid investment API status
 POST /api/plaid/link-token # create Plaid Link token for investments
 POST /api/plaid/exchange   # exchange public token for access token
@@ -998,7 +1079,7 @@ standalone-mode fallback if either app is run on its own Render service.
   `push_subscriptions`, `webauthn_credentials`, `investment_accounts`, `investment_holdings`,
   `plaid_investment_items`, `plaid_items`, `sync_cursors`, `schema_migrations`,
   `categorization_rules`, `manual_bills`, `bill_payments`, `notification_log`,
-  `ai_audit_log`, `account_balance_snapshots`
+  `ai_audit_log`, `account_balance_snapshots`, `watchlist_items`
 - `user_settings`: single-row pattern (CHECK id = 1) for app preferences
 - `linked_accounts` columns include: `is_shared BOOLEAN`, `spending_split_pct INT DEFAULT 100`,
   `is_manual BOOLEAN` — constraint `chk_account_source` allows `plaid_item_id IS NOT NULL OR
@@ -1090,6 +1171,13 @@ standalone-mode fallback if either app is run on its own Render service.
 - `manual_bills`: user-created expected charges for the bill calendar. Columns: `name`,
   `amount`, `due_day` (1-31), `cadence` (monthly/quarterly/yearly), `category`,
   `is_active`, `notes`. Integrated into `/api/bill-calendar`.
+- `watchlist_items`: user-curated list of merchants / categories /
+  keywords to monitor. Columns: `type` (CHECK enum: `merchant`,
+  `category`, `keyword`), `value`, `notes`, `is_active`. UNIQUE
+  on (type, value) so POSTing an existing item re-activates it
+  rather than failing. Edited via Settings → Watchlist; rendered
+  into the Watchlist sheet tab with the last 90 days of matching
+  transactions on each Sheets sync.
 - `bill_payments`: tracks which bills have been paid. Columns: `bill_source`
   (subscription or manual), `bill_id`, `paid_date`, `paid_amount`, `notes`.
   UNIQUE on (bill_source, bill_id, paid_date). Calendar shows paid state.

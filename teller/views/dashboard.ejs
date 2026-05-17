@@ -664,6 +664,36 @@
   <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:24px;">
     <a href="<%= basePath %>/calendar" class="btn" style="text-decoration:none;">Bill Calendar</a>
     <a href="<%= basePath %>/transactions" class="btn" style="text-decoration:none;">Search Transactions</a>
+    <button class="btn" id="dash-upload-csv-btn" style="cursor:pointer;font-family:inherit;">Upload CSV</button>
+    <button class="btn" id="dash-sync-sheets-btn" style="cursor:pointer;font-family:inherit;">Sync to Sheets</button>
+  </div>
+
+  <!-- Dashboard Quick CSV Upload modal — mirrors the Accounts page form but
+       lives on the dashboard so mobile users don't have to navigate.
+       POSTs to the same /api/import-csv endpoint. -->
+  <div id="dash-csv-modal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px);">
+    <div style="max-width:420px;margin:60px auto;padding:24px;background:var(--surface, var(--bg));border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+      <h3 style="margin:0 0 6px;">Import Transactions CSV</h3>
+      <div style="font-size:11px;color:var(--text-muted);margin-bottom:16px;">Pick a CSV export from your bank's app. Supports Chase, Wells Fargo, Capital One, Discover, Schwab, and generic.</div>
+      <div style="display:flex;flex-direction:column;gap:12px;">
+        <select id="dash-csv-institution" style="padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
+          <option value="Chase">Chase</option>
+          <option value="Wells Fargo">Wells Fargo</option>
+          <option value="Capital One">Capital One</option>
+          <option value="Discover">Discover</option>
+          <option value="Charles Schwab">Charles Schwab</option>
+          <option value="Other">Other</option>
+        </select>
+        <input id="dash-csv-custom" placeholder="Institution name" style="display:none;padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
+        <input id="dash-csv-label" placeholder="Account label (e.g. Chase Checking)" style="padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
+        <input id="dash-csv-file" type="file" accept=".csv,text/csv,.CSV" style="padding:8px;font-size:13px;color:var(--text-muted);">
+        <div id="dash-csv-status" style="font-size:12px;min-height:18px;"></div>
+        <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:4px;">
+          <button class="btn-sm" id="dash-csv-cancel" style="font-size:13px;padding:10px 16px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-family:inherit;min-height:40px;">Cancel</button>
+          <button class="btn-sm" id="dash-csv-submit" style="font-size:13px;padding:10px 16px;border:1px solid var(--teal);border-radius:6px;background:var(--teal);color:#000;cursor:pointer;font-family:inherit;font-weight:500;min-height:40px;">Upload &amp; Import</button>
+        </div>
+      </div>
+    </div>
   </div>
 
 <%- include('partials/foot') %>
@@ -1228,11 +1258,13 @@
             throw new Error(err.error || ('HTTP ' + res.status));
           }
           showStatus('Saved. Refreshing…', true);
+          // Fire-and-forget Sheets sync so the new manual_bills row lands
+          // in the Utilities tab right away instead of waiting for the next
+          // scheduled sync. Endpoint returns 400/501 gracefully when Sheets
+          // isn't configured, so the .catch swallow is safe.
+          apiFetch('/api/sheets/sync', { method: 'POST' }).catch(function() {});
           setTimeout(function() {
             closeModal();
-            // Refresh the upcoming-bills widget so the new bill appears
-            // immediately. The Sheets sync (if scheduled) will pick it up
-            // on its next tick.
             location.reload();
           }, 600);
         } catch (e) {
@@ -1240,6 +1272,120 @@
         } finally {
           saveBtn.disabled = false;
           saveBtn.textContent = 'Save Bill';
+        }
+      });
+    })();
+
+    // Dashboard CSV upload modal + Sync-to-Sheets button.
+    // The CSV modal POSTs to /api/import-csv (same endpoint the Accounts
+    // page uses); the Sheets button POSTs to /api/sheets/sync. Both are
+    // fire-and-forget from the user's perspective — status shows in a
+    // small inline message.
+    (function wireDashboardQuickActions() {
+      // ---- CSV upload modal ----
+      var csvModal = document.getElementById('dash-csv-modal');
+      var csvOpenBtn = document.getElementById('dash-upload-csv-btn');
+      var csvCancelBtn = document.getElementById('dash-csv-cancel');
+      var csvSubmitBtn = document.getElementById('dash-csv-submit');
+      var csvInstitution = document.getElementById('dash-csv-institution');
+      var csvCustom = document.getElementById('dash-csv-custom');
+      var csvLabel = document.getElementById('dash-csv-label');
+      var csvFile = document.getElementById('dash-csv-file');
+      var csvStatus = document.getElementById('dash-csv-status');
+      function closeCsvModal() { if (csvModal) csvModal.style.display = 'none'; }
+      function resetCsv() {
+        if (csvFile) csvFile.value = '';
+        if (csvLabel) csvLabel.value = '';
+        if (csvCustom) { csvCustom.value = ''; csvCustom.style.display = 'none'; }
+        if (csvInstitution) csvInstitution.value = 'Chase';
+        if (csvStatus) { csvStatus.textContent = ''; csvStatus.style.color = ''; }
+      }
+      if (csvOpenBtn && csvModal) {
+        csvOpenBtn.addEventListener('click', function() {
+          resetCsv();
+          csvModal.style.display = 'block';
+          setTimeout(function() { csvInstitution && csvInstitution.focus(); }, 100);
+        });
+      }
+      if (csvCancelBtn) csvCancelBtn.addEventListener('click', closeCsvModal);
+      if (csvModal) csvModal.addEventListener('click', function(e) {
+        if (e.target === csvModal) closeCsvModal();
+      });
+      if (csvInstitution) csvInstitution.addEventListener('change', function() {
+        if (csvCustom) csvCustom.style.display = this.value === 'Other' ? 'block' : 'none';
+      });
+      document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape' && csvModal && csvModal.style.display === 'block') closeCsvModal();
+      });
+      if (csvSubmitBtn) csvSubmitBtn.addEventListener('click', async function() {
+        if (!csvFile || !csvFile.files[0]) {
+          csvStatus.textContent = 'Please select a CSV file.';
+          csvStatus.style.color = 'var(--red, #eb6b6b)';
+          return;
+        }
+        var institution = csvInstitution.value === 'Other'
+          ? (csvCustom.value.trim() || 'Unknown')
+          : csvInstitution.value;
+        var label = (csvLabel.value || '').trim() || (institution + ' Account');
+        var fd = new FormData();
+        fd.append('file', csvFile.files[0]);
+        fd.append('institution', institution);
+        fd.append('account_label', label);
+        csvSubmitBtn.disabled = true;
+        csvSubmitBtn.textContent = 'Importing…';
+        csvStatus.style.color = 'var(--text-muted)';
+        csvStatus.textContent = 'Uploading…';
+        try {
+          var res = await apiFetch('/api/import-csv', { method: 'POST', body: fd });
+          var data = await res.json().catch(function() { return {}; });
+          if (res.ok) {
+            csvStatus.style.color = 'var(--green, #6fcf97)';
+            csvStatus.textContent = 'Imported ' + data.rows_imported + ' transactions (' +
+              data.rows_skipped + ' skipped) — ' + (data.format_detected || 'unknown format');
+            // Fire-and-forget targeted Transactions-tab refresh (faster
+            // than a full syncAll which touches all 16 tabs). Endpoint
+            // returns 400/501 cleanly if Sheets isn't configured.
+            apiFetch('/api/sheets/sync-transactions', { method: 'POST' }).catch(function() {});
+            setTimeout(function() { closeCsvModal(); window.location.reload(); }, 2200);
+          } else {
+            csvStatus.style.color = 'var(--red, #eb6b6b)';
+            csvStatus.textContent = 'Import failed: ' + (data.error || ('HTTP ' + res.status));
+          }
+        } catch (err) {
+          csvStatus.style.color = 'var(--red, #eb6b6b)';
+          csvStatus.textContent = 'Import failed: ' + err.message;
+        } finally {
+          csvSubmitBtn.disabled = false;
+          csvSubmitBtn.textContent = 'Upload & Import';
+        }
+      });
+
+      // ---- Sync to Sheets button ----
+      // POSTs /api/sheets/sync directly. Returns 400 if Sheets isn't
+      // configured (no GOOGLE_SHEETS_ID env var) and 501 if googleapis
+      // isn't installed — both surface as inline error.
+      var syncBtn = document.getElementById('dash-sync-sheets-btn');
+      if (syncBtn) syncBtn.addEventListener('click', async function() {
+        var orig = syncBtn.textContent;
+        syncBtn.disabled = true;
+        syncBtn.textContent = 'Syncing…';
+        try {
+          var res = await apiFetch('/api/sheets/sync', { method: 'POST' });
+          var data = await res.json().catch(function() { return {}; });
+          if (res.ok) {
+            syncBtn.textContent = 'Synced ✓';
+            setTimeout(function() { syncBtn.textContent = orig; syncBtn.disabled = false; }, 2000);
+          } else {
+            syncBtn.textContent = data.error ? 'Failed' : ('HTTP ' + res.status);
+            // Use a status-msg toast if available so the error is readable.
+            if (typeof showStatus === 'function') {
+              showStatus(data.error || 'Sheets sync failed', false);
+            }
+            setTimeout(function() { syncBtn.textContent = orig; syncBtn.disabled = false; }, 3000);
+          }
+        } catch (err) {
+          syncBtn.textContent = 'Failed';
+          setTimeout(function() { syncBtn.textContent = orig; syncBtn.disabled = false; }, 3000);
         }
       });
     })();
