@@ -274,6 +274,7 @@ app.use(require("./routes/notifications"));
 app.use(require("./routes/investments"));
 app.use(require("./routes/persistent"));
 app.use(require("./routes/whats-new"));
+app.use(require("./routes/watchlist"));
 
 // ---------------------------------------------------------------------------
 // Prevent browser caching of HTML pages and API mutation responses

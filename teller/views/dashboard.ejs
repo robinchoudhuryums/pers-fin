@@ -1342,9 +1342,10 @@
             csvStatus.style.color = 'var(--green, #6fcf97)';
             csvStatus.textContent = 'Imported ' + data.rows_imported + ' transactions (' +
               data.rows_skipped + ' skipped) — ' + (data.format_detected || 'unknown format');
-            // Fire-and-forget Sheets sync so the new transactions land in
-            // the spreadsheet without waiting for the scheduled sync.
-            apiFetch('/api/sheets/sync', { method: 'POST' }).catch(function() {});
+            // Fire-and-forget targeted Transactions-tab refresh (faster
+            // than a full syncAll which touches all 16 tabs). Endpoint
+            // returns 400/501 cleanly if Sheets isn't configured.
+            apiFetch('/api/sheets/sync-transactions', { method: 'POST' }).catch(function() {});
             setTimeout(function() { closeCsvModal(); window.location.reload(); }, 2200);
           } else {
             csvStatus.style.color = 'var(--red, #eb6b6b)';

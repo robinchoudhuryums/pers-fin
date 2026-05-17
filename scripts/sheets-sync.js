@@ -2586,6 +2586,494 @@ async function syncBillPayments(sheets, pool) {
 }
 
 // ---------------------------------------------------------------------------
+// Sync Important Dates — combined upcoming-events view
+// ---------------------------------------------------------------------------
+// UNIONs four sources of upcoming dates into one sortable tab:
+//   - detected_subscriptions.next_expected
+//   - manual_bills (computed next-due from due_day + cadence)
+//   - recurring_transfers (last_seen + cadence_days)
+//   - financial_goals.target_date
+// Scoped to the next 90 days so the tab stays glanceable. Sorted by date
+// ASC so the top of the sheet shows what's happening soonest.
+async function syncImportantDates(sheets, pool) {
+  console.log("Syncing important dates to Google Sheets...");
+
+  const { rows } = await pool.query(`
+    WITH subs AS (
+      SELECT next_expected AS event_date,
+             'Subscription' AS event_type,
+             display_name AS name,
+             amount,
+             cadence_days || '-day cycle' AS notes
+      FROM detected_subscriptions
+      WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL
+        AND next_expected IS NOT NULL
+        AND next_expected <= CURRENT_DATE + INTERVAL '90 days'
+    ),
+    manual AS (
+      SELECT
+        make_date(
+          CASE WHEN EXTRACT(DAY FROM CURRENT_DATE)::int > LEAST(due_day, 28)
+               THEN EXTRACT(YEAR FROM (CURRENT_DATE + INTERVAL '1 month'))::int
+               ELSE EXTRACT(YEAR FROM CURRENT_DATE)::int END,
+          CASE WHEN EXTRACT(DAY FROM CURRENT_DATE)::int > LEAST(due_day, 28)
+               THEN EXTRACT(MONTH FROM (CURRENT_DATE + INTERVAL '1 month'))::int
+               ELSE EXTRACT(MONTH FROM CURRENT_DATE)::int END,
+          LEAST(due_day, 28)
+        ) AS event_date,
+        'Manual Bill (' || category || ')' AS event_type,
+        name,
+        amount,
+        cadence AS notes
+      FROM manual_bills
+      WHERE is_active = true
+    ),
+    transfers AS (
+      SELECT
+        (last_seen + (cadence_days || ' days')::interval)::date AS event_date,
+        'Transfer (' || transfer_type || ')' AS event_type,
+        display_name AS name,
+        amount,
+        direction AS notes
+      FROM recurring_transfers
+      WHERE is_active = true AND is_dismissed = false
+        AND last_seen IS NOT NULL
+        AND (last_seen + (cadence_days || ' days')::interval)::date <= CURRENT_DATE + INTERVAL '90 days'
+        AND (last_seen + (cadence_days || ' days')::interval)::date >= CURRENT_DATE
+    ),
+    goals AS (
+      SELECT target_date AS event_date,
+             'Goal Target' AS event_type,
+             name,
+             target_amount AS amount,
+             type AS notes
+      FROM financial_goals
+      WHERE is_active = true
+        AND target_date IS NOT NULL
+        AND target_date <= CURRENT_DATE + INTERVAL '90 days'
+        AND target_date >= CURRENT_DATE
+    )
+    SELECT * FROM subs
+    UNION ALL SELECT * FROM manual
+    UNION ALL SELECT * FROM transfers
+    UNION ALL SELECT * FROM goals
+    ORDER BY event_date ASC, event_type, name
+  `);
+
+  const SHEET_DATES = "Important Dates";
+  await ensureSheet(sheets, SHEET_DATES);
+
+  const headers = ["Date", "Days Away", "Type", "Name", "Amount", "Notes"];
+  const data = rows.map((r, i) => {
+    const sheetRow = i + 2;
+    // Days Away = formula so the countdown stays current when the user
+    // opens the sheet on a later date.
+    const daysFormula = `=IF(A${sheetRow}="","", IFERROR(DATEVALUE(A${sheetRow}) - TODAY(),""))`;
+    return [
+      fmtDate(r.event_date),
+      daysFormula,
+      r.event_type,
+      r.name,
+      fmtCurrency(r.amount),
+      r.notes || "",
+    ];
+  });
+
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_DATES}!A:Z`,
+  });
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_DATES}!A1`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [headers, ...data] },
+  });
+
+  const sheetId = await getSheetId(sheets, SHEET_DATES);
+  if (sheetId !== null) {
+    const requests = [
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
+          cell: {
+            userEnteredFormat: {
+              textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 }, fontSize: 11 },
+              backgroundColor: { red: 0.55, green: 0.35, blue: 0.20 },
+            },
+          },
+          fields: "userEnteredFormat(textFormat,backgroundColor)",
+        },
+      },
+      {
+        updateSheetProperties: {
+          properties: { sheetId, gridProperties: { frozenRowCount: 1 } },
+          fields: "gridProperties.frozenRowCount",
+        },
+      },
+      // Currency on Amount (col E = idx 4)
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: 1, startColumnIndex: 4, endColumnIndex: 5 },
+          cell: { userEnteredFormat: { numberFormat: { type: "CURRENCY", pattern: "$#,##0.00" } } },
+          fields: "userEnteredFormat.numberFormat",
+        },
+      },
+      {
+        autoResizeDimensions: {
+          dimensions: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 6 },
+        },
+      },
+    ];
+    if (data.length > 0) {
+      // Highlight imminent events (next 7 days) amber; today red.
+      requests.push({
+        addConditionalFormatRule: {
+          rule: {
+            ranges: [{ sheetId, startRowIndex: 1, endRowIndex: data.length + 1, startColumnIndex: 1, endColumnIndex: 2 }],
+            booleanRule: {
+              condition: { type: "CUSTOM_FORMULA", values: [{ userEnteredValue: `=AND(ISNUMBER($B2), $B2=0)` }] },
+              format: { backgroundColor: { red: 0.96, green: 0.80, blue: 0.78 }, textFormat: { bold: true } },
+            },
+          },
+          index: 0,
+        },
+      });
+      requests.push({
+        addConditionalFormatRule: {
+          rule: {
+            ranges: [{ sheetId, startRowIndex: 1, endRowIndex: data.length + 1, startColumnIndex: 1, endColumnIndex: 2 }],
+            booleanRule: {
+              condition: { type: "CUSTOM_FORMULA", values: [{ userEnteredValue: `=AND(ISNUMBER($B2), $B2>0, $B2<=7)` }] },
+              format: { backgroundColor: { red: 1, green: 0.93, blue: 0.78 }, textFormat: { bold: true } },
+            },
+          },
+          index: 1,
+        },
+      });
+    }
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SPREADSHEET_ID,
+      requestBody: { requests },
+    });
+  }
+
+  console.log(`  ${rows.length} important dates written.`);
+  return rows.length;
+}
+
+// ---------------------------------------------------------------------------
+// Sync Per-Month Archive — immutable monthly snapshots of transactions
+// ---------------------------------------------------------------------------
+// Once a month is complete (not the current month), copy its transactions
+// into a dedicated tab named "YYYY-MM Transactions" that subsequent syncs
+// never touch. Provides a permanent audit trail per month: useful for
+// disputes, taxes, or "what was this charge in March 2024?" lookups.
+// Idempotent: checks for existing tab before creating.
+async function syncMonthArchives(sheets, pool) {
+  console.log("Checking month archives...");
+
+  // List months with transactions, excluding the current month (still
+  // in flight). Older-first so newer archives appear leftmost in the
+  // sheet tab bar.
+  const { rows: months } = await pool.query(`
+    SELECT DISTINCT TO_CHAR(date, 'YYYY-MM') AS month
+    FROM transactions
+    WHERE pending = false
+      AND TO_CHAR(date, 'YYYY-MM') < TO_CHAR(CURRENT_DATE, 'YYYY-MM')
+    ORDER BY month ASC
+  `);
+
+  if (months.length === 0) {
+    console.log("  no archivable months yet.");
+    return 0;
+  }
+
+  // Read existing tab names once so we don't `spreadsheets.get` per month.
+  const meta = await sheets.spreadsheets.get({
+    spreadsheetId: SPREADSHEET_ID,
+    fields: "sheets(properties(title))",
+  });
+  const existingTitles = new Set(meta.data.sheets.map(s => s.properties.title));
+
+  let archivesCreated = 0;
+  for (const { month } of months) {
+    const title = `${month} Transactions`;
+    if (existingTitles.has(title)) continue;
+
+    const { rows } = await pool.query(`
+      SELECT
+        t.date,
+        COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS merchant,
+        t.amount,
+        la.name AS account_name,
+        COALESCE(pi.institution_name, te.institution_name, 'CSV Import') AS institution_name,
+        COALESCE(t.user_category, t.category[1]) AS category,
+        COALESCE(t.is_reimbursed, false) AS is_reimbursed,
+        t.user_notes,
+        t.transaction_id
+      FROM transactions t
+      JOIN linked_accounts la ON la.account_id = t.account_id
+      LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
+      LEFT JOIN teller_enrollments te ON te.id = la.teller_enrollment_id
+      WHERE t.pending = false AND TO_CHAR(t.date, 'YYYY-MM') = $1
+      ORDER BY t.date DESC, t.merchant_name
+    `, [month]);
+
+    if (rows.length === 0) continue;
+
+    await ensureSheet(sheets, title);
+    const sheetId = await getSheetId(sheets, title);
+
+    const headers = ["Date", "Merchant", "Amount", "Account", "Institution", "Category", "Reimbursed", "Notes", "Transaction ID"];
+    const data = rows.map(r => [
+      fmtDate(r.date),
+      r.merchant || "",
+      fmtCurrency(r.amount),
+      r.account_name || "",
+      r.institution_name || "",
+      r.category || "",
+      r.is_reimbursed ? "Yes" : "",
+      r.user_notes || "",
+      r.transaction_id || "",
+    ]);
+    const total = rows.reduce((s, r) => s + parseFloat(r.amount), 0);
+    data.push([]);
+    data.push(["TOTAL", "", total, "", "", "", "", "", ""]);
+
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${title}!A1`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [headers, ...data] },
+    });
+
+    if (sheetId !== null) {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: SPREADSHEET_ID,
+        requestBody: {
+          requests: [
+            {
+              repeatCell: {
+                range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
+                cell: {
+                  userEnteredFormat: {
+                    textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 }, fontSize: 11 },
+                    backgroundColor: { red: 0.30, green: 0.30, blue: 0.30 },
+                  },
+                },
+                fields: "userEnteredFormat(textFormat,backgroundColor)",
+              },
+            },
+            {
+              updateSheetProperties: {
+                properties: { sheetId, gridProperties: { frozenRowCount: 1 } },
+                fields: "gridProperties.frozenRowCount",
+              },
+            },
+            {
+              repeatCell: {
+                range: { sheetId, startRowIndex: 1, startColumnIndex: 2, endColumnIndex: 3 },
+                cell: { userEnteredFormat: { numberFormat: { type: "CURRENCY", pattern: "$#,##0.00" } } },
+                fields: "userEnteredFormat.numberFormat",
+              },
+            },
+            {
+              autoResizeDimensions: {
+                dimensions: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 9 },
+              },
+            },
+          ],
+        },
+      });
+      // Archive tabs are immutable — protect them with the marker
+      // description so a subsequent month doesn't accidentally pick the
+      // wrong tab to overwrite.
+      await applyProtection(sheets, sheetId);
+    }
+
+    console.log(`  created archive '${title}' with ${rows.length} transactions.`);
+    archivesCreated++;
+  }
+
+  if (archivesCreated === 0) console.log("  all months already archived.");
+  return archivesCreated;
+}
+
+// ---------------------------------------------------------------------------
+// Sync Watchlist — user-curated merchant/category/keyword monitoring
+// ---------------------------------------------------------------------------
+// Pulls watchlist_items (the user adds entries via Settings → Watchlist)
+// and renders one row per matching transaction in the last 90 days,
+// grouped by watchlist item. The tab is read-only for review; edits to
+// the watchlist itself happen in the app.
+async function syncWatchlist(sheets, pool) {
+  console.log("Syncing watchlist to Google Sheets...");
+
+  const { rows: items } = await pool.query(`
+    SELECT id, type, value, notes, created_at
+    FROM watchlist_items
+    WHERE is_active = true
+    ORDER BY type, value
+  `);
+
+  const SHEET_WATCH = "Watchlist";
+  await ensureSheet(sheets, SHEET_WATCH);
+
+  if (items.length === 0) {
+    // Empty state — clear and write a guidance row so the tab isn't confusing
+    await sheets.spreadsheets.values.clear({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${SHEET_WATCH}!A:Z`,
+    });
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${SHEET_WATCH}!A1`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [["No watchlist items configured. Add merchants, categories, or keywords to monitor via Perfin → Settings → Watchlist."]] },
+    });
+    console.log("  watchlist empty — wrote guidance.");
+    return 0;
+  }
+
+  // For each item, look up recent matching transactions
+  const sections = [];
+  for (const item of items) {
+    let where, params;
+    if (item.type === "merchant") {
+      where = `COALESCE(t.user_merchant_name, t.merchant_name, t.name) ILIKE $1`;
+      params = ["%" + item.value + "%"];
+    } else if (item.type === "category") {
+      where = `COALESCE(t.user_category, t.category[1]) = $1`;
+      params = [item.value];
+    } else { // keyword
+      where = `COALESCE(t.user_merchant_name, t.merchant_name, t.name) ILIKE $1 OR COALESCE(t.user_category, t.category[1]) ILIKE $1`;
+      params = ["%" + item.value + "%"];
+    }
+    const { rows: matches } = await pool.query(
+      `SELECT t.date, COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS merchant,
+              t.amount, la.name AS account_name,
+              COALESCE(t.user_category, t.category[1]) AS category
+       FROM transactions t
+       JOIN linked_accounts la ON la.account_id = t.account_id
+       WHERE t.pending = false
+         AND t.date >= CURRENT_DATE - INTERVAL '90 days'
+         AND (${where})
+       ORDER BY t.date DESC
+       LIMIT 100`,
+      params
+    );
+    const total = matches.reduce((s, r) => s + parseFloat(r.amount), 0);
+    sections.push({ item, matches, total });
+  }
+
+  const allRows = [["Watchlist Item", "Type", "Match Count", "90-Day Total", "Notes"]];
+  for (const s of sections) {
+    allRows.push([s.item.value, s.item.type, s.matches.length, fmtCurrency(s.total), s.item.notes || ""]);
+  }
+  allRows.push([]);
+  allRows.push(["RECENT MATCHES (last 90 days)", "", "", "", ""]);
+  allRows.push(["Watchlist Item", "Date", "Merchant", "Amount", "Account / Category"]);
+  for (const s of sections) {
+    for (const m of s.matches) {
+      allRows.push([
+        s.item.value,
+        fmtDate(m.date),
+        m.merchant,
+        fmtCurrency(m.amount),
+        (m.account_name || "") + (m.category ? " — " + m.category : ""),
+      ]);
+    }
+  }
+
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_WATCH}!A:Z`,
+  });
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_WATCH}!A1`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: allRows },
+  });
+
+  const sheetId = await getSheetId(sheets, SHEET_WATCH);
+  if (sheetId !== null) {
+    const sectionHeaderRow = 1 + sections.length + 2 + 1; // 1-based
+    const requests = [
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
+          cell: {
+            userEnteredFormat: {
+              textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 }, fontSize: 11 },
+              backgroundColor: { red: 0.20, green: 0.40, blue: 0.55 },
+            },
+          },
+          fields: "userEnteredFormat(textFormat,backgroundColor)",
+        },
+      },
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: sectionHeaderRow - 1, endRowIndex: sectionHeaderRow },
+          cell: {
+            userEnteredFormat: {
+              textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 }, fontSize: 11 },
+              backgroundColor: { red: 0.20, green: 0.40, blue: 0.55 },
+            },
+          },
+          fields: "userEnteredFormat(textFormat,backgroundColor)",
+        },
+      },
+      {
+        updateSheetProperties: {
+          properties: { sheetId, gridProperties: { frozenRowCount: 1 } },
+          fields: "gridProperties.frozenRowCount",
+        },
+      },
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: 1, startColumnIndex: 3, endColumnIndex: 4 },
+          cell: { userEnteredFormat: { numberFormat: { type: "CURRENCY", pattern: "$#,##0.00" } } },
+          fields: "userEnteredFormat.numberFormat",
+        },
+      },
+      {
+        autoResizeDimensions: {
+          dimensions: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 5 },
+        },
+      },
+    ];
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SPREADSHEET_ID,
+      requestBody: { requests },
+    });
+    await applyProtection(sheets, sheetId);
+  }
+
+  const totalMatches = sections.reduce((s, sec) => s + sec.matches.length, 0);
+  console.log(`  ${items.length} watchlist items, ${totalMatches} matches written.`);
+  return items.length;
+}
+
+// ---------------------------------------------------------------------------
+// Append Transactions — partial update for CSV-uploaded transactions
+// ---------------------------------------------------------------------------
+// Used by POST /api/sheets/sync-transactions for faster feedback after a
+// CSV upload (vs running a full syncAll). Only re-runs syncTransactions,
+// which is the only tab affected by a CSV import.
+async function syncTransactionsOnly() {
+  const sheets = await getSheetsClient();
+  const pool = getPool();
+  try {
+    const count = await syncTransactions(sheets, pool);
+    return { transactions_synced: count, timestamp: new Date().toISOString() };
+  } finally {
+    await pool.end();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // API endpoint handler (called from server.js)
 // ---------------------------------------------------------------------------
 async function syncAll() {
@@ -2606,6 +3094,9 @@ async function syncAll() {
     const rulesCount = await syncCategorizationRules(sheets, pool);
     const manualBillsCount = await syncManualBills(sheets, pool);
     const billPaymentsCount = await syncBillPayments(sheets, pool);
+    const datesCount = await syncImportantDates(sheets, pool);
+    const watchlistCount = await syncWatchlist(sheets, pool);
+    const archivesCreated = await syncMonthArchives(sheets, pool);
     await buildDashboard(sheets, pool);
 
     return {
@@ -2622,6 +3113,9 @@ async function syncAll() {
       categorization_rules_synced: rulesCount,
       manual_bills_synced: manualBillsCount,
       bill_payments_synced: billPaymentsCount,
+      important_dates_synced: datesCount,
+      watchlist_items_synced: watchlistCount,
+      month_archives_created: archivesCreated,
       timestamp: new Date().toISOString(),
     };
   } finally {
@@ -2665,4 +3159,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { syncAll, syncDashboardOnly };
+module.exports = { syncAll, syncDashboardOnly, syncTransactionsOnly };

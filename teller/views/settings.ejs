@@ -386,6 +386,32 @@
     </div>
   </div>
 
+  <!-- Watchlist editor. Tracks user-curated merchants / categories /
+       keywords. The Google Sheets sync renders these + their last 90 days
+       of matching transactions into the Watchlist tab. -->
+  <div class="section" id="watchlist-section"><h2>Watchlist</h2>
+    <div class="setting-row" style="flex-direction:column;align-items:stretch;">
+      <div class="setting-info" style="margin-bottom:8px;">
+        <div class="name">Monitored items</div>
+        <div class="desc">
+          Add a merchant ("Amazon"), category ("Food and Drink"), or keyword to monitor.
+          The Watchlist tab in Google Sheets shows matching transactions over the last 90 days.
+        </div>
+      </div>
+      <div id="watchlist-rows" style="display:flex;flex-direction:column;gap:6px;"></div>
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
+        <select id="watchlist-new-type" style="padding:8px 10px;background:transparent;color:var(--text);border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:13px;min-width:120px;">
+          <option value="merchant">Merchant</option>
+          <option value="category">Category</option>
+          <option value="keyword">Keyword</option>
+        </select>
+        <input id="watchlist-new-value" placeholder="e.g. Amazon, Food and Drink, refund" style="flex:1 1 200px;min-width:140px;padding:8px 10px;background:transparent;color:var(--text);border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:13px;">
+        <button class="btn" id="watchlist-add-btn" style="min-width:90px;">+ Add</button>
+      </div>
+      <div id="watchlist-status" style="margin-top:6px;font-size:11px;color:var(--text-muted);"></div>
+    </div>
+  </div>
+
   <h3 class="settings-group-title" style="font-size:12px;text-transform:uppercase;letter-spacing:1.5px;color:var(--warm, #d4a574);margin:24px 0 12px;font-weight:500;">Data &amp; Export</h3>
   <div class="section"><h2>Data</h2>
     <div class="setting-row">
@@ -919,6 +945,88 @@
           saveBtn.disabled = false;
         }
       });
+    })();
+
+    // ---- Watchlist editor ----
+    // Loads current items via GET /api/watchlist, renders one row each
+    // with toggle-active + delete buttons. Add form below issues POST.
+    (function wireWatchlist() {
+      var rows = document.getElementById('watchlist-rows');
+      var addBtn = document.getElementById('watchlist-add-btn');
+      var typeInput = document.getElementById('watchlist-new-type');
+      var valueInput = document.getElementById('watchlist-new-value');
+      var status = document.getElementById('watchlist-status');
+      if (!rows || !addBtn) return;
+      function setStatus(msg, isError) {
+        if (!status) return;
+        status.textContent = msg || '';
+        status.style.color = isError ? 'var(--red, #eb6b6b)' : 'var(--text-muted)';
+      }
+      async function load() {
+        try {
+          var res = await apiFetch('/api/watchlist');
+          if (!res.ok) { setStatus('Failed to load watchlist', true); return; }
+          var items = await res.json();
+          if (!items.length) {
+            rows.innerHTML = '<div style="font-size:12px;color:var(--text-muted);font-style:italic;">No items yet — add merchants, categories, or keywords to monitor.</div>';
+            return;
+          }
+          rows.innerHTML = items.map(function(it) {
+            var checked = it.is_active ? 'checked' : '';
+            return '<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:' +
+              (it.is_active ? 'transparent' : 'rgba(128,128,128,0.05)') + ';">' +
+              '<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-muted);cursor:pointer;">' +
+                '<input type="checkbox" data-toggle-id="' + it.id + '" ' + checked + '>' +
+                '<span>active</span>' +
+              '</label>' +
+              '<span style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);min-width:60px;">' + esc(it.type) + '</span>' +
+              '<span style="flex:1 1 auto;font-size:13px;color:var(--text);' +
+                (it.is_active ? '' : 'text-decoration:line-through;opacity:0.6;') +
+              '">' + esc(it.value) + '</span>' +
+              '<button class="btn btn-sm" data-delete-id="' + it.id + '" title="Remove" style="min-width:36px;">×</button>' +
+            '</div>';
+          }).join('');
+          rows.querySelectorAll('input[data-toggle-id]').forEach(function(cb) {
+            cb.addEventListener('change', async function() {
+              await apiFetch('/api/watchlist/' + this.getAttribute('data-toggle-id'), {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ is_active: this.checked }),
+              });
+              load();
+            });
+          });
+          rows.querySelectorAll('button[data-delete-id]').forEach(function(btn) {
+            btn.addEventListener('click', async function() {
+              await apiFetch('/api/watchlist/' + this.getAttribute('data-delete-id'), { method: 'DELETE' });
+              load();
+            });
+          });
+        } catch (e) { setStatus('Failed to load watchlist: ' + e.message, true); }
+      }
+      addBtn.addEventListener('click', async function() {
+        var value = (valueInput.value || '').trim();
+        if (!value) { setStatus('value required', true); return; }
+        addBtn.disabled = true;
+        setStatus('Adding…');
+        try {
+          var res = await apiFetch('/api/watchlist', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: typeInput.value, value: value }),
+          });
+          if (!res.ok) {
+            var err = await res.json().catch(function() { return {}; });
+            setStatus(err.error || 'Add failed', true);
+          } else {
+            valueInput.value = '';
+            setStatus('Added');
+            load();
+          }
+        } catch (e) { setStatus('Add failed: ' + e.message, true); }
+        finally { addBtn.disabled = false; }
+      });
+      load();
     })();
 
     // ---- WebAuthn registration UI ----
