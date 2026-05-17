@@ -1353,6 +1353,916 @@ async function syncTaxDeductions(sheets, pool) {
 }
 
 // ---------------------------------------------------------------------------
+// Sync Investments — Plaid holdings (qty, cost basis, current value, return)
+// ---------------------------------------------------------------------------
+// Joins investment_holdings to investment_accounts so each row shows which
+// account holds the security. Computes return $ and return % per row.
+// Only Plaid-linked holdings have cost basis; Teller-linked investment
+// accounts (brokerage / IRA at the account level) don't expose per-security
+// data via the Teller API and don't appear here.
+async function syncInvestments(sheets, pool) {
+  console.log("Syncing investments to Google Sheets...");
+
+  const { rows } = await pool.query(`
+    SELECT h.ticker, h.name, h.security_type, h.quantity, h.cost_basis,
+           h.current_value, ia.name AS account_name, ia.institution
+    FROM investment_holdings h
+    LEFT JOIN investment_accounts ia ON ia.plaid_account_id = h.plaid_account_id
+    WHERE COALESCE(ia.is_active, true) = true
+    ORDER BY h.current_value DESC
+  `);
+
+  const SHEET_INVESTMENTS = "Investments";
+  await ensureSheet(sheets, SHEET_INVESTMENTS);
+
+  const headers = [
+    "Ticker", "Name", "Type", "Account", "Institution",
+    "Quantity", "Cost Basis", "Current Value", "Return $", "Return %",
+  ];
+
+  let totalValue = 0, totalCost = 0;
+  const data = rows.map(r => {
+    const value = parseFloat(r.current_value || 0);
+    const cost = parseFloat(r.cost_basis || 0);
+    const ret = value - cost;
+    const retPct = cost > 0 ? (ret / cost) * 100 : null;
+    totalValue += value;
+    totalCost += cost;
+    return [
+      r.ticker || "",
+      r.name || "",
+      r.security_type || "",
+      r.account_name || "",
+      r.institution || "",
+      parseFloat(r.quantity || 0),
+      fmtCurrency(cost),
+      fmtCurrency(value),
+      fmtCurrency(ret),
+      retPct === null ? "" : retPct.toFixed(2) + "%",
+    ];
+  });
+
+  // Total row
+  const totalRet = totalValue - totalCost;
+  const totalRetPct = totalCost > 0 ? (totalRet / totalCost) * 100 : null;
+  data.push([]);
+  data.push([
+    "TOTAL", "", "", "", "", "",
+    fmtCurrency(totalCost),
+    fmtCurrency(totalValue),
+    fmtCurrency(totalRet),
+    totalRetPct === null ? "" : totalRetPct.toFixed(2) + "%",
+  ]);
+
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_INVESTMENTS}!A:Z`,
+  });
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_INVESTMENTS}!A1`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [headers, ...data] },
+  });
+
+  const sheetId = await getSheetId(sheets, SHEET_INVESTMENTS);
+  if (sheetId !== null) {
+    const requests = [
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
+          cell: {
+            userEnteredFormat: {
+              textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 }, fontSize: 11 },
+              backgroundColor: { red: 0.13, green: 0.40, blue: 0.40 },
+            },
+          },
+          fields: "userEnteredFormat(textFormat,backgroundColor)",
+        },
+      },
+      {
+        updateSheetProperties: {
+          properties: { sheetId, gridProperties: { frozenRowCount: 1 } },
+          fields: "gridProperties.frozenRowCount",
+        },
+      },
+      // Cost / Value / Return $ columns (G-I = 6-8) as currency
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: 1, startColumnIndex: 6, endColumnIndex: 9 },
+          cell: { userEnteredFormat: { numberFormat: { type: "CURRENCY", pattern: "$#,##0.00" } } },
+          fields: "userEnteredFormat.numberFormat",
+        },
+      },
+      {
+        autoResizeDimensions: {
+          dimensions: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 10 },
+        },
+      },
+    ];
+    // Color returns: green positive, red negative (Return $ column = col I = index 8)
+    if (rows.length > 0) {
+      requests.push({
+        addConditionalFormatRule: {
+          rule: {
+            ranges: [{ sheetId, startRowIndex: 1, endRowIndex: rows.length + 1, startColumnIndex: 8, endColumnIndex: 9 }],
+            booleanRule: {
+              condition: { type: "NUMBER_GREATER", values: [{ userEnteredValue: "0" }] },
+              format: { textFormat: { foregroundColor: { red: 0.0, green: 0.5, blue: 0.0 } } },
+            },
+          },
+          index: 0,
+        },
+      });
+      requests.push({
+        addConditionalFormatRule: {
+          rule: {
+            ranges: [{ sheetId, startRowIndex: 1, endRowIndex: rows.length + 1, startColumnIndex: 8, endColumnIndex: 9 }],
+            booleanRule: {
+              condition: { type: "NUMBER_LESS", values: [{ userEnteredValue: "0" }] },
+              format: { textFormat: { foregroundColor: { red: 0.7, green: 0.0, blue: 0.0 } } },
+            },
+          },
+          index: 0,
+        },
+      });
+    }
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SPREADSHEET_ID,
+      requestBody: { requests },
+    });
+  }
+
+  console.log(`  ${rows.length} holdings written.`);
+  return rows.length;
+}
+
+// ---------------------------------------------------------------------------
+// Sync Net Worth History (monthly aggregation)
+// ---------------------------------------------------------------------------
+// One row per month showing the last snapshot of that month — gives a clean
+// monthly trajectory without daily noise. The dashboard already has its own
+// daily-grain history chart, so this complements rather than duplicates.
+async function syncNetWorthHistory(sheets, pool) {
+  console.log("Syncing net worth history to Google Sheets...");
+
+  const { rows } = await pool.query(`
+    SELECT TO_CHAR(snapshot_date, 'YYYY-MM') AS month,
+           total_assets, total_liabilities, net_worth, snapshot_date
+    FROM (
+      SELECT DISTINCT ON (TO_CHAR(snapshot_date, 'YYYY-MM'))
+             snapshot_date, total_assets, total_liabilities, net_worth
+      FROM net_worth_snapshots
+      ORDER BY TO_CHAR(snapshot_date, 'YYYY-MM'), snapshot_date DESC
+    ) latest_per_month
+    ORDER BY snapshot_date DESC
+  `);
+
+  const SHEET_NWH = "Net Worth History";
+  await ensureSheet(sheets, SHEET_NWH);
+
+  const headers = ["Month", "Net Worth", "Total Assets", "Total Liabilities", "Snapshot Date", "Change vs Prior Month"];
+
+  // Build rows oldest-to-newest first so we can compute month-over-month delta,
+  // then reverse for display so the latest month is at the top.
+  const oldestFirst = rows.slice().reverse();
+  const enriched = oldestFirst.map((r, i) => {
+    const prior = oldestFirst[i - 1];
+    const delta = prior ? parseFloat(r.net_worth) - parseFloat(prior.net_worth) : null;
+    return {
+      month: r.month,
+      net_worth: parseFloat(r.net_worth),
+      total_assets: parseFloat(r.total_assets),
+      total_liabilities: parseFloat(r.total_liabilities),
+      snapshot_date: r.snapshot_date,
+      delta,
+    };
+  }).reverse();
+
+  const data = enriched.map(r => [
+    r.month,
+    fmtCurrency(r.net_worth),
+    fmtCurrency(r.total_assets),
+    fmtCurrency(r.total_liabilities),
+    fmtDate(r.snapshot_date),
+    r.delta === null ? "" : fmtCurrency(r.delta),
+  ]);
+
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_NWH}!A:Z`,
+  });
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_NWH}!A1`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [headers, ...data] },
+  });
+
+  const sheetId = await getSheetId(sheets, SHEET_NWH);
+  if (sheetId !== null) {
+    const requests = [
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
+          cell: {
+            userEnteredFormat: {
+              textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 }, fontSize: 11 },
+              backgroundColor: { red: 0.20, green: 0.40, blue: 0.30 },
+            },
+          },
+          fields: "userEnteredFormat(textFormat,backgroundColor)",
+        },
+      },
+      {
+        updateSheetProperties: {
+          properties: { sheetId, gridProperties: { frozenRowCount: 1 } },
+          fields: "gridProperties.frozenRowCount",
+        },
+      },
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: 1, startColumnIndex: 1, endColumnIndex: 4 },
+          cell: { userEnteredFormat: { numberFormat: { type: "CURRENCY", pattern: "$#,##0.00" } } },
+          fields: "userEnteredFormat.numberFormat",
+        },
+      },
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: 1, startColumnIndex: 5, endColumnIndex: 6 },
+          cell: { userEnteredFormat: { numberFormat: { type: "CURRENCY", pattern: "$#,##0.00;[Red]-$#,##0.00" } } },
+          fields: "userEnteredFormat.numberFormat",
+        },
+      },
+      {
+        autoResizeDimensions: {
+          dimensions: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 6 },
+        },
+      },
+    ];
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SPREADSHEET_ID,
+      requestBody: { requests },
+    });
+  }
+
+  console.log(`  ${rows.length} months of net worth history written.`);
+  return rows.length;
+}
+
+// ---------------------------------------------------------------------------
+// Sync Income — monthly aggregate using the canonical INCOME_PREDICATE
+// ---------------------------------------------------------------------------
+// Uses the same income-detection rules the dashboard / savings-rate /
+// cash-flow surfaces use (services/financial-queries.js). Inlines the
+// predicate so this script stays a pure script (doesn't pull in the
+// teller route layer).
+async function syncIncome(sheets, pool) {
+  console.log("Syncing income summary to Google Sheets...");
+
+  const INCOME_PREDICATE = `
+    (
+      (COALESCE(merchant_name, name, '') ~* '\\y(payroll|direct dep|direct deposit|dir dep|salary|employer|deposit|ach credit)\\y'
+        AND COALESCE(merchant_name, name, '') !~* '\\y(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|reversal|atm|withdrawal|bill pay)\\y')
+      OR (
+        COALESCE(merchant_name, name, '') ~* 'funds transfer from brokerage'
+        AND NOT EXISTS (
+          SELECT 1 FROM transactions __t2
+          WHERE __t2.account_id <> account_id
+            AND __t2.amount = ABS(amount)
+            AND __t2.pending = false
+            AND __t2.date BETWEEN date - INTERVAL '2 days' AND date + INTERVAL '2 days'
+        )
+      )
+      OR COALESCE(user_category, category[1]) = 'Income'
+    )
+  `;
+
+  // Monthly totals (last 24 months)
+  const monthly = await pool.query(`
+    SELECT TO_CHAR(date, 'YYYY-MM') AS month,
+           SUM(ABS(amount)) AS total,
+           COUNT(*) AS deposits
+    FROM transactions
+    WHERE pending = false
+      AND date >= CURRENT_DATE - INTERVAL '24 months'
+      AND amount < 0
+      AND ${INCOME_PREDICATE}
+    GROUP BY TO_CHAR(date, 'YYYY-MM')
+    ORDER BY month DESC
+  `);
+
+  // Top sources (last 12 months) — group by merchant
+  const sources = await pool.query(`
+    SELECT COALESCE(merchant_name, name) AS source,
+           SUM(ABS(amount)) AS total,
+           COUNT(*) AS deposits,
+           MAX(date) AS most_recent
+    FROM transactions
+    WHERE pending = false
+      AND date >= CURRENT_DATE - INTERVAL '12 months'
+      AND amount < 0
+      AND ${INCOME_PREDICATE}
+    GROUP BY COALESCE(merchant_name, name)
+    ORDER BY total DESC
+    LIMIT 50
+  `);
+
+  const SHEET_INCOME = "Income";
+  await ensureSheet(sheets, SHEET_INCOME);
+
+  // Layout: monthly table on top, then a blank row, then top-sources table.
+  const headers1 = ["Month", "Total Income", "# Deposits"];
+  const monthlyData = monthly.rows.map(r => [
+    r.month, fmtCurrency(r.total), parseInt(r.deposits, 10),
+  ]);
+  // Section break
+  const sep = ["", "", ""];
+  const sectionTitle = ["TOP SOURCES (LAST 12 MONTHS)", "", ""];
+  const headers2 = ["Source", "Total", "# Deposits"];
+  const sourcesData = sources.rows.map(r => [
+    r.source || "(unknown)",
+    fmtCurrency(r.total),
+    parseInt(r.deposits, 10),
+  ]);
+
+  const allRows = [
+    headers1,
+    ...monthlyData,
+    sep,
+    sectionTitle,
+    headers2,
+    ...sourcesData,
+  ];
+
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_INCOME}!A:Z`,
+  });
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_INCOME}!A1`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: allRows },
+  });
+
+  const sheetId = await getSheetId(sheets, SHEET_INCOME);
+  if (sheetId !== null) {
+    const sourcesHeaderRow = 1 + monthlyData.length + 2 + 1;  // 1-indexed display row of headers2
+    const requests = [
+      // Monthly header (row 0)
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
+          cell: {
+            userEnteredFormat: {
+              textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 }, fontSize: 11 },
+              backgroundColor: { red: 0.27, green: 0.56, blue: 0.36 },
+            },
+          },
+          fields: "userEnteredFormat(textFormat,backgroundColor)",
+        },
+      },
+      // Sources header
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: sourcesHeaderRow - 1, endRowIndex: sourcesHeaderRow },
+          cell: {
+            userEnteredFormat: {
+              textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 }, fontSize: 11 },
+              backgroundColor: { red: 0.27, green: 0.56, blue: 0.36 },
+            },
+          },
+          fields: "userEnteredFormat(textFormat,backgroundColor)",
+        },
+      },
+      // Section title row (bold but no fill)
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: sourcesHeaderRow - 2, endRowIndex: sourcesHeaderRow - 1 },
+          cell: { userEnteredFormat: { textFormat: { bold: true, fontSize: 12 } } },
+          fields: "userEnteredFormat.textFormat",
+        },
+      },
+      {
+        updateSheetProperties: {
+          properties: { sheetId, gridProperties: { frozenRowCount: 1 } },
+          fields: "gridProperties.frozenRowCount",
+        },
+      },
+      // Currency formatting for Total columns (col B = idx 1) across both tables
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: 1, startColumnIndex: 1, endColumnIndex: 2 },
+          cell: { userEnteredFormat: { numberFormat: { type: "CURRENCY", pattern: "$#,##0.00" } } },
+          fields: "userEnteredFormat.numberFormat",
+        },
+      },
+      {
+        autoResizeDimensions: {
+          dimensions: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 3 },
+        },
+      },
+    ];
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SPREADSHEET_ID,
+      requestBody: { requests },
+    });
+  }
+
+  console.log(`  ${monthly.rows.length} months + ${sources.rows.length} sources written.`);
+  return monthly.rows.length + sources.rows.length;
+}
+
+// ---------------------------------------------------------------------------
+// Sync AI Trust Signals — audit findings + user feedback ratings
+// ---------------------------------------------------------------------------
+// Two tables in one sheet: most-recent audit findings (with severity / claim /
+// expected / actual), and per-insight user feedback ratings + notes.
+async function syncAiTrust(sheets, pool) {
+  console.log("Syncing AI trust signals to Google Sheets...");
+
+  const [findings, ratings] = await Promise.all([
+    pool.query(`
+      SELECT al.created_at, al.severity, al.module, al.check_type,
+             al.claim_text, al.expected_value, al.actual_value,
+             fi.created_at AS insight_date
+      FROM ai_audit_log al
+      LEFT JOIN financial_insights fi ON fi.id = al.insight_id
+      ORDER BY al.created_at DESC
+      LIMIT 100
+    `),
+    pool.query(`
+      SELECT id, created_at, user_feedback, user_feedback_text, user_feedback_at,
+             SUBSTRING(insight_text, 1, 200) AS preview
+      FROM financial_insights
+      WHERE entry_type = 'insight' AND user_feedback IS NOT NULL
+      ORDER BY user_feedback_at DESC NULLS LAST
+      LIMIT 50
+    `),
+  ]);
+
+  const SHEET_TRUST = "AI Trust";
+  await ensureSheet(sheets, SHEET_TRUST);
+
+  const findingsHeaders = ["Audit Date", "Severity", "Module", "Check Type", "Claim", "Expected", "Actual", "Insight Date"];
+  const findingsRows = findings.rows.map(r => [
+    fmtDate(r.created_at),
+    r.severity || "",
+    r.module || "",
+    r.check_type || "",
+    r.claim_text || "",
+    r.expected_value || "",
+    r.actual_value || "",
+    r.insight_date ? fmtDate(r.insight_date) : "",
+  ]);
+
+  const ratingsHeaders = ["Rated At", "Feedback", "Note", "Insight Preview"];
+  const ratingsRows = ratings.rows.map(r => [
+    fmtDate(r.user_feedback_at || r.created_at),
+    r.user_feedback || "",
+    r.user_feedback_text || "",
+    (r.preview || "").replace(/\n/g, " ") + (r.preview && r.preview.length === 200 ? "…" : ""),
+  ]);
+
+  const sep = ["", "", "", "", "", "", "", ""];
+  const sectionTitle = ["USER FEEDBACK ON INSIGHTS", "", "", "", "", "", "", ""];
+
+  const allRows = [
+    findingsHeaders,
+    ...findingsRows,
+    sep,
+    sectionTitle,
+    ratingsHeaders.concat(["", "", "", ""]),
+    ...ratingsRows.map(r => r.concat(["", "", "", ""])),
+  ];
+
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_TRUST}!A:Z`,
+  });
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_TRUST}!A1`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: allRows },
+  });
+
+  const sheetId = await getSheetId(sheets, SHEET_TRUST);
+  if (sheetId !== null) {
+    const ratingsHeaderRow = 1 + findingsRows.length + 2 + 1;
+    const requests = [
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
+          cell: {
+            userEnteredFormat: {
+              textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 }, fontSize: 11 },
+              backgroundColor: { red: 0.45, green: 0.30, blue: 0.55 },
+            },
+          },
+          fields: "userEnteredFormat(textFormat,backgroundColor)",
+        },
+      },
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: ratingsHeaderRow - 1, endRowIndex: ratingsHeaderRow },
+          cell: {
+            userEnteredFormat: {
+              textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 }, fontSize: 11 },
+              backgroundColor: { red: 0.45, green: 0.30, blue: 0.55 },
+            },
+          },
+          fields: "userEnteredFormat(textFormat,backgroundColor)",
+        },
+      },
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: ratingsHeaderRow - 2, endRowIndex: ratingsHeaderRow - 1 },
+          cell: { userEnteredFormat: { textFormat: { bold: true, fontSize: 12 } } },
+          fields: "userEnteredFormat.textFormat",
+        },
+      },
+      {
+        updateSheetProperties: {
+          properties: { sheetId, gridProperties: { frozenRowCount: 1 } },
+          fields: "gridProperties.frozenRowCount",
+        },
+      },
+      {
+        autoResizeDimensions: {
+          dimensions: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 8 },
+        },
+      },
+    ];
+
+    // Color severity rows
+    if (findingsRows.length > 0) {
+      for (const [sev, color] of [
+        ["critical", { red: 0.95, green: 0.85, blue: 0.85 }],
+        ["warning",  { red: 0.98, green: 0.93, blue: 0.78 }],
+        ["info",     { red: 0.88, green: 0.92, blue: 0.95 }],
+      ]) {
+        requests.push({
+          addConditionalFormatRule: {
+            rule: {
+              ranges: [{ sheetId, startRowIndex: 1, endRowIndex: findingsRows.length + 1, startColumnIndex: 0, endColumnIndex: 8 }],
+              booleanRule: {
+                condition: { type: "CUSTOM_FORMULA", values: [{ userEnteredValue: `=$B2="${sev}"` }] },
+                format: { backgroundColor: color },
+              },
+            },
+            index: 0,
+          },
+        });
+      }
+    }
+    // Color feedback rows
+    if (ratingsRows.length > 0) {
+      for (const [fb, color] of [
+        ["positive", { red: 0.88, green: 0.95, blue: 0.88 }],
+        ["negative", { red: 0.95, green: 0.85, blue: 0.85 }],
+        ["mixed",    { red: 0.98, green: 0.93, blue: 0.78 }],
+      ]) {
+        requests.push({
+          addConditionalFormatRule: {
+            rule: {
+              ranges: [{ sheetId, startRowIndex: ratingsHeaderRow, endRowIndex: ratingsHeaderRow + ratingsRows.length, startColumnIndex: 0, endColumnIndex: 4 }],
+              booleanRule: {
+                condition: { type: "CUSTOM_FORMULA", values: [{ userEnteredValue: `=$B${ratingsHeaderRow + 1}="${fb}"` }] },
+                format: { backgroundColor: color },
+              },
+            },
+            index: 0,
+          },
+        });
+      }
+    }
+
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SPREADSHEET_ID,
+      requestBody: { requests },
+    });
+  }
+
+  console.log(`  ${findings.rows.length} findings + ${ratings.rows.length} ratings written.`);
+  return findings.rows.length + ratings.rows.length;
+}
+
+// ---------------------------------------------------------------------------
+// Sync Categorization Rules — user-curated merchant→category map
+// ---------------------------------------------------------------------------
+async function syncCategorizationRules(sheets, pool) {
+  console.log("Syncing categorization rules to Google Sheets...");
+
+  const { rows } = await pool.query(`
+    SELECT merchant_pattern, category, match_type, is_active, times_applied, created_at
+    FROM categorization_rules
+    ORDER BY times_applied DESC, merchant_pattern
+  `);
+
+  const SHEET_RULES = "Categorization Rules";
+  await ensureSheet(sheets, SHEET_RULES);
+
+  const headers = ["Merchant Pattern", "Category", "Match Type", "Active", "Times Applied", "Created"];
+  const data = rows.map(r => [
+    r.merchant_pattern || "",
+    r.category || "",
+    r.match_type || "",
+    r.is_active ? "Yes" : "No",
+    parseInt(r.times_applied || 0, 10),
+    fmtDate(r.created_at),
+  ]);
+
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_RULES}!A:Z`,
+  });
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_RULES}!A1`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [headers, ...data] },
+  });
+
+  const sheetId = await getSheetId(sheets, SHEET_RULES);
+  if (sheetId !== null) {
+    const requests = [
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
+          cell: {
+            userEnteredFormat: {
+              textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 }, fontSize: 11 },
+              backgroundColor: { red: 0.42, green: 0.35, blue: 0.20 },
+            },
+          },
+          fields: "userEnteredFormat(textFormat,backgroundColor)",
+        },
+      },
+      {
+        updateSheetProperties: {
+          properties: { sheetId, gridProperties: { frozenRowCount: 1 } },
+          fields: "gridProperties.frozenRowCount",
+        },
+      },
+      {
+        autoResizeDimensions: {
+          dimensions: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 6 },
+        },
+      },
+    ];
+    if (rows.length > 0) {
+      // Grey out inactive rules
+      requests.push({
+        addConditionalFormatRule: {
+          rule: {
+            ranges: [{ sheetId, startRowIndex: 1, endRowIndex: rows.length + 1, startColumnIndex: 0, endColumnIndex: 6 }],
+            booleanRule: {
+              condition: { type: "CUSTOM_FORMULA", values: [{ userEnteredValue: `=$D2="No"` }] },
+              format: { backgroundColor: { red: 0.93, green: 0.93, blue: 0.93 }, textFormat: { foregroundColor: { red: 0.5, green: 0.5, blue: 0.5 } } },
+            },
+          },
+          index: 0,
+        },
+      });
+    }
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SPREADSHEET_ID,
+      requestBody: { requests },
+    });
+  }
+
+  console.log(`  ${rows.length} categorization rules written.`);
+  return rows.length;
+}
+
+// ---------------------------------------------------------------------------
+// Sync Manual Bills — all categories (Utilities tab only shows utility ones)
+// ---------------------------------------------------------------------------
+async function syncManualBills(sheets, pool) {
+  console.log("Syncing manual bills to Google Sheets...");
+
+  const { rows } = await pool.query(`
+    SELECT name, amount, due_day, cadence, category, is_active, notes, created_at
+    FROM manual_bills
+    ORDER BY is_active DESC, category, amount DESC
+  `);
+
+  const SHEET_BILLS = "Manual Bills";
+  await ensureSheet(sheets, SHEET_BILLS);
+
+  const headers = ["Name", "Amount", "Cadence", "Due Day", "Category", "Active", "Notes", "Created"];
+  const data = rows.map(r => [
+    r.name || "",
+    fmtCurrency(r.amount),
+    r.cadence || "",
+    parseInt(r.due_day || 1, 10),
+    r.category || "",
+    r.is_active ? "Yes" : "No",
+    r.notes || "",
+    fmtDate(r.created_at),
+  ]);
+
+  // Monthly-equivalent total row (treats quarterly as /3, yearly as /12)
+  let monthlyEq = 0;
+  for (const r of rows) {
+    if (!r.is_active) continue;
+    const amt = parseFloat(r.amount || 0);
+    if (r.cadence === "monthly") monthlyEq += amt;
+    else if (r.cadence === "quarterly") monthlyEq += amt / 3;
+    else if (r.cadence === "yearly") monthlyEq += amt / 12;
+  }
+  data.push([]);
+  data.push(["TOTAL active (monthly equivalent)", monthlyEq, "", "", "", "", "", ""]);
+
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_BILLS}!A:Z`,
+  });
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_BILLS}!A1`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [headers, ...data] },
+  });
+
+  const sheetId = await getSheetId(sheets, SHEET_BILLS);
+  if (sheetId !== null) {
+    const requests = [
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
+          cell: {
+            userEnteredFormat: {
+              textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 }, fontSize: 11 },
+              backgroundColor: { red: 0.30, green: 0.35, blue: 0.55 },
+            },
+          },
+          fields: "userEnteredFormat(textFormat,backgroundColor)",
+        },
+      },
+      {
+        updateSheetProperties: {
+          properties: { sheetId, gridProperties: { frozenRowCount: 1 } },
+          fields: "gridProperties.frozenRowCount",
+        },
+      },
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: 1, startColumnIndex: 1, endColumnIndex: 2 },
+          cell: { userEnteredFormat: { numberFormat: { type: "CURRENCY", pattern: "$#,##0.00" } } },
+          fields: "userEnteredFormat.numberFormat",
+        },
+      },
+      {
+        autoResizeDimensions: {
+          dimensions: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 8 },
+        },
+      },
+    ];
+    if (rows.length > 0) {
+      requests.push({
+        addConditionalFormatRule: {
+          rule: {
+            ranges: [{ sheetId, startRowIndex: 1, endRowIndex: rows.length + 1, startColumnIndex: 0, endColumnIndex: 8 }],
+            booleanRule: {
+              condition: { type: "CUSTOM_FORMULA", values: [{ userEnteredValue: `=$F2="No"` }] },
+              format: { backgroundColor: { red: 0.93, green: 0.93, blue: 0.93 }, textFormat: { foregroundColor: { red: 0.5, green: 0.5, blue: 0.5 } } },
+            },
+          },
+          index: 0,
+        },
+      });
+    }
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SPREADSHEET_ID,
+      requestBody: { requests },
+    });
+  }
+
+  console.log(`  ${rows.length} manual bills written.`);
+  return rows.length;
+}
+
+// ---------------------------------------------------------------------------
+// Sync Bill Payments Log — audit trail of every paid bill
+// ---------------------------------------------------------------------------
+// `bill_payments.bill_source` is 'subscription' or 'manual'; join to whichever
+// applies so the log shows the bill's display name regardless of source.
+async function syncBillPayments(sheets, pool) {
+  console.log("Syncing bill payments log to Google Sheets...");
+
+  const { rows } = await pool.query(`
+    SELECT bp.bill_source,
+           bp.bill_id,
+           bp.paid_date,
+           bp.paid_amount,
+           bp.notes,
+           bp.created_at,
+           COALESCE(ds.display_name, mb.name) AS bill_name,
+           COALESCE(ds.amount,       mb.amount) AS expected_amount,
+           COALESCE(ds.category,     mb.category) AS category
+    FROM bill_payments bp
+    LEFT JOIN detected_subscriptions ds ON bp.bill_source = 'subscription' AND ds.id = bp.bill_id
+    LEFT JOIN manual_bills           mb ON bp.bill_source = 'manual'       AND mb.id = bp.bill_id
+    ORDER BY bp.paid_date DESC, bp.created_at DESC
+  `);
+
+  const SHEET_PAYMENTS = "Bill Payments Log";
+  await ensureSheet(sheets, SHEET_PAYMENTS);
+
+  const headers = ["Paid Date", "Bill", "Source", "Category", "Paid Amount", "Expected Amount", "Variance", "Notes", "Logged"];
+  const data = rows.map(r => {
+    const paid = parseFloat(r.paid_amount || 0);
+    const expected = parseFloat(r.expected_amount || 0);
+    const variance = paid - expected;
+    return [
+      fmtDate(r.paid_date),
+      r.bill_name || "(unknown bill)",
+      r.bill_source || "",
+      r.category || "",
+      fmtCurrency(paid),
+      expected > 0 ? fmtCurrency(expected) : "",
+      expected > 0 ? fmtCurrency(variance) : "",
+      r.notes || "",
+      fmtDate(r.created_at),
+    ];
+  });
+
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_PAYMENTS}!A:Z`,
+  });
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_PAYMENTS}!A1`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [headers, ...data] },
+  });
+
+  const sheetId = await getSheetId(sheets, SHEET_PAYMENTS);
+  if (sheetId !== null) {
+    const requests = [
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
+          cell: {
+            userEnteredFormat: {
+              textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 }, fontSize: 11 },
+              backgroundColor: { red: 0.35, green: 0.50, blue: 0.30 },
+            },
+          },
+          fields: "userEnteredFormat(textFormat,backgroundColor)",
+        },
+      },
+      {
+        updateSheetProperties: {
+          properties: { sheetId, gridProperties: { frozenRowCount: 1 } },
+          fields: "gridProperties.frozenRowCount",
+        },
+      },
+      // Currency columns (Paid E=4, Expected F=5, Variance G=6)
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: 1, startColumnIndex: 4, endColumnIndex: 7 },
+          cell: { userEnteredFormat: { numberFormat: { type: "CURRENCY", pattern: "$#,##0.00;[Red]-$#,##0.00" } } },
+          fields: "userEnteredFormat.numberFormat",
+        },
+      },
+      {
+        autoResizeDimensions: {
+          dimensions: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 9 },
+        },
+      },
+    ];
+    // Highlight large variances (>10% of expected)
+    if (rows.length > 0) {
+      requests.push({
+        addConditionalFormatRule: {
+          rule: {
+            ranges: [{ sheetId, startRowIndex: 1, endRowIndex: rows.length + 1, startColumnIndex: 6, endColumnIndex: 7 }],
+            booleanRule: {
+              condition: { type: "CUSTOM_FORMULA", values: [{ userEnteredValue: `=AND(ISNUMBER($F2), $F2>0, ABS($G2/$F2)>0.10)` }] },
+              format: { backgroundColor: { red: 0.98, green: 0.93, blue: 0.78 } },
+            },
+          },
+          index: 0,
+        },
+      });
+    }
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SPREADSHEET_ID,
+      requestBody: { requests },
+    });
+  }
+
+  console.log(`  ${rows.length} bill payments written.`);
+  return rows.length;
+}
+
+// ---------------------------------------------------------------------------
 // API endpoint handler (called from server.js)
 // ---------------------------------------------------------------------------
 async function syncAll() {
@@ -1366,6 +2276,13 @@ async function syncAll() {
     const insightsCount = await syncInsights(sheets, pool);
     const transfersCount = await syncRecurringTransfers(sheets, pool);
     const taxCount = await syncTaxDeductions(sheets, pool);
+    const investmentsCount = await syncInvestments(sheets, pool);
+    const nwhCount = await syncNetWorthHistory(sheets, pool);
+    const incomeCount = await syncIncome(sheets, pool);
+    const trustCount = await syncAiTrust(sheets, pool);
+    const rulesCount = await syncCategorizationRules(sheets, pool);
+    const manualBillsCount = await syncManualBills(sheets, pool);
+    const billPaymentsCount = await syncBillPayments(sheets, pool);
     await buildDashboard(sheets, pool);
 
     return {
@@ -1375,6 +2292,13 @@ async function syncAll() {
       insights_synced: insightsCount,
       transfers_synced: transfersCount,
       tax_deductions_synced: taxCount,
+      investments_synced: investmentsCount,
+      net_worth_months_synced: nwhCount,
+      income_rows_synced: incomeCount,
+      ai_trust_rows_synced: trustCount,
+      categorization_rules_synced: rulesCount,
+      manual_bills_synced: manualBillsCount,
+      bill_payments_synced: billPaymentsCount,
       timestamp: new Date().toISOString(),
     };
   } finally {
