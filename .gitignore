@@ -3,3 +3,4 @@ node_modules/
 *.log
 *.pem
 service-account-key.json
+.claude/worktrees/
