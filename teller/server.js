@@ -73,6 +73,14 @@ app.use(express.urlencoded({ extended: false }));
 app.use((req, res, next) => {
   res.locals.basePath = req.baseUrl || "";
   res.locals.embedded = !!req.app.get("embedded");
+  // Touch the idle-gate so background jobs know a user is active.
+  // Static assets and health checks don't count — only real API /
+  // page requests keep the gate open.
+  if (!req.path.endsWith(".css") && !req.path.endsWith(".js") &&
+      !req.path.endsWith(".svg") && req.path !== "/health") {
+    const { touchActivity } = require("./startup");
+    touchActivity();
+  }
   next();
 });
 

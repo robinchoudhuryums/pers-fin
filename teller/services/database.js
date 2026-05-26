@@ -12,7 +12,14 @@ if (!process.env.NEON_DATABASE_URL) {
 const pool = new Pool({
   connectionString: process.env.NEON_DATABASE_URL,
   ssl: { rejectUnauthorized: true },
-  max: 5,
+  // Single-user app — 3 connections is sufficient. Each idle connection
+  // holds a Postgres backend process on Neon, consuming compute hours
+  // even when not running queries. The previous max of 5 was oversized.
+  // Tip: switch NEON_DATABASE_URL to the "-pooler" endpoint (Neon
+  // dashboard → Connection Details → Pooled) for pgbouncer-level
+  // connection multiplexing and faster cold starts.
+  max: 3,
+  idleTimeoutMillis: 20000,
   connectionTimeoutMillis: 10000,
 });
 

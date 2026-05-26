@@ -30,9 +30,22 @@ const intervalHandles = [];
 // for every cycle. Use the "extract handler → export → reuse" pattern when
 // adding new scheduled tasks.
 
+// ---- Idle-gate (Neon compute optimization) ----
+// Tracks the last time a real HTTP request arrived. Background jobs check
+// isUserActive() and skip their tick when nobody's been active for 15+
+// minutes, letting Neon's auto-suspend kick in. Without this, the 10
+// intervals fire hourly queries that keep Neon awake 24/7.
+let _lastRequestAt = Date.now();
+function touchActivity() { _lastRequestAt = Date.now(); }
+function isUserActive() {
+  return (Date.now() - _lastRequestAt) < 15 * 60 * 1000;
+}
+
 function startBackgroundJobs() {
-  // Sheets auto-sync check (every hour)
+  // Sheets auto-sync check (every hour). Gated: skips when no user has
+  // been active for 15+ minutes so Neon can auto-suspend.
   intervalHandles.push(setInterval(async () => {
+    if (!isUserActive()) return;
     try {
       const settings = await pool.query("SELECT sheets_auto_sync_enabled, sheets_auto_sync_interval, sheets_last_auto_sync FROM user_settings WHERE id = 1");
       const s = settings.rows[0];
@@ -54,14 +67,12 @@ function startBackgroundJobs() {
     }
   }, 60 * 60 * 1000));
 
-  // Hourly net worth auto-snapshot. The INSERT below uses ON CONFLICT
-  // (snapshot_date) DO UPDATE so a same-day re-run rewrites the row with
-  // the latest balances — important when a balance sync arrives mid-day
-  // and the snapshot would otherwise lock in stale numbers from this
-  // morning. (CLAUDE.md describes this as "updates if exists so late-
-  // arriving transactions are reflected"; the previous early-return
-  // contradicted that.)
+  // Hourly net worth auto-snapshot. Gated: skips when no user is active
+  // so Neon can auto-suspend. The INSERT uses ON CONFLICT (snapshot_date)
+  // DO UPDATE so a same-day re-run rewrites the row with the latest
+  // balances.
   intervalHandles.push(setInterval(async () => {
+    if (!isUserActive()) return;
     try {
       const [accounts, investments] = await Promise.all([
         pool.query("SELECT name, type, available_balance, current_balance FROM linked_accounts WHERE available_balance IS NOT NULL OR current_balance IS NOT NULL"),
@@ -101,8 +112,9 @@ function startBackgroundJobs() {
     }
   }, 60 * 60 * 1000));
 
-  // Goal milestone notifications (every 6 hours)
+  // Goal milestone notifications (every 6 hours). Gated on user activity.
   intervalHandles.push(setInterval(async () => {
+    if (!isUserActive()) return;
     try {
       const goals = await pool.query(
         "SELECT id, name, target_amount, current_amount FROM financial_goals WHERE is_active = true"
@@ -180,8 +192,9 @@ function startBackgroundJobs() {
     }
   }, 6 * 60 * 60 * 1000));
 
-  // Budget alert push notifications (every 3 hours)
+  // Budget alert push notifications (every 3 hours). Gated on user activity.
   intervalHandles.push(setInterval(async () => {
+    if (!isUserActive()) return;
     try {
       const { getCategorySpendingThisMonth } = require("./services/financial-queries");
       const [budgets, spending] = await Promise.all([
@@ -219,8 +232,10 @@ function startBackgroundJobs() {
     }
   }, 3 * 60 * 60 * 1000));
 
-  // Budget snapshot auto-trigger (every 6 hours; only acts on the 1st of the month)
+  // Budget snapshot auto-trigger (every 6 hours; only acts on the 1st of the month).
+  // Gated on user activity.
   intervalHandles.push(setInterval(async () => {
+    if (!isUserActive()) return;
     try {
       const today = new Date();
       if (today.getDate() !== 1) return;
@@ -307,11 +322,11 @@ function startBackgroundJobs() {
     }
   }, 60 * 60 * 1000));
 
-  // Weekly digest email (S2: daily check; runWeeklyDigest itself gates to
-  // once per 6+ days). Independent of /api/insights cadence — fires on the
-  // configured weekly_digest_day even when the per-insight email channel is
-  // quiet. Bails immediately if weekly_digest_enabled is false.
+  // Weekly digest email. Gated on user activity (no point burning compute
+  // to check if nobody's here). Fires on the configured weekly_digest_day
+  // when weekly_digest_enabled is true. Bails silently otherwise.
   intervalHandles.push(setInterval(async () => {
+    if (!isUserActive()) return;
     try {
       const settings = await pool.query(
         "SELECT weekly_digest_enabled, weekly_digest_day FROM user_settings WHERE id = 1"
@@ -333,11 +348,9 @@ function startBackgroundJobs() {
     }
   }, 60 * 60 * 1000));
 
-  // Daily digest email (#19). Hourly tick — runDailyDigest itself gates with
-  // a 20h window from last_daily_digest_at so we get one digest per day
-  // regardless of process restarts or timezone-edge ticks. Skips silently
-  // when there's nothing new (no point in an empty "yesterday" mail).
+  // Daily digest email (#19). Gated on user activity.
   intervalHandles.push(setInterval(async () => {
+    if (!isUserActive()) return;
     try {
       const { runDailyDigest } = require("./routes/insights");
       const result = await runDailyDigest();
@@ -350,8 +363,9 @@ function startBackgroundJobs() {
     }
   }, 60 * 60 * 1000));
 
-  // CSV import reminder (every 24 hours)
+  // CSV import reminder (every 24 hours). Gated on user activity.
   intervalHandles.push(setInterval(async () => {
+    if (!isUserActive()) return;
     try {
       const settings = await pool.query(
         "SELECT csv_reminder_enabled, csv_reminder_days, sync_notifications_enabled FROM user_settings WHERE id = 1"
@@ -431,4 +445,4 @@ async function start(app, opts = {}) {
   return { app, server, intervalHandles };
 }
 
-module.exports = { start, startBackgroundJobs, stopBackgroundJobs };
+module.exports = { start, startBackgroundJobs, stopBackgroundJobs, touchActivity };

@@ -156,10 +156,13 @@ async function start(opts = {}) {
     console.log("No NEON_DATABASE_URL set — running without database (API calls will fail)");
   }
 
-  // Email scheduler (every minute)
+  // Email scheduler — checks for emails due to send. Changed from every
+  // minute to every 10 minutes to reduce Neon compute-hour burn (was
+  // 1,440 queries/day; now 144/day). Worst case: a scheduled email fires
+  // up to 10 minutes late, which is unnoticeable for a personal app.
   if (cron) {
-    cron.schedule("* * * * *", processScheduledEmails);
-    console.log("Email scheduler started (checks every minute)");
+    cron.schedule("*/10 * * * *", processScheduledEmails);
+    console.log("Email scheduler started (checks every 10 minutes)");
   }
 
   // Recurring task processor — auto-generate next instance for overdue recurring
