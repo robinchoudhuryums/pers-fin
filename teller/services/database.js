@@ -606,6 +606,23 @@ async function runMigrations() {
     )`);
     await client.query("CREATE INDEX IF NOT EXISTS idx_watchlist_active ON watchlist_items (is_active, type)");
 
+    // ---- Credit score tracking (manual entry) ----
+    // Users log their credit score periodically (e.g. once a month from
+    // their bank/card app). The app stores history, trends it on the
+    // dashboard, syncs to Sheets, and feeds the trajectory into AI
+    // insights so Claude can correlate score changes with spending behavior.
+    await client.query(`CREATE TABLE IF NOT EXISTS credit_scores (
+      id          SERIAL PRIMARY KEY,
+      score       INT NOT NULL CHECK (score >= 300 AND score <= 850),
+      score_type  TEXT NOT NULL DEFAULT 'vantagescore' CHECK (score_type IN ('fico','vantagescore','other')),
+      source      TEXT,
+      notes       TEXT,
+      checked_at  DATE NOT NULL DEFAULT CURRENT_DATE,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(checked_at, score_type)
+    )`);
+    await client.query("CREATE INDEX IF NOT EXISTS idx_credit_scores_date ON credit_scores (checked_at DESC)");
+
     // ---- Add 'investments' to dashboard_widgets default for new users ----
     // For existing rows: merge the new key into the JSONB without overwriting
     // user customizations to other keys. jsonb concat (||) is right-precedence,
@@ -627,8 +644,8 @@ async function runMigrations() {
     `);
     await client.query(`
       UPDATE user_settings
-      SET dashboard_widgets = '{"whatsNew":true,"investmentReturns":true}'::jsonb || dashboard_widgets
-      WHERE NOT (dashboard_widgets ? 'whatsNew') OR NOT (dashboard_widgets ? 'investmentReturns')
+      SET dashboard_widgets = '{"whatsNew":true,"investmentReturns":true,"creditScore":true}'::jsonb || dashboard_widgets
+      WHERE NOT (dashboard_widgets ? 'whatsNew') OR NOT (dashboard_widgets ? 'investmentReturns') OR NOT (dashboard_widgets ? 'creditScore')
     `);
 
     // One-shot cleanup: detection-key migration orphans

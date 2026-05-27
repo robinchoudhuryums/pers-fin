@@ -283,6 +283,7 @@ app.use(require("./routes/investments"));
 app.use(require("./routes/persistent"));
 app.use(require("./routes/whats-new"));
 app.use(require("./routes/watchlist"));
+app.use(require("./routes/credit-scores"));
 
 // ---------------------------------------------------------------------------
 // Prevent browser caching of HTML pages and API mutation responses

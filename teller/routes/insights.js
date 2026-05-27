@@ -1035,6 +1035,28 @@ async function generateInsights() {
       }
     } catch (err) { console.error("Recurring transfers query error:", err.message); }
 
+    // --- Enrichment: Credit score trajectory (if logged) ---
+    // Feed the last 6 entries + trend into the prompt so Claude can
+    // correlate score changes with spending/debt behavior.
+    try {
+      const csResult = await pool.query(
+        "SELECT score, score_type, source, checked_at FROM credit_scores ORDER BY checked_at DESC LIMIT 6"
+      );
+      if (csResult.rows.length > 0) {
+        const latest = csResult.rows[0];
+        const prior = csResult.rows[1];
+        const oldest = csResult.rows[csResult.rows.length - 1];
+        let summary = "Latest: " + latest.score + " (" + (latest.score_type || "unknown") + ", " + latest.checked_at + ")";
+        if (prior) summary += " | Prior: " + prior.score + " (delta " + (latest.score - prior.score > 0 ? "+" : "") + (latest.score - prior.score) + ")";
+        if (csResult.rows.length >= 3) {
+          summary += " | " + csResult.rows.length + "-entry range: " + oldest.score + " → " + latest.score +
+            " (" + (latest.score - oldest.score > 0 ? "+" : "") + (latest.score - oldest.score) + " over " +
+            Math.round((new Date(latest.checked_at) - new Date(oldest.checked_at)) / 86400000) + " days)";
+        }
+        userMsg += "\n\n=== CREDIT SCORE ===\n" + summary;
+      }
+    } catch (err) { console.error("Credit score enrichment error:", err.message); }
+
     // --- Enrichment: Month-over-month spending trends with deltas ---
     try {
       if (monthlyData.rows.length >= 2) {
