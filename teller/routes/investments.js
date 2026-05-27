@@ -90,8 +90,12 @@ router.post("/api/plaid/link-token", async (_req, res) => {
 // same `transactions` table as Teller-synced ones, so the entire dashboard,
 // budget, AI insights, and Sheets pipeline works without changes.
 
-// POST /api/plaid/link-token-transactions — create a link token scoped to
-// the Transactions product (separate from the Investments link).
+// POST /api/plaid/link-token-transactions — create a link token that
+// requests Transactions + Investments in one Plaid Link session. Banks
+// like Schwab serve both checking (transactions) and brokerage (holdings)
+// under a single login — requesting both products means the user links
+// once instead of twice. transactions.days_requested pulls maximum
+// history (730 days); some banks cap lower (Capital One = 90 days).
 router.post("/api/plaid/link-token-transactions", async (_req, res) => {
   const client = getPlaidClient();
   if (!client) return res.status(501).json({ error: "Plaid not configured." });
@@ -99,9 +103,10 @@ router.post("/api/plaid/link-token-transactions", async (_req, res) => {
     const response = await client.linkTokenCreate({
       user: { client_user_id: "perfin-user-1" },
       client_name: "Perfin",
-      products: [Products.Transactions],
+      products: [Products.Transactions, Products.Investments],
       country_codes: [CountryCode.Us],
       language: "en",
+      transactions: { days_requested: 730 },
     });
     res.json({ link_token: response.data.link_token });
   } catch (err) {
@@ -168,12 +173,80 @@ router.post("/api/plaid/exchange-transactions", async (req, res) => {
     // Run initial transaction sync immediately
     const syncResult = await syncPlaidItemTransactions(client, plaidItemDbId, accessToken);
 
+    // If the linked institution has investment accounts, also sync
+    // holdings. The link token requested both Products.Transactions and
+    // Products.Investments, so Schwab (and similar banks that serve both
+    // checking + brokerage) will have investment-type accounts available.
+    let holdingsSynced = 0;
+    const investmentAccounts = acctRes.data.accounts.filter(a => a.type === "investment");
+    if (investmentAccounts.length > 0) {
+      try {
+        // Also store in plaid_investment_items so the existing
+        // POST /api/plaid/sync-holdings path picks them up.
+        await pool.query(
+          `INSERT INTO plaid_investment_items (item_id, institution_name, access_token_enc)
+           VALUES ($1, $2, pgp_sym_encrypt($3, $4))
+           ON CONFLICT (item_id) DO UPDATE SET
+             access_token_enc = pgp_sym_encrypt($3, $4),
+             institution_name = $2,
+             updated_at = now()`,
+          [itemId, institution?.name || "Unknown", accessToken, ENCRYPTION_PASSPHRASE]
+        );
+        const holdingsRes = await client.investmentsHoldingsGet({ access_token: accessToken });
+        const holdings = holdingsRes.data.holdings || [];
+        const securities = holdingsRes.data.securities || [];
+        const secMap = {};
+        for (const sec of securities) secMap[sec.security_id] = sec;
+        for (const acct of investmentAccounts) {
+          const balance = acct.balances?.current || 0;
+          await pool.query(
+            `INSERT INTO investment_accounts (name, institution, account_type, balance, plaid_account_id)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (plaid_account_id) DO UPDATE SET
+               balance = $4, name = $1, updated_at = now()`,
+            [acct.name, institution?.name || "Unknown", acct.subtype || "brokerage",
+             balance, acct.account_id]
+          );
+        }
+        if (holdings.length > 0) {
+          const placeholders = [];
+          const values = [];
+          let idx = 1;
+          for (const h of holdings) {
+            const sec = secMap[h.security_id] || {};
+            placeholders.push(`($${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++})`);
+            values.push(
+              h.account_id, h.security_id,
+              sec.ticker_symbol || null, sec.name || "Unknown",
+              h.quantity, h.cost_basis || 0,
+              h.institution_value || (sec.close_price ? h.quantity * sec.close_price : null),
+              sec.type || "unknown",
+            );
+          }
+          await pool.query(
+            `INSERT INTO investment_holdings (plaid_account_id, security_id, ticker, name,
+              quantity, cost_basis, current_value, security_type)
+             VALUES ${placeholders.join(", ")}
+             ON CONFLICT (plaid_account_id, security_id) DO UPDATE SET
+               quantity = EXCLUDED.quantity, cost_basis = EXCLUDED.cost_basis,
+               current_value = EXCLUDED.current_value, ticker = EXCLUDED.ticker,
+               name = EXCLUDED.name, updated_at = now()`,
+            values
+          );
+          holdingsSynced = holdings.length;
+        }
+      } catch (invErr) {
+        console.error("Initial holdings sync error:", invErr.response?.data?.error_message || invErr.message);
+      }
+    }
+
     res.json({
       ok: true,
       item_id: itemId,
       institution: institution?.name || "Unknown",
       accounts_linked: linked,
       transactions_added: syncResult.added,
+      holdings_synced: holdingsSynced || undefined,
     });
   } catch (err) {
     console.error("Plaid exchange-transactions error:", err.response?.data || err.message);
