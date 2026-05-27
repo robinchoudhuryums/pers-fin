@@ -307,6 +307,16 @@ async function runMigrations() {
     await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS is_manual BOOLEAN NOT NULL DEFAULT false");
     await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS institution_name_manual TEXT DEFAULT NULL");
     await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS credit_limit NUMERIC(12,2) DEFAULT NULL");
+    // Liabilities data from Plaid (APR, minimum payment, loan details).
+    // apr already exists; these columns supplement it for the debt
+    // optimizer AI module and the bill calendar.
+    await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS minimum_payment NUMERIC(12,2) DEFAULT NULL");
+    await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS next_payment_due_date DATE DEFAULT NULL");
+    await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS last_payment_amount NUMERIC(12,2) DEFAULT NULL");
+    await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS last_payment_date DATE DEFAULT NULL");
+    // Transaction logo URL from Plaid's counterparties enrichment.
+    // Stored at sync time; NULL for Teller-sourced or un-enriched rows.
+    await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS logo_url TEXT DEFAULT NULL");
     // Shared/joint account support — spending_split_pct controls what fraction of spending counts as yours (default 100)
     await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS spending_split_pct INT NOT NULL DEFAULT 100");
     await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS is_shared BOOLEAN NOT NULL DEFAULT false");
