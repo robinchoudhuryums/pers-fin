@@ -5,7 +5,9 @@ Single Node process that hosts two related personal tools behind one PIN gate:
 
 - **Perfin** — finance tracker. Detects recurring charges, compares spending to
   benchmarks, tracks financial goals, runs AI-powered insights via Claude. Uses
-  **Teller API** for bank links via mTLS, plus Plaid for investment holdings.
+  **Teller API** for bank links via mTLS, plus Plaid for investment holdings
+  and transaction syncing for banks Teller doesn't cover (Capital One,
+  Discover, Schwab, etc.).
 - **Per-sistant** — personal assistant. Tasks, scheduled emails, notes,
   calendar, AI daily briefing.
 
@@ -94,12 +96,20 @@ teller/
     investments.js       — GET /api/plaid/status, POST /api/plaid/link-token,
                            POST /api/plaid/exchange, POST /api/plaid/sync-holdings,
                            GET /api/plaid/holdings (Plaid investment accounts).
+                           POST /api/plaid/link-token-transactions,
+                           POST /api/plaid/exchange-transactions,
+                           POST /api/plaid/sync-transactions (Plaid transaction
+                           syncing for banks Teller doesn't cover — Capital One,
+                           Discover, Schwab, etc. Combined link token requests
+                           both Transactions + Investments in one session).
                            GET /api/investments returns the unified picture
                            across Teller-linked, manual, and Plaid sources.
                            GET /api/investments/performance aggregates returns,
                            asset-class allocation, and top winners/losers from
                            Plaid-tracked holdings only (Teller-linked lacks
                            cost basis from Teller's API).
+    credit-scores.js     — GET/POST/DELETE /api/credit-scores
+                           (manual credit score tracking with trend computation)
     notifications.js     — GET /api/notifications/vapid, POST/DELETE /api/notifications/subscribe,
                            POST /api/notifications/test, GET /api/notifications,
                            PATCH /api/notifications/:id/read, POST /api/notifications/read-all
@@ -282,6 +292,16 @@ shell/
   - **Plaid-linked**: full holdings sync (qty / cost basis / current value
     per security). Stored in `investment_accounts` + `investment_holdings`.
     Endpoints: `/api/plaid/{status,link-token,exchange,sync-holdings,holdings}`.
+    Plaid also syncs **transactions** for banks Teller doesn't cover
+    (Capital One, Discover, Schwab, Amex, credit unions) via
+    `/api/plaid/{link-token-transactions,exchange-transactions,sync-transactions}`.
+    The link token requests both `Products.Transactions` and
+    `Products.Investments` in one session with `days_requested: 730`
+    (2 years; some banks cap lower). Transactions land in the same
+    `transactions` table as Teller-synced ones so the entire pipeline
+    works without changes. Uses Plaid's cursor-based `transactionsSync`
+    (not the deprecated `transactionsGet`); Capital One doesn't support
+    `/transactions/refresh` but cursor-based sync handles it.
   - **Manual**: user-entered via `POST /api/investment-accounts`. Stored in
     `investment_accounts` with no `plaid_account_id`.
 - **CSV import**: Auto-detect Chase, Capital One, Discover, Wells Fargo, Schwab formats
@@ -328,6 +348,14 @@ shell/
   manually-entered value still surfaces as `current_amount_manual`.
 - **Net worth tracking**: Automated daily snapshots with trend history
 - **Credit utilization**: Derived credit limit display, utilization percentages
+- **Credit score tracking**: Manual-entry credit score log (300-850, FICO /
+  VantageScore / other). Dashboard widget shows current score color-coded
+  (740+=green, 670+=teal, 580+=yellow, <580=red), delta vs prior entry,
+  delta vs ~6 months ago, collapsible history, and inline log form.
+  Synced to a Google Sheets "Credit Scores" tab with per-entry change
+  column. The last 6 score entries + trajectory are injected into the
+  AI insights prompt so Claude can correlate score changes with spending
+  behavior (e.g. reduced utilization → score improvement).
 - **Tax deduction persistence**: Flagged deductions stored in `tax_deductions` table, accumulated year-round
 - **Manual bills**: User-created expected charges for the bill calendar (name, amount,
   due_day 1-31, cadence monthly/quarterly/yearly, category). CRUD via
@@ -761,6 +789,14 @@ the prereq is missing; the daily toggle inherits the same constraint.
 Operators enabling either should verify the Per-sistant integration
 first under Settings → Integrations.
 
+**Plaid** (optional — for banks Teller doesn't cover): create a Plaid
+account at dashboard.plaid.com. New accounts after April 2026 get the
+**Trial Plan** (10 free Production Items — enough for personal use).
+Set `PLAID_CLIENT_ID`, `PLAID_SECRET_PROD`, and `PLAID_ENV=production`
+in the Render dashboard. The old Development environment was
+decommissioned June 2024; Trial Plan replaced it. Access tokens never
+expire; re-auth only needed if the user changes their bank password.
+
 ### Render (Free, recommended — currently deployed)
 1. Connect GitHub repo in Render dashboard
 2. Create Web Service from `render.yaml` blueprint
@@ -809,7 +845,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 241 tests passing across 11 test files
+- ~505 tests passing across 14 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash
@@ -923,10 +959,20 @@ GET  /api/watchlist        # list watchlist items (merchant/category/keyword)
 POST /api/watchlist        # add watchlist item (body: type, value, notes?)
 PATCH /api/watchlist/:id   # toggle is_active or update notes
 DELETE /api/watchlist/:id  # remove watchlist item
-GET  /api/plaid/status     # Plaid investment API status
-POST /api/plaid/link-token # create Plaid Link token for investments
-POST /api/plaid/exchange   # exchange public token for access token
+GET  /api/credit-scores    # credit score history + computed trend (query: limit, score_type)
+POST /api/credit-scores    # log a score (body: score 300-850, score_type?, source?, notes?, checked_at?)
+DELETE /api/credit-scores/:id # remove an entry
+GET  /api/plaid/status     # Plaid API config status (configured + environment)
+POST /api/plaid/link-token # create Plaid Link token for investments only
+POST /api/plaid/exchange   # exchange public token for investment accounts
 POST /api/plaid/sync-holdings # sync investment holdings
+POST /api/plaid/link-token-transactions # create combined Transactions+Investments link token
+                                        # (730-day history request; one Plaid Link session links
+                                        # both checking + brokerage for banks like Schwab)
+POST /api/plaid/exchange-transactions   # exchange token, store in plaid_items, fetch accounts
+                                        # into linked_accounts, run initial transaction sync,
+                                        # auto-detect + sync investment holdings if present
+POST /api/plaid/sync-transactions       # cursor-based sync for all plaid_items (added/modified/removed)
                                # Response: { accounts_updated, holdings_updated, errors[]? }
                                # Per-item failures (including NULL access_token from a
                                # pgp_sym_decrypt mismatch) surface as
@@ -1046,9 +1092,13 @@ value applies on the very next request, not after the 60s cache lag.
 ### Keep-alive (Perfin / shell)
 - `RENDER_EXTERNAL_URL` — auto-set by Render; the keep-alive self-ping uses it as the target URL when present, falling back to `http://localhost:PORT` for local runs. Operators don't set this manually.
 
-### Investments (Perfin, optional)
-- `PLAID_CLIENT_ID`, `PLAID_SECRET_SANDBOX|DEV|PROD` — Plaid investment-account linking
-- `PLAID_ENV` — `sandbox` (default), `development`, or `production`; selects which `PLAID_SECRET_*` is used
+### Plaid (Perfin — investments + transactions for banks Teller doesn't cover)
+- `PLAID_CLIENT_ID`, `PLAID_SECRET_SANDBOX|DEV|PROD` — Plaid API credentials
+- `PLAID_ENV` — `sandbox` (default), `development`, or `production`; selects which `PLAID_SECRET_*` is used.
+  **For real bank connections set `PLAID_ENV=production`** with a Trial Plan
+  account (10 free Production Items, no cost). The old Development
+  environment was decommissioned June 2024; Trial Plan (created after
+  April 2026) is the replacement.
 
 ### SMTP (Per-sistant — email scheduling)
 - `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM`
@@ -1079,7 +1129,7 @@ standalone-mode fallback if either app is run on its own Render service.
   `push_subscriptions`, `webauthn_credentials`, `investment_accounts`, `investment_holdings`,
   `plaid_investment_items`, `plaid_items`, `sync_cursors`, `schema_migrations`,
   `categorization_rules`, `manual_bills`, `bill_payments`, `notification_log`,
-  `ai_audit_log`, `account_balance_snapshots`, `watchlist_items`
+  `ai_audit_log`, `account_balance_snapshots`, `watchlist_items`, `credit_scores`
 - `user_settings`: single-row pattern (CHECK id = 1) for app preferences
 - `linked_accounts` columns include: `is_shared BOOLEAN`, `spending_split_pct INT DEFAULT 100`,
   `is_manual BOOLEAN` — constraint `chk_account_source` allows `plaid_item_id IS NOT NULL OR
@@ -1178,6 +1228,12 @@ standalone-mode fallback if either app is run on its own Render service.
   rather than failing. Edited via Settings → Watchlist; rendered
   into the Watchlist sheet tab with the last 90 days of matching
   transactions on each Sheets sync.
+- `credit_scores`: manual-entry credit score history. Columns: `score` (INT,
+  CHECK 300-850), `score_type` (CHECK: fico/vantagescore/other), `source`,
+  `notes`, `checked_at` (DATE). UNIQUE on (checked_at, score_type) so
+  same-day re-entry upserts. Dashboard widget renders current + trend;
+  AI insights sees the last 6 entries. Synced to Google Sheets "Credit
+  Scores" tab with per-entry Change column.
 - `bill_payments`: tracks which bills have been paid. Columns: `bill_source`
   (subscription or manual), `bill_id`, `paid_date`, `paid_amount`, `notes`.
   UNIQUE on (bill_source, bill_id, paid_date). Calendar shows paid state.
@@ -1338,9 +1394,10 @@ embedded mode).
   so budget rollover advances automatically. Idempotent — skips if snapshot already exists.
 - **Bank auto-sync** (Phase A): every 1 hour, checks `auto_sync_enabled` and whether
   `auto_sync_interval_hours` has elapsed since `last_auto_sync_at`. When due, calls
-  `syncAllEnrollments()` then `syncAllBalances()` in-process — never via HTTP self-fetch,
-  so API_KEY-protected deployments don't 401 against themselves. Updates
-  `last_auto_sync_at` on every check (success or partial failure).
+  `syncAllEnrollments()` (Teller) then `syncAllPlaidTransactions()` (Plaid) then
+  `syncAllBalances()` in-process — never via HTTP self-fetch, so API_KEY-protected
+  deployments don't 401 against themselves. Updates `last_auto_sync_at` on every
+  check (success or partial failure).
   Push notification only fires when at least one transaction was added, at
   least one balance was updated, or a sync failed — silent successful syncs
   no longer produce hourly notification noise. Failed syncs still notify

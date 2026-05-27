@@ -82,6 +82,381 @@ router.post("/api/plaid/link-token", async (_req, res) => {
   }
 });
 
+// =========================================================================
+// Plaid Transactions — link, exchange, sync for banks Teller doesn't cover
+// =========================================================================
+// Uses the existing `plaid_items` + `sync_cursors` + `linked_accounts`
+// schema that was scaffolded at project inception. Transactions land in the
+// same `transactions` table as Teller-synced ones, so the entire dashboard,
+// budget, AI insights, and Sheets pipeline works without changes.
+
+// POST /api/plaid/link-token-transactions — create a link token that
+// requests Transactions + Investments in one Plaid Link session. Banks
+// like Schwab serve both checking (transactions) and brokerage (holdings)
+// under a single login — requesting both products means the user links
+// once instead of twice. transactions.days_requested pulls maximum
+// history (730 days); some banks cap lower (Capital One = 90 days).
+router.post("/api/plaid/link-token-transactions", async (_req, res) => {
+  const client = getPlaidClient();
+  if (!client) return res.status(501).json({ error: "Plaid not configured." });
+  try {
+    const response = await client.linkTokenCreate({
+      user: { client_user_id: "perfin-user-1" },
+      client_name: "Perfin",
+      products: [Products.Transactions, Products.Investments],
+      country_codes: [CountryCode.Us],
+      language: "en",
+      transactions: { days_requested: 730 },
+    });
+    res.json({ link_token: response.data.link_token });
+  } catch (err) {
+    console.error("Plaid link-token-transactions error:", err.response?.data || err.message);
+    res.status(500).json({ error: "Failed to create Plaid link token" });
+  }
+});
+
+// POST /api/plaid/exchange-transactions — exchange public token after the
+// user authenticates in Plaid Link, store the item in `plaid_items`, fetch
+// accounts and store in `linked_accounts` with `plaid_item_id` set.
+router.post("/api/plaid/exchange-transactions", async (req, res) => {
+  const { public_token, institution } = req.body;
+  if (!public_token) return res.status(400).json({ error: "public_token required" });
+  const client = getPlaidClient();
+  if (!client) return res.status(501).json({ error: "Plaid not configured." });
+
+  try {
+    const exchangeRes = await client.itemPublicTokenExchange({ public_token });
+    const accessToken = exchangeRes.data.access_token;
+    const itemId = exchangeRes.data.item_id;
+
+    // Store the Plaid item (reuses the existing plaid_items table)
+    const itemRow = await pool.query(
+      `INSERT INTO plaid_items (item_id, institution_id, institution_name, access_token_enc)
+       VALUES ($1, $2, $3, pgp_sym_encrypt($4, $5))
+       ON CONFLICT (item_id) DO UPDATE SET
+         access_token_enc = pgp_sym_encrypt($4, $5),
+         institution_name = $3,
+         updated_at = now()
+       RETURNING id`,
+      [itemId, institution?.institution_id || null, institution?.name || "Unknown",
+       accessToken, ENCRYPTION_PASSPHRASE]
+    );
+    const plaidItemDbId = itemRow.rows[0].id;
+
+    // Initialize the sync cursor for cursor-based transactionsSync
+    await pool.query(
+      `INSERT INTO sync_cursors (plaid_item_id, cursor)
+       VALUES ($1, '')
+       ON CONFLICT (plaid_item_id) DO NOTHING`,
+      [plaidItemDbId]
+    );
+
+    // Fetch accounts and store in linked_accounts
+    const acctRes = await client.accountsGet({ access_token: accessToken });
+    let linked = 0;
+    for (const acct of acctRes.data.accounts) {
+      await pool.query(
+        `INSERT INTO linked_accounts (plaid_item_id, account_id, name, official_name, type, subtype, mask)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (account_id) DO UPDATE SET
+           name = EXCLUDED.name,
+           official_name = EXCLUDED.official_name,
+           type = EXCLUDED.type,
+           subtype = EXCLUDED.subtype,
+           plaid_item_id = EXCLUDED.plaid_item_id`,
+        [plaidItemDbId, acct.account_id, acct.name, acct.official_name || null,
+         acct.type, acct.subtype || null, acct.mask || null]
+      );
+      linked++;
+    }
+
+    // Run initial transaction sync immediately
+    const syncResult = await syncPlaidItemTransactions(client, plaidItemDbId, accessToken);
+
+    // If the linked institution has investment accounts, also sync
+    // holdings. The link token requested both Products.Transactions and
+    // Products.Investments, so Schwab (and similar banks that serve both
+    // checking + brokerage) will have investment-type accounts available.
+    let holdingsSynced = 0;
+    const investmentAccounts = acctRes.data.accounts.filter(a => a.type === "investment");
+    if (investmentAccounts.length > 0) {
+      try {
+        // Also store in plaid_investment_items so the existing
+        // POST /api/plaid/sync-holdings path picks them up.
+        await pool.query(
+          `INSERT INTO plaid_investment_items (item_id, institution_name, access_token_enc)
+           VALUES ($1, $2, pgp_sym_encrypt($3, $4))
+           ON CONFLICT (item_id) DO UPDATE SET
+             access_token_enc = pgp_sym_encrypt($3, $4),
+             institution_name = $2,
+             updated_at = now()`,
+          [itemId, institution?.name || "Unknown", accessToken, ENCRYPTION_PASSPHRASE]
+        );
+        const holdingsRes = await client.investmentsHoldingsGet({ access_token: accessToken });
+        const holdings = holdingsRes.data.holdings || [];
+        const securities = holdingsRes.data.securities || [];
+        const secMap = {};
+        for (const sec of securities) secMap[sec.security_id] = sec;
+        for (const acct of investmentAccounts) {
+          const balance = acct.balances?.current || 0;
+          await pool.query(
+            `INSERT INTO investment_accounts (name, institution, account_type, balance, plaid_account_id)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (plaid_account_id) DO UPDATE SET
+               balance = $4, name = $1, updated_at = now()`,
+            [acct.name, institution?.name || "Unknown", acct.subtype || "brokerage",
+             balance, acct.account_id]
+          );
+        }
+        if (holdings.length > 0) {
+          const placeholders = [];
+          const values = [];
+          let idx = 1;
+          for (const h of holdings) {
+            const sec = secMap[h.security_id] || {};
+            placeholders.push(`($${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++})`);
+            values.push(
+              h.account_id, h.security_id,
+              sec.ticker_symbol || null, sec.name || "Unknown",
+              h.quantity, h.cost_basis || 0,
+              h.institution_value || (sec.close_price ? h.quantity * sec.close_price : null),
+              sec.type || "unknown",
+            );
+          }
+          await pool.query(
+            `INSERT INTO investment_holdings (plaid_account_id, security_id, ticker, name,
+              quantity, cost_basis, current_value, security_type)
+             VALUES ${placeholders.join(", ")}
+             ON CONFLICT (plaid_account_id, security_id) DO UPDATE SET
+               quantity = EXCLUDED.quantity, cost_basis = EXCLUDED.cost_basis,
+               current_value = EXCLUDED.current_value, ticker = EXCLUDED.ticker,
+               name = EXCLUDED.name, updated_at = now()`,
+            values
+          );
+          holdingsSynced = holdings.length;
+        }
+      } catch (invErr) {
+        console.error("Initial holdings sync error:", invErr.response?.data?.error_message || invErr.message);
+      }
+    }
+
+    res.json({
+      ok: true,
+      item_id: itemId,
+      institution: institution?.name || "Unknown",
+      accounts_linked: linked,
+      transactions_added: syncResult.added,
+      holdings_synced: holdingsSynced || undefined,
+    });
+  } catch (err) {
+    console.error("Plaid exchange-transactions error:", err.response?.data || err.message);
+    res.status(500).json({ error: "Failed to exchange token: " + (err.response?.data?.error_message || err.message) });
+  }
+});
+
+// Core sync helper: cursor-based transactionsSync for one Plaid item.
+// Plaid's transactionsSync returns added/modified/removed transaction sets
+// and a new cursor. We loop until `has_more` is false, upserting into our
+// `transactions` table.
+//
+// Plaid amount convention: positive = money leaving account (debit),
+// negative = money entering (credit). This matches our convention directly
+// (no sign flip needed, unlike Teller which is inverted).
+async function syncPlaidItemTransactions(client, plaidItemDbId, accessToken) {
+  // Read the current cursor
+  const cursorRow = await pool.query(
+    "SELECT cursor FROM sync_cursors WHERE plaid_item_id = $1",
+    [plaidItemDbId]
+  );
+  let cursor = cursorRow.rows[0]?.cursor || "";
+  let totalAdded = 0;
+  let totalModified = 0;
+  let totalRemoved = 0;
+  let hasMore = true;
+  let pages = 0;
+  const MAX_PAGES = 20;
+
+  while (hasMore && pages < MAX_PAGES) {
+    pages++;
+    const syncRes = await client.transactionsSync({
+      access_token: accessToken,
+      cursor: cursor,
+      count: 500,
+    });
+    const data = syncRes.data;
+
+    // Process added transactions
+    for (const txn of data.added || []) {
+      if (txn.pending) continue;
+      try {
+        await pool.query(
+          `INSERT INTO transactions (account_id, transaction_id, amount, iso_currency_code, date,
+                                     merchant_name, name, category, pending, personal_finance_category)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, $9)
+           ON CONFLICT (transaction_id)
+           DO UPDATE SET
+             amount = EXCLUDED.amount,
+             date = EXCLUDED.date,
+             merchant_name = EXCLUDED.merchant_name,
+             name = EXCLUDED.name,
+             category = EXCLUDED.category,
+             pending = EXCLUDED.pending,
+             personal_finance_category = EXCLUDED.personal_finance_category`,
+          [
+            txn.account_id,
+            txn.transaction_id,
+            txn.amount,
+            txn.iso_currency_code || "USD",
+            txn.date,
+            txn.merchant_name || null,
+            txn.name || "",
+            txn.category ? `{${txn.category.join(",")}}` : null,
+            txn.personal_finance_category ? JSON.stringify(txn.personal_finance_category) : null,
+          ]
+        );
+        totalAdded++;
+      } catch (err) {
+        console.error("Plaid txn insert error:", err.message, txn.transaction_id);
+      }
+    }
+
+    // Process modified transactions (same upsert — ON CONFLICT handles it)
+    for (const txn of data.modified || []) {
+      if (txn.pending) continue;
+      try {
+        await pool.query(
+          `UPDATE transactions SET
+             amount = $1, date = $2, merchant_name = $3, name = $4,
+             category = $5, personal_finance_category = $6
+           WHERE transaction_id = $7`,
+          [
+            txn.amount, txn.date, txn.merchant_name || null, txn.name || "",
+            txn.category ? `{${txn.category.join(",")}}` : null,
+            txn.personal_finance_category ? JSON.stringify(txn.personal_finance_category) : null,
+            txn.transaction_id,
+          ]
+        );
+        totalModified++;
+      } catch (err) {
+        console.error("Plaid txn update error:", err.message, txn.transaction_id);
+      }
+    }
+
+    // Process removed transactions
+    for (const txn of data.removed || []) {
+      try {
+        await pool.query("DELETE FROM transactions WHERE transaction_id = $1", [txn.transaction_id]);
+        totalRemoved++;
+      } catch (err) {
+        console.error("Plaid txn delete error:", err.message, txn.transaction_id);
+      }
+    }
+
+    cursor = data.next_cursor;
+    hasMore = data.has_more;
+  }
+
+  // Persist the new cursor
+  await pool.query(
+    `UPDATE sync_cursors SET cursor = $1, last_synced_at = now() WHERE plaid_item_id = $2`,
+    [cursor, plaidItemDbId]
+  );
+
+  return { added: totalAdded, modified: totalModified, removed: totalRemoved };
+}
+
+// POST /api/plaid/sync-transactions — sync transactions for all Plaid items
+router.post("/api/plaid/sync-transactions", async (_req, res) => {
+  const client = getPlaidClient();
+  if (!client) return res.status(501).json({ error: "Plaid not configured." });
+  try {
+    const result = await syncAllPlaidTransactions();
+    res.json(result);
+  } catch (err) {
+    console.error("Plaid sync-transactions error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// Helper: sync all Plaid items' transactions. Called by the endpoint above
+// and by the bank auto-sync scheduler.
+async function syncAllPlaidTransactions() {
+  const client = getPlaidClient();
+  if (!client) return { ok: false, error: "Plaid not configured" };
+
+  const items = await pool.query(
+    `SELECT pi.id, pi.item_id, pi.institution_name,
+            pgp_sym_decrypt(pi.access_token_enc, $1) AS access_token
+     FROM plaid_items pi
+     WHERE pi.status = 'GOOD'`,
+    [ENCRYPTION_PASSPHRASE]
+  );
+
+  let totalAdded = 0;
+  let totalModified = 0;
+  let totalRemoved = 0;
+  const errors = [];
+
+  for (const item of items.rows) {
+    if (!item.access_token) {
+      errors.push({ institution: item.institution_name, error: "decryption_failed" });
+      continue;
+    }
+    try {
+      const result = await syncPlaidItemTransactions(client, item.id, item.access_token);
+      totalAdded += result.added;
+      totalModified += result.modified;
+      totalRemoved += result.removed;
+
+      // Update balance snapshots for linked accounts under this item
+      const accts = await pool.query(
+        "SELECT id, account_id FROM linked_accounts WHERE plaid_item_id = $1",
+        [item.id]
+      );
+      try {
+        const balRes = await client.accountsGet({ access_token: item.access_token });
+        for (const ba of balRes.data.accounts) {
+          const la = accts.rows.find(a => a.account_id === ba.account_id);
+          if (!la) continue;
+          const bal = ba.balances?.current ?? ba.balances?.available ?? null;
+          if (bal !== null) {
+            await pool.query(
+              `UPDATE linked_accounts SET
+                 current_balance = $1, available_balance = $2, balance_updated_at = now()
+               WHERE id = $3`,
+              [ba.balances.current, ba.balances.available, la.id]
+            );
+            await pool.query(
+              `INSERT INTO account_balance_snapshots (source, source_id, snapshot_date, balance, current_balance, available_balance)
+               VALUES ('linked', $1, CURRENT_DATE, $2, $3, $4)
+               ON CONFLICT (source, source_id, snapshot_date) DO UPDATE SET
+                 balance = EXCLUDED.balance, current_balance = EXCLUDED.current_balance,
+                 available_balance = EXCLUDED.available_balance`,
+              [la.id, ba.balances.current ?? ba.balances.available, ba.balances.current, ba.balances.available]
+            ).catch(e => console.error("Plaid balance snapshot error:", e.message));
+          }
+        }
+      } catch (balErr) {
+        console.error("Plaid balance update error for", item.institution_name, ":", balErr.message);
+      }
+    } catch (err) {
+      console.error("Plaid sync error for", item.institution_name, ":", err.response?.data?.error_message || err.message);
+      errors.push({ institution: item.institution_name, error: err.response?.data?.error_message || err.message });
+    }
+  }
+
+  return {
+    ok: true,
+    items_synced: items.rows.length - errors.length,
+    transactions_added: totalAdded,
+    transactions_modified: totalModified,
+    transactions_removed: totalRemoved,
+    errors: errors.length > 0 ? errors : undefined,
+  };
+}
+
+module.exports.syncAllPlaidTransactions = syncAllPlaidTransactions;
+
 // POST /api/plaid/exchange — exchange public token and store investment accounts
 router.post("/api/plaid/exchange", async (req, res) => {
   const { public_token, institution } = req.body;

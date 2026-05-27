@@ -2595,6 +2595,113 @@ async function syncBillPayments(sheets, pool) {
 //   - financial_goals.target_date
 // Scoped to the next 90 days so the tab stays glanceable. Sorted by date
 // ASC so the top of the sheet shows what's happening soonest.
+// ---------------------------------------------------------------------------
+// Sync Credit Score History — manual-entry score tracking
+// ---------------------------------------------------------------------------
+async function syncCreditScores(sheets, pool) {
+  console.log("Syncing credit scores to Google Sheets...");
+
+  const { rows } = await pool.query(`
+    SELECT score, score_type, source, notes, checked_at
+    FROM credit_scores
+    ORDER BY checked_at DESC
+  `);
+
+  const SHEET_CREDIT = "Credit Scores";
+  await ensureSheet(sheets, SHEET_CREDIT);
+
+  const headers = ["Date", "Score", "Type", "Source", "Notes", "Change"];
+
+  // Compute per-row delta vs the next-oldest entry (rows are newest-first;
+  // the "prior" for rows[i] is rows[i+1]).
+  const data = rows.map((r, i) => {
+    const prior = rows[i + 1];
+    const delta = prior ? r.score - prior.score : null;
+    return [
+      fmtDate(r.checked_at),
+      r.score,
+      r.score_type || "",
+      r.source || "",
+      r.notes || "",
+      delta === null ? "" : (delta >= 0 ? "+" : "") + delta,
+    ];
+  });
+
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_CREDIT}!A:Z`,
+  });
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_CREDIT}!A1`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [headers, ...data] },
+  });
+
+  const sheetId = await getSheetId(sheets, SHEET_CREDIT);
+  if (sheetId !== null) {
+    const requests = [
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
+          cell: {
+            userEnteredFormat: {
+              textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 }, fontSize: 11 },
+              backgroundColor: { red: 0.35, green: 0.45, blue: 0.25 },
+            },
+          },
+          fields: "userEnteredFormat(textFormat,backgroundColor)",
+        },
+      },
+      {
+        updateSheetProperties: {
+          properties: { sheetId, gridProperties: { frozenRowCount: 1 } },
+          fields: "gridProperties.frozenRowCount",
+        },
+      },
+      {
+        autoResizeDimensions: {
+          dimensions: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 6 },
+        },
+      },
+    ];
+    // Color the Change column: green for positive, red for negative
+    if (rows.length > 1) {
+      requests.push({
+        addConditionalFormatRule: {
+          rule: {
+            ranges: [{ sheetId, startRowIndex: 1, endRowIndex: data.length + 1, startColumnIndex: 5, endColumnIndex: 6 }],
+            booleanRule: {
+              condition: { type: "CUSTOM_FORMULA", values: [{ userEnteredValue: `=AND(ISNUMBER(VALUE(SUBSTITUTE($F2,"+",""))), VALUE(SUBSTITUTE($F2,"+",""))>0)` }] },
+              format: { textFormat: { foregroundColor: { red: 0.0, green: 0.5, blue: 0.0 } } },
+            },
+          },
+          index: 0,
+        },
+      });
+      requests.push({
+        addConditionalFormatRule: {
+          rule: {
+            ranges: [{ sheetId, startRowIndex: 1, endRowIndex: data.length + 1, startColumnIndex: 5, endColumnIndex: 6 }],
+            booleanRule: {
+              condition: { type: "CUSTOM_FORMULA", values: [{ userEnteredValue: `=AND(ISNUMBER(VALUE($F2)), VALUE($F2)<0)` }] },
+              format: { textFormat: { foregroundColor: { red: 0.7, green: 0.0, blue: 0.0 } } },
+            },
+          },
+          index: 0,
+        },
+      });
+    }
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SPREADSHEET_ID,
+      requestBody: { requests },
+    });
+  }
+
+  console.log(`  ${rows.length} credit score entries written.`);
+  return rows.length;
+}
+
 async function syncImportantDates(sheets, pool) {
   console.log("Syncing important dates to Google Sheets...");
 
@@ -3094,6 +3201,7 @@ async function syncAll() {
     const rulesCount = await syncCategorizationRules(sheets, pool);
     const manualBillsCount = await syncManualBills(sheets, pool);
     const billPaymentsCount = await syncBillPayments(sheets, pool);
+    const creditScoreCount = await syncCreditScores(sheets, pool);
     const datesCount = await syncImportantDates(sheets, pool);
     const watchlistCount = await syncWatchlist(sheets, pool);
     const archivesCreated = await syncMonthArchives(sheets, pool);
@@ -3113,6 +3221,7 @@ async function syncAll() {
       categorization_rules_synced: rulesCount,
       manual_bills_synced: manualBillsCount,
       bill_payments_synced: billPaymentsCount,
+      credit_scores_synced: creditScoreCount,
       important_dates_synced: datesCount,
       watchlist_items_synced: watchlistCount,
       month_archives_created: archivesCreated,

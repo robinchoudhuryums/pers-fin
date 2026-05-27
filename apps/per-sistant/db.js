@@ -20,8 +20,10 @@ const CONNECTION_STRING =
 const pool = new Pool({
   connectionString: CONNECTION_STRING,
   ssl: CONNECTION_STRING ? { rejectUnauthorized: false } : false,
-  max: 10,
-  idleTimeoutMillis: 30000,
+  // Single-user app — 3 connections is plenty. The previous 10 kept idle
+  // Postgres backends alive on Neon, burning compute hours for nothing.
+  max: 3,
+  idleTimeoutMillis: 20000,
   connectionTimeoutMillis: 5000,
 });
 

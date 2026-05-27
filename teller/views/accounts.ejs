@@ -55,6 +55,7 @@
   <script nonce="<%= nonce %>">
     window._tellerLoaded = false;
     window._tellerError = null;
+    window._plaidLoaded = false;
     // Load Teller SDK dynamically to avoid inline onload/onerror (CSP)
     (function() {
       var s = document.createElement('script');
@@ -62,13 +63,26 @@
       s.onload = function() { window._tellerLoaded = true; };
       s.onerror = function() { window._tellerError = 'Script load failed'; };
       document.head.appendChild(s);
+      // Load Plaid Link SDK in parallel
+      var p = document.createElement('script');
+      p.src = 'https://cdn.plaid.com/link/v2/stable/link-initialize.js';
+      p.onload = function() { window._plaidLoaded = true; };
+      document.head.appendChild(p);
     })();
   </script>
 <%- include('partials/nav', { activePage: 'accounts' }) %>
 
   <h1>Link Accounts</h1>
   <p>Connect a financial institution to start tracking recurring charges automatically.</p>
-  <button id="link-btn">Link an Account</button>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;">
+    <button id="link-btn">Link via Teller</button>
+    <button id="plaid-link-btn">Link via Plaid</button>
+  </div>
+  <div style="font-size:11px;color:var(--text-muted);margin-bottom:16px;">
+    <strong>Teller</strong> — most major banks (Chase, BofA, Wells Fargo, etc.).<br>
+    <strong>Plaid</strong> — Capital One, Discover, Amex, Schwab, and other banks Teller doesn't cover.
+    Plaid pulls up to 2 years of history and auto-links investment accounts (holdings + cost basis) when available.
+  </div>
   <div id="status"></div>
   <div id="items"><h3>Linked Institutions</h3><div id="items-list" style="color:var(--text-muted);font-size:14px;font-weight:300;">Loading...</div></div>
 
@@ -528,9 +542,54 @@
       } catch (e) { showStatus(e.message, false); }
     }
 
+    // --- Plaid transactions link (for Capital One, Discover, etc.) ---
+    async function linkPlaidTransactions() {
+      if (!window._plaidLoaded || typeof Plaid === 'undefined') {
+        showStatus('Plaid Link SDK failed to load. Check your internet connection or try refreshing.', false);
+        return;
+      }
+      try {
+        showStatus('Connecting to Plaid...', true);
+        var tokenRes = await apiFetch('/api/plaid/link-token-transactions', { method: 'POST' });
+        if (!tokenRes.ok) {
+          var err = await tokenRes.json().catch(function() { return {}; });
+          showStatus(err.error || 'Failed to create Plaid link token', false);
+          return;
+        }
+        var tokenData = await tokenRes.json();
+        var handler = Plaid.create({
+          token: tokenData.link_token,
+          onSuccess: async function(public_token, metadata) {
+            try {
+              showStatus('Linking accounts...', true);
+              var exRes = await apiFetch('/api/plaid/exchange-transactions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ public_token: public_token, institution: metadata.institution }),
+              });
+              var exData = await exRes.json();
+              if (exRes.ok) {
+                showStatus('Linked ' + exData.accounts_linked + ' accounts, synced ' + exData.transactions_added + ' transactions from ' + exData.institution + '.', true);
+                loadItems();
+              } else {
+                showStatus(exData.error || 'Exchange failed', false);
+              }
+            } catch (e) { showStatus(e.message, false); }
+          },
+          onExit: function(err) {
+            if (err) showStatus('Plaid connection cancelled' + (err.display_message ? ': ' + err.display_message : ''), false);
+          },
+        });
+        handler.open();
+      } catch (e) {
+        showStatus('Failed to open Plaid Link: ' + e.message, false);
+      }
+    }
+
     // --- Bind event handlers (CSP-safe) ---
     bindEvents([
       ['link-btn', 'click', startLink],
+      ['plaid-link-btn', 'click', linkPlaidTransactions],
       ['csv-upload-btn', 'click', uploadCsv],
       ['plaid-inv-btn', 'click', linkPlaidInvestments],
       ['add-inv-btn', 'click', addInvestment],

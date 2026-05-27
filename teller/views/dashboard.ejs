@@ -556,6 +556,33 @@
     </details>
   </div>
 
+  <!-- Credit Score widget — manual-entry trend tracker -->
+  <div class="section" id="credit-score-widget" style="margin-bottom:28px;">
+    <details open>
+      <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;justify-content:space-between;">
+        <h2 style="margin:0;">Credit Score</h2>
+        <span id="credit-score-current" style="font-size:16px;font-weight:600;color:var(--green);"></span>
+      </summary>
+      <div id="credit-score-body" style="margin-top:12px;">
+        <div id="credit-score-trend" style="margin-bottom:12px;font-size:13px;color:var(--text-secondary);"></div>
+        <div id="credit-score-history" style="font-size:12px;color:var(--text-muted);margin-bottom:12px;"></div>
+        <!-- Quick log form -->
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <input id="cs-score-input" type="number" min="300" max="850" inputmode="numeric" placeholder="Score (300-850)"
+                 style="width:120px;padding:8px 10px;font-size:13px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);font-family:inherit;min-height:40px;">
+          <select id="cs-type-input" style="padding:8px 10px;font-size:13px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);font-family:inherit;min-height:40px;">
+            <option value="vantagescore">VantageScore</option>
+            <option value="fico">FICO</option>
+            <option value="other">Other</option>
+          </select>
+          <input id="cs-source-input" placeholder="Source (e.g. Chase)" style="width:120px;padding:8px 10px;font-size:13px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);font-family:inherit;min-height:40px;">
+          <button class="btn" id="cs-log-btn" style="min-height:40px;cursor:pointer;font-family:inherit;">Log Score</button>
+          <span id="cs-status" style="font-size:11px;color:var(--text-muted);"></span>
+        </div>
+      </div>
+    </details>
+  </div>
+
   <!-- Bill Calendar Quick View -->
   <div class="section" id="calendar-widget" style="margin-bottom:28px;">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
@@ -1482,6 +1509,109 @@
         var val = current ? current.dataset.fb : 'mixed';
         send(val, noteField.value);
       });
+    })();
+
+    // Credit Score widget — loads history, shows current + trend, log form
+    (function wireCreditScore() {
+      var currentEl = document.getElementById('credit-score-current');
+      var trendEl = document.getElementById('credit-score-trend');
+      var historyEl = document.getElementById('credit-score-history');
+      var logBtn = document.getElementById('cs-log-btn');
+      var scoreInput = document.getElementById('cs-score-input');
+      var typeInput = document.getElementById('cs-type-input');
+      var sourceInput = document.getElementById('cs-source-input');
+      var status = document.getElementById('cs-status');
+      if (!logBtn) return;
+
+      function scoreColor(s) {
+        if (s >= 740) return 'var(--green, #6fcf97)';
+        if (s >= 670) return 'var(--teal, #5a8f8f)';
+        if (s >= 580) return 'var(--yellow, #f0c36d)';
+        return 'var(--red, #eb6b6b)';
+      }
+
+      async function load() {
+        try {
+          var res = await apiFetch('/api/credit-scores?limit=12');
+          if (!res.ok) return;
+          var data = await res.json();
+          if (!data.scores || !data.scores.length) {
+            if (currentEl) currentEl.textContent = '';
+            if (trendEl) trendEl.textContent = 'No scores logged yet — enter your score below.';
+            if (historyEl) historyEl.textContent = '';
+            return;
+          }
+          var latest = data.scores[0];
+          if (currentEl) {
+            currentEl.textContent = latest.score;
+            currentEl.style.color = scoreColor(latest.score);
+          }
+          if (trendEl && data.trend) {
+            var t = data.trend;
+            var parts = [];
+            if (t.delta_vs_prior !== null && t.delta_vs_prior !== undefined) {
+              var sign = t.delta_vs_prior >= 0 ? '+' : '';
+              var col = t.delta_vs_prior >= 0 ? 'var(--green)' : 'var(--red)';
+              parts.push('<span style="color:' + col + ';">' + sign + t.delta_vs_prior + ' vs prior</span>');
+            }
+            if (t.delta_vs_6mo !== null) {
+              var sign6 = t.delta_vs_6mo >= 0 ? '+' : '';
+              var col6 = t.delta_vs_6mo >= 0 ? 'var(--green)' : 'var(--red)';
+              parts.push('<span style="color:' + col6 + ';">' + sign6 + t.delta_vs_6mo + ' vs 6mo ago</span>');
+            }
+            trendEl.innerHTML = parts.length ? parts.join(' · ') : '';
+          }
+          if (historyEl && data.scores.length > 1) {
+            historyEl.innerHTML = '<details><summary style="cursor:pointer;font-size:11px;">History (' + data.scores.length + ' entries)</summary>' +
+              '<div style="margin-top:6px;display:flex;flex-direction:column;gap:2px;">' +
+              data.scores.map(function(s) {
+                return '<div style="display:flex;justify-content:space-between;gap:12px;">' +
+                  '<span>' + new Date(s.checked_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + '</span>' +
+                  '<span style="font-weight:500;color:' + scoreColor(s.score) + ';">' + s.score + '</span>' +
+                  '<span style="color:var(--text-muted);">' + esc(s.source || s.score_type) + '</span>' +
+                '</div>';
+              }).join('') +
+              '</div></details>';
+          }
+        } catch (e) { /* silently hide */ }
+      }
+
+      logBtn.addEventListener('click', async function() {
+        var s = parseInt(scoreInput.value, 10);
+        if (!s || s < 300 || s > 850) {
+          if (status) { status.textContent = 'Score must be 300-850'; status.style.color = 'var(--red)'; }
+          return;
+        }
+        logBtn.disabled = true;
+        if (status) { status.textContent = 'Saving…'; status.style.color = 'var(--text-muted)'; }
+        try {
+          var res = await apiFetch('/api/credit-scores', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              score: s,
+              score_type: typeInput.value,
+              source: (sourceInput.value || '').trim() || null,
+            }),
+          });
+          if (!res.ok) {
+            var err = await res.json().catch(function() { return {}; });
+            if (status) { status.textContent = err.error || 'Failed'; status.style.color = 'var(--red)'; }
+          } else {
+            scoreInput.value = '';
+            sourceInput.value = '';
+            if (status) { status.textContent = 'Logged ✓'; status.style.color = 'var(--green)'; }
+            load();
+            setTimeout(function() { if (status) status.textContent = ''; }, 2000);
+          }
+        } catch (e) {
+          if (status) { status.textContent = 'Failed'; status.style.color = 'var(--red)'; }
+        } finally {
+          logBtn.disabled = false;
+        }
+      });
+
+      load();
     })();
 
     // S4: Investment performance widget — auto-hides when no Plaid holdings
