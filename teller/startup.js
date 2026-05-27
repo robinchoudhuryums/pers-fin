@@ -167,11 +167,13 @@ function startBackgroundJobs() {
       if (!lastRun || (now - lastRun) / 86400000 >= cadenceDays) {
         const { syncAllEnrollments, syncAllBalances } = require("./routes/enrollments");
         const { runSubscriptionDetection } = require("./routes/subscriptions");
+        const { syncAllPlaidTransactions } = require("./routes/investments");
         const { detectRecurringTransfers } = require("../scripts/detect-transfers");
         const { runCategorize } = require("./routes/categorize");
         const { generateInsights } = require("./routes/insights");
 
         try { await syncAllEnrollments(); } catch (e) { console.error("Pre-insights sync error:", e.message); }
+        try { await syncAllPlaidTransactions(); } catch (e) { console.error("Pre-insights Plaid sync error:", e.message); }
         try { await syncAllBalances(); } catch (e) { console.error("Pre-insights balance error:", e.message); }
         try { await runSubscriptionDetection(); } catch (e) { console.error("Pre-insights detect error:", e.message); }
         try { await detectRecurringTransfers(pool); } catch (e) { console.error("Pre-insights detect-transfers error:", e.message); }
@@ -287,22 +289,23 @@ function startBackgroundJobs() {
       if (lastSync && (now - lastSync) < dueMs) return;
 
       const { syncAllEnrollments, syncAllBalances } = require("./routes/enrollments");
-      let txnResult = null, balResult = null;
+      const { syncAllPlaidTransactions } = require("./routes/investments");
+      let txnResult = null, balResult = null, plaidResult = null;
       try { txnResult = await syncAllEnrollments(); }
-      catch (e) { console.error("Auto-sync transactions error:", e.message); }
+      catch (e) { console.error("Auto-sync Teller error:", e.message); }
+      try { plaidResult = await syncAllPlaidTransactions(); }
+      catch (e) { console.error("Auto-sync Plaid error:", e.message); }
       try { balResult = await syncAllBalances(); }
       catch (e) { console.error("Auto-sync balances error:", e.message); }
 
       await pool.query("UPDATE user_settings SET last_auto_sync_at = now() WHERE id = 1")
         .catch(e => console.error("Auto-sync timestamp update failed:", e.message));
-      const syncMsg = (txnResult ? `${txnResult.transactions_added} txns added` : "txn sync failed") +
-        ", " + (balResult ? `${balResult.accounts_updated} balances updated` : "balance sync failed");
+      const tellerTxns = txnResult ? txnResult.transactions_added : 0;
+      const plaidTxns = plaidResult && plaidResult.ok ? plaidResult.transactions_added : 0;
+      const syncMsg = `${tellerTxns + plaidTxns} txns (${tellerTxns} Teller, ${plaidTxns} Plaid)` +
+        ", " + (balResult ? `${balResult.accounts_updated} balances` : "balance sync failed");
       console.log("Auto-sync complete: " + syncMsg);
-      // Only push a notification when something actually changed OR a sync
-      // failed — silent successful syncs (0 txns, 0 balance updates) used to
-      // produce hourly noise notifications. Failed syncs should still notify
-      // so the user knows the data isn't fresh.
-      const txnsAdded = txnResult ? txnResult.transactions_added : 0;
+      const txnsAdded = tellerTxns + plaidTxns;
       const balancesUpdated = balResult ? balResult.accounts_updated : 0;
       const anyFailed = !txnResult || !balResult;
       const anyChanged = txnsAdded > 0 || balancesUpdated > 0;
