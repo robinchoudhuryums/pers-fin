@@ -240,7 +240,7 @@ router.get("/api/transactions/search", async (req, res) => {
         SELECT t.transaction_id, t.date, COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS merchant, t.user_notes, t.is_reimbursed,
                t.amount, la.name AS account_name, la.type AS account_type,
                COALESCE(pi.institution_name, te.institution_name, la.institution_name_manual, 'CSV Import') AS institution_name,
-               COALESCE(t.user_category, t.category[1]) AS category, t.pending
+               COALESCE(t.user_category, t.category[1]) AS category, t.logo_url, t.pending
         FROM transactions t
         JOIN linked_accounts la ON la.account_id = t.account_id
         LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
@@ -284,6 +284,7 @@ router.get("/api/transactions", async (req, res) => {
         COALESCE(t.user_category, t.category[1]) AS category,
         t.personal_finance_category->>'primary' AS pfc_primary,
         t.personal_finance_category->>'detailed' AS pfc_detailed,
+        t.logo_url,
         t.pending
       FROM transactions t
       JOIN linked_accounts la ON la.account_id = t.account_id

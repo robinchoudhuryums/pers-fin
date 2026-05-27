@@ -353,3 +353,207 @@ describe("/api/investments/performance", () => {
       "drift_pct should be absent when no targets configured");
   });
 });
+
+// ---------------------------------------------------------------------------
+// GET/POST/DELETE /api/credit-scores
+// ---------------------------------------------------------------------------
+describe("/api/credit-scores", () => {
+  it("POST rejects scores outside 300-850 range", async () => {
+    dbModule.pool.query = async () => ({ rows: [] });
+    const app = makeApp("../teller/routes/credit-scores");
+    await supertest(app).post("/api/credit-scores")
+      .send({ score: 200 }).expect(400);
+    await supertest(app).post("/api/credit-scores")
+      .send({ score: 900 }).expect(400);
+    await supertest(app).post("/api/credit-scores")
+      .send({ score: "abc" }).expect(400);
+  });
+
+  it("POST accepts valid score and passes correct params to DB", async () => {
+    let capturedParams;
+    dbModule.pool.query = async (sql, params) => {
+      capturedParams = params;
+      return { rows: [{ id: 1, score: params[0], score_type: params[1], source: params[2], checked_at: "2026-05-27" }] };
+    };
+    const app = makeApp("../teller/routes/credit-scores");
+    const res = await supertest(app).post("/api/credit-scores")
+      .send({ score: 745, score_type: "fico", source: "Chase", notes: "monthly check" })
+      .expect(200);
+    assert.equal(res.body.score, 745);
+    assert.equal(capturedParams[0], 745);
+    assert.equal(capturedParams[1], "fico");
+    assert.equal(capturedParams[2], "Chase");
+  });
+
+  it("POST defaults to vantagescore when score_type is omitted", async () => {
+    let capturedParams;
+    dbModule.pool.query = async (sql, params) => {
+      capturedParams = params;
+      return { rows: [{ id: 1, score: params[0], score_type: params[1] }] };
+    };
+    const app = makeApp("../teller/routes/credit-scores");
+    await supertest(app).post("/api/credit-scores")
+      .send({ score: 720 }).expect(200);
+    assert.equal(capturedParams[1], "vantagescore");
+  });
+
+  it("GET returns scores + trend with delta computations", async () => {
+    dbModule.pool.query = async () => ({
+      rows: [
+        { id: 3, score: 760, score_type: "vantagescore", source: "Discover", checked_at: "2026-05-15", created_at: new Date() },
+        { id: 2, score: 745, score_type: "vantagescore", source: "Discover", checked_at: "2026-04-15", created_at: new Date() },
+        { id: 1, score: 730, score_type: "vantagescore", source: "Discover", checked_at: "2025-11-15", created_at: new Date() },
+      ],
+    });
+    const app = makeApp("../teller/routes/credit-scores");
+    const res = await supertest(app).get("/api/credit-scores").expect(200);
+    assert.equal(res.body.scores.length, 3);
+    assert.equal(res.body.trend.current, 760);
+    assert.equal(res.body.trend.delta_vs_prior, 15);
+    assert.equal(res.body.trend.six_month_ago, 730);
+    assert.equal(res.body.trend.delta_vs_6mo, 30);
+  });
+
+  it("DELETE returns 404 for non-existent id", async () => {
+    dbModule.pool.query = async () => ({ rows: [] });
+    const app = makeApp("../teller/routes/credit-scores");
+    await supertest(app).delete("/api/credit-scores/999").expect(404);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET/POST/PATCH/DELETE /api/watchlist
+// ---------------------------------------------------------------------------
+describe("/api/watchlist", () => {
+  it("POST rejects invalid type enum", async () => {
+    dbModule.pool.query = async () => ({ rows: [] });
+    const app = makeApp("../teller/routes/watchlist");
+    await supertest(app).post("/api/watchlist")
+      .send({ type: "invalid", value: "test" }).expect(400);
+  });
+
+  it("POST accepts valid merchant/category/keyword types", async () => {
+    let capturedParams;
+    dbModule.pool.query = async (sql, params) => {
+      capturedParams = params;
+      return { rows: [{ id: 1, type: params[0], value: params[1], is_active: true }] };
+    };
+    const app = makeApp("../teller/routes/watchlist");
+    for (const type of ["merchant", "category", "keyword"]) {
+      const res = await supertest(app).post("/api/watchlist")
+        .send({ type, value: "Test Value" }).expect(200);
+      assert.equal(res.body.type, type);
+    }
+  });
+
+  it("POST rejects empty value", async () => {
+    dbModule.pool.query = async () => ({ rows: [] });
+    const app = makeApp("../teller/routes/watchlist");
+    await supertest(app).post("/api/watchlist")
+      .send({ type: "merchant", value: "   " }).expect(400);
+  });
+
+  it("PATCH toggles is_active", async () => {
+    let capturedSql;
+    dbModule.pool.query = async (sql, params) => {
+      capturedSql = sql;
+      return { rows: [{ id: 1, is_active: params[0] }] };
+    };
+    const app = makeApp("../teller/routes/watchlist");
+    const res = await supertest(app).patch("/api/watchlist/1")
+      .send({ is_active: false }).expect(200);
+    assert.equal(res.body.is_active, false);
+    assert.ok(capturedSql.includes("is_active"));
+  });
+
+  it("DELETE returns 404 for non-existent id", async () => {
+    dbModule.pool.query = async () => ({ rows: [] });
+    const app = makeApp("../teller/routes/watchlist");
+    await supertest(app).delete("/api/watchlist/999").expect(404);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plaid transaction endpoints (surface-level — can't mock Plaid SDK itself)
+// ---------------------------------------------------------------------------
+describe("Plaid transaction endpoints", () => {
+  it("POST /api/plaid/exchange-transactions rejects missing public_token", async () => {
+    dbModule.pool.query = async () => ({ rows: [] });
+    const app = makeApp("../teller/routes/investments");
+    const res = await supertest(app).post("/api/plaid/exchange-transactions")
+      .send({}).expect(400);
+    assert.ok(res.body.error.includes("public_token"));
+  });
+
+  it("POST /api/plaid/link-token-transactions returns 501 when Plaid not configured", async () => {
+    dbModule.pool.query = async () => ({ rows: [] });
+    const app = makeApp("../teller/routes/investments");
+    const res = await supertest(app).post("/api/plaid/link-token-transactions");
+    assert.ok([501, 500].includes(res.status),
+      "Should return 501 or 500 when Plaid env vars not set");
+  });
+
+  it("POST /api/plaid/sync-transactions returns error when Plaid not configured", async () => {
+    dbModule.pool.query = async () => ({ rows: [] });
+    const app = makeApp("../teller/routes/investments");
+    const res = await supertest(app).post("/api/plaid/sync-transactions");
+    assert.ok([501, 500].includes(res.status));
+  });
+
+  it("GET /api/plaid/status reports configured state", async () => {
+    const app = makeApp("../teller/routes/investments");
+    const res = await supertest(app).get("/api/plaid/status").expect(200);
+    assert.equal(typeof res.body.configured, "boolean");
+    assert.equal(typeof res.body.environment, "string");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Idle-gate (touchActivity export)
+// ---------------------------------------------------------------------------
+describe("Idle-gate utility", () => {
+  it("touchActivity is exported and callable", () => {
+    const startup = require("../teller/startup");
+    assert.equal(typeof startup.touchActivity, "function");
+    startup.touchActivity(); // should not throw
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gatherWhatsNew shared aggregator (used by both HTTP route and daily digest)
+// ---------------------------------------------------------------------------
+describe("gatherWhatsNew shared aggregator", () => {
+  it("returns structured data with counts + arrays on empty DB", async () => {
+    dbModule.pool.query = async () => ({ rows: [] });
+    delete require.cache[require.resolve("../teller/routes/whats-new")];
+    const whatsNew = require("../teller/routes/whats-new");
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const result = await whatsNew.gatherWhatsNew(since);
+    assert.ok(result.since, "should include since ISO timestamp");
+    assert.ok(result.counts, "should include counts object");
+    assert.equal(result.counts.transactions, 0);
+    assert.equal(result.counts.subscriptions, 0);
+    assert.equal(result.counts.notifications, 0);
+    assert.equal(result.counts.balance_changes, 0);
+    assert.ok(Array.isArray(result.transactions));
+    assert.ok(Array.isArray(result.balance_changes));
+  });
+
+  it("populates counts from DB rows", async () => {
+    dbModule.pool.query = async (sql) => {
+      if (sql.includes("transactions") && !sql.includes("baselines")) {
+        return { rows: [{ transaction_id: "t1", merchant: "X", amount: "5.00", date: "2026-05-27", category: "Food", account_name: "A" }] };
+      }
+      if (sql.includes("detected_subscriptions")) {
+        return { rows: [{ id: 1, display_name: "Netflix", amount: "15.99", cadence_days: 30, category: "sub", first_seen: "2026-01-01" }] };
+      }
+      return { rows: [] };
+    };
+    delete require.cache[require.resolve("../teller/routes/whats-new")];
+    const whatsNew = require("../teller/routes/whats-new");
+    const result = await whatsNew.gatherWhatsNew(new Date(Date.now() - 86400000));
+    assert.equal(result.counts.transactions, 1);
+    assert.equal(result.counts.subscriptions, 1);
+    assert.equal(result.transactions[0].merchant, "X");
+  });
+});

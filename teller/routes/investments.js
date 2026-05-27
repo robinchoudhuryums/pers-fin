@@ -103,7 +103,7 @@ router.post("/api/plaid/link-token-transactions", async (_req, res) => {
     const response = await client.linkTokenCreate({
       user: { client_user_id: "perfin-user-1" },
       client_name: "Perfin",
-      products: [Products.Transactions, Products.Investments],
+      products: [Products.Transactions, Products.Investments, Products.Liabilities],
       country_codes: [CountryCode.Us],
       language: "en",
       transactions: { days_requested: 730 },
@@ -173,10 +173,14 @@ router.post("/api/plaid/exchange-transactions", async (req, res) => {
     // Run initial transaction sync immediately
     const syncResult = await syncPlaidItemTransactions(client, plaidItemDbId, accessToken);
 
+    // #1: Sync liabilities (APR, min payment, due dates) — runs for
+    // credit cards, student loans, and mortgages. Fails gracefully when
+    // the institution doesn't support the Liabilities product.
+    const liabResult = await syncPlaidLiabilities(client, accessToken, plaidItemDbId);
+
     // If the linked institution has investment accounts, also sync
-    // holdings. The link token requested both Products.Transactions and
-    // Products.Investments, so Schwab (and similar banks that serve both
-    // checking + brokerage) will have investment-type accounts available.
+    // holdings. The link token requested Transactions + Investments +
+    // Liabilities, so multi-product banks link everything in one pass.
     let holdingsSynced = 0;
     const investmentAccounts = acctRes.data.accounts.filter(a => a.type === "investment");
     if (investmentAccounts.length > 0) {
@@ -247,6 +251,7 @@ router.post("/api/plaid/exchange-transactions", async (req, res) => {
       accounts_linked: linked,
       transactions_added: syncResult.added,
       holdings_synced: holdingsSynced || undefined,
+      liabilities_synced: liabResult.updated || undefined,
     });
   } catch (err) {
     console.error("Plaid exchange-transactions error:", err.response?.data || err.message);
@@ -289,10 +294,15 @@ async function syncPlaidItemTransactions(client, plaidItemDbId, accessToken) {
     for (const txn of data.added || []) {
       if (txn.pending) continue;
       try {
+        // Extract first counterparty's logo_url for merchant display (#3).
+        // Plaid returns counterparties[] on enriched transactions; the first
+        // entry is usually the merchant with a square logo.
+        const logoUrl = txn.counterparties?.[0]?.logo_url || null;
+
         await pool.query(
           `INSERT INTO transactions (account_id, transaction_id, amount, iso_currency_code, date,
-                                     merchant_name, name, category, pending, personal_finance_category)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, $9)
+                                     merchant_name, name, category, pending, personal_finance_category, logo_url)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, $9, $10)
            ON CONFLICT (transaction_id)
            DO UPDATE SET
              amount = EXCLUDED.amount,
@@ -301,7 +311,8 @@ async function syncPlaidItemTransactions(client, plaidItemDbId, accessToken) {
              name = EXCLUDED.name,
              category = EXCLUDED.category,
              pending = EXCLUDED.pending,
-             personal_finance_category = EXCLUDED.personal_finance_category`,
+             personal_finance_category = EXCLUDED.personal_finance_category,
+             logo_url = COALESCE(EXCLUDED.logo_url, transactions.logo_url)`,
           [
             txn.account_id,
             txn.transaction_id,
@@ -312,6 +323,7 @@ async function syncPlaidItemTransactions(client, plaidItemDbId, accessToken) {
             txn.name || "",
             txn.category ? `{${txn.category.join(",")}}` : null,
             txn.personal_finance_category ? JSON.stringify(txn.personal_finance_category) : null,
+            logoUrl,
           ]
         );
         totalAdded++;
@@ -408,6 +420,10 @@ async function syncAllPlaidTransactions() {
       totalModified += result.modified;
       totalRemoved += result.removed;
 
+      // #1: sync liabilities (APR, min payment) on each auto-sync cycle
+      try { await syncPlaidLiabilities(client, item.access_token, item.id); }
+      catch (libErr) { console.error("Liabilities sync error for", item.institution_name, ":", libErr.message); }
+
       // Update balance snapshots for linked accounts under this item
       const accts = await pool.query(
         "SELECT id, account_id FROM linked_accounts WHERE plaid_item_id = $1",
@@ -456,6 +472,171 @@ async function syncAllPlaidTransactions() {
 }
 
 module.exports.syncAllPlaidTransactions = syncAllPlaidTransactions;
+
+// =========================================================================
+// #1 — Plaid Liabilities (APR, minimum payment, loan details)
+// =========================================================================
+// Syncs credit-card and loan liability details from Plaid into
+// linked_accounts columns. Called once at exchange time and on each
+// auto-sync cycle. Updates apr, credit_limit, minimum_payment,
+// next_payment_due_date, and last_payment fields.
+
+async function syncPlaidLiabilities(client, accessToken, plaidItemDbId) {
+  try {
+    const libRes = await client.liabilitiesGet({ access_token: accessToken });
+    const credit = libRes.data.liabilities?.credit || [];
+    const student = libRes.data.liabilities?.student || [];
+    const mortgage = libRes.data.liabilities?.mortgage || [];
+
+    let updated = 0;
+    for (const cc of credit) {
+      if (!cc.account_id) continue;
+      const aprs = cc.aprs || [];
+      const purchaseApr = aprs.find(a => a.apr_type === "purchase_apr") || aprs[0];
+      await pool.query(
+        `UPDATE linked_accounts SET
+           apr = COALESCE($1, apr),
+           credit_limit = COALESCE($2, credit_limit),
+           minimum_payment = $3,
+           next_payment_due_date = $4,
+           last_payment_amount = $5,
+           last_payment_date = $6,
+           balance_updated_at = now()
+         WHERE account_id = $7 AND plaid_item_id = $8`,
+        [
+          purchaseApr?.apr_percentage || null,
+          cc.credit_limit || null,
+          cc.minimum_payment_amount || null,
+          cc.next_payment_due_date || null,
+          cc.last_payment_amount || null,
+          cc.last_payment_date || null,
+          cc.account_id,
+          plaidItemDbId,
+        ]
+      );
+      updated++;
+    }
+
+    // Student loans + mortgages — store summary on the linked_account
+    // row so the debt optimizer sees them. These account types may not
+    // have a linked_accounts row (they'd need to be in the accounts
+    // response at link time). If the row doesn't exist, skip silently.
+    for (const loan of [...student, ...mortgage]) {
+      if (!loan.account_id) continue;
+      const apr = loan.interest_rate_percentage ??
+                  loan.origination_principal_amount ? null : null;
+      await pool.query(
+        `UPDATE linked_accounts SET
+           apr = COALESCE($1, apr),
+           minimum_payment = COALESCE($2, minimum_payment),
+           next_payment_due_date = COALESCE($3, next_payment_due_date),
+           last_payment_amount = COALESCE($4, last_payment_amount),
+           last_payment_date = COALESCE($5, last_payment_date),
+           balance_updated_at = now()
+         WHERE account_id = $6 AND plaid_item_id = $7`,
+        [
+          loan.interest_rate_percentage || null,
+          loan.minimum_payment_amount || null,
+          loan.next_payment_due_date || null,
+          loan.last_payment_amount || null,
+          loan.last_payment_date || null,
+          loan.account_id,
+          plaidItemDbId,
+        ]
+      );
+      updated++;
+    }
+
+    return { credit: credit.length, student: student.length, mortgage: mortgage.length, updated };
+  } catch (err) {
+    // Liabilities may not be supported for all institutions — fail
+    // gracefully so the rest of the sync continues.
+    if (err.response?.data?.error_code === "PRODUCTS_NOT_SUPPORTED") {
+      return { credit: 0, student: 0, mortgage: 0, updated: 0, skipped: "not_supported" };
+    }
+    console.error("Plaid liabilities sync error:", err.response?.data?.error_message || err.message);
+    return { credit: 0, student: 0, mortgage: 0, updated: 0, error: err.message };
+  }
+}
+
+// =========================================================================
+// #2 + #4 — Plaid Recurring Transactions (subscriptions + income streams)
+// =========================================================================
+// Calls transactionsRecurringGet for each Plaid item and returns both
+// outflow_streams (detected subscriptions) and inflow_streams (detected
+// income). These complement — not replace — the app's own detection.
+//
+// GET /api/plaid/recurring returns the combined view so the dashboard or
+// subscriptions page can show "Plaid detected" alongside "Perfin detected".
+
+router.get("/api/plaid/recurring", async (_req, res) => {
+  const client = getPlaidClient();
+  if (!client) return res.status(501).json({ error: "Plaid not configured." });
+
+  try {
+    const items = await pool.query(
+      `SELECT pi.id, pi.item_id, pi.institution_name,
+              pgp_sym_decrypt(pi.access_token_enc, $1) AS access_token
+       FROM plaid_items pi WHERE pi.status = 'GOOD'`,
+      [ENCRYPTION_PASSPHRASE]
+    );
+
+    const allOutflows = [];
+    const allInflows = [];
+
+    for (const item of items.rows) {
+      if (!item.access_token) continue;
+      try {
+        const recRes = await client.transactionsRecurringGet({
+          access_token: item.access_token,
+          options: {},
+        });
+        const outflows = (recRes.data.outflow_streams || []).map(s => ({
+          stream_id: s.stream_id,
+          institution: item.institution_name,
+          merchant_name: s.merchant_name || s.description,
+          amount: Math.abs(s.average_amount?.amount || s.last_amount?.amount || 0),
+          frequency: s.frequency,
+          category: s.personal_finance_category?.primary || s.category?.[0] || null,
+          last_date: s.last_date,
+          next_date: s.predicted_next_date,
+          is_active: s.is_active,
+          status: s.status,
+          direction: "outflow",
+        }));
+        const inflows = (recRes.data.inflow_streams || []).map(s => ({
+          stream_id: s.stream_id,
+          institution: item.institution_name,
+          merchant_name: s.merchant_name || s.description,
+          amount: Math.abs(s.average_amount?.amount || s.last_amount?.amount || 0),
+          frequency: s.frequency,
+          category: s.personal_finance_category?.primary || s.category?.[0] || null,
+          last_date: s.last_date,
+          next_date: s.predicted_next_date,
+          is_active: s.is_active,
+          status: s.status,
+          direction: "inflow",
+        }));
+        allOutflows.push(...outflows);
+        allInflows.push(...inflows);
+      } catch (err) {
+        if (err.response?.data?.error_code !== "PRODUCTS_NOT_SUPPORTED") {
+          console.error("Plaid recurring error for", item.institution_name, ":", err.response?.data?.error_message || err.message);
+        }
+      }
+    }
+
+    res.json({
+      outflow_streams: allOutflows.sort((a, b) => b.amount - a.amount),
+      inflow_streams: allInflows.sort((a, b) => b.amount - a.amount),
+      total_monthly_outflow: allOutflows.filter(s => s.is_active).reduce((sum, s) => sum + s.amount, 0),
+      total_monthly_inflow: allInflows.filter(s => s.is_active).reduce((sum, s) => sum + s.amount, 0),
+    });
+  } catch (err) {
+    console.error("Plaid recurring error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
 
 // POST /api/plaid/exchange — exchange public token and store investment accounts
 router.post("/api/plaid/exchange", async (req, res) => {

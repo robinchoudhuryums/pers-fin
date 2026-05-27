@@ -892,8 +892,11 @@ async function generateInsights() {
     // --- Module: Debt payoff optimizer (dynamic data) ---
     if (modules.debt_optimizer !== false) {
       try {
+        // #1: query now includes minimum_payment + next_payment_due_date
+        // from Plaid Liabilities so the debt optimizer has real data.
         const creditAccounts = await pool.query(
-          `SELECT name, mask, current_balance, available_balance, apr
+          `SELECT name, mask, current_balance, available_balance, apr,
+                  credit_limit, minimum_payment, next_payment_due_date
            FROM linked_accounts
            WHERE type = 'credit'
              AND (current_balance IS NOT NULL OR available_balance IS NOT NULL)
@@ -904,13 +907,16 @@ async function generateInsights() {
           let cardLines = cards.map(c => {
             const owed = parseFloat(c.current_balance || 0);
             const avail = parseFloat(c.available_balance || 0);
-            const limit = owed + avail;
+            const limit = c.credit_limit ? parseFloat(c.credit_limit) : (owed + avail);
             const util = limit > 0 ? Math.round((owed / limit) * 100) : 0;
-            return c.name + (c.mask ? " (****" + c.mask + ")" : "") +
+            let line = c.name + (c.mask ? " (****" + c.mask + ")" : "") +
               ": Balance $" + owed.toFixed(2) +
               ", Limit $" + limit.toFixed(2) +
               ", Utilization " + util + "%" +
               (c.apr ? ", APR " + c.apr + "%" : ", APR unknown");
+            if (c.minimum_payment) line += ", Min Payment $" + parseFloat(c.minimum_payment).toFixed(2);
+            if (c.next_payment_due_date) line += ", Due " + c.next_payment_due_date;
+            return line;
           }).join("\n");
           const totalDebt = cards.reduce((s, c) => s + parseFloat(c.current_balance || 0), 0);
           const totalLimit = cards.reduce((s, c) => s + parseFloat(c.current_balance || 0) + parseFloat(c.available_balance || 0), 0);
