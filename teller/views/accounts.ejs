@@ -543,6 +543,60 @@
     }
 
     // --- Plaid transactions link (for Capital One, Discover, etc.) ---
+    //
+    // Two-phase OAuth flow:
+    //   Phase 1 — initial open:
+    //     • Persist link_token + redirect URL in sessionStorage
+    //     • Open Plaid Link normally
+    //     • Banks that DON'T require OAuth (most credit unions) complete in
+    //       the popup and call onSuccess directly.
+    //     • Banks that DO require OAuth (Capital One, Chase, many others)
+    //       redirect the browser to the bank's login page, then back to
+    //       /perfin/accounts?oauth_state_id=<state>.
+    //   Phase 2 — OAuth return (handlePlaidOAuthReturn below):
+    //     • Detects the oauth_state_id query param on page load
+    //     • Recovers the persisted link_token from sessionStorage
+    //     • Reinitializes Plaid Link with `receivedRedirectUri` so Plaid
+    //       knows to resume the OAuth flow instead of starting fresh.
+    var PLAID_LINK_TOKEN_KEY = 'perfin_plaid_link_token';
+
+    function buildPlaidHandler(linkToken, receivedRedirectUri) {
+      return Plaid.create({
+        token: linkToken,
+        receivedRedirectUri: receivedRedirectUri || null,
+        onLoad: function() { console.log('Plaid Link loaded'); },
+        onSuccess: async function(public_token, metadata) {
+          try {
+            showStatus('Linking accounts...', true);
+            var exRes = await apiFetch('/api/plaid/exchange-transactions', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ public_token: public_token, institution: metadata.institution }),
+            });
+            var exData = await exRes.json();
+            sessionStorage.removeItem(PLAID_LINK_TOKEN_KEY);
+            if (exRes.ok) {
+              showStatus('Linked ' + exData.accounts_linked + ' accounts, synced ' + exData.transactions_added + ' transactions from ' + exData.institution + '.', true);
+              loadItems();
+            } else {
+              showStatus(exData.error || 'Exchange failed', false);
+            }
+          } catch (e) { showStatus(e.message, false); }
+        },
+        onExit: function(err, metadata) {
+          console.log('Plaid onExit:', { err: err, metadata: metadata });
+          sessionStorage.removeItem(PLAID_LINK_TOKEN_KEY);
+          if (err) {
+            var msg = 'Plaid: ' + (err.display_message || err.error_message || err.error_code || JSON.stringify(err));
+            showStatus(msg, false);
+          }
+        },
+        onEvent: function(eventName, metadata) {
+          console.log('Plaid event:', eventName, metadata);
+        },
+      });
+    }
+
     async function linkPlaidTransactions() {
       if (!window._plaidLoaded || typeof Plaid === 'undefined') {
         showStatus('Plaid Link SDK failed to load. Check your internet connection or try refreshing.', false);
@@ -550,41 +604,57 @@
       }
       try {
         showStatus('Connecting to Plaid...', true);
-        var tokenRes = await apiFetch('/api/plaid/link-token-transactions', { method: 'POST' });
+        // Pass our current page URL as redirect_uri so OAuth-required banks
+        // can hand control back to this same page. Must be registered in
+        // the Plaid Dashboard. Use the origin + pathname (no query/hash).
+        var redirectUri = window.location.origin + window.location.pathname;
+        var tokenRes = await apiFetch('/api/plaid/link-token-transactions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ redirect_uri: redirectUri }),
+        });
         if (!tokenRes.ok) {
           var err = await tokenRes.json().catch(function() { return {}; });
           showStatus(err.error || 'Failed to create Plaid link token', false);
           return;
         }
         var tokenData = await tokenRes.json();
-        var handler = Plaid.create({
-          token: tokenData.link_token,
-          onSuccess: async function(public_token, metadata) {
-            try {
-              showStatus('Linking accounts...', true);
-              var exRes = await apiFetch('/api/plaid/exchange-transactions', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ public_token: public_token, institution: metadata.institution }),
-              });
-              var exData = await exRes.json();
-              if (exRes.ok) {
-                showStatus('Linked ' + exData.accounts_linked + ' accounts, synced ' + exData.transactions_added + ' transactions from ' + exData.institution + '.', true);
-                loadItems();
-              } else {
-                showStatus(exData.error || 'Exchange failed', false);
-              }
-            } catch (e) { showStatus(e.message, false); }
-          },
-          onExit: function(err) {
-            if (err) showStatus('Plaid connection cancelled' + (err.display_message ? ': ' + err.display_message : ''), false);
-          },
-        });
+        if (!tokenData.link_token) {
+          showStatus('No link_token returned by server: ' + JSON.stringify(tokenData), false);
+          return;
+        }
+        // Persist for the OAuth return trip.
+        sessionStorage.setItem(PLAID_LINK_TOKEN_KEY, tokenData.link_token);
+        var handler = buildPlaidHandler(tokenData.link_token);
         handler.open();
       } catch (e) {
         showStatus('Failed to open Plaid Link: ' + e.message, false);
       }
     }
+
+    // Auto-detect OAuth return on page load.
+    function handlePlaidOAuthReturn() {
+      var params = new URLSearchParams(window.location.search);
+      if (!params.has('oauth_state_id')) return;
+      var linkToken = sessionStorage.getItem(PLAID_LINK_TOKEN_KEY);
+      if (!linkToken) {
+        showStatus('Plaid OAuth return detected, but no link token in session storage. Try linking again.', false);
+        return;
+      }
+      if (!window._plaidLoaded || typeof Plaid === 'undefined') {
+        // SDK not ready yet — wait and retry once.
+        setTimeout(handlePlaidOAuthReturn, 500);
+        return;
+      }
+      showStatus('Completing Plaid OAuth handshake...', true);
+      var handler = buildPlaidHandler(linkToken, window.location.href);
+      handler.open();
+      // Clean the query param from the URL so a reload doesn't re-trigger.
+      var clean = window.location.origin + window.location.pathname;
+      window.history.replaceState({}, '', clean);
+    }
+    // Defer until after the page settles so showStatus + SDK are ready.
+    setTimeout(handlePlaidOAuthReturn, 100);
 
     // --- Bind event handlers (CSP-safe) ---
     bindEvents([
