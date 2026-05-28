@@ -96,22 +96,33 @@ router.post("/api/plaid/link-token", async (_req, res) => {
 // under a single login — requesting both products means the user links
 // once instead of twice. transactions.days_requested pulls maximum
 // history (730 days); some banks cap lower (Capital One = 90 days).
-router.post("/api/plaid/link-token-transactions", async (_req, res) => {
+router.post("/api/plaid/link-token-transactions", async (req, res) => {
   const client = getPlaidClient();
   if (!client) return res.status(501).json({ error: "Plaid not configured." });
   try {
-    const response = await client.linkTokenCreate({
+    // OAuth redirect mode: client passes its current page URL as redirect_uri
+    // so banks that require full-page OAuth (Capital One, Chase via OAuth,
+    // many credit unions, and most mobile flows) can hand control back to
+    // the same page. The URI must be registered in the Plaid Dashboard
+    // (Team Settings → API → Allowed redirect URIs). When omitted (e.g.
+    // desktop popup flow), Plaid Link uses popup mode and no redirect URI
+    // is needed.
+    const tokenRequest = {
       user: { client_user_id: "perfin-user-1" },
       client_name: "Perfin",
       products: [Products.Transactions, Products.Investments, Products.Liabilities],
       country_codes: [CountryCode.Us],
       language: "en",
       transactions: { days_requested: 730 },
-    });
+    };
+    if (req.body?.redirect_uri) {
+      tokenRequest.redirect_uri = req.body.redirect_uri;
+    }
+    const response = await client.linkTokenCreate(tokenRequest);
     res.json({ link_token: response.data.link_token });
   } catch (err) {
     console.error("Plaid link-token-transactions error:", err.response?.data || err.message);
-    res.status(500).json({ error: "Failed to create Plaid link token" });
+    res.status(500).json({ error: err.response?.data?.error_message || "Failed to create Plaid link token" });
   }
 });
 
