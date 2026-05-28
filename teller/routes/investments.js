@@ -1111,4 +1111,147 @@ router.get("/api/investments/performance", async (_req, res) => {
   }
 });
 
+// =========================================================================
+// Migration helper: Teller → Plaid override preservation
+// =========================================================================
+// When switching an account from Teller to Plaid, deleting the Teller
+// enrollment CASCADEs to its transactions, taking the user's overrides
+// (user_merchant_name, user_category, user_notes, is_reimbursed) with it.
+// This endpoint pre-emptively copies those overrides to the matching
+// Plaid transactions so the manual override work isn't lost.
+//
+// Match heuristic: same date ±2 days, same amount (exact match — money
+// doesn't approximate), same merchant signature (case-insensitive substring).
+// Conservative on purpose — a Plaid transaction only gets the override if
+// there's exactly ONE Teller candidate that matches.
+
+router.get("/api/plaid/migrate-preview", async (_req, res) => {
+  try {
+    // List Teller-linked accounts whose mask + name appears in any
+    // Plaid-linked account too (indicates a likely duplicate to migrate).
+    const result = await pool.query(`
+      SELECT
+        te.id AS teller_enrollment_id,
+        te.institution_name AS teller_institution,
+        la_t.id AS teller_account_id,
+        la_t.name AS teller_account_name,
+        la_t.mask AS teller_mask,
+        pi.id AS plaid_item_id,
+        pi.institution_name AS plaid_institution,
+        la_p.id AS plaid_account_id,
+        la_p.name AS plaid_account_name,
+        la_p.mask AS plaid_mask,
+        (SELECT COUNT(*) FROM transactions t
+         WHERE t.account_id = la_t.account_id
+           AND (t.user_merchant_name IS NOT NULL
+                OR t.user_category IS NOT NULL
+                OR t.user_notes IS NOT NULL
+                OR t.is_reimbursed = true)
+        ) AS overrides_at_risk
+      FROM teller_enrollments te
+      JOIN linked_accounts la_t ON la_t.teller_enrollment_id = te.id
+      JOIN linked_accounts la_p ON la_p.mask = la_t.mask AND la_p.plaid_item_id IS NOT NULL
+      JOIN plaid_items pi ON pi.id = la_p.plaid_item_id
+      WHERE la_t.mask IS NOT NULL
+      ORDER BY te.institution_name, la_t.mask
+    `);
+    res.json({
+      candidate_pairs: result.rows,
+      note: "These Teller-linked accounts have matching Plaid-linked accounts (by mask). Running migrate-execute copies user overrides from Teller transactions to matching Plaid transactions before you can safely delete the Teller enrollment.",
+    });
+  } catch (err) {
+    console.error("Migration preview error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+router.post("/api/plaid/migrate-overrides", async (req, res) => {
+  const tellerAccountId = req.body?.teller_account_id;
+  const plaidAccountId = req.body?.plaid_account_id;
+  if (!tellerAccountId || !plaidAccountId) {
+    return res.status(400).json({ error: "teller_account_id and plaid_account_id required (numeric linked_accounts.id values from /migrate-preview)" });
+  }
+  try {
+    // Resolve both accounts to their Teller/Plaid string account_ids
+    const accts = await pool.query(
+      `SELECT id, account_id, teller_enrollment_id, plaid_item_id, mask, name
+       FROM linked_accounts
+       WHERE id = ANY($1::int[])`,
+      [[tellerAccountId, plaidAccountId]]
+    );
+    if (accts.rows.length !== 2) return res.status(404).json({ error: "One or both linked_accounts rows not found" });
+    const teller = accts.rows.find(r => r.teller_enrollment_id);
+    const plaid = accts.rows.find(r => r.plaid_item_id);
+    if (!teller || !plaid) {
+      return res.status(400).json({ error: "Pair must be one Teller-linked and one Plaid-linked account" });
+    }
+
+    // For each Teller transaction with overrides, find the matching
+    // Plaid transaction (date ±2 days, exact amount) and copy overrides.
+    // Conservative: only copy if exactly one Plaid candidate matches.
+    const tellerTxns = await pool.query(
+      `SELECT transaction_id, date, amount, merchant_name, name,
+              user_merchant_name, user_category, user_notes, is_reimbursed, reimbursed_at
+       FROM transactions
+       WHERE account_id = $1
+         AND (user_merchant_name IS NOT NULL
+              OR user_category IS NOT NULL
+              OR user_notes IS NOT NULL
+              OR is_reimbursed = true)`,
+      [teller.account_id]
+    );
+
+    let migrated = 0;
+    let ambiguous = 0;
+    let unmatched = 0;
+    const unmatchedSamples = [];
+
+    for (const t of tellerTxns.rows) {
+      const candidates = await pool.query(
+        `SELECT transaction_id FROM transactions
+         WHERE account_id = $1
+           AND amount = $2
+           AND ABS(EXTRACT(EPOCH FROM (date::timestamp - $3::timestamp)) / 86400) <= 2
+         LIMIT 2`,
+        [plaid.account_id, t.amount, t.date]
+      );
+      if (candidates.rows.length === 0) {
+        unmatched++;
+        if (unmatchedSamples.length < 5) {
+          unmatchedSamples.push({ date: t.date, amount: t.amount, merchant: t.merchant_name || t.name });
+        }
+        continue;
+      }
+      if (candidates.rows.length > 1) {
+        ambiguous++;
+        continue;
+      }
+      await pool.query(
+        `UPDATE transactions SET
+           user_merchant_name = COALESCE($1, user_merchant_name),
+           user_category = COALESCE($2, user_category),
+           user_notes = COALESCE($3, user_notes),
+           is_reimbursed = $4 OR is_reimbursed,
+           reimbursed_at = COALESCE($5, reimbursed_at)
+         WHERE transaction_id = $6`,
+        [t.user_merchant_name, t.user_category, t.user_notes, t.is_reimbursed, t.reimbursed_at, candidates.rows[0].transaction_id]
+      );
+      migrated++;
+    }
+
+    res.json({
+      ok: true,
+      overrides_found: tellerTxns.rows.length,
+      migrated,
+      ambiguous,
+      unmatched,
+      unmatched_samples: unmatchedSamples,
+      next_step: "Verify the Plaid account looks correct on the Transactions page, then delete the Teller enrollment via the Accounts page. The Teller transactions will be removed but your overrides now live on the matching Plaid transactions.",
+    });
+  } catch (err) {
+    console.error("Migration execute error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
 module.exports = router;
