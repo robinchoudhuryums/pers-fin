@@ -183,7 +183,13 @@ app.use(helmet({
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'", (req, res) => `'nonce-${res.locals.nonce}'`, "https://cdn.teller.io", "https://*.teller.io", "https://cdn.jsdelivr.net", "https://*.jsdelivr.net", "https://cdn.plaid.com"],
       connectSrc: ["'self'", "https://teller.io", "https://*.teller.io", "https://*.plaid.com", "https://fonts.googleapis.com", "https://fonts.gstatic.com"],
-      frameSrc: ["https://teller.io", "https://*.teller.io", "https://cdn.plaid.com"],
+      // Plaid Link opens its UI in iframes hosted on link.plaid.com,
+      // production.plaid.com, sandbox.plaid.com (depending on env), and a
+      // few other subdomains. Whitelisting *.plaid.com is the simplest
+      // way to support the full set without breakage when Plaid adds
+      // new subdomains. Without this, the green "Connecting to Plaid…"
+      // toast appears but the modal never opens.
+      frameSrc: ["https://teller.io", "https://*.teller.io", "https://*.plaid.com"],
       // Style policy is split (CSP Level 3): <style> blocks require the
       // per-request nonce so an XSS-injected <style> can't smuggle CSS that
       // exfiltrates data via background-image fetches; inline `style=""`

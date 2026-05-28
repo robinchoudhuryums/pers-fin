@@ -557,8 +557,17 @@
           return;
         }
         var tokenData = await tokenRes.json();
+        if (!tokenData.link_token) {
+          showStatus('No link_token returned by server: ' + JSON.stringify(tokenData), false);
+          return;
+        }
         var handler = Plaid.create({
           token: tokenData.link_token,
+          onLoad: function() {
+            // Plaid Link finished loading and is ready to display.
+            // If we never see this fire, the CSP is likely blocking the iframe.
+            console.log('Plaid Link loaded');
+          },
           onSuccess: async function(public_token, metadata) {
             try {
               showStatus('Linking accounts...', true);
@@ -576,8 +585,21 @@
               }
             } catch (e) { showStatus(e.message, false); }
           },
-          onExit: function(err) {
-            if (err) showStatus('Plaid connection cancelled' + (err.display_message ? ': ' + err.display_message : ''), false);
+          onExit: function(err, metadata) {
+            // Surface Plaid's structured error data verbosely so the user
+            // can see WHY the modal closed (institution down, OAuth not
+            // configured, user cancelled, etc.) instead of just a silent
+            // dismissal.
+            console.log('Plaid onExit:', { err: err, metadata: metadata });
+            if (err) {
+              var msg = 'Plaid: ' + (err.display_message || err.error_message || err.error_code || JSON.stringify(err));
+              showStatus(msg, false);
+            }
+          },
+          onEvent: function(eventName, metadata) {
+            // Logs every event Plaid Link emits — useful when the modal
+            // closes silently. Look for ERROR, EXIT, or HANDOFF in the console.
+            console.log('Plaid event:', eventName, metadata);
           },
         });
         handler.open();
