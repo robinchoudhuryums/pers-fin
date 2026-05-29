@@ -14,12 +14,15 @@
     /* Toast-style status pinned to top-right (matches .status-msg behavior
        on other pages — the Accounts page uses #status with .success/.error
        sub-classes instead of the shared .status-msg pattern). */
-    #status { position: fixed; top: 16px; right: 16px; left: auto; z-index: 1000;
+    #status { position: fixed;
+              top: calc(16px + env(safe-area-inset-top));
+              right: calc(16px + env(safe-area-inset-right));
+              left: auto; z-index: 1000;
               max-width: 420px; min-width: 240px;
               padding: 14px 18px; border-radius: 8px; display: none;
               font-size: 13px; font-weight: 400;
               box-shadow: 0 6px 24px rgba(0,0,0,0.35); }
-    @media (max-width: 640px) { #status { left: 16px; right: 16px; max-width: none; min-width: 0; } }
+    @media (max-width: 640px) { #status { left: calc(16px + env(safe-area-inset-left)); right: calc(16px + env(safe-area-inset-right)); max-width: none; min-width: 0; } }
     .success { background: var(--green-bg); border: 1px solid rgba(111,207,151,0.15); color: var(--green); }
     .error   { background: var(--red-bg); border: 1px solid rgba(235,107,107,0.15); color: var(--red); }
     #items { margin-top: 36px; }
