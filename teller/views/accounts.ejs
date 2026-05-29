@@ -597,48 +597,70 @@
       });
     }
 
-    async function linkPlaidTransactions() {
-      console.log('[Plaid] Link button clicked');
+    // Pre-fetched Plaid handler — built on page load so the click handler
+    // can call .open() synchronously. iOS Safari loses the "user gesture"
+    // context across async work, so without this, the modal silently fails
+    // to open on iPhone (works on desktop where popup blocking is laxer).
+    // Plaid docs explicitly recommend this approach.
+    var _plaidHandler = null;
+    var _plaidHandlerError = null;
+
+    async function prebuildPlaidHandler() {
       if (!window._plaidLoaded || typeof Plaid === 'undefined') {
-        console.error('[Plaid] SDK not loaded. _plaidLoaded=', window._plaidLoaded, ', Plaid=', typeof Plaid);
-        showStatus('Plaid Link SDK failed to load. Check your internet connection or try refreshing.', false);
+        // SDK not yet loaded — wait and retry once more, then give up.
+        setTimeout(prebuildPlaidHandler, 1500);
         return;
       }
       try {
-        showStatus('Connecting to Plaid...', true);
-        // Pass our current page URL as redirect_uri (strip trailing slash so
-        // we exactly match the URI registered in the Plaid Dashboard, which
-        // does not have a trailing slash).
         var redirectUri = (window.location.origin + window.location.pathname).replace(/\/+$/, '');
-        console.log('[Plaid] Requesting link token with redirect_uri:', redirectUri);
+        console.log('[Plaid] Pre-fetching link token, redirect_uri:', redirectUri);
         var tokenRes = await apiFetch('/api/plaid/link-token-transactions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ redirect_uri: redirectUri }),
         });
-        console.log('[Plaid] Token response status:', tokenRes.status);
         if (!tokenRes.ok) {
           var err = await tokenRes.json().catch(function() { return {}; });
-          console.error('[Plaid] Token request failed:', err);
-          showStatus(err.error || ('Token request failed: HTTP ' + tokenRes.status), false);
+          _plaidHandlerError = err.error || ('Token request failed: HTTP ' + tokenRes.status);
+          console.error('[Plaid] Pre-fetch token request failed:', err);
           return;
         }
         var tokenData = await tokenRes.json();
-        console.log('[Plaid] Token response body:', tokenData);
         if (!tokenData.link_token) {
-          showStatus('No link_token returned by server: ' + JSON.stringify(tokenData), false);
+          _plaidHandlerError = 'No link_token returned by server';
           return;
         }
         sessionStorage.setItem(PLAID_LINK_TOKEN_KEY, tokenData.link_token);
-        console.log('[Plaid] Building handler and opening modal...');
-        var handler = buildPlaidHandler(tokenData.link_token);
-        handler.open();
-        console.log('[Plaid] handler.open() returned (modal should be visible)');
+        _plaidHandler = buildPlaidHandler(tokenData.link_token);
+        console.log('[Plaid] Handler pre-built and ready');
       } catch (e) {
-        console.error('[Plaid] Exception in linkPlaidTransactions:', e);
-        showStatus('Failed to open Plaid Link: ' + e.message, false);
+        _plaidHandlerError = 'Failed to pre-build Plaid handler: ' + e.message;
+        console.error('[Plaid] Pre-build exception:', e);
       }
     }
+
+    function linkPlaidTransactions() {
+      console.log('[Plaid] Link button clicked');
+      // Synchronous path: open the pre-built handler immediately so iOS
+      // Safari preserves the user-gesture context.
+      if (_plaidHandler) {
+        showStatus('Opening Plaid...', true);
+        _plaidHandler.open();
+        return;
+      }
+      if (_plaidHandlerError) {
+        showStatus(_plaidHandlerError, false);
+        return;
+      }
+      // SDK or token still loading. Tell the user and retry the pre-build.
+      showStatus('Plaid is still initializing — try again in a moment.', false);
+      prebuildPlaidHandler();
+    }
+
+    // Kick off the pre-fetch once the page settles. The Plaid SDK loads
+    // dynamically (see head injection above) so we give it a moment to
+    // arrive before requesting the link token.
+    setTimeout(prebuildPlaidHandler, 800);
 
     // Auto-detect OAuth return on page load.
     function handlePlaidOAuthReturn() {
