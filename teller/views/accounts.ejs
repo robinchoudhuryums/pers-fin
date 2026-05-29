@@ -624,8 +624,14 @@
         });
         if (!tokenRes.ok) {
           var err = await tokenRes.json().catch(function() { return {}; });
-          _plaidHandlerError = err.error || ('Token request failed: HTTP ' + tokenRes.status);
-          console.error('[Plaid] Pre-fetch token request failed:', err);
+          // Show the exact redirect_uri we sent so the user can compare
+          // it letter-by-letter against what's registered in Plaid Dashboard.
+          // INVALID_REDIRECT_URI fails on the tiniest mismatch (case, trailing
+          // slash, extra space, www vs no-www, http vs https, etc.).
+          var msg = (err.error || ('Token request failed: HTTP ' + tokenRes.status))
+            + ' | Sent redirect_uri: "' + redirectUri + '" — verify this exact string is in Plaid Dashboard → API → Allowed redirect URIs for the PRODUCTION environment.';
+          _plaidHandlerError = msg;
+          console.error('[Plaid] Pre-fetch token request failed:', err, 'redirect_uri sent:', redirectUri);
           return;
         }
         var tokenData = await tokenRes.json();
