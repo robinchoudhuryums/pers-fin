@@ -598,36 +598,44 @@
     }
 
     async function linkPlaidTransactions() {
+      console.log('[Plaid] Link button clicked');
       if (!window._plaidLoaded || typeof Plaid === 'undefined') {
+        console.error('[Plaid] SDK not loaded. _plaidLoaded=', window._plaidLoaded, ', Plaid=', typeof Plaid);
         showStatus('Plaid Link SDK failed to load. Check your internet connection or try refreshing.', false);
         return;
       }
       try {
         showStatus('Connecting to Plaid...', true);
-        // Pass our current page URL as redirect_uri so OAuth-required banks
-        // can hand control back to this same page. Must be registered in
-        // the Plaid Dashboard. Use the origin + pathname (no query/hash).
-        var redirectUri = window.location.origin + window.location.pathname;
+        // Pass our current page URL as redirect_uri (strip trailing slash so
+        // we exactly match the URI registered in the Plaid Dashboard, which
+        // does not have a trailing slash).
+        var redirectUri = (window.location.origin + window.location.pathname).replace(/\/+$/, '');
+        console.log('[Plaid] Requesting link token with redirect_uri:', redirectUri);
         var tokenRes = await apiFetch('/api/plaid/link-token-transactions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ redirect_uri: redirectUri }),
         });
+        console.log('[Plaid] Token response status:', tokenRes.status);
         if (!tokenRes.ok) {
           var err = await tokenRes.json().catch(function() { return {}; });
-          showStatus(err.error || 'Failed to create Plaid link token', false);
+          console.error('[Plaid] Token request failed:', err);
+          showStatus(err.error || ('Token request failed: HTTP ' + tokenRes.status), false);
           return;
         }
         var tokenData = await tokenRes.json();
+        console.log('[Plaid] Token response body:', tokenData);
         if (!tokenData.link_token) {
           showStatus('No link_token returned by server: ' + JSON.stringify(tokenData), false);
           return;
         }
-        // Persist for the OAuth return trip.
         sessionStorage.setItem(PLAID_LINK_TOKEN_KEY, tokenData.link_token);
+        console.log('[Plaid] Building handler and opening modal...');
         var handler = buildPlaidHandler(tokenData.link_token);
         handler.open();
+        console.log('[Plaid] handler.open() returned (modal should be visible)');
       } catch (e) {
+        console.error('[Plaid] Exception in linkPlaidTransactions:', e);
         showStatus('Failed to open Plaid Link: ' + e.message, false);
       }
     }
