@@ -126,6 +126,42 @@ router.post("/api/plaid/link-token-transactions", async (req, res) => {
   }
 });
 
+// POST /api/plaid/hosted-link — create a hosted Plaid Link URL for the
+// mobile-friendly redirect-based flow. The browser navigates to the
+// returned URL; the user completes the entire flow on plaid.com's
+// domain; Plaid redirects back to our redirect_uri with the public
+// token in query params. No iframes involved — works around iOS Safari's
+// iframe modal incompatibility.
+router.post("/api/plaid/hosted-link", async (req, res) => {
+  const client = getPlaidClient();
+  if (!client) return res.status(501).json({ error: "Plaid not configured." });
+  if (!req.body?.redirect_uri) {
+    return res.status(400).json({ error: "redirect_uri required for hosted link" });
+  }
+  try {
+    const response = await client.linkTokenCreate({
+      user: { client_user_id: "perfin-user-1" },
+      client_name: "Perfin",
+      products: [Products.Transactions, Products.Investments, Products.Liabilities],
+      country_codes: [CountryCode.Us],
+      language: "en",
+      transactions: { days_requested: 730 },
+      redirect_uri: req.body.redirect_uri,
+      hosted_link: {
+        url_lifetime_seconds: 3600,
+        completion_redirect_uri: req.body.redirect_uri,
+      },
+    });
+    res.json({
+      link_token: response.data.link_token,
+      hosted_link_url: response.data.hosted_link_url,
+    });
+  } catch (err) {
+    console.error("Plaid hosted-link error:", err.response?.data || err.message);
+    res.status(500).json({ error: err.response?.data?.error_message || "Failed to create hosted Plaid link" });
+  }
+});
+
 // POST /api/plaid/exchange-transactions — exchange public token after the
 // user authenticates in Plaid Link, store the item in `plaid_items`, fetch
 // accounts and store in `linked_accounts` with `plaid_item_id` set.
