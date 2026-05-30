@@ -110,7 +110,15 @@ router.post("/api/plaid/link-token-transactions", async (req, res) => {
     const tokenRequest = {
       user: { client_user_id: "perfin-user-1" },
       client_name: "Perfin",
-      products: [Products.Transactions, Products.Investments, Products.Liabilities],
+      // Only Transactions is required — every bank we'd want to link
+      // supports it. Investments and Liabilities are optional so banks
+      // that don't offer them (Capital One has no brokerage; Discover
+      // is mostly credit cards) still link successfully with just the
+      // products they DO support. Without this split, Plaid blocks
+      // linking unless ALL listed products are supported by the
+      // institution, which excludes most credit-card-only banks.
+      products: [Products.Transactions],
+      optional_products: [Products.Investments, Products.Liabilities],
       country_codes: [CountryCode.Us],
       language: "en",
       transactions: { days_requested: 730 },
@@ -142,7 +150,11 @@ router.post("/api/plaid/hosted-link", async (req, res) => {
     const response = await client.linkTokenCreate({
       user: { client_user_id: "perfin-user-1" },
       client_name: "Perfin",
-      products: [Products.Transactions, Products.Investments, Products.Liabilities],
+      // Same product split as the modal-based link — required:
+      // Transactions only; optional: Investments + Liabilities. Lets
+      // credit-card-only banks (Capital One, Discover) link.
+      products: [Products.Transactions],
+      optional_products: [Products.Investments, Products.Liabilities],
       country_codes: [CountryCode.Us],
       language: "en",
       transactions: { days_requested: 730 },
