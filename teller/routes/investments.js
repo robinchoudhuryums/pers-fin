@@ -174,6 +174,90 @@ router.post("/api/plaid/hosted-link", async (req, res) => {
   }
 });
 
+// POST /api/plaid/hosted-link-complete — finalize a hosted link session.
+// After hosted link completes on Plaid's side, the public_token isn't in
+// the return URL. Instead, we call linkTokenGet to retrieve the link
+// session's public_token, then run the standard exchange-transactions
+// flow (store in plaid_items, fetch accounts, initial sync, liabilities).
+router.post("/api/plaid/hosted-link-complete", async (req, res) => {
+  const client = getPlaidClient();
+  if (!client) return res.status(501).json({ error: "Plaid not configured." });
+  const linkToken = req.body?.link_token;
+  if (!linkToken) return res.status(400).json({ error: "link_token required" });
+  try {
+    const tokenInfo = await client.linkTokenGet({ link_token: linkToken });
+    const sessions = tokenInfo.data.link_sessions || [];
+    if (sessions.length === 0) {
+      return res.status(400).json({ error: "No link session yet — try again in a moment." });
+    }
+    // Take the most recent completed session.
+    const session = sessions[sessions.length - 1];
+    const publicToken = session.results?.item_add_results?.[0]?.public_token
+                     || session.public_token;
+    const institutionName = session.results?.item_add_results?.[0]?.institution?.name
+                         || session.institution?.name
+                         || "Unknown";
+    if (!publicToken) {
+      return res.status(400).json({ error: "Link session has no public_token yet — user may not have completed the flow." });
+    }
+    // Now do the same as exchange-transactions
+    const exchangeRes = await client.itemPublicTokenExchange({ public_token: publicToken });
+    const accessToken = exchangeRes.data.access_token;
+    const itemId = exchangeRes.data.item_id;
+
+    const itemRow = await pool.query(
+      `INSERT INTO plaid_items (item_id, institution_name, access_token_enc)
+       VALUES ($1, $2, pgp_sym_encrypt($3, $4))
+       ON CONFLICT (item_id) DO UPDATE SET
+         access_token_enc = pgp_sym_encrypt($3, $4),
+         institution_name = $2,
+         updated_at = now()
+       RETURNING id`,
+      [itemId, institutionName, accessToken, ENCRYPTION_PASSPHRASE]
+    );
+    const plaidItemDbId = itemRow.rows[0].id;
+
+    await pool.query(
+      `INSERT INTO sync_cursors (plaid_item_id, cursor) VALUES ($1, '')
+       ON CONFLICT (plaid_item_id) DO NOTHING`,
+      [plaidItemDbId]
+    );
+
+    const acctRes = await client.accountsGet({ access_token: accessToken });
+    let linked = 0;
+    for (const acct of acctRes.data.accounts) {
+      await pool.query(
+        `INSERT INTO linked_accounts (plaid_item_id, account_id, name, official_name, type, subtype, mask)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (account_id) DO UPDATE SET
+           name = EXCLUDED.name,
+           official_name = EXCLUDED.official_name,
+           type = EXCLUDED.type,
+           subtype = EXCLUDED.subtype,
+           plaid_item_id = EXCLUDED.plaid_item_id`,
+        [plaidItemDbId, acct.account_id, acct.name, acct.official_name || null,
+         acct.type, acct.subtype || null, acct.mask || null]
+      );
+      linked++;
+    }
+
+    const syncResult = await syncPlaidItemTransactions(client, plaidItemDbId, accessToken);
+    const liabResult = await syncPlaidLiabilities(client, accessToken, plaidItemDbId);
+
+    res.json({
+      ok: true,
+      item_id: itemId,
+      institution: institutionName,
+      accounts_linked: linked,
+      transactions_added: syncResult.added,
+      liabilities_synced: liabResult.updated || undefined,
+    });
+  } catch (err) {
+    console.error("Plaid hosted-link-complete error:", err.response?.data || err.message);
+    res.status(500).json({ error: err.response?.data?.error_message || err.message });
+  }
+});
+
 // POST /api/plaid/exchange-transactions — exchange public token after the
 // user authenticates in Plaid Link, store the item in `plaid_items`, fetch
 // accounts and store in `linked_accounts` with `plaid_item_id` set.
