@@ -59,6 +59,17 @@
       <button id="notif-mark-all" style="font-size:11px;background:none;border:none;color:var(--teal);cursor:pointer;padding:0;">Mark all read</button>
     </div>
     <div id="notif-list" style="padding:0;"></div>
+    <!-- Debug mode toggle. Persists in localStorage so it survives page
+         reloads. When on, an on-screen log panel captures console output,
+         uncaught exceptions, and iframe attachments — useful for
+         debugging issues on devices without easy DevTools access. -->
+    <div style="border-top:1px solid var(--border);padding:10px 16px;display:flex;align-items:center;justify-content:space-between;">
+      <span style="font-size:12px;color:var(--text-muted);">Debug mode</span>
+      <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:11px;">
+        <input type="checkbox" id="nav-debug-toggle" style="margin:0;">
+        <span id="nav-debug-state" style="color:var(--text-muted);">off</span>
+      </label>
+    </div>
   </div>
   <main id="main-content">
   <script nonce="<%= nonce %>">
@@ -176,6 +187,30 @@
           await apiFetch('/api/notifications/read-all', { method: 'POST' });
           loadNotifs();
         } catch (_) {}
+      });
+
+      // Debug-mode toggle wiring. The actual on-screen log overlay lives
+      // in perfin-shared.js; it auto-activates on page load when the
+      // localStorage flag is set. Toggling here just sets/clears the flag
+      // and prompts a reload so the overlay can attach (or detach).
+      var debugToggle = document.getElementById('nav-debug-toggle');
+      var debugState = document.getElementById('nav-debug-state');
+      function refreshDebugToggle() {
+        var on = false;
+        try { on = localStorage.getItem('perfin_debug') === '1'; } catch (_) {}
+        debugToggle.checked = on;
+        debugState.textContent = on ? 'on' : 'off';
+        debugState.style.color = on ? 'var(--green)' : 'var(--text-muted)';
+      }
+      refreshDebugToggle();
+      debugToggle.addEventListener('change', function() {
+        try {
+          if (this.checked) localStorage.setItem('perfin_debug', '1');
+          else localStorage.removeItem('perfin_debug');
+        } catch (_) {}
+        refreshDebugToggle();
+        // Reload so the overlay (de)activates on the new state.
+        setTimeout(function() { location.reload(); }, 250);
       });
 
       loadNotifs();
