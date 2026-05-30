@@ -268,6 +268,40 @@
       panel.style.display = 'none';
     });
     console.log('Debug overlay enabled. URL:', win.location.href);
+
+    // MutationObserver — log every iframe that appears on the page so we
+    // can verify whether vendor SDKs (Plaid, Teller) actually attached
+    // their modal and inspect its dimensions/z-index/visibility.
+    try {
+      var observer = new MutationObserver(function(mutations) {
+        mutations.forEach(function(m) {
+          m.addedNodes && m.addedNodes.forEach(function(n) {
+            if (!n.querySelectorAll) return;
+            var iframes = n.tagName === 'IFRAME' ? [n] : Array.from(n.querySelectorAll('iframe'));
+            iframes.forEach(function(f) {
+              setTimeout(function() {
+                var cs = win.getComputedStyle(f);
+                var rect = f.getBoundingClientRect();
+                console.log('iframe attached:', {
+                  src: (f.src || '').substring(0, 80),
+                  id: f.id || '(no id)',
+                  size: rect.width + 'x' + rect.height,
+                  position: cs.position + ' top:' + cs.top + ' left:' + cs.left,
+                  zIndex: cs.zIndex,
+                  display: cs.display,
+                  visibility: cs.visibility,
+                  opacity: cs.opacity,
+                  transform: cs.transform === 'none' ? 'none' : cs.transform.substring(0, 50),
+                });
+              }, 100);
+            });
+          });
+        });
+      });
+      observer.observe(doc.body, { childList: true, subtree: true });
+    } catch (e) {
+      console.error('MutationObserver setup failed:', e.message);
+    }
   }
   initDebugOverlay();
   win.perfinDebugEnabled = debugEnabled;
