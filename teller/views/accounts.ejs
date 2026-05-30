@@ -235,18 +235,27 @@
     }
 
     async function unlinkAccount(id, name, provider) {
-      if (!confirm('Unlink ' + name + '? This will remove the enrollment and all associated transactions.')) return;
+      console.log('[unlink] click', { id: id, name: name, provider: provider });
+      var confirmed = confirm('Unlink ' + name + '? This will remove the enrollment and all associated transactions.');
+      console.log('[unlink] confirm result', confirmed);
+      if (!confirmed) return;
       try {
-        const endpoint = provider === 'plaid' ? '/api/items/' + id : '/api/enrollments/' + id;
-        const res = await apiFetch(endpoint, { method: 'DELETE' });
+        var endpoint = provider === 'plaid' ? '/api/items/' + id : '/api/enrollments/' + id;
+        console.log('[unlink] DELETE', endpoint);
+        var res = await apiFetch(endpoint, { method: 'DELETE' });
+        console.log('[unlink] response status', res.status);
         if (res.ok) {
           showStatus('Unlinked ' + name + ' successfully.', true);
           loadItems();
         } else {
-          const data = await res.json().catch(() => ({}));
+          var data = await res.json().catch(function() { return {}; });
+          console.error('[unlink] failed', res.status, data);
           showStatus('Failed to unlink: ' + (data.error || 'HTTP ' + res.status), false);
         }
-      } catch (e) { showStatus('Failed to unlink: ' + e.message, false); }
+      } catch (e) {
+        console.error('[unlink] exception', e);
+        showStatus('Failed to unlink: ' + e.message, false);
+      }
     }
 
     function startLink() {
@@ -498,11 +507,26 @@
     }
 
     async function deleteInvestment(id, name) {
-      if (!confirm('Remove ' + name + '?')) return;
+      console.log('[delete-inv] click', { id: id, name: name });
+      var confirmed = confirm('Remove ' + name + '?');
+      console.log('[delete-inv] confirm result', confirmed);
+      if (!confirmed) return;
       try {
-        await apiFetch('/api/investment-accounts/' + id, { method: 'DELETE' });
-        showStatus('Removed ' + name + '.', true); loadInvestments();
-      } catch (e) { showStatus(e.message, false); }
+        console.log('[delete-inv] DELETE /api/investment-accounts/' + id);
+        var res = await apiFetch('/api/investment-accounts/' + id, { method: 'DELETE' });
+        console.log('[delete-inv] response status', res.status);
+        if (res.ok) {
+          showStatus('Removed ' + name + '.', true);
+          loadInvestments();
+        } else {
+          var data = await res.json().catch(function() { return {}; });
+          console.error('[delete-inv] failed', res.status, data);
+          showStatus('Failed to remove: ' + (data.error || 'HTTP ' + res.status), false);
+        }
+      } catch (e) {
+        console.error('[delete-inv] exception', e);
+        showStatus(e.message, false);
+      }
     }
 
     // Plaid investment linking

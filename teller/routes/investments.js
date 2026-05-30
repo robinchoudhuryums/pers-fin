@@ -350,7 +350,7 @@ router.post("/api/plaid/exchange-transactions", async (req, res) => {
             `INSERT INTO investment_accounts (name, institution, account_type, balance, plaid_account_id)
              VALUES ($1, $2, $3, $4, $5)
              ON CONFLICT (plaid_account_id) DO UPDATE SET
-               balance = $4, name = $1, updated_at = now()`,
+               balance = $4, name = $1, is_active = true, updated_at = now()`,
             [acct.name, institution?.name || "Unknown", acct.subtype || "brokerage",
              balance, acct.account_id]
           );
@@ -824,7 +824,7 @@ router.post("/api/plaid/exchange", async (req, res) => {
         `INSERT INTO investment_accounts (name, institution, account_type, balance, notes, plaid_account_id)
          VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT (plaid_account_id) DO UPDATE SET
-           balance = $4, name = $1, updated_at = now()`,
+           balance = $4, name = $1, is_active = true, updated_at = now()`,
         [
           acct.official_name || acct.name,
           institution?.name || "Unknown",
@@ -919,7 +919,7 @@ router.post("/api/plaid/sync-holdings", async (_req, res) => {
           // here but the snapshot table uses the local SERIAL id).
           const updRes = await pool.query(
             `UPDATE investment_accounts SET balance = $1, updated_at = now()
-             WHERE plaid_account_id = $2
+             WHERE plaid_account_id = $2 AND is_active = true
              RETURNING id`,
             [balance, acct.account_id]
           );
