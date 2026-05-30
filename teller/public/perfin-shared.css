@@ -262,21 +262,20 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 }
 
 /* ---------------------------------------------------------------------------
- * Third-party modal iframes — safe-area shimming for iPhone notch / Dynamic
- * Island. Teller Connect and Plaid Link inject full-viewport iframes whose
- * internal X / back buttons sit at the very top corners. Without this shim,
- * iOS Safari's status bar + notch overlap with the buttons and they become
- * untappable. We shrink the iframe to live within the safe-area inset so the
- * vendor's own corner-anchored controls land inside the tappable region.
+ * Teller Connect iframe — safe-area shimming for iPhone notch / Dynamic
+ * Island. Teller Connect injects a full-viewport iframe whose internal X /
+ * back buttons sit at the very top corners. Without this shim, iOS Safari's
+ * status bar + notch overlap with the buttons and they become untappable.
+ * We shrink the iframe to live within the safe-area inset so the vendor's
+ * own corner-anchored controls land inside the tappable region.
  *
- * Scoped to small screens (touch devices) so the shim doesn't accidentally
- * collide with Plaid Link's desktop positioning, which uses its own
- * inline styles for a centered modal layout.
+ * NOTE: Plaid Link is intentionally excluded here. Plaid handles iOS safe
+ * areas internally (their iframe content positions the X button with
+ * appropriate inset padding), and overriding their layout breaks the
+ * modal — it appears to "open" silently with no visible UI.
  * --------------------------------------------------------------------------- */
 @media (max-width: 640px) {
   iframe[src*="teller.io"],
-  iframe[src*="plaid.com"],
-  iframe[id*="plaid"],
   iframe[id*="teller"] {
     top: max(env(safe-area-inset-top), 0px) !important;
     left: max(env(safe-area-inset-left), 0px) !important;
