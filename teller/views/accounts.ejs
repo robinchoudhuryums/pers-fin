@@ -649,12 +649,15 @@
     }
 
     function linkPlaidTransactions() {
-      console.log('[Plaid] Link button clicked');
-      // Synchronous path: open the pre-built handler immediately so iOS
-      // Safari preserves the user-gesture context.
+      // CRITICAL: do as little as possible before .open() to preserve the
+      // iOS Safari user-gesture window. Any toast/log/DOM work happens
+      // AFTER, deferred via setTimeout so it doesn't consume gesture credit.
       if (_plaidHandler) {
-        showStatus('Opening Plaid...', true);
         _plaidHandler.open();
+        setTimeout(function() {
+          console.log('[Plaid] Link button clicked; handler.open() returned');
+          showStatus('Opening Plaid...', true);
+        }, 0);
         return;
       }
       if (_plaidHandlerError) {
