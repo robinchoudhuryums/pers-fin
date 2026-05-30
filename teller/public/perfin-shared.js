@@ -279,10 +279,10 @@
             if (!n.querySelectorAll) return;
             var iframes = n.tagName === 'IFRAME' ? [n] : Array.from(n.querySelectorAll('iframe'));
             iframes.forEach(function(f) {
-              setTimeout(function() {
+              function snapshot(label) {
                 var cs = win.getComputedStyle(f);
                 var rect = f.getBoundingClientRect();
-                console.log('iframe attached:', {
+                console.log('iframe ' + label + ':', {
                   src: (f.src || '').substring(0, 80),
                   id: f.id || '(no id)',
                   size: rect.width + 'x' + rect.height,
@@ -293,7 +293,29 @@
                   opacity: cs.opacity,
                   transform: cs.transform === 'none' ? 'none' : cs.transform.substring(0, 50),
                 });
-              }, 100);
+              }
+              setTimeout(function() { snapshot('attached'); }, 100);
+              setTimeout(function() { snapshot('after 2s'); }, 2000);
+              // ALSO try forcing it visible if it's a Plaid iframe stuck
+              // at display:none. We do this only on iPhone where the SDK
+              // appears to not transition the iframe out of hidden state.
+              if (f.id && f.id.indexOf('plaid-link-open') === 0) {
+                setTimeout(function() {
+                  var cs = win.getComputedStyle(f);
+                  if (cs.display === 'none' || f.getBoundingClientRect().width === 0) {
+                    console.warn('Force-revealing Plaid iframe (was display:' + cs.display + ', size:' + f.getBoundingClientRect().width + 'x' + f.getBoundingClientRect().height + ')');
+                    f.style.setProperty('display', 'block', 'important');
+                    f.style.setProperty('width', '100vw', 'important');
+                    f.style.setProperty('height', '100vh', 'important');
+                    f.style.setProperty('top', '0', 'important');
+                    f.style.setProperty('left', '0', 'important');
+                    f.style.setProperty('position', 'fixed', 'important');
+                    f.style.setProperty('z-index', '2147483647', 'important');
+                    f.style.setProperty('border', '0', 'important');
+                    setTimeout(function() { snapshot('after force-reveal'); }, 100);
+                  }
+                }, 1500);
+              }
             });
           });
         });
