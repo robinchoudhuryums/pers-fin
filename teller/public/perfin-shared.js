@@ -185,4 +185,90 @@
   win.onDelegate = onDelegate;
   win.perfinPromptInstall = perfinPromptInstall;
   win.perfinIsInstalled = perfinIsInstalled;
+
+  // ---------------------------------------------------------------------
+  // On-screen debug log overlay for mobile debugging without DevTools.
+  // Enable by appending ?debug=1 to any URL, or running
+  // localStorage.setItem('perfin_debug', '1') in any console. Captures
+  // console.log / .warn / .error and shows them in a fixed panel at the
+  // bottom of the screen. Tap the X to dismiss.
+  // ---------------------------------------------------------------------
+  function debugEnabled() {
+    try {
+      if (new URLSearchParams(win.location.search).get('debug') === '1') return true;
+      if (localStorage.getItem('perfin_debug') === '1') return true;
+    } catch (e) {}
+    return false;
+  }
+  function initDebugOverlay() {
+    if (!debugEnabled()) return;
+    var doc = win.document;
+    if (!doc || !doc.body) {
+      doc.addEventListener('DOMContentLoaded', initDebugOverlay);
+      return;
+    }
+    var panel = doc.createElement('div');
+    panel.id = 'perfin-debug-log';
+    panel.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99999;' +
+      'max-height:40vh;overflow-y:auto;background:rgba(0,0,0,0.88);color:#9fd4ff;' +
+      'font:11px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;padding:8px 8px 8px 8px;' +
+      'border-top:1px solid #4af;';
+    var header = doc.createElement('div');
+    header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;' +
+      'margin:0 0 6px;color:#fff;font-weight:600;';
+    header.innerHTML = '<span>DEBUG LOG</span>' +
+      '<span style="display:flex;gap:8px;">' +
+      '<button id="perfin-debug-clear" style="background:#333;color:#fff;border:0;padding:2px 8px;border-radius:4px;font:inherit;cursor:pointer;">clear</button>' +
+      '<button id="perfin-debug-close" style="background:#666;color:#fff;border:0;padding:2px 8px;border-radius:4px;font:inherit;cursor:pointer;">×</button>' +
+      '</span>';
+    panel.appendChild(header);
+    var logArea = doc.createElement('div');
+    logArea.id = 'perfin-debug-log-area';
+    panel.appendChild(logArea);
+    doc.body.appendChild(panel);
+
+    function add(level, args) {
+      var time = new Date().toLocaleTimeString();
+      var row = doc.createElement('div');
+      var color = level === 'error' ? '#ff8c8c' : level === 'warn' ? '#ffd166' : '#9fd4ff';
+      row.style.cssText = 'margin:2px 0;color:' + color + ';white-space:pre-wrap;word-break:break-all;';
+      var parts = Array.prototype.slice.call(args).map(function(a) {
+        if (a === null) return 'null';
+        if (a === undefined) return 'undefined';
+        if (typeof a === 'object') {
+          try { return JSON.stringify(a, null, 2); }
+          catch (e) { return String(a); }
+        }
+        return String(a);
+      });
+      row.textContent = '[' + time + '] ' + parts.join(' ');
+      logArea.appendChild(row);
+      logArea.scrollTop = logArea.scrollHeight;
+      // Keep the buffer reasonable.
+      while (logArea.children.length > 200) logArea.removeChild(logArea.firstChild);
+    }
+    ['log', 'warn', 'error'].forEach(function(level) {
+      var orig = console[level].bind(console);
+      console[level] = function() {
+        try { add(level, arguments); } catch (e) {}
+        orig.apply(console, arguments);
+      };
+    });
+    // Also capture global errors (uncaught exceptions, unhandled rejections)
+    win.addEventListener('error', function(e) {
+      add('error', ['window.onerror:', e.message, e.filename + ':' + e.lineno]);
+    });
+    win.addEventListener('unhandledrejection', function(e) {
+      add('error', ['unhandledrejection:', e.reason && e.reason.message || e.reason]);
+    });
+    doc.getElementById('perfin-debug-clear').addEventListener('click', function() {
+      logArea.innerHTML = '';
+    });
+    doc.getElementById('perfin-debug-close').addEventListener('click', function() {
+      panel.style.display = 'none';
+    });
+    console.log('Debug overlay enabled. URL:', win.location.href);
+  }
+  initDebugOverlay();
+  win.perfinDebugEnabled = debugEnabled;
 })(window);
