@@ -21,6 +21,7 @@ require("dotenv").config();
 
 const express = require("express");
 const cookieParser = require("cookie-parser");
+const rateLimit = require("express-rate-limit");
 const path = require("path");
 const auth = require("./middleware/auth");
 const webauthn = require("./middleware/webauthn");
@@ -34,6 +35,30 @@ app.set("views", path.join(__dirname, "views"));
 app.use(cookieParser());
 app.use(express.json({ limit: "64kb" }));
 app.use(express.urlencoded({ extended: false, limit: "64kb" }));
+
+// --- Brute-force protection (F4) -------------------------------------------
+// The shell is the SOLE auth gate for both sub-apps, and previously the only
+// defense on a wrong PIN was a fixed 750ms delay — which a concurrent attacker
+// defeats. These IP-based limiters cap credential-guessing on the PIN, the
+// biometric authenticate endpoints, and the x-api-key path. trust proxy is set
+// above, so req.ip reflects the real client behind Render's proxy.
+// `skipSuccessfulRequests` means a legitimate login/sync never burns the budget.
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,                        // failed credential attempts per IP / 15 min
+  skipSuccessfulRequests: true,
+  message: { error: "Too many attempts, please try again later." },
+});
+// Only counts FAILED requests that present an x-api-key header — so browser
+// traffic (no header) and cron clients with a valid key (successful) are
+// unaffected, while api-key guessing is throttled.
+const apiKeyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  skipSuccessfulRequests: true,
+  skip: (req) => !req.headers["x-api-key"],
+  message: { error: "Too many attempts, please try again later." },
+});
 
 // Shell-only static assets are scoped under /shell-static so they can't
 // collide with either sub-app's /public namespace once those are mounted.
@@ -92,8 +117,16 @@ app.get("/login", (req, res) => {
   if (auth.isValidSession(req.cookies[auth.COOKIE_NAME])) return res.redirect("/");
   res.render("login", { error: null });
 });
-app.post("/login", auth.handleLogin);
+app.post("/login", authLimiter, auth.handleLogin);
 app.post("/logout", auth.handleLogout);
+
+// Throttle the biometric authenticate endpoints. Both paths are listed
+// explicitly because app.use prefix-matching breaks at "/" boundaries, so
+// "/authenticate" would NOT cover "/authenticate-options". The GET /available
+// probe the login page polls is intentionally left untouched. Registered
+// before webauthn.attach so it runs ahead of those handlers.
+app.use("/api/shell/webauthn/authenticate", authLimiter);
+app.use("/api/shell/webauthn/authenticate-options", authLimiter);
 
 // Biometric login — mounted BEFORE requireAuth so users can authenticate via
 // FaceID / passkey without first entering the PIN. The endpoints query
@@ -117,6 +150,7 @@ perfin.app.set("shellAuthInvalidator", () => auth.invalidateIdleCache());
 // Everything past this point requires a valid signed session cookie. Sub-apps
 // trust this gate and don't run their own login flows; their /login routes
 // are shadowed by ours since the shell owns / and /login.
+app.use(apiKeyLimiter);
 app.use(auth.requireAuth);
 
 // --- Landing tile picker ----------------------------------------------------

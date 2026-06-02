@@ -173,9 +173,23 @@ async function handleLogin(req, res) {
   setSessionCookie(res, idleMs);
 
   // Allow ?return_to=/perfin/today on the form so a redirected request
-  // bounces back to where the user wanted to go after login.
-  const target = req.body.return_to;
-  res.redirect(typeof target === "string" && target.startsWith("/") ? target : "/");
+  // bounces back to where the user wanted to go after login. safeReturnTo
+  // rejects scheme-relative ("//evil.com") and backslash targets so the
+  // auth endpoint can't be turned into an open redirect (F17).
+  res.redirect(safeReturnTo(req.body.return_to));
+}
+
+// Sanitize a post-login redirect target. Only same-origin absolute paths are
+// allowed: a value must start with a single "/" and NOT be a scheme-relative
+// "//host" or contain a backslash (which some browsers normalize to "/"),
+// otherwise "//evil.com" would pass a naive startsWith("/") check and produce
+// an open redirect off the auth endpoint. Anything else falls back to "/".
+function safeReturnTo(target) {
+  if (typeof target !== "string") return "/";
+  if (!target.startsWith("/")) return "/";
+  if (target.startsWith("//")) return "/";
+  if (target.includes("\\")) return "/";
+  return target;
 }
 
 function handleLogout(_req, res) {
@@ -195,4 +209,5 @@ module.exports = {
   requireAuth,
   handleLogin,
   handleLogout,
+  safeReturnTo,
 };

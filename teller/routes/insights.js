@@ -672,6 +672,10 @@ async function generateInsights() {
     const utilTotal = utils.reduce((s, r) => s + parseFloat(r.amount) * 30 / r.cadence_days, 0);
 
     const activeModules = [];
+    // Dynamic-data modules whose query throws are recorded here so the response
+    // can report them as failed instead of silently advertising them as
+    // analyzed when Claude received no data for them (F10).
+    const failedModules = new Set();
 
     // ---- Build STATIC system prompt (cacheable across requests) ----
     let systemText = "You are a personal finance advisor providing ongoing monthly analysis.\n" +
@@ -837,13 +841,19 @@ async function generateInsights() {
              WHERE t2.amount > 0 AND t2.pending = false
                AND t2.date >= CURRENT_DATE - INTERVAL '12 months'
                AND t2.date <  CURRENT_DATE - INTERVAL '7 days'
+               AND ${NOT_TRANSFER.replace(/\bt\./g, "t2.")}
              GROUP BY LOWER(COALESCE(t2.user_merchant_name, t2.merchant_name, t2.name))
              HAVING COUNT(*) >= 3
            ) avg_tbl ON LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name)) = avg_tbl.merchant
            WHERE t.amount > 0 AND t.pending = false
              AND COALESCE(t.is_reimbursed, false) = false
              AND t.date >= CURRENT_DATE - INTERVAL '2 months'
+             AND ${NOT_TRANSFER}
              AND ((CASE WHEN la.is_shared AND t.personal_for = 'self' THEN t.amount WHEN la.is_shared AND t.personal_for = 'partner' THEN 0 ELSE t.amount * COALESCE(la.spending_split_pct, 100) / 100.0 END)) > avg_tbl.avg_amount * 2
+             AND (
+               avg_tbl.std_amount IS NULL OR avg_tbl.std_amount = 0
+               OR ((CASE WHEN la.is_shared AND t.personal_for = 'self' THEN t.amount WHEN la.is_shared AND t.personal_for = 'partner' THEN 0 ELSE t.amount * COALESCE(la.spending_split_pct, 100) / 100.0 END)) > avg_tbl.avg_amount + 2 * avg_tbl.std_amount
+             )
            ORDER BY t.date DESC
            LIMIT 10`
         );
@@ -858,7 +868,7 @@ async function generateInsights() {
         } else {
           userMsg += "\n\n=== ANOMALY DETECTION DATA ===\nNo unusual transactions detected in the last 2 months.";
         }
-      } catch (err) { console.error("Anomaly detection query error:", err.message); }
+      } catch (err) { console.error("Anomaly detection query error:", err.message); failedModules.add("anomaly_detection"); }
     }
 
     // --- Module: Seasonal forecasting (dynamic data) ---
@@ -886,7 +896,7 @@ async function generateInsights() {
           userMsg += "\n\n=== SEASONAL SPENDING HISTORY (24 months) ===\n" +
             seasonalData.rows.map(r => r.month_name + " " + r.year + ": $" + parseFloat(r.total).toFixed(2)).join("\n");
         }
-      } catch (err) { console.error("Seasonal forecast query error:", err.message); }
+      } catch (err) { console.error("Seasonal forecast query error:", err.message); failedModules.add("seasonal_forecast"); }
     }
 
     // --- Module: Debt payoff optimizer (dynamic data) ---
@@ -927,7 +937,7 @@ async function generateInsights() {
             "\nTotal credit limit: $" + totalLimit.toFixed(2) +
             "\nOverall utilization: " + overallUtil + "%";
         }
-      } catch (err) { console.error("Debt optimizer query error:", err.message); }
+      } catch (err) { console.error("Debt optimizer query error:", err.message); failedModules.add("debt_optimizer"); }
     }
 
     // --- Module: Income & savings rate (dynamic data) ---
@@ -945,7 +955,7 @@ async function generateInsights() {
               return r.month + ": Income $" + r.income.toFixed(2) + ", Spending $" + r.spending.toFixed(2) + ", Savings rate " + rate + "%";
             }).join("\n");
         }
-      } catch (err) { console.error("Income/savings query error:", err.message); }
+      } catch (err) { console.error("Income/savings query error:", err.message); failedModules.add("income_savings"); }
     }
 
     // --- Module: Tax deduction flags (dynamic data) ---
@@ -996,7 +1006,7 @@ async function generateInsights() {
             ).catch(err => console.error("tax_deductions upsert error for", row.merchant, ":", err.message));
           }
         }
-      } catch (err) { console.error("Tax deductions query error:", err.message); }
+      } catch (err) { console.error("Tax deductions query error:", err.message); failedModules.add("tax_deductions"); }
     }
 
     // --- Module: Goal tracking (dynamic data) ---
@@ -1016,7 +1026,7 @@ async function generateInsights() {
               return line;
             }).join("\n");
         }
-      } catch (err) { console.error("Goal tracking query error:", err.message); }
+      } catch (err) { console.error("Goal tracking query error:", err.message); failedModules.add("goal_tracking"); }
     }
 
     // --- Module: Recurring transfer analysis (dynamic data) ---
@@ -1039,7 +1049,7 @@ async function generateInsights() {
           "\n\nIncoming (" + incoming.length + " transfers, $" + inTotal.toFixed(2) + "/mo):\n" +
           (incoming.length > 0 ? incoming.map(r => sanitizeForPrompt(r.display_name) + ": $" + Math.abs(parseFloat(r.amount)).toFixed(2) + " every " + r.cadence_days + " days (" + r.transfer_type + ")").join("\n") : "(none)");
       }
-    } catch (err) { console.error("Recurring transfers query error:", err.message); }
+    } catch (err) { console.error("Recurring transfers query error:", err.message); failedModules.add("recurring_transfers"); }
 
     // --- Enrichment: Credit score trajectory (if logged) ---
     // Feed the last 6 entries + trend into the prompt so Claude can
@@ -1226,6 +1236,12 @@ async function generateInsights() {
       console.error("AI audit error:", auditErr.message);
     }
 
+    // Drop modules whose data query threw from modules_used (and surface them
+    // in modules_failed) so a swallowed query error no longer reports a module
+    // as analyzed when Claude received no data for it (F10).
+    const modulesFailed = [...failedModules];
+    const modulesUsed = activeModules.filter(m => !failedModules.has(m));
+
     // Send insight via webhook to Per-sistant for email delivery
     try {
       const { sendPerSistantWebhook } = require("./persistent");
@@ -1235,8 +1251,8 @@ async function generateInsights() {
       await sendPerSistantWebhook("insights_generated", {
         subject: "Perfin AI Financial Analysis — " + new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }),
         plain_text: insightText + auditNote,
-        html_body: renderInsightEmail(insightText, activeModules, auditResult),
-        modules_used: activeModules,
+        html_body: renderInsightEmail(insightText, modulesUsed, auditResult),
+        modules_used: modulesUsed,
         cost_usd: parseFloat(estimateCostGranular(usage, actualModel).toFixed(6)),
       });
     } catch (whErr) {
@@ -1248,7 +1264,8 @@ async function generateInsights() {
       ok: true,
       insight: insightText,
       tokens_used: tokensUsed,
-      modules_used: activeModules,
+      modules_used: modulesUsed,
+      modules_failed: modulesFailed,
       cache_read_tokens: usage.cache_read_input_tokens || 0,
       estimated_cost_usd: parseFloat(costUsd.toFixed(6)),
       stop_reason: message.stop_reason,
@@ -1356,6 +1373,27 @@ router.post("/api/insights/rebuild", async (_req, res) => {
       "UPDATE user_settings SET insights_running_summary = $1, insights_running_summary_json = $2 WHERE id = 1",
       [newSummaryText, newSummaryJson]
     );
+    // Record the rebuild's token spend so it counts against the shared monthly
+    // AI budget (INSIGHTS_MONTHLY_BUDGET_CENTS). Previously rebuild called Claude
+    // but wrote no usage row — the cap was checked-not-charged, so repeated
+    // rebuilds were effectively uncapped (F8). entry_type='rebuild' keeps the
+    // row out of the user-facing 'insight' feed (which filters entry_type)
+    // while the cost-cap queries (which don't filter) still see it.
+    await pool.query(
+      `INSERT INTO financial_insights
+         (insight_text, model_used, tokens_used, input_tokens, output_tokens,
+          cache_read_tokens, cache_creation_tokens, entry_type)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'rebuild')`,
+      [
+        `[Context Rebuild] summary rebuilt from ${allInsights.rows.length} analyses`,
+        message.model || modelId,
+        tokensUsed,
+        usage.input_tokens || 0,
+        usage.output_tokens || 0,
+        usage.cache_read_input_tokens || 0,
+        usage.cache_creation_input_tokens || 0,
+      ]
+    ).catch(err => console.error("rebuild usage tracking insert failed:", err.message));
     res.json({
       ok: true,
       message: "Long-term context rebuilt from " + allInsights.rows.length + " historical analyses.",

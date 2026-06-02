@@ -135,39 +135,41 @@ router.post("/api/budgets/suggest", async (_req, res) => {
     return res.status(501).json({ error: "Set ANTHROPIC_API_KEY to enable AI budget suggestions." });
   }
   try {
-    const [spendingData, settingsRow, existingBudgets] = await Promise.all([
-      pool.query(
-        `SELECT COALESCE(user_category, category[1], 'Uncategorized') AS category,
-                TO_CHAR(date, 'YYYY-MM') AS month,
-                SUM(amount) AS total,
-                COUNT(*) AS txn_count
-         FROM transactions
-         WHERE amount > 0 AND pending = false
-           AND COALESCE(is_reimbursed, false) = false
-           AND date >= CURRENT_DATE - INTERVAL '3 months'
-         GROUP BY COALESCE(user_category, category[1], 'Uncategorized'), TO_CHAR(date, 'YYYY-MM')
-         ORDER BY category, month`
-      ),
+    // Pull the trailing 3 months of per-category spend through the SAME helper
+    // GET /api/budgets uses, so suggestions are measured against the split-
+    // adjusted, reimbursed-excluded, transfer-filtered, spending_split_pct-aware
+    // numbers the user later sees as "spent" — not a raw SUM(amount) that
+    // includes transfers/credit-card payments and over-counts shared cards (F11).
+    const monthKeys = [0, 1, 2].map(i => {
+      const d = new Date();
+      d.setMonth(d.getMonth() - i);
+      return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+    });
+    const [perMonthSpending, settingsRow, existingBudgets] = await Promise.all([
+      Promise.all(monthKeys.map(m => getCategorySpendingForMonth(pool, m))),
       pool.query("SELECT insights_model FROM user_settings WHERE id = 1").catch(() => ({ rows: [{ insights_model: "haiku" }] })),
       pool.query("SELECT category, monthly_limit FROM budgets"),
     ]);
 
-    if (spendingData.rows.length === 0) {
-      return res.status(400).json({ error: "Not enough transaction data. Sync some transactions first." });
+    // Group by category → array of monthly totals (only months the category appears in)
+    const categories = {};
+    for (const monthRows of perMonthSpending) {
+      for (const r of monthRows) {
+        if (!categories[r.category]) categories[r.category] = [];
+        categories[r.category].push(parseFloat(r.spent));
+      }
     }
 
-    // Group by category
-    const categories = {};
-    for (const r of spendingData.rows) {
-      if (!categories[r.category]) categories[r.category] = [];
-      categories[r.category].push({ month: r.month, total: parseFloat(r.total), txns: r.txn_count });
+    if (Object.keys(categories).length === 0) {
+      return res.status(400).json({ error: "Not enough transaction data. Sync some transactions first." });
     }
 
     const existingMap = {};
     for (const b of existingBudgets.rows) existingMap[b.category] = parseFloat(b.monthly_limit);
 
-    const catSummary = Object.entries(categories).map(([cat, months]) => {
-      const avg = months.reduce((s, m) => s + m.total, 0) / months.length;
+    const catSummary = Object.entries(categories).map(([cat, totals]) => {
+      const avg = totals.reduce((s, t) => s + t, 0) / totals.length;
+      const months = totals; // alias kept for the message below
       const existing = existingMap[cat];
       return cat + ": avg $" + avg.toFixed(2) + "/mo over " + months.length + " months" +
         (existing ? " (current budget: $" + existing.toFixed(2) + ")" : "");

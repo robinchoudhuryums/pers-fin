@@ -232,6 +232,71 @@ router.get("/api/data-freshness", async (_req, res) => {
   }
 });
 
+// GET /api/data-health — operator-facing health surface. Aggregates per-source
+// freshness, provider connection status, recent sync-related notifications, and
+// a derived issues[] list so silent degradation (disconnected links, stale
+// balances, never-synced) becomes visible in one place instead of being buried
+// in logs. Note: we intentionally do NOT live-decrypt tokens to detect a
+// passphrase mismatch — pgp_sym_decrypt throws (not NULL) on a wrong key, which
+// would error the whole query; that condition surfaces via sync errors instead.
+router.get("/api/data-health", async (_req, res) => {
+  const FRESH_SEC = 6 * 60 * 60;
+  const STALE_SEC = 24 * 60 * 60;
+  const now = Date.now();
+  function ageInfo(ts) {
+    if (!ts) return { timestamp: null, age_seconds: null, level: "stale" };
+    const age = Math.floor((now - new Date(ts).getTime()) / 1000);
+    const level = age < FRESH_SEC ? "fresh" : age < STALE_SEC ? "aging" : "stale";
+    return { timestamp: ts, age_seconds: age, level };
+  }
+  try {
+    const [settingsRow, teller, plaid, events] = await Promise.all([
+      pool.query("SELECT last_txn_sync_at, last_balance_sync_at, last_auto_sync_at, insights_last_run, last_reconcile_at FROM user_settings WHERE id = 1"),
+      pool.query("SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE status = 'DISCONNECTED')::int AS disconnected FROM teller_enrollments").catch(() => ({ rows: [{ total: 0, disconnected: 0 }] })),
+      pool.query("SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE status <> 'GOOD')::int AS not_good FROM plaid_items").catch(() => ({ rows: [{ total: 0, not_good: 0 }] })),
+      pool.query("SELECT type, title, body, created_at FROM notification_log WHERE type IN ('auto-sync','csv-reminder') OR title ILIKE '%sync%' ORDER BY created_at DESC LIMIT 8").catch(() => ({ rows: [] })),
+    ]);
+    const s = settingsRow.rows[0] || {};
+    const t = teller.rows[0] || { total: 0, disconnected: 0 };
+    const p = plaid.rows[0] || { total: 0, not_good: 0 };
+
+    const freshness = {
+      transactions: ageInfo(s.last_txn_sync_at),
+      balances: ageInfo(s.last_balance_sync_at),
+      auto_sync: ageInfo(s.last_auto_sync_at),
+      insights: ageInfo(s.insights_last_run),
+    };
+
+    const issues = [];
+    if (t.disconnected > 0) issues.push({ severity: "warning", message: `${t.disconnected} Teller enrollment(s) disconnected — re-link in Accounts.` });
+    if (p.not_good > 0) issues.push({ severity: "warning", message: `${p.not_good} Plaid item(s) need re-authentication.` });
+    if (!s.last_txn_sync_at && !s.last_auto_sync_at) {
+      issues.push({ severity: "info", message: "No transaction sync has run yet." });
+    } else if (freshness.transactions.level === "stale") {
+      issues.push({ severity: "warning", message: "Transactions haven't synced in over 24h." });
+    }
+    if (s.last_balance_sync_at && freshness.balances.level === "stale") {
+      issues.push({ severity: "warning", message: "Balances haven't refreshed in over 24h." });
+    }
+
+    res.json({
+      thresholds: { fresh_seconds: FRESH_SEC, stale_seconds: STALE_SEC },
+      ok: issues.filter(i => i.severity !== "info").length === 0,
+      freshness,
+      providers: {
+        teller: { total: t.total, disconnected: t.disconnected },
+        plaid: { total: p.total, not_good: p.not_good },
+      },
+      last_reconcile_at: s.last_reconcile_at || null,
+      issues,
+      recent_events: events.rows,
+    });
+  } catch (err) {
+    console.error("data-health error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
 // POST /api/sheets/sync
 router.post("/api/sheets/sync", async (_req, res) => {
   if (!sheetsSync) {

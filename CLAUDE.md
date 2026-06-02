@@ -35,6 +35,8 @@ teller/
                            benchmarks, cancel URLs, category rules, AI model costs,
                            insight module definitions
     csv-formats.js       — CSV format detection (Chase, CapOne, Discover, WF, Schwab, generic)
+                           + parseMoney() money normalization (strips $ / thousands
+                           separators, handles parenthesized negatives, NaN on blank)
   services/
     database.js          — Postgres pool + transactional auto-migrations with schema versioning
     teller-api.js        — mTLS HTTP client for Teller API (retry with exponential backoff)
@@ -247,7 +249,9 @@ shell/
 - `scripts/detect-subscriptions.js` — Recurring subscription detection (30/60/90/365-day cadences)
 - `scripts/detect-transfers.js` — Recurring transfer detection (7/14/30/60/90/365-day cadences,
   6 transfer types: peer_transfer, bill_payment, savings, investment, internal, other)
-- `scripts/sheets-sync.js` — Google Sheets sync (16+ tabs).
+- `scripts/sheets-sync.js` — Google Sheets sync (16+ tabs). `syncAll` runs each
+  tab in isolation (per-step try/catch) and returns an `errors[]` array, so one
+  failing tab no longer aborts the rest mid-run and leaves a half-updated sheet.
   Core 7: Transactions (with splits inline + Source/Reimbursed columns),
   Subscriptions (with Days Until countdown), Utilities, AI Insights
   (with structured running summary + user feedback), Recurring Transfers,
@@ -261,8 +265,12 @@ shell/
   route/services layer, so `INCOME_PREDICATE` is duplicated from
   `services/financial-queries.js` (single-source-of-truth comment
   flags the drift risk).
-- `scripts/import-csv-cli.js` — Standalone CLI for importing bank CSVs (mirror of the
-  `/api/import-csv` route — note format detection drift between the two; see audit H8)
+- `scripts/import-csv-cli.js` — Standalone CLI for importing bank CSVs. Shares
+  the route's logic via `teller/data/csv-formats.js`: content-only
+  `detectCsvFormat` (no filename heuristic) and the same `csvTransactionId`
+  dedup-ID helper, so re-imports dedup correctly and IDs match the
+  `/api/import-csv` route. (Earlier the CLI used a divergent, row-index-based
+  ID and filename-based format detection — audit H8/F29/F31, now resolved.)
 - `scripts/retention-cleanup.sql` — Reference SQL for the manual cleanup queries
   exposed by `POST /api/cleanup`
 - `apps-script/Code.gs` — Google Sheets Apps Script (standalone + server sync)
@@ -274,9 +282,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (529 tests as of latest); use
+  Perfin and Per-sistant test files (544 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 529 tests across 14 test files.
+  Current count: 544 tests across 15 test files.
 - `.github/workflows/ci.yml` — CI pipeline (single `npm ci` at root via npm workspaces, then `npm test`)
 - `.claude/commands/` — Project slash-command prompts: `/broad-scan`, `/broad-implement`,
   `/test-sync`, `/sync-docs`
@@ -516,8 +524,10 @@ shell/
   - Spending benchmarks (vs BLS Consumer Expenditure Survey)
   - Savings & wealth-building suggestions
   - Subscription audit (overlaps, alternatives)
-  - Anomaly detection (transactions 2x+ above merchant average for AI analysis;
-    3x+ threshold for real-time push alerts during sync. Baseline excludes the
+  - Anomaly detection (for AI analysis a candidate must be both 2x+ above the
+    merchant average AND above mean + 2·stddev — the stddev gate suppresses
+    false positives on naturally high-variance merchants; 3x+ threshold for
+    real-time push alerts during sync. Baseline excludes the
     trailing 7 days so the candidate doesn't inflate its own baseline.
     Merchant grouping uses `LOWER(COALESCE(user_merchant_name, merchant_name, name))`
     so user-merged merchant variants share a single baseline. Both the AI
@@ -545,11 +555,14 @@ shell/
 - **AI context enrichment**: Insights prompt includes month-over-month trend deltas,
   current budget status (spent vs limits), and recurring transfer data.
   Module tracking: all enabled modules are registered in `activeModules` when their
-  system prompt instructions are added (not conditionally when data queries succeed).
-  This ensures `max_tokens` is correctly allocated and `modules_used` in the response
-  reflects all enabled modules even if a module's data query fails silently.
+  system prompt instructions are added (not conditionally when data queries succeed),
+  so `max_tokens` is correctly allocated for every enabled module. However, if a
+  dynamic module's data query throws, that module is recorded in a `failedModules`
+  set and dropped from the response's `modules_used`, surfacing instead in a new
+  `modules_failed` array — so a swallowed query error no longer reports a module as
+  analyzed when Claude actually received no data for it.
 - **Auto-trigger**: Insights auto-generate based on `insights_cadence_days` setting (checked every 6 hours)
-- **Cost tracking**: Granular token-level pricing — `input_tokens` from Anthropic's API (already excludes cache tokens) is multiplied by the input rate; `cache_read_input_tokens` and `cache_creation_input_tokens` are billed separately at their own rates. This restores accurate `INSIGHTS_MONTHLY_BUDGET_CENTS` enforcement when prompt caching is active. The monthly budget is shared between `/api/insights` and `/api/categorize` — both check the same cap before calling Claude AND `/api/categorize` writes a `financial_insights` row with `entry_type='categorize'` after each AI call so its spend counts toward the cap (not just the read side). Display queries that surface "AI Insights" filter `entry_type='insight'` to keep categorize tracking rows out of the user-facing feed.
+- **Cost tracking**: Granular token-level pricing — `input_tokens` from Anthropic's API (already excludes cache tokens) is multiplied by the input rate; `cache_read_input_tokens` and `cache_creation_input_tokens` are billed separately at their own rates. This restores accurate `INSIGHTS_MONTHLY_BUDGET_CENTS` enforcement when prompt caching is active. The monthly budget is shared between `/api/insights`, `/api/categorize`, and `/api/insights/rebuild` — all check the same cap before calling Claude AND each writes a `financial_insights` usage row after its AI call (`entry_type='categorize'` / `'rebuild'`) so its spend counts toward the cap (not just the read side). Display queries that surface "AI Insights" filter `entry_type='insight'` to keep categorize/rebuild tracking rows out of the user-facing feed.
 - **Insight inputs are split-adjusted**: AI insights see the same `spending_split_pct`-adjusted monthly spend totals and the same keyword-filtered income that the dashboard and `/api/savings-rate` show, via `services/financial-queries.js`.
 - **Structured running summary**: AI long-term memory is structured JSON, not plain text. `POST /api/insights` uses Anthropic tool_use (`generate_financial_insight` tool, forced via `tool_choice`) to return BOTH the user-facing `insights_text` AND a typed `summary` object with four arrays: `trends`, `completed_goals`, `pending_actions`, `alerts`. The summary is saved to `user_settings.insights_running_summary_json` (JSONB); the legacy `insights_running_summary` TEXT column gets a human-readable rendering for backward-compat callers. `sanitizeStructuredSummary` enforces shape/length bounds (max items per array, string lengths, enum values) so a pathological tool response can't pollute long-term memory. The response includes `summary_status` — `"updated"` (normal), `"preserved_due_to_truncation"` (tool block missing because hit max_tokens), `"preserved_no_tool_block"` (model didn't comply with tool_choice — rare), or `"preserved_validation_failed"` (sanitizer rejected the shape) — so callers can surface when long-term memory didn't advance. `GET /api/insights/status` returns the full `running_summary` object plus a `running_summary_counts` block (`{trends, completed_goals, pending_actions, alerts}`) so dashboards can show "tracking 3 trends · 2 goals · 5 actions · 1 alert" without a second fetch.
 - **AI insight auditing**: Post-generation validation via `services/ai-audit.js`. Four tiers:
@@ -595,7 +608,11 @@ shell/
   No AI call. Opt-in: Settings → AI Insights → "Daily Activity Digest"
   toggle (default off). Hourly scheduler; `runDailyDigest` dedupes via
   a 20-hour gate from `last_daily_digest_at` and skips silently when
-  `gatherWhatsNew` returns zero counts. Same Per-sistant prereq as
+  `gatherWhatsNew` returns zero counts.
+- `user_settings.last_reconcile_at TIMESTAMPTZ`: watermark for the weekly
+  self-healing reconcile and the manual `POST /api/sync/reconcile`. The
+  scheduler runs the trailing-window Teller backfill at most once per 7-day
+  window from this timestamp. Same Per-sistant prereq as
   weekly digest — without webhook config, it's a no-op.
 - **Context export**: Structured financial data (markdown/JSON) for pasting into Claude chat deep-dives
 - **Real-time anomaly alerts**: Push notifications for charges 3x+ above merchant average during sync
@@ -609,6 +626,10 @@ shell/
   timeout (default 60 min, tunable from Settings → Security → "App Idle
   Timeout"). Cookie refreshed on every authenticated request so an active
   user never times out mid-use; idle past the window → re-prompted.
+  Brute-force protection: a 750ms wrong-PIN delay plus IP rate limiters —
+  `authLimiter` (10 failed/15min) on `/login` + biometric authenticate, and
+  `apiKeyLimiter` (20 failed/15min) on the `x-api-key` path (counts only
+  failed key attempts, so browser/cron traffic is unaffected).
 - **Login animation (standalone Perfin)**: Iron Man helmet materialize on
   successful login (gold-amber stroke-draw → fill → particle burst → HUD
   scan → redirect). Lives inline in `teller/views/login.ejs`.
@@ -724,7 +745,7 @@ shell/
     subscription next-charge dates, manual-bill due dates (computed
     from `due_day` + `cadence` with month-end safety via
     `LEAST(due_day, 28)`), recurring-transfer projections
-    (`last_seen + cadence_days`), and goal `target_date`. Days Away is
+    (`last_transferred + cadence_days`), and goal `target_date`. Days Away is
     a Sheets formula. Today=red, ≤7 days=amber.
   - **Watchlist** (new): user-curated merchant / category / keyword
     monitor backed by the `watchlist_items` DB table. Tab shows each
@@ -815,7 +836,12 @@ on the operator's machine (or fed via env vars) before the app boots:
    for Teller items, Plaid Link re-run for Plaid items). After a rotation
    mismatch, `POST /api/plaid/sync-holdings` will surface
    `errors: [{ institution, error: "decryption_failed" }]` per affected
-   item rather than silently returning zero accounts.
+   item rather than silently returning zero accounts. The Teller sync paths
+   (`syncAllEnrollments` / `syncAllBalances`) do the same: a NULL decrypted
+   token is reported as `decryption_failed` and the enrollment is skipped
+   rather than 401-ing against Teller and being silently marked DISCONNECTED
+   (which would wrongly demand a Teller Connect re-run on a mere passphrase
+   mismatch).
 
 Both the **weekly digest** (Settings → AI Insights → "Weekly Digest
 Email") and the **daily activity digest** ("Daily Activity Digest"
@@ -884,7 +910,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 529 tests passing across 14 test files (Perfin + Per-sistant)
+- 544 tests passing across 15 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash
@@ -905,6 +931,14 @@ POST /api/sync-balances    # fetch latest account balances. Refreshes BOTH
                            # Response: { accounts_updated, errors?,
                            # plaid_accounts_updated, plaid_errors? }
 POST /api/detect           # run subscription detection
+POST /api/sync/reconcile   # backfill/reconcile to recover dropped transactions
+                           # (body: days=1-365 default 90, provider=teller|plaid|all).
+                           # Teller re-fetches the trailing window watermark-
+                           # independently (idempotent upserts, no watermark
+                           # advance, anomaly push suppressed); Plaid resets each
+                           # item's cursor and re-walks transactionsSync. Stamps
+                           # last_reconcile_at. Returns { days, provider, teller?,
+                           # plaid? } per-provider summaries.
 POST /api/detect-transfers # run recurring transfer detection
 GET  /api/recurring-transfers # list recurring transfers (query: filter=active|dismissed|all)
 PATCH /api/recurring-transfers/:id/dismiss   # dismiss a recurring transfer
@@ -989,6 +1023,13 @@ PATCH /api/settings        # update user settings. Accepts: theme,
                            # shell_idle_timeout_minutes, target_allocation_pct,
                            # weekly/daily digest toggles, etc.
 GET  /api/data-freshness   # per-source sync timestamps with staleness flags
+GET  /api/data-health      # operator health surface — per-source freshness,
+                           # Teller/Plaid connection status, derived issues[]
+                           # (disconnected links, stale balances, never-synced),
+                           # recent sync notifications, last_reconcile_at, and a
+                           # top-level `ok` flag. (Does NOT live-decrypt tokens —
+                           # pgp_sym_decrypt throws on a wrong key; that surfaces
+                           # via sync errors instead.)
 GET  /api/budgets          # list budgets with current spending (query: month=YYYY-MM)
 POST /api/budgets          # create budget (body: rollover_enabled, budget_type, effective_month)
 PATCH /api/budgets/:id     # update budget
@@ -998,7 +1039,9 @@ POST /api/budgets/accept   # accept AI-suggested budget
 GET  /api/budgets/alerts   # spending velocity warnings (critical/warning/info)
 POST /api/budgets/snapshot # create monthly snapshot + compute rollovers (body: month=YYYY-MM, 01-12)
 GET  /api/budgets/history  # budget snapshots for trend analysis (query: months)
-POST /api/insights         # generate new AI insights
+POST /api/insights         # generate new AI insights. Response includes
+                           # modules_used and modules_failed (dynamic modules
+                           # whose data query threw — dropped from modules_used)
 GET  /api/insights/status  # AI API config + usage stats + audit_accuracy (90d clean-run %)
                            # + running_summary (structured JSON) + running_summary_counts
 GET  /api/insights/usage   # AI usage history
@@ -1125,7 +1168,7 @@ value applies on the very next request, not after the 60s cache lag.
 ## Environment Variables
 
 ### Shell (unified PIN gate)
-- `SHELL_PIN` — unified PIN that fronts both apps. Constant-time compare with a 750ms throttle on incorrect attempts.
+- `SHELL_PIN` — unified PIN that fronts both apps. Constant-time compare with a 750ms throttle on incorrect attempts, backed by an IP rate limiter (10 failed attempts / 15 min) on `/login` and the biometric authenticate endpoints.
 - `SHELL_SECRET` — random ~32+ char string (`openssl rand -hex 32`). Signs the shell session cookie. Rotating it invalidates every active session.
 - `SHELL_PORT` — optional listener port override (defaults to `PORT` or `3000`)
 
@@ -1213,12 +1256,15 @@ standalone-mode fallback if either app is run on its own Render service.
   paid back, which excludes them from every spending aggregation.
   Index `idx_transactions_reimbursed` is partial (only indexes rows where
   is_reimbursed = true) to keep the common false case cheap.
-  Phase B4: `user_category TEXT` holds manual category overrides. `PATCH
-  /api/transactions/:id/category` and bulk-category write here (NOT
-  `category`), so a Teller re-sync — which UPSERTs `category = EXCLUDED.category`
-  — can't overwrite user choices. Display layers use
-  `COALESCE(user_category, category[1])` everywhere, including the rules-apply
-  candidate filter so user-overridden rows aren't re-categorized.
+  Phase B4: `user_category TEXT` holds category overrides. `PATCH
+  /api/transactions/:id/category`, bulk-category, AND every `/api/categorize`
+  write path — user rules, the Teller-map fast path, the AI fallback, and
+  `POST /api/categorization-rules/apply` — write here (NOT `category`), so a
+  Teller/Plaid re-sync — which UPSERTs `category = EXCLUDED.category` — can't
+  overwrite them. (Writing to scalar `user_category` means the rule/AI values
+  are stored as plain strings, not the `category[]` array literal.) Display
+  layers use `COALESCE(user_category, category[1])` everywhere, including the
+  categorize candidate filter so already-categorized rows aren't re-sent to AI.
 - `transaction_splits` (Phase B3): subdivides a single Teller transaction into
   multiple `(amount, category, merchant_name, notes)` rows that REPLACE the
   parent in per-category aggregations. `parent_transaction_id` references
@@ -1332,13 +1378,15 @@ standalone-mode fallback if either app is run on its own Render service.
   `check_type` (tier1-4), `claim_text`, `expected_value`, `actual_value`.
   Indexed on (insight_id, severity).
 - `financial_insights.entry_type TEXT NOT NULL DEFAULT 'insight'`: discriminator
-  that lets `/api/categorize` write its AI usage rows to the same table without
+  that lets `/api/categorize` (`'categorize'`) and `/api/insights/rebuild`
+  (`'rebuild'`) write their AI usage rows to the same table without
   shadowing the user-facing "AI Insights" feed. Display queries (`GET
   /api/insights`, the previous-insight reference inside `POST /api/insights`,
-  `/api/insights/rebuild`) filter `entry_type = 'insight'`. The shared monthly-
-  budget cost queries do NOT filter — both `'insight'` and `'categorize'` rows
-  count toward `INSIGHTS_MONTHLY_BUDGET_CENTS`. Without this, categorize was
-  read-only against the cap (checked it but never charged itself).
+  the `/api/insights/rebuild` source timeline) filter `entry_type = 'insight'`.
+  The shared monthly-budget cost queries do NOT filter — `'insight'`,
+  `'categorize'`, AND `'rebuild'` rows all count toward
+  `INSIGHTS_MONTHLY_BUDGET_CENTS`. Without this, categorize and rebuild were
+  read-only against the cap (checked it but never charged themselves).
 - `financial_insights.user_feedback TEXT`, `user_feedback_text TEXT`,
   `user_feedback_at TIMESTAMPTZ`: per-row trust-loop signal set by the
   dashboard's thumbs-up/down/mixed buttons. `user_feedback` is enum-guarded
@@ -1425,7 +1473,17 @@ can dismiss them from the UI or run `POST /api/cleanup`.
   configurations, the per-app session never gets written, so the in-memory
   default suffices and the `session` table is no longer maintained for nothing.
 - **Rate limiting**: General (100/15min), tight (5/1min) for sync/detect, login (10/15min),
-  SSO validate (10/15min)
+  SSO validate (10/15min). Shell layer (the sole auth gate): `authLimiter`
+  (10 failed/15min, `skipSuccessfulRequests`) on `POST /login` and the
+  biometric `authenticate`/`authenticate-options` endpoints, plus `apiKeyLimiter`
+  (20/15min) that counts only FAILED `x-api-key` attempts (skips header-less
+  browser traffic and successful cron requests). Replaces the prior
+  defenseless single 750ms delay.
+- **Shell login redirect guard**: `auth.safeReturnTo()` only allows same-origin
+  absolute paths for the post-login `return_to` — it rejects scheme-relative
+  `//host` targets and backslash paths, so the login endpoint can't be turned
+  into an open redirect (a naive `startsWith("/")` would have let `//evil.com`
+  through).
 - **SSO replay protection**: Each SSO token embeds a 24-byte random nonce; validate tracks
   used nonces in an in-memory Map (2-minute TTL cleanup) and rejects duplicates. Nonce is
   consumed after signature verification so timing attacks can't burn legitimate nonces.
@@ -1494,6 +1552,14 @@ embedded mode).
 - **CSV import reminders**: every 24 hours, checks manual (CSV-only) accounts
   whose most recent CSV import is older than `csv_reminder_days` setting.
   Sends notification listing specific account names needing a fresh upload.
+- **Self-healing reconcile**: every 1 hour, acts at most weekly (gated on
+  `last_reconcile_at`). Runs `reconcileTeller(90)` — re-fetches the trailing
+  90 days from every Teller enrollment regardless of the incremental
+  watermark, recovering any transactions a prior sync dropped (same-day late
+  arrivals, a failed-sibling-account skip) via idempotent upserts. Teller
+  only (free, cheap); Plaid reconcile is heavier (full cursor re-walk) and
+  stays a manual `POST /api/sync/reconcile` action. Not gated on user
+  activity — a weekly background heal should run even while the user is away.
 - **Weekly digest**: every 1 hour, checks `weekly_digest_enabled` and that
   today matches `weekly_digest_day` (0=Sun..6=Sat). When both match,
   invokes `runWeeklyDigest()` in `routes/insights.js`, which itself gates
@@ -1620,6 +1686,7 @@ income module, and bill-calendar income detection.
   at phrase edges, not inside the phrase. Sites that follow this pattern:
   `services/financial-queries.js` `INCOME_PREDICATE`,
   `scripts/detect-subscriptions.js` `isExcludedMerchant`,
+  `scripts/detect-transfers.js` `classifyTransfer`,
   `teller/data/reference-data.js` `categorizeSubscription` /
   `findCancelUrl`, `routes/insights.js` tax-deduction regex,
   `routes/enrollments.js` top-merchants exclusion. **When adding a new
@@ -1633,8 +1700,9 @@ income module, and bill-calendar income detection.
   Teller therefore can't fight the user — `INSERT … ON CONFLICT … DO
   UPDATE SET merchant_name = EXCLUDED.merchant_name` only updates the raw
   field and leaves the user override intact. The same pattern applies to
-  `user_category` (manual category overrides set via `PATCH
-  /api/transactions/:id/category`): every display query — including the
+  `user_category` (category overrides set via `PATCH
+  /api/transactions/:id/category`, bulk-category, AND the `/api/categorize`
+  rule/Teller-map/AI/rules-apply paths): every display query — including the
   in-app routes (`/api/transactions`, `/api/spending-summary`,
   `/api/spending-yoy`, the financial-queries helpers) AND the Google Sheets
   exporter (`scripts/sheets-sync.js`) — reads the override via
@@ -1706,7 +1774,8 @@ income module, and bill-calendar income detection.
 - **The scheduler calls helpers in-process, not via HTTP self-fetch.**
   Every route module that the scheduler invokes exports a callable helper
   alongside its Express router:
-  - `routes/enrollments.js` → `syncAllEnrollments`, `syncAllBalances`
+  - `routes/enrollments.js` → `syncAllEnrollments`, `syncAllBalances`, `reconcileTeller`
+  - `routes/investments.js` → `syncAllPlaidTransactions`, `syncAllPlaidBalances`, `reconcilePlaidTransactions`
   - `routes/subscriptions.js` → `runSubscriptionDetection`
   - `routes/categorize.js` → `runCategorize`
   - `routes/insights.js` → `generateInsights`
@@ -1842,6 +1911,46 @@ income module, and bill-calendar income detection.
   imports). The auto-sync loop still calls `syncAllPlaidTransactions`
   for transaction history; the two helpers exist in parallel for
   different cost/duplication profiles.
+- **Plaid sync advances the cursor only on a fully-successful page.**
+  `syncPlaidItemTransactions` processes each `transactionsSync` page, and if
+  ANY row in the page fails to upsert it halts WITHOUT advancing the cursor —
+  Plaid's contract is "everything ≤ cursor is durably processed," so stepping
+  past a failed row would lose it forever. The cursor is persisted
+  progressively after each clean page (so a later page's failure can't discard
+  earlier progress), and re-processing a page is safe because all writes are
+  idempotent (`ON CONFLICT` upserts / idempotent deletes). `modified`
+  transactions are UPSERTED (not bare-UPDATEd) so a pending→posted re-delivery
+  with no existing row is inserted rather than dropped. The helper returns
+  `incomplete: true` when it halted early or hit `MAX_PAGES`.
+- **Teller incremental sync never steps over a failed account.** In
+  `syncEnrollment`, the enrollment-level `last_synced_txn_date` watermark is
+  advanced ONLY when every account in the enrollment fetched cleanly — if any
+  account's fetch throws, the watermark is held back so the next sync retries
+  that range instead of permanently skipping a failed sibling account's older
+  transactions. The incremental filter uses `>=` (not `>`) against the
+  day-granular watermark so a transaction that posts on the watermark day after
+  a sync ran isn't dropped; re-including the whole watermark day is safe because
+  the `ON CONFLICT (transaction_id)` upsert dedups the re-processed rows.
+- **Reconcile/backfill is watermark-independent and idempotent.**
+  `reconcileTeller(days)` re-fetches the trailing window from every Teller
+  enrollment by passing `{ backfillDays }` to `syncAllEnrollments`, which sets a
+  `backfillFrom` floor used in place of `last_synced_txn_date` — it does NOT
+  advance the incremental watermark and suppresses the anomaly push (re-upserting
+  historical rows would otherwise look like a flood of new activity). All writes
+  are `ON CONFLICT` upserts so it only recovers dropped rows, never duplicates.
+  `reconcilePlaidTransactions()` resets every `sync_cursors.cursor` to '' and
+  re-walks `transactionsSync` (Plaid's cursor is all-or-nothing, so reconcile is
+  a full re-pull). Driven by `POST /api/sync/reconcile` and the weekly
+  self-healing scheduler (Teller only; Plaid stays manual).
+- **Named route helpers are attached AFTER `module.exports = router`.** In
+  modules that export an Express router AND helper functions (e.g.
+  `routes/investments.js`), the helper attachments (`module.exports.syncAll… = …`)
+  must come AFTER the `module.exports = router` line — otherwise the router
+  assignment replaces the default exports object and silently drops the helpers
+  to `undefined`. (This had left `syncAllPlaidTransactions` / `syncAllPlaidBalances`
+  unexported, so the scheduler's Plaid steps were no-ops caught by try/catch.)
+  All such helpers are hoisted `async function` declarations, so attaching them
+  at the very end works.
 
 ## Git
 - Render deploys from `main` (configured in the Render dashboard, not in `render.yaml`)

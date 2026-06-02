@@ -24,7 +24,6 @@ require("dotenv").config({ path: require("path").resolve(__dirname, "../.env") }
 
 const fs = require("fs");
 const path = require("path");
-const crypto = require("crypto");
 const { Pool } = require("pg");
 const { parse } = require("csv-parse/sync");
 
@@ -41,24 +40,10 @@ const pool = new Pool({
   connectionTimeoutMillis: 10000,
 });
 
-// ---------------------------------------------------------------------------
-// Detect institution from filename prefix
-// ---------------------------------------------------------------------------
-const FILENAME_PATTERNS = {
-  chase: /^chase/i,
-  wellsfargo: /^(wellsfargo|wells_fargo|wf)/i,
-  capitalone: /^(capitalone|capital_one|capone)/i,
-  discover: /^discover/i,
-  schwab: /^(schwab|charles_schwab)/i,
-};
-
-function institutionFromFilename(filename) {
-  for (const [bank, pattern] of Object.entries(FILENAME_PATTERNS)) {
-    if (pattern.test(filename)) return bank;
-  }
-  return null;
-}
-
+// Format is detected from CSV CONTENT only (see importCsvFile), matching the
+// API route. Filename-prefix detection was removed (F31) because it could
+// force the wrong parser for a misnamed file and made the CLI and the route
+// disagree on the same file.
 const INSTITUTION_LABELS = {
   chase: "Chase",
   wellsfargo: "Wells Fargo",
@@ -90,10 +75,11 @@ async function importCsvFile(filePath) {
     return null;
   }
 
-  // Detect format: filename hint > content detection.
+  // Detect format from CSV CONTENT only — matching the API route
+  // (teller/routes/subscriptions.js detectCsvFormat). The previous filename-hint
+  // precedence could force the wrong parser for a misnamed file (F31).
   const headers = Object.keys(records[0]);
-  const filenameBank = institutionFromFilename(filename);
-  const format = filenameBank || detectCsvFormat(headers);
+  const format = detectCsvFormat(headers);
   let fmt = CSV_FORMATS[format];
 
   // Headerless formats (e.g., Wells Fargo) ship without a header row. When detected,
@@ -109,7 +95,7 @@ async function importCsvFile(filePath) {
     }
   }
 
-  const institution = INSTITUTION_LABELS[format] || INSTITUTION_LABELS[filenameBank] || "CSV Import";
+  const institution = INSTITUTION_LABELS[format] || "CSV Import";
   const accountLabel = `${institution} Account`;
 
   const institutionSlug = institution.toLowerCase().replace(/[^a-z0-9]+/g, "_");
@@ -160,21 +146,24 @@ async function importCsvFile(filePath) {
         continue;
       }
 
-      const txnHash = crypto
-        .createHash("sha256")
-        .update(`${virtualAccountId}|${date}|${parsed.amount}|${parsed.merchant_name || ""}|${i}`)
-        .digest("hex")
-        .slice(0, 24);
-      const transactionId = `csv_${txnHash}`;
+      // Use the SHARED dedup-ID helper so the CLI and the API route generate
+      // identical transaction IDs for the same row (F29). The old scheme hashed
+      // virtualAccountId (route hashes accountLabel), truncated to 24 chars, AND
+      // folded in the row index `i` — so re-importing the same file produced
+      // brand-new IDs and never deduped against itself.
+      const transactionId = csvTransactionId(accountLabel, date, parsed.amount, parsed.merchant_name);
 
       try {
-        await client.query(
+        const ins = await client.query(
           `INSERT INTO transactions (account_id, transaction_id, amount, date, merchant_name, name, category, pending)
            VALUES ($1, $2, $3, $4, $5, $6, $7, false)
            ON CONFLICT (transaction_id) DO NOTHING`,
           [virtualAccountId, transactionId, parsed.amount, date, parsed.merchant_name, parsed.merchant_name, parsed.category ? [parsed.category] : null]
         );
-        imported++;
+        // ON CONFLICT DO NOTHING → rowCount 1 on a real insert, 0 on a dup.
+        // Count dups as skipped, not imported (F30).
+        if (ins.rowCount > 0) imported++;
+        else skipped++;
       } catch {
         skipped++;
       }

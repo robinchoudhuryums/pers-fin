@@ -4,13 +4,33 @@
 
 const crypto = require("crypto");
 
+// Parse a monetary string into a number, tolerating the formatting real bank
+// CSVs ship: thousands separators ("1,234.56"), a leading currency symbol
+// ("$1,234.56"), parenthesized negatives ("(45.00)"), and surrounding
+// whitespace. Returns NaN for blank/unparseable input so callers (and the
+// import route's `isNaN(parsed.amount)` guard) skip the row rather than
+// inserting a corrupt amount. Previously chase/capitalone/discover/wellsfargo
+// called parseFloat directly, so "1,234.56" silently became 1.
+function parseMoney(raw) {
+  if (raw == null) return NaN;
+  let s = String(raw).trim();
+  if (s === "") return NaN;
+  let sign = 1;
+  // Accounting-style parenthesized negatives, e.g. "(45.00)".
+  if (/^\(.*\)$/.test(s)) { sign = -1; s = s.slice(1, -1); }
+  s = s.replace(/[$,\s]/g, "");
+  if (s === "") return NaN;
+  const n = parseFloat(s);
+  return isNaN(n) ? NaN : sign * n;
+}
+
 const CSV_FORMATS = {
   chase: {
     detect: (headers) => headers.includes("Transaction Date") && headers.includes("Post Date") && headers.includes("Description"),
     parse: (row) => ({
       date: row["Transaction Date"],
       merchant_name: row["Description"],
-      amount: -parseFloat(row["Amount"]),
+      amount: -parseMoney(row["Amount"]),
       category: row["Category"] || "",
     }),
   },
@@ -18,9 +38,9 @@ const CSV_FORMATS = {
     detect: (headers) => headers.includes("Transaction Date") && headers.includes("Posted Date") && (headers.includes("Debit") || headers.includes("Credit")),
     parse: (row) => {
       // Capital One uses separate Debit/Credit columns; Debit = positive spending, Credit = negative (payment/refund)
-      const debit = (row["Debit"] || "").trim();
-      const credit = (row["Credit"] || "").trim();
-      const amount = debit.length > 0 ? parseFloat(debit) : -(parseFloat(credit) || 0);
+      const debit = parseMoney(row["Debit"]);
+      const credit = parseMoney(row["Credit"]);
+      const amount = !isNaN(debit) ? debit : -(isNaN(credit) ? 0 : credit);
       return {
         date: row["Transaction Date"],
         merchant_name: row["Description"],
@@ -35,7 +55,7 @@ const CSV_FORMATS = {
       date: row["Trans. Date"],
       merchant_name: row["Description"],
       // Discover: positive amounts are debits (purchases), negative are credits (payments)
-      amount: parseFloat(row["Amount"]),
+      amount: parseMoney(row["Amount"]),
       category: row["Category"] || "",
     }),
   },
@@ -46,7 +66,7 @@ const CSV_FORMATS = {
     parse: (row, cols) => ({
       date: row[cols[0]],
       merchant_name: (row[cols[4]] || row[cols[3]] || "").trim(),
-      amount: -parseFloat(row[cols[1]]),
+      amount: -parseMoney(row[cols[1]]),
       category: "",
     }),
   },
@@ -134,4 +154,5 @@ module.exports = {
   detectCsvFormat,
   parseDate,
   csvTransactionId,
+  parseMoney,
 };

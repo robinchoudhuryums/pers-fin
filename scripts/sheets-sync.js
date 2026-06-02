@@ -524,28 +524,49 @@ async function syncSubscriptions(sheets, pool) {
 async function buildDashboard(sheets, pool) {
   console.log("Building dashboard...");
 
+  // Spending adjustments inlined to match the in-app dashboard (F33). The
+  // sheets script is intentionally standalone (it doesn't import the services
+  // layer), so — like INCOME_PREDICATE below — these mirror
+  // services/financial-queries.js: NOT_TRANSFER excludes inter-account
+  // transfers / card payments, the reimbursed exclusion drops repaid charges,
+  // and SPLIT_AMT applies the shared-account spending_split_pct + per-txn
+  // personal_for override. (Splits-REPLACEMENT — substituting transaction_splits
+  // rows for their parent in category totals — is not mirrored here; see the
+  // sheets-sync note in CLAUDE.md.)
+  const NOT_TRANSFER = `
+    COALESCE(t.user_merchant_name, t.merchant_name, t.name, '') !~*
+      '\\y(payment thank|pymt|autopay|auto pay|minimum payment|directpay|automatic payment|interest|int charge|finance charge|funds tran|funds transfer|transfer to|transfer from|ach transfer|wire transfer|internal transfer|zelle|venmo|paypal|cash app|cashapp|square cash|bank of america|wells fargo|chase|citi|citibank|capital one|discover|amex|american express|us bank|pnc bank|td bank|ally bank|truist|boa transfer|online transfer|mobile transfer|bill pay|epay|credit card payment|card payment|cc payment|loan payment|mortgage payment|deposit|direct dep|atm|withdrawal)\\y'`;
+  const SPLIT_AMT = `(CASE
+      WHEN la.is_shared AND t.personal_for = 'self' THEN t.amount
+      WHEN la.is_shared AND t.personal_for = 'partner' THEN 0
+      ELSE t.amount * COALESCE(la.spending_split_pct, 100) / 100.0
+    END)`;
+  const NOT_REIMBURSED = "COALESCE(t.is_reimbursed, false) = false";
+
   // Fetch summary data from DB
   const { rows: monthlySummary } = await pool.query(`
     SELECT
-      TO_CHAR(date, 'YYYY-MM') AS month,
+      TO_CHAR(t.date, 'YYYY-MM') AS month,
       COUNT(*) AS txn_count,
-      SUM(amount) AS total_spend,
-      ROUND(AVG(amount), 2) AS avg_transaction
-    FROM transactions
-    WHERE pending = false AND amount > 0
-      AND date >= CURRENT_DATE - INTERVAL '6 months'
-    GROUP BY TO_CHAR(date, 'YYYY-MM')
+      SUM(${SPLIT_AMT}) AS total_spend,
+      ROUND(AVG(${SPLIT_AMT}), 2) AS avg_transaction
+    FROM transactions t
+    LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+    WHERE t.pending = false AND t.amount > 0 AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER}
+      AND t.date >= CURRENT_DATE - INTERVAL '6 months'
+    GROUP BY TO_CHAR(t.date, 'YYYY-MM')
     ORDER BY month DESC
   `);
 
   const { rows: categorySummary } = await pool.query(`
     SELECT
-      COALESCE(user_category, personal_finance_category->>'primary', category[1], 'Uncategorized') AS category,
-      SUM(amount) AS total,
+      COALESCE(t.user_category, t.personal_finance_category->>'primary', t.category[1], 'Uncategorized') AS category,
+      SUM(${SPLIT_AMT}) AS total,
       COUNT(*) AS txn_count
-    FROM transactions
-    WHERE pending = false AND amount > 0
-      AND date >= CURRENT_DATE - INTERVAL '6 months'
+    FROM transactions t
+    LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+    WHERE t.pending = false AND t.amount > 0 AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER}
+      AND t.date >= CURRENT_DATE - INTERVAL '6 months'
     GROUP BY category
     ORDER BY total DESC
     LIMIT 15
@@ -556,12 +577,13 @@ async function buildDashboard(sheets, pool) {
   // category list's "Trend" column has data to graph.
   const { rows: categoryByMonth } = await pool.query(`
     SELECT
-      COALESCE(user_category, personal_finance_category->>'primary', category[1], 'Uncategorized') AS category,
-      TO_CHAR(date, 'YYYY-MM') AS month,
-      SUM(amount) AS total
-    FROM transactions
-    WHERE pending = false AND amount > 0
-      AND date >= CURRENT_DATE - INTERVAL '6 months'
+      COALESCE(t.user_category, t.personal_finance_category->>'primary', t.category[1], 'Uncategorized') AS category,
+      TO_CHAR(t.date, 'YYYY-MM') AS month,
+      SUM(${SPLIT_AMT}) AS total
+    FROM transactions t
+    LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+    WHERE t.pending = false AND t.amount > 0 AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER}
+      AND t.date >= CURRENT_DATE - INTERVAL '6 months'
     GROUP BY 1, 2
   `);
   // Build a {category: {month: total}} map for fast lookup, and the list
@@ -575,12 +597,13 @@ async function buildDashboard(sheets, pool) {
 
   const { rows: topMerchants } = await pool.query(`
     SELECT
-      COALESCE(merchant_name, name) AS merchant,
-      SUM(amount) AS total,
+      COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS merchant,
+      SUM(${SPLIT_AMT}) AS total,
       COUNT(*) AS txn_count
-    FROM transactions
-    WHERE pending = false AND amount > 0
-      AND date >= CURRENT_DATE - INTERVAL '6 months'
+    FROM transactions t
+    LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+    WHERE t.pending = false AND t.amount > 0 AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER}
+      AND t.date >= CURRENT_DATE - INTERVAL '6 months'
     GROUP BY merchant
     ORDER BY total DESC
     LIMIT 10
@@ -599,12 +622,13 @@ async function buildDashboard(sheets, pool) {
 
   const { rows: totals } = await pool.query(`
     SELECT
-      COALESCE(SUM(amount), 0) AS total_6mo,
-      COALESCE(AVG(amount), 0) AS avg_txn,
+      COALESCE(SUM(${SPLIT_AMT}), 0) AS total_6mo,
+      COALESCE(AVG(${SPLIT_AMT}), 0) AS avg_txn,
       COUNT(*) AS txn_count
-    FROM transactions
-    WHERE pending = false AND amount > 0
-      AND date >= CURRENT_DATE - INTERVAL '6 months'
+    FROM transactions t
+    LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+    WHERE t.pending = false AND t.amount > 0 AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER}
+      AND t.date >= CURRENT_DATE - INTERVAL '6 months'
   `);
 
   // Net worth history
@@ -618,12 +642,13 @@ async function buildDashboard(sheets, pool) {
   // Budget status
   const { rows: budgetData } = await pool.query(`
     SELECT b.category, b.monthly_limit,
-           COALESCE(SUM(t.amount), 0) AS spent
+           COALESCE(SUM(${SPLIT_AMT}), 0) AS spent
     FROM budgets b
     LEFT JOIN transactions t ON COALESCE(t.user_category, t.category[1], 'Uncategorized') = b.category
-      AND t.amount > 0 AND t.pending = false
+      AND t.amount > 0 AND t.pending = false AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER}
       AND t.date >= date_trunc('month', CURRENT_DATE)
       AND t.date < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
+    LEFT JOIN linked_accounts la ON la.account_id = t.account_id
     GROUP BY b.category, b.monthly_limit
     ORDER BY b.monthly_limit DESC
   `);
@@ -2591,7 +2616,7 @@ async function syncBillPayments(sheets, pool) {
 // UNIONs four sources of upcoming dates into one sortable tab:
 //   - detected_subscriptions.next_expected
 //   - manual_bills (computed next-due from due_day + cadence)
-//   - recurring_transfers (last_seen + cadence_days)
+//   - recurring_transfers (last_transferred + cadence_days)
 //   - financial_goals.target_date
 // Scoped to the next 90 days so the tab stays glanceable. Sorted by date
 // ASC so the top of the sheet shows what's happening soonest.
@@ -2737,16 +2762,16 @@ async function syncImportantDates(sheets, pool) {
     ),
     transfers AS (
       SELECT
-        (last_seen + (cadence_days || ' days')::interval)::date AS event_date,
+        (last_transferred + (cadence_days || ' days')::interval)::date AS event_date,
         'Transfer (' || transfer_type || ')' AS event_type,
         display_name AS name,
         amount,
         direction AS notes
       FROM recurring_transfers
       WHERE is_active = true AND is_dismissed = false
-        AND last_seen IS NOT NULL
-        AND (last_seen + (cadence_days || ' days')::interval)::date <= CURRENT_DATE + INTERVAL '90 days'
-        AND (last_seen + (cadence_days || ' days')::interval)::date >= CURRENT_DATE
+        AND last_transferred IS NOT NULL
+        AND (last_transferred + (cadence_days || ' days')::interval)::date <= CURRENT_DATE + INTERVAL '90 days'
+        AND (last_transferred + (cadence_days || ' days')::interval)::date >= CURRENT_DATE
     ),
     goals AS (
       SELECT target_date AS event_date,
@@ -3187,29 +3212,46 @@ async function syncAll() {
   const sheets = await getSheetsClient();
   const pool = getPool();
 
+  // Per-step isolation: each tab sync runs independently so one failing tab
+  // (e.g. a query referencing a renamed column) no longer aborts syncAll and
+  // leaves the spreadsheet half-updated with no signal. Failures are
+  // collected and returned in `errors[]` so the caller can surface which
+  // tabs are stale instead of seeing a single opaque throw after 14 tabs
+  // were already written.
+  const errors = [];
+  const step = async (name, fn, fallback = null) => {
+    try {
+      return await fn();
+    } catch (err) {
+      console.error(`Sheets sync step "${name}" failed:`, err.message);
+      errors.push({ step: name, error: err.message });
+      return fallback;
+    }
+  };
+
   try {
-    const txnCount = await syncTransactions(sheets, pool);
-    const subs = await syncSubscriptions(sheets, pool);
-    const utilCount = await syncUtilities(sheets, pool);
-    const insightsCount = await syncInsights(sheets, pool);
-    const transfersCount = await syncRecurringTransfers(sheets, pool);
-    const taxCount = await syncTaxDeductions(sheets, pool);
-    const investmentsCount = await syncInvestments(sheets, pool);
-    const nwhCount = await syncNetWorthHistory(sheets, pool);
-    const incomeCount = await syncIncome(sheets, pool);
-    const trustCount = await syncAiTrust(sheets, pool);
-    const rulesCount = await syncCategorizationRules(sheets, pool);
-    const manualBillsCount = await syncManualBills(sheets, pool);
-    const billPaymentsCount = await syncBillPayments(sheets, pool);
-    const creditScoreCount = await syncCreditScores(sheets, pool);
-    const datesCount = await syncImportantDates(sheets, pool);
-    const watchlistCount = await syncWatchlist(sheets, pool);
-    const archivesCreated = await syncMonthArchives(sheets, pool);
-    await buildDashboard(sheets, pool);
+    const txnCount = await step("transactions", () => syncTransactions(sheets, pool), 0);
+    const subs = await step("subscriptions", () => syncSubscriptions(sheets, pool), []);
+    const utilCount = await step("utilities", () => syncUtilities(sheets, pool), 0);
+    const insightsCount = await step("insights", () => syncInsights(sheets, pool), 0);
+    const transfersCount = await step("recurring_transfers", () => syncRecurringTransfers(sheets, pool), 0);
+    const taxCount = await step("tax_deductions", () => syncTaxDeductions(sheets, pool), 0);
+    const investmentsCount = await step("investments", () => syncInvestments(sheets, pool), 0);
+    const nwhCount = await step("net_worth_history", () => syncNetWorthHistory(sheets, pool), 0);
+    const incomeCount = await step("income", () => syncIncome(sheets, pool), 0);
+    const trustCount = await step("ai_trust", () => syncAiTrust(sheets, pool), 0);
+    const rulesCount = await step("categorization_rules", () => syncCategorizationRules(sheets, pool), 0);
+    const manualBillsCount = await step("manual_bills", () => syncManualBills(sheets, pool), 0);
+    const billPaymentsCount = await step("bill_payments", () => syncBillPayments(sheets, pool), 0);
+    const creditScoreCount = await step("credit_scores", () => syncCreditScores(sheets, pool), 0);
+    const datesCount = await step("important_dates", () => syncImportantDates(sheets, pool), 0);
+    const watchlistCount = await step("watchlist", () => syncWatchlist(sheets, pool), 0);
+    const archivesCreated = await step("month_archives", () => syncMonthArchives(sheets, pool), 0);
+    await step("dashboard", () => buildDashboard(sheets, pool));
 
     return {
       transactions_synced: txnCount,
-      subscriptions_synced: subs.length,
+      subscriptions_synced: Array.isArray(subs) ? subs.length : 0,
       utilities_synced: utilCount,
       insights_synced: insightsCount,
       transfers_synced: transfersCount,
@@ -3225,6 +3267,7 @@ async function syncAll() {
       important_dates_synced: datesCount,
       watchlist_items_synced: watchlistCount,
       month_archives_created: archivesCreated,
+      errors,
       timestamp: new Date().toISOString(),
     };
   } finally {

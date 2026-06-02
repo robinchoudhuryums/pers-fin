@@ -599,6 +599,13 @@ async function runMigrations() {
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS daily_digest_enabled BOOLEAN NOT NULL DEFAULT false");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_daily_digest_at TIMESTAMPTZ");
 
+    // ---- Self-healing reconcile watermark ----
+    // Tracks the last time the trailing-window backfill (POST /api/sync/reconcile
+    // and the weekly self-healing scheduler) ran, so the weekly job can dedupe
+    // its ticks. Reconcile re-fetches a bounded recent window and re-upserts
+    // (idempotent) to recover any transactions a prior incremental sync dropped.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_reconcile_at TIMESTAMPTZ");
+
     // ---- Shared-card per-transaction settlement override ----
     // For shared/joint accounts (is_shared = true), the account-level
     // spending_split_pct splits every transaction at the same percentage.

@@ -77,8 +77,15 @@ router.post("/api/enroll", async (req, res) => {
 });
 
 // Helper: sync a single enrollment
-async function syncEnrollment(enrollment) {
+async function syncEnrollment(enrollment, opts = {}) {
   const { id: enrollmentDbId, access_token, last_synced_txn_date, institution_name } = enrollment;
+
+  // Reconciliation/backfill mode: when opts.backfillFrom is set, re-fetch from
+  // that date floor regardless of the stored incremental watermark, and do NOT
+  // advance the watermark (this is a recovery pass, not the incremental cursor).
+  // Re-fetching is safe because the INSERT below upserts on transaction_id.
+  const backfillFrom = opts.backfillFrom || null;
+  const floorDate = backfillFrom || last_synced_txn_date;
 
   const { rows: accounts } = await pool.query(
     `SELECT account_id FROM linked_accounts WHERE teller_enrollment_id = $1`,
@@ -87,6 +94,13 @@ async function syncEnrollment(enrollment) {
 
   let added = 0;
   let latestDate = last_synced_txn_date;
+  // If ANY account in this enrollment fails to fetch (fully), we hold back the
+  // enrollment-level watermark so the next sync retries from the same point.
+  // Otherwise an earlier account that synced to "today" would advance the
+  // shared watermark and permanently skip a failed sibling account's older
+  // un-synced transactions (F3). Re-processing is safe — the insert below
+  // upserts on transaction_id.
+  let fetchError = false;
 
   for (const { account_id } of accounts) {
     let allTxns = [];
@@ -99,6 +113,7 @@ async function syncEnrollment(enrollment) {
         txns = await tellerRequest(endpoint, access_token);
       } catch (fetchErr) {
         console.error(`  Error fetching transactions for account ${account_id}:`, fetchErr.message);
+        fetchError = true;
         break;
       }
 
@@ -106,7 +121,7 @@ async function syncEnrollment(enrollment) {
       allTxns = allTxns.concat(txns);
 
       const oldestInBatch = txns[txns.length - 1];
-      if (last_synced_txn_date && new Date(oldestInBatch.date) <= new Date(last_synced_txn_date)) {
+      if (floorDate && new Date(oldestInBatch.date) <= new Date(floorDate)) {
         keepFetching = false;
       } else if (txns.length < 500) {
         keepFetching = false;
@@ -115,8 +130,13 @@ async function syncEnrollment(enrollment) {
       }
     }
 
-    const txnsToProcess = last_synced_txn_date
-      ? allTxns.filter(t => new Date(t.date) > new Date(last_synced_txn_date))
+    // Use >= (not >) against the day-granular watermark: Teller transaction
+    // `date` is day-granular, so a transaction that posts on the watermark day
+    // AFTER a sync ran would be `=` and never `>`, dropping it forever (F6).
+    // Re-including the whole watermark day is safe — the ON CONFLICT upsert
+    // below dedups rows already inserted on that day.
+    const txnsToProcess = floorDate
+      ? allTxns.filter(t => new Date(t.date) >= new Date(floorDate))
       : allTxns;
 
     for (const txn of txnsToProcess) {
@@ -161,7 +181,12 @@ async function syncEnrollment(enrollment) {
     }
   }
 
-  if (latestDate) {
+  // Only advance the watermark when every account fetched cleanly AND this is a
+  // normal incremental sync — a backfill/reconcile pass must not move the
+  // incremental cursor (it deliberately re-reads old data). On a fetch error we
+  // leave last_synced_txn_date untouched so the next sync re-attempts the failed
+  // account's range instead of stepping over it (F3).
+  if (latestDate && !fetchError && !backfillFrom) {
     await pool.query(
       `UPDATE teller_enrollments SET last_synced_txn_date = $1, updated_at = now()
        WHERE id = $2`,
@@ -176,7 +201,20 @@ async function syncEnrollment(enrollment) {
 // syncAllEnrollments — in-process sync of every non-suspended Teller enrollment.
 // Used by both POST /api/sync (HTTP handler) and the scheduled auto-sync task
 // in server.js. Returns { enrollments_synced, transactions_added, errors }.
-async function syncAllEnrollments() {
+async function syncAllEnrollments(opts = {}) {
+  // Backfill/reconcile mode: opts.backfillDays re-fetches the trailing N days
+  // from every enrollment regardless of the incremental watermark, to recover
+  // any transactions a prior sync dropped (idempotent upserts). The anomaly
+  // push is suppressed in this mode because re-upserting historical rows would
+  // otherwise look like a flood of "new" activity.
+  const backfillDays = Number.isFinite(opts.backfillDays) ? opts.backfillDays : null;
+  let backfillFrom = null;
+  if (backfillDays) {
+    const d = new Date();
+    d.setDate(d.getDate() - backfillDays);
+    backfillFrom = d.toISOString().split("T")[0];
+  }
+
   const { rows: enrollments } = await pool.query(
     `SELECT te.id, te.enrollment_id, te.institution_name,
             pgp_sym_decrypt(te.access_token_enc, $1) AS access_token,
@@ -191,8 +229,18 @@ async function syncAllEnrollments() {
   const errors = [];
 
   for (const enrollment of enrollments) {
+    // A NULL decrypted token means the TOKEN_ENCRYPTION_PASSPHRASE no longer
+    // matches the ciphertext (e.g. after a passphrase rotation). Surface it as
+    // `decryption_failed` (parity with the Plaid sync paths) instead of letting
+    // a null token reach Teller, 401, and silently mark the enrollment
+    // DISCONNECTED — which would wrongly require re-linking on a key rotation (F7).
+    if (!enrollment.access_token) {
+      console.error(`Teller enrollment "${enrollment.institution_name}": token decryption failed (passphrase mismatch?) — skipping, not disconnecting.`);
+      errors.push({ institution: enrollment.institution_name, error: "decryption_failed" });
+      continue;
+    }
     try {
-      const result = await syncEnrollment(enrollment);
+      const result = await syncEnrollment(enrollment, { backfillFrom });
       totalAdded += result.added;
     } catch (err) {
       console.error(`Sync error for ${enrollment.institution_name}:`, err.message);
@@ -212,7 +260,7 @@ async function syncAllEnrollments() {
   //      doesn't inflate its own baseline.
   //   2. Only transactions inserted since last_anomaly_check_at are considered,
   //      so the same anomaly doesn't re-push on subsequent syncs.
-  if (totalAdded > 0) {
+  if (totalAdded > 0 && !backfillFrom) {
     try {
       const settings = await pool.query("SELECT last_anomaly_check_at FROM user_settings WHERE id = 1");
       const watermark = settings.rows[0]?.last_anomaly_check_at || null;
@@ -293,6 +341,42 @@ router.post("/api/sync", async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error("Sync error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// reconcileTeller — re-fetch the trailing N days from every Teller enrollment,
+// watermark-independent, to recover any transactions a prior incremental sync
+// dropped (same-day late arrivals, a failed-sibling-account skip, etc.). All
+// writes are idempotent upserts, so this is safe to run repeatedly.
+async function reconcileTeller(days = 90) {
+  const backfillDays = Math.max(1, Math.min(365, parseInt(days, 10) || 90));
+  return syncAllEnrollments({ backfillDays });
+}
+
+// POST /api/sync/reconcile — manual backfill/reconciliation across providers.
+// Body: { days?: 1-365 (default 90), provider?: 'teller' | 'plaid' | 'all' }.
+// Teller re-fetches the trailing window; Plaid resets each item's cursor and
+// re-walks transactionsSync (idempotent upserts). Stamps last_reconcile_at.
+router.post("/api/sync/reconcile", async (req, res) => {
+  const days = Math.max(1, Math.min(365, parseInt(req.body.days, 10) || 90));
+  const provider = ["teller", "plaid", "all"].includes(req.body.provider) ? req.body.provider : "all";
+  const out = { days, provider };
+  try {
+    if (provider === "teller" || provider === "all") {
+      try { out.teller = await reconcileTeller(days); }
+      catch (e) { out.teller = { error: e.message }; }
+    }
+    if (provider === "plaid" || provider === "all") {
+      try {
+        const { reconcilePlaidTransactions } = require("./investments");
+        out.plaid = await reconcilePlaidTransactions();
+      } catch (e) { out.plaid = { error: e.message }; }
+    }
+    await pool.query("UPDATE user_settings SET last_reconcile_at = now(), last_txn_sync_at = now() WHERE id = 1").catch(() => {});
+    res.json(out);
+  } catch (err) {
+    console.error("Reconcile error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
   }
 });
@@ -546,6 +630,12 @@ async function syncAllBalances() {
   const errors = [];
 
   for (const enrollment of enrollments.rows) {
+    // See syncAllEnrollments: a NULL decrypted token signals a passphrase
+    // mismatch — surface decryption_failed rather than 401-ing against Teller (F7).
+    if (!enrollment.access_token) {
+      errors.push({ institution: enrollment.institution_name, error: "decryption_failed" });
+      continue;
+    }
     try {
       const accounts = await tellerRequest("/accounts", enrollment.access_token);
       for (const acct of accounts) {
@@ -1276,3 +1366,4 @@ router.get("/api/income-summary", async (req, res) => {
 module.exports = router;
 module.exports.syncAllEnrollments = syncAllEnrollments;
 module.exports.syncAllBalances = syncAllBalances;
+module.exports.reconcileTeller = reconcileTeller;
