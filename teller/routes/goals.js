@@ -531,7 +531,7 @@ router.get("/api/context-export", async (req, res) => {
       })),
       pool.query("SELECT display_name, amount, cadence_days, category, next_expected FROM detected_subscriptions WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL ORDER BY amount DESC"),
       pool.query("SELECT * FROM financial_goals WHERE is_active = true ORDER BY target_date ASC NULLS LAST").catch(() => ({ rows: [] })),
-      pool.query("SELECT name, mask, current_balance, available_balance, apr FROM linked_accounts WHERE type = 'credit' AND current_balance IS NOT NULL").catch(() => ({ rows: [] })),
+      pool.query("SELECT name, mask, current_balance, available_balance, credit_limit, apr FROM linked_accounts WHERE type = 'credit' AND current_balance IS NOT NULL").catch(() => ({ rows: [] })),
       pool.query("SELECT * FROM net_worth_snapshots ORDER BY snapshot_date DESC LIMIT 6").catch(() => ({ rows: [] })),
       pool.query("SELECT insight_text, created_at FROM financial_insights ORDER BY created_at DESC LIMIT 1").catch(() => ({ rows: [] })),
       pool.query("SELECT zip_code FROM user_settings WHERE id = 1").catch(() => ({ rows: [{}] })),
@@ -550,7 +550,10 @@ router.get("/api/context-export", async (req, res) => {
         credit_cards: creditCards.rows.map(c => {
           const owed = parseFloat(c.current_balance || 0);
           const avail = parseFloat(c.available_balance || 0);
-          return { ...c, credit_limit: owed + avail, utilization_pct: (owed + avail) > 0 ? Math.round(owed / (owed + avail) * 100) : 0 };
+          // Prefer the reported credit_limit; fall back to owed+avail (which is
+          // wrong when Plaid reports available:null, e.g. Discover).
+          const limit = parseFloat(c.credit_limit) || (owed + avail);
+          return { ...c, credit_limit: limit, utilization_pct: limit > 0 ? Math.round(owed / limit * 100) : 0 };
         }),
         net_worth_history: netWorth.rows,
         latest_insight: recentInsight.rows[0] || null,
@@ -604,7 +607,7 @@ router.get("/api/context-export", async (req, res) => {
       for (const c of creditCards.rows) {
         const owed = parseFloat(c.current_balance || 0);
         const avail = parseFloat(c.available_balance || 0);
-        const limit = owed + avail;
+        const limit = parseFloat(c.credit_limit) || (owed + avail);
         const util = limit > 0 ? Math.round(owed / limit * 100) : 0;
         md += "- **" + c.name + "**" + (c.mask ? " (****" + c.mask + ")" : "") + ": $" + owed.toFixed(2) + " owed / $" + limit.toFixed(2) + " limit (" + util + "% utilization)";
         if (c.apr) md += ", " + c.apr + "% APR";

@@ -54,6 +54,22 @@ function getPlaidClient() {
   return new PlaidApi(config);
 }
 
+// Sum holdings' current value per Plaid account. Used as the account balance
+// fallback when accountsGet/holdingsGet return a null account-level
+// `balances.current` — which Schwab (and some other brokerages) do for
+// investment accounts, leaving the real value only in the holdings (F-invest).
+function sumHoldingsByAccount(holdings, secMap) {
+  const m = {};
+  for (const h of holdings || []) {
+    const sec = secMap[h.security_id] || {};
+    const val = h.institution_value != null
+      ? h.institution_value
+      : (sec.close_price != null ? h.quantity * sec.close_price : 0);
+    m[h.account_id] = (m[h.account_id] || 0) + (parseFloat(val) || 0);
+  }
+  return m;
+}
+
 // GET /api/plaid/status — check if Plaid is configured
 router.get("/api/plaid/status", (_req, res) => {
   const client = getPlaidClient();
@@ -362,8 +378,11 @@ router.post("/api/plaid/exchange-transactions", async (req, res) => {
         const securities = holdingsRes.data.securities || [];
         const secMap = {};
         for (const sec of securities) secMap[sec.security_id] = sec;
+        // Fall back to the sum of holdings when the account-level current
+        // balance is null (Schwab et al.) so brokerages don't show $0.
+        const acctValue = sumHoldingsByAccount(holdings, secMap);
         for (const acct of investmentAccounts) {
-          const balance = acct.balances?.current || 0;
+          const balance = acct.balances?.current ?? acctValue[acct.account_id] ?? 0;
           await pool.query(
             `INSERT INTO investment_accounts (name, institution, account_type, balance, plaid_account_id)
              VALUES ($1, $2, $3, $4, $5)
@@ -371,6 +390,12 @@ router.post("/api/plaid/exchange-transactions", async (req, res) => {
                balance = $4, name = $1, is_active = true, updated_at = now()`,
             [acct.name, institution?.name || "Unknown", acct.subtype || "brokerage",
              balance, acct.account_id]
+          );
+          // Backfill the linked_accounts row too so the accounts grid (which
+          // reads current_balance) shows the real value instead of $0.
+          await pool.query(
+            "UPDATE linked_accounts SET current_balance = $1, balance_updated_at = now() WHERE account_id = $2 AND (current_balance IS NULL OR current_balance = 0)",
+            [balance, acct.account_id]
           );
         }
         if (holdings.length > 0) {
@@ -620,11 +645,15 @@ async function syncAllPlaidTransactions() {
           if (!la) continue;
           const bal = ba.balances?.current ?? ba.balances?.available ?? null;
           if (bal !== null) {
+            // Keep credit_limit fresh on the auto-sync path too (only the
+            // balance-only path did before), so utilization stays correct when
+            // Plaid reports `available: null` for a credit card (F-credit).
             await pool.query(
               `UPDATE linked_accounts SET
-                 current_balance = $1, available_balance = $2, balance_updated_at = now()
-               WHERE id = $3`,
-              [ba.balances.current, ba.balances.available, la.id]
+                 current_balance = $1, available_balance = $2,
+                 credit_limit = COALESCE($3, credit_limit), balance_updated_at = now()
+               WHERE id = $4`,
+              [ba.balances.current, ba.balances.available, ba.balances?.limit ?? null, la.id]
             );
             await pool.query(
               `INSERT INTO account_balance_snapshots (source, source_id, snapshot_date, balance, current_balance, available_balance)
@@ -721,6 +750,11 @@ async function syncAllPlaidBalances() {
           ).catch(e => console.error("Plaid balance snapshot error:", e.message));
         }
       }
+      // Refresh liabilities (APR / min payment / due date) on the balance path
+      // too — previously only the transaction sync + exchange did, so clicking
+      // "Sync Balances" never updated APR. Fails gracefully when unsupported.
+      try { await syncPlaidLiabilities(client, item.access_token, item.id); }
+      catch (libErr) { console.error("Liabilities refresh error for", item.institution_name, ":", libErr.message); }
     } catch (err) {
       console.error("Plaid balance refresh error for", item.institution_name, ":", err.response?.data?.error_message || err.message);
       errors.push({ institution: item.institution_name, error: err.response?.data?.error_message || err.message });
@@ -1024,10 +1058,13 @@ router.post("/api/plaid/sync-holdings", async (_req, res) => {
         const securities = holdingsRes.data.securities || [];
         const secMap = {};
         for (const s of securities) secMap[s.security_id] = s;
+        // Holdings-sum fallback for accounts whose account-level current balance
+        // is null (Schwab et al.), so they don't get persisted as $0.
+        const acctValue = sumHoldingsByAccount(holdings, secMap);
 
         for (const acct of accounts) {
           if (acct.type !== "investment") continue;
-          const balance = acct.balances?.current || 0;
+          const balance = acct.balances?.current ?? acctValue[acct.account_id] ?? 0;
           // RETURNING the investment_accounts.id so the snapshot below can
           // attribute history to the right account (we key by plaid_account_id
           // here but the snapshot table uses the local SERIAL id).
@@ -1035,6 +1072,11 @@ router.post("/api/plaid/sync-holdings", async (_req, res) => {
             `UPDATE investment_accounts SET balance = $1, updated_at = now()
              WHERE plaid_account_id = $2 AND is_active = true
              RETURNING id`,
+            [balance, acct.account_id]
+          );
+          // Keep the linked_accounts mirror in sync so the accounts grid agrees.
+          await pool.query(
+            "UPDATE linked_accounts SET current_balance = $1, balance_updated_at = now() WHERE account_id = $2",
             [balance, acct.account_id]
           );
           totalAccounts++;
@@ -1161,6 +1203,7 @@ router.get("/api/investments", async (_req, res) => {
          FROM linked_accounts la
          LEFT JOIN teller_enrollments te ON te.id = la.teller_enrollment_id
          WHERE ${INVESTMENT_ACCOUNT_TYPES}
+           AND la.plaid_item_id IS NULL
          ORDER BY balance DESC`
       ),
       pool.query(
