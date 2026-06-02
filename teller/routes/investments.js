@@ -1018,10 +1018,15 @@ router.post("/api/plaid/exchange", async (req, res) => {
   }
 });
 
-// POST /api/plaid/sync-holdings — refresh investment holdings
-router.post("/api/plaid/sync-holdings", async (_req, res) => {
+// syncAllPlaidHoldings — refresh investment_accounts + investment_holdings for
+// every Plaid investment item. Extracted as a helper so the scheduler and
+// POST /api/sync-balances can call it in-process (no HTTP self-fetch), and so
+// investments repopulate automatically. UPSERTs investment_accounts so the rows
+// are RE-CREATED if the table was cleared (e.g. after a fresh-start reset) —
+// the old code only UPDATEd existing rows, leaving investments empty after a wipe.
+async function syncAllPlaidHoldings() {
   const client = getPlaidClient();
-  if (!client) return res.status(501).json({ error: "Plaid not configured." });
+  if (!client) return { ok: false, error: "Plaid not configured" };
   try {
     const items = await pool.query(
       `SELECT item_id, institution_name,
@@ -1069,10 +1074,14 @@ router.post("/api/plaid/sync-holdings", async (_req, res) => {
           // attribute history to the right account (we key by plaid_account_id
           // here but the snapshot table uses the local SERIAL id).
           const updRes = await pool.query(
-            `UPDATE investment_accounts SET balance = $1, updated_at = now()
-             WHERE plaid_account_id = $2 AND is_active = true
+            `INSERT INTO investment_accounts (name, institution, account_type, balance, plaid_account_id)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (plaid_account_id) DO UPDATE SET
+               balance = $4, name = $1, institution = $2, account_type = $3,
+               is_active = true, updated_at = now()
              RETURNING id`,
-            [balance, acct.account_id]
+            [acct.name || "Investment", item.institution_name || "Unknown",
+             acct.subtype || "brokerage", balance, acct.account_id]
           );
           // Keep the linked_accounts mirror in sync so the accounts grid agrees.
           await pool.query(
@@ -1144,14 +1153,18 @@ router.post("/api/plaid/sync-holdings", async (_req, res) => {
       }
     }
 
-    res.json({
-      accounts_updated: totalAccounts,
-      holdings_updated: totalHoldings,
-      errors: errors.length > 0 ? errors : undefined,
-    });
+    return { ok: true, accounts_updated: totalAccounts, holdings_updated: totalHoldings, errors: errors.length > 0 ? errors : undefined };
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return { ok: false, error: err.message };
   }
+}
+
+// POST /api/plaid/sync-holdings — refresh investment holdings (thin wrapper)
+router.post("/api/plaid/sync-holdings", async (_req, res) => {
+  const client = getPlaidClient();
+  if (!client) return res.status(501).json({ error: "Plaid not configured." });
+  const result = await syncAllPlaidHoldings();
+  res.json(result);
 });
 
 // GET /api/plaid/holdings — list investment holdings
@@ -1564,3 +1577,4 @@ module.exports = router;
 module.exports.syncAllPlaidTransactions = syncAllPlaidTransactions;
 module.exports.reconcilePlaidTransactions = reconcilePlaidTransactions;
 module.exports.syncAllPlaidBalances = syncAllPlaidBalances;
+module.exports.syncAllPlaidHoldings = syncAllPlaidHoldings;

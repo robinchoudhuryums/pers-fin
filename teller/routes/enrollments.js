@@ -712,12 +712,19 @@ router.post("/api/sync-balances", async (_req, res) => {
     // Also refresh Plaid balances so users with both providers get one-click
     // freshness. Lazy-required to avoid a circular import via routes/investments.
     let plaidResult = null;
+    let holdingsResult = null;
     try {
       const inv = require("./investments");
       if (typeof inv.syncAllPlaidBalances === "function") {
         plaidResult = await inv.syncAllPlaidBalances();
       }
-    } catch (e) { console.error("Plaid balance sync error:", e.message); }
+      // Also refresh investment holdings so brokerage values + the
+      // investment_accounts rows repopulate from one "Sync Balances" click
+      // (notably right after a fresh-start reset, when those rows were wiped).
+      if (typeof inv.syncAllPlaidHoldings === "function") {
+        holdingsResult = await inv.syncAllPlaidHoldings();
+      }
+    } catch (e) { console.error("Plaid balance/holdings sync error:", e.message); }
     await pool.query(
       "UPDATE user_settings SET last_balance_sync_at = now() WHERE id = 1"
     ).catch(() => {});
@@ -725,6 +732,7 @@ router.post("/api/sync-balances", async (_req, res) => {
       ...tellerResult,
       plaid_accounts_updated: plaidResult?.accounts_updated || 0,
       plaid_errors: plaidResult?.errors?.length ? plaidResult.errors : undefined,
+      holdings_updated: holdingsResult?.holdings_updated || 0,
     });
   } catch (err) {
     console.error("sync-balances error:", err.message);

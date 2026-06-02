@@ -184,13 +184,14 @@ function startBackgroundJobs() {
       if (!lastRun || (now - lastRun) / 86400000 >= cadenceDays) {
         const { syncAllEnrollments, syncAllBalances } = require("./routes/enrollments");
         const { runSubscriptionDetection } = require("./routes/subscriptions");
-        const { syncAllPlaidTransactions } = require("./routes/investments");
+        const { syncAllPlaidTransactions, syncAllPlaidHoldings } = require("./routes/investments");
         const { detectRecurringTransfers } = require("../scripts/detect-transfers");
         const { runCategorize } = require("./routes/categorize");
         const { generateInsights } = require("./routes/insights");
 
         try { await syncAllEnrollments(); } catch (e) { console.error("Pre-insights sync error:", e.message); }
         try { await syncAllPlaidTransactions(); } catch (e) { console.error("Pre-insights Plaid sync error:", e.message); }
+        try { await syncAllPlaidHoldings(); } catch (e) { console.error("Pre-insights holdings sync error:", e.message); }
         try { await syncAllBalances(); } catch (e) { console.error("Pre-insights balance error:", e.message); }
         try { await runSubscriptionDetection(); } catch (e) { console.error("Pre-insights detect error:", e.message); }
         try { await detectRecurringTransfers(pool); } catch (e) { console.error("Pre-insights detect-transfers error:", e.message); }
@@ -316,12 +317,14 @@ function startBackgroundJobs() {
       if (lastSync && (now - lastSync) < dueMs) return;
 
       const { syncAllEnrollments, syncAllBalances } = require("./routes/enrollments");
-      const { syncAllPlaidTransactions } = require("./routes/investments");
+      const { syncAllPlaidTransactions, syncAllPlaidHoldings } = require("./routes/investments");
       let txnResult = null, balResult = null, plaidResult = null;
       try { txnResult = await syncAllEnrollments(); }
       catch (e) { console.error("Auto-sync Teller error:", e.message); }
       try { plaidResult = await syncAllPlaidTransactions(); }
       catch (e) { console.error("Auto-sync Plaid error:", e.message); }
+      try { await syncAllPlaidHoldings(); }
+      catch (e) { console.error("Auto-sync holdings error:", e.message); }
       try { balResult = await syncAllBalances(); }
       catch (e) { console.error("Auto-sync balances error:", e.message); }
 
