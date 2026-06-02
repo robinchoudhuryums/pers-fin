@@ -19,7 +19,8 @@
     "detect": "node scripts/detect-subscriptions.js",
     "detect-transfers": "node scripts/detect-transfers.js",
     "sheets-sync": "node scripts/sheets-sync.js",
-    "import-csv": "node scripts/import-csv-cli.js"
+    "import-csv": "node scripts/import-csv-cli.js",
+    "reset:fresh": "node scripts/reset-fresh.js"
   },
   "engines": {
     "node": ">=18"
