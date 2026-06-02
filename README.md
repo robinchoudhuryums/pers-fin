@@ -84,7 +84,7 @@ Under the unified shell the cross-app integration endpoints (Per-sistant's Perfi
 | `scripts/detect-subscriptions.js` | Recurring charge detection algorithm |
 | `scripts/sheets-sync.js` | Google Sheets sync + dashboard builder |
 | `apps-script/Code.gs` | Google Sheets Apps Script (standalone + server sync) |
-| `tests/` | Test suite (node:test, ~505 tests across 14 files) |
+| `tests/` | Test suite (node:test, 529 tests across 14 files) |
 | `Dockerfile` | Container build — installs all workspaces and boots `node shell/index.js` |
 | `render.yaml` | Render deployment blueprint (unified shell) |
 | `fly.toml` | Fly.io deployment config |
@@ -160,7 +160,7 @@ npm run test:perfin       # Perfin tests only
 npm run test:persistent   # Per-sistant tests only
 ```
 
-~500 tests covering detection, CSV parsing, date handling, API logic, cost calculations, financial-queries semantics, AI-audit pattern extraction, pinned regression tests for auth/SSO/template/exclusion behavior, and integration tests for the feedback, whats-new, performance, and trust-overview endpoints. No database required — all tests run against pure functions and mock pools.
+529 tests covering detection, CSV parsing, date handling, API logic, cost calculations, financial-queries semantics, AI-audit pattern extraction, pinned regression tests for auth/SSO/template/exclusion behavior, and integration tests for the feedback, whats-new, performance, and trust-overview endpoints. No database required — all tests run against pure functions and mock pools.
 
 ## API Endpoints
 
