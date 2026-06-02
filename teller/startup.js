@@ -216,18 +216,28 @@ function startBackgroundJobs() {
     if (!isUserActive()) return;
     try {
       const { getCategorySpendingThisMonth } = require("./services/financial-queries");
-      const [budgets, spending] = await Promise.all([
-        pool.query("SELECT category, monthly_limit FROM budgets"),
+      const month = new Date().getFullYear() + "-" + String(new Date().getMonth() + 1).padStart(2, "0");
+      const [budgets, spending, snapshots] = await Promise.all([
+        pool.query("SELECT id, category, monthly_limit, rollover_enabled, budget_type, effective_month FROM budgets"),
         getCategorySpendingThisMonth(pool),
+        pool.query("SELECT budget_id, rollover_amount FROM budget_snapshots WHERE month = $1", [month]),
       ]);
       if (budgets.rows.length === 0) return;
       const spendMap = {};
       for (const r of spending) spendMap[r.category] = parseFloat(r.spent);
+      const snapMap = {};
+      for (const s of snapshots.rows) snapMap[s.budget_id] = s;
 
       const { sendToAll } = require("./routes/notifications");
       for (const b of budgets.rows) {
+        // Skip one-time budgets outside their effective month, and compare
+        // against the effective limit (base + rollover) — same as the in-app
+        // alerts endpoint and GET /api/budgets (F18).
+        if (b.budget_type === "one_time" && b.effective_month && b.effective_month !== month) continue;
         const spent = spendMap[b.category] || 0;
-        const limit = parseFloat(b.monthly_limit);
+        const snap = snapMap[b.id];
+        const rollover = (b.rollover_enabled && snap) ? parseFloat(snap.rollover_amount || 0) : 0;
+        const limit = parseFloat(b.monthly_limit) + rollover;
         if (limit <= 0) continue;
         const pct = Math.round((spent / limit) * 100);
         if (pct >= 100) {

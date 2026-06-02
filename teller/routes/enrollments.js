@@ -156,7 +156,8 @@ async function syncEnrollment(enrollment, opts = {}) {
              merchant_name = EXCLUDED.merchant_name,
              name = EXCLUDED.name,
              category = EXCLUDED.category,
-             pending = EXCLUDED.pending`,
+             pending = EXCLUDED.pending
+           RETURNING (xmax = 0) AS inserted`,
           [
             account_id,
             txn.id,
@@ -168,7 +169,11 @@ async function syncEnrollment(enrollment, opts = {}) {
           ]
         );
 
-        if (result.rowCount > 0) {
+        // Count only genuine inserts, not ON-CONFLICT updates (rowCount is 1 for
+        // both). `xmax = 0` is true only for a fresh insert, so re-syncing
+        // existing rows no longer inflates `added` and triggers false
+        // "new activity" notifications / anomaly passes (F16).
+        if (result.rows[0]?.inserted) {
           added++;
         }
       } catch (insertErr) {

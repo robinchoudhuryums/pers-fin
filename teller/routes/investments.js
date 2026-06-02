@@ -463,7 +463,8 @@ async function syncPlaidItemTransactions(client, plaidItemDbId, accessToken) {
          category = EXCLUDED.category,
          pending = EXCLUDED.pending,
          personal_finance_category = EXCLUDED.personal_finance_category,
-         logo_url = COALESCE(EXCLUDED.logo_url, transactions.logo_url)`,
+         logo_url = COALESCE(EXCLUDED.logo_url, transactions.logo_url)
+       RETURNING (xmax = 0) AS inserted`,
       [
         txn.account_id,
         txn.transaction_id,
@@ -497,8 +498,11 @@ async function syncPlaidItemTransactions(client, plaidItemDbId, accessToken) {
     for (const txn of data.added || []) {
       if (txn.pending) continue;
       try {
-        await upsertTxn(txn);
-        totalAdded++;
+        // Count only genuine inserts (xmax = 0), not ON-CONFLICT updates — on a
+        // reconcile/cursor-reset Plaid re-delivers existing rows in `added`, and
+        // counting those as new inflated transactions_added (F16).
+        const r = await upsertTxn(txn);
+        if (r.rows[0]?.inserted) totalAdded++;
       } catch (err) {
         console.error("Plaid txn insert error:", err.message, txn.transaction_id);
         pageFailed = true;

@@ -272,9 +272,11 @@ router.post("/api/budgets/accept", async (req, res) => {
 // GET /api/budgets/alerts — Spending velocity / pacing warnings
 router.get("/api/budgets/alerts", async (_req, res) => {
   try {
-    const [budgets, spending] = await Promise.all([
+    const month = currentMonthKey();
+    const [budgets, spending, snapshots] = await Promise.all([
       pool.query("SELECT * FROM budgets ORDER BY monthly_limit DESC"),
       getCategorySpendingThisMonth(pool), // Phase B3: honors splits
+      pool.query("SELECT budget_id, rollover_amount FROM budget_snapshots WHERE month = $1", [month]),
     ]);
 
     const today = new Date();
@@ -285,11 +287,20 @@ router.get("/api/budgets/alerts", async (_req, res) => {
 
     const spendMap = {};
     for (const r of spending) spendMap[r.category] = parseFloat(r.spent);
+    const snapMap = {};
+    for (const s of snapshots.rows) snapMap[s.budget_id] = s;
 
     const alerts = [];
     for (const b of budgets.rows) {
+      // One-time budgets only apply to their effective month — don't alert on a
+      // past vacation budget every month (mirrors GET /api/budgets) (F18).
+      if (b.budget_type === "one_time" && b.effective_month && b.effective_month !== month) continue;
       const spent = spendMap[b.category] || 0;
-      const limit = parseFloat(b.monthly_limit);
+      // Compare against the effective limit (base + this month's rollover), the
+      // same number GET /api/budgets shows — not the bare monthly_limit (F18).
+      const snap = snapMap[b.id];
+      const rollover = (b.rollover_enabled && snap) ? parseFloat(snap.rollover_amount || 0) : 0;
+      const limit = parseFloat(b.monthly_limit) + rollover;
       const pctUsed = limit > 0 ? (spent / limit) * 100 : 0;
       // Don't calculate pace for the first few days — too unreliable with little data
       const pace = monthProgress >= 0.1 ? pctUsed / (monthProgress * 100) : 0;

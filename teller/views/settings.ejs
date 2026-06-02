@@ -335,6 +335,14 @@
     </div>
   </div>
 
+  <div class="section"><h2>Sync Health</h2>
+    <div id="data-health-body" style="font-size:13px;color:var(--text-muted);">Loading…</div>
+    <div class="setting-row" style="margin-top:12px;">
+      <div class="setting-info"><div class="name">Reconcile Now</div><div class="desc">Re-fetch the last 90 days from every linked bank to recover any missed transactions. Safe to run anytime — duplicates are ignored.</div></div>
+      <div class="setting-control"><button class="btn" id="reconcile-btn">Reconcile</button></div>
+    </div>
+  </div>
+
   <div class="section"><h2>Google Sheets Auto-Sync</h2>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Auto-Sync</div><div class="desc">Automatically sync data to Google Sheets on a schedule</div></div>
@@ -1236,7 +1244,71 @@
       removeBiometricCredential(this.getAttribute('data-bio-remove'), this.getAttribute('data-bio-name'));
     });
 
+    function dhAge(sec) {
+      if (sec == null) return 'never';
+      if (sec < 3600) return Math.max(1, Math.round(sec / 60)) + 'm ago';
+      if (sec < 86400) return Math.round(sec / 3600) + 'h ago';
+      return Math.round(sec / 86400) + 'd ago';
+    }
+    function dhDot(level) {
+      var c = level === 'fresh' ? 'var(--green,#4caf50)' : level === 'aging' ? 'var(--warm,#d4a574)' : 'var(--red,#eb6b6b)';
+      return '<span style="color:' + c + ';">●</span> ';
+    }
+    async function loadDataHealth() {
+      var el = document.getElementById('data-health-body');
+      if (!el) return;
+      try {
+        var res = await apiFetch('/api/data-health');
+        if (!res.ok) { el.textContent = 'Unavailable'; return; }
+        var h = await res.json();
+        var f = h.freshness || {};
+        var out = '';
+        out += '<div style="font-weight:600;margin-bottom:8px;color:' + (h.ok ? 'var(--green,#4caf50)' : 'var(--red,#eb6b6b)') + ';">'
+             + (h.ok ? 'All systems healthy' : 'Attention needed') + '</div>';
+        out += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;margin-bottom:8px;">'
+             + '<div>' + dhDot(f.transactions && f.transactions.level) + 'Transactions: ' + dhAge(f.transactions && f.transactions.age_seconds) + '</div>'
+             + '<div>' + dhDot(f.balances && f.balances.level) + 'Balances: ' + dhAge(f.balances && f.balances.age_seconds) + '</div>'
+             + '<div>' + dhDot(f.auto_sync && f.auto_sync.level) + 'Auto-sync: ' + dhAge(f.auto_sync && f.auto_sync.age_seconds) + '</div>'
+             + '<div>' + dhDot(f.insights && f.insights.level) + 'Insights: ' + dhAge(f.insights && f.insights.age_seconds) + '</div>'
+             + '</div>';
+        var p = h.providers || { teller: {}, plaid: {} };
+        out += '<div style="margin-bottom:6px;">Teller: ' + (p.teller.total || 0) + ' linked'
+             + (p.teller.disconnected ? ', <span style="color:var(--red,#eb6b6b);">' + p.teller.disconnected + ' disconnected</span>' : '')
+             + ' · Plaid: ' + (p.plaid.total || 0) + ' linked'
+             + (p.plaid.not_good ? ', <span style="color:var(--red,#eb6b6b);">' + p.plaid.not_good + ' need re-auth</span>' : '')
+             + '</div>';
+        if (h.issues && h.issues.length) {
+          out += '<ul style="margin:6px 0;padding-left:18px;">' + h.issues.map(function (i) {
+            var c = i.severity === 'info' ? 'var(--text-muted)' : 'var(--red,#eb6b6b)';
+            return '<li style="color:' + c + ';">' + esc(i.message) + '</li>';
+          }).join('') + '</ul>';
+        }
+        if (h.last_reconcile_at) {
+          out += '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Last reconcile: ' + new Date(h.last_reconcile_at).toLocaleString() + '</div>';
+        }
+        el.innerHTML = out;
+      } catch (e) { el.textContent = 'Unavailable'; }
+    }
+    (function () {
+      var rb = document.getElementById('reconcile-btn');
+      if (!rb) return;
+      rb.addEventListener('click', async function () {
+        rb.disabled = true; var prev = rb.textContent; rb.textContent = 'Reconciling…';
+        try {
+          var res = await apiFetch('/api/sync/reconcile', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ days: 90, provider: 'all' }),
+          });
+          var j = await res.json();
+          if (res.ok) { showMsg('Reconcile complete', true); loadDataHealth(); }
+          else { showMsg(j.error || 'Reconcile failed', false); }
+        } catch (e) { showMsg(e.message, false); }
+        finally { rb.disabled = false; rb.textContent = prev; }
+      });
+    })();
+
     checkPushStatus();
-    loadSettings(); loadInsights(); loadUsageHistory(); loadCatStatus(); loadBiometricCredentials();
+    loadSettings(); loadInsights(); loadUsageHistory(); loadCatStatus(); loadBiometricCredentials(); loadDataHealth();
   </script>
 </body></html>
