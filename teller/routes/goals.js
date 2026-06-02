@@ -6,7 +6,7 @@ const express = require("express");
 const router = express.Router();
 const { pool } = require("../services/database");
 const { zipToState } = require("../data/reference-data");
-const { INVESTMENT_ACCOUNT_TYPES } = require("../services/financial-queries");
+const { INVESTMENT_ACCOUNT_TYPES, getMonthlySpending } = require("../services/financial-queries");
 
 // GET /api/goals
 // When a goal is linked to a funding account (Phase C), current_amount is
@@ -523,7 +523,12 @@ router.get("/api/context-export", async (req, res) => {
   try {
     const [accounts, monthlySpend, subs, goals, creditCards, netWorth, recentInsight, settings] = await Promise.all([
       pool.query("SELECT name, type, subtype, mask, available_balance, current_balance, apr FROM linked_accounts ORDER BY type, name"),
-      pool.query("SELECT TO_CHAR(date, 'YYYY-MM') AS month, SUM(amount) AS total, COUNT(*) AS txns FROM transactions WHERE amount > 0 AND date >= CURRENT_DATE - INTERVAL '12 months' GROUP BY TO_CHAR(date, 'YYYY-MM') ORDER BY month"),
+      // Split-adjusted, transfer-filtered, reimbursed-excluded monthly spend via
+      // the shared helper, so the AI deep-dive export shows the same numbers as
+      // the dashboard rather than a raw SUM(amount) that includes transfers (F12).
+      getMonthlySpending(pool, 12).then(rows => ({
+        rows: rows.map(r => ({ month: r.month, total: parseFloat(r.total_spend), txns: parseInt(r.txn_count, 10) })),
+      })),
       pool.query("SELECT display_name, amount, cadence_days, category, next_expected FROM detected_subscriptions WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL ORDER BY amount DESC"),
       pool.query("SELECT * FROM financial_goals WHERE is_active = true ORDER BY target_date ASC NULLS LAST").catch(() => ({ rows: [] })),
       pool.query("SELECT name, mask, current_balance, available_balance, apr FROM linked_accounts WHERE type = 'credit' AND current_balance IS NOT NULL").catch(() => ({ rows: [] })),

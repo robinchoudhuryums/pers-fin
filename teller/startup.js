@@ -116,8 +116,25 @@ function startBackgroundJobs() {
   intervalHandles.push(setInterval(async () => {
     if (!isUserActive()) return;
     try {
+      // Derive current_amount the same way GET /api/goals does: for a
+      // funding-linked goal the real progress is (account_balance - baseline),
+      // and the stored current_amount column is never updated — so milestones
+      // must compute it here too, or funding-linked goals would fire on a stale
+      // value (F13). Orphaned funding links (FK set but row gone) fall back to
+      // the stored value via the la.id / ia.id NULL guards.
       const goals = await pool.query(
-        "SELECT id, name, target_amount, current_amount FROM financial_goals WHERE is_active = true"
+        `SELECT g.id, g.name, g.target_amount,
+                CASE
+                  WHEN g.funding_account_id IS NOT NULL AND la.id IS NOT NULL
+                    THEN GREATEST(0, COALESCE(la.available_balance, la.current_balance, 0) - COALESCE(g.goal_baseline_amount, 0))
+                  WHEN g.funding_investment_id IS NOT NULL AND ia.id IS NOT NULL
+                    THEN GREATEST(0, COALESCE(ia.balance, 0) - COALESCE(g.goal_baseline_amount, 0))
+                  ELSE g.current_amount
+                END AS current_amount
+         FROM financial_goals g
+         LEFT JOIN linked_accounts     la ON la.id = g.funding_account_id
+         LEFT JOIN investment_accounts ia ON ia.id = g.funding_investment_id
+         WHERE g.is_active = true`
       );
       const MILESTONES = [25, 50, 75, 100];
       for (const g of goals.rows) {
