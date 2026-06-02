@@ -2591,7 +2591,7 @@ async function syncBillPayments(sheets, pool) {
 // UNIONs four sources of upcoming dates into one sortable tab:
 //   - detected_subscriptions.next_expected
 //   - manual_bills (computed next-due from due_day + cadence)
-//   - recurring_transfers (last_seen + cadence_days)
+//   - recurring_transfers (last_transferred + cadence_days)
 //   - financial_goals.target_date
 // Scoped to the next 90 days so the tab stays glanceable. Sorted by date
 // ASC so the top of the sheet shows what's happening soonest.
@@ -2737,16 +2737,16 @@ async function syncImportantDates(sheets, pool) {
     ),
     transfers AS (
       SELECT
-        (last_seen + (cadence_days || ' days')::interval)::date AS event_date,
+        (last_transferred + (cadence_days || ' days')::interval)::date AS event_date,
         'Transfer (' || transfer_type || ')' AS event_type,
         display_name AS name,
         amount,
         direction AS notes
       FROM recurring_transfers
       WHERE is_active = true AND is_dismissed = false
-        AND last_seen IS NOT NULL
-        AND (last_seen + (cadence_days || ' days')::interval)::date <= CURRENT_DATE + INTERVAL '90 days'
-        AND (last_seen + (cadence_days || ' days')::interval)::date >= CURRENT_DATE
+        AND last_transferred IS NOT NULL
+        AND (last_transferred + (cadence_days || ' days')::interval)::date <= CURRENT_DATE + INTERVAL '90 days'
+        AND (last_transferred + (cadence_days || ' days')::interval)::date >= CURRENT_DATE
     ),
     goals AS (
       SELECT target_date AS event_date,
@@ -3187,29 +3187,46 @@ async function syncAll() {
   const sheets = await getSheetsClient();
   const pool = getPool();
 
+  // Per-step isolation: each tab sync runs independently so one failing tab
+  // (e.g. a query referencing a renamed column) no longer aborts syncAll and
+  // leaves the spreadsheet half-updated with no signal. Failures are
+  // collected and returned in `errors[]` so the caller can surface which
+  // tabs are stale instead of seeing a single opaque throw after 14 tabs
+  // were already written.
+  const errors = [];
+  const step = async (name, fn, fallback = null) => {
+    try {
+      return await fn();
+    } catch (err) {
+      console.error(`Sheets sync step "${name}" failed:`, err.message);
+      errors.push({ step: name, error: err.message });
+      return fallback;
+    }
+  };
+
   try {
-    const txnCount = await syncTransactions(sheets, pool);
-    const subs = await syncSubscriptions(sheets, pool);
-    const utilCount = await syncUtilities(sheets, pool);
-    const insightsCount = await syncInsights(sheets, pool);
-    const transfersCount = await syncRecurringTransfers(sheets, pool);
-    const taxCount = await syncTaxDeductions(sheets, pool);
-    const investmentsCount = await syncInvestments(sheets, pool);
-    const nwhCount = await syncNetWorthHistory(sheets, pool);
-    const incomeCount = await syncIncome(sheets, pool);
-    const trustCount = await syncAiTrust(sheets, pool);
-    const rulesCount = await syncCategorizationRules(sheets, pool);
-    const manualBillsCount = await syncManualBills(sheets, pool);
-    const billPaymentsCount = await syncBillPayments(sheets, pool);
-    const creditScoreCount = await syncCreditScores(sheets, pool);
-    const datesCount = await syncImportantDates(sheets, pool);
-    const watchlistCount = await syncWatchlist(sheets, pool);
-    const archivesCreated = await syncMonthArchives(sheets, pool);
-    await buildDashboard(sheets, pool);
+    const txnCount = await step("transactions", () => syncTransactions(sheets, pool), 0);
+    const subs = await step("subscriptions", () => syncSubscriptions(sheets, pool), []);
+    const utilCount = await step("utilities", () => syncUtilities(sheets, pool), 0);
+    const insightsCount = await step("insights", () => syncInsights(sheets, pool), 0);
+    const transfersCount = await step("recurring_transfers", () => syncRecurringTransfers(sheets, pool), 0);
+    const taxCount = await step("tax_deductions", () => syncTaxDeductions(sheets, pool), 0);
+    const investmentsCount = await step("investments", () => syncInvestments(sheets, pool), 0);
+    const nwhCount = await step("net_worth_history", () => syncNetWorthHistory(sheets, pool), 0);
+    const incomeCount = await step("income", () => syncIncome(sheets, pool), 0);
+    const trustCount = await step("ai_trust", () => syncAiTrust(sheets, pool), 0);
+    const rulesCount = await step("categorization_rules", () => syncCategorizationRules(sheets, pool), 0);
+    const manualBillsCount = await step("manual_bills", () => syncManualBills(sheets, pool), 0);
+    const billPaymentsCount = await step("bill_payments", () => syncBillPayments(sheets, pool), 0);
+    const creditScoreCount = await step("credit_scores", () => syncCreditScores(sheets, pool), 0);
+    const datesCount = await step("important_dates", () => syncImportantDates(sheets, pool), 0);
+    const watchlistCount = await step("watchlist", () => syncWatchlist(sheets, pool), 0);
+    const archivesCreated = await step("month_archives", () => syncMonthArchives(sheets, pool), 0);
+    await step("dashboard", () => buildDashboard(sheets, pool));
 
     return {
       transactions_synced: txnCount,
-      subscriptions_synced: subs.length,
+      subscriptions_synced: Array.isArray(subs) ? subs.length : 0,
       utilities_synced: utilCount,
       insights_synced: insightsCount,
       transfers_synced: transfersCount,
@@ -3225,6 +3242,7 @@ async function syncAll() {
       important_dates_synced: datesCount,
       watchlist_items_synced: watchlistCount,
       month_archives_created: archivesCreated,
+      errors,
       timestamp: new Date().toISOString(),
     };
   } finally {

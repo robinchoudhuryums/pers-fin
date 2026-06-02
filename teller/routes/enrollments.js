@@ -87,6 +87,13 @@ async function syncEnrollment(enrollment) {
 
   let added = 0;
   let latestDate = last_synced_txn_date;
+  // If ANY account in this enrollment fails to fetch (fully), we hold back the
+  // enrollment-level watermark so the next sync retries from the same point.
+  // Otherwise an earlier account that synced to "today" would advance the
+  // shared watermark and permanently skip a failed sibling account's older
+  // un-synced transactions (F3). Re-processing is safe — the insert below
+  // upserts on transaction_id.
+  let fetchError = false;
 
   for (const { account_id } of accounts) {
     let allTxns = [];
@@ -99,6 +106,7 @@ async function syncEnrollment(enrollment) {
         txns = await tellerRequest(endpoint, access_token);
       } catch (fetchErr) {
         console.error(`  Error fetching transactions for account ${account_id}:`, fetchErr.message);
+        fetchError = true;
         break;
       }
 
@@ -115,8 +123,13 @@ async function syncEnrollment(enrollment) {
       }
     }
 
+    // Use >= (not >) against the day-granular watermark: Teller transaction
+    // `date` is day-granular, so a transaction that posts on the watermark day
+    // AFTER a sync ran would be `=` and never `>`, dropping it forever (F6).
+    // Re-including the whole watermark day is safe — the ON CONFLICT upsert
+    // below dedups rows already inserted on that day.
     const txnsToProcess = last_synced_txn_date
-      ? allTxns.filter(t => new Date(t.date) > new Date(last_synced_txn_date))
+      ? allTxns.filter(t => new Date(t.date) >= new Date(last_synced_txn_date))
       : allTxns;
 
     for (const txn of txnsToProcess) {
@@ -161,7 +174,10 @@ async function syncEnrollment(enrollment) {
     }
   }
 
-  if (latestDate) {
+  // Only advance the watermark when every account fetched cleanly. On a fetch
+  // error we leave last_synced_txn_date untouched so the next sync re-attempts
+  // the failed account's range instead of stepping over it (F3).
+  if (latestDate && !fetchError) {
     await pool.query(
       `UPDATE teller_enrollments SET last_synced_txn_date = $1, updated_at = now()
        WHERE id = $2`,

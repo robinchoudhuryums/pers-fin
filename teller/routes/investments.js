@@ -440,7 +440,44 @@ async function syncPlaidItemTransactions(client, plaidItemDbId, accessToken) {
   let totalRemoved = 0;
   let hasMore = true;
   let pages = 0;
+  let incomplete = false;
   const MAX_PAGES = 20;
+
+  // Reusable upsert for both `added` and `modified`. Plaid frequently delivers
+  // a transaction as pending in `added`, then re-delivers it posted in
+  // `modified`; a bare UPDATE would match zero rows in that case and silently
+  // drop the now-posted transaction (F5). Upserting on both paths makes the
+  // `modified` branch self-healing.
+  const upsertTxn = (txn) => {
+    const logoUrl = txn.counterparties?.[0]?.logo_url || null;
+    return pool.query(
+      `INSERT INTO transactions (account_id, transaction_id, amount, iso_currency_code, date,
+                                 merchant_name, name, category, pending, personal_finance_category, logo_url)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, $9, $10)
+       ON CONFLICT (transaction_id)
+       DO UPDATE SET
+         amount = EXCLUDED.amount,
+         date = EXCLUDED.date,
+         merchant_name = EXCLUDED.merchant_name,
+         name = EXCLUDED.name,
+         category = EXCLUDED.category,
+         pending = EXCLUDED.pending,
+         personal_finance_category = EXCLUDED.personal_finance_category,
+         logo_url = COALESCE(EXCLUDED.logo_url, transactions.logo_url)`,
+      [
+        txn.account_id,
+        txn.transaction_id,
+        txn.amount,
+        txn.iso_currency_code || "USD",
+        txn.date,
+        txn.merchant_name || null,
+        txn.name || "",
+        txn.category ? `{${txn.category.join(",")}}` : null,
+        txn.personal_finance_category ? JSON.stringify(txn.personal_finance_category) : null,
+        logoUrl,
+      ]
+    );
+  };
 
   while (hasMore && pages < MAX_PAGES) {
     pages++;
@@ -451,67 +488,33 @@ async function syncPlaidItemTransactions(client, plaidItemDbId, accessToken) {
     });
     const data = syncRes.data;
 
+    // Track per-page row failures. Plaid's cursor contract is "everything up to
+    // `cursor` has been durably processed" — so if ANY row in this page fails to
+    // persist, we must NOT advance past it, or Plaid will never resend it (F1).
+    let pageFailed = false;
+
     // Process added transactions
     for (const txn of data.added || []) {
       if (txn.pending) continue;
       try {
-        // Extract first counterparty's logo_url for merchant display (#3).
-        // Plaid returns counterparties[] on enriched transactions; the first
-        // entry is usually the merchant with a square logo.
-        const logoUrl = txn.counterparties?.[0]?.logo_url || null;
-
-        await pool.query(
-          `INSERT INTO transactions (account_id, transaction_id, amount, iso_currency_code, date,
-                                     merchant_name, name, category, pending, personal_finance_category, logo_url)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, $9, $10)
-           ON CONFLICT (transaction_id)
-           DO UPDATE SET
-             amount = EXCLUDED.amount,
-             date = EXCLUDED.date,
-             merchant_name = EXCLUDED.merchant_name,
-             name = EXCLUDED.name,
-             category = EXCLUDED.category,
-             pending = EXCLUDED.pending,
-             personal_finance_category = EXCLUDED.personal_finance_category,
-             logo_url = COALESCE(EXCLUDED.logo_url, transactions.logo_url)`,
-          [
-            txn.account_id,
-            txn.transaction_id,
-            txn.amount,
-            txn.iso_currency_code || "USD",
-            txn.date,
-            txn.merchant_name || null,
-            txn.name || "",
-            txn.category ? `{${txn.category.join(",")}}` : null,
-            txn.personal_finance_category ? JSON.stringify(txn.personal_finance_category) : null,
-            logoUrl,
-          ]
-        );
+        await upsertTxn(txn);
         totalAdded++;
       } catch (err) {
         console.error("Plaid txn insert error:", err.message, txn.transaction_id);
+        pageFailed = true;
       }
     }
 
-    // Process modified transactions (same upsert — ON CONFLICT handles it)
+    // Process modified transactions (upsert so a pending→posted re-delivery
+    // with no existing row is inserted rather than dropped — see F5 above).
     for (const txn of data.modified || []) {
       if (txn.pending) continue;
       try {
-        await pool.query(
-          `UPDATE transactions SET
-             amount = $1, date = $2, merchant_name = $3, name = $4,
-             category = $5, personal_finance_category = $6
-           WHERE transaction_id = $7`,
-          [
-            txn.amount, txn.date, txn.merchant_name || null, txn.name || "",
-            txn.category ? `{${txn.category.join(",")}}` : null,
-            txn.personal_finance_category ? JSON.stringify(txn.personal_finance_category) : null,
-            txn.transaction_id,
-          ]
-        );
+        await upsertTxn(txn);
         totalModified++;
       } catch (err) {
         console.error("Plaid txn update error:", err.message, txn.transaction_id);
+        pageFailed = true;
       }
     }
 
@@ -522,20 +525,36 @@ async function syncPlaidItemTransactions(client, plaidItemDbId, accessToken) {
         totalRemoved++;
       } catch (err) {
         console.error("Plaid txn delete error:", err.message, txn.transaction_id);
+        pageFailed = true;
       }
+    }
+
+    if (pageFailed) {
+      // Halt without advancing the cursor. The rows that succeeded this page are
+      // idempotent (ON CONFLICT upserts / idempotent deletes), so re-processing
+      // the page on the next sync is safe; the failed rows get another chance
+      // instead of being lost forever.
+      incomplete = true;
+      console.error(`Plaid sync (item ${plaidItemDbId}): row failure on page ${pages}; halting cursor advance to avoid data loss.`);
+      break;
     }
 
     cursor = data.next_cursor;
     hasMore = data.has_more;
+
+    // Persist progressively after each fully-successful page so a failure on a
+    // later page can't discard the progress of earlier pages.
+    await pool.query(
+      `UPDATE sync_cursors SET cursor = $1, last_synced_at = now() WHERE plaid_item_id = $2`,
+      [cursor, plaidItemDbId]
+    );
   }
 
-  // Persist the new cursor
-  await pool.query(
-    `UPDATE sync_cursors SET cursor = $1, last_synced_at = now() WHERE plaid_item_id = $2`,
-    [cursor, plaidItemDbId]
-  );
+  // If MAX_PAGES was hit while has_more is still true, the sync is partial but
+  // the cursor is correctly positioned for the next invocation to resume.
+  if (hasMore && !incomplete) incomplete = true;
 
-  return { added: totalAdded, modified: totalModified, removed: totalRemoved };
+  return { added: totalAdded, modified: totalModified, removed: totalRemoved, incomplete };
 }
 
 // POST /api/plaid/sync-transactions — sync transactions for all Plaid items

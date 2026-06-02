@@ -103,8 +103,12 @@ async function runCategorize() {
           : merchant.includes(pattern);
         if (isMatch) {
           await pool.query(
-            "UPDATE transactions SET category = $1 WHERE transaction_id = $2",
-            [`{${rule.category}}`, txn.transaction_id]
+            // Write to user_category (scalar TEXT), NOT category[]. The Teller/
+            // Plaid upserts do `category = EXCLUDED.category` on conflict, so a
+            // re-sync would clobber a categorization written to `category`.
+            // Display layers read COALESCE(user_category, category[1]).
+            "UPDATE transactions SET user_category = $1 WHERE transaction_id = $2",
+            [rule.category, txn.transaction_id]
           );
           await pool.query(
             "UPDATE categorization_rules SET times_applied = times_applied + 1, updated_at = now() WHERE id = $1",
@@ -130,8 +134,9 @@ async function runCategorize() {
       const mapped = tellerCat ? TELLER_CATEGORY_MAP[tellerCat] : null;
       if (mapped && CATEGORIES.includes(mapped)) {
         await pool.query(
-          "UPDATE transactions SET category = $1 WHERE transaction_id = $2",
-          [`{${mapped}}`, txn.transaction_id]
+          // Write to user_category (scalar) so a Teller/Plaid re-sync can't clobber it.
+          "UPDATE transactions SET user_category = $1 WHERE transaction_id = $2",
+          [mapped, txn.transaction_id]
         );
         tellerMapped++;
       } else {
@@ -265,8 +270,9 @@ async function runCategorize() {
       if (!CATEGORIES.includes(cat.category)) continue;
       const txn = afterTellerMap[idx];
       await pool.query(
-        "UPDATE transactions SET category = $1 WHERE transaction_id = $2",
-        [`{${cat.category}}`, txn.transaction_id]
+        // Write to user_category (scalar) so a Teller/Plaid re-sync can't clobber it.
+        "UPDATE transactions SET user_category = $1 WHERE transaction_id = $2",
+        [cat.category, txn.transaction_id]
       );
       updated++;
     }
@@ -550,7 +556,9 @@ router.post("/api/categorization-rules/apply", async (_req, res) => {
       // Same scheme-aware predicate as POST /api/categorize. Skip rows where
       // the user has manually set user_category — their choice wins.
       const result = await pool.query(
-        `UPDATE transactions t SET category = $2
+        // Write to user_category (scalar TEXT) so a Teller/Plaid re-sync (which
+        // does `category = EXCLUDED.category`) can't clobber the applied rule.
+        `UPDATE transactions t SET user_category = $2
          WHERE user_category IS NULL
            AND (
              category IS NULL
@@ -560,7 +568,7 @@ router.post("/api/categorization-rules/apply", async (_req, res) => {
            AND pending = false AND amount > 0
            AND ${condition}
          RETURNING transaction_id`,
-        [pattern, `{${rule.category}}`, OUR_CATEGORIES_PG]
+        [pattern, rule.category, OUR_CATEGORIES_PG]
       );
       if (result.rowCount > 0) {
         totalApplied += result.rowCount;
