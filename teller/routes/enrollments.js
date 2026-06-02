@@ -613,12 +613,24 @@ async function syncAllBalances() {
 // POST /api/sync-balances
 router.post("/api/sync-balances", async (_req, res) => {
   try {
-    const result = await syncAllBalances();
-    // Update data freshness timestamp
+    const tellerResult = await syncAllBalances();
+    // Also refresh Plaid balances so users with both providers get one-click
+    // freshness. Lazy-required to avoid a circular import via routes/investments.
+    let plaidResult = null;
+    try {
+      const inv = require("./investments");
+      if (typeof inv.syncAllPlaidBalances === "function") {
+        plaidResult = await inv.syncAllPlaidBalances();
+      }
+    } catch (e) { console.error("Plaid balance sync error:", e.message); }
     await pool.query(
       "UPDATE user_settings SET last_balance_sync_at = now() WHERE id = 1"
     ).catch(() => {});
-    res.json(result);
+    res.json({
+      ...tellerResult,
+      plaid_accounts_updated: plaidResult?.accounts_updated || 0,
+      plaid_errors: plaidResult?.errors?.length ? plaidResult.errors : undefined,
+    });
   } catch (err) {
     console.error("sync-balances error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });

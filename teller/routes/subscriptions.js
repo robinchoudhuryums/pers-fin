@@ -802,6 +802,105 @@ router.get("/api/transactions/duplicates", async (_req, res) => {
   }
 });
 
+// GET /api/transactions/csv-overlap — find CSV-imported transactions that
+// have a matching Plaid/Teller-synced transaction (same date ±2 days, exact
+// amount). This is the common cause of spending double-counting after a user
+// links a previously CSV-only account via Plaid: the historical CSV rows are
+// still in the database under a manual virtual account, and Plaid pulls fresh
+// copies of the same transactions under its own account_id. The transaction_id
+// scheme differs across sources so the existing ON CONFLICT dedup misses them.
+router.get("/api/transactions/csv-overlap", async (_req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        la_csv.id AS csv_account_id,
+        la_csv.name AS csv_account_name,
+        la_csv.institution_name_manual AS csv_institution,
+        la_synced.id AS synced_account_id,
+        la_synced.name AS synced_account_name,
+        COALESCE(pi.institution_name, te.institution_name) AS synced_institution,
+        CASE WHEN pi.id IS NOT NULL THEN 'plaid' ELSE 'teller' END AS synced_source,
+        COUNT(*)::int AS overlap_count,
+        SUM(t_csv.amount)::numeric(14,2) AS overlap_amount,
+        MIN(t_csv.date) AS overlap_first_date,
+        MAX(t_csv.date) AS overlap_last_date
+      FROM linked_accounts la_csv
+      JOIN transactions t_csv ON t_csv.account_id = la_csv.account_id
+      JOIN transactions t_synced ON t_synced.amount = t_csv.amount
+        AND ABS(EXTRACT(EPOCH FROM (t_synced.date::timestamp - t_csv.date::timestamp)) / 86400) <= 2
+        AND t_synced.account_id != t_csv.account_id
+      JOIN linked_accounts la_synced ON la_synced.account_id = t_synced.account_id
+      LEFT JOIN plaid_items pi ON pi.id = la_synced.plaid_item_id
+      LEFT JOIN teller_enrollments te ON te.id = la_synced.teller_enrollment_id
+      WHERE la_csv.is_manual = true
+        AND (la_synced.plaid_item_id IS NOT NULL OR la_synced.teller_enrollment_id IS NOT NULL)
+      GROUP BY la_csv.id, la_csv.name, la_csv.institution_name_manual,
+               la_synced.id, la_synced.name, pi.institution_name, te.institution_name, pi.id
+      HAVING COUNT(*) >= 3
+      ORDER BY COUNT(*) DESC
+    `);
+    res.json({
+      overlaps: result.rows,
+      note: "CSV virtual accounts whose transactions overlap with Plaid/Teller-synced accounts. POST /api/transactions/csv-overlap/resolve with { csv_account_id, synced_account_id } to delete the CSV-side duplicates.",
+    });
+  } catch (err) {
+    console.error("csv-overlap error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// POST /api/transactions/csv-overlap/resolve — delete CSV transactions that
+// have a matching Plaid/Teller transaction (same amount, date ±2 days). Keeps
+// the Plaid/Teller side as the canonical source going forward. Also offers a
+// dry_run flag so the user can preview the row count before committing.
+router.post("/api/transactions/csv-overlap/resolve", async (req, res) => {
+  const csvAccountId = parseInt(req.body?.csv_account_id);
+  const syncedAccountId = parseInt(req.body?.synced_account_id);
+  const dryRun = req.body?.dry_run === true;
+  if (!csvAccountId || !syncedAccountId) {
+    return res.status(400).json({ error: "csv_account_id and synced_account_id required (numeric linked_accounts.id values from GET /api/transactions/csv-overlap)" });
+  }
+  try {
+    const accts = await pool.query(
+      `SELECT id, account_id, is_manual, plaid_item_id, teller_enrollment_id
+       FROM linked_accounts WHERE id = ANY($1::int[])`,
+      [[csvAccountId, syncedAccountId]]
+    );
+    if (accts.rows.length !== 2) return res.status(404).json({ error: "One or both accounts not found" });
+    const csv = accts.rows.find(r => r.id === csvAccountId);
+    const synced = accts.rows.find(r => r.id === syncedAccountId);
+    if (!csv?.is_manual) return res.status(400).json({ error: "csv_account_id must be a manual (CSV-imported) account" });
+    if (!synced?.plaid_item_id && !synced?.teller_enrollment_id) {
+      return res.status(400).json({ error: "synced_account_id must be a Plaid- or Teller-linked account" });
+    }
+    const candidates = await pool.query(
+      `SELECT t_csv.transaction_id
+       FROM transactions t_csv
+       WHERE t_csv.account_id = $1
+         AND EXISTS (
+           SELECT 1 FROM transactions t_synced
+           WHERE t_synced.account_id = $2
+             AND t_synced.amount = t_csv.amount
+             AND ABS(EXTRACT(EPOCH FROM (t_synced.date::timestamp - t_csv.date::timestamp)) / 86400) <= 2
+         )`,
+      [csv.account_id, synced.account_id]
+    );
+    if (dryRun) {
+      return res.json({ would_delete: candidates.rows.length, dry_run: true });
+    }
+    const ids = candidates.rows.map(r => r.transaction_id);
+    if (!ids.length) return res.json({ deleted: 0 });
+    const del = await pool.query(
+      `DELETE FROM transactions WHERE transaction_id = ANY($1::text[]) RETURNING transaction_id`,
+      [ids]
+    );
+    res.json({ deleted: del.rows.length });
+  } catch (err) {
+    console.error("csv-overlap resolve error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
 // PATCH /api/transactions/:id — user overrides (merchant_name, notes, is_reimbursed).
 // User edits are stored in `user_*` columns so a subsequent sync from Teller
 // does not clobber them. `merchant_name` in the PATCH body writes to
