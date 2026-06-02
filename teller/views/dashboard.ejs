@@ -509,6 +509,19 @@
     </details>
   </div>
 
+  <!-- Shared-card settlement (who-owes-who on a joint card) -->
+  <div class="section" id="settlement-section" style="display:none;margin-bottom:28px;">
+    <details open>
+      <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;justify-content:space-between;">
+        <h2 style="margin:0;display:inline;">Shared Card Settlement</h2>
+        <span style="display:flex;gap:8px;align-items:center;">
+          <select id="settlement-month-pick" style="font-size:11px;padding:3px 6px;background:var(--bg-elevated);color:var(--text);border:1px solid var(--card-border);border-radius:4px;"></select>
+        </span>
+      </summary>
+      <div id="settlement-body" style="margin-top:12px;font-size:13px;"></div>
+    </details>
+  </div>
+
   <!-- Investments (Teller-linked + Plaid + manual, unified) -->
   <div class="section" id="investments-section" style="margin-bottom:28px;">
     <details open>
@@ -2569,6 +2582,88 @@
       } catch (e) { /* non-critical */ }
     }
 
+    // Shared-card settlement (who-owes-who on a joint card). Only renders
+    // when at least one is_shared account exists. Defaults to current month
+    // but lets the user pick the prior 3 from a small dropdown — most users
+    // check the first week of a new month, when they want last month's tally.
+    function fmtMoney(n) {
+      var x = parseFloat(n || 0);
+      return (x < 0 ? '-$' : '$') + Math.abs(x).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+    function monthLabel(ym) {
+      var parts = ym.split('-');
+      var d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, 1);
+      return d.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+    }
+    function buildSettlementMonthOptions() {
+      var sel = document.getElementById('settlement-month-pick');
+      if (!sel || sel.options.length) return;
+      var now = new Date();
+      for (var i = 0; i < 6; i++) {
+        var d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        var ym = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+        var opt = document.createElement('option');
+        opt.value = ym;
+        opt.textContent = monthLabel(ym) + (i === 0 ? ' (current)' : '');
+        // Default to the previous month if it's the first week — that's
+        // when the user typically checks who owes what for the statement.
+        if (i === (now.getDate() <= 7 && now.getMonth() !== d.getMonth() ? 0 : (now.getDate() <= 7 ? 1 : 0))) {
+          opt.selected = true;
+        }
+        sel.appendChild(opt);
+      }
+      sel.addEventListener('change', function() { loadSettlement(); });
+    }
+    async function loadSettlement() {
+      buildSettlementMonthOptions();
+      var section = document.getElementById('settlement-section');
+      var body = document.getElementById('settlement-body');
+      var sel = document.getElementById('settlement-month-pick');
+      var month = sel ? sel.value : '';
+      try {
+        var r = await apiFetch('/api/shared-settlement' + (month ? '?month=' + month : ''));
+        if (!r.ok) return;
+        var d = await r.json();
+        if (!d.accounts || !d.accounts.length) {
+          section.style.display = 'none';
+          return;
+        }
+        section.style.display = '';
+        var partner = d.partner_name || 'Partner';
+        body.innerHTML = d.accounts.map(function(a) {
+          var explainer = a.txn_count === 0
+            ? '<div style="color:var(--text-muted);padding:8px 0;">No charges on this card in ' + monthLabel(d.month) + '.</div>'
+            : (
+              '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px;">' +
+                '<div style="padding:10px;background:var(--bg-elevated);border:1px solid var(--card-border);border-radius:6px;">' +
+                  '<div style="font-size:11px;color:var(--text-muted);">You owe</div>' +
+                  '<div style="font-size:20px;color:var(--warm);font-weight:500;margin-top:2px;">' + fmtMoney(a.your_share) + '</div>' +
+                  '<div style="font-size:10px;color:var(--text-muted);margin-top:4px;">' + a.split_pct + '% of ' + fmtMoney(a.shared_total) + ' shared + ' + fmtMoney(a.your_personal_total) + ' personal</div>' +
+                '</div>' +
+                '<div style="padding:10px;background:var(--bg-elevated);border:1px solid var(--card-border);border-radius:6px;">' +
+                  '<div style="font-size:11px;color:var(--text-muted);">' + esc(partner) + ' owes</div>' +
+                  '<div style="font-size:20px;color:var(--teal);font-weight:500;margin-top:2px;">' + fmtMoney(a.partner_share) + '</div>' +
+                  '<div style="font-size:10px;color:var(--text-muted);margin-top:4px;">' + (100 - a.split_pct) + '% of ' + fmtMoney(a.shared_total) + ' shared + ' + fmtMoney(a.partner_personal_total) + ' personal</div>' +
+                '</div>' +
+              '</div>' +
+              '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;display:flex;justify-content:space-between;">' +
+                '<span>Total charges: <strong>' + fmtMoney(a.total_charges) + '</strong> across ' + a.txn_count + ' transactions</span>' +
+                '<a href="/transactions?account_id=' + a.account_id + '&month=' + d.month + '" style="color:var(--teal);text-decoration:none;">Review &rarr;</a>' +
+              '</div>'
+            );
+          return (
+            '<div style="margin-bottom:14px;padding:14px;background:var(--card);border:1px solid var(--card-border);border-radius:8px;">' +
+              '<div style="display:flex;justify-content:space-between;align-items:baseline;">' +
+                '<strong style="font-size:14px;">' + esc(a.account_name) + '</strong>' +
+                '<span style="font-size:11px;color:var(--text-muted);">' + monthLabel(d.month) + '</span>' +
+              '</div>' +
+              explainer +
+            '</div>'
+          );
+        }).join('');
+      } catch (e) { /* non-critical */ }
+    }
+
     // Dashboard widget visibility
     async function applyWidgetVisibility() {
       try {
@@ -2589,6 +2684,7 @@
           investments: '#investments-section',
           reviewQueue: '#review-queue-section',
           aiMemory: '#ai-memory-section',
+          settlement: '#settlement-section',
         };
         Object.entries(map).forEach(function(e) {
           var key = e[0], selector = e[1];
@@ -2610,6 +2706,7 @@
     loadInvestments();
     loadReviewQueue();
     loadAiMemory();
+    loadSettlement();
 
     computeWellness();
 

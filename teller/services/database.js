@@ -324,7 +324,7 @@ async function runMigrations() {
     await client.query("ALTER TABLE linked_accounts DROP CONSTRAINT IF EXISTS chk_account_source");
     await client.query("ALTER TABLE linked_accounts ADD CONSTRAINT chk_account_source CHECK (plaid_item_id IS NOT NULL OR teller_enrollment_id IS NOT NULL OR is_manual = true)");
     // Dashboard widget order/visibility
-    await client.query(`ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS dashboard_widgets JSONB NOT NULL DEFAULT '{"pyramid":true,"accounts":true,"recentTxns":true,"monthlySpend":true,"categories":true,"merchants":true,"upcoming":true,"forecast":true,"charts":true,"calendar":true,"cashFlow":true,"savingsRate":true,"yoy":true,"investments":true,"reviewQueue":true,"aiMemory":true}'::jsonb`);
+    await client.query(`ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS dashboard_widgets JSONB NOT NULL DEFAULT '{"pyramid":true,"accounts":true,"recentTxns":true,"monthlySpend":true,"categories":true,"merchants":true,"upcoming":true,"forecast":true,"charts":true,"calendar":true,"cashFlow":true,"savingsRate":true,"yoy":true,"investments":true,"reviewQueue":true,"aiMemory":true,"settlement":true}'::jsonb`);
     // Sheets auto-sync
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sheets_auto_sync_enabled BOOLEAN NOT NULL DEFAULT false");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sheets_auto_sync_interval TEXT NOT NULL DEFAULT 'weekly'");
@@ -598,6 +598,21 @@ async function runMigrations() {
     // 20-hour gate from last_daily_digest_at.
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS daily_digest_enabled BOOLEAN NOT NULL DEFAULT false");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_daily_digest_at TIMESTAMPTZ");
+
+    // ---- Shared-card per-transaction settlement override ----
+    // For shared/joint accounts (is_shared = true), the account-level
+    // spending_split_pct splits every transaction at the same percentage.
+    // personal_for overrides that split for individual transactions: when set,
+    // the row is 100% attributed to one person ('self' = you, 'partner' = the
+    // other cardholder) instead of being split. NULL = use the account default.
+    // Only honored when the account is is_shared = true; on non-shared accounts
+    // the split formula falls back to spending_split_pct as before.
+    await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS personal_for TEXT");
+    await client.query("ALTER TABLE transactions DROP CONSTRAINT IF EXISTS chk_personal_for");
+    await client.query("ALTER TABLE transactions ADD CONSTRAINT chk_personal_for CHECK (personal_for IS NULL OR personal_for IN ('self','partner'))");
+    // partner_name surfaces in the settlement widget + transaction-row UI so
+    // amounts say "Sarah owes you $X" rather than "Partner owes you $X".
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS partner_name TEXT");
 
     // ---- Watchlist ----
     // User-curated list of merchants / categories / keywords to monitor.

@@ -557,3 +557,109 @@ describe("gatherWhatsNew shared aggregator", () => {
     assert.equal(result.transactions[0].merchant, "X");
   });
 });
+
+// ---------------------------------------------------------------------------
+// GET /api/shared-settlement
+// ---------------------------------------------------------------------------
+describe("GET /api/shared-settlement", () => {
+  let app;
+
+  beforeEach(() => {
+    dbModule.pool.query = async (sql, params) => {
+      // partner_name lookup
+      if (sql.includes("partner_name") && sql.includes("user_settings")) {
+        return { rows: [{ partner_name: "Sarah" }] };
+      }
+      // settlement aggregate
+      if (sql.includes("FILTER (WHERE t.personal_for IS NULL)")) {
+        return {
+          rows: [
+            {
+              account_id: 7,
+              account_name: "Capital One Quicksilver",
+              split_pct: 50,
+              txn_count: 50,
+              total_charges: "2400.00",
+              shared_total: "2000.00",
+              shared_count: 45,
+              your_personal_total: "200.00",
+              your_personal_count: 3,
+              partner_personal_total: "200.00",
+              partner_personal_count: 2,
+            },
+          ],
+        };
+      }
+      return { rows: [] };
+    };
+    app = makeApp("../teller/routes/subscriptions");
+  });
+
+  it("returns split math for a shared account (50/50 + personals)", async () => {
+    const res = await supertest(app).get("/api/shared-settlement?month=2026-05").expect(200);
+    assert.equal(res.body.month, "2026-05");
+    assert.equal(res.body.partner_name, "Sarah");
+    assert.equal(res.body.accounts.length, 1);
+    const a = res.body.accounts[0];
+    // 50% of $2000 shared + $200 personal = $1200
+    assert.equal(a.your_share, 1200);
+    assert.equal(a.partner_share, 1200);
+    assert.equal(a.total_charges, 2400);
+  });
+
+  it("defaults to current month when query string omitted", async () => {
+    const res = await supertest(app).get("/api/shared-settlement").expect(200);
+    assert.match(res.body.month, /^\d{4}-(0[1-9]|1[0-2])$/);
+  });
+
+  it("rejects malformed month and falls back to current", async () => {
+    const res = await supertest(app).get("/api/shared-settlement?month=2026-13").expect(200);
+    // Falls back to current month silently — the regex guards against SQL injection
+    assert.match(res.body.month, /^\d{4}-(0[1-9]|1[0-2])$/);
+    assert.notEqual(res.body.month, "2026-13");
+  });
+});
+
+describe("PATCH /api/transactions/:id accepts personal_for", () => {
+  let app, captured;
+
+  beforeEach(() => {
+    captured = null;
+    dbModule.pool.query = async (sql, params) => {
+      captured = { sql, params };
+      return { rows: [{ transaction_id: "t1", personal_for: params[0] }] };
+    };
+    app = makeApp("../teller/routes/subscriptions");
+  });
+
+  it("writes 'self' through", async () => {
+    await supertest(app).patch("/api/transactions/t1")
+      .send({ personal_for: "self" }).expect(200);
+    assert.match(captured.sql, /personal_for = \$1/);
+    assert.equal(captured.params[0], "self");
+  });
+
+  it("writes 'partner' through", async () => {
+    await supertest(app).patch("/api/transactions/t1")
+      .send({ personal_for: "partner" }).expect(200);
+    assert.equal(captured.params[0], "partner");
+  });
+
+  it("clears the override on null / empty / 'shared'", async () => {
+    await supertest(app).patch("/api/transactions/t1")
+      .send({ personal_for: null }).expect(200);
+    assert.equal(captured.params[0], null);
+    await supertest(app).patch("/api/transactions/t1")
+      .send({ personal_for: "" }).expect(200);
+    assert.equal(captured.params[0], null);
+    await supertest(app).patch("/api/transactions/t1")
+      .send({ personal_for: "shared" }).expect(200);
+    assert.equal(captured.params[0], null);
+  });
+
+  it("rejects garbage values by storing null (not the bad string)", async () => {
+    await supertest(app).patch("/api/transactions/t1")
+      .send({ personal_for: "DROP TABLE transactions" }).expect(200);
+    assert.equal(captured.params[0], null);
+  });
+});

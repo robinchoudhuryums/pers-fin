@@ -822,15 +822,15 @@ async function generateInsights() {
         //     reimbursed per CLAUDE.md — a reimbursed charge is still typical).
         const anomalyData = await pool.query(
           `SELECT t.merchant_name, t.name, t.user_merchant_name,
-                  ROUND(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0, 2) AS amount,
+                  ROUND((CASE WHEN la.is_shared AND t.personal_for = 'self' THEN t.amount WHEN la.is_shared AND t.personal_for = 'partner' THEN 0 ELSE t.amount * COALESCE(la.spending_split_pct, 100) / 100.0 END), 2) AS amount,
                   t.date,
                   avg_tbl.avg_amount, avg_tbl.txn_count
            FROM transactions t
            LEFT JOIN linked_accounts la ON la.account_id = t.account_id
            JOIN (
              SELECT LOWER(COALESCE(t2.user_merchant_name, t2.merchant_name, t2.name)) AS merchant,
-                    AVG(t2.amount * COALESCE(la2.spending_split_pct, 100) / 100.0) AS avg_amount,
-                    STDDEV(t2.amount * COALESCE(la2.spending_split_pct, 100) / 100.0) AS std_amount,
+                    AVG((CASE WHEN la2.is_shared AND t2.personal_for = 'self' THEN t2.amount WHEN la2.is_shared AND t2.personal_for = 'partner' THEN 0 ELSE t2.amount * COALESCE(la2.spending_split_pct, 100) / 100.0 END)) AS avg_amount,
+                    STDDEV((CASE WHEN la2.is_shared AND t2.personal_for = 'self' THEN t2.amount WHEN la2.is_shared AND t2.personal_for = 'partner' THEN 0 ELSE t2.amount * COALESCE(la2.spending_split_pct, 100) / 100.0 END)) AS std_amount,
                     COUNT(*) AS txn_count
              FROM transactions t2
              LEFT JOIN linked_accounts la2 ON la2.account_id = t2.account_id
@@ -843,7 +843,7 @@ async function generateInsights() {
            WHERE t.amount > 0 AND t.pending = false
              AND COALESCE(t.is_reimbursed, false) = false
              AND t.date >= CURRENT_DATE - INTERVAL '2 months'
-             AND (t.amount * COALESCE(la.spending_split_pct, 100) / 100.0) > avg_tbl.avg_amount * 2
+             AND ((CASE WHEN la.is_shared AND t.personal_for = 'self' THEN t.amount WHEN la.is_shared AND t.personal_for = 'partner' THEN 0 ELSE t.amount * COALESCE(la.spending_split_pct, 100) / 100.0 END)) > avg_tbl.avg_amount * 2
            ORDER BY t.date DESC
            LIMIT 10`
         );
@@ -872,7 +872,7 @@ async function generateInsights() {
           `SELECT EXTRACT(MONTH FROM t.date)::int AS month_num,
                   TO_CHAR(t.date, 'Mon') AS month_name,
                   EXTRACT(YEAR FROM t.date)::int AS year,
-                  ROUND(SUM(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0), 2) AS total
+                  ROUND(SUM((CASE WHEN la.is_shared AND t.personal_for = 'self' THEN t.amount WHEN la.is_shared AND t.personal_for = 'partner' THEN 0 ELSE t.amount * COALESCE(la.spending_split_pct, 100) / 100.0 END)), 2) AS total
            FROM transactions t
            LEFT JOIN linked_accounts la ON la.account_id = t.account_id
            WHERE t.amount > 0 AND t.pending = false
