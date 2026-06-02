@@ -282,9 +282,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (529 tests as of latest); use
+  Perfin and Per-sistant test files (544 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 529 tests across 14 test files.
+  Current count: 544 tests across 15 test files.
 - `.github/workflows/ci.yml` — CI pipeline (single `npm ci` at root via npm workspaces, then `npm test`)
 - `.claude/commands/` — Project slash-command prompts: `/broad-scan`, `/broad-implement`,
   `/test-sync`, `/sync-docs`
@@ -608,7 +608,11 @@ shell/
   No AI call. Opt-in: Settings → AI Insights → "Daily Activity Digest"
   toggle (default off). Hourly scheduler; `runDailyDigest` dedupes via
   a 20-hour gate from `last_daily_digest_at` and skips silently when
-  `gatherWhatsNew` returns zero counts. Same Per-sistant prereq as
+  `gatherWhatsNew` returns zero counts.
+- `user_settings.last_reconcile_at TIMESTAMPTZ`: watermark for the weekly
+  self-healing reconcile and the manual `POST /api/sync/reconcile`. The
+  scheduler runs the trailing-window Teller backfill at most once per 7-day
+  window from this timestamp. Same Per-sistant prereq as
   weekly digest — without webhook config, it's a no-op.
 - **Context export**: Structured financial data (markdown/JSON) for pasting into Claude chat deep-dives
 - **Real-time anomaly alerts**: Push notifications for charges 3x+ above merchant average during sync
@@ -906,7 +910,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 529 tests passing across 14 test files (Perfin + Per-sistant)
+- 544 tests passing across 15 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash
@@ -927,6 +931,14 @@ POST /api/sync-balances    # fetch latest account balances. Refreshes BOTH
                            # Response: { accounts_updated, errors?,
                            # plaid_accounts_updated, plaid_errors? }
 POST /api/detect           # run subscription detection
+POST /api/sync/reconcile   # backfill/reconcile to recover dropped transactions
+                           # (body: days=1-365 default 90, provider=teller|plaid|all).
+                           # Teller re-fetches the trailing window watermark-
+                           # independently (idempotent upserts, no watermark
+                           # advance, anomaly push suppressed); Plaid resets each
+                           # item's cursor and re-walks transactionsSync. Stamps
+                           # last_reconcile_at. Returns { days, provider, teller?,
+                           # plaid? } per-provider summaries.
 POST /api/detect-transfers # run recurring transfer detection
 GET  /api/recurring-transfers # list recurring transfers (query: filter=active|dismissed|all)
 PATCH /api/recurring-transfers/:id/dismiss   # dismiss a recurring transfer
@@ -1011,6 +1023,13 @@ PATCH /api/settings        # update user settings. Accepts: theme,
                            # shell_idle_timeout_minutes, target_allocation_pct,
                            # weekly/daily digest toggles, etc.
 GET  /api/data-freshness   # per-source sync timestamps with staleness flags
+GET  /api/data-health      # operator health surface — per-source freshness,
+                           # Teller/Plaid connection status, derived issues[]
+                           # (disconnected links, stale balances, never-synced),
+                           # recent sync notifications, last_reconcile_at, and a
+                           # top-level `ok` flag. (Does NOT live-decrypt tokens —
+                           # pgp_sym_decrypt throws on a wrong key; that surfaces
+                           # via sync errors instead.)
 GET  /api/budgets          # list budgets with current spending (query: month=YYYY-MM)
 POST /api/budgets          # create budget (body: rollover_enabled, budget_type, effective_month)
 PATCH /api/budgets/:id     # update budget
@@ -1460,6 +1479,11 @@ can dismiss them from the UI or run `POST /api/cleanup`.
   (20/15min) that counts only FAILED `x-api-key` attempts (skips header-less
   browser traffic and successful cron requests). Replaces the prior
   defenseless single 750ms delay.
+- **Shell login redirect guard**: `auth.safeReturnTo()` only allows same-origin
+  absolute paths for the post-login `return_to` — it rejects scheme-relative
+  `//host` targets and backslash paths, so the login endpoint can't be turned
+  into an open redirect (a naive `startsWith("/")` would have let `//evil.com`
+  through).
 - **SSO replay protection**: Each SSO token embeds a 24-byte random nonce; validate tracks
   used nonces in an in-memory Map (2-minute TTL cleanup) and rejects duplicates. Nonce is
   consumed after signature verification so timing attacks can't burn legitimate nonces.
@@ -1528,6 +1552,14 @@ embedded mode).
 - **CSV import reminders**: every 24 hours, checks manual (CSV-only) accounts
   whose most recent CSV import is older than `csv_reminder_days` setting.
   Sends notification listing specific account names needing a fresh upload.
+- **Self-healing reconcile**: every 1 hour, acts at most weekly (gated on
+  `last_reconcile_at`). Runs `reconcileTeller(90)` — re-fetches the trailing
+  90 days from every Teller enrollment regardless of the incremental
+  watermark, recovering any transactions a prior sync dropped (same-day late
+  arrivals, a failed-sibling-account skip) via idempotent upserts. Teller
+  only (free, cheap); Plaid reconcile is heavier (full cursor re-walk) and
+  stays a manual `POST /api/sync/reconcile` action. Not gated on user
+  activity — a weekly background heal should run even while the user is away.
 - **Weekly digest**: every 1 hour, checks `weekly_digest_enabled` and that
   today matches `weekly_digest_day` (0=Sun..6=Sat). When both match,
   invokes `runWeeklyDigest()` in `routes/insights.js`, which itself gates
@@ -1742,7 +1774,8 @@ income module, and bill-calendar income detection.
 - **The scheduler calls helpers in-process, not via HTTP self-fetch.**
   Every route module that the scheduler invokes exports a callable helper
   alongside its Express router:
-  - `routes/enrollments.js` → `syncAllEnrollments`, `syncAllBalances`
+  - `routes/enrollments.js` → `syncAllEnrollments`, `syncAllBalances`, `reconcileTeller`
+  - `routes/investments.js` → `syncAllPlaidTransactions`, `syncAllPlaidBalances`, `reconcilePlaidTransactions`
   - `routes/subscriptions.js` → `runSubscriptionDetection`
   - `routes/categorize.js` → `runCategorize`
   - `routes/insights.js` → `generateInsights`
@@ -1898,6 +1931,26 @@ income module, and bill-calendar income detection.
   day-granular watermark so a transaction that posts on the watermark day after
   a sync ran isn't dropped; re-including the whole watermark day is safe because
   the `ON CONFLICT (transaction_id)` upsert dedups the re-processed rows.
+- **Reconcile/backfill is watermark-independent and idempotent.**
+  `reconcileTeller(days)` re-fetches the trailing window from every Teller
+  enrollment by passing `{ backfillDays }` to `syncAllEnrollments`, which sets a
+  `backfillFrom` floor used in place of `last_synced_txn_date` — it does NOT
+  advance the incremental watermark and suppresses the anomaly push (re-upserting
+  historical rows would otherwise look like a flood of new activity). All writes
+  are `ON CONFLICT` upserts so it only recovers dropped rows, never duplicates.
+  `reconcilePlaidTransactions()` resets every `sync_cursors.cursor` to '' and
+  re-walks `transactionsSync` (Plaid's cursor is all-or-nothing, so reconcile is
+  a full re-pull). Driven by `POST /api/sync/reconcile` and the weekly
+  self-healing scheduler (Teller only; Plaid stays manual).
+- **Named route helpers are attached AFTER `module.exports = router`.** In
+  modules that export an Express router AND helper functions (e.g.
+  `routes/investments.js`), the helper attachments (`module.exports.syncAll… = …`)
+  must come AFTER the `module.exports = router` line — otherwise the router
+  assignment replaces the default exports object and silently drops the helpers
+  to `undefined`. (This had left `syncAllPlaidTransactions` / `syncAllPlaidBalances`
+  unexported, so the scheduler's Plaid steps were no-ops caught by try/catch.)
+  All such helpers are hoisted `async function` declarations, so attaching them
+  at the very end works.
 
 ## Git
 - Render deploys from `main` (configured in the Render dashboard, not in `render.yaml`)
