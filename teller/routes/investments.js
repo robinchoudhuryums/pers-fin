@@ -651,7 +651,20 @@ async function syncAllPlaidTransactions() {
   };
 }
 
-module.exports.syncAllPlaidTransactions = syncAllPlaidTransactions;
+
+// reconcilePlaidTransactions — reset every Plaid item's transactionsSync cursor
+// to empty, then re-walk the full history. Plaid's cursor model is all-or-
+// nothing (you can't bound it to "last N days"), so reconciliation is a full
+// re-pull; all writes are idempotent upserts, so it only recovers anything we
+// previously dropped — it doesn't duplicate. Heavier than the incremental sync,
+// so it's a manual/weekly action, never the hourly auto-sync path.
+async function reconcilePlaidTransactions() {
+  const client = getPlaidClient();
+  if (!client) return { ok: false, error: "Plaid not configured" };
+  await pool.query("UPDATE sync_cursors SET cursor = ''").catch(e => console.error("cursor reset error:", e.message));
+  const result = await syncAllPlaidTransactions();
+  return { ok: true, reconciled: true, ...result };
+}
 
 // Balance-only refresh for every linked Plaid item. Used by
 // POST /api/sync-balances so a single "Sync Balances" click pulls Plaid
@@ -712,7 +725,6 @@ async function syncAllPlaidBalances() {
   return { ok: true, items_synced: items.rows.length - errors.length, accounts_updated: accountsUpdated, errors };
 }
 
-module.exports.syncAllPlaidBalances = syncAllPlaidBalances;
 
 // =========================================================================
 // #1 — Plaid Liabilities (APR, minimum payment, loan details)
@@ -1495,4 +1507,13 @@ router.post("/api/plaid/migrate-overrides", async (req, res) => {
   }
 });
 
+// IMPORTANT: assign the router FIRST, then attach the named helpers. Doing
+// `module.exports = router` here (at the end) would otherwise discard any
+// `module.exports.X = X` set earlier in the file against the default {} —
+// which had silently left syncAllPlaidTransactions / syncAllPlaidBalances
+// undefined for startup.js's schedulers. All three are hoisted function
+// declarations, so they're defined by the time this runs.
 module.exports = router;
+module.exports.syncAllPlaidTransactions = syncAllPlaidTransactions;
+module.exports.reconcilePlaidTransactions = reconcilePlaidTransactions;
+module.exports.syncAllPlaidBalances = syncAllPlaidBalances;

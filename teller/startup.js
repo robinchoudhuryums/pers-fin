@@ -325,6 +325,28 @@ function startBackgroundJobs() {
     }
   }, 60 * 60 * 1000));
 
+  // Self-healing reconcile (every hour, acts at most weekly). Re-fetches the
+  // trailing 90 days from every Teller enrollment regardless of the incremental
+  // watermark, so any transactions a prior sync dropped (same-day late arrivals,
+  // a failed-sibling-account skip) are recovered via idempotent upserts. Teller
+  // only — it's free and cheap; Plaid reconcile is heavier (full cursor re-walk)
+  // and stays a manual POST /api/sync/reconcile action. Not gated on user
+  // activity: a weekly background heal should run even while the user is away.
+  intervalHandles.push(setInterval(async () => {
+    try {
+      const r = await pool.query("SELECT last_reconcile_at FROM user_settings WHERE id = 1");
+      const last = r.rows[0]?.last_reconcile_at ? new Date(r.rows[0].last_reconcile_at) : null;
+      const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+      if (last && (Date.now() - last.getTime()) < WEEK_MS) return;
+      const { reconcileTeller } = require("./routes/enrollments");
+      const result = await reconcileTeller(90);
+      await pool.query("UPDATE user_settings SET last_reconcile_at = now() WHERE id = 1").catch(() => {});
+      console.log("Self-healing Teller reconcile complete:", JSON.stringify(result));
+    } catch (err) {
+      console.error("Self-healing reconcile error:", err.message);
+    }
+  }, 60 * 60 * 1000));
+
   // Weekly digest email. Gated on user activity (no point burning compute
   // to check if nobody's here). Fires on the configured weekly_digest_day
   // when weekly_digest_enabled is true. Bails silently otherwise.
