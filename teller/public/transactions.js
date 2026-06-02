@@ -63,15 +63,23 @@
           var amt = parseFloat(t.amount);
           var amtClass = amt > 0 ? 'debit' : 'credit';
           var reimbursedBadge = t.is_reimbursed ? ' <span style="font-size:10px;color:var(--teal);border:1px solid var(--teal);padding:1px 4px;border-radius:4px;">REIMBURSED</span>' : '';
+          // Shared-card per-transaction settlement override. Only meaningful on
+          // is_shared accounts — on a normal account, personal_for has no
+          // effect on the SPLIT_AMOUNT formula, so we hide the control.
+          var personalBadge = '';
+          if (t.account_is_shared) {
+            if (t.personal_for === 'self') personalBadge = ' <span style="font-size:10px;color:var(--warm);border:1px solid var(--warm);padding:1px 4px;border-radius:4px;">MINE</span>';
+            else if (t.personal_for === 'partner') personalBadge = ' <span style="font-size:10px;color:var(--teal);border:1px solid var(--teal);padding:1px 4px;border-radius:4px;">PARTNER</span>';
+          }
           return '<tr>' +
             '<td><input type="checkbox" class="txn-check" data-id="' + esc(t.transaction_id) + '"></td>' +
             '<td>' + fmtDate(t.date) + '</td>' +
-            '<td>' + esc(t.merchant) + reimbursedBadge + '</td>' +
+            '<td>' + esc(t.merchant) + reimbursedBadge + personalBadge + '</td>' +
             '<td><span class="txn-cat">' + esc(t.category || 'Uncategorized') + '</span></td>' +
             '<td class="amount ' + amtClass + '">' + fmt(Math.abs(amt)) + '</td>' +
             '<td class="hide-mobile" style="font-size:11px;color:var(--text-muted);">' + esc(t.account_name || '') + '</td>' +
             '<td class="row-actions">' +
-              '<button class="btn-xs" data-action="edit" data-id="' + esc(t.transaction_id) + '" data-merchant="' + esc(t.merchant || '') + '" data-notes="' + esc(t.user_notes || '') + '" data-reimbursed="' + (t.is_reimbursed ? '1' : '0') + '" data-category="' + esc(t.category || '') + '">Edit</button>' +
+              '<button class="btn-xs" data-action="edit" data-id="' + esc(t.transaction_id) + '" data-merchant="' + esc(t.merchant || '') + '" data-notes="' + esc(t.user_notes || '') + '" data-reimbursed="' + (t.is_reimbursed ? '1' : '0') + '" data-category="' + esc(t.category || '') + '" data-shared="' + (t.account_is_shared ? '1' : '0') + '" data-personal="' + esc(t.personal_for || '') + '">Edit</button>' +
               (amt > 0 && !t.pending
                 ? '<button class="btn-xs" data-action="split" data-id="' + esc(t.transaction_id) + '" data-amount="' + esc(String(Math.abs(amt))) + '" data-merchant="' + esc(t.merchant || '') + '">Split</button>'
                 : '') +
@@ -313,6 +321,8 @@
       var currentNotes = this.dataset.notes || '';
       var currentReimbursed = this.dataset.reimbursed === '1';
       var currentCategory = this.dataset.category || '';
+      var isSharedAccount = this.dataset.shared === '1';
+      var currentPersonal = this.dataset.personal || '';
       // Only offer to "remember" when the current category isn't already in
       // our scheme. If it is, the user is probably making a one-off correction.
       var inScheme = CATEGORIES.indexOf(currentCategory) >= 0;
@@ -349,6 +359,16 @@
             '<input type="checkbox" id="edit-reimbursed"' + (currentReimbursed ? ' checked' : '') + ' style="width:auto;min-height:auto;">' +
             '<span style="font-size:11px;color:var(--text-muted);">Excludes this transaction from spending totals</span>' +
           '</div>' +
+          (isSharedAccount
+            ? '<div class="edit-field"><label>Settlement</label>' +
+                '<select id="edit-personal">' +
+                  '<option value=""' + (currentPersonal === '' ? ' selected' : '') + '>Shared (default split)</option>' +
+                  '<option value="self"' + (currentPersonal === 'self' ? ' selected' : '') + '>Mine (I pay 100%)</option>' +
+                  '<option value="partner"' + (currentPersonal === 'partner' ? ' selected' : '') + '>Partner (they pay 100%)</option>' +
+                '</select>' +
+                '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Per-transaction override for shared cards. Reflected in the Settlement widget on the dashboard.</div>' +
+              '</div>'
+            : '') +
           '<div class="actions">' +
             '<button class="btn" id="edit-cancel">Cancel</button>' +
             '<button class="btn primary" id="edit-save">Save</button>' +
@@ -369,6 +389,11 @@
         if (newMerchant !== currentMerchant) body.merchant_name = newMerchant || null;
         if (newNotes !== currentNotes) body.notes = newNotes || null;
         if (newReimbursed !== currentReimbursed) body.is_reimbursed = newReimbursed;
+        if (isSharedAccount) {
+          var personalEl = document.getElementById('edit-personal');
+          var newPersonal = personalEl ? personalEl.value : '';
+          if (newPersonal !== currentPersonal) body.personal_for = newPersonal || null;
+        }
 
         var categoryChanged = newCategory && newCategory !== currentCategory;
         if (!Object.keys(body).length && !categoryChanged) {

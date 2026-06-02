@@ -226,17 +226,26 @@ router.post("/api/plaid/hosted-link-complete", async (req, res) => {
     const acctRes = await client.accountsGet({ access_token: accessToken });
     let linked = 0;
     for (const acct of acctRes.data.accounts) {
+      const cur = acct.balances?.current ?? null;
+      const avail = acct.balances?.available ?? null;
+      const limit = acct.balances?.limit ?? null;
       await pool.query(
-        `INSERT INTO linked_accounts (plaid_item_id, account_id, name, official_name, type, subtype, mask)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `INSERT INTO linked_accounts (plaid_item_id, account_id, name, official_name, type, subtype, mask,
+                                       current_balance, available_balance, credit_limit, balance_updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
          ON CONFLICT (account_id) DO UPDATE SET
            name = EXCLUDED.name,
            official_name = EXCLUDED.official_name,
            type = EXCLUDED.type,
            subtype = EXCLUDED.subtype,
-           plaid_item_id = EXCLUDED.plaid_item_id`,
+           plaid_item_id = EXCLUDED.plaid_item_id,
+           current_balance = EXCLUDED.current_balance,
+           available_balance = EXCLUDED.available_balance,
+           credit_limit = COALESCE(EXCLUDED.credit_limit, linked_accounts.credit_limit),
+           balance_updated_at = now()`,
         [plaidItemDbId, acct.account_id, acct.name, acct.official_name || null,
-         acct.type, acct.subtype || null, acct.mask || null]
+         acct.type, acct.subtype || null, acct.mask || null,
+         cur, avail, limit]
       );
       linked++;
     }
@@ -298,17 +307,26 @@ router.post("/api/plaid/exchange-transactions", async (req, res) => {
     const acctRes = await client.accountsGet({ access_token: accessToken });
     let linked = 0;
     for (const acct of acctRes.data.accounts) {
+      const cur = acct.balances?.current ?? null;
+      const avail = acct.balances?.available ?? null;
+      const limit = acct.balances?.limit ?? null;
       await pool.query(
-        `INSERT INTO linked_accounts (plaid_item_id, account_id, name, official_name, type, subtype, mask)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `INSERT INTO linked_accounts (plaid_item_id, account_id, name, official_name, type, subtype, mask,
+                                       current_balance, available_balance, credit_limit, balance_updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
          ON CONFLICT (account_id) DO UPDATE SET
            name = EXCLUDED.name,
            official_name = EXCLUDED.official_name,
            type = EXCLUDED.type,
            subtype = EXCLUDED.subtype,
-           plaid_item_id = EXCLUDED.plaid_item_id`,
+           plaid_item_id = EXCLUDED.plaid_item_id,
+           current_balance = EXCLUDED.current_balance,
+           available_balance = EXCLUDED.available_balance,
+           credit_limit = COALESCE(EXCLUDED.credit_limit, linked_accounts.credit_limit),
+           balance_updated_at = now()`,
         [plaidItemDbId, acct.account_id, acct.name, acct.official_name || null,
-         acct.type, acct.subtype || null, acct.mask || null]
+         acct.type, acct.subtype || null, acct.mask || null,
+         cur, avail, limit]
       );
       linked++;
     }
@@ -350,7 +368,7 @@ router.post("/api/plaid/exchange-transactions", async (req, res) => {
             `INSERT INTO investment_accounts (name, institution, account_type, balance, plaid_account_id)
              VALUES ($1, $2, $3, $4, $5)
              ON CONFLICT (plaid_account_id) DO UPDATE SET
-               balance = $4, name = $1, updated_at = now()`,
+               balance = $4, name = $1, is_active = true, updated_at = now()`,
             [acct.name, institution?.name || "Unknown", acct.subtype || "brokerage",
              balance, acct.account_id]
           );
@@ -616,6 +634,67 @@ async function syncAllPlaidTransactions() {
 
 module.exports.syncAllPlaidTransactions = syncAllPlaidTransactions;
 
+// Balance-only refresh for every linked Plaid item. Used by
+// POST /api/sync-balances so a single "Sync Balances" click pulls Plaid
+// AND Teller balances. Doesn't touch the transactions table — that's what
+// makes it safe to run independently of the full transactionsSync cycle.
+async function syncAllPlaidBalances() {
+  const client = getPlaidClient();
+  if (!client) return { ok: true, items_synced: 0, accounts_updated: 0, errors: [] };
+  const items = await pool.query(
+    `SELECT id, institution_name,
+            pgp_sym_decrypt(access_token_enc, $1) AS access_token
+     FROM plaid_items`,
+    [ENCRYPTION_PASSPHRASE]
+  );
+  let accountsUpdated = 0;
+  const errors = [];
+  for (const item of items.rows) {
+    if (!item.access_token) {
+      errors.push({ institution: item.institution_name, error: "decryption_failed" });
+      continue;
+    }
+    try {
+      const balRes = await client.accountsGet({ access_token: item.access_token });
+      for (const ba of balRes.data.accounts) {
+        const cur = ba.balances?.current ?? null;
+        const avail = ba.balances?.available ?? null;
+        const limit = ba.balances?.limit ?? null;
+        if (cur === null && avail === null) continue;
+        const upd = await pool.query(
+          `UPDATE linked_accounts SET
+             current_balance = $1, available_balance = $2,
+             credit_limit = COALESCE($3, credit_limit),
+             balance_updated_at = now()
+           WHERE account_id = $4 AND plaid_item_id = $5
+           RETURNING id`,
+          [cur, avail, limit, ba.account_id, item.id]
+        );
+        if (upd.rows.length) {
+          accountsUpdated++;
+          const daily = cur !== null ? cur : avail;
+          await pool.query(
+            `INSERT INTO account_balance_snapshots
+               (source, source_id, snapshot_date, balance, available_balance, current_balance)
+             VALUES ('linked', $1, CURRENT_DATE, $2, $3, $4)
+             ON CONFLICT (source, source_id, snapshot_date) DO UPDATE SET
+               balance = EXCLUDED.balance,
+               available_balance = EXCLUDED.available_balance,
+               current_balance = EXCLUDED.current_balance`,
+            [upd.rows[0].id, daily, avail, cur]
+          ).catch(e => console.error("Plaid balance snapshot error:", e.message));
+        }
+      }
+    } catch (err) {
+      console.error("Plaid balance refresh error for", item.institution_name, ":", err.response?.data?.error_message || err.message);
+      errors.push({ institution: item.institution_name, error: err.response?.data?.error_message || err.message });
+    }
+  }
+  return { ok: true, items_synced: items.rows.length - errors.length, accounts_updated: accountsUpdated, errors };
+}
+
+module.exports.syncAllPlaidBalances = syncAllPlaidBalances;
+
 // =========================================================================
 // #1 — Plaid Liabilities (APR, minimum payment, loan details)
 // =========================================================================
@@ -824,7 +903,7 @@ router.post("/api/plaid/exchange", async (req, res) => {
         `INSERT INTO investment_accounts (name, institution, account_type, balance, notes, plaid_account_id)
          VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT (plaid_account_id) DO UPDATE SET
-           balance = $4, name = $1, updated_at = now()`,
+           balance = $4, name = $1, is_active = true, updated_at = now()`,
         [
           acct.official_name || acct.name,
           institution?.name || "Unknown",
@@ -919,7 +998,7 @@ router.post("/api/plaid/sync-holdings", async (_req, res) => {
           // here but the snapshot table uses the local SERIAL id).
           const updRes = await pool.query(
             `UPDATE investment_accounts SET balance = $1, updated_at = now()
-             WHERE plaid_account_id = $2
+             WHERE plaid_account_id = $2 AND is_active = true
              RETURNING id`,
             [balance, acct.account_id]
           );

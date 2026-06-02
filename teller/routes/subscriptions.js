@@ -277,9 +277,11 @@ router.get("/api/transactions", async (req, res) => {
         COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS merchant,
         t.user_notes,
         t.is_reimbursed,
+        t.personal_for,
         t.amount,
         la.name AS account_name,
         la.type AS account_type,
+        la.is_shared AS account_is_shared,
         COALESCE(pi.institution_name, te.institution_name, 'CSV Import') AS institution_name,
         COALESCE(t.user_category, t.category[1]) AS category,
         t.personal_finance_category->>'primary' AS pfc_primary,
@@ -487,6 +489,119 @@ router.get("/api/csv-imports", async (_req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// GET /api/shared-settlement — month-by-month "who owes who" for shared
+// credit cards. Splits each transaction by personal_for: NULL rows use the
+// account's spending_split_pct (default 50/50 on a shared card); 'self' rows
+// are 100% the user; 'partner' rows are 100% the other cardholder. Reimbursed
+// rows are excluded entirely (they net out to neither party).
+// Query: month=YYYY-MM (default = current month), account_id (optional —
+// returns settlements for every shared account when omitted).
+router.get("/api/shared-settlement", async (req, res) => {
+  const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(req.query.month || ""))
+    ? req.query.month
+    : new Date().toISOString().slice(0, 7);
+  const accountIdFilter = req.query.account_id ? parseInt(req.query.account_id) : null;
+  try {
+    const partnerNameRow = await pool.query(
+      "SELECT COALESCE(NULLIF(TRIM(partner_name), ''), 'Partner') AS partner_name FROM user_settings WHERE id = 1"
+    );
+    const partnerName = partnerNameRow.rows[0]?.partner_name || "Partner";
+
+    const params = [month + "-01"];
+    let accountClause = "la.is_shared = true";
+    if (accountIdFilter) {
+      params.push(accountIdFilter);
+      accountClause += ` AND la.id = $${params.length}`;
+    }
+
+    const result = await pool.query(`
+      SELECT
+        la.id AS account_id,
+        la.name AS account_name,
+        COALESCE(la.spending_split_pct, 50) AS split_pct,
+        COUNT(t.transaction_id)::int AS txn_count,
+        ROUND(COALESCE(SUM(t.amount), 0)::numeric, 2) AS total_charges,
+        ROUND(COALESCE(SUM(t.amount) FILTER (WHERE t.personal_for IS NULL), 0)::numeric, 2) AS shared_total,
+        COUNT(*) FILTER (WHERE t.personal_for IS NULL)::int AS shared_count,
+        ROUND(COALESCE(SUM(t.amount) FILTER (WHERE t.personal_for = 'self'), 0)::numeric, 2) AS your_personal_total,
+        COUNT(*) FILTER (WHERE t.personal_for = 'self')::int AS your_personal_count,
+        ROUND(COALESCE(SUM(t.amount) FILTER (WHERE t.personal_for = 'partner'), 0)::numeric, 2) AS partner_personal_total,
+        COUNT(*) FILTER (WHERE t.personal_for = 'partner')::int AS partner_personal_count
+      FROM linked_accounts la
+      LEFT JOIN transactions t
+        ON t.account_id = la.account_id
+        AND t.amount > 0
+        AND COALESCE(t.is_reimbursed, false) = false
+        AND t.date >= $1::date
+        AND t.date <  ($1::date + INTERVAL '1 month')::date
+      WHERE ${accountClause}
+      GROUP BY la.id, la.name, la.spending_split_pct
+      ORDER BY la.name
+    `, params);
+
+    const accounts = result.rows.map(r => {
+      const shared = parseFloat(r.shared_total) || 0;
+      const yours = parseFloat(r.your_personal_total) || 0;
+      const theirs = parseFloat(r.partner_personal_total) || 0;
+      const yourSplitPct = (parseInt(r.split_pct) || 50) / 100;
+      const yourShare = shared * yourSplitPct + yours;
+      const theirShare = shared * (1 - yourSplitPct) + theirs;
+      return {
+        account_id: r.account_id,
+        account_name: r.account_name,
+        split_pct: parseInt(r.split_pct),
+        txn_count: r.txn_count,
+        total_charges: parseFloat(r.total_charges) || 0,
+        shared_total: shared,
+        shared_count: r.shared_count,
+        your_personal_total: yours,
+        your_personal_count: r.your_personal_count,
+        partner_personal_total: theirs,
+        partner_personal_count: r.partner_personal_count,
+        your_share: Math.round(yourShare * 100) / 100,
+        partner_share: Math.round(theirShare * 100) / 100,
+      };
+    });
+
+    res.json({ month, partner_name: partnerName, accounts });
+  } catch (err) {
+    console.error("shared-settlement error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// GET /api/shared-settlement/:account_id/transactions — flat list of every
+// transaction on a shared account for the given month, with each row's
+// personal_for state, so the user can review/edit assignments while
+// reconciling. Reimbursed rows are returned with a flag so the UI can hide
+// or fade them.
+router.get("/api/shared-settlement/:account_id/transactions", async (req, res) => {
+  const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(req.query.month || ""))
+    ? req.query.month
+    : new Date().toISOString().slice(0, 7);
+  const accountId = parseInt(req.params.account_id);
+  if (!accountId) return res.status(400).json({ error: "account_id required" });
+  try {
+    const result = await pool.query(`
+      SELECT t.transaction_id, t.date, t.amount,
+             COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS merchant,
+             COALESCE(t.user_category, t.category[1]) AS category,
+             t.personal_for, t.is_reimbursed
+      FROM transactions t
+      JOIN linked_accounts la ON la.account_id = t.account_id
+      WHERE la.id = $1
+        AND t.amount > 0
+        AND t.date >= $2::date
+        AND t.date <  ($2::date + INTERVAL '1 month')::date
+      ORDER BY t.date DESC, t.transaction_id
+    `, [accountId, month + "-01"]);
+    res.json({ month, account_id: accountId, transactions: result.rows });
+  } catch (err) {
+    console.error("settlement transactions error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
   }
 });
@@ -802,12 +917,111 @@ router.get("/api/transactions/duplicates", async (_req, res) => {
   }
 });
 
+// GET /api/transactions/csv-overlap — find CSV-imported transactions that
+// have a matching Plaid/Teller-synced transaction (same date ±2 days, exact
+// amount). This is the common cause of spending double-counting after a user
+// links a previously CSV-only account via Plaid: the historical CSV rows are
+// still in the database under a manual virtual account, and Plaid pulls fresh
+// copies of the same transactions under its own account_id. The transaction_id
+// scheme differs across sources so the existing ON CONFLICT dedup misses them.
+router.get("/api/transactions/csv-overlap", async (_req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        la_csv.id AS csv_account_id,
+        la_csv.name AS csv_account_name,
+        la_csv.institution_name_manual AS csv_institution,
+        la_synced.id AS synced_account_id,
+        la_synced.name AS synced_account_name,
+        COALESCE(pi.institution_name, te.institution_name) AS synced_institution,
+        CASE WHEN pi.id IS NOT NULL THEN 'plaid' ELSE 'teller' END AS synced_source,
+        COUNT(*)::int AS overlap_count,
+        SUM(t_csv.amount)::numeric(14,2) AS overlap_amount,
+        MIN(t_csv.date) AS overlap_first_date,
+        MAX(t_csv.date) AS overlap_last_date
+      FROM linked_accounts la_csv
+      JOIN transactions t_csv ON t_csv.account_id = la_csv.account_id
+      JOIN transactions t_synced ON t_synced.amount = t_csv.amount
+        AND ABS(EXTRACT(EPOCH FROM (t_synced.date::timestamp - t_csv.date::timestamp)) / 86400) <= 2
+        AND t_synced.account_id != t_csv.account_id
+      JOIN linked_accounts la_synced ON la_synced.account_id = t_synced.account_id
+      LEFT JOIN plaid_items pi ON pi.id = la_synced.plaid_item_id
+      LEFT JOIN teller_enrollments te ON te.id = la_synced.teller_enrollment_id
+      WHERE la_csv.is_manual = true
+        AND (la_synced.plaid_item_id IS NOT NULL OR la_synced.teller_enrollment_id IS NOT NULL)
+      GROUP BY la_csv.id, la_csv.name, la_csv.institution_name_manual,
+               la_synced.id, la_synced.name, pi.institution_name, te.institution_name, pi.id
+      HAVING COUNT(*) >= 3
+      ORDER BY COUNT(*) DESC
+    `);
+    res.json({
+      overlaps: result.rows,
+      note: "CSV virtual accounts whose transactions overlap with Plaid/Teller-synced accounts. POST /api/transactions/csv-overlap/resolve with { csv_account_id, synced_account_id } to delete the CSV-side duplicates.",
+    });
+  } catch (err) {
+    console.error("csv-overlap error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// POST /api/transactions/csv-overlap/resolve — delete CSV transactions that
+// have a matching Plaid/Teller transaction (same amount, date ±2 days). Keeps
+// the Plaid/Teller side as the canonical source going forward. Also offers a
+// dry_run flag so the user can preview the row count before committing.
+router.post("/api/transactions/csv-overlap/resolve", async (req, res) => {
+  const csvAccountId = parseInt(req.body?.csv_account_id);
+  const syncedAccountId = parseInt(req.body?.synced_account_id);
+  const dryRun = req.body?.dry_run === true;
+  if (!csvAccountId || !syncedAccountId) {
+    return res.status(400).json({ error: "csv_account_id and synced_account_id required (numeric linked_accounts.id values from GET /api/transactions/csv-overlap)" });
+  }
+  try {
+    const accts = await pool.query(
+      `SELECT id, account_id, is_manual, plaid_item_id, teller_enrollment_id
+       FROM linked_accounts WHERE id = ANY($1::int[])`,
+      [[csvAccountId, syncedAccountId]]
+    );
+    if (accts.rows.length !== 2) return res.status(404).json({ error: "One or both accounts not found" });
+    const csv = accts.rows.find(r => r.id === csvAccountId);
+    const synced = accts.rows.find(r => r.id === syncedAccountId);
+    if (!csv?.is_manual) return res.status(400).json({ error: "csv_account_id must be a manual (CSV-imported) account" });
+    if (!synced?.plaid_item_id && !synced?.teller_enrollment_id) {
+      return res.status(400).json({ error: "synced_account_id must be a Plaid- or Teller-linked account" });
+    }
+    const candidates = await pool.query(
+      `SELECT t_csv.transaction_id
+       FROM transactions t_csv
+       WHERE t_csv.account_id = $1
+         AND EXISTS (
+           SELECT 1 FROM transactions t_synced
+           WHERE t_synced.account_id = $2
+             AND t_synced.amount = t_csv.amount
+             AND ABS(EXTRACT(EPOCH FROM (t_synced.date::timestamp - t_csv.date::timestamp)) / 86400) <= 2
+         )`,
+      [csv.account_id, synced.account_id]
+    );
+    if (dryRun) {
+      return res.json({ would_delete: candidates.rows.length, dry_run: true });
+    }
+    const ids = candidates.rows.map(r => r.transaction_id);
+    if (!ids.length) return res.json({ deleted: 0 });
+    const del = await pool.query(
+      `DELETE FROM transactions WHERE transaction_id = ANY($1::text[]) RETURNING transaction_id`,
+      [ids]
+    );
+    res.json({ deleted: del.rows.length });
+  } catch (err) {
+    console.error("csv-overlap resolve error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
 // PATCH /api/transactions/:id — user overrides (merchant_name, notes, is_reimbursed).
 // User edits are stored in `user_*` columns so a subsequent sync from Teller
 // does not clobber them. `merchant_name` in the PATCH body writes to
 // `user_merchant_name`; the raw `merchant_name` column keeps Teller's value.
 router.patch("/api/transactions/:id", async (req, res) => {
-  const { merchant_name, notes, is_reimbursed } = req.body;
+  const { merchant_name, notes, is_reimbursed, personal_for } = req.body;
   const updates = []; const values = []; let idx = 1;
   if (merchant_name !== undefined) {
     const v = typeof merchant_name === "string" ? merchant_name.trim() : null;
@@ -826,11 +1040,17 @@ router.patch("/api/transactions/:id", async (req, res) => {
       updates.push("reimbursed_at = $" + idx++); values.push(null);
     }
   }
+  if (personal_for !== undefined) {
+    // null / '' / 'shared' all clear the override (use the account's
+    // spending_split_pct). 'self' and 'partner' are the only stored values.
+    const v = personal_for === "self" || personal_for === "partner" ? personal_for : null;
+    updates.push("personal_for = $" + idx++); values.push(v);
+  }
   if (!updates.length) return res.status(400).json({ error: "No valid fields to update" });
   values.push(req.params.id);
   try {
     const result = await pool.query(
-      "UPDATE transactions SET " + updates.join(", ") + " WHERE transaction_id = $" + idx + " RETURNING transaction_id, user_merchant_name, user_notes, is_reimbursed, reimbursed_at",
+      "UPDATE transactions SET " + updates.join(", ") + " WHERE transaction_id = $" + idx + " RETURNING transaction_id, user_merchant_name, user_notes, is_reimbursed, reimbursed_at, personal_for",
       values
     );
     if (!result.rows.length) return res.status(404).json({ error: "Transaction not found" });

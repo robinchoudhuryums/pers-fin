@@ -78,8 +78,17 @@ const NOT_TRANSFER = `
 // Spending split SQL fragment — multiplies each transaction's amount by the
 // account's spending_split_pct (defaults to 100 = 100%). Apply consistently in
 // every spending aggregation so shared/joint accounts are counted at the
-// configured share.
-const SPLIT_AMOUNT = "t.amount * COALESCE(la.spending_split_pct, 100) / 100.0";
+// configured share. The CASE branches honor per-transaction personal_for
+// overrides ONLY on shared accounts: a row marked personal_for='self' counts
+// 100% (full amount, since the user owes it all); 'partner' counts 0%
+// (entirely the other cardholder's). NULL falls back to spending_split_pct.
+const SPLIT_AMOUNT = `(
+  CASE
+    WHEN la.is_shared AND t.personal_for = 'self' THEN t.amount
+    WHEN la.is_shared AND t.personal_for = 'partner' THEN 0
+    ELSE t.amount * COALESCE(la.spending_split_pct, 100) / 100.0
+  END
+)`;
 
 // Reimbursed exclusion — use inside any spending aggregation so transactions
 // the user has flagged as reimbursed don't count against their budgets/cash
@@ -194,7 +203,7 @@ async function getCategorySpendingForMonth(pool, monthStr) {
     ),
     parent_no_splits AS (
       SELECT COALESCE(t.user_category, t.category[1], 'Uncategorized') AS category,
-             t.amount * COALESCE(la.spending_split_pct, 100) / 100.0 AS amount
+             ${SPLIT_AMOUNT} AS amount
       FROM transactions t
       LEFT JOIN linked_accounts la ON la.account_id = t.account_id
       CROSS JOIN bounds b
@@ -207,7 +216,7 @@ async function getCategorySpendingForMonth(pool, monthStr) {
     ),
     from_splits AS (
       SELECT COALESCE(s.category, t.user_category, t.category[1], 'Uncategorized') AS category,
-             s.amount * COALESCE(la.spending_split_pct, 100) / 100.0 AS amount
+             (CASE WHEN la.is_shared AND t.personal_for = 'self' THEN s.amount WHEN la.is_shared AND t.personal_for = 'partner' THEN 0 ELSE s.amount * COALESCE(la.spending_split_pct, 100) / 100.0 END) AS amount
       FROM transaction_splits s
       JOIN transactions t ON t.transaction_id = s.parent_transaction_id
       LEFT JOIN linked_accounts la ON la.account_id = t.account_id
@@ -244,7 +253,7 @@ async function getCategorySpendingThisMonth(pool) {
   const result = await pool.query(`
     WITH parent_no_splits AS (
       SELECT COALESCE(t.user_category, t.category[1], 'Uncategorized') AS category,
-             t.amount * COALESCE(la.spending_split_pct, 100) / 100.0 AS amount
+             ${SPLIT_AMOUNT} AS amount
       FROM transactions t
       LEFT JOIN linked_accounts la ON la.account_id = t.account_id
       WHERE t.amount > 0 AND t.pending = false
@@ -256,7 +265,7 @@ async function getCategorySpendingThisMonth(pool) {
     ),
     from_splits AS (
       SELECT COALESCE(s.category, t.user_category, t.category[1], 'Uncategorized') AS category,
-             s.amount * COALESCE(la.spending_split_pct, 100) / 100.0 AS amount
+             (CASE WHEN la.is_shared AND t.personal_for = 'self' THEN s.amount WHEN la.is_shared AND t.personal_for = 'partner' THEN 0 ELSE s.amount * COALESCE(la.spending_split_pct, 100) / 100.0 END) AS amount
       FROM transaction_splits s
       JOIN transactions t ON t.transaction_id = s.parent_transaction_id
       LEFT JOIN linked_accounts la ON la.account_id = t.account_id

@@ -178,6 +178,12 @@
         <input type="text" id="zip-input" maxlength="5" placeholder="e.g. 10001" style="width:80px;padding:8px 12px;font-size:13px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;text-align:center;">
       </div>
     </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Partner Name</div><div class="desc">Used in the Shared Card Settlement widget — e.g. "Sarah owes you $X" instead of "Partner owes you $X"</div></div>
+      <div class="setting-control">
+        <input type="text" id="partner-name-input" maxlength="50" placeholder="e.g. Sarah" style="width:140px;padding:8px 12px;font-size:13px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;">
+      </div>
+    </div>
     <div class="setting-row" style="flex-direction:column;align-items:stretch;">
       <div class="setting-info" style="margin-bottom:12px;"><div class="name">Insight Modules</div><div class="desc">Toggle analysis features. Each adds a small amount of context to the AI prompt.</div></div>
       <div id="modules-container" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;"></div>
@@ -460,6 +466,8 @@
         document.getElementById('keepalive-tz').value = s.keep_alive_timezone || 'America/New_York';
         updateKeepAliveEstimate();
         document.getElementById('zip-input').value = s.zip_code || '';
+        var pn = document.getElementById('partner-name-input');
+        if (pn) pn.value = s.partner_name || '';
         document.getElementById('pyramid-source-select').value = s.pyramid_data_source || 'wellness';
         document.getElementById('pyramid-color-select').value = s.pyramid_color_mode || 'single';
         // New settings
@@ -1152,6 +1160,7 @@
       ['model-select', 'change', function() { updateSetting('insights_model', this.value); }],
       ['cadence-select', 'change', function() { updateSetting('insights_cadence_days', parseInt(this.value)); }],
       ['zip-input', 'change', function() { updateSetting('zip_code', this.value); }],
+      ['partner-name-input', 'change', function() { updateSetting('partner_name', this.value); }],
       ['reset-btn', 'click', resetContext],
       ['rebuild-btn', 'click', rebuildContext],
       ['categorize-btn', 'click', runCategorize],

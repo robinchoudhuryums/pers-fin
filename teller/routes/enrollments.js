@@ -6,7 +6,7 @@ const express = require("express");
 const router = express.Router();
 const { pool, ENCRYPTION_PASSPHRASE } = require("../services/database");
 const { tellerRequest } = require("../services/teller-api");
-const { INCOME_PREDICATE, NOT_TRANSFER, INVESTMENT_ACCOUNT_TYPES, getMonthlySpending, getMonthlyIncome } = require("../services/financial-queries");
+const { INCOME_PREDICATE, NOT_TRANSFER, INVESTMENT_ACCOUNT_TYPES, SPLIT_AMOUNT, getMonthlySpending, getMonthlyIncome } = require("../services/financial-queries");
 
 // POST /api/enroll — store Teller Connect enrollment
 router.post("/api/enroll", async (req, res) => {
@@ -613,12 +613,24 @@ async function syncAllBalances() {
 // POST /api/sync-balances
 router.post("/api/sync-balances", async (_req, res) => {
   try {
-    const result = await syncAllBalances();
-    // Update data freshness timestamp
+    const tellerResult = await syncAllBalances();
+    // Also refresh Plaid balances so users with both providers get one-click
+    // freshness. Lazy-required to avoid a circular import via routes/investments.
+    let plaidResult = null;
+    try {
+      const inv = require("./investments");
+      if (typeof inv.syncAllPlaidBalances === "function") {
+        plaidResult = await inv.syncAllPlaidBalances();
+      }
+    } catch (e) { console.error("Plaid balance sync error:", e.message); }
     await pool.query(
       "UPDATE user_settings SET last_balance_sync_at = now() WHERE id = 1"
     ).catch(() => {});
-    res.json(result);
+    res.json({
+      ...tellerResult,
+      plaid_accounts_updated: plaidResult?.accounts_updated || 0,
+      plaid_errors: plaidResult?.errors?.length ? plaidResult.errors : undefined,
+    });
   } catch (err) {
     console.error("sync-balances error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
@@ -631,9 +643,9 @@ router.get("/api/spending-summary", async (req, res) => {
   try {
     const monthlyTrend = await pool.query(
       `SELECT TO_CHAR(t.date, 'YYYY-MM') AS month,
-              ROUND(SUM(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0), 2) AS total_spend,
+              ROUND(SUM(${SPLIT_AMOUNT}), 2) AS total_spend,
               COUNT(*) AS txn_count,
-              ROUND(AVG(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0), 2) AS avg_transaction
+              ROUND(AVG(${SPLIT_AMOUNT}), 2) AS avg_transaction
        FROM transactions t
        LEFT JOIN linked_accounts la ON la.account_id = t.account_id
        WHERE t.amount > 0 AND COALESCE(t.is_reimbursed, false) = false
@@ -651,7 +663,7 @@ router.get("/api/spending-summary", async (req, res) => {
     const byCategory = await pool.query(
       `WITH parent_no_splits AS (
          SELECT COALESCE(t.user_category, t.category[1], 'Uncategorized') AS category,
-                t.amount * COALESCE(la.spending_split_pct, 100) / 100.0 AS amount,
+                ${SPLIT_AMOUNT} AS amount,
                 1 AS line_count
          FROM transactions t
          LEFT JOIN linked_accounts la ON la.account_id = t.account_id
@@ -662,7 +674,7 @@ router.get("/api/spending-summary", async (req, res) => {
        ),
        from_splits AS (
          SELECT COALESCE(s.category, t.user_category, t.category[1], 'Uncategorized') AS category,
-                s.amount * COALESCE(la.spending_split_pct, 100) / 100.0 AS amount,
+                ${SPLIT_AMOUNT.replace(/t\.amount/g, "s.amount")} AS amount,
                 1 AS line_count
          FROM transaction_splits s
          JOIN transactions t ON t.transaction_id = s.parent_transaction_id
@@ -691,7 +703,7 @@ router.get("/api/spending-summary", async (req, res) => {
     // Reimbursed transactions are excluded from the total (Phase B2).
     const topMerchants = await pool.query(
       `SELECT COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS merchant,
-              ROUND(SUM(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0), 2) AS total_spent,
+              ROUND(SUM(${SPLIT_AMOUNT}), 2) AS total_spent,
               COUNT(*) AS txn_count
        FROM transactions t
        LEFT JOIN linked_accounts la ON la.account_id = t.account_id
@@ -840,7 +852,7 @@ router.get("/api/cash-flow", async (req, res) => {
     const avgSpendResult = await pool.query(`
       SELECT COALESCE(AVG(daily_total), 0) AS avg_daily
       FROM (
-        SELECT t.date, ROUND(SUM(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0), 2) AS daily_total
+        SELECT t.date, ROUND(SUM((CASE WHEN la.is_shared AND t.personal_for = 'self' THEN t.amount WHEN la.is_shared AND t.personal_for = 'partner' THEN 0 ELSE t.amount * COALESCE(la.spending_split_pct, 100) / 100.0 END)), 2) AS daily_total
         FROM transactions t
         LEFT JOIN linked_accounts la ON la.account_id = t.account_id
         WHERE t.amount > 0 AND t.pending = false
@@ -863,7 +875,7 @@ router.get("/api/cash-flow", async (req, res) => {
       ),
       daily_totals AS (
         SELECT t.date,
-               SUM(t.amount * COALESCE(la.spending_split_pct, 100) / 100.0) AS daily_total
+               SUM((CASE WHEN la.is_shared AND t.personal_for = 'self' THEN t.amount WHEN la.is_shared AND t.personal_for = 'partner' THEN 0 ELSE t.amount * COALESCE(la.spending_split_pct, 100) / 100.0 END)) AS daily_total
         FROM transactions t
         LEFT JOIN linked_accounts la ON la.account_id = t.account_id
         WHERE t.amount > 0 AND t.pending = false
@@ -972,7 +984,7 @@ router.get("/api/spending-yoy", async (req, res) => {
     const result = await pool.query(`
       WITH parent_no_splits AS (
         SELECT t.date, COALESCE(t.user_category, t.category[1], 'Uncategorized') AS category,
-               t.amount * COALESCE(la.spending_split_pct, 100) / 100.0 AS amount
+               (CASE WHEN la.is_shared AND t.personal_for = 'self' THEN t.amount WHEN la.is_shared AND t.personal_for = 'partner' THEN 0 ELSE t.amount * COALESCE(la.spending_split_pct, 100) / 100.0 END) AS amount
         FROM transactions t
         LEFT JOIN linked_accounts la ON la.account_id = t.account_id
         WHERE t.amount > 0 AND t.pending = false
@@ -984,7 +996,7 @@ router.get("/api/spending-yoy", async (req, res) => {
       ),
       from_splits AS (
         SELECT t.date, COALESCE(s.category, t.user_category, t.category[1], 'Uncategorized') AS category,
-               s.amount * COALESCE(la.spending_split_pct, 100) / 100.0 AS amount
+               (CASE WHEN la.is_shared AND t.personal_for = 'self' THEN s.amount WHEN la.is_shared AND t.personal_for = 'partner' THEN 0 ELSE s.amount * COALESCE(la.spending_split_pct, 100) / 100.0 END) AS amount
         FROM transaction_splits s
         JOIN transactions t ON t.transaction_id = s.parent_transaction_id
         LEFT JOIN linked_accounts la ON la.account_id = t.account_id

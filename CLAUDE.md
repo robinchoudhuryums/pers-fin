@@ -62,10 +62,13 @@ teller/
                            POST /api/import-csv, GET /api/csv-imports, POST /api/cleanup,
                            GET /api/recurring-transfers, POST /api/detect-transfers,
                            PATCH /api/recurring-transfers/:id/dismiss|undismiss|type,
-                           PATCH /api/transactions/:id (merchant_name, notes, is_reimbursed),
+                           PATCH /api/transactions/:id (merchant_name, notes,
+                           is_reimbursed, personal_for),
                            GET/POST/DELETE /api/transactions/:id/splits,
                            GET/POST/PATCH/DELETE /api/manual-bills,
-                           GET/POST/DELETE /api/bill-payments
+                           GET/POST/DELETE /api/bill-payments,
+                           GET /api/shared-settlement (+ /:account_id/transactions),
+                           GET /api/transactions/csv-overlap (+ /resolve)
     goals.js             — GET/POST/PATCH/DELETE /api/goals, GET /api/goals/funding-options,
                            POST /api/net-worth/snapshot, GET /api/net-worth/history,
                            GET /api/context-export, GET/POST /api/investment-accounts
@@ -108,6 +111,9 @@ teller/
                            asset-class allocation, and top winners/losers from
                            Plaid-tracked holdings only (Teller-linked lacks
                            cost basis from Teller's API).
+                           Also exports `syncAllPlaidTransactions` and
+                           `syncAllPlaidBalances` for the scheduled auto-sync
+                           and `POST /api/sync-balances` (in-process).
     credit-scores.js     — GET/POST/DELETE /api/credit-scores
                            (manual credit score tracking with trend computation)
     notifications.js     — GET /api/notifications/vapid, POST/DELETE /api/notifications/subscribe,
@@ -180,8 +186,11 @@ teller/
                            dual light/dark theme-color, skip-link)
     partials/nav.ejs     — Top navigation bar with helmet logo icon, "Synced Xm ago"
                            badge with color-coded staleness (green/yellow/red) and per-source
-                           tooltip, notification bell with unread count + dropdown panel,
-                           <main> landmark
+                           tooltip (hidden on mobile to free up nav width — same data
+                           available in Settings + the notification log), notification
+                           bell with unread count + dropdown panel (drops down on
+                           desktop, slides up as a bottom sheet with backdrop on
+                           mobile ≤640px), <main> landmark
     partials/foot.ejs    — Footer partial (closes <main>)
 ```
 
@@ -265,8 +274,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (~505 tests); use
+  Perfin and Per-sistant test files (529 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
+  Current count: 529 tests across 14 test files.
 - `.github/workflows/ci.yml` — CI pipeline (single `npm ci` at root via npm workspaces, then `npm test`)
 - `.claude/commands/` — Project slash-command prompts: `/broad-scan`, `/broad-implement`,
   `/test-sync`, `/sync-docs`
@@ -335,8 +345,15 @@ shell/
 - **Recurring transfer detection**: Auto-detect Zelle, Venmo, bill payments, savings transfers,
   investment contributions, ACH/wire (7/14/30/60/90/365-day cadences, outgoing/incoming split)
 - **Utility separation**: Utilities tracked separately from optional subscriptions
-- **Shared accounts**: Joint/shared card support with configurable spending split percentage
-  (`is_shared`, `spending_split_pct` on linked_accounts, applied in all spending queries via SQL JOIN)
+- **Shared accounts**: Joint/shared card support with two layers of split:
+  account-level (`is_shared`, `spending_split_pct` on `linked_accounts`,
+  applied in all spending queries via SQL JOIN — default 50/50 on a shared
+  card) AND per-transaction override (`transactions.personal_for`, enum
+  `'self' | 'partner' | NULL`, only honored when the account is_shared).
+  `'self'` = user owes 100%; `'partner'` = the other cardholder owes 100%;
+  `NULL` = use the account-level split. Powers the Shared Card Settlement
+  dashboard widget, MINE/PARTNER badges on the Transactions page, and the
+  `/api/shared-settlement` endpoints.
 - **Financial goals**: Track progress toward savings/investment targets with compound interest projections
   (logarithmic formula), milestone push notifications at 25/50/75/100%
 - **Goal funding from accounts** (Phase C): link a goal to a depository or
@@ -407,6 +424,17 @@ shell/
   100%, muted otherwise (the API doesn't require sum = 100). Saved to
   `user_settings.target_allocation_pct` via PATCH /api/settings. Drives
   the drift fields on `GET /api/investments/performance`.
+- **Shared Card Settlement widget**: For each is_shared account, shows
+  "You owe $X" + "{partner_name} owes $Y" for the selected month, broken
+  down as `(split_pct × shared_total) + your_personal_total` per side.
+  Month dropdown defaults to the prior month when the user opens it in
+  the first week (reconciliation usually happens after the statement
+  closes). "Review →" link jumps to the Transactions page filtered to
+  that account + month. Auto-hides when no is_shared accounts exist.
+  Backed by `GET /api/shared-settlement`. Toggleable from Settings
+  (widget key: `settlement`, default on). Partner display name set via
+  Settings → Partner Name (`user_settings.partner_name`); defaults to
+  "Partner" until set.
 - **Since-you-last-looked widget**: aggregates new transactions, balance
   deltas (oldest snapshot ≤ watermark vs latest, dropped if |Δ| < $0.01),
   new subscriptions, and recent notifications since `last_dashboard_view_at`.
@@ -598,11 +626,16 @@ shell/
   shell at root paths so iOS auto-discovers from any page. Distinct from
   Perfin's per-app icon — adding from a Perfin page still gets the helmet
   bookmark.
-- **Status messages**: `.status-msg` (Perfin shared sheet + Per-sistant
-  shared sheet) renders as a fixed-position toast in the top-right
-  corner, with the existing `slideDown` keyframe. Visible regardless of
-  page scroll so feedback from buttons low on long pages (e.g. Settings →
-  "Run detection") doesn't require scrolling back up.
+- **Status messages (toast stack)**: `showMsg(text, ok)` pushes onto a
+  `#toast-stack` container (auto-created on first call) instead of
+  overwriting a single per-page element. Stack caps at 5 visible toasts;
+  identical consecutive messages dedupe (timer bump, no pile-up). Each
+  toast auto-dismisses after 5 s (success) / 10 s (error); tap to dismiss
+  early. Desktop: anchored top-right with slide-down. Mobile (≤640px):
+  bottom-right `column-reverse` with slide-up so the newest is at thumb
+  level and doesn't compete with the iOS notch / Dynamic Island. Legacy
+  per-page `.status-msg` divs are now `display: none !important` but kept
+  in templates so any direct DOM writes are silent no-ops.
 - **Dark/Light theme**: Toggle in Settings, persisted to DB + localStorage
 - **PWA**: Installable home screen app (manifest.json + service worker, helmet icon centered on home screen).
   Service worker (cache `perfin-v4`) uses network-first, caches successful same-origin
@@ -620,13 +653,19 @@ shell/
 - **"Last synced" nav badge** (Phase D): top nav shows "Synced 47m ago" with color-coded
   staleness: green (<6h), yellow (6-24h), red (>24h). Tooltip shows per-source
   freshness (transactions, balances, auto-sync). Populated from the most recent of
-  `last_auto_sync_at`, `last_txn_sync_at`, `last_balance_sync_at`.
+  `last_auto_sync_at`, `last_txn_sync_at`, `last_balance_sync_at`. Hidden on
+  mobile (≤640px) to free up nav width — same data lives in Settings and the
+  notification log.
 - **Unified notification center**: In-app notification history via `notification_log`
-  table. Nav bar bell icon shows unread count badge. Clicking opens a dropdown panel
-  listing recent notifications with timestamps. Click to mark read, "Mark all read"
-  button. `sendToAll()` logs every push notification to the table, so notifications
-  are preserved even if the user hasn't enabled push or dismissed the browser alert.
-  API: `GET /api/notifications`, `PATCH /api/notifications/:id/read`,
+  table. Nav bar bell icon shows unread count badge. Desktop: clicking opens a
+  drop-down panel (`.notif-panel`) anchored top-right. Mobile (≤640px): the panel
+  becomes a full-width bottom sheet with a grab-handle hint + dim backdrop
+  (`#notif-backdrop`); tap the backdrop, click outside, or press ESC to dismiss.
+  Show/hide uses the HTML `hidden` attribute so CSS animations are declarative.
+  Sticky header keeps the title + "Mark all read" pinned while scrolling the
+  list. `sendToAll()` logs every push notification to the table, so
+  notifications are preserved even if the user hasn't enabled push or dismissed
+  the browser alert. API: `GET /api/notifications`, `PATCH /api/notifications/:id/read`,
   `POST /api/notifications/read-all`.
 - **Data freshness API**: `GET /api/data-freshness` returns per-source timestamps
   (transactions, balances, auto-sync, insights) with `age_seconds`, a boolean
@@ -845,7 +884,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- ~505 tests passing across 14 test files (Perfin + Per-sistant)
+- 529 tests passing across 14 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash
@@ -858,7 +897,13 @@ npm run test:persistent                        # Per-sistant tests only
 # Key API endpoints
 POST /api/enroll           # store Teller access token after Connect
 POST /api/sync             # pull transactions for all enrollments
-POST /api/sync-balances    # fetch latest account balances
+POST /api/sync-balances    # fetch latest account balances. Refreshes BOTH
+                           # Teller (`syncAllBalances`) AND Plaid
+                           # (`syncAllPlaidBalances`) in one call — Plaid
+                           # accounts get current/available/credit_limit
+                           # populated without rerunning transactionsSync.
+                           # Response: { accounts_updated, errors?,
+                           # plaid_accounts_updated, plaid_errors? }
 POST /api/detect           # run subscription detection
 POST /api/detect-transfers # run recurring transfer detection
 GET  /api/recurring-transfers # list recurring transfers (query: filter=active|dismissed|all)
@@ -868,7 +913,20 @@ PATCH /api/recurring-transfers/:id/type      # reclassify transfer type
 GET  /api/transactions     # list transactions (query: months, limit, offset)
 GET  /api/transactions/search # search/filter (query: q, category, account_id, min/max_amount, start/end_date)
 GET  /api/transactions/duplicates # find candidate duplicate transactions across accounts
-PATCH /api/transactions/:id # user overrides: merchant_name, notes, is_reimbursed (Phase B1/B2)
+GET  /api/transactions/csv-overlap         # CSV virtual accounts whose transactions
+                                           # overlap with Plaid/Teller-synced accounts
+                                           # (same amount, date ±2 days, ≥3 matches).
+                                           # Common after linking a previously
+                                           # CSV-only bank via Plaid — historical
+                                           # CSV rows + 2yr Plaid history double-count.
+POST /api/transactions/csv-overlap/resolve # delete CSV-side rows that have a matching
+                                           # Plaid/Teller row (body: csv_account_id,
+                                           # synced_account_id, dry_run?). Keeps the
+                                           # synced account as canonical going forward.
+PATCH /api/transactions/:id # user overrides: merchant_name, notes, is_reimbursed
+                            # (Phase B1/B2), personal_for ('self'|'partner'|null —
+                            # shared-card settlement override; invalid values
+                            # silently coerced to NULL)
 DELETE /api/transactions/:id # delete a single transaction (deduplication tool)
 GET  /api/transactions/:id/splits # list splits for a transaction (Phase B3)
 POST /api/transactions/:id/splits # replace splits, validates sum matches parent ±$0.01
@@ -890,6 +948,14 @@ PATCH /api/accounts/:id/shared # mark account as shared/joint (body: is_shared, 
 PATCH /api/accounts/:id/balance # update balance fields (current_balance, available_balance, credit_limit)
 POST /api/accounts/manual  # create a manual (non-Teller, non-Plaid) account
 DELETE /api/accounts/manual/:id # delete a manual account
+GET  /api/shared-settlement # who-owes-who on shared cards for a given month
+                            # (query: month=YYYY-MM, account_id?). Returns per-
+                            # account { total_charges, shared_total, your/partner
+                            # personal totals + counts, your_share, partner_share }
+                            # plus the user's configured partner_name.
+GET  /api/shared-settlement/:account_id/transactions # flat list of every charge on a
+                            # shared account in the given month with each row's
+                            # personal_for state, for reconciliation.
 GET  /api/spending-summary # monthly trends, categories, top merchants (split-adjusted)
 GET  /api/cash-flow        # rolling cash flow projection (query: days, default 90)
 GET  /api/savings-rate     # income vs spending analysis (query: months, default 3)
@@ -915,7 +981,13 @@ GET  /api/net-worth/history # net worth snapshots over time
 GET  /api/context-export   # structured data dump for Claude chat
 GET  /api/tax-deductions   # accumulated tax-deductible transactions
 GET  /api/settings         # retrieve user settings
-PATCH /api/settings        # update user settings
+PATCH /api/settings        # update user settings. Accepts: theme,
+                           # dashboard_months, insights_*, keep_alive_*,
+                           # zip_code, partner_name (shared-card settlement
+                           # widget display name, max 50 chars),
+                           # pyramid_*, debt_baseline_amount,
+                           # shell_idle_timeout_minutes, target_allocation_pct,
+                           # weekly/daily digest toggles, etc.
 GET  /api/data-freshness   # per-source sync timestamps with staleness flags
 GET  /api/budgets          # list budgets with current spending (query: month=YYYY-MM)
 POST /api/budgets          # create budget (body: rollover_enabled, budget_type, effective_month)
@@ -1151,6 +1223,21 @@ standalone-mode fallback if either app is run on its own Render service.
   multiple `(amount, category, merchant_name, notes)` rows that REPLACE the
   parent in per-category aggregations. `parent_transaction_id` references
   `transactions(transaction_id)` with `ON DELETE CASCADE`. Indexed by parent.
+- `transactions.personal_for TEXT` (CHECK `personal_for IS NULL OR
+  personal_for IN ('self','partner')`): per-transaction settlement override
+  for shared cards. `NULL` = use the account's `spending_split_pct`;
+  `'self'` = user owes 100% of the charge; `'partner'` = the other
+  cardholder owes 100%. Only honored when the linked account is
+  `is_shared = true`; on non-shared accounts the SPLIT_AMOUNT formula
+  falls back to the spending_split_pct path regardless of value. Set
+  via `PATCH /api/transactions/:id { personal_for: 'self'|'partner'|null }`
+  (invalid values silently coerced to NULL).
+- `user_settings.partner_name TEXT`: display name for the other
+  cardholder on a shared card. Surfaces in the Settlement widget
+  ("Sarah owes you $X" rather than "Partner owes you $X") and is
+  returned by `GET /api/shared-settlement`. NULL/empty falls back to
+  literal "Partner". Set via `PATCH /api/settings { partner_name }`,
+  max 50 chars.
 - `financial_goals` funding columns (Phase C): `funding_account_id INT REFERENCES
   linked_accounts(id)`, `funding_investment_id INT REFERENCES investment_accounts(id)`,
   `goal_baseline_amount NUMERIC(14,2)`. CHECK `chk_goal_funding_exclusive`
@@ -1423,12 +1510,29 @@ embedded mode).
   `daily_summary` webhook to Per-sistant. No AI call.
 
 ## Shared Account Spending Split
-All spending queries apply the split percentage for shared/joint accounts via SQL JOIN:
+All spending queries apply the `SPLIT_AMOUNT` SQL fragment from
+`services/financial-queries.js`. As of the Settlement feature it's a CASE
+expression with two layers — per-transaction `personal_for` override
+(only on shared accounts) on top of the account-level `spending_split_pct`:
 ```sql
-t.amount * COALESCE(la.spending_split_pct, 100) / 100.0
+(CASE
+   WHEN la.is_shared AND t.personal_for = 'self'    THEN t.amount
+   WHEN la.is_shared AND t.personal_for = 'partner' THEN 0
+   ELSE t.amount * COALESCE(la.spending_split_pct, 100) / 100.0
+ END)
 ```
-This affects: spending-summary (monthly_trend, byCategory, topMerchants), savings-rate,
-spending-yoy, budgets, budget alerts, and cash flow.
+Non-shared accounts always fall through to the spending_split_pct branch
+(which defaults to 100 = full amount). Inline copies of this formula
+exist in `routes/enrollments.js` (spending-summary monthly/category/
+merchants, cash-flow daily/DOW averages), `routes/insights.js` (anomaly
+baseline + candidate, seasonal patterns), and the split-row variant
+(`s.amount` instead of `t.amount`) in `financial-queries.js` and
+`enrollments.js`. Any new spending aggregation should import `SPLIT_AMOUNT`
+rather than re-inline.
+
+This affects: spending-summary (monthly_trend, byCategory, topMerchants),
+savings-rate, spending-yoy, budgets, budget alerts, cash flow, AI insights
+anomaly detection + seasonal, and the Settlement widget.
 
 ## Income Detection
 Income is identified via three OR'd branches in
@@ -1487,9 +1591,11 @@ income module, and bill-calendar income detection.
 - **Shared financial queries.** `services/financial-queries.js` is the
   source of truth for "income" and "spending" computations: keyword-filtered
   payroll/direct-dep income (excluding transfers/payments/refunds) and
-  `spending_split_pct`-adjusted spending that honors transaction_splits.
-  AI insights routes through it so Claude sees the same numbers the
-  dashboard shows. Helpers:
+  split-adjusted spending that honors `transaction_splits`, the
+  account-level `spending_split_pct`, AND the per-transaction `personal_for`
+  override on shared accounts (`SPLIT_AMOUNT` is a CASE expression — see
+  the Shared Account Spending Split section). AI insights routes through
+  it so Claude sees the same numbers the dashboard shows. Helpers:
   - `getMonthlyIncome(pool, months)` — keyword-filtered income, last N months
   - `getMonthlySpending(pool, months)` — split-adjusted spending, last N months
   - `getCategorySpendingThisMonth(pool)` — current-month per-category spend
@@ -1689,11 +1795,53 @@ income module, and bill-calendar income detection.
   pointing at its helmet SVG, so an "Add to Home Screen" tap from deep
   inside Perfin still gets the helmet bookmark (different visual identity
   per app — a feature, not a bug).
-- **Status messages render as fixed-position toasts.** `.status-msg`
-  (Perfin shared + Per-sistant) is `position: fixed; top: 16px; right:
-  16px;` so action feedback for buttons low on a long page (Settings →
-  "Run detection") shows up regardless of scroll position. No JS change
-  — every existing `showStatus(...)` call site keeps working.
+- **Toast stack replaces single status element.** `showMsg(text, ok)` in
+  `perfin-shared.js` pushes onto a `#toast-stack` container (auto-created
+  on first call) rather than overwriting one shared `#status-msg` div.
+  Stack caps at 5 visible toasts; identical consecutive messages dedupe
+  (timer bump, no pile-up). Tap to dismiss; auto-dismiss after 5 s
+  success / 10 s error. Desktop anchors top-right; mobile (≤640px)
+  flips to bottom-right with `column-reverse` + slide-up so toasts are
+  thumb-reachable and don't fight the iOS Dynamic Island. Per-page
+  `.status-msg` divs are now `display: none !important` — kept in
+  templates for backward compat with any direct DOM writes (silent
+  no-op). The Accounts page's bespoke `#status` element was retired
+  along the same path — its local `showStatus` now delegates to the
+  shared `showMsg`.
+- **Notification panel becomes a bottom sheet on mobile.** At ≤640px,
+  `.notif-panel` flips from a 340 px-wide drop-down (`top: 56 px; right:
+  12 px`) to a full-width bottom sheet (`bottom: 0`, `border-radius:
+  16 px 16 px 0 0`) with a grab-handle hint (`.notif-grabber`) + dim
+  backdrop (`#notif-backdrop`). Show/hide is controlled via the HTML
+  `hidden` attribute (not `style.display`) so CSS animations are
+  declarative; the backdrop, click-outside, and `Esc` key all dismiss.
+  The nav sync badge is hidden in the same media query to free up
+  width — the same data is in Settings and the notification log.
+- **Per-transaction shared-card settlement override.** On is_shared
+  accounts, the per-row `personal_for` column overrides the account-level
+  `spending_split_pct` ('self' = 100% user, 'partner' = 100% other
+  cardholder, NULL = use account default). Honored by the SPLIT_AMOUNT
+  CASE expression in `services/financial-queries.js` (and every inline
+  copy across enrollments.js / insights.js — see the Shared Account
+  Spending Split section). The settlement endpoint (`GET
+  /api/shared-settlement`) groups charges into three buckets — shared,
+  your_personal, partner_personal — and computes per-person obligations
+  as `(split_pct × shared_total) + personal_total`. Reimbursed rows are
+  excluded entirely (they net to neither party). The dashboard widget
+  and the Transactions-page Edit modal share one source of truth: the
+  `personal_for` column. New "who owes what" surfaces should compute
+  obligations from the settlement endpoint rather than re-deriving them.
+- **Plaid balance refresh is a standalone helper.** `syncAllPlaidBalances`
+  in `routes/investments.js` calls `accountsGet` on every linked
+  Plaid item and writes `current_balance` / `available_balance` /
+  `credit_limit` to `linked_accounts` + a daily snapshot row — no
+  transactionsSync involved. `POST /api/sync-balances` calls it
+  alongside Teller's `syncAllBalances`, so one "Sync Balances" click
+  freshens both providers without triggering Plaid's transaction sync
+  (which would add duplicate rows during overlap with prior CSV
+  imports). The auto-sync loop still calls `syncAllPlaidTransactions`
+  for transaction history; the two helpers exist in parallel for
+  different cost/duplication profiles.
 
 ## Git
 - Render deploys from `main` (configured in the Render dashboard, not in `render.yaml`)

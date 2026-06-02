@@ -486,12 +486,34 @@ router.patch("/api/investment-accounts/:id", async (req, res) => {
 });
 
 // DELETE /api/investment-accounts/:id
+// Soft-deletes the investment_accounts row and drops its holdings so a
+// subsequent Plaid sync-holdings call won't re-render phantom positions.
+// The parent plaid_investment_items row is left in place — one item can
+// back multiple accounts, and the sync-holdings path already filters out
+// soft-deleted accounts via the is_active check before UPDATE.
 router.delete("/api/investment-accounts/:id", async (req, res) => {
+  const client = await pool.connect();
   try {
-    await pool.query("UPDATE investment_accounts SET is_active = false, updated_at = now() WHERE id = $1", [req.params.id]);
+    await client.query("BEGIN");
+    const upd = await client.query(
+      `UPDATE investment_accounts SET is_active = false, updated_at = now()
+       WHERE id = $1 RETURNING plaid_account_id`,
+      [req.params.id]
+    );
+    if (upd.rows.length && upd.rows[0].plaid_account_id) {
+      await client.query(
+        "DELETE FROM investment_holdings WHERE plaid_account_id = $1",
+        [upd.rows[0].plaid_account_id]
+      );
+    }
+    await client.query("COMMIT");
     res.json({ deleted: true });
   } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("delete investment account error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
+  } finally {
+    client.release();
   }
 });
 
