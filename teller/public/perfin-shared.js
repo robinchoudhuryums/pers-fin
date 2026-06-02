@@ -51,17 +51,44 @@
     return fetch(withBase(url), opts);
   }
 
-  // --- Status message ---
+  // --- Toast stack ---
+  // Stacks multiple feedback messages instead of overwriting a single
+  // element. Identical consecutive messages dedupe (just refresh the timer)
+  // so a tight retry loop doesn't pile up 12 of the same toast.
+  function removeToast(el) {
+    if (!el || !el.parentNode) return;
+    el.classList.add('toast-leaving');
+    setTimeout(function() { if (el.parentNode) el.parentNode.removeChild(el); }, 220);
+  }
   function showMsg(text, ok) {
-    var el = document.getElementById('status-msg');
-    if (!el) return;
-    el.style.display = '';
-    el.textContent = text;
-    el.className = 'status-msg ' + (ok ? 'success' : 'error');
-    if (el._timer) clearTimeout(el._timer);
-    el._timer = setTimeout(function() {
-      el.className = 'status-msg';
-    }, ok ? 5000 : 10000);
+    if (!text) return;
+    var stack = document.getElementById('toast-stack');
+    if (!stack) {
+      stack = document.createElement('div');
+      stack.id = 'toast-stack';
+      document.body.appendChild(stack);
+    }
+    // Dedupe: most recent toast with same text gets its timer bumped.
+    var last = stack.lastElementChild;
+    if (last && last.textContent === text) {
+      if (last._timer) clearTimeout(last._timer);
+      last._timer = setTimeout(function() { removeToast(last); }, ok ? 5000 : 10000);
+      return;
+    }
+    var toast = document.createElement('div');
+    toast.className = 'toast ' + (ok ? 'success' : 'error');
+    toast.setAttribute('role', ok ? 'status' : 'alert');
+    toast.textContent = text;
+    toast.addEventListener('click', function() { removeToast(toast); });
+    stack.appendChild(toast);
+    toast._timer = setTimeout(function() { removeToast(toast); }, ok ? 5000 : 10000);
+    // Cap at 5 visible toasts — anything older gets dropped so the stack
+    // doesn't grow unbounded during a rapid background-task burst.
+    while (stack.children.length > 5) {
+      var oldest = stack.firstElementChild;
+      if (oldest && oldest._timer) clearTimeout(oldest._timer);
+      if (oldest) removeToast(oldest);
+    }
   }
 
   // --- Button loading state ---

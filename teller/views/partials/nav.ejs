@@ -52,22 +52,28 @@
   </div>
   <script src="/shell-static/transition.js?v=2" defer></script>
 <% } %>
-  <!-- Notification dropdown panel -->
-  <div id="notif-panel" style="display:none;position:fixed;top:48px;right:8px;width:340px;max-height:400px;overflow-y:auto;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.3);z-index:99;padding:0;">
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border);">
-      <strong style="font-size:14px;">Notifications</strong>
-      <button id="notif-mark-all" style="font-size:11px;background:none;border:none;color:var(--teal);cursor:pointer;padding:0;">Mark all read</button>
+  <!-- Notification backdrop (dim layer behind the panel on mobile bottom-sheet). -->
+  <div id="notif-backdrop" class="notif-backdrop" hidden></div>
+
+  <!-- Notification dropdown panel. CSS class drives layout so the mobile
+       media query can convert it into a bottom sheet without inline-style
+       fights. Drag handle is shown on mobile only. -->
+  <div id="notif-panel" class="notif-panel" hidden>
+    <div class="notif-grabber" aria-hidden="true"></div>
+    <div class="notif-header">
+      <strong>Notifications</strong>
+      <button id="notif-mark-all" class="notif-mark-all">Mark all read</button>
     </div>
-    <div id="notif-list" style="padding:0;"></div>
+    <div id="notif-list" class="notif-list"></div>
     <!-- Debug mode toggle. Persists in localStorage so it survives page
          reloads. When on, an on-screen log panel captures console output,
          uncaught exceptions, and iframe attachments — useful for
          debugging issues on devices without easy DevTools access. -->
-    <div style="border-top:1px solid var(--border);padding:10px 16px;display:flex;align-items:center;justify-content:space-between;">
-      <span style="font-size:12px;color:var(--text-muted);">Debug mode</span>
-      <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:11px;">
-        <input type="checkbox" id="nav-debug-toggle" style="margin:0;">
-        <span id="nav-debug-state" style="color:var(--text-muted);">off</span>
+    <div class="notif-footer">
+      <span class="notif-footer-label">Debug mode</span>
+      <label class="notif-footer-toggle">
+        <input type="checkbox" id="nav-debug-toggle">
+        <span id="nav-debug-state">off</span>
       </label>
     </div>
   </div>
@@ -128,7 +134,7 @@
           } else {
             badge.style.display = 'none';
           }
-          if (panel.style.display !== 'none') renderList(data.notifications);
+          if (!panel.hidden) renderList(data.notifications);
         } catch (_) {}
       }
 
@@ -154,21 +160,37 @@
         return Math.floor(s / 86400) + 'd ago';
       }
 
+      var backdrop = document.getElementById('notif-backdrop');
+      function openPanel() {
+        panel.hidden = false;
+        if (backdrop) backdrop.hidden = false;
+      }
+      function closePanel() {
+        panel.hidden = true;
+        if (backdrop) backdrop.hidden = true;
+      }
       bell.addEventListener('click', async function(e) {
         e.stopPropagation();
-        if (panel.style.display === 'none') {
-          panel.style.display = '';
+        if (panel.hidden) {
+          openPanel();
           try {
             var r = await apiFetch('/api/notifications?limit=20');
             if (r.ok) { var data = await r.json(); renderList(data.notifications); }
           } catch (_) {}
         } else {
-          panel.style.display = 'none';
+          closePanel();
         }
       });
 
+      if (backdrop) backdrop.addEventListener('click', closePanel);
+
       document.addEventListener('click', function(e) {
-        if (!panel.contains(e.target) && !bell.contains(e.target)) panel.style.display = 'none';
+        if (panel.hidden) return;
+        if (!panel.contains(e.target) && !bell.contains(e.target)) closePanel();
+      });
+      // ESC also closes (useful on desktop, harmless on mobile).
+      document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape' && !panel.hidden) closePanel();
       });
 
       // Click notification to mark read
