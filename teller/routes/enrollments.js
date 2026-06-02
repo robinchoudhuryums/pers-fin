@@ -207,6 +207,16 @@ async function syncAllEnrollments() {
   const errors = [];
 
   for (const enrollment of enrollments) {
+    // A NULL decrypted token means the TOKEN_ENCRYPTION_PASSPHRASE no longer
+    // matches the ciphertext (e.g. after a passphrase rotation). Surface it as
+    // `decryption_failed` (parity with the Plaid sync paths) instead of letting
+    // a null token reach Teller, 401, and silently mark the enrollment
+    // DISCONNECTED — which would wrongly require re-linking on a key rotation (F7).
+    if (!enrollment.access_token) {
+      console.error(`Teller enrollment "${enrollment.institution_name}": token decryption failed (passphrase mismatch?) — skipping, not disconnecting.`);
+      errors.push({ institution: enrollment.institution_name, error: "decryption_failed" });
+      continue;
+    }
     try {
       const result = await syncEnrollment(enrollment);
       totalAdded += result.added;
@@ -562,6 +572,12 @@ async function syncAllBalances() {
   const errors = [];
 
   for (const enrollment of enrollments.rows) {
+    // See syncAllEnrollments: a NULL decrypted token signals a passphrase
+    // mismatch — surface decryption_failed rather than 401-ing against Teller (F7).
+    if (!enrollment.access_token) {
+      errors.push({ institution: enrollment.institution_name, error: "decryption_failed" });
+      continue;
+    }
     try {
       const accounts = await tellerRequest("/accounts", enrollment.access_token);
       for (const acct of accounts) {

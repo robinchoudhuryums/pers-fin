@@ -49,7 +49,17 @@ function classifyTransfer(merchantKey) {
   if (!merchantKey) return null;
   const lower = merchantKey.toLowerCase();
   for (const [type, keywords] of Object.entries(TRANSFER_PATTERNS)) {
-    if (keywords.some(kw => lower.includes(kw))) return type;
+    if (keywords.some(kw => {
+      // Mirror detect-subscriptions.js isExcludedMerchant: multi-word keywords
+      // are safe as substrings, but single-word keywords MUST use a word
+      // boundary so short tokens like "ira"/"epay" don't substring-match
+      // unrelated merchants ("Mira", "telepayments") and mis-tag ordinary
+      // purchases as recurring transfers (which would also hide them from
+      // spending via the parallel NOT_TRANSFER filter). (F32)
+      if (kw.includes(" ")) return lower.includes(kw);
+      const re = new RegExp("\\b" + kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b");
+      return re.test(lower);
+    })) return type;
   }
   return null;
 }
