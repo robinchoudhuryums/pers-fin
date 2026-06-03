@@ -898,7 +898,11 @@
           if (isCredit && hasBalances) {
             const owed = parseFloat(a.current_balance || 0);
             const avail = parseFloat(a.available_balance || 0);
-            const limit = owed + avail;
+            // Prefer the actual reported credit_limit; only derive it from
+            // owed+avail when no limit is stored. Plaid returns available:null
+            // for many cards (e.g. Discover), which made the derived limit
+            // collapse to `owed` and show 100% utilization.
+            const limit = parseFloat(a.credit_limit) || (owed + avail);
             const util = limit > 0 ? Math.round((owed / limit) * 100) : 0;
             const utilColor = util <= 10 ? 'var(--green)' : util <= 30 ? 'var(--teal)' : util <= 50 ? 'var(--warm)' : 'var(--red)';
             creditExtra += '<div style="font-size:11px;margin-top:4px;color:var(--text-muted);">Utilization: <span style="color:' + utilColor + ';font-weight:500;">' + util + '%</span> of ' + fmt(limit) + '</div>';

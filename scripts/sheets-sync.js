@@ -119,8 +119,15 @@ function fmtCurrency(val) {
 
 function fmtDate(d) {
   if (!d) return "";
-  const date = new Date(d);
-  return date.toISOString().split("T")[0];
+  const date = (d instanceof Date) ? d : new Date(d);
+  if (isNaN(date.getTime())) return String(d);
+  // Use LOCAL calendar components, not toISOString() (UTC). node-postgres parses
+  // a DATE column to a JS Date at local midnight; toISOString() re-expresses it
+  // in UTC, which shifts the rendered day back by one on west-of-UTC servers (F34).
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 // ---------------------------------------------------------------------------

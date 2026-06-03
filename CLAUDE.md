@@ -113,9 +113,16 @@ teller/
                            asset-class allocation, and top winners/losers from
                            Plaid-tracked holdings only (Teller-linked lacks
                            cost basis from Teller's API).
-                           Also exports `syncAllPlaidTransactions` and
-                           `syncAllPlaidBalances` for the scheduled auto-sync
-                           and `POST /api/sync-balances` (in-process).
+                           Also exports `syncAllPlaidTransactions`,
+                           `syncAllPlaidBalances`, and `syncAllPlaidHoldings`
+                           (UPSERTs investment_accounts; holdings-sum balance
+                           fallback for null-balance brokerages) for the
+                           scheduled auto-sync and `POST /api/sync-balances`
+                           (in-process).
+                           GET /api/investments excludes Plaid-linked accounts
+                           from its linked_accounts branch (la.plaid_item_id IS
+                           NULL) so Plaid investments come only from
+                           investment_accounts — no $0 double-listing.
     credit-scores.js     — GET/POST/DELETE /api/credit-scores
                            (manual credit score tracking with trend computation)
     notifications.js     — GET /api/notifications/vapid, POST/DELETE /api/notifications/subscribe,
@@ -273,6 +280,17 @@ shell/
   ID and filename-based format detection — audit H8/F29/F31, now resolved.)
 - `scripts/retention-cleanup.sql` — Reference SQL for the manual cleanup queries
   exposed by `POST /api/cleanup`
+- `scripts/reset-fresh.js` — Guarded fresh-start reset (`npm run reset:fresh`).
+  Wipes all historical data + user config (transactions, insights, goals,
+  budgets, rules, snapshots, watchlist, …) and resets `user_settings` to a
+  single default row, but PRESERVES the bank-connection layer
+  (`teller_enrollments`, `plaid_items`, `plaid_investment_items`,
+  `linked_accounts`, `sync_cursors`) and device auth (`webauthn_credentials`,
+  `push_subscriptions`) so no re-linking/re-registration is needed. Resets the
+  sync watermarks (Plaid cursors → '', Teller `last_synced_txn_date` → NULL) so
+  the next sync re-pulls full clean history. Dry-run by default (prints per-table
+  row counts); only mutates with `--yes` / `CONFIRM_RESET=YES`; runs in one
+  transaction.
 - `apps-script/Code.gs` — Google Sheets Apps Script (standalone + server sync)
 - `tests/` — Perfin test suite (node:test runner). Includes
   `tests/audit-regressions.test.js` which pins documented behavior for
@@ -310,6 +328,11 @@ shell/
   - **Plaid-linked**: full holdings sync (qty / cost basis / current value
     per security). Stored in `investment_accounts` + `investment_holdings`.
     Endpoints: `/api/plaid/{status,link-token,exchange,sync-holdings,holdings}`.
+    Holdings sync (`syncAllPlaidHoldings`) UPSERTs `investment_accounts` so the
+    rows survive a reset/wipe, and uses the sum of an account's holdings as the
+    balance when Plaid returns a null account-level balance (Schwab et al.) so
+    brokerages don't show $0. It runs automatically (auto-sync + AI pre-insights
+    chains + `POST /api/sync-balances`), not just at link time.
     Plaid also syncs **transactions** for banks Teller doesn't cover
     (Capital One, Discover, Schwab, Amex, credit unions) via
     `/api/plaid/{link-token-transactions,exchange-transactions,sync-transactions}`.
@@ -506,7 +529,7 @@ shell/
   income detection (keyword matching, excludes transfers/payments/refunds), bill scheduling
 - **Savings rate**: Income vs spending analysis with configurable lookback (default 3 months)
 - **Year-over-year comparisons**: Month-by-month spending comparison vs prior year
-- **Budget alerts** (`GET /api/budgets/alerts`): Spending velocity/pacing warnings with severity levels — `critical` ≥100% (over budget), `warning` ≥80% (approaching limit), `info` when pace > 1.2× and ≥50% (spending faster than the month's progress). The 3-hour scheduled push-notification path uses the same 80% / 100% thresholds; the in-app `info`/pace heuristic is intentionally not pushed (too noisy as a notification).
+- **Budget alerts** (`GET /api/budgets/alerts`): Spending velocity/pacing warnings with severity levels — `critical` ≥100% (over budget), `warning` ≥80% (approaching limit), `info` when pace > 1.2× and ≥50% (spending faster than the month's progress). Alerts compare spending against the **effective limit** (base `monthly_limit` + this month's `rollover_amount` from `budget_snapshots`) and skip one-time budgets outside their `effective_month` — matching `GET /api/budgets`. The 3-hour scheduled push-notification path uses the same effective-limit logic and 80% / 100% thresholds; the in-app `info`/pace heuristic is intentionally not pushed (too noisy as a notification).
 
 ### AI & Intelligence
 - **ML categorization**: Claude-powered smart transaction categorization via tool_use structured
@@ -696,6 +719,11 @@ shell/
   green/yellow/red mapping doesn't need to repeat threshold constants.
   `POST /api/sync` updates `last_txn_sync_at`; `POST /api/sync-balances`
   updates `last_balance_sync_at`.
+- **Sync Health card** (Settings): renders `GET /api/data-health` — per-source
+  freshness dots (green/yellow/red), Teller/Plaid connection status, a derived
+  `issues[]` list (disconnected links, stale balances, never-synced), and the
+  last reconcile time — plus a "Reconcile Now" button that POSTs
+  `/api/sync/reconcile` to recover any dropped transactions.
 - **Web Push notifications**: VAPID-based push notifications for anomalies, budget alerts,
   goal milestones
 - **Accessibility**: Skip-to-content link, `<main>` landmark, chart aria-labels, :focus-visible
@@ -919,17 +947,20 @@ npm install                                    # ALSO required at repo root for 
 npm test                                       # Run all tests (Perfin + Per-sistant)
 npm run test:perfin                            # Perfin tests only (tests/*.test.js)
 npm run test:persistent                        # Per-sistant tests only
+npm run reset:fresh                            # DRY RUN: print what a fresh-start reset would wipe/keep
+npm run reset:fresh -- --yes                   # perform the reset (wipes data+config, keeps bank links)
 
 # Key API endpoints
 POST /api/enroll           # store Teller access token after Connect
 POST /api/sync             # pull transactions for all enrollments
-POST /api/sync-balances    # fetch latest account balances. Refreshes BOTH
-                           # Teller (`syncAllBalances`) AND Plaid
-                           # (`syncAllPlaidBalances`) in one call — Plaid
-                           # accounts get current/available/credit_limit
-                           # populated without rerunning transactionsSync.
+POST /api/sync-balances    # fetch latest account balances. Refreshes Teller
+                           # (`syncAllBalances`), Plaid balances + credit limit
+                           # + liabilities/APR (`syncAllPlaidBalances`), AND
+                           # Plaid investment holdings (`syncAllPlaidHoldings`)
+                           # in one call — no transactionsSync rerun.
                            # Response: { accounts_updated, errors?,
-                           # plaid_accounts_updated, plaid_errors? }
+                           # plaid_accounts_updated, plaid_errors?,
+                           # holdings_updated }
 POST /api/detect           # run subscription detection
 POST /api/sync/reconcile   # backfill/reconcile to recover dropped transactions
                            # (body: days=1-365 default 90, provider=teller|plaid|all).
@@ -1080,7 +1111,9 @@ DELETE /api/credit-scores/:id # remove an entry
 GET  /api/plaid/status     # Plaid API config status (configured + environment)
 POST /api/plaid/link-token # create Plaid Link token for investments only
 POST /api/plaid/exchange   # exchange public token for investment accounts
-POST /api/plaid/sync-holdings # sync investment holdings
+POST /api/plaid/sync-holdings # sync investment holdings (thin wrapper around the
+                              # exported syncAllPlaidHoldings helper; UPSERTs
+                              # investment_accounts so wiped rows are re-created)
 POST /api/plaid/link-token-transactions # create combined Transactions+Investments link token
                                         # (730-day history request; one Plaid Link session links
                                         # both checking + brokerage for banks like Schwab)
@@ -1530,16 +1563,18 @@ embedded mode).
 - **Net worth snapshot**: every 1 hour (`ON CONFLICT (snapshot_date) DO UPDATE` so a same-day re-run rewrites the row with the latest balances — late-arriving syncs are reflected immediately)
 - **Goal milestones**: every 6 hours (push notifications at 25/50/75/100%)
 - **AI insights auto-trigger**: every 6 hours (respects `insights_cadence_days` setting).
-  Pre-analysis sync chain: syncAllEnrollments → syncAllBalances → detect subscriptions →
+  Pre-analysis sync chain: syncAllEnrollments → syncAllPlaidTransactions →
+  syncAllPlaidHoldings → syncAllBalances → detect subscriptions →
   detect transfers → categorize → generate insights → audit → email webhook.
   Ensures AI analyzes freshest data. Auto-categorization runs as part of this pipeline.
-- **Budget alerts**: every 3 hours (push notifications at 80% and 100%+ thresholds, aligned with the in-app `/api/budgets/alerts` `warning`/`critical` levels). The in-app `info`/pace heuristic is intentionally not pushed (too noisy as a notification).
+- **Budget alerts**: every 3 hours (push notifications at 80% and 100%+ thresholds, aligned with the in-app `/api/budgets/alerts` `warning`/`critical` levels). Like the endpoint, the push compares against the effective limit (base + current-month rollover) and skips one-time budgets outside their `effective_month`. The in-app `info`/pace heuristic is intentionally not pushed (too noisy as a notification).
 - **Budget snapshot auto-trigger**: every 6 hours, checks if today is the 1st of the
   month. If so, creates a snapshot for the previous month (spending + rollover amounts)
   so budget rollover advances automatically. Idempotent — skips if snapshot already exists.
 - **Bank auto-sync** (Phase A): every 1 hour, checks `auto_sync_enabled` and whether
   `auto_sync_interval_hours` has elapsed since `last_auto_sync_at`. When due, calls
   `syncAllEnrollments()` (Teller) then `syncAllPlaidTransactions()` (Plaid) then
+  `syncAllPlaidHoldings()` (Plaid investments) then
   `syncAllBalances()` in-process — never via HTTP self-fetch, so API_KEY-protected
   deployments don't 401 against themselves. Updates `last_auto_sync_at` on every
   check (success or partial failure).
@@ -1593,8 +1628,12 @@ exist in `routes/enrollments.js` (spending-summary monthly/category/
 merchants, cash-flow daily/DOW averages), `routes/insights.js` (anomaly
 baseline + candidate, seasonal patterns), and the split-row variant
 (`s.amount` instead of `t.amount`) in `financial-queries.js` and
-`enrollments.js`. Any new spending aggregation should import `SPLIT_AMOUNT`
-rather than re-inline.
+`enrollments.js`. The standalone `scripts/sheets-sync.js` `buildDashboard` also
+inlines a `SPLIT_AMT` + `NOT_TRANSFER` + reimbursed-exclusion copy (it can't
+import the services layer) — it mirrors the per-transaction split but does NOT
+do splits-REPLACEMENT (substituting `transaction_splits` rows for their parent),
+the one remaining divergence from the in-app category totals. Any new spending
+aggregation should import `SPLIT_AMOUNT` rather than re-inline.
 
 This affects: spending-summary (monthly_trend, byCategory, topMerchants),
 savings-rate, spending-yoy, budgets, budget alerts, cash flow, AI insights
@@ -1673,9 +1712,12 @@ income module, and bill-calendar income detection.
   Constants: `INCOME_PREDICATE`, `NOT_TRANSFER`, `SPLIT_AMOUNT`, `NOT_REIMBURSED`.
   `/api/savings-rate` calls `getMonthlyIncome` + `getMonthlySpending`;
   `/api/cash-flow` uses `INCOME_PREDICATE`; `/api/budgets/alerts` and the
-  scheduled budget-alert push use `getCategorySpendingThisMonth`. The
-  spending-summary monthly-trend path still inlines equivalent SQL — any new
-  financial endpoint should use this module instead of re-inlining.
+  scheduled budget-alert push use `getCategorySpendingThisMonth`;
+  `/api/budgets/suggest` uses `getCategorySpendingForMonth` over the trailing 3
+  months; `/api/context-export` uses `getMonthlySpending` — so AI suggestions
+  and the Claude-chat export see the same split-adjusted numbers as the
+  dashboard. The spending-summary monthly-trend path still inlines equivalent
+  SQL — any new financial endpoint should use this module instead of re-inlining.
 - **Substring-safe keyword exclusions.** All merchant/transaction keyword
   filters use word-boundary matching — `\b` in JavaScript regex, `\y` in
   Postgres regex (`~*` / `!~*`). The reason: short tokens like `atm`,
@@ -1775,7 +1817,7 @@ income module, and bill-calendar income detection.
   Every route module that the scheduler invokes exports a callable helper
   alongside its Express router:
   - `routes/enrollments.js` → `syncAllEnrollments`, `syncAllBalances`, `reconcileTeller`
-  - `routes/investments.js` → `syncAllPlaidTransactions`, `syncAllPlaidBalances`, `reconcilePlaidTransactions`
+  - `routes/investments.js` → `syncAllPlaidTransactions`, `syncAllPlaidBalances`, `syncAllPlaidHoldings`, `reconcilePlaidTransactions`
   - `routes/subscriptions.js` → `runSubscriptionDetection`
   - `routes/categorize.js` → `runCategorize`
   - `routes/insights.js` → `generateInsights`
@@ -1903,14 +1945,29 @@ income module, and bill-calendar income detection.
 - **Plaid balance refresh is a standalone helper.** `syncAllPlaidBalances`
   in `routes/investments.js` calls `accountsGet` on every linked
   Plaid item and writes `current_balance` / `available_balance` /
-  `credit_limit` to `linked_accounts` + a daily snapshot row — no
+  `credit_limit` to `linked_accounts` + a daily snapshot row, then
+  refreshes liabilities (APR / minimum payment / due date via
+  `syncPlaidLiabilities`, failing gracefully when unsupported) — no
   transactionsSync involved. `POST /api/sync-balances` calls it
-  alongside Teller's `syncAllBalances`, so one "Sync Balances" click
-  freshens both providers without triggering Plaid's transaction sync
-  (which would add duplicate rows during overlap with prior CSV
-  imports). The auto-sync loop still calls `syncAllPlaidTransactions`
-  for transaction history; the two helpers exist in parallel for
-  different cost/duplication profiles.
+  alongside Teller's `syncAllBalances` AND `syncAllPlaidHoldings`, so one
+  "Sync Balances" click freshens balances + credit limits + APR +
+  investment holdings across both providers without triggering Plaid's
+  transaction sync (which would add duplicate rows during overlap with
+  prior CSV imports). The auto-sync loop still calls
+  `syncAllPlaidTransactions` for transaction history; the helpers exist
+  in parallel for different cost/duplication profiles.
+- **Plaid holdings sync re-creates accounts, not just updates them.**
+  `syncAllPlaidHoldings` in `routes/investments.js` UPSERTs
+  `investment_accounts` (`ON CONFLICT (plaid_account_id)`) rather than a
+  bare UPDATE, so the account rows are RE-CREATED when the table has been
+  cleared (e.g. after a `scripts/reset-fresh.js` run) — the old UPDATE-only
+  path inserted holdings but left `investment_accounts` empty, so
+  investments stayed blank after any wipe. Account balance falls back to
+  the sum of the account's holdings (`sumHoldingsByAccount`) when Plaid
+  returns a null account-level `balances.current` (Schwab et al.), so
+  brokerages don't persist as $0. The helper runs in the bank auto-sync
+  chain, the AI pre-insights chain, and `POST /api/sync-balances`; the
+  `POST /api/plaid/sync-holdings` route is a thin wrapper around it.
 - **Plaid sync advances the cursor only on a fully-successful page.**
   `syncPlaidItemTransactions` processes each `transactionsSync` page, and if
   ANY row in the page fails to upsert it halts WITHOUT advancing the cursor —
@@ -1922,6 +1979,14 @@ income module, and bill-calendar income detection.
   transactions are UPSERTED (not bare-UPDATEd) so a pending→posted re-delivery
   with no existing row is inserted rather than dropped. The helper returns
   `incomplete: true` when it halted early or hit `MAX_PAGES`.
+- **Sync "added" counts genuine inserts, not updates.** Both the Teller and
+  Plaid transaction upserts `RETURNING (xmax = 0) AS inserted` and increment
+  their `added`/`transactions_added` counters only when the row was a fresh
+  insert (`xmax = 0`). `ON CONFLICT DO UPDATE` returns `rowCount = 1` for both
+  inserts and updates, so the old `rowCount > 0` check inflated the count on
+  every re-sync and reconcile — which drove false "new activity" auto-sync
+  notifications and unnecessary anomaly passes. `modified`/`removed` are tracked
+  separately and unaffected.
 - **Teller incremental sync never steps over a failed account.** In
   `syncEnrollment`, the enrollment-level `last_synced_txn_date` watermark is
   advanced ONLY when every account in the enrollment fetched cleanly — if any
