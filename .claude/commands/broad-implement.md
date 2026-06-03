@@ -11,7 +11,7 @@ You are implementing specific findings from a broad scan audit.
 
 Scope: $ARGUMENTS
 
-Read CLAUDE.md before starting.
+Read CLAUDE.md (especially Common Gotchas) before starting.
 
 Rules:
 - Implement ONLY the findings specified above — nothing else
@@ -28,11 +28,23 @@ Rules:
 After all fixes are complete, do the following in order:
 
 1. RUN TESTS
-Run the test suite (use the test command from CLAUDE.md's Cycle Workflow
-Config, or `npm test` if not specified). Note the result. If tests fail, classify:
+Read the Test Command from CLAUDE.md's Cycle Workflow Config.
+
+  - If Test Command is `manual`: skip programmatic test execution.
+    Walk every Regression Scenario whose Subsystem overlaps a file
+    you modified. Record per-scenario outcome (PASS / FAIL /
+    NOT APPLICABLE — with reason for NOT APPLICABLE). A FAIL is
+    classified the same as a test failure below.
+
+  - Otherwise: run the test suite (use the Test Command, or
+    `npm test` if not specified). If Regression Scenarios is also
+    configured, walk them after tests pass.
+
+Note the result. If tests fail (or any scenario FAILs), classify:
 - Caused by this session's changes (fix now)
 - Pre-existing (note but don't fix)
-- Real production bug exposed by correct test (flag as follow-on, don't fix here)
+- Real production bug exposed by correct test/scenario (flag as
+  follow-on, don't fix here)
 
 2. REGRESSION CHECK
 For each file you modified:
@@ -48,7 +60,11 @@ a) Would this bug have actually fired in production this month? YES/NO
 b) Did this fix introduce a new failure mode, documented or not? YES/NO
 Tally: [production fixes] − [new failure modes] = [net score]
 
-4. SUMMARY
+4. INVARIANT CHECK
+Check whether any changes could have violated invariants from the project's
+invariant library (listed in CLAUDE.md Common Gotchas). Flag any at risk.
+
+5. SUMMARY
 Produce a BROAD SCAN IMPLEMENTATION SUMMARY:
 
 ---BROAD SCAN IMPLEMENTATION SUMMARY---
@@ -60,7 +76,19 @@ CHANGES:
 
 TEST RESULTS: [passed/failed — details if failed]
 REGRESSION RISKS: [any risks identified, or "None"]
+INVARIANTS AT RISK: [any invariants potentially affected, or "None"]
 NET SCORE: [production fixes] − [new failure modes] = [net]
+
+DEPLOY STEP:
+[If Deploy Command is configured in CLAUDE.md for any modified
+subsystem, list the deploy command(s) the operator must run for the
+change to be live, one line per subsystem:]
+- [subsystem]: [command]
+[Otherwise:]
+N/A — no Deploy Command configured
+
+(Implementation is not considered complete in production until the
+operator confirms the deploy step.)
 
 FOLLOW-ON ITEMS:
 - [anything noticed but not fixed, out of scope]
@@ -70,6 +98,14 @@ DOCUMENTATION UPDATES NEEDED:
 - [any CLAUDE.md, README, or inline doc changes needed]
 (or "None")
 ---END BROAD SCAN IMPLEMENTATION SUMMARY---
+
+6. CHECKPOINT (optional — only if the project uses .cycle/ state)
+If a .cycle/ directory exists at the project root, create or update
+.cycle/STATE.md to reflect this session: completed findings, any
+selected findings not finished, open follow-on items, decisions made,
+and a "Where I left off" line. This lets /cycle-resume continue cleanly
+in a fresh session if context runs out. If .cycle/ does not exist, skip
+this step — the summary block above is the record, as usual.
 
 After the summary, suggest running /test-sync if any test failures remain,
 and /sync-docs if any documentation updates are needed.

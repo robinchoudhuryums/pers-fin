@@ -2042,3 +2042,143 @@ income module, and bill-calendar income detection.
    categorize → set budgets) visible until all steps complete
 4. **Investment performance & allocation** — Plaid syncs holdings (qty, cost basis,
    current value); compute returns, asset allocation, and goal-vs-portfolio drift
+
+## Cycle Workflow Config
+
+### Test Command
+npm test
+
+### Health Dimensions
+Financial Data Accuracy, Sync Integrity & Idempotency, Income/Spending Classification,
+AI Output Trustworthiness, Auth & Session Security, Secret & Token Handling,
+Scheduler Reliability, Data Freshness & Reconciliation, Migration Safety,
+Notification Correctness, Cross-app Integration Integrity, UI/UX & Accessibility,
+External Export Fidelity, Test Coverage Quality
+
+### Horizontal (Axis B) Categories
+Silent Degradation Posture | failures that swallow errors and look like success
+Startup Ordering Guarantees | migrations/cron/pool-wiring race or run out of order
+Operator-Only State Gaps | undocumented manual setup (PEMs, passphrase, env vars)
+Parallel Source-of-Truth Drift | SPLIT_AMOUNT/INCOME_PREDICATE copies diverging across files
+Money / Precision Drift | NUMERIC rounding, split-sum ±$0.01, parseMoney edge cases
+Test Coverage Quality | tests that pass regardless of the code under test
+
+### Subsystems
+Bank Sync & Ingestion:
+  teller/routes/enrollments.js, teller/routes/investments.js,
+  teller/services/teller-api.js, teller/data/csv-formats.js,
+  scripts/import-csv-cli.js
+  (Teller and Plaid are co-equal, first-class linking paths — both write the
+   same transactions/linked_accounts tables. Plaid additionally covers banks
+   Teller doesn't, plus investment holdings.)
+Detection & Categorization:
+  teller/routes/subscriptions.js, teller/routes/categorize.js,
+  teller/routes/categorize-helpers.js, teller/data/reference-data.js,
+  scripts/detect-subscriptions.js, scripts/detect-transfers.js
+Financial Analytics:
+  teller/services/financial-queries.js, teller/routes/budgets.js,
+  teller/routes/goals.js, teller/routes/credit-scores.js,
+  teller/routes/whats-new.js, teller/routes/watchlist.js
+AI Insights & Audit:
+  teller/routes/insights.js, teller/services/ai-audit.js
+Settings, Notifications & Cross-app:
+  teller/routes/settings.js, teller/routes/notifications.js,
+  teller/routes/persistent.js
+  (Seam: the matching Per-sistant integration files —
+   apps/per-sistant/routes/perfin.js + routes/webhooks.js — are audited
+   together with this subsystem from both sides.)
+Platform, Shell & Auth:
+  shell/index.js, shell/middleware/auth.js, shell/middleware/webauthn.js,
+  teller/server.js, teller/startup.js, teller/services/database.js,
+  teller/services/keep-alive.js, scripts/reset-fresh.js, db/*.sql
+Web UI (Perfin):
+  teller/pages/*.js, teller/views/*.ejs, teller/views/partials/*.ejs,
+  teller/public/*.js, teller/public/*.css, teller/public/sw.js,
+  shell/views/*.ejs, shell/public/*
+Sheets & External Export:
+  scripts/sheets-sync.js, scripts/retention-cleanup.sql, apps-script/Code.gs
+Per-sistant Backend:
+  apps/per-sistant/server.js, apps/per-sistant/ai.js, apps/per-sistant/config.js,
+  apps/per-sistant/db.js, apps/per-sistant/helpers.js, apps/per-sistant/middleware.js,
+  apps/per-sistant/routes/*.js, apps/per-sistant/services/keep-alive.js,
+  apps/per-sistant/db/*.sql
+  (Subtree-merged companion app, governed by THIS config to keep the two apps
+   in lockstep — not a separate cycle. routes/perfin.js + routes/webhooks.js
+   are the cross-app synergy seam shared with Perfin's Settings/Notifications/
+   Cross-app subsystem.)
+Per-sistant Web UI:
+  apps/per-sistant/views.js, apps/per-sistant/views/*.js, apps/per-sistant/pages/*.js
+
+### Invariant Library
+INV-01 | Sync "added" counts only genuine inserts (RETURNING xmax=0), never updates | Subsystem: Bank Sync & Ingestion | Verify: tests/sync-durability.test.js
+INV-02 | Teller watermark advances only when every account in the enrollment fetched cleanly | Subsystem: Bank Sync & Ingestion | Verify: code read syncEnrollment
+INV-03 | Teller incremental filter uses >= against the day-granular watermark | Subsystem: Bank Sync & Ingestion | Verify: code read
+INV-04 | Plaid cursor advances only after a fully-successful page; persisted progressively | Subsystem: Bank Sync & Ingestion | Verify: code read syncPlaidItemTransactions
+INV-05 | Reconcile is watermark-independent + idempotent; anomaly push suppressed | Subsystem: Bank Sync & Ingestion | Verify: reconcileTeller / tests/sync-durability.test.js
+INV-06 | User overrides never clobbered by re-sync; display uses COALESCE | Subsystem: Bank Sync & Ingestion
+INV-07 | Every spending aggregation applies SPLIT_AMOUNT | Subsystem: Financial Analytics | Verify: tests/financial-queries.test.js
+INV-08 | Reimbursed transactions excluded from all spending aggregations | Subsystem: Financial Analytics
+INV-09 | transaction_splits replace parent in per-category totals; sum matches parent ±$0.01 | Subsystem: Financial Analytics
+INV-10 | Keyword filters use word-boundary regex, never LIKE '%kw%' | Subsystem: Financial Analytics | Verify: tests/audit-regressions.test.js
+INV-11 | Goal current_amount derived (balance − baseline) when funding-linked | Subsystem: Financial Analytics
+INV-12 | Categorization writes user_category, never category | Subsystem: Detection & Categorization
+INV-13 | Categorization rules applied before AI; only unmatched rows sent to Claude | Subsystem: Detection & Categorization
+INV-14 | INSIGHTS_MONTHLY_BUDGET_CENTS enforced across insight+categorize+rebuild | Subsystem: AI Insights & Audit
+INV-15 | Insight cost uses granular token pricing (input + cache_read + cache_creation) | Subsystem: AI Insights & Audit
+INV-16 | sanitizeStructuredSummary bounds the summary; failure preserves prior | Subsystem: AI Insights & Audit
+INV-17 | Migrations run in one transaction; failure is fatal | Subsystem: Platform, Shell & Auth
+INV-18 | Scheduler invokes route logic via in-process helpers, never HTTP self-fetch | Subsystem: Platform, Shell & Auth
+INV-19 | Named helper exports attached AFTER module.exports = router | Subsystem: Platform, Shell & Auth
+INV-20 | Shell requireAuth honors x-api-key; embedded sub-apps skip own check | Subsystem: Platform, Shell & Auth | Verify: tests/audit-regressions.test.js
+INV-21 | Shell safeReturnTo allows only same-origin absolute paths | Subsystem: Platform, Shell & Auth
+INV-22 | Tokens + webhook secret encrypted at rest; mismatch surfaces as decryption_failed | Subsystem: Platform, Shell & Auth
+INV-23 | Service worker never caches /api/* | Subsystem: Web UI
+INV-24 | sheets-sync.syncAll isolates each tab (per-tab try/catch + errors[]) | Subsystem: Sheets & External Export
+INV-25 | Embedded sub-apps detect req.app.get("embedded") and skip their own auth; cross-app calls use the wired pool (perfinPool/persistentPool), never HTTP self-fetch | Subsystem: Per-sistant Backend / Platform, Shell & Auth
+
+### Policy Configuration
+Policy threshold: 6/10
+Consecutive cycles: 2
+
+### Regression Scenarios
+S1 | Re-sync is idempotent | Subsystem: Bank Sync & Ingestion
+  Steps:
+    - Run a Teller + Plaid sync, note transactions_added
+    - Run the same sync again with no new bank activity
+  Expected: second run reports 0 added; no duplicate rows; watermark/cursor unchanged on the no-op
+S2 | Shared-card settlement math | Subsystem: Financial Analytics
+  Steps:
+    - Mark an account is_shared at 50%; set one charge personal_for='self', one 'partner'
+    - Open the Settlement widget for that month
+  Expected: your_share = 50%×shared_total + self_total; partner mirror; reimbursed rows excluded
+S3 | AI budget cap enforced | Subsystem: AI Insights & Audit
+  Steps:
+    - Set INSIGHTS_MONTHLY_BUDGET_CENTS low; trigger insights, then categorize
+  Expected: 429 once cap hit; rules still categorize for free; usage rows written for both entry_types
+S4 | Embedded auth gate + cross-pool wiring | Subsystem: Platform, Shell & Auth
+  Steps:
+    - Hit /perfin/api/spending-summary with no shell cookie, then with a valid x-api-key
+    - Load the Per-sistant Perfin widget while embedded
+  Expected: 401/redirect without creds; 200 with valid key; widget reads Perfin's pool directly (no self-fetch 401)
+S5 | Sheets partial-failure isolation | Subsystem: Sheets & External Export
+  Steps:
+    - Force one tab's query to throw during syncAll
+  Expected: other tabs still update; errors[] names the failed tab; run doesn't abort mid-way
+S6 | Offline navigation fallback | Subsystem: Web UI
+  Steps:
+    - Install PWA, go offline, navigate to an uncached route
+  Expected: branded /offline.html served; no stale /api/* data shown
+
+### Frozen Subsystems
+- Legacy standalone Plaid server (plaid/server.js) — the LEGACY standalone process only. The active, co-equal Plaid linking path lives in teller/routes/investments.js and is NOT frozen. This file is kept solely for isolated standalone Plaid debugging; unfreeze if the in-app Plaid path is ever extracted to a standalone service.
+- n8n workflows (n8n-workflows/*.json) — superseded by in-process scheduled tasks in teller/startup.js. Unfreeze only if scheduling moves back out-of-process.
+
+### Deploy Command
+Platform, Shell & Auth: Render auto-deploys on push to `main` (configured in the Render dashboard, not via CLI). Alt: `fly deploy` (Dockerfile-based).
+Sheets & External Export: Apps Script side deploys via clasp — `clasp push` from apps-script/, then Apps Script editor → Deploy → New version. (Server-side sheets-sync.js ships with the main Render deploy.)
+
+### Cycle Rotation Plan
+Recommended first subsystem: Bank Sync & Ingestion (widest blast radius — every downstream number depends on correct transaction data; most invariants; richest recent bug history).
+Recommended order (frozen excluded): Bank Sync & Ingestion → Financial Analytics → Detection & Categorization → AI Insights & Audit → Platform, Shell & Auth → Settings, Notifications & Cross-app → Sheets & External Export → Web UI (Perfin) → Per-sistant Backend → Per-sistant Web UI.
+Seams audit frequency: every 3 subsystem cycles (focus: enrollments.js, subscriptions.js, settings.js, financial-queries.js, notifications.js, and the Per-sistant integration seam routes/perfin.js + routes/webhooks.js).
+Confidence: Bank Sync, Analytics, Detection, AI, Platform = High; Integrations, Sheets, Web UI, Per-sistant Backend, Per-sistant Web UI = Medium.

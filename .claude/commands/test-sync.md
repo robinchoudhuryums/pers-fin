@@ -1,54 +1,34 @@
-Post-implementation test quality assessment and failure resolution. Leads with coverage and quality analysis, not just failure fixing.
+Read CLAUDE.md before starting.
 
-Step 1: RUN TESTS AND CLASSIFY FAILURES
+[PASTE THE IMPLEMENTATION SUMMARY from the cycle, if available]
 
-Run the test suite. For each failure, classify into one of 5 categories:
+Post-implementation test quality assessment AND failure resolution. Lead
+with coverage/quality, not just fixing reds.
 
-Category A: Outdated assertions — test expectations that no longer match the (correct) new behavior. Fix by updating the assertion.
-Category B: Tests with local redefinitions — tests that redefine constants, configs, or values that should be imported from production code. Rewrite to import production values.
-Category C: Pre-existing failures — tests that were already failing before this cycle's changes. Fix if scoped to current work, otherwise note.
-Category D: Real production bugs caught by correct tests — the test is right, the code is wrong. Flag as follow-on item, do NOT fix here.
-Category E: Infrastructure issues — test runner config, missing fixtures, environment problems. Fix.
+Step 1 — Run tests (Test Command from CLAUDE.md; if `manual`, walk the
+Regression Scenarios) and classify each failure:
+- A: outdated assertion (fix)
+- B: test redefines a production value locally (rewrite to import it)
+- C: pre-existing failure (fix if in scope)
+- D: real production bug caught by a correct test (flag only, defer)
+- E: infrastructure issue (fix)
 
-Step 2: FIX CATEGORIES A, B, C, E in priority order. Category D items are flagged but not fixed (they need their own audit cycle).
+Step 2 — Fix A, B, C, E in priority order. Do NOT "fix" a D by weakening
+the test.
 
-Step 3: COVERAGE GAP ANALYSIS (primary value — runs even if all tests pass)
+Step 3 — Coverage gap analysis (runs even if all tests pass): for every
+change in the implementation summary, does a test exist that would FAIL
+if the change regressed? For each gap, describe what's untested, classify
+simple (<30 min) or complex, implement the simple ones now. Report the
+Category D ratio (fixes with no regression test / total fixes). Where an
+invariant defines a Verify test, confirm it exists and runs.
 
-For every change in the most recent implementation summary:
+Step 4 — Test quality: flag tests that pass both before and after a fix
+(no regression value), tests asserting on mock/stub behavior rather than
+production behavior, and assertions so broad they'd pass regardless of
+the code under test. Mark each salvageable (tighten) or rewrite.
 
-Does a test exist that would fail if the change regressed?
-If not, that's a coverage gap.
-For each gap:
+Step 5 — CI config check (typecheck, lint, build wired and green).
 
-Describe what's untested
-Classify as simple (<30 min to write) or complex (>30 min)
-Implement simple ones immediately
-Category D ratio: what percentage of fixes have no regression test?
-
-Step 4: TEST QUALITY CHECK
-
-Flag tests that:
-
-Pass both before and after a fix — they don't guard against regression
-Assert on mock/stub behavior rather than production behavior
-Have assertions so broad they'd pass regardless of the code under test
-For each quality issue:
-
-Is the test salvageable (tighten assertion) or should it be rewritten?
-If salvageable, fix it now
-
-Step 5: CI CONFIGURATION CHECK
-
-Verify:
-
-TypeScript type-check passes (tsc --noEmit)
-Linter passes with no errors
-Build succeeds
-Coverage thresholds are still met
-
-Report:
-
-Tests fixed: [count by category]
-Coverage gaps found: [count] — filled: [count] — remaining: [count]
-Quality issues found: [count] — fixed: [count]
-CI status: [all passing / issues found]
+Report: fixes made, remaining failures by category, coverage gaps and the
+Category D ratio, and quality issues found.
