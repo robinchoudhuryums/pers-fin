@@ -93,6 +93,7 @@ router.post("/api/subscriptions", async (req, res) => {
          amount = EXCLUDED.amount,
          notes = EXCLUDED.notes,
          is_active = true,
+         is_dismissed = false,
          cancelled_at = NULL,
          updated_at = now()
        RETURNING *`,
@@ -1186,7 +1187,7 @@ router.get("/api/recurring-transfers", async (req, res) => {
 
     const result = await pool.query(
       `SELECT rt.*,
-              ROUND(rt.amount * (30.0 / rt.cadence_days), 2) AS monthly_equivalent
+              ROUND(rt.amount * (30.0 / NULLIF(rt.cadence_days, 0)), 2) AS monthly_equivalent
        FROM recurring_transfers rt
        ${where}
        ORDER BY rt.amount DESC`

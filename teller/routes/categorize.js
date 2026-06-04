@@ -148,11 +148,12 @@ async function runCategorize() {
     if (afterTellerMap.length === 0) {
       const leftover = await pool.query(
         `SELECT COUNT(*) AS uncategorized FROM transactions
-         WHERE (
-           category IS NULL
-           OR category = '{}'
-           OR NOT (category[1] = ANY($1::text[]))
-         )
+         WHERE user_category IS NULL
+           AND (
+             category IS NULL
+             OR category = '{}'
+             OR NOT (category[1] = ANY($1::text[]))
+           )
            AND pending = false AND amount > 0`,
         [OUR_CATEGORIES_PG]
       );

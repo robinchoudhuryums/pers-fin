@@ -27,6 +27,20 @@ router.get("/api/settings", async (_req, res) => {
   }
 });
 
+// Coerce a client-supplied toggle map (insight_modules / dashboard_widgets)
+// to a flat { string: boolean } object (SN-5). Rejects arrays and non-objects
+// and drops nested/over-long keys, so a pathological body can't be persisted
+// verbatim — unlike `target_allocation_pct`, these were stored after only a
+// `typeof === "object"` check (which `[]` and arbitrary nesting pass).
+function sanitizeBoolMap(obj) {
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (typeof k === "string" && k.length > 0 && k.length <= 64) out[k] = !!v;
+  }
+  return out;
+}
+
 // PATCH /api/settings
 router.patch("/api/settings", async (req, res) => {
   const { session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules, pyramid_data_source, pyramid_color_mode, debt_baseline_amount, partner_name } = req.body;
@@ -74,9 +88,9 @@ router.patch("/api/settings", async (req, res) => {
       updates.push("zip_code = $" + idx++);
       values.push(cleaned || null);
     }
-    if (insight_modules !== undefined && typeof insight_modules === "object") {
-      updates.push("insight_modules = $" + idx++);
-      values.push(JSON.stringify(insight_modules));
+    if (insight_modules !== undefined) {
+      const clean = sanitizeBoolMap(insight_modules);
+      if (clean) { updates.push("insight_modules = $" + idx++); values.push(JSON.stringify(clean)); }
     }
     if (pyramid_data_source !== undefined && ["wellness", "debt_payoff", "goal_progress", "spending_categories", "net_worth"].includes(pyramid_data_source)) {
       updates.push("pyramid_data_source = $" + idx++); values.push(pyramid_data_source);
@@ -115,8 +129,8 @@ router.patch("/api/settings", async (req, res) => {
     if (req.body.csv_reminder_enabled !== undefined) {
       updates.push("csv_reminder_enabled = $" + idx++); values.push(!!req.body.csv_reminder_enabled);
     }
-    if (req.body.dashboard_widgets !== undefined && typeof req.body.dashboard_widgets === "object") {
-      updates.push("dashboard_widgets = $" + idx++); values.push(JSON.stringify(req.body.dashboard_widgets));
+    if (req.body.dashboard_widgets !== undefined && sanitizeBoolMap(req.body.dashboard_widgets)) {
+      updates.push("dashboard_widgets = $" + idx++); values.push(JSON.stringify(sanitizeBoolMap(req.body.dashboard_widgets)));
     }
     // Per-sistant integration settings
     if (req.body.persistent_url !== undefined) {

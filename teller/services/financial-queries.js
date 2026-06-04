@@ -127,7 +127,10 @@ async function getMonthlySpending(pool, months = 6) {
      WHERE t.amount > 0 AND t.pending = false
        AND COALESCE(t.is_reimbursed, false) = false
        AND ${NOT_TRANSFER}
-       AND t.date >= CURRENT_DATE - make_interval(months => $1)
+       -- Whole-month window (FA-4): floor to the 1st of the month so the
+       -- oldest bucket is a FULL month, not a partial one — callers (savings-
+       -- rate, context-export, AI trends) treat each returned month as complete.
+       AND t.date >= date_trunc('month', CURRENT_DATE) - make_interval(months => $1 - 1)
      GROUP BY TO_CHAR(t.date, 'YYYY-MM')
      ORDER BY month`,
     [months]
@@ -146,7 +149,8 @@ async function getMonthlyIncome(pool, months = 6) {
             SUM(ABS(amount)) AS total_income
      FROM transactions
      WHERE amount < 0 AND pending = false
-       AND date >= CURRENT_DATE - make_interval(months => $1)
+       -- Whole-month window (FA-4) — see getMonthlySpending.
+       AND date >= date_trunc('month', CURRENT_DATE) - make_interval(months => $1 - 1)
        AND ${INCOME_PREDICATE}
      GROUP BY TO_CHAR(date, 'YYYY-MM')
      ORDER BY month`,

@@ -289,7 +289,11 @@ async function syncAllEnrollments(opts = {}) {
          WHERE t.amount > 0 AND t.pending = false
            AND COALESCE(t.is_reimbursed, false) = false
            AND ${NOT_TRANSFER}
-           AND t.date >= CURRENT_DATE - INTERVAL '3 days'
+           -- 7-day window (F7) matches the baseline's 7-day exclusion below, so a
+           -- late-POSTING charge (synced today but dated up to a week ago — caught
+           -- by created_at > watermark) is still eligible, while staying disjoint
+           -- from the baseline so a candidate never inflates its own average.
+           AND t.date >= CURRENT_DATE - INTERVAL '7 days'
            AND t.amount > avg_tbl.avg_amount * 3
            AND ($1::timestamptz IS NULL OR t.created_at > $1)
          ORDER BY t.amount DESC
@@ -754,7 +758,7 @@ router.get("/api/spending-summary", async (req, res) => {
               ROUND(AVG(${SPLIT_AMOUNT}), 2) AS avg_transaction
        FROM transactions t
        LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-       WHERE t.amount > 0 AND COALESCE(t.is_reimbursed, false) = false
+       WHERE t.amount > 0 AND t.pending = false AND COALESCE(t.is_reimbursed, false) = false
          AND ${NOT_TRANSFER}
          AND t.date >= CURRENT_DATE - ($1 || ' months')::INTERVAL
        GROUP BY TO_CHAR(t.date, 'YYYY-MM')
@@ -773,7 +777,7 @@ router.get("/api/spending-summary", async (req, res) => {
                 1 AS line_count
          FROM transactions t
          LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-         WHERE t.amount > 0 AND COALESCE(t.is_reimbursed, false) = false
+         WHERE t.amount > 0 AND t.pending = false AND COALESCE(t.is_reimbursed, false) = false
            AND ${NOT_TRANSFER}
            AND t.date >= CURRENT_DATE - ($1 || ' months')::INTERVAL
            AND NOT EXISTS (SELECT 1 FROM transaction_splits s WHERE s.parent_transaction_id = t.transaction_id)
@@ -785,7 +789,7 @@ router.get("/api/spending-summary", async (req, res) => {
          FROM transaction_splits s
          JOIN transactions t ON t.transaction_id = s.parent_transaction_id
          LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-         WHERE t.amount > 0 AND COALESCE(t.is_reimbursed, false) = false
+         WHERE t.amount > 0 AND t.pending = false AND COALESCE(t.is_reimbursed, false) = false
            AND ${NOT_TRANSFER}
            AND t.date >= CURRENT_DATE - ($1 || ' months')::INTERVAL
        ),
@@ -813,7 +817,7 @@ router.get("/api/spending-summary", async (req, res) => {
               COUNT(*) AS txn_count
        FROM transactions t
        LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-       WHERE t.amount > 0 AND COALESCE(t.is_reimbursed, false) = false
+       WHERE t.amount > 0 AND t.pending = false AND COALESCE(t.is_reimbursed, false) = false
              AND t.merchant_name IS NOT NULL
              AND ${NOT_TRANSFER}
              AND t.date >= CURRENT_DATE - ($1 || ' months')::INTERVAL
