@@ -30,7 +30,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **To-Do Lists**: Short/medium/long-term horizons, 4 priority levels, categories, due dates
 - **Todo Categories**: Preset categories (work, personal, health, finance, errands, home, learning) + custom; filterable on todos page and dashboard
 - **Dashboard Task Views**: All / By Category / By Urgency / Due Soon tabs
-- **Recurring Tasks**: Daily, weekly, monthly, yearly, weekdays + custom intervals (every N days/weeks/months) with auto-generation, streak/habit tracking, skip, and snooze
+- **Recurring Tasks**: Daily, weekly, monthly, yearly, weekdays + custom intervals (every N days/weeks/months) with auto-generation, streak/habit tracking, skip, and snooze. The midnight auto-roll cron atomically CLAIMS each overdue recurring row (`UPDATE … WHERE id = $1 AND completed = false RETURNING`) before generating the next instance, so it can't race the manual complete-recurring path into a double-generated instance (PS-11).
 - **Subtasks**: Checklists within tasks with progress tracking
 - **Natural Language Quick Add**: Create todos from natural language with auto-detected priority/horizon/due date (AI-enhanced when enabled)
 - **Email Drafting**: Compose, schedule, send; natural language "Quick Send" parser
@@ -42,7 +42,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **AI Note Auto-Tagging**: Suggest tags for notes based on content
 - **AI Model Selection**: Per-feature choice of Haiku (fast/cheap), Sonnet (smarter), or Off — configurable in Settings
 - **Email Templates**: Save and reuse common email formats
-- **Notes**: Color-coded, pinnable, with optional reminders, tags, and Markdown support (bold, italic, lists, checkboxes, links, quotes, headings)
+- **Notes**: Color-coded, pinnable, with optional reminders, tags, and Markdown support (bold, italic, lists, checkboxes, links, quotes, headings). The client-side `renderMd` link rule scheme-validates hrefs (`http(s):`/`mailto:` only, else neutralized to `#`) and quote-escapes the URL, so a `[x](javascript:…)` note can't render a clickable script URL (PS-4).
 - **Task Dependencies**: Blocking/blocked-by relationships between tasks with circular dependency prevention
 - **Streak Tracking**: Recurring tasks track completion streaks (current + best) with on-time detection
 - **Contacts**: Name→email lookup for quick email addressing
@@ -50,7 +50,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **AI Smart Suggestions**: AI-powered productivity coaching based on task priorities, due dates, and streaks
 - **AI Natural Language Query**: Ask questions about your data ("what did I do last week?", "how many tasks are overdue?")
 - **Automations/Rules Engine**: Create trigger→action rules (e.g., "when task created with category=work, set priority=high"), configurable in Settings
-- **File Attachments**: Upload files (up to 10MB) to tasks, emails, and notes via local storage
+- **File Attachments**: Upload files (up to 10MB) to tasks, emails, and notes via local storage. The download route sanitizes the stored `original_name` in the `Content-Disposition` header (strips quotes/backslashes/control chars) and emits RFC 5987 `filename*=UTF-8''…`, so a crafted filename can't inject/spoof a header (PS-5).
 - **iCal Export**: Export tasks and scheduled emails as .ics file for Google Calendar, Outlook, etc.
 - **Voice Input**: Web Speech API microphone button on Quick Add and notes (Chrome/Edge)
 - **Location-Based Reminders**: Set location (name + coordinates + radius) on tasks, periodic geofence checking with browser notifications
@@ -69,7 +69,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **Dashboard Inline Actions**: Complete tasks and send emails directly from dashboard
 - **Bulk Actions**: Multi-select mode on todos, emails, and notes for batch operations
 - **System Theme Auto-Detection**: Auto option follows OS dark/light preference via prefers-color-scheme
-- **Backend Validation**: Server-side enum validation for priority, horizon, recurrence rules, note colors, email format
+- **Backend Validation**: Server-side enum validation for priority, horizon, recurrence rules, note colors, email format. The email `PATCH` validates `status` against `VALID_EMAIL_STATUSES` too (not just `POST`), so a client can't force `status='scheduled'` with a past `scheduled_at` to inject a cron-pickable row (PS-7).
 - **Cross-Entity Links**: Link todos, emails, and notes to each other; create todos from notes or emails with auto-linking
 - **Notification System**: Centralized notification check for due tasks, overdue items, streaks at risk, and note reminders; browser push notifications on dashboard load
 - **Analytics Dashboard**: Productivity insights with completion trends, day-of-week analysis, priority/category breakdowns, average completion time, streak leaderboard, productivity score, activity heatmap (90 days), emails sent/notes created counts; filterable by week/month/quarter/year
@@ -283,7 +283,11 @@ GET    /sw.js               # Service worker
   All migration files run inside ONE transaction (`BEGIN`/`COMMIT`); a failure
   is FATAL: `runMigrations` rolls back and rethrows, and `start()` exits
   non-zero rather than booting against a half-applied schema (PS-1, mirrors
-  Perfin's migration guarantee).
+  Perfin's migration guarantee). Migrations are gated on
+  `PERSISTENT_DATABASE_URL || NEON_DATABASE_URL` — the same connection string
+  the pool uses — so a pure-standalone deployment with only
+  `PERSISTENT_DATABASE_URL` set still runs them (previously gated on
+  `NEON_DATABASE_URL` alone, which silently skipped migrations in that config).
 - `user_settings` table: single-row pattern (CHECK id = 1), includes ai_model_* columns
 - `user_settings.perfin_webhook_recipient TEXT`: destination email address for
   inbound `insights_generated` webhooks from Perfin. `routes/perfin.js` reads
@@ -298,6 +302,12 @@ GET    /sw.js               # Service worker
   handler — they share `recipient_email` selection (from
   `perfin_webhook_recipient` → SMTP_FROM → SMTP_USER → draft), differ
   only on the `recipient_name` label and fallback subject.
+- **Inbound webhook replay/expiry guard** (SN-1): after the HMAC signature
+  check, `routes/perfin.js` rejects payloads whose signed `timestamp` is
+  outside a ±5-minute window, and tracks recently-seen signatures in a
+  self-cleaning TTL map so a captured signed POST can't be replayed to
+  re-queue digest emails. Mirrors the SSO nonce-replay protection on the
+  Perfin side.
 
 ## Express version
 Per-sistant is pinned to **express v4** (^4.21.0) to align with the

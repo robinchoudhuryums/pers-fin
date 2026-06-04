@@ -274,10 +274,15 @@ shell/
   flags the drift risk).
 - `scripts/import-csv-cli.js` — Standalone CLI for importing bank CSVs. Shares
   the route's logic via `teller/data/csv-formats.js`: content-only
-  `detectCsvFormat` (no filename heuristic) and the same `csvTransactionId`
-  dedup-ID helper, so re-imports dedup correctly and IDs match the
-  `/api/import-csv` route. (Earlier the CLI used a divergent, row-index-based
-  ID and filename-based format detection — audit H8/F29/F31, now resolved.)
+  `detectCsvFormat` (no filename heuristic), the same `csvTransactionId`
+  dedup-ID helper, AND the same `INSTITUTION_LABELS` map. Both derive the
+  default account label (`"<institution> Account"`) from the detected format,
+  so when the caller doesn't supply an explicit label the CLI and the
+  `/api/import-csv` route produce **identical** dedup IDs for the same row
+  (F2). The route still honors an explicitly-provided `institution` /
+  `account_label` (e.g. the web dropdown) — those are intentionally separate
+  accounts. (Earlier the CLI used a divergent, row-index-based ID and
+  filename-based format detection — audit H8/F29/F31, now resolved.)
 - `scripts/retention-cleanup.sql` — Reference SQL for the manual cleanup queries
   exposed by `POST /api/cleanup`
 - `scripts/reset-fresh.js` — Guarded fresh-start reset (`npm run reset:fresh`).
@@ -300,12 +305,17 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (557 tests as of latest); use
+  Perfin and Per-sistant test files (575 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 557 tests across 16 test files (incl.
-  `tests/cycle-fixes.test.js` — regression tests pinning the net-worth
-  single-source-of-truth, budget-rollover month-keying, Per-sistant
-  migration/email fixes, and the AI-audit completion marker).
+  Current count: 575 tests across 17 test files (incl.
+  `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
+  — regression tests pinning the net-worth single-source-of-truth,
+  budget-rollover month-keying, the AI-audit completion marker, and the
+  Tier 1/Tier 2 broad-scan fixes: webhook replay/expiry, markdown-link &
+  attachment-header sanitization, email status validation, CSV dedup-ID
+  parity, Plaid balance-sync status filter, categorize cap-charge ordering,
+  tax user-merchant override, decryption_failed surfacing, recurring-cron
+  atomic claim).
 - `.github/workflows/ci.yml` — CI pipeline (single `npm ci` at root via npm workspaces, then `npm test`)
 - `.claude/commands/` — Project slash-command prompts: `/broad-scan`, `/broad-implement`,
   `/test-sync`, `/sync-docs`
@@ -947,7 +957,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 557 tests passing across 16 test files (Perfin + Per-sistant)
+- 575 tests passing across 17 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash
@@ -1874,8 +1884,12 @@ income module, and bill-calendar income detection.
   to `res.status().json()` and direct callers can branch on `result.ok`.
   Outbound HTTP helpers (`sendPerSistantWebhook`) follow a parallel
   contract: `{ sent: bool, status?, reason?, error? }`. `reason` is an
-  enum-style string (`"not_configured"`, `"missing_secret"`) so callers
-  can branch on the specific failure mode rather than parsing logs.
+  enum-style string (`"not_configured"`, `"missing_secret"`,
+  `"decryption_failed"`) so callers can branch on the specific failure mode
+  rather than parsing logs. `getPersistentConfig` decrypts the webhook secret
+  in a separate query from the url/enabled read, so a `TOKEN_ENCRYPTION_PASSPHRASE`
+  mismatch surfaces as `"decryption_failed"` instead of masquerading as
+  `"not_configured"` (SN-3).
 - **"Since last X" watermarks live in `user_settings`, not in cookies.**
   The anomaly notifier (`last_anomaly_check_at`) and the "since you last
   looked" dashboard widget (`last_dashboard_view_at`) both use a single
@@ -1985,8 +1999,12 @@ income module, and bill-calendar income detection.
   obligations from the settlement endpoint rather than re-deriving them.
 - **Plaid balance refresh is a standalone helper.** `syncAllPlaidBalances`
   in `routes/investments.js` calls `accountsGet` on every linked
-  Plaid item and writes `current_balance` / `available_balance` /
-  `credit_limit` to `linked_accounts` + a daily snapshot row, then
+  Plaid item **with `status = 'GOOD'`** (so CSV virtual `plaid_items`
+  — `status='CSV'`, placeholder token — aren't sent to Plaid every balance
+  sync, which would 400 and surface as recurring spurious errors; matches the
+  filter `syncAllPlaidTransactions` applies, F3) and writes `current_balance` /
+  `available_balance` / `credit_limit` to `linked_accounts` + a daily snapshot
+  row, then
   refreshes liabilities (APR / minimum payment / due date via
   `syncPlaidLiabilities`, failing gracefully when unsupported) — no
   transactionsSync involved. `POST /api/sync-balances` calls it
