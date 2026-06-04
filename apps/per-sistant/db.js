@@ -35,13 +35,22 @@ async function runMigrations() {
     const files = fs.readdirSync(migrationsDir)
       .filter(f => f.endsWith(".sql"))
       .sort();
+    // Run every migration inside ONE transaction and make failure FATAL
+    // (PS-1). Previously each file ran without BEGIN/COMMIT and the catch
+    // only logged, so a failed migration left a half-applied schema and the
+    // server booted against it anyway. This mirrors Perfin's atomic + fatal
+    // migration guarantee — the throw propagates to start(), which exits.
+    await client.query("BEGIN");
     for (const file of files) {
       const sql = fs.readFileSync(path.join(migrationsDir, file), "utf8");
       await client.query(sql);
     }
+    await client.query("COMMIT");
     console.log(`Migrations complete (${files.length} files)`);
   } catch (err) {
-    console.error("Migration error:", err.message);
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("Migration error (fatal):", err.message);
+    throw err;
   } finally {
     client.release();
   }

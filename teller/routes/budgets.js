@@ -21,6 +21,19 @@ function currentMonthKey() {
   return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
 }
 
+// Previous-month key for a given 'YYYY-MM'. The rollover that applies to
+// month M is the unused budget from month M-1, which the snapshot job stores
+// in the budget_snapshots row keyed by M-1 (prevMonth). Readers must look up
+// the PRIOR month's snapshot, not the current month's (FA-1) — the current
+// month's row either doesn't exist yet or holds this month's own (circular)
+// underspend, so the carried-over amount was previously never applied.
+function previousMonthKey(monthKey) {
+  const [y, m] = monthKey.split("-").map(Number);
+  const d = new Date(y, m - 1, 1); // first day of monthKey
+  d.setMonth(d.getMonth() - 1);
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+}
+
 // GET /api/budgets — list all budgets with current month spending
 router.get("/api/budgets", async (req, res) => {
   const queryMonth = req.query.month || currentMonthKey();
@@ -36,7 +49,8 @@ router.get("/api/budgets", async (req, res) => {
       // numbers — the previous helper always returned the current month, which
       // gave nonsense data when callers asked for a historical month.
       getCategorySpendingForMonth(pool, queryMonth),
-      pool.query("SELECT * FROM budget_snapshots WHERE month = $1", [queryMonth]),
+      // Rollover for queryMonth comes from the PRIOR month's snapshot (FA-1).
+      pool.query("SELECT * FROM budget_snapshots WHERE month = $1", [previousMonthKey(queryMonth)]),
     ]);
     const spendMap = {};
     for (const r of spending) spendMap[r.category] = parseFloat(r.spent);
@@ -276,7 +290,8 @@ router.get("/api/budgets/alerts", async (_req, res) => {
     const [budgets, spending, snapshots] = await Promise.all([
       pool.query("SELECT * FROM budgets ORDER BY monthly_limit DESC"),
       getCategorySpendingThisMonth(pool), // Phase B3: honors splits
-      pool.query("SELECT budget_id, rollover_amount FROM budget_snapshots WHERE month = $1", [month]),
+      // Rollover applied to this month is the prior month's unused budget (FA-1).
+      pool.query("SELECT budget_id, rollover_amount FROM budget_snapshots WHERE month = $1", [previousMonthKey(month)]),
     ]);
 
     const today = new Date();

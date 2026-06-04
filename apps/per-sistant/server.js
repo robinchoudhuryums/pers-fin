@@ -108,8 +108,21 @@ function getSmtpTransporter() {
 async function processScheduledEmails() {
   if (!nodemailer || !process.env.SMTP_HOST) return;
   try {
+    // Atomically CLAIM due emails before sending (PS-2). The old code
+    // select-then-sent: a slow SMTP send overlapping the next 10-min tick (or
+    // any second runner) re-selected the still-'scheduled' row and sent it
+    // twice. Flipping status to 'sent' inside a single UPDATE … FOR UPDATE SKIP
+    // LOCKED claims each row so no other tick can pick it up; we revert to
+    // 'failed' if the actual send throws. ('sending' isn't in the status CHECK
+    // constraint, so we claim straight to 'sent' — at-most-once delivery.)
     const r = await pool.query(
-      "SELECT * FROM emails WHERE deleted_at IS NULL AND status = 'scheduled' AND scheduled_at <= now()"
+      `UPDATE emails SET status = 'sent', sent_at = now()
+       WHERE id IN (
+         SELECT id FROM emails
+         WHERE deleted_at IS NULL AND status = 'scheduled' AND scheduled_at <= now()
+         FOR UPDATE SKIP LOCKED
+       )
+       RETURNING *`
     );
     for (const email of r.rows) {
       try {
@@ -122,10 +135,11 @@ async function processScheduledEmails() {
         };
         if (email.body_html) mail.html = email.body_html;
         await transporter.sendMail(mail);
-        await pool.query("UPDATE emails SET status = 'sent', sent_at = now() WHERE id = $1", [email.id]);
         console.log(`Sent scheduled email ${email.id} to ${email.recipient_email}`);
       } catch (err) {
-        await pool.query("UPDATE emails SET status = 'failed', error_message = $1 WHERE id = $2", [err.message, email.id]);
+        // Send failed — release the optimistic claim back to 'failed' so the
+        // row reflects reality (it won't be retried, matching prior behavior).
+        await pool.query("UPDATE emails SET status = 'failed', error_message = $1, sent_at = NULL WHERE id = $2", [err.message, email.id]);
         console.error(`Failed to send email ${email.id}:`, err.message);
       }
     }
@@ -229,7 +243,13 @@ async function start(opts = {}) {
 // Required by the unified shell: it does `require("./server")` and gets
 // `{ app, start, pool, ... }` without a second listener firing up.
 if (require.main === module) {
-  start().catch(console.error);
+  // Fail fast on startup error (PS-1). runMigrations is now fatal — a failed
+  // migration rejects start(); exit non-zero rather than logging and limping
+  // along against a half-applied schema (mirrors Perfin's behavior).
+  start().catch((err) => {
+    console.error("Per-sistant startup failed:", err);
+    process.exit(1);
+  });
 }
 
 module.exports = { app, pool, start, processScheduledEmails, parseTimeExpr: null };

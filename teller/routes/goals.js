@@ -378,35 +378,17 @@ router.delete("/api/goals/:id", async (req, res) => {
 // POST /api/net-worth/snapshot
 router.post("/api/net-worth/snapshot", async (_req, res) => {
   try {
-    const [accounts, investments] = await Promise.all([
-      pool.query("SELECT name, type, available_balance, current_balance FROM linked_accounts WHERE available_balance IS NOT NULL OR current_balance IS NOT NULL"),
-      pool.query("SELECT name, account_type, balance FROM investment_accounts WHERE is_active = true AND balance != 0"),
-    ]);
-    let totalAssets = 0, totalLiabilities = 0;
-    const breakdown = { accounts: [], investments: [] };
-    for (const a of accounts.rows) {
-      if (a.type === "credit") {
-        const owed = parseFloat(a.current_balance || 0);
-        totalLiabilities += owed;
-        breakdown.accounts.push({ name: a.name, type: a.type, amount: -owed });
-      } else {
-        const bal = parseFloat(a.available_balance || a.current_balance || 0);
-        totalAssets += bal;
-        breakdown.accounts.push({ name: a.name, type: a.type, amount: bal });
-      }
-    }
-    for (const inv of investments.rows) {
-      const bal = parseFloat(inv.balance);
-      totalAssets += bal;
-      breakdown.investments.push({ name: inv.name, type: inv.account_type, amount: bal });
-    }
-    const netWorth = totalAssets - totalLiabilities;
+    // Shared net-worth computation (F1) — dedupes Plaid investment accounts
+    // counted in both linked_accounts and investment_accounts, and matches the
+    // scheduled snapshot + balance-sync writers exactly.
+    const { getNetWorth } = require("../services/financial-queries");
+    const nw = await getNetWorth(pool);
     const result = await pool.query(
       `INSERT INTO net_worth_snapshots (total_assets, total_liabilities, net_worth, breakdown, snapshot_date)
        VALUES ($1, $2, $3, $4, CURRENT_DATE)
        ON CONFLICT (snapshot_date) DO UPDATE SET total_assets = $1, total_liabilities = $2, net_worth = $3, breakdown = $4
        RETURNING *`,
-      [totalAssets, totalLiabilities, netWorth, JSON.stringify(breakdown)]
+      [nw.total_assets, nw.total_liabilities, nw.net_worth, JSON.stringify(nw.breakdown)]
     );
     res.json(result.rows[0]);
   } catch (err) {

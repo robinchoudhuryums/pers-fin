@@ -689,17 +689,20 @@ async function syncAllBalances() {
     }
   }
 
-  // Auto-snapshot net worth after balance sync
+  // Auto-snapshot net worth after balance sync. Uses the shared getNetWorth
+  // (F1) so this write includes investments + dedupes Plaid-in-both-tables —
+  // previously it summed linked_accounts ONLY (and wrote no breakdown), so it
+  // clobbered the investment-inclusive snapshot the hourly job wrote, making
+  // net worth oscillate intra-day.
   try {
-    const allAccts = await pool.query("SELECT type, available_balance, current_balance FROM linked_accounts WHERE available_balance IS NOT NULL OR current_balance IS NOT NULL");
-    let assets = 0, liabilities = 0;
-    for (const a of allAccts.rows) {
-      if (a.type === "credit") liabilities += parseFloat(a.current_balance || 0);
-      else assets += parseFloat(a.available_balance || a.current_balance || 0);
-    }
+    const { getNetWorth } = require("../services/financial-queries");
+    const nw = await getNetWorth(pool);
     await pool.query(
-      "INSERT INTO net_worth_snapshots (total_assets, total_liabilities, net_worth, snapshot_date) VALUES ($1, $2, $3, CURRENT_DATE) ON CONFLICT (snapshot_date) DO UPDATE SET total_assets=$1, total_liabilities=$2, net_worth=$3",
-      [assets, liabilities, assets - liabilities]
+      `INSERT INTO net_worth_snapshots (total_assets, total_liabilities, net_worth, breakdown, snapshot_date)
+       VALUES ($1, $2, $3, $4, CURRENT_DATE)
+       ON CONFLICT (snapshot_date) DO UPDATE SET
+         total_assets = $1, total_liabilities = $2, net_worth = $3, breakdown = $4`,
+      [nw.total_assets, nw.total_liabilities, nw.net_worth, JSON.stringify(nw.breakdown)]
     );
   } catch { /* non-critical */ }
   return { accounts_updated: updated, errors: errors.length > 0 ? errors : undefined };

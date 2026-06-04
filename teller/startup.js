@@ -74,28 +74,13 @@ function startBackgroundJobs() {
   intervalHandles.push(setInterval(async () => {
     if (!isUserActive()) return;
     try {
-      const [accounts, investments] = await Promise.all([
-        pool.query("SELECT name, type, available_balance, current_balance FROM linked_accounts WHERE available_balance IS NOT NULL OR current_balance IS NOT NULL"),
-        pool.query("SELECT name, account_type, balance FROM investment_accounts WHERE is_active = true AND balance != 0"),
-      ]);
-      if (accounts.rows.length === 0 && investments.rows.length === 0) return;
-      let totalAssets = 0, totalLiabilities = 0;
-      const breakdown = { accounts: [], investments: [] };
-      for (const a of accounts.rows) {
-        if (a.type === "credit") {
-          totalLiabilities += parseFloat(a.current_balance || 0);
-          breakdown.accounts.push({ name: a.name, type: a.type, amount: -parseFloat(a.current_balance || 0) });
-        } else {
-          const bal = parseFloat(a.available_balance || a.current_balance || 0);
-          totalAssets += bal;
-          breakdown.accounts.push({ name: a.name, type: a.type, amount: bal });
-        }
-      }
-      for (const inv of investments.rows) {
-        const bal = parseFloat(inv.balance);
-        totalAssets += bal;
-        breakdown.investments.push({ name: inv.name, type: inv.account_type, amount: bal });
-      }
+      // Single source of truth (F1): getNetWorth dedupes Plaid investment
+      // accounts present in both linked_accounts and investment_accounts and
+      // always includes investments, so this hourly snapshot, the balance-sync
+      // snapshot, and POST /api/net-worth/snapshot all agree.
+      const { getNetWorth } = require("./services/financial-queries");
+      const nw = await getNetWorth(pool);
+      if (nw.breakdown.accounts.length === 0 && nw.breakdown.investments.length === 0) return;
       await pool.query(
         `INSERT INTO net_worth_snapshots (total_assets, total_liabilities, net_worth, breakdown, snapshot_date)
          VALUES ($1, $2, $3, $4, CURRENT_DATE)
@@ -104,9 +89,9 @@ function startBackgroundJobs() {
            total_liabilities = EXCLUDED.total_liabilities,
            net_worth = EXCLUDED.net_worth,
            breakdown = EXCLUDED.breakdown`,
-        [totalAssets, totalLiabilities, totalAssets - totalLiabilities, JSON.stringify(breakdown)]
+        [nw.total_assets, nw.total_liabilities, nw.net_worth, JSON.stringify(nw.breakdown)]
       );
-      console.log("Daily net worth snapshot recorded: $" + (totalAssets - totalLiabilities).toFixed(2));
+      console.log("Daily net worth snapshot recorded: $" + nw.net_worth.toFixed(2));
     } catch (err) {
       console.error("Net worth auto-snapshot error:", err.message);
     }
@@ -217,11 +202,17 @@ function startBackgroundJobs() {
     if (!isUserActive()) return;
     try {
       const { getCategorySpendingThisMonth } = require("./services/financial-queries");
-      const month = new Date().getFullYear() + "-" + String(new Date().getMonth() + 1).padStart(2, "0");
+      const now = new Date();
+      const month = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
+      // Rollover applied to this month is the PRIOR month's unused budget (FA-1)
+      // — the snapshot job stores it keyed by prevMonth, so read that row, not
+      // the current month's (which mirrors GET /api/budgets + /alerts).
+      const prevD = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const prevMonth = prevD.getFullYear() + "-" + String(prevD.getMonth() + 1).padStart(2, "0");
       const [budgets, spending, snapshots] = await Promise.all([
         pool.query("SELECT id, category, monthly_limit, rollover_enabled, budget_type, effective_month FROM budgets"),
         getCategorySpendingThisMonth(pool),
-        pool.query("SELECT budget_id, rollover_amount FROM budget_snapshots WHERE month = $1", [month]),
+        pool.query("SELECT budget_id, rollover_amount FROM budget_snapshots WHERE month = $1", [prevMonth]),
       ]);
       if (budgets.rows.length === 0) return;
       const spendMap = {};
