@@ -36,7 +36,9 @@ teller/
                            insight module definitions
     csv-formats.js       — CSV format detection (Chase, CapOne, Discover, WF, Schwab, generic)
                            + parseMoney() money normalization (strips $ / thousands
-                           separators, handles parenthesized negatives, NaN on blank)
+                           separators, handles parenthesized negatives, NaN on blank).
+                           Used by EVERY bank-format parser incl. Schwab + generic (F6)
+                           so a "(45.00)" row is imported as -45, not silently skipped.
   services/
     database.js          — Postgres pool + transactional auto-migrations with schema versioning
     teller-api.js        — mTLS HTTP client for Teller API (retry with exponential backoff)
@@ -564,7 +566,13 @@ shell/
     merchant average AND above mean + 2·stddev — the stddev gate suppresses
     false positives on naturally high-variance merchants; 3x+ threshold for
     real-time push alerts during sync. Baseline excludes the
-    trailing 7 days so the candidate doesn't inflate its own baseline.
+    trailing 7 days so the candidate doesn't inflate its own baseline; the
+    candidate window matches that 7-day exclusion (F7) so a charge dated up to
+    a week ago but only just synced — caught via `created_at > watermark` — is
+    still eligible. Deliberately evaluates the PARENT transaction amount, not
+    `transaction_splits` shares (AI-13): anomaly asks "was this CHARGE unusually
+    large?", and the merchant billed the full amount regardless of how the user
+    later split it across categories.
     Merchant grouping uses `LOWER(COALESCE(user_merchant_name, merchant_name, name))`
     so user-merged merchant variants share a single baseline. Both the AI
     insights candidate query and the real-time post-sync push baseline apply
@@ -585,7 +593,13 @@ shell/
     `office supplies`, `office depot`, `business expense`). This eliminates
     false positives where credit-card finance charges flagged as `interest`
     deductions and Box-Office tickets flagged as `office` deductions.
-    Persistent year-round accumulation in `tax_deductions` for tax filing.
+    Matches/groups on `COALESCE(user_merchant_name, merchant_name, name)` so a
+    user-renamed merchant is flagged under the name the dashboard shows (AI-7).
+    Persistent year-round accumulation in `tax_deductions` for tax filing —
+    this persistence is INTENTIONALLY independent of AI success (AI-8): the rows
+    are a deterministic keyword-matched view of real YTD transactions (not model
+    output), idempotently UPSERTed, so they accumulate even on a run that later
+    hits the token cap or errors.
   - Goal tracking (with real-world economic context)
   - Recurring transfers (Zelle, bill payments, savings, investment patterns)
 - **AI context enrichment**: Insights prompt includes month-over-month trend deltas,
@@ -598,15 +612,19 @@ shell/
   `modules_failed` array — so a swallowed query error no longer reports a module as
   analyzed when Claude actually received no data for it.
 - **Auto-trigger**: Insights auto-generate based on `insights_cadence_days` setting (checked every 6 hours)
-- **Cost tracking**: Granular token-level pricing — `input_tokens` from Anthropic's API (already excludes cache tokens) is multiplied by the input rate; `cache_read_input_tokens` and `cache_creation_input_tokens` are billed separately at their own rates. This restores accurate `INSIGHTS_MONTHLY_BUDGET_CENTS` enforcement when prompt caching is active. The monthly budget is shared between `/api/insights`, `/api/categorize`, and `/api/insights/rebuild` — all check the same cap before calling Claude AND each writes a `financial_insights` usage row after its AI call (`entry_type='categorize'` / `'rebuild'`) so its spend counts toward the cap (not just the read side). Display queries that surface "AI Insights" filter `entry_type='insight'` to keep categorize/rebuild tracking rows out of the user-facing feed.
+- **Cost tracking**: Granular token-level pricing — `input_tokens` from Anthropic's API (already excludes cache tokens) is multiplied by the input rate; `cache_read_input_tokens` and `cache_creation_input_tokens` are billed separately at their own rates. This restores accurate `INSIGHTS_MONTHLY_BUDGET_CENTS` enforcement when prompt caching is active. The monthly budget is shared between `/api/insights`, `/api/categorize`, and `/api/insights/rebuild` — all check the same cap before calling Claude AND each writes a `financial_insights` usage row after its AI call (`entry_type='categorize'` / `'rebuild'`) so its spend counts toward the cap (not just the read side). Display queries that surface "AI Insights" filter `entry_type='insight'` to keep categorize/rebuild tracking rows out of the user-facing feed. The cap is checked-then-charged; for the insight path the insight row IS the usage row (atomic — a failed write loses the insight and its charge together), and the only gap (two concurrent generate calls both passing the pre-check) is accepted for a single-operator app rather than guarded with a provisional reservation (AI-11). `/api/insights/status` rounds the accumulated cost once and derives `budget_remaining_cents` from it so estimated + remaining == budget (AI-10).
 - **Insight inputs are split-adjusted**: AI insights see the same `spending_split_pct`-adjusted monthly spend totals and the same keyword-filtered income that the dashboard and `/api/savings-rate` show, via `services/financial-queries.js`.
 - **Structured running summary**: AI long-term memory is structured JSON, not plain text. `POST /api/insights` uses Anthropic tool_use (`generate_financial_insight` tool, forced via `tool_choice`) to return BOTH the user-facing `insights_text` AND a typed `summary` object with four arrays: `trends`, `completed_goals`, `pending_actions`, `alerts`. The summary is saved to `user_settings.insights_running_summary_json` (JSONB); the legacy `insights_running_summary` TEXT column gets a human-readable rendering for backward-compat callers. `sanitizeStructuredSummary` enforces shape/length bounds (max items per array, string lengths, enum values) so a pathological tool response can't pollute long-term memory. The response includes `summary_status` — `"updated"` (normal), `"preserved_due_to_truncation"` (tool block missing because hit max_tokens), `"preserved_no_tool_block"` (model didn't comply with tool_choice — rare), or `"preserved_validation_failed"` (sanitizer rejected the shape) — so callers can surface when long-term memory didn't advance. `GET /api/insights/status` returns the full `running_summary` object plus a `running_summary_counts` block (`{trends, completed_goals, pending_actions, alerts}`) so dashboards can show "tracking 3 trends · 2 goals · 5 actions · 1 alert" without a second fetch.
 - **AI insight auditing**: Post-generation validation via `services/ai-audit.js`. Four tiers:
-  (1) arithmetic — dollar amounts and percentages compared to actual DB data, critical >20% off,
-  warning >5%; (2) entity existence — merchant/goal/subscription names verified against DB,
-  hallucinated entities flagged; (3) trend direction — "X is up/down" claims compared to actual
-  month-over-month data; (4) consistency — detects self-contradictions within the same report.
-  Results stored in `ai_audit_log` table. Critical findings trigger in-app notification.
+  (1) arithmetic — dollar amounts/percentages compared to actual DB data; a claim is matched to a
+  category name by **word boundary** (not substring, so `car` ≠ `Carmax`) and emits at most ONE
+  finding per dollar claim (the single longest/most-specific match) — critical >20% off, warning >5%
+  (AI-2/AI-3); (2) entity existence — merchant/goal/subscription names verified against DB via
+  whole-word match with a ≥4-char min, so a tiny known entity (a "Car" goal) can't wildcard-match
+  every claimed name and let hallucinations pass (AI-4); (3) trend direction — only **total/overall**
+  spending claims are checked against the monthly total; category-specific claims are skipped rather
+  than mis-flagged against the total baseline (AI-1); (4) consistency — detects self-contradictions
+  within the same report. Results stored in `ai_audit_log` table. Critical findings trigger in-app notification.
   Module auto-disable requires user confirmation. `GET /api/insights/audit` returns
   `{ findings, stats, accuracy }`; `GET /api/insights/status` includes an
   `audit_accuracy` block — both surfaced via `getAuditAccuracy(days=90)`, which
@@ -1217,6 +1235,12 @@ GET  /android-chrome-512x512.png          # PWA icon, 512 (mask-crop PNG)
 After the PATCH a hook fires `auth.invalidateIdleCache()` so the new
 value applies on the very next request, not after the 60s cache lag.
 
+The `insight_modules` and `dashboard_widgets` toggle maps are coerced to a
+flat `{ string: boolean }` object via `sanitizeBoolMap` before persisting
+(rejects arrays / nested objects, caps key length, `!!`-coerces values) so a
+pathological body can't be stored verbatim — parity with the `target_allocation_pct`
+validation (SN-5).
+
 ## Environment Variables
 
 ### Shell (unified PIN gate)
@@ -1729,7 +1753,11 @@ income module, and bill-calendar income detection.
   the Shared Account Spending Split section). AI insights routes through
   it so Claude sees the same numbers the dashboard shows. Helpers:
   - `getMonthlyIncome(pool, months)` — keyword-filtered income, last N months
-  - `getMonthlySpending(pool, months)` — split-adjusted spending, last N months
+  - `getMonthlySpending(pool, months)` — split-adjusted spending, last N months.
+    Both use a WHOLE-month window (floored to the 1st via `date_trunc`), so the
+    oldest bucket is a full month rather than a partial one — callers (savings-
+    rate, context-export, AI trends) treat each returned month as complete (FA-4).
+    The current month is still included (partial-to-date, as expected in-progress).
   - `getCategorySpendingThisMonth(pool)` — current-month per-category spend
     (anchored to Postgres `CURRENT_DATE` so month-end semantics match the SQL)
   - `getCategorySpendingForMonth(pool, monthStr)` — same shape, but for an
