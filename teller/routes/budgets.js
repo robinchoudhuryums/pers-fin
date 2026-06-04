@@ -434,3 +434,6 @@ router.get("/api/budgets/history", async (req, res) => {
 });
 
 module.exports = router;
+// Exported for unit testing the rollover month-keying (FA-1). Attached AFTER
+// `module.exports = router` so the router assignment doesn't drop it (INV-19).
+module.exports.previousMonthKey = previousMonthKey;
