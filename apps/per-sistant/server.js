@@ -164,10 +164,14 @@ const PORT = parseInt(process.env.PORT || "3001", 10);
 async function start(opts = {}) {
   const standalone = opts.standalone !== false;
 
-  if (process.env.NEON_DATABASE_URL) {
+  // Gate migrations on the SAME connection string the pool uses
+  // (PERSISTENT_DATABASE_URL || NEON_DATABASE_URL) — previously gated on
+  // NEON_DATABASE_URL only, so a pure-standalone Per-sistant deployment with
+  // just PERSISTENT_DATABASE_URL set would silently skip migrations.
+  if (process.env.PERSISTENT_DATABASE_URL || process.env.NEON_DATABASE_URL) {
     await runMigrations();
   } else {
-    console.log("No NEON_DATABASE_URL set — running without database (API calls will fail)");
+    console.log("No database URL set (PERSISTENT_DATABASE_URL / NEON_DATABASE_URL) — running without database (API calls will fail)");
   }
 
   // Email scheduler — checks for emails due to send. Changed from every
@@ -185,7 +189,12 @@ async function start(opts = {}) {
       try {
         const r = await pool.query("SELECT * FROM todos WHERE deleted_at IS NULL AND recurring = true AND completed = false AND due_date < CURRENT_DATE");
         for (const todo of r.rows) {
-          await pool.query("UPDATE todos SET completed = true, completed_at = now(), streak_count = 0 WHERE id = $1", [todo.id]);
+          // Atomically CLAIM the row (PS-11): the guard `AND completed = false`
+          // means if the manual complete-recurring path already handled this
+          // todo between our SELECT and now, this matches 0 rows and we skip —
+          // avoiding a double-generated next instance from the race.
+          const claim = await pool.query("UPDATE todos SET completed = true, completed_at = now(), streak_count = 0 WHERE id = $1 AND completed = false RETURNING id", [todo.id]);
+          if (!claim.rows.length) continue;
           const rule = todo.recurrence_rule;
           const interval = todo.recurrence_interval || 1;
           let nextDue = new Date(todo.due_date);

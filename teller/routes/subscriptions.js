@@ -8,7 +8,7 @@ const multer = require("multer");
 const { parse } = require("csv-parse/sync");
 const { pool, ENCRYPTION_PASSPHRASE } = require("../services/database");
 const { categorizeSubscription, findCancelUrl } = require("../data/reference-data");
-const { CSV_FORMATS, detectCsvFormat, parseDate, csvTransactionId } = require("../data/csv-formats");
+const { CSV_FORMATS, INSTITUTION_LABELS, detectCsvFormat, parseDate, csvTransactionId } = require("../data/csv-formats");
 const { detectSubscriptions } = require("../../scripts/detect-subscriptions");
 const { detectRecurringTransfers } = require("../../scripts/detect-transfers");
 const { INCOME_PREDICATE } = require("../services/financial-queries");
@@ -355,9 +355,6 @@ router.post("/api/detect", async (_req, res) => {
 router.post("/api/import-csv", upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
-  const institution = req.body.institution || "CSV Import";
-  const accountLabel = req.body.account_label || `${institution} Account`;
-
   try {
     const content = req.file.buffer.toString("utf-8");
     let records = parse(content, { columns: true, skip_empty_lines: true, trim: true, bom: true });
@@ -367,6 +364,14 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
     const formatName = detectCsvFormat(headers);
     const fmt = CSV_FORMATS[formatName];
     if (!fmt) return res.status(400).json({ error: `Unrecognized CSV format: ${formatName}` });
+
+    // Default institution/account label from the DETECTED format when the
+    // caller omits them, so a headless/API import matches the CLI's
+    // content-derived label (and therefore its dedup IDs) for the same file
+    // (F2). A client that explicitly supplies these (e.g. the web dropdown)
+    // still gets its chosen account name — those are intentionally separate.
+    const institution = req.body.institution || INSTITUTION_LABELS[formatName] || "CSV Import";
+    const accountLabel = req.body.account_label || `${institution} Account`;
 
     // Headerless formats (Wells Fargo) need a re-parse with explicit columns so
     // each record is keyed by the declared column names rather than the values

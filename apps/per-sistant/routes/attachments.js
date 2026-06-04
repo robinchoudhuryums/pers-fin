@@ -48,7 +48,15 @@ module.exports = function ({ pool }) {
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       const filePath = path.join(uploadsDir, r.rows[0].filename);
       if (!fs.existsSync(filePath)) return res.status(404).json({ error: "File not found on disk." });
-      res.setHeader("Content-Disposition", `attachment; filename="${r.rows[0].original_name}"`);
+      // Sanitize the user-supplied original_name before putting it in the
+      // Content-Disposition header (PS-5): strip quotes/backslashes and control
+      // chars (incl. CR/LF) so it can't break out of the quoted value or inject
+      // a header, and also emit RFC 5987 filename* for correct UTF-8 handling.
+      const rawName = String(r.rows[0].original_name || "download");
+      const asciiName = rawName.replace(/["\\]/g, "_").replace(/[\u0000-\u001f\u007f]/g, "");
+      const safeName = asciiName.trim() || "download";
+      const encodedName = encodeURIComponent(rawName).replace(/['()*]/g, escape);
+      res.setHeader("Content-Disposition", `attachment; filename="${safeName}"; filename*=UTF-8''${encodedName}`);
       res.setHeader("Content-Type", r.rows[0].mime_type);
       fs.createReadStream(filePath).pipe(res);
     } catch (err) { res.status(500).json({ error: err.message }); }

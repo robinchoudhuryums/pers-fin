@@ -707,9 +707,14 @@ async function syncAllPlaidBalances() {
   const client = getPlaidClient();
   if (!client) return { ok: true, items_synced: 0, accounts_updated: 0, errors: [] };
   const items = await pool.query(
+    // status = 'GOOD' so CSV virtual items (status='CSV', placeholder token)
+    // aren't sent to Plaid's accountsGet every balance sync — they'd 400 and
+    // surface as a recurring spurious error + wasted call (F3). Matches the
+    // filter syncAllPlaidTransactions already applies.
     `SELECT id, institution_name,
             pgp_sym_decrypt(access_token_enc, $1) AS access_token
-     FROM plaid_items`,
+     FROM plaid_items
+     WHERE status = 'GOOD'`,
     [ENCRYPTION_PASSPHRASE]
   );
   let accountsUpdated = 0;

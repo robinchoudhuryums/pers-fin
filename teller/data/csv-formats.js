@@ -101,6 +101,20 @@ const CSV_FORMATS = {
   },
 };
 
+// Canonical institution display name per detected format. Shared by the CLI
+// (scripts/import-csv-cli.js) and the /api/import-csv route so both derive the
+// SAME default account label ("<institution> Account") from a file's content
+// when the caller doesn't supply one — making their `csvTransactionId`s match
+// for the same row instead of double-importing (F2).
+const INSTITUTION_LABELS = {
+  chase: "Chase",
+  wellsfargo: "Wells Fargo",
+  capitalone: "Capital One",
+  discover: "Discover",
+  schwab: "Charles Schwab",
+  generic: "CSV Import",
+};
+
 function detectCsvFormat(headers) {
   for (const [name, fmt] of Object.entries(CSV_FORMATS)) {
     if (name === "generic") continue;
@@ -151,6 +165,7 @@ function csvTransactionId(accountLabel, date, amount, merchant) {
 
 module.exports = {
   CSV_FORMATS,
+  INSTITUTION_LABELS,
   detectCsvFormat,
   parseDate,
   csvTransactionId,

@@ -57,6 +57,12 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
   router.patch("/api/emails/:id", async (req, res) => {
     try {
       const { recipient_name, recipient_email, subject, body, body_html, scheduled_at, status } = req.body;
+      // Validate client-supplied status (PS-7) — unlike POST, the PATCH path
+      // wrote it through unchecked, letting a client force e.g. status='scheduled'
+      // with a past scheduled_at to inject a row the cron picks up.
+      if (status !== undefined && !VALID_EMAIL_STATUSES.includes(status)) {
+        return res.status(400).json({ error: "Invalid status." });
+      }
       const fields = [];
       const params = [];
       let idx = 1;

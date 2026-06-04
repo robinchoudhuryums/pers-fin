@@ -40,7 +40,7 @@ function renderMd(s){
     .replace(/^\\d+\\. (.+)$/gm,'<div style="margin:2px 0;padding-left:12px;">$1</div>')
     .replace(/^> (.+)$/gm,'<blockquote style="border-left:2px solid var(--warm);padding-left:10px;margin:4px 0;color:var(--text-muted);font-style:italic;">$1</blockquote>')
     .replace(/^---$/gm,'<hr style="border:none;border-top:1px solid var(--border);margin:8px 0;">')
-    .replace(/\\[([^\\]]+)\\]\\(([^)]+)\\)/g,'<a href="$2" target="_blank" style="color:var(--teal);text-decoration:underline;">$1</a>')
+    .replace(/\\[([^\\]]+)\\]\\(([^)]+)\\)/g,function(m,t,u){var url=String(u).trim();var safe=/^(https?:|mailto:)/i.test(url)?url.replace(/"/g,'%22'):'#';return '<a href="'+safe+'" target="_blank" rel="noopener noreferrer" style="color:var(--teal);text-decoration:underline;">'+t+'</a>';})
     .replace(/\\n/g,'<br>');
 }
 // Offline detection and sync

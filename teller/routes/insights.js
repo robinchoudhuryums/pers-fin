@@ -981,13 +981,16 @@ async function generateInsights() {
           "mortgage interest", "student loan interest", "property tax", "state tax"];
         const taxRegex = "\\y(" + taxKeywords.join("|") + ")\\y";
         const taxData = await pool.query(
-          `SELECT COALESCE(merchant_name, name) AS merchant, SUM(amount) AS total, COUNT(*) AS txn_count
+          // Honor the user's merchant override (AI-7) — COALESCE(user_merchant_name,
+          // merchant_name, name) matches every other display/aggregation path so a
+          // renamed merchant is flagged/persisted under the name the dashboard shows.
+          `SELECT COALESCE(user_merchant_name, merchant_name, name) AS merchant, SUM(amount) AS total, COUNT(*) AS txn_count
            FROM transactions
            WHERE pending = false AND amount > 0
              AND COALESCE(is_reimbursed, false) = false
              AND date >= date_trunc('year', CURRENT_DATE)
-             AND COALESCE(merchant_name, name) ~* $1
-           GROUP BY COALESCE(merchant_name, name)
+             AND COALESCE(user_merchant_name, merchant_name, name) ~* $1
+           GROUP BY COALESCE(user_merchant_name, merchant_name, name)
            ORDER BY total DESC LIMIT 15`,
           [taxRegex]
         );

@@ -30,7 +30,7 @@ const { parse } = require("csv-parse/sync");
 // CSV_FORMATS is the single source of truth in teller/data/csv-formats.js;
 // this CLI used to redefine it inline (and drift). We now import it so any
 // future bank-format change propagates to both the API route and the CLI.
-const { CSV_FORMATS, detectCsvFormat, parseDate, csvTransactionId } = require("../teller/data/csv-formats");
+const { CSV_FORMATS, INSTITUTION_LABELS, detectCsvFormat, parseDate, csvTransactionId } = require("../teller/data/csv-formats");
 
 const ENCRYPTION_PASSPHRASE = process.env.TOKEN_ENCRYPTION_PASSPHRASE;
 const pool = new Pool({
@@ -43,15 +43,9 @@ const pool = new Pool({
 // Format is detected from CSV CONTENT only (see importCsvFile), matching the
 // API route. Filename-prefix detection was removed (F31) because it could
 // force the wrong parser for a misnamed file and made the CLI and the route
-// disagree on the same file.
-const INSTITUTION_LABELS = {
-  chase: "Chase",
-  wellsfargo: "Wells Fargo",
-  capitalone: "Capital One",
-  discover: "Discover",
-  schwab: "Charles Schwab",
-  generic: "CSV Import",
-};
+// disagree on the same file. INSTITUTION_LABELS is imported from the shared
+// csv-formats module so the CLI and the route derive identical default account
+// labels (and thus identical dedup IDs) from a file's content (F2).
 
 // ---------------------------------------------------------------------------
 // Import a single CSV file
