@@ -300,9 +300,12 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (544 tests as of latest); use
+  Perfin and Per-sistant test files (557 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 544 tests across 15 test files.
+  Current count: 557 tests across 16 test files (incl.
+  `tests/cycle-fixes.test.js` — regression tests pinning the net-worth
+  single-source-of-truth, budget-rollover month-keying, Per-sistant
+  migration/email fixes, and the AI-audit completion marker).
 - `.github/workflows/ci.yml` — CI pipeline (single `npm ci` at root via npm workspaces, then `npm test`)
 - `.claude/commands/` — Project slash-command prompts: `/broad-scan`, `/broad-implement`,
   `/test-sync`, `/sync-docs`
@@ -597,8 +600,14 @@ shell/
   Module auto-disable requires user confirmation. `GET /api/insights/audit` returns
   `{ findings, stats, accuracy }`; `GET /api/insights/status` includes an
   `audit_accuracy` block — both surfaced via `getAuditAccuracy(days=90)`, which
-  returns `{ total_audited_runs, clean_runs, accuracy_pct, findings_by_severity,
-  findings_by_tier }` over the trailing 90 days. "Clean" = zero critical findings.
+  returns `{ total_audited_runs, clean_runs, incomplete_runs, accuracy_pct,
+  findings_by_severity, findings_by_tier }` over the trailing 90 days. "Clean" =
+  zero critical findings. The denominator counts ONLY runs that were genuinely
+  audited to completion (`financial_insights.audited_at IS NOT NULL AND NOT
+  audit_incomplete`); runs that were never audited or whose tiers silently
+  threw are reported separately as `incomplete_runs` and excluded — so a
+  swallowed-tier failure or an un-audited insert no longer masquerades as a
+  "clean" run and inflates the accuracy % (AI-5/AI-6).
 - **Insight email via Per-sistant**: After each scheduled insight generation, Perfin sends
   an `insights_generated` webhook to Per-sistant with `{ subject, html_body, plain_text }`.
   HTML email is pre-rendered in Perfin with app-matching dark theme (gold/amber accents,
@@ -938,7 +947,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 544 tests passing across 15 test files (Perfin + Per-sistant)
+- 557 tests passing across 16 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash
@@ -1428,6 +1437,14 @@ standalone-mode fallback if either app is run on its own Render service.
   insights and renders them into the next prompt under a
   `=== USER FEEDBACK ON RECENT INSIGHTS ===` block so Claude can adjust.
   Cleared by passing `feedback: null` to `PATCH /api/insights/:id/feedback`.
+- `financial_insights.audited_at TIMESTAMPTZ`, `audit_incomplete BOOLEAN NOT
+  NULL DEFAULT false`: per-run audit completion marker (AI-5/AI-6). `auditInsight`
+  stamps `audited_at = now()` after running all four tiers and sets
+  `audit_incomplete = true` when any tier's DB query threw (and thus produced
+  no findings). `getAuditAccuracy` counts only `audited_at IS NOT NULL AND NOT
+  audit_incomplete` runs in its clean/total tally, so a genuinely-clean run
+  (audited, zero findings) is distinguishable from one that was never audited
+  or failed silently — the latter surface as `incomplete_runs`.
 - `user_settings.insights_running_summary_json JSONB`: structured AI long-term
   memory — `{ trends, completed_goals, pending_actions, alerts }`. Replaces the
   legacy plain-text `insights_running_summary` (TEXT column still populated
@@ -1560,7 +1577,7 @@ which sub-app owns its own listener (sub-app `startKeepAlive` is no-op in
 embedded mode).
 - **Keep-alive ping** (shell layer): every 14 min (timezone-aware active hours, 10s timeout); reads `keep_alive_enabled` and active-hours from Perfin's `user_settings` each tick
 - **Sheets auto-sync**: every 1 hour (daily/weekly/monthly cadence from settings)
-- **Net worth snapshot**: every 1 hour (`ON CONFLICT (snapshot_date) DO UPDATE` so a same-day re-run rewrites the row with the latest balances — late-arriving syncs are reflected immediately)
+- **Net worth snapshot**: every 1 hour (`ON CONFLICT (snapshot_date) DO UPDATE` so a same-day re-run rewrites the row with the latest balances — late-arriving syncs are reflected immediately). Computes the figure via the shared `getNetWorth()` helper, so this job, `syncAllBalances`, and `POST /api/net-worth/snapshot` all write the same investment-deduped value (F1)
 - **Goal milestones**: every 6 hours (push notifications at 25/50/75/100%)
 - **AI insights auto-trigger**: every 6 hours (respects `insights_cadence_days` setting).
   Pre-analysis sync chain: syncAllEnrollments → syncAllPlaidTransactions →
@@ -1709,6 +1726,10 @@ income module, and bill-calendar income detection.
     arbitrary `'YYYY-MM'` month; used by `GET /api/budgets?month=...`,
     `POST /api/budgets/snapshot`, and the budget-snapshot auto-trigger so
     snapshots record the correct month's spending instead of always-this-month.
+  - `getNetWorth(pool)` — the single source of truth for net worth (assets,
+    liabilities, net_worth, breakdown). Dedupes Plaid investment accounts that
+    appear in BOTH `linked_accounts` and `investment_accounts` and always
+    includes investments (see the net-worth Key Design Decision below).
   Constants: `INCOME_PREDICATE`, `NOT_TRANSFER`, `SPLIT_AMOUNT`, `NOT_REIMBURSED`.
   `/api/savings-rate` calls `getMonthlyIncome` + `getMonthlySpending`;
   `/api/cash-flow` uses `INCOME_PREDICATE`; `/api/budgets/alerts` and the
@@ -1718,6 +1739,21 @@ income module, and bill-calendar income detection.
   and the Claude-chat export see the same split-adjusted numbers as the
   dashboard. The spending-summary monthly-trend path still inlines equivalent
   SQL — any new financial endpoint should use this module instead of re-inlining.
+- **Net worth is computed by one shared helper, not re-derived per writer.**
+  `getNetWorth(pool)` in `services/financial-queries.js` is the single source of
+  truth, used by all three `net_worth_snapshots` writers — the hourly snapshot
+  job (`startup.js`), `POST /api/net-worth/snapshot` (`goals.js`), and
+  `syncAllBalances` (`enrollments.js`). It sums non-credit `linked_accounts` as
+  assets, credit accounts as liabilities, and active `investment_accounts` —
+  but **dedupes Plaid investment accounts that exist in BOTH tables** (a
+  brokerage linked via the combined Plaid transactions+investments flow lands
+  in `linked_accounts` AND `investment_accounts`) via `NOT EXISTS (… la.account_id
+  = ia.plaid_account_id)`. Before this (F1), the three writers disagreed — the
+  balance-sync writer summed `linked_accounts` only (omitting investments) while
+  the other two summed both tables AND double-counted the Plaid brokerage — so
+  the headline net-worth figure both oscillated intra-day (depending on which
+  job wrote the daily row last) and was inflated. New net-worth surfaces MUST
+  call `getNetWorth` rather than re-inlining the assets/liabilities sum.
 - **Substring-safe keyword exclusions.** All merchant/transaction keyword
   filters use word-boundary matching — `\b` in JavaScript regex, `\y` in
   Postgres regex (`~*` / `!~*`). The reason: short tokens like `atm`,
@@ -1801,9 +1837,14 @@ income module, and bill-calendar income detection.
   account per day via `ON CONFLICT DO UPDATE`.
 - **Budget rollover uses snapshots, not running totals.** The rollover
   amount is computed by `POST /api/budgets/snapshot` as `MAX(0, limit - spent)`
-  and stored in `budget_snapshots`. `GET /api/budgets` adds the most recent
-  snapshot's `rollover_amount` to the base `monthly_limit` to produce
-  `effective_limit`. One-time budgets (`budget_type = 'one_time'`) share the
+  and stored in `budget_snapshots` keyed by the month that just ended. The
+  rollover that applies to month M is the unused budget from month M-1, so the
+  readers (`GET /api/budgets`, `GET /api/budgets/alerts`, and the scheduled
+  budget-alert push) add the **prior** month's snapshot `rollover_amount` to the
+  base `monthly_limit` to produce `effective_limit` — via `previousMonthKey()`
+  (FA-1). (They previously read the *current* month's snapshot, which doesn't
+  exist yet or holds this month's own circular underspend, so the carried-over
+  amount was silently never applied.) One-time budgets (`budget_type = 'one_time'`) share the
   `UNIQUE(category)` constraint with recurring budgets — you can't have both
   a recurring and one-time budget for the same category. Convert via PATCH.
 - **Notification log as audit trail.** `sendToAll()` always writes to

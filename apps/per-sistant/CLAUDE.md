@@ -14,7 +14,12 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **Views**: `views.js` + `views/css.js` + `views/js.js` (shared HTML/CSS/JS helpers)
 - **Routes**: `routes/` (21 route modules — auth, todos, emails, notes, contacts, settings, etc.)
 - **Pages**: `pages/` (9 page modules — dashboard, todos, emails, notes, contacts, calendar, review, analytics, settings)
-- **Email**: nodemailer (SMTP) with scheduled sending via node-cron
+- **Email**: nodemailer (SMTP) with scheduled sending via node-cron. The
+  scheduler atomically CLAIMS due emails before sending — `UPDATE emails SET
+  status='sent' WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED) RETURNING *`,
+  reverting to `'failed'` if the send throws — so a slow SMTP send overlapping
+  the next tick (or a second runner) can't double-send the same row (PS-2,
+  at-most-once delivery)
 - **Tests**: `tests/` (node:test runner, `npm test`, 181 unit tests + integration tests)
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
@@ -274,7 +279,11 @@ GET    /sw.js               # Service worker
 - `PERFIN_URL` — URL to linked Perfin instance (for navigation + dashboard integration)
 
 ## Database
-- Auto-migration runs on server startup — no manual SQL execution needed
+- Auto-migration runs on server startup — no manual SQL execution needed.
+  All migration files run inside ONE transaction (`BEGIN`/`COMMIT`); a failure
+  is FATAL: `runMigrations` rolls back and rethrows, and `start()` exits
+  non-zero rather than booting against a half-applied schema (PS-1, mirrors
+  Perfin's migration guarantee).
 - `user_settings` table: single-row pattern (CHECK id = 1), includes ai_model_* columns
 - `user_settings.perfin_webhook_recipient TEXT`: destination email address for
   inbound `insights_generated` webhooks from Perfin. `routes/perfin.js` reads
