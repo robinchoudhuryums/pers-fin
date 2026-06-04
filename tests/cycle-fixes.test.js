@@ -213,3 +213,83 @@ describe("PS-2 — scheduled email atomic claim", () => {
     assert.match(src, /UPDATE emails SET status = 'sent'[\s\S]*RETURNING/);
   });
 });
+
+// ===========================================================================
+// Tier 1 + Tier 2 broad-scan fixes
+// ===========================================================================
+
+// --- F2: shared INSTITUTION_LABELS + deterministic CSV dedup IDs ----------
+describe("F2 — shared INSTITUTION_LABELS + deterministic csv IDs", () => {
+  const { INSTITUTION_LABELS, csvTransactionId } = require("../teller/data/csv-formats");
+
+  it("exports the institution label map (shared by CLI and route)", () => {
+    assert.equal(INSTITUTION_LABELS.chase, "Chase");
+    assert.equal(INSTITUTION_LABELS.capitalone, "Capital One");
+    assert.equal(INSTITUTION_LABELS.generic, "CSV Import");
+  });
+
+  it("csvTransactionId is deterministic for the same (label,row) so CLI and route dedup", () => {
+    const label = INSTITUTION_LABELS.chase + " Account";
+    const a = csvTransactionId(label, "2026-01-02", 12.34, "Starbucks");
+    const b = csvTransactionId(label, "2026-01-02", 12.34, "Starbucks");
+    assert.equal(a, b);
+    assert.ok(a.startsWith("csv_"));
+    // A different account label is a distinct account → distinct id.
+    assert.notEqual(a, csvTransactionId("Other Account", "2026-01-02", 12.34, "Starbucks"));
+  });
+});
+
+// --- SN-3: sendPerSistantWebhook surfaces decryption_failed ----------------
+describe("SN-3 — sendPerSistantWebhook distinguishes failure modes", () => {
+  const persistent = require("../teller/routes/persistent");
+
+  it("returns reason 'decryption_failed' when the webhook secret won't decrypt", async () => {
+    dbModule.pool.query = async (sql) => {
+      if (/has_secret/i.test(sql)) {
+        return { rows: [{ persistent_url: "http://x.test", persistent_webhook_enabled: true, has_secret: true }] };
+      }
+      if (/pgp_sym_decrypt/i.test(sql)) throw new Error("Wrong key or corrupt data");
+      return { rows: [] };
+    };
+    const r = await persistent.sendPerSistantWebhook("test", {});
+    assert.equal(r.sent, false);
+    assert.equal(r.reason, "decryption_failed");
+  });
+
+  it("returns 'not_configured' when persistent_url is unset", async () => {
+    dbModule.pool.query = async () => ({ rows: [{ persistent_url: null }] });
+    const r = await persistent.sendPerSistantWebhook("test", {});
+    assert.equal(r.reason, "not_configured");
+  });
+
+  it("returns 'missing_secret' when enabled but no secret stored", async () => {
+    dbModule.pool.query = async (sql) => {
+      if (/has_secret/i.test(sql)) {
+        return { rows: [{ persistent_url: "http://x.test", persistent_webhook_enabled: true, has_secret: false }] };
+      }
+      return { rows: [] };
+    };
+    const r = await persistent.sendPerSistantWebhook("test", {});
+    assert.equal(r.reason, "missing_secret");
+  });
+});
+
+// --- Source-pinned: F3, DC-2, AI-7 (DB/AI-bound — guard against reversion) -
+describe("F3 / DC-2 / AI-7 — source-pinned", () => {
+  const inv = fs.readFileSync(path.join(__dirname, "../teller/routes/investments.js"), "utf8");
+  const cat = fs.readFileSync(path.join(__dirname, "../teller/routes/categorize.js"), "utf8");
+  const ins = fs.readFileSync(path.join(__dirname, "../teller/routes/insights.js"), "utf8");
+
+  it("F3: syncAllPlaidBalances filters plaid_items to status='GOOD'", () => {
+    assert.match(inv, /FROM plaid_items\s+WHERE status = 'GOOD'/);
+  });
+  it("DC-2: categorize records the usage row BEFORE the apply loop", () => {
+    const usageIdx = cat.indexOf("AI returned ${categories.length}");
+    const applyIdx = cat.indexOf("Apply AI-assigned categories to the rows");
+    assert.ok(usageIdx > 0, "usage-row text present");
+    assert.ok(applyIdx > usageIdx, "usage INSERT must precede the apply loop");
+  });
+  it("AI-7: tax-deduction query groups by COALESCE(user_merchant_name, merchant_name, name)", () => {
+    assert.match(ins, /GROUP BY COALESCE\(user_merchant_name, merchant_name, name\)/);
+  });
+});
