@@ -472,7 +472,9 @@ function renderInsightEmail(text, modules, auditResult) {
     .replace(/\n/g, "<br>");
 
   let auditSection = "";
-  if (auditResult && (auditResult.summary.critical > 0 || auditResult.summary.warning > 0)) {
+  // Guard summary existence (AI-12) — auditInsight always returns it today, but
+  // a future change shouldn't be able to throw inside email rendering.
+  if (auditResult && auditResult.summary && (auditResult.summary.critical > 0 || auditResult.summary.warning > 0)) {
     auditSection = `
       <div style="margin-top:24px;padding:16px;background:#2a1a1a;border:1px solid #663333;border-radius:8px;">
         <h3 style="color:#eb6b6b;margin:0 0 8px;font-size:14px;">Audit Findings</h3>
@@ -538,12 +540,16 @@ router.get("/api/insights/status", async (_req, res) => {
       };
     }
   } catch (err) { console.error("running summary read error:", err.message); }
+  // Round the accumulated cost ONCE and derive remaining from the rounded
+  // value (AI-10) so estimated + remaining == budget instead of drifting by
+  // rounding noise (the two fields previously rounded independently).
+  const estCents = Math.round(estimatedCostCents * 100) / 100;
   res.json({
     configured,
     reason: configured ? null : (!Anthropic ? "SDK not installed" : "ANTHROPIC_API_KEY not set in .env"),
-    estimated_cost_cents: Math.round(estimatedCostCents * 100) / 100,
+    estimated_cost_cents: estCents,
     budget_cents: budgetCents,
-    budget_remaining_cents: Math.round((budgetCents - estimatedCostCents) * 100) / 100,
+    budget_remaining_cents: Math.round((budgetCents - estCents) * 100) / 100,
     cost_rates: MODEL_COST_PER_M,
     audit_accuracy: accuracy,
     running_summary: runningSummaryJson,
@@ -602,6 +608,14 @@ async function generateInsights() {
     return { ok: false, status: 501, error: "Set ANTHROPIC_API_KEY in .env to enable AI insights." };
   }
   try {
+    // Cap is checked-then-charged (AI-11): we tally this month's spend, bail if
+    // over, then write the spend as the insight row AFTER the Claude call. For
+    // the insight path the insight row IS the usage row, so a failed INSERT
+    // loses the insight and its charge together (consistent — nothing to
+    // reconcile). The only gap is two *concurrent* generate calls both passing
+    // the pre-check; this is a single-operator app (scheduler + an occasional
+    // manual trigger), so that race is accepted rather than guarded with a
+    // provisional-row reservation. Revisit if multi-user lands.
     const budgetCents = parseInt(process.env.INSIGHTS_MONTHLY_BUDGET_CENTS) || 50;
     const usageResult = await pool.query(
       "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights " +
@@ -824,6 +838,12 @@ async function generateInsights() {
         //     transaction amount.
         //   - Exclude reimbursed rows from CANDIDATES (baselines still include
         //     reimbursed per CLAUDE.md — a reimbursed charge is still typical).
+        //   - Deliberately uses the PARENT transaction amount, NOT transaction_splits
+        //     shares (AI-13). Anomaly detection asks "was this CHARGE at this merchant
+        //     unusually large?" — the merchant billed the full amount regardless of how
+        //     the user later split it across categories, so the parent amount is the
+        //     correct signal here. (Split-replacement is for per-category spend totals,
+        //     a different question.)
         const anomalyData = await pool.query(
           `SELECT t.merchant_name, t.name, t.user_merchant_name,
                   ROUND((CASE WHEN la.is_shared AND t.personal_for = 'self' THEN t.amount WHEN la.is_shared AND t.personal_for = 'partner' THEN 0 ELSE t.amount * COALESCE(la.spending_split_pct, 100) / 100.0 END), 2) AS amount,
@@ -998,7 +1018,13 @@ async function generateInsights() {
           userMsg += "\n\n=== POTENTIAL TAX-DEDUCTIBLE TRANSACTIONS (YTD) ===\n" +
             taxData.rows.map(r => sanitizeForPrompt(r.merchant) + ": $" + parseFloat(r.total).toFixed(2) + " (" + r.txn_count + " transactions)").join("\n");
 
-          // Persist flagged deductions to tax_deductions table for year-round accumulation
+          // Persist flagged deductions to tax_deductions table for year-round accumulation.
+          // This is INTENTIONALLY independent of AI success (AI-8): the rows are a
+          // deterministic, keyword-matched view of real YTD transactions — not AI
+          // output — so they should accumulate even on a run that later hits the
+          // token cap or errors. The UPSERT is idempotent (ON CONFLICT), so a
+          // subsequent run re-affirms them harmlessly. ('ai_detected' labels the
+          // detection *channel*, not a dependency on the model's reply.)
           for (const row of taxData.rows) {
             await pool.query(
               `INSERT INTO tax_deductions (tax_year, merchant, amount, category, deduction_type)

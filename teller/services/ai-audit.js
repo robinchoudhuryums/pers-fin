@@ -95,6 +95,34 @@ function findContradictions(text) {
   return contradictions;
 }
 
+// Escape a string for safe insertion into a RegExp.
+function reEscape(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
+// True when `needle` appears as a whole word/phrase in `haystack` (case-
+// insensitive). Word boundaries prevent short tokens (a 3-char category name
+// or known merchant) from substring-matching unrelated text (AI-2/AI-4).
+function wordMatch(haystack, needle) {
+  if (!needle) return false;
+  return new RegExp("\\b" + reEscape(needle) + "\\b", "i").test(haystack);
+}
+
+// Decide whether a claimed entity name corresponds to something in the known
+// set. Requires an exact match OR a whole-word containment in either direction
+// where the shorter token is substantial (>=4 chars) — so a tiny known/claimed
+// name ("car" goal, "ira") can't act as a universal substring wildcard that
+// makes every claimed entity look "known" (AI-4).
+function entityKnown(claimedLower, knownSet) {
+  for (const k of knownSet) {
+    if (!k) continue;
+    if (k === claimedLower) return true;
+    const shorter = k.length <= claimedLower.length ? k : claimedLower;
+    const longer = k.length <= claimedLower.length ? claimedLower : k;
+    if (shorter.length < 4) continue;
+    if (wordMatch(longer, shorter)) return true;
+  }
+  return false;
+}
+
 /**
  * Run all audit tiers against an insight text.
  * Returns { findings: [...], summary: { critical, warning, info } }
@@ -134,19 +162,27 @@ async function auditInsight(insightText, insightId) {
     const dollarClaims = extractDollarClaims(insightText);
     for (const claim of dollarClaims) {
       const ctx = claim.context.toLowerCase();
-      // Check against category spending
+      // Find the single BEST (longest = most specific) category whose name
+      // appears as a whole word in the claim's context, and emit at most one
+      // finding per dollar claim — word boundaries stop short category names
+      // substring-matching unrelated text (AI-2), and the single-best choice
+      // stops one claim producing several conflicting findings (AI-3).
+      let bestCat = null, bestActual = null;
       for (const [cat, actual] of Object.entries(actualCategories)) {
-        if (ctx.includes(cat.toLowerCase()) && Math.abs(claim.value - actual) > 0.01) {
-          const pctOff = actual > 0 ? Math.abs(claim.value - actual) / actual : 1;
-          if (pctOff > 0.20) {
-            findings.push({ severity: "critical", tier: 1, check: "arithmetic",
-              claim: `$${claim.value.toFixed(2)} for ${cat}`, expected: `$${actual.toFixed(2)}`,
-              pct_off: Math.round(pctOff * 100), context: claim.context });
-          } else if (pctOff > 0.05) {
-            findings.push({ severity: "warning", tier: 1, check: "arithmetic",
-              claim: `$${claim.value.toFixed(2)} for ${cat}`, expected: `$${actual.toFixed(2)}`,
-              pct_off: Math.round(pctOff * 100), context: claim.context });
-          }
+        if (wordMatch(ctx, cat) && (bestCat === null || cat.length > bestCat.length)) {
+          bestCat = cat; bestActual = actual;
+        }
+      }
+      if (bestCat !== null && Math.abs(claim.value - bestActual) > 0.01) {
+        const pctOff = bestActual > 0 ? Math.abs(claim.value - bestActual) / bestActual : 1;
+        if (pctOff > 0.20) {
+          findings.push({ severity: "critical", tier: 1, check: "arithmetic",
+            claim: `$${claim.value.toFixed(2)} for ${bestCat}`, expected: `$${bestActual.toFixed(2)}`,
+            pct_off: Math.round(pctOff * 100), context: claim.context });
+        } else if (pctOff > 0.05) {
+          findings.push({ severity: "warning", tier: 1, check: "arithmetic",
+            claim: `$${claim.value.toFixed(2)} for ${bestCat}`, expected: `$${bestActual.toFixed(2)}`,
+            pct_off: Math.round(pctOff * 100), context: claim.context });
         }
       }
       // Check subscription total claims
@@ -196,7 +232,10 @@ async function auditInsight(insightText, insightId) {
 
       for (const name of merchantNames) {
         const lower = name.toLowerCase();
-        const exists = [...known].some(k => k.includes(lower) || lower.includes(k));
+        // Whole-word match with a min-length guard (AI-4) instead of the old
+        // bidirectional substring check, which let any short known entity make
+        // every claimed name look "known" (so hallucinations slipped through).
+        const exists = entityKnown(lower, known);
         if (!exists) {
           findings.push({ severity: "warning", tier: 2, check: "entity_existence",
             claim: name, expected: "Should exist in transactions/goals/subscriptions",
@@ -220,13 +259,23 @@ async function auditInsight(insightText, insightId) {
         const actualDirection = latest > prior ? "up" : "down";
 
         for (const claim of trendClaims) {
-          if (claim.category.toLowerCase().includes("spending") || claim.category.toLowerCase().includes("total")) {
-            if (claim.direction !== actualDirection && Math.abs(latest - prior) / Math.max(prior, 1) > 0.05) {
-              findings.push({ severity: "warning", tier: 3, check: "trend_direction",
-                claim: `${claim.category} is ${claim.direction}`,
-                expected: `Actual direction is ${actualDirection} ($${prior.toFixed(0)} → $${latest.toFixed(0)})`,
-                context: claim.context });
-            }
+          // Only verify claims about TOTAL/overall spending against the monthly
+          // total. A category-specific claim ("Dining spending is down") was
+          // previously matched here (its text contains "spending") and checked
+          // against the TOTAL direction, producing false trend findings. We have
+          // no reliable per-category monthly series in this tier, so we skip
+          // category-specific claims rather than mis-flag them (AI-1). A claim is
+          // "total" only if removing the spend/cost noun leaves nothing or a
+          // total/overall qualifier.
+          const core = claim.category.toLowerCase()
+            .replace(/\b(spending|spend|costs?|expenses?)\b/g, "").trim();
+          const isTotalClaim = core === "" || core === "total" || core === "overall" || core === "aggregate";
+          if (!isTotalClaim) continue;
+          if (claim.direction !== actualDirection && Math.abs(latest - prior) / Math.max(prior, 1) > 0.05) {
+            findings.push({ severity: "warning", tier: 3, check: "trend_direction",
+              claim: `${claim.category} is ${claim.direction}`,
+              expected: `Actual total spending direction is ${actualDirection} ($${prior.toFixed(0)} → $${latest.toFixed(0)})`,
+              context: claim.context });
           }
         }
       }
@@ -399,4 +448,4 @@ async function getAuditAccuracy(days = 90) {
   }
 }
 
-module.exports = { auditInsight, getAuditStats, getAuditAccuracy, extractDollarClaims, extractPercentClaims, extractMerchantNames, extractTrendClaims, findContradictions };
+module.exports = { auditInsight, getAuditStats, getAuditAccuracy, extractDollarClaims, extractPercentClaims, extractMerchantNames, extractTrendClaims, findContradictions, wordMatch, entityKnown };
