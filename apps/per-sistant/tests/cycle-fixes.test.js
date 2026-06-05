@@ -127,3 +127,37 @@ describe("PS-3 — /api/stats surfaces a failed-email count", () => {
     assert.match(src, /FILTER \(WHERE status = 'failed'\) as failed/);
   });
 });
+
+// ===========================================================================
+// Per-sistant Backend audit — PB-1 (SSRF) + PB-2 (error leakage)
+// ===========================================================================
+describe("PB-1 — isValidWebhookUrl blocks metadata + loopback ranges", () => {
+  const { isValidWebhookUrl } = require("../config");
+  it("blocks the cloud metadata endpoint (169.254.169.254)", () => {
+    assert.equal(isValidWebhookUrl("http://169.254.169.254/latest/meta-data/"), false);
+    assert.equal(isValidWebhookUrl("http://169.254.1.1/"), false);
+  });
+  it("blocks the full loopback /8 (not just 127.0.0.1)", () => {
+    assert.equal(isValidWebhookUrl("http://127.0.0.2/admin"), false);
+  });
+  it("still blocks RFC-1918 private ranges", () => {
+    assert.equal(isValidWebhookUrl("http://10.0.0.5/"), false);
+    assert.equal(isValidWebhookUrl("http://192.168.1.1/"), false);
+    assert.equal(isValidWebhookUrl("http://172.16.0.1/"), false);
+  });
+  it("allows a legitimate public https URL", () => {
+    assert.equal(isValidWebhookUrl("https://example.com/hook"), true);
+  });
+});
+
+describe("PB-2 — serverError returns a generic message, never raw err.message", () => {
+  const { serverError } = require("../errors");
+  it("responds 500 with a generic message and does not echo err.message", () => {
+    let code = null, body = null;
+    const res = { status(c) { code = c; return this; }, json(b) { body = b; } };
+    serverError(res, new Error("relation \"todos\" does not exist"));
+    assert.equal(code, 500);
+    assert.equal(body.error, "An internal error occurred.");
+    assert.ok(!/relation|todos/.test(JSON.stringify(body)), "must not leak DB error text");
+  });
+});

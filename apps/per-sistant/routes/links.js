@@ -4,6 +4,8 @@
 
 const express = require("express");
 
+const { serverError } = require("../errors");
+
 module.exports = function ({ pool }) {
   const router = express.Router();
 
@@ -28,7 +30,7 @@ module.exports = function ({ pool }) {
           FROM entity_links el WHERE el.target_type = $1 AND el.target_id = $2`, [type, id]),
       ]);
       res.json({ outgoing: outgoing.rows, incoming: incoming.rows });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.post("/api/links", async (req, res) => {
@@ -46,7 +48,7 @@ module.exports = function ({ pool }) {
       );
       if (!r.rows.length) return res.status(409).json({ error: "Link already exists." });
       res.json(r.rows[0]);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.delete("/api/links/:id", async (req, res) => {
@@ -54,7 +56,7 @@ module.exports = function ({ pool }) {
       const r = await pool.query("DELETE FROM entity_links WHERE id = $1 RETURNING id", [req.params.id]);
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       res.json({ ok: true });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   // Create todo from note
@@ -72,7 +74,7 @@ module.exports = function ({ pool }) {
       await pool.query("INSERT INTO entity_links (source_type, source_id, target_type, target_id) VALUES ('note', $1, 'todo', $2) ON CONFLICT DO NOTHING",
         [n.id, todo.rows[0].id]);
       res.json(todo.rows[0]);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   // Create todo from email
@@ -89,7 +91,7 @@ module.exports = function ({ pool }) {
       await pool.query("INSERT INTO entity_links (source_type, source_id, target_type, target_id) VALUES ('email', $1, 'todo', $2) ON CONFLICT DO NOTHING",
         [e.id, todo.rows[0].id]);
       res.json(todo.rows[0]);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   return router;

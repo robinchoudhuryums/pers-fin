@@ -46,8 +46,15 @@ function isValidWebhookUrl(urlStr) {
     // Block private/internal IPs
     const hostname = u.hostname;
     if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "0.0.0.0" || hostname === "::1" || hostname === "[::1]") return false;
+    if (hostname.startsWith("127.")) return false; // full loopback /8 (not just 127.0.0.1)
+    // Link-local 169.254.0.0/16 — INCLUDES the cloud metadata endpoint
+    // 169.254.169.254 (AWS/GCP/Azure credential theft via SSRF) (PB-1).
+    if (hostname.startsWith("169.254.")) return false;
     if (hostname.startsWith("10.") || hostname.startsWith("192.168.")) return false;
     if (/^172\.(1[6-9]|2\d|3[01])\./.test(hostname)) return false;
+    // IPv6 loopback/link-local/unique-local in bracketed form ([::1], [fe80::…],
+    // [fc00::…]/[fd00::…]) and IPv4-mapped metadata.
+    if (/^\[(::1|fe80:|fc[0-9a-f]{2}:|fd[0-9a-f]{2}:|::ffff:169\.254\.|::ffff:127\.|::ffff:10\.)/i.test(hostname)) return false;
     if (hostname.endsWith(".internal") || hostname.endsWith(".local")) return false;
     return true;
   } catch {

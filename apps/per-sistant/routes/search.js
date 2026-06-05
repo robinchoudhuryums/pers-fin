@@ -1,5 +1,7 @@
 const express = require("express");
 
+const { serverError } = require("../errors");
+
 module.exports = function ({ pool }) {
   const router = express.Router();
 
@@ -15,7 +17,7 @@ module.exports = function ({ pool }) {
         pool.query("SELECT id, name as title, email as description, 'contact' as type FROM contacts WHERE name ILIKE $1 OR email ILIKE $1 LIMIT 10", [pattern]),
       ]);
       res.json([...todos.rows, ...emails.rows, ...notes.rows, ...contacts.rows]);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   return router;

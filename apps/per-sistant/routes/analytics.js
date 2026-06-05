@@ -1,5 +1,7 @@
 const express = require("express");
 
+const { serverError } = require("../errors");
+
 module.exports = function ({ pool }) {
   const router = express.Router();
 
@@ -73,7 +75,7 @@ module.exports = function ({ pool }) {
         emails_sent: parseInt(emailsSent.rows[0]?.count || 0),
         notes_created: parseInt(notesMade.rows[0]?.count || 0),
       });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   return router;

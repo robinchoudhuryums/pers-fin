@@ -3,6 +3,8 @@ const express = require("express");
 const VALID_PRIORITIES = ["low", "medium", "high", "urgent"];
 const VALID_HORIZONS = ["short", "medium", "long"];
 
+const { serverError } = require("../errors");
+
 module.exports = function ({ pool }) {
   const router = express.Router();
 
@@ -10,7 +12,7 @@ module.exports = function ({ pool }) {
     try {
       const r = await pool.query("SELECT * FROM todo_templates ORDER BY name ASC");
       res.json(r.rows);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.post("/api/todo-templates", async (req, res) => {
@@ -24,7 +26,7 @@ module.exports = function ({ pool }) {
         [name, title, description || null, priority || "medium", horizon || "short", category || null, recurring || false, recurrence_rule || null, recurrence_interval || 1, JSON.stringify(subtasks || [])]
       );
       res.json(r.rows[0]);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.patch("/api/todo-templates/:id", async (req, res) => {
@@ -46,7 +48,7 @@ module.exports = function ({ pool }) {
       const r = await pool.query(`UPDATE todo_templates SET ${fields.join(", ")} WHERE id = $${idx} RETURNING *`, params);
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       res.json(r.rows[0]);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.delete("/api/todo-templates/:id", async (req, res) => {
@@ -54,7 +56,7 @@ module.exports = function ({ pool }) {
       const r = await pool.query("DELETE FROM todo_templates WHERE id = $1 RETURNING id", [req.params.id]);
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       res.json({ ok: true });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.post("/api/todo-templates/:id/apply", async (req, res) => {
@@ -72,7 +74,7 @@ module.exports = function ({ pool }) {
         await pool.query("INSERT INTO subtasks (todo_id, title) VALUES ($1, $2)", [todo.id, typeof sub === "string" ? sub : sub.title]);
       }
       res.json(todo);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   return router;

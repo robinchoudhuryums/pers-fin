@@ -7,6 +7,8 @@ try {
   nodemailer = null;
 }
 
+const { serverError } = require("../errors");
+
 module.exports = function createEmailRoutes({ pool, config, helpers }) {
   const router = express.Router();
   const { VALID_EMAIL_STATUSES, EMAIL_REGEX, MAX_PAGINATION_LIMIT, MAX_BODY_LENGTH } = config;
@@ -29,7 +31,7 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
       const r = await pool.query(`SELECT * FROM emails WHERE ${where.join(" AND ")} ORDER BY CASE status WHEN 'scheduled' THEN 0 WHEN 'draft' THEN 1 WHEN 'sent' THEN 2 ELSE 3 END, created_at DESC${pagination}`, params);
       res.json(r.rows);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -50,7 +52,7 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
       );
       res.json(r.rows[0]);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -79,7 +81,7 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       res.json(r.rows[0]);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -89,7 +91,7 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       res.json({ ok: true });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -122,7 +124,7 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
       res.json({ ok: true, message: "Email sent successfully." });
     } catch (err) {
       await pool.query("UPDATE emails SET status = 'failed', error_message = $1 WHERE id = $2", [err.message, req.params.id]);
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -134,7 +136,7 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
     try {
       const r = await pool.query("SELECT * FROM email_templates ORDER BY name ASC");
       res.json(r.rows);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.post("/api/email-templates", async (req, res) => {
@@ -143,7 +145,7 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
       if (!name || !subject || !body) return res.status(400).json({ error: "Name, subject, and body required." });
       const r = await pool.query("INSERT INTO email_templates (name, subject, body) VALUES ($1,$2,$3) RETURNING *", [name, subject, body]);
       res.json(r.rows[0]);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.patch("/api/email-templates/:id", async (req, res) => {
@@ -158,7 +160,7 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
       const r = await pool.query(`UPDATE email_templates SET ${fields.join(", ")} WHERE id = $${idx} RETURNING *`, params);
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       res.json(r.rows[0]);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.delete("/api/email-templates/:id", async (req, res) => {
@@ -166,7 +168,7 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
       const r = await pool.query("DELETE FROM email_templates WHERE id = $1 RETURNING id", [req.params.id]);
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       res.json({ ok: true });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   return router;

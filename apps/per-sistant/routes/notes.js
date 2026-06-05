@@ -1,5 +1,7 @@
 const express = require("express");
 
+const { serverError } = require("../errors");
+
 module.exports = function ({ pool, config, helpers }) {
   const router = express.Router();
   const { VALID_NOTE_COLORS, MAX_PAGINATION_LIMIT, MAX_CONTENT_LENGTH } = config;
@@ -16,7 +18,7 @@ module.exports = function ({ pool, config, helpers }) {
       const r = await pool.query(`SELECT * FROM notes WHERE deleted_at IS NULL ORDER BY pinned DESC, updated_at DESC${pagination}`, params);
       res.json(r.rows);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -34,7 +36,7 @@ module.exports = function ({ pool, config, helpers }) {
       );
       res.json(r.rows[0]);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -60,7 +62,7 @@ module.exports = function ({ pool, config, helpers }) {
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       res.json(r.rows[0]);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -70,7 +72,7 @@ module.exports = function ({ pool, config, helpers }) {
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       res.json({ ok: true });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 

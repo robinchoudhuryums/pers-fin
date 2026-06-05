@@ -4,6 +4,8 @@ const { loadKeepAliveConfig } = require("../services/keep-alive");
 
 const VALID_PALETTES = ["copper", "indigo", "forest", "slate", "plum", "mono"];
 
+const { serverError } = require("../errors");
+
 module.exports = function ({ pool, config }) {
   const router = express.Router();
   const { AUTH_MODE, PERFIN_URL } = config;
@@ -34,7 +36,7 @@ module.exports = function ({ pool, config }) {
       settings.palette = settings.palette || "copper";
       res.json(settings);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -65,7 +67,7 @@ module.exports = function ({ pool, config }) {
       if (session_timeout_minutes && req.session) req.session.timeoutMinutes = session_timeout_minutes;
       res.json(r.rows[0]);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -82,7 +84,7 @@ module.exports = function ({ pool, config }) {
         notes: notes.rows[0],
       });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
