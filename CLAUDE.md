@@ -307,9 +307,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (593 tests as of latest); use
+  Perfin and Per-sistant test files (605 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 593 tests across 17 test files (incl.
+  Current count: 605 tests across 17 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -976,7 +976,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 593 tests passing across 17 test files (Perfin + Per-sistant)
+- 605 tests passing across 17 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash
@@ -2199,9 +2199,9 @@ Sheets & External Export:
   scripts/sheets-sync.js, scripts/retention-cleanup.sql, apps-script/Code.gs
 Per-sistant Backend:
   apps/per-sistant/server.js, apps/per-sistant/ai.js, apps/per-sistant/config.js,
-  apps/per-sistant/db.js, apps/per-sistant/helpers.js, apps/per-sistant/middleware.js,
-  apps/per-sistant/routes/*.js, apps/per-sistant/services/keep-alive.js,
-  apps/per-sistant/db/*.sql
+  apps/per-sistant/db.js, apps/per-sistant/errors.js, apps/per-sistant/helpers.js,
+  apps/per-sistant/middleware.js, apps/per-sistant/routes/*.js,
+  apps/per-sistant/services/keep-alive.js, apps/per-sistant/db/*.sql
   (Subtree-merged companion app, governed by THIS config to keep the two apps
    in lockstep — not a separate cycle. routes/perfin.js + routes/webhooks.js
    are the cross-app synergy seam shared with Perfin's Settings/Notifications/

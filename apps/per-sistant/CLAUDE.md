@@ -20,7 +20,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   reverting to `'failed'` if the send throws — so a slow SMTP send overlapping
   the next tick (or a second runner) can't double-send the same row (PS-2,
   at-most-once delivery)
-- **Tests**: `tests/` (node:test runner, `npm test`, 181 unit tests + integration tests)
+- **Tests**: `tests/` (node:test runner, `npm test`, 254 tests (api + integration + cycle-fixes))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of March 2026)
@@ -84,10 +84,11 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **Rate Limiting**: General (200/15min), auth (10/15min), and AI (20/min) rate limiters
 - **CSRF Protection**: State-changing requests require `X-Requested-With` or JSON/multipart content-type; auto-injected by fetch wrapper in shared JS
 - **Postgres Sessions**: `connect-pg-simple` stores sessions in DB (survives restarts/deploys), auto-creates table, prunes expired sessions every 15 min
-- **Webhooks**: Configure external webhook endpoints to receive event notifications (task created/completed, email sent, streak milestones); test webhooks from Settings
-- **Slack Integration**: Add Slack Incoming Webhook URL in Settings for notifications
+- **Webhooks**: Configure external webhook endpoints to receive event notifications (task created/completed, email sent, streak milestones); test webhooks from Settings. Both webhook URLs (on create) AND the Slack URL (`config.isValidWebhookUrl`, at write-time + before each send) are SSRF-validated: `http(s)` only, and private/loopback/link-local ranges are blocked — including `169.254.0.0/16` (the cloud metadata endpoint `169.254.169.254`), the full `127.0.0.0/8`, RFC-1918, and bracketed IPv6 loopback/ULA (PB-1/PB-5).
+- **Slack Integration**: Add Slack Incoming Webhook URL in Settings for notifications (SSRF-validated — see Webhooks above)
 - **AI API Optimization**: Singleton client reuse, prompt caching via system prompts with `cache_control`, response caching for briefing (10min) and suggestions (5min)
-- **Helmet CSP**: Content Security Policy via helmet with strict directives; all inline event handlers migrated to CSP-safe event delegation (`bindEvents()`/`onDelegate()` pattern)
+- **Helmet CSP**: Content Security Policy via helmet. Inline event handlers are migrated to CSP-safe event delegation and `script-src-attr` defaults to `'none'` (via helmet) so inline `onclick`/`onchange` are blocked. NOTE: `script-src` still carries `'unsafe-inline'` because the page templates emit inline `<script>` blocks — so the CSP is NOT yet an XSS backstop the way Perfin's nonce-based policy is (known gap PB-3; removing `'unsafe-inline'` needs a per-request-nonce migration across all inline scripts). Rely on output-escaping (e.g. `renderMd` scheme-validation, PS-4) for XSS defense meanwhile.
+- **Internal error handling**: route 500s go through `errors.serverError(res, err)`, which logs the real error server-side and returns a generic `"An internal error occurred."` — raw DB/constraint/internal text is never echoed to the client (PB-2, matching Perfin's convention).
 - **Event Delegation**: All pages use `bindEvents()` for static elements and `onDelegate()` for dynamic content — zero inline `onclick`/`onchange` attributes; enables `script-src-attr: 'none'` CSP
 - **Constant-Time Auth**: `crypto.timingSafeEqual` for password/PIN comparison; PIN pad shows fixed 8-dot display regardless of actual PIN length
 - **Keep-Alive**: Self-ping system to prevent Render free tier from sleeping (14-minute interval)
@@ -101,6 +102,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `ai.js` — Anthropic client, callAI, model helpers, response caching
 - `middleware.js` — session, auth, CSRF, helmet, rate limiting
 - `helpers.js` — advanceRecurrence, webhooks, Slack, automations
+- `errors.js` — `serverError(res, err)` shared 500 responder (logs real error, returns generic message; PB-2)
 - `views.js` — pageHead, navBar, themeScript (imports from `views/`)
 - `routes/` — 21 API route modules (auth, todos, emails, notes, contacts, etc.)
 - `pages/` — 9 page rendering modules (dashboard, todos, emails, notes, etc.)
@@ -113,7 +115,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `db/007_enhancements.sql` — custom recurrence, entity links, webhooks, notification preferences
 - `db/008_templates_performance.sql` — todo templates table, performance indexes
 - `uploads/` — local file attachment storage
-- `tests/api.test.js` — unit test suite (181 tests, 52 suites)
+- `tests/api.test.js` — unit test suite (the bulk of the 254 per-sistant tests)
 - `tests/integration.test.js` — integration tests (requires DB, auto-skips without)
 - `Dockerfile` / `docker-compose.yml` — container deployment
 - `fly.toml` — Fly.io config
@@ -124,7 +126,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (181 tests)
+# Run tests (254 tests)
 npm test
 
 # Pages
