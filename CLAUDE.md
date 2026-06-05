@@ -307,9 +307,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (591 tests as of latest); use
+  Perfin and Per-sistant test files (593 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 591 tests across 17 test files (incl.
+  Current count: 593 tests across 17 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -758,8 +758,9 @@ shell/
   updates `last_balance_sync_at`.
 - **Sync Health card** (Settings): renders `GET /api/data-health` — per-source
   freshness dots (green/yellow/red), Teller/Plaid connection status, a derived
-  `issues[]` list (disconnected links, stale balances, never-synced), and the
-  last reconcile time — plus a "Reconcile Now" button that POSTs
+  `issues[]` list (disconnected links, stale balances, never-synced, plus the
+  per-item errors from the most recent sync run — see `last_sync_result` below),
+  and the last reconcile time — plus a "Reconcile Now" button that POSTs
   `/api/sync/reconcile` to recover any dropped transactions.
 - **Web Push notifications**: VAPID-based push notifications for anomalies, budget alerts,
   goal milestones
@@ -975,7 +976,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 591 tests passing across 17 test files (Perfin + Per-sistant)
+- 593 tests passing across 17 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash
@@ -1093,11 +1094,13 @@ PATCH /api/settings        # update user settings. Accepts: theme,
 GET  /api/data-freshness   # per-source sync timestamps with staleness flags
 GET  /api/data-health      # operator health surface — per-source freshness,
                            # Teller/Plaid connection status, derived issues[]
-                           # (disconnected links, stale balances, never-synced),
-                           # recent sync notifications, last_reconcile_at, and a
-                           # top-level `ok` flag. (Does NOT live-decrypt tokens —
-                           # pgp_sym_decrypt throws on a wrong key; that surfaces
-                           # via sync errors instead.)
+                           # (disconnected links, stale balances, never-synced,
+                           # + per-item errors from last_sync_result), recent sync
+                           # notifications, last_reconcile_at, last_sync_result, and
+                           # a top-level `ok` flag. Does NOT live-decrypt tokens to
+                           # probe a passphrase mismatch (pgp_sym_decrypt throws on a
+                           # wrong key); that condition surfaces here via
+                           # last_sync_result.errors (decryption_failed) instead (D).
 GET  /api/budgets          # list budgets with current spending (query: month=YYYY-MM)
 POST /api/budgets          # create budget (body: rollover_enabled, budget_type, effective_month)
 PATCH /api/budgets/:id     # update budget
@@ -1411,6 +1414,16 @@ standalone-mode fallback if either app is run on its own Render service.
   `POST /api/sync`), `last_balance_sync_at TIMESTAMPTZ` (updated by
   `POST /api/sync-balances`). The nav badge uses the most recent of these plus
   `last_auto_sync_at` to display staleness.
+- `user_settings.last_sync_result JSONB` — structured summary of the most recent
+  sync run (any path): `{ at, errors: [{ provider, institution, error }] }`.
+  Written by `recordSyncResult()` (`routes/enrollments.js`) from `POST /api/sync`,
+  `POST /api/sync-balances`, and the bank auto-sync scheduler (the comprehensive,
+  all-provider writer). Surfaced by `GET /api/data-health` as `issues[]` + the
+  raw `last_sync_result`, so a per-item error that does NOT disconnect an
+  enrollment — notably `decryption_failed` (passphrase mismatch) — is visible in
+  the Sync Health card instead of staying silent on scheduled runs (addition D).
+  The auto-sync fires a one-shot "Sync error" notification only when the error
+  signature CHANGES, so a persistent mismatch doesn't spam hourly.
 - `user_settings.shell_idle_timeout_minutes INT NOT NULL DEFAULT 60`: how
   many minutes of inactivity before the unified-shell PIN is required again
   (sliding window — every authenticated request resets the timer). Read by
@@ -1895,7 +1908,7 @@ income module, and bill-calendar income detection.
 - **The scheduler calls helpers in-process, not via HTTP self-fetch.**
   Every route module that the scheduler invokes exports a callable helper
   alongside its Express router:
-  - `routes/enrollments.js` → `syncAllEnrollments`, `syncAllBalances`, `reconcileTeller`
+  - `routes/enrollments.js` → `syncAllEnrollments`, `syncAllBalances`, `reconcileTeller`, `recordSyncResult`
   - `routes/investments.js` → `syncAllPlaidTransactions`, `syncAllPlaidBalances`, `syncAllPlaidHoldings`, `reconcilePlaidTransactions`
   - `routes/subscriptions.js` → `runSubscriptionDetection`
   - `routes/categorize.js` → `runCategorize`
