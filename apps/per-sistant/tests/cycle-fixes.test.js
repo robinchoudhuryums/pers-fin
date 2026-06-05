@@ -120,3 +120,10 @@ describe("migration env-gate uses the pool's connection string", () => {
     assert.match(src, /PERSISTENT_DATABASE_URL \|\| process\.env\.NEON_DATABASE_URL/);
   });
 });
+
+describe("PS-3 — /api/stats surfaces a failed-email count", () => {
+  const src = fs.readFileSync(path.join(__dirname, "../routes/settings.js"), "utf8");
+  it("the emails stats query counts status='failed'", () => {
+    assert.match(src, /FILTER \(WHERE status = 'failed'\) as failed/);
+  });
+});

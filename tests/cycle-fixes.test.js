@@ -293,3 +293,117 @@ describe("F3 / DC-2 / AI-7 — source-pinned", () => {
     assert.match(ins, /GROUP BY COALESCE\(user_merchant_name, merchant_name, name\)/);
   });
 });
+
+// ===========================================================================
+// Tier 3 — AI-audit matcher helpers (behavioral)
+// ===========================================================================
+describe("Tier 3 — wordMatch (AI-2/AI-3)", () => {
+  const { wordMatch } = require("../teller/services/ai-audit");
+  it("does NOT substring-match short tokens (car != carmax)", () => {
+    assert.equal(wordMatch("carmax purchase", "car"), false);
+    assert.equal(wordMatch("box office tickets", "office"), true); // whole word
+  });
+  it("matches whole-word category names", () => {
+    assert.equal(wordMatch("food costs were high", "food"), true);
+    assert.equal(wordMatch("dining out", "din"), false);
+  });
+});
+
+describe("Tier 3 — entityKnown (AI-4)", () => {
+  const { entityKnown } = require("../teller/services/ai-audit");
+  it("a tiny known entity can't wildcard-match every claimed name", () => {
+    assert.equal(entityKnown("starbucks", new Set(["car"])), false);
+    assert.equal(entityKnown("hallucinomart", new Set(["starbucks", "target"])), false);
+  });
+  it("matches exact and whole-word containment for substantial tokens", () => {
+    assert.equal(entityKnown("ira", new Set(["ira"])), true);             // exact
+    assert.equal(entityKnown("netflix", new Set(["netflix.com"])), true); // whole-word
+    assert.equal(entityKnown("amazon", new Set(["amazon mktp 1234"])), true);
+  });
+});
+
+// ===========================================================================
+// Tier 4 — behavioral + source-pinned
+// ===========================================================================
+describe("F6 — schwab/generic CSV parsers use parseMoney", () => {
+  const { CSV_FORMATS } = require("../teller/data/csv-formats");
+  it("generic parses parenthesized negatives instead of NaN", () => {
+    const r = CSV_FORMATS.generic.parse({ Date: "2026-01-02", Description: "X", Amount: "(45.00)" });
+    assert.equal(r.amount, -45);
+  });
+  it("schwab handles $ + thousands separators on a withdrawal", () => {
+    const r = CSV_FORMATS.schwab.parse({ Date: "2026-01-02", Description: "Y", Withdrawal: "$1,234.56", Deposit: "", Amount: "" });
+    assert.equal(r.amount, 1234.56);
+  });
+});
+
+describe("SN-5 — sanitizeBoolMap", () => {
+  const { sanitizeBoolMap } = require("../teller/routes/settings");
+  it("rejects arrays and non-objects", () => {
+    assert.equal(sanitizeBoolMap([1, 2, 3]), null);
+    assert.equal(sanitizeBoolMap("nope"), null);
+    assert.equal(sanitizeBoolMap(null), null);
+  });
+  it("coerces values to booleans and drops over-long keys", () => {
+    const out = sanitizeBoolMap({ pyramid: 1, accounts: 0, nested: { x: 1 } });
+    assert.equal(out.pyramid, true);
+    assert.equal(out.accounts, false);
+    assert.equal(out.nested, true); // !!{} — coerced, not stored verbatim
+    assert.equal(sanitizeBoolMap({ ["k".repeat(80)]: true })["k".repeat(80)], undefined);
+  });
+});
+
+describe("FA-4 — getMonthlySpending uses a whole-month window", () => {
+  const { getMonthlySpending, getMonthlyIncome } = require("../teller/services/financial-queries");
+  it("spending SQL floors to the 1st via date_trunc('month', ...)", async () => {
+    let sql = "";
+    await getMonthlySpending({ query: async (s) => { sql = s; return { rows: [] }; } }, 6);
+    assert.match(sql, /date_trunc\('month', CURRENT_DATE\)/);
+    assert.match(sql, /make_interval\(months => \$1 - 1\)/);
+  });
+  it("income SQL floors to the 1st too", async () => {
+    let sql = "";
+    await getMonthlyIncome({ query: async (s) => { sql = s; return { rows: [] }; } }, 3);
+    assert.match(sql, /date_trunc\('month', CURRENT_DATE\)/);
+  });
+});
+
+describe("Tier 4 — source-pinned (DC-1/DC-5/DC-7/F7)", () => {
+  const enr = fs.readFileSync(path.join(__dirname, "../teller/routes/enrollments.js"), "utf8");
+  const cat = fs.readFileSync(path.join(__dirname, "../teller/routes/categorize.js"), "utf8");
+  const subs = fs.readFileSync(path.join(__dirname, "../teller/routes/subscriptions.js"), "utf8");
+
+  it("DC-1: leftover uncategorized count excludes user_category-set rows", () => {
+    assert.match(cat, /WHERE user_category IS NULL/);
+  });
+  it("DC-5: manual-sub re-add clears is_dismissed", () => {
+    assert.match(subs, /is_active = true,\s*\n\s*is_dismissed = false/);
+  });
+  it("DC-7: recurring-transfer monthly_equivalent guards divide-by-zero", () => {
+    assert.match(subs, /30\.0 \/ NULLIF\(rt\.cadence_days, 0\)/);
+  });
+  it("F7: anomaly candidate window is 7 days", () => {
+    assert.match(enr, /t\.date >= CURRENT_DATE - INTERVAL '7 days'/);
+  });
+});
+
+describe("FA-3 — credit-score 6-month delta picks the entry closest to 180 days", () => {
+  it("chooses the ~180-day entry, not the first >=150-day one", async () => {
+    const day = (n) => new Date(Date.now() - n * 86400000).toISOString().split("T")[0];
+    const rows = [
+      { id: 5, score: 700, checked_at: day(0),   score_type: "fico" }, // latest
+      { id: 4, score: 695, checked_at: day(30),  score_type: "fico" }, // prior
+      { id: 3, score: 680, checked_at: day(150), score_type: "fico" }, // old code picked this
+      { id: 2, score: 670, checked_at: day(180), score_type: "fico" }, // FA-3 should pick this
+      { id: 1, score: 660, checked_at: day(210), score_type: "fico" },
+    ];
+    dbModule.pool.query = async () => ({ rows });
+    const app = express();
+    app.use(express.json());
+    app.use(require("../teller/routes/credit-scores"));
+    const res = await supertest(app).get("/api/credit-scores").expect(200);
+    assert.equal(res.body.trend.delta_vs_prior, 5);          // 700 - 695
+    assert.equal(res.body.trend.six_month_ago, 670);         // the ~180d entry
+    assert.equal(res.body.trend.delta_vs_6mo, 30);           // 700 - 670
+  });
+});

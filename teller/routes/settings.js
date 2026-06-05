@@ -509,3 +509,6 @@ router.get("/api/export/tax-report", async (req, res) => {
 });
 
 module.exports = router;
+// Exported for unit testing the toggle-map validation (SN-5). Attached after
+// `module.exports = router` so the router assignment doesn't drop it (INV-19).
+module.exports.sanitizeBoolMap = sanitizeBoolMap;
