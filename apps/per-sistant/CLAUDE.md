@@ -19,8 +19,10 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   status='sent' WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED) RETURNING *`,
   reverting to `'failed'` if the send throws — so a slow SMTP send overlapping
   the next tick (or a second runner) can't double-send the same row (PS-2,
-  at-most-once delivery)
-- **Tests**: `tests/` (node:test runner, `npm test`, 254 tests (api + integration + cycle-fixes))
+  at-most-once delivery). The manual `POST /api/emails/:id/send` claims the row
+  the same way (`UPDATE … WHERE id = $1 AND status <> 'sent' RETURNING`) so a
+  double-click / retry returns 409 instead of re-sending (PB-4).
+- **Tests**: `tests/` (node:test runner, `npm test`, 256 tests (api + integration + cycle-fixes))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of March 2026)
@@ -115,7 +117,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `db/007_enhancements.sql` — custom recurrence, entity links, webhooks, notification preferences
 - `db/008_templates_performance.sql` — todo templates table, performance indexes
 - `uploads/` — local file attachment storage
-- `tests/api.test.js` — unit test suite (the bulk of the 254 per-sistant tests)
+- `tests/api.test.js` — unit test suite (the bulk of the 256 per-sistant tests)
 - `tests/integration.test.js` — integration tests (requires DB, auto-skips without)
 - `Dockerfile` / `docker-compose.yml` — container deployment
 - `fly.toml` — Fly.io config
@@ -126,7 +128,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (254 tests)
+# Run tests (256 tests)
 npm test
 
 # Pages

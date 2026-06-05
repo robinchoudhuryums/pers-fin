@@ -250,3 +250,29 @@ describe("PB-7 — complete-recurring streak + next instance", () => {
     assert.ok(captured.insert, "a next recurring instance must be created");
   });
 });
+
+// ===========================================================================
+// PB-4 — manual email send: atomic claim guards against double-send
+// ===========================================================================
+describe("PB-4 — POST /api/emails/:id/send won't re-send an already-sent email", () => {
+  it("returns 409 when the email is already sent (no re-send)", async () => {
+    process.env.SMTP_HOST = process.env.SMTP_HOST || "smtp.test";
+    const mockPool = {
+      query: async (sql) => {
+        if (/SELECT \* FROM emails/.test(sql)) {
+          return { rows: [{ id: 7, status: "sent", recipient_email: "a@b.com", subject: "x", body: "y" }] };
+        }
+        return { rows: [] };
+      },
+    };
+    const app = express();
+    app.use(express.json());
+    app.use(require("../routes/emails")({ pool: mockPool, config: require("../config"), helpers: {} }));
+    await supertest(app).post("/api/emails/7/send").expect(409);
+  });
+
+  it("source: claims the row with status <> 'sent' RETURNING before sending", () => {
+    const src = fs.readFileSync(path.join(__dirname, "../routes/emails.js"), "utf8");
+    assert.match(src, /UPDATE emails SET status = 'sent'[\s\S]*status <> 'sent' RETURNING id/);
+  });
+});

@@ -99,13 +99,25 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
     if (!nodemailer) return res.status(500).json({ error: "nodemailer not installed." });
     const smtpHost = process.env.SMTP_HOST;
     if (!smtpHost) return res.status(500).json({ error: "SMTP not configured. Set SMTP_HOST, SMTP_USER, SMTP_PASS in .env" });
+    let claimed = false;
     try {
-      const r = await pool.query("SELECT * FROM emails WHERE id = $1", [req.params.id]);
+      const r = await pool.query("SELECT * FROM emails WHERE id = $1 AND deleted_at IS NULL", [req.params.id]);
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       const email = r.rows[0];
+      if (email.status === "sent") return res.status(409).json({ error: "Email already sent." });
       if (!EMAIL_REGEX.test(email.recipient_email)) {
         return res.status(400).json({ error: "Invalid recipient email address." });
       }
+      // Atomically CLAIM the row before sending (PB-4): flip to 'sent' guarded by
+      // `status <> 'sent'`, so a double-POST / retry / concurrent request can't
+      // send the same email twice. A losing racer matches 0 rows → 409. Reverted
+      // to 'failed' if the actual send throws. Mirrors the scheduler's PS-2 claim.
+      const claim = await pool.query(
+        "UPDATE emails SET status = 'sent', sent_at = now() WHERE id = $1 AND deleted_at IS NULL AND status <> 'sent' RETURNING id",
+        [req.params.id]
+      );
+      if (!claim.rows.length) return res.status(409).json({ error: "Email already sent." });
+      claimed = true;
       const transporter = nodemailer.createTransport({
         host: smtpHost,
         port: parseInt(process.env.SMTP_PORT || "587", 10),
@@ -120,10 +132,12 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
       };
       if (email.body_html) mail.html = email.body_html;
       await transporter.sendMail(mail);
-      await pool.query("UPDATE emails SET status = 'sent', sent_at = now() WHERE id = $1", [req.params.id]);
       res.json({ ok: true, message: "Email sent successfully." });
     } catch (err) {
-      await pool.query("UPDATE emails SET status = 'failed', error_message = $1 WHERE id = $2", [err.message, req.params.id]);
+      // Only revert if WE claimed it (don't stomp another request's state).
+      if (claimed) {
+        await pool.query("UPDATE emails SET status = 'failed', error_message = $1, sent_at = NULL WHERE id = $2", [err.message, req.params.id]).catch(() => {});
+      }
       serverError(res, err);
     }
   });
