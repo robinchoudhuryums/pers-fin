@@ -339,6 +339,33 @@ async function syncAllEnrollments(opts = {}) {
   };
 }
 
+// recordSyncResult — persist a structured summary of the most recent sync run
+// (any path) to user_settings.last_sync_result so per-item errors surface in
+// the Sync Health card (GET /api/data-health) instead of only living in a
+// manual-sync HTTP payload (addition D). `parts` is [{ provider, result }];
+// each result's `errors` array (e.g. [{ institution, error: "decryption_failed" }])
+// is flattened. Returns the persisted payload so callers can diff it.
+async function recordSyncResult(parts) {
+  const errors = [];
+  for (const { provider, result } of parts) {
+    if (result && Array.isArray(result.errors)) {
+      for (const e of result.errors) {
+        errors.push({
+          provider,
+          institution: e && e.institution ? e.institution : null,
+          error: e && e.error ? e.error : String(e),
+        });
+      }
+    }
+  }
+  const payload = { at: new Date().toISOString(), errors };
+  await pool.query(
+    "UPDATE user_settings SET last_sync_result = $1 WHERE id = 1",
+    [JSON.stringify(payload)]
+  ).catch(e => console.error("record sync result error:", e.message));
+  return payload;
+}
+
 // POST /api/sync
 router.post("/api/sync", async (req, res) => {
   try {
@@ -347,6 +374,7 @@ router.post("/api/sync", async (req, res) => {
     await pool.query(
       "UPDATE user_settings SET last_txn_sync_at = now() WHERE id = 1"
     ).catch(() => {});
+    await recordSyncResult([{ provider: "teller_txn", result }]);
     res.json(result);
   } catch (err) {
     console.error("Sync error:", err.message);
@@ -735,6 +763,11 @@ router.post("/api/sync-balances", async (_req, res) => {
     await pool.query(
       "UPDATE user_settings SET last_balance_sync_at = now() WHERE id = 1"
     ).catch(() => {});
+    await recordSyncResult([
+      { provider: "teller_balance", result: tellerResult },
+      { provider: "plaid_balance", result: plaidResult },
+      { provider: "plaid_holdings", result: holdingsResult },
+    ]);
     res.json({
       ...tellerResult,
       plaid_accounts_updated: plaidResult?.accounts_updated || 0,
@@ -1387,3 +1420,4 @@ module.exports = router;
 module.exports.syncAllEnrollments = syncAllEnrollments;
 module.exports.syncAllBalances = syncAllBalances;
 module.exports.reconcileTeller = reconcileTeller;
+module.exports.recordSyncResult = recordSyncResult;

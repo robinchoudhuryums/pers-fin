@@ -297,7 +297,7 @@ function startBackgroundJobs() {
   intervalHandles.push(setInterval(async () => {
     try {
       const settings = await pool.query(
-        "SELECT auto_sync_enabled, auto_sync_interval_hours, last_auto_sync_at FROM user_settings WHERE id = 1"
+        "SELECT auto_sync_enabled, auto_sync_interval_hours, last_auto_sync_at, last_sync_result FROM user_settings WHERE id = 1"
       );
       const s = settings.rows[0];
       if (!s || !s.auto_sync_enabled) return;
@@ -307,20 +307,49 @@ function startBackgroundJobs() {
       const dueMs = intervalHours * 60 * 60 * 1000;
       if (lastSync && (now - lastSync) < dueMs) return;
 
-      const { syncAllEnrollments, syncAllBalances } = require("./routes/enrollments");
+      const { syncAllEnrollments, syncAllBalances, recordSyncResult } = require("./routes/enrollments");
       const { syncAllPlaidTransactions, syncAllPlaidHoldings } = require("./routes/investments");
-      let txnResult = null, balResult = null, plaidResult = null;
+      let txnResult = null, balResult = null, plaidResult = null, holdingsResult = null;
       try { txnResult = await syncAllEnrollments(); }
       catch (e) { console.error("Auto-sync Teller error:", e.message); }
       try { plaidResult = await syncAllPlaidTransactions(); }
       catch (e) { console.error("Auto-sync Plaid error:", e.message); }
-      try { await syncAllPlaidHoldings(); }
+      try { holdingsResult = await syncAllPlaidHoldings(); }
       catch (e) { console.error("Auto-sync holdings error:", e.message); }
       try { balResult = await syncAllBalances(); }
       catch (e) { console.error("Auto-sync balances error:", e.message); }
 
       await pool.query("UPDATE user_settings SET last_auto_sync_at = now() WHERE id = 1")
         .catch(e => console.error("Auto-sync timestamp update failed:", e.message));
+
+      // Persist a structured sync-result so per-item errors (decryption_failed,
+      // per-institution failures) surface in the Sync Health card even on a
+      // scheduled run nobody is watching (addition D). The auto-sync covers all
+      // providers, so its record is the comprehensive one.
+      const syncRecord = await recordSyncResult([
+        { provider: "teller_txn", result: txnResult },
+        { provider: "plaid_txn", result: plaidResult },
+        { provider: "plaid_holdings", result: holdingsResult },
+        { provider: "teller_balance", result: balResult },
+      ]);
+      // Notify ONLY when the error set changes (new errors appeared) so a
+      // persistent passphrase mismatch doesn't spam a notification every hour.
+      const errSig = (errs) => (errs || []).map(e => `${e.provider}:${e.institution || ""}:${e.error}`).sort().join("|");
+      const prevErrSig = errSig(s.last_sync_result && s.last_sync_result.errors);
+      const newErrSig = errSig(syncRecord.errors);
+      if (syncRecord.errors.length > 0 && newErrSig !== prevErrSig && s.sync_notifications_enabled !== false) {
+        try {
+          const { sendToAll } = require("./routes/notifications");
+          const summary = syncRecord.errors.slice(0, 4)
+            .map(e => `${e.institution || e.provider}: ${e.error}`).join("; ");
+          await sendToAll({
+            title: "Sync error",
+            body: `${syncRecord.errors.length} sync error(s) — ${summary}. See Settings → Sync Health.`,
+            tag: "sync-error",
+            data: { url: "/settings" },
+          });
+        } catch {}
+      }
       const tellerTxns = txnResult ? txnResult.transactions_added : 0;
       const plaidTxns = plaidResult && plaidResult.ok ? plaidResult.transactions_added : 0;
       const syncMsg = `${tellerTxns + plaidTxns} txns (${tellerTxns} Teller, ${plaidTxns} Plaid)` +

@@ -387,6 +387,48 @@ describe("Tier 4 — source-pinned (DC-1/DC-5/DC-7/F7)", () => {
   });
 });
 
+// ===========================================================================
+// Addition D — structured sync-result surfaced in Sync Health
+// ===========================================================================
+describe("Addition D — recordSyncResult + data-health surfacing", () => {
+  const enr = require("../teller/routes/enrollments");
+
+  it("recordSyncResult flattens per-provider errors and persists them", async () => {
+    let written = null;
+    dbModule.pool.query = async (sql, params) => {
+      if (/last_sync_result/.test(sql)) written = JSON.parse(params[0]);
+      return { rows: [] };
+    };
+    const out = await enr.recordSyncResult([
+      { provider: "teller_txn", result: { errors: [{ institution: "Chase", error: "decryption_failed" }] } },
+      { provider: "plaid_balance", result: { accounts_updated: 3 } }, // no errors
+    ]);
+    assert.equal(out.errors.length, 1);
+    assert.equal(out.errors[0].provider, "teller_txn");
+    assert.equal(out.errors[0].error, "decryption_failed");
+    assert.ok(written, "must persist to last_sync_result");
+  });
+
+  it("data-health surfaces a persisted decryption_failed as an issue", async () => {
+    dbModule.pool.query = async (sql) => {
+      if (/FROM user_settings/.test(sql)) {
+        return { rows: [{ last_sync_result: { at: new Date().toISOString(), errors: [{ provider: "plaid_txn", institution: "Schwab", error: "decryption_failed" }] } }] };
+      }
+      if (/teller_enrollments/.test(sql)) return { rows: [{ total: 1, disconnected: 0 }] };
+      if (/plaid_items/.test(sql)) return { rows: [{ total: 1, not_good: 0 }] };
+      return { rows: [] }; // notification_log
+    };
+    const app = express();
+    app.use(express.json());
+    app.use(require("../teller/routes/settings"));
+    const res = await supertest(app).get("/api/data-health").expect(200);
+    const msg = res.body.issues.map(i => i.message).join(" | ");
+    assert.match(msg, /Schwab: decryption_failed/);
+    assert.ok(res.body.last_sync_result, "response includes last_sync_result");
+    assert.equal(res.body.ok, false, "a sync error makes the surface not-ok");
+  });
+});
+
 describe("FA-3 — credit-score 6-month delta picks the entry closest to 180 days", () => {
   it("chooses the ~180-day entry, not the first >=150-day one", async () => {
     const day = (n) => new Date(Date.now() - n * 86400000).toISOString().split("T")[0];

@@ -516,6 +516,12 @@ async function runMigrations() {
     // ---- Data freshness tracking ----
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_balance_sync_at TIMESTAMPTZ DEFAULT NULL");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_txn_sync_at TIMESTAMPTZ DEFAULT NULL");
+    // Structured result of the most recent sync run (any path), so per-item
+    // errors (esp. `decryption_failed`, which deliberately does NOT mark an
+    // enrollment DISCONNECTED) surface in the Sync Health card instead of only
+    // living in a manual-sync HTTP payload. Shape: { at, errors:[{provider,
+    // institution, error}] }.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_sync_result JSONB DEFAULT NULL");
     // Sync notification toggle
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sync_notifications_enabled BOOLEAN NOT NULL DEFAULT true");
 
