@@ -7,6 +7,8 @@ try {
   nodemailer = null;
 }
 
+const { serverError } = require("../errors");
+
 module.exports = function createEmailRoutes({ pool, config, helpers }) {
   const router = express.Router();
   const { VALID_EMAIL_STATUSES, EMAIL_REGEX, MAX_PAGINATION_LIMIT, MAX_BODY_LENGTH } = config;
@@ -29,7 +31,7 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
       const r = await pool.query(`SELECT * FROM emails WHERE ${where.join(" AND ")} ORDER BY CASE status WHEN 'scheduled' THEN 0 WHEN 'draft' THEN 1 WHEN 'sent' THEN 2 ELSE 3 END, created_at DESC${pagination}`, params);
       res.json(r.rows);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -50,13 +52,19 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
       );
       res.json(r.rows[0]);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
   router.patch("/api/emails/:id", async (req, res) => {
     try {
       const { recipient_name, recipient_email, subject, body, body_html, scheduled_at, status } = req.body;
+      // Validate client-supplied status (PS-7) — unlike POST, the PATCH path
+      // wrote it through unchecked, letting a client force e.g. status='scheduled'
+      // with a past scheduled_at to inject a row the cron picks up.
+      if (status !== undefined && !VALID_EMAIL_STATUSES.includes(status)) {
+        return res.status(400).json({ error: "Invalid status." });
+      }
       const fields = [];
       const params = [];
       let idx = 1;
@@ -73,7 +81,7 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       res.json(r.rows[0]);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -83,7 +91,7 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       res.json({ ok: true });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -91,13 +99,25 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
     if (!nodemailer) return res.status(500).json({ error: "nodemailer not installed." });
     const smtpHost = process.env.SMTP_HOST;
     if (!smtpHost) return res.status(500).json({ error: "SMTP not configured. Set SMTP_HOST, SMTP_USER, SMTP_PASS in .env" });
+    let claimed = false;
     try {
-      const r = await pool.query("SELECT * FROM emails WHERE id = $1", [req.params.id]);
+      const r = await pool.query("SELECT * FROM emails WHERE id = $1 AND deleted_at IS NULL", [req.params.id]);
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       const email = r.rows[0];
+      if (email.status === "sent") return res.status(409).json({ error: "Email already sent." });
       if (!EMAIL_REGEX.test(email.recipient_email)) {
         return res.status(400).json({ error: "Invalid recipient email address." });
       }
+      // Atomically CLAIM the row before sending (PB-4): flip to 'sent' guarded by
+      // `status <> 'sent'`, so a double-POST / retry / concurrent request can't
+      // send the same email twice. A losing racer matches 0 rows → 409. Reverted
+      // to 'failed' if the actual send throws. Mirrors the scheduler's PS-2 claim.
+      const claim = await pool.query(
+        "UPDATE emails SET status = 'sent', sent_at = now() WHERE id = $1 AND deleted_at IS NULL AND status <> 'sent' RETURNING id",
+        [req.params.id]
+      );
+      if (!claim.rows.length) return res.status(409).json({ error: "Email already sent." });
+      claimed = true;
       const transporter = nodemailer.createTransport({
         host: smtpHost,
         port: parseInt(process.env.SMTP_PORT || "587", 10),
@@ -112,11 +132,13 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
       };
       if (email.body_html) mail.html = email.body_html;
       await transporter.sendMail(mail);
-      await pool.query("UPDATE emails SET status = 'sent', sent_at = now() WHERE id = $1", [req.params.id]);
       res.json({ ok: true, message: "Email sent successfully." });
     } catch (err) {
-      await pool.query("UPDATE emails SET status = 'failed', error_message = $1 WHERE id = $2", [err.message, req.params.id]);
-      res.status(500).json({ error: err.message });
+      // Only revert if WE claimed it (don't stomp another request's state).
+      if (claimed) {
+        await pool.query("UPDATE emails SET status = 'failed', error_message = $1, sent_at = NULL WHERE id = $2", [err.message, req.params.id]).catch(() => {});
+      }
+      serverError(res, err);
     }
   });
 
@@ -128,7 +150,7 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
     try {
       const r = await pool.query("SELECT * FROM email_templates ORDER BY name ASC");
       res.json(r.rows);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.post("/api/email-templates", async (req, res) => {
@@ -137,7 +159,7 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
       if (!name || !subject || !body) return res.status(400).json({ error: "Name, subject, and body required." });
       const r = await pool.query("INSERT INTO email_templates (name, subject, body) VALUES ($1,$2,$3) RETURNING *", [name, subject, body]);
       res.json(r.rows[0]);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.patch("/api/email-templates/:id", async (req, res) => {
@@ -152,7 +174,7 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
       const r = await pool.query(`UPDATE email_templates SET ${fields.join(", ")} WHERE id = $${idx} RETURNING *`, params);
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       res.json(r.rows[0]);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.delete("/api/email-templates/:id", async (req, res) => {
@@ -160,7 +182,7 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
       const r = await pool.query("DELETE FROM email_templates WHERE id = $1 RETURNING id", [req.params.id]);
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       res.json({ ok: true });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   return router;

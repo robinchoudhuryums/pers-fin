@@ -14,8 +14,15 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **Views**: `views.js` + `views/css.js` + `views/js.js` (shared HTML/CSS/JS helpers)
 - **Routes**: `routes/` (21 route modules — auth, todos, emails, notes, contacts, settings, etc.)
 - **Pages**: `pages/` (9 page modules — dashboard, todos, emails, notes, contacts, calendar, review, analytics, settings)
-- **Email**: nodemailer (SMTP) with scheduled sending via node-cron
-- **Tests**: `tests/` (node:test runner, `npm test`, 181 unit tests + integration tests)
+- **Email**: nodemailer (SMTP) with scheduled sending via node-cron. The
+  scheduler atomically CLAIMS due emails before sending — `UPDATE emails SET
+  status='sent' WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED) RETURNING *`,
+  reverting to `'failed'` if the send throws — so a slow SMTP send overlapping
+  the next tick (or a second runner) can't double-send the same row (PS-2,
+  at-most-once delivery). The manual `POST /api/emails/:id/send` claims the row
+  the same way (`UPDATE … WHERE id = $1 AND status <> 'sent' RETURNING`) so a
+  double-click / retry returns 409 instead of re-sending (PB-4).
+- **Tests**: `tests/` (node:test runner, `npm test`, 256 tests (api + integration + cycle-fixes))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of March 2026)
@@ -25,7 +32,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **To-Do Lists**: Short/medium/long-term horizons, 4 priority levels, categories, due dates
 - **Todo Categories**: Preset categories (work, personal, health, finance, errands, home, learning) + custom; filterable on todos page and dashboard
 - **Dashboard Task Views**: All / By Category / By Urgency / Due Soon tabs
-- **Recurring Tasks**: Daily, weekly, monthly, yearly, weekdays + custom intervals (every N days/weeks/months) with auto-generation, streak/habit tracking, skip, and snooze
+- **Recurring Tasks**: Daily, weekly, monthly, yearly, weekdays + custom intervals (every N days/weeks/months) with auto-generation, streak/habit tracking, skip, and snooze. The midnight auto-roll cron atomically CLAIMS each overdue recurring row (`UPDATE … WHERE id = $1 AND completed = false RETURNING`) before generating the next instance, so it can't race the manual complete-recurring path into a double-generated instance (PS-11).
 - **Subtasks**: Checklists within tasks with progress tracking
 - **Natural Language Quick Add**: Create todos from natural language with auto-detected priority/horizon/due date (AI-enhanced when enabled)
 - **Email Drafting**: Compose, schedule, send; natural language "Quick Send" parser
@@ -37,7 +44,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **AI Note Auto-Tagging**: Suggest tags for notes based on content
 - **AI Model Selection**: Per-feature choice of Haiku (fast/cheap), Sonnet (smarter), or Off — configurable in Settings
 - **Email Templates**: Save and reuse common email formats
-- **Notes**: Color-coded, pinnable, with optional reminders, tags, and Markdown support (bold, italic, lists, checkboxes, links, quotes, headings)
+- **Notes**: Color-coded, pinnable, with optional reminders, tags, and Markdown support (bold, italic, lists, checkboxes, links, quotes, headings). The client-side `renderMd` link rule scheme-validates hrefs (`http(s):`/`mailto:` only, else neutralized to `#`) and quote-escapes the URL, so a `[x](javascript:…)` note can't render a clickable script URL (PS-4).
 - **Task Dependencies**: Blocking/blocked-by relationships between tasks with circular dependency prevention
 - **Streak Tracking**: Recurring tasks track completion streaks (current + best) with on-time detection
 - **Contacts**: Name→email lookup for quick email addressing
@@ -45,7 +52,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **AI Smart Suggestions**: AI-powered productivity coaching based on task priorities, due dates, and streaks
 - **AI Natural Language Query**: Ask questions about your data ("what did I do last week?", "how many tasks are overdue?")
 - **Automations/Rules Engine**: Create trigger→action rules (e.g., "when task created with category=work, set priority=high"), configurable in Settings
-- **File Attachments**: Upload files (up to 10MB) to tasks, emails, and notes via local storage
+- **File Attachments**: Upload files (up to 10MB) to tasks, emails, and notes via local storage. The download route sanitizes the stored `original_name` in the `Content-Disposition` header (strips quotes/backslashes/control chars) and emits RFC 5987 `filename*=UTF-8''…`, so a crafted filename can't inject/spoof a header (PS-5).
 - **iCal Export**: Export tasks and scheduled emails as .ics file for Google Calendar, Outlook, etc.
 - **Voice Input**: Web Speech API microphone button on Quick Add and notes (Chrome/Edge)
 - **Location-Based Reminders**: Set location (name + coordinates + radius) on tasks, periodic geofence checking with browser notifications
@@ -64,7 +71,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **Dashboard Inline Actions**: Complete tasks and send emails directly from dashboard
 - **Bulk Actions**: Multi-select mode on todos, emails, and notes for batch operations
 - **System Theme Auto-Detection**: Auto option follows OS dark/light preference via prefers-color-scheme
-- **Backend Validation**: Server-side enum validation for priority, horizon, recurrence rules, note colors, email format
+- **Backend Validation**: Server-side enum validation for priority, horizon, recurrence rules, note colors, email format. The email `PATCH` validates `status` against `VALID_EMAIL_STATUSES` too (not just `POST`), so a client can't force `status='scheduled'` with a past `scheduled_at` to inject a cron-pickable row (PS-7).
 - **Cross-Entity Links**: Link todos, emails, and notes to each other; create todos from notes or emails with auto-linking
 - **Notification System**: Centralized notification check for due tasks, overdue items, streaks at risk, and note reminders; browser push notifications on dashboard load
 - **Analytics Dashboard**: Productivity insights with completion trends, day-of-week analysis, priority/category breakdowns, average completion time, streak leaderboard, productivity score, activity heatmap (90 days), emails sent/notes created counts; filterable by week/month/quarter/year
@@ -79,10 +86,11 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **Rate Limiting**: General (200/15min), auth (10/15min), and AI (20/min) rate limiters
 - **CSRF Protection**: State-changing requests require `X-Requested-With` or JSON/multipart content-type; auto-injected by fetch wrapper in shared JS
 - **Postgres Sessions**: `connect-pg-simple` stores sessions in DB (survives restarts/deploys), auto-creates table, prunes expired sessions every 15 min
-- **Webhooks**: Configure external webhook endpoints to receive event notifications (task created/completed, email sent, streak milestones); test webhooks from Settings
-- **Slack Integration**: Add Slack Incoming Webhook URL in Settings for notifications
+- **Webhooks**: Configure external webhook endpoints to receive event notifications (task created/completed, email sent, streak milestones); test webhooks from Settings. Both webhook URLs (on create) AND the Slack URL (`config.isValidWebhookUrl`, at write-time + before each send) are SSRF-validated: `http(s)` only, and private/loopback/link-local ranges are blocked — including `169.254.0.0/16` (the cloud metadata endpoint `169.254.169.254`), the full `127.0.0.0/8`, RFC-1918, and bracketed IPv6 loopback/ULA (PB-1/PB-5).
+- **Slack Integration**: Add Slack Incoming Webhook URL in Settings for notifications (SSRF-validated — see Webhooks above)
 - **AI API Optimization**: Singleton client reuse, prompt caching via system prompts with `cache_control`, response caching for briefing (10min) and suggestions (5min)
-- **Helmet CSP**: Content Security Policy via helmet with strict directives; all inline event handlers migrated to CSP-safe event delegation (`bindEvents()`/`onDelegate()` pattern)
+- **Helmet CSP**: Content Security Policy via helmet. Inline event handlers are migrated to CSP-safe event delegation and `script-src-attr` defaults to `'none'` (via helmet) so inline `onclick`/`onchange` are blocked. NOTE: `script-src` still carries `'unsafe-inline'` because the page templates emit inline `<script>` blocks — so the CSP is NOT yet an XSS backstop the way Perfin's nonce-based policy is (known gap PB-3; removing `'unsafe-inline'` needs a per-request-nonce migration across all inline scripts). Rely on output-escaping (e.g. `renderMd` scheme-validation, PS-4) for XSS defense meanwhile.
+- **Internal error handling**: route 500s go through `errors.serverError(res, err)`, which logs the real error server-side and returns a generic `"An internal error occurred."` — raw DB/constraint/internal text is never echoed to the client (PB-2, matching Perfin's convention).
 - **Event Delegation**: All pages use `bindEvents()` for static elements and `onDelegate()` for dynamic content — zero inline `onclick`/`onchange` attributes; enables `script-src-attr: 'none'` CSP
 - **Constant-Time Auth**: `crypto.timingSafeEqual` for password/PIN comparison; PIN pad shows fixed 8-dot display regardless of actual PIN length
 - **Keep-Alive**: Self-ping system to prevent Render free tier from sleeping (14-minute interval)
@@ -96,6 +104,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `ai.js` — Anthropic client, callAI, model helpers, response caching
 - `middleware.js` — session, auth, CSRF, helmet, rate limiting
 - `helpers.js` — advanceRecurrence, webhooks, Slack, automations
+- `errors.js` — `serverError(res, err)` shared 500 responder (logs real error, returns generic message; PB-2)
 - `views.js` — pageHead, navBar, themeScript (imports from `views/`)
 - `routes/` — 21 API route modules (auth, todos, emails, notes, contacts, etc.)
 - `pages/` — 9 page rendering modules (dashboard, todos, emails, notes, etc.)
@@ -108,7 +117,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `db/007_enhancements.sql` — custom recurrence, entity links, webhooks, notification preferences
 - `db/008_templates_performance.sql` — todo templates table, performance indexes
 - `uploads/` — local file attachment storage
-- `tests/api.test.js` — unit test suite (181 tests, 52 suites)
+- `tests/api.test.js` — unit test suite (the bulk of the 256 per-sistant tests)
 - `tests/integration.test.js` — integration tests (requires DB, auto-skips without)
 - `Dockerfile` / `docker-compose.yml` — container deployment
 - `fly.toml` — Fly.io config
@@ -119,7 +128,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (181 tests)
+# Run tests (256 tests)
 npm test
 
 # Pages
@@ -274,7 +283,15 @@ GET    /sw.js               # Service worker
 - `PERFIN_URL` — URL to linked Perfin instance (for navigation + dashboard integration)
 
 ## Database
-- Auto-migration runs on server startup — no manual SQL execution needed
+- Auto-migration runs on server startup — no manual SQL execution needed.
+  All migration files run inside ONE transaction (`BEGIN`/`COMMIT`); a failure
+  is FATAL: `runMigrations` rolls back and rethrows, and `start()` exits
+  non-zero rather than booting against a half-applied schema (PS-1, mirrors
+  Perfin's migration guarantee). Migrations are gated on
+  `PERSISTENT_DATABASE_URL || NEON_DATABASE_URL` — the same connection string
+  the pool uses — so a pure-standalone deployment with only
+  `PERSISTENT_DATABASE_URL` set still runs them (previously gated on
+  `NEON_DATABASE_URL` alone, which silently skipped migrations in that config).
 - `user_settings` table: single-row pattern (CHECK id = 1), includes ai_model_* columns
 - `user_settings.perfin_webhook_recipient TEXT`: destination email address for
   inbound `insights_generated` webhooks from Perfin. `routes/perfin.js` reads
@@ -289,6 +306,12 @@ GET    /sw.js               # Service worker
   handler — they share `recipient_email` selection (from
   `perfin_webhook_recipient` → SMTP_FROM → SMTP_USER → draft), differ
   only on the `recipient_name` label and fallback subject.
+- **Inbound webhook replay/expiry guard** (SN-1): after the HMAC signature
+  check, `routes/perfin.js` rejects payloads whose signed `timestamp` is
+  outside a ±5-minute window, and tracks recently-seen signatures in a
+  self-cleaning TTL map so a captured signed POST can't be replayed to
+  re-queue digest emails. Mirrors the SSO nonce-replay protection on the
+  Perfin side.
 
 ## Express version
 Per-sistant is pinned to **express v4** (^4.21.0) to align with the

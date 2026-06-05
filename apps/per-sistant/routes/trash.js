@@ -1,5 +1,7 @@
 const express = require("express");
 
+const { serverError } = require("../errors");
+
 module.exports = function ({ pool }) {
   const router = express.Router();
 
@@ -11,7 +13,7 @@ module.exports = function ({ pool }) {
         pool.query("SELECT id, COALESCE(title, LEFT(content, 50)) as title, deleted_at, 'note' as type FROM notes WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC"),
       ]);
       res.json([...todos.rows, ...emails.rows, ...notes.rows].sort((a, b) => new Date(b.deleted_at) - new Date(a.deleted_at)));
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.post("/api/trash/:type/:id/restore", async (req, res) => {
@@ -22,7 +24,7 @@ module.exports = function ({ pool }) {
       const r = await pool.query(`UPDATE ${table} SET deleted_at = NULL WHERE id = $1 AND deleted_at IS NOT NULL RETURNING id`, [id]);
       if (!r.rows.length) return res.status(404).json({ error: "Not found in trash." });
       res.json({ ok: true, message: "Item restored." });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.delete("/api/trash/:type/:id", async (req, res) => {
@@ -33,7 +35,7 @@ module.exports = function ({ pool }) {
       const r = await pool.query(`DELETE FROM ${table} WHERE id = $1 AND deleted_at IS NOT NULL RETURNING id`, [id]);
       if (!r.rows.length) return res.status(404).json({ error: "Not found in trash." });
       res.json({ ok: true, message: "Permanently deleted." });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.post("/api/trash/empty", async (req, res) => {
@@ -44,7 +46,7 @@ module.exports = function ({ pool }) {
         pool.query("DELETE FROM notes WHERE deleted_at IS NOT NULL"),
       ]);
       res.json({ ok: true, message: "Trash emptied." });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   return router;

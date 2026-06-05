@@ -1,5 +1,7 @@
 const express = require("express");
 
+const { serverError } = require("../errors");
+
 module.exports = function ({ pool, config }) {
   const router = express.Router();
   const { envContacts, EMAIL_REGEX } = config;
@@ -9,7 +11,7 @@ module.exports = function ({ pool, config }) {
       const r = await pool.query("SELECT * FROM contacts ORDER BY name ASC");
       res.json(r.rows);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -24,7 +26,7 @@ module.exports = function ({ pool, config }) {
       res.json(r.rows[0]);
     } catch (err) {
       if (err.code === "23505") return res.status(409).json({ error: "Contact with that name already exists." });
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -42,7 +44,7 @@ module.exports = function ({ pool, config }) {
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       res.json(r.rows[0]);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -52,7 +54,7 @@ module.exports = function ({ pool, config }) {
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       res.json({ ok: true });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -69,7 +71,7 @@ module.exports = function ({ pool, config }) {
       }
       res.status(404).json({ error: "Contact not found." });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -89,7 +91,7 @@ module.exports = function ({ pool, config }) {
         } catch (err) { errors.push({ contact: c, error: err.message }); }
       }
       res.json({ imported: imported.length, errors: errors.length, details: errors.length ? errors : undefined });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   return router;

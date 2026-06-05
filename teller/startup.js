@@ -74,28 +74,13 @@ function startBackgroundJobs() {
   intervalHandles.push(setInterval(async () => {
     if (!isUserActive()) return;
     try {
-      const [accounts, investments] = await Promise.all([
-        pool.query("SELECT name, type, available_balance, current_balance FROM linked_accounts WHERE available_balance IS NOT NULL OR current_balance IS NOT NULL"),
-        pool.query("SELECT name, account_type, balance FROM investment_accounts WHERE is_active = true AND balance != 0"),
-      ]);
-      if (accounts.rows.length === 0 && investments.rows.length === 0) return;
-      let totalAssets = 0, totalLiabilities = 0;
-      const breakdown = { accounts: [], investments: [] };
-      for (const a of accounts.rows) {
-        if (a.type === "credit") {
-          totalLiabilities += parseFloat(a.current_balance || 0);
-          breakdown.accounts.push({ name: a.name, type: a.type, amount: -parseFloat(a.current_balance || 0) });
-        } else {
-          const bal = parseFloat(a.available_balance || a.current_balance || 0);
-          totalAssets += bal;
-          breakdown.accounts.push({ name: a.name, type: a.type, amount: bal });
-        }
-      }
-      for (const inv of investments.rows) {
-        const bal = parseFloat(inv.balance);
-        totalAssets += bal;
-        breakdown.investments.push({ name: inv.name, type: inv.account_type, amount: bal });
-      }
+      // Single source of truth (F1): getNetWorth dedupes Plaid investment
+      // accounts present in both linked_accounts and investment_accounts and
+      // always includes investments, so this hourly snapshot, the balance-sync
+      // snapshot, and POST /api/net-worth/snapshot all agree.
+      const { getNetWorth } = require("./services/financial-queries");
+      const nw = await getNetWorth(pool);
+      if (nw.breakdown.accounts.length === 0 && nw.breakdown.investments.length === 0) return;
       await pool.query(
         `INSERT INTO net_worth_snapshots (total_assets, total_liabilities, net_worth, breakdown, snapshot_date)
          VALUES ($1, $2, $3, $4, CURRENT_DATE)
@@ -104,9 +89,9 @@ function startBackgroundJobs() {
            total_liabilities = EXCLUDED.total_liabilities,
            net_worth = EXCLUDED.net_worth,
            breakdown = EXCLUDED.breakdown`,
-        [totalAssets, totalLiabilities, totalAssets - totalLiabilities, JSON.stringify(breakdown)]
+        [nw.total_assets, nw.total_liabilities, nw.net_worth, JSON.stringify(nw.breakdown)]
       );
-      console.log("Daily net worth snapshot recorded: $" + (totalAssets - totalLiabilities).toFixed(2));
+      console.log("Daily net worth snapshot recorded: $" + nw.net_worth.toFixed(2));
     } catch (err) {
       console.error("Net worth auto-snapshot error:", err.message);
     }
@@ -217,11 +202,17 @@ function startBackgroundJobs() {
     if (!isUserActive()) return;
     try {
       const { getCategorySpendingThisMonth } = require("./services/financial-queries");
-      const month = new Date().getFullYear() + "-" + String(new Date().getMonth() + 1).padStart(2, "0");
+      const now = new Date();
+      const month = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
+      // Rollover applied to this month is the PRIOR month's unused budget (FA-1)
+      // — the snapshot job stores it keyed by prevMonth, so read that row, not
+      // the current month's (which mirrors GET /api/budgets + /alerts).
+      const prevD = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const prevMonth = prevD.getFullYear() + "-" + String(prevD.getMonth() + 1).padStart(2, "0");
       const [budgets, spending, snapshots] = await Promise.all([
         pool.query("SELECT id, category, monthly_limit, rollover_enabled, budget_type, effective_month FROM budgets"),
         getCategorySpendingThisMonth(pool),
-        pool.query("SELECT budget_id, rollover_amount FROM budget_snapshots WHERE month = $1", [month]),
+        pool.query("SELECT budget_id, rollover_amount FROM budget_snapshots WHERE month = $1", [prevMonth]),
       ]);
       if (budgets.rows.length === 0) return;
       const spendMap = {};
@@ -306,7 +297,7 @@ function startBackgroundJobs() {
   intervalHandles.push(setInterval(async () => {
     try {
       const settings = await pool.query(
-        "SELECT auto_sync_enabled, auto_sync_interval_hours, last_auto_sync_at FROM user_settings WHERE id = 1"
+        "SELECT auto_sync_enabled, auto_sync_interval_hours, last_auto_sync_at, last_sync_result FROM user_settings WHERE id = 1"
       );
       const s = settings.rows[0];
       if (!s || !s.auto_sync_enabled) return;
@@ -316,20 +307,49 @@ function startBackgroundJobs() {
       const dueMs = intervalHours * 60 * 60 * 1000;
       if (lastSync && (now - lastSync) < dueMs) return;
 
-      const { syncAllEnrollments, syncAllBalances } = require("./routes/enrollments");
+      const { syncAllEnrollments, syncAllBalances, recordSyncResult } = require("./routes/enrollments");
       const { syncAllPlaidTransactions, syncAllPlaidHoldings } = require("./routes/investments");
-      let txnResult = null, balResult = null, plaidResult = null;
+      let txnResult = null, balResult = null, plaidResult = null, holdingsResult = null;
       try { txnResult = await syncAllEnrollments(); }
       catch (e) { console.error("Auto-sync Teller error:", e.message); }
       try { plaidResult = await syncAllPlaidTransactions(); }
       catch (e) { console.error("Auto-sync Plaid error:", e.message); }
-      try { await syncAllPlaidHoldings(); }
+      try { holdingsResult = await syncAllPlaidHoldings(); }
       catch (e) { console.error("Auto-sync holdings error:", e.message); }
       try { balResult = await syncAllBalances(); }
       catch (e) { console.error("Auto-sync balances error:", e.message); }
 
       await pool.query("UPDATE user_settings SET last_auto_sync_at = now() WHERE id = 1")
         .catch(e => console.error("Auto-sync timestamp update failed:", e.message));
+
+      // Persist a structured sync-result so per-item errors (decryption_failed,
+      // per-institution failures) surface in the Sync Health card even on a
+      // scheduled run nobody is watching (addition D). The auto-sync covers all
+      // providers, so its record is the comprehensive one.
+      const syncRecord = await recordSyncResult([
+        { provider: "teller_txn", result: txnResult },
+        { provider: "plaid_txn", result: plaidResult },
+        { provider: "plaid_holdings", result: holdingsResult },
+        { provider: "teller_balance", result: balResult },
+      ]);
+      // Notify ONLY when the error set changes (new errors appeared) so a
+      // persistent passphrase mismatch doesn't spam a notification every hour.
+      const errSig = (errs) => (errs || []).map(e => `${e.provider}:${e.institution || ""}:${e.error}`).sort().join("|");
+      const prevErrSig = errSig(s.last_sync_result && s.last_sync_result.errors);
+      const newErrSig = errSig(syncRecord.errors);
+      if (syncRecord.errors.length > 0 && newErrSig !== prevErrSig && s.sync_notifications_enabled !== false) {
+        try {
+          const { sendToAll } = require("./routes/notifications");
+          const summary = syncRecord.errors.slice(0, 4)
+            .map(e => `${e.institution || e.provider}: ${e.error}`).join("; ");
+          await sendToAll({
+            title: "Sync error",
+            body: `${syncRecord.errors.length} sync error(s) — ${summary}. See Settings → Sync Health.`,
+            tag: "sync-error",
+            data: { url: "/settings" },
+          });
+        } catch {}
+      }
       const tellerTxns = txnResult ? txnResult.transactions_added : 0;
       const plaidTxns = plaidResult && plaidResult.ok ? plaidResult.transactions_added : 0;
       const syncMsg = `${tellerTxns + plaidTxns} txns (${tellerTxns} Teller, ${plaidTxns} Plaid)` +

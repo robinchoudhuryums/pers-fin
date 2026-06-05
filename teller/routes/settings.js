@@ -27,6 +27,20 @@ router.get("/api/settings", async (_req, res) => {
   }
 });
 
+// Coerce a client-supplied toggle map (insight_modules / dashboard_widgets)
+// to a flat { string: boolean } object (SN-5). Rejects arrays and non-objects
+// and drops nested/over-long keys, so a pathological body can't be persisted
+// verbatim — unlike `target_allocation_pct`, these were stored after only a
+// `typeof === "object"` check (which `[]` and arbitrary nesting pass).
+function sanitizeBoolMap(obj) {
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (typeof k === "string" && k.length > 0 && k.length <= 64) out[k] = !!v;
+  }
+  return out;
+}
+
 // PATCH /api/settings
 router.patch("/api/settings", async (req, res) => {
   const { session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules, pyramid_data_source, pyramid_color_mode, debt_baseline_amount, partner_name } = req.body;
@@ -74,9 +88,9 @@ router.patch("/api/settings", async (req, res) => {
       updates.push("zip_code = $" + idx++);
       values.push(cleaned || null);
     }
-    if (insight_modules !== undefined && typeof insight_modules === "object") {
-      updates.push("insight_modules = $" + idx++);
-      values.push(JSON.stringify(insight_modules));
+    if (insight_modules !== undefined) {
+      const clean = sanitizeBoolMap(insight_modules);
+      if (clean) { updates.push("insight_modules = $" + idx++); values.push(JSON.stringify(clean)); }
     }
     if (pyramid_data_source !== undefined && ["wellness", "debt_payoff", "goal_progress", "spending_categories", "net_worth"].includes(pyramid_data_source)) {
       updates.push("pyramid_data_source = $" + idx++); values.push(pyramid_data_source);
@@ -115,8 +129,8 @@ router.patch("/api/settings", async (req, res) => {
     if (req.body.csv_reminder_enabled !== undefined) {
       updates.push("csv_reminder_enabled = $" + idx++); values.push(!!req.body.csv_reminder_enabled);
     }
-    if (req.body.dashboard_widgets !== undefined && typeof req.body.dashboard_widgets === "object") {
-      updates.push("dashboard_widgets = $" + idx++); values.push(JSON.stringify(req.body.dashboard_widgets));
+    if (req.body.dashboard_widgets !== undefined && sanitizeBoolMap(req.body.dashboard_widgets)) {
+      updates.push("dashboard_widgets = $" + idx++); values.push(JSON.stringify(sanitizeBoolMap(req.body.dashboard_widgets)));
     }
     // Per-sistant integration settings
     if (req.body.persistent_url !== undefined) {
@@ -251,7 +265,7 @@ router.get("/api/data-health", async (_req, res) => {
   }
   try {
     const [settingsRow, teller, plaid, events] = await Promise.all([
-      pool.query("SELECT last_txn_sync_at, last_balance_sync_at, last_auto_sync_at, insights_last_run, last_reconcile_at FROM user_settings WHERE id = 1"),
+      pool.query("SELECT last_txn_sync_at, last_balance_sync_at, last_auto_sync_at, insights_last_run, last_reconcile_at, last_sync_result FROM user_settings WHERE id = 1"),
       pool.query("SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE status = 'DISCONNECTED')::int AS disconnected FROM teller_enrollments").catch(() => ({ rows: [{ total: 0, disconnected: 0 }] })),
       pool.query("SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE status <> 'GOOD')::int AS not_good FROM plaid_items").catch(() => ({ rows: [{ total: 0, not_good: 0 }] })),
       pool.query("SELECT type, title, body, created_at FROM notification_log WHERE type IN ('auto-sync','csv-reminder') OR title ILIKE '%sync%' ORDER BY created_at DESC LIMIT 8").catch(() => ({ rows: [] })),
@@ -278,6 +292,17 @@ router.get("/api/data-health", async (_req, res) => {
     if (s.last_balance_sync_at && freshness.balances.level === "stale") {
       issues.push({ severity: "warning", message: "Balances haven't refreshed in over 24h." });
     }
+    // Per-item errors from the most recent sync run (addition D) — these are the
+    // silent ones: a `decryption_failed` does NOT mark an enrollment
+    // DISCONNECTED (INV-22), so it wouldn't show above. Surface each explicitly.
+    const syncErrors = (s.last_sync_result && Array.isArray(s.last_sync_result.errors)) ? s.last_sync_result.errors : [];
+    for (const e of syncErrors) {
+      const who = e.institution || e.provider || "a sync source";
+      const hint = e.error === "decryption_failed"
+        ? " — TOKEN_ENCRYPTION_PASSPHRASE mismatch; re-link or restore the passphrase"
+        : "";
+      issues.push({ severity: "warning", message: `Last sync error — ${who}: ${e.error}${hint}` });
+    }
 
     res.json({
       thresholds: { fresh_seconds: FRESH_SEC, stale_seconds: STALE_SEC },
@@ -288,6 +313,7 @@ router.get("/api/data-health", async (_req, res) => {
         plaid: { total: p.total, not_good: p.not_good },
       },
       last_reconcile_at: s.last_reconcile_at || null,
+      last_sync_result: s.last_sync_result || null,
       issues,
       recent_events: events.rows,
     });
@@ -495,3 +521,6 @@ router.get("/api/export/tax-report", async (req, res) => {
 });
 
 module.exports = router;
+// Exported for unit testing the toggle-map validation (SN-5). Attached after
+// `module.exports = router` so the router assignment doesn't drop it (INV-19).
+module.exports.sanitizeBoolMap = sanitizeBoolMap;

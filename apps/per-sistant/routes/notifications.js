@@ -4,6 +4,8 @@
 
 const express = require("express");
 
+const { serverError } = require("../errors");
+
 module.exports = function ({ pool }) {
   const router = express.Router();
 
@@ -22,7 +24,7 @@ module.exports = function ({ pool }) {
       streaksAtRisk.rows.forEach(t => notifications.push({ type: "streak_at_risk", title: `${t.title} (${t.streak_count} streak)`, id: t.id, entity: "todo" }));
       reminders.rows.forEach(n => notifications.push({ type: "reminder", title: n.title, id: n.id, entity: "note" }));
       res.json({ notifications, counts: { due_today: dueSoon.rows.length, overdue: overdue.rows.length, streaks_at_risk: streaksAtRisk.rows.length, reminders: reminders.rows.length } });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   return router;

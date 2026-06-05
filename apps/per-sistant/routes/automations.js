@@ -4,6 +4,8 @@
 
 const express = require("express");
 
+const { serverError } = require("../errors");
+
 module.exports = function ({ pool, config }) {
   const router = express.Router();
   const { VALID_TRIGGERS, VALID_ACTIONS } = config;
@@ -12,7 +14,7 @@ module.exports = function ({ pool, config }) {
     try {
       const r = await pool.query("SELECT * FROM automations ORDER BY created_at DESC");
       res.json(r.rows);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.post("/api/automations", async (req, res) => {
@@ -26,7 +28,7 @@ module.exports = function ({ pool, config }) {
         [name, trigger_type, conditions || {}, action_type, action_data || {}]
       );
       res.json(r.rows[0]);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.patch("/api/automations/:id", async (req, res) => {
@@ -46,7 +48,7 @@ module.exports = function ({ pool, config }) {
       const r = await pool.query(`UPDATE automations SET ${fields.join(", ")} WHERE id = $${idx} RETURNING *`, params);
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       res.json(r.rows[0]);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.delete("/api/automations/:id", async (req, res) => {
@@ -54,7 +56,7 @@ module.exports = function ({ pool, config }) {
       const r = await pool.query("DELETE FROM automations WHERE id = $1 RETURNING id", [req.params.id]);
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       res.json({ ok: true });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   return router;

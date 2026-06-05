@@ -4,6 +4,8 @@ const { loadKeepAliveConfig } = require("../services/keep-alive");
 
 const VALID_PALETTES = ["copper", "indigo", "forest", "slate", "plum", "mono"];
 
+const { serverError } = require("../errors");
+
 module.exports = function ({ pool, config }) {
   const router = express.Router();
   const { AUTH_MODE, PERFIN_URL } = config;
@@ -34,7 +36,7 @@ module.exports = function ({ pool, config }) {
       settings.palette = settings.palette || "copper";
       res.json(settings);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -54,7 +56,14 @@ module.exports = function ({ pool, config }) {
         fields.push(`palette = $${idx++}`); params.push(palette);
       }
       if (dashboard_layout !== undefined) { fields.push(`dashboard_layout = $${idx++}`); params.push(JSON.stringify(dashboard_layout)); }
-      if (slack_webhook_url !== undefined) { fields.push(`slack_webhook_url = $${idx++}`); params.push(slack_webhook_url || null); }
+      if (slack_webhook_url !== undefined) {
+        // Reject an SSRF-prone Slack URL at write-time (PB-5), parallel to how
+        // webhook URLs are validated on create. Empty clears it.
+        if (slack_webhook_url && !config.isValidWebhookUrl(slack_webhook_url)) {
+          return res.status(400).json({ error: "Invalid Slack webhook URL. Must be a public http/https URL." });
+        }
+        fields.push(`slack_webhook_url = $${idx++}`); params.push(slack_webhook_url || null);
+      }
       if (keep_alive_enabled !== undefined) { fields.push(`keep_alive_enabled = $${idx++}`); params.push(!!keep_alive_enabled); }
       if (keep_alive_start !== undefined) { fields.push(`keep_alive_start = $${idx++}`); params.push(parseInt(keep_alive_start) || 0); }
       if (keep_alive_end !== undefined) { fields.push(`keep_alive_end = $${idx++}`); params.push(parseInt(keep_alive_end) || 0); }
@@ -65,7 +74,7 @@ module.exports = function ({ pool, config }) {
       if (session_timeout_minutes && req.session) req.session.timeoutMinutes = session_timeout_minutes;
       res.json(r.rows[0]);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -73,7 +82,7 @@ module.exports = function ({ pool, config }) {
     try {
       const [todos, emails, notes] = await Promise.all([
         pool.query("SELECT count(*) FILTER (WHERE NOT completed) as pending, count(*) FILTER (WHERE completed) as done, count(*) FILTER (WHERE NOT completed AND priority = 'urgent') as urgent, count(*) FILTER (WHERE NOT completed AND due_date <= CURRENT_DATE) as overdue FROM todos WHERE deleted_at IS NULL"),
-        pool.query("SELECT count(*) FILTER (WHERE status = 'draft') as drafts, count(*) FILTER (WHERE status = 'scheduled') as scheduled, count(*) FILTER (WHERE status = 'sent') as sent FROM emails WHERE deleted_at IS NULL"),
+        pool.query("SELECT count(*) FILTER (WHERE status = 'draft') as drafts, count(*) FILTER (WHERE status = 'scheduled') as scheduled, count(*) FILTER (WHERE status = 'sent') as sent, count(*) FILTER (WHERE status = 'failed') as failed FROM emails WHERE deleted_at IS NULL"),
         pool.query("SELECT count(*) as total FROM notes WHERE deleted_at IS NULL"),
       ]);
       res.json({
@@ -82,7 +91,7 @@ module.exports = function ({ pool, config }) {
         notes: notes.rows[0],
       });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 

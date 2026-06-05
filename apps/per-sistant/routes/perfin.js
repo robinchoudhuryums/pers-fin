@@ -1,6 +1,18 @@
 const express = require("express");
 const crypto = require("crypto");
 
+// Replay/expiry guard for inbound Perfin webhooks (SN-1). Perfin signs a
+// payload that includes a `timestamp`; reject anything outside a 5-minute
+// window, and track recently-seen signatures in a self-cleaning TTL map so a
+// captured signed POST can't be replayed to re-queue digest emails. Mirrors
+// the SSO nonce-replay protection on the Perfin side.
+const WEBHOOK_REPLAY_WINDOW_MS = 5 * 60 * 1000;
+const _seenWebhookSigs = new Map();
+setInterval(() => {
+  const cutoff = Date.now() - 2 * WEBHOOK_REPLAY_WINDOW_MS;
+  for (const [sig, ts] of _seenWebhookSigs) if (ts < cutoff) _seenWebhookSigs.delete(sig);
+}, WEBHOOK_REPLAY_WINDOW_MS).unref();
+
 module.exports = function ({ pool, config }) {
   const router = express.Router();
   const PERFIN_URL = config.PERFIN_URL;
@@ -108,6 +120,17 @@ module.exports = function ({ pool, config }) {
       valid = a.length === b.length && crypto.timingSafeEqual(a, b);
     } catch { valid = false; }
     if (!valid) return res.status(401).json({ error: "Invalid signature." });
+
+    // Replay/expiry guard (SN-1): the signed body carries a `timestamp`.
+    // Reject stale/future timestamps and signatures we've already processed.
+    const ts = Date.parse((req.body && req.body.timestamp) || "");
+    if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > WEBHOOK_REPLAY_WINDOW_MS) {
+      return res.status(401).json({ error: "Webhook timestamp missing, stale, or in the future." });
+    }
+    if (_seenWebhookSigs.has(expected)) {
+      return res.status(401).json({ error: "Webhook already processed (replay)." });
+    }
+    _seenWebhookSigs.set(expected, Date.now());
 
     const { event, data = {} } = req.body || {};
     if (event === "test") {

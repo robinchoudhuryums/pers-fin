@@ -5,6 +5,8 @@
 const express = require("express");
 const { advanceRecurrence, fireWebhooks, sendSlackNotification, runAutomations } = require("../helpers");
 
+const { serverError } = require("../errors");
+
 module.exports = function ({ pool, config }) {
   const router = express.Router();
   const { VALID_PRIORITIES, VALID_HORIZONS, VALID_RECURRENCE_RULES, MAX_PAGINATION_LIMIT, MAX_TITLE_LENGTH, MAX_BODY_LENGTH } = config;
@@ -30,7 +32,7 @@ module.exports = function ({ pool, config }) {
       const r = await pool.query(`SELECT * FROM todos ${clause} ORDER BY completed ASC, sort_order ASC, CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, created_at DESC${pagination}`, params);
       res.json(r.rows);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -51,7 +53,7 @@ module.exports = function ({ pool, config }) {
       fireWebhooks('todo_created', r.rows[0]).catch(() => {});
       res.json(r.rows[0]);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -93,7 +95,7 @@ module.exports = function ({ pool, config }) {
       }
       res.json(r.rows[0]);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -103,7 +105,7 @@ module.exports = function ({ pool, config }) {
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       res.json({ ok: true });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -115,7 +117,7 @@ module.exports = function ({ pool, config }) {
     try {
       const r = await pool.query("SELECT * FROM subtasks WHERE todo_id = $1 ORDER BY sort_order, id", [req.params.id]);
       res.json(r.rows);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.post("/api/todos/:id/subtasks", async (req, res) => {
@@ -124,7 +126,7 @@ module.exports = function ({ pool, config }) {
       if (!title) return res.status(400).json({ error: "Title is required." });
       const r = await pool.query("INSERT INTO subtasks (todo_id, title) VALUES ($1, $2) RETURNING *", [req.params.id, title]);
       res.json(r.rows[0]);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.patch("/api/subtasks/:id", async (req, res) => {
@@ -139,7 +141,7 @@ module.exports = function ({ pool, config }) {
       const r = await pool.query(`UPDATE subtasks SET ${fields.join(", ")} WHERE id = $${idx} RETURNING *`, params);
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       res.json(r.rows[0]);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.delete("/api/subtasks/:id", async (req, res) => {
@@ -147,7 +149,7 @@ module.exports = function ({ pool, config }) {
       const r = await pool.query("DELETE FROM subtasks WHERE id = $1 RETURNING id", [req.params.id]);
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       res.json({ ok: true });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   // ============================================================================
@@ -190,7 +192,7 @@ module.exports = function ({ pool, config }) {
       await client.query("COMMIT");
       fireWebhooks('todo_completed', todo).catch(() => {});
       res.json({ completed: todo, next: n.rows[0], streak: newStreak, best_streak: newBest });
-    } catch (err) { await client.query("ROLLBACK").catch(() => {}); res.status(500).json({ error: err.message }); }
+    } catch (err) { await client.query("ROLLBACK").catch(() => {}); serverError(res, err); }
     finally { client.release(); }
   });
 
@@ -215,7 +217,7 @@ module.exports = function ({ pool, config }) {
          todo.streak_count || 0, todo.best_streak || 0, todo.last_streak_date, (todo.skipped_count || 0) + 1]
       );
       res.json({ skipped: todo, next: n.rows[0] });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   // Snooze recurring task (postpone due date)
@@ -226,7 +228,7 @@ module.exports = function ({ pool, config }) {
       const r = await pool.query("UPDATE todos SET snoozed_until = $1, due_date = $1 WHERE id = $2 AND deleted_at IS NULL RETURNING *", [until, req.params.id]);
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       res.json(r.rows[0]);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   // ============================================================================
@@ -244,7 +246,7 @@ module.exports = function ({ pool, config }) {
         "SELECT DISTINCT ON (COALESCE(recurrence_parent_id, id)) COALESCE(recurrence_parent_id, id) as chain_id, title, best_streak, streak_count, recurrence_rule FROM todos WHERE recurring = true AND best_streak > 0 ORDER BY COALESCE(recurrence_parent_id, id), best_streak DESC"
       );
       res.json({ active: active.rows, top_streaks: top.rows });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   // ============================================================================
@@ -258,7 +260,7 @@ module.exports = function ({ pool, config }) {
         pool.query(`SELECT td.id as dep_id, td.todo_id, t.title, t.completed FROM task_dependencies td JOIN todos t ON t.id = td.todo_id WHERE td.depends_on_id = $1`, [req.params.id]),
       ]);
       res.json({ blocked_by: blockedBy.rows, blocking: blocking.rows });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.post("/api/todos/:id/dependencies", async (req, res) => {
@@ -281,7 +283,7 @@ module.exports = function ({ pool, config }) {
       );
       if (!r.rows.length) return res.status(409).json({ error: "Dependency already exists." });
       res.json(r.rows[0]);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.delete("/api/dependencies/:id", async (req, res) => {
@@ -289,7 +291,7 @@ module.exports = function ({ pool, config }) {
       const r = await pool.query("DELETE FROM task_dependencies WHERE id = $1 RETURNING id", [req.params.id]);
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       res.json({ ok: true });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   // ============================================================================
@@ -303,7 +305,7 @@ module.exports = function ({ pool, config }) {
       const dbCats = r.rows.map(row => row.category);
       const all = [...new Set([...defaults, ...dbCats])].sort();
       res.json(all);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   // ============================================================================
@@ -326,7 +328,7 @@ module.exports = function ({ pool, config }) {
         throw err;
       } finally { client.release(); }
       res.json({ ok: true });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   return router;

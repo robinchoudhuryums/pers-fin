@@ -95,12 +95,44 @@ function findContradictions(text) {
   return contradictions;
 }
 
+// Escape a string for safe insertion into a RegExp.
+function reEscape(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
+// True when `needle` appears as a whole word/phrase in `haystack` (case-
+// insensitive). Word boundaries prevent short tokens (a 3-char category name
+// or known merchant) from substring-matching unrelated text (AI-2/AI-4).
+function wordMatch(haystack, needle) {
+  if (!needle) return false;
+  return new RegExp("\\b" + reEscape(needle) + "\\b", "i").test(haystack);
+}
+
+// Decide whether a claimed entity name corresponds to something in the known
+// set. Requires an exact match OR a whole-word containment in either direction
+// where the shorter token is substantial (>=4 chars) — so a tiny known/claimed
+// name ("car" goal, "ira") can't act as a universal substring wildcard that
+// makes every claimed entity look "known" (AI-4).
+function entityKnown(claimedLower, knownSet) {
+  for (const k of knownSet) {
+    if (!k) continue;
+    if (k === claimedLower) return true;
+    const shorter = k.length <= claimedLower.length ? k : claimedLower;
+    const longer = k.length <= claimedLower.length ? claimedLower : k;
+    if (shorter.length < 4) continue;
+    if (wordMatch(longer, shorter)) return true;
+  }
+  return false;
+}
+
 /**
  * Run all audit tiers against an insight text.
  * Returns { findings: [...], summary: { critical, warning, info } }
  */
 async function auditInsight(insightText, insightId) {
   const findings = [];
+  // AI-5: track tiers that threw so a swallowed DB error in a tier isn't later
+  // mistaken for "audited and clean". Any incomplete tier marks the whole run
+  // incomplete, which getAuditAccuracy excludes from the clean/total tally.
+  let incomplete = false;
 
   // ---- Tier 1: Arithmetic Validation ----
   try {
@@ -130,19 +162,27 @@ async function auditInsight(insightText, insightId) {
     const dollarClaims = extractDollarClaims(insightText);
     for (const claim of dollarClaims) {
       const ctx = claim.context.toLowerCase();
-      // Check against category spending
+      // Find the single BEST (longest = most specific) category whose name
+      // appears as a whole word in the claim's context, and emit at most one
+      // finding per dollar claim — word boundaries stop short category names
+      // substring-matching unrelated text (AI-2), and the single-best choice
+      // stops one claim producing several conflicting findings (AI-3).
+      let bestCat = null, bestActual = null;
       for (const [cat, actual] of Object.entries(actualCategories)) {
-        if (ctx.includes(cat.toLowerCase()) && Math.abs(claim.value - actual) > 0.01) {
-          const pctOff = actual > 0 ? Math.abs(claim.value - actual) / actual : 1;
-          if (pctOff > 0.20) {
-            findings.push({ severity: "critical", tier: 1, check: "arithmetic",
-              claim: `$${claim.value.toFixed(2)} for ${cat}`, expected: `$${actual.toFixed(2)}`,
-              pct_off: Math.round(pctOff * 100), context: claim.context });
-          } else if (pctOff > 0.05) {
-            findings.push({ severity: "warning", tier: 1, check: "arithmetic",
-              claim: `$${claim.value.toFixed(2)} for ${cat}`, expected: `$${actual.toFixed(2)}`,
-              pct_off: Math.round(pctOff * 100), context: claim.context });
-          }
+        if (wordMatch(ctx, cat) && (bestCat === null || cat.length > bestCat.length)) {
+          bestCat = cat; bestActual = actual;
+        }
+      }
+      if (bestCat !== null && Math.abs(claim.value - bestActual) > 0.01) {
+        const pctOff = bestActual > 0 ? Math.abs(claim.value - bestActual) / bestActual : 1;
+        if (pctOff > 0.20) {
+          findings.push({ severity: "critical", tier: 1, check: "arithmetic",
+            claim: `$${claim.value.toFixed(2)} for ${bestCat}`, expected: `$${bestActual.toFixed(2)}`,
+            pct_off: Math.round(pctOff * 100), context: claim.context });
+        } else if (pctOff > 0.05) {
+          findings.push({ severity: "warning", tier: 1, check: "arithmetic",
+            claim: `$${claim.value.toFixed(2)} for ${bestCat}`, expected: `$${bestActual.toFixed(2)}`,
+            pct_off: Math.round(pctOff * 100), context: claim.context });
         }
       }
       // Check subscription total claims
@@ -174,6 +214,7 @@ async function auditInsight(insightText, insightId) {
     }
   } catch (err) {
     console.error("Audit Tier 1 error:", err.message);
+    incomplete = true;
   }
 
   // ---- Tier 2: Entity Existence ----
@@ -191,7 +232,10 @@ async function auditInsight(insightText, insightId) {
 
       for (const name of merchantNames) {
         const lower = name.toLowerCase();
-        const exists = [...known].some(k => k.includes(lower) || lower.includes(k));
+        // Whole-word match with a min-length guard (AI-4) instead of the old
+        // bidirectional substring check, which let any short known entity make
+        // every claimed name look "known" (so hallucinations slipped through).
+        const exists = entityKnown(lower, known);
         if (!exists) {
           findings.push({ severity: "warning", tier: 2, check: "entity_existence",
             claim: name, expected: "Should exist in transactions/goals/subscriptions",
@@ -201,6 +245,7 @@ async function auditInsight(insightText, insightId) {
     }
   } catch (err) {
     console.error("Audit Tier 2 error:", err.message);
+    incomplete = true;
   }
 
   // ---- Tier 3: Trend Direction Verification ----
@@ -214,19 +259,30 @@ async function auditInsight(insightText, insightId) {
         const actualDirection = latest > prior ? "up" : "down";
 
         for (const claim of trendClaims) {
-          if (claim.category.toLowerCase().includes("spending") || claim.category.toLowerCase().includes("total")) {
-            if (claim.direction !== actualDirection && Math.abs(latest - prior) / Math.max(prior, 1) > 0.05) {
-              findings.push({ severity: "warning", tier: 3, check: "trend_direction",
-                claim: `${claim.category} is ${claim.direction}`,
-                expected: `Actual direction is ${actualDirection} ($${prior.toFixed(0)} → $${latest.toFixed(0)})`,
-                context: claim.context });
-            }
+          // Only verify claims about TOTAL/overall spending against the monthly
+          // total. A category-specific claim ("Dining spending is down") was
+          // previously matched here (its text contains "spending") and checked
+          // against the TOTAL direction, producing false trend findings. We have
+          // no reliable per-category monthly series in this tier, so we skip
+          // category-specific claims rather than mis-flag them (AI-1). A claim is
+          // "total" only if removing the spend/cost noun leaves nothing or a
+          // total/overall qualifier.
+          const core = claim.category.toLowerCase()
+            .replace(/\b(spending|spend|costs?|expenses?)\b/g, "").trim();
+          const isTotalClaim = core === "" || core === "total" || core === "overall" || core === "aggregate";
+          if (!isTotalClaim) continue;
+          if (claim.direction !== actualDirection && Math.abs(latest - prior) / Math.max(prior, 1) > 0.05) {
+            findings.push({ severity: "warning", tier: 3, check: "trend_direction",
+              claim: `${claim.category} is ${claim.direction}`,
+              expected: `Actual total spending direction is ${actualDirection} ($${prior.toFixed(0)} → $${latest.toFixed(0)})`,
+              context: claim.context });
           }
         }
       }
     }
   } catch (err) {
     console.error("Audit Tier 3 error:", err.message);
+    incomplete = true;
   }
 
   // ---- Tier 4: Consistency (self-contradictions) ----
@@ -240,6 +296,7 @@ async function auditInsight(insightText, insightId) {
     }
   } catch (err) {
     console.error("Audit Tier 4 error:", err.message);
+    incomplete = true;
   }
 
   // Summarize
@@ -257,7 +314,22 @@ async function auditInsight(insightText, insightId) {
     } catch {}
   }
 
-  return { findings, summary };
+  // AI-5/AI-6: stamp the run as audited so getAuditAccuracy can tell a
+  // genuinely-clean run (audited, zero findings) apart from one that was never
+  // audited or whose tiers silently failed. audit_incomplete flags swallowed
+  // tier errors so those runs are excluded from the accuracy denominator.
+  if (insightId != null) {
+    try {
+      await pool.query(
+        "UPDATE financial_insights SET audited_at = now(), audit_incomplete = $1 WHERE id = $2",
+        [incomplete, insightId]
+      );
+    } catch (err) {
+      console.error("Audit completion marker update error:", err.message);
+    }
+  }
+
+  return { findings, summary, incomplete };
 }
 
 /**
@@ -297,28 +369,38 @@ async function getAuditStats(limit = 10) {
  */
 async function getAuditAccuracy(days = 90) {
   try {
-    // Count audited insight runs (distinct insight_id with at least one audit
-    // row) and runs without any critical finding.
+    // AI-6: "audited" means the run was actually audited to completion —
+    // audited_at IS NOT NULL AND NOT audit_incomplete. A run with zero
+    // ai_audit_log rows that was genuinely audited (audited_at set) counts as
+    // clean; a run that was never audited or whose tiers silently failed is
+    // EXCLUDED from the denominator (surfaced separately as incomplete_runs)
+    // rather than silently inflating accuracy as a phantom "clean" run.
     const runs = await pool.query(`
       WITH recent_audits AS (
         SELECT al.insight_id, MAX(CASE WHEN al.severity = 'critical' THEN 1 ELSE 0 END) AS has_critical
         FROM ai_audit_log al
-        JOIN financial_insights fi ON fi.id = al.insight_id AND fi.entry_type = 'insight'
         WHERE al.created_at >= CURRENT_DATE - make_interval(days => $1)
         GROUP BY al.insight_id
       ),
-      audited_inserted AS (
+      audited_runs AS (
         SELECT id FROM financial_insights
         WHERE entry_type = 'insight'
           AND created_at >= CURRENT_DATE - make_interval(days => $1)
+          AND audited_at IS NOT NULL
+          AND COALESCE(audit_incomplete, false) = false
       )
       SELECT
-        (SELECT COUNT(*) FROM audited_inserted) AS total_runs,
-        COALESCE(SUM(CASE WHEN ra.has_critical = 0 THEN 1 ELSE 0 END), 0) AS clean_runs
-      FROM audited_inserted ai
-      LEFT JOIN recent_audits ra ON ra.insight_id = ai.id
+        (SELECT COUNT(*) FROM audited_runs) AS total_runs,
+        COALESCE(SUM(CASE WHEN COALESCE(ra.has_critical, 0) = 0 THEN 1 ELSE 0 END), 0) AS clean_runs,
+        (SELECT COUNT(*) FROM financial_insights
+          WHERE entry_type = 'insight'
+            AND created_at >= CURRENT_DATE - make_interval(days => $1)
+            AND (audited_at IS NULL OR COALESCE(audit_incomplete, false) = true)
+        ) AS incomplete_runs
+      FROM audited_runs ar
+      LEFT JOIN recent_audits ra ON ra.insight_id = ar.id
     `, [days]);
-    const totals = runs.rows[0] || { total_runs: 0, clean_runs: 0 };
+    const totals = runs.rows[0] || { total_runs: 0, clean_runs: 0, incomplete_runs: 0 };
 
     const sev = await pool.query(`
       SELECT severity, COUNT(*) AS cnt
@@ -342,10 +424,12 @@ async function getAuditAccuracy(days = 90) {
 
     const totalRuns = parseInt(totals.total_runs, 10) || 0;
     const cleanRuns = parseInt(totals.clean_runs, 10) || 0;
+    const incompleteRuns = parseInt(totals.incomplete_runs, 10) || 0;
     return {
       window_days: days,
       total_audited_runs: totalRuns,
       clean_runs: cleanRuns,
+      incomplete_runs: incompleteRuns,
       accuracy_pct: totalRuns > 0 ? Math.round((cleanRuns / totalRuns) * 1000) / 10 : null,
       findings_by_severity,
       findings_by_tier,
@@ -356,6 +440,7 @@ async function getAuditAccuracy(days = 90) {
       window_days: days,
       total_audited_runs: 0,
       clean_runs: 0,
+      incomplete_runs: 0,
       accuracy_pct: null,
       findings_by_severity: { critical: 0, warning: 0, info: 0 },
       findings_by_tier: { tier1: 0, tier2: 0, tier3: 0, tier4: 0 },
@@ -363,4 +448,4 @@ async function getAuditAccuracy(days = 90) {
   }
 }
 
-module.exports = { auditInsight, getAuditStats, getAuditAccuracy, extractDollarClaims, extractPercentClaims, extractMerchantNames, extractTrendClaims, findContradictions };
+module.exports = { auditInsight, getAuditStats, getAuditAccuracy, extractDollarClaims, extractPercentClaims, extractMerchantNames, extractTrendClaims, findContradictions, wordMatch, entityKnown };

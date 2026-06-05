@@ -4,6 +4,8 @@
 
 const express = require("express");
 
+const { serverError } = require("../errors");
+
 module.exports = function ({ pool, config, helpers }) {
   const router = express.Router();
   const { VALID_WEBHOOK_EVENTS, isValidWebhookUrl, validateWebhookHeaders } = config;
@@ -13,7 +15,7 @@ module.exports = function ({ pool, config, helpers }) {
     try {
       const r = await pool.query("SELECT * FROM webhooks ORDER BY created_at DESC");
       res.json(r.rows);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.post("/api/webhooks", async (req, res) => {
@@ -33,7 +35,7 @@ module.exports = function ({ pool, config, helpers }) {
         [name, url, events || [], headers || {}]
       );
       res.json(r.rows[0]);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.patch("/api/webhooks/:id", async (req, res) => {
@@ -55,7 +57,7 @@ module.exports = function ({ pool, config, helpers }) {
       const r = await pool.query(`UPDATE webhooks SET ${fields.join(", ")} WHERE id = $${idx} RETURNING *`, params);
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       res.json(r.rows[0]);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.delete("/api/webhooks/:id", async (req, res) => {
@@ -63,7 +65,7 @@ module.exports = function ({ pool, config, helpers }) {
       const r = await pool.query("DELETE FROM webhooks WHERE id = $1 RETURNING id", [req.params.id]);
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       res.json({ ok: true });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   // Test a webhook
@@ -75,7 +77,7 @@ module.exports = function ({ pool, config, helpers }) {
       const payload = { event: "test", timestamp: new Date().toISOString(), message: "Per-sistant webhook test" };
       const result = await sendWebhook(webhook, payload);
       res.json({ ok: result.ok, status: result.status });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   return router;

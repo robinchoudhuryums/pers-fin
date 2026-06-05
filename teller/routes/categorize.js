@@ -148,11 +148,12 @@ async function runCategorize() {
     if (afterTellerMap.length === 0) {
       const leftover = await pool.query(
         `SELECT COUNT(*) AS uncategorized FROM transactions
-         WHERE (
-           category IS NULL
-           OR category = '{}'
-           OR NOT (category[1] = ANY($1::text[]))
-         )
+         WHERE user_category IS NULL
+           AND (
+             category IS NULL
+             OR category = '{}'
+             OR NOT (category[1] = ANY($1::text[]))
+           )
            AND pending = false AND amount > 0`,
         [OUR_CATEGORIES_PG]
       );
@@ -260,6 +261,32 @@ async function runCategorize() {
     }
     const categories = toolBlock.input.categories;
 
+    // Record token usage BEFORE applying categories (DC-2). The AI call is
+    // already billed by this point; recording the spend first ensures it counts
+    // against INSIGHTS_MONTHLY_BUDGET_CENTS even if the apply loop throws partway
+    // (the cost is independent of how many rows actually get updated). Earlier
+    // code wrote this AFTER the loop, so a mid-loop failure left the spend
+    // uncharged and the cap under-counted. The entry_type discriminator lets the
+    // dashboard hide these rows while the cost-cap queries still see them.
+    const usage = message.usage || {};
+    const tokensUsedForRow = (usage.input_tokens || 0) + (usage.output_tokens || 0);
+    const actualModel = message.model || modelId;
+    await pool.query(
+      `INSERT INTO financial_insights
+         (insight_text, model_used, tokens_used, input_tokens, output_tokens,
+          cache_read_tokens, cache_creation_tokens, entry_type)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'categorize')`,
+      [
+        `[ML Categorization] AI returned ${categories.length} categorization(s)`,
+        actualModel,
+        tokensUsedForRow,
+        usage.input_tokens || 0,
+        usage.output_tokens || 0,
+        usage.cache_read_input_tokens || 0,
+        usage.cache_creation_input_tokens || 0,
+      ]
+    ).catch(err => console.error("categorize usage tracking insert failed:", err.message));
+
     // Apply AI-assigned categories to the rows that made it past the
     // Teller-map fast path (afterTellerMap is the list Claude saw).
     let updated = 0;
@@ -276,31 +303,6 @@ async function runCategorize() {
       );
       updated++;
     }
-
-    // Record token usage so the categorize spend counts against the shared
-    // INSIGHTS_MONTHLY_BUDGET_CENTS cap. Earlier code skipped the write to
-    // avoid shadowing the user-facing "AI Insights" feed — but the cap was
-    // checked-not-charged, so categorize was effectively uncapped. The
-    // entry_type discriminator lets the dashboard hide these rows while the
-    // cost-cap queries still see them.
-    const usage = message.usage || {};
-    const tokensUsedForRow = (usage.input_tokens || 0) + (usage.output_tokens || 0);
-    const actualModel = message.model || modelId;
-    await pool.query(
-      `INSERT INTO financial_insights
-         (insight_text, model_used, tokens_used, input_tokens, output_tokens,
-          cache_read_tokens, cache_creation_tokens, entry_type)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'categorize')`,
-      [
-        `[ML Categorization] ${updated} txn(s) categorized by AI`,
-        actualModel,
-        tokensUsedForRow,
-        usage.input_tokens || 0,
-        usage.output_tokens || 0,
-        usage.cache_read_input_tokens || 0,
-        usage.cache_creation_input_tokens || 0,
-      ]
-    ).catch(err => console.error("categorize usage tracking insert failed:", err.message));
 
     const leftoverCount = await pool.query(
       `SELECT COUNT(*) AS uncategorized FROM transactions

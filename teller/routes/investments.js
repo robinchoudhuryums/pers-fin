@@ -707,9 +707,14 @@ async function syncAllPlaidBalances() {
   const client = getPlaidClient();
   if (!client) return { ok: true, items_synced: 0, accounts_updated: 0, errors: [] };
   const items = await pool.query(
+    // status = 'GOOD' so CSV virtual items (status='CSV', placeholder token)
+    // aren't sent to Plaid's accountsGet every balance sync — they'd 400 and
+    // surface as a recurring spurious error + wasted call (F3). Matches the
+    // filter syncAllPlaidTransactions already applies.
     `SELECT id, institution_name,
             pgp_sym_decrypt(access_token_enc, $1) AS access_token
-     FROM plaid_items`,
+     FROM plaid_items
+     WHERE status = 'GOOD'`,
     [ENCRYPTION_PASSPHRASE]
   );
   let accountsUpdated = 0;
@@ -814,8 +819,6 @@ async function syncPlaidLiabilities(client, accessToken, plaidItemDbId) {
     // response at link time). If the row doesn't exist, skip silently.
     for (const loan of [...student, ...mortgage]) {
       if (!loan.account_id) continue;
-      const apr = loan.interest_rate_percentage ??
-                  loan.origination_principal_amount ? null : null;
       await pool.query(
         `UPDATE linked_accounts SET
            apr = COALESCE($1, apr),
@@ -1433,10 +1436,12 @@ router.get("/api/investments/performance", async (_req, res) => {
 // This endpoint pre-emptively copies those overrides to the matching
 // Plaid transactions so the manual override work isn't lost.
 //
-// Match heuristic: same date ±2 days, same amount (exact match — money
-// doesn't approximate), same merchant signature (case-insensitive substring).
-// Conservative on purpose — a Plaid transaction only gets the override if
-// there's exactly ONE Teller candidate that matches.
+// Match heuristic: same amount (exact — money doesn't approximate) within a
+// ±2-day window. Merchant text is NOT compared (Teller and Plaid normalize
+// merchant strings differently, so requiring a match would miss legitimate
+// duplicates) — instead the safety comes from being conservative: a Plaid
+// transaction only inherits the override when EXACTLY ONE Teller candidate
+// matches that amount+date window (>1 → ambiguous → skipped) (F5).
 
 router.get("/api/plaid/migrate-preview", async (_req, res) => {
   try {

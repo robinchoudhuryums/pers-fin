@@ -6,6 +6,8 @@ const express = require("express");
 const { callAI, getAIModelForFeature, getCached, setCache, isAIAvailable } = require("../ai");
 const { VALID_AI_FEATURES } = require("../config");
 
+const { serverError } = require("../errors");
+
 module.exports = function ({ pool }) {
   const router = express.Router();
 
@@ -27,7 +29,7 @@ module.exports = function ({ pool }) {
       try { const draft = JSON.parse(jsonMatch[0]); res.json(draft); }
       catch { return res.status(500).json({ error: "Invalid AI response format." }); }
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -49,7 +51,7 @@ module.exports = function ({ pool }) {
       try { const subtasks = JSON.parse(jsonMatch[0]); res.json({ subtasks }); }
       catch { return res.status(500).json({ error: "Invalid AI response format." }); }
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -72,7 +74,7 @@ module.exports = function ({ pool }) {
       try { const parsed = JSON.parse(jsonMatch[0]); res.json(parsed); }
       catch { return res.status(500).json({ error: "Invalid AI response format." }); }
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -91,7 +93,7 @@ module.exports = function ({ pool }) {
         `You are a productivity coach. Write a brief, encouraging weekly review summary (2-4 sentences) based on the user's stats. Be conversational and motivating. Highlight accomplishments. If there are overdue tasks, gently remind. Don't use emojis.`);
       res.json({ summary: text });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -110,7 +112,7 @@ module.exports = function ({ pool }) {
         `You are an email tone adjustment assistant. Rewrite the given email body with the requested tone. Keep the same meaning and content but adjust the language.\n\nReturn ONLY the rewritten email body text (plain text, no JSON wrapping, no quotes).\nValid tones: more formal, more casual, shorter, friendlier, more direct.`);
       res.json({ body: text });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -140,7 +142,7 @@ module.exports = function ({ pool }) {
       setCache(cacheKey, text);
       res.json({ briefing: text });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -162,7 +164,7 @@ module.exports = function ({ pool }) {
       try { const tags = JSON.parse(jsonMatch[0]); res.json({ tags }); }
       catch { return res.status(500).json({ error: "Invalid AI response format." }); }
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      serverError(res, err);
     }
   });
 
@@ -193,7 +195,7 @@ module.exports = function ({ pool }) {
       catch { return res.json({ suggestions: null, error: "Invalid AI response format." }); }
       setCache(suggestCacheKey, suggestions);
       res.json({ suggestions });
-    } catch (err) { res.json({ suggestions: null, error: err.message }); }
+    } catch (err) { res.json({ suggestions: null, error: "AI request failed." }); }
   });
 
   // ============================================================================
@@ -218,7 +220,7 @@ module.exports = function ({ pool }) {
         1024,
         `You are a personal assistant with access to the user's data. Answer their question based on the provided data. Be concise and helpful. If the question asks for counts, lists, or stats, provide specific numbers. Answer concisely.`);
       res.json({ answer });
-    } catch (err) { res.json({ answer: "Sorry, I couldn't process that query.", error: err.message }); }
+    } catch (err) { res.json({ answer: "Sorry, I couldn't process that query.", error: "AI request failed." }); }
   });
 
   // ============================================================================
@@ -230,7 +232,7 @@ module.exports = function ({ pool }) {
       const models = r.rows[0] || {};
       models.available = isAIAvailable();
       res.json(models);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.patch("/api/ai/models", async (req, res) => {
@@ -248,7 +250,7 @@ module.exports = function ({ pool }) {
       if (!fields.length) return res.status(400).json({ error: "No fields to update." });
       const r = await pool.query(`UPDATE user_settings SET ${fields.join(", ")} WHERE id = 1 RETURNING *`, params);
       res.json(r.rows[0]);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   return router;

@@ -33,10 +33,16 @@ router.get("/api/credit-scores", async (req, res) => {
     if (rows.length >= 2) {
       const latest = rows[0];
       const prior = rows[1];
-      const sixMoAgo = rows.find(r => {
+      // Pick the entry CLOSEST to ~6 months (180 days) old, among entries at
+      // least ~4 months old, rather than the first one >=150 days (which, with
+      // frequent logging, was nearer 5 months and mislabeled) (FA-3).
+      let sixMoAgo = null, bestDiff = Infinity;
+      for (const r of rows) {
         const age = (new Date(latest.checked_at) - new Date(r.checked_at)) / 86400000;
-        return age >= 150;
-      });
+        if (age < 120) continue;
+        const diff = Math.abs(age - 180);
+        if (diff < bestDiff) { bestDiff = diff; sixMoAgo = r; }
+      }
       trend = {
         current: latest.score,
         prior: prior.score,

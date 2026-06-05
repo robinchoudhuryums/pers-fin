@@ -73,13 +73,15 @@ const CSV_FORMATS = {
   schwab: {
     detect: (headers) => headers.includes("Date") && headers.includes("Description") && (headers.includes("Withdrawal") || (headers.includes("Amount") && headers.includes("Type"))),
     parse: (row) => {
-      const rawWithdrawal = (row["Withdrawal"] || "").replace(/[$,]/g, "").trim();
-      const rawDeposit = (row["Deposit"] || "").replace(/[$,]/g, "").trim();
-      const rawAmount = (row["Amount"] || "").replace(/[$,]/g, "").trim();
-      const withdrawal = parseFloat(rawWithdrawal) || 0;
-      const deposit = parseFloat(rawDeposit) || 0;
+      // Use the shared parseMoney (F6) so parenthesized negatives, currency
+      // symbols, and thousands separators are handled like every other format.
+      const withdrawal = parseMoney(row["Withdrawal"]);
+      const deposit = parseMoney(row["Deposit"]);
+      const rawAmount = parseMoney(row["Amount"]);
       // Withdrawals are debits (positive), deposits are credits (negative)
-      const amount = withdrawal > 0 ? withdrawal : deposit > 0 ? -deposit : Math.abs(parseFloat(rawAmount) || 0);
+      const amount = withdrawal > 0 ? withdrawal
+        : deposit > 0 ? -deposit
+        : Math.abs(isNaN(rawAmount) ? 0 : rawAmount);
       return {
         date: row["Date"],
         merchant_name: row["Description"],
@@ -93,12 +95,27 @@ const CSV_FORMATS = {
     parse: (row) => {
       const date = row["Date"] || row["Transaction Date"] || Object.values(row)[0];
       const merchant = row["Description"] || row["Merchant"] || row["Name"] || Object.values(row)[1];
-      const rawAmt = (row["Amount"] || row["Debit"] || Object.values(row)[2] || "0").toString().replace(/[$,]/g, "");
-      const amount = parseFloat(rawAmt);
+      // Shared parseMoney (F6) — handles "(45.00)" parenthesized negatives,
+      // "$", and thousands separators, where the old parseFloat returned NaN.
+      const amount = parseMoney(row["Amount"] || row["Debit"] || Object.values(row)[2] || "0");
       const category = row["Category"] || "";
       return { date, merchant_name: merchant, amount, category };
     },
   },
+};
+
+// Canonical institution display name per detected format. Shared by the CLI
+// (scripts/import-csv-cli.js) and the /api/import-csv route so both derive the
+// SAME default account label ("<institution> Account") from a file's content
+// when the caller doesn't supply one — making their `csvTransactionId`s match
+// for the same row instead of double-importing (F2).
+const INSTITUTION_LABELS = {
+  chase: "Chase",
+  wellsfargo: "Wells Fargo",
+  capitalone: "Capital One",
+  discover: "Discover",
+  schwab: "Charles Schwab",
+  generic: "CSV Import",
 };
 
 function detectCsvFormat(headers) {
@@ -151,6 +168,7 @@ function csvTransactionId(accountLabel, date, amount, merchant) {
 
 module.exports = {
   CSV_FORMATS,
+  INSTITUTION_LABELS,
   detectCsvFormat,
   parseDate,
   csvTransactionId,

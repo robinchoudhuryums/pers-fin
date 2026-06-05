@@ -1,5 +1,7 @@
 const express = require("express");
 
+const { serverError } = require("../errors");
+
 module.exports = function ({ pool, advanceRecurrence }) {
   const router = express.Router();
 
@@ -35,7 +37,7 @@ module.exports = function ({ pool, advanceRecurrence }) {
         }
       }
       res.json([...todos.rows, ...emails.rows, ...notes.rows, ...projected]);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.get("/api/calendar.ics", async (req, res) => {
@@ -60,7 +62,7 @@ module.exports = function ({ pool, advanceRecurrence }) {
       res.setHeader("Content-Type", "text/calendar; charset=utf-8");
       res.setHeader("Content-Disposition", 'attachment; filename="per-sistant.ics"');
       res.send(ical);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   return router;

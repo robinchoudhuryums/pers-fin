@@ -127,7 +127,10 @@ async function getMonthlySpending(pool, months = 6) {
      WHERE t.amount > 0 AND t.pending = false
        AND COALESCE(t.is_reimbursed, false) = false
        AND ${NOT_TRANSFER}
-       AND t.date >= CURRENT_DATE - make_interval(months => $1)
+       -- Whole-month window (FA-4): floor to the 1st of the month so the
+       -- oldest bucket is a FULL month, not a partial one — callers (savings-
+       -- rate, context-export, AI trends) treat each returned month as complete.
+       AND t.date >= date_trunc('month', CURRENT_DATE) - make_interval(months => $1 - 1)
      GROUP BY TO_CHAR(t.date, 'YYYY-MM')
      ORDER BY month`,
     [months]
@@ -146,7 +149,8 @@ async function getMonthlyIncome(pool, months = 6) {
             SUM(ABS(amount)) AS total_income
      FROM transactions
      WHERE amount < 0 AND pending = false
-       AND date >= CURRENT_DATE - make_interval(months => $1)
+       -- Whole-month window (FA-4) — see getMonthlySpending.
+       AND date >= date_trunc('month', CURRENT_DATE) - make_interval(months => $1 - 1)
        AND ${INCOME_PREDICATE}
      GROUP BY TO_CHAR(date, 'YYYY-MM')
      ORDER BY month`,
@@ -287,6 +291,67 @@ async function getCategorySpendingThisMonth(pool) {
   return result.rows;
 }
 
+// getNetWorth — single source of truth for the net-worth computation.
+// Previously three call sites (startup.js hourly snapshot, goals.js
+// POST /api/net-worth/snapshot, enrollments.js syncAllBalances) each
+// computed this inline and DISAGREED: the balance-sync writer summed
+// linked_accounts only (omitting investments), while the other two summed
+// linked_accounts + investment_accounts — so the same daily
+// net_worth_snapshots row oscillated depending on which job ran last, and
+// a Plaid brokerage linked via the combined transactions+investments flow
+// (which lives in BOTH linked_accounts and investment_accounts) was counted
+// twice. This helper fixes both: it always includes investments, and it
+// dedupes Plaid investment accounts that already have a linked_accounts row
+// (NOT EXISTS on plaid_account_id = linked_accounts.account_id), so each
+// account is counted exactly once. Manual + investments-only-Plaid accounts
+// (no linked_accounts row) are still included from investment_accounts.
+async function getNetWorth(pool) {
+  const [accountsRes, investmentsRes] = await Promise.all([
+    pool.query(
+      `SELECT name, type, available_balance, current_balance
+       FROM linked_accounts
+       WHERE available_balance IS NOT NULL OR current_balance IS NOT NULL`
+    ),
+    pool.query(
+      `SELECT ia.name, ia.account_type, ia.balance
+       FROM investment_accounts ia
+       WHERE ia.is_active = true AND ia.balance != 0
+         AND NOT EXISTS (
+           SELECT 1 FROM linked_accounts la
+           WHERE la.account_id = ia.plaid_account_id
+         )`
+    ),
+  ]);
+
+  let totalAssets = 0;
+  let totalLiabilities = 0;
+  const breakdown = { accounts: [], investments: [] };
+
+  for (const a of accountsRes.rows) {
+    if (a.type === "credit") {
+      const owed = parseFloat(a.current_balance || 0);
+      totalLiabilities += owed;
+      breakdown.accounts.push({ name: a.name, type: a.type, amount: -owed });
+    } else {
+      const bal = parseFloat(a.available_balance || a.current_balance || 0);
+      totalAssets += bal;
+      breakdown.accounts.push({ name: a.name, type: a.type, amount: bal });
+    }
+  }
+  for (const inv of investmentsRes.rows) {
+    const bal = parseFloat(inv.balance);
+    totalAssets += bal;
+    breakdown.investments.push({ name: inv.name, type: inv.account_type, amount: bal });
+  }
+
+  return {
+    total_assets: totalAssets,
+    total_liabilities: totalLiabilities,
+    net_worth: totalAssets - totalLiabilities,
+    breakdown,
+  };
+}
+
 module.exports = {
   INCOME_PREDICATE,
   SPLIT_AMOUNT,
@@ -299,4 +364,5 @@ module.exports = {
   getMonthlyIncomeAndSpending,
   getCategorySpendingThisMonth,
   getCategorySpendingForMonth,
+  getNetWorth,
 };

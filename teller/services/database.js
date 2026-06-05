@@ -516,6 +516,12 @@ async function runMigrations() {
     // ---- Data freshness tracking ----
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_balance_sync_at TIMESTAMPTZ DEFAULT NULL");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_txn_sync_at TIMESTAMPTZ DEFAULT NULL");
+    // Structured result of the most recent sync run (any path), so per-item
+    // errors (esp. `decryption_failed`, which deliberately does NOT mark an
+    // enrollment DISCONNECTED) surface in the Sync Health card instead of only
+    // living in a manual-sync HTTP payload. Shape: { at, errors:[{provider,
+    // institution, error}] }.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_sync_result JSONB DEFAULT NULL");
     // Sync notification toggle
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sync_notifications_enabled BOOLEAN NOT NULL DEFAULT true");
 
@@ -563,6 +569,15 @@ async function runMigrations() {
     await client.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS user_feedback TEXT CHECK (user_feedback IS NULL OR user_feedback IN ('positive', 'negative', 'mixed'))");
     await client.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS user_feedback_text TEXT");
     await client.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS user_feedback_at TIMESTAMPTZ");
+    // AI-5/AI-6: explicit per-run audit completion marker. `audited_at` proves
+    // the post-generation audit actually ran for this insight; `audit_incomplete`
+    // is true when one or more audit tiers threw (DB error) and produced no
+    // findings. getAuditAccuracy uses these to count ONLY genuinely-audited,
+    // complete runs — previously a run with zero audit rows (never audited, or
+    // a swallowed tier failure) was indistinguishable from a clean run and
+    // inflated the accuracy %.
+    await client.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS audited_at TIMESTAMPTZ");
+    await client.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS audit_incomplete BOOLEAN NOT NULL DEFAULT false");
 
     // ---- "What changed since last sync" view (S3) ----
     // Watermark for the dashboard's "since you last looked" widget. POSTed

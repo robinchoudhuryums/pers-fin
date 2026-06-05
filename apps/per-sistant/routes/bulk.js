@@ -4,6 +4,8 @@
 
 const express = require("express");
 
+const { serverError } = require("../errors");
+
 module.exports = function ({ pool, config }) {
   const router = express.Router();
   const { VALID_PRIORITIES, VALID_HORIZONS, MAX_BULK_IDS } = config;
@@ -26,7 +28,7 @@ module.exports = function ({ pool, config }) {
         return res.status(400).json({ error: "Invalid action." });
       }
       res.json({ ok: true, count: ids.length });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.post("/api/bulk/emails", async (req, res) => {
@@ -40,7 +42,7 @@ module.exports = function ({ pool, config }) {
         return res.status(400).json({ error: "Invalid action." });
       }
       res.json({ ok: true, count: ids.length });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   router.post("/api/bulk/notes", async (req, res) => {
@@ -54,7 +56,7 @@ module.exports = function ({ pool, config }) {
         return res.status(400).json({ error: "Invalid action." });
       }
       res.json({ ok: true, count: ids.length });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   return router;

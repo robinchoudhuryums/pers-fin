@@ -16,12 +16,14 @@ const { pool, ENCRYPTION_PASSPHRASE } = require("../services/database");
 // ---------------------------------------------------------------------------
 async function getPersistentConfig() {
   try {
+    // Read url/enabled WITHOUT decrypting first, so a passphrase mismatch on the
+    // secret can't collapse the whole config to null (SN-3) — that masked a
+    // decryption failure as "not configured". The decrypt happens separately
+    // below and a failure is surfaced via `decryptFailed`.
     const r = await pool.query(
-      `SELECT persistent_url,
-              pgp_sym_decrypt(persistent_webhook_secret_enc, $1) AS persistent_webhook_secret,
-              persistent_webhook_enabled
-         FROM user_settings WHERE id = 1`,
-      [ENCRYPTION_PASSPHRASE || ""]
+      `SELECT persistent_url, persistent_webhook_enabled,
+              (persistent_webhook_secret_enc IS NOT NULL) AS has_secret
+         FROM user_settings WHERE id = 1`
     );
     const s = r.rows[0];
     if (!s || !s.persistent_url) return null;
@@ -30,7 +32,21 @@ async function getPersistentConfig() {
       const u = new URL(url);
       if (u.protocol !== "http:" && u.protocol !== "https:") return null;
     } catch { return null; }
-    return { url, secret: s.persistent_webhook_secret || null, enabled: s.persistent_webhook_enabled };
+    let secret = null;
+    let decryptFailed = false;
+    if (s.has_secret) {
+      try {
+        const d = await pool.query(
+          "SELECT pgp_sym_decrypt(persistent_webhook_secret_enc, $1) AS secret FROM user_settings WHERE id = 1",
+          [ENCRYPTION_PASSPHRASE || ""]
+        );
+        secret = d.rows[0]?.secret || null;
+        if (!secret) decryptFailed = true; // NULL decrypt == wrong/empty passphrase
+      } catch {
+        decryptFailed = true; // pgp_sym_decrypt throws on a wrong key
+      }
+    }
+    return { url, secret, enabled: s.persistent_webhook_enabled, decryptFailed };
   } catch {
     return null;
   }
@@ -42,6 +58,18 @@ async function getPersistentConfig() {
 async function sendPerSistantWebhook(event, data) {
   const config = await getPersistentConfig();
   if (!config || !config.enabled) return { sent: false, reason: "not_configured" };
+  // A configured-but-undecryptable secret means TOKEN_ENCRYPTION_PASSPHRASE no
+  // longer matches the stored ciphertext (e.g. after a rotation). Surface it
+  // distinctly (SN-3) instead of letting it fall through to "missing_secret",
+  // which would imply the operator never set it.
+  if (config.decryptFailed) {
+    console.error(
+      `sendPerSistantWebhook[${event}]: webhook secret decryption failed — ` +
+      "TOKEN_ENCRYPTION_PASSPHRASE no longer matches the stored ciphertext. " +
+      "Re-save the Per-sistant webhook secret under Settings → Per-sistant integration."
+    );
+    return { sent: false, reason: "decryption_failed" };
+  }
   // Refuse to dispatch without the shared HMAC secret. The Per-sistant
   // receiver rejects unsigned requests (returns 503), so sending unsigned
   // was always a silent failure: insight emails would disappear with no

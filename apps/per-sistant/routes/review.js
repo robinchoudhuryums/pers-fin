@@ -1,5 +1,7 @@
 const express = require("express");
 
+const { serverError } = require("../errors");
+
 module.exports = function ({ pool }) {
   const router = express.Router();
 
@@ -31,7 +33,7 @@ module.exports = function ({ pool }) {
         upcoming_tasks: upcoming.rows,
         overdue_tasks: overdue.rows,
       });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { serverError(res, err); }
   });
 
   return router;
