@@ -56,7 +56,14 @@ module.exports = function ({ pool, config }) {
         fields.push(`palette = $${idx++}`); params.push(palette);
       }
       if (dashboard_layout !== undefined) { fields.push(`dashboard_layout = $${idx++}`); params.push(JSON.stringify(dashboard_layout)); }
-      if (slack_webhook_url !== undefined) { fields.push(`slack_webhook_url = $${idx++}`); params.push(slack_webhook_url || null); }
+      if (slack_webhook_url !== undefined) {
+        // Reject an SSRF-prone Slack URL at write-time (PB-5), parallel to how
+        // webhook URLs are validated on create. Empty clears it.
+        if (slack_webhook_url && !config.isValidWebhookUrl(slack_webhook_url)) {
+          return res.status(400).json({ error: "Invalid Slack webhook URL. Must be a public http/https URL." });
+        }
+        fields.push(`slack_webhook_url = $${idx++}`); params.push(slack_webhook_url || null);
+      }
       if (keep_alive_enabled !== undefined) { fields.push(`keep_alive_enabled = $${idx++}`); params.push(!!keep_alive_enabled); }
       if (keep_alive_start !== undefined) { fields.push(`keep_alive_start = $${idx++}`); params.push(parseInt(keep_alive_start) || 0); }
       if (keep_alive_end !== undefined) { fields.push(`keep_alive_end = $${idx++}`); params.push(parseInt(keep_alive_end) || 0); }

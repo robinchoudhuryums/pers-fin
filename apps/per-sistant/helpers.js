@@ -3,6 +3,7 @@
 // ============================================================================
 
 const { pool } = require("./db");
+const { isValidWebhookUrl } = require("./config");
 
 function advanceRecurrence(date, rule, interval) {
   const d = new Date(date);
@@ -49,6 +50,13 @@ async function sendSlackNotification(message) {
     const settings = await pool.query("SELECT slack_webhook_url FROM user_settings WHERE id = 1");
     const url = settings.rows[0]?.slack_webhook_url;
     if (!url) return;
+    // SSRF guard (PB-5): the Slack URL is a server-side fetch target, so run it
+    // through the same validator as webhooks (blocks private/loopback/metadata
+    // ranges). Skip silently on a bad/internal URL rather than firing the request.
+    if (!isValidWebhookUrl(url)) {
+      console.error("sendSlackNotification: slack_webhook_url failed SSRF validation — skipping.");
+      return;
+    }
     await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

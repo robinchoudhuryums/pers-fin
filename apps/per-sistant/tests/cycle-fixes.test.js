@@ -161,3 +161,92 @@ describe("PB-2 — serverError returns a generic message, never raw err.message"
     assert.ok(!/relation|todos/.test(JSON.stringify(body)), "must not leak DB error text");
   });
 });
+
+// ===========================================================================
+// PB-7 — coverage for previously-untested load-bearing paths
+// ===========================================================================
+if (!process.env.PERSISTENT_DATABASE_URL) process.env.PERSISTENT_DATABASE_URL = "postgres://mock:mock@localhost/mock";
+
+describe("PB-7 — advanceRecurrence (recurrence date math)", () => {
+  const { advanceRecurrence } = require("../helpers");
+  const iso = (d) => d.toISOString().split("T")[0];
+  it("daily / custom_days advance by interval days", () => {
+    assert.equal(iso(advanceRecurrence(new Date("2026-01-01"), "daily", 1)), "2026-01-02");
+    assert.equal(iso(advanceRecurrence(new Date("2026-01-01"), "custom_days", 3)), "2026-01-04");
+  });
+  it("weekly advances 7 days * interval", () => {
+    assert.equal(iso(advanceRecurrence(new Date("2026-01-01"), "weekly", 1)), "2026-01-08");
+    assert.equal(iso(advanceRecurrence(new Date("2026-01-01"), "custom_weeks", 2)), "2026-01-15");
+  });
+  it("monthly / yearly advance by calendar unit", () => {
+    assert.equal(iso(advanceRecurrence(new Date("2026-01-15"), "monthly", 1)), "2026-02-15");
+    assert.equal(iso(advanceRecurrence(new Date("2026-01-01"), "yearly", 1)), "2027-01-01");
+  });
+  it("weekdays skips weekends", () => {
+    // 2026-01-02 is a Friday; +1 weekday => Monday 2026-01-05
+    assert.equal(iso(advanceRecurrence(new Date("2026-01-02"), "weekdays", 1)), "2026-01-05");
+  });
+});
+
+describe("PB-7 — runAutomations (rule engine matching)", () => {
+  const db = require("../db");
+  const { runAutomations } = require("../helpers");
+  const orig = db.pool.query;
+  function setup(rule, captured) {
+    db.pool.query = async (sql, params) => {
+      if (/FROM automations/.test(sql)) return { rows: [rule] };
+      captured.push({ sql, params });
+      return { rows: [] };
+    };
+  }
+  it("fires the action when conditions match", async () => {
+    const captured = [];
+    setup({ trigger_type: "todo_created", enabled: true, conditions: { category: "work" },
+            action_type: "set_priority", action_data: { priority: "high" } }, captured);
+    await runAutomations("todo_created", { id: 5, category: "work", priority: "low" }, "todo");
+    db.pool.query = orig;
+    const upd = captured.find(c => /UPDATE todos SET priority/.test(c.sql));
+    assert.ok(upd, "matching rule must issue the priority UPDATE");
+    assert.deepEqual(upd.params, ["high", 5]);
+  });
+  it("does NOT fire when a condition mismatches", async () => {
+    const captured = [];
+    setup({ trigger_type: "todo_created", enabled: true, conditions: { category: "work" },
+            action_type: "set_priority", action_data: { priority: "high" } }, captured);
+    await runAutomations("todo_created", { id: 5, category: "personal", priority: "low" }, "todo");
+    db.pool.query = orig;
+    assert.equal(captured.length, 0, "non-matching rule must issue no UPDATE");
+  });
+});
+
+describe("PB-7 — complete-recurring streak + next instance", () => {
+  const express = require("express");
+  const supertest = require("supertest");
+  it("increments the streak on an on-time completion and creates the next instance", async () => {
+    const captured = {};
+    const todoRow = {
+      id: 5, title: "Stretch", description: null, priority: "medium", horizon: "short",
+      category: "health", recurring: true, recurrence_rule: "daily", recurrence_interval: 1,
+      completed: false, due_date: new Date(Date.now() + 7 * 86400000), // future => on time
+      streak_count: 2, best_streak: 5, recurrence_parent_id: null,
+    };
+    const client = {
+      query: async (sql, params) => {
+        if (/BEGIN|COMMIT|ROLLBACK/.test(sql)) return {};
+        if (/SELECT \* FROM todos WHERE id = \$1 FOR UPDATE/.test(sql)) return { rows: [todoRow] };
+        if (/UPDATE todos SET completed/.test(sql)) { captured.update = params; return {}; }
+        if (/INSERT INTO todos/.test(sql)) { captured.insert = params; return { rows: [{ id: 99 }] }; }
+        return { rows: [] };
+      },
+      release() {},
+    };
+    const mockPool = { connect: async () => client };
+    const app = express();
+    app.use(express.json());
+    app.use(require("../routes/todos")({ pool: mockPool, config: require("../config") }));
+    const res = await supertest(app).post("/api/todos/5/complete-recurring").expect(200);
+    assert.equal(res.body.streak, 3, "2 -> 3 on an on-time completion");
+    assert.equal(res.body.best_streak, 5);
+    assert.ok(captured.insert, "a next recurring instance must be created");
+  });
+});
