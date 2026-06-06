@@ -635,3 +635,40 @@ describe("Per-sistant digest: embedded delivery writes directly to the emails ta
     }
   });
 });
+
+// ===========================================================================
+// Background reconcile — opt-in async run + status endpoint
+// ===========================================================================
+describe("Reconcile: background mode is opt-in; synchronous stays the default", () => {
+  it("background:true returns 202 {started} and exposes a status endpoint", async () => {
+    dbModule.pool.query = async () => ({ rows: [] });
+    const app = express();
+    app.use(express.json());
+    app.use(require("../teller/routes/enrollments"));
+    const res = await supertest(app)
+      .post("/api/sync/reconcile")
+      .send({ provider: "teller", background: true });
+    assert.equal(res.status, 202);
+    assert.equal(res.body.started, true);
+    assert.equal(res.body.provider, "teller");
+    const st = await supertest(app).get("/api/sync/reconcile/status").expect(200);
+    assert.ok("running" in st.body, "status endpoint reports a running flag");
+    assert.equal(st.body.provider, "teller");
+  });
+
+  it("without background flag it still returns the inline per-provider result", async () => {
+    dbModule.pool.query = async () => ({ rows: [] });
+    const app = express();
+    app.use(express.json());
+    app.use(require("../teller/routes/enrollments"));
+    const res = await supertest(app).post("/api/sync/reconcile").send({ provider: "teller" });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.teller, "synchronous path returns the teller summary inline");
+  });
+
+  it("source: background is opt-in (req.body.background === true)", () => {
+    const src = fs.readFileSync(path.join(__dirname, "../teller/routes/enrollments.js"), "utf8");
+    assert.match(src, /if \(req\.body\.background === true\)/);
+    assert.match(src, /GET \/api\/sync\/reconcile\/status/);
+  });
+});

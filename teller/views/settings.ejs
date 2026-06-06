@@ -1295,19 +1295,49 @@
     (function () {
       var rb = document.getElementById('reconcile-btn');
       if (!rb) return;
+      var reconcilePoll = null;
+      function pollReconcile(prev) {
+        reconcilePoll = setInterval(async function () {
+          try {
+            var sres = await apiFetch('/api/sync/reconcile/status');
+            if (!sres.ok) return;
+            var st = await sres.json();
+            if (!st.running) {
+              clearInterval(reconcilePoll); reconcilePoll = null;
+              rb.disabled = false; rb.textContent = prev;
+              if (st.error) showMsg('Reconcile finished with errors: ' + st.error, false);
+              else showMsg('Reconcile complete.', true);
+              loadDataHealth();
+            }
+          } catch (e) { /* keep polling */ }
+        }, 4000);
+      }
       rb.addEventListener('click', async function () {
         rb.disabled = true; var prev = rb.textContent; rb.textContent = 'Reconciling…';
         try {
+          // Run in the background — the Plaid leg re-walks up to 2 years of
+          // history and can take a while. We poll for completion and also push
+          // a notification when done, so the user can navigate away.
           var res = await apiFetch('/api/sync/reconcile', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ days: 90, provider: 'all' }),
+            body: JSON.stringify({ days: 90, provider: 'all', background: true }),
           });
           var j = await res.json();
-          if (res.ok) { showMsg('Reconcile complete', true); loadDataHealth(); }
-          else { showMsg(j.error || 'Reconcile failed', false); }
-        } catch (e) { showMsg(e.message, false); }
-        finally { rb.disabled = false; rb.textContent = prev; }
+          if (res.status === 202 || j.started) {
+            showMsg('Reconcile started — this can take a minute; you’ll get a notification when it finishes.', true);
+            pollReconcile(prev);
+          } else if (res.status === 409) {
+            showMsg('A reconcile is already running.', false);
+            pollReconcile(prev);
+          } else {
+            showMsg(j.error || 'Reconcile failed', false);
+            rb.disabled = false; rb.textContent = prev;
+          }
+        } catch (e) {
+          showMsg(e.message, false);
+          rb.disabled = false; rb.textContent = prev;
+        }
       });
     })();
 

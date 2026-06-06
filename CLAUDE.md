@@ -307,9 +307,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (625 tests as of latest); use
+  Perfin and Per-sistant test files (628 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 625 tests across 17 test files (incl.
+  Current count: 628 tests across 17 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -989,7 +989,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 625 tests passing across 17 test files (Perfin + Per-sistant)
+- 628 tests passing across 17 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash
@@ -1017,13 +1017,23 @@ POST /api/sync-balances    # fetch latest account balances. Refreshes Teller
                            # so a card whose APR/limit won't load is visible.
 POST /api/detect           # run subscription detection
 POST /api/sync/reconcile   # backfill/reconcile to recover dropped transactions
-                           # (body: days=1-365 default 90, provider=teller|plaid|all).
-                           # Teller re-fetches the trailing window watermark-
-                           # independently (idempotent upserts, no watermark
+                           # (body: days=1-365 default 90, provider=teller|plaid|all,
+                           # background?=bool). Teller re-fetches the trailing window
+                           # watermark-independently (idempotent upserts, no watermark
                            # advance, anomaly push suppressed); Plaid resets each
                            # item's cursor and re-walks transactionsSync. Stamps
-                           # last_reconcile_at. Returns { days, provider, teller?,
-                           # plaid? } per-provider summaries.
+                           # last_reconcile_at. SYNCHRONOUS by default — returns
+                           # { days, provider, teller?, plaid? } per-provider
+                           # summaries inline (the contract API/CLI callers rely on).
+                           # With background:true the work runs detached: returns 202
+                           # { started, running, provider, days } immediately and
+                           # pushes a "Reconcile complete" notification on finish
+                           # (409 if one is already running). The Sync Health UI uses
+                           # background mode + polling since the Plaid leg re-walks up
+                           # to 2 years of history and can take a minute.
+GET  /api/sync/reconcile/status # poll the background reconcile job
+                           # { running, started_at, finished_at, provider, days,
+                           #   result, error }
 POST /api/detect-transfers # run recurring transfer detection
 GET  /api/recurring-transfers # list recurring transfers (query: filter=active|dismissed|all)
 PATCH /api/recurring-transfers/:id/dismiss   # dismiss a recurring transfer
