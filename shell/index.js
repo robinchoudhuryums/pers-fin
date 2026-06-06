@@ -179,6 +179,16 @@ persistent.app.set("embedded", true);
 perfin.app.set("persistentPool", persistent.pool);
 persistent.app.set("perfinPool", perfin.pool);
 
+// Let Perfin deliver digest/insight emails straight into Per-sistant's emails
+// table (no HTTP webhook + HMAC needed under the unified shell). require() here
+// returns the same cached module instance teller/server.js mounted, so this
+// registers the pool on the live router's closure.
+try {
+  require("../teller/routes/persistent").setEmbeddedPersistentPool(persistent.pool);
+} catch (e) {
+  console.error("Could not wire in-process Per-sistant digest delivery:", e.message);
+}
+
 app.use("/perfin", perfin.app);
 app.use("/per-sistant", persistent.app);
 

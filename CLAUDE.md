@@ -307,9 +307,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (617 tests as of latest); use
+  Perfin and Per-sistant test files (632 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 617 tests across 17 test files (incl.
+  Current count: 632 tests across 17 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -647,6 +647,17 @@ shell/
   to dispatch (returns `{ sent: false, reason: "missing_secret" }`) — the
   receiver was already rejecting unsigned posts, so failures are now visible
   to the caller instead of being warned-and-dropped opaquely.
+  **Under the unified shell, delivery is IN-PROCESS** — the shell calls
+  `persistent.setEmbeddedPersistentPool(persistent.pool)` (in `routes/persistent.js`),
+  and `sendPerSistantWebhook` short-circuits the three email events
+  (`insights_generated`, `weekly_summary`, `daily_summary`) through
+  `deliverDigestInProcess`, which INSERTs straight into Per-sistant's `emails`
+  table (recipient = `perfin_webhook_recipient` → `SMTP_FROM` → `SMTP_USER` →
+  draft) — no `persistent_url`/secret/HMAC needed. The HTTP webhook path remains
+  the standalone fallback, and the `test` event always uses HTTP (it exists to
+  probe the webhook config). `GET /api/settings` returns `embedded` so the
+  Settings UI suppresses the "configure the webhook" digest prereq warning when
+  embedded.
 - **Weekly digest email**: standing once-per-week Monday-morning channel
   (independent of `insights_cadence_days`). Fires the `weekly_summary`
   webhook event with `{ subject, html_body, plain_text }`, rendered by
@@ -978,7 +989,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 617 tests passing across 17 test files (Perfin + Per-sistant)
+- 632 tests passing across 17 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash
@@ -1006,13 +1017,23 @@ POST /api/sync-balances    # fetch latest account balances. Refreshes Teller
                            # so a card whose APR/limit won't load is visible.
 POST /api/detect           # run subscription detection
 POST /api/sync/reconcile   # backfill/reconcile to recover dropped transactions
-                           # (body: days=1-365 default 90, provider=teller|plaid|all).
-                           # Teller re-fetches the trailing window watermark-
-                           # independently (idempotent upserts, no watermark
+                           # (body: days=1-365 default 90, provider=teller|plaid|all,
+                           # background?=bool). Teller re-fetches the trailing window
+                           # watermark-independently (idempotent upserts, no watermark
                            # advance, anomaly push suppressed); Plaid resets each
                            # item's cursor and re-walks transactionsSync. Stamps
-                           # last_reconcile_at. Returns { days, provider, teller?,
-                           # plaid? } per-provider summaries.
+                           # last_reconcile_at. SYNCHRONOUS by default — returns
+                           # { days, provider, teller?, plaid? } per-provider
+                           # summaries inline (the contract API/CLI callers rely on).
+                           # With background:true the work runs detached: returns 202
+                           # { started, running, provider, days } immediately and
+                           # pushes a "Reconcile complete" notification on finish
+                           # (409 if one is already running). The Sync Health UI uses
+                           # background mode + polling since the Plaid leg re-walks up
+                           # to 2 years of history and can take a minute.
+GET  /api/sync/reconcile/status # poll the background reconcile job
+                           # { running, started_at, finished_at, provider, days,
+                           #   result, error }
 POST /api/detect-transfers # run recurring transfer detection
 GET  /api/recurring-transfers # list recurring transfers (query: filter=active|dismissed|all)
 PATCH /api/recurring-transfers/:id/dismiss   # dismiss a recurring transfer
@@ -1133,6 +1154,15 @@ POST /api/categorize       # ML categorize transactions (rules first, then Claud
 GET  /api/categorize/status # ML categorization status
 GET  /api/categorize/review-queue # candidates the next AI categorize would send to Claude
 POST /api/categorize/review # apply a single user decision (sets user_category, optionally creates rule)
+GET  /api/categorize/accuracy # running ML accuracy over verified AI rows
+                            # { ai_total, verified, correct, unverified, accuracy_pct }
+GET  /api/categorize/accuracy-sample # random unverified AI-categorized rows to review
+                            # (query: limit 1-25 default 8) → { transactions[], categories[] }
+POST /api/categorize/accuracy-review # record a verdict on a sampled AI row
+                            # (body: transaction_id, correct: bool,
+                            # corrected_category? (required when wrong), create_rule?).
+                            # Preserves source='ai' so the miss still counts in stats;
+                            # the corrected category still wins via user_category.
 PATCH /api/transactions/:id/category # manually set transaction category — writes user_category
 PATCH /api/transactions/bulk-category # bulk update categories — writes user_category
 GET  /api/categorization-rules       # list all categorization rules
@@ -1349,6 +1379,16 @@ standalone-mode fallback if either app is run on its own Render service.
   are stored as plain strings, not the `category[]` array literal.) Display
   layers use `COALESCE(user_category, category[1])` everywhere, including the
   categorize candidate filter so already-categorized rows aren't re-sent to AI.
+  Categorization provenance + accuracy: `user_category_source TEXT`
+  (`'ai'|'rule'|'teller_map'|'manual'|'review'`) records HOW `user_category`
+  was set; `category_verified_at TIMESTAMPTZ` + `category_was_correct BOOLEAN`
+  capture the user's verdict when reviewing a sampled AI categorization. The
+  accuracy sampler (`GET /api/categorize/accuracy[-sample]`,
+  `POST /api/categorize/accuracy-review`) targets `user_category_source = 'ai'`
+  (partial index `idx_txn_cat_source_ai`) and a "wrong" verdict keeps the row
+  `'ai'`-sourced so the miss counts in the running accuracy %, while the
+  corrected category still wins via `user_category`. Re-categorizing a row
+  clears the prior verdict.
 - `transaction_splits` (Phase B3): subdivides a single Teller transaction into
   multiple `(amount, category, merchant_name, notes)` rows that REPLACE the
   parent in per-category aggregations. `parent_transaction_id` references
@@ -1644,8 +1684,12 @@ embedded mode).
   `auto_sync_interval_hours` has elapsed since `last_auto_sync_at`. When due, calls
   `syncAllEnrollments()` (Teller) then `syncAllPlaidTransactions()` (Plaid) then
   `syncAllPlaidHoldings()` (Plaid investments) then
-  `syncAllBalances()` in-process — never via HTTP self-fetch, so API_KEY-protected
-  deployments don't 401 against themselves. Updates `last_auto_sync_at` on every
+  `syncAllBalances()` then `runCategorize()` in-process — never via HTTP
+  self-fetch, so API_KEY-protected deployments don't 401 against themselves.
+  The trailing `runCategorize()` step gives a categorization sweep on every
+  sync (free rule + Teller-map paths over the whole backlog + a bounded AI
+  batch) so the uncategorized count doesn't pile up between the 30-day AI-
+  insights cadence runs. Updates `last_auto_sync_at` on every
   check (success or partial failure).
   Push notification only fires when at least one transaction was added, at
   least one balance was updated, or a sync failed — silent successful syncs
@@ -1860,13 +1904,24 @@ income module, and bill-calendar income detection.
   sum to the parent's amount. New per-category endpoints should call
   `getCategorySpendingThisMonth(pool)` rather than re-implementing the
   CTE — that helper already handles splits + reimbursed + spending-split.
-- **Categorization rules first, then AI.** When `POST /api/categorize` is
-  called, user-defined rules from `categorization_rules` are applied first
-  (free, instant, pattern matching) before sending remaining uncategorized
-  transactions to Claude (paid API call). This means a user who creates a
-  rule for "Amazon" → "Shopping" will never pay for AI to categorize Amazon
+- **Categorization rules first, then AI — free paths sweep the whole backlog,
+  only AI is batched.** When `POST /api/categorize` (or `runCategorize`) runs,
+  the two FREE deterministic paths — user `categorization_rules` and the
+  deterministic Teller/Plaid `TELLER_CATEGORY_MAP` — are applied as **bulk
+  `UPDATE … RETURNING` over the ENTIRE uncategorized backlog** (no row cap),
+  because they're pure SQL and cost nothing. Only the paid Claude call is
+  bounded, to `AI_BATCH` (50) rows per invocation, since the shared
+  `INSIGHTS_MONTHLY_BUDGET_CENTS` cap throttles total AI spend anyway.
+  (Earlier the whole batch — rules + Teller-map + AI — shared a single
+  `LIMIT 50`, so one "Categorize" click barely moved a large backlog and the
+  uncategorized count looked stuck.) A user who creates a rule for
+  "Amazon" → "Shopping" will never pay for AI to categorize Amazon
   transactions. Rules are matched against `COALESCE(user_merchant_name,
-  merchant_name, name)` so user-renamed merchants are also handled.
+  merchant_name, name)` so user-renamed merchants are also handled. All writes
+  go to `user_category` so a Teller/Plaid re-sync can't clobber them. The
+  HTTP route still returns 501 when `ANTHROPIC_API_KEY` is unset (the Settings
+  button is disabled without it), so the free sweep runs as part of an
+  AI-enabled call, not standalone.
 - **Categorization engagement loop drives AI cost down.** The dashboard's
   "Review Uncategorized" widget (`GET /api/categorize/review-queue`) shows
   the same set of transactions that would otherwise go to Claude on the

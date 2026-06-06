@@ -521,6 +521,23 @@ describe("Plaid: balance sync surfaces a genuine liabilities failure", () => {
     assert.match(inv, /if \(lib && lib\.error\)/);
     assert.match(inv, /"liabilities: " \+ \(lib\.error_code \|\| lib\.error\)/);
   });
+  it("surfaces an actionable re-link hint for a credit card whose item lacks Liabilities", () => {
+    // not_supported is only actionable when the item actually has a credit
+    // account (Discover) — brokerage/depository-only items stay quiet.
+    assert.match(inv, /const hasCreditAccount = \(balRes\.data\.accounts \|\| \[\]\)\.some\(a => a\.type === "credit"\)/);
+    assert.match(inv, /lib\.skipped === "not_supported" && hasCreditAccount/);
+    assert.match(inv, /re-link this card to enable Plaid Liabilities/);
+  });
+});
+
+describe("Dashboard: investment cards expose a Remove control for non-Teller rows", () => {
+  const ejs = fs.readFileSync(path.join(__dirname, "../teller/views/dashboard.ejs"), "utf8");
+  it("renders a remove button only for plaid/manual rows and wires it via addEventListener (CSP-safe)", () => {
+    assert.match(ejs, /a\.source === 'teller'\s*\?\s*''/);
+    assert.match(ejs, /class="inv-remove"/);
+    assert.match(ejs, /querySelectorAll\('\.inv-remove'\)/);
+    assert.match(ejs, /\/api\/investment-accounts\/' \+ id, \{ method: 'DELETE' \}/);
+  });
 });
 
 describe("sync-balances response + dashboard toast expose Plaid + holdings results", () => {
@@ -533,5 +550,181 @@ describe("sync-balances response + dashboard toast expose Plaid + holdings resul
   it("dashboard toast reports Teller/Plaid/investment counts and concatenates both error arrays", () => {
     assert.match(ejs, /Teller, '.*Plaid, '.*investment account/);
     assert.match(ejs, /\[\]\.concat\(data\.plaid_errors \|\| \[\], data\.holdings_errors \|\| \[\]\)/);
+  });
+});
+
+// ===========================================================================
+// Categorize efficiency — free paths sweep the whole backlog, only AI bounded
+// ===========================================================================
+describe("Categorize: free rule + Teller-map sweep is unbounded; only AI is capped", () => {
+  const cat = fs.readFileSync(path.join(__dirname, "../teller/routes/categorize.js"), "utf8");
+  it("applies rules in bulk via UPDATE ... RETURNING over the uncategorized predicate", () => {
+    assert.match(cat, /FREE PATH 1 — user-defined rules, bulk-applied/);
+    assert.match(cat, /UPDATE transactions SET user_category = \$3, user_category_source = 'rule',[\s\S]*?WHERE \$\{uncatPredicate\} AND \$\{cond\}/);
+  });
+  it("applies the Teller/Plaid category map in bulk (one UPDATE per source category)", () => {
+    assert.match(cat, /for \(const \[tellerCat, ourCat\] of Object\.entries\(TELLER_CATEGORY_MAP\)\)/);
+    assert.match(cat, /WHERE \$\{uncatPredicate\} AND LOWER\(category\[1\]\) = \$2/);
+  });
+  it("bounds ONLY the paid AI batch with AI_BATCH (not the whole sweep)", () => {
+    assert.match(cat, /const AI_BATCH = \d+;/);
+    assert.match(cat, /LIMIT \$\{AI_BATCH\}/);
+    // The old whole-batch LIMIT 50 SELECT must be gone.
+    assert.doesNotMatch(cat, /ORDER BY date DESC\s*\n\s*LIMIT 50/);
+  });
+});
+
+describe("Auto-sync runs a categorization sweep after syncing", () => {
+  const startup = fs.readFileSync(path.join(__dirname, "../teller/startup.js"), "utf8");
+  it("the bank auto-sync chain invokes runCategorize in-process", () => {
+    assert.match(startup, /Auto-categorize freshly-synced transactions/);
+    assert.match(startup, /const \{ runCategorize \} = require\("\.\/routes\/categorize"\)/);
+    assert.match(startup, /const catRes = await runCategorize\(\)/);
+  });
+});
+
+// ===========================================================================
+// In-process digest delivery (unified shell) — no webhook config required
+// ===========================================================================
+describe("Per-sistant digest: embedded delivery writes directly to the emails table", () => {
+  const persistent = require("../teller/routes/persistent");
+
+  it("sendPerSistantWebhook inserts a scheduled email via the wired pool (no HTTP)", async () => {
+    const queries = [];
+    const mockPersistentPool = {
+      query: async (sql, params) => {
+        queries.push({ sql, params });
+        if (/perfin_webhook_recipient/.test(sql)) {
+          return { rows: [{ perfin_webhook_recipient: "me@example.com" }] };
+        }
+        return { rows: [] };
+      },
+    };
+    persistent.setEmbeddedPersistentPool(mockPersistentPool);
+    try {
+      const res = await persistent.sendPerSistantWebhook("weekly_summary", {
+        subject: "Weekly", html_body: "<b>hi</b>", plain_text: "hi",
+      });
+      assert.equal(res.sent, true);
+      assert.equal(res.delivery, "in_process");
+      assert.equal(res.stored, "scheduled");
+      assert.equal(res.recipient, "me@example.com");
+      const insert = queries.find(q => /INSERT INTO emails/.test(q.sql) && /scheduled/.test(q.sql));
+      assert.ok(insert, "must insert a scheduled email row");
+      assert.equal(insert.params[1], "me@example.com");
+    } finally {
+      persistent.setEmbeddedPersistentPool(null); // don't leak into other tests
+    }
+  });
+
+  it("falls back to a draft when no recipient is configured", async () => {
+    const origFrom = process.env.SMTP_FROM, origUser = process.env.SMTP_USER;
+    delete process.env.SMTP_FROM; delete process.env.SMTP_USER;
+    const queries = [];
+    persistent.setEmbeddedPersistentPool({
+      query: async (sql, params) => { queries.push({ sql, params }); return { rows: [] }; },
+    });
+    try {
+      const res = await persistent.sendPerSistantWebhook("daily_summary", { subject: "D", plain_text: "x" });
+      assert.equal(res.stored, "draft");
+      assert.ok(queries.find(q => /INSERT INTO emails/.test(q.sql) && /'draft'/.test(q.sql)));
+    } finally {
+      persistent.setEmbeddedPersistentPool(null);
+      if (origFrom) process.env.SMTP_FROM = origFrom;
+      if (origUser) process.env.SMTP_USER = origUser;
+    }
+  });
+});
+
+// ===========================================================================
+// Background reconcile — opt-in async run + status endpoint
+// ===========================================================================
+describe("Reconcile: background mode is opt-in; synchronous stays the default", () => {
+  it("background:true returns 202 {started} and exposes a status endpoint", async () => {
+    dbModule.pool.query = async () => ({ rows: [] });
+    const app = express();
+    app.use(express.json());
+    app.use(require("../teller/routes/enrollments"));
+    const res = await supertest(app)
+      .post("/api/sync/reconcile")
+      .send({ provider: "teller", background: true });
+    assert.equal(res.status, 202);
+    assert.equal(res.body.started, true);
+    assert.equal(res.body.provider, "teller");
+    const st = await supertest(app).get("/api/sync/reconcile/status").expect(200);
+    assert.ok("running" in st.body, "status endpoint reports a running flag");
+    assert.equal(st.body.provider, "teller");
+  });
+
+  it("without background flag it still returns the inline per-provider result", async () => {
+    dbModule.pool.query = async () => ({ rows: [] });
+    const app = express();
+    app.use(express.json());
+    app.use(require("../teller/routes/enrollments"));
+    const res = await supertest(app).post("/api/sync/reconcile").send({ provider: "teller" });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.teller, "synchronous path returns the teller summary inline");
+  });
+
+  it("source: background is opt-in (req.body.background === true)", () => {
+    const src = fs.readFileSync(path.join(__dirname, "../teller/routes/enrollments.js"), "utf8");
+    assert.match(src, /if \(req\.body\.background === true\)/);
+    assert.match(src, /GET \/api\/sync\/reconcile\/status/);
+  });
+});
+
+// ===========================================================================
+// ML Categorization accuracy sampler
+// ===========================================================================
+describe("Categorize accuracy: provenance stamping + sampler endpoints", () => {
+  const cat = fs.readFileSync(path.join(__dirname, "../teller/routes/categorize.js"), "utf8");
+
+  it("AI/rule/teller-map writes stamp user_category_source", () => {
+    assert.match(cat, /user_category_source = 'ai'/);
+    assert.match(cat, /user_category_source = 'rule'/);
+    assert.match(cat, /user_category_source = 'teller_map'/);
+  });
+
+  it("GET /api/categorize/accuracy computes a % over verified AI rows", async () => {
+    dbModule.pool.query = async () => ({ rows: [{ ai_total: "10", verified: "4", correct: "3" }] });
+    const app = express();
+    app.use(express.json());
+    app.use(require("../teller/routes/categorize"));
+    const res = await supertest(app).get("/api/categorize/accuracy").expect(200);
+    assert.equal(res.body.ai_total, 10);
+    assert.equal(res.body.verified, 4);
+    assert.equal(res.body.correct, 3);
+    assert.equal(res.body.unverified, 6);
+    assert.equal(res.body.accuracy_pct, 75); // 3/4
+  });
+
+  it("accuracy-review requires a corrected_category when marking wrong", async () => {
+    dbModule.pool.query = async () => ({ rows: [] });
+    const app = express();
+    app.use(express.json());
+    app.use(require("../teller/routes/categorize"));
+    await supertest(app)
+      .post("/api/categorize/accuracy-review")
+      .send({ transaction_id: "t1", correct: false })
+      .expect(400);
+  });
+
+  it("accuracy-review marks a row correct and stamps the verdict", async () => {
+    const seen = [];
+    dbModule.pool.query = async (sql, params) => {
+      seen.push({ sql, params });
+      if (/UPDATE transactions/.test(sql)) return { rows: [{ merchant: "Starbucks" }] };
+      return { rows: [] };
+    };
+    const app = express();
+    app.use(express.json());
+    app.use(require("../teller/routes/categorize"));
+    const res = await supertest(app)
+      .post("/api/categorize/accuracy-review")
+      .send({ transaction_id: "t1", correct: true })
+      .expect(200);
+    assert.equal(res.body.ok, true);
+    const upd = seen.find(q => /category_was_correct = true/.test(q.sql) && /user_category_source = 'ai'/.test(q.sql));
+    assert.ok(upd, "correct verdict updates only AI-sourced rows and records was_correct=true");
   });
 });

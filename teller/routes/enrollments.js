@@ -391,31 +391,90 @@ async function reconcileTeller(days = 90) {
   return syncAllEnrollments({ backfillDays });
 }
 
+// runReconcile — the actual backfill work, shared by the synchronous and
+// background code paths. Teller re-fetches the trailing window; Plaid resets
+// each item's cursor and re-walks transactionsSync (idempotent upserts).
+// Stamps last_reconcile_at on completion.
+async function runReconcile(days, provider) {
+  const out = { days, provider };
+  if (provider === "teller" || provider === "all") {
+    try { out.teller = await reconcileTeller(days); }
+    catch (e) { out.teller = { error: e.message }; }
+  }
+  if (provider === "plaid" || provider === "all") {
+    try {
+      const { reconcilePlaidTransactions } = require("./investments");
+      out.plaid = await reconcilePlaidTransactions();
+    } catch (e) { out.plaid = { error: e.message }; }
+  }
+  await pool.query("UPDATE user_settings SET last_reconcile_at = now(), last_txn_sync_at = now() WHERE id = 1").catch(() => {});
+  return out;
+}
+
+// In-memory background-reconcile tracker. The Plaid leg is a full cursor
+// re-walk (up to 2 years across every item) and can take a while, so the UI
+// runs it in the background and polls /status; on completion we push a
+// notification. Single-operator, single-process app → one job at a time.
+let reconcileJob = { running: false, started_at: null, finished_at: null, provider: null, days: null, result: null, error: null };
+
+function summarizeReconcile(out) {
+  const leg = (r) => r ? (r.error ? "error" : ((r.transactions_added ?? r.added ?? 0) + " recovered")) : null;
+  const parts = [];
+  if (out.teller) parts.push("Teller: " + leg(out.teller));
+  if (out.plaid) parts.push("Plaid: " + (out.plaid.error ? "error" : ((out.plaid.transactions_added ?? 0) + " recovered")));
+  return parts.join(", ") || "Done.";
+}
+
 // POST /api/sync/reconcile — manual backfill/reconciliation across providers.
-// Body: { days?: 1-365 (default 90), provider?: 'teller' | 'plaid' | 'all' }.
-// Teller re-fetches the trailing window; Plaid resets each item's cursor and
-// re-walks transactionsSync (idempotent upserts). Stamps last_reconcile_at.
+// Body: { days?: 1-365 (default 90), provider?: 'teller' | 'plaid' | 'all',
+//         background?: bool }. Synchronous by default (returns the per-provider
+// summary inline — the contract API/CLI callers rely on). With
+// `background: true` the work runs detached and the route returns 202
+// immediately; poll GET /api/sync/reconcile/status and watch for the
+// "Reconcile complete" notification.
 router.post("/api/sync/reconcile", async (req, res) => {
   const days = Math.max(1, Math.min(365, parseInt(req.body.days, 10) || 90));
   const provider = ["teller", "plaid", "all"].includes(req.body.provider) ? req.body.provider : "all";
-  const out = { days, provider };
-  try {
-    if (provider === "teller" || provider === "all") {
-      try { out.teller = await reconcileTeller(days); }
-      catch (e) { out.teller = { error: e.message }; }
+
+  if (req.body.background === true) {
+    if (reconcileJob.running) {
+      return res.status(409).json({ running: true, started_at: reconcileJob.started_at, error: "A reconcile is already running." });
     }
-    if (provider === "plaid" || provider === "all") {
+    reconcileJob = { running: true, started_at: new Date().toISOString(), finished_at: null, provider, days, result: null, error: null };
+    // Fire-and-forget. Completion is reported via the status endpoint + a push.
+    (async () => {
+      let out;
+      try { out = await runReconcile(days, provider); }
+      catch (e) { out = { days, provider, error: e.message }; }
+      reconcileJob.running = false;
+      reconcileJob.finished_at = new Date().toISOString();
+      reconcileJob.result = out;
+      reconcileJob.error = out.error || null;
       try {
-        const { reconcilePlaidTransactions } = require("./investments");
-        out.plaid = await reconcilePlaidTransactions();
-      } catch (e) { out.plaid = { error: e.message }; }
-    }
-    await pool.query("UPDATE user_settings SET last_reconcile_at = now(), last_txn_sync_at = now() WHERE id = 1").catch(() => {});
+        const { sendToAll } = require("./notifications");
+        await sendToAll({
+          title: out.error ? "Reconcile finished with errors" : "Reconcile complete",
+          body: summarizeReconcile(out),
+          tag: "reconcile",
+          data: { url: "/settings" },
+        });
+      } catch {}
+    })();
+    return res.status(202).json({ started: true, running: true, provider, days });
+  }
+
+  try {
+    const out = await runReconcile(days, provider);
     res.json(out);
   } catch (err) {
     console.error("Reconcile error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
   }
+});
+
+// GET /api/sync/reconcile/status — poll the background reconcile job state.
+router.get("/api/sync/reconcile/status", (_req, res) => {
+  res.json(reconcileJob);
 });
 
 // GET /api/items

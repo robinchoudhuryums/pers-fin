@@ -350,6 +350,18 @@ async function runMigrations() {
     // COALESCE(user_category, category[1]).
     await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS user_category TEXT");
 
+    // Categorization provenance + accuracy verification. `user_category_source`
+    // records HOW user_category was set ('ai' | 'rule' | 'teller_map' | 'manual'
+    // | 'review') so the accuracy sampler can target AI-assigned rows
+    // specifically. `category_verified_at` / `category_was_correct` capture the
+    // user's verdict when they review a sampled AI categorization, driving the
+    // running accuracy % shown in Settings.
+    await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS user_category_source TEXT");
+    await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS category_verified_at TIMESTAMPTZ");
+    await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS category_was_correct BOOLEAN");
+    // Partial index: only AI-sourced rows are ever sampled/scored.
+    await client.query("CREATE INDEX IF NOT EXISTS idx_txn_cat_source_ai ON transactions (user_category_source) WHERE user_category_source = 'ai'");
+
     // Transaction splits (Phase B3): a single Teller transaction can be
     // subdivided into N (amount, category, merchant, notes) child rows so a
     // $120 Costco run showing up as "Groceries" can be split into groceries,

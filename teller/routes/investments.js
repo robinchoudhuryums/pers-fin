@@ -728,6 +728,10 @@ async function syncAllPlaidBalances() {
     }
     try {
       const balRes = await client.accountsGet({ access_token: item.access_token });
+      // Does this item carry a credit card? Only then is missing Liabilities
+      // data (APR / credit limit) actionable — so we don't nag for brokerage-
+      // or depository-only items that legitimately have no liabilities.
+      const hasCreditAccount = (balRes.data.accounts || []).some(a => a.type === "credit");
       for (const ba of balRes.data.accounts) {
         const cur = ba.balances?.current ?? null;
         const avail = ba.balances?.available ?? null;
@@ -767,6 +771,15 @@ async function syncAllPlaidBalances() {
         const lib = await syncPlaidLiabilities(client, item.access_token, item.id);
         if (lib && lib.error) {
           errors.push({ institution: item.institution_name, error: "liabilities: " + (lib.error_code || lib.error) });
+        } else if (lib && lib.skipped === "not_supported" && hasCreditAccount) {
+          // The card linked, but its item lacks the Liabilities product (it
+          // predates Liabilities being requested at link time, or the bank
+          // didn't return it). Plaid can't add a product to an existing item —
+          // re-linking the card is the only way to load APR + credit limit.
+          errors.push({
+            institution: item.institution_name,
+            error: "APR/credit limit unavailable — re-link this card to enable Plaid Liabilities",
+          });
         }
       } catch (libErr) {
         console.error("Liabilities refresh error for", item.institution_name, ":", libErr.message);

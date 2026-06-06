@@ -319,6 +319,22 @@ function startBackgroundJobs() {
       try { balResult = await syncAllBalances(); }
       catch (e) { console.error("Auto-sync balances error:", e.message); }
 
+      // Auto-categorize freshly-synced transactions so the user doesn't have
+      // to click "Categorize" after every sync. runCategorize sweeps the FULL
+      // backlog through the free rule + Teller-map paths and sends a bounded
+      // batch to AI (budget-capped) — so this is cheap and keeps the
+      // uncategorized count from piling up. Runs on the user's chosen auto-sync
+      // cadence, giving the daily categorization sweep.
+      try {
+        const { runCategorize } = require("./routes/categorize");
+        const catRes = await runCategorize();
+        if (catRes && catRes.ok) {
+          console.log(`Auto-sync categorize: ${catRes.categorized || 0} categorized, ${catRes.remaining ?? "?"} remaining.`);
+        } else if (catRes && catRes.error) {
+          console.log("Auto-sync categorize skipped:", catRes.error);
+        }
+      } catch (e) { console.error("Auto-sync categorize error:", e.message); }
+
       await pool.query("UPDATE user_settings SET last_auto_sync_at = now() WHERE id = 1")
         .catch(e => console.error("Auto-sync timestamp update failed:", e.message));
 
