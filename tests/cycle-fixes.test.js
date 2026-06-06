@@ -521,6 +521,23 @@ describe("Plaid: balance sync surfaces a genuine liabilities failure", () => {
     assert.match(inv, /if \(lib && lib\.error\)/);
     assert.match(inv, /"liabilities: " \+ \(lib\.error_code \|\| lib\.error\)/);
   });
+  it("surfaces an actionable re-link hint for a credit card whose item lacks Liabilities", () => {
+    // not_supported is only actionable when the item actually has a credit
+    // account (Discover) — brokerage/depository-only items stay quiet.
+    assert.match(inv, /const hasCreditAccount = \(balRes\.data\.accounts \|\| \[\]\)\.some\(a => a\.type === "credit"\)/);
+    assert.match(inv, /lib\.skipped === "not_supported" && hasCreditAccount/);
+    assert.match(inv, /re-link this card to enable Plaid Liabilities/);
+  });
+});
+
+describe("Dashboard: investment cards expose a Remove control for non-Teller rows", () => {
+  const ejs = fs.readFileSync(path.join(__dirname, "../teller/views/dashboard.ejs"), "utf8");
+  it("renders a remove button only for plaid/manual rows and wires it via addEventListener (CSP-safe)", () => {
+    assert.match(ejs, /a\.source === 'teller'\s*\?\s*''/);
+    assert.match(ejs, /class="inv-remove"/);
+    assert.match(ejs, /querySelectorAll\('\.inv-remove'\)/);
+    assert.match(ejs, /\/api\/investment-accounts\/' \+ id, \{ method: 'DELETE' \}/);
+  });
 });
 
 describe("sync-balances response + dashboard toast expose Plaid + holdings results", () => {

@@ -2422,7 +2422,18 @@
           // 'manual' rows live in investment_accounts, so source=investment.
           var histSource = a.source === 'teller' ? 'linked' : 'investment';
           var histHref = (window.BASE_PATH || '') + '/accounts/' + a.id + '/history?source=' + histSource;
-          return '<div class="acct-card" style="padding:10px;">' +
+          // Remove control only for investment_accounts-backed rows (plaid +
+          // manual). Teller rows come from linked_accounts and aren't deletable
+          // via /api/investment-accounts/:id. Lets the user clear a stale/zombie
+          // duplicate (e.g. an old Plaid account_id or a manual placeholder)
+          // that lingers at $0 after the live account re-synced under a new row.
+          var removeBtn = a.source === 'teller'
+            ? ''
+            : '<button type="button" class="inv-remove" data-id="' + a.id + '" data-name="' + esc(a.name) + '" ' +
+              'title="Remove this investment account" ' +
+              'style="position:absolute;top:6px;right:6px;border:none;background:transparent;color:var(--text-muted);cursor:pointer;font-size:14px;line-height:1;padding:2px 4px;">&times;</button>';
+          return '<div class="acct-card" style="padding:10px;position:relative;">' +
+            removeBtn +
             '<div class="acct-inst" style="font-size:10px;">' + esc(a.institution || a.source) + holdingsBadge + '</div>' +
             '<div class="acct-name" style="font-size:13px;">' + esc(a.name) + '</div>' +
             '<div class="acct-balance positive" style="font-size:18px;">' + fmt(a.balance) + '</div>' +
@@ -2431,6 +2442,21 @@
             '<a href="' + histHref + '" style="display:block;margin-top:6px;font-size:10px;color:var(--teal);text-decoration:none;">View history &rarr;</a>' +
           '</div>';
         }).join('');
+
+        // Wire the remove buttons (CSP forbids inline onclick — bind here).
+        Array.prototype.forEach.call(listEl.querySelectorAll('.inv-remove'), function(btn) {
+          btn.addEventListener('click', async function() {
+            var id = btn.getAttribute('data-id');
+            var name = btn.getAttribute('data-name') || 'this account';
+            if (!confirm('Remove "' + name + '" from your investment accounts? ' +
+                'If it is a live Plaid account it will reappear on the next holdings sync.')) return;
+            try {
+              var dres = await apiFetch('/api/investment-accounts/' + id, { method: 'DELETE' });
+              if (dres.ok) { showMsg('Removed ' + name + '.', true); loadInvestments(); }
+              else { showMsg('Could not remove account (HTTP ' + dres.status + ').', false); }
+            } catch (e) { showMsg('Could not remove account.', false); }
+          });
+        });
 
         // Lazy-load sparklines per account from balance-history endpoint.
         // Cap concurrency loosely by serializing — investment accounts are
