@@ -276,3 +276,37 @@ describe("PB-4 — POST /api/emails/:id/send won't re-send an already-sent email
     assert.match(src, /UPDATE emails SET status = 'sent'[\s\S]*status <> 'sent' RETURNING id/);
   });
 });
+
+// ===========================================================================
+// Migration idempotency — CREATE TRIGGER must be guarded (production-down bug)
+// ===========================================================================
+// PS-1 made migrations run in ONE transaction with fatal-on-error. A bare
+// `CREATE TRIGGER` (no IF NOT EXISTS) therefore throws "already exists" on
+// every deploy after the first, rolls back the whole migration, and crashes
+// the shell on boot. Every CREATE TRIGGER must be preceded by a matching
+// DROP TRIGGER IF EXISTS so re-runs are no-ops.
+describe("Migrations: every CREATE TRIGGER is idempotent (DROP IF EXISTS guard)", () => {
+  const dbDir = path.join(__dirname, "../db");
+  const files = fs.readdirSync(dbDir).filter((f) => f.endsWith(".sql"));
+
+  it("no SQL file contains a CREATE TRIGGER without a preceding DROP TRIGGER IF EXISTS", () => {
+    for (const f of files) {
+      // Strip line comments so prose like "-- CREATE TRIGGER is not idempotent"
+      // doesn't register as an actual statement.
+      const sql = fs
+        .readFileSync(path.join(dbDir, f), "utf8")
+        .replace(/--[^\n]*/g, "");
+      const triggerRe = /CREATE TRIGGER\s+(\w+)/g;
+      let m;
+      while ((m = triggerRe.exec(sql)) !== null) {
+        const name = m[1];
+        const guard = new RegExp(`DROP TRIGGER IF EXISTS\\s+${name}\\b`);
+        assert.ok(
+          guard.test(sql),
+          `${f}: CREATE TRIGGER ${name} is missing a "DROP TRIGGER IF EXISTS ${name}" guard — ` +
+            `it will throw "already exists" on the second migration run and crash boot`
+        );
+      }
+    }
+  });
+});

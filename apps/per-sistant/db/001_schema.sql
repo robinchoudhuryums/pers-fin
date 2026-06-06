@@ -109,11 +109,18 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- CREATE TRIGGER is not idempotent (no IF NOT EXISTS), and migrations now run
+-- in one transaction with FATAL-on-error (PS-1) — so a bare CREATE TRIGGER
+-- throws "already exists" on every deploy after the first and aborts the whole
+-- migration. Guard each with DROP TRIGGER IF EXISTS so re-runs are no-ops.
+DROP TRIGGER IF EXISTS trg_todos_updated_at ON todos;
 CREATE TRIGGER trg_todos_updated_at
     BEFORE UPDATE ON todos FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
+DROP TRIGGER IF EXISTS trg_emails_updated_at ON emails;
 CREATE TRIGGER trg_emails_updated_at
     BEFORE UPDATE ON emails FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
+DROP TRIGGER IF EXISTS trg_notes_updated_at ON notes;
 CREATE TRIGGER trg_notes_updated_at
     BEFORE UPDATE ON notes FOR EACH ROW EXECUTE FUNCTION set_updated_at();

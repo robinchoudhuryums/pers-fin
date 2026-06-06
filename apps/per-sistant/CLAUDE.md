@@ -22,7 +22,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   at-most-once delivery). The manual `POST /api/emails/:id/send` claims the row
   the same way (`UPDATE … WHERE id = $1 AND status <> 'sent' RETURNING`) so a
   double-click / retry returns 409 instead of re-sending (PB-4).
-- **Tests**: `tests/` (node:test runner, `npm test`, 256 tests (api + integration + cycle-fixes))
+- **Tests**: `tests/` (node:test runner, `npm test`, 257 tests (api + integration + cycle-fixes))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of March 2026)
@@ -128,7 +128,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (256 tests)
+# Run tests (257 tests)
 npm test
 
 # Pages
@@ -292,6 +292,13 @@ GET    /sw.js               # Service worker
   the pool uses — so a pure-standalone deployment with only
   `PERSISTENT_DATABASE_URL` set still runs them (previously gated on
   `NEON_DATABASE_URL` alone, which silently skipped migrations in that config).
+  Because PS-1 made re-runs fatal, every statement MUST be idempotent. Most use
+  `IF NOT EXISTS` / `CREATE OR REPLACE` / `DO $$ … IF NOT EXISTS(pg_constraint)`,
+  but `CREATE TRIGGER` has no `IF NOT EXISTS` form, so each trigger is preceded
+  by `DROP TRIGGER IF EXISTS <name> ON <table>;` (001_schema.sql, 002_features.sql).
+  A bare `CREATE TRIGGER` would throw "already exists" on the second deploy,
+  abort the whole transaction, and crash the shell on boot — pinned by
+  `tests/cycle-fixes.test.js` "every CREATE TRIGGER is idempotent".
 - `user_settings` table: single-row pattern (CHECK id = 1), includes ai_model_* columns
 - `user_settings.perfin_webhook_recipient TEXT`: destination email address for
   inbound `insights_generated` webhooks from Perfin. `routes/perfin.js` reads

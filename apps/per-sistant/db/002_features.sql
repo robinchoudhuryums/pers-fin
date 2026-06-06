@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS email_templates (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Idempotent (see 001_schema.sql) — DROP IF EXISTS so re-runs don't abort the
+-- single transactional, fatal-on-error migration (PS-1).
+DROP TRIGGER IF EXISTS trg_email_templates_updated_at ON email_templates;
 CREATE TRIGGER trg_email_templates_updated_at
     BEFORE UPDATE ON email_templates FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
