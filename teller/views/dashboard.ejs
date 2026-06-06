@@ -1107,7 +1107,18 @@
         const res = await apiFetch('/api/sync-balances', { method: 'POST' });
         const data = await res.json().catch(() => ({}));
         if (res.ok) {
-          showMsg('Balances updated for ' + (data.accounts_updated || 0) + ' accounts.', true);
+          // Show the full picture, not just the Teller count: Teller balances,
+          // Plaid balances, and Plaid investment holdings — plus any per-item
+          // errors (incl. liabilities/APR + decryption failures) so a silent
+          // Plaid problem is visible instead of looking like a clean sync.
+          const teller = data.accounts_updated || 0;
+          const plaid = data.plaid_accounts_updated || 0;
+          const holdings = data.holdings_accounts_updated || 0;
+          showMsg('Balances updated — ' + teller + ' Teller, ' + plaid + ' Plaid, ' + holdings + ' investment account(s).', true);
+          const errs = [].concat(data.plaid_errors || [], data.holdings_errors || []);
+          if (errs.length) {
+            showMsg('Plaid issues: ' + errs.map(function(e){ return (e.institution || '?') + ': ' + e.error; }).join('; '), false);
+          }
           loadAccounts();
         } else {
           showMsg('Balance sync error: ' + (data.error || 'HTTP ' + res.status), false);

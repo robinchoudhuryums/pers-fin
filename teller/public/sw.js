@@ -9,7 +9,7 @@
 // Strip the trailing "/sw.js" to get the mount prefix ("" or "/perfin").
 const BASE = new URL(self.location.href).pathname.replace(/\/sw\.js$/, '');
 
-const CACHE = 'perfin-v4';
+const CACHE = 'perfin-v5';
 const OFFLINE_URL = BASE + '/offline.html';
 const PRECACHE = [
   BASE + '/perfin-shared.js',

@@ -773,6 +773,8 @@ router.post("/api/sync-balances", async (_req, res) => {
       plaid_accounts_updated: plaidResult?.accounts_updated || 0,
       plaid_errors: plaidResult?.errors?.length ? plaidResult.errors : undefined,
       holdings_updated: holdingsResult?.holdings_updated || 0,
+      holdings_accounts_updated: holdingsResult?.accounts_updated || 0,
+      holdings_errors: holdingsResult?.errors?.length ? holdingsResult.errors : undefined,
     });
   } catch (err) {
     console.error("sync-balances error:", err.message);

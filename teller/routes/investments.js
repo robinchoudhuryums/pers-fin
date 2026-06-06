@@ -760,8 +760,18 @@ async function syncAllPlaidBalances() {
       // Refresh liabilities (APR / min payment / due date) on the balance path
       // too — previously only the transaction sync + exchange did, so clicking
       // "Sync Balances" never updated APR. Fails gracefully when unsupported.
-      try { await syncPlaidLiabilities(client, item.access_token, item.id); }
-      catch (libErr) { console.error("Liabilities refresh error for", item.institution_name, ":", libErr.message); }
+      // Surface a genuine liabilities failure (NOT the expected "not_supported"
+      // skip) so a card whose APR/limit won't load — e.g. an item that needs a
+      // Liabilities re-auth — is visible instead of silently swallowed.
+      try {
+        const lib = await syncPlaidLiabilities(client, item.access_token, item.id);
+        if (lib && lib.error) {
+          errors.push({ institution: item.institution_name, error: "liabilities: " + (lib.error_code || lib.error) });
+        }
+      } catch (libErr) {
+        console.error("Liabilities refresh error for", item.institution_name, ":", libErr.message);
+        errors.push({ institution: item.institution_name, error: "liabilities: " + libErr.message });
+      }
     } catch (err) {
       console.error("Plaid balance refresh error for", item.institution_name, ":", err.response?.data?.error_message || err.message);
       errors.push({ institution: item.institution_name, error: err.response?.data?.error_message || err.message });
@@ -1053,9 +1063,28 @@ async function syncAllPlaidHoldings() {
   if (!client) return { ok: false, error: "Plaid not configured" };
   try {
     const items = await pool.query(
-      `SELECT item_id, institution_name,
-              pgp_sym_decrypt(access_token_enc, $1) AS access_token
-       FROM plaid_investment_items`,
+      // Cover BOTH the dedicated plaid_investment_items registry AND any
+      // status='GOOD' plaid_items that have an investment-type account in
+      // linked_accounts but were never registered (Schwab et al. — Plaid often
+      // doesn't surface the brokerage as an investment account at link time, so
+      // exchange-transactions never added it to plaid_investment_items, leaving
+      // its holdings permanently un-synced → $0). DISTINCT ON (item_id) prefers
+      // the registered row; investmentsHoldingsGet just no-ops for items with
+      // no holdings.
+      `SELECT DISTINCT ON (item_id) item_id, institution_name, access_token FROM (
+         SELECT item_id, institution_name,
+                pgp_sym_decrypt(access_token_enc, $1) AS access_token, 1 AS src
+         FROM plaid_investment_items
+         UNION ALL
+         SELECT pi.item_id, pi.institution_name,
+                pgp_sym_decrypt(pi.access_token_enc, $1) AS access_token, 2 AS src
+         FROM plaid_items pi
+         WHERE pi.status = 'GOOD' AND EXISTS (
+           SELECT 1 FROM linked_accounts la
+           WHERE la.plaid_item_id = pi.id AND ${INVESTMENT_ACCOUNT_TYPES}
+         )
+       ) u
+       ORDER BY item_id, src`,
       [ENCRYPTION_PASSPHRASE]
     );
 

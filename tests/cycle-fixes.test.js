@@ -495,3 +495,43 @@ describe("Dashboard: credit utilization doesn't show a false 100% when limit unk
     assert.match(ejs, /credit limit not reported by bank/);
   });
 });
+
+// ===========================================================================
+// Plaid sync bugfixes (round 2) — Schwab holdings never synced + error visibility
+// ===========================================================================
+describe("Plaid: holdings sync covers unregistered investment items (Schwab brokerage)", () => {
+  const inv = fs.readFileSync(path.join(__dirname, "../teller/routes/investments.js"), "utf8");
+  it("syncAllPlaidHoldings UNIONs plaid_items having an investment-type linked_account", () => {
+    // The dedicated plaid_investment_items registry misses brokerages Plaid
+    // didn't surface as investment accounts at link time, so their holdings
+    // never sync and the account persists at $0. The items query must also pull
+    // status='GOOD' plaid_items that have an INVESTMENT_ACCOUNT_TYPES account.
+    assert.match(inv, /FROM plaid_investment_items\s+UNION ALL/);
+    assert.match(inv, /FROM plaid_items pi\s+WHERE pi\.status = 'GOOD' AND EXISTS/);
+    assert.match(inv, /\$\{INVESTMENT_ACCOUNT_TYPES\}/);
+    assert.match(inv, /SELECT DISTINCT ON \(item_id\)/);
+  });
+});
+
+describe("Plaid: balance sync surfaces a genuine liabilities failure", () => {
+  const inv = fs.readFileSync(path.join(__dirname, "../teller/routes/investments.js"), "utf8");
+  it("pushes a 'liabilities:' error when syncPlaidLiabilities returns .error (not the not_supported skip)", () => {
+    // A card whose APR/limit won't load (e.g. an item that needs a Liabilities
+    // re-auth) must show up in errors[] instead of being swallowed.
+    assert.match(inv, /if \(lib && lib\.error\)/);
+    assert.match(inv, /"liabilities: " \+ \(lib\.error_code \|\| lib\.error\)/);
+  });
+});
+
+describe("sync-balances response + dashboard toast expose Plaid + holdings results", () => {
+  const enr = fs.readFileSync(path.join(__dirname, "../teller/routes/enrollments.js"), "utf8");
+  const ejs = fs.readFileSync(path.join(__dirname, "../teller/views/dashboard.ejs"), "utf8");
+  it("/api/sync-balances returns holdings_accounts_updated + holdings_errors", () => {
+    assert.match(enr, /holdings_accounts_updated: holdingsResult\?\.accounts_updated/);
+    assert.match(enr, /holdings_errors: holdingsResult\?\.errors\?\.length/);
+  });
+  it("dashboard toast reports Teller/Plaid/investment counts and concatenates both error arrays", () => {
+    assert.match(ejs, /Teller, '.*Plaid, '.*investment account/);
+    assert.match(ejs, /\[\]\.concat\(data\.plaid_errors \|\| \[\], data\.holdings_errors \|\| \[\]\)/);
+  });
+});
