@@ -552,3 +552,33 @@ describe("sync-balances response + dashboard toast expose Plaid + holdings resul
     assert.match(ejs, /\[\]\.concat\(data\.plaid_errors \|\| \[\], data\.holdings_errors \|\| \[\]\)/);
   });
 });
+
+// ===========================================================================
+// Categorize efficiency — free paths sweep the whole backlog, only AI bounded
+// ===========================================================================
+describe("Categorize: free rule + Teller-map sweep is unbounded; only AI is capped", () => {
+  const cat = fs.readFileSync(path.join(__dirname, "../teller/routes/categorize.js"), "utf8");
+  it("applies rules in bulk via UPDATE ... RETURNING over the uncategorized predicate", () => {
+    assert.match(cat, /FREE PATH 1 — user-defined rules, bulk-applied/);
+    assert.match(cat, /UPDATE transactions SET user_category = \$3\s*\n\s*WHERE \$\{uncatPredicate\} AND \$\{cond\}/);
+  });
+  it("applies the Teller/Plaid category map in bulk (one UPDATE per source category)", () => {
+    assert.match(cat, /for \(const \[tellerCat, ourCat\] of Object\.entries\(TELLER_CATEGORY_MAP\)\)/);
+    assert.match(cat, /WHERE \$\{uncatPredicate\} AND LOWER\(category\[1\]\) = \$2/);
+  });
+  it("bounds ONLY the paid AI batch with AI_BATCH (not the whole sweep)", () => {
+    assert.match(cat, /const AI_BATCH = \d+;/);
+    assert.match(cat, /LIMIT \$\{AI_BATCH\}/);
+    // The old whole-batch LIMIT 50 SELECT must be gone.
+    assert.doesNotMatch(cat, /ORDER BY date DESC\s*\n\s*LIMIT 50/);
+  });
+});
+
+describe("Auto-sync runs a categorization sweep after syncing", () => {
+  const startup = fs.readFileSync(path.join(__dirname, "../teller/startup.js"), "utf8");
+  it("the bank auto-sync chain invokes runCategorize in-process", () => {
+    assert.match(startup, /Auto-categorize freshly-synced transactions/);
+    assert.match(startup, /const \{ runCategorize \} = require\("\.\/routes\/categorize"\)/);
+    assert.match(startup, /const catRes = await runCategorize\(\)/);
+  });
+});

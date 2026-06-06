@@ -50,6 +50,12 @@ router.get("/api/categorize/status", async (_req, res) => {
   }
 });
 
+// Max rows sent to Claude per categorize call. The free rule + Teller-map
+// sweep above is unbounded (pure SQL over the whole backlog); only this paid
+// AI batch is capped — both for token/latency limits and because the shared
+// INSIGHTS_MONTHLY_BUDGET_CENTS cap throttles total AI spend anyway.
+const AI_BATCH = 50;
+
 // runCategorize — orchestration extracted from POST /api/categorize so the
 // scheduler in startup.js can invoke it in-process. Returns:
 //   { ok: false, status: 501|429|500, error }            — early bail
@@ -60,110 +66,96 @@ async function runCategorize() {
     return { ok: false, status: 501, error: "Set ANTHROPIC_API_KEY to enable ML categorization." };
   }
   try {
-    // Pull up to 50 rows that aren't in our 21-category scheme. This
-    // includes Teller-tagged rows ('general', 'dining', etc.) so they
-    // can be re-mapped — most of them via the deterministic Teller map
-    // below (no AI call).
-    const result = await pool.query(
-      `SELECT transaction_id,
-              COALESCE(merchant_name, name) AS merchant,
-              amount, date,
-              category,
-              personal_finance_category
-       FROM transactions
-       WHERE (
-         user_category IS NULL
-         AND (category IS NULL
-              OR category = '{}'
-              OR NOT (category[1] = ANY($1::text[])))
-       )
-         AND pending = false AND amount > 0
-       ORDER BY date DESC
-       LIMIT 50`,
-      [OUR_CATEGORIES_PG]
-    );
+    // -----------------------------------------------------------------
+    // FREE deterministic sweep — runs over the ENTIRE uncategorized backlog,
+    // not a 50-row page. User rules and the Teller/Plaid category map cost
+    // nothing (pure SQL), so the old `LIMIT 50` on the whole batch made one
+    // "Categorize" click barely move a large backlog. Only the paid AI call
+    // further down stays bounded. The shared predicate keys on $1 = our
+    // 21-category list (Postgres array param).
+    // -----------------------------------------------------------------
+    const uncatPredicate = `
+      user_category IS NULL
+      AND (category IS NULL OR category = '{}'
+           OR NOT (category[1] = ANY($1::text[])))
+      AND pending = false AND amount > 0`;
 
-    if (result.rows.length === 0) {
-      return { ok: true, categorized: 0, message: "No uncategorized transactions found." };
-    }
+    const countRemaining = async () => {
+      const c = await pool.query(
+        `SELECT COUNT(*) AS uncategorized FROM transactions WHERE ${uncatPredicate}`,
+        [OUR_CATEGORIES_PG]
+      );
+      return parseInt(c.rows[0].uncategorized);
+    };
 
-    // Apply user-defined categorization rules first (cheaper than AI)
+    // FREE PATH 1 — user-defined rules, bulk-applied across the whole backlog.
     const rules = await pool.query(
       "SELECT * FROM categorization_rules WHERE is_active = true ORDER BY times_applied DESC"
     ).catch(() => ({ rows: [] }));
     let ruleApplied = 0;
-    const remaining = [];
-    for (const txn of result.rows) {
-      const merchant = (txn.merchant || "").toLowerCase();
-      let matched = false;
-      for (const rule of rules.rows) {
-        const pattern = rule.merchant_pattern.toLowerCase();
-        const isMatch = rule.match_type === "exact" ? merchant === pattern
-          : rule.match_type === "starts_with" ? merchant.startsWith(pattern)
-          : merchant.includes(pattern);
-        if (isMatch) {
-          await pool.query(
-            // Write to user_category (scalar TEXT), NOT category[]. The Teller/
-            // Plaid upserts do `category = EXCLUDED.category` on conflict, so a
-            // re-sync would clobber a categorization written to `category`.
-            // Display layers read COALESCE(user_category, category[1]).
-            "UPDATE transactions SET user_category = $1 WHERE transaction_id = $2",
-            [rule.category, txn.transaction_id]
-          );
-          await pool.query(
-            "UPDATE categorization_rules SET times_applied = times_applied + 1, updated_at = now() WHERE id = $1",
-            [rule.id]
-          );
-          ruleApplied++;
-          matched = true;
-          break;
-        }
-      }
-      if (!matched) remaining.push(txn);
-    }
-
-    // Teller-map fast path: any row whose current category[1] maps
-    // deterministically into our scheme is assigned without calling AI.
-    // Handles the bulk of real-world rows (dining, groceries, transport…).
-    let tellerMapped = 0;
-    const afterTellerMap = [];
-    for (const txn of remaining) {
-      const tellerCat = Array.isArray(txn.category) && txn.category[0]
-        ? String(txn.category[0]).toLowerCase()
-        : null;
-      const mapped = tellerCat ? TELLER_CATEGORY_MAP[tellerCat] : null;
-      if (mapped && CATEGORIES.includes(mapped)) {
-        await pool.query(
-          // Write to user_category (scalar) so a Teller/Plaid re-sync can't clobber it.
-          "UPDATE transactions SET user_category = $1 WHERE transaction_id = $2",
-          [mapped, txn.transaction_id]
-        );
-        tellerMapped++;
-      } else {
-        afterTellerMap.push(txn);
-      }
-    }
-
-    // If everything was handled by rules + Teller-map, skip the AI call.
-    if (afterTellerMap.length === 0) {
-      const leftover = await pool.query(
-        `SELECT COUNT(*) AS uncategorized FROM transactions
-         WHERE user_category IS NULL
-           AND (
-             category IS NULL
-             OR category = '{}'
-             OR NOT (category[1] = ANY($1::text[]))
-           )
-           AND pending = false AND amount > 0`,
-        [OUR_CATEGORIES_PG]
+    for (const rule of rules.rows) {
+      const cond = rule.match_type === "exact"
+        ? "LOWER(COALESCE(user_merchant_name, merchant_name, name, '')) = LOWER($2)"
+        : rule.match_type === "starts_with"
+        ? "LOWER(COALESCE(user_merchant_name, merchant_name, name, '')) LIKE LOWER($2) || '%'"
+        : "LOWER(COALESCE(user_merchant_name, merchant_name, name, '')) LIKE '%' || LOWER($2) || '%'";
+      // Write to user_category (scalar TEXT), NOT category[] — a Teller/Plaid
+      // re-sync does `category = EXCLUDED.category` and would clobber the latter.
+      const r = await pool.query(
+        `UPDATE transactions SET user_category = $3
+         WHERE ${uncatPredicate} AND ${cond}
+         RETURNING transaction_id`,
+        [OUR_CATEGORIES_PG, rule.merchant_pattern, rule.category]
       );
+      if (r.rowCount > 0) {
+        ruleApplied += r.rowCount;
+        await pool.query(
+          "UPDATE categorization_rules SET times_applied = times_applied + $1, updated_at = now() WHERE id = $2",
+          [r.rowCount, rule.id]
+        ).catch(() => {});
+      }
+    }
+
+    // FREE PATH 2 — deterministic Teller/Plaid category map, bulk-applied.
+    // One cheap UPDATE per source category (~dozens) instead of per-row JS.
+    let tellerMapped = 0;
+    for (const [tellerCat, ourCat] of Object.entries(TELLER_CATEGORY_MAP)) {
+      if (!CATEGORIES.includes(ourCat)) continue;
+      const r = await pool.query(
+        `UPDATE transactions SET user_category = $3
+         WHERE ${uncatPredicate} AND LOWER(category[1]) = $2
+         RETURNING transaction_id`,
+        [OUR_CATEGORIES_PG, tellerCat, ourCat]
+      );
+      tellerMapped += r.rowCount;
+    }
+
+    // -----------------------------------------------------------------
+    // PAID AI path — a bounded batch of whatever the free sweep couldn't place
+    // (rows with no bank category, or a category not in the deterministic map).
+    // -----------------------------------------------------------------
+    const result = await pool.query(
+      `SELECT transaction_id,
+              COALESCE(merchant_name, name) AS merchant,
+              amount, date, category, personal_finance_category
+       FROM transactions
+       WHERE ${uncatPredicate}
+       ORDER BY date DESC
+       LIMIT ${AI_BATCH}`,
+      [OUR_CATEGORIES_PG]
+    );
+    const afterTellerMap = result.rows;
+
+    // Everything the free sweep could place is done; nothing left for AI.
+    if (afterTellerMap.length === 0) {
       return {
         ok: true,
         categorized: ruleApplied + tellerMapped,
         categorized_by_rules: ruleApplied,
         categorized_by_teller_map: tellerMapped,
+        categorized_by_ai: 0,
         tokens_used: 0,
-        remaining: parseInt(leftover.rows[0].uncategorized),
+        remaining: await countRemaining(),
         estimated_cost: 0,
       };
     }

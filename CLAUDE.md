@@ -307,9 +307,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (619 tests as of latest); use
+  Perfin and Per-sistant test files (623 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 619 tests across 17 test files (incl.
+  Current count: 623 tests across 17 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -978,7 +978,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 619 tests passing across 17 test files (Perfin + Per-sistant)
+- 623 tests passing across 17 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash
@@ -1644,8 +1644,12 @@ embedded mode).
   `auto_sync_interval_hours` has elapsed since `last_auto_sync_at`. When due, calls
   `syncAllEnrollments()` (Teller) then `syncAllPlaidTransactions()` (Plaid) then
   `syncAllPlaidHoldings()` (Plaid investments) then
-  `syncAllBalances()` in-process — never via HTTP self-fetch, so API_KEY-protected
-  deployments don't 401 against themselves. Updates `last_auto_sync_at` on every
+  `syncAllBalances()` then `runCategorize()` in-process — never via HTTP
+  self-fetch, so API_KEY-protected deployments don't 401 against themselves.
+  The trailing `runCategorize()` step gives a categorization sweep on every
+  sync (free rule + Teller-map paths over the whole backlog + a bounded AI
+  batch) so the uncategorized count doesn't pile up between the 30-day AI-
+  insights cadence runs. Updates `last_auto_sync_at` on every
   check (success or partial failure).
   Push notification only fires when at least one transaction was added, at
   least one balance was updated, or a sync failed — silent successful syncs
@@ -1860,13 +1864,24 @@ income module, and bill-calendar income detection.
   sum to the parent's amount. New per-category endpoints should call
   `getCategorySpendingThisMonth(pool)` rather than re-implementing the
   CTE — that helper already handles splits + reimbursed + spending-split.
-- **Categorization rules first, then AI.** When `POST /api/categorize` is
-  called, user-defined rules from `categorization_rules` are applied first
-  (free, instant, pattern matching) before sending remaining uncategorized
-  transactions to Claude (paid API call). This means a user who creates a
-  rule for "Amazon" → "Shopping" will never pay for AI to categorize Amazon
+- **Categorization rules first, then AI — free paths sweep the whole backlog,
+  only AI is batched.** When `POST /api/categorize` (or `runCategorize`) runs,
+  the two FREE deterministic paths — user `categorization_rules` and the
+  deterministic Teller/Plaid `TELLER_CATEGORY_MAP` — are applied as **bulk
+  `UPDATE … RETURNING` over the ENTIRE uncategorized backlog** (no row cap),
+  because they're pure SQL and cost nothing. Only the paid Claude call is
+  bounded, to `AI_BATCH` (50) rows per invocation, since the shared
+  `INSIGHTS_MONTHLY_BUDGET_CENTS` cap throttles total AI spend anyway.
+  (Earlier the whole batch — rules + Teller-map + AI — shared a single
+  `LIMIT 50`, so one "Categorize" click barely moved a large backlog and the
+  uncategorized count looked stuck.) A user who creates a rule for
+  "Amazon" → "Shopping" will never pay for AI to categorize Amazon
   transactions. Rules are matched against `COALESCE(user_merchant_name,
-  merchant_name, name)` so user-renamed merchants are also handled.
+  merchant_name, name)` so user-renamed merchants are also handled. All writes
+  go to `user_category` so a Teller/Plaid re-sync can't clobber them. The
+  HTTP route still returns 501 when `ANTHROPIC_API_KEY` is unset (the Settings
+  button is disabled without it), so the free sweep runs as part of an
+  AI-enabled call, not standalone.
 - **Categorization engagement loop drives AI cost down.** The dashboard's
   "Review Uncategorized" widget (`GET /api/categorize/review-queue`) shows
   the same set of transactions that would otherwise go to Claude on the
