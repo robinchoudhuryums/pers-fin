@@ -449,3 +449,49 @@ describe("FA-3 — credit-score 6-month delta picks the entry closest to 180 day
     assert.equal(res.body.trend.delta_vs_6mo, 30);           // 700 - 670
   });
 });
+
+// ===========================================================================
+// Plaid sync bugfixes — Discover credit-limit/APR + Schwab investment $0
+// ===========================================================================
+describe("Plaid: Schwab investment $0 — holdings-sum fallback on a reported 0", () => {
+  const inv = fs.readFileSync(path.join(__dirname, "../teller/routes/investments.js"), "utf8");
+  const { sumHoldingsByAccount } = require("../teller/routes/investments");
+
+  it("sumHoldingsByAccount totals institution_value (and close_price fallback) per account", () => {
+    const holdings = [
+      { account_id: "A", security_id: "s1", quantity: 10, institution_value: 1500 },
+      { account_id: "A", security_id: "s2", quantity: 5, institution_value: null }, // falls back to qty*close_price
+      { account_id: "B", security_id: "s1", quantity: 1, institution_value: 99 },
+    ];
+    const secMap = { s1: { close_price: 100 }, s2: { close_price: 20 } };
+    const m = sumHoldingsByAccount(holdings, secMap);
+    assert.equal(m.A, 1500 + (5 * 20)); // 1600
+    assert.equal(m.B, 99);
+  });
+
+  it("holdings balance uses `|| acctValue` so a reported 0 falls through (not ??)", () => {
+    // Both holdings-balance sites must use || (else a Schwab balances.current===0
+    // skips the holdings-sum fallback and persists $0).
+    assert.match(inv, /balances\?\.current \|\| acctValue\[acct\.account_id\] \|\| 0/);
+    assert.doesNotMatch(inv, /balances\?\.current \?\? acctValue/);
+  });
+});
+
+describe("Plaid: Discover credit-limit sourced from the liabilities accounts", () => {
+  const inv = fs.readFileSync(path.join(__dirname, "../teller/routes/investments.js"), "utf8");
+  it("syncPlaidLiabilities reads balances.limit from libRes.data.accounts", () => {
+    assert.match(inv, /for \(const acct of \(libRes\.data\.accounts \|\| \[\]\)\)/);
+    assert.match(inv, /const lim = acct\.balances\?\.limit/);
+  });
+  it("no longer reads the non-existent cc.credit_limit field", () => {
+    assert.doesNotMatch(inv, /cc\.credit_limit/);
+  });
+});
+
+describe("Dashboard: credit utilization doesn't show a false 100% when limit unknown", () => {
+  const ejs = fs.readFileSync(path.join(__dirname, "../teller/views/dashboard.ejs"), "utf8");
+  it("only derives the limit from owed+avail when avail > 0, else shows it as unreported", () => {
+    assert.match(ejs, /avail > 0 \? owed \+ avail : null/);
+    assert.match(ejs, /credit limit not reported by bank/);
+  });
+});

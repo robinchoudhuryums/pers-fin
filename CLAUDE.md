@@ -307,9 +307,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (607 tests as of latest); use
+  Perfin and Per-sistant test files (612 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 607 tests across 17 test files (incl.
+  Current count: 612 tests across 17 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -345,8 +345,10 @@ shell/
     Endpoints: `/api/plaid/{status,link-token,exchange,sync-holdings,holdings}`.
     Holdings sync (`syncAllPlaidHoldings`) UPSERTs `investment_accounts` so the
     rows survive a reset/wipe, and uses the sum of an account's holdings as the
-    balance when Plaid returns a null account-level balance (Schwab et al.) so
-    brokerages don't show $0. It runs automatically (auto-sync + AI pre-insights
+    balance when Plaid returns a null OR zero account-level balance (Schwab
+    reports `balances.current === 0` and puts the value in holdings) so
+    brokerages don't show $0 — the balance pick uses `||`, not `??`, precisely
+    so a reported 0 falls through to the holdings-sum. It runs automatically (auto-sync + AI pre-insights
     chains + `POST /api/sync-balances`), not just at link time.
     Plaid also syncs **transactions** for banks Teller doesn't cover
     (Capital One, Discover, Schwab, Amex, credit unions) via
@@ -976,7 +978,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 607 tests passing across 17 test files (Perfin + Per-sistant)
+- 612 tests passing across 17 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash
@@ -2048,7 +2050,13 @@ income module, and bill-calendar income detection.
   row, then
   refreshes liabilities (APR / minimum payment / due date via
   `syncPlaidLiabilities`, failing gracefully when unsupported) — no
-  transactionsSync involved. `POST /api/sync-balances` calls it
+  transactionsSync involved. `credit_limit` is sourced from the liabilities
+  response's `accounts[].balances.limit` (Plaid's `CreditCardLiability` has no
+  credit-limit field, so the old per-card read was always undefined — Discover
+  fix); APR/limit only populate once `liabilitiesGet` succeeds, so an item that
+  predates the Liabilities product needs a Plaid Link re-auth. The dashboard
+  only derives a card's limit from `owed + available` when an available figure
+  exists — otherwise it shows utilization as "—" rather than a misleading 100%. `POST /api/sync-balances` calls it
   alongside Teller's `syncAllBalances` AND `syncAllPlaidHoldings`, so one
   "Sync Balances" click freshens balances + credit limits + APR +
   investment holdings across both providers without triggering Plaid's

@@ -898,14 +898,20 @@
           if (isCredit && hasBalances) {
             const owed = parseFloat(a.current_balance || 0);
             const avail = parseFloat(a.available_balance || 0);
-            // Prefer the actual reported credit_limit; only derive it from
-            // owed+avail when no limit is stored. Plaid returns available:null
-            // for many cards (e.g. Discover), which made the derived limit
-            // collapse to `owed` and show 100% utilization.
-            const limit = parseFloat(a.credit_limit) || (owed + avail);
-            const util = limit > 0 ? Math.round((owed / limit) * 100) : 0;
-            const utilColor = util <= 10 ? 'var(--green)' : util <= 30 ? 'var(--teal)' : util <= 50 ? 'var(--warm)' : 'var(--red)';
-            creditExtra += '<div style="font-size:11px;margin-top:4px;color:var(--text-muted);">Utilization: <span style="color:' + utilColor + ';font-weight:500;">' + util + '%</span> of ' + fmt(limit) + '</div>';
+            const storedLimit = parseFloat(a.credit_limit);
+            // Prefer the reported credit_limit; only DERIVE from owed+avail when
+            // we actually have an available figure. When neither is known (e.g.
+            // Discover reports no limit AND no available), the limit is genuinely
+            // unknown — show "—" instead of collapsing to `owed` and implying a
+            // misleading 100% utilization.
+            const limit = storedLimit > 0 ? storedLimit : (avail > 0 ? owed + avail : null);
+            if (limit && limit > 0) {
+              const util = Math.round((owed / limit) * 100);
+              const utilColor = util <= 10 ? 'var(--green)' : util <= 30 ? 'var(--teal)' : util <= 50 ? 'var(--warm)' : 'var(--red)';
+              creditExtra += '<div style="font-size:11px;margin-top:4px;color:var(--text-muted);">Utilization: <span style="color:' + utilColor + ';font-weight:500;">' + util + '%</span> of ' + fmt(limit) + '</div>';
+            } else {
+              creditExtra += '<div style="font-size:11px;margin-top:4px;color:var(--text-muted);">Utilization: <span>—</span> <span style="font-size:10px;">(credit limit not reported by bank)</span></div>';
+            }
             creditExtra += '<div style="font-size:11px;margin-top:4px;display:flex;align-items:center;gap:6px;color:var(--text-muted);">APR: <input type="number" step="0.01" min="0" max="99.99" value="' + (a.apr || '') + '" placeholder="\u2014" data-apr-account="' + a.id + '" style="width:60px;padding:2px 6px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);font-family:inherit;">%</div>';
           }
           return '<div class="acct-card">' +
