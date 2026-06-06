@@ -220,7 +220,7 @@
 
   <div class="section"><h2>Transaction Categorization</h2>
     <div class="setting-row">
-      <div class="setting-info"><div class="name">ML Categorization</div><div class="desc" id="cat-desc">Use AI to auto-categorize uncategorized transactions (uses Haiku, ~$0.002/batch)</div></div>
+      <div class="setting-info"><div class="name">ML Categorization</div><div class="desc" id="cat-desc">Use AI to auto-categorize uncategorized transactions (uses Haiku, ~$0.002/batch)</div><div id="cat-progress" style="font-size:11px;color:var(--teal);margin-top:4px;"></div></div>
       <div class="setting-control"><button class="btn primary" id="categorize-btn">Categorize</button></div>
     </div>
     <div class="setting-row">
@@ -772,17 +772,38 @@
     }
     async function runCategorize() {
       var btn = document.getElementById('categorize-btn');
+      var prog = document.getElementById('cat-progress');
       btn.classList.add('btn-loading'); btn.disabled = true;
+      var t0 = Date.now();
+      // Poll live progress so the user sees it's actually working (rules/map/AI
+      // counts + elapsed) instead of a blind spinner.
+      var poll = setInterval(async function () {
+        try {
+          var pr = await apiFetch('/api/categorize/progress');
+          if (!pr.ok) return;
+          var p = await pr.json();
+          if (!prog) return;
+          var secs = Math.round((Date.now() - t0) / 1000);
+          if (p.running === false) { prog.textContent = ''; return; }
+          var done = (p.by_rules || 0) + (p.by_teller_map || 0) + (p.by_ai || 0);
+          var phase = p.phase === 'ai' ? 'AI categorizing' : 'Applying rules';
+          prog.textContent = phase + '… ' + done + ' done (' + (p.by_rules || 0) + ' rules · ' + (p.by_teller_map || 0) + ' map · ' + (p.by_ai || 0) + ' AI) · ' + secs + 's';
+        } catch (e) { /* keep polling */ }
+      }, 1500);
       try {
         var res = await apiFetch('/api/categorize', { method: 'POST' });
         var data = await res.json();
         if (res.ok) {
-          showMsg('Categorized ' + data.categorized + ' transactions (' + data.tokens_used + ' tokens, ~$' + data.estimated_cost + '). ' + data.remaining + ' remaining.', true);
+          showMsg('Categorized ' + data.categorized + ' transactions (' + data.categorized_by_rules + ' rules, ' + data.categorized_by_teller_map + ' map, ' + data.categorized_by_ai + ' AI; ~$' + data.estimated_cost + '). ' + data.remaining + ' remaining.' + (data.budget_hit ? ' AI budget cap reached — raise it to keep going.' : ''), true);
           loadCatStatus();
           loadCatAccuracy();
         } else showMsg(data.error || 'Failed', false);
       } catch (e) { showMsg(e.message, false); }
-      btn.classList.remove('btn-loading'); btn.disabled = false;
+      finally {
+        clearInterval(poll);
+        if (prog) prog.textContent = '';
+        btn.classList.remove('btn-loading'); btn.disabled = false;
+      }
     }
     async function loadCatAccuracy() {
       try {
@@ -1383,13 +1404,17 @@
             var sres = await apiFetch('/api/sync/reconcile/status');
             if (!sres.ok) return;
             var st = await sres.json();
-            if (!st.running) {
-              clearInterval(reconcilePoll); reconcilePoll = null;
-              rb.disabled = false; rb.textContent = prev;
-              if (st.error) showMsg('Reconcile finished with errors: ' + st.error, false);
-              else showMsg('Reconcile complete.', true);
-              loadDataHealth();
+            if (st.running) {
+              // Live subtext on the button: current phase + elapsed seconds.
+              var secs = st.started_at ? Math.round((Date.now() - new Date(st.started_at).getTime()) / 1000) : 0;
+              rb.textContent = (st.phase || 'Reconciling') + '… ' + secs + 's';
+              return;
             }
+            clearInterval(reconcilePoll); reconcilePoll = null;
+            rb.disabled = false; rb.textContent = prev;
+            if (st.error) showMsg('Reconcile finished with errors: ' + st.error, false);
+            else showMsg('Reconcile complete.', true);
+            loadDataHealth();
           } catch (e) { /* keep polling */ }
         }, 4000);
       }

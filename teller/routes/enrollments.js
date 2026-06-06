@@ -398,15 +398,18 @@ async function reconcileTeller(days = 90) {
 async function runReconcile(days, provider) {
   const out = { days, provider };
   if (provider === "teller" || provider === "all") {
+    reconcileJob.phase = "Re-fetching Teller transactions";
     try { out.teller = await reconcileTeller(days); }
     catch (e) { out.teller = { error: e.message }; }
   }
   if (provider === "plaid" || provider === "all") {
+    reconcileJob.phase = "Re-walking Plaid history (this is the slow part)";
     try {
       const { reconcilePlaidTransactions } = require("./investments");
       out.plaid = await reconcilePlaidTransactions();
     } catch (e) { out.plaid = { error: e.message }; }
   }
+  reconcileJob.phase = "Finalizing";
   await pool.query("UPDATE user_settings SET last_reconcile_at = now(), last_txn_sync_at = now() WHERE id = 1").catch(() => {});
   return out;
 }
@@ -415,7 +418,7 @@ async function runReconcile(days, provider) {
 // re-walk (up to 2 years across every item) and can take a while, so the UI
 // runs it in the background and polls /status; on completion we push a
 // notification. Single-operator, single-process app → one job at a time.
-let reconcileJob = { running: false, started_at: null, finished_at: null, provider: null, days: null, result: null, error: null };
+let reconcileJob = { running: false, phase: null, started_at: null, finished_at: null, provider: null, days: null, result: null, error: null };
 
 function summarizeReconcile(out) {
   const leg = (r) => r ? (r.error ? "error" : ((r.transactions_added ?? r.added ?? 0) + " recovered")) : null;
@@ -440,7 +443,7 @@ router.post("/api/sync/reconcile", async (req, res) => {
     if (reconcileJob.running) {
       return res.status(409).json({ running: true, started_at: reconcileJob.started_at, error: "A reconcile is already running." });
     }
-    reconcileJob = { running: true, started_at: new Date().toISOString(), finished_at: null, provider, days, result: null, error: null };
+    reconcileJob = { running: true, phase: "Starting", started_at: new Date().toISOString(), finished_at: null, provider, days, result: null, error: null };
     // Fire-and-forget. Completion is reported via the status endpoint + a push.
     (async () => {
       let out;

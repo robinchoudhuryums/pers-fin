@@ -284,8 +284,8 @@ describe("F3 / DC-2 / AI-7 — source-pinned", () => {
     assert.match(inv, /FROM plaid_items\s+WHERE status = 'GOOD'/);
   });
   it("DC-2: categorize records the usage row BEFORE the apply loop", () => {
-    const usageIdx = cat.indexOf("AI returned ${categories.length}");
-    const applyIdx = cat.indexOf("Apply AI-assigned categories to the rows");
+    const usageIdx = cat.indexOf("AI returned ${catCount}");
+    const applyIdx = cat.indexOf("for (const cat of toolBlock.input.categories)");
     assert.ok(usageIdx > 0, "usage-row text present");
     assert.ok(applyIdx > usageIdx, "usage INSERT must precede the apply loop");
   });
@@ -726,5 +726,52 @@ describe("Categorize accuracy: provenance stamping + sampler endpoints", () => {
     assert.equal(res.body.ok, true);
     const upd = seen.find(q => /category_was_correct = true/.test(q.sql) && /user_category_source = 'ai'/.test(q.sql));
     assert.ok(upd, "correct verdict updates only AI-sourced rows and records was_correct=true");
+  });
+});
+
+// ===========================================================================
+// UX round: login→dashboard, categorize loop + progress, account dedupe
+// ===========================================================================
+describe("Root path redirects to the dashboard (login no longer lands on Accounts)", () => {
+  const acct = fs.readFileSync(path.join(__dirname, "../teller/pages/accounts.js"), "utf8");
+  it("serves Accounts at /accounts and redirects / to /dashboard (basePath-aware)", () => {
+    assert.match(acct, /router\.get\("\/accounts", renderAccounts\)/);
+    assert.match(acct, /router\.get\("\/", \(req, res\) => res\.redirect\(\(req\.baseUrl \|\| ""\) \+ "\/dashboard"\)\)/);
+  });
+
+  it("behaviorally redirects / → <baseUrl>/dashboard", async () => {
+    const app = express();
+    app.use(require("../teller/pages/accounts")({ TELLER_APP_ID: "x", TELLER_ENV: "sandbox" }));
+    const res = await supertest(app).get("/").expect(302);
+    assert.equal(res.headers.location, "/dashboard");
+  });
+});
+
+describe("Categorize: AI step loops up to a per-run cap + exposes live progress", () => {
+  const cat = fs.readFileSync(path.join(__dirname, "../teller/routes/categorize.js"), "utf8");
+  it("loops batches with a re-checked budget gate, bounded by AI_MAX_PER_RUN", () => {
+    assert.match(cat, /const AI_MAX_PER_RUN = \d+;/);
+    assert.match(cat, /while \(aiProcessed < AI_MAX_PER_RUN\)/);
+    assert.match(cat, /if \(\(await monthSpendCents\(\)\) >= budgetCents\) \{ budgetHit = true; break; \}/);
+  });
+  it("GET /api/categorize/progress reports the live tracker", async () => {
+    dbModule.pool.query = async () => ({ rows: [] });
+    const app = express();
+    app.use(express.json());
+    app.use(require("../teller/routes/categorize"));
+    const res = await supertest(app).get("/api/categorize/progress").expect(200);
+    assert.ok("running" in res.body && "by_ai" in res.body);
+  });
+});
+
+describe("Dashboard dedupes the Plaid brokerage twin from the accounts grid", () => {
+  const ejs = fs.readFileSync(path.join(__dirname, "../teller/views/dashboard.ejs"), "utf8");
+  it("filters linked_accounts rows whose account_id matches an investment plaid_account_id", () => {
+    assert.match(ejs, /invPlaidIds = new Set\(investments\.filter/);
+    assert.match(ejs, /accounts = accounts\.filter\(function\(a\)\{ return !\(a\.account_id && invPlaidIds\.has\(String\(a\.account_id\)\)\); \}\)/);
+  });
+  it("offers a manual credit-limit input wired to PATCH /:id/balance", () => {
+    assert.match(ejs, /data-limit-account/);
+    assert.match(ejs, /\/balance', \{\s*method: 'PATCH'[\s\S]*credit_limit: lim/);
   });
 });
