@@ -307,9 +307,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (623 tests as of latest); use
+  Perfin and Per-sistant test files (625 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 623 tests across 17 test files (incl.
+  Current count: 625 tests across 17 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -647,6 +647,17 @@ shell/
   to dispatch (returns `{ sent: false, reason: "missing_secret" }`) — the
   receiver was already rejecting unsigned posts, so failures are now visible
   to the caller instead of being warned-and-dropped opaquely.
+  **Under the unified shell, delivery is IN-PROCESS** — the shell calls
+  `persistent.setEmbeddedPersistentPool(persistent.pool)` (in `routes/persistent.js`),
+  and `sendPerSistantWebhook` short-circuits the three email events
+  (`insights_generated`, `weekly_summary`, `daily_summary`) through
+  `deliverDigestInProcess`, which INSERTs straight into Per-sistant's `emails`
+  table (recipient = `perfin_webhook_recipient` → `SMTP_FROM` → `SMTP_USER` →
+  draft) — no `persistent_url`/secret/HMAC needed. The HTTP webhook path remains
+  the standalone fallback, and the `test` event always uses HTTP (it exists to
+  probe the webhook config). `GET /api/settings` returns `embedded` so the
+  Settings UI suppresses the "configure the webhook" digest prereq warning when
+  embedded.
 - **Weekly digest email**: standing once-per-week Monday-morning channel
   (independent of `insights_cadence_days`). Fires the `weekly_summary`
   webhook event with `{ subject, html_body, plain_text }`, rendered by
@@ -978,7 +989,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 623 tests passing across 17 test files (Perfin + Per-sistant)
+- 625 tests passing across 17 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash

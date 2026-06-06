@@ -582,3 +582,56 @@ describe("Auto-sync runs a categorization sweep after syncing", () => {
     assert.match(startup, /const catRes = await runCategorize\(\)/);
   });
 });
+
+// ===========================================================================
+// In-process digest delivery (unified shell) — no webhook config required
+// ===========================================================================
+describe("Per-sistant digest: embedded delivery writes directly to the emails table", () => {
+  const persistent = require("../teller/routes/persistent");
+
+  it("sendPerSistantWebhook inserts a scheduled email via the wired pool (no HTTP)", async () => {
+    const queries = [];
+    const mockPersistentPool = {
+      query: async (sql, params) => {
+        queries.push({ sql, params });
+        if (/perfin_webhook_recipient/.test(sql)) {
+          return { rows: [{ perfin_webhook_recipient: "me@example.com" }] };
+        }
+        return { rows: [] };
+      },
+    };
+    persistent.setEmbeddedPersistentPool(mockPersistentPool);
+    try {
+      const res = await persistent.sendPerSistantWebhook("weekly_summary", {
+        subject: "Weekly", html_body: "<b>hi</b>", plain_text: "hi",
+      });
+      assert.equal(res.sent, true);
+      assert.equal(res.delivery, "in_process");
+      assert.equal(res.stored, "scheduled");
+      assert.equal(res.recipient, "me@example.com");
+      const insert = queries.find(q => /INSERT INTO emails/.test(q.sql) && /scheduled/.test(q.sql));
+      assert.ok(insert, "must insert a scheduled email row");
+      assert.equal(insert.params[1], "me@example.com");
+    } finally {
+      persistent.setEmbeddedPersistentPool(null); // don't leak into other tests
+    }
+  });
+
+  it("falls back to a draft when no recipient is configured", async () => {
+    const origFrom = process.env.SMTP_FROM, origUser = process.env.SMTP_USER;
+    delete process.env.SMTP_FROM; delete process.env.SMTP_USER;
+    const queries = [];
+    persistent.setEmbeddedPersistentPool({
+      query: async (sql, params) => { queries.push({ sql, params }); return { rows: [] }; },
+    });
+    try {
+      const res = await persistent.sendPerSistantWebhook("daily_summary", { subject: "D", plain_text: "x" });
+      assert.equal(res.stored, "draft");
+      assert.ok(queries.find(q => /INSERT INTO emails/.test(q.sql) && /'draft'/.test(q.sql)));
+    } finally {
+      persistent.setEmbeddedPersistentPool(null);
+      if (origFrom) process.env.SMTP_FROM = origFrom;
+      if (origUser) process.env.SMTP_USER = origUser;
+    }
+  });
+});

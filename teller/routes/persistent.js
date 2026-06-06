@@ -52,10 +52,72 @@ async function getPersistentConfig() {
   }
 }
 
+// Under the unified shell both apps share a process; the shell registers
+// Per-sistant's pg Pool here so digest/insight emails are delivered DIRECTLY
+// into Per-sistant's `emails` table — no HTTP webhook, no persistent_url, no
+// shared HMAC secret required. Standalone deployments leave this null and fall
+// back to the signed HTTP webhook below.
+let _embeddedPersistentPool = null;
+function setEmbeddedPersistentPool(p) { _embeddedPersistentPool = p; }
+
+// The three email-bearing events all carry { subject, html_body, plain_text }.
+const EMAIL_EVENTS = new Set(["insights_generated", "weekly_summary", "daily_summary"]);
+
+// In-process delivery — mirrors what apps/per-sistant/routes/perfin.js does on
+// receipt of the HTTP webhook (recipient resolution + emails-table insert), but
+// against the wired pool so no network round-trip or signature is involved.
+async function deliverDigestInProcess(event, data) {
+  const pp = _embeddedPersistentPool;
+  try {
+    const setR = await pp.query(
+      "SELECT perfin_webhook_recipient FROM user_settings WHERE id = 1"
+    ).catch(() => ({ rows: [] }));
+    const recipient = (setR.rows[0] && setR.rows[0].perfin_webhook_recipient)
+      || process.env.SMTP_FROM || process.env.SMTP_USER || null;
+    const fallbackSubject = event === "weekly_summary"
+      ? "Perfin: Your Weekly Financial Digest"
+      : event === "daily_summary"
+        ? "Perfin: Yesterday's Activity"
+        : "Perfin AI Financial Analysis";
+    const sendName = {
+      weekly_summary: "Perfin Weekly Digest",
+      daily_summary: "Perfin Daily Digest",
+      insights_generated: "Perfin Insights",
+    }[event] || "Perfin";
+    const subject = (data && data.subject) || fallbackSubject;
+    const body = (data && data.plain_text) || "(no body)";
+    const html = (data && data.html_body) || null;
+    if (!recipient) {
+      // No destination configured — save as a draft so the content isn't lost,
+      // matching the receiver's behavior.
+      await pp.query(
+        "INSERT INTO emails (recipient_email, subject, body, body_html, status) VALUES ($1, $2, $3, $4, 'draft')",
+        ["unset@localhost", subject, body, html]
+      );
+      return { sent: true, delivery: "in_process", stored: "draft", reason: "no_recipient_configured" };
+    }
+    await pp.query(
+      "INSERT INTO emails (recipient_name, recipient_email, subject, body, body_html, status, scheduled_at) VALUES ($1, $2, $3, $4, $5, 'scheduled', now())",
+      [sendName, recipient, subject, body, html]
+    );
+    return { sent: true, delivery: "in_process", stored: "scheduled", recipient };
+  } catch (err) {
+    console.error(`deliverDigestInProcess[${event}]: ${err.message}`);
+    return { sent: false, error: err.message };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Helper: send webhook to Per-sistant
 // ---------------------------------------------------------------------------
 async function sendPerSistantWebhook(event, data) {
+  // Embedded fast-path: deliver the email directly via the wired pool. Bypasses
+  // the persistent_url/secret prerequisite entirely under the unified shell.
+  // (The "test" event stays on the HTTP path — it exists to probe the webhook
+  // config, which only matters for standalone deployments.)
+  if (_embeddedPersistentPool && EMAIL_EVENTS.has(event)) {
+    return deliverDigestInProcess(event, data);
+  }
   const config = await getPersistentConfig();
   if (!config || !config.enabled) return { sent: false, reason: "not_configured" };
   // A configured-but-undecryptable secret means TOKEN_ENCRYPTION_PASSPHRASE no
@@ -344,3 +406,4 @@ router.post("/api/sso/validate", ssoLimiter, async (req, res) => {
 // Export both the router and the webhook sender function (for use by other routes)
 module.exports = router;
 module.exports.sendPerSistantWebhook = sendPerSistantWebhook;
+module.exports.setEmbeddedPersistentPool = setEmbeddedPersistentPool;

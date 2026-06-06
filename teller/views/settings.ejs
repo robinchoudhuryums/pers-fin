@@ -497,8 +497,11 @@
         document.getElementById('weekly-digest-day-select').value = String(s.weekly_digest_day ?? 1);
         var digestPrereq = document.getElementById('weekly-digest-prereq');
         if (digestPrereq) {
+          // Under the unified shell (embedded), digests deliver in-process via
+          // the wired Per-sistant pool — no webhook config needed. Only warn in
+          // standalone deployments where the HTTP webhook is the only path.
           var hasWebhook = !!(s.persistent_url && s.persistent_webhook_enabled);
-          digestPrereq.style.display = hasWebhook ? 'none' : 'block';
+          digestPrereq.style.display = (s.embedded || hasWebhook) ? 'none' : 'block';
         }
         // #19: daily digest control
         var dailyToggle = document.getElementById('daily-digest-toggle');
