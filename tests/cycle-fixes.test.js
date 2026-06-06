@@ -560,7 +560,7 @@ describe("Categorize: free rule + Teller-map sweep is unbounded; only AI is capp
   const cat = fs.readFileSync(path.join(__dirname, "../teller/routes/categorize.js"), "utf8");
   it("applies rules in bulk via UPDATE ... RETURNING over the uncategorized predicate", () => {
     assert.match(cat, /FREE PATH 1 — user-defined rules, bulk-applied/);
-    assert.match(cat, /UPDATE transactions SET user_category = \$3\s*\n\s*WHERE \$\{uncatPredicate\} AND \$\{cond\}/);
+    assert.match(cat, /UPDATE transactions SET user_category = \$3, user_category_source = 'rule',[\s\S]*?WHERE \$\{uncatPredicate\} AND \$\{cond\}/);
   });
   it("applies the Teller/Plaid category map in bulk (one UPDATE per source category)", () => {
     assert.match(cat, /for \(const \[tellerCat, ourCat\] of Object\.entries\(TELLER_CATEGORY_MAP\)\)/);
@@ -670,5 +670,61 @@ describe("Reconcile: background mode is opt-in; synchronous stays the default", 
     const src = fs.readFileSync(path.join(__dirname, "../teller/routes/enrollments.js"), "utf8");
     assert.match(src, /if \(req\.body\.background === true\)/);
     assert.match(src, /GET \/api\/sync\/reconcile\/status/);
+  });
+});
+
+// ===========================================================================
+// ML Categorization accuracy sampler
+// ===========================================================================
+describe("Categorize accuracy: provenance stamping + sampler endpoints", () => {
+  const cat = fs.readFileSync(path.join(__dirname, "../teller/routes/categorize.js"), "utf8");
+
+  it("AI/rule/teller-map writes stamp user_category_source", () => {
+    assert.match(cat, /user_category_source = 'ai'/);
+    assert.match(cat, /user_category_source = 'rule'/);
+    assert.match(cat, /user_category_source = 'teller_map'/);
+  });
+
+  it("GET /api/categorize/accuracy computes a % over verified AI rows", async () => {
+    dbModule.pool.query = async () => ({ rows: [{ ai_total: "10", verified: "4", correct: "3" }] });
+    const app = express();
+    app.use(express.json());
+    app.use(require("../teller/routes/categorize"));
+    const res = await supertest(app).get("/api/categorize/accuracy").expect(200);
+    assert.equal(res.body.ai_total, 10);
+    assert.equal(res.body.verified, 4);
+    assert.equal(res.body.correct, 3);
+    assert.equal(res.body.unverified, 6);
+    assert.equal(res.body.accuracy_pct, 75); // 3/4
+  });
+
+  it("accuracy-review requires a corrected_category when marking wrong", async () => {
+    dbModule.pool.query = async () => ({ rows: [] });
+    const app = express();
+    app.use(express.json());
+    app.use(require("../teller/routes/categorize"));
+    await supertest(app)
+      .post("/api/categorize/accuracy-review")
+      .send({ transaction_id: "t1", correct: false })
+      .expect(400);
+  });
+
+  it("accuracy-review marks a row correct and stamps the verdict", async () => {
+    const seen = [];
+    dbModule.pool.query = async (sql, params) => {
+      seen.push({ sql, params });
+      if (/UPDATE transactions/.test(sql)) return { rows: [{ merchant: "Starbucks" }] };
+      return { rows: [] };
+    };
+    const app = express();
+    app.use(express.json());
+    app.use(require("../teller/routes/categorize"));
+    const res = await supertest(app)
+      .post("/api/categorize/accuracy-review")
+      .send({ transaction_id: "t1", correct: true })
+      .expect(200);
+    assert.equal(res.body.ok, true);
+    const upd = seen.find(q => /category_was_correct = true/.test(q.sql) && /user_category_source = 'ai'/.test(q.sql));
+    assert.ok(upd, "correct verdict updates only AI-sourced rows and records was_correct=true");
   });
 });

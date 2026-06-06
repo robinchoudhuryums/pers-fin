@@ -227,6 +227,15 @@
       <div class="setting-info"><div class="name">Uncategorized</div><div class="desc">Transactions without a category assignment</div></div>
       <div class="setting-control"><span id="uncat-count" style="font-size:12px;color:var(--text-muted);">--</span></div>
     </div>
+    <div class="setting-row">
+      <div class="setting-info">
+        <div class="name">AI Accuracy</div>
+        <div class="desc">Verify a sample of AI-assigned categories to track how accurate ML categorization is.</div>
+        <div id="cat-accuracy-stat" style="font-size:12px;color:var(--text-muted);margin-top:4px;">--</div>
+      </div>
+      <div class="setting-control"><button class="btn" id="cat-verify-btn">Verify a sample</button></div>
+    </div>
+    <div id="cat-verify-panel" style="display:none;padding:8px 0;"></div>
   </div>
 
   <div class="section"><h2>API Usage History</h2>
@@ -770,9 +779,80 @@
         if (res.ok) {
           showMsg('Categorized ' + data.categorized + ' transactions (' + data.tokens_used + ' tokens, ~$' + data.estimated_cost + '). ' + data.remaining + ' remaining.', true);
           loadCatStatus();
+          loadCatAccuracy();
         } else showMsg(data.error || 'Failed', false);
       } catch (e) { showMsg(e.message, false); }
       btn.classList.remove('btn-loading'); btn.disabled = false;
+    }
+    async function loadCatAccuracy() {
+      try {
+        var res = await apiFetch('/api/categorize/accuracy');
+        if (!res.ok) return;
+        var d = await res.json();
+        var el = document.getElementById('cat-accuracy-stat');
+        if (!el) return;
+        if (d.verified > 0) {
+          el.textContent = d.accuracy_pct + '% accurate (' + d.correct + '/' + d.verified + ' verified · ' + d.unverified + ' unverified of ' + d.ai_total + ' AI-tagged)';
+        } else if (d.ai_total > 0) {
+          el.textContent = 'No samples verified yet · ' + d.ai_total + ' AI-tagged transactions';
+        } else {
+          el.textContent = 'No AI-categorized transactions yet — run Categorize first.';
+        }
+      } catch (e) { /* non-critical */ }
+    }
+    function escAttr(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+    async function loadAccuracySample() {
+      var panel = document.getElementById('cat-verify-panel');
+      if (!panel) return;
+      panel.style.display = 'block';
+      panel.innerHTML = '<div style="font-size:12px;color:var(--text-muted);">Loading sample…</div>';
+      try {
+        var res = await apiFetch('/api/categorize/accuracy-sample?limit=8');
+        var d = await res.json();
+        if (!res.ok) { panel.innerHTML = '<div style="font-size:12px;color:var(--red,#eb6b6b);">' + (d.error || 'Failed to load sample') + '</div>'; return; }
+        if (!d.transactions || d.transactions.length === 0) {
+          panel.innerHTML = '<div style="font-size:12px;color:var(--text-muted);">Nothing left to verify — all AI categorizations have been reviewed.</div>';
+          return;
+        }
+        var cats = d.categories || [];
+        var rows = d.transactions.map(function(t) {
+          var opts = cats.map(function(c) { return '<option value="' + escAttr(c) + '"' + (c === t.ai_category ? ' selected' : '') + '>' + escAttr(c) + '</option>'; }).join('');
+          return '<div class="cat-verify-row" data-id="' + escAttr(t.transaction_id) + '" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid var(--card-border);">' +
+            '<div style="flex:1 1 160px;min-width:140px;">' +
+              '<div style="font-size:13px;">' + escAttr(t.merchant) + '</div>' +
+              '<div style="font-size:11px;color:var(--text-muted);">$' + Math.abs(t.amount).toFixed(2) + ' · ' + escAttr(String(t.date).slice(0,10)) + ' · AI: <strong>' + escAttr(t.ai_category) + '</strong></div>' +
+            '</div>' +
+            '<button type="button" class="btn cat-correct" style="min-height:36px;">Correct</button>' +
+            '<select class="cat-fix-select" style="min-height:36px;">' + opts + '</select>' +
+            '<button type="button" class="btn cat-wrong" style="min-height:36px;">Wrong → save</button>' +
+          '</div>';
+        }).join('');
+        panel.innerHTML = rows;
+        Array.prototype.forEach.call(panel.querySelectorAll('.cat-verify-row'), function(row) {
+          var id = row.getAttribute('data-id');
+          row.querySelector('.cat-correct').addEventListener('click', function() { submitAccuracyReview(id, true, null, row); });
+          row.querySelector('.cat-wrong').addEventListener('click', function() {
+            var corrected = row.querySelector('.cat-fix-select').value;
+            submitAccuracyReview(id, false, corrected, row);
+          });
+        });
+      } catch (e) { panel.innerHTML = '<div style="font-size:12px;color:var(--red,#eb6b6b);">' + e.message + '</div>'; }
+    }
+    async function submitAccuracyReview(id, correct, corrected, row) {
+      try {
+        var body = { transaction_id: id, correct: correct };
+        if (!correct) { body.corrected_category = corrected; body.create_rule = true; }
+        var res = await apiFetch('/api/categorize/accuracy-review', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        var d = await res.json();
+        if (res.ok) {
+          row.style.opacity = '0.4';
+          Array.prototype.forEach.call(row.querySelectorAll('button,select'), function(el){ el.disabled = true; });
+          showMsg(correct ? 'Marked correct.' : 'Corrected' + (d.rule_created ? ' + rule created.' : '.'), true);
+          loadCatAccuracy();
+        } else showMsg(d.error || 'Failed', false);
+      } catch (e) { showMsg(e.message, false); }
     }
     // Push notifications
     async function checkPushStatus() {
@@ -1175,6 +1255,7 @@
       ['reset-btn', 'click', resetContext],
       ['rebuild-btn', 'click', rebuildContext],
       ['categorize-btn', 'click', runCategorize],
+      ['cat-verify-btn', 'click', loadAccuracySample],
       ['push-btn', 'click', togglePush],
       ['test-push-btn', 'click', testPush],
       ['keepalive-toggle', 'change', function() { updateSetting('keep_alive_enabled', this.checked); }],
@@ -1342,6 +1423,6 @@
     })();
 
     checkPushStatus();
-    loadSettings(); loadInsights(); loadUsageHistory(); loadCatStatus(); loadBiometricCredentials(); loadDataHealth();
+    loadSettings(); loadInsights(); loadUsageHistory(); loadCatStatus(); loadCatAccuracy(); loadBiometricCredentials(); loadDataHealth();
   </script>
 </body></html>

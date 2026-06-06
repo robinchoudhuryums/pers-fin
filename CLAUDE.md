@@ -307,9 +307,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (628 tests as of latest); use
+  Perfin and Per-sistant test files (632 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 628 tests across 17 test files (incl.
+  Current count: 632 tests across 17 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -989,7 +989,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 628 tests passing across 17 test files (Perfin + Per-sistant)
+- 632 tests passing across 17 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash
@@ -1154,6 +1154,15 @@ POST /api/categorize       # ML categorize transactions (rules first, then Claud
 GET  /api/categorize/status # ML categorization status
 GET  /api/categorize/review-queue # candidates the next AI categorize would send to Claude
 POST /api/categorize/review # apply a single user decision (sets user_category, optionally creates rule)
+GET  /api/categorize/accuracy # running ML accuracy over verified AI rows
+                            # { ai_total, verified, correct, unverified, accuracy_pct }
+GET  /api/categorize/accuracy-sample # random unverified AI-categorized rows to review
+                            # (query: limit 1-25 default 8) → { transactions[], categories[] }
+POST /api/categorize/accuracy-review # record a verdict on a sampled AI row
+                            # (body: transaction_id, correct: bool,
+                            # corrected_category? (required when wrong), create_rule?).
+                            # Preserves source='ai' so the miss still counts in stats;
+                            # the corrected category still wins via user_category.
 PATCH /api/transactions/:id/category # manually set transaction category — writes user_category
 PATCH /api/transactions/bulk-category # bulk update categories — writes user_category
 GET  /api/categorization-rules       # list all categorization rules
@@ -1370,6 +1379,16 @@ standalone-mode fallback if either app is run on its own Render service.
   are stored as plain strings, not the `category[]` array literal.) Display
   layers use `COALESCE(user_category, category[1])` everywhere, including the
   categorize candidate filter so already-categorized rows aren't re-sent to AI.
+  Categorization provenance + accuracy: `user_category_source TEXT`
+  (`'ai'|'rule'|'teller_map'|'manual'|'review'`) records HOW `user_category`
+  was set; `category_verified_at TIMESTAMPTZ` + `category_was_correct BOOLEAN`
+  capture the user's verdict when reviewing a sampled AI categorization. The
+  accuracy sampler (`GET /api/categorize/accuracy[-sample]`,
+  `POST /api/categorize/accuracy-review`) targets `user_category_source = 'ai'`
+  (partial index `idx_txn_cat_source_ai`) and a "wrong" verdict keeps the row
+  `'ai'`-sourced so the miss counts in the running accuracy %, while the
+  corrected category still wins via `user_category`. Re-categorizing a row
+  clears the prior verdict.
 - `transaction_splits` (Phase B3): subdivides a single Teller transaction into
   multiple `(amount, category, merchant_name, notes)` rows that REPLACE the
   parent in per-category aggregations. `parent_transaction_id` references

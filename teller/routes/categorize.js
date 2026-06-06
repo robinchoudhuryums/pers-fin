@@ -102,7 +102,8 @@ async function runCategorize() {
       // Write to user_category (scalar TEXT), NOT category[] — a Teller/Plaid
       // re-sync does `category = EXCLUDED.category` and would clobber the latter.
       const r = await pool.query(
-        `UPDATE transactions SET user_category = $3
+        `UPDATE transactions SET user_category = $3, user_category_source = 'rule',
+           category_verified_at = NULL, category_was_correct = NULL
          WHERE ${uncatPredicate} AND ${cond}
          RETURNING transaction_id`,
         [OUR_CATEGORIES_PG, rule.merchant_pattern, rule.category]
@@ -122,7 +123,8 @@ async function runCategorize() {
     for (const [tellerCat, ourCat] of Object.entries(TELLER_CATEGORY_MAP)) {
       if (!CATEGORIES.includes(ourCat)) continue;
       const r = await pool.query(
-        `UPDATE transactions SET user_category = $3
+        `UPDATE transactions SET user_category = $3, user_category_source = 'teller_map',
+           category_verified_at = NULL, category_was_correct = NULL
          WHERE ${uncatPredicate} AND LOWER(category[1]) = $2
          RETURNING transaction_id`,
         [OUR_CATEGORIES_PG, tellerCat, ourCat]
@@ -290,7 +292,11 @@ async function runCategorize() {
       const txn = afterTellerMap[idx];
       await pool.query(
         // Write to user_category (scalar) so a Teller/Plaid re-sync can't clobber it.
-        "UPDATE transactions SET user_category = $1 WHERE transaction_id = $2",
+        // Stamp source='ai' (+ clear any prior verification) so the accuracy
+        // sampler can target these rows and re-score a re-categorized one.
+        `UPDATE transactions SET user_category = $1, user_category_source = 'ai',
+           category_verified_at = NULL, category_was_correct = NULL
+         WHERE transaction_id = $2`,
         [cat.category, txn.transaction_id]
       );
       updated++;
@@ -404,7 +410,10 @@ router.post("/api/categorize/review", async (req, res) => {
   try {
     // Set user_category — the same path PATCH /api/transactions/:id/category uses.
     const upd = await pool.query(
-      "UPDATE transactions SET user_category = $1 WHERE transaction_id = $2 RETURNING transaction_id, COALESCE(user_merchant_name, merchant_name, name) AS merchant",
+      `UPDATE transactions SET user_category = $1, user_category_source = 'review',
+         category_verified_at = NULL, category_was_correct = NULL
+       WHERE transaction_id = $2
+       RETURNING transaction_id, COALESCE(user_merchant_name, merchant_name, name) AS merchant`,
       [category, transaction_id]
     );
     if (!upd.rows.length) return res.status(404).json({ error: "Transaction not found" });
@@ -440,7 +449,9 @@ router.patch("/api/transactions/:id/category", async (req, res) => {
   if (!CATEGORIES.includes(category)) return res.status(400).json({ error: `Invalid category. Must be one of: ${CATEGORIES.join(", ")}` });
   try {
     const result = await pool.query(
-      "UPDATE transactions SET user_category = $1 WHERE transaction_id = $2 RETURNING transaction_id, user_category",
+      `UPDATE transactions SET user_category = $1, user_category_source = 'manual',
+         category_verified_at = NULL, category_was_correct = NULL
+       WHERE transaction_id = $2 RETURNING transaction_id, user_category`,
       [category, req.params.id]
     );
     if (!result.rows.length) return res.status(404).json({ error: "Transaction not found" });
@@ -465,12 +476,146 @@ router.patch("/api/transactions/bulk-category", async (req, res) => {
   }
   try {
     const result = await pool.query(
-      `UPDATE transactions SET user_category = $1 WHERE transaction_id = ANY($2) RETURNING transaction_id`,
+      `UPDATE transactions SET user_category = $1, user_category_source = 'manual',
+         category_verified_at = NULL, category_was_correct = NULL
+       WHERE transaction_id = ANY($2) RETURNING transaction_id`,
       [category, transaction_ids]
     );
     res.json({ updated: result.rowCount });
   } catch (err) {
     console.error("bulk category error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// ============================================================================
+// ML Categorization accuracy — sample AI-assigned categories for verification
+// ============================================================================
+// The only categorizations whose "accuracy" is meaningful are the AI-assigned
+// ones (`user_category_source = 'ai'`) — rules and the Teller-map are
+// deterministic. The sampler surfaces unverified AI rows; the user confirms or
+// corrects each, and the verdicts drive a running accuracy %.
+
+// GET /api/categorize/accuracy — running accuracy over verified AI rows.
+router.get("/api/categorize/accuracy", async (_req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT
+         COUNT(*) FILTER (WHERE user_category_source = 'ai') AS ai_total,
+         COUNT(*) FILTER (WHERE user_category_source = 'ai' AND category_verified_at IS NOT NULL) AS verified,
+         COUNT(*) FILTER (WHERE user_category_source = 'ai' AND category_was_correct = true) AS correct
+       FROM transactions`
+    );
+    const row = r.rows[0] || {};
+    const aiTotal = parseInt(row.ai_total) || 0;
+    const verified = parseInt(row.verified) || 0;
+    const correct = parseInt(row.correct) || 0;
+    res.json({
+      ai_total: aiTotal,
+      verified,
+      correct,
+      unverified: aiTotal - verified,
+      accuracy_pct: verified > 0 ? Math.round((correct / verified) * 1000) / 10 : null,
+    });
+  } catch (err) {
+    console.error("categorize accuracy error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// GET /api/categorize/accuracy-sample?limit=N — a random sample of AI-assigned
+// categorizations the user hasn't verified yet.
+router.get("/api/categorize/accuracy-sample", async (req, res) => {
+  const limit = Math.max(1, Math.min(parseInt(req.query.limit) || 8, 25));
+  try {
+    const result = await pool.query(
+      `SELECT transaction_id,
+              COALESCE(user_merchant_name, merchant_name, name) AS merchant,
+              amount, date, user_category
+       FROM transactions
+       WHERE user_category_source = 'ai'
+         AND category_verified_at IS NULL
+         AND user_category IS NOT NULL
+       ORDER BY random()
+       LIMIT $1`,
+      [limit]
+    );
+    res.json({
+      transactions: result.rows.map(t => ({
+        transaction_id: t.transaction_id,
+        merchant: t.merchant,
+        amount: parseFloat(t.amount),
+        date: t.date,
+        ai_category: t.user_category,
+      })),
+      categories: CATEGORIES,
+    });
+  } catch (err) {
+    console.error("accuracy-sample error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// POST /api/categorize/accuracy-review — record a verdict on a sampled AI row.
+// Body: { transaction_id, correct: bool, corrected_category?, create_rule?: bool }.
+// correct=true  → mark verified-correct, leave the category as-is.
+// correct=false → set user_category to corrected_category (required), mark
+//                 verified-incorrect, and optionally create a rule so the same
+//                 merchant is auto-categorized correctly next time.
+router.post("/api/categorize/accuracy-review", async (req, res) => {
+  const { transaction_id, correct, corrected_category, create_rule } = req.body;
+  if (!transaction_id || typeof correct !== "boolean") {
+    return res.status(400).json({ error: "transaction_id and boolean correct are required" });
+  }
+  if (!correct) {
+    if (!corrected_category) return res.status(400).json({ error: "corrected_category is required when correct=false" });
+    if (!CATEGORIES.includes(corrected_category)) {
+      return res.status(400).json({ error: `Invalid category. Must be one of: ${CATEGORIES.join(", ")}` });
+    }
+  }
+  try {
+    let merchant = null;
+    if (correct) {
+      // Keep the AI category; just stamp the verdict. Source stays 'ai' so the
+      // row still counts toward the AI accuracy denominator.
+      const upd = await pool.query(
+        `UPDATE transactions
+           SET category_verified_at = now(), category_was_correct = true
+         WHERE transaction_id = $1 AND user_category_source = 'ai'
+         RETURNING COALESCE(user_merchant_name, merchant_name, name) AS merchant`,
+        [transaction_id]
+      );
+      if (!upd.rows.length) return res.status(404).json({ error: "AI-categorized transaction not found" });
+      merchant = upd.rows[0].merchant;
+    } else {
+      // Correct the category but PRESERVE source='ai' and record the miss, so
+      // the AI accuracy stats reflect the original (wrong) AI assignment. The
+      // user's corrected_category still wins everywhere via user_category.
+      const upd = await pool.query(
+        `UPDATE transactions
+           SET user_category = $2, category_verified_at = now(), category_was_correct = false
+         WHERE transaction_id = $1 AND user_category_source = 'ai'
+         RETURNING COALESCE(user_merchant_name, merchant_name, name) AS merchant`,
+        [transaction_id, corrected_category]
+      );
+      if (!upd.rows.length) return res.status(404).json({ error: "AI-categorized transaction not found" });
+      merchant = upd.rows[0].merchant;
+    }
+
+    let ruleCreated = false;
+    if (!correct && create_rule && merchant) {
+      await pool.query(
+        `INSERT INTO categorization_rules (merchant_pattern, category, match_type)
+         VALUES ($1, $2, 'contains')
+         ON CONFLICT (merchant_pattern, category) DO UPDATE SET
+           match_type = 'contains', is_active = true, updated_at = now()`,
+        [merchant.trim(), corrected_category]
+      );
+      ruleCreated = true;
+    }
+    res.json({ ok: true, transaction_id, correct, rule_created: ruleCreated });
+  } catch (err) {
+    console.error("accuracy-review error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
   }
 });
@@ -552,7 +697,8 @@ router.post("/api/categorization-rules/apply", async (_req, res) => {
       const result = await pool.query(
         // Write to user_category (scalar TEXT) so a Teller/Plaid re-sync (which
         // does `category = EXCLUDED.category`) can't clobber the applied rule.
-        `UPDATE transactions t SET user_category = $2
+        `UPDATE transactions t SET user_category = $2, user_category_source = 'rule',
+           category_verified_at = NULL, category_was_correct = NULL
          WHERE user_category IS NULL
            AND (
              category IS NULL
