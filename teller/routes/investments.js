@@ -382,7 +382,9 @@ router.post("/api/plaid/exchange-transactions", async (req, res) => {
         // balance is null (Schwab et al.) so brokerages don't show $0.
         const acctValue = sumHoldingsByAccount(holdings, secMap);
         for (const acct of investmentAccounts) {
-          const balance = acct.balances?.current ?? acctValue[acct.account_id] ?? 0;
+          // `||` not `??` — a reported balances.current of 0 (Schwab et al.)
+          // must fall through to the holdings-sum, not persist as $0.
+          const balance = acct.balances?.current || acctValue[acct.account_id] || 0;
           await pool.query(
             `INSERT INTO investment_accounts (name, institution, account_type, balance, plaid_account_id)
              VALUES ($1, $2, $3, $4, $5)
@@ -792,16 +794,14 @@ async function syncPlaidLiabilities(client, accessToken, plaidItemDbId) {
       await pool.query(
         `UPDATE linked_accounts SET
            apr = COALESCE($1, apr),
-           credit_limit = COALESCE($2, credit_limit),
-           minimum_payment = $3,
-           next_payment_due_date = $4,
-           last_payment_amount = $5,
-           last_payment_date = $6,
+           minimum_payment = $2,
+           next_payment_due_date = $3,
+           last_payment_amount = $4,
+           last_payment_date = $5,
            balance_updated_at = now()
-         WHERE account_id = $7 AND plaid_item_id = $8`,
+         WHERE account_id = $6 AND plaid_item_id = $7`,
         [
           purchaseApr?.apr_percentage || null,
-          cc.credit_limit || null,
           cc.minimum_payment_amount || null,
           cc.next_payment_due_date || null,
           cc.last_payment_amount || null,
@@ -811,6 +811,22 @@ async function syncPlaidLiabilities(client, accessToken, plaidItemDbId) {
         ]
       );
       updated++;
+    }
+
+    // Credit limit comes from the ACCOUNT balances, NOT the liabilities credit
+    // object — Plaid's CreditCardLiability carries no credit-limit field, so the
+    // old per-card read was always undefined and the limit was never sourced
+    // here. The liabilities response's `accounts[]` often carries balances.limit
+    // even when a plain accountsGet returns null for it (e.g. Discover), so
+    // populate it from there.
+    for (const acct of (libRes.data.accounts || [])) {
+      const lim = acct.balances?.limit;
+      if (lim != null && acct.account_id) {
+        await pool.query(
+          "UPDATE linked_accounts SET credit_limit = $1, balance_updated_at = now() WHERE account_id = $2 AND plaid_item_id = $3",
+          [lim, acct.account_id, plaidItemDbId]
+        );
+      }
     }
 
     // Student loans + mortgages — store summary on the linked_account
@@ -848,8 +864,13 @@ async function syncPlaidLiabilities(client, accessToken, plaidItemDbId) {
     if (err.response?.data?.error_code === "PRODUCTS_NOT_SUPPORTED") {
       return { credit: 0, student: 0, mortgage: 0, updated: 0, skipped: "not_supported" };
     }
-    console.error("Plaid liabilities sync error:", err.response?.data?.error_message || err.message);
-    return { credit: 0, student: 0, mortgage: 0, updated: 0, error: err.message };
+    // Surface the error_code so a missing/un-initialized Liabilities product
+    // (e.g. PRODUCT_NOT_READY, or an item linked before Liabilities was
+    // requested → needs a Plaid Link re-auth) is diagnosable instead of just a
+    // generic message. No APR/limit will load until liabilitiesGet succeeds.
+    const code = err.response?.data?.error_code || "UNKNOWN";
+    console.error(`Plaid liabilities sync error [${code}]:`, err.response?.data?.error_message || err.message);
+    return { credit: 0, student: 0, mortgage: 0, updated: 0, error: err.message, error_code: code };
   }
 }
 
@@ -1072,7 +1093,11 @@ async function syncAllPlaidHoldings() {
 
         for (const acct of accounts) {
           if (acct.type !== "investment") continue;
-          const balance = acct.balances?.current ?? acctValue[acct.account_id] ?? 0;
+          // Use `||` not `??`: Schwab (and others) report balances.current === 0
+          // for brokerage accounts and put the real value in holdings. With `??`
+          // a literal 0 isn't nullish, so the holdings-sum fallback was skipped
+          // and the account persisted as $0. `||` falls through 0 → holdings sum.
+          const balance = acct.balances?.current || acctValue[acct.account_id] || 0;
           // RETURNING the investment_accounts.id so the snapshot below can
           // attribute history to the right account (we key by plaid_account_id
           // here but the snapshot table uses the local SERIAL id).
@@ -1583,3 +1608,4 @@ module.exports.syncAllPlaidTransactions = syncAllPlaidTransactions;
 module.exports.reconcilePlaidTransactions = reconcilePlaidTransactions;
 module.exports.syncAllPlaidBalances = syncAllPlaidBalances;
 module.exports.syncAllPlaidHoldings = syncAllPlaidHoldings;
+module.exports.sumHoldingsByAccount = sumHoldingsByAccount; // exported for testing (Schwab $0 fallback)
