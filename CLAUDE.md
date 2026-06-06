@@ -307,9 +307,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (632 tests as of latest); use
+  Perfin and Per-sistant test files (638 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 632 tests across 17 test files (incl.
+  Current count: 638 tests across 17 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -989,7 +989,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 632 tests passing across 17 test files (Perfin + Per-sistant)
+- 638 tests passing across 17 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash
@@ -1154,6 +1154,8 @@ POST /api/categorize       # ML categorize transactions (rules first, then Claud
 GET  /api/categorize/status # ML categorization status
 GET  /api/categorize/review-queue # candidates the next AI categorize would send to Claude
 POST /api/categorize/review # apply a single user decision (sets user_category, optionally creates rule)
+GET  /api/categorize/progress # live progress of the running categorize pass
+                            # { running, phase, by_rules, by_teller_map, by_ai, ai_batches, remaining }
 GET  /api/categorize/accuracy # running ML accuracy over verified AI rows
                             # { ai_total, verified, correct, unverified, accuracy_pct }
 GET  /api/categorize/accuracy-sample # random unverified AI-categorized rows to review
@@ -1909,12 +1911,16 @@ income module, and bill-calendar income detection.
   the two FREE deterministic paths — user `categorization_rules` and the
   deterministic Teller/Plaid `TELLER_CATEGORY_MAP` — are applied as **bulk
   `UPDATE … RETURNING` over the ENTIRE uncategorized backlog** (no row cap),
-  because they're pure SQL and cost nothing. Only the paid Claude call is
-  bounded, to `AI_BATCH` (50) rows per invocation, since the shared
-  `INSIGHTS_MONTHLY_BUDGET_CENTS` cap throttles total AI spend anyway.
+  because they're pure SQL and cost nothing. The paid Claude call **loops** in
+  `AI_BATCH` (50)-row pages up to `AI_MAX_PER_RUN` (300) rows per invocation,
+  re-checking the shared `INSIGHTS_MONTHLY_BUDGET_CENTS` cap before each page and
+  stopping early when the cap is hit (returns `budget_hit: true`) or the backlog
+  drains — so one click makes a real dent instead of nibbling 50 rows.
   (Earlier the whole batch — rules + Teller-map + AI — shared a single
   `LIMIT 50`, so one "Categorize" click barely moved a large backlog and the
-  uncategorized count looked stuck.) A user who creates a rule for
+  uncategorized count looked stuck.) Live progress is published to a module
+  tracker polled by `GET /api/categorize/progress` so the Settings button shows
+  "AI categorizing… N done" instead of a blind spinner. A user who creates a rule for
   "Amazon" → "Shopping" will never pay for AI to categorize Amazon
   transactions. Rules are matched against `COALESCE(user_merchant_name,
   merchant_name, name)` so user-renamed merchants are also handled. All writes

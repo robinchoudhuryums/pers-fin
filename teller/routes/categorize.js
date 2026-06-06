@@ -55,6 +55,16 @@ router.get("/api/categorize/status", async (_req, res) => {
 // AI batch is capped — both for token/latency limits and because the shared
 // INSIGHTS_MONTHLY_BUDGET_CENTS cap throttles total AI spend anyway.
 const AI_BATCH = 50;
+// Max rows AI-categorized per runCategorize call. The loop processes AI_BATCH
+// rows at a time up to this ceiling (or until the budget cap / backlog runs
+// out), so one click makes a real dent in a large backlog. Budget-capped, so
+// this is a latency/sanity ceiling, not a cost control.
+const AI_MAX_PER_RUN = 300;
+
+// Live progress for the running categorize pass (single-operator, single
+// process → one pass at a time). Polled by GET /api/categorize/progress so the
+// UI can show "Categorized N so far…" instead of a blind spinner.
+let catProgress = { running: false, phase: null, by_rules: 0, by_teller_map: 0, by_ai: 0, ai_batches: 0, remaining: null, started_at: null };
 
 // runCategorize — orchestration extracted from POST /api/categorize so the
 // scheduler in startup.js can invoke it in-process. Returns:
@@ -65,6 +75,7 @@ async function runCategorize() {
   if (!Anthropic || !process.env.ANTHROPIC_API_KEY) {
     return { ok: false, status: 501, error: "Set ANTHROPIC_API_KEY to enable ML categorization." };
   }
+  catProgress = { running: true, phase: "free", by_rules: 0, by_teller_map: 0, by_ai: 0, ai_batches: 0, remaining: null, started_at: Date.now() };
   try {
     // -----------------------------------------------------------------
     // FREE deterministic sweep — runs over the ENTIRE uncategorized backlog,
@@ -133,23 +144,18 @@ async function runCategorize() {
     }
 
     // -----------------------------------------------------------------
-    // PAID AI path — a bounded batch of whatever the free sweep couldn't place
-    // (rows with no bank category, or a category not in the deterministic map).
+    // PAID AI path — LOOP bounded batches until the backlog is cleared, the
+    // per-run cap (AI_MAX_PER_RUN) is hit, or the monthly budget is exhausted.
+    // Looping (vs a single 50-row batch) means one "Categorize" click makes a
+    // real dent in a large backlog instead of nibbling 50 rows at a time.
     // -----------------------------------------------------------------
-    const result = await pool.query(
-      `SELECT transaction_id,
-              COALESCE(merchant_name, name) AS merchant,
-              amount, date, category, personal_finance_category
-       FROM transactions
-       WHERE ${uncatPredicate}
-       ORDER BY date DESC
-       LIMIT ${AI_BATCH}`,
-      [OUR_CATEGORIES_PG]
-    );
-    const afterTellerMap = result.rows;
+    catProgress.by_rules = ruleApplied;
+    catProgress.by_teller_map = tellerMapped;
+    catProgress.phase = "ai";
 
-    // Everything the free sweep could place is done; nothing left for AI.
-    if (afterTellerMap.length === 0) {
+    // Nothing left for AI after the free sweep.
+    if ((await countRemaining()) === 0) {
+      catProgress.remaining = 0;
       return {
         ok: true,
         categorized: ruleApplied + tellerMapped,
@@ -157,50 +163,44 @@ async function runCategorize() {
         categorized_by_teller_map: tellerMapped,
         categorized_by_ai: 0,
         tokens_used: 0,
-        remaining: await countRemaining(),
+        remaining: 0,
         estimated_cost: 0,
       };
     }
 
-    // Check monthly AI budget before calling Claude (shared cap with /api/insights)
+    // Shared monthly-spend computation (cap is shared with /api/insights).
     const budgetCents = parseInt(process.env.INSIGHTS_MONTHLY_BUDGET_CENTS) || 50;
-    const usageResult = await pool.query(
-      "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights WHERE created_at >= date_trunc('month', CURRENT_DATE)"
-    );
-    let estimatedCostCents = 0;
-    usageResult.rows.forEach(r => {
-      const cost = r.input_tokens
-        ? estimateCostGranular({ input_tokens: r.input_tokens, output_tokens: r.output_tokens, cache_read_input_tokens: r.cache_read_tokens || 0, cache_creation_input_tokens: r.cache_creation_tokens || 0 }, r.model_used)
-        : estimateCostUsd(r.tokens_used || 0, r.model_used);
-      estimatedCostCents += cost * 100;
-    });
-    if (estimatedCostCents >= budgetCents) {
+    const monthSpendCents = async () => {
+      const u = await pool.query(
+        "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights WHERE created_at >= date_trunc('month', CURRENT_DATE)"
+      );
+      let cents = 0;
+      u.rows.forEach(r => {
+        const cost = r.input_tokens
+          ? estimateCostGranular({ input_tokens: r.input_tokens, output_tokens: r.output_tokens, cache_read_input_tokens: r.cache_read_tokens || 0, cache_creation_input_tokens: r.cache_creation_tokens || 0 }, r.model_used)
+          : estimateCostUsd(r.tokens_used || 0, r.model_used);
+        cents += cost * 100;
+      });
+      return cents;
+    };
+
+    // Already over the cap before any AI work → explicit 429 with the
+    // raise-the-cap message (free paths still applied above).
+    if ((await monthSpendCents()) >= budgetCents) {
       return {
         ok: false,
         status: 429,
-        error: `Monthly AI budget reached ($${(estimatedCostCents / 100).toFixed(2)} of $${(budgetCents / 100).toFixed(2)} cap). Rules applied ${ruleApplied} transactions. Raise INSIGHTS_MONTHLY_BUDGET_CENTS to continue with AI.`,
+        error: `Monthly AI budget reached (of $${(budgetCents / 100).toFixed(2)} cap). Rules/Teller-map applied ${ruleApplied + tellerMapped} transactions. Raise INSIGHTS_MONTHLY_BUDGET_CENTS to continue with AI.`,
         categorized_by_rules: ruleApplied,
+        categorized_by_teller_map: tellerMapped,
       };
     }
 
     const settingsRow = await pool.query(
       "SELECT insights_model FROM user_settings WHERE id = 1"
     ).catch(() => ({ rows: [{ insights_model: "haiku" }] }));
-
-    // Use user's preferred model for categorization (default haiku — cheaper)
     const userModel = settingsRow.rows[0]?.insights_model || "haiku";
     const modelId = MODEL_MAP[userModel] || MODEL_MAP.haiku;
-
-    // Build the per-txn prompt lines. Include the bank's original category
-    // hint when present — it often disambiguates cryptic merchant strings
-    // (e.g. "SQ *MERCHANT" with hint "dining" is obviously Food & Drink).
-    const txnList = afterTellerMap.map((t, i) => {
-      const hint = Array.isArray(t.category) && t.category[0]
-        ? " [bank hint: " + t.category[0] + "]"
-        : "";
-      return (i + 1) + ". " + t.merchant + " — $" + parseFloat(t.amount).toFixed(2) + " on " + t.date + hint;
-    }).join("\n");
-
     const client = new Anthropic();
 
     // Use tool_use for structured output — guarantees valid JSON schema
@@ -226,10 +226,10 @@ async function runCategorize() {
       },
     };
 
-    // The system prompt is the big quality lever here. Listing categories
-    // with concrete examples cuts Haiku's "Other" rate dramatically and
-    // teaches it the boundary cases (Transfer vs Income, Food & Drink vs
-    // Groceries, Entertainment vs Subscription).
+    // The system prompt is the big quality lever here. Listing categories with
+    // concrete examples cuts Haiku's "Other" rate dramatically and teaches it
+    // the boundary cases. It's cache_control'd, so re-sending it each batch is
+    // cheap (cache reads, not fresh input).
     const systemPrompt =
       "You classify personal finance transactions into exactly one of these categories. " +
       "Pick the BEST fit based on the merchant name and bank hint. Use \"Other\" only when " +
@@ -237,95 +237,102 @@ async function runCategorize() {
       "CATEGORIES:\n" + CATEGORY_DESCRIPTIONS + "\n\n" +
       "Return your results via the categorize_transactions tool.";
 
-    const message = await client.messages.create({
-      model: modelId, max_tokens: 2000,
-      system: [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }],
-      tools: [categorizeTool],
-      tool_choice: { type: "tool", name: "categorize_transactions" },
-      messages: [{ role: "user", content: "Transactions:\n" + txnList }],
-    });
+    let aiUpdated = 0, aiTokens = 0, aiProcessed = 0, budgetHit = false;
+    while (aiProcessed < AI_MAX_PER_RUN) {
+      // Re-check the cap before each paid call so a mid-run exhaustion stops
+      // cleanly (returning what we got so far, not a 429).
+      if ((await monthSpendCents()) >= budgetCents) { budgetHit = true; break; }
 
-    const tokensUsed = (message.usage?.input_tokens || 0) + (message.usage?.output_tokens || 0);
-
-    // Extract structured output from tool_use block
-    const toolBlock = message.content.find(b => b.type === "tool_use");
-    if (!toolBlock || !toolBlock.input || !Array.isArray(toolBlock.input.categories)) {
-      console.error("AI did not return expected tool_use block");
-      return { ok: false, status: 500, error: "AI returned unexpected format" };
-    }
-    const categories = toolBlock.input.categories;
-
-    // Record token usage BEFORE applying categories (DC-2). The AI call is
-    // already billed by this point; recording the spend first ensures it counts
-    // against INSIGHTS_MONTHLY_BUDGET_CENTS even if the apply loop throws partway
-    // (the cost is independent of how many rows actually get updated). Earlier
-    // code wrote this AFTER the loop, so a mid-loop failure left the spend
-    // uncharged and the cap under-counted. The entry_type discriminator lets the
-    // dashboard hide these rows while the cost-cap queries still see them.
-    const usage = message.usage || {};
-    const tokensUsedForRow = (usage.input_tokens || 0) + (usage.output_tokens || 0);
-    const actualModel = message.model || modelId;
-    await pool.query(
-      `INSERT INTO financial_insights
-         (insight_text, model_used, tokens_used, input_tokens, output_tokens,
-          cache_read_tokens, cache_creation_tokens, entry_type)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'categorize')`,
-      [
-        `[ML Categorization] AI returned ${categories.length} categorization(s)`,
-        actualModel,
-        tokensUsedForRow,
-        usage.input_tokens || 0,
-        usage.output_tokens || 0,
-        usage.cache_read_input_tokens || 0,
-        usage.cache_creation_input_tokens || 0,
-      ]
-    ).catch(err => console.error("categorize usage tracking insert failed:", err.message));
-
-    // Apply AI-assigned categories to the rows that made it past the
-    // Teller-map fast path (afterTellerMap is the list Claude saw).
-    let updated = 0;
-    for (const cat of categories) {
-      if (!cat || typeof cat.index !== "number" || typeof cat.category !== "string") continue;
-      const idx = cat.index - 1;
-      if (idx < 0 || idx >= afterTellerMap.length) continue;
-      if (!CATEGORIES.includes(cat.category)) continue;
-      const txn = afterTellerMap[idx];
-      await pool.query(
-        // Write to user_category (scalar) so a Teller/Plaid re-sync can't clobber it.
-        // Stamp source='ai' (+ clear any prior verification) so the accuracy
-        // sampler can target these rows and re-score a re-categorized one.
-        `UPDATE transactions SET user_category = $1, user_category_source = 'ai',
-           category_verified_at = NULL, category_was_correct = NULL
-         WHERE transaction_id = $2`,
-        [cat.category, txn.transaction_id]
+      const batchRes = await pool.query(
+        `SELECT transaction_id, COALESCE(merchant_name, name) AS merchant, amount, date, category
+         FROM transactions
+         WHERE ${uncatPredicate}
+         ORDER BY date DESC
+         LIMIT ${AI_BATCH}`,
+        [OUR_CATEGORIES_PG]
       );
-      updated++;
+      const batch = batchRes.rows;
+      if (batch.length === 0) break;
+
+      const txnList = batch.map((t, i) => {
+        const hint = Array.isArray(t.category) && t.category[0] ? " [bank hint: " + t.category[0] + "]" : "";
+        return (i + 1) + ". " + t.merchant + " — $" + parseFloat(t.amount).toFixed(2) + " on " + t.date + hint;
+      }).join("\n");
+
+      const message = await client.messages.create({
+        model: modelId, max_tokens: 2000,
+        system: [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }],
+        tools: [categorizeTool],
+        tool_choice: { type: "tool", name: "categorize_transactions" },
+        messages: [{ role: "user", content: "Transactions:\n" + txnList }],
+      });
+
+      // Record token usage BEFORE applying categories (DC-2) so the spend counts
+      // against the cap even if the apply loop throws partway.
+      const usage = message.usage || {};
+      aiTokens += (usage.input_tokens || 0) + (usage.output_tokens || 0);
+      const toolBlock = message.content.find(b => b.type === "tool_use");
+      const catCount = toolBlock && toolBlock.input && Array.isArray(toolBlock.input.categories) ? toolBlock.input.categories.length : 0;
+      await pool.query(
+        `INSERT INTO financial_insights
+           (insight_text, model_used, tokens_used, input_tokens, output_tokens,
+            cache_read_tokens, cache_creation_tokens, entry_type)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'categorize')`,
+        [
+          `[ML Categorization] AI returned ${catCount} categorization(s)`,
+          message.model || modelId,
+          (usage.input_tokens || 0) + (usage.output_tokens || 0),
+          usage.input_tokens || 0, usage.output_tokens || 0,
+          usage.cache_read_input_tokens || 0, usage.cache_creation_input_tokens || 0,
+        ]
+      ).catch(err => console.error("categorize usage tracking insert failed:", err.message));
+
+      if (!toolBlock || !toolBlock.input || !Array.isArray(toolBlock.input.categories)) {
+        console.error("AI did not return expected tool_use block — stopping loop");
+        break;
+      }
+      for (const cat of toolBlock.input.categories) {
+        if (!cat || typeof cat.index !== "number" || typeof cat.category !== "string") continue;
+        const idx = cat.index - 1;
+        if (idx < 0 || idx >= batch.length) continue;
+        if (!CATEGORIES.includes(cat.category)) continue;
+        await pool.query(
+          // user_category (scalar) survives re-sync; source='ai' + cleared
+          // verification feeds the accuracy sampler.
+          `UPDATE transactions SET user_category = $1, user_category_source = 'ai',
+             category_verified_at = NULL, category_was_correct = NULL
+           WHERE transaction_id = $2`,
+          [cat.category, batch[idx].transaction_id]
+        );
+        aiUpdated++;
+      }
+      aiProcessed += batch.length;
+      catProgress.by_ai = aiUpdated;
+      catProgress.ai_batches += 1;
+      catProgress.remaining = await countRemaining();
+      // Backlog drained (last page was short) → stop.
+      if (batch.length < AI_BATCH) break;
     }
 
-    const leftoverCount = await pool.query(
-      `SELECT COUNT(*) AS uncategorized FROM transactions
-       WHERE (
-         user_category IS NULL
-         AND (category IS NULL
-              OR category = '{}'
-              OR NOT (category[1] = ANY($1::text[])))
-       )
-         AND pending = false AND amount > 0`,
-      [OUR_CATEGORIES_PG]
-    );
+    const remaining = await countRemaining();
+    catProgress.remaining = remaining;
     return {
       ok: true,
-      categorized: updated + ruleApplied + tellerMapped,
+      categorized: aiUpdated + ruleApplied + tellerMapped,
       categorized_by_rules: ruleApplied,
       categorized_by_teller_map: tellerMapped,
-      categorized_by_ai: updated,
-      tokens_used: tokensUsed,
-      remaining: parseInt(leftoverCount.rows[0].uncategorized),
-      estimated_cost: parseFloat(estimateCostUsd(tokensUsed, modelId).toFixed(4)),
+      categorized_by_ai: aiUpdated,
+      tokens_used: aiTokens,
+      remaining,
+      estimated_cost: parseFloat(estimateCostUsd(aiTokens, modelId).toFixed(4)),
+      budget_hit: budgetHit || undefined,
     };
   } catch (err) {
     console.error("Categorize error:", err.message);
     return { ok: false, status: 500, error: "An internal error occurred." };
+  } finally {
+    catProgress.running = false;
+    catProgress.phase = "done";
   }
 }
 
@@ -338,6 +345,12 @@ router.post("/api/categorize", async (_req, res) => {
   }
   const { ok, ...body } = result;
   res.json(body);
+});
+
+// GET /api/categorize/progress — live progress of the running categorize pass,
+// polled by the Settings UI so the button shows "Categorized N so far…".
+router.get("/api/categorize/progress", (_req, res) => {
+  res.json(catProgress);
 });
 
 // GET /api/categorize/review-queue — Surfaces transactions that would otherwise

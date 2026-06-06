@@ -866,8 +866,15 @@
           apiFetch('/api/investment-accounts'),
         ]);
         if (!res.ok) throw new Error('HTTP ' + res.status);
-        const accounts = await res.json();
+        let accounts = await res.json();
         const investments = invRes.ok ? await invRes.json() : [];
+        // Dedupe the Plaid brokerage twin: an investment account linked via the
+        // combined Plaid flow lands in BOTH linked_accounts (often $0 from
+        // accountsGet) AND investment_accounts (correct balance from holdings
+        // sync). Drop the linked_accounts copy so it doesn't show as a phantom
+        // $0 card — the investment_accounts row renders it correctly below.
+        var invPlaidIds = new Set(investments.filter(function(i){ return i.plaid_account_id; }).map(function(i){ return String(i.plaid_account_id); }));
+        accounts = accounts.filter(function(a){ return !(a.account_id && invPlaidIds.has(String(a.account_id))); });
         const grid = document.getElementById('accounts-grid');
 
         animateInt(document.getElementById('acct-count'), accounts.length + investments.length);
@@ -912,6 +919,10 @@
             } else {
               creditExtra += '<div style="font-size:11px;margin-top:4px;color:var(--text-muted);">Utilization: <span>—</span> <span style="font-size:10px;">(credit limit not reported by bank)</span></div>';
             }
+            // Manual credit-limit entry — some issuers (e.g. Discover via Plaid)
+            // never report a limit, so let the user set it to get real
+            // utilization. Saved to credit_limit via PATCH /:id/balance.
+            creditExtra += '<div style="font-size:11px;margin-top:4px;display:flex;align-items:center;gap:6px;color:var(--text-muted);">Limit: $<input type="number" step="1" min="0" value="' + (storedLimit > 0 ? storedLimit : '') + '" placeholder="—" data-limit-account="' + a.id + '" style="width:80px;padding:2px 6px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);font-family:inherit;"></div>';
             creditExtra += '<div style="font-size:11px;margin-top:4px;display:flex;align-items:center;gap:6px;color:var(--text-muted);">APR: <input type="number" step="0.01" min="0" max="99.99" value="' + (a.apr || '') + '" placeholder="\u2014" data-apr-account="' + a.id + '" style="width:60px;padding:2px 6px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);font-family:inherit;">%</div>';
           }
           return '<div class="acct-card">' +
@@ -1177,6 +1188,18 @@
       } catch (e) { showMsg(e.message, false); }
     }
 
+    async function setCreditLimit(accountId, value) {
+      try {
+        const lim = value === '' ? null : parseFloat(value);
+        const res = await apiFetch('/api/accounts/' + accountId + '/balance', {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ credit_limit: lim })
+        });
+        if (res.ok) { showMsg('Credit limit saved.', true); loadAccounts(); }
+        else { const d = await res.json().catch(() => ({})); showMsg(d.error || 'Failed to save limit', false); }
+      } catch (e) { showMsg(e.message, false); }
+    }
+
     async function loadForecast() {
       try {
         var res = await apiFetch('/api/forecast?days=30'); var data = await res.json();
@@ -1209,6 +1232,9 @@
     ]);
     onDelegate('accounts-grid', 'change', 'input[data-apr-account]', function() {
       setApr(parseInt(this.dataset.aprAccount), this.value);
+    });
+    onDelegate('accounts-grid', 'change', 'input[data-limit-account]', function() {
+      setCreditLimit(parseInt(this.dataset.limitAccount), this.value);
     });
     onDelegate('accounts-grid', 'click', 'button[data-shared-toggle]', function() {
       toggleShared(parseInt(this.dataset.sharedToggle));
