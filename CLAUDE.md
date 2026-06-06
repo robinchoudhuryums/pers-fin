@@ -307,9 +307,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (612 tests as of latest); use
+  Perfin and Per-sistant test files (616 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 612 tests across 17 test files (incl.
+  Current count: 616 tests across 17 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -978,7 +978,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 612 tests passing across 17 test files (Perfin + Per-sistant)
+- 616 tests passing across 17 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash
@@ -1000,7 +1000,10 @@ POST /api/sync-balances    # fetch latest account balances. Refreshes Teller
                            # in one call — no transactionsSync rerun.
                            # Response: { accounts_updated, errors?,
                            # plaid_accounts_updated, plaid_errors?,
-                           # holdings_updated }
+                           # holdings_updated, holdings_accounts_updated,
+                           # holdings_errors? }. plaid_errors now also carries
+                           # surfaced liabilities failures ("liabilities: <code>")
+                           # so a card whose APR/limit won't load is visible.
 POST /api/detect           # run subscription detection
 POST /api/sync/reconcile   # backfill/reconcile to recover dropped transactions
                            # (body: days=1-365 default 90, provider=teller|plaid|all).
@@ -2072,10 +2075,19 @@ income module, and bill-calendar income detection.
   path inserted holdings but left `investment_accounts` empty, so
   investments stayed blank after any wipe. Account balance falls back to
   the sum of the account's holdings (`sumHoldingsByAccount`) when Plaid
-  returns a null account-level `balances.current` (Schwab et al.), so
-  brokerages don't persist as $0. The helper runs in the bank auto-sync
-  chain, the AI pre-insights chain, and `POST /api/sync-balances`; the
-  `POST /api/plaid/sync-holdings` route is a thin wrapper around it.
+  returns a null OR zero account-level `balances.current` (Schwab et al.),
+  via `|| acctValue` (not `??`, so a reported 0 falls through), so
+  brokerages don't persist as $0. The items query UNIONs the dedicated
+  `plaid_investment_items` registry with any `status='GOOD'` `plaid_items`
+  that have an `INVESTMENT_ACCOUNT_TYPES` account in `linked_accounts`
+  (DISTINCT ON item_id, registry preferred) — because Plaid often doesn't
+  surface a brokerage as an investment account at link time, so
+  `exchange-transactions` never registered it in `plaid_investment_items`
+  and its holdings stayed permanently un-synced ($0) even though the
+  account itself linked fine. `investmentsHoldingsGet` no-ops for items with
+  no holdings, so the extra items are cheap. The helper runs in the bank
+  auto-sync chain, the AI pre-insights chain, and `POST /api/sync-balances`;
+  the `POST /api/plaid/sync-holdings` route is a thin wrapper around it.
 - **Plaid sync advances the cursor only on a fully-successful page.**
   `syncPlaidItemTransactions` processes each `transactionsSync` page, and if
   ANY row in the page fails to upsert it halts WITHOUT advancing the cursor —
