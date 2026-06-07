@@ -3,32 +3,50 @@
 Tracks the *currently running* cycle so work can be resumed across sessions.
 Read first by `/cycle-status` and `/cycle-resume`. When a cycle completes, its
 results move to `PROJECT_HEALTH.md` + `.cycle/metrics.csv` and this file resets
-to the "none in progress" state below.
+to the "none in progress" state.
 
 ---
 
 ## Current Cycle
 
-- **Status:** none in progress
-- **Phase:** idle
-- **Subsystem under audit:** —
-- **Started:** —
-- **Findings gathered:** —
-- **Implementation progress:** —
-- **Next concrete step:** start a fresh audit (see Rotation below)
+- **Status:** audit + broad-implement complete (Bank Sync & Ingestion); awaiting deploy confirmation
+- **Phase:** implemented — not yet Health-Synthesized (no Axis-A/B scores recorded yet)
+- **Subsystem audited:** Bank Sync & Ingestion
+- **Started:** 2026-06-07
+- **Findings gathered:** BS-1..BS-8 (1 High, 4 Medium, 3 Low)
+- **Implementation progress:** BS-1..BS-8 all implemented + tested (663 tests pass, +15)
+- **Next concrete step:** operator deploys (Render auto-deploys on push to `main`; this work is on branch `claude/pensive-davinci-JhKFb` / PR #107). Then optionally run a Health Synthesis to record Axis-A/B scores, and rotate to the next subsystem (Financial Analytics).
 
-> When a cycle is active, this section holds: the subsystem, the phase
-> (audit → synthesis → implement → verify), the findings list with severities,
-> which fixes are done vs pending, and the single next action to take.
+### Decisions made this cycle
+- **BS-1** judged advisable despite Teller's default `count` being undocumented:
+  the fix is page-size-independent (paginate until empty page / floor), so it is
+  correct under any default. Sets `count=500` (documented Teller param) to bound
+  round-trips; MAX_PAGES=100 runaway guard.
+- **BS-2** Schwab Amount-column sign assumed negative=debit (parity with the
+  Chase format + this format's Withdrawal→positive mapping). One-line flip if a
+  real Schwab Amount export proves the opposite convention.
+- **BS-4** Plaid cursor (INV-04) + xmax counting (INV-01) pinned via
+  source-pinned tests rather than live-client behavioral tests
+  (`syncPlaidItemTransactions` is not exported; behavioral would need a
+  module-surface change out of scope).
+
+### Residual / follow-on
+- BS-1 MAX_PAGES break advances the watermark even if a >50k-txn account wasn't
+  fully paged (warns to console). Beyond single-operator scale; revisit only if
+  the warn ever fires.
+- BS-1 depends on Teller accepting `count=500` (documented param; standard
+  clamp expected). Watch the first post-deploy Teller sync.
+
+## Where I left off
+All eight findings implemented, committed, and pushed to `claude/pensive-davinci-JhKFb`
+(part of PR #107). Tests green at 663. Awaiting deploy; no cycle work outstanding.
 
 ---
 
 ## Rotation Plan
 
-Recommended order (frozen subsystems excluded; name one explicitly to override):
-
-1. **Bank Sync & Ingestion**  ← recommended first (widest blast radius, most invariants, richest bug history)
-2. Financial Analytics
+1. ~~Bank Sync & Ingestion~~ ✅ audited + fixed (cycle 1)
+2. **Financial Analytics**  ← recommended next
 3. Detection & Categorization
 4. AI Insights & Audit
 5. Platform, Shell & Auth
@@ -38,16 +56,6 @@ Recommended order (frozen subsystems excluded; name one explicitly to override):
 9. Per-sistant Backend
 10. Per-sistant Web UI
 
-- **Seams audit:** every 3 subsystem cycles — enrollments.js, subscriptions.js,
-  settings.js, financial-queries.js, notifications.js, and the cross-app pair
-  apps/per-sistant/routes/perfin.js + routes/webhooks.js.
-- **Last subsystem audited:** none
-- **Cycles completed:** 0
-
----
-
-## Recommended Next Action
-
-→ **FRESH AUDIT** — no cycle is in progress and no findings are pending.
-Run `/broad-scan` (or `/targeted-audit Bank Sync & Ingestion`). Use fresh eyes —
-do not inherit prior conclusions.
+- **Seams audit:** every 3 subsystem cycles.
+- **Last subsystem audited:** Bank Sync & Ingestion
+- **Cycles completed:** 1 (audit+implement; synthesis pending)
