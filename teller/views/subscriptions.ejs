@@ -87,7 +87,7 @@
   </div>
 
   <div class="table-wrap">
-  <table>
+  <table class="responsive-cards">
     <thead>
       <tr>
         <th>Subscription</th>
@@ -168,12 +168,12 @@
           }
           const notesHtml = s.notes ? '<div style="font-size:12px;color:var(--text-muted);">' + esc(s.notes) + '</div>' : '';
           return '<tr>' +
-            '<td><strong>' + esc(s.display_name) + '</strong> ' + badges.join(' ') + notesHtml + '</td>' +
+            '<td class="cell-primary"><strong>' + esc(s.display_name) + '</strong> ' + badges.join(' ') + notesHtml + '</td>' +
             '<td class="amount" data-label="Amount">' + fmt(s.amount) + '</td>' +
             '<td class="amount" data-label="/month">' + fmt(s.monthly_cost) + '</td>' +
-            '<td class="hide-mobile-cycle">' + cadenceLabel(s.cadence_days) + '</td>' +
-            '<td><span class="' + nextClass + '">' + nextLabel + '</span></td>' +
-            '<td>' + actions + '</td></tr>';
+            '<td class="hide-mobile-cycle" data-label="Cycle">' + cadenceLabel(s.cadence_days) + '</td>' +
+            '<td data-label="Next charge"><span class="' + nextClass + '">' + nextLabel + '</span></td>' +
+            '<td class="cell-actions">' + actions + '</td></tr>';
         }).join('');
       } catch (e) {
         tbody.innerHTML = '<tr><td colspan="6" class="empty">Error loading subscriptions: ' + esc(e.message) + '</td></tr>';

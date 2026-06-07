@@ -398,3 +398,42 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   body { padding-bottom: calc(60px + env(safe-area-inset-bottom)); }
   #toast-stack { bottom: calc(72px + env(safe-area-inset-bottom)); }
 }
+
+/* ---------------------------------------------------------------------------
+ * Responsive table → cards (≤640px). Opt in with class="responsive-cards" on a
+ * <table>; give each <td> a data-label (the column name). On mobile the header
+ * row hides and each row becomes a card of label:value lines. Special cells:
+ *   td.cell-primary  — the row's title (merchant/name); full-width, no label
+ *   td.cell-actions  — buttons; wrap row of 40px-min tap targets, no label
+ *   td.empty         — full-width centered empty/loading state
+ * --------------------------------------------------------------------------- */
+@media (max-width: 640px) {
+  table.responsive-cards { border-collapse: separate; }
+  table.responsive-cards thead { position: absolute; width: 1px; height: 1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  table.responsive-cards tbody tr { display: block; background: var(--surface);
+    border: 1px solid var(--border); border-radius: 10px; padding: 4px 14px;
+    margin-bottom: 12px; }
+  table.responsive-cards tbody tr td { display: flex; justify-content: space-between;
+    align-items: baseline; gap: 12px; padding: 9px 0; font-size: 13px;
+    border: 0; border-bottom: 1px solid var(--border); text-align: right; }
+  table.responsive-cards tbody tr td:last-child { border-bottom: 0; }
+  table.responsive-cards tbody tr td::before { content: attr(data-label);
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px;
+    color: var(--text-muted); font-weight: 600; text-align: left; flex-shrink: 0; }
+  table.responsive-cards tbody tr td.cell-primary { display: block; text-align: left;
+    font-size: 15px; padding: 10px 0 8px; }
+  table.responsive-cards tbody tr td.cell-primary::before { content: none; }
+  table.responsive-cards tbody tr td.cell-actions { display: flex; flex-wrap: wrap;
+    gap: 8px; justify-content: flex-start; padding-top: 10px; }
+  table.responsive-cards tbody tr td.cell-actions::before { content: none; }
+  table.responsive-cards tbody tr td.cell-actions .btn-sm,
+  table.responsive-cards tbody tr td.cell-actions a.btn-sm,
+  table.responsive-cards tbody tr td.cell-actions .btn-xs {
+    flex: 1 1 auto; min-height: 40px; min-width: 76px; font-size: 12px; padding: 8px 12px;
+    display: inline-flex; align-items: center; justify-content: center; margin: 0; }
+  /* Select checkbox row: keep it compact, left-aligned. */
+  table.responsive-cards tbody tr td.cell-check { justify-content: flex-start; gap: 8px; }
+  table.responsive-cards tbody tr td.empty { display: block; text-align: center; }
+  table.responsive-cards tbody tr td.empty::before { content: none; }
+}
