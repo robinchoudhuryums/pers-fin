@@ -75,6 +75,7 @@ a:hover { color: var(--text); }
 
 /* Nav */
 .topnav { display: flex; align-items: center; justify-content: space-between;
+          position: relative;
           padding: 20px 0; margin-bottom: 40px; animation: fadeIn 0.3s ease both; }
 .topnav .logo { font-weight: 300; font-size: 13px; letter-spacing: 2px;
                 text-transform: uppercase; color: var(--text-muted);
@@ -95,6 +96,16 @@ a:hover { color: var(--text); }
 .topnav .nav-sync-badge { font-size: 11px; color: var(--text-muted); opacity: 0.75;
   padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; white-space: nowrap; }
 .topnav .nav-sync-badge:empty { display: none; }
+/* Mobile nav controls — hidden on desktop; shown in the ≤640px media query. */
+.nav-hamburger { display: none; flex-direction: column; justify-content: center; gap: 4px;
+  width: 40px; height: 40px; padding: 9px; background: transparent;
+  border: 1px solid var(--border); border-radius: 8px; cursor: pointer; flex-shrink: 0; }
+.nav-hamburger span { display: block; height: 2px; width: 100%; background: var(--text-muted);
+  border-radius: 2px; transition: transform 0.2s ease, opacity 0.2s ease; }
+.topnav.nav-open .nav-hamburger span:nth-child(1) { transform: translateY(6px) rotate(45deg); }
+.topnav.nav-open .nav-hamburger span:nth-child(2) { opacity: 0; }
+.topnav.nav-open .nav-hamburger span:nth-child(3) { transform: translateY(-6px) rotate(-45deg); }
+.bottom-nav { display: none; }
 
 /* Notification dropdown panel + backdrop. Desktop: anchored top-right drop;
    mobile (≤640px): full-width bottom sheet so it stops fighting the
@@ -318,8 +329,20 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 
 @media (max-width: 640px) {
-  .topnav { flex-direction: column; gap: 12px; align-items: flex-start; }
-  .topnav .nav-links { gap: 14px; flex-wrap: wrap; }
+  /* Single-row bar: logo left, bell + cross-app + hamburger right. The 7-link
+     menu collapses into a drawer that drops under the bar when the hamburger
+     is tapped (no more 2-3 line wrap eating the top of every page). */
+  .topnav { flex-direction: row; flex-wrap: nowrap; align-items: center; gap: 8px;
+            padding: 14px 0; margin-bottom: 24px; }
+  .topnav .logo { flex: 1; min-width: 0; }
+  .nav-hamburger { display: flex; }
+  .topnav .nav-links { display: none; position: absolute; top: 100%; left: 0; right: 0;
+    flex-direction: column; gap: 0; background: var(--surface, #16181d);
+    border: 1px solid var(--border); border-radius: 10px; padding: 6px; margin-top: 4px;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.4); z-index: 95; }
+  .topnav.nav-open .nav-links { display: flex; }
+  .topnav .nav-links a { padding: 12px 14px; border-radius: 8px; font-size: 15px; }
+  .topnav .nav-links a.active { background: var(--surface-2, rgba(255,255,255,0.05)); }
   h1 { font-size: 28px; }
   .setting-row { flex-direction: column; align-items: flex-start; gap: 10px; }
   .setting-control { margin-left: 0; }
@@ -353,4 +376,25 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
     width: calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right)) !important;
     max-width: 100vw !important;
   }
+}
+
+/* ---------------------------------------------------------------------------
+ * Mobile bottom tab bar — fixed primary-destination nav (≤640px). Pairs with
+ * the hamburger drawer: the bar holds the 5 most-used pages thumb-reachable,
+ * the drawer holds the full 7-link set. Content gets bottom padding so the bar
+ * never covers it; the toast stack lifts above the bar.
+ * --------------------------------------------------------------------------- */
+@media (max-width: 640px) {
+  .bottom-nav { display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 90;
+    background: var(--surface, #16181d); border-top: 1px solid var(--border);
+    padding-bottom: env(safe-area-inset-bottom);
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+  .bottom-nav-item { flex: 1; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 3px; padding: 8px 2px 6px; min-height: 52px;
+    color: var(--text-muted); font-size: 10px; letter-spacing: 0.3px; text-decoration: none; }
+  .bottom-nav-item svg { width: 22px; height: 22px; }
+  .bottom-nav-item.active { color: var(--warm); }
+  /* Clear the fixed bar so the last bit of content + toasts aren't hidden. */
+  body { padding-bottom: calc(60px + env(safe-area-inset-bottom)); }
+  #toast-stack { bottom: calc(72px + env(safe-area-inset-bottom)); }
 }

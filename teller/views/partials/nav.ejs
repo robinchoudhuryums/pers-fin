@@ -10,7 +10,7 @@
 %>
   <nav class="topnav" aria-label="Main navigation">
     <div class="logo"><span class="logo-icon" aria-hidden="true"></span>Perfin</div>
-    <div class="nav-links" role="list">
+    <div class="nav-links" id="nav-links-drawer" role="list">
       <a href="<%= __basePath %>/dashboard"<%= activePage === 'dashboard' ? ' class="active"' : '' %>>Dashboard</a>
       <a href="<%= __basePath %>/subscriptions"<%= activePage === 'subscriptions' ? ' class="active"' : '' %>>Subscriptions</a>
       <a href="<%= __basePath %>/transactions"<%= activePage === 'transactions' ? ' class="active"' : '' %>>Transactions</a>
@@ -33,6 +33,28 @@
       </svg>
       <span id="nav-notif-count" style="display:none;position:absolute;top:-2px;right:-2px;background:var(--red);color:#fff;border-radius:50%;font-size:9px;min-width:16px;height:16px;line-height:16px;text-align:center;"></span>
     </div>
+    <button class="nav-hamburger" id="nav-hamburger" type="button" aria-label="Menu" aria-expanded="false" aria-controls="nav-links-drawer">
+      <span></span><span></span><span></span>
+    </button>
+  </nav>
+<%
+  // Bottom tab bar (mobile only) — the 5 primary destinations, thumb-reachable.
+  // The full 7-link set still lives in the hamburger drawer above.
+  var __bottomTabs = [
+    { href: '/dashboard', page: 'dashboard', label: 'Home', icon: '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/>' },
+    { href: '/transactions', page: 'transactions', label: 'Activity', icon: '<line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="14" y2="17"/>' },
+    { href: '/subscriptions', page: 'subscriptions', label: 'Subs', icon: '<path d="M4 12a8 8 0 0 1 13.7-5.6L20 8"/><path d="M20 12a8 8 0 0 1-13.7 5.6L4 16"/><path d="M20 4v4h-4"/><path d="M4 20v-4h4"/>' },
+    { href: '/budgets', page: 'budgets', label: 'Budgets', icon: '<line x1="6" y1="20" x2="6" y2="11"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="18" y1="20" x2="18" y2="14"/>' },
+    { href: '/settings', page: 'settings', label: 'Settings', icon: '<circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>' }
+  ];
+%>
+  <nav class="bottom-nav" aria-label="Primary">
+<% __bottomTabs.forEach(function(t) { %>
+    <a href="<%= __basePath %><%= t.href %>" class="bottom-nav-item<%= activePage === t.page ? ' active' : '' %>"<%= activePage === t.page ? ' aria-current="page"' : '' %>>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><%- t.icon %></svg>
+      <span><%= t.label %></span>
+    </a>
+<% }); %>
   </nav>
 <% if (__embedded) { %>
   <!-- Cross-app cosmic transition overlay (Perfin → Per-sistant). Decorations
@@ -236,5 +258,29 @@
       });
 
       loadNotifs();
+    })();
+
+    // Hamburger drawer toggle (mobile). Collapses the 7-link menu behind a
+    // button so it stops wrapping onto 2-3 lines at the top of every page.
+    (function() {
+      var burger = document.getElementById('nav-hamburger');
+      var topnav = document.querySelector('.topnav');
+      var drawer = document.getElementById('nav-links-drawer');
+      if (!burger || !topnav || !drawer) return;
+      function setOpen(open) {
+        topnav.classList.toggle('nav-open', open);
+        burger.setAttribute('aria-expanded', open ? 'true' : 'false');
+      }
+      burger.addEventListener('click', function(e) {
+        e.stopPropagation();
+        setOpen(!topnav.classList.contains('nav-open'));
+      });
+      // Close on link tap, outside click, or Esc.
+      drawer.addEventListener('click', function(e) { if (e.target.closest('a')) setOpen(false); });
+      document.addEventListener('click', function(e) {
+        if (!topnav.classList.contains('nav-open')) return;
+        if (!drawer.contains(e.target) && !burger.contains(e.target)) setOpen(false);
+      });
+      document.addEventListener('keydown', function(e) { if (e.key === 'Escape') setOpen(false); });
     })();
   </script>
