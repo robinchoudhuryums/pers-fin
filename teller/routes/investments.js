@@ -720,10 +720,16 @@ async function syncAllPlaidBalances() {
     [ENCRYPTION_PASSPHRASE]
   );
   let accountsUpdated = 0;
+  // Count items whose BALANCE sync actually failed, separately from `errors`.
+  // `errors` also accumulates non-fatal liabilities re-link nags (the balance
+  // still synced fine), so `items.length - errors.length` under-reported
+  // items_synced — sometimes by more than one per item (BS-5).
+  let itemsFailed = 0;
   const errors = [];
   for (const item of items.rows) {
     if (!item.access_token) {
       errors.push({ institution: item.institution_name, error: "decryption_failed" });
+      itemsFailed++;
       continue;
     }
     try {
@@ -788,9 +794,10 @@ async function syncAllPlaidBalances() {
     } catch (err) {
       console.error("Plaid balance refresh error for", item.institution_name, ":", err.response?.data?.error_message || err.message);
       errors.push({ institution: item.institution_name, error: err.response?.data?.error_message || err.message });
+      itemsFailed++;
     }
   }
-  return { ok: true, items_synced: items.rows.length - errors.length, accounts_updated: accountsUpdated, errors };
+  return { ok: true, items_synced: items.rows.length - itemsFailed, accounts_updated: accountsUpdated, errors };
 }
 
 
@@ -1194,8 +1201,15 @@ async function syncAllPlaidHoldings() {
           totalHoldings += holdings.length;
         }
       } catch (err) {
-        console.error("Holdings sync error for " + item.institution_name + ":", err.message);
-        errors.push({ institution: item.institution_name, error: err.message });
+        // The items UNION above includes status='GOOD' plaid_items that merely
+        // have an investment-TYPE linked account but no usable Investments
+        // product (a transactions-only link). investmentsHoldingsGet 400s for
+        // those — that's expected, not an actionable error, so skip silently
+        // rather than surfacing a recurring holdings_error every sync (BS-8).
+        const code = err.response?.data?.error_code;
+        if (code === "PRODUCTS_NOT_SUPPORTED" || code === "PRODUCT_NOT_READY") continue;
+        console.error("Holdings sync error for " + item.institution_name + ":", err.response?.data?.error_message || err.message);
+        errors.push({ institution: item.institution_name, error: err.response?.data?.error_message || err.message });
       }
     }
 

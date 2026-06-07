@@ -102,12 +102,25 @@ async function syncEnrollment(enrollment, opts = {}) {
   // upserts on transaction_id.
   let fetchError = false;
 
+  // Teller paginates newest-first; `from_id` returns rows OLDER than that id.
+  // We request an explicit page size and do NOT assume what Teller's default is:
+  // page until Teller returns an empty page (no older rows) or we cross the
+  // floor date, with a hard page cap as a runaway guard. The previous
+  // `txns.length < 500` stop hard-coded a 500-row page assumption — if Teller's
+  // page size is smaller than 500 (the default is not documented as 500), the
+  // first full page satisfied `< 500`, `from_id` pagination never advanced, and
+  // history was capped at a single page while the watermark stepped past
+  // everything older (BS-1). Terminating on an empty page makes this correct
+  // regardless of the actual page size.
+  const PAGE = 500;
+  const MAX_PAGES = 100; // runaway guard: 100 * 500 = 50k txns/account
   for (const { account_id } of accounts) {
     let allTxns = [];
-    let endpoint = `/accounts/${account_id}/transactions`;
+    let endpoint = `/accounts/${account_id}/transactions?count=${PAGE}`;
 
-    let keepFetching = true;
-    while (keepFetching) {
+    let pages = 0;
+    while (pages < MAX_PAGES) {
+      pages++;
       let txns;
       try {
         txns = await tellerRequest(endpoint, access_token);
@@ -121,13 +134,14 @@ async function syncEnrollment(enrollment, opts = {}) {
       allTxns = allTxns.concat(txns);
 
       const oldestInBatch = txns[txns.length - 1];
-      if (floorDate && new Date(oldestInBatch.date) <= new Date(floorDate)) {
-        keepFetching = false;
-      } else if (txns.length < 500) {
-        keepFetching = false;
-      } else {
-        endpoint = `/accounts/${account_id}/transactions?from_id=${oldestInBatch.id}`;
+      // Reached the incremental/backfill floor — older rows aren't needed.
+      if (floorDate && new Date(oldestInBatch.date) <= new Date(floorDate)) break;
+      if (pages === MAX_PAGES) {
+        console.warn(`  ${account_id}: hit MAX_PAGES (${MAX_PAGES}); older history beyond ${allTxns.length} txns not fetched this run.`);
+        break;
       }
+      // Page to OLDER transactions; terminates when Teller returns an empty page.
+      endpoint = `/accounts/${account_id}/transactions?count=${PAGE}&from_id=${oldestInBatch.id}`;
     }
 
     // Use >= (not >) against the day-granular watermark: Teller transaction
@@ -810,6 +824,7 @@ router.post("/api/sync-balances", async (_req, res) => {
     // freshness. Lazy-required to avoid a circular import via routes/investments.
     let plaidResult = null;
     let holdingsResult = null;
+    let plaidThrew = null;
     try {
       const inv = require("./investments");
       if (typeof inv.syncAllPlaidBalances === "function") {
@@ -821,7 +836,14 @@ router.post("/api/sync-balances", async (_req, res) => {
       if (typeof inv.syncAllPlaidHoldings === "function") {
         holdingsResult = await inv.syncAllPlaidHoldings();
       }
-    } catch (e) { console.error("Plaid balance/holdings sync error:", e.message); }
+    } catch (e) {
+      // A wholesale throw (vs. per-item errors collected inside the helpers)
+      // used to be only console.error'd, so a total Plaid balance/holdings
+      // failure left no trace in last_sync_result and was invisible on the
+      // Sync Health card (BS-6). Capture it so recordSyncResult surfaces it.
+      console.error("Plaid balance/holdings sync error:", e.message);
+      plaidThrew = e.message;
+    }
     await pool.query(
       "UPDATE user_settings SET last_balance_sync_at = now() WHERE id = 1"
     ).catch(() => {});
@@ -829,6 +851,7 @@ router.post("/api/sync-balances", async (_req, res) => {
       { provider: "teller_balance", result: tellerResult },
       { provider: "plaid_balance", result: plaidResult },
       { provider: "plaid_holdings", result: holdingsResult },
+      ...(plaidThrew ? [{ provider: "plaid", result: { errors: [{ institution: null, error: plaidThrew }] } }] : []),
     ]);
     res.json({
       ...tellerResult,
@@ -1115,8 +1138,13 @@ router.get("/api/cash-flow", async (req, res) => {
 
       // Check for income
       for (const inc of recurringIncome) {
-        if (inc.cadence_days === 30 && dayOfMonth === inc.typical_day) {
-          dayIncome += inc.amount;
+        if (inc.cadence_days === 30) {
+          // Clamp the typical pay-day to the month's last day so a paycheck
+          // whose typical_day is 29-31 still projects in shorter months (Feb,
+          // 30-day months) instead of being silently skipped (BS-7).
+          const daysInMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+          const payDay = Math.min(inc.typical_day, daysInMonth);
+          if (dayOfMonth === payDay) dayIncome += inc.amount;
         } else if (inc.cadence_days === 14) {
           const lastDate = new Date(inc.last_date);
           const daysSinceLast = Math.round((date - lastDate) / 86400000);

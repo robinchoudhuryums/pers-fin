@@ -846,3 +846,94 @@ describe("Mobile UX: tables reflow to cards (responsive-cards)", () => {
     assert.match(sharedCss, /td\.empty-msg \{ display: block; text-align: center;/);
   });
 });
+
+// ===========================================================================
+// Bank Sync & Ingestion audit — BS-1..BS-8 (broad-implement)
+// Behavioral where the unit is a pure function (csv parsers); source-pinned
+// for the route-level sync logic (mirrors the "Source-pinned regression tests"
+// design decision — avoids standing up a live Plaid client / DB).
+// ===========================================================================
+describe("BS-2 — Schwab Amount+Type variant preserves sign (no Math.abs)", () => {
+  const { CSV_FORMATS } = require("../teller/data/csv-formats");
+  it("imports a signed-negative Amount (withdrawal) as a positive debit", () => {
+    const row = { "Date": "03/10/2026", "Type": "ACH", "Description": "ELECTRIC CO", "Amount": "-50.00" };
+    assert.equal(CSV_FORMATS.schwab.parse(row).amount, 50);
+  });
+  it("imports a signed-positive Amount (deposit) as a negative credit, not a debit", () => {
+    const row = { "Date": "03/11/2026", "Type": "ACH", "Description": "PAYROLL", "Amount": "1200.00" };
+    assert.equal(CSV_FORMATS.schwab.parse(row).amount, -1200);
+  });
+  it("still prefers Withdrawal/Deposit columns when present", () => {
+    const row = { "Date": "03/12/2026", "Type": "VISA", "Description": "STORE", "Withdrawal": "42.99", "Deposit": "" };
+    assert.equal(CSV_FORMATS.schwab.parse(row).amount, 42.99);
+  });
+});
+
+describe("BS-3 — Wells Fargo detection no longer matches any 5-column CSV", () => {
+  const { detectCsvFormat } = require("../teller/data/csv-formats");
+  it("detects a genuine WF headerless row (date + money in first two fields)", () => {
+    assert.equal(detectCsvFormat(["01/15/2025", "-50.00", "*", "*", "COFFEE SHOP"]), "wellsfargo");
+  });
+  it("does NOT misclassify an unrelated 5-column CSV as Wells Fargo", () => {
+    assert.equal(detectCsvFormat(["Account", "Type", "Memo", "Ref", "Note"]), "generic");
+  });
+});
+
+describe("BS-1 — Teller pagination is page-size-independent", () => {
+  const src = fs.readFileSync(path.join(__dirname, "../teller/routes/enrollments.js"), "utf8");
+  it("requests an explicit count and pages via from_id", () => {
+    assert.match(src, /transactions\?count=\$\{PAGE\}/);
+    assert.match(src, /from_id=\$\{oldestInBatch\.id\}/);
+  });
+  it("no longer stops on the hard-coded `txns.length < 500` page-size assumption", () => {
+    // Target the code construct, not the explanatory comment that names the old bug.
+    assert.doesNotMatch(src, /else if \(txns\.length < 500\)/);
+    assert.match(src, /while \(pages < MAX_PAGES\)/);
+  });
+});
+
+describe("BS-4 / INV-01 — sync 'added' counts only genuine inserts (xmax=0)", () => {
+  const enroll = fs.readFileSync(path.join(__dirname, "../teller/routes/enrollments.js"), "utf8");
+  const inv = fs.readFileSync(path.join(__dirname, "../teller/routes/investments.js"), "utf8");
+  it("Teller upsert returns (xmax = 0) and increments only on a real insert", () => {
+    assert.match(enroll, /RETURNING \(xmax = 0\) AS inserted/);
+    assert.match(enroll, /if \(result\.rows\[0\]\?\.inserted\)/);
+    assert.doesNotMatch(enroll, /if \(result\.rowCount > 0\) added\+\+/);
+  });
+  it("Plaid upsert returns (xmax = 0) and increments only on a real insert", () => {
+    assert.match(inv, /RETURNING \(xmax = 0\) AS inserted/);
+    assert.match(inv, /if \(r\.rows\[0\]\?\.inserted\) totalAdded\+\+/);
+  });
+});
+
+describe("BS-4 / INV-04 — Plaid cursor advances only after a clean page", () => {
+  const inv = fs.readFileSync(path.join(__dirname, "../teller/routes/investments.js"), "utf8");
+  it("halts on a page row-failure before advancing the cursor", () => {
+    // The pageFailed break must appear before `cursor = data.next_cursor`.
+    const failIdx = inv.indexOf("if (pageFailed)");
+    const advIdx = inv.indexOf("cursor = data.next_cursor");
+    assert.ok(failIdx > 0 && advIdx > 0 && failIdx < advIdx,
+      "pageFailed halt must precede the cursor advance");
+  });
+  it("persists the cursor progressively inside the page loop", () => {
+    assert.match(inv, /UPDATE sync_cursors SET cursor = \$1, last_synced_at = now\(\)/);
+  });
+});
+
+describe("BS-5/6/7/8 — sync-helper correctness (source-pinned)", () => {
+  const enroll = fs.readFileSync(path.join(__dirname, "../teller/routes/enrollments.js"), "utf8");
+  const inv = fs.readFileSync(path.join(__dirname, "../teller/routes/investments.js"), "utf8");
+  it("BS-5: items_synced counts failed items, not the (nag-inflated) errors array", () => {
+    assert.match(inv, /items_synced: items\.rows\.length - itemsFailed/);
+  });
+  it("BS-6: a wholesale Plaid throw is recorded in last_sync_result", () => {
+    assert.match(enroll, /plaidThrew/);
+    assert.match(enroll, /plaidThrew \? \[\{ provider: "plaid", result: \{ errors:/);
+  });
+  it("BS-7: monthly income projection clamps the pay-day to the month length", () => {
+    assert.match(enroll, /const payDay = Math\.min\(inc\.typical_day, daysInMonth\)/);
+  });
+  it("BS-8: holdings sync skips items lacking the Investments product", () => {
+    assert.match(inv, /PRODUCTS_NOT_SUPPORTED" \|\| code === "PRODUCT_NOT_READY"\) continue/);
+  });
+});
