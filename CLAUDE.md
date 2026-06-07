@@ -307,9 +307,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (646 tests as of latest); use
+  Perfin and Per-sistant test files (648 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 646 tests across 17 test files (incl.
+  Current count: 648 tests across 17 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -760,10 +760,12 @@ shell/
   `responsive-cards` pattern (`perfin-shared.css`) — at ≤640px the header row is
   visually hidden and each `<td>` (with a `data-label`) renders as a label:value
   line inside a card. Special cells: `cell-primary` (full-width title),
-  `cell-actions` (wrap row of 40px-min buttons), `cell-check`, `empty`. Applied
-  to the Subscriptions and Transactions lists (the worst desktop-table offenders
-  on mobile). New wide tables should add `class="responsive-cards"` + `data-label`s
-  rather than relying on horizontal scroll.
+  `cell-actions` (wrap row of 40px-min buttons), `cell-check`, `empty`/`empty-msg`.
+  Applied to the Subscriptions and Transactions lists AND all five dashboard
+  mini-tables (Recent Transactions, Monthly Spending, Spending by Category, Top
+  Merchants, Upcoming Charges). New wide tables should add
+  `class="responsive-cards"` + `data-label`s rather than relying on horizontal
+  scroll.
 - **Money formatting**: the shared global `fmt()` (`perfin-shared.js`) renders
   thousands separators (`$22,199.52`); stat-card `.value` font uses `clamp()` +
   `overflow-wrap` so large amounts never overflow narrow 2-up mobile cards.
@@ -1026,7 +1028,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 646 tests passing across 17 test files (Perfin + Per-sistant)
+- 648 tests passing across 17 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash

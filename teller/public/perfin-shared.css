@@ -434,6 +434,8 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
     display: inline-flex; align-items: center; justify-content: center; margin: 0; }
   /* Select checkbox row: keep it compact, left-aligned. */
   table.responsive-cards tbody tr td.cell-check { justify-content: flex-start; gap: 8px; }
-  table.responsive-cards tbody tr td.empty { display: block; text-align: center; }
-  table.responsive-cards tbody tr td.empty::before { content: none; }
+  table.responsive-cards tbody tr td.empty,
+  table.responsive-cards tbody tr td.empty-msg { display: block; text-align: center; }
+  table.responsive-cards tbody tr td.empty::before,
+  table.responsive-cards tbody tr td.empty-msg::before { content: none; }
 }

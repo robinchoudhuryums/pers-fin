@@ -833,4 +833,16 @@ describe("Mobile UX: tables reflow to cards (responsive-cards)", () => {
     assert.match(txnJs, /class="row-actions cell-actions"/);
     assert.match(txnJs, /data-label="Amount"/);
   });
+  it("all five dashboard mini-tables opt in and label their cells", () => {
+    const dash = fs.readFileSync(path.join(__dirname, "../teller/views/dashboard.ejs"), "utf8");
+    // 5 tables: recent txns, monthly, category, merchants, upcoming.
+    assert.equal((dash.match(/responsive-cards/g) || []).length, 5);
+    assert.match(dash, /data-label="Total"/);
+    assert.match(dash, /data-label="Share"/);
+    assert.match(dash, /data-label="Next"/);
+    assert.match(dash, /class="cell-primary"/);
+  });
+  it("empty-msg cells render full-width in card mode", () => {
+    assert.match(sharedCss, /td\.empty-msg \{ display: block; text-align: center;/);
+  });
 });
