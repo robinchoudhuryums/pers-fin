@@ -1,7 +1,7 @@
 <%- include('partials/head', { title: 'Subscriptions', extraStyles: `
     .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
                gap: 16px; margin-bottom: 36px; }
-    .card .value { font-size: 32px; }
+    .card .value { font-size: clamp(18px, 6.5vw, 32px); overflow-wrap: anywhere; }
     .badge { display: inline-block; padding: 3px 8px; border-radius: 4px; font-size: 9px;
              font-weight: 600; letter-spacing: 0.8px; text-transform: uppercase; }
     .badge-new { background: var(--green-bg); color: var(--green); }
@@ -127,12 +127,12 @@
         const res = await apiFetch('/api/subscriptions?filter=' + filter);
         if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || 'Server returned ' + res.status); }
         const data = await res.json();
-        document.getElementById('subs-cost').textContent = '$' + data.summary.subscriptions_monthly.toFixed(2);
+        document.getElementById('subs-cost').textContent = fmt(data.summary.subscriptions_monthly);
         document.getElementById('subs-count').textContent = data.summary.subscription_count + ' active';
-        document.getElementById('utils-cost').textContent = '$' + data.summary.utilities_monthly.toFixed(2);
+        document.getElementById('utils-cost').textContent = fmt(data.summary.utilities_monthly);
         document.getElementById('utils-count').textContent = data.summary.utility_count + ' active';
-        document.getElementById('monthly-cost').textContent = '$' + data.summary.monthly_cost.toFixed(2);
-        document.getElementById('yearly-cost').textContent = '$' + data.summary.yearly_cost.toFixed(2);
+        document.getElementById('monthly-cost').textContent = fmt(data.summary.monthly_cost);
+        document.getElementById('yearly-cost').textContent = fmt(data.summary.yearly_cost);
         if (!data.subscriptions.length) {
           tbody.innerHTML = '<tr><td colspan="6" class="empty">No subscriptions found. Import transactions or add manually.</td></tr>';
           return;
@@ -169,8 +169,8 @@
           const notesHtml = s.notes ? '<div style="font-size:12px;color:var(--text-muted);">' + esc(s.notes) + '</div>' : '';
           return '<tr>' +
             '<td><strong>' + esc(s.display_name) + '</strong> ' + badges.join(' ') + notesHtml + '</td>' +
-            '<td class="amount">$' + parseFloat(s.amount).toFixed(2) + '</td>' +
-            '<td class="amount">$' + parseFloat(s.monthly_cost).toFixed(2) + '</td>' +
+            '<td class="amount" data-label="Amount">' + fmt(s.amount) + '</td>' +
+            '<td class="amount" data-label="/month">' + fmt(s.monthly_cost) + '</td>' +
             '<td class="hide-mobile-cycle">' + cadenceLabel(s.cadence_days) + '</td>' +
             '<td><span class="' + nextClass + '">' + nextLabel + '</span></td>' +
             '<td>' + actions + '</td></tr>';
