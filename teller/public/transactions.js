@@ -72,13 +72,13 @@
             else if (t.personal_for === 'partner') personalBadge = ' <span style="font-size:10px;color:var(--teal);border:1px solid var(--teal);padding:1px 4px;border-radius:4px;">PARTNER</span>';
           }
           return '<tr>' +
-            '<td><input type="checkbox" class="txn-check" data-id="' + esc(t.transaction_id) + '"></td>' +
-            '<td>' + fmtDate(t.date) + '</td>' +
-            '<td>' + esc(t.merchant) + reimbursedBadge + personalBadge + '</td>' +
-            '<td><span class="txn-cat">' + esc(t.category || 'Uncategorized') + '</span></td>' +
-            '<td class="amount ' + amtClass + '">' + fmt(Math.abs(amt)) + '</td>' +
-            '<td class="hide-mobile" style="font-size:11px;color:var(--text-muted);">' + esc(t.account_name || '') + '</td>' +
-            '<td class="row-actions">' +
+            '<td class="cell-check" data-label="Select"><input type="checkbox" class="txn-check" data-id="' + esc(t.transaction_id) + '"></td>' +
+            '<td data-label="Date">' + fmtDate(t.date) + '</td>' +
+            '<td class="cell-primary">' + esc(t.merchant) + reimbursedBadge + personalBadge + '</td>' +
+            '<td data-label="Category"><span class="txn-cat">' + esc(t.category || 'Uncategorized') + '</span></td>' +
+            '<td class="amount ' + amtClass + '" data-label="Amount">' + fmt(Math.abs(amt)) + '</td>' +
+            '<td data-label="Account" style="font-size:11px;color:var(--text-muted);">' + esc(t.account_name || '') + '</td>' +
+            '<td class="row-actions cell-actions">' +
               '<button class="btn-xs" data-action="edit" data-id="' + esc(t.transaction_id) + '" data-merchant="' + esc(t.merchant || '') + '" data-notes="' + esc(t.user_notes || '') + '" data-reimbursed="' + (t.is_reimbursed ? '1' : '0') + '" data-category="' + esc(t.category || '') + '" data-shared="' + (t.account_is_shared ? '1' : '0') + '" data-personal="' + esc(t.personal_for || '') + '">Edit</button>' +
               (amt > 0 && !t.pending
                 ? '<button class="btn-xs" data-action="split" data-id="' + esc(t.transaction_id) + '" data-amount="' + esc(String(Math.abs(amt))) + '" data-merchant="' + esc(t.merchant || '') + '">Split</button>'

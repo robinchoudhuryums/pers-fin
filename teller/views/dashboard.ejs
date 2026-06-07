@@ -404,7 +404,7 @@
   <div class="section" style="margin-bottom:28px; animation: fadeInUp 0.4s ease both; animation-delay: 0.3s;">
     <h2>Recent Transactions</h2>
     <div class="table-wrap">
-    <table class="recent-txn-table">
+    <table class="recent-txn-table responsive-cards">
       <thead><tr><th>Date</th><th>Description</th><th>Category</th><th>Amount</th><th class="hide-mobile">Status</th></tr></thead>
       <tbody id="recent-txn-body"><tr><td colspan="5" class="empty-msg">Loading...</td></tr></tbody>
     </table>
@@ -416,7 +416,7 @@
     <div class="section">
       <h2>Monthly Spending</h2>
       <div class="table-wrap">
-      <table>
+      <table class="responsive-cards">
         <thead><tr><th>Month</th><th>Total</th><th>Txns</th><th>Avg</th></tr></thead>
         <tbody id="monthly-body"><tr><td colspan="4" class="empty-msg">Loading...</td></tr></tbody>
       </table>
@@ -425,7 +425,7 @@
     <div class="section">
       <h2>Spending by Category</h2>
       <div class="table-wrap">
-      <table>
+      <table class="responsive-cards">
         <thead><tr><th>Category</th><th>Total</th><th style="width:30%">Share</th></tr></thead>
         <tbody id="category-body"><tr><td colspan="3" class="empty-msg">Loading...</td></tr></tbody>
       </table>
@@ -438,7 +438,7 @@
     <div class="section">
       <h2>Top Merchants</h2>
       <div class="table-wrap">
-      <table>
+      <table class="responsive-cards">
         <thead><tr><th>Merchant</th><th>Total</th><th>Txns</th></tr></thead>
         <tbody id="merchant-body"><tr><td colspan="3" class="empty-msg">Loading...</td></tr></tbody>
       </table>
@@ -447,7 +447,7 @@
     <div class="section">
       <h2>Upcoming Charges</h2>
       <div class="table-wrap">
-      <table>
+      <table class="responsive-cards">
         <thead><tr><th>Service</th><th>Amount</th><th>Next</th></tr></thead>
         <tbody id="upcoming-body"><tr><td colspan="3" class="empty-msg">Loading...</td></tr></tbody>
       </table>
@@ -1016,10 +1016,10 @@
         const monthBody = document.getElementById('monthly-body');
         if (data.monthly_trend.length) {
           monthBody.innerHTML = data.monthly_trend.map(m =>
-            '<tr><td>' + fmtMonth(m.month) + '</td>' +
-            '<td class="amount warm">' + fmt(m.total_spend) + '</td>' +
-            '<td>' + m.txn_count + '</td>' +
-            '<td class="amount">' + fmt(m.avg_transaction) + '</td></tr>'
+            '<tr><td class="cell-primary">' + fmtMonth(m.month) + '</td>' +
+            '<td class="amount warm" data-label="Total">' + fmt(m.total_spend) + '</td>' +
+            '<td data-label="Txns">' + m.txn_count + '</td>' +
+            '<td class="amount" data-label="Avg">' + fmt(m.avg_transaction) + '</td></tr>'
           ).join('');
 
           const totalSpend = data.monthly_trend.reduce((s, m) => s + parseFloat(m.total_spend), 0);
@@ -1039,9 +1039,9 @@
           catBody.innerHTML = data.by_category.map((c, i) => {
             const pct = Math.round((parseFloat(c.total) / maxCat) * 100);
             const color = barColors[i % barColors.length];
-            return '<tr><td>' + esc(c.category) + '</td>' +
-              '<td class="amount warm">' + fmt(c.total) + '</td>' +
-              '<td><div class="bar-container"><div class="bar-fill" style="width:' + pct + '%;background:' + color + '"></div></div></td></tr>';
+            return '<tr><td class="cell-primary">' + esc(c.category) + '</td>' +
+              '<td class="amount warm" data-label="Total">' + fmt(c.total) + '</td>' +
+              '<td data-label="Share"><div class="bar-container"><div class="bar-fill" style="width:' + pct + '%;background:' + color + '"></div></div></td></tr>';
           }).join('');
         } else {
           catBody.innerHTML = '<tr><td colspan="3" class="empty-msg">No category data yet.</td></tr>';
@@ -1050,9 +1050,9 @@
         const merchBody = document.getElementById('merchant-body');
         if (data.top_merchants.length) {
           merchBody.innerHTML = data.top_merchants.map(m =>
-            '<tr><td>' + esc(m.merchant) + '</td>' +
-            '<td class="amount warm">' + fmt(m.total_spent) + '</td>' +
-            '<td>' + m.txn_count + '</td></tr>'
+            '<tr><td class="cell-primary">' + esc(m.merchant) + '</td>' +
+            '<td class="amount warm" data-label="Total">' + fmt(m.total_spent) + '</td>' +
+            '<td data-label="Txns">' + m.txn_count + '</td></tr>'
           ).join('');
         } else {
           merchBody.innerHTML = '<tr><td colspan="3" class="empty-msg">No merchant data yet.</td></tr>';
@@ -1061,9 +1061,9 @@
         const upBody = document.getElementById('upcoming-body');
         if (data.upcoming_subscriptions.length) {
           upBody.innerHTML = data.upcoming_subscriptions.map(s =>
-            '<tr><td>' + esc(s.display_name) + '</td>' +
-            '<td class="amount teal">' + fmt(s.amount) + '</td>' +
-            '<td>' + fmtDate(s.next_expected) + '</td></tr>'
+            '<tr><td class="cell-primary">' + esc(s.display_name) + '</td>' +
+            '<td class="amount teal" data-label="Amount">' + fmt(s.amount) + '</td>' +
+            '<td data-label="Next">' + fmtDate(s.next_expected) + '</td></tr>'
           ).join('');
 
           const subsMonthly = data.upcoming_subscriptions.reduce((s, sub) => s + parseFloat(sub.monthly_cost || 0), 0);
@@ -1080,11 +1080,11 @@
               ? '<span class="badge-pending">PENDING</span>'
               : '<span class="badge-posted">POSTED</span>';
             const amtClass = parseFloat(t.amount) > 0 ? 'warm' : 'teal';
-            return '<tr><td>' + fmtDate(t.date) + '</td>' +
-              '<td>' + esc(t.description) + '</td>' +
-              '<td style="font-size:11px;color:var(--text-muted)">' + esc(t.category) + '</td>' +
-              '<td class="amount ' + amtClass + '">' + fmt(t.amount) + '</td>' +
-              '<td class="hide-mobile">' + badge + '</td></tr>';
+            return '<tr><td data-label="Date">' + fmtDate(t.date) + '</td>' +
+              '<td class="cell-primary">' + esc(t.description) + '</td>' +
+              '<td data-label="Category" style="font-size:11px;color:var(--text-muted)">' + esc(t.category) + '</td>' +
+              '<td class="amount ' + amtClass + '" data-label="Amount">' + fmt(t.amount) + '</td>' +
+              '<td data-label="Status">' + badge + '</td></tr>';
           }).join('');
         } else {
           recentBody.innerHTML = '<tr><td colspan="5" class="empty-msg">No transactions yet.</td></tr>';

@@ -130,7 +130,10 @@
   }
 
   // --- Formatters ---
-  function fmt(n) { return '$' + parseFloat(n || 0).toFixed(2); }
+  // Thousands separators so large amounts read clearly and don't visually
+  // overflow narrow mobile stat cards ($22,199.52 vs $22199.52). Negatives keep
+  // the prior "$-12.34" shape (toLocaleString renders the minus before digits).
+  function fmt(n) { return '$' + parseFloat(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
   function fmtDate(d) {
     return d ? new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—';
   }

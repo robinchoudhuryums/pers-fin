@@ -775,3 +775,74 @@ describe("Dashboard dedupes the Plaid brokerage twin from the accounts grid", ()
     assert.match(ejs, /\/balance', \{\s*method: 'PATCH'[\s\S]*credit_limit: lim/);
   });
 });
+
+// ===========================================================================
+// Mobile UX round — number formatting, hamburger+bottom-nav, tables→cards
+// ===========================================================================
+describe("Mobile UX: number formatting", () => {
+  const sharedJs = fs.readFileSync(path.join(__dirname, "../teller/public/perfin-shared.js"), "utf8");
+  const sharedCss = fs.readFileSync(path.join(__dirname, "../teller/public/perfin-shared.css"), "utf8");
+  it("fmt() uses thousands separators (toLocaleString), not bare toFixed", () => {
+    assert.match(sharedJs, /function fmt\(n\) \{ return '\$' \+ parseFloat\(n \|\| 0\)\.toLocaleString\('en-US'/);
+  });
+  it("stat-card .value font is responsive (clamp + overflow-wrap)", () => {
+    assert.match(sharedCss, /\.card \.value \{ font-size: clamp\([^)]*\);[\s\S]*overflow-wrap: anywhere/);
+  });
+});
+
+describe("Mobile UX: hamburger drawer + bottom tab bar", () => {
+  const navTpl = fs.readFileSync(path.join(__dirname, "../teller/views/partials/nav.ejs"), "utf8");
+  const sharedCss = fs.readFileSync(path.join(__dirname, "../teller/public/perfin-shared.css"), "utf8");
+  it("nav markup has the hamburger button + bottom-nav tabs", () => {
+    assert.match(navTpl, /id="nav-hamburger"/);
+    assert.match(navTpl, /class="bottom-nav"/);
+    assert.match(navTpl, /class="bottom-nav-item/);
+  });
+  it("nav renders with an active bottom tab and a hamburger", () => {
+    const ejs = require("ejs");
+    const html = ejs.render(navTpl, { basePath: "/perfin", embedded: false, activePage: "transactions", nonce: "n" });
+    assert.ok(html.includes("nav-hamburger"));
+    assert.ok(/bottom-nav-item active/.test(html), "active page marks its bottom tab");
+  });
+  it("CSS hides the mobile controls on desktop and shows them ≤640px", () => {
+    assert.match(sharedCss, /\.nav-hamburger \{ display: none;/);
+    assert.match(sharedCss, /\.bottom-nav \{ display: none; \}/);
+    assert.match(sharedCss, /\.bottom-nav \{ display: flex; position: fixed/);
+  });
+});
+
+describe("Mobile UX: tables reflow to cards (responsive-cards)", () => {
+  const sharedCss = fs.readFileSync(path.join(__dirname, "../teller/public/perfin-shared.css"), "utf8");
+  const subs = fs.readFileSync(path.join(__dirname, "../teller/views/subscriptions.ejs"), "utf8");
+  const txnTpl = fs.readFileSync(path.join(__dirname, "../teller/views/transactions.ejs"), "utf8");
+  const txnJs = fs.readFileSync(path.join(__dirname, "../teller/public/transactions.js"), "utf8");
+  it("shared CSS defines the responsive-cards pattern", () => {
+    assert.match(sharedCss, /table\.responsive-cards thead \{ position: absolute/);
+    assert.match(sharedCss, /td::before \{ content: attr\(data-label\)/);
+    assert.match(sharedCss, /td\.cell-actions .* min-height: 40px|min-height: 40px/);
+  });
+  it("subscriptions table opts in and labels its cells", () => {
+    assert.match(subs, /<table class="responsive-cards">/);
+    assert.match(subs, /class="cell-primary"/);
+    assert.match(subs, /class="cell-actions"/);
+    assert.match(subs, /data-label="Amount"/);
+  });
+  it("transactions table opts in and labels its cells", () => {
+    assert.match(txnTpl, /class="txn-table responsive-cards"/);
+    assert.match(txnJs, /class="cell-primary"/);
+    assert.match(txnJs, /class="row-actions cell-actions"/);
+    assert.match(txnJs, /data-label="Amount"/);
+  });
+  it("all five dashboard mini-tables opt in and label their cells", () => {
+    const dash = fs.readFileSync(path.join(__dirname, "../teller/views/dashboard.ejs"), "utf8");
+    // 5 tables: recent txns, monthly, category, merchants, upcoming.
+    assert.equal((dash.match(/responsive-cards/g) || []).length, 5);
+    assert.match(dash, /data-label="Total"/);
+    assert.match(dash, /data-label="Share"/);
+    assert.match(dash, /data-label="Next"/);
+    assert.match(dash, /class="cell-primary"/);
+  });
+  it("empty-msg cells render full-width in card mode", () => {
+    assert.match(sharedCss, /td\.empty-msg \{ display: block; text-align: center;/);
+  });
+});

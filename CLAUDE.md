@@ -307,9 +307,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (638 tests as of latest); use
+  Perfin and Per-sistant test files (648 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 638 tests across 17 test files (incl.
+  Current count: 648 tests across 17 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -449,7 +449,13 @@ shell/
   headers — Cash (depository), Credit, Investments, Other — using the
   `is_investment` flag returned from `GET /api/accounts`. Teller-linked
   brokerage / IRA / 401k accounts surface under their own header instead of
-  being mixed in with checking/savings.
+  being mixed in with checking/savings. A Plaid brokerage linked via the
+  combined flow lands in BOTH `linked_accounts` (often $0 from accountsGet) and
+  `investment_accounts` (correct balance from holdings sync), so the grid drops
+  any `linked_accounts` row whose `account_id` matches an
+  `investment_accounts.plaid_account_id` — only the correct card shows, no $0
+  phantom twin (parallels the `la.plaid_item_id IS NULL` dedupe in
+  `GET /api/investments`).
 - **Investments widget**: Total invested across all sources, per-source
   breakdown (Teller / Plaid / Manual), and per-account cards with inline SVG
   sparklines (computed client-side from `/api/accounts/:id/balance-history`,
@@ -744,6 +750,25 @@ shell/
   to iOS Add-to-Home-Screen instructions when neither path is available.
 - **Mobile polish** (Phase D): viewport-fit=cover for iOS notch, dual light/dark
   `theme-color` meta, 40/44px (desktop/mobile) touch-target minimums on buttons.
+- **Mobile navigation**: at ≤640px the 7-link top nav collapses behind a
+  **hamburger** (drawer drops under a single-row bar; closes on link tap /
+  outside click / Esc) and a fixed **bottom tab bar** surfaces the 5 primary
+  destinations (Home/Activity/Subs/Budgets/Settings) thumb-reachable. Both are
+  in `partials/nav.ejs` + `perfin-shared.css`; desktop is unchanged (both
+  hidden). Body gets bottom padding and the toast stack lifts above the bar.
+- **Responsive tables → cards**: wide data tables opt into a shared
+  `responsive-cards` pattern (`perfin-shared.css`) — at ≤640px the header row is
+  visually hidden and each `<td>` (with a `data-label`) renders as a label:value
+  line inside a card. Special cells: `cell-primary` (full-width title),
+  `cell-actions` (wrap row of 40px-min buttons), `cell-check`, `empty`/`empty-msg`.
+  Applied to the Subscriptions and Transactions lists AND all five dashboard
+  mini-tables (Recent Transactions, Monthly Spending, Spending by Category, Top
+  Merchants, Upcoming Charges). New wide tables should add
+  `class="responsive-cards"` + `data-label`s rather than relying on horizontal
+  scroll.
+- **Money formatting**: the shared global `fmt()` (`perfin-shared.js`) renders
+  thousands separators (`$22,199.52`); stat-card `.value` font uses `clamp()` +
+  `overflow-wrap` so large amounts never overflow narrow 2-up mobile cards.
 - **"Last synced" nav badge** (Phase D): top nav shows "Synced 47m ago" with color-coded
   staleness: green (<6h), yellow (6-24h), red (>24h). Tooltip shows per-source
   freshness (transactions, balances, auto-sync). Populated from the most recent of
@@ -941,6 +966,20 @@ in the Render dashboard. The old Development environment was
 decommissioned June 2024; Trial Plan replaced it. Access tokens never
 expire; re-auth only needed if the user changes their bank password.
 
+**Gotcha — Plaid Liabilities coverage is issuer-dependent.** Some issuers
+(observed with **Discover**) do NOT return APR or `balances.limit` through
+Plaid's Liabilities product even after a fresh re-link with Liabilities
+requested — so APR stays blank and utilization shows "—". A re-link will NOT
+fix this (and burns a precious Trial-Plan Item), so do NOT recommend re-linking
+to chase APR/limit. Instead use the **manual credit-limit + APR fields** on the
+dashboard credit card (limit → `PATCH /api/accounts/:id/balance { credit_limit }`,
+APR → `PATCH /api/accounts/:id { apr }`), which drive real utilization with no
+Plaid dependency. `syncAllPlaidBalances` surfaces an actionable
+"re-link this card to enable Plaid Liabilities" message ONLY when the item lacks
+the Liabilities product entirely (PRODUCTS_NOT_SUPPORTED) AND carries a credit
+account — it stays silent when Liabilities is present but the issuer simply
+returns no APR/limit data, which is the un-fixable Discover case.
+
 ### Render (Free, recommended — currently deployed)
 1. Connect GitHub repo in Render dashboard
 2. Create Web Service from `render.yaml` blueprint
@@ -989,7 +1028,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 638 tests passing across 17 test files (Perfin + Per-sistant)
+- 648 tests passing across 17 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash
@@ -1247,6 +1286,10 @@ POST /api/sso/generate             # create HMAC-signed SSO token (60s expiry)
 POST /api/sso/validate             # validate SSO token, create session
 
 # Pages
+GET  /                          # redirects to /dashboard (post-login entry point;
+                                # baseUrl-aware so it lands in the right mount
+                                # under the unified shell)
+GET  /accounts                  # Teller Connect enrollment + CSV import page
 GET  /dashboard                 # main dashboard UI
 GET  /subscriptions             # subscription management
 GET  /transactions              # transaction search/filter page
@@ -2120,7 +2163,10 @@ income module, and bill-calendar income detection.
   fix); APR/limit only populate once `liabilitiesGet` succeeds, so an item that
   predates the Liabilities product needs a Plaid Link re-auth. The dashboard
   only derives a card's limit from `owed + available` when an available figure
-  exists — otherwise it shows utilization as "—" rather than a misleading 100%. `POST /api/sync-balances` calls it
+  exists — otherwise it shows utilization as "—" rather than a misleading 100%,
+  and offers a **manual credit-limit input** (→ `PATCH /api/accounts/:id/balance
+  { credit_limit }`) next to the existing manual APR field so issuers Plaid never
+  reports a limit for (e.g. Discover) still get real utilization. `POST /api/sync-balances` calls it
   alongside Teller's `syncAllBalances` AND `syncAllPlaidHoldings`, so one
   "Sync Balances" click freshens balances + credit limits + APR +
   investment holdings across both providers without triggering Plaid's

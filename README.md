@@ -84,7 +84,7 @@ Under the unified shell the cross-app integration endpoints (Per-sistant's Perfi
 | `scripts/detect-subscriptions.js` | Recurring charge detection algorithm |
 | `scripts/sheets-sync.js` | Google Sheets sync + dashboard builder |
 | `apps-script/Code.gs` | Google Sheets Apps Script (standalone + server sync) |
-| `tests/` | Test suite (node:test, 612 tests across 17 files) |
+| `tests/` | Test suite (node:test, 648 tests across 17 files) |
 | `Dockerfile` | Container build — installs all workspaces and boots `node shell/index.js` |
 | `render.yaml` | Render deployment blueprint (unified shell) |
 | `fly.toml` | Fly.io deployment config |
@@ -160,7 +160,7 @@ npm run test:perfin       # Perfin tests only
 npm run test:persistent   # Per-sistant tests only
 ```
 
-612 tests covering detection, CSV parsing, date handling, API logic, cost calculations, financial-queries semantics (incl. the net-worth single-source-of-truth), AI-audit pattern extraction, pinned regression tests for auth/SSO/template/exclusion behavior and the latest cycle fixes (net-worth dedupe, budget-rollover month-keying, webhook replay/expiry, XSS/header sanitization, CSV dedup-ID parity, Plaid balance-sync status filter), and integration tests for the feedback, whats-new, performance, and trust-overview endpoints. No database required — all tests run against pure functions and mock pools.
+648 tests covering detection, CSV parsing, date handling, API logic, cost calculations, financial-queries semantics (incl. the net-worth single-source-of-truth), AI-audit pattern extraction, pinned regression tests for auth/SSO/template/exclusion behavior and the latest cycle fixes (net-worth dedupe, budget-rollover month-keying, webhook replay/expiry, XSS/header sanitization, CSV dedup-ID parity, Plaid balance-sync status filter, Plaid holdings-items UNION + liabilities re-link hint, categorize bulk-sweep/loop + auto-sweep + accuracy sampler, in-process digest delivery, background reconcile, login→dashboard redirect, $0-brokerage dedupe), and integration tests for the feedback, whats-new, performance, and trust-overview endpoints. No database required — all tests run against pure functions and mock pools.
 
 ## API Endpoints
 
@@ -171,6 +171,8 @@ When mounted under the unified shell, all of these are accessed via the `/perfin
 | `POST` | `/api/enroll` | Store Teller access token after Connect |
 | `POST` | `/api/sync` | Pull transactions for all enrollments |
 | `POST` | `/api/sync-balances` | Fetch latest account balances + auto net worth snapshot |
+| `POST` | `/api/sync/reconcile` | Backfill/recover dropped transactions (body: days, provider, `background: true` for detached run) |
+| `GET` | `/api/sync/reconcile/status` | Poll the background reconcile job |
 | `POST` | `/api/detect` | Run subscription detection |
 | `GET` | `/api/transactions` | List transactions (query: months, limit, offset) |
 | `GET` | `/api/accounts` | List linked accounts with balances |
@@ -198,6 +200,10 @@ When mounted under the unified shell, all of these are accessed via the `/perfin
 | `GET` | `/api/categorize/status` | ML categorization status |
 | `GET` | `/api/categorize/review-queue` | Candidates the next AI categorize would send to Claude |
 | `POST` | `/api/categorize/review` | Apply user decision (sets user_category, optionally creates rule) |
+| `GET` | `/api/categorize/progress` | Live progress of the running categorize pass (rules/map/AI counts + phase) |
+| `GET` | `/api/categorize/accuracy` | Running ML accuracy over verified AI rows |
+| `GET` | `/api/categorize/accuracy-sample` | Random unverified AI-categorized rows to review |
+| `POST` | `/api/categorize/accuracy-review` | Record a correct/wrong verdict on a sampled AI row |
 | `GET/POST/DELETE` | `/api/categorization-rules` | Persistent merchant→category rules |
 | `POST` | `/api/categorization-rules/from-transaction` | Create rule from a transaction (used by Edit modal "Remember") |
 | `POST` | `/api/categorization-rules/apply` | Run all active rules against uncategorized rows |
@@ -217,7 +223,9 @@ When mounted under the unified shell, all of these are accessed via the `/perfin
 | `POST` | `/api/notifications/test` | Send test push notification |
 | `POST` | `/api/sheets/sync` | Sync all data to Google Sheets |
 | `GET` | `/api/export` | Download transactions/subscriptions CSV |
+| `GET` | `/` | Redirects to `/dashboard` (the post-login entry point) |
 | `GET` | `/dashboard` | Main dashboard UI |
+| `GET` | `/accounts` | Teller Connect enrollment + CSV import page |
 | `GET` | `/accounts/:id/history` | Per-account balance chart (query: source=linked\|investment, months) |
 | `GET` | `/api/shell/webauthn/available` | Probe whether biometric credentials exist (shell-layer, pre-auth) |
 | `POST` | `/api/shell/webauthn/authenticate-options` | Start biometric auth flow (shell-layer, pre-auth) |
@@ -281,9 +289,11 @@ Track brokerage, retirement, and crypto holdings via Plaid API integration. Hold
 ### ML Transaction Categorization
 
 Three-tier categorization pipeline:
-1. **User rules** (saved from the "Remember" checkbox) — free, instant.
-2. **Teller-tag fast path** — deterministic mapping from Teller's own categories (`dining` → `Food & Drink`, etc.) — free, instant.
-3. **AI fallback** — Claude classifies anything left over with rich category descriptions and the bank's own hint as context.
+1. **User rules** (saved from the "Remember" checkbox) — free, instant, applied in bulk over the **entire** uncategorized backlog.
+2. **Teller-tag fast path** — deterministic mapping from Teller's own categories (`dining` → `Food & Drink`, etc.) — free, instant, also bulk over the whole backlog.
+3. **AI fallback** — Claude classifies anything left over with rich category descriptions and the bank's own hint as context. The AI step **loops** 50-row pages up to 300 rows per click, re-checking the shared monthly budget cap before each page (stops early when the cap is hit), so one click makes a real dent instead of nibbling 50 rows.
+
+Categorization also runs **automatically on the bank auto-sync cadence** (not just the 30-day AI-insights run), and `GET /api/categorize/progress` powers a live "categorizing… N done" indicator on the Settings button. An **accuracy sampler** (Settings → AI Accuracy) surfaces random AI-assigned categories to confirm or correct, tracking a running accuracy %; a "wrong" verdict fixes the category (optionally creating a rule) while still counting the miss.
 
 ### Web Push Notifications
 
