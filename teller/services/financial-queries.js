@@ -328,7 +328,11 @@ async function getNetWorth(pool) {
   const breakdown = { accounts: [], investments: [] };
 
   for (const a of accountsRes.rows) {
-    if (a.type === "credit") {
+    // Liabilities: credit cards AND loans (mortgage / student / auto). Plaid
+    // sets type='loan' for all debt subtypes, and its current_balance is the
+    // outstanding principal owed. Counting a loan in the asset branch (the old
+    // `else`) inflated net worth by ~2× the loan balance (F1).
+    if (a.type === "credit" || a.type === "loan") {
       const owed = parseFloat(a.current_balance || 0);
       totalLiabilities += owed;
       breakdown.accounts.push({ name: a.name, type: a.type, amount: -owed });
