@@ -39,6 +39,11 @@ teller/
                            separators, handles parenthesized negatives, NaN on blank).
                            Used by EVERY bank-format parser incl. Schwab + generic (F6)
                            so a "(45.00)" row is imported as -45, not silently skipped.
+                           Schwab's Amount+Type variant preserves the signed amount
+                           (negate to debit-positive — BS-2), not Math.abs. WF detection
+                           requires the first field to look like a date + the second to
+                           parse as money so an arbitrary 5-col CSV isn't parsed with WF's
+                           positional columns (BS-3).
   services/
     database.js          — Postgres pool + transactional auto-migrations with schema versioning
     teller-api.js        — mTLS HTTP client for Teller API (retry with exponential backoff)
@@ -307,9 +312,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (648 tests as of latest); use
+  Perfin and Per-sistant test files (663 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 648 tests across 17 test files (incl.
+  Current count: 663 tests across 17 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -1028,7 +1033,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 648 tests passing across 17 test files (Perfin + Per-sistant)
+- 663 tests passing across 17 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash
@@ -1513,7 +1518,11 @@ standalone-mode fallback if either app is run on its own Render service.
   enrollment — notably `decryption_failed` (passphrase mismatch) — is visible in
   the Sync Health card instead of staying silent on scheduled runs (addition D).
   The auto-sync fires a one-shot "Sync error" notification only when the error
-  signature CHANGES, so a persistent mismatch doesn't spam hourly.
+  signature CHANGES, so a persistent mismatch doesn't spam hourly. A *wholesale*
+  Plaid balance/holdings throw inside `POST /api/sync-balances` (vs. the per-item
+  errors the helpers collect) is also captured into `last_sync_result` now, so a
+  total Plaid failure surfaces on the Sync Health card instead of only the log
+  (BS-6).
 - `user_settings.shell_idle_timeout_minutes INT NOT NULL DEFAULT 60`: how
   many minutes of inactivity before the unified-shell PIN is required again
   (sliding window — every authenticated request resets the timer). Read by
@@ -2223,6 +2232,13 @@ income module, and bill-calendar income detection.
   day-granular watermark so a transaction that posts on the watermark day after
   a sync ran isn't dropped; re-including the whole watermark day is safe because
   the `ON CONFLICT (transaction_id)` upsert dedups the re-processed rows.
+  Pagination is **page-size-independent** (BS-1): the loop requests an explicit
+  `?count=500` and pages via `from_id` until Teller returns an empty page (or the
+  floor date is crossed), with a `MAX_PAGES=100` runaway guard. The earlier
+  `txns.length < 500` stop hard-coded a 500-row page assumption — if Teller's
+  default page size were smaller, the first full page satisfied `< 500`, `from_id`
+  pagination never advanced, and history was capped at one page while the
+  watermark stepped past everything older.
 - **Reconcile/backfill is watermark-independent and idempotent.**
   `reconcileTeller(days)` re-fetches the trailing window from every Teller
   enrollment by passing `{ backfillDays }` to `syncAllEnrollments`, which sets a
@@ -2362,6 +2378,7 @@ INV-22 | Tokens + webhook secret encrypted at rest; mismatch surfaces as decrypt
 INV-23 | Service worker never caches /api/* | Subsystem: Web UI
 INV-24 | sheets-sync.syncAll isolates each tab (per-tab try/catch + errors[]) | Subsystem: Sheets & External Export
 INV-25 | Embedded sub-apps detect req.app.get("embedded") and skip their own auth; cross-app calls use the wired pool (perfinPool/persistentPool), never HTTP self-fetch | Subsystem: Per-sistant Backend / Platform, Shell & Auth
+INV-26 | Teller transaction pagination terminates on an empty page (count-explicit + from_id), never a hard-coded page-size compare | Subsystem: Bank Sync & Ingestion | Verify: tests/cycle-fixes.test.js (BS-1 block)
 
 ### Policy Configuration
 Policy threshold: 6/10
