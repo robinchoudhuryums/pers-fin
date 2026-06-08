@@ -2384,6 +2384,9 @@ INV-26 | Teller transaction pagination terminates on an empty page (count-explic
 Policy threshold: 6/10
 Consecutive cycles: 2
 
+### Seams Audit Cadence
+every 3 subsystem cycles
+
 ### Regression Scenarios
 S1 | Re-sync is idempotent | Subsystem: Bank Sync & Ingestion
   Steps:

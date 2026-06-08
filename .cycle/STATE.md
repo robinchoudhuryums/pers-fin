@@ -57,5 +57,6 @@ All eight findings implemented, committed, and pushed to `claude/pensive-davinci
 10. Per-sistant Web UI
 
 - **Seams audit:** every 3 subsystem cycles.
+- **Subsystem cycles since last Seams audit:** 1
 - **Last subsystem audited:** Bank Sync & Ingestion
 - **Cycles completed:** 1 (audit+implement; synthesis pending)
