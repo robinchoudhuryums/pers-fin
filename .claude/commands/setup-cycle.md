@@ -189,6 +189,9 @@ INV-XX | [rule text] | Subsystem: [name] | Verify: [test name or code ref — op
 Policy threshold: [N]/10
 Consecutive cycles: [N]
 
+### Seams Audit Cadence   ← optional; default: every 4 subsystem cycles
+every [N] subsystem cycles
+
 ### Regression Scenarios   ← required iff Test Command is `manual`; otherwise optional
 S1 | [short scenario name] | Subsystem: [name]
   Steps:

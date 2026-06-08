@@ -16,6 +16,11 @@ Do not make any changes to any files until the comparison is complete.
 
 You are syncing this project's command files with the latest templates.
 
+Step 0: Read the template repo's VERSION file and the top entry of its
+CHANGELOG.md (local path or raw URL). Report the template version and the
+most recent changelog entry up front, so the operator knows what they are
+syncing to and what changed. If a VERSION/CHANGELOG is not found, note
+that and continue.
 Step 1: Read the template CLAUDE.md.
 If $ARGUMENTS is a local path: read $ARGUMENTS/CLAUDE.md directly.
 If $ARGUMENTS is a URL: fetch the raw CLAUDE.md from the repository
