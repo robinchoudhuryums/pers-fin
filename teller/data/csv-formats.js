@@ -60,7 +60,16 @@ const CSV_FORMATS = {
     }),
   },
   wellsfargo: {
-    detect: (headers) => headers.length === 5 && !headers.includes("Transaction Date"),
+    // Wells Fargo ships headerless, so `headers` here are actually the FIRST
+    // data row's values (the file is parsed columns:true for detection). Match
+    // on shape: 5 columns where the first looks like a date and the second
+    // parses as money. The old `length === 5 && !includes("Transaction Date")`
+    // matched ANY 5-column CSV, so an unrelated 5-col export was parsed with
+    // WF's fixed positional columns and produced garbage (BS-3).
+    detect: (headers) => headers.length === 5
+      && !headers.includes("Transaction Date")
+      && /^(\d{1,2}\/\d{1,2}\/\d{2,4}|\d{4}-\d{2}-\d{2})$/.test(String(headers[0] || "").trim())
+      && !isNaN(parseMoney(headers[1])),
     headerless: true,
     columns: ["date", "amount", "ignore1", "ignore2", "merchant_name"],
     parse: (row, cols) => ({
@@ -78,10 +87,16 @@ const CSV_FORMATS = {
       const withdrawal = parseMoney(row["Withdrawal"]);
       const deposit = parseMoney(row["Deposit"]);
       const rawAmount = parseMoney(row["Amount"]);
-      // Withdrawals are debits (positive), deposits are credits (negative)
+      // Withdrawals are debits (positive in our convention), deposits are
+      // credits (negative). For the Amount+Type variant (no Withdrawal/Deposit
+      // columns) PRESERVE the signed Amount rather than Math.abs'ing it: Schwab
+      // exports money-out as a negative Amount, so negate to match our
+      // debit-positive convention — parity with the Chase format above and this
+      // format's own Withdrawal→positive mapping. Math.abs silently turned every
+      // credit into a debit, inflating spending (BS-2).
       const amount = withdrawal > 0 ? withdrawal
         : deposit > 0 ? -deposit
-        : Math.abs(isNaN(rawAmount) ? 0 : rawAmount);
+        : isNaN(rawAmount) ? 0 : -rawAmount;
       return {
         date: row["Date"],
         merchant_name: row["Description"],

@@ -11,11 +11,15 @@ don't exist):
 Produce a CYCLE STATUS report:
 - Current standing: [latest synthesis scores / one-line health, or
   "no synthesis recorded yet"]
-- Active cycle & phase: [from STATE.md, or "none in progress"]
+- Active cycle & phase: [from STATE.md's Cycle field — the single source of
+  truth; flag if any metrics.csv row's cycle disagrees with it]
 - In-progress work: [what's partially done + the next concrete step,
   or "none"]
 - Open follow-on items: [list, or "none"]
 - Trend: [direction from metrics.csv if present, or "n/a"]
+- Seams cadence: [K of N subsystem cycles since the last Seams audit —
+  K from STATE.md's "Subsystem cycles since last Seams audit", N from the
+  Cycle Workflow Config's Seams Audit Cadence; flag "DUE" if K >= N]
 - RECOMMENDED NEXT ACTION — choose explicitly:
   → RESUME — there is unfinished implementation work in STATE.md →
     run /cycle-resume

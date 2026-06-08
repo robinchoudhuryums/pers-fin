@@ -22,6 +22,13 @@ If this scope is listed under Frozen Subsystems in the Cycle Workflow
 Config, print the FROZEN SUBSYSTEM banner (see /targeted-audit) before
 continuing, then proceed.
 
+Seams cadence check: read the Seams Audit Cadence (N) from the Cycle
+Workflow Config and "Subsystem cycles since last Seams audit" (K) from
+.cycle/STATE.md (treat a missing counter or cadence as 0 / default 4). If
+K >= N, note at the TOP of your output that a Seams & Invariants audit is
+DUE (K of N) and recommend running it this cycle or next — then proceed
+with this audit normally.
+
 Audit this subsystem across these focus areas:
 1. Bugs and logic errors in currently-reachable code paths
 2. Dead code / unused exports (only if they create confusion)
@@ -46,6 +53,11 @@ For each finding:
 DO NOT flag style preferences or speculative "could be cleaner"
 refactoring unless the current code is actively wrong.
 
+Finding IDs in the handoff block are SESSION-LOCAL labels (F1, F2, …) —
+not invariant-library IDs. INV-N IDs are assigned only when a rule is
+promoted to the Invariant Library (see /reflect), so parallel audit
+sessions can reuse F1/F2 without colliding.
+
 Do NOT produce an implementation plan — that is /plan. Produce a
 SESSION HANDOFF BLOCK:
 
@@ -59,6 +71,10 @@ FINDINGS:
 
 CROSS-MODULE DEPENDENCIES SURFACED:
 - [dependency description]
+
+OPERATOR ACTIONS SURFACED (manual / out-of-PR steps this scope depends on — env vars, IaC, console/dashboard, one-time migrations):
+- [action] | BLOCKS DEPLOY: Y/N
+(or "None")
 
 TOP PRIORITIES:
 Impact: [finding IDs]
