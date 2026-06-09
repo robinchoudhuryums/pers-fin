@@ -21,6 +21,16 @@ function advanceRecurrence(date, rule, interval) {
 
 async function sendWebhook(webhook, payload) {
   try {
+    // SSRF guard at SEND time (PSB2) — mirror sendSlackNotification. Stored URLs
+    // are validated on create/PATCH, but re-checking here closes the gap if a
+    // row ever lands outside the validated routes, and matches the documented
+    // "validated before each send" invariant. Blocks private/loopback/
+    // link-local/metadata targets.
+    if (!isValidWebhookUrl(webhook.url)) {
+      console.error("sendWebhook: url failed SSRF validation — skipping webhook", webhook.id);
+      await pool.query("UPDATE webhooks SET last_triggered = now(), last_status = 0 WHERE id = $1", [webhook.id]).catch(() => {});
+      return { ok: false, status: 0, error: "url_failed_validation" };
+    }
     const headers = { "Content-Type": "application/json", ...(webhook.headers || {}) };
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);

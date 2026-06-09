@@ -52,8 +52,18 @@ Audited views.js + views/*.js + pages/*.js (XSS-sink scan). Cross-module follow-
 - **Deferred:** A3 (remove `'unsafe-inline'` from script-src via per-request-nonce migration — the real PB-3 fix, L effort).
 - Tests 760, 0 fail. Emitted client JS bodies verified to parse.
 
+### Per-sistant Backend targeted cycle (this session)
+Audited server.js, ai.js, config.js, db.js, errors.js, helpers.js, middleware.js, keep-alive.js, db/*.sql, routes/* (excl. rag/perfin/webhooks). Heavily hardened — 1 Medium, 4 Low. Implemented A1–A2, deferred A3/A4/A5:
+- **A1 (PSB1, Medium)** db.js: flipped `ssl.rejectUnauthorized` false→true so the Neon TLS cert is verified (was MITM-exposed; inconsistent with Perfin which already verifies). Deploy-sensitive but Perfin connects to Neon with verification successfully → strong evidence the cert is trusted.
+- **A2 (PSB2, Low)** helpers.js: `sendWebhook` now re-validates the URL via isValidWebhookUrl at SEND time (mirrors sendSlackNotification) — closes the SSRF defense-in-depth gap + matches the documented invariant.
+- **Deferred:** A3 (config.js IPv6-mapped SSRF regex misses ::ffff:192.168./172.16-31. — single-operator), A4 (integer-:id guards + bulk/import element validation — robustness, parameterized so no security risk), A5 (recurring streak on-time UTC-boundary tz edge).
+- Tests 760, 0 fail. Verified clean: PS-1/2/11, PB-1/2/4/5, constant-time auth, CSRF+sameSite:lax, AI model resolution (whitelisted, no stale opus), no SQLi.
+
 ### Rotation status
-Cycles: Bank Sync, Financial Analytics, broad pass, Knowledge/RAG, Detection & Categorization, AI Insights & Audit + seams audit, Platform/Shell & Auth, Settings/Notifications/Cross-app, Per-sistant Web UI. Remaining: Sheets & External Export, Web UI (Perfin), Per-sistant Backend. (Seams audit due again after 3 more subsystem cycles.)
+Cycles: Bank Sync, Financial Analytics, broad pass, Knowledge/RAG, Detection & Categorization, AI Insights & Audit + seams audit, Platform/Shell & Auth, Settings/Notifications/Cross-app, Per-sistant Web UI, Per-sistant Backend. Remaining: Sheets & External Export, Web UI (Perfin). (Seams audit due again after 3 more subsystem cycles.)
+
+### Doc drift to sync (NEXT /sync-docs)
+- Per-sistant CLAUDE.md Webhooks line: webhook URLs are now SSRF-validated at SEND time too (A2/PSB2), not only on create. Optionally note Per-sistant's DB connection now verifies the TLS cert (A1/PSB1).
 
 ### Doc drift to sync (NEXT /sync-docs)
 - Per-sistant CLAUDE.md "Helmet CSP" feature line says `script-src-attr` "defaults to 'none' (via helmet)" — now set EXPLICITLY (A2/PWUI5). Optionally note `escAttr()` as the attribute-context escaper alongside the PS-4 renderMd note.
