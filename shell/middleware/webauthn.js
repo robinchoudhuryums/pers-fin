@@ -115,6 +115,13 @@ function attach(app, perfinPool) {
         expectedChallenge: stored.challenge,
         expectedOrigin: rp.origin,
         expectedRPID: rp.id,
+        // Enforce that the authenticator actually performed user verification
+        // (biometric / device PIN), matching the `userVerification: "required"`
+        // we request in authenticate-options. @simplewebauthn/server v11 already
+        // defaults this to true; pinning it explicitly keeps "biometric login"
+        // genuinely biometric if a future SDK upgrade ever flips the default
+        // (PSA2 — defense-in-depth, not a current gap).
+        requireUserVerification: true,
         credential: {
           id: stored_cred.credential_id,
           publicKey: Buffer.from(stored_cred.public_key, "base64url"),

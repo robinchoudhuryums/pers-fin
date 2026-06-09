@@ -33,8 +33,10 @@ if (!ENCRYPTION_PASSPHRASE) {
   console.warn("WARNING: TOKEN_ENCRYPTION_PASSPHRASE is not set. Token encryption will fail.");
 }
 
-// Current schema version — increment when adding new migration steps
-const SCHEMA_VERSION = 2;
+// Current schema version — increment when adding new migration steps.
+// Bumped to 3 (PSA1) so the detection-key orphan cleanup below runs ONCE
+// (gated on `currentVersion < 3`) instead of on every boot.
+const SCHEMA_VERSION = 3;
 
 async function runMigrations() {
   const client = await pool.connect();
@@ -707,35 +709,42 @@ async function runMigrations() {
       WHERE NOT (dashboard_widgets ? 'whatsNew') OR NOT (dashboard_widgets ? 'investmentReturns') OR NOT (dashboard_widgets ? 'creditScore')
     `);
 
-    // One-shot cleanup: detection-key migration orphans
+    // One-shot cleanup: detection-key migration orphans (PSA1 — now genuinely
+    // one-shot, gated on the schema version so it doesn't re-run every boot).
     // When detection started keying on COALESCE(user_merchant_name, merchant_name, name)
     // instead of raw merchant_name, pre-existing detected_subscriptions /
     // recurring_transfers rows keyed by the raw merchant_name were left active
     // alongside the new rows keyed by the user-overridden name. Both UPDATEs are
-    // idempotent: if no orphans exist (no user_merchant_name overrides applied
-    // to merchants that have detected rows under the raw name), nothing changes.
-    await client.query(`
-      UPDATE detected_subscriptions ds
-      SET is_active = false, updated_at = now()
-      WHERE ds.is_active = true
-        AND EXISTS (
-          SELECT 1 FROM transactions t
-          WHERE t.merchant_name = ds.merchant_key
-            AND t.user_merchant_name IS NOT NULL
-            AND t.user_merchant_name != ds.merchant_key
-        )
-    `);
-    await client.query(`
-      UPDATE recurring_transfers rt
-      SET is_active = false, updated_at = now()
-      WHERE rt.is_active = true
-        AND EXISTS (
-          SELECT 1 FROM transactions t
-          WHERE t.merchant_name = rt.merchant_key
-            AND t.user_merchant_name IS NOT NULL
-            AND t.user_merchant_name != rt.merchant_key
-        )
-    `);
+    // idempotent, but the predicate (`t.merchant_name = merchant_key AND a
+    // differing user override exists`) can deactivate an unrelated active row if
+    // two distinct merchants share a raw name and one is renamed — so we run it
+    // exactly once during the v3 upgrade rather than on every restart. Existing
+    // deploys retired their orphans long ago; this just stops the recurring
+    // re-exposure.
+    if (currentVersion < 3) {
+      await client.query(`
+        UPDATE detected_subscriptions ds
+        SET is_active = false, updated_at = now()
+        WHERE ds.is_active = true
+          AND EXISTS (
+            SELECT 1 FROM transactions t
+            WHERE t.merchant_name = ds.merchant_key
+              AND t.user_merchant_name IS NOT NULL
+              AND t.user_merchant_name != ds.merchant_key
+          )
+      `);
+      await client.query(`
+        UPDATE recurring_transfers rt
+        SET is_active = false, updated_at = now()
+        WHERE rt.is_active = true
+          AND EXISTS (
+            SELECT 1 FROM transactions t
+            WHERE t.merchant_name = rt.merchant_key
+              AND t.user_merchant_name IS NOT NULL
+              AND t.user_merchant_name != rt.merchant_key
+          )
+      `);
+    }
 
     // Record schema version
     if (currentVersion < SCHEMA_VERSION) {
