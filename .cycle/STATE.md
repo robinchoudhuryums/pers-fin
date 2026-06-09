@@ -171,6 +171,6 @@ then rotate to Detection & Categorization.
 10. Per-sistant Web UI
 
 - **Seams audit:** every 3 subsystem cycles.
-- **Subsystem cycles since last Seams audit:** 2
-- **Last subsystem audited:** Financial Analytics
-- **Cycles completed:** 2 (audit+implement; synthesis pending)
+- **Subsystem cycles since last Seams audit:** 5 — DUE (Platform, Settings/Cross-app, Per-sistant Web UI, Per-sistant Backend, Sheets ran after this session's mid-rotation seams audit). Run a Seams & Invariants audit next cycle (resets to 0).
+- **Last subsystem audited:** Sheets & External Export
+- **Cycles completed:** rotation complete this session (broad-scan + 8 targeted + 1 seams); reflect recorded (cycle 3, net +4); Health Synthesis still pending.
