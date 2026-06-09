@@ -7,6 +7,19 @@
 const { pool } = require("../services/database");
 const { getMonthlySpending, getMonthlyIncomeAndSpending, getCategorySpendingThisMonth } = require("./financial-queries");
 
+// AIA1: Tier-1 arithmetic only has THIS-MONTH per-category + monthly-subscription
+// actuals to compare against (getCategorySpendingThisMonth / actualSubMonthly).
+// A dollar claim scoped to a DIFFERENT period — annualized, multi-month, YTD,
+// projected, or a running average — legitimately differs from the single-month
+// actual by large multiples, so comparing it here produced false-positive
+// CRITICAL findings (audit-alert notification spam + a deflated audit_accuracy %,
+// the headline trust metric). When a claim's surrounding context signals a
+// non-current-month window we SKIP the dollar comparison rather than mis-flag it.
+// Unqualified or explicitly "this month" claims (which refer to the this-month
+// data the model was actually given) are still checked, so this-month
+// hallucinations are still caught.
+const CROSS_PERIOD_RE = /\b(per year|\/?yr\b|\/year|annual|annually|a year|yearly|year[- ]?to[- ]?date|ytd|this year|over the (?:past|last)|(?:last|past|over)\s+\d+\s+months?|\d+\s+months?|average|avg|projected|projection|annualized|run[- ]?rate|on track)\b/;
+
 // Extract dollar amounts from text: "$1,234.56" or "$500"
 function extractDollarClaims(text) {
   const matches = [];
@@ -162,6 +175,11 @@ async function auditInsight(insightText, insightId) {
     const dollarClaims = extractDollarClaims(insightText);
     for (const claim of dollarClaims) {
       const ctx = claim.context.toLowerCase();
+      // Skip claims scoped to a non-current-month period (annual/multi-month/YTD/
+      // projected/average) — the per-category + subscription actuals below are
+      // this-month figures, so comparing a cross-period dollar amount would
+      // false-flag (AIA1).
+      const crossPeriod = CROSS_PERIOD_RE.test(ctx);
       // Find the single BEST (longest = most specific) category whose name
       // appears as a whole word in the claim's context, and emit at most one
       // finding per dollar claim — word boundaries stop short category names
@@ -173,7 +191,7 @@ async function auditInsight(insightText, insightId) {
           bestCat = cat; bestActual = actual;
         }
       }
-      if (bestCat !== null && Math.abs(claim.value - bestActual) > 0.01) {
+      if (bestCat !== null && !crossPeriod && Math.abs(claim.value - bestActual) > 0.01) {
         const pctOff = bestActual > 0 ? Math.abs(claim.value - bestActual) / bestActual : 1;
         if (pctOff > 0.20) {
           findings.push({ severity: "critical", tier: 1, check: "arithmetic",
@@ -185,8 +203,8 @@ async function auditInsight(insightText, insightId) {
             pct_off: Math.round(pctOff * 100), context: claim.context });
         }
       }
-      // Check subscription total claims
-      if (ctx.includes("subscription") && Math.abs(claim.value - actualSubMonthly) > 1) {
+      // Check subscription total claims (this-month dollars → same cross-period skip)
+      if (!crossPeriod && ctx.includes("subscription") && Math.abs(claim.value - actualSubMonthly) > 1) {
         const pctOff = actualSubMonthly > 0 ? Math.abs(claim.value - actualSubMonthly) / actualSubMonthly : 1;
         if (pctOff > 0.20) {
           findings.push({ severity: "critical", tier: 1, check: "subscription_total",
@@ -448,4 +466,4 @@ async function getAuditAccuracy(days = 90) {
   }
 }
 
-module.exports = { auditInsight, getAuditStats, getAuditAccuracy, extractDollarClaims, extractPercentClaims, extractMerchantNames, extractTrendClaims, findContradictions, wordMatch, entityKnown };
+module.exports = { auditInsight, getAuditStats, getAuditAccuracy, extractDollarClaims, extractPercentClaims, extractMerchantNames, extractTrendClaims, findContradictions, wordMatch, entityKnown, CROSS_PERIOD_RE };
