@@ -38,8 +38,15 @@ Audited the full subsystem (shell/index.js, auth.js, webauthn.js, server.js, sta
 - **Deferred:** A3 (reset-fresh CASCADE FK-topology guard — latent), A4 (shell shutdown doesn't stop sub-app cron — cosmetic).
 - Tests 760, 0 fail.
 
+### Settings, Notifications & Cross-app targeted cycle (this session)
+Audited settings.js, notifications.js, persistent.js + the cross-app seam. Mostly clean — 0 Critical/High, 1 Medium, 2 Low. Implemented A1–A2, deferred A3/A4:
+- **A1 (SETT1, Medium)** settings.js: `/api/export` (transaction CSV) and `/api/export/tax-report` (CSV + summary) now quote-escape EVERY interpolated text field (account, institution, category in the txn export; category, deduction_type, summary-category in the tax report). Previously only merchant/notes were escaped, so a `"` in the others silently misaligned the CSV columns.
+- **A2 (SETT2, Low)** settings.js: `data-freshness` `stale` boolean uses `age >= STALE_SEC` so it agrees with `level==="stale"` at the exact 24h boundary (was `>`, off by a 1-second window).
+- **Deferred:** A3 (CSV formula-injection prefix-guard `= + - @` — single-operator own-data, low priority), A4 (log inside cross-app read catch so a future Perfin schema rename isn't fully silent — accepted INV-35 posture / SEAM-2).
+- Tests 760, 0 fail. notifications.js + persistent.js (SSO/productivity-context/webhook) verified clean; cross-app contracts confirmed by the seams audit.
+
 ### Rotation status
-Cycles: Bank Sync, Financial Analytics, broad pass, Knowledge/RAG, Detection & Categorization, AI Insights & Audit + seams audit, Platform/Shell & Auth. Next rotation: Settings/Notifications/Cross-app, then Sheets, Web UI, Per-sistant Backend/Web UI.
+Cycles: Bank Sync, Financial Analytics, broad pass, Knowledge/RAG, Detection & Categorization, AI Insights & Audit + seams audit, Platform/Shell & Auth, Settings/Notifications/Cross-app. Next rotation: Sheets & External Export, then Web UI (Perfin), Per-sistant Backend, Per-sistant Web UI. (A seams audit will be due again after 3 more subsystem cycles.)
 
 ### Doc drift to sync (NEXT /sync-docs)
 - CLAUDE.md Database section says "schema_migrations ... recorded for observability only; it does not gate any migration logic today" AND the "Detection-key migration window" section says the cleanup "runs on every startup" — both now STALE after A1 (the cleanup is version-gated to run once via `currentVersion < 3`). Correct both.

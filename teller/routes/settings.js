@@ -236,7 +236,9 @@ router.get("/api/data-freshness", async (_req, res) => {
       if (!ts) return { timestamp: null, age_seconds: null, stale: true, level: "stale" };
       const age = Math.floor((now - new Date(ts).getTime()) / 1000);
       const level = age < FRESH_SEC ? "fresh" : age < STALE_SEC ? "aging" : "stale";
-      return { timestamp: ts, age_seconds: age, stale: age > STALE_SEC, level };
+      // SETT2: `stale` must agree with level==="stale" at the exact STALE_SEC
+      // boundary — use >= (level uses `< STALE_SEC ? aging : stale`).
+      return { timestamp: ts, age_seconds: age, stale: age >= STALE_SEC, level };
     }
     res.json({
       thresholds: { fresh_seconds: FRESH_SEC, stale_seconds: STALE_SEC },
@@ -402,7 +404,10 @@ router.get("/api/export", async (req, res) => {
       [months]
     );
     const header = "Date,Merchant,Amount,Account,Institution,Category\n";
-    const rows = result.rows.map(r => `${r.date},"${(r.merchant || "").replace(/"/g, '""')}",${r.amount},"${r.account}","${r.institution}","${r.category || ""}"`).join("\n");
+    // Quote-escape EVERY interpolated text field (SETT1) — a `"` in an account
+    // label / institution / user_category would otherwise break the CSV quoting
+    // and silently misalign columns in the downloaded records artifact.
+    const rows = result.rows.map(r => `${r.date},"${(r.merchant || "").replace(/"/g, '""')}",${r.amount},"${(r.account || "").replace(/"/g, '""')}","${(r.institution || "").replace(/"/g, '""')}","${(r.category || "").replace(/"/g, '""')}"`).join("\n");
     res.setHeader("Content-Type", "text/csv");
     res.setHeader("Content-Disposition", `attachment; filename=transactions_${months}mo.csv`);
     res.send(header + rows);
@@ -500,7 +505,7 @@ router.get("/api/export/tax-report", async (req, res) => {
     const rows = deductions.rows.map(d =>
       `${d.tax_year},${d.txn_date || ''},` +
       `"${(d.merchant || '').replace(/"/g, '""')}",` +
-      `${d.amount},"${d.category}","${d.deduction_type || ''}",` +
+      `${d.amount},"${(d.category || '').replace(/"/g, '""')}","${(d.deduction_type || '').replace(/"/g, '""')}",` +
       `"${(d.notes || '').replace(/"/g, '""')}",${d.is_confirmed}`
     ).join("\n");
 
@@ -512,7 +517,7 @@ router.get("/api/export/tax-report", async (req, res) => {
     }
     const grandTotal = deductions.rows.reduce((s, d) => s + parseFloat(d.amount), 0);
     const summary = "\n\nSUMMARY BY CATEGORY\nCategory,Total\n" +
-      Object.entries(byCategory).map(([cat, total]) => `"${cat}",${total.toFixed(2)}`).join("\n") +
+      Object.entries(byCategory).map(([cat, total]) => `"${(cat || '').replace(/"/g, '""')}",${total.toFixed(2)}`).join("\n") +
       `\n\nGRAND TOTAL,${grandTotal.toFixed(2)}`;
 
     res.setHeader("Content-Type", "text/csv");
