@@ -262,6 +262,12 @@ POST   /api/ai/query               # Natural language query about your data
 GET    /api/ai/models              # Get per-feature model preferences
 PATCH  /api/ai/models              # Update per-feature model preferences
 
+# Knowledge / RAG API (personal knowledge base Q&A)
+GET    /api/rag/search             # retrieval only (vector if configured, else keyword); zero LLM cost
+POST   /api/rag/query              # source-grounded answer (cites sources inline by [n])
+GET    /api/rag/status             # vault config + index counts + embeddings/vector readiness + reindex state
+POST   /api/rag/reindex            # background full reindex (vault re-walk + notes); 202, poll status; 409 if running
+
 POST   /api/login           # Authenticate
 POST   /api/logout          # End session
 GET    /manifest.json       # PWA manifest
@@ -281,6 +287,13 @@ GET    /sw.js               # Service worker
 - `CONTACTS` — JSON map of name→email (e.g. `{"mom":"mom@email.com"}`)
 - `ANTHROPIC_API_KEY` — Claude API key for AI features (optional)
 - `PERFIN_URL` — URL to linked Perfin instance (for navigation + dashboard integration)
+- `VOYAGE_API_KEY` — Voyage AI key for Knowledge embeddings (optional). Without
+  it, Knowledge falls back to keyword retrieval over notes/documents.
+- `VOYAGE_MODEL` — embedding model (default `voyage-3.5`, 1024-dim — must match
+  the `chunks.embedding vector(1024)` column)
+- `VAULT_GITHUB_TOKEN` — read-only fine-grained GitHub PAT for the private
+  Obsidian-vault repo. Used to pull changed markdown via the GitHub API (no
+  clone). Never stored in the DB; repo/branch are set in Settings → Knowledge.
 
 ## Database
 - Auto-migration runs on server startup — no manual SQL execution needed.
@@ -326,7 +339,30 @@ Perfin sub-app and the shell. Do not introduce v5-only idioms (`req.host`,
 `app.del`, removed wildcard path patterns, etc.) — the workspace install
 hoists v4 across all sub-apps and a v5 idiom would break under the
 hoisted version.
-- Tables: `todos`, `emails`, `notes`, `contacts`, `user_settings`, `subtasks`, `email_templates`, `todo_templates`, `weekly_reviews`, `task_dependencies`, `automations`, `attachments`
+- Tables: `todos`, `emails`, `notes`, `contacts`, `user_settings`, `subtasks`, `email_templates`, `todo_templates`, `weekly_reviews`, `task_dependencies`, `automations`, `attachments`, `documents`, `chunks`, `embed_state`
+- **Knowledge / RAG** (`db/013_knowledge.sql`, `db/014_vault_vectors.sql`):
+  - `documents` — personal knowledge corpus (`source` manual/vault/note,
+    `source_ref`, `sensitivity` normal/private/secret). Filled by the Obsidian
+    vault sync (`source='vault'`). Only `sensitivity='normal'` is embedded +
+    retrievable; private/secret are stored but never embedded/returned.
+  - `chunks` — polymorphic (`source_kind` note/document, `source_id`) with
+    `embedding vector(1024)`, HNSW cosine index. **Created defensively** — the
+    migration only builds it when the `vector` extension is available, so an
+    unsupported Postgres degrades to keyword retrieval instead of failing the
+    (fatal) migration and crashing the shell. `services/vault-sync.vectorReady`
+    + `routes/rag.js` gate on its existence.
+  - `embed_state` — per-source content hash so unchanged notes/docs aren't
+    re-embedded each sync.
+  - `user_settings.ai_model_rag` (default sonnet) + `vault_enabled` /
+    `vault_repo` / `vault_branch` / `vault_last_sha` / `vault_last_synced_at` /
+    `vault_last_error`. The vault GitHub token is the `VAULT_GITHUB_TOKEN` env
+    var, never a DB column.
+  - Sync: `services/vault-sync.js` (GitHub Contents/Trees/compare API, no clone;
+    frontmatter `embed:false`/`private:true`/`sensitivity:` honored). Hourly
+    in-process cron + `POST /api/rag/reindex` (also driven by the
+    `knowledge-reindex.yml` GitHub Action via `x-api-key`). Embeddings via
+    `services/embeddings.js` (Voyage, native fetch). Retrieval is vector-first
+    with keyword fallback.
 
 ## Embedded Mode (under the unified shell)
 When loaded by `shell/index.js` instead of run standalone, the Per-sistant app

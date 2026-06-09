@@ -23,9 +23,9 @@ describe("Knowledge — buildRetrievalQuery", () => {
     assert.deepEqual(params, ["%car%", "%insurance%", 8]);
   });
 
-  it("excludes secret-sensitivity documents from the corpus", () => {
+  it("only retrieves normal-sensitivity documents (private/secret excluded)", () => {
     const { sql } = buildRetrievalQuery("anything", 5);
-    assert.match(sql, /sensitivity <> 'secret'/);
+    assert.match(sql, /sensitivity = 'normal'/);
   });
 
   it("drops sub-3-char tokens, falling back to the whole query", () => {

@@ -96,6 +96,25 @@ ${navBar("/settings")}
   </div>
 
   <div class="section">
+    <h2>Knowledge &mdash; Obsidian Vault</h2>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:12px;">Index a private GitHub repo (your Obsidian vault) for semantic Knowledge Q&amp;A. Requires <code>VOYAGE_API_KEY</code> and <code>VAULT_GITHUB_TOKEN</code> set on the server &mdash; the token is never stored in the database. Run/monitor indexing on the <a href="knowledge" style="color:var(--accent);">Knowledge</a> page.</p>
+    <div style="display:flex;flex-direction:column;gap:12px;">
+      <div style="display:flex;align-items:center;gap:12px;">
+        <label style="margin:0;white-space:nowrap;">Enable vault sync</label>
+        <input type="checkbox" id="vault-enabled" style="width:auto;">
+      </div>
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+        <label style="margin:0;white-space:nowrap;">Repo</label>
+        <input type="text" id="vault-repo" placeholder="owner/my-vault" style="flex:1;min-width:160px;">
+        <label style="margin:0;white-space:nowrap;">Branch</label>
+        <input type="text" id="vault-branch" placeholder="main" style="width:110px;">
+        <button class="btn primary" id="save-vault-btn">Save</button>
+      </div>
+      <div id="vault-status" style="font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:0.04em;line-height:1.6;"></div>
+    </div>
+  </div>
+
+  <div class="section">
     <h2>Email (SMTP)</h2>
     <p style="font-size:12px;color:var(--muted);margin-bottom:8px;" id="smtp-status"></p>
   </div>

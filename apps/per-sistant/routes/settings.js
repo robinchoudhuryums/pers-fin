@@ -42,7 +42,7 @@ module.exports = function ({ pool, config }) {
 
   router.patch("/api/settings", async (req, res) => {
     try {
-      const { theme, session_timeout_minutes, default_horizon, perfin_url, perfin_webhook_recipient, palette, dashboard_layout, slack_webhook_url, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone } = req.body;
+      const { theme, session_timeout_minutes, default_horizon, perfin_url, perfin_webhook_recipient, palette, dashboard_layout, slack_webhook_url, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, vault_enabled, vault_repo, vault_branch } = req.body;
       const fields = [];
       const params = [];
       let idx = 1;
@@ -68,6 +68,17 @@ module.exports = function ({ pool, config }) {
       if (keep_alive_start !== undefined) { fields.push(`keep_alive_start = $${idx++}`); params.push(parseInt(keep_alive_start) || 0); }
       if (keep_alive_end !== undefined) { fields.push(`keep_alive_end = $${idx++}`); params.push(parseInt(keep_alive_end) || 0); }
       if (keep_alive_timezone !== undefined) { fields.push(`keep_alive_timezone = $${idx++}`); params.push(keep_alive_timezone || "America/New_York"); }
+      // Knowledge / Obsidian vault config (non-secret — the GitHub token is the
+      // VAULT_GITHUB_TOKEN env var, never stored here).
+      if (vault_enabled !== undefined) { fields.push(`vault_enabled = $${idx++}`); params.push(!!vault_enabled); }
+      if (vault_repo !== undefined) {
+        const repo = vault_repo ? String(vault_repo).trim() : null;
+        if (repo && !/^[\w.-]+\/[\w.-]+$/.test(repo)) {
+          return res.status(400).json({ error: "vault_repo must be in 'owner/name' form." });
+        }
+        fields.push(`vault_repo = $${idx++}`); params.push(repo);
+      }
+      if (vault_branch !== undefined) { fields.push(`vault_branch = $${idx++}`); params.push((vault_branch && String(vault_branch).trim()) || "main"); }
       if (!fields.length) return res.status(400).json({ error: "No fields to update." });
       const r = await pool.query(`UPDATE user_settings SET ${fields.join(", ")} WHERE id = 1 RETURNING *`, params);
       if (theme && req.session) req.session.theme = theme;

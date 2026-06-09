@@ -17,15 +17,22 @@
 
 const express = require("express");
 const { callAI, getAIModelForFeature, isAIAvailable } = require("../ai");
+const embeddings = require("../services/embeddings");
+const vaultSync = require("../services/vault-sync");
 const { serverError } = require("../errors");
 
 // Cap how much of each source we feed the model, and how many sources.
 const MAX_SOURCES = 8;
 const MAX_SNIPPET_CHARS = 1500;
 
-// Build a parameterized keyword query over the notes + documents corpus.
-// Returns { sql, params }. 'secret'-sensitivity documents are excluded from
-// the corpus entirely (never retrievable, never sent to AI).
+// Background reindex status (module-scoped so it survives across requests).
+// The real concurrency lock lives in vault-sync (isSyncing); this is UI state.
+let reindexState = { running: false, started_at: null, finished_at: null, result: null, error: null };
+
+// Build a parameterized keyword query over the notes + documents corpus
+// (the fallback path when embeddings/pgvector aren't available). Returns
+// { sql, params }. Only 'normal'-sensitivity documents are retrievable —
+// 'private'/'secret' rows are never returned and never sent to the model.
 function buildRetrievalQuery(query, limit) {
   const terms = (String(query).match(/\w+/g) || [])
     .filter((t) => t.length > 2)
@@ -48,7 +55,7 @@ function buildRetrievalQuery(query, limit) {
       FROM notes WHERE deleted_at IS NULL
       UNION ALL
       SELECT id::text AS id, title, content, 'document'::text AS kind, updated_at
-      FROM documents WHERE deleted_at IS NULL AND sensitivity <> 'secret'
+      FROM documents WHERE deleted_at IS NULL AND sensitivity = 'normal'
     )
     SELECT id, title, content, kind, updated_at, (${score}) AS score
     FROM corpus
@@ -66,7 +73,34 @@ function snippet(text) {
 module.exports = function ({ pool }) {
   const router = express.Router();
 
+  // Vector retrieval over the polymorphic chunk store, joining back to the
+  // source row to get its title and honor deleted/sensitivity filters. Only
+  // 'normal' documents (and non-deleted notes) are retrievable.
+  const VECTOR_SQL = `
+    SELECT c.source_kind AS kind, c.source_id::text AS id, c.content,
+           COALESCE(n.title, d.title) AS title,
+           COALESCE(n.updated_at, d.updated_at) AS updated_at
+    FROM chunks c
+    LEFT JOIN notes n ON c.source_kind = 'note' AND n.id = c.source_id
+    LEFT JOIN documents d ON c.source_kind = 'document' AND d.id = c.source_id
+    WHERE c.embedding IS NOT NULL
+      AND ( (c.source_kind = 'note' AND n.deleted_at IS NULL)
+         OR (c.source_kind = 'document' AND d.deleted_at IS NULL AND d.sensitivity = 'normal') )
+    ORDER BY c.embedding <=> $1::vector
+    LIMIT $2`;
+
+  // Vector-first; falls back to keyword (Phase 0) when Voyage isn't configured,
+  // the chunks table doesn't exist, the query embed fails, or nothing matched.
   async function retrieve(query, limit) {
+    if (embeddings.isConfigured() && (await vaultSync.vectorReady(pool))) {
+      try {
+        const [qvec] = await embeddings.embed([query], { inputType: "query" });
+        const r = await pool.query(VECTOR_SQL, [embeddings.toVectorLiteral(qvec), limit]);
+        if (r.rows.length) return r.rows;
+      } catch (e) {
+        // fall through to keyword retrieval on any embedding/vector error
+      }
+    }
     const { sql, params } = buildRetrievalQuery(query, limit);
     const r = await pool.query(sql, params);
     return r.rows;
@@ -146,6 +180,60 @@ module.exports = function ({ pool }) {
     } catch (err) {
       serverError(res, err);
     }
+  });
+
+  // Vault + index status for the Knowledge page / Settings. Cheap; safe to poll.
+  router.get("/api/rag/status", async (req, res) => {
+    try {
+      const cfg = await vaultSync.getVaultConfig(pool).catch(() => ({}));
+      const ready = await vaultSync.vectorReady(pool);
+      const counts = { documents: 0, embedded: 0 };
+      try {
+        const c = await pool.query(
+          `SELECT (SELECT count(*) FROM documents WHERE deleted_at IS NULL) AS documents,
+                  (SELECT count(*) FROM embed_state) AS embedded`
+        );
+        counts.documents = Number(c.rows[0].documents);
+        counts.embedded = Number(c.rows[0].embedded);
+      } catch {}
+      res.json({
+        vault: {
+          enabled: !!cfg.vault_enabled,
+          repo: cfg.vault_repo || null,
+          branch: cfg.vault_branch || "main",
+          last_synced_at: cfg.vault_last_synced_at || null,
+          last_error: cfg.vault_last_error || null,
+        },
+        embeddings_configured: embeddings.isConfigured(),
+        vector_ready: ready,
+        counts,
+        reindex: reindexState,
+      });
+    } catch (err) {
+      serverError(res, err);
+    }
+  });
+
+  // Kick a full reindex in the background (vault re-walk + notes). Returns 202
+  // immediately; poll GET /api/rag/status for progress. 409 if already running.
+  // Auth: under the unified shell this is reachable from the GitHub Actions
+  // cron via x-api-key (the shell validates it); browsers use the session.
+  router.post("/api/rag/reindex", async (req, res) => {
+    if (reindexState.running || vaultSync.isSyncing()) {
+      return res.status(409).json({ error: "A sync/reindex is already running." });
+    }
+    reindexState = { running: true, started_at: new Date().toISOString(), finished_at: null, result: null, error: null };
+    res.status(202).json({ started: true });
+    (async () => {
+      try {
+        reindexState.result = await vaultSync.reindexAll(pool);
+      } catch (e) {
+        reindexState.error = e.message;
+      } finally {
+        reindexState.running = false;
+        reindexState.finished_at = new Date().toISOString();
+      }
+    })();
   });
 
   return router;

@@ -10,6 +10,11 @@ ${navBar("/knowledge")}
   <h1>Knowledge</h1>
   <p class="subtitle">Ask questions across your notes and documents. Answers cite their sources.</p>
 
+  <div class="section" style="display:flex;flex-wrap:wrap;align-items:center;gap:12px;justify-content:space-between;">
+    <span id="k-status-text" style="font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:0.04em;line-height:1.6;">Loading index status&hellip;</span>
+    <button class="btn" id="k-reindex-btn">Reindex now</button>
+  </div>
+
   <div class="section">
     <div style="display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap;">
       <textarea id="k-query" rows="2" placeholder="Ask anything in your knowledge base… e.g. 'what's my car insurance deductible?'" style="flex:1;min-width:240px;min-height:52px;"></textarea>
@@ -95,11 +100,43 @@ async function searchOnly(){
   } finally { kBusy(false); }
 }
 
+var kPollTimer = null;
+async function loadKStatus(){
+  try {
+    var st = await fetch('/api/rag/status').then(function(r){return r.json();});
+    var el = document.getElementById('k-status-text'); if(!el) return;
+    var bits = [];
+    if(st.reindex && st.reindex.running){ bits.push('Reindexing…'); }
+    bits.push(st.vector_ready ? 'Semantic search ready' : 'Keyword search (no vector index)');
+    if(!st.embeddings_configured) bits.push('embeddings not configured');
+    if(st.counts) bits.push(st.counts.embedded + ' sources embedded');
+    if(st.vault && st.vault.enabled && st.vault.last_synced_at) bits.push('vault synced ' + new Date(st.vault.last_synced_at).toLocaleString());
+    if(st.vault && st.vault.last_error) bits.push('vault error: ' + st.vault.last_error);
+    el.textContent = bits.join('  ·  ');
+    var btn = document.getElementById('k-reindex-btn');
+    if(btn) btn.disabled = !!(st.reindex && st.reindex.running);
+    if(st.reindex && st.reindex.running){
+      if(!kPollTimer) kPollTimer = setInterval(loadKStatus, 4000);
+    } else if(kPollTimer){ clearInterval(kPollTimer); kPollTimer = null; }
+  } catch(e){}
+}
+async function reindex(){
+  var btn = document.getElementById('k-reindex-btn');
+  btn.disabled = true;
+  try {
+    var r = await fetch('/api/rag/reindex', {method:'POST'}).then(function(r){return r.json();});
+    if(r && r.error){ document.getElementById('k-status-text').textContent = r.error; btn.disabled = false; return; }
+    loadKStatus();
+  } catch(e){ btn.disabled = false; }
+}
+
 bindEvents([
   ['k-ask-btn','click',ask],
   ['k-search-btn','click',searchOnly],
   ['k-mic-btn','click',function(){ startVoiceInput('k-query'); }],
+  ['k-reindex-btn','click',reindex],
 ]);
+loadKStatus();
 document.getElementById('k-query').addEventListener('keydown',function(e){
   if(e.key==='Enter' && (e.metaKey || e.ctrlKey)){ e.preventDefault(); ask(); }
 });
