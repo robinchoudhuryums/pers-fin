@@ -315,9 +315,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (663 tests as of latest); use
+  Perfin and Per-sistant test files (745 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 663 tests across 17 test files (incl.
+  Current count: 745 tests across 24 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -628,14 +628,20 @@ shell/
   `modules_failed` array — so a swallowed query error no longer reports a module as
   analyzed when Claude actually received no data for it.
 - **Auto-trigger**: Insights auto-generate based on `insights_cadence_days` setting (checked every 6 hours)
-- **Cost tracking**: Granular token-level pricing — `input_tokens` from Anthropic's API (already excludes cache tokens) is multiplied by the input rate; `cache_read_input_tokens` and `cache_creation_input_tokens` are billed separately at their own rates. This restores accurate `INSIGHTS_MONTHLY_BUDGET_CENTS` enforcement when prompt caching is active. The monthly budget is shared between `/api/insights`, `/api/categorize`, and `/api/insights/rebuild` — all check the same cap before calling Claude AND each writes a `financial_insights` usage row after its AI call (`entry_type='categorize'` / `'rebuild'`) so its spend counts toward the cap (not just the read side). Display queries that surface "AI Insights" filter `entry_type='insight'` to keep categorize/rebuild tracking rows out of the user-facing feed. The cap is checked-then-charged; for the insight path the insight row IS the usage row (atomic — a failed write loses the insight and its charge together), and the only gap (two concurrent generate calls both passing the pre-check) is accepted for a single-operator app rather than guarded with a provisional reservation (AI-11). `/api/insights/status` rounds the accumulated cost once and derives `budget_remaining_cents` from it so estimated + remaining == budget (AI-10).
+- **Cost tracking**: Granular token-level pricing — `input_tokens` from Anthropic's API (already excludes cache tokens) is multiplied by the input rate; `cache_read_input_tokens` and `cache_creation_input_tokens` are billed separately at their own rates. This restores accurate `INSIGHTS_MONTHLY_BUDGET_CENTS` enforcement when prompt caching is active. The monthly budget is shared between `/api/insights`, `/api/categorize`, and `/api/insights/rebuild` — all check the same cap before calling Claude AND each writes a `financial_insights` usage row after its AI call (`entry_type='categorize'` / `'rebuild'`) so its spend counts toward the cap (not just the read side). `/api/insights/rebuild` records that usage row IMMEDIATELY after the Claude call — before its tool-block validation early-returns and the summary UPDATE — so a rebuild that truncated or failed validation (which 500s) still charges the cap for the spend it already incurred (AIA2); `/api/categorize` likewise stops its AI loop if a usage-row write fails rather than spending uncapped (M2). Display queries that surface "AI Insights" filter `entry_type='insight'` to keep categorize/rebuild tracking rows out of the user-facing feed. The cap is checked-then-charged; for the insight path the insight row IS the usage row (atomic — a failed write loses the insight and its charge together), and the only gap (two concurrent generate calls both passing the pre-check) is accepted for a single-operator app rather than guarded with a provisional reservation (AI-11). `/api/insights/status` rounds the accumulated cost once and derives `budget_remaining_cents` from it so estimated + remaining == budget (AI-10).
 - **Insight inputs are split-adjusted**: AI insights see the same `spending_split_pct`-adjusted monthly spend totals and the same keyword-filtered income that the dashboard and `/api/savings-rate` show, via `services/financial-queries.js`.
 - **Structured running summary**: AI long-term memory is structured JSON, not plain text. `POST /api/insights` uses Anthropic tool_use (`generate_financial_insight` tool, forced via `tool_choice`) to return BOTH the user-facing `insights_text` AND a typed `summary` object with four arrays: `trends`, `completed_goals`, `pending_actions`, `alerts`. The summary is saved to `user_settings.insights_running_summary_json` (JSONB); the legacy `insights_running_summary` TEXT column gets a human-readable rendering for backward-compat callers. `sanitizeStructuredSummary` enforces shape/length bounds (max items per array, string lengths, enum values) so a pathological tool response can't pollute long-term memory. The response includes `summary_status` — `"updated"` (normal), `"preserved_due_to_truncation"` (tool block missing because hit max_tokens), `"preserved_no_tool_block"` (model didn't comply with tool_choice — rare), or `"preserved_validation_failed"` (sanitizer rejected the shape) — so callers can surface when long-term memory didn't advance. `GET /api/insights/status` returns the full `running_summary` object plus a `running_summary_counts` block (`{trends, completed_goals, pending_actions, alerts}`) so dashboards can show "tracking 3 trends · 2 goals · 5 actions · 1 alert" without a second fetch.
 - **AI insight auditing**: Post-generation validation via `services/ai-audit.js`. Four tiers:
   (1) arithmetic — dollar amounts/percentages compared to actual DB data; a claim is matched to a
   category name by **word boundary** (not substring, so `car` ≠ `Carmax`) and emits at most ONE
   finding per dollar claim (the single longest/most-specific match) — critical >20% off, warning >5%
-  (AI-2/AI-3); (2) entity existence — merchant/goal/subscription names verified against DB via
+  (AI-2/AI-3). The per-category + subscription-total dollar actuals are THIS-MONTH figures
+  (`getCategorySpendingThisMonth` / monthly sub total), so a claim whose context signals a
+  non-current-month window (annual / multi-month / YTD / projected / running-average, matched by
+  `CROSS_PERIOD_RE`) is SKIPPED rather than mis-compared — otherwise an annualized figure (×12) read
+  near a category name false-flagged CRITICAL, spamming the audit notification and deflating the
+  `audit_accuracy` % (AIA1). this-month + unqualified claims (which refer to the data the model was
+  given) are still checked. (2) entity existence — merchant/goal/subscription names verified against DB via
   whole-word match with a ≥4-char min, so a tiny known entity (a "Car" goal) can't wildcard-match
   every claimed name and let hallucinations pass (AI-4); (3) trend direction — only **total/overall**
   spending claims are checked against the monthly total; category-specific claims are skipped rather
@@ -1062,7 +1068,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 663 tests passing across 17 test files (Perfin + Per-sistant)
+- 745 tests passing across 24 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash
@@ -1425,10 +1431,13 @@ standalone-mode fallback if either app is run on its own Render service.
 - Migration creates base tables (`plaid_items`, `teller_enrollments`, `linked_accounts`,
   `sync_cursors`, `transactions`, `detected_subscriptions`, `csv_imports`) idempotently
   via `CREATE TABLE IF NOT EXISTS` before the per-feature `ALTER TABLE` steps.
-- Schema versioning via `schema_migrations` table exists (current value: 2) but is
-  effectively dormant — every migration step uses `IF NOT EXISTS` / `IF NOT EXISTS`
-  guards and runs unconditionally. The `schema_migrations` row is recorded for
-  observability only; it does not gate any migration logic today.
+- Schema versioning via `schema_migrations` table (current value: 3). Most
+  migration steps use `IF NOT EXISTS` / `CREATE OR REPLACE` guards and run
+  unconditionally, so the version is largely observability — with ONE exception:
+  the detection-key orphan cleanup (see "Detection-key migration window") is
+  gated on `currentVersion < 3` so it runs exactly once during the v3 upgrade
+  instead of on every boot (PSA1). New one-shot cleanups should follow the same
+  `currentVersion < N` gating rather than running unconditionally.
 - Schema files in `db/` for reference only
 - Key tables: `teller_enrollments`, `linked_accounts`, `transactions`,
   `transaction_splits`, `detected_subscriptions`, `recurring_transfers`,
@@ -1671,14 +1680,18 @@ Subscription and transfer detection now key on
 after the upgrade a user with active `user_merchant_name` overrides may see
 a parallel duplicate row appear under the new (merged) name.
 
-An idempotent cleanup runs on every startup as part of the migration step:
-it deactivates any subscription/transfer row whose `merchant_key` matches
+A one-time cleanup runs ONCE during the v3 schema upgrade (gated on
+`currentVersion < 3`, PSA1 — previously it ran on every startup): it
+deactivates any subscription/transfer row whose `merchant_key` matches
 `transactions.merchant_name` AND whose underlying transactions have a
 differing `user_merchant_name` override set. This auto-retires the orphans
-without waiting for the 120-day staleness sweep. The UPDATE is a no-op when
-no orphans exist, so the migration stays cheap. Users who still see
-duplicates after a restart (e.g. orphans without matching transaction rows)
-can dismiss them from the UI or run `POST /api/cleanup`.
+without waiting for the 120-day staleness sweep. It's gated to run once
+because the predicate could otherwise deactivate an unrelated active row if
+two distinct merchants share a raw `merchant_name` and one is renamed — and
+the orphans only ever arose from the one-time raw→COALESCE key migration, so
+re-running it every boot bought nothing but that re-exposure. Users who still
+see duplicates after the upgrade (e.g. orphans without matching transaction
+rows) can dismiss them from the UI or run `POST /api/cleanup`.
 
 ## Security
 - **CSP nonces**: Per-request `crypto.randomBytes(16)` nonce for all inline scripts.
@@ -1718,6 +1731,10 @@ can dismiss them from the UI or run `POST /api/cleanup`.
   aren't burned by bad signatures.
 - **WebAuthn rpID**: Derived per-request from `req.hostname` (not cached at module scope),
   so deployments behind proxies with multiple hostnames or DNS changes work correctly.
+  The shell verify path pins `requireUserVerification: true` on
+  `verifyAuthenticationResponse` (matching the `userVerification:"required"` it
+  requests) — @simplewebauthn v11 already defaults it true, so this is a
+  defense-in-depth pin against a future SDK-default flip (PSA2).
 - **Biometric registration UI**: Settings → Security → "Biometric Login"
   section lists registered credentials and provides Register / Remove
   buttons via the existing `/api/webauthn/*` endpoints. Section auto-hides
@@ -1760,9 +1777,13 @@ embedded mode).
   detect transfers → categorize → generate insights → audit → email webhook.
   Ensures AI analyzes freshest data. Auto-categorization runs as part of this pipeline.
 - **Budget alerts**: every 3 hours (push notifications at 80% and 100%+ thresholds, aligned with the in-app `/api/budgets/alerts` `warning`/`critical` levels). Like the endpoint, the push compares against the effective limit (base + current-month rollover) and skips one-time budgets outside their `effective_month`. The in-app `info`/pace heuristic is intentionally not pushed (too noisy as a notification).
-- **Budget snapshot auto-trigger**: every 6 hours, checks if today is the 1st of the
-  month. If so, creates a snapshot for the previous month (spending + rollover amounts)
-  so budget rollover advances automatically. Idempotent — skips if snapshot already exists.
+- **Budget snapshot auto-trigger**: every 6 hours, creates a snapshot for the
+  previous (now-complete) month (spending + rollover amounts) so budget rollover
+  advances automatically. Idempotent — skips if a snapshot for that month already
+  exists. Runs on EVERY tick (not only the 1st) so a snapshot missed because the
+  process was asleep/inactive on the 1st is caught up on any later tick that
+  month (M5) — the prior month is complete regardless of which day it runs, so
+  timing within the month doesn't matter. Gated on user activity.
 - **Bank auto-sync** (Phase A): every 1 hour, checks `auto_sync_enabled` and whether
   `auto_sync_interval_hours` has elapsed since `last_auto_sync_at`. When due, calls
   `syncAllEnrollments()` (Teller) then `syncAllPlaidTransactions()` (Plaid) then
@@ -1819,17 +1840,27 @@ expression with two layers — per-transaction `personal_for` override
  END)
 ```
 Non-shared accounts always fall through to the spending_split_pct branch
-(which defaults to 100 = full amount). Inline copies of this formula
-exist in `routes/enrollments.js` (spending-summary monthly/category/
-merchants, cash-flow daily/DOW averages), `routes/insights.js` (anomaly
-baseline + candidate, seasonal patterns), and the split-row variant
-(`s.amount` instead of `t.amount`) in `financial-queries.js` and
-`enrollments.js`. The standalone `scripts/sheets-sync.js` `buildDashboard` also
+(which defaults to 100 = full amount). `routes/enrollments.js`
+(spending-summary monthly/category/merchants, cash-flow daily/DOW averages),
+`routes/insights.js` (anomaly baseline + candidate, seasonal patterns), and
+`routes/subscriptions.js` (bill-calendar income) **IMPORT** `SPLIT_AMOUNT` /
+`NOT_TRANSFER` / `INCOME_PREDICATE` from `financial-queries.js` and
+template-interpolate them — they are NOT independent copies and cannot drift
+(the split-row variant is derived in-place via `SPLIT_AMOUNT.replace(/t\.amount/g,
+"s.amount")`, and insights' anomaly subquery via `NOT_TRANSFER.replace(/\bt\./g,
+"t2.")`). The only place that holds a TRUE inline copy (because it can't `require`
+the services layer) is the standalone `scripts/sheets-sync.js` (verified byte-
+matching the canonical) and the legacy Apps Script `apps-script/Code.gs` fork.
+The standalone `scripts/sheets-sync.js` `buildDashboard` also
 inlines a `SPLIT_AMT` + `NOT_TRANSFER` + reimbursed-exclusion copy (it can't
-import the services layer) — it mirrors the per-transaction split but does NOT
-do splits-REPLACEMENT (substituting `transaction_splits` rows for their parent),
-the one remaining divergence from the in-app category totals. Any new spending
-aggregation should import `SPLIT_AMOUNT` rather than re-inline.
+import the services layer). As of M4 it ALSO mirrors splits-REPLACEMENT for its
+per-category surfaces — a splits-aware `cat_lines` CTE (parent_no_splits ∪
+from_splits) backs the Spending-by-Category, category×month pivot, and Budget
+Status queries, so per-category Sheets totals now match the in-app category
+totals. Total aggregations (monthly trend, 6-month totals) and Top Merchants
+stay parent-keyed by design — splits sum to their parent, so those totals are
+unchanged either way. Any new spending aggregation should import `SPLIT_AMOUNT`
+rather than re-inline.
 
 This affects: spending-summary (monthly_trend, byCategory, topMerchants),
 savings-rate, spending-yoy, budgets, budget alerts, cash flow, AI insights
@@ -1910,9 +1941,11 @@ income module, and bill-calendar income detection.
     `POST /api/budgets/snapshot`, and the budget-snapshot auto-trigger so
     snapshots record the correct month's spending instead of always-this-month.
   - `getNetWorth(pool)` — the single source of truth for net worth (assets,
-    liabilities, net_worth, breakdown). Dedupes Plaid investment accounts that
-    appear in BOTH `linked_accounts` and `investment_accounts` and always
-    includes investments (see the net-worth Key Design Decision below).
+    liabilities, net_worth, breakdown). For a Plaid brokerage that appears in
+    BOTH `linked_accounts` and `investment_accounts`, it keeps the
+    `investment_accounts` value (the correct holdings-sum) and drops the
+    `linked_accounts` phantom (often $0 from accountsGet) — see the net-worth
+    Key Design Decision below. Always includes investments.
   Constants: `INCOME_PREDICATE`, `NOT_TRANSFER`, `SPLIT_AMOUNT`, `NOT_REIMBURSED`.
   `/api/savings-rate` calls `getMonthlyIncome` + `getMonthlySpending`;
   `/api/cash-flow` uses `INCOME_PREDICATE`; `/api/budgets/alerts` and the
@@ -1926,17 +1959,26 @@ income module, and bill-calendar income detection.
   `getNetWorth(pool)` in `services/financial-queries.js` is the single source of
   truth, used by all three `net_worth_snapshots` writers — the hourly snapshot
   job (`startup.js`), `POST /api/net-worth/snapshot` (`goals.js`), and
-  `syncAllBalances` (`enrollments.js`). It sums non-credit `linked_accounts` as
-  assets, credit accounts as liabilities, and active `investment_accounts` —
-  but **dedupes Plaid investment accounts that exist in BOTH tables** (a
-  brokerage linked via the combined Plaid transactions+investments flow lands
-  in `linked_accounts` AND `investment_accounts`) via `NOT EXISTS (… la.account_id
-  = ia.plaid_account_id)`. Before this (F1), the three writers disagreed — the
-  balance-sync writer summed `linked_accounts` only (omitting investments) while
-  the other two summed both tables AND double-counted the Plaid brokerage — so
-  the headline net-worth figure both oscillated intra-day (depending on which
-  job wrote the daily row last) and was inflated. New net-worth surfaces MUST
-  call `getNetWorth` rather than re-inlining the assets/liabilities sum.
+  `syncAllBalances` (`enrollments.js`). It sums depository (non-credit, non-loan)
+  `linked_accounts` as assets, credit AND loan accounts as liabilities (Plaid
+  sets `type='loan'` for all debt subtypes — counting a loan as an asset
+  inflated net worth ~2× the loan balance, F1), and active `investment_accounts`
+  — but **dedupes the Plaid brokerage that exists in BOTH tables**. A brokerage
+  linked via the combined Plaid transactions+investments flow lands in
+  `linked_accounts` (often $0 — Schwab et al. report `balances.current=0` at the
+  account level and put the real value in holdings) AND `investment_accounts`
+  (correct holdings-sum balance). **`investment_accounts` is authoritative**: the
+  `linked_accounts` query drops any row whose `account_id` matches an active
+  `investment_accounts.plaid_account_id` (`NOT EXISTS (… ia.plaid_account_id =
+  la.account_id AND ia.is_active)`), and the `investment_accounts` query is NOT
+  filtered against `linked_accounts`. This matches `GET /api/investments`
+  (`la.plaid_item_id IS NULL`) and the dashboard accounts grid. Earlier the dedup
+  ran the OTHER way (kept the $0 `linked_accounts` phantom, dropped the real
+  `investment_accounts` value), so net worth understated by the full brokerage
+  value (H1); before THAT (F1), the three writers disagreed — the balance-sync
+  writer summed `linked_accounts` only (omitting investments) while the other two
+  double-counted the Plaid brokerage. New net-worth surfaces MUST call
+  `getNetWorth` rather than re-inlining the assets/liabilities sum.
 - **Substring-safe keyword exclusions.** All merchant/transaction keyword
   filters use word-boundary matching — `\b` in JavaScript regex, `\y` in
   Postgres regex (`~*` / `!~*`). The reason: short tokens like `atm`,
@@ -2438,7 +2480,7 @@ INV-32 | Answer cache keyed on query+model+corpus_version (notes+documents+facts
 INV-33 | Vault sync is read-only (VAULT_GITHUB_TOKEN); capture writes only with the separate write-scoped VAULT_GITHUB_WRITE_TOKEN (400 until set) | Subsystem: Knowledge / RAG | Verify: tests/knowledge-capture.test.js
 INV-34 | Citations enabled all-or-none per request; incompatible with structured outputs (unused here) | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js (answerWithCitations)
 INV-35 | Cross-app finance grounding reads perfinPool read-only, only on finance queries, never an HTTP self-fetch (parallels INV-25) | Subsystem: Knowledge / RAG | Verify: tests/knowledge-crossapp.test.js
-INV-36 | Single in-process vault-sync lock (isSyncing) prevents overlapping cron/reindex/GH-Action runs; vault_last_sha advances only on success (errors stamp vault_last_error) | Subsystem: Knowledge / RAG | Verify: code read vault-sync.syncVault
+INV-36 | Single in-process vault-sync lock (isSyncing) prevents overlapping cron/reindex/GH-Action runs — BOTH syncVault AND syncNotes acquire it (busy→no-op), so the cron's notes phase can't overlap a concurrent reindex (K4); vault_last_sha advances only on success (errors stamp vault_last_error) | Subsystem: Knowledge / RAG | Verify: code read vault-sync.syncVault + syncNotes
 
 ### Policy Configuration
 Policy threshold: 6/10
@@ -2508,4 +2550,4 @@ Sheets & External Export: Apps Script side deploys via clasp — `clasp push` fr
 Recommended first subsystem: Bank Sync & Ingestion (widest blast radius — every downstream number depends on correct transaction data; most invariants; richest recent bug history).
 Recommended order (frozen excluded): Bank Sync & Ingestion → Financial Analytics → Detection & Categorization → AI Insights & Audit → Knowledge / RAG (Per-sistant) → Platform, Shell & Auth → Settings, Notifications & Cross-app → Sheets & External Export → Web UI (Perfin) → Per-sistant Backend → Per-sistant Web UI.
 Seams audit frequency: every 3 subsystem cycles (focus: enrollments.js, subscriptions.js, settings.js, financial-queries.js, notifications.js, the Per-sistant integration seam routes/perfin.js + routes/webhooks.js, and the Knowledge↔Perfin seam — rag.js's read-only perfinPool use of linked_accounts/detected_subscriptions).
-Confidence: Bank Sync, Analytics, Detection, AI, Platform = High; Integrations, Sheets, Web UI, Per-sistant Backend, Per-sistant Web UI, Knowledge / RAG = Medium (Knowledge: new code, heavily tested at 734, but unexercised against a live vault/Voyage/pgvector).
+Confidence: Bank Sync, Analytics, Detection, AI, Platform = High; Integrations, Sheets, Web UI, Per-sistant Backend, Per-sistant Web UI, Knowledge / RAG = Medium (Knowledge: new code, heavily tested, but unexercised against a live vault/Voyage/pgvector).

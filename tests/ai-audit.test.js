@@ -13,6 +13,7 @@ const {
   extractMerchantNames,
   extractTrendClaims,
   findContradictions,
+  CROSS_PERIOD_RE,
 } = require("../teller/services/ai-audit");
 
 describe("extractDollarClaims", () => {
@@ -109,4 +110,40 @@ describe("findContradictions", () => {
     const contradictions = findContradictions(text);
     assert.equal(contradictions.length, 0);
   });
+});
+
+// AIA1: Tier-1 dollar-claim arithmetic only has this-month actuals, so a claim
+// whose context is scoped to a non-current-month window must be SKIPPED (not
+// compared) to avoid false-positive critical findings.
+describe("CROSS_PERIOD_RE — skip non-current-month dollar claims (AIA1)", () => {
+  const crosses = [
+    "you spent $2,400 per year on groceries",
+    "$2,400/yr on dining",
+    "annual food & drink spend is $2,400",
+    "annually you pay $1,200",
+    "$3,600 over the past 6 months",
+    "spent $3,600 in the last 3 months on shopping",
+    "year-to-date you spent $1,500",
+    "$1,500 YTD on healthcare",
+    "your monthly average is $300",
+    "projected $400 on travel",
+    "on track to spend $5,000 this year",
+  ];
+  for (const t of crosses) {
+    it(`flags cross-period: "${t}"`, () => {
+      assert.ok(CROSS_PERIOD_RE.test(t.toLowerCase()), "should be treated as cross-period (skipped)");
+    });
+  }
+
+  const currentOrUnqualified = [
+    "you spent $234.56 on groceries",
+    "$234.56 on dining this month",
+    "Food & Drink: $234.56",
+    "$50 per month on subscriptions",
+  ];
+  for (const t of currentOrUnqualified) {
+    it(`does NOT flag current/unqualified: "${t}"`, () => {
+      assert.ok(!CROSS_PERIOD_RE.test(t.toLowerCase()), "this-month/unqualified claims stay checked");
+    });
+  }
 });

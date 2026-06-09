@@ -253,13 +253,21 @@ function startBackgroundJobs() {
     }
   }, 3 * 60 * 60 * 1000));
 
-  // Budget snapshot auto-trigger (every 6 hours; only acts on the 1st of the month).
-  // Gated on user activity.
+  // Budget snapshot auto-trigger (every 6 hours). Snapshots the PRIOR (now-
+  // complete) month's spending + rollover so rollover-enabled budgets advance.
+  // M5: this used to only act when today.getDate()===1, which — combined with
+  // the user-activity gate and Render free-tier sleep — meant a snapshot could
+  // be permanently missed if nobody woke the process on the 1st, and from the
+  // 2nd onward the date gate never let it catch up, so rollover silently never
+  // applied that month. Now it runs on EVERY tick and is made idempotent by the
+  // existing-snapshot short-circuit below, so any tick after the month rolls
+  // over creates the missing prior-month snapshot (catch-up) and subsequent
+  // ticks no-op. Still gated on user activity (the prior month is complete
+  // regardless of which day we run, so timing within the month doesn't matter).
   intervalHandles.push(setInterval(async () => {
     if (!isUserActive()) return;
     try {
       const today = new Date();
-      if (today.getDate() !== 1) return;
       const prev = new Date(today.getFullYear(), today.getMonth() - 1, 1);
       const prevMonth = prev.getFullYear() + "-" + String(prev.getMonth() + 1).padStart(2, "0");
       const existing = await pool.query(

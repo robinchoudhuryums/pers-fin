@@ -158,7 +158,7 @@ async function loadAutomations() {
     var condText = '';
     if (a.conditions) {
       var keys = Object.keys(a.conditions).filter(k=>a.conditions[k]);
-      condText = keys.length ? ' when ' + keys.map(k=>k+'='+a.conditions[k]).join(' & ') : '';
+      condText = keys.length ? ' when ' + keys.map(k=>esc(k)+'='+esc(a.conditions[k])).join(' & ') : '';
     }
     var onClass = a.enabled ? 'class="btn" style="color:var(--good);border-color:var(--good);"' : 'class="btn"';
     return '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--line);font-size:13px;">'

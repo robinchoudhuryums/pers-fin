@@ -105,11 +105,18 @@ async function runCategorize() {
     ).catch(() => ({ rows: [] }));
     let ruleApplied = 0;
     for (const rule of rules.rows) {
+      // M1: escape LIKE metacharacters (\ % _) in the user-supplied pattern so a
+      // pattern containing '%' or '_' can't act as a wildcard and mis-categorize
+      // unrelated transactions. The trailing/leading '%' we append stay OUTSIDE
+      // the escaped expression so they remain the intended wildcards. (SQL
+      // produced: REPLACE(REPLACE(REPLACE(LOWER($2),'\','\\'),'%','\%'),'_','\_')
+      // with ESCAPE '\'.)
+      const escPat = "REPLACE(REPLACE(REPLACE(LOWER($2), '\\', '\\\\'), '%', '\\%'), '_', '\\_')";
       const cond = rule.match_type === "exact"
         ? "LOWER(COALESCE(user_merchant_name, merchant_name, name, '')) = LOWER($2)"
         : rule.match_type === "starts_with"
-        ? "LOWER(COALESCE(user_merchant_name, merchant_name, name, '')) LIKE LOWER($2) || '%'"
-        : "LOWER(COALESCE(user_merchant_name, merchant_name, name, '')) LIKE '%' || LOWER($2) || '%'";
+        ? `LOWER(COALESCE(user_merchant_name, merchant_name, name, '')) LIKE ${escPat} || '%' ESCAPE '\\'`
+        : `LOWER(COALESCE(user_merchant_name, merchant_name, name, '')) LIKE '%' || ${escPat} || '%' ESCAPE '\\'`;
       // Write to user_category (scalar TEXT), NOT category[] — a Teller/Plaid
       // re-sync does `category = EXCLUDED.category` and would clobber the latter.
       const r = await pool.query(
@@ -238,6 +245,11 @@ async function runCategorize() {
       "Return your results via the categorize_transactions tool.";
 
     let aiUpdated = 0, aiTokens = 0, aiProcessed = 0, budgetHit = false;
+    // M2: when a usage-row insert fails we can't account for that batch's spend,
+    // so monthSpendCents() would under-count and the loop could overshoot the
+    // shared budget cap. We still apply the categories we already paid for in
+    // that batch, then stop the loop rather than keep calling Claude uncapped.
+    let usageRecordFailed = false;
     while (aiProcessed < AI_MAX_PER_RUN) {
       // Re-check the cap before each paid call so a mid-run exhaustion stops
       // cleanly (returning what we got so far, not a 429).
@@ -273,19 +285,26 @@ async function runCategorize() {
       aiTokens += (usage.input_tokens || 0) + (usage.output_tokens || 0);
       const toolBlock = message.content.find(b => b.type === "tool_use");
       const catCount = toolBlock && toolBlock.input && Array.isArray(toolBlock.input.categories) ? toolBlock.input.categories.length : 0;
-      await pool.query(
-        `INSERT INTO financial_insights
-           (insight_text, model_used, tokens_used, input_tokens, output_tokens,
-            cache_read_tokens, cache_creation_tokens, entry_type)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'categorize')`,
-        [
-          `[ML Categorization] AI returned ${catCount} categorization(s)`,
-          message.model || modelId,
-          (usage.input_tokens || 0) + (usage.output_tokens || 0),
-          usage.input_tokens || 0, usage.output_tokens || 0,
-          usage.cache_read_input_tokens || 0, usage.cache_creation_input_tokens || 0,
-        ]
-      ).catch(err => console.error("categorize usage tracking insert failed:", err.message));
+      try {
+        await pool.query(
+          `INSERT INTO financial_insights
+             (insight_text, model_used, tokens_used, input_tokens, output_tokens,
+              cache_read_tokens, cache_creation_tokens, entry_type)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, 'categorize')`,
+          [
+            `[ML Categorization] AI returned ${catCount} categorization(s)`,
+            message.model || modelId,
+            (usage.input_tokens || 0) + (usage.output_tokens || 0),
+            usage.input_tokens || 0, usage.output_tokens || 0,
+            usage.cache_read_input_tokens || 0, usage.cache_creation_input_tokens || 0,
+          ]
+        );
+      } catch (err) {
+        // Spend was incurred but couldn't be recorded — flag so we stop after
+        // applying this (already-paid-for) batch instead of looping uncapped (M2).
+        console.error("categorize usage tracking insert failed — will stop AI loop to respect the budget cap:", err.message);
+        usageRecordFailed = true;
+      }
 
       if (!toolBlock || !toolBlock.input || !Array.isArray(toolBlock.input.categories)) {
         console.error("AI did not return expected tool_use block — stopping loop");
@@ -310,6 +329,9 @@ async function runCategorize() {
       catProgress.by_ai = aiUpdated;
       catProgress.ai_batches += 1;
       catProgress.remaining = await countRemaining();
+      // Stop if this batch's spend couldn't be recorded (M2) — the categories
+      // we paid for are applied above, but continuing would spend uncapped.
+      if (usageRecordFailed) { budgetHit = true; break; }
       // Backlog drained (last page was short) → stop.
       if (batch.length < AI_BATCH) break;
     }
@@ -434,13 +456,16 @@ router.post("/api/categorize/review", async (req, res) => {
 
     let ruleCreated = false;
     if (create_rule && merchant) {
-      // Same insert path as POST /api/categorization-rules. ON CONFLICT DO UPDATE
-      // so re-applying the same merchant→category pair doesn't error.
+      // ON CONFLICT DO UPDATE so re-applying the same merchant→category pair
+      // doesn't error. DC3: do NOT overwrite match_type here — this is an
+      // implicit "remember" path, so silently widening an existing rule's scope
+      // (e.g. flipping an exact rule to contains) would surprise the user. Only
+      // the explicit POST /api/categorization-rules honors a chosen match_type.
       await pool.query(
         `INSERT INTO categorization_rules (merchant_pattern, category, match_type)
          VALUES ($1, $2, $3)
          ON CONFLICT (merchant_pattern, category) DO UPDATE SET
-           match_type = $3, is_active = true, updated_at = now()`,
+           is_active = true, updated_at = now()`,
         [merchant.trim(), category, ruleType]
       );
       ruleCreated = true;
@@ -618,10 +643,12 @@ router.post("/api/categorize/accuracy-review", async (req, res) => {
     let ruleCreated = false;
     if (!correct && create_rule && merchant) {
       await pool.query(
+        // DC3: implicit accuracy-review "remember" path — reactivate on conflict
+        // but keep the existing rule's match_type (don't silently widen scope).
         `INSERT INTO categorization_rules (merchant_pattern, category, match_type)
          VALUES ($1, $2, 'contains')
          ON CONFLICT (merchant_pattern, category) DO UPDATE SET
-           match_type = 'contains', is_active = true, updated_at = now()`,
+           is_active = true, updated_at = now()`,
         [merchant.trim(), corrected_category]
       );
       ruleCreated = true;
@@ -697,13 +724,16 @@ router.post("/api/categorization-rules/apply", async (_req, res) => {
     let totalApplied = 0;
     for (const rule of rules.rows) {
       const pattern = rule.merchant_pattern;
+      // M1: escape LIKE metacharacters in the user pattern so '%'/'_' can't act
+      // as wildcards (parallel to runCategorize). exact uses '=', no escaping.
+      const escPat = "REPLACE(REPLACE(REPLACE(LOWER($1), '\\', '\\\\'), '%', '\\%'), '_', '\\_')";
       let condition;
       if (rule.match_type === "exact") {
         condition = "LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name, '')) = LOWER($1)";
       } else if (rule.match_type === "starts_with") {
-        condition = "LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name, '')) LIKE LOWER($1) || '%'";
+        condition = `LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name, '')) LIKE ${escPat} || '%' ESCAPE '\\'`;
       } else {
-        condition = "LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name, '')) LIKE '%' || LOWER($1) || '%'";
+        condition = `LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name, '')) LIKE '%' || ${escPat} || '%' ESCAPE '\\'`;
       }
       // Same scheme-aware predicate as POST /api/categorize. Skip rows where
       // the user has manually set user_category — their choice wins.
@@ -762,10 +792,13 @@ router.post("/api/categorization-rules/from-transaction", async (req, res) => {
     const type = validTypes.includes(match_type) ? match_type : "contains";
 
     const result = await pool.query(
+      // DC3: from-transaction is an implicit "create rule from this manual
+      // categorization" path — reactivate on conflict but keep the existing
+      // rule's match_type rather than silently widening it.
       `INSERT INTO categorization_rules (merchant_pattern, category, match_type)
        VALUES ($1, $2, $3)
        ON CONFLICT (merchant_pattern, category) DO UPDATE SET
-         match_type = $3, is_active = true, updated_at = now()
+         is_active = true, updated_at = now()
        RETURNING *`,
       [merchant.trim(), category, type]
     );

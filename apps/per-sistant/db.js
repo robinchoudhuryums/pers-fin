@@ -19,7 +19,12 @@ const CONNECTION_STRING =
 
 const pool = new Pool({
   connectionString: CONNECTION_STRING,
-  ssl: CONNECTION_STRING ? { rejectUnauthorized: false } : false,
+  // Verify the Neon TLS certificate (PSB1) — matches Perfin's
+  // teller/services/database.js. `false` left DB traffic open to MITM /
+  // endpoint impersonation (encrypted but unauthenticated). Neon terminates
+  // TLS with a publicly-trusted cert in Node's default CA store, so
+  // verification works without bundling a CA (Perfin connects to Neon this way).
+  ssl: CONNECTION_STRING ? { rejectUnauthorized: true } : false,
   // Single-user app — 3 connections is plenty. The previous 10 kept idle
   // Postgres backends alive on Neon, burning compute hours for nothing.
   max: 3,

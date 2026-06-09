@@ -187,7 +187,12 @@ async function upcomingFacts(pool, days = 30) {
          WHERE deleted_at IS NULL AND sensitivity = 'normal' AND valid_to IS NOT NULL
          UNION ALL
          SELECT entity, attribute AS kind,
-                CASE WHEN value ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN value::date END AS on_date
+                -- to_date (not value::date) so a date-SHAPED but out-of-range
+                -- value (e.g. '2025-02-30') doesn't THROW and abort the whole
+                -- query — which would silently disable ALL upcoming-fact
+                -- notifications (K2). to_date is lenient (rolls over) and never
+                -- raises on a digit-shaped input.
+                CASE WHEN value ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN to_date(value, 'YYYY-MM-DD') END AS on_date
          FROM facts
          WHERE deleted_at IS NULL AND sensitivity = 'normal'
            AND attribute ~* '(renew|expir|due|deadline|valid.?until|ends?)'

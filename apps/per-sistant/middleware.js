@@ -60,6 +60,12 @@ function setup(app) {
       directives: {
         defaultSrc: ["'self'"],
         scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"],
+        // Pin script-src-attr to 'none' explicitly (PWUI5) so inline event
+        // handlers (onclick/onerror) are blocked regardless of helmet's
+        // default-merge behavior — this is the load-bearing mitigation for the
+        // attribute-escaping class (PWUI1-3) while script-src still carries
+        // 'unsafe-inline' (PB-3). All UI uses event delegation, so 'none' is safe.
+        scriptSrcAttr: ["'none'"],
         styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
         fontSrc: ["'self'", "https://fonts.gstatic.com"],
       },

@@ -300,26 +300,38 @@ async function getCategorySpendingThisMonth(pool) {
 // net_worth_snapshots row oscillated depending on which job ran last, and
 // a Plaid brokerage linked via the combined transactions+investments flow
 // (which lives in BOTH linked_accounts and investment_accounts) was counted
-// twice. This helper fixes both: it always includes investments, and it
-// dedupes Plaid investment accounts that already have a linked_accounts row
-// (NOT EXISTS on plaid_account_id = linked_accounts.account_id), so each
-// account is counted exactly once. Manual + investments-only-Plaid accounts
-// (no linked_accounts row) are still included from investment_accounts.
+// twice. This helper always includes investments and dedupes the
+// Plaid-in-both-tables brokerage so each account is counted exactly once.
+//
+// DEDUP DIRECTION (H1): a Plaid brokerage linked via the combined flow lands
+// in BOTH linked_accounts (often $0 — Schwab et al. report balances.current=0
+// at the account level and put the real value in holdings) AND
+// investment_accounts (correct holdings-sum balance). The CORRECT side to keep
+// is investment_accounts — matching GET /api/investments (`la.plaid_item_id IS
+// NULL`) and the dashboard accounts grid (drop the linked_accounts row whose
+// account_id matches an investment_accounts.plaid_account_id). So we drop the
+// linked_accounts phantom whenever an active investment_accounts row exists for
+// it, and count the investment_accounts value. Previously the dedup kept the
+// $0 linked_accounts side and dropped the real investment_accounts value, so
+// net worth understated by the full brokerage value. Manual investment_accounts
+// (no plaid_account_id) never match a linked_accounts row, so they're
+// unaffected; Teller-linked brokerages (no investment_accounts row) still count
+// via linked_accounts.
 async function getNetWorth(pool) {
   const [accountsRes, investmentsRes] = await Promise.all([
     pool.query(
-      `SELECT name, type, available_balance, current_balance
-       FROM linked_accounts
-       WHERE available_balance IS NOT NULL OR current_balance IS NOT NULL`
+      `SELECT la.name, la.type, la.available_balance, la.current_balance
+       FROM linked_accounts la
+       WHERE (la.available_balance IS NOT NULL OR la.current_balance IS NOT NULL)
+         AND NOT EXISTS (
+           SELECT 1 FROM investment_accounts ia
+           WHERE ia.plaid_account_id = la.account_id AND ia.is_active = true
+         )`
     ),
     pool.query(
       `SELECT ia.name, ia.account_type, ia.balance
        FROM investment_accounts ia
-       WHERE ia.is_active = true AND ia.balance != 0
-         AND NOT EXISTS (
-           SELECT 1 FROM linked_accounts la
-           WHERE la.account_id = ia.plaid_account_id
-         )`
+       WHERE ia.is_active = true AND ia.balance != 0`
     ),
   ]);
 

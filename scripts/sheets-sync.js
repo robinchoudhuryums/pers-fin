@@ -550,6 +550,50 @@ async function buildDashboard(sheets, pool) {
     END)`;
   const NOT_REIMBURSED = "COALESCE(t.is_reimbursed, false) = false";
 
+  // M4: splits-aware category lines. When a transaction has transaction_splits,
+  // each split's (category, amount) REPLACES the parent row in per-category
+  // aggregations (mirrors getCategorySpendingThisMonth / getCategorySpendingForMonth
+  // in services/financial-queries.js); transactions without splits contribute the
+  // parent row. TOTAL aggregations (monthlySummary, totals) are intentionally NOT
+  // routed through this — splits sum to the parent, so totals are unchanged — and
+  // topMerchants stays parent-keyed (splits-replacement is per-CATEGORY, matching
+  // the app). `whereClause` is the date-window predicate on `t`.
+  const CAT_EXPR_PARENT = "COALESCE(t.user_category, t.personal_finance_category->>'primary', t.category[1], 'Uncategorized')";
+  const CAT_EXPR_SPLIT = "COALESCE(s.category, t.user_category, t.personal_finance_category->>'primary', t.category[1], 'Uncategorized')";
+  const SPLIT_AMT_S = `(CASE
+      WHEN la.is_shared AND t.personal_for = 'self' THEN s.amount
+      WHEN la.is_shared AND t.personal_for = 'partner' THEN 0
+      ELSE s.amount * COALESCE(la.spending_split_pct, 100) / 100.0
+    END)`;
+  const catLinesCTE = (whereClause) => `
+    WITH parent_no_splits AS (
+      SELECT ${CAT_EXPR_PARENT} AS category,
+             TO_CHAR(t.date, 'YYYY-MM') AS month,
+             ${SPLIT_AMT} AS amount
+      FROM transactions t
+      LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+      WHERE t.pending = false AND t.amount > 0 AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER}
+        AND ${whereClause}
+        AND NOT EXISTS (SELECT 1 FROM transaction_splits s WHERE s.parent_transaction_id = t.transaction_id)
+    ),
+    from_splits AS (
+      SELECT ${CAT_EXPR_SPLIT} AS category,
+             TO_CHAR(t.date, 'YYYY-MM') AS month,
+             ${SPLIT_AMT_S} AS amount
+      FROM transaction_splits s
+      JOIN transactions t ON t.transaction_id = s.parent_transaction_id
+      LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+      WHERE t.pending = false AND t.amount > 0 AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER}
+        AND ${whereClause}
+    ),
+    cat_lines AS (
+      SELECT category, month, amount FROM parent_no_splits
+      UNION ALL
+      SELECT category, month, amount FROM from_splits
+    )`;
+  const WINDOW_6MO = "t.date >= CURRENT_DATE - INTERVAL '6 months'";
+  const WINDOW_THIS_MONTH = "t.date >= date_trunc('month', CURRENT_DATE) AND t.date < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'";
+
   // Fetch summary data from DB
   const { rows: monthlySummary } = await pool.query(`
     SELECT
@@ -565,15 +609,13 @@ async function buildDashboard(sheets, pool) {
     ORDER BY month DESC
   `);
 
+  // M4: splits-replacement so per-category totals match the app dashboard. The
+  // txn_count here is the count of spending LINES (a split parent contributes
+  // its split rows), not raw transactions — the dollar total is what's rendered.
   const { rows: categorySummary } = await pool.query(`
-    SELECT
-      COALESCE(t.user_category, t.personal_finance_category->>'primary', t.category[1], 'Uncategorized') AS category,
-      SUM(${SPLIT_AMT}) AS total,
-      COUNT(*) AS txn_count
-    FROM transactions t
-    LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-    WHERE t.pending = false AND t.amount > 0 AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER}
-      AND t.date >= CURRENT_DATE - INTERVAL '6 months'
+    ${catLinesCTE(WINDOW_6MO)}
+    SELECT category, SUM(amount) AS total, COUNT(*) AS txn_count
+    FROM cat_lines
     GROUP BY category
     ORDER BY total DESC
     LIMIT 15
@@ -581,16 +623,11 @@ async function buildDashboard(sheets, pool) {
 
   // Category × month pivot for sparklines + heatmap (#6, #7). One SUM
   // per (category, month) over the same 6-month window so the visible
-  // category list's "Trend" column has data to graph.
+  // category list's "Trend" column has data to graph. Splits-replaced (M4).
   const { rows: categoryByMonth } = await pool.query(`
-    SELECT
-      COALESCE(t.user_category, t.personal_finance_category->>'primary', t.category[1], 'Uncategorized') AS category,
-      TO_CHAR(t.date, 'YYYY-MM') AS month,
-      SUM(${SPLIT_AMT}) AS total
-    FROM transactions t
-    LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-    WHERE t.pending = false AND t.amount > 0 AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER}
-      AND t.date >= CURRENT_DATE - INTERVAL '6 months'
+    ${catLinesCTE(WINDOW_6MO)}
+    SELECT category, month, SUM(amount) AS total
+    FROM cat_lines
     GROUP BY 1, 2
   `);
   // Build a {category: {month: total}} map for fast lookup, and the list
@@ -647,16 +684,21 @@ async function buildDashboard(sheets, pool) {
   `);
 
   // Budget status
+  // M3: derive the spend category with the SAME expression as the SPENDING BY
+  // CATEGORY query above (includes personal_finance_category->>'primary').
+  // M4: route current-month spend through the splits-aware cat_lines CTE so a
+  // budget's "Spent" matches the app's /api/budgets (which uses
+  // getCategorySpendingForMonth — splits-replaced) and the category breakdown
+  // on this same sheet, instead of attributing a split parent's full amount to
+  // its single parent category.
   const { rows: budgetData } = await pool.query(`
-    SELECT b.category, b.monthly_limit,
-           COALESCE(SUM(${SPLIT_AMT}), 0) AS spent
+    ${catLinesCTE(WINDOW_THIS_MONTH)},
+    cat_spend AS (
+      SELECT category, SUM(amount) AS spent FROM cat_lines GROUP BY category
+    )
+    SELECT b.category, b.monthly_limit, COALESCE(cs.spent, 0) AS spent
     FROM budgets b
-    LEFT JOIN transactions t ON COALESCE(t.user_category, t.category[1], 'Uncategorized') = b.category
-      AND t.amount > 0 AND t.pending = false AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER}
-      AND t.date >= date_trunc('month', CURRENT_DATE)
-      AND t.date < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
-    LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-    GROUP BY b.category, b.monthly_limit
+    LEFT JOIN cat_spend cs ON cs.category = b.category
     ORDER BY b.monthly_limit DESC
   `);
 

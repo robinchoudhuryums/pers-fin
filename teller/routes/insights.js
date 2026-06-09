@@ -1389,25 +1389,14 @@ router.post("/api/insights/rebuild", async (_req, res) => {
     });
     const usage = message.usage || {};
     const tokensUsed = (usage.input_tokens || 0) + (usage.output_tokens || 0);
-    const toolBlock = message.content.find(b => b.type === "tool_use");
-    if (!toolBlock || !toolBlock.input || !toolBlock.input.summary) {
-      return res.status(500).json({ error: "Rebuild did not return expected structured summary." });
-    }
-    const newSummaryJson = sanitizeStructuredSummary(toolBlock.input.summary);
-    if (!newSummaryJson) {
-      return res.status(500).json({ error: "Rebuild summary failed validation." });
-    }
-    const newSummaryText = renderStructuredSummaryForPrompt(newSummaryJson) || "";
-    await pool.query(
-      "UPDATE user_settings SET insights_running_summary = $1, insights_running_summary_json = $2 WHERE id = 1",
-      [newSummaryText, newSummaryJson]
-    );
-    // Record the rebuild's token spend so it counts against the shared monthly
-    // AI budget (INSIGHTS_MONTHLY_BUDGET_CENTS). Previously rebuild called Claude
-    // but wrote no usage row — the cap was checked-not-charged, so repeated
-    // rebuilds were effectively uncapped (F8). entry_type='rebuild' keeps the
-    // row out of the user-facing 'insight' feed (which filters entry_type)
-    // while the cost-cap queries (which don't filter) still see it.
+    // AIA2: record the rebuild's token spend FIRST — before the tool-block
+    // validation early-returns and the summary UPDATE below — so the shared
+    // monthly AI cap (INSIGHTS_MONTHLY_BUDGET_CENTS) counts it even when the
+    // model truncated / returned no usable summary. Those 500 paths previously
+    // returned BEFORE the usage insert, letting the already-incurred cost escape
+    // the cap entirely (sibling of F8). entry_type='rebuild' keeps the row out of
+    // the user-facing 'insight' feed while the cost-cap queries (no entry_type
+    // filter) still see it.
     await pool.query(
       `INSERT INTO financial_insights
          (insight_text, model_used, tokens_used, input_tokens, output_tokens,
@@ -1422,7 +1411,20 @@ router.post("/api/insights/rebuild", async (_req, res) => {
         usage.cache_read_input_tokens || 0,
         usage.cache_creation_input_tokens || 0,
       ]
-    ).catch(err => console.error("rebuild usage tracking insert failed:", err.message));
+    ).catch(err => console.error("rebuild usage tracking insert failed — monthly AI cap may under-count this rebuild:", err.message));
+    const toolBlock = message.content.find(b => b.type === "tool_use");
+    if (!toolBlock || !toolBlock.input || !toolBlock.input.summary) {
+      return res.status(500).json({ error: "Rebuild did not return expected structured summary." });
+    }
+    const newSummaryJson = sanitizeStructuredSummary(toolBlock.input.summary);
+    if (!newSummaryJson) {
+      return res.status(500).json({ error: "Rebuild summary failed validation." });
+    }
+    const newSummaryText = renderStructuredSummaryForPrompt(newSummaryJson) || "";
+    await pool.query(
+      "UPDATE user_settings SET insights_running_summary = $1, insights_running_summary_json = $2 WHERE id = 1",
+      [newSummaryText, newSummaryJson]
+    );
     res.json({
       ok: true,
       message: "Long-term context rebuilt from " + allInsights.rows.length + " historical analyses.",

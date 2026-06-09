@@ -101,10 +101,10 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **Rate Limiting**: General (200/15min), auth (10/15min), and AI (20/min) rate limiters
 - **CSRF Protection**: State-changing requests require `X-Requested-With` or JSON/multipart content-type; auto-injected by fetch wrapper in shared JS
 - **Postgres Sessions**: `connect-pg-simple` stores sessions in DB (survives restarts/deploys), auto-creates table, prunes expired sessions every 15 min
-- **Webhooks**: Configure external webhook endpoints to receive event notifications (task created/completed, email sent, streak milestones); test webhooks from Settings. Both webhook URLs (on create) AND the Slack URL (`config.isValidWebhookUrl`, at write-time + before each send) are SSRF-validated: `http(s)` only, and private/loopback/link-local ranges are blocked — including `169.254.0.0/16` (the cloud metadata endpoint `169.254.169.254`), the full `127.0.0.0/8`, RFC-1918, and bracketed IPv6 loopback/ULA (PB-1/PB-5).
+- **Webhooks**: Configure external webhook endpoints to receive event notifications (task created/completed, email sent, streak milestones); test webhooks from Settings. Both the webhook URLs AND the Slack URL (`config.isValidWebhookUrl`) are SSRF-validated at write-time (on create/PATCH) AND re-validated before each outbound send (`helpers.sendWebhook` + `sendSlackNotification`, PSB2): `http(s)` only, and private/loopback/link-local ranges are blocked — including `169.254.0.0/16` (the cloud metadata endpoint `169.254.169.254`), the full `127.0.0.0/8`, RFC-1918, and bracketed IPv6 loopback/ULA (PB-1/PB-5).
 - **Slack Integration**: Add Slack Incoming Webhook URL in Settings for notifications (SSRF-validated — see Webhooks above)
 - **AI API Optimization**: Singleton client reuse, prompt caching via system prompts with `cache_control`, response caching for briefing (10min) and suggestions (5min)
-- **Helmet CSP**: Content Security Policy via helmet. Inline event handlers are migrated to CSP-safe event delegation and `script-src-attr` defaults to `'none'` (via helmet) so inline `onclick`/`onchange` are blocked. NOTE: `script-src` still carries `'unsafe-inline'` because the page templates emit inline `<script>` blocks — so the CSP is NOT yet an XSS backstop the way Perfin's nonce-based policy is (known gap PB-3; removing `'unsafe-inline'` needs a per-request-nonce migration across all inline scripts). Rely on output-escaping (e.g. `renderMd` scheme-validation, PS-4) for XSS defense meanwhile.
+- **Helmet CSP**: Content Security Policy via helmet. Inline event handlers are migrated to CSP-safe event delegation and `script-src-attr` is set EXPLICITLY to `'none'` (PWUI5 — previously relied on helmet's implicit default-merge) so inline `onclick`/`onchange` are blocked. NOTE: `script-src` still carries `'unsafe-inline'` because the page templates emit inline `<script>` blocks — so the CSP is NOT yet an XSS backstop the way Perfin's nonce-based policy is (known gap PB-3; removing `'unsafe-inline'` needs a per-request-nonce migration across all inline scripts). Rely on output-escaping (`renderMd` scheme-validation PS-4, plus `esc()` for element-text and `escAttr()` — which also encodes `"`/`'` — for HTML-attribute contexts; views/js.js) for XSS defense meanwhile.
 - **Internal error handling**: route 500s go through `errors.serverError(res, err)`, which logs the real error server-side and returns a generic `"An internal error occurred."` — raw DB/constraint/internal text is never echoed to the client (PB-2, matching Perfin's convention).
 - **Event Delegation**: All pages use `bindEvents()` for static elements and `onDelegate()` for dynamic content — zero inline `onclick`/`onchange` attributes; enables `script-src-attr: 'none'` CSP
 - **Constant-Time Auth**: `crypto.timingSafeEqual` for password/PIN comparison; PIN pad shows fixed 8-dot display regardless of actual PIN length
@@ -383,7 +383,9 @@ hoisted version.
     (fatal) migration and crashing the shell. `services/vault-sync.vectorReady`
     + `routes/rag.js` gate on its existence.
   - `embed_state` — per-source content hash so unchanged notes/docs aren't
-    re-embedded each sync.
+    re-embedded each sync. An empty-body source records an `embed_state` row with
+    `chunk_count = 0` (not just a chunk delete) so the hash-skip engages for it
+    too instead of re-clearing every sync (K5).
   - `user_settings.ai_model_rag` (default sonnet) + `vault_enabled` /
     `vault_repo` / `vault_branch` / `vault_last_sha` / `vault_last_synced_at` /
     `vault_last_error`. The vault GitHub token is the `VAULT_GITHUB_TOKEN` env
@@ -412,7 +414,12 @@ hoisted version.
     files" (`type: fact`): reserved keys (type/entity/valid_from/valid_to/
     sensitivity/tags/title/embed/private/context) are metadata, every other key
     becomes a fact row; `services/vault-sync.extractFacts` + `upsertFacts`
-    replace all facts for a file on each sync. `POST /api/rag/query` injects the
+    replace all facts for a file on each sync. The fact lifecycle is symmetric:
+    converting a file prose→fact removes its prior prose document
+    (`removeVaultDocument`), and converting fact→prose (dropping `type: fact`)
+    clears its prior fact rows (`clearFacts` in the prose branch, K1) — so a
+    converted file never leaves orphaned facts being injected as authoritative.
+    `POST /api/rag/query` injects the
     matching CURRENT, `normal`-sensitivity facts (`buildFactsQuery` +
     `factsToDocument`) as an authoritative "Known facts (current)" document
     listed first and cited — so precise lookups ("current deductible") don't
