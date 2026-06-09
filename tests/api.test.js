@@ -231,8 +231,10 @@ describe("addDays", () => {
 // ============================================================================
 describe("Cleanup logic", () => {
   it("constructs correct retention interval", () => {
-    const sql = "DELETE FROM transactions WHERE date < (CURRENT_DATE - INTERVAL '18 months')";
-    assert.ok(sql.includes("18 months"));
+    // 36 months (SX1) — must be >= the longest analytical window (detection 36mo
+    // / seasonal 24mo) so cleanup doesn't silently truncate it.
+    const sql = "DELETE FROM transactions WHERE date < (CURRENT_DATE - INTERVAL '36 months')";
+    assert.ok(sql.includes("36 months"));
   });
 
   it("cleans up inactive subscriptions older than 6 months", () => {

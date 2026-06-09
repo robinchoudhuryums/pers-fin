@@ -417,3 +417,32 @@ describe("Budget month validators", () => {
       "getCategorySpendingForMonth must validate its month arg with the same regex");
   });
 });
+
+// SX3 — the SPLIT_AMOUNT / NOT_TRANSFER / INCOME_PREDICATE fragments are inlined
+// into scripts/sheets-sync.js (it can't require the services layer). They MUST
+// stay byte-identical to teller/services/financial-queries.js or the Sheets
+// export silently drifts from the in-app numbers. Pin that equality.
+describe("SX3 — sheets-sync inlined SQL fragments match financial-queries canonical", () => {
+  const fqSrc = fs.readFileSync(path.join(__dirname, "..", "teller", "services", "financial-queries.js"), "utf-8");
+  const ssSrc = fs.readFileSync(path.join(__dirname, "..", "scripts", "sheets-sync.js"), "utf-8");
+  const norm = (s) => s.replace(/\s+/g, " ");
+
+  function pin(name, re, normalize) {
+    it(`${name} body matches canonical`, () => {
+      const a = (normalize ? norm(fqSrc) : fqSrc).match(re);
+      const b = (normalize ? norm(ssSrc) : ssSrc).match(re);
+      assert.ok(a, `${name} not found in financial-queries.js — update the test regex`);
+      assert.ok(b, `${name} not found in sheets-sync.js — copy missing/renamed`);
+      assert.equal(b[0], a[0], `sheets-sync ${name} must byte-match financial-queries (drift detected)`);
+    });
+  }
+
+  pin("NOT_TRANSFER keyword list", /payment thank\|[^']*withdrawal/);
+  pin("INCOME include keywords", /payroll\|direct dep[^']*ach credit/);
+  pin("INCOME exclude keywords", /payment\|transfer\|pymt[^']*bill pay/);
+  // SPLIT_AMOUNT CASE — multi-line in sheets-sync, single-line in canonical, so
+  // compare whitespace-normalized.
+  pin("SPLIT_AMOUNT CASE",
+    /personal_for = 'self' THEN t\.amount WHEN la\.is_shared AND t\.personal_for = 'partner' THEN 0 ELSE t\.amount \* COALESCE\(la\.spending_split_pct, 100\) \/ 100\.0/,
+    true);
+});

@@ -1174,6 +1174,21 @@ function dailyAutoSync() {
 }
 
 /**
+ * HTML-escape a value before interpolating it into the alert email body.
+ * The merchant/service/detail strings come from parsed CSV / server data, so
+ * a stray '<' or '&' (or markup in a merchant name) would otherwise render
+ * raw in the HTML email (SX2).
+ */
+function escapeHtml_(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/**
  * Email the user about new subscriptions, price changes, and upcoming charges.
  * Uses styled HTML matching the app's dark aurora design.
  */
@@ -1325,8 +1340,8 @@ function sendSubscriptionAlerts_() {
     for (var i = 0; i < alerts.length; i++) {
       var a = alerts[i];
       html += '<div style="padding:8px 0;' + (i < alerts.length - 1 ? 'border-bottom:1px solid #1e2228;' : '') + '">';
-      html += '<p style="font-size:14px;color:#f0ebe3;margin:0 0 2px;font-weight:400;">' + a.service + '</p>';
-      html += '<p style="font-size:12px;color:#78746d;margin:0;word-break:break-word;">' + a.detail + '</p>';
+      html += '<p style="font-size:14px;color:#f0ebe3;margin:0 0 2px;font-weight:400;">' + escapeHtml_(a.service) + '</p>';
+      html += '<p style="font-size:12px;color:#78746d;margin:0;word-break:break-word;">' + escapeHtml_(a.detail) + '</p>';
       html += '</div>';
     }
     html += '</div>';
@@ -1341,9 +1356,9 @@ function sendSubscriptionAlerts_() {
       var u = upcoming[j];
       var borderStyle = j < upcoming.length - 1 ? 'border-bottom:1px solid #1e2228;' : '';
       html += '<tr>';
-      html += '<td style="padding:8px 0;font-size:14px;color:#f0ebe3;font-weight:400;' + borderStyle + '">' + u.service + '</td>';
+      html += '<td style="padding:8px 0;font-size:14px;color:#f0ebe3;font-weight:400;' + borderStyle + '">' + escapeHtml_(u.service) + '</td>';
       html += '<td style="padding:8px 0;font-size:14px;color:#c8856c;font-weight:400;text-align:right;white-space:nowrap;' + borderStyle + '">' + fmt(u.amount) + '</td>';
-      html += '<td style="padding:8px 0;font-size:12px;color:#78746d;text-align:right;white-space:nowrap;padding-left:12px;' + borderStyle + '">' + u.date + '</td>';
+      html += '<td style="padding:8px 0;font-size:12px;color:#78746d;text-align:right;white-space:nowrap;padding-left:12px;' + borderStyle + '">' + escapeHtml_(u.date) + '</td>';
       html += '</tr>';
     }
     html += '</table>';
