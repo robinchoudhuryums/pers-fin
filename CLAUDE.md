@@ -315,9 +315,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (663 tests as of latest); use
+  Perfin and Per-sistant test files (745 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 663 tests across 17 test files (incl.
+  Current count: 745 tests across 24 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -1062,7 +1062,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 663 tests passing across 17 test files (Perfin + Per-sistant)
+- 745 tests passing across 24 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash
@@ -1760,9 +1760,13 @@ embedded mode).
   detect transfers → categorize → generate insights → audit → email webhook.
   Ensures AI analyzes freshest data. Auto-categorization runs as part of this pipeline.
 - **Budget alerts**: every 3 hours (push notifications at 80% and 100%+ thresholds, aligned with the in-app `/api/budgets/alerts` `warning`/`critical` levels). Like the endpoint, the push compares against the effective limit (base + current-month rollover) and skips one-time budgets outside their `effective_month`. The in-app `info`/pace heuristic is intentionally not pushed (too noisy as a notification).
-- **Budget snapshot auto-trigger**: every 6 hours, checks if today is the 1st of the
-  month. If so, creates a snapshot for the previous month (spending + rollover amounts)
-  so budget rollover advances automatically. Idempotent — skips if snapshot already exists.
+- **Budget snapshot auto-trigger**: every 6 hours, creates a snapshot for the
+  previous (now-complete) month (spending + rollover amounts) so budget rollover
+  advances automatically. Idempotent — skips if a snapshot for that month already
+  exists. Runs on EVERY tick (not only the 1st) so a snapshot missed because the
+  process was asleep/inactive on the 1st is caught up on any later tick that
+  month (M5) — the prior month is complete regardless of which day it runs, so
+  timing within the month doesn't matter. Gated on user activity.
 - **Bank auto-sync** (Phase A): every 1 hour, checks `auto_sync_enabled` and whether
   `auto_sync_interval_hours` has elapsed since `last_auto_sync_at`. When due, calls
   `syncAllEnrollments()` (Teller) then `syncAllPlaidTransactions()` (Plaid) then
@@ -1910,9 +1914,11 @@ income module, and bill-calendar income detection.
     `POST /api/budgets/snapshot`, and the budget-snapshot auto-trigger so
     snapshots record the correct month's spending instead of always-this-month.
   - `getNetWorth(pool)` — the single source of truth for net worth (assets,
-    liabilities, net_worth, breakdown). Dedupes Plaid investment accounts that
-    appear in BOTH `linked_accounts` and `investment_accounts` and always
-    includes investments (see the net-worth Key Design Decision below).
+    liabilities, net_worth, breakdown). For a Plaid brokerage that appears in
+    BOTH `linked_accounts` and `investment_accounts`, it keeps the
+    `investment_accounts` value (the correct holdings-sum) and drops the
+    `linked_accounts` phantom (often $0 from accountsGet) — see the net-worth
+    Key Design Decision below. Always includes investments.
   Constants: `INCOME_PREDICATE`, `NOT_TRANSFER`, `SPLIT_AMOUNT`, `NOT_REIMBURSED`.
   `/api/savings-rate` calls `getMonthlyIncome` + `getMonthlySpending`;
   `/api/cash-flow` uses `INCOME_PREDICATE`; `/api/budgets/alerts` and the
@@ -1926,17 +1932,26 @@ income module, and bill-calendar income detection.
   `getNetWorth(pool)` in `services/financial-queries.js` is the single source of
   truth, used by all three `net_worth_snapshots` writers — the hourly snapshot
   job (`startup.js`), `POST /api/net-worth/snapshot` (`goals.js`), and
-  `syncAllBalances` (`enrollments.js`). It sums non-credit `linked_accounts` as
-  assets, credit accounts as liabilities, and active `investment_accounts` —
-  but **dedupes Plaid investment accounts that exist in BOTH tables** (a
-  brokerage linked via the combined Plaid transactions+investments flow lands
-  in `linked_accounts` AND `investment_accounts`) via `NOT EXISTS (… la.account_id
-  = ia.plaid_account_id)`. Before this (F1), the three writers disagreed — the
-  balance-sync writer summed `linked_accounts` only (omitting investments) while
-  the other two summed both tables AND double-counted the Plaid brokerage — so
-  the headline net-worth figure both oscillated intra-day (depending on which
-  job wrote the daily row last) and was inflated. New net-worth surfaces MUST
-  call `getNetWorth` rather than re-inlining the assets/liabilities sum.
+  `syncAllBalances` (`enrollments.js`). It sums depository (non-credit, non-loan)
+  `linked_accounts` as assets, credit AND loan accounts as liabilities (Plaid
+  sets `type='loan'` for all debt subtypes — counting a loan as an asset
+  inflated net worth ~2× the loan balance, F1), and active `investment_accounts`
+  — but **dedupes the Plaid brokerage that exists in BOTH tables**. A brokerage
+  linked via the combined Plaid transactions+investments flow lands in
+  `linked_accounts` (often $0 — Schwab et al. report `balances.current=0` at the
+  account level and put the real value in holdings) AND `investment_accounts`
+  (correct holdings-sum balance). **`investment_accounts` is authoritative**: the
+  `linked_accounts` query drops any row whose `account_id` matches an active
+  `investment_accounts.plaid_account_id` (`NOT EXISTS (… ia.plaid_account_id =
+  la.account_id AND ia.is_active)`), and the `investment_accounts` query is NOT
+  filtered against `linked_accounts`. This matches `GET /api/investments`
+  (`la.plaid_item_id IS NULL`) and the dashboard accounts grid. Earlier the dedup
+  ran the OTHER way (kept the $0 `linked_accounts` phantom, dropped the real
+  `investment_accounts` value), so net worth understated by the full brokerage
+  value (H1); before THAT (F1), the three writers disagreed — the balance-sync
+  writer summed `linked_accounts` only (omitting investments) while the other two
+  double-counted the Plaid brokerage. New net-worth surfaces MUST call
+  `getNetWorth` rather than re-inlining the assets/liabilities sum.
 - **Substring-safe keyword exclusions.** All merchant/transaction keyword
   filters use word-boundary matching — `\b` in JavaScript regex, `\y` in
   Postgres regex (`~*` / `!~*`). The reason: short tokens like `atm`,
@@ -2508,4 +2523,4 @@ Sheets & External Export: Apps Script side deploys via clasp — `clasp push` fr
 Recommended first subsystem: Bank Sync & Ingestion (widest blast radius — every downstream number depends on correct transaction data; most invariants; richest recent bug history).
 Recommended order (frozen excluded): Bank Sync & Ingestion → Financial Analytics → Detection & Categorization → AI Insights & Audit → Knowledge / RAG (Per-sistant) → Platform, Shell & Auth → Settings, Notifications & Cross-app → Sheets & External Export → Web UI (Perfin) → Per-sistant Backend → Per-sistant Web UI.
 Seams audit frequency: every 3 subsystem cycles (focus: enrollments.js, subscriptions.js, settings.js, financial-queries.js, notifications.js, the Per-sistant integration seam routes/perfin.js + routes/webhooks.js, and the Knowledge↔Perfin seam — rag.js's read-only perfinPool use of linked_accounts/detected_subscriptions).
-Confidence: Bank Sync, Analytics, Detection, AI, Platform = High; Integrations, Sheets, Web UI, Per-sistant Backend, Per-sistant Web UI, Knowledge / RAG = Medium (Knowledge: new code, heavily tested at 734, but unexercised against a live vault/Voyage/pgvector).
+Confidence: Bank Sync, Analytics, Detection, AI, Platform = High; Integrations, Sheets, Web UI, Per-sistant Backend, Per-sistant Web UI, Knowledge / RAG = Medium (Knowledge: new code, heavily tested, but unexercised against a live vault/Voyage/pgvector).
