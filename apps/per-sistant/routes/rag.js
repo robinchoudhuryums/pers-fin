@@ -171,6 +171,37 @@ async function matchFacts(pool, query, limit) {
   }
 }
 
+// Proactive surfacing (Phase 3): facts with an upcoming date — either the
+// validity window ending (valid_to) or a date-valued attribute (renewal/
+// expiration/due/deadline). Returns rows { entity, kind, on_date, days_away }
+// within `days`. Used by the notification check. Schema-drift safe.
+async function upcomingFacts(pool, days = 30) {
+  try {
+    const r = await pool.query(
+      `SELECT entity, kind, on_date, (on_date - CURRENT_DATE) AS days_away FROM (
+         SELECT entity, 'expires'::text AS kind, valid_to AS on_date
+         FROM facts
+         WHERE deleted_at IS NULL AND sensitivity = 'normal' AND valid_to IS NOT NULL
+         UNION ALL
+         SELECT entity, attribute AS kind,
+                CASE WHEN value ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN value::date END AS on_date
+         FROM facts
+         WHERE deleted_at IS NULL AND sensitivity = 'normal'
+           AND attribute ~* '(renew|expir|due|deadline|valid.?until|ends?)'
+       ) s
+       WHERE on_date IS NOT NULL
+         AND on_date >= CURRENT_DATE
+         AND on_date <= CURRENT_DATE + ($1 || ' days')::interval
+       ORDER BY on_date
+       LIMIT 50`,
+      [String(parseInt(days, 10) || 30)]
+    );
+    return r.rows;
+  } catch {
+    return [];
+  }
+}
+
 // Render matched facts into a single authoritative document, grouped by entity.
 function factsToDocument(rows) {
   if (!rows || !rows.length) return null;
@@ -630,6 +661,7 @@ module.exports.cacheSet = cacheSet;
 module.exports.buildFactsQuery = buildFactsQuery;
 module.exports.factsToDocument = factsToDocument;
 module.exports.matchFacts = matchFacts;
+module.exports.upcomingFacts = upcomingFacts;
 module.exports.looksFinancial = looksFinancial;
 module.exports.perfinFinanceSnapshot = perfinFinanceSnapshot;
 module.exports.stripMermaidFences = stripMermaidFences;

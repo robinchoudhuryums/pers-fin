@@ -418,6 +418,14 @@ hoisted version.
     write-scoped `VAULT_GITHUB_WRITE_TOKEN` (the sync token stays read-only); 400
     until set. Unique paths mean it's always a create. Kicks a background
     syncVault so the capture is searchable soon. Capture box on the Knowledge page.
+  - **Proactive surfacing (Phase 3):** `routes/rag.upcomingFacts(pool, days)`
+    finds facts with an upcoming date — the validity window ending (`valid_to`)
+    or a date-valued attribute (`renew`/`expir`/`due`/`deadline`/…). `GET
+    /api/notifications/check` includes these as `fact_upcoming` notifications (+
+    a count) over a 30-day lookahead; the dashboard browser-notifies the
+    imminent ones (≤7 days). Schema-drift safe (errors → no upcoming facts).
+    Per-sistant has no email digest (that's Perfin) — the notification check is
+    the proactive surface.
 
 ## Embedded Mode (under the unified shell)
 When loaded by `shell/index.js` instead of run standalone, the Per-sistant app
