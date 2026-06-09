@@ -366,8 +366,14 @@ module.exports = function ({ pool }) {
       // when the corpus hasn't changed (and it's < 24h old). Free repeats.
       const qn = normalizeQuery(query);
       const ver = await corpusVersion(pool);
-      const cached = await cacheGet(pool, qn, model, ver);
-      if (cached) return res.json({ answer: cached.answer, sources: cached.sources, cached: true });
+      // Finance-grounded answers depend on live Perfin data, which isn't part of
+      // the corpus-version stamp — don't cache them, or a balance change within
+      // the 24h window would serve a stale affordability answer.
+      const useCache = !looksFinancial(query);
+      if (useCache) {
+        const cached = await cacheGet(pool, qn, model, ver);
+        if (cached) return res.json({ answer: cached.answer, sources: cached.sources, cached: true });
+      }
 
       const SYSTEM =
         "You are a personal knowledge assistant. Answer the question using ONLY the information in the provided documents. A document titled \"Known facts (current)\" holds verified structured facts about the user — treat it as authoritative and prefer it for precise values (numbers, dates, IDs). If the documents do not contain the answer, say plainly that you don't have that information in your knowledge base — do not guess or use outside knowledge. Be concise.";
@@ -392,7 +398,7 @@ module.exports = function ({ pool }) {
 
       const citedSet = new Set(citedIndexes);
       const finalSources = sources.map((s) => ({ ...s, cited: citedSet.has(s.n - 1) }));
-      await cacheSet(pool, qn, model, ver, answer, finalSources);
+      if (useCache) await cacheSet(pool, qn, model, ver, answer, finalSources);
       res.json({ answer, sources: finalSources, cached: false });
     } catch (err) {
       serverError(res, err);
