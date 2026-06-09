@@ -1829,12 +1829,18 @@ expression with two layers — per-transaction `personal_for` override
  END)
 ```
 Non-shared accounts always fall through to the spending_split_pct branch
-(which defaults to 100 = full amount). Inline copies of this formula
-exist in `routes/enrollments.js` (spending-summary monthly/category/
-merchants, cash-flow daily/DOW averages), `routes/insights.js` (anomaly
-baseline + candidate, seasonal patterns), and the split-row variant
-(`s.amount` instead of `t.amount`) in `financial-queries.js` and
-`enrollments.js`. The standalone `scripts/sheets-sync.js` `buildDashboard` also
+(which defaults to 100 = full amount). `routes/enrollments.js`
+(spending-summary monthly/category/merchants, cash-flow daily/DOW averages),
+`routes/insights.js` (anomaly baseline + candidate, seasonal patterns), and
+`routes/subscriptions.js` (bill-calendar income) **IMPORT** `SPLIT_AMOUNT` /
+`NOT_TRANSFER` / `INCOME_PREDICATE` from `financial-queries.js` and
+template-interpolate them — they are NOT independent copies and cannot drift
+(the split-row variant is derived in-place via `SPLIT_AMOUNT.replace(/t\.amount/g,
+"s.amount")`, and insights' anomaly subquery via `NOT_TRANSFER.replace(/\bt\./g,
+"t2.")`). The only place that holds a TRUE inline copy (because it can't `require`
+the services layer) is the standalone `scripts/sheets-sync.js` (verified byte-
+matching the canonical) and the legacy Apps Script `apps-script/Code.gs` fork.
+The standalone `scripts/sheets-sync.js` `buildDashboard` also
 inlines a `SPLIT_AMT` + `NOT_TRANSFER` + reimbursed-exclusion copy (it can't
 import the services layer). As of M4 it ALSO mirrors splits-REPLACEMENT for its
 per-category surfaces — a splits-aware `cat_lines` CTE (parent_no_splits ∪

@@ -17,8 +17,22 @@ Audited; 3 findings (1 Medium AIA1, 2 Low AIA2/AIA3). Implemented A1–A2, defer
 - **A2 (AIA2)** insights.js /api/insights/rebuild: moved the `entry_type='rebuild'` usage-row INSERT to immediately after the Claude call — BEFORE the tool-block validation early-returns and the summary UPDATE — so a rebuild that truncates/fails-validation (previously 500'd before the insert) still records its already-incurred spend against the shared monthly cap. Failure now logged loudly.
 - **Deferred:** A3 (AIA3 — empty insight_text row reaches the feed when the model returns neither tool nor text block; cosmetic, rare with tool_choice forced).
 
+### Seams audit (this session) — COMPLETE, clean
+Audited the cross-subsystem boundaries. No Critical/High/Medium. Verified OK:
+webhook event shape (in-process deliverDigestInProcess + HTTP receiver insert
+identical emails columns + identical recipient resolution; status CHECK allows
+draft/scheduled); perfinPool read contract (all linked_accounts/detected_subscriptions
+columns rag.js + the Perfin widget assume exist today, INV-35); productivity-context
+(todos/emails/notes/weekly_reviews columns exist; standalone fallback unwraps /api/review
+shape); embedded-auth + pool wiring (no HTTP self-fetch except documented standalone
+fallbacks + the test event, INV-25); settings↔shell idle-cache (shellAuthInvalidator
+wired callback, sanitizeBoolMap + bounds, SN-5).
+Findings:
+- **SEAM-1 (Low, doc/impl drift — FIXED this session):** CLAUDE.md said enrollments.js/insights.js hold "inline copies" of SPLIT_AMOUNT; they actually IMPORT it from financial-queries.js and template-interpolate (safe `.replace` alias transforms), so they can't drift. Only sheets-sync.js (byte-matching) + Apps Script Code.gs (stale fork, broad-scan L1) are true copies. Corrected the Shared-Account-Spending-Split doc section.
+- **SEAM-2 (Low, accepted):** cross-app perfinPool reads + the Perfin widget swallow ALL errors (→ null / connected:false), so a FUTURE Perfin column rename degrades silently. Documented INV-35 posture; intentional. No action.
+
 ### Rotation status
-Cycles: Bank Sync, Financial Analytics, broad pass, Knowledge/RAG, Detection & Categorization, AI Insights & Audit. **Seams audit now due** (every 3 subsystem cycles) — focus: enrollments.js, subscriptions.js, settings.js, financial-queries.js, notifications.js, the Per-sistant integration seam (routes/perfin.js + webhooks.js), and the Knowledge↔Perfin seam (rag.js perfinPool). Then continue rotation: Platform/Shell & Auth, Settings/Notifications/Cross-app, Sheets, Web UI, Per-sistant Backend/Web UI.
+Cycles: Bank Sync, Financial Analytics, broad pass, Knowledge/RAG, Detection & Categorization, AI Insights & Audit + seams audit (done). Next rotation: Platform/Shell & Auth, then Settings/Notifications/Cross-app, Sheets, Web UI, Per-sistant Backend/Web UI.
 
 ### Detection & Categorization targeted cycle (this session)
 Audited; 7 findings, all Low (3 prior broad-scan items here — M1 LIKE-escaping, M2 cap-escape, L2 CSV balance match — already fixed earlier this cycle). Implemented A1–A4, deferred A5/A6:
