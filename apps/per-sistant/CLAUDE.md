@@ -390,6 +390,14 @@ hoisted version.
     depend on fuzzy vector recall. Browse via `GET /api/rag/facts`. Only the
     active validity window is injected (historical/superseded facts are not
     surfaced in answers).
+  - **Cross-app finance grounding (Phase 3):** for finance-flavored questions
+    (`looksFinancial` keyword gate), `POST /api/rag/query` pulls a READ-ONLY
+    snapshot from Perfin (`perfinFinanceSnapshot` over the shell-wired
+    `perfinPool` — `linked_accounts` balances + active `detected_subscriptions`;
+    INV-25, never an HTTP self-fetch) and injects it as a cited "Finances (from
+    Perfin)" source. Only fires on finance queries (non-finance queries never
+    touch perfinPool) and is schema-drift safe (any error → no finance context).
+    No Perfin schema changes. Standalone (no perfinPool) → silently skipped.
 
 ## Embedded Mode (under the unified shell)
 When loaded by `shell/index.js` instead of run standalone, the Per-sistant app

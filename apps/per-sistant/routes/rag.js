@@ -190,6 +190,67 @@ function factsToDocument(rows) {
   return { title: "Known facts (current)", content: lines.join("\n") };
 }
 
+// ---------------------------------------------------------------------------
+// Cross-app grounding (Phase 3) — answer finance-flavored questions using
+// Perfin data, read-only, via the shell-wired perfinPool (INV-25: never an
+// HTTP self-fetch). Only triggered on finance-looking queries so non-finance
+// questions don't ship account data to the model. Schema-drift safe (any error
+// → null, no finance context).
+// ---------------------------------------------------------------------------
+const FINANCE_RE =
+  /\b(afford|cost|costs?|price[ds]?|pay|paid|payments?|budget|balances?|owe[ds]?|spend(?:ing|t)?|money|accounts?|subscriptions?|premiums?|renew(?:al)?|bills?|cash|savings|credit|debt|expenses?|income|salary|loan|mortgage)\b|\$/i;
+
+function looksFinancial(q) {
+  return FINANCE_RE.test(String(q || ""));
+}
+
+function money(v) {
+  if (v == null) return null;
+  const n = Number(v);
+  const s = "$" + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return n < 0 ? "-" + s : s;
+}
+
+async function perfinFinanceSnapshot(perfinPool) {
+  if (!perfinPool) return null;
+  try {
+    const [acc, subs] = await Promise.all([
+      perfinPool.query("SELECT name, type, current_balance, credit_limit FROM linked_accounts ORDER BY type, name"),
+      perfinPool.query(
+        "SELECT display_name, amount, cadence_days, next_expected FROM detected_subscriptions WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL"
+      ),
+    ]);
+    const lines = [];
+    if (acc.rows.length) {
+      lines.push("Accounts:");
+      for (const a of acc.rows) {
+        const bal = money(a.current_balance) || "balance unknown";
+        const lim = a.credit_limit != null ? `, credit limit ${money(a.credit_limit)}` : "";
+        lines.push(`  ${a.name} (${a.type || "account"}): ${bal}${lim}`);
+      }
+    }
+    if (subs.rows.length) {
+      const monthly = subs.rows
+        .filter((s) => Number(s.cadence_days) <= 31)
+        .reduce((sum, s) => sum + Number(s.amount || 0), 0);
+      lines.push(`Active subscriptions: ${subs.rows.length} (~${money(monthly)}/mo)`);
+      const now = Date.now();
+      const upcoming = subs.rows
+        .filter((s) => {
+          if (!s.next_expected) return false;
+          const d = (new Date(s.next_expected).getTime() - now) / 86400000;
+          return d >= 0 && d <= 14;
+        })
+        .map((s) => `${s.display_name} ${money(s.amount)} on ${new Date(s.next_expected).toISOString().slice(0, 10)}`);
+      if (upcoming.length) lines.push("Upcoming charges (next 14 days): " + upcoming.join("; "));
+    }
+    if (!lines.length) return null;
+    return { title: "Finances (from Perfin)", content: lines.join("\n") };
+  } catch {
+    return null;
+  }
+}
+
 module.exports = function ({ pool }) {
   const router = express.Router();
 
@@ -264,6 +325,15 @@ module.exports = function ({ pool }) {
       if (factDoc) {
         documents.push(factDoc);
         sources.push({ n: n++, id: "facts", kind: "fact", title: factDoc.title });
+      }
+      // Cross-app grounding: pull a read-only finance snapshot from Perfin for
+      // finance-flavored questions ("can I afford the renewal?").
+      if (looksFinancial(query)) {
+        const financeDoc = await perfinFinanceSnapshot(req.app.get("perfinPool"));
+        if (financeDoc) {
+          documents.push(financeDoc);
+          sources.push({ n: n++, id: "perfin", kind: "finance", title: financeDoc.title });
+        }
       }
       for (const r of rows) {
         const title = r.title || (r.kind === "note" ? "Untitled note" : "Untitled");
@@ -424,3 +494,5 @@ module.exports.cacheSet = cacheSet;
 module.exports.buildFactsQuery = buildFactsQuery;
 module.exports.factsToDocument = factsToDocument;
 module.exports.matchFacts = matchFacts;
+module.exports.looksFinancial = looksFinancial;
+module.exports.perfinFinanceSnapshot = perfinFinanceSnapshot;
