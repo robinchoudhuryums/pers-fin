@@ -154,9 +154,12 @@ router.post("/api/budgets/suggest", async (_req, res) => {
     // adjusted, reimbursed-excluded, transfer-filtered, spending_split_pct-aware
     // numbers the user later sees as "spent" — not a raw SUM(amount) that
     // includes transfers/credit-card payments and over-counts shared cards (F11).
+    // Anchor each month to the 1st before subtracting, so running this on the
+    // 29th-31st doesn't overflow (e.g. May 31 → setMonth(-1) lands on Mar 3,
+    // dropping April and duplicating May). new Date(y, m-1-i, 1) is exact (F3).
+    const now = new Date();
     const monthKeys = [0, 1, 2].map(i => {
-      const d = new Date();
-      d.setMonth(d.getMonth() - i);
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
       return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
     });
     const [perMonthSpending, settingsRow, existingBudgets] = await Promise.all([
