@@ -1431,10 +1431,13 @@ standalone-mode fallback if either app is run on its own Render service.
 - Migration creates base tables (`plaid_items`, `teller_enrollments`, `linked_accounts`,
   `sync_cursors`, `transactions`, `detected_subscriptions`, `csv_imports`) idempotently
   via `CREATE TABLE IF NOT EXISTS` before the per-feature `ALTER TABLE` steps.
-- Schema versioning via `schema_migrations` table exists (current value: 2) but is
-  effectively dormant — every migration step uses `IF NOT EXISTS` / `IF NOT EXISTS`
-  guards and runs unconditionally. The `schema_migrations` row is recorded for
-  observability only; it does not gate any migration logic today.
+- Schema versioning via `schema_migrations` table (current value: 3). Most
+  migration steps use `IF NOT EXISTS` / `CREATE OR REPLACE` guards and run
+  unconditionally, so the version is largely observability — with ONE exception:
+  the detection-key orphan cleanup (see "Detection-key migration window") is
+  gated on `currentVersion < 3` so it runs exactly once during the v3 upgrade
+  instead of on every boot (PSA1). New one-shot cleanups should follow the same
+  `currentVersion < N` gating rather than running unconditionally.
 - Schema files in `db/` for reference only
 - Key tables: `teller_enrollments`, `linked_accounts`, `transactions`,
   `transaction_splits`, `detected_subscriptions`, `recurring_transfers`,
@@ -1677,14 +1680,18 @@ Subscription and transfer detection now key on
 after the upgrade a user with active `user_merchant_name` overrides may see
 a parallel duplicate row appear under the new (merged) name.
 
-An idempotent cleanup runs on every startup as part of the migration step:
-it deactivates any subscription/transfer row whose `merchant_key` matches
+A one-time cleanup runs ONCE during the v3 schema upgrade (gated on
+`currentVersion < 3`, PSA1 — previously it ran on every startup): it
+deactivates any subscription/transfer row whose `merchant_key` matches
 `transactions.merchant_name` AND whose underlying transactions have a
 differing `user_merchant_name` override set. This auto-retires the orphans
-without waiting for the 120-day staleness sweep. The UPDATE is a no-op when
-no orphans exist, so the migration stays cheap. Users who still see
-duplicates after a restart (e.g. orphans without matching transaction rows)
-can dismiss them from the UI or run `POST /api/cleanup`.
+without waiting for the 120-day staleness sweep. It's gated to run once
+because the predicate could otherwise deactivate an unrelated active row if
+two distinct merchants share a raw `merchant_name` and one is renamed — and
+the orphans only ever arose from the one-time raw→COALESCE key migration, so
+re-running it every boot bought nothing but that re-exposure. Users who still
+see duplicates after the upgrade (e.g. orphans without matching transaction
+rows) can dismiss them from the UI or run `POST /api/cleanup`.
 
 ## Security
 - **CSP nonces**: Per-request `crypto.randomBytes(16)` nonce for all inline scripts.
@@ -1724,6 +1731,10 @@ can dismiss them from the UI or run `POST /api/cleanup`.
   aren't burned by bad signatures.
 - **WebAuthn rpID**: Derived per-request from `req.hostname` (not cached at module scope),
   so deployments behind proxies with multiple hostnames or DNS changes work correctly.
+  The shell verify path pins `requireUserVerification: true` on
+  `verifyAuthenticationResponse` (matching the `userVerification:"required"` it
+  requests) — @simplewebauthn v11 already defaults it true, so this is a
+  defense-in-depth pin against a future SDK-default flip (PSA2).
 - **Biometric registration UI**: Settings → Security → "Biometric Login"
   section lists registered credentials and provides Register / Remove
   buttons via the existing `/api/webauthn/*` endpoints. Section auto-hides
