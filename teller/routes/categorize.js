@@ -456,13 +456,16 @@ router.post("/api/categorize/review", async (req, res) => {
 
     let ruleCreated = false;
     if (create_rule && merchant) {
-      // Same insert path as POST /api/categorization-rules. ON CONFLICT DO UPDATE
-      // so re-applying the same merchant→category pair doesn't error.
+      // ON CONFLICT DO UPDATE so re-applying the same merchant→category pair
+      // doesn't error. DC3: do NOT overwrite match_type here — this is an
+      // implicit "remember" path, so silently widening an existing rule's scope
+      // (e.g. flipping an exact rule to contains) would surprise the user. Only
+      // the explicit POST /api/categorization-rules honors a chosen match_type.
       await pool.query(
         `INSERT INTO categorization_rules (merchant_pattern, category, match_type)
          VALUES ($1, $2, $3)
          ON CONFLICT (merchant_pattern, category) DO UPDATE SET
-           match_type = $3, is_active = true, updated_at = now()`,
+           is_active = true, updated_at = now()`,
         [merchant.trim(), category, ruleType]
       );
       ruleCreated = true;
@@ -640,10 +643,12 @@ router.post("/api/categorize/accuracy-review", async (req, res) => {
     let ruleCreated = false;
     if (!correct && create_rule && merchant) {
       await pool.query(
+        // DC3: implicit accuracy-review "remember" path — reactivate on conflict
+        // but keep the existing rule's match_type (don't silently widen scope).
         `INSERT INTO categorization_rules (merchant_pattern, category, match_type)
          VALUES ($1, $2, 'contains')
          ON CONFLICT (merchant_pattern, category) DO UPDATE SET
-           match_type = 'contains', is_active = true, updated_at = now()`,
+           is_active = true, updated_at = now()`,
         [merchant.trim(), corrected_category]
       );
       ruleCreated = true;
@@ -787,10 +792,13 @@ router.post("/api/categorization-rules/from-transaction", async (req, res) => {
     const type = validTypes.includes(match_type) ? match_type : "contains";
 
     const result = await pool.query(
+      // DC3: from-transaction is an implicit "create rule from this manual
+      // categorization" path — reactivate on conflict but keep the existing
+      // rule's match_type rather than silently widening it.
       `INSERT INTO categorization_rules (merchant_pattern, category, match_type)
        VALUES ($1, $2, $3)
        ON CONFLICT (merchant_pattern, category) DO UPDATE SET
-         match_type = $3, is_active = true, updated_at = now()
+         is_active = true, updated_at = now()
        RETURNING *`,
       [merchant.trim(), category, type]
     );

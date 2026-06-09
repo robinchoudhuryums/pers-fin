@@ -1107,7 +1107,11 @@ router.post("/api/transactions/:id/splits", async (req, res) => {
         if (isNaN(n) || n <= 0) return res.status(400).json({ error: "Each split amount must be a positive number" });
         sum += n;
       }
-      if (Math.abs(sum - parentAmount) > 0.011) {
+      // Compare in integer cents (DC4/A4): honors the documented "within $0.01"
+      // exactly (reject only when off by MORE than one cent) AND avoids the
+      // floating-point noise the old `> 0.011` padding was working around — a
+      // legitimately-on-the-cent split no longer depends on FP slop.
+      if (Math.abs(Math.round(sum * 100) - Math.round(parentAmount * 100)) > 1) {
         return res.status(400).json({
           error: `Splits sum to $${sum.toFixed(2)} but parent transaction is $${parentAmount.toFixed(2)} — must match within $0.01`,
         });

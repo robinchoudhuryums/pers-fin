@@ -10,7 +10,7 @@
 //     (the n8n variant is at the bottom of this file).
 //
 // Algorithm:
-//   1. Pull all non-pending transactions from the last 12 months
+//   1. Pull all non-pending transactions from the last 36 months
 //   2. Group by merchant key (merchant_name || normalized name)
 //   3. For each merchant group, sort by date and compute inter-charge gaps
 //   4. If 3+ charges exist with consistent gaps (~30, ~60, or ~90 days),
@@ -223,7 +223,7 @@ const EXCLUSION_PATTERNS = {
     "dutch bros", "starbucks", "dunkin", "peet", "tim horton",
     "walmart", "target", "costco gas", "sam's club", "kroger", "safeway", "albertson",
     "publix", "heb", "h-e-b", "aldi", "trader joe", "whole foods", "food lion",
-    "wawa", "sheetz", "quiktrip", "racetrac", "circle k", "shell", "chevron", "exxon", "bp ",
+    "wawa", "sheetz", "quiktrip", "racetrac", "circle k", "shell", "chevron", "exxon", "bp",
   ],
   debt_payments: [
     "directpay", "minimum payment", "autopay", "auto pay", "payment thank you",
