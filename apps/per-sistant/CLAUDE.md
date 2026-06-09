@@ -268,6 +268,7 @@ POST   /api/rag/query              # source-grounded answer via the Citations fe
                                    #   flagged cited:true/false); exact-match answer cache (free repeats)
 GET    /api/rag/status             # vault config + index counts + embeddings/vector readiness + reindex state
 POST   /api/rag/reindex            # background full reindex (vault re-walk + notes); 202, poll status; 409 if running
+GET    /api/rag/facts              # browse current structured facts (query: entity, all=1 to include expired)
 
 POST   /api/login           # Authenticate
 POST   /api/logout          # End session
@@ -340,7 +341,7 @@ Perfin sub-app and the shell. Do not introduce v5-only idioms (`req.host`,
 `app.del`, removed wildcard path patterns, etc.) — the workspace install
 hoists v4 across all sub-apps and a v5 idiom would break under the
 hoisted version.
-- Tables: `todos`, `emails`, `notes`, `contacts`, `user_settings`, `subtasks`, `email_templates`, `todo_templates`, `weekly_reviews`, `task_dependencies`, `automations`, `attachments`, `documents`, `chunks`, `embed_state`, `rag_answer_cache`
+- Tables: `todos`, `emails`, `notes`, `contacts`, `user_settings`, `subtasks`, `email_templates`, `todo_templates`, `weekly_reviews`, `task_dependencies`, `automations`, `attachments`, `documents`, `chunks`, `embed_state`, `rag_answer_cache`, `facts`
 - **Knowledge / RAG** (`db/013_knowledge.sql`, `db/014_vault_vectors.sql`):
   - `documents` — personal knowledge corpus (`source` manual/vault/note,
     `source_ref`, `sensitivity` normal/private/secret). Filled by the Obsidian
@@ -372,10 +373,23 @@ hoisted version.
     (unused here).
   - **Answer cache (Phase 2):** `rag_answer_cache` — exact-match, keyed by
     normalized query + model + a corpus-version stamp (`max(updated_at)` + active
-    row count over notes+documents), 24h freshness. Auto-invalidates when the
-    corpus changes; survives restarts (unlike the in-memory ai.js cache).
+    row count over notes+documents+facts), 24h freshness. Auto-invalidates when
+    the corpus changes; survives restarts (unlike the in-memory ai.js cache).
     Helpers in `routes/rag.js` swallow errors so a pre-migration/missing table
     degrades to "no cache". Semantic (paraphrase) caching is deferred.
+  - **Structured facts (Phase 2c):** `facts` — precise, supersedable
+    `(entity, attribute, value)` rows with `valid_from`/`valid_to` (NULL = still
+    current) and `sensitivity`. Authored as flat frontmatter in vault "fact
+    files" (`type: fact`): reserved keys (type/entity/valid_from/valid_to/
+    sensitivity/tags/title/embed/private/context) are metadata, every other key
+    becomes a fact row; `services/vault-sync.extractFacts` + `upsertFacts`
+    replace all facts for a file on each sync. `POST /api/rag/query` injects the
+    matching CURRENT, `normal`-sensitivity facts (`buildFactsQuery` +
+    `factsToDocument`) as an authoritative "Known facts (current)" document
+    listed first and cited — so precise lookups ("current deductible") don't
+    depend on fuzzy vector recall. Browse via `GET /api/rag/facts`. Only the
+    active validity window is injected (historical/superseded facts are not
+    surfaced in answers).
 
 ## Embedded Mode (under the unified shell)
 When loaded by `shell/index.js` instead of run standalone, the Per-sistant app

@@ -111,6 +111,7 @@ async function loadKStatus(){
     bits.push(st.vector_ready ? 'Semantic search ready' : 'Keyword search (no vector index)');
     if(!st.embeddings_configured) bits.push('embeddings not configured');
     if(st.counts) bits.push(st.counts.embedded + ' sources embedded');
+    if(st.counts && st.counts.facts) bits.push(st.counts.facts + ' facts');
     if(st.vault && st.vault.enabled && st.vault.last_synced_at) bits.push('vault synced ' + new Date(st.vault.last_synced_at).toLocaleString());
     if(st.vault && st.vault.last_error) bits.push('vault error: ' + st.vault.last_error);
     el.textContent = bits.join('  ·  ');

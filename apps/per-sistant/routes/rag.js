@@ -89,7 +89,8 @@ async function corpusVersion(pool) {
     const r = await pool.query(
       `SELECT COALESCE(to_char(max(u), 'YYYYMMDDHH24MISS'), '0') AS v, count(*) AS n
        FROM ( SELECT updated_at AS u FROM notes WHERE deleted_at IS NULL
-              UNION ALL SELECT updated_at FROM documents WHERE deleted_at IS NULL ) x`
+              UNION ALL SELECT updated_at FROM documents WHERE deleted_at IS NULL
+              UNION ALL SELECT updated_at FROM facts WHERE deleted_at IS NULL ) x`
     );
     return `${r.rows[0].v}:${r.rows[0].n}`;
   } catch {
@@ -123,6 +124,70 @@ async function cacheSet(pool, qn, model, ver, answer, sources) {
   } catch {
     /* cache write is best-effort */
   }
+}
+
+// ---------------------------------------------------------------------------
+// Structured facts (Phase 2c) — precise, supersedable key-value records with
+// temporal validity. "Current" = not deleted, sensitivity normal, and within
+// the optional valid_from..valid_to window. Matched facts are injected into the
+// answer as an authoritative, cited source so precise lookups ("what's my
+// current deductible?") don't depend on fuzzy vector recall.
+// ---------------------------------------------------------------------------
+const FACTS_LIMIT = 12;
+
+function buildFactsQuery(query, limit) {
+  const terms = (String(query).match(/\w+/g) || []).filter((t) => t.length > 2).slice(0, 8);
+  const search = terms.length ? terms : [String(query).trim() || ""];
+  const params = search.map((t) => `%${t}%`);
+  const match = search
+    .map((_, i) => `(entity ILIKE $${i + 1} OR attribute ILIKE $${i + 1} OR value ILIKE $${i + 1})`)
+    .join(" OR ");
+  const score = search
+    .map(
+      (_, i) =>
+        `(CASE WHEN entity ILIKE $${i + 1} THEN 2 ELSE 0 END + CASE WHEN attribute ILIKE $${i + 1} THEN 1 ELSE 0 END + CASE WHEN value ILIKE $${i + 1} THEN 1 ELSE 0 END)`
+    )
+    .join(" + ");
+  params.push(limit);
+  const sql = `
+    SELECT entity, attribute, value, valid_from, valid_to, (${score}) AS score
+    FROM facts
+    WHERE deleted_at IS NULL AND sensitivity = 'normal'
+      AND (valid_to IS NULL OR valid_to >= CURRENT_DATE)
+      AND (valid_from IS NULL OR valid_from <= CURRENT_DATE)
+      AND (${match})
+    ORDER BY score DESC, entity
+    LIMIT $${params.length}`;
+  return { sql, params };
+}
+
+async function matchFacts(pool, query, limit) {
+  try {
+    const { sql, params } = buildFactsQuery(query, limit);
+    const r = await pool.query(sql, params);
+    return r.rows;
+  } catch {
+    return []; // facts table missing / pre-migration → no facts
+  }
+}
+
+// Render matched facts into a single authoritative document, grouped by entity.
+function factsToDocument(rows) {
+  if (!rows || !rows.length) return null;
+  const byEntity = new Map();
+  for (const f of rows) {
+    if (!byEntity.has(f.entity)) byEntity.set(f.entity, []);
+    byEntity.get(f.entity).push(f);
+  }
+  const lines = [];
+  for (const [entity, fs] of byEntity) {
+    lines.push(`${entity}:`);
+    for (const f of fs) {
+      const until = f.valid_to ? ` (valid until ${f.valid_to})` : "";
+      lines.push(`  ${f.attribute}: ${f.value}${until}`);
+    }
+  }
+  return { title: "Known facts (current)", content: lines.join("\n") };
 }
 
 module.exports = function ({ pool }) {
@@ -189,14 +254,24 @@ module.exports = function ({ pool }) {
       if (!query) return res.status(400).json({ error: "Query is required." });
 
       const rows = await retrieve(query, MAX_SOURCES);
-      const sources = rows.map((r, i) => ({
-        n: i + 1,
-        id: r.id,
-        kind: r.kind,
-        title: r.title || (r.kind === "note" ? "Untitled note" : "Untitled"),
-      }));
+      const factDoc = factsToDocument(await matchFacts(pool, query, FACTS_LIMIT));
 
-      if (!rows.length) {
+      // Combine current structured facts (authoritative, listed first) with the
+      // retrieved prose sources into one numbered source list.
+      const documents = [];
+      const sources = [];
+      let n = 1;
+      if (factDoc) {
+        documents.push(factDoc);
+        sources.push({ n: n++, id: "facts", kind: "fact", title: factDoc.title });
+      }
+      for (const r of rows) {
+        const title = r.title || (r.kind === "note" ? "Untitled note" : "Untitled");
+        documents.push({ title, content: snippet(r.content) });
+        sources.push({ n: n++, id: String(r.id), kind: r.kind, title });
+      }
+
+      if (!documents.length) {
         return res.json({
           answer: null,
           sources: [],
@@ -206,7 +281,7 @@ module.exports = function ({ pool }) {
 
       const model = await getAIModelForFeature("rag");
       if (model === "off" || !isAIAvailable()) {
-        // Degrade gracefully: still hand back the retrieved sources so the
+        // Degrade gracefully: still hand back the matching sources so the
         // page is useful without an AI call (or with the feature disabled).
         return res.json({
           answer: null,
@@ -225,11 +300,7 @@ module.exports = function ({ pool }) {
       if (cached) return res.json({ answer: cached.answer, sources: cached.sources, cached: true });
 
       const SYSTEM =
-        "You are a personal knowledge assistant. Answer the question using ONLY the information in the provided documents. If the documents do not contain the answer, say plainly that you don't have that information in your knowledge base — do not guess or use outside knowledge. Be concise.";
-      const documents = rows.map((r) => ({
-        title: r.title || (r.kind === "note" ? "Untitled note" : "Untitled"),
-        content: snippet(r.content),
-      }));
+        "You are a personal knowledge assistant. Answer the question using ONLY the information in the provided documents. A document titled \"Known facts (current)\" holds verified structured facts about the user — treat it as authoritative and prefer it for precise values (numbers, dates, IDs). If the documents do not contain the answer, say plainly that you don't have that information in your knowledge base — do not guess or use outside knowledge. Be concise.";
 
       // Real Citations: the model cites which document backed each claim. Fall
       // back to the prompt-cite path if the citations call fails for any reason.
@@ -263,7 +334,7 @@ module.exports = function ({ pool }) {
     try {
       const cfg = await vaultSync.getVaultConfig(pool).catch(() => ({}));
       const ready = await vaultSync.vectorReady(pool);
-      const counts = { documents: 0, embedded: 0 };
+      const counts = { documents: 0, embedded: 0, facts: 0 };
       try {
         const c = await pool.query(
           `SELECT (SELECT count(*) FROM documents WHERE deleted_at IS NULL) AS documents,
@@ -271,6 +342,10 @@ module.exports = function ({ pool }) {
         );
         counts.documents = Number(c.rows[0].documents);
         counts.embedded = Number(c.rows[0].embedded);
+      } catch {}
+      try {
+        const fc = await pool.query("SELECT count(*) AS n FROM facts WHERE deleted_at IS NULL AND sensitivity = 'normal'");
+        counts.facts = Number(fc.rows[0].n);
       } catch {}
       res.json({
         vault: {
@@ -312,6 +387,31 @@ module.exports = function ({ pool }) {
     })();
   });
 
+  // Browse your own current structured facts. ?entity= filters by entity name;
+  // ?all=1 includes expired/future-dated facts. Only 'normal' sensitivity.
+  router.get("/api/rag/facts", async (req, res) => {
+    try {
+      const all = req.query.all === "1" || req.query.all === "true";
+      const params = [];
+      let where = "deleted_at IS NULL AND sensitivity = 'normal'";
+      if (!all) {
+        where += " AND (valid_to IS NULL OR valid_to >= CURRENT_DATE) AND (valid_from IS NULL OR valid_from <= CURRENT_DATE)";
+      }
+      if (req.query.entity) {
+        params.push(`%${String(req.query.entity)}%`);
+        where += ` AND entity ILIKE $${params.length}`;
+      }
+      const r = await pool.query(
+        `SELECT id, entity, attribute, value, valid_from, valid_to, source_ref, updated_at
+         FROM facts WHERE ${where} ORDER BY entity, attribute LIMIT 500`,
+        params
+      );
+      res.json({ facts: r.rows });
+    } catch (err) {
+      res.json({ facts: [] }); // facts table may not exist pre-migration
+    }
+  });
+
   return router;
 };
 
@@ -321,3 +421,6 @@ module.exports.normalizeQuery = normalizeQuery;
 module.exports.corpusVersion = corpusVersion;
 module.exports.cacheGet = cacheGet;
 module.exports.cacheSet = cacheSet;
+module.exports.buildFactsQuery = buildFactsQuery;
+module.exports.factsToDocument = factsToDocument;
+module.exports.matchFacts = matchFacts;

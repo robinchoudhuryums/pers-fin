@@ -106,6 +106,44 @@ function titleFromPath(path) {
   return basename(path).replace(INDEXABLE_RE, "");
 }
 
+// --- Structured facts (Phase 2c) -------------------------------------------
+// A vault file is a "fact file" when its frontmatter has `type: fact`/`facts`.
+// Reserved keys control metadata; every other flat key becomes a fact row.
+const RESERVED_FACT_KEYS = new Set([
+  "type", "entity", "title", "valid_from", "valid_to", "valid",
+  "sensitivity", "tags", "embed", "private", "context", "aliases",
+]);
+
+function isFactFile(meta) {
+  const t = meta && meta.type && String(meta.type).toLowerCase();
+  return t === "fact" || t === "facts";
+}
+
+function normalizeDate(v) {
+  if (!v) return null;
+  const s = String(v).trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+}
+
+// extractFacts(meta, sourceRef) -> [{ entity, attribute, value, valid_from,
+// valid_to, sensitivity, tags, source_ref }]. One row per non-reserved key.
+function extractFacts(meta, sourceRef) {
+  const m = meta || {};
+  const entity = (m.entity && String(m.entity)) || (sourceRef ? titleFromPath(sourceRef) : "Unknown");
+  const sensitivity = resolveSensitivity(m);
+  const tags = Array.isArray(m.tags) ? m.tags : m.tags ? [String(m.tags)] : null;
+  const valid_from = normalizeDate(m.valid_from);
+  const valid_to = normalizeDate(m.valid_to);
+  const out = [];
+  for (const [k, v] of Object.entries(m)) {
+    if (RESERVED_FACT_KEYS.has(k)) continue;
+    if (v === "" || v == null) continue;
+    const value = Array.isArray(v) ? v.join(", ") : String(v);
+    out.push({ entity, attribute: k, value, valid_from, valid_to, sensitivity, tags, source_ref: sourceRef });
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // DB helpers
 // ---------------------------------------------------------------------------
@@ -191,6 +229,32 @@ async function removeVaultDocument(pool, path) {
     [path]
   );
   if (r.rows[0]) await clearSource(pool, "document", r.rows[0].id);
+}
+
+// Replace all facts for a vault file (one file = many fact rows).
+async function upsertFacts(pool, sourceRef, facts) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("DELETE FROM facts WHERE source = 'vault' AND source_ref = $1", [sourceRef]);
+    for (const f of facts) {
+      await client.query(
+        `INSERT INTO facts (source, source_ref, entity, attribute, value, valid_from, valid_to, sensitivity, tags)
+         VALUES ('vault', $1, $2, $3, $4, $5, $6, $7, $8)`,
+        [sourceRef, f.entity, f.attribute, f.value, f.valid_from, f.valid_to, f.sensitivity, f.tags && f.tags.length ? f.tags : null]
+      );
+    }
+    await client.query("COMMIT");
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+async function clearFacts(pool, sourceRef) {
+  await pool.query("DELETE FROM facts WHERE source = 'vault' AND source_ref = $1", [sourceRef]);
 }
 
 // ---------------------------------------------------------------------------
@@ -280,9 +344,20 @@ async function syncVault(pool, opts = {}) {
 
     let embedded = 0;
     let skipped = 0;
+    let factFiles = 0;
     for (const path of changed) {
       const text = await getFileText(repo, path, head, ctx);
       const { meta, body } = parseFrontmatter(text);
+
+      // Fact file: structured records only. Replace its facts and drop any
+      // prior prose document/chunks for the same path.
+      if (isFactFile(meta)) {
+        await upsertFacts(pool, path, extractFacts(meta, path));
+        await removeVaultDocument(pool, path);
+        factFiles++;
+        continue;
+      }
+
       const sensitivity = resolveSensitivity(meta);
       const title = (meta.title && String(meta.title)) || titleFromPath(path);
       const tags = Array.isArray(meta.tags) ? meta.tags : meta.tags ? [String(meta.tags)] : null;
@@ -296,13 +371,16 @@ async function syncVault(pool, opts = {}) {
         await clearSource(pool, "document", docId);
       }
     }
-    for (const path of removed) await removeVaultDocument(pool, path);
+    for (const path of removed) {
+      await removeVaultDocument(pool, path);
+      await clearFacts(pool, path);
+    }
 
     await pool.query(
       "UPDATE user_settings SET vault_last_sha = $1, vault_last_synced_at = now(), vault_last_error = NULL WHERE id = 1",
       [head]
     );
-    return { ok: true, changed: changed.length, removed: removed.length, embedded, skipped, head };
+    return { ok: true, changed: changed.length, removed: removed.length, embedded, skipped, facts: factFiles, head };
   } catch (e) {
     await pool
       .query("UPDATE user_settings SET vault_last_error = $1, vault_last_synced_at = now() WHERE id = 1", [
@@ -355,4 +433,7 @@ module.exports = {
   shouldIndex,
   sha256,
   titleFromPath,
+  isFactFile,
+  extractFacts,
+  normalizeDate,
 };
