@@ -9,11 +9,18 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **Config**: `config.js` (constants, env parsing, validation arrays)
 - **Database**: `db.js` (pool + migrations), Neon PostgreSQL (schema in `db/`)
 - **Middleware**: `middleware.js` (auth, CSRF, rate limiting, session)
-- **AI**: `ai.js` (Anthropic Claude client, model helpers, caching) — 9 features with per-feature model selection
+- **AI**: `ai.js` (Anthropic Claude client, model helpers, caching) — 10 features with per-feature model selection (incl. Knowledge Q&A)
 - **Helpers**: `helpers.js` (recurrence, webhooks, Slack, automations)
 - **Views**: `views.js` + `views/css.js` + `views/js.js` (shared HTML/CSS/JS helpers)
-- **Routes**: `routes/` (21 route modules — auth, todos, emails, notes, contacts, settings, etc.)
-- **Pages**: `pages/` (9 page modules — dashboard, todos, emails, notes, contacts, calendar, review, analytics, settings)
+- **Routes**: `routes/` (22 route modules — auth, todos, emails, notes, contacts, settings, rag, etc.)
+- **Pages**: `pages/` (10 page modules — dashboard, todos, emails, notes, contacts, calendar, review, analytics, settings, knowledge)
+- **Knowledge / RAG**: `routes/rag.js` + `services/embeddings.js` (Voyage) +
+  `services/vault-sync.js` (Obsidian-vault ingest, GitHub API) + `pages/knowledge.js`.
+  Personal knowledge base — pgvector semantic retrieval over the vault + notes
+  (keyword fallback), Citations, answer cache, structured facts with temporal
+  validity, Mermaid diagrams, capture-to-vault, never-sent-to-AI "secret" tier,
+  and cross-app finance grounding from Perfin (read-only `perfinPool`). Migrations
+  `db/013`–`db/017`. Full detail in the Knowledge block under **Database** below.
 - **Email**: nodemailer (SMTP) with scheduled sending via node-cron. The
   scheduler atomically CLAIMS due emails before sending — `UPDATE emails SET
   status='sent' WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED) RETURNING *`,
@@ -51,6 +58,14 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **Dashboard**: Customizable widget layout (drag-to-reorder, show/hide widgets), overview cards, task views, AI briefing, smart suggestions, natural language AI query, scheduled emails, Perfin widget, global search
 - **AI Smart Suggestions**: AI-powered productivity coaching based on task priorities, due dates, and streaks
 - **AI Natural Language Query**: Ask questions about your data ("what did I do last week?", "how many tasks are overdue?")
+- **Knowledge base (RAG)**: a personal master knowledge store on the Knowledge page.
+  Indexes an Obsidian vault (private GitHub repo) + your notes into pgvector for
+  source-cited semantic Q&A (keyword fallback when embeddings are off); structured
+  facts (`type: fact` frontmatter) with temporal validity for precise "current X?"
+  lookups; Mermaid diagrams; capture-to-vault (write-scoped token); a "secret" tier
+  that's findable locally but never embedded/sent to AI; proactive renewal/expiry
+  surfacing via the notification check; and cross-app finance grounding that reads
+  Perfin data read-only. Answers carry a grounded/trust signal + per-fact verify.
 - **Automations/Rules Engine**: Create trigger→action rules (e.g., "when task created with category=work, set priority=high"), configurable in Settings
 - **File Attachments**: Upload files (up to 10MB) to tasks, emails, and notes via local storage. The download route sanitizes the stored `original_name` in the `Content-Disposition` header (strips quotes/backslashes/control chars) and emits RFC 5987 `filename*=UTF-8''…`, so a crafted filename can't inject/spoof a header (PS-5).
 - **iCal Export**: Export tasks and scheduled emails as .ics file for Google Calendar, Outlook, etc.
@@ -101,9 +116,15 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `server.js` — entry point (~180 lines: wires modules, starts server, cron jobs)
 - `config.js` — constants, validation arrays, env var parsing
 - `db.js` — database pool and migration runner
-- `ai.js` — Anthropic client, callAI, model helpers, response caching
+- `ai.js` — Anthropic client, callAI, answerWithCitations, model helpers, response caching
 - `middleware.js` — session, auth, CSRF, helmet, rate limiting
 - `helpers.js` — advanceRecurrence, webhooks, Slack, automations
+- `routes/rag.js` — Knowledge / RAG API (search, query, diagram, capture, facts,
+  facts/verify, secret-lookup, status, reindex) + retrieval/cache/facts/finance helpers
+- `services/embeddings.js` — Voyage embeddings (one swappable `embed()`)
+- `services/vault-sync.js` — Obsidian-vault ingest (GitHub API), chunking, frontmatter,
+  facts extraction, capture commit
+- `pages/knowledge.js` — Knowledge page (ask / search / diagram / capture / facts / secret)
 - `errors.js` — `serverError(res, err)` shared 500 responder (logs real error, returns generic message; PB-2)
 - `views.js` — pageHead, navBar, themeScript (imports from `views/`)
 - `routes/` — 21 API route modules (auth, todos, emails, notes, contacts, etc.)
@@ -468,9 +489,9 @@ Migrations and cron jobs run in both modes; only the listener, keep-alive,
 and signal handlers are owned by the shell when embedded.
 
 ## AI Features & Models
-- 9 AI features, each independently configurable: Haiku (fast/cheap), Sonnet (smarter), or Off
-- Models: `claude-haiku-4-5-20251001`, `claude-sonnet-4-6-20250415`
-- Features: email drafting, task breakdown, smart quick add, weekly review summary, email tone adjustment, daily briefing, note auto-tagging, smart suggestions, natural language query
+- 10 AI features, each independently configurable: Haiku (fast/cheap), Sonnet (smarter), or Off
+- Models: `claude-haiku-4-5-20251001`, `claude-sonnet-4-6`
+- Features: email drafting, task breakdown, smart quick add, weekly review summary, email tone adjustment, daily briefing, note auto-tagging, smart suggestions, natural language query, **Knowledge Q&A** (`ai_model_rag`, default sonnet — the RAG answer/diagram/capture model)
 - Configuration stored in `user_settings` table (ai_model_* columns)
 - Settings page provides per-feature dropdowns
 

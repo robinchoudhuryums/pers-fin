@@ -9,7 +9,10 @@ Single Node process that hosts two related personal tools behind one PIN gate:
   and transaction syncing for banks Teller doesn't cover (Capital One,
   Discover, Schwab, etc.).
 - **Per-sistant** — personal assistant. Tasks, scheduled emails, notes,
-  calendar, AI daily briefing.
+  calendar, AI daily briefing, and a **personal Knowledge base** — RAG over an
+  Obsidian vault (pgvector semantic retrieval): source-cited Q&A, structured
+  facts with temporal validity, Mermaid diagrams, capture-to-vault, a
+  never-sent-to-AI "secret" tier, and cross-app finance grounding from Perfin.
 
 A `shell/` Express app authenticates the user with `SHELL_PIN`, renders a tile
 picker landing page, then mounts each sub-app under its own URL prefix:
@@ -887,6 +890,13 @@ shared session cookie. Cross-app surface area today:
   bails on `req.app.get("embedded")`.
 - **Cross-app navigation**: in-nav "switch to other tool" link in each app's
   layout, only rendered when embedded. Same-origin, in-app navigation.
+- **Knowledge → Perfin finance grounding** (new seam): Per-sistant's Knowledge
+  feature (`apps/per-sistant/routes/rag.js`) reads Perfin's pool **read-only**
+  (`linked_accounts`, `detected_subscriptions`) via the wired `perfinPool` to
+  ground finance-flavored questions ("can I afford my renewal?"). Owned by the
+  Knowledge / RAG subsystem; finance queries only; no Perfin schema changes;
+  never an HTTP self-fetch (INV-35). This is why a Perfin-side audit should know
+  Per-sistant consumes those tables.
 - **Cross-pool wiring**: `shell/index.js` does
   `perfin.app.set("persistentPool", persistent.pool)` and the reverse, so
   routes in either app can query the other's database directly via
@@ -2287,7 +2297,11 @@ income module, and bill-calendar income detection.
 - **Location**: `apps/per-sistant/` (subtree-merged into this repo; original
   per-sistant history preserved). Originally lived at `github.com/robinchoudhuryums/per-sistant`.
 - **Purpose**: Personal assistant — task management, email scheduling, notes,
-  AI productivity briefings, calendar.
+  AI productivity briefings, calendar, and a **personal Knowledge base**
+  (vault-backed RAG: cited Q&A, structured facts, diagrams, capture, secret
+  tier; grounds finance questions on Perfin data). See the Knowledge / RAG
+  subsystem in the Cycle Workflow Config and the Knowledge section of
+  `apps/per-sistant/CLAUDE.md`.
 - **Integration under unified shell**: see "Per-sistant Integration" section
   above. Sub-app mounts at `/per-sistant/*`, shares the shell's session cookie,
   runs its own migrations against `PERSISTENT_DATABASE_URL`.
