@@ -13,7 +13,9 @@ try {
 // AI model mapping
 const AI_MODELS = {
   haiku: "claude-haiku-4-5-20251001",
-  sonnet: "claude-sonnet-4-6-20250415",
+  // Bare alias — `claude-sonnet-4-6` has no dated snapshot variant; the old
+  // `-20250415` suffix was not a real model ID and risks a 404.
+  sonnet: "claude-sonnet-4-6",
 };
 
 // Singleton Anthropic client
