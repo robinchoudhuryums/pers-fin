@@ -268,7 +268,8 @@ POST   /api/rag/query              # source-grounded answer via the Citations fe
                                    #   flagged cited:true/false); exact-match answer cache (free repeats)
 GET    /api/rag/status             # vault config + index counts + embeddings/vector readiness + reindex state
 POST   /api/rag/reindex            # background full reindex (vault re-walk + notes); 202, poll status; 409 if running
-GET    /api/rag/facts              # browse current structured facts (query: entity, all=1 to include expired)
+GET    /api/rag/facts              # browse current structured facts (query: entity, all=1 to include expired); includes `verified`
+POST   /api/rag/facts/verify       # mark/unmark a fact verified (body: entity, attribute, value, verified?)
 POST   /api/rag/diagram            # generate a Mermaid diagram from the knowledge base (facts+finance+prose)
 POST   /api/rag/capture            # structure raw text into a note/fact and COMMIT it to the vault repo
                                    #   (needs VAULT_GITHUB_WRITE_TOKEN; 400 if unset)
@@ -347,7 +348,7 @@ Perfin sub-app and the shell. Do not introduce v5-only idioms (`req.host`,
 `app.del`, removed wildcard path patterns, etc.) — the workspace install
 hoists v4 across all sub-apps and a v5 idiom would break under the
 hoisted version.
-- Tables: `todos`, `emails`, `notes`, `contacts`, `user_settings`, `subtasks`, `email_templates`, `todo_templates`, `weekly_reviews`, `task_dependencies`, `automations`, `attachments`, `documents`, `chunks`, `embed_state`, `rag_answer_cache`, `facts`
+- Tables: `todos`, `emails`, `notes`, `contacts`, `user_settings`, `subtasks`, `email_templates`, `todo_templates`, `weekly_reviews`, `task_dependencies`, `automations`, `attachments`, `documents`, `chunks`, `embed_state`, `rag_answer_cache`, `facts`, `fact_verifications`
 - **Knowledge / RAG** (`db/013_knowledge.sql`, `db/014_vault_vectors.sql`):
   - `documents` — personal knowledge corpus (`source` manual/vault/note,
     `source_ref`, `sensitivity` normal/private/secret). Filled by the Obsidian
@@ -426,6 +427,15 @@ hoisted version.
     imminent ones (≤7 days). Schema-drift safe (errors → no upcoming facts).
     Per-sistant has no email digest (that's Perfin) — the notification check is
     the proactive surface.
+  - **Trust/audit (Phase 4):** `POST /api/rag/query` returns `grounded`
+    (true/false) — whether the cited-answer actually cited a provided source;
+    the Knowledge page shows an "ungrounded — double-check" caution when false.
+    Fact verification loop: `fact_verifications` is keyed by CONTENT
+    (entity, attribute, value), NOT row id, so a verification survives vault
+    re-sync (which replaces fact rows) and resets when the value changes. Facts
+    queries expose `verified` via an EXISTS subquery; `factsToDocument`
+    annotates verified facts `[verified]`; `POST /api/rag/facts/verify`
+    sets/clears it; the Knowledge "Your facts" list has per-fact Verify toggles.
 
 ## Embedded Mode (under the unified shell)
 When loaded by `shell/index.js` instead of run standalone, the Per-sistant app

@@ -150,7 +150,10 @@ function buildFactsQuery(query, limit) {
     .join(" + ");
   params.push(limit);
   const sql = `
-    SELECT entity, attribute, value, valid_from, valid_to, (${score}) AS score
+    SELECT entity, attribute, value, valid_from, valid_to,
+           EXISTS(SELECT 1 FROM fact_verifications fv
+                  WHERE fv.entity = facts.entity AND fv.attribute = facts.attribute AND fv.value = facts.value) AS verified,
+           (${score}) AS score
     FROM facts
     WHERE deleted_at IS NULL AND sensitivity = 'normal'
       AND (valid_to IS NULL OR valid_to >= CURRENT_DATE)
@@ -215,7 +218,8 @@ function factsToDocument(rows) {
     lines.push(`${entity}:`);
     for (const f of fs) {
       const until = f.valid_to ? ` (valid until ${f.valid_to})` : "";
-      lines.push(`  ${f.attribute}: ${f.value}${until}`);
+      const mark = f.verified ? " [verified]" : "";
+      lines.push(`  ${f.attribute}: ${f.value}${until}${mark}`);
     }
   }
   return { title: "Known facts (current)", content: lines.join("\n") };
@@ -411,7 +415,14 @@ module.exports = function ({ pool }) {
       const useCache = !looksFinancial(query);
       if (useCache) {
         const cached = await cacheGet(pool, qn, model, ver);
-        if (cached) return res.json({ answer: cached.answer, sources: cached.sources, cached: true });
+        if (cached) {
+          return res.json({
+            answer: cached.answer,
+            sources: cached.sources,
+            cached: true,
+            grounded: (cached.sources || []).some((s) => s.cited),
+          });
+        }
       }
 
       const SYSTEM =
@@ -437,8 +448,12 @@ module.exports = function ({ pool }) {
 
       const citedSet = new Set(citedIndexes);
       const finalSources = sources.map((s) => ({ ...s, cited: citedSet.has(s.n - 1) }));
+      // Trust signal: did the answer actually cite a provided source? An
+      // ungrounded answer (no citations) may have drawn on outside knowledge —
+      // the UI flags it for the user to double-check.
+      const grounded = finalSources.some((s) => s.cited);
       if (useCache) await cacheSet(pool, qn, model, ver, answer, finalSources);
-      res.json({ answer, sources: finalSources, cached: false });
+      res.json({ answer, sources: finalSources, cached: false, grounded });
     } catch (err) {
       serverError(res, err);
     }
@@ -639,13 +654,44 @@ module.exports = function ({ pool }) {
         where += ` AND entity ILIKE $${params.length}`;
       }
       const r = await pool.query(
-        `SELECT id, entity, attribute, value, valid_from, valid_to, source_ref, updated_at
+        `SELECT id, entity, attribute, value, valid_from, valid_to, source_ref, updated_at,
+                EXISTS(SELECT 1 FROM fact_verifications fv
+                       WHERE fv.entity = facts.entity AND fv.attribute = facts.attribute AND fv.value = facts.value) AS verified
          FROM facts WHERE ${where} ORDER BY entity, attribute LIMIT 500`,
         params
       );
       res.json({ facts: r.rows });
     } catch (err) {
       res.json({ facts: [] }); // facts table may not exist pre-migration
+    }
+  });
+
+  // Verify-this-fact trust loop. Keyed by content (entity, attribute, value) so
+  // it survives vault re-syncs (which replace fact rows) and resets when the
+  // value changes. Pass verified:false to clear.
+  router.post("/api/rag/facts/verify", async (req, res) => {
+    try {
+      const { entity, attribute, value } = req.body || {};
+      const verified = req.body && req.body.verified !== false; // default true
+      if (!entity || !attribute || value == null) {
+        return res.status(400).json({ error: "entity, attribute, and value are required." });
+      }
+      if (verified) {
+        await pool.query(
+          `INSERT INTO fact_verifications (entity, attribute, value, verified_at)
+           VALUES ($1, $2, $3, now())
+           ON CONFLICT (entity, attribute, value) DO UPDATE SET verified_at = now()`,
+          [String(entity), String(attribute), String(value)]
+        );
+      } else {
+        await pool.query(
+          "DELETE FROM fact_verifications WHERE entity = $1 AND attribute = $2 AND value = $3",
+          [String(entity), String(attribute), String(value)]
+        );
+      }
+      res.json({ ok: true, verified });
+    } catch (err) {
+      serverError(res, err);
     }
   });
 

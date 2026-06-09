@@ -115,3 +115,45 @@ describe("Facts — GET /api/rag/facts", () => {
     assert.deepEqual(res.body.facts, []);
   });
 });
+
+describe("Facts — verification (Phase 4)", () => {
+  function makeApp(mockPool) {
+    const app = express();
+    app.use(express.json());
+    app.use(rag({ pool: mockPool }));
+    return app;
+  }
+
+  it("buildFactsQuery joins verification via an EXISTS subquery", () => {
+    const { sql } = buildFactsQuery("x", 5);
+    assert.match(sql, /fact_verifications/);
+    assert.match(sql, /AS verified/);
+  });
+
+  it("factsToDocument annotates verified facts", () => {
+    const doc = factsToDocument([{ entity: "Car", attribute: "deductible", value: "$1000", valid_to: null, verified: true }]);
+    assert.match(doc.content, /deductible: \$1000 \[verified\]/);
+  });
+
+  it("POST /api/rag/facts/verify requires entity+attribute+value", async () => {
+    await supertest(makeApp({ query: async () => ({ rows: [] }) }))
+      .post("/api/rag/facts/verify").send({ entity: "Car" }).expect(400);
+  });
+
+  it("upserts when verified (default true)", async () => {
+    let captured;
+    const res = await supertest(makeApp({ query: async (sql, p) => { captured = { sql, p }; return { rows: [] }; } }))
+      .post("/api/rag/facts/verify").send({ entity: "Car", attribute: "deductible", value: "$1000" }).expect(200);
+    assert.equal(res.body.verified, true);
+    assert.match(captured.sql, /INSERT INTO fact_verifications/);
+    assert.deepEqual(captured.p, ["Car", "deductible", "$1000"]);
+  });
+
+  it("deletes when verified:false", async () => {
+    let captured;
+    const res = await supertest(makeApp({ query: async (sql, p) => { captured = { sql, p }; return { rows: [] }; } }))
+      .post("/api/rag/facts/verify").send({ entity: "Car", attribute: "deductible", value: "$1000", verified: false }).expect(200);
+    assert.equal(res.body.verified, false);
+    assert.match(captured.sql, /DELETE FROM fact_verifications/);
+  });
+});

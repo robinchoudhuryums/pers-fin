@@ -30,6 +30,7 @@ ${navBar("/knowledge")}
 
   <div id="k-answer-wrap" class="section" style="display:none;">
     <h2 style="font-size:14px;">Answer</h2>
+    <div id="k-ungrounded" style="display:none;font-size:11px;color:var(--warn);border-left:2px solid var(--warn);padding:6px 10px;margin-bottom:8px;">This answer didn't cite any of your sources, so it may not be grounded in your knowledge base &mdash; double-check it.</div>
     <div id="k-answer" style="font-size:14px;line-height:1.7;"></div>
   </div>
 
@@ -56,6 +57,12 @@ ${navBar("/knowledge")}
       <button class="btn primary" id="k-capture-btn">Capture</button>
       <span id="k-capture-status" style="font-family:var(--mono);font-size:10px;color:var(--muted);align-self:center;line-height:1.5;"></span>
     </div>
+  </details>
+
+  <details class="section" id="k-facts-details">
+    <summary style="cursor:pointer;font-size:14px;font-weight:600;">Your facts</summary>
+    <p style="font-size:11px;color:var(--muted);margin:8px 0;">Current structured facts from your vault. Mark one verified once you've confirmed it's correct.</p>
+    <div id="k-facts-list"></div>
   </details>
 </div>
 
@@ -121,6 +128,7 @@ async function ask(){
     var r = await fetch('/api/rag/query', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:q})}).then(function(r){return r.json();});
     if(r.error){ document.getElementById('k-empty-msg').textContent = r.error; kShow('k-empty', true); return; }
     if(r.answer){
+      document.getElementById('k-ungrounded').style.display = (r.grounded === false) ? 'block' : 'none';
       document.getElementById('k-answer').innerHTML = renderMd(r.answer);
       kShow('k-answer-wrap', true);
     } else if(r.note){
@@ -208,6 +216,34 @@ bindEvents([
   ['k-reindex-btn','click',reindex],
 ]);
 loadKStatus();
+
+async function loadFacts(){
+  var el = document.getElementById('k-facts-list');
+  el.textContent = 'Loading…';
+  try {
+    var r = await fetch('/api/rag/facts').then(function(r){return r.json();});
+    if(!r.facts || !r.facts.length){ el.innerHTML = '<div class="empty-msg">No structured facts yet. Add a <code>type: fact</code> note to your vault.</div>'; return; }
+    el.innerHTML = r.facts.map(function(f){
+      var v = !!f.verified;
+      var until = f.valid_to ? ' <span style="color:var(--muted);">(until '+esc(String(f.valid_to).slice(0,10))+')</span>' : '';
+      return '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);font-size:12px;">'
+        +'<div><span style="color:var(--muted);">'+esc(f.entity)+'</span> &middot; '+esc(f.attribute)+': '+esc(f.value)+until+'</div>'
+        +'<button class="btn" data-fact-verify data-entity="'+encodeURIComponent(f.entity)+'" data-attr="'+encodeURIComponent(f.attribute)+'" data-value="'+encodeURIComponent(f.value)+'" data-verified="'+(v?'1':'0')+'"'+(v?' style="color:var(--good);border-color:var(--good);"':'')+'>'+(v?'✓ Verified':'Verify')+'</button>'
+        +'</div>';
+    }).join('');
+  } catch(e){ el.textContent = 'Could not load facts.'; }
+}
+document.getElementById('k-facts-details').addEventListener('toggle', function(){ if(this.open) loadFacts(); });
+document.addEventListener('click', function(e){
+  var b = e.target.closest('[data-fact-verify]'); if(!b) return;
+  var newV = b.dataset.verified !== '1';
+  fetch('/api/rag/facts/verify', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    entity: decodeURIComponent(b.dataset.entity),
+    attribute: decodeURIComponent(b.dataset.attr),
+    value: decodeURIComponent(b.dataset.value),
+    verified: newV,
+  })}).then(function(){ loadFacts(); }).catch(function(){});
+});
 document.getElementById('k-query').addEventListener('keydown',function(e){
   if(e.key==='Enter' && (e.metaKey || e.ctrlKey)){ e.preventDefault(); ask(); }
 });
