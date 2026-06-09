@@ -383,7 +383,9 @@ hoisted version.
     (fatal) migration and crashing the shell. `services/vault-sync.vectorReady`
     + `routes/rag.js` gate on its existence.
   - `embed_state` — per-source content hash so unchanged notes/docs aren't
-    re-embedded each sync.
+    re-embedded each sync. An empty-body source records an `embed_state` row with
+    `chunk_count = 0` (not just a chunk delete) so the hash-skip engages for it
+    too instead of re-clearing every sync (K5).
   - `user_settings.ai_model_rag` (default sonnet) + `vault_enabled` /
     `vault_repo` / `vault_branch` / `vault_last_sha` / `vault_last_synced_at` /
     `vault_last_error`. The vault GitHub token is the `VAULT_GITHUB_TOKEN` env
@@ -412,7 +414,12 @@ hoisted version.
     files" (`type: fact`): reserved keys (type/entity/valid_from/valid_to/
     sensitivity/tags/title/embed/private/context) are metadata, every other key
     becomes a fact row; `services/vault-sync.extractFacts` + `upsertFacts`
-    replace all facts for a file on each sync. `POST /api/rag/query` injects the
+    replace all facts for a file on each sync. The fact lifecycle is symmetric:
+    converting a file prose→fact removes its prior prose document
+    (`removeVaultDocument`), and converting fact→prose (dropping `type: fact`)
+    clears its prior fact rows (`clearFacts` in the prose branch, K1) — so a
+    converted file never leaves orphaned facts being injected as authoritative.
+    `POST /api/rag/query` injects the
     matching CURRENT, `normal`-sensitivity facts (`buildFactsQuery` +
     `factsToDocument`) as an authoritative "Known facts (current)" document
     listed first and cited — so precise lookups ("current deductible") don't
