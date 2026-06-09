@@ -1830,10 +1830,14 @@ baseline + candidate, seasonal patterns), and the split-row variant
 (`s.amount` instead of `t.amount`) in `financial-queries.js` and
 `enrollments.js`. The standalone `scripts/sheets-sync.js` `buildDashboard` also
 inlines a `SPLIT_AMT` + `NOT_TRANSFER` + reimbursed-exclusion copy (it can't
-import the services layer) — it mirrors the per-transaction split but does NOT
-do splits-REPLACEMENT (substituting `transaction_splits` rows for their parent),
-the one remaining divergence from the in-app category totals. Any new spending
-aggregation should import `SPLIT_AMOUNT` rather than re-inline.
+import the services layer). As of M4 it ALSO mirrors splits-REPLACEMENT for its
+per-category surfaces — a splits-aware `cat_lines` CTE (parent_no_splits ∪
+from_splits) backs the Spending-by-Category, category×month pivot, and Budget
+Status queries, so per-category Sheets totals now match the in-app category
+totals. Total aggregations (monthly trend, 6-month totals) and Top Merchants
+stay parent-keyed by design — splits sum to their parent, so those totals are
+unchanged either way. Any new spending aggregation should import `SPLIT_AMOUNT`
+rather than re-inline.
 
 This affects: spending-summary (monthly_trend, byCategory, topMerchants),
 savings-rate, spending-yoy, budgets, budget alerts, cash flow, AI insights
