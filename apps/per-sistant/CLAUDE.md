@@ -264,7 +264,8 @@ PATCH  /api/ai/models              # Update per-feature model preferences
 
 # Knowledge / RAG API (personal knowledge base Q&A)
 GET    /api/rag/search             # retrieval only (vector if configured, else keyword); zero LLM cost
-POST   /api/rag/query              # source-grounded answer (cites sources inline by [n])
+POST   /api/rag/query              # source-grounded answer via the Citations feature (each source
+                                   #   flagged cited:true/false); exact-match answer cache (free repeats)
 GET    /api/rag/status             # vault config + index counts + embeddings/vector readiness + reindex state
 POST   /api/rag/reindex            # background full reindex (vault re-walk + notes); 202, poll status; 409 if running
 
@@ -339,7 +340,7 @@ Perfin sub-app and the shell. Do not introduce v5-only idioms (`req.host`,
 `app.del`, removed wildcard path patterns, etc.) — the workspace install
 hoists v4 across all sub-apps and a v5 idiom would break under the
 hoisted version.
-- Tables: `todos`, `emails`, `notes`, `contacts`, `user_settings`, `subtasks`, `email_templates`, `todo_templates`, `weekly_reviews`, `task_dependencies`, `automations`, `attachments`, `documents`, `chunks`, `embed_state`
+- Tables: `todos`, `emails`, `notes`, `contacts`, `user_settings`, `subtasks`, `email_templates`, `todo_templates`, `weekly_reviews`, `task_dependencies`, `automations`, `attachments`, `documents`, `chunks`, `embed_state`, `rag_answer_cache`
 - **Knowledge / RAG** (`db/013_knowledge.sql`, `db/014_vault_vectors.sql`):
   - `documents` — personal knowledge corpus (`source` manual/vault/note,
     `source_ref`, `sensitivity` normal/private/secret). Filled by the Obsidian
@@ -363,6 +364,18 @@ hoisted version.
     `knowledge-reindex.yml` GitHub Action via `x-api-key`). Embeddings via
     `services/embeddings.js` (Voyage, native fetch). Retrieval is vector-first
     with keyword fallback.
+  - **Citations (Phase 2):** `POST /api/rag/query` answers via the Anthropic
+    Citations feature (`ai.answerWithCitations` — each retrieved source is a
+    plain-text document block with citations enabled; response flags each
+    source `cited:true/false`). Falls back to prompt-cite `callAI` if the
+    citations call throws. Citations are incompatible with structured outputs
+    (unused here).
+  - **Answer cache (Phase 2):** `rag_answer_cache` — exact-match, keyed by
+    normalized query + model + a corpus-version stamp (`max(updated_at)` + active
+    row count over notes+documents), 24h freshness. Auto-invalidates when the
+    corpus changes; survives restarts (unlike the in-memory ai.js cache).
+    Helpers in `routes/rag.js` swallow errors so a pre-migration/missing table
+    degrades to "no cache". Semantic (paraphrase) caching is deferred.
 
 ## Embedded Mode (under the unified shell)
 When loaded by `shell/index.js` instead of run standalone, the Per-sistant app

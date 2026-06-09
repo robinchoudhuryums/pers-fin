@@ -70,6 +70,61 @@ function snippet(text) {
   return t.length > MAX_SNIPPET_CHARS ? t.slice(0, MAX_SNIPPET_CHARS) + "…" : t;
 }
 
+// ---------------------------------------------------------------------------
+// Answer cache (Phase 2) — exact-match, corpus-version-aware, 24h freshness.
+// All helpers swallow errors so a missing table (pre-migration) degrades to
+// "no cache" rather than failing the query.
+// ---------------------------------------------------------------------------
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+function normalizeQuery(q) {
+  return String(q || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+// A stamp that changes whenever the corpus changes (edit bumps max(updated_at);
+// add/delete changes the active row count), so cached answers from a stale
+// corpus never match.
+async function corpusVersion(pool) {
+  try {
+    const r = await pool.query(
+      `SELECT COALESCE(to_char(max(u), 'YYYYMMDDHH24MISS'), '0') AS v, count(*) AS n
+       FROM ( SELECT updated_at AS u FROM notes WHERE deleted_at IS NULL
+              UNION ALL SELECT updated_at FROM documents WHERE deleted_at IS NULL ) x`
+    );
+    return `${r.rows[0].v}:${r.rows[0].n}`;
+  } catch {
+    return "0";
+  }
+}
+
+async function cacheGet(pool, qn, model, ver) {
+  try {
+    const r = await pool.query(
+      "SELECT answer, sources, created_at FROM rag_answer_cache WHERE query_norm = $1 AND model = $2 AND corpus_version = $3",
+      [qn, model, ver]
+    );
+    if (!r.rows.length) return null;
+    if (Date.now() - new Date(r.rows[0].created_at).getTime() > CACHE_TTL_MS) return null;
+    return { answer: r.rows[0].answer, sources: r.rows[0].sources };
+  } catch {
+    return null;
+  }
+}
+
+async function cacheSet(pool, qn, model, ver, answer, sources) {
+  try {
+    await pool.query(
+      `INSERT INTO rag_answer_cache (query_norm, model, corpus_version, answer, sources, created_at)
+       VALUES ($1, $2, $3, $4, $5::jsonb, now())
+       ON CONFLICT (query_norm, model, corpus_version)
+       DO UPDATE SET answer = EXCLUDED.answer, sources = EXCLUDED.sources, created_at = now()`,
+      [qn, model, ver, answer, JSON.stringify(sources || [])]
+    );
+  } catch {
+    /* cache write is best-effort */
+  }
+}
+
 module.exports = function ({ pool }) {
   const router = express.Router();
 
@@ -162,6 +217,13 @@ module.exports = function ({ pool }) {
         });
       }
 
+      // Exact-match answer cache — return a prior answer for the same query
+      // when the corpus hasn't changed (and it's < 24h old). Free repeats.
+      const qn = normalizeQuery(query);
+      const ver = await corpusVersion(pool);
+      const cached = await cacheGet(pool, qn, model, ver);
+      if (cached) return res.json({ answer: cached.answer, sources: cached.sources, cached: true });
+
       const SYSTEM =
         "You are a personal knowledge assistant. Answer the question using ONLY the information in the provided documents. If the documents do not contain the answer, say plainly that you don't have that information in your knowledge base — do not guess or use outside knowledge. Be concise.";
       const documents = rows.map((r) => ({
@@ -188,7 +250,9 @@ module.exports = function ({ pool }) {
       }
 
       const citedSet = new Set(citedIndexes);
-      res.json({ answer, sources: sources.map((s) => ({ ...s, cited: citedSet.has(s.n - 1) })) });
+      const finalSources = sources.map((s) => ({ ...s, cited: citedSet.has(s.n - 1) }));
+      await cacheSet(pool, qn, model, ver, answer, finalSources);
+      res.json({ answer, sources: finalSources, cached: false });
     } catch (err) {
       serverError(res, err);
     }
@@ -251,5 +315,9 @@ module.exports = function ({ pool }) {
   return router;
 };
 
-// Exported for unit tests (parameterized-query construction is pure).
+// Exported for unit tests.
 module.exports.buildRetrievalQuery = buildRetrievalQuery;
+module.exports.normalizeQuery = normalizeQuery;
+module.exports.corpusVersion = corpusVersion;
+module.exports.cacheGet = cacheGet;
+module.exports.cacheSet = cacheSet;
