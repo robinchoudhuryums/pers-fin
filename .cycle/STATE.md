@@ -9,13 +9,20 @@ to the "none in progress" state.
 
 ## Current Cycle
 
-- **Status:** audit + broad-implement complete (Bank Sync & Ingestion); awaiting deploy confirmation
+- **Status:** audit→plan→implement complete (Financial Analytics, cycle 2); awaiting deploy confirmation
 - **Phase:** implemented — not yet Health-Synthesized (no Axis-A/B scores recorded yet)
-- **Subsystem audited:** Bank Sync & Ingestion
+- **Subsystem audited:** Financial Analytics (cycle 2). Prior: Bank Sync & Ingestion (cycle 1).
 - **Started:** 2026-06-07
-- **Findings gathered:** BS-1..BS-8 (1 High, 4 Medium, 3 Low)
-- **Implementation progress:** BS-1..BS-8 all implemented + tested (663 tests pass, +15)
-- **Next concrete step:** operator deploys (Render auto-deploys on push to `main`; this work is on branch `claude/pensive-davinci-JhKFb` / PR #107). Then optionally run a Health Synthesis to record Axis-A/B scores, and rotate to the next subsystem (Financial Analytics).
+- **Findings gathered (cycle 2):** F1 (High — net worth counted loans as assets), F2/F3/F4 (Med/Low), F5 (test gaps). Implemented as A1–A5.
+- **Implementation progress:** A1–A5 all implemented + tested (666 tests pass, +3). Cycle 1 (BS-1..BS-8) shipped via PR #108.
+- **Next concrete step:** operator deploys (Render auto-deploys on merge to `main`; cycle-1 work is in open PR #108, cycle-2 commits stack on the same branch). Then run `/reflect` (promote candidate INV-27 net-worth liability rule; record cycle-2 metrics) and optionally a Health Synthesis, then rotate to subsystem 3 (Detection & Categorization).
+
+### Decisions made this cycle (cycle 2 — Financial Analytics)
+- **A1/F1** liability set = `type IN ('credit','loan')` (Plaid's two debt types cover all loan subtypes); return shape of `getNetWorth` unchanged so its 3 snapshot writers + dashboard + context-export need no caller changes.
+- **A2/F2** extracted `deriveGoalProgress()` shared by GET /api/goals + context-export to kill the parallel-source-of-truth drift (was an inline duplicate).
+- **A4/F4** trend scoped to the latest entry's score_type; added `score_type` to the trend object (additive).
+
+### Decisions made cycle 1 (Bank Sync & Ingestion)
 
 ### Decisions made this cycle
 - **BS-1** judged advisable despite Teller's default `count` being undocumented:
@@ -38,16 +45,18 @@ to the "none in progress" state.
   clamp expected). Watch the first post-deploy Teller sync.
 
 ## Where I left off
-All eight findings implemented, committed, and pushed to `claude/pensive-davinci-JhKFb`
-(part of PR #107). Tests green at 663. Awaiting deploy; no cycle work outstanding.
+Cycle 2 (Financial Analytics) A1–A5 implemented on `claude/pensive-davinci-JhKFb`;
+tests green at 666. Cycle 1 (Bank Sync, BS-1..BS-8) is in open PR #108. No cycle
+work outstanding — next is `/reflect` (promote INV-27, record cycle-2 metrics)
+then rotate to Detection & Categorization.
 
 ---
 
 ## Rotation Plan
 
 1. ~~Bank Sync & Ingestion~~ ✅ audited + fixed (cycle 1)
-2. **Financial Analytics**  ← recommended next
-3. Detection & Categorization
+2. ~~Financial Analytics~~ ✅ audited + fixed (cycle 2)
+3. **Detection & Categorization**  ← recommended next
 4. AI Insights & Audit
 5. Platform, Shell & Auth
 6. Settings, Notifications & Cross-app
@@ -57,6 +66,6 @@ All eight findings implemented, committed, and pushed to `claude/pensive-davinci
 10. Per-sistant Web UI
 
 - **Seams audit:** every 3 subsystem cycles.
-- **Subsystem cycles since last Seams audit:** 1
-- **Last subsystem audited:** Bank Sync & Ingestion
-- **Cycles completed:** 1 (audit+implement; synthesis pending)
+- **Subsystem cycles since last Seams audit:** 2
+- **Last subsystem audited:** Financial Analytics
+- **Cycles completed:** 2 (audit+implement; synthesis pending)

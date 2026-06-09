@@ -937,3 +937,71 @@ describe("BS-5/6/7/8 — sync-helper correctness (source-pinned)", () => {
     assert.match(inv, /PRODUCTS_NOT_SUPPORTED" \|\| code === "PRODUCT_NOT_READY"\) continue/);
   });
 });
+
+// ===========================================================================
+// Financial Analytics audit — A1/F1 (loan liability) + A5/F5 (goal funding)
+// ===========================================================================
+describe("F1 — getNetWorth classifies loans as liabilities", () => {
+  function mockPool(linkedRows, invRows) {
+    return {
+      query: async (sql) => {
+        if (/investment_accounts/i.test(sql)) return { rows: invRows };
+        return { rows: linkedRows };
+      },
+    };
+  }
+  it("a loan account's balance is a liability, not an asset", async () => {
+    const linked = [
+      { name: "Checking", type: "depository", available_balance: "2000", current_balance: "2000" },
+      { name: "Mortgage", type: "loan", available_balance: null, current_balance: "300000" },
+      { name: "Card", type: "credit", available_balance: null, current_balance: "500" },
+    ];
+    const nw = await getNetWorth(mockPool(linked, []));
+    assert.equal(nw.total_assets, 2000, "only the checking account is an asset");
+    assert.equal(nw.total_liabilities, 300500, "mortgage + card");
+    assert.equal(nw.net_worth, 2000 - 300500);
+    const mortgage = nw.breakdown.accounts.find(a => a.type === "loan");
+    assert.equal(mortgage.amount, -300000, "loan shows as a negative line in the breakdown");
+  });
+});
+
+describe("INV-11 / F5 — goal current_amount derived from funding account", () => {
+  function goalsApp() {
+    const app = express();
+    app.use(express.json());
+    app.use(require("../teller/routes/goals"));
+    return app;
+  }
+  it("derives current = max(0, balance − baseline) and marks the goal linked", async () => {
+    dbModule.pool.query = async (sql) => {
+      if (/recurring_transfers/i.test(sql)) return { rows: [] };
+      return { rows: [{
+        id: 1, name: "House", type: "savings", target_amount: "4000", current_amount: "3000",
+        monthly_contribution: "0", interest_rate: "0", target_date: null,
+        funding_account_id: 9, funding_account_balance: "5500", funding_account_name: "Savings",
+        funding_investment_id: null, funding_investment_balance: null, goal_baseline_amount: "2000",
+      }] };
+    };
+    const res = await supertest(goalsApp()).get("/api/goals").expect(200);
+    const g = res.body[0];
+    assert.equal(g.current_amount, 3500, "5500 balance − 2000 baseline");
+    assert.equal(g.current_amount_manual, 3000, "stored value preserved separately");
+    assert.equal(g.funding_status, "linked");
+    assert.equal(g.percent_complete, 88); // 3500/4000
+  });
+  it("falls back to stored current_amount and marks orphaned when the funding balance is missing", async () => {
+    dbModule.pool.query = async (sql) => {
+      if (/recurring_transfers/i.test(sql)) return { rows: [] };
+      return { rows: [{
+        id: 2, name: "Car", type: "savings", target_amount: "10000", current_amount: "3000",
+        monthly_contribution: "0", interest_rate: "0", target_date: null,
+        funding_account_id: 9, funding_account_balance: null, funding_account_name: null,
+        funding_investment_id: null, funding_investment_balance: null, goal_baseline_amount: "1000",
+      }] };
+    };
+    const res = await supertest(goalsApp()).get("/api/goals").expect(200);
+    const g = res.body[0];
+    assert.equal(g.current_amount, 3000, "orphaned link falls back to stored current_amount");
+    assert.equal(g.funding_status, "orphaned");
+  });
+});

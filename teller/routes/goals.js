@@ -8,6 +8,46 @@ const { pool } = require("../services/database");
 const { zipToState } = require("../data/reference-data");
 const { INVESTMENT_ACCOUNT_TYPES, getMonthlySpending } = require("../services/financial-queries");
 
+// Derive a goal's effective current_amount + funding status from a row that has
+// been LEFT JOINed to its funding account/investment (columns:
+// funding_account_balance / funding_account_name / funding_investment_balance /
+// funding_investment_name / goal_baseline_amount / current_amount). When a
+// funding source is linked and readable, current = max(0, balance − baseline);
+// otherwise the stored current_amount is used. Shared by GET /api/goals AND
+// GET /api/context-export so both report the same funding-derived progress
+// rather than the stale stored value (INV-11 / F2) — the two were previously
+// independent copies that drifted.
+function deriveGoalProgress(g) {
+  const manualCurrent = parseFloat(g.current_amount || 0);
+  let current = manualCurrent;
+  let funding_source = null;
+  let funding_status = "none";
+  if (g.funding_account_id) {
+    if (g.funding_account_balance !== null && g.funding_account_balance !== undefined) {
+      const bal = parseFloat(g.funding_account_balance);
+      const baseline = parseFloat(g.goal_baseline_amount || 0);
+      current = Math.max(0, bal - baseline);
+      funding_source = { kind: "account", id: g.funding_account_id, name: g.funding_account_name, balance: bal, baseline };
+      funding_status = "linked";
+    } else {
+      funding_source = { kind: "account", id: g.funding_account_id, name: null, balance: null, baseline: parseFloat(g.goal_baseline_amount || 0) };
+      funding_status = "orphaned";
+    }
+  } else if (g.funding_investment_id) {
+    if (g.funding_investment_balance !== null && g.funding_investment_balance !== undefined) {
+      const bal = parseFloat(g.funding_investment_balance);
+      const baseline = parseFloat(g.goal_baseline_amount || 0);
+      current = Math.max(0, bal - baseline);
+      funding_source = { kind: "investment", id: g.funding_investment_id, name: g.funding_investment_name, balance: bal, baseline };
+      funding_status = "linked";
+    } else {
+      funding_source = { kind: "investment", id: g.funding_investment_id, name: null, balance: null, baseline: parseFloat(g.goal_baseline_amount || 0) };
+      funding_status = "orphaned";
+    }
+  }
+  return { current, manualCurrent, funding_source, funding_status };
+}
+
 // GET /api/goals
 // When a goal is linked to a funding account (Phase C), current_amount is
 // derived as (funding_account.current_balance - goal_baseline_amount) so the
@@ -52,38 +92,12 @@ router.get("/api/goals", async (_req, res) => {
     ]);
     const goals = result.rows.map(g => {
       const target = parseFloat(g.target_amount);
-      const manualCurrent = parseFloat(g.current_amount || 0);
-      let current = manualCurrent;
-      let funding_source = null;
       // funding_status: 'linked' when an account is linked AND its balance is
       // readable; 'orphaned' when the FK is set but the LEFT JOIN returned NULL
       // (account deleted, deactivated, or otherwise missing); 'none' when no
       // funding source is configured. The orphan path falls back to the stored
       // current_amount_manual so the goal's pre-link progress isn't lost.
-      let funding_status = "none";
-      if (g.funding_account_id) {
-        if (g.funding_account_balance !== null) {
-          const bal = parseFloat(g.funding_account_balance);
-          const baseline = parseFloat(g.goal_baseline_amount || 0);
-          current = Math.max(0, bal - baseline);
-          funding_source = { kind: "account", id: g.funding_account_id, name: g.funding_account_name, balance: bal, baseline };
-          funding_status = "linked";
-        } else {
-          funding_source = { kind: "account", id: g.funding_account_id, name: null, balance: null, baseline: parseFloat(g.goal_baseline_amount || 0) };
-          funding_status = "orphaned";
-        }
-      } else if (g.funding_investment_id) {
-        if (g.funding_investment_balance !== null) {
-          const bal = parseFloat(g.funding_investment_balance);
-          const baseline = parseFloat(g.goal_baseline_amount || 0);
-          current = Math.max(0, bal - baseline);
-          funding_source = { kind: "investment", id: g.funding_investment_id, name: g.funding_investment_name, balance: bal, baseline };
-          funding_status = "linked";
-        } else {
-          funding_source = { kind: "investment", id: g.funding_investment_id, name: null, balance: null, baseline: parseFloat(g.goal_baseline_amount || 0) };
-          funding_status = "orphaned";
-        }
-      }
+      const { current, manualCurrent, funding_source, funding_status } = deriveGoalProgress(g);
       const monthly = parseFloat(g.monthly_contribution || 0);
       const rate = parseFloat(g.interest_rate || 0) / 100 / 12;
       const pct = target > 0 ? Math.round((current / target) * 100) : 0;
@@ -512,7 +526,20 @@ router.get("/api/context-export", async (req, res) => {
         rows: rows.map(r => ({ month: r.month, total: parseFloat(r.total_spend), txns: parseInt(r.txn_count, 10) })),
       })),
       pool.query("SELECT display_name, amount, cadence_days, category, next_expected FROM detected_subscriptions WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL ORDER BY amount DESC"),
-      pool.query("SELECT * FROM financial_goals WHERE is_active = true ORDER BY target_date ASC NULLS LAST").catch(() => ({ rows: [] })),
+      // JOIN the funding account/investment so deriveGoalProgress can compute
+      // the same funding-derived current_amount the dashboard shows (F2).
+      pool.query(
+        `SELECT g.*,
+                COALESCE(la.available_balance, la.current_balance) AS funding_account_balance,
+                la.name AS funding_account_name,
+                ia.balance AS funding_investment_balance,
+                ia.name AS funding_investment_name
+         FROM financial_goals g
+         LEFT JOIN linked_accounts     la ON la.id = g.funding_account_id
+         LEFT JOIN investment_accounts ia ON ia.id = g.funding_investment_id
+         WHERE g.is_active = true
+         ORDER BY g.target_date ASC NULLS LAST`
+      ).catch(() => ({ rows: [] })),
       pool.query("SELECT name, mask, current_balance, available_balance, credit_limit, apr FROM linked_accounts WHERE type = 'credit' AND current_balance IS NOT NULL").catch(() => ({ rows: [] })),
       pool.query("SELECT * FROM net_worth_snapshots ORDER BY snapshot_date DESC LIMIT 6").catch(() => ({ rows: [] })),
       pool.query("SELECT insight_text, created_at FROM financial_insights ORDER BY created_at DESC LIMIT 1").catch(() => ({ rows: [] })),
@@ -528,7 +555,10 @@ router.get("/api/context-export", async (req, res) => {
         accounts: accounts.rows,
         monthly_spending_12mo: monthlySpend.rows,
         subscriptions: subs.rows,
-        goals: goals.rows,
+        goals: goals.rows.map(g => {
+          const { current, manualCurrent } = deriveGoalProgress(g);
+          return { ...g, current_amount: current, current_amount_manual: manualCurrent };
+        }),
         credit_cards: creditCards.rows.map(c => {
           const owed = parseFloat(c.current_balance || 0);
           const avail = parseFloat(c.available_balance || 0);
@@ -576,8 +606,9 @@ router.get("/api/context-export", async (req, res) => {
     if (goals.rows.length > 0) {
       md += "\n## Financial Goals\n";
       for (const g of goals.rows) {
-        const pct = parseFloat(g.target_amount) > 0 ? Math.round(parseFloat(g.current_amount) / parseFloat(g.target_amount) * 100) : 0;
-        md += "- **" + g.name + "** (" + g.type + "): $" + parseFloat(g.current_amount).toFixed(2) + " / $" + parseFloat(g.target_amount).toFixed(2) + " (" + pct + "%)";
+        const cur = deriveGoalProgress(g).current; // funding-derived, not stale stored value (F2)
+        const pct = parseFloat(g.target_amount) > 0 ? Math.round(cur / parseFloat(g.target_amount) * 100) : 0;
+        md += "- **" + g.name + "** (" + g.type + "): $" + cur.toFixed(2) + " / $" + parseFloat(g.target_amount).toFixed(2) + " (" + pct + "%)";
         if (g.monthly_contribution > 0) md += ", contributing $" + parseFloat(g.monthly_contribution).toFixed(2) + "/mo";
         if (g.target_date) md += ", target: " + g.target_date;
         md += "\n";

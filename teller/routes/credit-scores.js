@@ -30,26 +30,34 @@ router.get("/api/credit-scores", async (req, res) => {
     // and the entry from ~6 months ago (if available).
     const rows = result.rows;
     let trend = null;
-    if (rows.length >= 2) {
-      const latest = rows[0];
-      const prior = rows[1];
-      // Pick the entry CLOSEST to ~6 months (180 days) old, among entries at
-      // least ~4 months old, rather than the first one >=150 days (which, with
-      // frequent logging, was nearer 5 months and mislabeled) (FA-3).
-      let sixMoAgo = null, bestDiff = Infinity;
-      for (const r of rows) {
-        const age = (new Date(latest.checked_at) - new Date(r.checked_at)) / 86400000;
-        if (age < 120) continue;
-        const diff = Math.abs(age - 180);
-        if (diff < bestDiff) { bestDiff = diff; sixMoAgo = r; }
+    if (rows.length >= 1) {
+      // Compare like-for-like: when the list mixes FICO and VantageScore entries
+      // (no score_type filter passed), restrict the trend to the latest entry's
+      // score_type so a FICO is never diffed against a VantageScore (F4).
+      const trendType = rows[0].score_type;
+      const trendRows = rows.filter(r => r.score_type === trendType);
+      if (trendRows.length >= 2) {
+        const latest = trendRows[0];
+        const prior = trendRows[1];
+        // Pick the entry CLOSEST to ~6 months (180 days) old, among entries at
+        // least ~4 months old, rather than the first one >=150 days (which, with
+        // frequent logging, was nearer 5 months and mislabeled) (FA-3).
+        let sixMoAgo = null, bestDiff = Infinity;
+        for (const r of trendRows) {
+          const age = (new Date(latest.checked_at) - new Date(r.checked_at)) / 86400000;
+          if (age < 120) continue;
+          const diff = Math.abs(age - 180);
+          if (diff < bestDiff) { bestDiff = diff; sixMoAgo = r; }
+        }
+        trend = {
+          score_type: trendType,
+          current: latest.score,
+          prior: prior.score,
+          delta_vs_prior: latest.score - prior.score,
+          six_month_ago: sixMoAgo ? sixMoAgo.score : null,
+          delta_vs_6mo: sixMoAgo ? latest.score - sixMoAgo.score : null,
+        };
       }
-      trend = {
-        current: latest.score,
-        prior: prior.score,
-        delta_vs_prior: latest.score - prior.score,
-        six_month_ago: sixMoAgo ? sixMoAgo.score : null,
-        delta_vs_6mo: sixMoAgo ? latest.score - sixMoAgo.score : null,
-      };
     }
     res.json({ scores: rows, trend });
   } catch (err) {
