@@ -621,7 +621,10 @@ router.get("/api/shared-settlement/:account_id/transactions", async (req, res) =
 router.post("/api/cleanup", async (_req, res) => {
   try {
     const txnResult = await pool.query(
-      `DELETE FROM transactions WHERE date < (CURRENT_DATE - INTERVAL '18 months') RETURNING transaction_id`
+      // 36 months (SX1): must be >= the longest analytical window so cleanup
+      // doesn't silently truncate detection (36mo) / seasonal (24mo) / YoY.
+      // Mirrors scripts/retention-cleanup.sql — keep both in lockstep.
+      `DELETE FROM transactions WHERE date < (CURRENT_DATE - INTERVAL '36 months') RETURNING transaction_id`
     );
     const subResult = await pool.query(
       `DELETE FROM detected_subscriptions WHERE is_active = false AND updated_at < (CURRENT_DATE - INTERVAL '6 months') RETURNING merchant_key`
