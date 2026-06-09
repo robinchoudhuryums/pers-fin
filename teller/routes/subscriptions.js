@@ -443,12 +443,17 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
 
       // Auto-update manual account balance if institution matches
       try {
+        // Match the user's manual account by EXACT institution name or EXACT
+        // account label (L2). The previous `name LIKE '%institution%'` substring
+        // could match the wrong manual account (e.g. a short institution token
+        // matching an unrelated account name) and silently overwrite ITS
+        // current_balance from this CSV's net — both matches are now exact.
         const manualAcct = await client.query(
           `SELECT id, type FROM linked_accounts
            WHERE is_manual = true
-             AND (LOWER(institution_name_manual) = LOWER($1) OR LOWER(name) LIKE '%' || LOWER($1) || '%')
+             AND (LOWER(institution_name_manual) = LOWER($1) OR LOWER(name) = LOWER($2))
            LIMIT 1`,
-          [institution]
+          [institution, accountLabel]
         );
         if (manualAcct.rows.length) {
           // Calculate balance from most recent transactions

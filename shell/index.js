@@ -33,7 +33,14 @@ app.set("view engine", "ejs");
 app.set("views", path.join(__dirname, "views"));
 
 app.use(cookieParser());
-app.use(express.json({ limit: "64kb" }));
+// Capture the raw request body so the embedded Per-sistant webhook receiver can
+// verify its HMAC against the exact bytes that were signed (M6). The shell's
+// express.json() parses first and the mounted sub-app's own json() then skips
+// (req._body is already true), so without this verify hook req.rawBody would
+// never be populated under the unified shell and the receiver would fall back
+// to re-stringifying req.body — not guaranteed byte-identical to the signed
+// payload. Mirrors the verify hook in apps/per-sistant/server.js.
+app.use(express.json({ limit: "64kb", verify: (req, _res, buf) => { req.rawBody = buf; } }));
 app.use(express.urlencoded({ extended: false, limit: "64kb" }));
 
 // --- Brute-force protection (F4) -------------------------------------------
