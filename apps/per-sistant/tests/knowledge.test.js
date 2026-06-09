@@ -11,7 +11,7 @@ const express = require("express");
 const supertest = require("supertest");
 
 const ragFactory = require("../routes/rag");
-const { buildRetrievalQuery } = require("../routes/rag");
+const { buildRetrievalQuery, stripMermaidFences } = require("../routes/rag");
 const { answerWithCitations } = require("../ai");
 
 describe("Knowledge — buildRetrievalQuery", () => {
@@ -152,5 +152,44 @@ describe("Citations — answerWithCitations", () => {
     await assert.rejects(() =>
       answerWithCitations({ model: "bogus", query: "x", documents: [], client: { messages: { create: async () => ({ content: [] }) } } })
     );
+  });
+});
+
+describe("Diagram — stripMermaidFences", () => {
+  it("removes ```mermaid fences", () => {
+    assert.equal(stripMermaidFences("```mermaid\nflowchart TD\nA-->B\n```"), "flowchart TD\nA-->B");
+  });
+  it("removes bare ``` fences", () => {
+    assert.equal(stripMermaidFences("```\ngraph LR\n```"), "graph LR");
+  });
+  it("leaves unfenced content alone", () => {
+    assert.equal(stripMermaidFences("flowchart TD"), "flowchart TD");
+  });
+});
+
+describe("Diagram — POST /api/rag/diagram", () => {
+  it("requires a query", async () => {
+    await supertest(makeApp({ query: async () => ({ rows: [] }) }))
+      .post("/api/rag/diagram").send({}).expect(400);
+  });
+
+  it("returns mermaid:null with sources when AI is unavailable", async () => {
+    const saved = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    try {
+      const mockPool = {
+        query: async (sql) => {
+          if (/WITH corpus AS/.test(sql)) return { rows: [{ id: "1", title: "Accounts", content: "Checking, Savings, Visa.", kind: "note", updated_at: new Date(), score: 1 }] };
+          if (/ai_model_rag as model/.test(sql)) return { rows: [{ model: "sonnet" }] };
+          return { rows: [] };
+        },
+      };
+      const res = await supertest(makeApp(mockPool)).post("/api/rag/diagram").send({ query: "map my accounts" }).expect(200);
+      assert.equal(res.body.mermaid, null);
+      assert.ok(res.body.sources.length >= 1);
+      assert.ok(res.body.note);
+    } finally {
+      if (saved !== undefined) process.env.ANTHROPIC_API_KEY = saved;
+    }
   });
 });

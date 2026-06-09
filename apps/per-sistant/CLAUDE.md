@@ -269,6 +269,7 @@ POST   /api/rag/query              # source-grounded answer via the Citations fe
 GET    /api/rag/status             # vault config + index counts + embeddings/vector readiness + reindex state
 POST   /api/rag/reindex            # background full reindex (vault re-walk + notes); 202, poll status; 409 if running
 GET    /api/rag/facts              # browse current structured facts (query: entity, all=1 to include expired)
+POST   /api/rag/diagram            # generate a Mermaid diagram from the knowledge base (facts+finance+prose)
 
 POST   /api/login           # Authenticate
 POST   /api/logout          # End session
@@ -398,6 +399,13 @@ hoisted version.
     Perfin)" source. Only fires on finance queries (non-finance queries never
     touch perfinPool) and is schema-drift safe (any error → no finance context).
     No Perfin schema changes. Standalone (no perfinPool) → silently skipped.
+  - **Diagrams (Phase 3):** `POST /api/rag/diagram` retrieves like `/query`
+    (facts+finance+prose) and asks the model for Mermaid only
+    (`stripMermaidFences` cleans stray code fences). Generative, so no Citations
+    and no answer-cache. Rendered client-side on the Knowledge page via Mermaid
+    from cdn.jsdelivr.net (already in the CSP `scriptSrc` allowlist),
+    `securityLevel:'strict'`; the Mermaid source is shown in a `<details>` and
+    used as the fallback when render fails.
 
 ## Embedded Mode (under the unified shell)
 When loaded by `shell/index.js` instead of run standalone, the Per-sistant app

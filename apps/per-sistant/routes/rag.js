@@ -251,6 +251,14 @@ async function perfinFinanceSnapshot(perfinPool) {
   }
 }
 
+// Strip ```mermaid fences the model sometimes wraps around the diagram.
+function stripMermaidFences(s) {
+  return String(s || "")
+    .replace(/^\s*```(?:mermaid)?\s*/i, "")
+    .replace(/\s*```\s*$/, "")
+    .trim();
+}
+
 module.exports = function ({ pool }) {
   const router = express.Router();
 
@@ -405,6 +413,58 @@ module.exports = function ({ pool }) {
     }
   });
 
+  // Generate a Mermaid diagram from the knowledge base. Retrieves the same way
+  // as /query (facts + finance + prose), then asks the model for Mermaid only.
+  // Generative output, so no Citations and no answer-cache here.
+  router.post("/api/rag/diagram", async (req, res) => {
+    try {
+      const query = (req.body && req.body.query || "").toString().trim();
+      if (!query) return res.status(400).json({ error: "Query is required." });
+
+      const rows = await retrieve(query, MAX_SOURCES);
+      const factDoc = factsToDocument(await matchFacts(pool, query, FACTS_LIMIT));
+      const documents = [];
+      const sources = [];
+      let n = 1;
+      if (factDoc) { documents.push(factDoc); sources.push({ n: n++, id: "facts", kind: "fact", title: factDoc.title }); }
+      if (looksFinancial(query)) {
+        const financeDoc = await perfinFinanceSnapshot(req.app.get("perfinPool"));
+        if (financeDoc) { documents.push(financeDoc); sources.push({ n: n++, id: "perfin", kind: "finance", title: financeDoc.title }); }
+      }
+      for (const r of rows) {
+        const title = r.title || (r.kind === "note" ? "Untitled note" : "Untitled");
+        documents.push({ title, content: snippet(r.content) });
+        sources.push({ n: n++, id: String(r.id), kind: r.kind, title });
+      }
+
+      if (!documents.length) {
+        return res.json({ mermaid: null, sources: [], note: "Nothing in your knowledge base matched that." });
+      }
+
+      const model = await getAIModelForFeature("rag");
+      if (model === "off" || !isAIAvailable()) {
+        return res.json({
+          mermaid: null,
+          sources,
+          note: isAIAvailable()
+            ? "Knowledge Q&A is turned off. Enable it in Settings → AI Features."
+            : "AI is not configured.",
+        });
+      }
+
+      const context = documents.map((d, i) => `[${i + 1}] ${d.title}\n${d.content}`).join("\n\n");
+      const raw = await callAI(
+        model,
+        `Data:\n${context}\n\nDiagram request: "${query}"`,
+        1500,
+        "You generate Mermaid diagrams from the user's personal data. Output ONLY valid Mermaid syntax — no prose, no explanation, no markdown code fences. Pick the most fitting diagram type (flowchart TD, mindmap, timeline, or erDiagram). Use ONLY information present in the provided data; never invent nodes or values. Keep node labels short and avoid characters that break Mermaid (quotes, parentheses) inside labels."
+      );
+      res.json({ mermaid: stripMermaidFences(raw), sources });
+    } catch (err) {
+      serverError(res, err);
+    }
+  });
+
   // Vault + index status for the Knowledge page / Settings. Cheap; safe to poll.
   router.get("/api/rag/status", async (req, res) => {
     try {
@@ -502,3 +562,4 @@ module.exports.factsToDocument = factsToDocument;
 module.exports.matchFacts = matchFacts;
 module.exports.looksFinancial = looksFinancial;
 module.exports.perfinFinanceSnapshot = perfinFinanceSnapshot;
+module.exports.stripMermaidFences = stripMermaidFences;

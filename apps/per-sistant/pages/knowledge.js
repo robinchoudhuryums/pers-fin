@@ -23,6 +23,7 @@ ${navBar("/knowledge")}
     <div class="actions" style="margin-top:10px;">
       <button class="btn primary" id="k-ask-btn">Ask</button>
       <button class="btn" id="k-search-btn">Search only</button>
+      <button class="btn" id="k-diagram-btn">Diagram</button>
       <span id="k-busy" style="display:none;font-family:var(--mono);font-size:11px;color:var(--muted);align-self:center;letter-spacing:0.04em;">Thinking&hellip;</span>
     </div>
   </div>
@@ -30,6 +31,12 @@ ${navBar("/knowledge")}
   <div id="k-answer-wrap" class="section" style="display:none;">
     <h2 style="font-size:14px;">Answer</h2>
     <div id="k-answer" style="font-size:14px;line-height:1.7;"></div>
+  </div>
+
+  <div id="k-diagram-wrap" class="section" style="display:none;">
+    <h2 style="font-size:14px;">Diagram</h2>
+    <div id="k-diagram" style="overflow:auto;text-align:center;"></div>
+    <details style="margin-top:10px;"><summary style="cursor:pointer;font-size:11px;color:var(--muted);">Mermaid source</summary><pre id="k-diagram-src" style="white-space:pre-wrap;font-family:var(--mono);font-size:11px;background:var(--paper-card);border:1px solid var(--line);border-radius:var(--radius);padding:10px;overflow:auto;"></pre></details>
   </div>
 
   <div id="k-sources-wrap" class="section" style="display:none;">
@@ -60,7 +67,41 @@ function renderSources(sources){
   kShow('k-sources-wrap', true);
 }
 
-function kReset(){ kShow('k-answer-wrap', false); kShow('k-sources-wrap', false); kShow('k-empty', false); }
+function kReset(){ kShow('k-answer-wrap', false); kShow('k-diagram-wrap', false); kShow('k-sources-wrap', false); kShow('k-empty', false); }
+function showEmpty(msg){ document.getElementById('k-empty-msg').textContent = msg; kShow('k-empty', true); }
+
+var _mermaid = null;
+async function loadMermaid(){
+  if(_mermaid) return _mermaid;
+  var mod = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+  _mermaid = mod.default;
+  _mermaid.initialize({ startOnLoad:false, securityLevel:'strict', theme:'neutral' });
+  return _mermaid;
+}
+async function renderDiagram(code){
+  document.getElementById('k-diagram-src').textContent = code;
+  kShow('k-diagram-wrap', true);
+  try {
+    var m = await loadMermaid();
+    var out = await m.render('k-mmd-'+Date.now(), code);
+    document.getElementById('k-diagram').innerHTML = out.svg;
+  } catch(e){
+    document.getElementById('k-diagram').innerHTML = '<div class="empty-msg">Could not render the diagram — see the Mermaid source below.</div>';
+  }
+}
+async function diagram(){
+  var q = document.getElementById('k-query').value.trim();
+  if(!q) return;
+  kReset(); kBusy(true);
+  try {
+    var r = await fetch('/api/rag/diagram', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:q})}).then(function(r){return r.json();});
+    if(r.error){ showEmpty(r.error); return; }
+    if(!r.mermaid){ showEmpty(r.note || 'Could not generate a diagram.'); renderSources(r.sources); return; }
+    await renderDiagram(r.mermaid);
+    renderSources(r.sources);
+  } catch(e){ showEmpty('Something went wrong. Please try again.'); }
+  finally { kBusy(false); }
+}
 
 async function ask(){
   var q = document.getElementById('k-query').value.trim();
@@ -135,6 +176,7 @@ async function reindex(){
 bindEvents([
   ['k-ask-btn','click',ask],
   ['k-search-btn','click',searchOnly],
+  ['k-diagram-btn','click',diagram],
   ['k-mic-btn','click',function(){ startVoiceInput('k-query'); }],
   ['k-reindex-btn','click',reindex],
 ]);
