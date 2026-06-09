@@ -37,13 +37,13 @@ async function loadCategories() {
     // Populate filter dropdown
     var filterSel = document.getElementById('filter-category');
     var html = '<option value="">All Categories</option>';
-    cats.forEach(c => { html += '<option value="'+c+'"'+(curCategory===c?' selected':'')+'>'+c.charAt(0).toUpperCase()+c.slice(1)+'</option>'; });
+    cats.forEach(c => { html += '<option value="'+escAttr(c)+'"'+(curCategory===c?' selected':'')+'>'+esc(c.charAt(0).toUpperCase()+c.slice(1))+'</option>'; });
     filterSel.innerHTML = html;
     // Also populate category select in modal
     var sel = document.getElementById('f-category-select');
     var curVal = sel.value;
     sel.innerHTML = '<option value="">None</option>';
-    cats.forEach(c => { sel.innerHTML += '<option value="'+c+'">'+c.charAt(0).toUpperCase()+c.slice(1)+'</option>'; });
+    cats.forEach(c => { sel.innerHTML += '<option value="'+escAttr(c)+'">'+esc(c.charAt(0).toUpperCase()+c.slice(1))+'</option>'; });
     sel.innerHTML += '<option value="__custom__">Custom...</option>';
     sel.value = curVal;
   } catch {}
@@ -83,10 +83,10 @@ async function load() {
     var unblockedBy = deps.blocked_by.filter(d=>!d.completed);
     var isBlocked = unblockedBy.length > 0;
     var depBadges = '';
-    if (isBlocked) depBadges += '<span class="badge blocked" title="Blocked by: '+unblockedBy.map(d=>esc(d.title)).join(', ')+'">blocked ('+unblockedBy.length+')</span>';
-    if (deps.blocking.length) depBadges += '<span class="badge blocking" title="Blocking: '+deps.blocking.map(d=>esc(d.title)).join(', ')+'">blocking ('+deps.blocking.length+')</span>';
+    if (isBlocked) depBadges += '<span class="badge blocked" title="Blocked by: '+unblockedBy.map(d=>escAttr(d.title)).join(', ')+'">blocked ('+unblockedBy.length+')</span>';
+    if (deps.blocking.length) depBadges += '<span class="badge blocking" title="Blocking: '+deps.blocking.map(d=>escAttr(d.title)).join(', ')+'">blocking ('+deps.blocking.length+')</span>';
     if (t.streak_count > 0) depBadges += '<span class="badge streak" title="Best: '+t.best_streak+'">&#x1F525; '+t.streak_count+' streak</span>';
-    if (t.location_name) depBadges += '<span title="'+esc(t.location_name)+'" style="font-size:10px;color:var(--accent);">&#128205; '+esc(t.location_name)+'</span>';
+    if (t.location_name) depBadges += '<span title="'+escAttr(t.location_name)+'" style="font-size:10px;color:var(--accent);">&#128205; '+esc(t.location_name)+'</span>';
     if (t.snoozed_until) depBadges += '<span style="font-size:10px;color:var(--warn);" title="Snoozed until '+t.snoozed_until+'">&#128164; snoozed</span>';
     var recurInfo = '';
     if (t.recurring) {

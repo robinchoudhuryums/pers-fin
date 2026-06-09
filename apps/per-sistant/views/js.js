@@ -22,6 +22,11 @@ module.exports = `
   };
 })();
 function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML;}
+// Attribute-safe escape: like esc() but ALSO encodes " and ' so a value placed
+// inside an HTML attribute (title="...", value="...") can't break out of the
+// quotes. esc() alone is only safe in element-text context. Use escAttr() for
+// any attr="'+VALUE+'" interpolation. (& escaped first to avoid double-encoding.)
+function escAttr(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 function renderMd(s){
   if(!s)return'';
   return s
