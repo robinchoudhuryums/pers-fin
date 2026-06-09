@@ -951,6 +951,25 @@ on the operator's machine (or fed via env vars) before the app boots:
    rather than 401-ing against Teller and being silently marked DISCONNECTED
    (which would wrongly demand a Teller Connect re-run on a mere passphrase
    mismatch).
+3. **Per-sistant Knowledge / RAG operator state** (all optional — the feature
+   degrades to keyword-only without them; nothing blocks app boot):
+   - `VOYAGE_API_KEY` — Voyage embeddings for semantic retrieval. Without it,
+     Knowledge serves keyword search only. (`VOYAGE_MODEL` optional, default
+     `voyage-3.5`; dimension 1024 is baked into `chunks.embedding vector(1024)`.)
+   - `VAULT_GITHUB_TOKEN` — **read-only** fine-grained PAT for the private
+     Obsidian-vault repo (sync/ingest). Repo + branch are set in Settings →
+     Knowledge, not env.
+   - `VAULT_GITHUB_WRITE_TOKEN` — **separate write-scoped** PAT (Contents
+     read+write) used ONLY by capture-to-vault; capture returns 400 until set.
+     Kept distinct from the read-only sync token (least privilege).
+   - **pgvector** — verify `CREATE EXTENSION vector` succeeds on the Neon DB
+     before relying on semantic search. The migration is defensive (degrades to
+     keyword if the extension is unavailable) so it won't crash boot, but
+     semantic retrieval needs the extension present (Neon supports it).
+   - **`knowledge-reindex.yml` GitHub Action secrets** — `SERVER_URL` +
+     `API_KEY` repo secrets so the scheduled reindex can reach
+     `/per-sistant/api/rag/reindex` (via the shell's x-api-key path) while the
+     Render free tier sleeps.
 
 Both the **weekly digest** (Settings → AI Insights → "Weekly Digest
 Email") and the **daily activity digest** ("Daily Activity Digest"
@@ -2296,7 +2315,7 @@ Financial Data Accuracy, Sync Integrity & Idempotency, Income/Spending Classific
 AI Output Trustworthiness, Auth & Session Security, Secret & Token Handling,
 Scheduler Reliability, Data Freshness & Reconciliation, Migration Safety,
 Notification Correctness, Cross-app Integration Integrity, UI/UX & Accessibility,
-External Export Fidelity, Test Coverage Quality
+External Export Fidelity, Knowledge Retrieval & Grounding, Test Coverage Quality
 
 ### Horizontal (Axis B) Categories
 Silent Degradation Posture | failures that swallow errors and look like success
@@ -2351,6 +2370,23 @@ Per-sistant Backend:
    Cross-app subsystem.)
 Per-sistant Web UI:
   apps/per-sistant/views.js, apps/per-sistant/views/*.js, apps/per-sistant/pages/*.js
+Knowledge / RAG (Per-sistant):
+  apps/per-sistant/routes/rag.js, apps/per-sistant/services/embeddings.js,
+  apps/per-sistant/services/vault-sync.js, apps/per-sistant/pages/knowledge.js,
+  apps/per-sistant/db/013_knowledge.sql, apps/per-sistant/db/014_vault_vectors.sql,
+  apps/per-sistant/db/015_rag_cache.sql, apps/per-sistant/db/016_facts.sql,
+  .github/workflows/knowledge-reindex.yml
+  (Personal knowledge base: Obsidian-vault ingest + pgvector semantic retrieval,
+   Citations, answer cache, structured facts + temporal validity, cross-app
+   finance grounding, Mermaid diagrams, capture-to-vault, proactive surfacing.
+   NOTE: embeddings.js + vault-sync.js are owned HERE, not by Per-sistant
+   Backend (whose subsystem list names services/keep-alive.js explicitly, not
+   services/*.js). Seam files shared with other subsystems: routes/notifications.js
+   (fact_upcoming), routes/settings.js (vault config), ai.js (answerWithCitations),
+   pages/settings.js + settings-script.js + pages/dashboard-script.js, server.js
+   (vault-sync cron). CROSS-APP SEAM: rag.js reads Perfin's perfinPool
+   (linked_accounts, detected_subscriptions) read-only — a new seam between
+   Knowledge and Perfin's Bank Sync & Ingestion / Financial Analytics.)
 
 ### Invariant Library
 INV-01 | Sync "added" counts only genuine inserts (RETURNING xmax=0), never updates | Subsystem: Bank Sync & Ingestion | Verify: tests/sync-durability.test.js
@@ -2379,6 +2415,16 @@ INV-23 | Service worker never caches /api/* | Subsystem: Web UI
 INV-24 | sheets-sync.syncAll isolates each tab (per-tab try/catch + errors[]) | Subsystem: Sheets & External Export
 INV-25 | Embedded sub-apps detect req.app.get("embedded") and skip their own auth; cross-app calls use the wired pool (perfinPool/persistentPool), never HTTP self-fetch | Subsystem: Per-sistant Backend / Platform, Shell & Auth
 INV-26 | Teller transaction pagination terminates on an empty page (count-explicit + from_id), never a hard-coded page-size compare | Subsystem: Bank Sync & Ingestion | Verify: tests/cycle-fixes.test.js (BS-1 block)
+INV-27 | Only sensitivity='normal' docs/facts are embedded AND retrieved; private/secret are never embedded or sent to AI | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js (buildRetrievalQuery), tests/knowledge-facts.test.js
+INV-28 | pgvector objects are created defensively (only if the `vector` extension is available); the migration succeeds and Knowledge degrades to keyword retrieval rather than failing boot | Subsystem: Knowledge / RAG | Verify: code read db/014_vault_vectors.sql + vault-sync.vectorReady
+INV-29 | Retrieval is vector-first with keyword fallback; /query & /diagram degrade to sources-only / null when AI is off or unavailable | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js, tests/knowledge-crossapp.test.js
+INV-30 | Embedding dimension (1024) matches chunks.embedding vector(1024); a provider/dimension change is a re-embed migration, not a config flip | Subsystem: Knowledge / RAG | Verify: code read services/embeddings.js EMBED_DIM
+INV-31 | embed_state content-hash skip prevents re-embedding unchanged sources | Subsystem: Knowledge / RAG | Verify: code read vault-sync.embedSource
+INV-32 | Answer cache keyed on query+model+corpus_version (notes+documents+facts max(updated_at)+count); finance-grounded answers bypass the cache | Subsystem: Knowledge / RAG | Verify: tests/knowledge-cache.test.js + routes/rag.js useCache gate
+INV-33 | Vault sync is read-only (VAULT_GITHUB_TOKEN); capture writes only with the separate write-scoped VAULT_GITHUB_WRITE_TOKEN (400 until set) | Subsystem: Knowledge / RAG | Verify: tests/knowledge-capture.test.js
+INV-34 | Citations enabled all-or-none per request; incompatible with structured outputs (unused here) | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js (answerWithCitations)
+INV-35 | Cross-app finance grounding reads perfinPool read-only, only on finance queries, never an HTTP self-fetch (parallels INV-25) | Subsystem: Knowledge / RAG | Verify: tests/knowledge-crossapp.test.js
+INV-36 | Single in-process vault-sync lock (isSyncing) prevents overlapping cron/reindex/GH-Action runs; vault_last_sha advances only on success (errors stamp vault_last_error) | Subsystem: Knowledge / RAG | Verify: code read vault-sync.syncVault
 
 ### Policy Configuration
 Policy threshold: 6/10
@@ -2415,6 +2461,26 @@ S6 | Offline navigation fallback | Subsystem: Web UI
   Steps:
     - Install PWA, go offline, navigate to an uncached route
   Expected: branded /offline.html served; no stale /api/* data shown
+SK1 | Vault sync idempotent | Subsystem: Knowledge / RAG
+  Steps:
+    - Configure the vault; run a sync, then run it again with no repo changes
+  Expected: second run reports 0 changed; content-hash skips re-embedding; vault_last_sha unchanged
+SK2 | Knowledge privacy | Subsystem: Knowledge / RAG
+  Steps:
+    - Mark a fact/doc private (embed:false / sensitivity: private|secret); ask a question that would match it
+  Expected: it is never embedded and never returned by /query or /search (and never sent to the model)
+SK3 | pgvector unavailable | Subsystem: Knowledge / RAG
+  Steps:
+    - Boot against a Postgres without the `vector` extension available
+  Expected: migration still succeeds (no boot crash); Knowledge serves keyword retrieval
+SK4 | Capture write-gating | Subsystem: Knowledge / RAG
+  Steps:
+    - POST /api/rag/capture with VAULT_GITHUB_WRITE_TOKEN unset, then set
+  Expected: 400 with a clear message when unset; a single committed file when set
+SK5 | Temporal validity | Subsystem: Knowledge / RAG
+  Steps:
+    - Create a fact with valid_to in the past; ask about it
+  Expected: it is NOT injected into the answer; GET /api/rag/facts?all=1 still lists it
 
 ### Frozen Subsystems
 - Legacy standalone Plaid server (plaid/server.js) — the LEGACY standalone process only. The active, co-equal Plaid linking path lives in teller/routes/investments.js and is NOT frozen. This file is kept solely for isolated standalone Plaid debugging; unfreeze if the in-app Plaid path is ever extracted to a standalone service.
@@ -2426,6 +2492,6 @@ Sheets & External Export: Apps Script side deploys via clasp — `clasp push` fr
 
 ### Cycle Rotation Plan
 Recommended first subsystem: Bank Sync & Ingestion (widest blast radius — every downstream number depends on correct transaction data; most invariants; richest recent bug history).
-Recommended order (frozen excluded): Bank Sync & Ingestion → Financial Analytics → Detection & Categorization → AI Insights & Audit → Platform, Shell & Auth → Settings, Notifications & Cross-app → Sheets & External Export → Web UI (Perfin) → Per-sistant Backend → Per-sistant Web UI.
-Seams audit frequency: every 3 subsystem cycles (focus: enrollments.js, subscriptions.js, settings.js, financial-queries.js, notifications.js, and the Per-sistant integration seam routes/perfin.js + routes/webhooks.js).
-Confidence: Bank Sync, Analytics, Detection, AI, Platform = High; Integrations, Sheets, Web UI, Per-sistant Backend, Per-sistant Web UI = Medium.
+Recommended order (frozen excluded): Bank Sync & Ingestion → Financial Analytics → Detection & Categorization → AI Insights & Audit → Knowledge / RAG (Per-sistant) → Platform, Shell & Auth → Settings, Notifications & Cross-app → Sheets & External Export → Web UI (Perfin) → Per-sistant Backend → Per-sistant Web UI.
+Seams audit frequency: every 3 subsystem cycles (focus: enrollments.js, subscriptions.js, settings.js, financial-queries.js, notifications.js, the Per-sistant integration seam routes/perfin.js + routes/webhooks.js, and the Knowledge↔Perfin seam — rag.js's read-only perfinPool use of linked_accounts/detected_subscriptions).
+Confidence: Bank Sync, Analytics, Detection, AI, Platform = High; Integrations, Sheets, Web UI, Per-sistant Backend, Per-sistant Web UI, Knowledge / RAG = Medium (Knowledge: new code, heavily tested at 734, but unexercised against a live vault/Voyage/pgvector).
