@@ -228,7 +228,7 @@ module.exports = function ({ pool }) {
   // ============================================================================
   router.get("/api/ai/models", async (req, res) => {
     try {
-      const r = await pool.query("SELECT ai_model_email_draft, ai_model_task_breakdown, ai_model_quick_add, ai_model_review_summary, ai_model_email_tone, ai_model_daily_briefing, ai_model_note_tagging FROM user_settings WHERE id = 1");
+      const r = await pool.query("SELECT ai_model_email_draft, ai_model_task_breakdown, ai_model_quick_add, ai_model_review_summary, ai_model_email_tone, ai_model_daily_briefing, ai_model_note_tagging, ai_model_rag FROM user_settings WHERE id = 1");
       const models = r.rows[0] || {};
       models.available = isAIAvailable();
       res.json(models);
@@ -237,7 +237,7 @@ module.exports = function ({ pool }) {
 
   router.patch("/api/ai/models", async (req, res) => {
     try {
-      const allowed = ["ai_model_email_draft", "ai_model_task_breakdown", "ai_model_quick_add", "ai_model_review_summary", "ai_model_email_tone", "ai_model_daily_briefing", "ai_model_note_tagging"];
+      const allowed = ["ai_model_email_draft", "ai_model_task_breakdown", "ai_model_quick_add", "ai_model_review_summary", "ai_model_email_tone", "ai_model_daily_briefing", "ai_model_note_tagging", "ai_model_rag"];
       const validValues = ["haiku", "sonnet", "off"];
       const fields = []; const params = []; let idx = 1;
       for (const key of allowed) {

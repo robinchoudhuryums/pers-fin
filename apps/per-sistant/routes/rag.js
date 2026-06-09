@@ -1,0 +1,155 @@
+// ============================================================================
+// Per-sistant — Knowledge / RAG Routes (Phase 0)
+// ============================================================================
+// Personal knowledge base Q&A. Phase 0 uses keyword retrieval over `notes` +
+// `documents` (no embeddings); Phase 1 swaps the retrieval step for pgvector
+// cosine search behind the same endpoints.
+//
+//   GET  /api/rag/search?q=...   retrieval only — zero LLM cost
+//   POST /api/rag/query {query}  retrieve, then a source-grounded Claude answer
+//
+// The query path answers ONLY from retrieved sources and cites them inline by
+// [n]; the source list is returned alongside so the UI can show provenance.
+// Gated by getAIModelForFeature('rag') + isAIAvailable(); search works with no
+// AI configured. Phase 2 will replace callAI here with a dedicated Citations
+// function (multi-block) — callAI's single-text-block return is fine for now.
+// ============================================================================
+
+const express = require("express");
+const { callAI, getAIModelForFeature, isAIAvailable } = require("../ai");
+const { serverError } = require("../errors");
+
+// Cap how much of each source we feed the model, and how many sources.
+const MAX_SOURCES = 8;
+const MAX_SNIPPET_CHARS = 1500;
+
+// Build a parameterized keyword query over the notes + documents corpus.
+// Returns { sql, params }. 'secret'-sensitivity documents are excluded from
+// the corpus entirely (never retrievable, never sent to AI).
+function buildRetrievalQuery(query, limit) {
+  const terms = (String(query).match(/\w+/g) || [])
+    .filter((t) => t.length > 2)
+    .slice(0, 8);
+  const search = terms.length ? terms : [String(query).trim() || ""];
+  const params = search.map((t) => `%${t}%`);
+  const match = search
+    .map((_, i) => `(title ILIKE $${i + 1} OR content ILIKE $${i + 1})`)
+    .join(" OR ");
+  const score = search
+    .map(
+      (_, i) =>
+        `(CASE WHEN title ILIKE $${i + 1} THEN 2 ELSE 0 END + CASE WHEN content ILIKE $${i + 1} THEN 1 ELSE 0 END)`
+    )
+    .join(" + ");
+  params.push(limit);
+  const sql = `
+    WITH corpus AS (
+      SELECT id::text AS id, title, content, 'note'::text AS kind, updated_at
+      FROM notes WHERE deleted_at IS NULL
+      UNION ALL
+      SELECT id::text AS id, title, content, 'document'::text AS kind, updated_at
+      FROM documents WHERE deleted_at IS NULL AND sensitivity <> 'secret'
+    )
+    SELECT id, title, content, kind, updated_at, (${score}) AS score
+    FROM corpus
+    WHERE ${match}
+    ORDER BY score DESC, updated_at DESC
+    LIMIT $${params.length}`;
+  return { sql, params };
+}
+
+function snippet(text) {
+  const t = String(text || "");
+  return t.length > MAX_SNIPPET_CHARS ? t.slice(0, MAX_SNIPPET_CHARS) + "…" : t;
+}
+
+module.exports = function ({ pool }) {
+  const router = express.Router();
+
+  async function retrieve(query, limit) {
+    const { sql, params } = buildRetrievalQuery(query, limit);
+    const r = await pool.query(sql, params);
+    return r.rows;
+  }
+
+  // Retrieval only — no model call, so this is free and works without an API key.
+  router.get("/api/rag/search", async (req, res) => {
+    try {
+      const q = (req.query.q || "").toString().trim();
+      if (!q) return res.status(400).json({ error: "Query is required." });
+      const rows = await retrieve(q, MAX_SOURCES);
+      res.json({
+        results: rows.map((r) => ({
+          id: r.id,
+          kind: r.kind,
+          title: r.title || null,
+          snippet: snippet(r.content),
+          updated_at: r.updated_at,
+        })),
+      });
+    } catch (err) {
+      serverError(res, err);
+    }
+  });
+
+  // Source-grounded answer. Retrieves first, then asks Claude to answer using
+  // ONLY the retrieved sources, citing them inline by [n].
+  router.post("/api/rag/query", async (req, res) => {
+    try {
+      const query = (req.body && req.body.query || "").toString().trim();
+      if (!query) return res.status(400).json({ error: "Query is required." });
+
+      const rows = await retrieve(query, MAX_SOURCES);
+      const sources = rows.map((r, i) => ({
+        n: i + 1,
+        id: r.id,
+        kind: r.kind,
+        title: r.title || (r.kind === "note" ? "Untitled note" : "Untitled"),
+      }));
+
+      if (!rows.length) {
+        return res.json({
+          answer: null,
+          sources: [],
+          note: "Nothing in your knowledge base matched that. Try different words, or add notes/documents first.",
+        });
+      }
+
+      const model = await getAIModelForFeature("rag");
+      if (model === "off" || !isAIAvailable()) {
+        // Degrade gracefully: still hand back the retrieved sources so the
+        // page is useful without an AI call (or with the feature disabled).
+        return res.json({
+          answer: null,
+          sources,
+          note: isAIAvailable()
+            ? "Knowledge Q&A is turned off. Enable it in Settings → AI Features. Showing matching sources."
+            : "AI is not configured. Showing matching sources only.",
+        });
+      }
+
+      const context = rows
+        .map(
+          (r, i) =>
+            `[${i + 1}] ${r.title ? r.title + " — " : ""}(${r.kind})\n${snippet(r.content)}`
+        )
+        .join("\n\n");
+
+      const answer = await callAI(
+        model,
+        `Sources:\n${context}\n\nQuestion: "${query}"`,
+        1024,
+        `You are a personal knowledge assistant. Answer the question using ONLY the information in the provided sources. Cite the sources you use inline with their bracketed numbers, e.g. [1] or [2][3]. If the sources do not contain the answer, say plainly that you don't have that information in your knowledge base — do not guess or use outside knowledge. Be concise.`
+      );
+
+      res.json({ answer, sources });
+    } catch (err) {
+      serverError(res, err);
+    }
+  });
+
+  return router;
+};
+
+// Exported for unit tests (parameterized-query construction is pure).
+module.exports.buildRetrievalQuery = buildRetrievalQuery;

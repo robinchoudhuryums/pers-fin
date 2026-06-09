@@ -33,7 +33,7 @@ async function load() {
     document.getElementById('ai-models-section').style.display = 'block';
     try {
       var models = await fetch('/api/ai/models').then(r=>r.json());
-      var features = ['email_draft','task_breakdown','quick_add','review_summary','email_tone','daily_briefing','note_tagging'];
+      var features = ['email_draft','task_breakdown','quick_add','review_summary','email_tone','daily_briefing','note_tagging','rag'];
       features.forEach(f => {
         var el = document.getElementById('aim-'+f);
         if (el) el.value = models['ai_model_'+f] || 'off';
@@ -85,7 +85,7 @@ async function exportData(type) {
 
 async function saveAIModels() {
   var data = {};
-  var features = ['email_draft','task_breakdown','quick_add','review_summary','email_tone','daily_briefing','note_tagging'];
+  var features = ['email_draft','task_breakdown','quick_add','review_summary','email_tone','daily_briefing','note_tagging','rag'];
   features.forEach(f => { data['ai_model_'+f] = document.getElementById('aim-'+f).value; });
   await fetch('/api/ai/models', {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
   var el = document.getElementById('status');
