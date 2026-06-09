@@ -9,11 +9,18 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **Config**: `config.js` (constants, env parsing, validation arrays)
 - **Database**: `db.js` (pool + migrations), Neon PostgreSQL (schema in `db/`)
 - **Middleware**: `middleware.js` (auth, CSRF, rate limiting, session)
-- **AI**: `ai.js` (Anthropic Claude client, model helpers, caching) — 9 features with per-feature model selection
+- **AI**: `ai.js` (Anthropic Claude client, model helpers, caching) — 10 features with per-feature model selection (incl. Knowledge Q&A)
 - **Helpers**: `helpers.js` (recurrence, webhooks, Slack, automations)
 - **Views**: `views.js` + `views/css.js` + `views/js.js` (shared HTML/CSS/JS helpers)
-- **Routes**: `routes/` (21 route modules — auth, todos, emails, notes, contacts, settings, etc.)
-- **Pages**: `pages/` (9 page modules — dashboard, todos, emails, notes, contacts, calendar, review, analytics, settings)
+- **Routes**: `routes/` (22 route modules — auth, todos, emails, notes, contacts, settings, rag, etc.)
+- **Pages**: `pages/` (10 page modules — dashboard, todos, emails, notes, contacts, calendar, review, analytics, settings, knowledge)
+- **Knowledge / RAG**: `routes/rag.js` + `services/embeddings.js` (Voyage) +
+  `services/vault-sync.js` (Obsidian-vault ingest, GitHub API) + `pages/knowledge.js`.
+  Personal knowledge base — pgvector semantic retrieval over the vault + notes
+  (keyword fallback), Citations, answer cache, structured facts with temporal
+  validity, Mermaid diagrams, capture-to-vault, never-sent-to-AI "secret" tier,
+  and cross-app finance grounding from Perfin (read-only `perfinPool`). Migrations
+  `db/013`–`db/017`. Full detail in the Knowledge block under **Database** below.
 - **Email**: nodemailer (SMTP) with scheduled sending via node-cron. The
   scheduler atomically CLAIMS due emails before sending — `UPDATE emails SET
   status='sent' WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED) RETURNING *`,
@@ -51,6 +58,14 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **Dashboard**: Customizable widget layout (drag-to-reorder, show/hide widgets), overview cards, task views, AI briefing, smart suggestions, natural language AI query, scheduled emails, Perfin widget, global search
 - **AI Smart Suggestions**: AI-powered productivity coaching based on task priorities, due dates, and streaks
 - **AI Natural Language Query**: Ask questions about your data ("what did I do last week?", "how many tasks are overdue?")
+- **Knowledge base (RAG)**: a personal master knowledge store on the Knowledge page.
+  Indexes an Obsidian vault (private GitHub repo) + your notes into pgvector for
+  source-cited semantic Q&A (keyword fallback when embeddings are off); structured
+  facts (`type: fact` frontmatter) with temporal validity for precise "current X?"
+  lookups; Mermaid diagrams; capture-to-vault (write-scoped token); a "secret" tier
+  that's findable locally but never embedded/sent to AI; proactive renewal/expiry
+  surfacing via the notification check; and cross-app finance grounding that reads
+  Perfin data read-only. Answers carry a grounded/trust signal + per-fact verify.
 - **Automations/Rules Engine**: Create trigger→action rules (e.g., "when task created with category=work, set priority=high"), configurable in Settings
 - **File Attachments**: Upload files (up to 10MB) to tasks, emails, and notes via local storage. The download route sanitizes the stored `original_name` in the `Content-Disposition` header (strips quotes/backslashes/control chars) and emits RFC 5987 `filename*=UTF-8''…`, so a crafted filename can't inject/spoof a header (PS-5).
 - **iCal Export**: Export tasks and scheduled emails as .ics file for Google Calendar, Outlook, etc.
@@ -101,9 +116,15 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `server.js` — entry point (~180 lines: wires modules, starts server, cron jobs)
 - `config.js` — constants, validation arrays, env var parsing
 - `db.js` — database pool and migration runner
-- `ai.js` — Anthropic client, callAI, model helpers, response caching
+- `ai.js` — Anthropic client, callAI, answerWithCitations, model helpers, response caching
 - `middleware.js` — session, auth, CSRF, helmet, rate limiting
 - `helpers.js` — advanceRecurrence, webhooks, Slack, automations
+- `routes/rag.js` — Knowledge / RAG API (search, query, diagram, capture, facts,
+  facts/verify, secret-lookup, status, reindex) + retrieval/cache/facts/finance helpers
+- `services/embeddings.js` — Voyage embeddings (one swappable `embed()`)
+- `services/vault-sync.js` — Obsidian-vault ingest (GitHub API), chunking, frontmatter,
+  facts extraction, capture commit
+- `pages/knowledge.js` — Knowledge page (ask / search / diagram / capture / facts / secret)
 - `errors.js` — `serverError(res, err)` shared 500 responder (logs real error, returns generic message; PB-2)
 - `views.js` — pageHead, navBar, themeScript (imports from `views/`)
 - `routes/` — 21 API route modules (auth, todos, emails, notes, contacts, etc.)
@@ -262,6 +283,19 @@ POST   /api/ai/query               # Natural language query about your data
 GET    /api/ai/models              # Get per-feature model preferences
 PATCH  /api/ai/models              # Update per-feature model preferences
 
+# Knowledge / RAG API (personal knowledge base Q&A)
+GET    /api/rag/search             # retrieval only (vector if configured, else keyword); zero LLM cost
+POST   /api/rag/query              # source-grounded answer via the Citations feature (each source
+                                   #   flagged cited:true/false); exact-match answer cache (free repeats)
+GET    /api/rag/status             # vault config + index counts + embeddings/vector readiness + reindex state
+POST   /api/rag/reindex            # background full reindex (vault re-walk + notes); 202, poll status; 409 if running
+GET    /api/rag/facts              # browse current structured facts (query: entity, all=1 to include expired); includes `verified`
+POST   /api/rag/facts/verify       # mark/unmark a fact verified (body: entity, attribute, value, verified?)
+GET    /api/rag/secret-lookup       # local exact match over sensitivity='secret' items; never embedded/sent to AI
+POST   /api/rag/diagram            # generate a Mermaid diagram from the knowledge base (facts+finance+prose)
+POST   /api/rag/capture            # structure raw text into a note/fact and COMMIT it to the vault repo
+                                   #   (needs VAULT_GITHUB_WRITE_TOKEN; 400 if unset)
+
 POST   /api/login           # Authenticate
 POST   /api/logout          # End session
 GET    /manifest.json       # PWA manifest
@@ -281,6 +315,16 @@ GET    /sw.js               # Service worker
 - `CONTACTS` — JSON map of name→email (e.g. `{"mom":"mom@email.com"}`)
 - `ANTHROPIC_API_KEY` — Claude API key for AI features (optional)
 - `PERFIN_URL` — URL to linked Perfin instance (for navigation + dashboard integration)
+- `VOYAGE_API_KEY` — Voyage AI key for Knowledge embeddings (optional). Without
+  it, Knowledge falls back to keyword retrieval over notes/documents.
+- `VOYAGE_MODEL` — embedding model (default `voyage-3.5`, 1024-dim — must match
+  the `chunks.embedding vector(1024)` column)
+- `VAULT_GITHUB_TOKEN` — read-only fine-grained GitHub PAT for the private
+  Obsidian-vault repo. Used to pull changed markdown via the GitHub API (no
+  clone). Never stored in the DB; repo/branch are set in Settings → Knowledge.
+- `VAULT_GITHUB_WRITE_TOKEN` — SEPARATE write-scoped PAT (Contents read+write)
+  for "Capture to vault" (`POST /api/rag/capture`). Kept distinct from the
+  read-only sync token (least privilege); capture is disabled until it's set.
 
 ## Database
 - Auto-migration runs on server startup — no manual SQL execution needed.
@@ -326,7 +370,103 @@ Perfin sub-app and the shell. Do not introduce v5-only idioms (`req.host`,
 `app.del`, removed wildcard path patterns, etc.) — the workspace install
 hoists v4 across all sub-apps and a v5 idiom would break under the
 hoisted version.
-- Tables: `todos`, `emails`, `notes`, `contacts`, `user_settings`, `subtasks`, `email_templates`, `todo_templates`, `weekly_reviews`, `task_dependencies`, `automations`, `attachments`
+- Tables: `todos`, `emails`, `notes`, `contacts`, `user_settings`, `subtasks`, `email_templates`, `todo_templates`, `weekly_reviews`, `task_dependencies`, `automations`, `attachments`, `documents`, `chunks`, `embed_state`, `rag_answer_cache`, `facts`, `fact_verifications`
+- **Knowledge / RAG** (`db/013_knowledge.sql`, `db/014_vault_vectors.sql`):
+  - `documents` — personal knowledge corpus (`source` manual/vault/note,
+    `source_ref`, `sensitivity` normal/private/secret). Filled by the Obsidian
+    vault sync (`source='vault'`). Only `sensitivity='normal'` is embedded +
+    retrievable; private/secret are stored but never embedded/returned.
+  - `chunks` — polymorphic (`source_kind` note/document, `source_id`) with
+    `embedding vector(1024)`, HNSW cosine index. **Created defensively** — the
+    migration only builds it when the `vector` extension is available, so an
+    unsupported Postgres degrades to keyword retrieval instead of failing the
+    (fatal) migration and crashing the shell. `services/vault-sync.vectorReady`
+    + `routes/rag.js` gate on its existence.
+  - `embed_state` — per-source content hash so unchanged notes/docs aren't
+    re-embedded each sync.
+  - `user_settings.ai_model_rag` (default sonnet) + `vault_enabled` /
+    `vault_repo` / `vault_branch` / `vault_last_sha` / `vault_last_synced_at` /
+    `vault_last_error`. The vault GitHub token is the `VAULT_GITHUB_TOKEN` env
+    var, never a DB column.
+  - Sync: `services/vault-sync.js` (GitHub Contents/Trees/compare API, no clone;
+    frontmatter `embed:false`/`private:true`/`sensitivity:` honored). Hourly
+    in-process cron + `POST /api/rag/reindex` (also driven by the
+    `knowledge-reindex.yml` GitHub Action via `x-api-key`). Embeddings via
+    `services/embeddings.js` (Voyage, native fetch). Retrieval is vector-first
+    with keyword fallback.
+  - **Citations (Phase 2):** `POST /api/rag/query` answers via the Anthropic
+    Citations feature (`ai.answerWithCitations` — each retrieved source is a
+    plain-text document block with citations enabled; response flags each
+    source `cited:true/false`). Falls back to prompt-cite `callAI` if the
+    citations call throws. Citations are incompatible with structured outputs
+    (unused here).
+  - **Answer cache (Phase 2):** `rag_answer_cache` — exact-match, keyed by
+    normalized query + model + a corpus-version stamp (`max(updated_at)` + active
+    row count over notes+documents+facts), 24h freshness. Auto-invalidates when
+    the corpus changes; survives restarts (unlike the in-memory ai.js cache).
+    Helpers in `routes/rag.js` swallow errors so a pre-migration/missing table
+    degrades to "no cache". Semantic (paraphrase) caching is deferred.
+  - **Structured facts (Phase 2c):** `facts` — precise, supersedable
+    `(entity, attribute, value)` rows with `valid_from`/`valid_to` (NULL = still
+    current) and `sensitivity`. Authored as flat frontmatter in vault "fact
+    files" (`type: fact`): reserved keys (type/entity/valid_from/valid_to/
+    sensitivity/tags/title/embed/private/context) are metadata, every other key
+    becomes a fact row; `services/vault-sync.extractFacts` + `upsertFacts`
+    replace all facts for a file on each sync. `POST /api/rag/query` injects the
+    matching CURRENT, `normal`-sensitivity facts (`buildFactsQuery` +
+    `factsToDocument`) as an authoritative "Known facts (current)" document
+    listed first and cited — so precise lookups ("current deductible") don't
+    depend on fuzzy vector recall. Browse via `GET /api/rag/facts`. Only the
+    active validity window is injected (historical/superseded facts are not
+    surfaced in answers).
+  - **Cross-app finance grounding (Phase 3):** for finance-flavored questions
+    (`looksFinancial` keyword gate), `POST /api/rag/query` pulls a READ-ONLY
+    snapshot from Perfin (`perfinFinanceSnapshot` over the shell-wired
+    `perfinPool` — `linked_accounts` balances + active `detected_subscriptions`;
+    INV-25, never an HTTP self-fetch) and injects it as a cited "Finances (from
+    Perfin)" source. Only fires on finance queries (non-finance queries never
+    touch perfinPool) and is schema-drift safe (any error → no finance context).
+    No Perfin schema changes. Standalone (no perfinPool) → silently skipped.
+  - **Diagrams (Phase 3):** `POST /api/rag/diagram` retrieves like `/query`
+    (facts+finance+prose) and asks the model for Mermaid only
+    (`stripMermaidFences` cleans stray code fences). Generative, so no Citations
+    and no answer-cache. Rendered client-side on the Knowledge page via Mermaid
+    from cdn.jsdelivr.net (already in the CSP `scriptSrc` allowlist),
+    `securityLevel:'strict'`; the Mermaid source is shown in a `<details>` and
+    used as the fallback when render fails.
+  - **Capture-to-vault (Phase 3):** `POST /api/rag/capture` structures raw text
+    (pasted email, dictation) into a note or fact (AI when available, else a
+    raw note) and COMMITs it to the vault repo at `captures/<date>-<slug>-<rand>.md`
+    via `vault-sync.commitVaultFile`. Outward write gated on a SEPARATE
+    write-scoped `VAULT_GITHUB_WRITE_TOKEN` (the sync token stays read-only); 400
+    until set. Unique paths mean it's always a create. Kicks a background
+    syncVault so the capture is searchable soon. Capture box on the Knowledge page.
+  - **Proactive surfacing (Phase 3):** `routes/rag.upcomingFacts(pool, days)`
+    finds facts with an upcoming date — the validity window ending (`valid_to`)
+    or a date-valued attribute (`renew`/`expir`/`due`/`deadline`/…). `GET
+    /api/notifications/check` includes these as `fact_upcoming` notifications (+
+    a count) over a 30-day lookahead; the dashboard browser-notifies the
+    imminent ones (≤7 days). Schema-drift safe (errors → no upcoming facts).
+    Per-sistant has no email digest (that's Perfin) — the notification check is
+    the proactive surface.
+  - **Trust/audit (Phase 4):** `POST /api/rag/query` returns `grounded`
+    (true/false) — whether the cited-answer actually cited a provided source;
+    the Knowledge page shows an "ungrounded — double-check" caution when false.
+    Fact verification loop: `fact_verifications` is keyed by CONTENT
+    (entity, attribute, value), NOT row id, so a verification survives vault
+    re-sync (which replaces fact rows) and resets when the value changes. Facts
+    queries expose `verified` via an EXISTS subquery; `factsToDocument`
+    annotates verified facts `[verified]`; `POST /api/rag/facts/verify`
+    sets/clears it; the Knowledge "Your facts" list has per-fact Verify toggles.
+  - **Secret tier (Phase 4):** items flagged `sensitivity: secret` (vault
+    frontmatter `sensitivity: secret`, or `embed:false`/`private:true` →
+    private) are stored but NEVER embedded and NEVER sent to any AI — the AI
+    retrieval builders (`buildRetrievalQuery`, `buildFactsQuery`,
+    `perfinFinanceSnapshot`) all require `sensitivity='normal'`. `GET
+    /api/rag/secret-lookup` is the only path that surfaces secret items: a pure
+    local DB substring match returned verbatim to the user, no model call. UI:
+    "Secret lookup" box on the Knowledge page. (Stored in your own Neon DB; the
+    tier's guarantee is "never sent to a third-party AI," not "never persisted.")
 
 ## Embedded Mode (under the unified shell)
 When loaded by `shell/index.js` instead of run standalone, the Per-sistant app
@@ -349,9 +489,9 @@ Migrations and cron jobs run in both modes; only the listener, keep-alive,
 and signal handlers are owned by the shell when embedded.
 
 ## AI Features & Models
-- 9 AI features, each independently configurable: Haiku (fast/cheap), Sonnet (smarter), or Off
-- Models: `claude-haiku-4-5-20251001`, `claude-sonnet-4-6-20250415`
-- Features: email drafting, task breakdown, smart quick add, weekly review summary, email tone adjustment, daily briefing, note auto-tagging, smart suggestions, natural language query
+- 10 AI features, each independently configurable: Haiku (fast/cheap), Sonnet (smarter), or Off
+- Models: `claude-haiku-4-5-20251001`, `claude-sonnet-4-6`
+- Features: email drafting, task breakdown, smart quick add, weekly review summary, email tone adjustment, daily briefing, note auto-tagging, smart suggestions, natural language query, **Knowledge Q&A** (`ai_model_rag`, default sonnet — the RAG answer/diagram/capture model)
 - Configuration stored in `user_settings` table (ai_model_* columns)
 - Settings page provides per-feature dropdowns
 

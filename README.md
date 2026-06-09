@@ -23,9 +23,12 @@ A small **shell** authenticates the user with a unified PIN, renders a tile pick
 │      │                                                      │
 │      └── /per-sistant  ─►  apps/per-sistant/server.js      │
 │                                 │                          │
-│                                 ├──► Claude API (briefing) │
+│                                 ├──► Claude API (briefing, │
+│                                 │      Knowledge RAG + cite)│
+│                                 ├──► Voyage + GitHub vault  │
+│                                 │      (Knowledge / RAG)    │
 │                                 ├──► SMTP (email schedule) │
-│                                 └──► Neon Postgres (sep DB)│
+│                                 └──► Neon Postgres + pgvec  │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -359,6 +362,35 @@ AI-flagged deductions are accumulated year-round in a persistent table, availabl
 The unified shell installs as a single PWA with its own icon and start URL (`/`). Each sub-app's manifest still works under its prefix if you want to install it separately, but the recommended install is the shell.
 - **iPhone**: Open in Safari → Share → "Add to Home Screen"
 - **Android**: Chrome → Menu → "Install app"
+
+### Personal Knowledge Base / RAG (Per-sistant)
+
+A private "master journal/database" on Per-sistant's Knowledge page. It indexes a
+local-first **Obsidian vault** (a private GitHub repo, the source of truth) plus
+your notes into **Neon + pgvector**, and answers questions across all of it with
+**source citations**:
+
+- **Semantic Q&A** — vector retrieval (Voyage embeddings) with automatic keyword
+  fallback; answers cite the documents they used (Anthropic Citations) and carry a
+  grounded/trust signal.
+- **Structured facts + temporal validity** — `type: fact` vault frontmatter →
+  precise `(entity, attribute, value)` records with `valid_from`/`valid_to`, so
+  "what's my *current* deductible?" is an exact lookup, not fuzzy recall. Per-fact
+  verify loop.
+- **Mermaid diagrams** generated from your data.
+- **Capture-to-vault** — paste an email / dictate → structured note or fact
+  committed back to the vault (separate write-scoped token).
+- **"Secret" tier** — items flagged `sensitivity: secret` are stored and locally
+  searchable but **never embedded and never sent to any AI**.
+- **Proactive surfacing** — upcoming renewals/expirations via the notification check.
+- **Cross-app finance grounding** — finance questions read Perfin's accounts +
+  subscriptions (read-only) so "can I afford my renewal?" is answerable.
+
+Optional setup: `VOYAGE_API_KEY` (semantic search), `VAULT_GITHUB_TOKEN`
+(read-only vault sync), `VAULT_GITHUB_WRITE_TOKEN` (capture), and the `vector`
+extension on Neon. Without them, Knowledge degrades to keyword search over notes.
+Full detail: `apps/per-sistant/CLAUDE.md` (Knowledge block) and the Knowledge / RAG
+subsystem in `CLAUDE.md`'s Cycle Workflow Config.
 
 ## How Subscription Detection Works
 

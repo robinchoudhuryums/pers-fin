@@ -18,6 +18,7 @@ const { advanceRecurrence } = require("./helpers");
 const middleware = require("./middleware");
 const views = require("./views");
 const { startKeepAlive } = require("./services/keep-alive");
+const vaultSync = require("./services/vault-sync");
 
 let nodemailer;
 try { nodemailer = require("nodemailer"); } catch { nodemailer = null; }
@@ -71,6 +72,7 @@ app.use(require("./routes/calendar")(deps));
 app.use(require("./routes/review")(deps));
 app.use(require("./routes/search")(deps));
 app.use(require("./routes/ai")(deps));
+app.use(require("./routes/rag")(deps));
 app.use(require("./routes/perfin")(deps));
 app.use(require("./routes/pwa")(deps));
 
@@ -82,6 +84,7 @@ app.get("/today", require("./pages/today")());
 app.get("/todos", require("./pages/todos")());
 app.get("/emails", require("./pages/emails")());
 app.get("/notes", require("./pages/notes")());
+app.get("/knowledge", require("./pages/knowledge")());
 app.get("/contacts", require("./pages/contacts")());
 app.get("/calendar", require("./pages/calendar")());
 app.get("/review", require("./pages/review")());
@@ -212,6 +215,28 @@ async function start(opts = {}) {
       } catch (err) { console.error("Recurring task error:", err.message); }
     });
     console.log("Recurring task processor started (daily at midnight)");
+  }
+
+  // Knowledge vault sync — hourly incremental pull of the Obsidian vault +
+  // (re-)embed of changed notes. No-ops unless the vault is enabled and
+  // VOYAGE_API_KEY / VAULT_GITHUB_TOKEN are configured, so it's cheap when the
+  // feature is off. A GitHub Actions cron also hits POST /api/rag/reindex for
+  // reliability while the Render free tier sleeps; the in-process lock
+  // (vault-sync.isSyncing) keeps the two from overlapping.
+  if (cron) {
+    cron.schedule("17 * * * *", async () => {
+      try {
+        if (vaultSync.isSyncing()) return;
+        // Each self-guards: syncVault no-ops without vault config; syncNotes
+        // no-ops without VOYAGE_API_KEY / pgvector. Notes embedding doesn't
+        // depend on the vault, so run both independently.
+        await vaultSync.syncVault(pool);
+        await vaultSync.syncNotes(pool);
+      } catch (err) {
+        console.error("Vault sync error:", err.message);
+      }
+    });
+    console.log("Knowledge vault sync started (hourly when configured)");
   }
 
   if (!standalone) {

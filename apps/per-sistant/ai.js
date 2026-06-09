@@ -13,7 +13,9 @@ try {
 // AI model mapping
 const AI_MODELS = {
   haiku: "claude-haiku-4-5-20251001",
-  sonnet: "claude-sonnet-4-6-20250415",
+  // Bare alias — `claude-sonnet-4-6` has no dated snapshot variant; the old
+  // `-20250415` suffix was not a real model ID and risks a 404.
+  sonnet: "claude-sonnet-4-6",
 };
 
 // Singleton Anthropic client
@@ -53,6 +55,44 @@ async function callAI(model, prompt, maxTokens = 1024, systemPrompt = null) {
   return msg.content[0].text.trim();
 }
 
+// Source-grounded answer using the Citations feature. Each source is sent as a
+// plain-text `document` block with citations enabled; the response interleaves
+// text blocks, some carrying a `.citations[]` array that points back at the
+// document that backed the claim. Returns the assembled answer text plus the
+// 0-based indexes of documents that were actually cited (index === position in
+// `documents`). All our models support citations (only Haiku 3 doesn't).
+// `client` is injectable for tests.
+async function answerWithCitations({ model, system, query, documents, maxTokens = 1024, client }) {
+  const c = client || getAnthropicClient();
+  if (!c) throw new Error("AI not configured");
+  if (!AI_MODELS[model]) throw new Error("Invalid model: " + model);
+  const docBlocks = (documents || []).map((d) => ({
+    type: "document",
+    source: { type: "text", media_type: "text/plain", data: String(d.content || "") },
+    ...(d.title ? { title: String(d.title).slice(0, 200) } : {}),
+    citations: { enabled: true },
+  }));
+  const params = {
+    model: AI_MODELS[model],
+    max_tokens: maxTokens,
+    messages: [{ role: "user", content: docBlocks.concat([{ type: "text", text: query }]) }],
+  };
+  if (system) params.system = system;
+  const msg = await c.messages.create(params);
+  let text = "";
+  const cited = new Set();
+  const spans = [];
+  for (const block of msg.content || []) {
+    if (block.type !== "text") continue;
+    text += block.text;
+    for (const cit of block.citations || []) {
+      if (typeof cit.document_index === "number") cited.add(cit.document_index);
+      spans.push({ document_index: cit.document_index, cited_text: cit.cited_text });
+    }
+  }
+  return { text: text.trim(), citedIndexes: Array.from(cited).sort((a, b) => a - b), citations: spans };
+}
+
 async function getAIModelForFeature(feature) {
   if (!VALID_AI_FEATURES.includes(feature)) return "off";
   try {
@@ -65,4 +105,4 @@ function isAIAvailable() {
   return !!(Anthropic && process.env.ANTHROPIC_API_KEY);
 }
 
-module.exports = { callAI, getAIModelForFeature, getCached, setCache, AI_MODELS, isAIAvailable };
+module.exports = { callAI, answerWithCitations, getAIModelForFeature, getCached, setCache, AI_MODELS, isAIAvailable };

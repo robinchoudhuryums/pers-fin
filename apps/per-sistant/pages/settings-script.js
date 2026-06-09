@@ -33,7 +33,7 @@ async function load() {
     document.getElementById('ai-models-section').style.display = 'block';
     try {
       var models = await fetch('/api/ai/models').then(r=>r.json());
-      var features = ['email_draft','task_breakdown','quick_add','review_summary','email_tone','daily_briefing','note_tagging'];
+      var features = ['email_draft','task_breakdown','quick_add','review_summary','email_tone','daily_briefing','note_tagging','rag'];
       features.forEach(f => {
         var el = document.getElementById('aim-'+f);
         if (el) el.value = models['ai_model_'+f] || 'off';
@@ -47,6 +47,13 @@ async function load() {
   document.getElementById('ka-end').value = s.keep_alive_end != null ? s.keep_alive_end : 0;
   document.getElementById('ka-tz').value = s.keep_alive_timezone || 'America/New_York';
   updateKAEstimate();
+  // Knowledge vault
+  if (document.getElementById('vault-enabled')) {
+    document.getElementById('vault-enabled').checked = !!s.vault_enabled;
+    document.getElementById('vault-repo').value = s.vault_repo || '';
+    document.getElementById('vault-branch').value = s.vault_branch || 'main';
+    loadVaultStatus();
+  }
   if ('Notification' in window && Notification.permission === 'granted') {
     document.getElementById('notif-btn').textContent = 'Notifications Enabled';
     document.getElementById('notif-btn').disabled = true;
@@ -85,7 +92,7 @@ async function exportData(type) {
 
 async function saveAIModels() {
   var data = {};
-  var features = ['email_draft','task_breakdown','quick_add','review_summary','email_tone','daily_briefing','note_tagging'];
+  var features = ['email_draft','task_breakdown','quick_add','review_summary','email_tone','daily_briefing','note_tagging','rag'];
   features.forEach(f => { data['ai_model_'+f] = document.getElementById('aim-'+f).value; });
   await fetch('/api/ai/models', {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
   var el = document.getElementById('status');
@@ -300,6 +307,34 @@ async function logout() {
   location.href = BP + '/login';
 }
 
+// Knowledge vault
+async function loadVaultStatus(){
+  try {
+    var st = await fetch('/api/rag/status').then(r=>r.json());
+    var el = document.getElementById('vault-status'); if(!el) return;
+    var bits = [];
+    bits.push('Embeddings: ' + (st.embeddings_configured ? 'configured' : 'not configured'));
+    bits.push('Vector index: ' + (st.vector_ready ? 'ready' : 'unavailable (keyword fallback)'));
+    if(st.counts) bits.push(st.counts.embedded + ' sources embedded');
+    if(st.vault && st.vault.last_synced_at) bits.push('Last sync ' + new Date(st.vault.last_synced_at).toLocaleString());
+    if(st.vault && st.vault.last_error) bits.push('Last error: ' + st.vault.last_error);
+    el.textContent = bits.join('  ·  ');
+  } catch (e) {}
+}
+async function saveVault(){
+  var data = {
+    vault_enabled: document.getElementById('vault-enabled').checked,
+    vault_repo: document.getElementById('vault-repo').value || null,
+    vault_branch: document.getElementById('vault-branch').value || 'main',
+  };
+  var r = await fetch('/api/settings',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}).then(r=>r.json());
+  var el=document.getElementById('status');
+  if(r && r.error){ el.className='status-msg'; el.textContent=r.error; setTimeout(function(){el.className='status-msg';},4000); return; }
+  el.className='status-msg success'; el.textContent='Vault settings saved.';
+  setTimeout(function(){el.className='status-msg';},3000);
+  loadVaultStatus();
+}
+
 // Keep-alive hour selectors
 (function(){
   var startSel=document.getElementById('ka-start');
@@ -348,6 +383,8 @@ bindEvents([
   ['new-webhook-btn','click',openWebhookModal],
   ['save-slack-btn','click',saveSlack],
   ['save-keepalive-btn','click',saveKeepAlive],
+  ['save-vault-btn','click',saveVault],
+  ['vault-enabled','change',saveVault],
   ['logout-btn','click',logout],
   ['auto-action','change',updateActionFields],
   ['auto-cancel-btn','click',closeAutoModal],

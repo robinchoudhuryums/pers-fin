@@ -174,7 +174,7 @@ Personal assistant tool for task management, email scheduling, and note-taking. 
 - **Geofencing**: Set location (name + coordinates + radius) on tasks
 - **Periodic checking**: Browser-based geofence monitoring with notifications
 
-### AI Features (9 total)
+### AI Features (10 total)
 All AI features are optional and independently configurable. Choose **Haiku** (fast, ~$0.0003/call), **Sonnet** (smarter, ~$0.002/call), or **Off** for each feature in Settings.
 
 | Feature | Description | Default |
@@ -188,6 +188,26 @@ All AI features are optional and independently configurable. Choose **Haiku** (f
 | Note Auto-Tagging | Suggest tags for notes based on content | Off |
 | Smart Suggestions | AI productivity coaching based on your tasks | Off |
 | Natural Language Query | Ask questions about your data in plain English | Off |
+| Knowledge Q&A | Source-cited RAG over your vault + notes (answers, diagrams, capture) | Sonnet |
+
+### Knowledge Base (RAG)
+A private "master journal/database" on the **Knowledge** page. Indexes a local-first
+**Obsidian vault** (a private GitHub repo) + your notes into **Neon + pgvector** and
+answers across all of it with **source citations**:
+
+- **Semantic Q&A** — Voyage embeddings + pgvector, with keyword fallback; answers cite
+  their sources and show a grounded/trust signal.
+- **Structured facts + temporal validity** — `type: fact` vault frontmatter → precise
+  `(entity, attribute, value)` records with `valid_from`/`valid_to` for "current X?"
+  lookups; per-fact verify.
+- **Mermaid diagrams**, **capture-to-vault** (write-scoped token), and a **"secret" tier**
+  (locally searchable, never embedded or sent to AI).
+- **Proactive surfacing** of upcoming renewals/expirations, and **cross-app finance
+  grounding** that reads Perfin data read-only.
+
+Optional env: `VOYAGE_API_KEY`, `VAULT_GITHUB_TOKEN` (read-only), `VAULT_GITHUB_WRITE_TOKEN`
+(capture), plus the `vector` extension on Neon. Without them, Knowledge degrades to keyword
+search over notes. See `CLAUDE.md` (Knowledge block) for full detail.
 
 ### Authentication
 Two login modes — set one in your environment variables:

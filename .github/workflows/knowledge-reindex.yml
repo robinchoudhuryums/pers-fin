@@ -1,0 +1,39 @@
+# Knowledge vault reindex — pulls the Obsidian vault + re-embeds changed notes.
+# Runs a few times a day, or manually. Gives reliable indexing even while the
+# Render free tier is asleep (the request wakes it). The in-process sync lock
+# keeps this from overlapping the app's own hourly sync.
+#
+# Requires these repository secrets:
+#   SERVER_URL  — e.g. https://pers-fin-tracker.onrender.com
+#   API_KEY     — the API key set on the server (shell validates x-api-key)
+
+name: Knowledge Vault Reindex
+
+on:
+  schedule:
+    - cron: '30 6,18 * * *'  # 6:30 and 18:30 UTC
+  workflow_dispatch:          # manual trigger
+
+jobs:
+  reindex:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake server (Render free tier cold start)
+        run: |
+          curl -s -o /dev/null -w "%{http_code}" "${{ secrets.SERVER_URL }}/health" || true
+          sleep 10
+
+      - name: Trigger reindex
+        run: |
+          # Knowledge runs under the Per-sistant sub-app behind the unified
+          # shell; the shell's requireAuth honors x-api-key. Returns 202 (queued)
+          # or 409 (a sync is already running) — both are fine.
+          STATUS=$(curl -s -o /tmp/reindex.json -w "%{http_code}" \
+            -X POST "${{ secrets.SERVER_URL }}/per-sistant/api/rag/reindex" \
+            -H "x-api-key: ${{ secrets.API_KEY }}" \
+            -H "Content-Type: application/json")
+          echo "Reindex trigger status: $STATUS"
+          cat /tmp/reindex.json || true
+          if [ "$STATUS" != "202" ] && [ "$STATUS" != "409" ]; then
+            echo "Reindex trigger failed"; exit 1
+          fi

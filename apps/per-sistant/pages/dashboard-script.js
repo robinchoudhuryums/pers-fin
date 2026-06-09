@@ -175,9 +175,14 @@ async function load() {
 
   fetch('/api/notifications/check').then(r=>r.json()).then(d => {
     if (d.notifications && d.notifications.length && 'Notification' in window && Notification.permission === 'granted') {
-      var important = d.notifications.filter(n => n.type === 'overdue' || n.type === 'streak_at_risk');
+      var important = d.notifications.filter(n =>
+        n.type === 'overdue' ||
+        n.type === 'streak_at_risk' ||
+        (n.type === 'fact_upcoming' && n.days_away != null && n.days_away <= 7)
+      );
       important.slice(0,3).forEach(n => {
-        new Notification('Per-sistant', { body: (n.type==='overdue'?'Overdue: ':'Streak at risk: ')+n.title, icon: BP+'/android-chrome-192x192.png' });
+        var prefix = n.type==='overdue' ? 'Overdue: ' : n.type==='streak_at_risk' ? 'Streak at risk: ' : 'Upcoming: ';
+        new Notification('Per-sistant', { body: prefix+n.title, icon: BP+'/android-chrome-192x192.png' });
       });
     }
   }).catch(function(){});
