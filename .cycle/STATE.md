@@ -9,13 +9,25 @@ to the "none in progress" state.
 
 ## Current Cycle
 
-- **Status:** audit→plan→implement complete (Financial Analytics, cycle 2); awaiting deploy confirmation
-- **Phase:** implemented — not yet Health-Synthesized (no Axis-A/B scores recorded yet)
-- **Subsystem audited:** Financial Analytics (cycle 2). Prior: Bank Sync & Ingestion (cycle 1).
-- **Started:** 2026-06-07
-- **Findings gathered (cycle 2):** F1 (High — net worth counted loans as assets), F2/F3/F4 (Med/Low), F5 (test gaps). Implemented as A1–A5.
-- **Implementation progress:** A1–A5 all implemented + tested (666 tests pass, +3). Cycle 1 (BS-1..BS-8) shipped via PR #108.
-- **Next concrete step:** operator deploys (Render auto-deploys on merge to `main`; cycle-1 work is in open PR #108, cycle-2 commits stack on the same branch). Then run `/reflect` (promote candidate INV-27 net-worth liability rule; record cycle-2 metrics) and optionally a Health Synthesis, then rotate to subsystem 3 (Detection & Categorization).
+- **Status:** /broad-scan (whole-codebase) + /broad-implement complete on branch `claude/sweet-brahmagupta-3uwc4r`; awaiting review/deploy.
+- **Phase:** implemented — not yet Health-Synthesized (broad-scan Axis-A scores recorded in the session report, not yet promoted to PROJECT_HEALTH.md).
+- **Subsystem audited:** broad pass across all subsystems (cycle 3, broad). Prior: Bank Sync (cycle 1), Financial Analytics (cycle 2).
+- **Started:** 2026-06-09
+- **Findings gathered (broad scan):** H1 (High — getNetWorth dedup direction drops Plaid brokerage value), M1–M6 + ~15 Low. Top-5: H1, M5, M2, M3, M1.
+- **Implementation progress (this session):** H1, M5, M2, M3, M1 implemented + tested (745 tests pass, 0 fail). Not committed yet at time of writing this checkpoint.
+
+### Findings implemented this session
+- **H1** `getNetWorth` (financial-queries.js): flipped dedup direction — drop the $0 Plaid `linked_accounts` phantom when an active `investment_accounts` row exists; `investment_accounts` is authoritative (matches /api/investments + dashboard grid). Updated the two cycle-fixes.test.js getNetWorth mocks (they routed on a bare `/investment_accounts/` substring that now also matches the linked query's NOT EXISTS subquery — routed on `FROM linked_accounts` instead).
+- **M5** budget-snapshot auto-trigger (startup.js): removed the `getDate()===1` gate so a missed prior-month snapshot is caught up on any later tick (idempotent via the existing-snapshot short-circuit). Fixes silent rollover loss on free-tier sleep.
+- **M2** categorize AI loop (categorize.js): a swallowed usage-row INSERT no longer lets spend escape the cap — on insert failure we apply the already-paid batch, then stop the loop (`budgetHit=true`).
+- **M3** sheets buildDashboard (sheets-sync.js): budget-join category expression now matches the SPENDING BY CATEGORY query (adds `personal_finance_category->>'primary'`), so the budget tab's "Spent" agrees with the breakdown on the same sheet.
+- **M1** categorization-rule LIKE (categorize.js, both runCategorize + /apply): escape `\ % _` in user patterns with `REPLACE(...) ESCAPE '\'` so a `%`/`_` in a pattern can't act as a wildcard. exact (`=`) unchanged.
+
+### Not implemented (deferred, in broad-scan report)
+- M4 (sheets splits-replacement in buildDashboard), M6 (embedded webhook rawBody/HMAC, latent), L1–L9 (Apps Script fork, CSV balance fuzzy-match, split tolerance 0.011, detection-key cleanup comment, $0 CSV skip, ephemeral SESSION_SECRET, syncNotes lock, empty-doc embed_state, return_to on redirect).
+
+### Next concrete step
+- Review + deploy (Render auto-deploys on merge to `main`). Then `/sync-docs` to fix CLAUDE.md's getNetWorth Key Design Decision (it documents the OLD/wrong dedup direction). Optionally `/reflect` to record broad-scan metrics + a candidate invariant for the net-worth dedup direction.
 
 ### Decisions made this cycle (cycle 2 — Financial Analytics)
 - **A1/F1** liability set = `type IN ('credit','loan')` (Plaid's two debt types cover all loan subtypes); return shape of `getNetWorth` unchanged so its 3 snapshot writers + dashboard + context-export need no caller changes.

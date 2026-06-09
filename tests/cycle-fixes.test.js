@@ -39,28 +39,37 @@ afterEach(() => {
 // F1 — getNetWorth single source of truth
 // ---------------------------------------------------------------------------
 describe("F1 — getNetWorth", () => {
-  // Routes linked_accounts vs investment_accounts queries to the right rowset
-  // by inspecting the SQL, and records the investment query for assertions.
+  // Routes linked_accounts vs investment_accounts queries to the right rowset.
+  // The linked query references investment_accounts in a NOT EXISTS subquery, so
+  // route on "FROM linked_accounts" (only the linked query has it); everything
+  // else is the investment query. Records both for assertions.
   function mockPool(linkedRows, invRows, captured) {
     return {
       query: async (sql) => {
-        if (/investment_accounts/i.test(sql)) {
-          captured.invSql = sql;
-          return { rows: invRows };
+        if (/FROM linked_accounts/i.test(sql)) {
+          captured.linkedSql = sql;
+          return { rows: linkedRows };
         }
-        captured.linkedSql = sql;
-        return { rows: linkedRows };
+        captured.invSql = sql;
+        return { rows: invRows };
       },
     };
   }
 
-  it("dedupes Plaid investment accounts present in both tables (the F1 fix)", async () => {
+  it("dedupes by dropping the linked_accounts phantom, keeping investment_accounts (H1)", async () => {
     const captured = {};
     await getNetWorth(mockPool([], [], captured));
-    assert.match(captured.invSql, /NOT EXISTS/i,
-      "investment_accounts query must exclude rows already in linked_accounts");
-    assert.match(captured.invSql, /plaid_account_id/,
-      "dedupe must key on plaid_account_id = linked_accounts.account_id");
+    // H1: the dedup must live on the LINKED query (drop the $0 Plaid phantom
+    // when an active investment_accounts row exists), NOT on the investment
+    // query (which would drop the real holdings-sum value and zero out the
+    // brokerage). investment_accounts is authoritative for Plaid brokerages —
+    // matching GET /api/investments + the dashboard accounts grid.
+    assert.match(captured.linkedSql, /NOT EXISTS/i,
+      "linked_accounts query must drop rows that have an investment_accounts row");
+    assert.match(captured.linkedSql, /plaid_account_id\s*=\s*la\.account_id/i,
+      "dedupe must key on investment_accounts.plaid_account_id = linked_accounts.account_id");
+    assert.doesNotMatch(captured.invSql, /NOT EXISTS/i,
+      "investment_accounts is authoritative — it must NOT be filtered against linked_accounts");
   });
 
   it("includes investments, treats credit as a liability, sums correctly", async () => {
@@ -945,8 +954,11 @@ describe("F1 — getNetWorth classifies loans as liabilities", () => {
   function mockPool(linkedRows, invRows) {
     return {
       query: async (sql) => {
-        if (/investment_accounts/i.test(sql)) return { rows: invRows };
-        return { rows: linkedRows };
+        // The linked query references investment_accounts in a NOT EXISTS
+        // subquery (H1 dedup), so route on "FROM linked_accounts" (only the
+        // linked query has it); everything else is the investment query.
+        if (/FROM linked_accounts/i.test(sql)) return { rows: linkedRows };
+        return { rows: invRows };
       },
     };
   }

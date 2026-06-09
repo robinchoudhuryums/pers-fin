@@ -647,11 +647,16 @@ async function buildDashboard(sheets, pool) {
   `);
 
   // Budget status
+  // M3: derive the join category with the SAME expression as the SPENDING BY
+  // CATEGORY query above (which includes personal_finance_category->>'primary').
+  // Previously this join omitted the PFC-primary fallback, so a budget keyed to
+  // a Plaid-PFC-only category silently under-counted its "Spent" relative to the
+  // category breakdown rendered on the same sheet.
   const { rows: budgetData } = await pool.query(`
     SELECT b.category, b.monthly_limit,
            COALESCE(SUM(${SPLIT_AMT}), 0) AS spent
     FROM budgets b
-    LEFT JOIN transactions t ON COALESCE(t.user_category, t.category[1], 'Uncategorized') = b.category
+    LEFT JOIN transactions t ON COALESCE(t.user_category, t.personal_finance_category->>'primary', t.category[1], 'Uncategorized') = b.category
       AND t.amount > 0 AND t.pending = false AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER}
       AND t.date >= date_trunc('month', CURRENT_DATE)
       AND t.date < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
