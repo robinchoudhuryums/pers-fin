@@ -12,6 +12,7 @@ const supertest = require("supertest");
 
 const ragFactory = require("../routes/rag");
 const { buildRetrievalQuery } = require("../routes/rag");
+const { answerWithCitations } = require("../ai");
 
 describe("Knowledge — buildRetrievalQuery", () => {
   it("parameterizes terms and unions notes + documents", () => {
@@ -106,5 +107,50 @@ describe("Knowledge — POST /api/rag/query", () => {
     } finally {
       if (saved !== undefined) process.env.ANTHROPIC_API_KEY = saved;
     }
+  });
+});
+
+describe("Citations — answerWithCitations", () => {
+  it("assembles text, collects cited indexes, and sends citation-enabled docs", async () => {
+    let captured;
+    const client = {
+      messages: {
+        create: async (p) => {
+          captured = p;
+          return {
+            content: [
+              { type: "text", text: "Grass is green " },
+              { type: "text", text: "and the sky is blue", citations: [{ type: "char_location", cited_text: "The sky is blue.", document_index: 1, start_char_index: 0, end_char_index: 16 }] },
+              { type: "text", text: " per the first source", citations: [{ type: "char_location", cited_text: "green", document_index: 0 }] },
+            ],
+          };
+        },
+      },
+    };
+    const out = await answerWithCitations({
+      model: "sonnet",
+      system: "sys",
+      query: "colors?",
+      documents: [{ title: "A", content: "The grass is green." }, { title: "B", content: "The sky is blue." }],
+      client,
+    });
+    assert.equal(out.text, "Grass is green and the sky is blue per the first source");
+    assert.deepEqual(out.citedIndexes, [0, 1]);
+    // request shape: 2 document blocks + 1 question text block
+    const content = captured.messages[0].content;
+    assert.equal(content.length, 3);
+    assert.equal(content[0].type, "document");
+    assert.equal(content[0].source.type, "text");
+    assert.equal(content[0].source.media_type, "text/plain");
+    assert.equal(content[0].citations.enabled, true);
+    assert.equal(content[2].type, "text");
+    assert.equal(content[2].text, "colors?");
+    assert.equal(captured.system, "sys");
+  });
+
+  it("rejects an unknown model", async () => {
+    await assert.rejects(() =>
+      answerWithCitations({ model: "bogus", query: "x", documents: [], client: { messages: { create: async () => ({ content: [] }) } } })
+    );
   });
 });

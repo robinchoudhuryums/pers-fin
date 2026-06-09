@@ -16,7 +16,7 @@
 // ============================================================================
 
 const express = require("express");
-const { callAI, getAIModelForFeature, isAIAvailable } = require("../ai");
+const { callAI, answerWithCitations, getAIModelForFeature, isAIAvailable } = require("../ai");
 const embeddings = require("../services/embeddings");
 const vaultSync = require("../services/vault-sync");
 const { serverError } = require("../errors");
@@ -162,21 +162,33 @@ module.exports = function ({ pool }) {
         });
       }
 
-      const context = rows
-        .map(
-          (r, i) =>
-            `[${i + 1}] ${r.title ? r.title + " — " : ""}(${r.kind})\n${snippet(r.content)}`
-        )
-        .join("\n\n");
+      const SYSTEM =
+        "You are a personal knowledge assistant. Answer the question using ONLY the information in the provided documents. If the documents do not contain the answer, say plainly that you don't have that information in your knowledge base — do not guess or use outside knowledge. Be concise.";
+      const documents = rows.map((r) => ({
+        title: r.title || (r.kind === "note" ? "Untitled note" : "Untitled"),
+        content: snippet(r.content),
+      }));
 
-      const answer = await callAI(
-        model,
-        `Sources:\n${context}\n\nQuestion: "${query}"`,
-        1024,
-        `You are a personal knowledge assistant. Answer the question using ONLY the information in the provided sources. Cite the sources you use inline with their bracketed numbers, e.g. [1] or [2][3]. If the sources do not contain the answer, say plainly that you don't have that information in your knowledge base — do not guess or use outside knowledge. Be concise.`
-      );
+      // Real Citations: the model cites which document backed each claim. Fall
+      // back to the prompt-cite path if the citations call fails for any reason.
+      let answer;
+      let citedIndexes = [];
+      try {
+        const out = await answerWithCitations({ model, system: SYSTEM, query, documents });
+        answer = out.text;
+        citedIndexes = out.citedIndexes;
+      } catch (e) {
+        const context = documents.map((d, i) => `[${i + 1}] ${d.title}\n${d.content}`).join("\n\n");
+        answer = await callAI(
+          model,
+          `Sources:\n${context}\n\nQuestion: "${query}"`,
+          1024,
+          `${SYSTEM} Cite the sources you use inline with their bracketed numbers, e.g. [1] or [2][3].`
+        );
+      }
 
-      res.json({ answer, sources });
+      const citedSet = new Set(citedIndexes);
+      res.json({ answer, sources: sources.map((s) => ({ ...s, cited: citedSet.has(s.n - 1) })) });
     } catch (err) {
       serverError(res, err);
     }

@@ -52,9 +52,10 @@ function renderSources(sources){
   document.getElementById('k-sources').innerHTML = sources.map(function(s){
     var num = s.n ? '<span style="font-family:var(--mono);color:var(--accent);margin-right:8px;">['+s.n+']</span>' : '';
     var kind = '<span style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);margin-left:8px;">'+esc(s.kind||'')+'</span>';
+    var citedBadge = s.cited ? '<span style="font-family:var(--mono);font-size:9px;color:var(--good);margin-left:8px;letter-spacing:0.08em;">&#10003; CITED</span>' : '';
     var title = esc(s.title || s.snippet || 'Untitled');
     var snip = s.snippet ? '<div style="font-size:12px;color:var(--muted);margin-top:4px;line-height:1.5;">'+esc(s.snippet.slice(0,220))+(s.snippet.length>220?'…':'')+'</div>' : '';
-    return '<div style="padding:10px 0;border-bottom:1px solid var(--line);">'+num+'<span style="font-size:13px;">'+title+'</span>'+kind+snip+'</div>';
+    return '<div style="padding:10px 0;border-bottom:1px solid var(--line);">'+num+'<span style="font-size:13px;">'+title+'</span>'+kind+citedBadge+snip+'</div>';
   }).join('');
   kShow('k-sources-wrap', true);
 }
