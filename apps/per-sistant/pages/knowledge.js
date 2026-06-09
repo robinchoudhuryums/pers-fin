@@ -47,6 +47,16 @@ ${navBar("/knowledge")}
   <div id="k-empty" class="section" style="display:none;">
     <div class="empty-msg" id="k-empty-msg"></div>
   </div>
+
+  <details class="section">
+    <summary style="cursor:pointer;font-size:14px;font-weight:600;">Capture to vault</summary>
+    <p style="font-size:11px;color:var(--muted);margin:8px 0;">Paste an email or jot a note &mdash; it's structured into a note or fact and committed to your vault. Requires a write-scoped token (<code>VAULT_GITHUB_WRITE_TOKEN</code>).</p>
+    <textarea id="k-capture-text" rows="3" placeholder="Paste or type something to save to your vault&hellip;" style="width:100%;min-height:64px;"></textarea>
+    <div class="actions" style="margin-top:8px;">
+      <button class="btn primary" id="k-capture-btn">Capture</button>
+      <span id="k-capture-status" style="font-family:var(--mono);font-size:10px;color:var(--muted);align-self:center;line-height:1.5;"></span>
+    </div>
+  </details>
 </div>
 
 <script>
@@ -173,10 +183,27 @@ async function reindex(){
   } catch(e){ btn.disabled = false; }
 }
 
+async function capture(){
+  var t = document.getElementById('k-capture-text').value.trim();
+  if(!t) return;
+  var st = document.getElementById('k-capture-status');
+  var btn = document.getElementById('k-capture-btn');
+  st.textContent = 'Saving…'; btn.disabled = true;
+  try {
+    var r = await fetch('/api/rag/capture', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})}).then(function(r){return r.json();});
+    if(r.error){ st.textContent = r.error; return; }
+    st.innerHTML = 'Saved as <code>'+esc(r.path)+'</code> ('+esc(r.type)+'). Searchable after the next sync.';
+    document.getElementById('k-capture-text').value = '';
+    loadKStatus();
+  } catch(e){ st.textContent = 'Capture failed.'; }
+  finally { btn.disabled = false; }
+}
+
 bindEvents([
   ['k-ask-btn','click',ask],
   ['k-search-btn','click',searchOnly],
   ['k-diagram-btn','click',diagram],
+  ['k-capture-btn','click',capture],
   ['k-mic-btn','click',function(){ startVoiceInput('k-query'); }],
   ['k-reindex-btn','click',reindex],
 ]);

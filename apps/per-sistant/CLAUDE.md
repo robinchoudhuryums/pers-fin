@@ -270,6 +270,8 @@ GET    /api/rag/status             # vault config + index counts + embeddings/ve
 POST   /api/rag/reindex            # background full reindex (vault re-walk + notes); 202, poll status; 409 if running
 GET    /api/rag/facts              # browse current structured facts (query: entity, all=1 to include expired)
 POST   /api/rag/diagram            # generate a Mermaid diagram from the knowledge base (facts+finance+prose)
+POST   /api/rag/capture            # structure raw text into a note/fact and COMMIT it to the vault repo
+                                   #   (needs VAULT_GITHUB_WRITE_TOKEN; 400 if unset)
 
 POST   /api/login           # Authenticate
 POST   /api/logout          # End session
@@ -297,6 +299,9 @@ GET    /sw.js               # Service worker
 - `VAULT_GITHUB_TOKEN` — read-only fine-grained GitHub PAT for the private
   Obsidian-vault repo. Used to pull changed markdown via the GitHub API (no
   clone). Never stored in the DB; repo/branch are set in Settings → Knowledge.
+- `VAULT_GITHUB_WRITE_TOKEN` — SEPARATE write-scoped PAT (Contents read+write)
+  for "Capture to vault" (`POST /api/rag/capture`). Kept distinct from the
+  read-only sync token (least privilege); capture is disabled until it's set.
 
 ## Database
 - Auto-migration runs on server startup — no manual SQL execution needed.
@@ -406,6 +411,13 @@ hoisted version.
     from cdn.jsdelivr.net (already in the CSP `scriptSrc` allowlist),
     `securityLevel:'strict'`; the Mermaid source is shown in a `<details>` and
     used as the fallback when render fails.
+  - **Capture-to-vault (Phase 3):** `POST /api/rag/capture` structures raw text
+    (pasted email, dictation) into a note or fact (AI when available, else a
+    raw note) and COMMITs it to the vault repo at `captures/<date>-<slug>-<rand>.md`
+    via `vault-sync.commitVaultFile`. Outward write gated on a SEPARATE
+    write-scoped `VAULT_GITHUB_WRITE_TOKEN` (the sync token stays read-only); 400
+    until set. Unique paths mean it's always a create. Kicks a background
+    syncVault so the capture is searchable soon. Capture box on the Knowledge page.
 
 ## Embedded Mode (under the unified shell)
 When loaded by `shell/index.js` instead of run standalone, the Per-sistant app

@@ -106,6 +106,41 @@ function titleFromPath(path) {
   return basename(path).replace(INDEXABLE_RE, "");
 }
 
+// --- Capture-to-vault (Phase 3) --------------------------------------------
+// Build a markdown file (frontmatter + body) for a captured note/fact, and
+// commit it to the vault repo. Writing uses a SEPARATE write-scoped token
+// (VAULT_GITHUB_WRITE_TOKEN) so the read-only sync token stays least-privilege.
+function slugify(s) {
+  return (
+    String(s || "note").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 50) || "note"
+  );
+}
+
+// Quote a YAML scalar only when it contains characters that would break the
+// flat frontmatter parser.
+function yamlScalar(v) {
+  const s = Array.isArray(v) ? v.join(", ") : String(v);
+  return /[:#\n"']/.test(s) ? JSON.stringify(s) : s;
+}
+
+function buildCaptureMarkdown({ type, title, entity, fields, tags, body }) {
+  const fm = [];
+  if (type === "fact") {
+    fm.push("type: fact");
+    if (entity) fm.push(`entity: ${yamlScalar(entity)}`);
+    for (const [k, v] of Object.entries(fields || {})) {
+      if (v == null || v === "") continue;
+      const key = String(k).toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
+      if (key) fm.push(`${key}: ${yamlScalar(v)}`);
+    }
+  } else if (title) {
+    fm.push(`title: ${yamlScalar(title)}`);
+  }
+  if (tags && tags.length) fm.push(`tags: [${tags.map((t) => yamlScalar(t)).join(", ")}]`);
+  const front = fm.length ? `---\n${fm.join("\n")}\n---\n\n` : "";
+  return front + (body || "");
+}
+
 // --- Structured facts (Phase 2c) -------------------------------------------
 // A vault file is a "fact file" when its frontmatter has `type: fact`/`facts`.
 // Reserved keys control metadata; every other flat key becomes a fact row.
@@ -309,6 +344,33 @@ async function listChangedFiles(repo, base, head, ctx) {
   return { changed, removed };
 }
 
+// Create a file in the vault repo (write-scoped token). Unique paths avoid
+// the need for a prior-sha update, so this is always a create.
+async function commitVaultFile(repo, branch, path, content, message, ctx) {
+  const f = (ctx && ctx.fetchImpl) || globalThis.fetch;
+  const encoded = path.split("/").map(encodeURIComponent).join("/");
+  const res = await f(`${GH_API}/repos/${repo}/contents/${encoded}`, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${ctx.token}`,
+      Accept: "application/vnd.github+json",
+      "User-Agent": "per-sistant-vault-sync",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      message,
+      content: Buffer.from(String(content), "utf8").toString("base64"),
+      branch,
+    }),
+  });
+  if (!res.ok) {
+    const b = await res.text().catch(() => "");
+    throw new Error(`GitHub ${res.status}: ${String(b).slice(0, 200)}`);
+  }
+  return res.json();
+}
+
 // ---------------------------------------------------------------------------
 // Orchestration
 // ---------------------------------------------------------------------------
@@ -436,4 +498,7 @@ module.exports = {
   isFactFile,
   extractFacts,
   normalizeDate,
+  slugify,
+  buildCaptureMarkdown,
+  commitVaultFile,
 };

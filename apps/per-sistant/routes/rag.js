@@ -523,6 +523,76 @@ module.exports = function ({ pool }) {
     })();
   });
 
+  // Capture: turn raw text (a pasted email, a dictated note) into a markdown
+  // note/fact and COMMIT it to the vault repo. Outward write — gated on a
+  // separate write-scoped token (VAULT_GITHUB_WRITE_TOKEN); refuses cleanly if
+  // it isn't set, so nothing can write to the repo until the operator opts in.
+  router.post("/api/rag/capture", async (req, res) => {
+    try {
+      const text = (req.body && req.body.text || "").toString().trim();
+      if (!text) return res.status(400).json({ error: "text is required." });
+
+      const writeToken = process.env.VAULT_GITHUB_WRITE_TOKEN;
+      if (!writeToken) {
+        return res.status(400).json({
+          error: "Capture is not configured. Set VAULT_GITHUB_WRITE_TOKEN (a write-scoped GitHub token for your vault repo).",
+        });
+      }
+      const cfg = await vaultSync.getVaultConfig(pool);
+      if (!cfg.vault_repo) {
+        return res.status(400).json({ error: "No vault repo configured. Set it in Settings → Knowledge." });
+      }
+
+      // Default: store the raw text as a note. If AI is on, let it structure the
+      // capture (note vs fact, fields, tags) — falling back to the raw note.
+      let entry = { type: req.body.kind === "fact" ? "fact" : "note", title: null, entity: null, fields: {}, tags: [], body: text };
+      const model = await getAIModelForFeature("rag");
+      if (model !== "off" && isAIAvailable()) {
+        try {
+          const raw = await callAI(
+            model,
+            `Captured text:\n"""\n${text}\n"""`,
+            800,
+            'Convert the captured text into a personal-knowledge entry. Return ONLY a JSON object: {"type":"note"|"fact","title":string,"entity":string|null,"fields":{key:value},"tags":[string],"body":string}. Use "fact" when the text is mostly discrete attributes about one entity (account, policy, device, person): put those attributes in "fields" (short snake_case keys) and the name in "entity". Otherwise use "note" with the prose in "body". Do not invent information.'
+          );
+          const m = raw.match(/\{[\s\S]*\}/);
+          if (m) {
+            const p = JSON.parse(m[0]);
+            entry = {
+              type: p.type === "fact" ? "fact" : "note",
+              title: p.title || null,
+              entity: p.entity || null,
+              fields: p.fields && typeof p.fields === "object" ? p.fields : {},
+              tags: Array.isArray(p.tags) ? p.tags.slice(0, 10) : [],
+              body: p.body || text,
+            };
+          }
+        } catch (e) {
+          /* fall back to the raw note */
+        }
+      }
+
+      const title = entry.title || entry.entity || text.slice(0, 40);
+      const md = vaultSync.buildCaptureMarkdown(entry);
+      const date = new Date().toISOString().slice(0, 10);
+      const rand = Math.random().toString(36).slice(2, 7);
+      const path = `captures/${date}-${vaultSync.slugify(title)}-${rand}.md`;
+      const result = await vaultSync.commitVaultFile(
+        cfg.vault_repo,
+        cfg.vault_branch || "main",
+        path,
+        md,
+        `capture: ${title}`,
+        { token: writeToken }
+      );
+      // Index it soon (non-blocking; next cron would also pick it up).
+      vaultSync.syncVault(pool).catch(() => {});
+      res.json({ ok: true, path, type: entry.type, html_url: (result.content && result.content.html_url) || null });
+    } catch (err) {
+      serverError(res, err);
+    }
+  });
+
   // Browse your own current structured facts. ?entity= filters by entity name;
   // ?all=1 includes expired/future-dated facts. Only 'normal' sensitivity.
   router.get("/api/rag/facts", async (req, res) => {
