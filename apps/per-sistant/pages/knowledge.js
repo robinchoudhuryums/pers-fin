@@ -64,6 +64,16 @@ ${navBar("/knowledge")}
     <p style="font-size:11px;color:var(--muted);margin:8px 0;">Current structured facts from your vault. Mark one verified once you've confirmed it's correct.</p>
     <div id="k-facts-list"></div>
   </details>
+
+  <details class="section" id="k-secret-details">
+    <summary style="cursor:pointer;font-size:14px;font-weight:600;">Secret lookup</summary>
+    <p style="font-size:11px;color:var(--muted);margin:8px 0;">Find items flagged <code>sensitivity: secret</code> in your vault. Shown only to you &mdash; never embedded and never sent to any AI.</p>
+    <div style="display:flex;gap:8px;">
+      <input type="text" id="k-secret-q" placeholder="e.g. account number, PIN&hellip;" style="flex:1;">
+      <button class="btn" id="k-secret-btn">Look up</button>
+    </div>
+    <div id="k-secret-results" style="margin-top:8px;"></div>
+  </details>
 </div>
 
 <script>
@@ -234,6 +244,25 @@ async function loadFacts(){
   } catch(e){ el.textContent = 'Could not load facts.'; }
 }
 document.getElementById('k-facts-details').addEventListener('toggle', function(){ if(this.open) loadFacts(); });
+
+async function secretLookup(){
+  var q = document.getElementById('k-secret-q').value.trim();
+  if(!q) return;
+  var el = document.getElementById('k-secret-results'); el.textContent = 'Looking…';
+  try {
+    var r = await fetch('/api/rag/secret-lookup?q='+encodeURIComponent(q)).then(function(r){return r.json();});
+    if(r.error){ el.textContent = r.error; return; }
+    if(!r.results || !r.results.length){ el.innerHTML = '<div class="empty-msg">No secret items matched.</div>'; return; }
+    el.innerHTML = r.results.map(function(s){
+      return '<div style="padding:8px 0;border-bottom:1px solid var(--line);">'
+        +'<div style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);">'+esc(s.kind)+'</div>'
+        +'<div style="font-size:13px;font-weight:600;">'+esc(s.title)+'</div>'
+        +'<pre style="white-space:pre-wrap;margin:4px 0 0;font-family:var(--mono);font-size:12px;">'+esc(s.content)+'</pre></div>';
+    }).join('');
+  } catch(e){ el.textContent = 'Lookup failed.'; }
+}
+bindEvents([['k-secret-btn','click',secretLookup]]);
+document.getElementById('k-secret-q').addEventListener('keydown',function(e){ if(e.key==='Enter'){ e.preventDefault(); secretLookup(); } });
 document.addEventListener('click', function(e){
   var b = e.target.closest('[data-fact-verify]'); if(!b) return;
   var newV = b.dataset.verified !== '1';

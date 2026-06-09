@@ -639,6 +639,38 @@ module.exports = function ({ pool }) {
     }
   });
 
+  // Secret tier: local exact/substring match over sensitivity='secret' items,
+  // returned VERBATIM to the user. This is a pure DB read with NO model call —
+  // and the AI retrieval paths (buildRetrievalQuery, buildFactsQuery,
+  // perfinFinanceSnapshot) all require sensitivity='normal', so secret content
+  // is never embedded and never enters a prompt. Stored in your own DB, never
+  // sent to Voyage/Anthropic.
+  router.get("/api/rag/secret-lookup", async (req, res) => {
+    try {
+      const q = (req.query.q || "").toString().trim();
+      if (!q) return res.status(400).json({ error: "Query is required." });
+      const like = `%${q}%`;
+      const results = [];
+      try {
+        const docs = await pool.query(
+          "SELECT title, content FROM documents WHERE deleted_at IS NULL AND sensitivity = 'secret' AND (title ILIKE $1 OR content ILIKE $1) ORDER BY updated_at DESC LIMIT 20",
+          [like]
+        );
+        docs.rows.forEach((d) => results.push({ kind: "document", title: d.title || "Untitled", content: d.content }));
+      } catch {}
+      try {
+        const facts = await pool.query(
+          "SELECT entity, attribute, value FROM facts WHERE deleted_at IS NULL AND sensitivity = 'secret' AND (entity ILIKE $1 OR attribute ILIKE $1 OR value ILIKE $1) ORDER BY entity LIMIT 50",
+          [like]
+        );
+        facts.rows.forEach((f) => results.push({ kind: "fact", title: `${f.entity} — ${f.attribute}`, content: f.value }));
+      } catch {}
+      res.json({ results, note: "Local match over secret items — never embedded, never sent to AI." });
+    } catch (err) {
+      serverError(res, err);
+    }
+  });
+
   // Browse your own current structured facts. ?entity= filters by entity name;
   // ?all=1 includes expired/future-dated facts. Only 'normal' sensitivity.
   router.get("/api/rag/facts", async (req, res) => {

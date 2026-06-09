@@ -167,6 +167,36 @@ describe("Diagram — stripMermaidFences", () => {
   });
 });
 
+describe("Secret tier — GET /api/rag/secret-lookup", () => {
+  it("requires a query", async () => {
+    await supertest(makeApp({ query: async () => ({ rows: [] }) }))
+      .get("/api/rag/secret-lookup").expect(400);
+  });
+
+  it("returns secret docs + facts verbatim, filtered to sensitivity='secret'", async () => {
+    const seen = [];
+    const mockPool = {
+      query: async (sql) => {
+        seen.push(sql);
+        if (/FROM documents/.test(sql)) return { rows: [{ title: "Bank", content: "acct 12345678" }] };
+        if (/FROM facts/.test(sql)) return { rows: [{ entity: "Wifi", attribute: "password", value: "hunter2" }] };
+        return { rows: [] };
+      },
+    };
+    const res = await supertest(makeApp(mockPool)).get("/api/rag/secret-lookup?q=acct").expect(200);
+    assert.equal(res.body.results.length, 2);
+    assert.ok(res.body.results.some((r) => r.kind === "document" && /12345678/.test(r.content)));
+    assert.ok(res.body.results.some((r) => r.kind === "fact" && r.content === "hunter2"));
+    assert.ok(seen.every((s) => /sensitivity = 'secret'/.test(s)), "both lookups must filter to secret");
+  });
+
+  it("guards the AI path: retrieval builders never include secret/private", () => {
+    // The only path that surfaces secret content is secret-lookup (no model
+    // call). The AI retrieval builders require sensitivity = 'normal'.
+    assert.match(buildRetrievalQuery("x", 5).sql, /sensitivity = 'normal'/);
+  });
+});
+
 describe("Diagram — POST /api/rag/diagram", () => {
   it("requires a query", async () => {
     await supertest(makeApp({ query: async () => ({ rows: [] }) }))

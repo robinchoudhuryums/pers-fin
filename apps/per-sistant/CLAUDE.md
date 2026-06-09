@@ -270,6 +270,7 @@ GET    /api/rag/status             # vault config + index counts + embeddings/ve
 POST   /api/rag/reindex            # background full reindex (vault re-walk + notes); 202, poll status; 409 if running
 GET    /api/rag/facts              # browse current structured facts (query: entity, all=1 to include expired); includes `verified`
 POST   /api/rag/facts/verify       # mark/unmark a fact verified (body: entity, attribute, value, verified?)
+GET    /api/rag/secret-lookup       # local exact match over sensitivity='secret' items; never embedded/sent to AI
 POST   /api/rag/diagram            # generate a Mermaid diagram from the knowledge base (facts+finance+prose)
 POST   /api/rag/capture            # structure raw text into a note/fact and COMMIT it to the vault repo
                                    #   (needs VAULT_GITHUB_WRITE_TOKEN; 400 if unset)
@@ -436,6 +437,15 @@ hoisted version.
     queries expose `verified` via an EXISTS subquery; `factsToDocument`
     annotates verified facts `[verified]`; `POST /api/rag/facts/verify`
     sets/clears it; the Knowledge "Your facts" list has per-fact Verify toggles.
+  - **Secret tier (Phase 4):** items flagged `sensitivity: secret` (vault
+    frontmatter `sensitivity: secret`, or `embed:false`/`private:true` →
+    private) are stored but NEVER embedded and NEVER sent to any AI — the AI
+    retrieval builders (`buildRetrievalQuery`, `buildFactsQuery`,
+    `perfinFinanceSnapshot`) all require `sensitivity='normal'`. `GET
+    /api/rag/secret-lookup` is the only path that surfaces secret items: a pure
+    local DB substring match returned verbatim to the user, no model call. UI:
+    "Secret lookup" box on the Knowledge page. (Stored in your own Neon DB; the
+    tier's guarantee is "never sent to a third-party AI," not "never persisted.")
 
 ## Embedded Mode (under the unified shell)
 When loaded by `shell/index.js` instead of run standalone, the Per-sistant app
