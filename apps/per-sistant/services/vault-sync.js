@@ -213,7 +213,19 @@ async function embedSource(pool, kind, id, text) {
 
   const parts = chunkMarkdown(body);
   if (!parts.length) {
-    await clearSource(pool, kind, id);
+    // K5: no chunks to embed, but RECORD the content hash so an unchanged empty
+    // source isn't re-processed every sync (the early-return above engages next
+    // time). Drop any prior chunks, then upsert embed_state with chunk_count 0.
+    // (Plain clearSource deleted the embed_state row too, so the hash was never
+    // remembered and every sync re-ran this branch.)
+    await pool.query("DELETE FROM chunks WHERE source_kind = $1 AND source_id = $2", [kind, id]);
+    await pool.query(
+      `INSERT INTO embed_state (source_kind, source_id, content_sha, chunk_count, embedded_at)
+       VALUES ($1, $2, $3, 0, now())
+       ON CONFLICT (source_kind, source_id)
+       DO UPDATE SET content_sha = EXCLUDED.content_sha, chunk_count = 0, embedded_at = now()`,
+      [kind, id, sha]
+    );
     return { chunks: 0 };
   }
   const vectors = await embeddings.embed(parts, { inputType: "document" });
@@ -423,6 +435,13 @@ async function syncVault(pool, opts = {}) {
       const sensitivity = resolveSensitivity(meta);
       const title = (meta.title && String(meta.title)) || titleFromPath(path);
       const tags = Array.isArray(meta.tags) ? meta.tags : meta.tags ? [String(meta.tags)] : null;
+      // K1: this path is NOT a fact file. If it WAS one previously (the user
+      // dropped `type: fact`), its extracted fact rows would otherwise linger
+      // and keep being injected into answers as authoritative "Known facts" —
+      // the fact→prose transition was unhandled (only repo-removal cleared
+      // facts). Clear them here so the conversion is symmetric with prose→fact
+      // (which calls removeVaultDocument). No-op when the file was never a fact file.
+      await clearFacts(pool, path);
       const docId = await upsertVaultDocument(pool, path, title, body, sensitivity, tags);
       if (sensitivity === "normal") {
         const r = await embedSource(pool, "document", docId, body);
@@ -459,18 +478,29 @@ async function syncVault(pool, opts = {}) {
 // for notes that were deleted. Cheap on re-run thanks to the content-hash skip.
 async function syncNotes(pool) {
   if (!embeddings.isConfigured() || !(await vectorReady(pool))) return { ok: false, reason: "not_ready" };
-  let embedded = 0;
-  let skipped = 0;
-  const notes = await pool.query("SELECT id, title, content FROM notes WHERE deleted_at IS NULL");
-  for (const n of notes.rows) {
-    const text = (n.title ? n.title + "\n\n" : "") + (n.content || "");
-    const r = await embedSource(pool, "note", n.id, text);
-    if (r.skipped) skipped++;
-    else embedded++;
+  // K4: hold the same single-flight lock syncVault uses so the hourly cron and a
+  // concurrent POST /api/rag/reindex can't run overlapping note-embeds. The cron
+  // only checks isSyncing() once (before syncVault), leaving a window during its
+  // syncNotes phase where a reindex could slip in; self-locking here closes it.
+  // Writes are idempotent regardless, so a busy no-op is safely retried next tick.
+  if (_syncing) return { ok: false, reason: "busy" };
+  _syncing = true;
+  try {
+    let embedded = 0;
+    let skipped = 0;
+    const notes = await pool.query("SELECT id, title, content FROM notes WHERE deleted_at IS NULL");
+    for (const n of notes.rows) {
+      const text = (n.title ? n.title + "\n\n" : "") + (n.content || "");
+      const r = await embedSource(pool, "note", n.id, text);
+      if (r.skipped) skipped++;
+      else embedded++;
+    }
+    await pool.query("DELETE FROM chunks WHERE source_kind = 'note' AND source_id NOT IN (SELECT id FROM notes WHERE deleted_at IS NULL)");
+    await pool.query("DELETE FROM embed_state WHERE source_kind = 'note' AND source_id NOT IN (SELECT id FROM notes WHERE deleted_at IS NULL)");
+    return { ok: true, embedded, skipped, total: notes.rows.length };
+  } finally {
+    _syncing = false;
   }
-  await pool.query("DELETE FROM chunks WHERE source_kind = 'note' AND source_id NOT IN (SELECT id FROM notes WHERE deleted_at IS NULL)");
-  await pool.query("DELETE FROM embed_state WHERE source_kind = 'note' AND source_id NOT IN (SELECT id FROM notes WHERE deleted_at IS NULL)");
-  return { ok: true, embedded, skipped, total: notes.rows.length };
 }
 
 // Full reconcile — re-walk the entire vault + all notes (content-hash skip
