@@ -327,9 +327,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (846 tests as of latest); use
+  Perfin and Per-sistant test files (856 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 846 tests across 29 test files (incl.
+  Current count: 856 tests across 30 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -794,6 +794,14 @@ shell/
   to iOS Add-to-Home-Screen instructions when neither path is available.
 - **Mobile polish** (Phase D): viewport-fit=cover for iOS notch, dual light/dark
   `theme-color` meta, 40/44px (desktop/mobile) touch-target minimums on buttons.
+- **Safe-area pass + pull-to-refresh** (PWA Phase-0 follow-up): Perfin's body
+  (and the shell login/landing) pad by `env(safe-area-inset-*)` so the top nav
+  clears the iPhone status bar/notch under viewport-fit=cover (Per-sistant
+  deliberately omits viewport-fit and auto-insets — don't "fix" the asymmetry).
+  Both apps' shared JS ship `initPullToRefresh`: standalone-display-mode-only,
+  passive-listener drag-down-from-top → ring indicator → reload, with
+  overlay/pyramid/canvas exclusions (iOS home-screen PWAs have no native
+  pull-to-refresh gesture).
 - **Mobile navigation**: at ≤640px the 7-link top nav collapses behind a
   **hamburger** (drawer drops under a single-row bar; closes on link tap /
   outside click / Esc) and a fixed **bottom tab bar** surfaces the 5 primary
@@ -1115,7 +1123,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 846 tests passing across 29 test files (Perfin + Per-sistant)
+- 856 tests passing across 30 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash

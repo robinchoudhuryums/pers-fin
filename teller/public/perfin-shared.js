@@ -361,3 +361,69 @@
   initDebugOverlay();
   win.perfinDebugEnabled = debugEnabled;
 })(window);
+
+// ---------------------------------------------------------------------------
+// Pull-to-refresh (standalone PWA mode only). iOS home-screen PWAs don't get
+// Safari's native pull-to-refresh, so this fills the gap: drag down from the
+// very top of the page past the threshold and release to reload. Inactive in
+// regular browser tabs (the browser's own gesture exists there) and while a
+// modal/panel is open. Passive listeners only — never blocks scrolling.
+// ---------------------------------------------------------------------------
+(function initPullToRefresh() {
+  try {
+    if (!window.matchMedia || !window.matchMedia('(display-mode: standalone)').matches) return;
+  } catch (_) { return; }
+  var THRESHOLD = 75, MAX_PULL = 130;
+  var startY = 0, startX = 0, dist = 0, active = false, refreshing = false, el = null;
+  function indicator() {
+    if (el) return el;
+    el = document.createElement('div');
+    el.id = 'ptr-indicator';
+    el.setAttribute('aria-hidden', 'true');
+    var ring = document.createElement('div');
+    ring.className = 'ptr-ring';
+    el.appendChild(ring);
+    document.body.appendChild(el);
+    return el;
+  }
+  document.addEventListener('touchstart', function (e) {
+    if (refreshing || e.touches.length !== 1) return;
+    var scroller = document.scrollingElement || document.documentElement;
+    if (scroller.scrollTop > 0) return;
+    // Don't hijack pulls that start inside overlays/panels with their own scroll.
+    if (e.target.closest && e.target.closest('.notif-panel, .modal-backdrop, .modal-overlay, dialog, .pyramid-stage, canvas')) return;
+    startY = e.touches[0].clientY;
+    startX = e.touches[0].clientX;
+    dist = 0; active = true;
+  }, { passive: true });
+  document.addEventListener('touchmove', function (e) {
+    if (!active || refreshing) return;
+    var dy = e.touches[0].clientY - startY;
+    var dx = Math.abs(e.touches[0].clientX - startX);
+    if (dy <= 0 || dx > Math.abs(dy)) { if (dy < -10) active = false; return; }
+    dist = Math.min(dy, MAX_PULL);
+    if (dist > 12) {
+      var ind = indicator();
+      ind.style.opacity = String(Math.min(1, dist / THRESHOLD));
+      ind.style.transform = 'translateX(-50%) translateY(' + (dist * 0.45) + 'px) rotate(' + (dist * 2.2) + 'deg)';
+      if (dist >= THRESHOLD) ind.classList.add('ptr-ready');
+      else ind.classList.remove('ptr-ready');
+    }
+  }, { passive: true });
+  document.addEventListener('touchend', function () {
+    if (!active || refreshing) return;
+    active = false;
+    if (dist >= THRESHOLD) {
+      refreshing = true;
+      var ind = indicator();
+      ind.classList.add('ptr-refreshing');
+      ind.style.transform = 'translateX(-50%) translateY(28px)';
+      location.reload();
+    } else if (el) {
+      el.style.opacity = '0';
+      el.classList.remove('ptr-ready');
+      el.style.transform = 'translateX(-50%)';
+    }
+    dist = 0;
+  }, { passive: true });
+})();
