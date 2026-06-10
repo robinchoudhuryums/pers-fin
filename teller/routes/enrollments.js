@@ -824,6 +824,7 @@ router.post("/api/sync-balances", async (_req, res) => {
     // freshness. Lazy-required to avoid a circular import via routes/investments.
     let plaidResult = null;
     let holdingsResult = null;
+    let flowsResult = null;
     let plaidThrew = null;
     try {
       const inv = require("./investments");
@@ -835,6 +836,10 @@ router.post("/api/sync-balances", async (_req, res) => {
       // (notably right after a fresh-start reset, when those rows were wiped).
       if (typeof inv.syncAllPlaidHoldings === "function") {
         holdingsResult = await inv.syncAllPlaidHoldings();
+      }
+      // And external cash flows (TWR/XIRR) — idempotent full-window re-pull.
+      if (typeof inv.syncAllPlaidInvestmentFlows === "function") {
+        flowsResult = await inv.syncAllPlaidInvestmentFlows();
       }
     } catch (e) {
       // A wholesale throw (vs. per-item errors collected inside the helpers)
@@ -860,6 +865,8 @@ router.post("/api/sync-balances", async (_req, res) => {
       holdings_updated: holdingsResult?.holdings_updated || 0,
       holdings_accounts_updated: holdingsResult?.accounts_updated || 0,
       holdings_errors: holdingsResult?.errors?.length ? holdingsResult.errors : undefined,
+      flows_added: flowsResult?.flows_added || 0,
+      flows_errors: flowsResult?.errors?.length ? flowsResult.errors : undefined,
     });
   } catch (err) {
     console.error("sync-balances error:", err.message);

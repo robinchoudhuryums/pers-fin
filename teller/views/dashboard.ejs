@@ -553,6 +553,24 @@
             </div>
             <div id="invperf-history-chart" style="margin-top:8px;"></div>
             <div id="invperf-history-stats" style="margin-top:6px;font-size:11px;color:var(--text-secondary);"></div>
+            <div id="invperf-twr-stats" style="margin-top:4px;font-size:11px;color:var(--text-secondary);"></div>
+            <details id="invflow-log" style="margin-top:8px;">
+              <summary style="cursor:pointer;font-size:11px;color:var(--text-muted);">Log contribution / withdrawal</summary>
+              <form id="invflow-form" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center;font-size:11px;">
+                <select id="invflow-account" required style="max-width:160px;"><option value="">Account…</option></select>
+                <select id="invflow-type">
+                  <option value="contribution">Contribution</option>
+                  <option value="withdrawal">Withdrawal</option>
+                </select>
+                <input id="invflow-date" type="date" required>
+                <input id="invflow-amount" type="number" step="0.01" min="0.01" placeholder="Amount" inputmode="decimal" required style="width:100px;">
+                <button type="submit">Save</button>
+              </form>
+              <div style="margin-top:4px;font-size:10px;color:var(--text-muted);">
+                For accounts Plaid can't see (Teller-linked / manual). Plaid-linked
+                accounts get deposits &amp; withdrawals synced automatically.
+              </div>
+            </details>
           </div>
           <details style="margin-top:10px;">
             <summary style="cursor:pointer;font-size:11px;color:var(--text-muted);">Top winners &amp; losers</summary>
@@ -1810,8 +1828,86 @@
           // Contributions count as portfolio growth here (value-based line);
           // the cost-basis Total return row above is the contribution-adjusted one.
           statsEl.innerHTML = parts.join(' &nbsp;·&nbsp; ');
+
+          // Flow-adjusted figures (TWR cumulative for the window, XIRR
+          // annualized), scoped to flow-covered accounts.
+          var twrEl = document.getElementById('invperf-twr-stats');
+          var twrParts = [];
+          if (data.twr_pct !== null && data.twr_pct !== undefined) {
+            var ts = data.twr_pct >= 0 ? '+' : '';
+            twrParts.push('TWR <strong style="color:' + (data.twr_pct >= 0 ? 'var(--green)' : 'var(--red)') + ';" ' +
+              'title="Time-weighted return: contributions and withdrawals removed, pure investment performance">' +
+              ts + data.twr_pct.toFixed(1) + '%</strong>');
+          }
+          if (data.xirr_pct !== null && data.xirr_pct !== undefined) {
+            var xs = data.xirr_pct >= 0 ? '+' : '';
+            twrParts.push('XIRR <strong title="Money-weighted (annualized): what your actual dollars earned per year">' +
+              xs + data.xirr_pct.toFixed(1) + '%/yr</strong>');
+          }
+          if (twrParts.length && data.flow_coverage && data.flow_coverage.scope === 'partial') {
+            twrParts.push('<span style="color:var(--text-muted);">(covers ' +
+              data.flow_coverage.coverage_pct.toFixed(0) + '% of portfolio — log flows for the rest)</span>');
+          }
+          if (twrEl) twrEl.innerHTML = twrParts.join(' &nbsp;·&nbsp; ');
         } catch (e) { /* leave hidden */ }
       }
+
+      // Manual flow logging (Teller-linked / manual accounts). Account list
+      // is fetched lazily on first open; Plaid-synced accounts are excluded
+      // (their flows come from investmentsTransactionsGet automatically).
+      (function wireFlowForm() {
+        var det = document.getElementById('invflow-log');
+        var form = document.getElementById('invflow-form');
+        var acctSel = document.getElementById('invflow-account');
+        if (!det || !form || !acctSel) return;
+        document.getElementById('invflow-date').value = new Date().toISOString().slice(0, 10);
+        var loaded = false;
+        det.addEventListener('toggle', async function() {
+          if (!det.open || loaded) return;
+          loaded = true;
+          try {
+            var res = await apiFetch('/api/investments');
+            if (!res.ok) return;
+            var data = await res.json();
+            (data.accounts || []).forEach(function(a) {
+              if (a.source === 'plaid') return; // auto-synced — manual entry would double-count
+              var opt = document.createElement('option');
+              // Teller-linked accounts live in linked_accounts → source 'linked';
+              // manual investment accounts live in investment_accounts.
+              opt.value = (a.source === 'teller' ? 'linked' : 'investment') + ':' + a.id;
+              opt.textContent = (a.name || 'Account') + (a.institution ? ' — ' + a.institution : '');
+              acctSel.appendChild(opt);
+            });
+          } catch (e) {}
+        });
+        form.addEventListener('submit', async function(e) {
+          e.preventDefault();
+          var sel = acctSel.value.split(':');
+          if (sel.length !== 2) { showMsg('Pick an account', false); return; }
+          try {
+            var res = await apiFetch('/api/investment-flows', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                source: sel[0],
+                source_id: parseInt(sel[1]),
+                flow_date: document.getElementById('invflow-date').value,
+                amount: parseFloat(document.getElementById('invflow-amount').value),
+                flow_type: document.getElementById('invflow-type').value,
+              }),
+            });
+            if (!res.ok) {
+              var err = await res.json().catch(function() { return {}; });
+              showMsg(err.error || 'Could not save flow', false);
+              return;
+            }
+            showMsg('Flow logged', true);
+            document.getElementById('invflow-amount').value = '';
+            var active = document.querySelector('.invperf-range-btn.active');
+            load(active ? parseInt(active.getAttribute('data-months')) || 12 : 12);
+          } catch (e) { showMsg('Could not save flow', false); }
+        });
+      })();
 
       document.getElementById('invperf-history-range').addEventListener('click', function(e) {
         var btn = e.target.closest('.invperf-range-btn');

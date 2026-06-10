@@ -733,6 +733,29 @@ async function runMigrations() {
       PRIMARY KEY (symbol, price_date)
     )`);
 
+    // External cash flows for investment accounts (TWR/XIRR). Plaid rows come
+    // from investmentsTransactionsGet (deposits/withdrawals/in-kind transfers
+    // — dividends and buy/sell churn are RETURN, not flows, and are never
+    // inserted here); manual rows from POST /api/investment-flows for
+    // accounts Plaid can't see (Teller-linked, manual). `amount` is signed:
+    // positive = money INTO the portfolio, negative = out. Polymorphic
+    // (source, source_id) reference, same convention as
+    // account_balance_snapshots.
+    await client.query(`CREATE TABLE IF NOT EXISTS investment_flows (
+      id          SERIAL PRIMARY KEY,
+      source      TEXT NOT NULL DEFAULT 'investment' CHECK (source IN ('linked', 'investment')),
+      source_id   INT NOT NULL,
+      flow_date   DATE NOT NULL,
+      amount      NUMERIC(14,2) NOT NULL,
+      flow_type   TEXT NOT NULL CHECK (flow_type IN ('contribution', 'withdrawal', 'transfer_in', 'transfer_out')),
+      provenance  TEXT NOT NULL DEFAULT 'manual' CHECK (provenance IN ('plaid', 'manual')),
+      plaid_investment_transaction_id TEXT UNIQUE,
+      name        TEXT,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_inv_flows_src_date ON investment_flows (source, source_id, flow_date)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_inv_flows_date ON investment_flows (flow_date)`);
+
     // Scheduled-job heartbeat table (F4 — missed-job detection). One row per
     // background job in teller/startup.js, UPSERTed by services/job-health.js
     // when ticks are flushed. The `_watchdog` row stores the last-notified

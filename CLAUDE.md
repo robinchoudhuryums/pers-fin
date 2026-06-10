@@ -327,9 +327,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (812 tests as of latest); use
+  Perfin and Per-sistant test files (837 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 812 tests across 27 test files (incl.
+  Current count: 837 tests across 28 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -503,8 +503,13 @@ shell/
   card even when the cost-basis "Total return" row stays hidden. The
   benchmark line + "vs market" excess figure drop out gracefully when the
   benchmark source (Stooq, keyless) is unreachable. Portfolio line is
-  value-based (contributions count as growth); the cost-basis Total return
-  remains the contribution-adjusted figure.
+  value-based (contributions count as growth); below it the card shows the
+  flow-adjusted figures — **TWR** (cumulative for the window) and **XIRR**
+  (annualized) — computed over flow-covered accounts, with a "(covers N% of
+  portfolio)" label when coverage is partial. A "Log contribution /
+  withdrawal" form (collapsed) posts manual flows for Teller-linked/manual
+  accounts; Plaid-linked accounts get their flows synced automatically and
+  are excluded from the dropdown so manual entry can't double-count.
 - **Target Allocation editor** (Settings → Target Allocation): per-
   asset-class target weights as `{security_type: pct}` rows the user
   can add/edit/remove. Sum indicator turns green at ≈100%, red above
@@ -1110,7 +1115,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 812 tests passing across 27 test files (Perfin + Per-sistant)
+- 837 tests passing across 28 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash
@@ -1133,7 +1138,9 @@ POST /api/sync-balances    # fetch latest account balances. Refreshes Teller
                            # Response: { accounts_updated, errors?,
                            # plaid_accounts_updated, plaid_errors?,
                            # holdings_updated, holdings_accounts_updated,
-                           # holdings_errors? }. plaid_errors now also carries
+                           # holdings_errors?, flows_added, flows_errors? }.
+                           # Also re-pulls investment cash flows
+                           # (syncAllPlaidInvestmentFlows) for TWR/XIRR. plaid_errors now also carries
                            # surfaced liabilities failures ("liabilities: <code>")
                            # so a card whose APR/limit won't load is visible.
 POST /api/detect           # run subscription detection
@@ -1334,10 +1341,31 @@ GET  /api/investments/performance-history # portfolio value series vs S&P 500
                                   # direction as getNetWorth), per-account forward-filled.
                                   # Benchmark from benchmark_prices (services/benchmarks.js);
                                   # response carries benchmark:null gracefully when the
-                                  # source is unavailable. Returns are point-to-point on
-                                  # VALUE (contributions count as growth — by design; the
-                                  # contribution-adjusted figure is /performance's
-                                  # cost-basis return).
+                                  # source is unavailable. portfolio_return_pct is
+                                  # point-to-point on VALUE (contributions count as
+                                  # growth); the response ALSO carries flow-adjusted
+                                  # figures: twr_pct (true time-weighted return — daily
+                                  # chain-linked, exact since valuations are daily) and
+                                  # xirr_pct (annualized money-weighted return), both
+                                  # computed over FLOW-COVERED accounts only (Plaid-synced
+                                  # + any account with manual flows) with a flow_coverage
+                                  # block ({coverage_pct, flows_count, net_flows, scope:
+                                  # all|partial|none}) so partial coverage is explicit
+                                  # rather than silently wrong.
+POST /api/plaid/sync-flows # sync external cash flows (deposits/withdrawals/in-kind
+                           # transfers) from Plaid investmentsTransactionsGet into
+                           # investment_flows. Full ~24-month window every run, idempotent
+                           # via UNIQUE plaid_investment_transaction_id (no watermark —
+                           # a newly linked item can't silently lose history). Dividends,
+                           # interest, capital gains, buys/sells/fees are RETURN
+                           # components, never flows (classifyPlaidFlow).
+GET  /api/investment-flows # list flows (query: months default 24) with account names
+POST /api/investment-flows # log a manual flow for accounts Plaid can't see
+                           # (body: source 'investment'|'linked', source_id, flow_date,
+                           # amount, flow_type contribution|withdrawal — sign derived
+                           # from flow_type regardless of submitted sign)
+DELETE /api/investment-flows/:id # delete a MANUAL flow (plaid rows 404 — they'd
+                           # resurrect on the next sync)
 GET  /api/whats-new        # "since you last looked" feed — new transactions, balance deltas,
                            # new subscriptions, and recent notifications since last_dashboard_view_at
 POST /api/whats-new/seen   # advance last_dashboard_view_at to now (idempotent)
@@ -1503,7 +1531,10 @@ standalone-mode fallback if either app is run on its own Render service.
   `ai_audit_log`, `account_balance_snapshots`, `watchlist_items`, `credit_scores`,
   `job_runs` (scheduled-job heartbeats — one row per background job, UPSERTed by
   `services/job-health.js`; the `_watchdog` row stores the last-notified
-  missed-job signature), `benchmark_prices` (S&P 500 daily closes cached from
+  missed-job signature), `investment_flows` (external cash flows for
+  TWR/XIRR — polymorphic (source, source_id) like account_balance_snapshots,
+  signed amount (positive = into the portfolio), provenance 'plaid' (UNIQUE
+  plaid_investment_transaction_id) or 'manual'), `benchmark_prices` (S&P 500 daily closes cached from
   Stooq by `services/benchmarks.js` — PK (symbol, price_date); read by
   `GET /api/investments/performance-history`)
 - `user_settings`: single-row pattern (CHECK id = 1) for app preferences
@@ -1846,7 +1877,8 @@ embedded mode).
 - **Bank auto-sync** (Phase A): every 1 hour, checks `auto_sync_enabled` and whether
   `auto_sync_interval_hours` has elapsed since `last_auto_sync_at`. When due, calls
   `syncAllEnrollments()` (Teller) then `syncAllPlaidTransactions()` (Plaid) then
-  `syncAllPlaidHoldings()` (Plaid investments) then
+  `syncAllPlaidHoldings()` (Plaid investments) then `syncAllPlaidInvestmentFlows()`
+  (external cash flows for TWR/XIRR) then
   `syncAllBalances()` then `runCategorize()` in-process — never via HTTP
   self-fetch, so API_KEY-protected deployments don't 401 against themselves.
   The trailing `runCategorize()` step gives a categorization sweep on every
@@ -2170,7 +2202,7 @@ income module, and bill-calendar income detection.
   Every route module that the scheduler invokes exports a callable helper
   alongside its Express router:
   - `routes/enrollments.js` → `syncAllEnrollments`, `syncAllBalances`, `reconcileTeller`, `recordSyncResult`
-  - `routes/investments.js` → `syncAllPlaidTransactions`, `syncAllPlaidBalances`, `syncAllPlaidHoldings`, `reconcilePlaidTransactions`
+  - `routes/investments.js` → `syncAllPlaidTransactions`, `syncAllPlaidBalances`, `syncAllPlaidHoldings`, `syncAllPlaidInvestmentFlows`, `reconcilePlaidTransactions`
   - `routes/subscriptions.js` → `runSubscriptionDetection`
   - `routes/categorize.js` → `runCategorize`
   - `routes/insights.js` → `generateInsights`
