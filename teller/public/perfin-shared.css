@@ -5,7 +5,9 @@
 :root {
   --bg: #080b12; --surface: rgba(255,255,255,0.04); --surface-2: rgba(255,255,255,0.07);
   --border: rgba(255,255,255,0.08); --border-hover: rgba(255,255,255,0.18);
-  --text: #f0ebe3; --text-muted: rgba(240,235,227,0.55);
+  /* --text-muted at 0.70 alpha ≈ 5.7:1 on --bg (WCAG AA for normal text);
+     the previous 0.55 sat near 3.4:1 and failed for small secondary text. */
+  --text: #f0ebe3; --text-muted: rgba(240,235,227,0.70);
   --warm: #d4a574; --warm-glow: #c8856c; --teal: #5a8f8f;
   --green: #6fcf97; --green-bg: rgba(111,207,151,0.1);
   --red: #eb6b6b; --red-bg: rgba(235,107,107,0.1);
@@ -16,8 +18,11 @@
 [data-theme="light"] {
   --bg: #f5f2ed; --surface: rgba(0,0,0,0.03); --surface-2: rgba(0,0,0,0.06);
   --border: rgba(0,0,0,0.10); --border-hover: rgba(0,0,0,0.20);
-  --text: #1a1a2e; --text-muted: rgba(26,26,46,0.65);
-  --warm: #b07a4a; --warm-glow: #a0684c; --teal: #3d7272;
+  /* Light-theme contrast floors: muted text at 0.75 alpha ≈ 6.5:1 on --bg;
+     teal darkened #3d7272 → #336363 (≈4.9:1 → ≈6.1:1) since it's used for
+     11-12px text (.notif-mark-all, card values) that needs 4.5:1 headroom. */
+  --text: #1a1a2e; --text-muted: rgba(26,26,46,0.75);
+  --warm: #b07a4a; --warm-glow: #a0684c; --teal: #336363;
   --green: #2d9f5f; --green-bg: rgba(45,159,95,0.1);
   --red: #c94444; --red-bg: rgba(201,68,68,0.1);
   --yellow: #c49a2a; --yellow-bg: rgba(196,154,42,0.1);

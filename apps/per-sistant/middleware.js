@@ -59,12 +59,21 @@ function setup(app) {
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
-        scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"],
+        // Nonce-based script policy (PB-3 closed — parity with Perfin). The
+        // per-request nonce is generated in views.basePathMiddleware (which
+        // server.js installs BEFORE this helmet middleware) and every inline
+        // <script> emitted by pageHead/themeScript/pages/login carries
+        // nonceAttr(). cdn.jsdelivr.net stays allowlisted for Mermaid on the
+        // Knowledge page. No 'unsafe-inline' — an injected inline script
+        // without the nonce won't run.
+        scriptSrc: [
+          "'self'",
+          (_req, res) => `'nonce-${res.locals.cspNonce}'`,
+          "https://cdn.jsdelivr.net",
+        ],
         // Pin script-src-attr to 'none' explicitly (PWUI5) so inline event
         // handlers (onclick/onerror) are blocked regardless of helmet's
-        // default-merge behavior — this is the load-bearing mitigation for the
-        // attribute-escaping class (PWUI1-3) while script-src still carries
-        // 'unsafe-inline' (PB-3). All UI uses event delegation, so 'none' is safe.
+        // default-merge behavior. All UI uses event delegation, so 'none' is safe.
         scriptSrcAttr: ["'none'"],
         styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
         fontSrc: ["'self'", "https://fonts.gstatic.com"],

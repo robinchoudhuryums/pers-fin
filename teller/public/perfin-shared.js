@@ -66,6 +66,9 @@
     if (!stack) {
       stack = document.createElement('div');
       stack.id = 'toast-stack';
+      // Live region so screen readers announce toasts as they appear; the
+      // per-toast role (status/alert) refines politeness per message.
+      stack.setAttribute('aria-live', 'polite');
       document.body.appendChild(stack);
     }
     // Dedupe: most recent toast with same text gets its timer bumped.

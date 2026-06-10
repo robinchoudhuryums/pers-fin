@@ -1,4 +1,4 @@
-const { pageHead, navBar, themeScript, basePath } = require("../views");
+const { pageHead, navBar, themeScript, basePath, nonceAttr } = require("../views");
 const DASHBOARD_JS = require("./dashboard-script");
 
 module.exports = function() {
@@ -141,7 +141,7 @@ ${navBar("/")}
     </div>
   </div>
 </div>
-<script>${DASHBOARD_JS}</script>
+<script${nonceAttr()}>${DASHBOARD_JS}</script>
 </body></html>`);
   };
 };

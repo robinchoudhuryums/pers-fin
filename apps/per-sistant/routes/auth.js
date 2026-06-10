@@ -4,7 +4,7 @@ const path = require("path");
 
 module.exports = function ({ pool, views, config }) {
   const router = require("express").Router();
-  const { pageHead, themeScript } = views;
+  const { pageHead, themeScript, nonceAttr } = views;
   const { AUTH_SECRET, AUTH_MODE, SESSION_PASSWORD, SESSION_PIN } = config;
 
   router.get("/login", (req, res) => {
@@ -272,7 +272,7 @@ ${themeScript()}
     <div id="error" class="error-msg"></div>
     `}
   </div>
-  <script>
+  <script${nonceAttr()}>
     // Generate randomized starfield for the cosmic login reveal. Stars are
     // scattered across the 380x380 backdrop with staggered twinkle delays so
     // they don't all flash in lockstep. Cap the count modestly to keep the

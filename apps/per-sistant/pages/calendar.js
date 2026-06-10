@@ -1,4 +1,4 @@
-const { pageHead, navBar, themeScript, basePath } = require("../views");
+const { pageHead, navBar, themeScript, basePath, nonceAttr } = require("../views");
 
 module.exports = function() {
   return (req, res) => {
@@ -27,7 +27,7 @@ ${navBar("/calendar")}
     <div class="cal-grid" id="cal-days"></div>
   </div>
 </div>
-<script>
+<script${nonceAttr()}>
 var calMonth = new Date().getMonth();
 var calYear = new Date().getFullYear();
 function prevMonth() { calMonth--; if (calMonth<0){calMonth=11;calYear--;} load(); }

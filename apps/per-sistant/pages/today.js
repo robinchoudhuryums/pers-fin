@@ -1,4 +1,4 @@
-const { pageHead, navBar, themeScript } = require("../views");
+const { pageHead, navBar, themeScript, nonceAttr } = require("../views");
 
 module.exports = function() {
   return (req, res) => {
@@ -39,7 +39,7 @@ ${navBar("/today")}
     <div id="email-list"></div>
   </div>
 </div>
-<script>
+<script${nonceAttr()}>
 // Priority -> duration heuristic in minutes. Used until Sprint 1 adds a real
 // estimate_minutes column to todos. When a task carries a value in the
 // backend (future), client can use that first and fall back to this.

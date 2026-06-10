@@ -1,4 +1,4 @@
-const { pageHead, navBar, themeScript } = require("../views");
+const { pageHead, navBar, themeScript, nonceAttr } = require("../views");
 
 module.exports = function() {
   return (req, res) => {
@@ -42,7 +42,7 @@ ${navBar("/review")}
     <div id="next-week-list"></div>
   </div>
 </div>
-<script>
+<script${nonceAttr()}>
 async function load() {
   var data = await fetch('/api/review').then(r=>r.json());
   document.getElementById('review-period').textContent =

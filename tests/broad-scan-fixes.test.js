@@ -226,3 +226,107 @@ describe("F5 — budget alert dedup (sentRecently)", () => {
     assert.ok(warnBlock && /sentRecently\(tag, 24\)/.test(warnBlock[0]), "warning path must dedupe");
   });
 });
+
+// ============================================================================
+// Second wave (F6-F10, same scan)
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// F6 — Apps Script dashboard prefers the server's canonical spending summary
+// ---------------------------------------------------------------------------
+describe("F6 — Code.gs dashboard parity with in-app numbers", () => {
+  const gs = fs.readFileSync(path.join(ROOT, "apps-script", "Code.gs"), "utf8");
+
+  it("fetches /api/spending-summary and uses it when configured", () => {
+    assert.match(gs, /function fetchSpendingSummary_\(\)/);
+    assert.match(gs, /\/api\/spending-summary\?months=12/);
+    assert.match(gs, /const serverSummary = fetchSpendingSummary_\(\);/,
+      "buildDashboard must prefer the server's splits-aware/reimbursed-excluded numbers");
+  });
+
+  it("keeps local sheet aggregation as the standalone fallback", () => {
+    assert.match(gs, /const monthlyTotals = \{\};/, "local monthly fallback retained");
+    assert.match(gs, /const categoryTotals = \{\};/, "local category fallback retained");
+    assert.match(gs, /const merchantTotals = \{\};/, "local merchant fallback retained");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F8 — notification panel a11y + contrast tokens
+// ---------------------------------------------------------------------------
+describe("F8 — notification a11y + contrast", () => {
+  const navTpl = fs.readFileSync(path.join(ROOT, "teller", "views", "partials", "nav.ejs"), "utf8");
+  const css = fs.readFileSync(path.join(ROOT, "teller", "public", "perfin-shared.css"), "utf8");
+  const sharedJs = fs.readFileSync(path.join(ROOT, "teller", "public", "perfin-shared.js"), "utf8");
+
+  it("bell is a real button with dialog wiring", () => {
+    assert.match(navTpl, /<button class="nav-notification-bell"[^>]*aria-label="Notifications"/);
+    assert.match(navTpl, /aria-haspopup="dialog"/);
+    assert.match(navTpl, /aria-controls="notif-panel"/);
+  });
+
+  it("panel is a focusable dialog and open/close manage focus + aria-expanded", () => {
+    assert.match(navTpl, /id="notif-panel"[^>]*role="dialog"[^>]*aria-modal="true"[^>]*tabindex="-1"/);
+    assert.match(navTpl, /bell\.setAttribute\('aria-expanded', 'true'\);[\s\S]*?panel\.focus\(\);/);
+    assert.match(navTpl, /bell\.setAttribute\('aria-expanded', 'false'\);[\s\S]*?bell\.focus\(\);/);
+  });
+
+  it("notification rows are keyboard-activatable and failures surface a toast", () => {
+    assert.match(navTpl, /tabindex="0" role="button"/, "rows must be focusable");
+    assert.match(navTpl, /keydown[\s\S]*?e\.key !== 'Enter' && e\.key !== ' '/, "Enter/Space activation");
+    assert.match(navTpl, /showMsg\('Could not mark notification read', false\)/);
+    assert.match(navTpl, /showMsg\('Could not mark all read', false\)/);
+  });
+
+  it("contrast tokens meet AA floors and the toast stack is a live region", () => {
+    assert.match(css, /--text-muted: rgba\(240,235,227,0\.70\)/, "dark muted >= 4.5:1");
+    assert.match(css, /--text-muted: rgba\(26,26,46,0\.75\)/, "light muted >= 4.5:1");
+    assert.match(css, /--teal: #336363/, "light teal darkened for 11-12px text");
+    assert.match(sharedJs, /setAttribute\('aria-live', 'polite'\)/, "toasts announced to screen readers");
+  });
+
+  it("nav template still renders valid EJS with the button bell", () => {
+    const ejs = require("ejs");
+    const html = ejs.render(navTpl, { basePath: "", embedded: false, activePage: "dashboard", nonce: "n" });
+    assert.ok(html.includes('id="nav-notif-bell"'));
+    assert.ok(/<button[^>]*nav-notification-bell/.test(html));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F10 — insight/digest email rendering escapes user-controlled strings
+// ---------------------------------------------------------------------------
+describe("F10 — email renderers escape hostile strings", () => {
+  const insights = require("../teller/routes/insights");
+  const HOSTILE = '<img src=x onerror=alert(1)>';
+
+  it("renderWeeklyDigestEmail escapes summary fields", () => {
+    const html = insights.renderWeeklyDigestEmail({
+      trends: [{ category: HOSTILE, direction: "up", magnitude: HOSTILE, since_when: HOSTILE }],
+      pending_actions: [{ description: HOSTILE, urgency: "high" }],
+      alerts: [{ message: HOSTILE, severity: "high" }],
+      completed_goals: [{ goal_name: HOSTILE, completed_date: HOSTILE }],
+    }, {});
+    assert.ok(!html.includes(HOSTILE), "raw payload must not appear in HTML");
+    assert.ok(html.includes("&lt;img"), "payload must be entity-escaped");
+  });
+
+  it("renderDailyDigestEmail escapes merchant/account/subscription/notification strings", () => {
+    const html = insights.renderDailyDigestEmail({
+      counts: { transactions: 1, balance_changes: 1, subscriptions: 1, notifications: 1 },
+      transactions: [{ date: "2026-06-01", merchant: HOSTILE, amount: "5.00", category: HOSTILE }],
+      balance_changes: [{ account_name: HOSTILE, source_id: 1, delta: 5, baseline_balance: 10, current_balance: 15 }],
+      subscriptions: [{ display_name: HOSTILE, amount: "9.99", cadence_days: 30 }],
+      notifications: [{ title: HOSTILE, body: HOSTILE }],
+    });
+    assert.ok(!html.includes(HOSTILE));
+    assert.ok(html.includes("&lt;img"));
+  });
+
+  it("renderInsightEmail escapes the model text before markdown transforms", () => {
+    const html = insights.renderInsightEmail("<script>alert(1)</script> **bold**", ["benchmarks"], null);
+    assert.ok(!html.includes("<script>alert"), "raw script must not pass through");
+    assert.ok(html.includes("&lt;script&gt;"), "script tag entity-escaped");
+    assert.ok(html.includes("<strong"), "markdown still applied after escaping");
+  });
+});

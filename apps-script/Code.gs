@@ -739,6 +739,30 @@ function detectSubscriptions() {
 // DASHBOARD
 // ============================================================================
 
+/**
+ * Fetch the server's canonical spending summary (split-adjusted, splits-aware
+ * per-category, reimbursed-excluded — the same numbers the in-app dashboard
+ * shows). Returns null when no server is configured or the fetch fails, in
+ * which case buildDashboard falls back to aggregating the local Transactions
+ * sheet (standalone mode). The local sheet only holds parent transaction rows
+ * (no transaction_splits, no spending_split_pct, no reimbursed flags), so its
+ * per-category totals diverge from the app whenever those features are in use
+ * — preferring the server endpoint removes that divergence instead of
+ * re-implementing splits logic in Apps Script.
+ */
+function fetchSpendingSummary_() {
+  if (!CONFIG.SERVER_URL) return null;
+  try {
+    const res = fetchFromServer_("/api/spending-summary?months=12");
+    if (res.getResponseCode() !== 200) return null;
+    const data = JSON.parse(res.getContentText());
+    if (!data || !Array.isArray(data.monthly_trend) || !Array.isArray(data.by_category)) return null;
+    return data;
+  } catch (e) {
+    return null;
+  }
+}
+
 function buildDashboard() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const txnSheet = ss.getSheetByName(CONFIG.SHEET_TRANSACTIONS);
@@ -786,38 +810,80 @@ function buildDashboard() {
     }
   }
 
-  // Monthly breakdown
-  const monthlyTotals = {};
-  for (const txn of txns) {
-    const month = Utilities.formatDate(txn.date, Session.getScriptTimeZone(), "yyyy-MM");
-    if (!monthlyTotals[month]) monthlyTotals[month] = { total: 0, count: 0 };
-    monthlyTotals[month].total += txn.amount;
-    monthlyTotals[month].count++;
-  }
+  // Prefer the server's canonical numbers (splits-replacement per category,
+  // shared-card split_pct, reimbursed exclusion). Local sheet aggregation is
+  // the standalone fallback only.
+  const serverSummary = fetchSpendingSummary_();
 
-  // Category breakdown
-  const categoryTotals = {};
-  for (const txn of txns) {
-    const cat = txn.category || "Uncategorized";
-    if (!categoryTotals[cat]) categoryTotals[cat] = { total: 0, count: 0 };
-    categoryTotals[cat].total += txn.amount;
-    categoryTotals[cat].count++;
+  // Monthly breakdown — [month, total, count, avgTxn]
+  let monthlyEntries;
+  if (serverSummary) {
+    monthlyEntries = serverSummary.monthly_trend.map(function (m) {
+      const total = parseFloat(m.total_spend) || 0;
+      const count = parseInt(m.txn_count) || 0;
+      return [m.month, total, count, count > 0 ? total / count : 0];
+    });
+  } else {
+    const monthlyTotals = {};
+    for (const txn of txns) {
+      const month = Utilities.formatDate(txn.date, Session.getScriptTimeZone(), "yyyy-MM");
+      if (!monthlyTotals[month]) monthlyTotals[month] = { total: 0, count: 0 };
+      monthlyTotals[month].total += txn.amount;
+      monthlyTotals[month].count++;
+    }
+    monthlyEntries = Object.entries(monthlyTotals).map(function (e) {
+      return [e[0], e[1].total, e[1].count, e[1].count > 0 ? e[1].total / e[1].count : 0];
+    });
   }
+  monthlyEntries.sort(function (a, b) { return b[0].localeCompare(a[0]); });
 
-  // Top merchants
-  const merchantTotals = {};
-  for (const txn of txns) {
-    const m = txn.merchant || "Unknown";
-    if (!merchantTotals[m]) merchantTotals[m] = { total: 0, count: 0 };
-    merchantTotals[m].total += txn.amount;
-    merchantTotals[m].count++;
+  // Category breakdown — [category, total, count]
+  let categoryEntries;
+  if (serverSummary) {
+    categoryEntries = serverSummary.by_category.map(function (c) {
+      return [c.category || "Uncategorized", parseFloat(c.total) || 0, parseInt(c.txn_count) || 0];
+    });
+  } else {
+    const categoryTotals = {};
+    for (const txn of txns) {
+      const cat = txn.category || "Uncategorized";
+      if (!categoryTotals[cat]) categoryTotals[cat] = { total: 0, count: 0 };
+      categoryTotals[cat].total += txn.amount;
+      categoryTotals[cat].count++;
+    }
+    categoryEntries = Object.entries(categoryTotals).map(function (e) {
+      return [e[0], e[1].total, e[1].count];
+    });
   }
+  categoryEntries.sort(function (a, b) { return b[1] - a[1]; });
+  categoryEntries = categoryEntries.slice(0, 15);
 
-  // Calculate summaries
+  // Top merchants — [merchant, total, count]
+  let merchantEntries;
+  if (serverSummary && Array.isArray(serverSummary.top_merchants)) {
+    merchantEntries = serverSummary.top_merchants.map(function (m) {
+      return [m.merchant || "Unknown", parseFloat(m.total_spent) || 0, parseInt(m.txn_count) || 0];
+    });
+  } else {
+    const merchantTotals = {};
+    for (const txn of txns) {
+      const m = txn.merchant || "Unknown";
+      if (!merchantTotals[m]) merchantTotals[m] = { total: 0, count: 0 };
+      merchantTotals[m].total += txn.amount;
+      merchantTotals[m].count++;
+    }
+    merchantEntries = Object.entries(merchantTotals).map(function (e) {
+      return [e[0], e[1].total, e[1].count];
+    });
+  }
+  merchantEntries.sort(function (a, b) { return b[1] - a[1]; });
+  merchantEntries = merchantEntries.slice(0, 10);
+
+  // Calculate summaries (from the same source as the trend table)
   const totalMonthly = subs.reduce((s, sub) => s + sub.monthlyCost, 0);
   const totalYearly = totalMonthly * 12;
-  const totalSpend = txns.reduce((s, t) => s + t.amount, 0);
-  const monthCount = Object.keys(monthlyTotals).length || 1;
+  const totalSpend = monthlyEntries.reduce(function (s, e) { return s + e[1]; }, 0);
+  const monthCount = monthlyEntries.length || 1;
   const avgMonthly = totalSpend / monthCount;
   const avgDaily = totalSpend / (monthCount * 30);
 
@@ -837,10 +903,9 @@ function buildDashboard() {
   // Monthly trend
   rows.push(["MONTHLY SPENDING TREND", "", "", "", ""]);
   rows.push(["Month", "Total Spend", "Transactions", "Avg Transaction", "Trend"]);
-  const sortedMonths = Object.entries(monthlyTotals).sort((a, b) => b[0].localeCompare(a[0]));
   const monthlyTrendStartRow = rows.length + 1; // 1-indexed row where data starts
-  for (const [month, data] of sortedMonths) {
-    rows.push([month, data.total, data.count, data.total / data.count, ""]);
+  for (const entry of monthlyEntries) {
+    rows.push([entry[0], entry[1], entry[2], entry[3], ""]);
   }
   const monthlyTrendEndRow = rows.length; // 1-indexed last data row
   rows.push(["", "", "", "", ""]);
@@ -848,10 +913,9 @@ function buildDashboard() {
   // Category breakdown
   rows.push(["SPENDING BY CATEGORY", "", "", ""]);
   rows.push(["Category", "Total", "Transactions", "Share"]);
-  const sortedCats = Object.entries(categoryTotals).sort((a, b) => b[1].total - a[1].total).slice(0, 15);
   const categoryStartRow = rows.length + 1;
-  for (const [cat, data] of sortedCats) {
-    rows.push([cat, data.total, data.count, ""]);
+  for (const entry of categoryEntries) {
+    rows.push([entry[0], entry[1], entry[2], ""]);
   }
   const categoryEndRow = rows.length;
   rows.push(["", "", "", ""]);
@@ -859,9 +923,8 @@ function buildDashboard() {
   // Top merchants
   rows.push(["TOP MERCHANTS", "", ""]);
   rows.push(["Merchant", "Total Spent", "Transactions"]);
-  const sortedMerchants = Object.entries(merchantTotals).sort((a, b) => b[1].total - a[1].total).slice(0, 10);
-  for (const [m, data] of sortedMerchants) {
-    rows.push([m, data.total, data.count]);
+  for (const entry of merchantEntries) {
+    rows.push([entry[0], entry[1], entry[2]]);
   }
   rows.push(["", "", ""]);
 
@@ -887,8 +950,6 @@ function buildDashboard() {
     monthlyTrendEndRow: monthlyTrendEndRow,
     categoryStartRow: categoryStartRow,
     categoryEndRow: categoryEndRow,
-    sortedMonths: sortedMonths,
-    sortedCats: sortedCats,
     totalSpend: totalSpend,
   });
 }
