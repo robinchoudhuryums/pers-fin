@@ -1,0 +1,19 @@
+{
+  "appId": "com.robinchoudhury.persfin",
+  "appName": "Perfin",
+  "webDir": "www",
+  "server": {
+    "url": "https://pers-fin-tracker.onrender.com",
+    "allowNavigation": [
+      "pers-fin-tracker.onrender.com",
+      "*.teller.io",
+      "teller.io",
+      "*.plaid.com",
+      "cdn.plaid.com"
+    ]
+  },
+  "ios": {
+    "contentInset": "automatic",
+    "backgroundColor": "#080b12"
+  }
+}

@@ -2,8 +2,8 @@
 
 Single Node process that hosts two related personal tools behind one PIN gate:
 
-- **Perfin** — finance tracker. Detects recurring charges, compares spending to benchmarks, tracks financial goals, runs AI-powered insights via Claude. Uses **Teller API** for bank links via mTLS, plus Plaid for investment holdings.
-- **Per-sistant** — personal assistant. Tasks, scheduled emails, notes, calendar, and an AI daily briefing.
+- **Perfin** — finance tracker. Detects recurring charges, compares spending to benchmarks, tracks financial goals, runs AI-powered insights via Claude. Uses **Teller API** for bank links via mTLS, plus Plaid for investment holdings + transaction syncing for banks Teller doesn't cover.
+- **Per-sistant** — personal assistant. Tasks, scheduled emails, notes, calendar, an AI daily briefing, and a personal **Knowledge base** — RAG over an Obsidian vault with cited Q&A, structured facts, and a never-sent-to-AI secret tier.
 
 A small **shell** authenticates the user with a unified PIN, renders a tile picker, then routes traffic to whichever sub-app is selected. Both sub-apps mount under their own URL prefix (`/perfin` and `/per-sistant`) and continue to keep their own databases, routes, and migrations.
 
@@ -87,10 +87,11 @@ Under the unified shell the cross-app integration endpoints (Per-sistant's Perfi
 | `scripts/detect-subscriptions.js` | Recurring charge detection algorithm |
 | `scripts/sheets-sync.js` | Google Sheets sync + dashboard builder |
 | `apps-script/Code.gs` | Google Sheets Apps Script (standalone + server sync) |
-| `tests/` | Test suite (node:test, 663 tests across 17 files) |
+| `tests/` | Test suite (node:test, 859 tests across 30 files incl. apps/per-sistant/tests) |
 | `Dockerfile` | Container build — installs all workspaces and boots `node shell/index.js` |
 | `render.yaml` | Render deployment blueprint (unified shell) |
 | `fly.toml` | Fly.io deployment config |
+| `mobile/` | Capacitor iOS wrapper (remote-URL mode; coexists with the PWA — see mobile/README.md) |
 
 ## Setup
 
@@ -155,6 +156,19 @@ Subscriptions / Tax Deductions / Recurring Transfers / Per-month archives / Watc
 docker compose up --build
 ```
 
+### 6. Backups
+
+`.github/workflows/db-backup.yml` runs nightly (and on manual dispatch): it
+`pg_dump`s both Neon databases, encrypts each dump with AES-256, and uploads
+them as GitHub Actions artifacts with 90-day retention. It runs entirely from
+GitHub's runners, so backups happen even while the Render free tier sleeps.
+
+Set three repository secrets: `NEON_DATABASE_URL`, `PERSISTENT_DATABASE_URL`
+(optional), and `BACKUP_ENCRYPTION_PASSPHRASE` (keep a copy in a password
+manager — the artifacts are unreadable without it). The full restore runbook
+is in the workflow file's header comment; do one restore drill into a
+throwaway Neon branch so the procedure isn't first attempted mid-emergency.
+
 ## Running Tests
 
 ```bash
@@ -163,7 +177,7 @@ npm run test:perfin       # Perfin tests only
 npm run test:persistent   # Per-sistant tests only
 ```
 
-745 tests covering detection, CSV parsing, date handling, API logic, cost calculations, financial-queries semantics (incl. the net-worth single-source-of-truth + the $0-brokerage dedupe direction), AI-audit pattern extraction, pinned regression tests for auth/SSO/template/exclusion behavior and the latest cycle fixes (net-worth dedupe, budget-rollover month-keying, webhook replay/expiry, XSS/header sanitization, CSV dedup-ID parity, Plaid balance-sync status filter, Plaid holdings-items UNION + liabilities re-link hint, categorize bulk-sweep/loop + auto-sweep + accuracy sampler, in-process digest delivery, background reconcile, login→dashboard redirect, $0-brokerage dedupe, page-size-independent Teller pagination, Schwab CSV sign preservation, Wells Fargo CSV detection tightening, and Plaid sync observability), and integration tests for the feedback, whats-new, performance, and trust-overview endpoints. No database required — all tests run against pure functions and mock pools.
+859 tests covering detection, CSV parsing, date handling, API logic, cost calculations, financial-queries semantics (incl. the net-worth single-source-of-truth + the $0-brokerage dedupe direction), AI-audit pattern extraction, pinned regression tests for auth/SSO/template/exclusion behavior and the latest cycle fixes (net-worth dedupe, budget-rollover month-keying, webhook replay/expiry, XSS/header sanitization, CSV dedup-ID parity, Plaid balance-sync status filter, Plaid holdings-items UNION + liabilities re-link hint, categorize bulk-sweep/loop + auto-sweep + accuracy sampler, in-process digest delivery, background reconcile, login→dashboard redirect, $0-brokerage dedupe, page-size-independent Teller pagination, Schwab CSV sign preservation, Wells Fargo CSV detection tightening, Plaid sync observability, and the June 2026 broad-scan fixes: backup workflow, fail-fast token passphrase, compromised-cert detection, missed-job watchdog, budget-alert dedup), and integration tests for the feedback, whats-new, performance, and trust-overview endpoints. No database required — all tests run against pure functions and mock pools.
 
 ## API Endpoints
 
@@ -415,7 +429,7 @@ subsystem in `CLAUDE.md`'s Cycle Workflow Config.
 | `SESSION_PASSWORD` / `SESSION_PIN` / `SESSION_SECRET` | Legacy standalone-Perfin auth (bypassed when embedded under the shell) |
 | `API_KEY` | `x-api-key` for non-browser clients (cron, GitHub Actions daily-sync.yml + keep-alive.yml). Honored by the shell's `requireAuth` as an alternate credential parallel to the PIN cookie |
 | `ANTHROPIC_API_KEY` | Enables AI features in both apps |
-| `INSIGHTS_MONTHLY_BUDGET_CENTS` | Perfin AI spending cap, default 50 = $0.50/month |
+| `INSIGHTS_MONTHLY_BUDGET_CENTS` | Perfin AI spending cap fallback (default 50 = $0.50/month) — overridable at runtime in Settings → AI Insights → Monthly Budget Cap |
 | `GOOGLE_SHEETS_ID` | Google Sheets spreadsheet ID (Perfin sync, optional) |
 | `GOOGLE_SERVICE_ACCOUNT_KEY` | Google service account JSON key (Perfin sync, optional) |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | Per-sistant email scheduling |

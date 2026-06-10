@@ -176,7 +176,10 @@ async function runCategorize() {
     }
 
     // Shared monthly-spend computation (cap is shared with /api/insights).
-    const budgetCents = parseInt(process.env.INSIGHTS_MONTHLY_BUDGET_CENTS) || 50;
+    // Shared cap resolver (Settings-tunable, env fallback) — lazy require to
+    // avoid a static insights<->categorize cycle (INV-14: one cap, one reader).
+    const { getAiBudgetCents } = require("./insights");
+    const budgetCents = await getAiBudgetCents();
     const monthSpendCents = async () => {
       const u = await pool.query(
         "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights WHERE created_at >= date_trunc('month', CURRENT_DATE)"
@@ -197,7 +200,7 @@ async function runCategorize() {
       return {
         ok: false,
         status: 429,
-        error: `Monthly AI budget reached (of $${(budgetCents / 100).toFixed(2)} cap). Rules/Teller-map applied ${ruleApplied + tellerMapped} transactions. Raise INSIGHTS_MONTHLY_BUDGET_CENTS to continue with AI.`,
+        error: `Monthly AI budget reached (of $${(budgetCents / 100).toFixed(2)} cap). Rules/Teller-map applied ${ruleApplied + tellerMapped} transactions. Raise the cap under Settings → AI Insights to continue with AI.`,
         categorized_by_rules: ruleApplied,
         categorized_by_teller_map: tellerMapped,
       };

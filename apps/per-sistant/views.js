@@ -3,6 +3,7 @@
 // ============================================================================
 
 const { AsyncLocalStorage } = require("async_hooks");
+const crypto = require("crypto");
 const { PERFIN_URL } = require("./config");
 
 const CSS_CORE = require("./views/css");
@@ -29,10 +30,18 @@ const SETTINGS_PATCH = require("./views/settings-patch");
 // inside the helpers below, basePath() returns "" for standalone or
 // "/per-sistant" when mounted, and embedded() reflects the shell flag.
 const _ctx = new AsyncLocalStorage();
-function basePathMiddleware(req, _res, next) {
+function basePathMiddleware(req, res, next) {
+  // Per-request CSP nonce (PB-3 fix). Generated here — before middleware.setup
+  // installs helmet — so the helmet scriptSrc directive function can read
+  // res.locals.cspNonce, and the view helpers can read it from the ALS store.
+  // Every inline <script> emitted by pageHead/themeScript/pages must carry
+  // nonceAttr() or the browser will refuse to run it.
+  const cspNonce = crypto.randomBytes(16).toString("base64");
+  res.locals.cspNonce = cspNonce;
   _ctx.run({
     basePath: req.baseUrl || "",
     embedded: !!req.app.get("embedded"),
+    cspNonce,
   }, () => next());
 }
 function basePath() {
@@ -42,6 +51,14 @@ function basePath() {
 function embedded() {
   const store = _ctx.getStore();
   return !!(store && store.embedded);
+}
+// ` nonce="..."` attribute for inline <script> tags. Empty when called outside
+// a request context (shouldn't happen in practice — all pages render inside
+// basePathMiddleware's ALS scope).
+function nonceAttr() {
+  const store = _ctx.getStore();
+  const n = store && store.cspNonce;
+  return n ? ` nonce="${n}"` : "";
 }
 
 function pageHead(title) {
@@ -79,10 +96,10 @@ function pageHead(title) {
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">${materializeAssets}
   <style>${SHARED_CSS}${NAV_CHROME_CSS}</style>
-  <script>window.BASE_PATH = ${JSON.stringify(bp)};</script>
-  <script>${SHARED_JS}</script>
-  <script>${PRIMITIVES_JS}</script>
-  <script>${SETTINGS_PATCH}</script>
+  <script${nonceAttr()}>window.BASE_PATH = ${JSON.stringify(bp)};</script>
+  <script${nonceAttr()}>${SHARED_JS}</script>
+  <script${nonceAttr()}>${PRIMITIVES_JS}</script>
+  <script${nonceAttr()}>${SETTINGS_PATCH}</script>
 </head>`;
 }
 
@@ -227,7 +244,7 @@ function navBar(activePath) {
 function themeScript() {
   // The fetch calls below go through the wrapper installed by views/js.js,
   // which prepends window.BASE_PATH automatically — no manual concat needed.
-  return `<script>
+  return `<script${nonceAttr()}>
   (function(){
     var PALETTES = ['copper','indigo','forest','slate','plum','mono'];
     function getUI() { try { return JSON.parse(localStorage.getItem('ps-ui') || '{}'); } catch { return {}; } }
@@ -317,4 +334,5 @@ module.exports = {
   basePathMiddleware,
   basePath,
   embedded,
+  nonceAttr,
 };

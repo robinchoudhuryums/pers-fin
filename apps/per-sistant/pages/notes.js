@@ -1,4 +1,4 @@
-const { pageHead, navBar, themeScript } = require("../views");
+const { pageHead, navBar, themeScript, nonceAttr } = require("../views");
 
 module.exports = function() {
   return (req, res) => {
@@ -70,7 +70,7 @@ ${navBar("/notes")}
   </div>
 </div>
 
-<script>
+<script${nonceAttr()}>
 var colorMap = {warm:'var(--accent)',teal:'var(--accent)',green:'var(--good)',blue:'var(--accent)',default:'var(--line)'};
 var currentTags = [];
 var noteSelectMode = false, noteSelectedIds = new Set();

@@ -1,0 +1,20 @@
+{
+  "name": "pers-fin-mobile",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Capacitor iOS wrapper for the Perfin + Per-sistant unified shell. Remote-URL mode: the WebView loads the live Render deployment, so every server deploy IS an app update. Deliberately NOT in the root npm workspaces — server deploys must never install native tooling.",
+  "scripts": {
+    "add:ios": "cap add ios",
+    "sync": "cap sync ios",
+    "open": "cap open ios",
+    "assets": "capacitor-assets generate --ios"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.0.0",
+    "@capacitor/assets": "^3.0.5"
+  },
+  "dependencies": {
+    "@capacitor/core": "^7.0.0",
+    "@capacitor/ios": "^7.0.0"
+  }
+}

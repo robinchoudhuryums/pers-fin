@@ -1,0 +1,96 @@
+# Nightly encrypted database backups (broad-scan F1)
+#
+# Dumps BOTH Neon databases (Perfin + Per-sistant) with pg_dump, encrypts
+# each dump with AES-256, and stores them as GitHub Actions artifacts with
+# 90-day retention. Runs independently of the app server, so backups happen
+# even while the Render free tier is asleep.
+#
+# Required repository secrets:
+#   NEON_DATABASE_URL            — Perfin's Postgres connection string
+#   PERSISTENT_DATABASE_URL      — Per-sistant's Postgres connection string
+#                                  (optional; the step skips if unset)
+#   BACKUP_ENCRYPTION_PASSPHRASE — passphrase for the AES-256 encryption.
+#                                  Store a copy OUTSIDE GitHub (password
+#                                  manager) — without it the backups are
+#                                  unreadable.
+#
+# ── RESTORE RUNBOOK ─────────────────────────────────────────────────────────
+# 1. Download the artifact from the workflow run (Actions → Database Backup →
+#    pick a run → Artifacts) and unzip it.
+# 2. Decrypt:
+#      openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+#        -pass pass:'<BACKUP_ENCRYPTION_PASSPHRASE>' \
+#        -in perfin-YYYY-MM-DD.dump.enc -out perfin.dump
+# 3. Restore into a fresh database (Neon: create a new database/branch first):
+#      pg_restore --clean --if-exists --no-owner --no-privileges \
+#        -d "$NEW_DATABASE_URL" perfin.dump
+# 4. Point NEON_DATABASE_URL (or PERSISTENT_DATABASE_URL) at the restored DB
+#    and redeploy. Teller/Plaid tokens restore with the data — they're
+#    encrypted with TOKEN_ENCRYPTION_PASSPHRASE, which must be unchanged.
+# 5. Do a restore drill once: restore into a throwaway Neon branch and boot
+#    the app against it, so step 3 isn't attempted for the first time during
+#    an actual emergency.
+# ────────────────────────────────────────────────────────────────────────────
+
+name: Database Backup
+
+on:
+  schedule:
+    - cron: '23 8 * * *'   # daily, 8:23 AM UTC (offset to avoid load spikes)
+  workflow_dispatch:        # manual trigger
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install PostgreSQL 17 client (matches Neon's server major)
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -sSf -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-17
+
+      - name: Dump + encrypt Perfin database
+        env:
+          DB_URL: ${{ secrets.NEON_DATABASE_URL }}
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
+        run: |
+          if [ -z "$DB_URL" ]; then echo "NEON_DATABASE_URL secret not set"; exit 1; fi
+          if [ -z "$BACKUP_PASSPHRASE" ]; then echo "BACKUP_ENCRYPTION_PASSPHRASE secret not set"; exit 1; fi
+          DATE=$(date -u +%F)
+          pg_dump "$DB_URL" --no-owner --no-privileges --format=custom \
+            --file="perfin-$DATE.dump"
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
+            -pass env:BACKUP_PASSPHRASE \
+            -in "perfin-$DATE.dump" -out "perfin-$DATE.dump.enc"
+          rm "perfin-$DATE.dump"
+          ls -lh perfin-*.dump.enc
+
+      - name: Dump + encrypt Per-sistant database
+        env:
+          DB_URL: ${{ secrets.PERSISTENT_DATABASE_URL }}
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
+        run: |
+          if [ -z "$DB_URL" ]; then
+            echo "PERSISTENT_DATABASE_URL secret not set — skipping (standalone-Perfin setup)"
+            exit 0
+          fi
+          DATE=$(date -u +%F)
+          pg_dump "$DB_URL" --no-owner --no-privileges --format=custom \
+            --file="persistent-$DATE.dump"
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
+            -pass env:BACKUP_PASSPHRASE \
+            -in "persistent-$DATE.dump" -out "persistent-$DATE.dump.enc"
+          rm "persistent-$DATE.dump"
+          ls -lh persistent-*.dump.enc
+
+      - name: Upload encrypted backups
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-backup-${{ github.run_id }}
+          path: '*.dump.enc'
+          retention-days: 90
+          if-no-files-found: error

@@ -177,5 +177,24 @@ async function sendToAll(payload) {
   }
 }
 
+// Utility: has a notification with this tag been sent within the last N hours?
+// Backed by notification_log (sendToAll stores payload.tag in the `type`
+// column), so the dedup window survives restarts. Fails open (returns false)
+// on a query error — a missed dedup is one extra notification, while failing
+// closed would silently suppress real alerts.
+async function sentRecently(tag, hours = 24) {
+  try {
+    const r = await pool.query(
+      "SELECT 1 FROM notification_log WHERE type = $1 AND created_at > now() - make_interval(hours => $2) LIMIT 1",
+      [tag, hours]
+    );
+    return r.rows.length > 0;
+  } catch (err) {
+    console.error("sentRecently check error:", err.message);
+    return false;
+  }
+}
+
 module.exports = router;
 module.exports.sendToAll = sendToAll;
+module.exports.sentRecently = sentRecently;

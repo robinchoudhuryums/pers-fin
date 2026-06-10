@@ -1,4 +1,4 @@
-const { pageHead, navBar, themeScript } = require("../views");
+const { pageHead, navBar, themeScript, nonceAttr } = require("../views");
 const SETTINGS_JS = require("./settings-script");
 
 module.exports = function(AUTH_SECRET) {
@@ -292,7 +292,7 @@ ${navBar("/settings")}
   </div>
 </div>
 
-<script>${SETTINGS_JS}</script>
+<script${nonceAttr()}>${SETTINGS_JS}</script>
 </body></html>`);
   };
 };

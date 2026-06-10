@@ -1,4 +1,4 @@
-const { pageHead, navBar, themeScript } = require("../views");
+const { pageHead, navBar, themeScript, nonceAttr } = require("../views");
 
 module.exports = function() {
   return (req, res) => {
@@ -38,7 +38,7 @@ ${navBar("/contacts")}
   </div>
 </div>
 
-<script>
+<script${nonceAttr()}>
 async function load() {
   var contacts = await fetch('/api/contacts').then(r=>r.json());
   if (!contacts.length) { document.getElementById('contact-list').innerHTML = '<div class="empty-msg">No contacts yet. Add contacts to use quick email addressing.</div>'; return; }

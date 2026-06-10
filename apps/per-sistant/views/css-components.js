@@ -222,4 +222,14 @@ tr:hover td { background: var(--paper-2); }
   text-align: center; padding: 40px; color: var(--muted);
   font-size: 13px; font-style: italic;
 }
+
+/* Pull-to-refresh indicator (standalone PWA only — see views/js.js) */
+#ptr-indicator { position: fixed; top: calc(10px + env(safe-area-inset-top));
+  left: 50%; transform: translateX(-50%); z-index: 1100; opacity: 0;
+  pointer-events: none; transition: opacity 0.15s ease; }
+#ptr-indicator .ptr-ring { width: 26px; height: 26px; border-radius: 50%;
+  border: 2.5px solid var(--line); border-top-color: var(--ink);
+  background: var(--paper-card); box-shadow: 0 2px 8px rgba(0,0,0,0.18); }
+#ptr-indicator.ptr-ready .ptr-ring { border-top-color: var(--green, #2d9f5f); }
+#ptr-indicator.ptr-refreshing .ptr-ring { animation: spin 0.8s linear infinite; }
 `;

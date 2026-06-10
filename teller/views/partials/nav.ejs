@@ -25,14 +25,16 @@
     </a>
 <% } %>
     <div class="nav-sync-badge" id="nav-sync-badge" title="Most recent sync — updated by auto-sync or the Sync button"></div>
-    <div class="nav-notification-bell" id="nav-notif-bell" title="Notifications" style="cursor:pointer;position:relative;padding:4px 8px;display:flex;align-items:center;">
-      <svg width="20" height="20" viewBox="0 0 20 20" fill="none" style="display:block;">
+    <button class="nav-notification-bell" id="nav-notif-bell" type="button" title="Notifications"
+            aria-label="Notifications" aria-haspopup="dialog" aria-expanded="false" aria-controls="notif-panel"
+            style="cursor:pointer;position:relative;padding:4px 8px;display:flex;align-items:center;background:none;border:none;">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none" style="display:block;" aria-hidden="true">
         <circle cx="10" cy="10" r="8.5" stroke="var(--warm, #d4a574)" stroke-width="1.5" fill="none"/>
         <circle cx="10" cy="10" r="4" stroke="var(--warm, #d4a574)" stroke-width="1.2" fill="none"/>
         <circle cx="10" cy="10" r="1.5" fill="var(--warm, #d4a574)"/>
       </svg>
-      <span id="nav-notif-count" style="display:none;position:absolute;top:-2px;right:-2px;background:var(--red);color:#fff;border-radius:50%;font-size:9px;min-width:16px;height:16px;line-height:16px;text-align:center;"></span>
-    </div>
+      <span id="nav-notif-count" aria-hidden="true" style="display:none;position:absolute;top:-2px;right:-2px;background:var(--red);color:#fff;border-radius:50%;font-size:9px;min-width:16px;height:16px;line-height:16px;text-align:center;"></span>
+    </button>
     <button class="nav-hamburger" id="nav-hamburger" type="button" aria-label="Menu" aria-expanded="false" aria-controls="nav-links-drawer">
       <span></span><span></span><span></span>
     </button>
@@ -80,7 +82,7 @@
   <!-- Notification dropdown panel. CSS class drives layout so the mobile
        media query can convert it into a bottom sheet without inline-style
        fights. Drag handle is shown on mobile only. -->
-  <div id="notif-panel" class="notif-panel" hidden>
+  <div id="notif-panel" class="notif-panel" role="dialog" aria-modal="true" aria-label="Notifications" tabindex="-1" hidden>
     <div class="notif-grabber" aria-hidden="true"></div>
     <div class="notif-header">
       <strong>Notifications</strong>
@@ -153,8 +155,10 @@
           if (data.unread_count > 0) {
             badge.textContent = data.unread_count > 9 ? '9+' : data.unread_count;
             badge.style.display = '';
+            bell.setAttribute('aria-label', 'Notifications, ' + data.unread_count + ' unread');
           } else {
             badge.style.display = 'none';
+            bell.setAttribute('aria-label', 'Notifications');
           }
           if (!panel.hidden) renderList(data.notifications);
         } catch (_) {}
@@ -165,7 +169,9 @@
         list.innerHTML = notifs.map(function(n) {
           var ago = fmtAgo(n.created_at);
           var bg = n.is_read ? '' : 'background:rgba(95,191,191,0.05);';
-          return '<div data-nid="' + n.id + '" style="padding:10px 16px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px;' + bg + '">' +
+          return '<div data-nid="' + n.id + '" tabindex="0" role="button"' +
+            ' aria-label="' + esc(n.title) + (n.is_read ? '' : ', unread, activate to mark read') + '"' +
+            ' style="padding:10px 16px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px;' + bg + '">' +
             '<div style="font-weight:' + (n.is_read ? '400' : '600') + ';">' + esc(n.title) + '</div>' +
             '<div style="color:var(--text-muted);margin-top:2px;">' + esc(n.body) + '</div>' +
             '<div style="color:var(--text-muted);font-size:10px;margin-top:4px;">' + ago + '</div>' +
@@ -186,10 +192,16 @@
       function openPanel() {
         panel.hidden = false;
         if (backdrop) backdrop.hidden = false;
+        bell.setAttribute('aria-expanded', 'true');
+        // Move focus into the dialog so keyboard/screen-reader users land in it.
+        panel.focus();
       }
       function closePanel() {
         panel.hidden = true;
         if (backdrop) backdrop.hidden = true;
+        bell.setAttribute('aria-expanded', 'false');
+        // Return focus to the trigger so keyboard users don't lose their place.
+        bell.focus();
       }
       bell.addEventListener('click', async function(e) {
         e.stopPropagation();
@@ -215,22 +227,38 @@
         if (e.key === 'Escape' && !panel.hidden) closePanel();
       });
 
-      // Click notification to mark read
-      list.addEventListener('click', async function(e) {
-        var item = e.target.closest('[data-nid]');
-        if (!item) return;
+      // Click (or Enter/Space) on a notification to mark read. Failures
+      // surface as a toast instead of silently leaving the row looking read.
+      async function markRead(item) {
         var nid = item.getAttribute('data-nid');
         try {
-          await apiFetch('/api/notifications/' + nid + '/read', { method: 'PATCH' });
+          var r = await apiFetch('/api/notifications/' + nid + '/read', { method: 'PATCH' });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
           loadNotifs();
-        } catch (_) {}
+        } catch (_) {
+          if (typeof showMsg === 'function') showMsg('Could not mark notification read', false);
+        }
+      }
+      list.addEventListener('click', function(e) {
+        var item = e.target.closest('[data-nid]');
+        if (item) markRead(item);
+      });
+      list.addEventListener('keydown', function(e) {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        var item = e.target.closest('[data-nid]');
+        if (!item) return;
+        e.preventDefault();
+        markRead(item);
       });
 
       document.getElementById('notif-mark-all').addEventListener('click', async function() {
         try {
-          await apiFetch('/api/notifications/read-all', { method: 'POST' });
+          var r = await apiFetch('/api/notifications/read-all', { method: 'POST' });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
           loadNotifs();
-        } catch (_) {}
+        } catch (_) {
+          if (typeof showMsg === 'function') showMsg('Could not mark all read', false);
+        }
       });
 
       // Debug-mode toggle wiring. The actual on-screen log overlay lives

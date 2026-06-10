@@ -502,11 +502,28 @@ function renderInsightEmail(text, modules, auditResult) {
 }
 
 
+// Effective monthly AI budget cap (cents). Single source of truth shared by
+// /api/insights, /api/insights/rebuild, and /api/categorize (INV-14):
+// user_settings.ai_monthly_budget_cents (Settings-tunable) wins when set and
+// positive, then the INSIGHTS_MONTHLY_BUDGET_CENTS env var, then 50 ($0.50).
+// Fails open to the env/default on a DB blip — the cap still applies, just at
+// the configured baseline.
+async function getAiBudgetCents() {
+  try {
+    const r = await pool.query("SELECT ai_monthly_budget_cents FROM user_settings WHERE id = 1");
+    const v = parseInt(r.rows[0]?.ai_monthly_budget_cents);
+    if (Number.isFinite(v) && v > 0) return v;
+  } catch (err) {
+    console.error("getAiBudgetCents read error:", err.message);
+  }
+  return parseInt(process.env.INSIGHTS_MONTHLY_BUDGET_CENTS) || 50;
+}
+
 // GET /api/insights/status
 router.get("/api/insights/status", async (_req, res) => {
   const configured = !!(Anthropic && process.env.ANTHROPIC_API_KEY);
   let estimatedCostCents = 0;
-  let budgetCents = parseInt(process.env.INSIGHTS_MONTHLY_BUDGET_CENTS) || 50;
+  let budgetCents = await getAiBudgetCents();
   try {
     const usageRows = await pool.query(
       "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights WHERE created_at >= date_trunc('month', CURRENT_DATE)"
@@ -616,7 +633,7 @@ async function generateInsights() {
     // the pre-check; this is a single-operator app (scheduler + an occasional
     // manual trigger), so that race is accepted rather than guarded with a
     // provisional-row reservation. Revisit if multi-user lands.
-    const budgetCents = parseInt(process.env.INSIGHTS_MONTHLY_BUDGET_CENTS) || 50;
+    const budgetCents = await getAiBudgetCents();
     const usageResult = await pool.query(
       "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights " +
       "WHERE created_at >= date_trunc('month', CURRENT_DATE)"
@@ -632,7 +649,7 @@ async function generateInsights() {
       return {
         ok: false,
         status: 429,
-        error: `Monthly AI budget reached ($${(estimatedCostCents / 100).toFixed(2)} of $${(budgetCents / 100).toFixed(2)} cap). Resets next month. Adjust INSIGHTS_MONTHLY_BUDGET_CENTS in .env to raise the limit.`,
+        error: `Monthly AI budget reached ($${(estimatedCostCents / 100).toFixed(2)} of $${(budgetCents / 100).toFixed(2)} cap). Resets next month. Raise it under Settings → AI Insights → Monthly Budget Cap.`,
         budget_cents: budgetCents,
       };
     }
@@ -1339,7 +1356,7 @@ router.post("/api/insights/rebuild", async (_req, res) => {
   }
   try {
     // Check monthly budget before calling Claude (using granular cost if available)
-    const budgetCents = parseInt(process.env.INSIGHTS_MONTHLY_BUDGET_CENTS) || 50;
+    const budgetCents = await getAiBudgetCents();
     const usageResult = await pool.query(
       "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights WHERE created_at >= date_trunc('month', CURRENT_DATE)"
     );
@@ -1596,6 +1613,7 @@ router.get("/api/insights/audit", async (_req, res) => {
 });
 
 module.exports = router;
+module.exports.getAiBudgetCents = getAiBudgetCents;
 module.exports.renderInsightEmail = renderInsightEmail;
 module.exports.renderWeeklyDigestEmail = renderWeeklyDigestEmail;
 module.exports.renderDailyDigestEmail = renderDailyDigestEmail;

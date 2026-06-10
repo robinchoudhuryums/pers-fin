@@ -1,4 +1,4 @@
-const { pageHead, navBar, themeScript } = require("../views");
+const { pageHead, navBar, themeScript, nonceAttr } = require("../views");
 const TODOS_JS = require("./todos-script-1") + require("./todos-script-2");
 
 module.exports = function() {
@@ -181,7 +181,7 @@ ${navBar("/todos")}
   </div>
 </div>
 
-<script>${TODOS_JS}</script>
+<script${nonceAttr()}>${TODOS_JS}</script>
 </body></html>`);
   };
 };

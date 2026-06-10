@@ -5,8 +5,35 @@
 const https = require("https");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 
 const TELLER_API_BASE = "https://api.teller.io";
+
+// SHA-256 fingerprint (over the DER bytes) of the Teller client certificate
+// that was committed to this repo's git history and later untracked. Those
+// committed bytes must be considered compromised — if the cert loaded at
+// runtime still matches, the operator hasn't rotated it in the Teller
+// dashboard yet, so surface a loud warning at boot (non-fatal: the app must
+// keep working until the rotation happens).
+const COMPROMISED_CERT_SHA256 =
+  "d58d1d12b1043ca913feb2e0fc74c6b38e1631b17ddefd17bab1c0f868150954";
+
+// Extract the first CERTIFICATE block from a PEM buffer/string and return the
+// lowercase hex SHA-256 of its DER bytes (same digest `openssl x509
+// -fingerprint -sha256` computes). Returns null if no certificate block is
+// found or the base64 doesn't decode.
+function certFingerprintSha256(pem) {
+  try {
+    const text = pem.toString("utf8");
+    const m = text.match(/-----BEGIN CERTIFICATE-----([\s\S]*?)-----END CERTIFICATE-----/);
+    if (!m) return null;
+    const der = Buffer.from(m[1].replace(/\s+/g, ""), "base64");
+    if (der.length === 0) return null;
+    return crypto.createHash("sha256").update(der).digest("hex");
+  } catch {
+    return null;
+  }
+}
 const TELLER_APP_ID = process.env.TELLER_APPLICATION_ID;
 const TELLER_ENV = (process.env.TELLER_ENV || "sandbox").toLowerCase();
 const TELLER_CERT_PATH = process.env.TELLER_CERT_PATH;
@@ -45,6 +72,15 @@ function getTlsAgent() {
   }
 
   console.log(`[mTLS] Certificate loaded (${cert.length} bytes), key loaded (${key.length} bytes)`);
+  if (certFingerprintSha256(cert) === COMPROMISED_CERT_SHA256) {
+    console.error(
+      "[mTLS] *** SECURITY WARNING *** The loaded Teller certificate is the one " +
+      "that was committed to git history and must be considered compromised. " +
+      "Generate a new certificate in the Teller dashboard, update " +
+      "TELLER_CERT/TELLER_KEY (or the PEM files), and scrub the old one from " +
+      "git history. See CLAUDE.md → Deployment → Operator state."
+    );
+  }
   tlsAgent = new https.Agent({ cert, key });
   return tlsAgent;
 }
@@ -118,4 +154,6 @@ module.exports = {
   TELLER_ENV,
   getTlsAgent,
   tellerRequest,
+  certFingerprintSha256,
+  COMPROMISED_CERT_SHA256,
 };

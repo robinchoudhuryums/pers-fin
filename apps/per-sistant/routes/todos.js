@@ -45,6 +45,12 @@ module.exports = function ({ pool, config }) {
       if (priority && !VALID_PRIORITIES.includes(priority)) return res.status(400).json({ error: "Invalid priority. Must be: " + VALID_PRIORITIES.join(", ") });
       if (horizon && !VALID_HORIZONS.includes(horizon)) return res.status(400).json({ error: "Invalid horizon. Must be: " + VALID_HORIZONS.join(", ") });
       if (recurrence_rule && !VALID_RECURRENCE_RULES.includes(recurrence_rule)) return res.status(400).json({ error: "Invalid recurrence rule. Must be: " + VALID_RECURRENCE_RULES.join(", ") });
+      // A zero/negative interval makes recurrence projections stand still or
+      // run backwards (DB CHECK chk_todos_recurrence_interval backs this up).
+      if (recurrence_interval !== undefined && recurrence_interval !== null &&
+          (!Number.isInteger(recurrence_interval) || recurrence_interval < 1 || recurrence_interval > 365)) {
+        return res.status(400).json({ error: "Invalid recurrence interval. Must be an integer between 1 and 365." });
+      }
       const r = await pool.query(
         `INSERT INTO todos (title, description, priority, horizon, category, due_date, recurring, recurrence_rule, recurrence_interval) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
         [title, description || null, priority || "medium", horizon || "short", category || null, due_date || null, recurring || false, recurrence_rule || null, recurrence_interval || 1]
@@ -63,6 +69,10 @@ module.exports = function ({ pool, config }) {
       if (priority !== undefined && !VALID_PRIORITIES.includes(priority)) return res.status(400).json({ error: "Invalid priority. Must be: " + VALID_PRIORITIES.join(", ") });
       if (horizon !== undefined && !VALID_HORIZONS.includes(horizon)) return res.status(400).json({ error: "Invalid horizon. Must be: " + VALID_HORIZONS.join(", ") });
       if (recurrence_rule !== undefined && recurrence_rule !== null && !VALID_RECURRENCE_RULES.includes(recurrence_rule)) return res.status(400).json({ error: "Invalid recurrence rule. Must be: " + VALID_RECURRENCE_RULES.join(", ") });
+      if (req.body.recurrence_interval !== undefined && req.body.recurrence_interval !== null &&
+          (!Number.isInteger(req.body.recurrence_interval) || req.body.recurrence_interval < 1 || req.body.recurrence_interval > 365)) {
+        return res.status(400).json({ error: "Invalid recurrence interval. Must be an integer between 1 and 365." });
+      }
       const fields = [];
       const params = [];
       let idx = 1;

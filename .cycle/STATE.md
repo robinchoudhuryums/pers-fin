@@ -11,6 +11,106 @@ to the "none in progress" state.
 
 - **Status:** /broad-scan + /broad-implement (H1/M5/M2/M3/M1 + Tier-1 M6/M4/L2) + /sync-docs; then /targeted-audit+implement of Knowledge/RAG (A1–A4); Detection & Categorization (A1–A4); AI Insights & Audit (A1–A2) — all on branch `claude/sweet-brahmagupta-3uwc4r`; awaiting review/deploy. Tests now 760 (was 745, +15 AIA1 classification cases).
 
+### Broad-scan + broad-implement (June 2026 session, branch `claude/exciting-albattani-ug1gjv`)
+Full 3-stage /broad-scan completed (4 subsystem deep-dives + gap-fill on Web UI/A11y,
+Export Fidelity, Notification Correctness, Income Classification). Implemented F1-F5:
+- **F1** `.github/workflows/db-backup.yml` — nightly pg_dump of both Neon DBs from
+  GitHub Actions, AES-256 artifacts, 90-day retention, restore runbook in header.
+  README "Backups" section. OPERATOR: set NEON_DATABASE_URL, PERSISTENT_DATABASE_URL,
+  BACKUP_ENCRYPTION_PASSPHRASE repo secrets; do one restore drill.
+- **F2** database.js — missing TOKEN_ENCRYPTION_PASSPHRASE now fatal at boot
+  (ALLOW_MISSING_TOKEN_PASSPHRASE=true escape hatch). Test files set mock passphrase.
+- **F3** teller-api.js — boot warning when loaded Teller cert matches the compromised
+  fingerprint (d58d1d12...0954) from git history. OPERATOR (still open): rotate cert in
+  Teller dashboard, then scrub history (git filter-repo).
+- **F4** services/job-health.js + job_runs table + ticks in every startup.js interval +
+  6-hourly/post-boot watchdog ("jobs-missed" notification, signature-deduped, 36h+ threshold).
+- **F5** notifications.sentRecently(tag, hours) — budget alerts max 1/category/severity/24h.
+Tests: 779 pass (764 -> 779, +15 in tests/broad-scan-fixes.test.js).
+**Open follow-ons:** F6 Code.gs splits divergence; F7 Per-sistant CSP nonces; F8 notif-panel
+a11y + contrast; F9 recurrence_interval CHECK; F10 insights-email escaping audit; docs drift
+(test count 745 -> 779 in CLAUDE.md x3 + README) -> /sync-docs.
+**Where I left off:** F1-F5 committed + pushed on `claude/exciting-albattani-ug1gjv`; awaiting
+review/merge + the three operator actions above.
+
+### Broad-implement F6-F10 + /sync-docs (same session, same branch)
+/sync-docs applied (test counts, job_runs, watchdog, backup secrets, fail-fast passphrase,
+stale README 663/17 table entry, per-sistant 257->343). Then implemented F6-F10:
+- **F6** Code.gs buildDashboard prefers GET /api/spending-summary (canonical splits/
+  reimbursed/split_pct numbers) when SERVER_URL set; local sheet aggregation = standalone
+  fallback. Dead sortedMonths/sortedCats opts removed. DEPLOY: clasp push + new Apps
+  Script version (per Deploy Command).
+- **F7** Per-sistant CSP nonce migration (PB-3 closed): nonce in views.basePathMiddleware
+  -> res.locals.cspNonce + ALS; helmet scriptSrc nonce directive, 'unsafe-inline' removed;
+  nonceAttr() on all inline scripts (views.js x5, 11 pages, routes/auth.js login).
+- **F8** Perfin notification a11y (button bell + role=dialog + focus mgmt + keyboard rows +
+  toast aria-live + surfaced mark-read failures) + AA contrast tokens (muted 0.70/0.75,
+  light teal #336363).
+- **F9** recurrence_interval >= 1: todos POST/PATCH validation, db/018 clamp+CHECK
+  (todos + todo_templates), advanceRecurrence floor.
+- **F10** email renderers audited — already consistently escaped; pinned with behavioral
+  hostile-string tests (finding effectively retracted-on-close-read, now regression-proof).
+Tests: 796 pass across 26 files. Both waves committed on `claude/exciting-albattani-ug1gjv`.
+**Remaining follow-ons:** N+1 goal milestones; unread badge 9+ cap; per-sistant CLAUDE.md
+still says script-src carries 'unsafe-inline' (now stale — fixed in parent docs sweep? NO:
+update apps/per-sistant/CLAUDE.md Helmet CSP paragraph next /sync-docs); job_runs surface
+in /api/data-health (optional).
+
+### Roadmap update + investment-performance implementation (same session, same branch)
+Roadmap: DROPPED multi-user + onboarding by operator decision (documented in CLAUDE.md
+Priority Next Features with rationale); roadmap #4 (investment performance) IMPLEMENTED:
+- services/benchmarks.js + benchmark_prices table — S&P 500 closes from Stooq (keyless),
+  lazy fetch, once/day gate, graceful failure (benchmark:null, never errors).
+- GET /api/investments/performance-history (months 3-60) — portfolio value series from
+  account_balance_snapshots (investment-source + Teller-linked investment types, Plaid
+  phantom-twin dedupe same direction as getNetWorth, per-account forward-fill via
+  exported buildPortfolioSeries) + benchmark trimmed to window + excess return.
+- Dashboard: "Value vs S&P 500" sub-card (3M/6M/12M, dual-line normalized SVG) —
+  independent of Plaid holdings; cost-basis Total return row now holdings-gated.
+- DESIGN NOTE: value-based point-to-point return (contributions count as growth) — true
+  TWR deliberately scoped out (flows not reliably attributable from snapshots alone);
+  the contribution-adjusted figure remains /performance's cost-basis return.
+Tests: 812 pass across 27 files (+16 tests/investment-performance.test.js).
+
+### TWR/XIRR implementation (same session, same branch)
+investment_flows table + classifyPlaidFlow (subtype-driven signs; dividends/cap-gains =
+return, not flows) + syncAllPlaidInvestmentFlows (full-window idempotent, wired into
+auto-sync + pre-insights + sync-balances chains) + manual flow CRUD
+(GET/POST/DELETE /api/investment-flows, plaid rows delete-protected) + computeTWR (daily
+chain-linked exact) + computeXIRR (bisection) on performance-history with flow_coverage
+scoping {coverage_pct, scope all|partial|none}. Dashboard: TWR/XIRR line + log-flow form
+(Plaid accounts excluded from dropdown). Tests: 837 across 28 files (+25
+tests/investment-flows.test.js).
+
+### PWA Phase-0 fixes + polish (same session, same branch)
+Phase-0 PWA testing surfaced: (1) biometric registration 401'd under the shell —
+register endpoints checked Perfin's standalone session, never written when embedded;
+fixed with the INV-25 embedded bail (tests pin both guards). (2) VAPID keys were never
+generated — operator set all three on Render (resolved, no code). (3) AI budget cap
+\$0.512/\$0.50 = documented check-then-charge overshoot, working as designed; added
+Settings-tunable cap (user_settings.ai_monthly_budget_cents, getAiBudgetCents() single
+resolver, INV-14). (4) PWA polish: pull-to-refresh in both apps' shared JS
+(standalone-only, passive, overlay/pyramid/canvas exclusions) + safe-area pass (Perfin
+body pads env(safe-area-inset-*) under viewport-fit=cover — the notch collision was
+structural, not per-page; shell login/landing same; Per-sistant deliberately untouched,
+auto-insets, pinned by test). Native iOS app DEFERRED: no APNs without \$99/yr, web push
+doesn't run in native WebViews, free-signing loses notifications vs the PWA.
+Tests: 856 across 30 files (+9 budget-cap-webauthn, +10 pwa-polish).
+
+### Native iOS wrapper scaffold (same session, same branch)
+mobile/ Capacitor workspace (NOT in root npm workspaces): remote-URL mode at the Render
+deployment, iOS project generated + icons from the mask-crop artwork, Teller/Plaid
+allowNavigation, offline stub, free-signing runbook + Phase-2 device checklist in
+mobile/README.md. PTR gate widened to window.Capacitor. Coexistence design: PWA stays
+installed alongside (separate session; web push keeps flowing through the PWA — native
+free-signed build has no APNs; notification taps open the PWA). Operator next: on the
+Mac — cd mobile && npm install && npx cap sync ios && npx cap open ios, personal-team
+signing, run on device. Tests: 859 across 30 files (+3 scaffold pins).
+**Where I left off:** everything committed + pushed on `claude/exciting-albattani-ug1gjv`
+(F1-F10 + docs + investment performance + TWR/XIRR); awaiting review/merge + operator actions
+(Render passphrase check BLOCKS DEPLOY; backup secrets; cert rotation; clasp push for
+Code.gs F6). Remaining follow-ons unchanged otherwise.
+
 ### AI Insights & Audit targeted cycle (this session)
 Audited; 3 findings (1 Medium AIA1, 2 Low AIA2/AIA3). Implemented A1–A2, deferred A3:
 - **A1 (AIA1)** ai-audit.js: Tier-1 dollar-claim arithmetic now SKIPS claims whose context signals a non-current-month window (annual / multi-month / YTD / projected / average — `CROSS_PERIOD_RE`), since the only per-category + subscription actuals it has are this-month. Stops false-positive CRITICAL findings (audit-alert notification spam + deflated audit_accuracy%) on annualized advice. this-month/unqualified claims still checked. Exported `CROSS_PERIOD_RE` + added 15 classification tests.

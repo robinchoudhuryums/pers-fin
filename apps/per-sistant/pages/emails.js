@@ -1,4 +1,4 @@
-const { pageHead, navBar, themeScript } = require("../views");
+const { pageHead, navBar, themeScript, nonceAttr } = require("../views");
 
 module.exports = function() {
   return (req, res) => {
@@ -91,7 +91,7 @@ ${navBar("/emails")}
   </div>
 </div>
 
-<script>
+<script${nonceAttr()}>
 var curFilter = '';
 var emailSelectMode = false, emailSelectedIds = new Set();
 function setFilter(btn, f) { curFilter = f; document.querySelectorAll('#email-filters button').forEach(b=>b.classList.remove('active')); btn.classList.add('active'); load(); }

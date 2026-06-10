@@ -1,4 +1,4 @@
-const { pageHead, navBar, themeScript } = require("../views");
+const { pageHead, navBar, themeScript, nonceAttr } = require("../views");
 
 module.exports = function() {
   return (req, res) => {
@@ -57,7 +57,7 @@ ${navBar("/analytics")}
     <div id="streak-leaders"></div>
   </div>
 </div>
-<script>
+<script${nonceAttr()}>
 var curPeriod = 'week';
 function setPeriod(btn, p) { curPeriod = p; document.querySelectorAll('#period-filters button').forEach(b=>b.classList.remove('active')); btn.classList.add('active'); load(); }
 

@@ -51,10 +51,22 @@ teller/
     database.js          — Postgres pool + transactional auto-migrations with schema versioning
     teller-api.js        — mTLS HTTP client for Teller API (retry with exponential backoff)
     keep-alive.js        — Self-ping to prevent Render free tier sleep (with fetch timeout)
+    job-health.js        — Scheduled-job heartbeats + missed-job watchdog. Every
+                           startup.js interval calls tick(name) BEFORE its activity
+                           gate (in-memory only — preserves the Neon idle-gate);
+                           the watchdog flushes ticks to job_runs and pushes a
+                           signature-deduped "Scheduled jobs missed" notification
+                           when any job hasn't ticked for 36h+ (process asleep
+                           with keep-alive off, crash loops)
     financial-queries.js — Shared income/spending SQL helpers (split-adjusted spending,
                            keyword-filtered income, current-month per-category spending
                            that honors transaction_splits) — single source of truth used
                            by AI insights and budgets so the numbers match the dashboard
+    benchmarks.js        — S&P 500 benchmark closes for portfolio comparison.
+                           Stooq daily-close CSV (keyless), cached in
+                           benchmark_prices, fetched lazily at most once/day
+                           and only the missing range; every failure path
+                           degrades to "no benchmark line" rather than erroring
     ai-audit.js        — Post-generation insight auditing (4 tiers: arithmetic
                            validation, entity existence, trend direction, consistency).
                            Stores results in ai_audit_log table.
@@ -315,9 +327,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (745 tests as of latest); use
+  Perfin and Per-sistant test files (859 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 745 tests across 24 test files (incl.
+  Current count: 859 tests across 30 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -325,13 +337,31 @@ shell/
   attachment-header sanitization, email status validation, CSV dedup-ID
   parity, Plaid balance-sync status filter, categorize cap-charge ordering,
   tax user-merchant override, decryption_failed surfacing, recurring-cron
-  atomic claim).
+  atomic claim — and `tests/broad-scan-fixes.test.js`, pinning the June 2026
+  broad-scan fixes: backup workflow shape, fail-fast token passphrase,
+  compromised-cert fingerprint check, job-health watchdog, budget-alert
+  24h dedup — plus tests/investment-performance.test.js (benchmark fetch +
+  portfolio series), tests/investment-flows.test.js (TWR/XIRR + Plaid flow
+  classification), tests/budget-cap-webauthn.test.js (tunable AI cap +
+  embedded biometric registration), and tests/pwa-polish.test.js
+  (pull-to-refresh + safe-area pins).
 - `.github/workflows/ci.yml` — CI pipeline (single `npm ci` at root via npm workspaces, then `npm test`)
 - `.claude/commands/` — Project slash-command prompts: `/broad-scan`, `/broad-implement`,
   `/test-sync`, `/sync-docs`
 - `Dockerfile`, `fly.toml`, `render.yaml` — Deployment configs (the Dockerfile
   installs all workspaces and boots `node shell/index.js`; render.yaml uses
   `npm install` + `npm start` and bypasses the Dockerfile)
+- `mobile/` — Capacitor iOS wrapper (remote-URL mode: the WebView loads the
+  live Render deployment, so server deploys ARE app updates; no bundled web
+  build). Deliberately NOT in the root npm workspaces so server deploys never
+  install native tooling. Free-signing build (7-day re-sign from Xcode, NO
+  APNs push — notifications keep flowing through the installed PWA, which
+  coexists as a separate icon/session for A/B comparison). Pull-to-refresh in
+  both apps' shared JS also activates under `window.Capacitor` (the WebView
+  reports display-mode: browser). Build runbook + Phase-2 device checklist:
+  `mobile/README.md`. Teller/Plaid domains are allowlisted in
+  `capacitor.config.json` server.allowNavigation so bank-link flows stay
+  in-WebView.
 
 ## Features
 
@@ -480,6 +510,21 @@ shell/
   per-asset-class rows also carry `target_pct` + `drift_pct` (actual −
   target); under-weight classes the user wants exposure to but doesn't
   hold are surfaced as synthetic zero-holding rows.
+  The card also renders a **"Value vs S&P 500" history chart** (3M/6M/12M
+  range buttons, dual-line normalized-to-100 inline SVG — solid portfolio
+  line, dashed benchmark) backed by `GET /api/investments/performance-history`.
+  This sub-section is INDEPENDENT of Plaid holdings — Teller-linked and
+  manual investment accounts have snapshot history too, so it lights up the
+  card even when the cost-basis "Total return" row stays hidden. The
+  benchmark line + "vs market" excess figure drop out gracefully when the
+  benchmark source (Stooq, keyless) is unreachable. Portfolio line is
+  value-based (contributions count as growth); below it the card shows the
+  flow-adjusted figures — **TWR** (cumulative for the window) and **XIRR**
+  (annualized) — computed over flow-covered accounts, with a "(covers N% of
+  portfolio)" label when coverage is partial. A "Log contribution /
+  withdrawal" form (collapsed) posts manual flows for Teller-linked/manual
+  accounts; Plaid-linked accounts get their flows synced automatically and
+  are excluded from the dropdown so manual entry can't double-count.
 - **Target Allocation editor** (Settings → Target Allocation): per-
   asset-class target weights as `{security_type: pct}` rows the user
   can add/edit/remove. Sum indicator turns green at ≈100%, red above
@@ -764,6 +809,14 @@ shell/
   to iOS Add-to-Home-Screen instructions when neither path is available.
 - **Mobile polish** (Phase D): viewport-fit=cover for iOS notch, dual light/dark
   `theme-color` meta, 40/44px (desktop/mobile) touch-target minimums on buttons.
+- **Safe-area pass + pull-to-refresh** (PWA Phase-0 follow-up): Perfin's body
+  (and the shell login/landing) pad by `env(safe-area-inset-*)` so the top nav
+  clears the iPhone status bar/notch under viewport-fit=cover (Per-sistant
+  deliberately omits viewport-fit and auto-insets — don't "fix" the asymmetry).
+  Both apps' shared JS ship `initPullToRefresh`: standalone-display-mode-only,
+  passive-listener drag-down-from-top → ring indicator → reload, with
+  overlay/pyramid/canvas exclusions (iOS home-screen PWAs have no native
+  pull-to-refresh gesture).
 - **Mobile navigation**: at ≤640px the 7-link top nav collapses behind a
   **hamburger** (drawer drops under a single-row bar; closes on link tap /
   outside click / Esc) and a fixed **bottom tab bar** surfaces the 5 primary
@@ -953,10 +1006,19 @@ on the operator's machine (or fed via env vars) before the app boots:
    should be **considered compromised** — rotate the cert in the Teller
    dashboard before relying on them, and treat scrubbing history
    (`git filter-repo` / BFG) as a one-time destructive action that needs
-   to happen out-of-band.
+   to happen out-of-band. Until the rotation happens, `getTlsAgent()`
+   (`teller/services/teller-api.js`) logs a loud `*** SECURITY WARNING ***`
+   at cert load when the loaded cert's DER SHA-256 matches the
+   known-compromised fingerprint from history — the warning disappearing
+   is the signal that the rotation took effect.
 2. **`TOKEN_ENCRYPTION_PASSPHRASE`** — used by `pgp_sym_encrypt` to store
    Teller access tokens, Plaid access tokens, and the Per-sistant webhook
-   HMAC secret. Rotating it invalidates all stored ciphertext; the
+   HMAC secret. **Missing it is FATAL at boot** (`services/database.js`
+   exits 1, same posture as a missing `NEON_DATABASE_URL`) — booting
+   without it used to only warn and then surface later as scattered
+   `decryption_failed` errors. For local debugging without any bank links,
+   set `ALLOW_MISSING_TOKEN_PASSPHRASE=true` to downgrade the failure to
+   the old warning. Rotating it invalidates all stored ciphertext; the
    remediation is to re-link affected institutions (Teller Connect re-run
    for Teller items, Plaid Link re-run for Plaid items). After a rotation
    mismatch, `POST /api/plaid/sync-holdings` will surface
@@ -986,6 +1048,14 @@ on the operator's machine (or fed via env vars) before the app boots:
      `API_KEY` repo secrets so the scheduled reindex can reach
      `/per-sistant/api/rag/reindex` (via the shell's x-api-key path) while the
      Render free tier sleeps.
+4. **`db-backup.yml` GitHub Action secrets** — `NEON_DATABASE_URL`,
+   `PERSISTENT_DATABASE_URL` (optional), and `BACKUP_ENCRYPTION_PASSPHRASE`
+   repo secrets for the nightly encrypted backup workflow (pg_dump of both
+   DBs → AES-256 artifacts, 90-day retention; runs from GitHub's runners so
+   it works while Render sleeps). Keep a copy of the backup passphrase
+   OUTSIDE GitHub — the artifacts are unreadable without it. The restore
+   runbook lives in the workflow file's header; do one restore drill into a
+   throwaway Neon branch before you need it for real.
 
 Both the **weekly digest** (Settings → AI Insights → "Weekly Digest
 Email") and the **daily activity digest** ("Daily Activity Digest"
@@ -1068,7 +1138,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 745 tests passing across 24 test files (Perfin + Per-sistant)
+- 859 tests passing across 30 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash
@@ -1091,7 +1161,9 @@ POST /api/sync-balances    # fetch latest account balances. Refreshes Teller
                            # Response: { accounts_updated, errors?,
                            # plaid_accounts_updated, plaid_errors?,
                            # holdings_updated, holdings_accounts_updated,
-                           # holdings_errors? }. plaid_errors now also carries
+                           # holdings_errors?, flows_added, flows_errors? }.
+                           # Also re-pulls investment cash flows
+                           # (syncAllPlaidInvestmentFlows) for TWR/XIRR. plaid_errors now also carries
                            # surfaced liabilities failures ("liabilities: <code>")
                            # so a card whose APR/limit won't load is visible.
 POST /api/detect           # run subscription detection
@@ -1195,7 +1267,9 @@ PATCH /api/settings        # update user settings. Accepts: theme,
                            # widget display name, max 50 chars),
                            # pyramid_*, debt_baseline_amount,
                            # shell_idle_timeout_minutes, target_allocation_pct,
-                           # weekly/daily digest toggles, etc.
+                           # weekly/daily digest toggles,
+                           # ai_monthly_budget_cents (1-10000 cents or null
+                           # to fall back to env), etc.
 GET  /api/data-freshness   # per-source sync timestamps with staleness flags
 GET  /api/data-health      # operator health surface — per-source freshness,
                            # Teller/Plaid connection status, derived issues[]
@@ -1284,6 +1358,39 @@ POST /api/plaid/sync-transactions       # cursor-based sync for all plaid_items 
 GET  /api/plaid/holdings   # list investment holdings
 GET  /api/investments/performance # portfolio returns + asset-class allocation + top winners/losers
                                   # (Plaid holdings only; auto-hides on dashboard when empty)
+GET  /api/investments/performance-history # portfolio value series vs S&P 500
+                                  # (query: months=3-60 default 12). Portfolio = daily
+                                  # account_balance_snapshots summed across ALL investment
+                                  # accounts (investment-source rows + Teller-linked
+                                  # investment types, Plaid phantom twins deduped same
+                                  # direction as getNetWorth), per-account forward-filled.
+                                  # Benchmark from benchmark_prices (services/benchmarks.js);
+                                  # response carries benchmark:null gracefully when the
+                                  # source is unavailable. portfolio_return_pct is
+                                  # point-to-point on VALUE (contributions count as
+                                  # growth); the response ALSO carries flow-adjusted
+                                  # figures: twr_pct (true time-weighted return — daily
+                                  # chain-linked, exact since valuations are daily) and
+                                  # xirr_pct (annualized money-weighted return), both
+                                  # computed over FLOW-COVERED accounts only (Plaid-synced
+                                  # + any account with manual flows) with a flow_coverage
+                                  # block ({coverage_pct, flows_count, net_flows, scope:
+                                  # all|partial|none}) so partial coverage is explicit
+                                  # rather than silently wrong.
+POST /api/plaid/sync-flows # sync external cash flows (deposits/withdrawals/in-kind
+                           # transfers) from Plaid investmentsTransactionsGet into
+                           # investment_flows. Full ~24-month window every run, idempotent
+                           # via UNIQUE plaid_investment_transaction_id (no watermark —
+                           # a newly linked item can't silently lose history). Dividends,
+                           # interest, capital gains, buys/sells/fees are RETURN
+                           # components, never flows (classifyPlaidFlow).
+GET  /api/investment-flows # list flows (query: months default 24) with account names
+POST /api/investment-flows # log a manual flow for accounts Plaid can't see
+                           # (body: source 'investment'|'linked', source_id, flow_date,
+                           # amount, flow_type contribution|withdrawal — sign derived
+                           # from flow_type regardless of submitted sign)
+DELETE /api/investment-flows/:id # delete a MANUAL flow (plaid rows 404 — they'd
+                           # resurrect on the next sync)
 GET  /api/whats-new        # "since you last looked" feed — new transactions, balance deltas,
                            # new subscriptions, and recent notifications since last_dashboard_view_at
 POST /api/whats-new/seen   # advance last_dashboard_view_at to now (idempotent)
@@ -1374,7 +1481,7 @@ validation (SN-5).
 ### Databases (one per sub-app)
 - `NEON_DATABASE_URL` — Perfin's Neon PostgreSQL connection string
 - `PERSISTENT_DATABASE_URL` — Per-sistant's Neon DB (separate). Falls back to `NEON_DATABASE_URL` for standalone Per-sistant deployments.
-- `TOKEN_ENCRYPTION_PASSPHRASE` — passphrase for encrypting access tokens at rest
+- `TOKEN_ENCRYPTION_PASSPHRASE` — passphrase for encrypting access tokens at rest. **Required — boot fails without it** (escape hatch: `ALLOW_MISSING_TOKEN_PASSPHRASE=true` for local debug with no bank links).
 
 ### Teller (Perfin)
 - `TELLER_APPLICATION_ID` — Teller app ID
@@ -1397,7 +1504,7 @@ validation (SN-5).
 
 ### AI / Insights (Perfin)
 - `ANTHROPIC_API_KEY` — enables AI features in both apps
-- `INSIGHTS_MONTHLY_BUDGET_CENTS` — monthly API spending cap (default 50 = $0.50); shared between `/api/insights` and `/api/categorize`
+- `INSIGHTS_MONTHLY_BUDGET_CENTS` — monthly API spending cap fallback (default 50 = $0.50); shared between `/api/insights` and `/api/categorize`. Overridable at runtime from Settings → AI Insights → Monthly Budget Cap (`user_settings.ai_monthly_budget_cents`, resolved by `getAiBudgetCents()` in routes/insights.js — the single cap reader)
 
 ### Push notifications (Perfin)
 - `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` — Web Push keypair (`npx web-push generate-vapid-keys`); without these `/api/notifications/*` returns 501
@@ -1446,7 +1553,15 @@ standalone-mode fallback if either app is run on its own Render service.
   `push_subscriptions`, `webauthn_credentials`, `investment_accounts`, `investment_holdings`,
   `plaid_investment_items`, `plaid_items`, `sync_cursors`, `schema_migrations`,
   `categorization_rules`, `manual_bills`, `bill_payments`, `notification_log`,
-  `ai_audit_log`, `account_balance_snapshots`, `watchlist_items`, `credit_scores`
+  `ai_audit_log`, `account_balance_snapshots`, `watchlist_items`, `credit_scores`,
+  `job_runs` (scheduled-job heartbeats — one row per background job, UPSERTed by
+  `services/job-health.js`; the `_watchdog` row stores the last-notified
+  missed-job signature), `investment_flows` (external cash flows for
+  TWR/XIRR — polymorphic (source, source_id) like account_balance_snapshots,
+  signed amount (positive = into the portfolio), provenance 'plaid' (UNIQUE
+  plaid_investment_transaction_id) or 'manual'), `benchmark_prices` (S&P 500 daily closes cached from
+  Stooq by `services/benchmarks.js` — PK (symbol, price_date); read by
+  `GET /api/investments/performance-history`)
 - `user_settings`: single-row pattern (CHECK id = 1) for app preferences
 - `linked_accounts` columns include: `is_shared BOOLEAN`, `spending_split_pct INT DEFAULT 100`,
   `is_manual BOOLEAN` — constraint `chk_account_source` allows `plaid_item_id IS NOT NULL OR
@@ -1737,7 +1852,11 @@ rows) can dismiss them from the UI or run `POST /api/cleanup`.
   defense-in-depth pin against a future SDK-default flip (PSA2).
 - **Biometric registration UI**: Settings → Security → "Biometric Login"
   section lists registered credentials and provides Register / Remove
-  buttons via the existing `/api/webauthn/*` endpoints. Section auto-hides
+  buttons via the existing `/api/webauthn/*` endpoints. The register
+  endpoints accept shell-authenticated requests (`req.app.get("embedded")`,
+  INV-25) — they previously checked only Perfin's own session, which is never
+  written under the unified shell, so registration always 401'd for shell
+  users (found during PWA Phase-0 testing). Section auto-hides
   on browsers without `window.PublicKeyCredential` or when the WebAuthn
   SDK isn't installed (server returns 501). Works under both standalone
   and unified-shell deployments — registration always happens against
@@ -1776,7 +1895,7 @@ embedded mode).
   syncAllPlaidHoldings → syncAllBalances → detect subscriptions →
   detect transfers → categorize → generate insights → audit → email webhook.
   Ensures AI analyzes freshest data. Auto-categorization runs as part of this pipeline.
-- **Budget alerts**: every 3 hours (push notifications at 80% and 100%+ thresholds, aligned with the in-app `/api/budgets/alerts` `warning`/`critical` levels). Like the endpoint, the push compares against the effective limit (base + current-month rollover) and skips one-time budgets outside their `effective_month`. The in-app `info`/pace heuristic is intentionally not pushed (too noisy as a notification).
+- **Budget alerts**: every 3 hours (push notifications at 80% and 100%+ thresholds, aligned with the in-app `/api/budgets/alerts` `warning`/`critical` levels). Like the endpoint, the push compares against the effective limit (base + current-month rollover) and skips one-time budgets outside their `effective_month`. The in-app `info`/pace heuristic is intentionally not pushed (too noisy as a notification). **Deduped to at most one notification per category+severity per 24h** via `sentRecently(tag, 24)` (`routes/notifications.js`, backed by `notification_log`) — previously a category that stayed over budget re-logged a notification on every 3-hour tick for the rest of the month. Escalation (warn → over) still fires immediately because the two severities use distinct tags.
 - **Budget snapshot auto-trigger**: every 6 hours, creates a snapshot for the
   previous (now-complete) month (spending + rollover amounts) so budget rollover
   advances automatically. Idempotent — skips if a snapshot for that month already
@@ -1787,7 +1906,8 @@ embedded mode).
 - **Bank auto-sync** (Phase A): every 1 hour, checks `auto_sync_enabled` and whether
   `auto_sync_interval_hours` has elapsed since `last_auto_sync_at`. When due, calls
   `syncAllEnrollments()` (Teller) then `syncAllPlaidTransactions()` (Plaid) then
-  `syncAllPlaidHoldings()` (Plaid investments) then
+  `syncAllPlaidHoldings()` (Plaid investments) then `syncAllPlaidInvestmentFlows()`
+  (external cash flows for TWR/XIRR) then
   `syncAllBalances()` then `runCategorize()` in-process — never via HTTP
   self-fetch, so API_KEY-protected deployments don't 401 against themselves.
   The trailing `runCategorize()` step gives a categorization sweep on every
@@ -1826,6 +1946,19 @@ embedded mode).
   silently when `gatherWhatsNew(now - 24h)` returns zero counts (no
   point mailing an empty "yesterday" digest). On send, fires the
   `daily_summary` webhook to Per-sistant. No AI call.
+- **Missed-job watchdog**: ~2 minutes after boot, then every 6 hours
+  (activity-gated). Every scheduled interval above calls
+  `jobHealth.tick(name)` as its first statement — BEFORE the activity
+  gate, recorded in memory only so the Neon idle-gate stays intact. The
+  watchdog flushes ticks to the `job_runs` table and pushes a
+  "Scheduled jobs missed" notification (tag `jobs-missed`) when any
+  job's last persisted tick is older than max(4× its interval, 36h) —
+  i.e. the process wasn't running at all (free-tier sleep with
+  keep-alive off, crash loop). Alerts once per outage: the sorted
+  missed-job list is a signature stored on the `_watchdog` row, and an
+  unchanged signature doesn't re-notify. Normal overnight sleeps stay
+  under the 36h floor by design. Jobs with no row yet (fresh install)
+  never alarm.
 
 ## Shared Account Spending Split
 All spending queries apply the `SPLIT_AMOUNT` SQL fragment from
@@ -2098,7 +2231,7 @@ income module, and bill-calendar income detection.
   Every route module that the scheduler invokes exports a callable helper
   alongside its Express router:
   - `routes/enrollments.js` → `syncAllEnrollments`, `syncAllBalances`, `reconcileTeller`, `recordSyncResult`
-  - `routes/investments.js` → `syncAllPlaidTransactions`, `syncAllPlaidBalances`, `syncAllPlaidHoldings`, `reconcilePlaidTransactions`
+  - `routes/investments.js` → `syncAllPlaidTransactions`, `syncAllPlaidBalances`, `syncAllPlaidHoldings`, `syncAllPlaidInvestmentFlows`, `reconcilePlaidTransactions`
   - `routes/subscriptions.js` → `runSubscriptionDetection`
   - `routes/categorize.js` → `runCategorize`
   - `routes/insights.js` → `generateInsights`
@@ -2355,11 +2488,14 @@ income module, and bill-calendar income detection.
 
 ## Priority Next Features
 1. **Mobile app** — React Native or Capacitor wrapper for native experience
-2. **Multi-user support** — Shared household finance tracking with role-based access
-3. **Onboarding flow** — Guided "Getting Started" checklist (link account → sync →
-   categorize → set budgets) visible until all steps complete
-4. **Investment performance & allocation** — Plaid syncs holdings (qty, cost basis,
-   current value); compute returns, asset allocation, and goal-vs-portfolio drift
+
+Dropped by design (June 2026): **multi-user support** — the single-user
+assumption (single-row `user_settings`, server-side watermarks, no tenancy
+dimension in queries) is a load-bearing simplification, not a gap; and
+**onboarding flow** — single operator, already onboarded. **Investment
+performance & allocation** shipped: cost-basis returns + asset-class
+allocation + target-drift (`GET /api/investments/performance`) and portfolio
+value history vs S&P 500 benchmark (`GET /api/investments/performance-history`).
 
 ## Cycle Workflow Config
 
@@ -2384,8 +2520,8 @@ Test Coverage Quality | tests that pass regardless of the code under test
 ### Subsystems
 Bank Sync & Ingestion:
   teller/routes/enrollments.js, teller/routes/investments.js,
-  teller/services/teller-api.js, teller/data/csv-formats.js,
-  scripts/import-csv-cli.js
+  teller/services/teller-api.js, teller/services/benchmarks.js,
+  teller/data/csv-formats.js, scripts/import-csv-cli.js
   (Teller and Plaid are co-equal, first-class linking paths — both write the
    same transactions/linked_accounts tables. Plaid additionally covers banks
    Teller doesn't, plus investment holdings.)
@@ -2408,7 +2544,8 @@ Settings, Notifications & Cross-app:
 Platform, Shell & Auth:
   shell/index.js, shell/middleware/auth.js, shell/middleware/webauthn.js,
   teller/server.js, teller/startup.js, teller/services/database.js,
-  teller/services/keep-alive.js, scripts/reset-fresh.js, db/*.sql
+  teller/services/keep-alive.js, teller/services/job-health.js,
+  scripts/reset-fresh.js, db/*.sql
 Web UI (Perfin):
   teller/pages/*.js, teller/views/*.ejs, teller/views/partials/*.ejs,
   teller/public/*.js, teller/public/*.css, teller/public/sw.js,

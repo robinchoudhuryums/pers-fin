@@ -1,4 +1,4 @@
-const { pageHead, navBar, themeScript } = require("../views");
+const { pageHead, navBar, themeScript, nonceAttr } = require("../views");
 
 module.exports = function() {
   return (req, res) => {
@@ -76,7 +76,7 @@ ${navBar("/knowledge")}
   </details>
 </div>
 
-<script>
+<script${nonceAttr()}>
 var BP = window.BASE_PATH || '';
 function kBusy(on){ document.getElementById('k-busy').style.display = on ? 'inline' : 'none'; }
 function kShow(id, on){ document.getElementById(id).style.display = on ? 'block' : 'none'; }

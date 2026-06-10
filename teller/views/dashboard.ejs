@@ -534,11 +534,44 @@
         <!-- S4: portfolio return + asset allocation. Only renders when Plaid
              holdings exist (cost_basis / current_value per security). -->
         <div id="investments-performance" style="display:none;margin-bottom:14px;padding:12px;background:var(--bg-elevated);border:1px solid var(--card-border);border-radius:8px;">
-          <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:8px;">
+          <div id="invperf-return-row" style="display:none;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:8px;">
             <span style="font-size:13px;color:var(--text-muted);">Total return</span>
             <span id="invperf-return" style="font-size:14px;font-weight:500;"></span>
           </div>
           <div id="invperf-allocation" style="margin-top:8px;display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--text-secondary);"></div>
+          <!-- Portfolio value vs S&P 500 (performance-history). Hidden until
+               the series has >= 2 snapshot days; benchmark line + numbers
+               drop out gracefully when the benchmark source is unavailable. -->
+          <div id="invperf-history" style="display:none;margin-top:12px;border-top:1px solid var(--card-border);padding-top:10px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+              <span style="font-size:13px;color:var(--text-muted);">Value vs S&amp;P 500</span>
+              <span id="invperf-history-range" role="group" aria-label="History range">
+                <button type="button" class="invperf-range-btn" data-months="3" style="font-size:10px;padding:2px 8px;">3M</button>
+                <button type="button" class="invperf-range-btn" data-months="6" style="font-size:10px;padding:2px 8px;">6M</button>
+                <button type="button" class="invperf-range-btn active" data-months="12" style="font-size:10px;padding:2px 8px;">12M</button>
+              </span>
+            </div>
+            <div id="invperf-history-chart" style="margin-top:8px;"></div>
+            <div id="invperf-history-stats" style="margin-top:6px;font-size:11px;color:var(--text-secondary);"></div>
+            <div id="invperf-twr-stats" style="margin-top:4px;font-size:11px;color:var(--text-secondary);"></div>
+            <details id="invflow-log" style="margin-top:8px;">
+              <summary style="cursor:pointer;font-size:11px;color:var(--text-muted);">Log contribution / withdrawal</summary>
+              <form id="invflow-form" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center;font-size:11px;">
+                <select id="invflow-account" required style="max-width:160px;"><option value="">Account…</option></select>
+                <select id="invflow-type">
+                  <option value="contribution">Contribution</option>
+                  <option value="withdrawal">Withdrawal</option>
+                </select>
+                <input id="invflow-date" type="date" required>
+                <input id="invflow-amount" type="number" step="0.01" min="0.01" placeholder="Amount" inputmode="decimal" required style="width:100px;">
+                <button type="submit">Save</button>
+              </form>
+              <div style="margin-top:4px;font-size:10px;color:var(--text-muted);">
+                For accounts Plaid can't see (Teller-linked / manual). Plaid-linked
+                accounts get deposits &amp; withdrawals synced automatically.
+              </div>
+            </details>
+          </div>
           <details style="margin-top:10px;">
             <summary style="cursor:pointer;font-size:11px;color:var(--text-muted);">Top winners &amp; losers</summary>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px;font-size:11px;">
@@ -1684,6 +1717,7 @@
         var data = await res.json();
         if (!data.holdings_count || data.total_value <= 0) return;
         box.style.display = 'block';
+        document.getElementById('invperf-return-row').style.display = 'flex';
         var retEl = document.getElementById('invperf-return');
         var sign = data.total_return >= 0 ? '+' : '';
         var color = data.total_return >= 0 ? 'var(--green)' : 'var(--red)';
@@ -1712,6 +1746,178 @@
         winEl.innerHTML = (data.top_winners || []).map(holdingRow).join('') || '<div style="color:var(--text-muted);">—</div>';
         loseEl.innerHTML = (data.top_losers || []).map(holdingRow).join('') || '<div style="color:var(--text-muted);">—</div>';
       } catch (e) { /* silently hide */ }
+    })();
+
+    // Portfolio value vs S&P 500 — performance-history sub-card. Independent
+    // of the Plaid-holdings loader above: Teller-linked + manual investment
+    // accounts have snapshot history too, so this can light up the card even
+    // when there are no holdings (the cost-basis "Total return" row stays
+    // hidden in that case). Both series are normalized to 100 at the first
+    // common date so the two lines are visually comparable regardless of
+    // scale. No Chart.js — same inline-SVG approach as the sparklines.
+    (function loadInvestmentHistory() {
+      var box = document.getElementById('investments-performance');
+      var hist = document.getElementById('invperf-history');
+      var chartEl = document.getElementById('invperf-history-chart');
+      var statsEl = document.getElementById('invperf-history-stats');
+      if (!box || !hist || !chartEl) return;
+
+      function renderDualLine(portfolio, benchmark) {
+        var w = 560, h = 96, pad = 2;
+        function norm(series, key) {
+          var base = series[0][key];
+          if (!base) return null;
+          return series.map(function(p) { return { date: p.date, v: (p[key] / base) * 100 }; });
+        }
+        var pn = norm(portfolio, 'value');
+        var bn = benchmark && benchmark.series && benchmark.series.length >= 2 ? norm(benchmark.series, 'close') : null;
+        if (!pn) return '';
+        var all = pn.map(function(p) { return p.v; }).concat(bn ? bn.map(function(p) { return p.v; }) : []);
+        var min = Math.min.apply(null, all), max = Math.max.apply(null, all);
+        var range = max - min || 1;
+        var t0 = new Date(pn[0].date).getTime();
+        var t1 = new Date(pn[pn.length - 1].date).getTime();
+        var span = (t1 - t0) || 1;
+        function line(series, color, width, dash) {
+          var pts = series.map(function(p) {
+            var x = (((new Date(p.date).getTime() - t0) / span) * (w - 2 * pad) + pad).toFixed(1);
+            var y = (h - pad - ((p.v - min) / range) * (h - 2 * pad)).toFixed(1);
+            return x + ',' + y;
+          }).join(' ');
+          return '<polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="' + width + '"' +
+            (dash ? ' stroke-dasharray="4,3" opacity="0.75"' : '') +
+            ' stroke-linecap="round" stroke-linejoin="round"/>';
+        }
+        var pColor = pn[pn.length - 1].v >= 100 ? 'var(--green)' : 'var(--red)';
+        return '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" ' +
+          'style="display:block;width:100%;height:' + h + 'px;" role="img" ' +
+          'aria-label="Portfolio value versus S and P 500, normalized">' +
+          (bn ? line(bn, 'var(--text-muted)', 1.2, true) : '') +
+          line(pn, pColor, 1.8, false) +
+          '</svg>' +
+          '<div style="display:flex;gap:14px;font-size:10px;color:var(--text-muted);margin-top:2px;">' +
+            '<span><span style="display:inline-block;width:14px;height:2px;background:' + pColor + ';vertical-align:middle;margin-right:4px;"></span>Portfolio</span>' +
+            (bn ? '<span><span style="display:inline-block;width:14px;border-top:2px dashed var(--text-muted);vertical-align:middle;margin-right:4px;"></span>S&amp;P 500</span>' : '') +
+          '</div>';
+      }
+
+      async function load(months) {
+        try {
+          var res = await apiFetch('/api/investments/performance-history?months=' + months);
+          if (!res.ok) return;
+          var data = await res.json();
+          if (!data.portfolio || data.portfolio.length < 2) return;
+          box.style.display = 'block';
+          hist.style.display = 'block';
+          chartEl.innerHTML = renderDualLine(data.portfolio, data.benchmark);
+          var parts = [];
+          if (data.portfolio_return_pct !== null && data.portfolio_return_pct !== undefined) {
+            var ps = data.portfolio_return_pct >= 0 ? '+' : '';
+            parts.push('Portfolio <strong style="color:' + (data.portfolio_return_pct >= 0 ? 'var(--green)' : 'var(--red)') + ';">' +
+              ps + data.portfolio_return_pct.toFixed(1) + '%</strong>');
+          }
+          if (data.benchmark && data.benchmark.return_pct !== null) {
+            var bs = data.benchmark.return_pct >= 0 ? '+' : '';
+            parts.push('S&amp;P 500 <strong>' + bs + data.benchmark.return_pct.toFixed(1) + '%</strong>');
+          }
+          if (data.excess_return_pct !== null && data.excess_return_pct !== undefined) {
+            var es = data.excess_return_pct >= 0 ? '+' : '';
+            parts.push('<span style="color:' + (data.excess_return_pct >= 0 ? 'var(--green)' : 'var(--red)') + ';">' +
+              es + data.excess_return_pct.toFixed(1) + '% vs market</span>');
+          }
+          // Contributions count as portfolio growth here (value-based line);
+          // the cost-basis Total return row above is the contribution-adjusted one.
+          statsEl.innerHTML = parts.join(' &nbsp;·&nbsp; ');
+
+          // Flow-adjusted figures (TWR cumulative for the window, XIRR
+          // annualized), scoped to flow-covered accounts.
+          var twrEl = document.getElementById('invperf-twr-stats');
+          var twrParts = [];
+          if (data.twr_pct !== null && data.twr_pct !== undefined) {
+            var ts = data.twr_pct >= 0 ? '+' : '';
+            twrParts.push('TWR <strong style="color:' + (data.twr_pct >= 0 ? 'var(--green)' : 'var(--red)') + ';" ' +
+              'title="Time-weighted return: contributions and withdrawals removed, pure investment performance">' +
+              ts + data.twr_pct.toFixed(1) + '%</strong>');
+          }
+          if (data.xirr_pct !== null && data.xirr_pct !== undefined) {
+            var xs = data.xirr_pct >= 0 ? '+' : '';
+            twrParts.push('XIRR <strong title="Money-weighted (annualized): what your actual dollars earned per year">' +
+              xs + data.xirr_pct.toFixed(1) + '%/yr</strong>');
+          }
+          if (twrParts.length && data.flow_coverage && data.flow_coverage.scope === 'partial') {
+            twrParts.push('<span style="color:var(--text-muted);">(covers ' +
+              data.flow_coverage.coverage_pct.toFixed(0) + '% of portfolio — log flows for the rest)</span>');
+          }
+          if (twrEl) twrEl.innerHTML = twrParts.join(' &nbsp;·&nbsp; ');
+        } catch (e) { /* leave hidden */ }
+      }
+
+      // Manual flow logging (Teller-linked / manual accounts). Account list
+      // is fetched lazily on first open; Plaid-synced accounts are excluded
+      // (their flows come from investmentsTransactionsGet automatically).
+      (function wireFlowForm() {
+        var det = document.getElementById('invflow-log');
+        var form = document.getElementById('invflow-form');
+        var acctSel = document.getElementById('invflow-account');
+        if (!det || !form || !acctSel) return;
+        document.getElementById('invflow-date').value = new Date().toISOString().slice(0, 10);
+        var loaded = false;
+        det.addEventListener('toggle', async function() {
+          if (!det.open || loaded) return;
+          loaded = true;
+          try {
+            var res = await apiFetch('/api/investments');
+            if (!res.ok) return;
+            var data = await res.json();
+            (data.accounts || []).forEach(function(a) {
+              if (a.source === 'plaid') return; // auto-synced — manual entry would double-count
+              var opt = document.createElement('option');
+              // Teller-linked accounts live in linked_accounts → source 'linked';
+              // manual investment accounts live in investment_accounts.
+              opt.value = (a.source === 'teller' ? 'linked' : 'investment') + ':' + a.id;
+              opt.textContent = (a.name || 'Account') + (a.institution ? ' — ' + a.institution : '');
+              acctSel.appendChild(opt);
+            });
+          } catch (e) {}
+        });
+        form.addEventListener('submit', async function(e) {
+          e.preventDefault();
+          var sel = acctSel.value.split(':');
+          if (sel.length !== 2) { showMsg('Pick an account', false); return; }
+          try {
+            var res = await apiFetch('/api/investment-flows', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                source: sel[0],
+                source_id: parseInt(sel[1]),
+                flow_date: document.getElementById('invflow-date').value,
+                amount: parseFloat(document.getElementById('invflow-amount').value),
+                flow_type: document.getElementById('invflow-type').value,
+              }),
+            });
+            if (!res.ok) {
+              var err = await res.json().catch(function() { return {}; });
+              showMsg(err.error || 'Could not save flow', false);
+              return;
+            }
+            showMsg('Flow logged', true);
+            document.getElementById('invflow-amount').value = '';
+            var active = document.querySelector('.invperf-range-btn.active');
+            load(active ? parseInt(active.getAttribute('data-months')) || 12 : 12);
+          } catch (e) { showMsg('Could not save flow', false); }
+        });
+      })();
+
+      document.getElementById('invperf-history-range').addEventListener('click', function(e) {
+        var btn = e.target.closest('.invperf-range-btn');
+        if (!btn) return;
+        document.querySelectorAll('.invperf-range-btn').forEach(function(b) { b.classList.remove('active'); });
+        btn.classList.add('active');
+        load(parseInt(btn.getAttribute('data-months')) || 12);
+      });
+
+      load(12);
     })();
 
     // S3: "What's new since last visit" widget. Reads /api/whats-new (which

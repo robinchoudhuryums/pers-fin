@@ -7,7 +7,11 @@ const { isValidWebhookUrl } = require("./config");
 
 function advanceRecurrence(date, rule, interval) {
   const d = new Date(date);
-  const n = interval || 1;
+  // Floor at 1 (F9 defense-in-depth): a zero/negative interval would make the
+  // date stand still or step backwards, and callers (calendar projections,
+  // recurring auto-roll) rely on "date advanced" as their loop progress.
+  // Routes + the DB CHECK reject bad values at write time.
+  const n = Math.max(1, parseInt(interval, 10) || 1);
   if (rule === "daily" || rule === "custom_days") d.setDate(d.getDate() + n);
   else if (rule === "weekdays") {
     let count = 0;

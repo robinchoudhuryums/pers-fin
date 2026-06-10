@@ -29,10 +29,10 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   at-most-once delivery). The manual `POST /api/emails/:id/send` claims the row
   the same way (`UPDATE … WHERE id = $1 AND status <> 'sent' RETURNING`) so a
   double-click / retry returns 409 instead of re-sending (PB-4).
-- **Tests**: `tests/` (node:test runner, `npm test`, 257 tests (api + integration + cycle-fixes))
+- **Tests**: `tests/` (node:test runner, `npm test`, 343 tests (api + integration + cycle-fixes))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
-## Current State (as of March 2026)
+## Current State (as of June 2026)
 - Modular Express server with separated routes, pages, and middleware (matches Perfin aesthetic exactly)
 - **Authentication**: Set `SESSION_PASSWORD` (text) or `SESSION_PIN` (numeric PIN pad) env var
 - **Dark/Light theme**: Toggle in Settings, persisted to DB + localStorage
@@ -71,7 +71,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **iCal Export**: Export tasks and scheduled emails as .ics file for Google Calendar, Outlook, etc.
 - **Voice Input**: Web Speech API microphone button on Quick Add and notes (Chrome/Edge)
 - **Location-Based Reminders**: Set location (name + coordinates + radius) on tasks, periodic geofence checking with browser notifications
-- **Mobile-Optimized**: Bottom navigation bar, hamburger menu, swipe between pages, floating action button, horizontal-scroll filters, responsive layouts
+- **Mobile-Optimized**: Bottom navigation bar, hamburger menu, swipe between pages, floating action button, horizontal-scroll filters, responsive layouts, pull-to-refresh in standalone PWA mode (views/js.js `initPullToRefresh` — passive listeners, overlay exclusions; the shared-JS module is one exported template literal, so the PTR block must stay backtick-free)
 - **Offline Support**: Service worker caches pages and API responses, queues mutations for sync when back online, offline banner indicator
 - **Global Search**: Search across todos, emails, and notes
 - **Calendar View**: Monthly calendar with iCal export, showing tasks, emails, and notes by date
@@ -104,7 +104,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **Webhooks**: Configure external webhook endpoints to receive event notifications (task created/completed, email sent, streak milestones); test webhooks from Settings. Both the webhook URLs AND the Slack URL (`config.isValidWebhookUrl`) are SSRF-validated at write-time (on create/PATCH) AND re-validated before each outbound send (`helpers.sendWebhook` + `sendSlackNotification`, PSB2): `http(s)` only, and private/loopback/link-local ranges are blocked — including `169.254.0.0/16` (the cloud metadata endpoint `169.254.169.254`), the full `127.0.0.0/8`, RFC-1918, and bracketed IPv6 loopback/ULA (PB-1/PB-5).
 - **Slack Integration**: Add Slack Incoming Webhook URL in Settings for notifications (SSRF-validated — see Webhooks above)
 - **AI API Optimization**: Singleton client reuse, prompt caching via system prompts with `cache_control`, response caching for briefing (10min) and suggestions (5min)
-- **Helmet CSP**: Content Security Policy via helmet. Inline event handlers are migrated to CSP-safe event delegation and `script-src-attr` is set EXPLICITLY to `'none'` (PWUI5 — previously relied on helmet's implicit default-merge) so inline `onclick`/`onchange` are blocked. NOTE: `script-src` still carries `'unsafe-inline'` because the page templates emit inline `<script>` blocks — so the CSP is NOT yet an XSS backstop the way Perfin's nonce-based policy is (known gap PB-3; removing `'unsafe-inline'` needs a per-request-nonce migration across all inline scripts). Rely on output-escaping (`renderMd` scheme-validation PS-4, plus `esc()` for element-text and `escAttr()` — which also encodes `"`/`'` — for HTML-attribute contexts; views/js.js) for XSS defense meanwhile.
+- **Helmet CSP**: Content Security Policy via helmet, **nonce-based** (PB-3 closed — parity with Perfin). `views.basePathMiddleware` generates a per-request `crypto.randomBytes(16)` nonce (it runs BEFORE `middleware.setup` installs helmet), exposing it as `res.locals.cspNonce` for the helmet `scriptSrc` directive function and via AsyncLocalStorage for view helpers. Every inline `<script>` — the 4 in `pageHead`, `themeScript`, all 11 pages, and the login page in `routes/auth.js` — carries `nonceAttr()` (exported from views.js). `script-src` has NO `'unsafe-inline'`; `https://cdn.jsdelivr.net` stays allowlisted for Mermaid on the Knowledge page. `script-src-attr` remains EXPLICITLY `'none'` (PWUI5) so inline `onclick`/`onchange` are blocked — all UI uses event delegation. Output-escaping (`renderMd` scheme-validation PS-4, `esc()` for element text, `escAttr()` for attribute contexts) remains the first line of defense; the nonce CSP is now the backstop. New inline scripts MUST use `<script${nonceAttr()}>` — a bare `<script>` will be refused by the browser (pinned by `tests/broad-scan-fixes.test.js`).
 - **Internal error handling**: route 500s go through `errors.serverError(res, err)`, which logs the real error server-side and returns a generic `"An internal error occurred."` — raw DB/constraint/internal text is never echoed to the client (PB-2, matching Perfin's convention).
 - **Event Delegation**: All pages use `bindEvents()` for static elements and `onDelegate()` for dynamic content — zero inline `onclick`/`onchange` attributes; enables `script-src-attr: 'none'` CSP
 - **Constant-Time Auth**: `crypto.timingSafeEqual` for password/PIN comparison; PIN pad shows fixed 8-dot display regardless of actual PIN length
@@ -138,7 +138,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `db/007_enhancements.sql` — custom recurrence, entity links, webhooks, notification preferences
 - `db/008_templates_performance.sql` — todo templates table, performance indexes
 - `uploads/` — local file attachment storage
-- `tests/api.test.js` — unit test suite (the bulk of the 256 per-sistant tests)
+- `tests/api.test.js` — unit test suite (the bulk of the 343 per-sistant tests)
 - `tests/integration.test.js` — integration tests (requires DB, auto-skips without)
 - `Dockerfile` / `docker-compose.yml` — container deployment
 - `fly.toml` — Fly.io config
@@ -149,7 +149,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (257 tests)
+# Run tests (343 tests)
 npm test
 
 # Pages
