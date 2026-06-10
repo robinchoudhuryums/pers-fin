@@ -56,6 +56,26 @@ still says script-src carries 'unsafe-inline' (now stale — fixed in parent doc
 update apps/per-sistant/CLAUDE.md Helmet CSP paragraph next /sync-docs); job_runs surface
 in /api/data-health (optional).
 
+### Roadmap update + investment-performance implementation (same session, same branch)
+Roadmap: DROPPED multi-user + onboarding by operator decision (documented in CLAUDE.md
+Priority Next Features with rationale); roadmap #4 (investment performance) IMPLEMENTED:
+- services/benchmarks.js + benchmark_prices table — S&P 500 closes from Stooq (keyless),
+  lazy fetch, once/day gate, graceful failure (benchmark:null, never errors).
+- GET /api/investments/performance-history (months 3-60) — portfolio value series from
+  account_balance_snapshots (investment-source + Teller-linked investment types, Plaid
+  phantom-twin dedupe same direction as getNetWorth, per-account forward-fill via
+  exported buildPortfolioSeries) + benchmark trimmed to window + excess return.
+- Dashboard: "Value vs S&P 500" sub-card (3M/6M/12M, dual-line normalized SVG) —
+  independent of Plaid holdings; cost-basis Total return row now holdings-gated.
+- DESIGN NOTE: value-based point-to-point return (contributions count as growth) — true
+  TWR deliberately scoped out (flows not reliably attributable from snapshots alone);
+  the contribution-adjusted figure remains /performance's cost-basis return.
+Tests: 812 pass across 27 files (+16 tests/investment-performance.test.js).
+**Where I left off:** everything committed + pushed on `claude/exciting-albattani-ug1gjv`
+(F1-F10 + docs + investment performance); awaiting review/merge + operator actions
+(Render passphrase check BLOCKS DEPLOY; backup secrets; cert rotation; clasp push for
+Code.gs F6). Remaining follow-ons unchanged otherwise.
+
 ### AI Insights & Audit targeted cycle (this session)
 Audited; 3 findings (1 Medium AIA1, 2 Low AIA2/AIA3). Implemented A1–A2, deferred A3:
 - **A1 (AIA1)** ai-audit.js: Tier-1 dollar-claim arithmetic now SKIPS claims whose context signals a non-current-month window (annual / multi-month / YTD / projected / average — `CROSS_PERIOD_RE`), since the only per-category + subscription actuals it has are this-month. Stops false-positive CRITICAL findings (audit-alert notification spam + deflated audit_accuracy%) on annualized advice. this-month/unqualified claims still checked. Exported `CROSS_PERIOD_RE` + added 15 classification tests.
