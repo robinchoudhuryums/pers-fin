@@ -71,8 +71,18 @@ Priority Next Features with rationale); roadmap #4 (investment performance) IMPL
   TWR deliberately scoped out (flows not reliably attributable from snapshots alone);
   the contribution-adjusted figure remains /performance's cost-basis return.
 Tests: 812 pass across 27 files (+16 tests/investment-performance.test.js).
+
+### TWR/XIRR implementation (same session, same branch)
+investment_flows table + classifyPlaidFlow (subtype-driven signs; dividends/cap-gains =
+return, not flows) + syncAllPlaidInvestmentFlows (full-window idempotent, wired into
+auto-sync + pre-insights + sync-balances chains) + manual flow CRUD
+(GET/POST/DELETE /api/investment-flows, plaid rows delete-protected) + computeTWR (daily
+chain-linked exact) + computeXIRR (bisection) on performance-history with flow_coverage
+scoping {coverage_pct, scope all|partial|none}. Dashboard: TWR/XIRR line + log-flow form
+(Plaid accounts excluded from dropdown). Tests: 837 across 28 files (+25
+tests/investment-flows.test.js).
 **Where I left off:** everything committed + pushed on `claude/exciting-albattani-ug1gjv`
-(F1-F10 + docs + investment performance); awaiting review/merge + operator actions
+(F1-F10 + docs + investment performance + TWR/XIRR); awaiting review/merge + operator actions
 (Render passphrase check BLOCKS DEPLOY; backup secrets; cert rotation; clasp push for
 Code.gs F6). Remaining follow-ons unchanged otherwise.
 
