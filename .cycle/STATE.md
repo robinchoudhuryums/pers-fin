@@ -33,6 +33,29 @@ a11y + contrast; F9 recurrence_interval CHECK; F10 insights-email escaping audit
 **Where I left off:** F1-F5 committed + pushed on `claude/exciting-albattani-ug1gjv`; awaiting
 review/merge + the three operator actions above.
 
+### Broad-implement F6-F10 + /sync-docs (same session, same branch)
+/sync-docs applied (test counts, job_runs, watchdog, backup secrets, fail-fast passphrase,
+stale README 663/17 table entry, per-sistant 257->343). Then implemented F6-F10:
+- **F6** Code.gs buildDashboard prefers GET /api/spending-summary (canonical splits/
+  reimbursed/split_pct numbers) when SERVER_URL set; local sheet aggregation = standalone
+  fallback. Dead sortedMonths/sortedCats opts removed. DEPLOY: clasp push + new Apps
+  Script version (per Deploy Command).
+- **F7** Per-sistant CSP nonce migration (PB-3 closed): nonce in views.basePathMiddleware
+  -> res.locals.cspNonce + ALS; helmet scriptSrc nonce directive, 'unsafe-inline' removed;
+  nonceAttr() on all inline scripts (views.js x5, 11 pages, routes/auth.js login).
+- **F8** Perfin notification a11y (button bell + role=dialog + focus mgmt + keyboard rows +
+  toast aria-live + surfaced mark-read failures) + AA contrast tokens (muted 0.70/0.75,
+  light teal #336363).
+- **F9** recurrence_interval >= 1: todos POST/PATCH validation, db/018 clamp+CHECK
+  (todos + todo_templates), advanceRecurrence floor.
+- **F10** email renderers audited — already consistently escaped; pinned with behavioral
+  hostile-string tests (finding effectively retracted-on-close-read, now regression-proof).
+Tests: 796 pass across 26 files. Both waves committed on `claude/exciting-albattani-ug1gjv`.
+**Remaining follow-ons:** N+1 goal milestones; unread badge 9+ cap; per-sistant CLAUDE.md
+still says script-src carries 'unsafe-inline' (now stale — fixed in parent docs sweep? NO:
+update apps/per-sistant/CLAUDE.md Helmet CSP paragraph next /sync-docs); job_runs surface
+in /api/data-health (optional).
+
 ### AI Insights & Audit targeted cycle (this session)
 Audited; 3 findings (1 Medium AIA1, 2 Low AIA2/AIA3). Implemented A1–A2, deferred A3:
 - **A1 (AIA1)** ai-audit.js: Tier-1 dollar-claim arithmetic now SKIPS claims whose context signals a non-current-month window (annual / multi-month / YTD / projected / average — `CROSS_PERIOD_RE`), since the only per-category + subscription actuals it has are this-month. Stops false-positive CRITICAL findings (audit-alert notification spam + deflated audit_accuracy%) on annualized advice. this-month/unqualified claims still checked. Exported `CROSS_PERIOD_RE` + added 15 classification tests.
