@@ -327,9 +327,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (837 tests as of latest); use
+  Perfin and Per-sistant test files (846 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 837 tests across 28 test files (incl.
+  Current count: 846 tests across 29 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -1115,7 +1115,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 837 tests passing across 28 test files (Perfin + Per-sistant)
+- 846 tests passing across 29 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash
@@ -1244,7 +1244,9 @@ PATCH /api/settings        # update user settings. Accepts: theme,
                            # widget display name, max 50 chars),
                            # pyramid_*, debt_baseline_amount,
                            # shell_idle_timeout_minutes, target_allocation_pct,
-                           # weekly/daily digest toggles, etc.
+                           # weekly/daily digest toggles,
+                           # ai_monthly_budget_cents (1-10000 cents or null
+                           # to fall back to env), etc.
 GET  /api/data-freshness   # per-source sync timestamps with staleness flags
 GET  /api/data-health      # operator health surface — per-source freshness,
                            # Teller/Plaid connection status, derived issues[]
@@ -1479,7 +1481,7 @@ validation (SN-5).
 
 ### AI / Insights (Perfin)
 - `ANTHROPIC_API_KEY` — enables AI features in both apps
-- `INSIGHTS_MONTHLY_BUDGET_CENTS` — monthly API spending cap (default 50 = $0.50); shared between `/api/insights` and `/api/categorize`
+- `INSIGHTS_MONTHLY_BUDGET_CENTS` — monthly API spending cap fallback (default 50 = $0.50); shared between `/api/insights` and `/api/categorize`. Overridable at runtime from Settings → AI Insights → Monthly Budget Cap (`user_settings.ai_monthly_budget_cents`, resolved by `getAiBudgetCents()` in routes/insights.js — the single cap reader)
 
 ### Push notifications (Perfin)
 - `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` — Web Push keypair (`npx web-push generate-vapid-keys`); without these `/api/notifications/*` returns 501
@@ -1827,7 +1829,11 @@ rows) can dismiss them from the UI or run `POST /api/cleanup`.
   defense-in-depth pin against a future SDK-default flip (PSA2).
 - **Biometric registration UI**: Settings → Security → "Biometric Login"
   section lists registered credentials and provides Register / Remove
-  buttons via the existing `/api/webauthn/*` endpoints. Section auto-hides
+  buttons via the existing `/api/webauthn/*` endpoints. The register
+  endpoints accept shell-authenticated requests (`req.app.get("embedded")`,
+  INV-25) — they previously checked only Perfin's own session, which is never
+  written under the unified shell, so registration always 401'd for shell
+  users (found during PWA Phase-0 testing). Section auto-hides
   on browsers without `window.PublicKeyCredential` or when the WebAuthn
   SDK isn't installed (server returns 501). Works under both standalone
   and unified-shell deployments — registration always happens against

@@ -71,10 +71,14 @@ router.post("/api/logout", (req, res) => {
 // ---------------------------------------------------------------------------
 
 // POST /api/webauthn/register-options — generate registration challenge
-// (requires authenticated session — user must be logged in to set up biometrics)
+// (requires an authenticated session — user must be logged in to set up
+// biometrics. Under the unified shell, the shell's PIN gate authenticated the
+// request before it ever reached this sub-app and Perfin's own session is
+// never written, so `embedded` is the auth signal — without this check,
+// registration always 401'd "Must be logged in" for shell users, INV-25.)
 router.post("/api/webauthn/register-options", async (req, res) => {
   if (!simplewebauthn) return res.status(501).json({ error: "WebAuthn not available" });
-  if (!req.session || !req.session.authenticated) {
+  if (!req.app.get("embedded") && (!req.session || !req.session.authenticated)) {
     return res.status(401).json({ error: "Must be logged in to register biometric" });
   }
   try {
@@ -112,7 +116,8 @@ router.post("/api/webauthn/register-options", async (req, res) => {
 // POST /api/webauthn/register — verify registration and store credential
 router.post("/api/webauthn/register", async (req, res) => {
   if (!simplewebauthn) return res.status(501).json({ error: "WebAuthn not available" });
-  if (!req.session || !req.session.authenticated) {
+  // Same embedded-mode bail as register-options (INV-25).
+  if (!req.app.get("embedded") && (!req.session || !req.session.authenticated)) {
     return res.status(401).json({ error: "Must be logged in to register biometric" });
   }
   const challenge = req.session.webauthnChallenge;

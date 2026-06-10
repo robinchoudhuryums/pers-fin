@@ -189,8 +189,14 @@
       <div id="modules-container" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;"></div>
     </div>
     <div class="setting-row">
-      <div class="setting-info"><div class="name">Monthly Budget Cap</div><div class="desc" id="budget-desc">Limits API spending per month (set via INSIGHTS_MONTHLY_BUDGET_CENTS env var)</div></div>
-      <div class="setting-control"><span id="budget-status" style="font-size:12px;color:var(--text-muted);">--</span></div>
+      <div class="setting-info"><div class="name">Monthly Budget Cap</div><div class="desc" id="budget-desc">Limits AI API spend per month (insights + categorize + rebuild share one cap). The cap is checked before each AI call, so the final call of the month can finish slightly over it — that overshoot is expected and blocks all further calls until the month resets.</div></div>
+      <div class="setting-control" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <span id="budget-status" style="font-size:12px;color:var(--text-muted);">--</span>
+        <span style="font-size:12px;color:var(--text-muted);">$</span>
+        <input id="budget-cap-input" type="number" min="0.01" max="100" step="0.01" inputmode="decimal"
+               aria-label="Monthly AI budget cap in dollars" style="width:80px;">
+        <button id="budget-cap-save" type="button">Save</button>
+      </div>
     </div>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Long-Term Memory</div><div class="desc" id="memory-desc">AI maintains a cumulative summary across analyses for context continuity</div></div>
@@ -577,6 +583,8 @@
           badge.style.background = 'var(--green-bg)'; badge.style.color = 'var(--green)';
           desc.textContent = 'ANTHROPIC_API_KEY is configured and ready';
           if (budgetEl) budgetEl.textContent = '$' + (st.estimated_cost_cents / 100).toFixed(3) + ' of $' + (st.budget_cents / 100).toFixed(2) + ' cap used this month';
+          var capInput = document.getElementById('budget-cap-input');
+          if (capInput && !capInput.value) capInput.value = (st.budget_cents / 100).toFixed(2);
         } else {
           badge.textContent = 'Not Set';
           badge.style.background = 'var(--yellow-bg)'; badge.style.color = 'var(--yellow)';
@@ -617,6 +625,21 @@
         else { const d = await res.json().catch(() => ({})); showMsg(d.error || 'Failed', false); }
       } catch (e) { showMsg(e.message, false); }
     }
+    // Monthly AI budget cap — dollars in the input, cents over the wire.
+    (function wireBudgetCap() {
+      var saveBtn = document.getElementById('budget-cap-save');
+      var input = document.getElementById('budget-cap-input');
+      if (!saveBtn || !input) return;
+      saveBtn.addEventListener('click', async function() {
+        var dollars = parseFloat(input.value);
+        if (!isFinite(dollars) || dollars < 0.01 || dollars > 100) {
+          showMsg('Cap must be between $0.01 and $100', false);
+          return;
+        }
+        await updateSetting('ai_monthly_budget_cents', Math.round(dollars * 100));
+        loadSettings(); // refresh the "$X of $Y cap" line with the new cap
+      });
+    })();
     async function toggleModule(key, enabled) {
       try {
         const res = await apiFetch('/api/settings'); const s = await res.json();

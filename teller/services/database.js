@@ -662,6 +662,11 @@ async function runMigrations() {
     // partner_name surfaces in the settlement widget + transaction-row UI so
     // amounts say "Sarah owes you $X" rather than "Partner owes you $X".
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS partner_name TEXT");
+    // Monthly AI budget cap, user-tunable from Settings (cents; NULL = fall
+    // back to the INSIGHTS_MONTHLY_BUDGET_CENTS env var, then 50). Resolved
+    // by getAiBudgetCents() in routes/insights.js — the single read path
+    // shared by insights, categorize, and rebuild.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS ai_monthly_budget_cents INT");
 
     // ---- Watchlist ----
     // User-curated list of merchants / categories / keywords to monitor.
