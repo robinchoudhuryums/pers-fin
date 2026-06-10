@@ -16,6 +16,7 @@
 const { pool, runMigrations } = require("./services/database");
 const { TELLER_APP_ID, TELLER_ENV } = require("./services/teller-api");
 const { startKeepAlive } = require("./services/keep-alive");
+const jobHealth = require("./services/job-health");
 
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.API_KEY;
@@ -45,6 +46,7 @@ function startBackgroundJobs() {
   // Sheets auto-sync check (every hour). Gated: skips when no user has
   // been active for 15+ minutes so Neon can auto-suspend.
   intervalHandles.push(setInterval(async () => {
+    jobHealth.tick("sheets-auto-sync");
     if (!isUserActive()) return;
     try {
       const settings = await pool.query("SELECT sheets_auto_sync_enabled, sheets_auto_sync_interval, sheets_last_auto_sync FROM user_settings WHERE id = 1");
@@ -72,6 +74,7 @@ function startBackgroundJobs() {
   // DO UPDATE so a same-day re-run rewrites the row with the latest
   // balances.
   intervalHandles.push(setInterval(async () => {
+    jobHealth.tick("net-worth-snapshot");
     if (!isUserActive()) return;
     try {
       // Single source of truth (F1): getNetWorth dedupes Plaid investment
@@ -99,6 +102,7 @@ function startBackgroundJobs() {
 
   // Goal milestone notifications (every 6 hours). Gated on user activity.
   intervalHandles.push(setInterval(async () => {
+    jobHealth.tick("goal-milestones");
     if (!isUserActive()) return;
     try {
       // Derive current_amount the same way GET /api/goals does: for a
@@ -156,6 +160,7 @@ function startBackgroundJobs() {
   // Auto-trigger AI insights based on cadence (every 6 hours).
   // Pre-syncs transactions + balances + detection so AI sees fresh data.
   intervalHandles.push(setInterval(async () => {
+    jobHealth.tick("insights-auto-trigger");
     try {
       if (!process.env.ANTHROPIC_API_KEY) return;
       const settings = await pool.query(
@@ -199,6 +204,7 @@ function startBackgroundJobs() {
 
   // Budget alert push notifications (every 3 hours). Gated on user activity.
   intervalHandles.push(setInterval(async () => {
+    jobHealth.tick("budget-alerts");
     if (!isUserActive()) return;
     try {
       const { getCategorySpendingThisMonth } = require("./services/financial-queries");
@@ -220,7 +226,7 @@ function startBackgroundJobs() {
       const snapMap = {};
       for (const s of snapshots.rows) snapMap[s.budget_id] = s;
 
-      const { sendToAll } = require("./routes/notifications");
+      const { sendToAll, sentRecently } = require("./routes/notifications");
       for (const b of budgets.rows) {
         // Skip one-time budgets outside their effective month, and compare
         // against the effective limit (base + rollover) — same as the in-app
@@ -232,18 +238,28 @@ function startBackgroundJobs() {
         const limit = parseFloat(b.monthly_limit) + rollover;
         if (limit <= 0) continue;
         const pct = Math.round((spent / limit) * 100);
+        // At most one alert per category+severity per 24h: without this, a
+        // category that stays over budget re-logged a notification_log row on
+        // every 3-hour tick for the rest of the month — web-push collapsed the
+        // OS notifications via `tag`, but the in-app bell badge/log spammed.
+        // Escalation (warn → over) uses a different tag, so it still fires
+        // immediately.
         if (pct >= 100) {
+          const tag = "budget-over-" + b.category.toLowerCase().replace(/\s+/g, "-");
+          if (await sentRecently(tag, 24)) continue;
           await sendToAll({
             title: "Budget exceeded: " + b.category,
             body: "$" + spent.toFixed(2) + " spent of $" + limit.toFixed(2) + " budget (" + pct + "%)",
-            tag: "budget-over-" + b.category.toLowerCase().replace(/\s+/g, "-"),
+            tag,
             data: { url: "/budgets" },
           });
         } else if (pct >= 80) {
+          const tag = "budget-warn-" + b.category.toLowerCase().replace(/\s+/g, "-");
+          if (await sentRecently(tag, 24)) continue;
           await sendToAll({
             title: "Budget warning: " + b.category,
             body: "$" + spent.toFixed(2) + " of $" + limit.toFixed(2) + " (" + pct + "% — approaching limit)",
-            tag: "budget-warn-" + b.category.toLowerCase().replace(/\s+/g, "-"),
+            tag,
             data: { url: "/budgets" },
           });
         }
@@ -265,6 +281,7 @@ function startBackgroundJobs() {
   // ticks no-op. Still gated on user activity (the prior month is complete
   // regardless of which day we run, so timing within the month doesn't matter).
   intervalHandles.push(setInterval(async () => {
+    jobHealth.tick("budget-snapshot");
     if (!isUserActive()) return;
     try {
       const today = new Date();
@@ -303,6 +320,7 @@ function startBackgroundJobs() {
 
   // Bank auto-sync (every hour, throttled by user setting)
   intervalHandles.push(setInterval(async () => {
+    jobHealth.tick("bank-auto-sync");
     try {
       const settings = await pool.query(
         "SELECT auto_sync_enabled, auto_sync_interval_hours, last_auto_sync_at, last_sync_result FROM user_settings WHERE id = 1"
@@ -407,6 +425,7 @@ function startBackgroundJobs() {
   // and stays a manual POST /api/sync/reconcile action. Not gated on user
   // activity: a weekly background heal should run even while the user is away.
   intervalHandles.push(setInterval(async () => {
+    jobHealth.tick("self-healing-reconcile");
     try {
       const r = await pool.query("SELECT last_reconcile_at FROM user_settings WHERE id = 1");
       const last = r.rows[0]?.last_reconcile_at ? new Date(r.rows[0].last_reconcile_at) : null;
@@ -425,6 +444,7 @@ function startBackgroundJobs() {
   // to check if nobody's here). Fires on the configured weekly_digest_day
   // when weekly_digest_enabled is true. Bails silently otherwise.
   intervalHandles.push(setInterval(async () => {
+    jobHealth.tick("weekly-digest");
     if (!isUserActive()) return;
     try {
       const settings = await pool.query(
@@ -449,6 +469,7 @@ function startBackgroundJobs() {
 
   // Daily digest email (#19). Gated on user activity.
   intervalHandles.push(setInterval(async () => {
+    jobHealth.tick("daily-digest");
     if (!isUserActive()) return;
     try {
       const { runDailyDigest } = require("./routes/insights");
@@ -464,6 +485,7 @@ function startBackgroundJobs() {
 
   // CSV import reminder (every 24 hours). Gated on user activity.
   intervalHandles.push(setInterval(async () => {
+    jobHealth.tick("csv-reminder");
     if (!isUserActive()) return;
     try {
       const settings = await pool.query(
@@ -502,6 +524,31 @@ function startBackgroundJobs() {
       console.error("CSV reminder scheduler error:", err.message);
     }
   }, 24 * 60 * 60 * 1000));
+
+  // Missed-job watchdog (F4). Flushes the in-memory job heartbeats to the
+  // job_runs table and alerts (once per outage, signature-deduped) when any
+  // scheduled job hasn't ticked for 36h+ — i.e. the process was asleep or
+  // dead long enough that data is going stale (Render free tier with
+  // keep-alive off, crash loops). Runs ~2 minutes after boot (boot counts as
+  // user activity, and a wake-after-long-sleep is exactly when the gap is
+  // visible) and every 6 hours thereafter. Activity-gated like the other
+  // jobs so it doesn't keep Neon awake.
+  const runWatchdog = async () => {
+    if (!isUserActive()) return;
+    try {
+      const { sendToAll } = require("./routes/notifications");
+      const { missed } = await jobHealth.checkMissedJobs(pool, { sendToAll });
+      if (missed.length > 0) {
+        console.warn("Job watchdog: missed jobs —",
+          missed.map(m => `${m.job} (${m.stale_hours}h)`).join(", "));
+      }
+    } catch (err) {
+      console.error("Job watchdog error:", err.message);
+    }
+  };
+  const bootCheck = setTimeout(runWatchdog, 2 * 60 * 1000);
+  if (bootCheck.unref) bootCheck.unref();
+  intervalHandles.push(setInterval(runWatchdog, 6 * 60 * 60 * 1000));
 }
 
 function stopBackgroundJobs() {

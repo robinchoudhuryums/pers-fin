@@ -155,6 +155,19 @@ Subscriptions / Tax Deductions / Recurring Transfers / Per-month archives / Watc
 docker compose up --build
 ```
 
+### 6. Backups
+
+`.github/workflows/db-backup.yml` runs nightly (and on manual dispatch): it
+`pg_dump`s both Neon databases, encrypts each dump with AES-256, and uploads
+them as GitHub Actions artifacts with 90-day retention. It runs entirely from
+GitHub's runners, so backups happen even while the Render free tier sleeps.
+
+Set three repository secrets: `NEON_DATABASE_URL`, `PERSISTENT_DATABASE_URL`
+(optional), and `BACKUP_ENCRYPTION_PASSPHRASE` (keep a copy in a password
+manager — the artifacts are unreadable without it). The full restore runbook
+is in the workflow file's header comment; do one restore drill into a
+throwaway Neon branch so the procedure isn't first attempted mid-emergency.
+
 ## Running Tests
 
 ```bash

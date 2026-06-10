@@ -10,6 +10,7 @@
 // ============================================================================
 
 if (!process.env.NEON_DATABASE_URL) process.env.NEON_DATABASE_URL = "postgres://mock:mock@localhost/mock";
+if (!process.env.TOKEN_ENCRYPTION_PASSPHRASE) process.env.TOKEN_ENCRYPTION_PASSPHRASE = "test-passphrase";
 
 const { describe, it, before } = require("node:test");
 const assert = require("node:assert/strict");

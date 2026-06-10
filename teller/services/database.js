@@ -30,7 +30,20 @@ pool.on("error", (err) => {
 
 const ENCRYPTION_PASSPHRASE = process.env.TOKEN_ENCRYPTION_PASSPHRASE;
 if (!ENCRYPTION_PASSPHRASE) {
-  console.warn("WARNING: TOKEN_ENCRYPTION_PASSPHRASE is not set. Token encryption will fail.");
+  // Fail fast (same posture as the NEON_DATABASE_URL check above): without the
+  // passphrase every pgp_sym_encrypt/decrypt of Teller/Plaid tokens and the
+  // Per-sistant webhook secret breaks at request time, which previously
+  // surfaced only as scattered decryption_failed errors long after boot.
+  // ALLOW_MISSING_TOKEN_PASSPHRASE=true is the explicit local-debug escape
+  // hatch for booting without any bank links.
+  if (process.env.ALLOW_MISSING_TOKEN_PASSPHRASE === "true") {
+    console.warn("WARNING: TOKEN_ENCRYPTION_PASSPHRASE is not set (ALLOW_MISSING_TOKEN_PASSPHRASE override active). Token encryption will fail.");
+  } else {
+    console.error("FATAL: TOKEN_ENCRYPTION_PASSPHRASE environment variable is not set. " +
+      "Token encryption/decryption cannot work without it. " +
+      "Set it, or set ALLOW_MISSING_TOKEN_PASSPHRASE=true to boot anyway for local debugging.");
+    process.exit(1);
+  }
 }
 
 // Current schema version — increment when adding new migration steps.
@@ -708,6 +721,19 @@ async function runMigrations() {
       SET dashboard_widgets = '{"whatsNew":true,"investmentReturns":true,"creditScore":true}'::jsonb || dashboard_widgets
       WHERE NOT (dashboard_widgets ? 'whatsNew') OR NOT (dashboard_widgets ? 'investmentReturns') OR NOT (dashboard_widgets ? 'creditScore')
     `);
+
+    // Scheduled-job heartbeat table (F4 — missed-job detection). One row per
+    // background job in teller/startup.js, UPSERTed by services/job-health.js
+    // when ticks are flushed. The `_watchdog` row stores the last-notified
+    // missed-job signature in last_error so a persistent outage alerts once,
+    // not on every watchdog pass.
+    await client.query(`CREATE TABLE IF NOT EXISTS job_runs (
+      job_name    TEXT PRIMARY KEY,
+      last_run_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_status TEXT,
+      last_error  TEXT,
+      updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
 
     // One-shot cleanup: detection-key migration orphans (PSA1 — now genuinely
     // one-shot, gated on the schema version so it doesn't re-run every boot).
