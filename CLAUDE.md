@@ -62,6 +62,11 @@ teller/
                            keyword-filtered income, current-month per-category spending
                            that honors transaction_splits) — single source of truth used
                            by AI insights and budgets so the numbers match the dashboard
+    benchmarks.js        — S&P 500 benchmark closes for portfolio comparison.
+                           Stooq daily-close CSV (keyless), cached in
+                           benchmark_prices, fetched lazily at most once/day
+                           and only the missing range; every failure path
+                           degrades to "no benchmark line" rather than erroring
     ai-audit.js        — Post-generation insight auditing (4 tiers: arithmetic
                            validation, entity existence, trend direction, consistency).
                            Stores results in ai_audit_log table.
@@ -322,9 +327,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (796 tests as of latest); use
+  Perfin and Per-sistant test files (812 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 796 tests across 26 test files (incl.
+  Current count: 812 tests across 27 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -490,6 +495,16 @@ shell/
   per-asset-class rows also carry `target_pct` + `drift_pct` (actual −
   target); under-weight classes the user wants exposure to but doesn't
   hold are surfaced as synthetic zero-holding rows.
+  The card also renders a **"Value vs S&P 500" history chart** (3M/6M/12M
+  range buttons, dual-line normalized-to-100 inline SVG — solid portfolio
+  line, dashed benchmark) backed by `GET /api/investments/performance-history`.
+  This sub-section is INDEPENDENT of Plaid holdings — Teller-linked and
+  manual investment accounts have snapshot history too, so it lights up the
+  card even when the cost-basis "Total return" row stays hidden. The
+  benchmark line + "vs market" excess figure drop out gracefully when the
+  benchmark source (Stooq, keyless) is unreachable. Portfolio line is
+  value-based (contributions count as growth); the cost-basis Total return
+  remains the contribution-adjusted figure.
 - **Target Allocation editor** (Settings → Target Allocation): per-
   asset-class target weights as `{security_type: pct}` rows the user
   can add/edit/remove. Sum indicator turns green at ≈100%, red above
@@ -1095,7 +1110,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 796 tests passing across 26 test files (Perfin + Per-sistant)
+- 812 tests passing across 27 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash
@@ -1311,6 +1326,18 @@ POST /api/plaid/sync-transactions       # cursor-based sync for all plaid_items 
 GET  /api/plaid/holdings   # list investment holdings
 GET  /api/investments/performance # portfolio returns + asset-class allocation + top winners/losers
                                   # (Plaid holdings only; auto-hides on dashboard when empty)
+GET  /api/investments/performance-history # portfolio value series vs S&P 500
+                                  # (query: months=3-60 default 12). Portfolio = daily
+                                  # account_balance_snapshots summed across ALL investment
+                                  # accounts (investment-source rows + Teller-linked
+                                  # investment types, Plaid phantom twins deduped same
+                                  # direction as getNetWorth), per-account forward-filled.
+                                  # Benchmark from benchmark_prices (services/benchmarks.js);
+                                  # response carries benchmark:null gracefully when the
+                                  # source is unavailable. Returns are point-to-point on
+                                  # VALUE (contributions count as growth — by design; the
+                                  # contribution-adjusted figure is /performance's
+                                  # cost-basis return).
 GET  /api/whats-new        # "since you last looked" feed — new transactions, balance deltas,
                            # new subscriptions, and recent notifications since last_dashboard_view_at
 POST /api/whats-new/seen   # advance last_dashboard_view_at to now (idempotent)
@@ -1476,7 +1503,9 @@ standalone-mode fallback if either app is run on its own Render service.
   `ai_audit_log`, `account_balance_snapshots`, `watchlist_items`, `credit_scores`,
   `job_runs` (scheduled-job heartbeats — one row per background job, UPSERTed by
   `services/job-health.js`; the `_watchdog` row stores the last-notified
-  missed-job signature)
+  missed-job signature), `benchmark_prices` (S&P 500 daily closes cached from
+  Stooq by `services/benchmarks.js` — PK (symbol, price_date); read by
+  `GET /api/investments/performance-history`)
 - `user_settings`: single-row pattern (CHECK id = 1) for app preferences
 - `linked_accounts` columns include: `is_shared BOOLEAN`, `spending_split_pct INT DEFAULT 100`,
   `is_manual BOOLEAN` — constraint `chk_account_source` allows `plaid_item_id IS NOT NULL OR
@@ -2398,11 +2427,14 @@ income module, and bill-calendar income detection.
 
 ## Priority Next Features
 1. **Mobile app** — React Native or Capacitor wrapper for native experience
-2. **Multi-user support** — Shared household finance tracking with role-based access
-3. **Onboarding flow** — Guided "Getting Started" checklist (link account → sync →
-   categorize → set budgets) visible until all steps complete
-4. **Investment performance & allocation** — Plaid syncs holdings (qty, cost basis,
-   current value); compute returns, asset allocation, and goal-vs-portfolio drift
+
+Dropped by design (June 2026): **multi-user support** — the single-user
+assumption (single-row `user_settings`, server-side watermarks, no tenancy
+dimension in queries) is a load-bearing simplification, not a gap; and
+**onboarding flow** — single operator, already onboarded. **Investment
+performance & allocation** shipped: cost-basis returns + asset-class
+allocation + target-drift (`GET /api/investments/performance`) and portfolio
+value history vs S&P 500 benchmark (`GET /api/investments/performance-history`).
 
 ## Cycle Workflow Config
 

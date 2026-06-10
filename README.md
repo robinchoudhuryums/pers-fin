@@ -87,7 +87,7 @@ Under the unified shell the cross-app integration endpoints (Per-sistant's Perfi
 | `scripts/detect-subscriptions.js` | Recurring charge detection algorithm |
 | `scripts/sheets-sync.js` | Google Sheets sync + dashboard builder |
 | `apps-script/Code.gs` | Google Sheets Apps Script (standalone + server sync) |
-| `tests/` | Test suite (node:test, 796 tests across 26 files incl. apps/per-sistant/tests) |
+| `tests/` | Test suite (node:test, 812 tests across 27 files incl. apps/per-sistant/tests) |
 | `Dockerfile` | Container build — installs all workspaces and boots `node shell/index.js` |
 | `render.yaml` | Render deployment blueprint (unified shell) |
 | `fly.toml` | Fly.io deployment config |
@@ -176,7 +176,7 @@ npm run test:perfin       # Perfin tests only
 npm run test:persistent   # Per-sistant tests only
 ```
 
-796 tests covering detection, CSV parsing, date handling, API logic, cost calculations, financial-queries semantics (incl. the net-worth single-source-of-truth + the $0-brokerage dedupe direction), AI-audit pattern extraction, pinned regression tests for auth/SSO/template/exclusion behavior and the latest cycle fixes (net-worth dedupe, budget-rollover month-keying, webhook replay/expiry, XSS/header sanitization, CSV dedup-ID parity, Plaid balance-sync status filter, Plaid holdings-items UNION + liabilities re-link hint, categorize bulk-sweep/loop + auto-sweep + accuracy sampler, in-process digest delivery, background reconcile, login→dashboard redirect, $0-brokerage dedupe, page-size-independent Teller pagination, Schwab CSV sign preservation, Wells Fargo CSV detection tightening, Plaid sync observability, and the June 2026 broad-scan fixes: backup workflow, fail-fast token passphrase, compromised-cert detection, missed-job watchdog, budget-alert dedup), and integration tests for the feedback, whats-new, performance, and trust-overview endpoints. No database required — all tests run against pure functions and mock pools.
+812 tests covering detection, CSV parsing, date handling, API logic, cost calculations, financial-queries semantics (incl. the net-worth single-source-of-truth + the $0-brokerage dedupe direction), AI-audit pattern extraction, pinned regression tests for auth/SSO/template/exclusion behavior and the latest cycle fixes (net-worth dedupe, budget-rollover month-keying, webhook replay/expiry, XSS/header sanitization, CSV dedup-ID parity, Plaid balance-sync status filter, Plaid holdings-items UNION + liabilities re-link hint, categorize bulk-sweep/loop + auto-sweep + accuracy sampler, in-process digest delivery, background reconcile, login→dashboard redirect, $0-brokerage dedupe, page-size-independent Teller pagination, Schwab CSV sign preservation, Wells Fargo CSV detection tightening, Plaid sync observability, and the June 2026 broad-scan fixes: backup workflow, fail-fast token passphrase, compromised-cert detection, missed-job watchdog, budget-alert dedup), and integration tests for the feedback, whats-new, performance, and trust-overview endpoints. No database required — all tests run against pure functions and mock pools.
 
 ## API Endpoints
 

@@ -1509,6 +1509,144 @@ router.get("/api/investments/performance", async (_req, res) => {
 });
 
 // =========================================================================
+// Portfolio value history vs S&P 500 benchmark (roadmap #4 completion)
+// =========================================================================
+
+// Build a daily total-portfolio series from raw snapshot rows
+// ({ snapshot_date, source, source_id, balance }, ordered by date ASC).
+// Forward-fills each account's last known balance across the date axis so a
+// day where only some accounts synced doesn't show as a phantom dip; an
+// account's first snapshot simply starts contributing from that day (no
+// backfill — before that day the value genuinely wasn't tracked).
+// Pure function — exported for tests.
+function buildPortfolioSeries(rows) {
+  if (!rows || rows.length === 0) return [];
+  const dates = [];
+  const seen = new Set();
+  for (const r of rows) {
+    const d = (r.snapshot_date instanceof Date)
+      ? r.snapshot_date.toISOString().slice(0, 10)
+      : String(r.snapshot_date).slice(0, 10);
+    if (!seen.has(d)) { seen.add(d); dates.push(d); }
+  }
+  dates.sort();
+  const byDate = {};
+  for (const r of rows) {
+    const d = (r.snapshot_date instanceof Date)
+      ? r.snapshot_date.toISOString().slice(0, 10)
+      : String(r.snapshot_date).slice(0, 10);
+    (byDate[d] = byDate[d] || []).push(r);
+  }
+  const lastKnown = {}; // "source:source_id" → balance
+  const series = [];
+  for (const d of dates) {
+    for (const r of (byDate[d] || [])) {
+      lastKnown[r.source + ":" + r.source_id] = parseFloat(r.balance) || 0;
+    }
+    let total = 0;
+    for (const v of Object.values(lastKnown)) total += v;
+    series.push({ date: d, value: Math.round(total * 100) / 100 });
+  }
+  return series;
+}
+
+// GET /api/investments/performance-history — portfolio value over time vs
+// the S&P 500 (query: months=3-60, default 12).
+//
+// Portfolio series = sum of daily account_balance_snapshots across all
+// investment accounts: source='investment' rows (Plaid + manual) plus
+// source='linked' rows for Teller-linked investment-type accounts —
+// excluding linked rows whose account_id has an active
+// investment_accounts.plaid_account_id twin (same dedupe direction as
+// getNetWorth / GET /api/investments: investment_accounts is authoritative
+// for Plaid brokerages, the linked_accounts row is the $0 phantom).
+//
+// Benchmark = cached S&P 500 closes (services/benchmarks.js; lazily fetched
+// from Stooq at most once/day). When the benchmark is unavailable (source
+// down, network-restricted deploy) the response carries benchmark: null and
+// the portfolio series still renders.
+//
+// Returns are point-to-point on account VALUE, so contributions count as
+// growth — that's by design for this endpoint (it answers "what is the line
+// doing?"); the contribution-adjusted number is /api/investments/performance's
+// cost-basis return. Flow-attribution for a true time-weighted return isn't
+// reliably possible from balance snapshots alone (noted in the response).
+router.get("/api/investments/performance-history", async (req, res) => {
+  const months = Math.min(60, Math.max(3, parseInt(req.query.months) || 12));
+  try {
+    const snaps = await pool.query(
+      `SELECT s.snapshot_date, s.source, s.source_id, s.balance
+       FROM account_balance_snapshots s
+       WHERE s.snapshot_date >= CURRENT_DATE - make_interval(months => $1)
+         AND (
+           (s.source = 'investment' AND s.source_id IN (
+              SELECT id FROM investment_accounts WHERE is_active = true))
+           OR
+           (s.source = 'linked' AND s.source_id IN (
+              SELECT la.id FROM linked_accounts la
+              WHERE ${INVESTMENT_ACCOUNT_TYPES}
+                AND NOT EXISTS (
+                  SELECT 1 FROM investment_accounts ia
+                  WHERE ia.plaid_account_id = la.account_id AND ia.is_active = true)))
+         )
+       ORDER BY s.snapshot_date`,
+      [months]
+    );
+    const portfolio = buildPortfolioSeries(snaps.rows);
+
+    let benchmark = null;
+    let excess = null;
+    let portfolioReturnPct = null;
+    if (portfolio.length >= 2) {
+      const first = portfolio[0].value;
+      const last = portfolio[portfolio.length - 1].value;
+      portfolioReturnPct = first > 0 ? ((last - first) / first) * 100 : null;
+    }
+    try {
+      const benchmarks = require("../services/benchmarks");
+      await benchmarks.ensureBenchmark(pool, months);
+      let series = await benchmarks.getBenchmarkSeries(pool, months);
+      if (portfolio.length >= 2 && series.length >= 2) {
+        // Trim the benchmark to the portfolio's window so both lines cover
+        // the same period and the return comparison is apples-to-apples.
+        const startD = portfolio[0].date;
+        const endD = portfolio[portfolio.length - 1].date;
+        series = series.filter((b) => b.date >= startD && b.date <= endD);
+        if (series.length >= 2) {
+          const bFirst = series[0].close;
+          const bLast = series[series.length - 1].close;
+          const benchReturnPct = bFirst > 0 ? ((bLast - bFirst) / bFirst) * 100 : null;
+          benchmark = {
+            symbol: "S&P 500",
+            series,
+            return_pct: benchReturnPct,
+          };
+          if (portfolioReturnPct !== null && benchReturnPct !== null) {
+            excess = portfolioReturnPct - benchReturnPct;
+          }
+        }
+      }
+    } catch (err) {
+      console.error("performance-history benchmark error:", err.message);
+    }
+
+    res.json({
+      months,
+      start_date: portfolio.length ? portfolio[0].date : null,
+      end_date: portfolio.length ? portfolio[portfolio.length - 1].date : null,
+      portfolio,
+      portfolio_return_pct: portfolioReturnPct,
+      benchmark,
+      excess_return_pct: excess,
+      note: "Portfolio return is point-to-point on account value (contributions count as growth). For the contribution-adjusted figure see /api/investments/performance (cost-basis return).",
+    });
+  } catch (err) {
+    console.error("performance-history error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// =========================================================================
 // Migration helper: Teller → Plaid override preservation
 // =========================================================================
 // When switching an account from Teller to Plaid, deleting the Teller
@@ -1665,3 +1803,4 @@ module.exports.reconcilePlaidTransactions = reconcilePlaidTransactions;
 module.exports.syncAllPlaidBalances = syncAllPlaidBalances;
 module.exports.syncAllPlaidHoldings = syncAllPlaidHoldings;
 module.exports.sumHoldingsByAccount = sumHoldingsByAccount; // exported for testing (Schwab $0 fallback)
+module.exports.buildPortfolioSeries = buildPortfolioSeries; // exported for testing (performance-history forward-fill)

@@ -722,6 +722,17 @@ async function runMigrations() {
       WHERE NOT (dashboard_widgets ? 'whatsNew') OR NOT (dashboard_widgets ? 'investmentReturns') OR NOT (dashboard_widgets ? 'creditScore')
     `);
 
+    // Benchmark close cache (investment performance vs S&P 500). Filled
+    // lazily by services/benchmarks.js ensureBenchmark() — at most one Stooq
+    // fetch per day, only the missing date range. Read by
+    // GET /api/investments/performance-history.
+    await client.query(`CREATE TABLE IF NOT EXISTS benchmark_prices (
+      symbol     TEXT NOT NULL,
+      price_date DATE NOT NULL,
+      close      NUMERIC(14,4) NOT NULL,
+      PRIMARY KEY (symbol, price_date)
+    )`);
+
     // Scheduled-job heartbeat table (F4 — missed-job detection). One row per
     // background job in teller/startup.js, UPSERTed by services/job-health.js
     // when ticks are flushed. The `_watchdog` row stores the last-notified
