@@ -327,9 +327,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (856 tests as of latest); use
+  Perfin and Per-sistant test files (859 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 856 tests across 30 test files (incl.
+  Current count: 859 tests across 30 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -351,6 +351,17 @@ shell/
 - `Dockerfile`, `fly.toml`, `render.yaml` — Deployment configs (the Dockerfile
   installs all workspaces and boots `node shell/index.js`; render.yaml uses
   `npm install` + `npm start` and bypasses the Dockerfile)
+- `mobile/` — Capacitor iOS wrapper (remote-URL mode: the WebView loads the
+  live Render deployment, so server deploys ARE app updates; no bundled web
+  build). Deliberately NOT in the root npm workspaces so server deploys never
+  install native tooling. Free-signing build (7-day re-sign from Xcode, NO
+  APNs push — notifications keep flowing through the installed PWA, which
+  coexists as a separate icon/session for A/B comparison). Pull-to-refresh in
+  both apps' shared JS also activates under `window.Capacitor` (the WebView
+  reports display-mode: browser). Build runbook + Phase-2 device checklist:
+  `mobile/README.md`. Teller/Plaid domains are allowlisted in
+  `capacitor.config.json` server.allowNavigation so bank-link flows stay
+  in-WebView.
 
 ## Features
 
@@ -1127,7 +1138,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 856 tests passing across 30 test files (Perfin + Per-sistant)
+- 859 tests passing across 30 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash

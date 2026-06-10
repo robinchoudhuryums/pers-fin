@@ -96,6 +96,16 @@ structural, not per-page; shell login/landing same; Per-sistant deliberately unt
 auto-insets, pinned by test). Native iOS app DEFERRED: no APNs without \$99/yr, web push
 doesn't run in native WebViews, free-signing loses notifications vs the PWA.
 Tests: 856 across 30 files (+9 budget-cap-webauthn, +10 pwa-polish).
+
+### Native iOS wrapper scaffold (same session, same branch)
+mobile/ Capacitor workspace (NOT in root npm workspaces): remote-URL mode at the Render
+deployment, iOS project generated + icons from the mask-crop artwork, Teller/Plaid
+allowNavigation, offline stub, free-signing runbook + Phase-2 device checklist in
+mobile/README.md. PTR gate widened to window.Capacitor. Coexistence design: PWA stays
+installed alongside (separate session; web push keeps flowing through the PWA — native
+free-signed build has no APNs; notification taps open the PWA). Operator next: on the
+Mac — cd mobile && npm install && npx cap sync ios && npx cap open ios, personal-team
+signing, run on device. Tests: 859 across 30 files (+3 scaffold pins).
 **Where I left off:** everything committed + pushed on `claude/exciting-albattani-ug1gjv`
 (F1-F10 + docs + investment performance + TWR/XIRR); awaiting review/merge + operator actions
 (Render passphrase check BLOCKS DEPLOY; backup secrets; cert rotation; clasp push for

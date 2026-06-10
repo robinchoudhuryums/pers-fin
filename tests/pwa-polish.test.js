@@ -96,3 +96,28 @@ describe("notch / safe-area pass", () => {
     assert.ok(!views.includes("viewport-fit"), "per-sistant viewport meta must not opt into cover without a matching safe-area pass");
   });
 });
+
+describe("native iOS wrapper scaffold (mobile/)", () => {
+  it("Capacitor config is remote-URL mode against the live deployment", () => {
+    const cfg = JSON.parse(read("mobile", "capacitor.config.json"));
+    assert.match(cfg.server.url, /^https:\/\//, "remote-URL mode — server deploys ARE app updates");
+    assert.ok(Array.isArray(cfg.server.allowNavigation), "bank-link hosts must stay in the WebView");
+    const nav = cfg.server.allowNavigation.join(",");
+    assert.ok(nav.includes("teller.io") && nav.includes("plaid.com"),
+      "Teller Connect + Plaid Link domains allowlisted");
+    assert.equal(cfg.webDir, "www");
+    assert.ok(fs.existsSync(path.join(ROOT, "mobile", "www", "index.html")), "offline stub exists");
+  });
+
+  it("mobile/ is NOT an npm workspace (server deploys must not install native tooling)", () => {
+    const pkg = JSON.parse(read("package.json"));
+    assert.ok(!pkg.workspaces.includes("mobile"), "keep Capacitor out of Render's npm install");
+  });
+
+  it("pull-to-refresh also activates inside the Capacitor WebView", () => {
+    for (const f of [read("teller", "public", "perfin-shared.js"), read("apps", "per-sistant", "views", "js.js")]) {
+      assert.match(f, /if \(!standalone && !window\.Capacitor\) return;/,
+        "Capacitor reports display-mode: browser, so the gate must also accept window.Capacitor");
+    }
+  });
+});

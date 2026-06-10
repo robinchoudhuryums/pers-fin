@@ -158,8 +158,12 @@ document.addEventListener('click',function(e){
 // modal/panel is open. Passive listeners only — never blocks scrolling.
 // ---------------------------------------------------------------------------
 (function initPullToRefresh() {
+  // Active in the installed PWA (display-mode: standalone) AND inside the
+  // Capacitor iOS wrapper (which reports display-mode: browser but exposes
+  // window.Capacitor). Regular Safari tabs keep the native gesture.
   try {
-    if (!window.matchMedia || !window.matchMedia('(display-mode: standalone)').matches) return;
+    var standalone = window.matchMedia && window.matchMedia('(display-mode: standalone)').matches;
+    if (!standalone && !window.Capacitor) return;
   } catch (_) { return; }
   var THRESHOLD = 75, MAX_PULL = 130;
   var startY = 0, startX = 0, dist = 0, active = false, refreshing = false, el = null;
