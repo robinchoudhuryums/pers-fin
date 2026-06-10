@@ -2,8 +2,8 @@
 
 Single Node process that hosts two related personal tools behind one PIN gate:
 
-- **Perfin** — finance tracker. Detects recurring charges, compares spending to benchmarks, tracks financial goals, runs AI-powered insights via Claude. Uses **Teller API** for bank links via mTLS, plus Plaid for investment holdings.
-- **Per-sistant** — personal assistant. Tasks, scheduled emails, notes, calendar, and an AI daily briefing.
+- **Perfin** — finance tracker. Detects recurring charges, compares spending to benchmarks, tracks financial goals, runs AI-powered insights via Claude. Uses **Teller API** for bank links via mTLS, plus Plaid for investment holdings + transaction syncing for banks Teller doesn't cover.
+- **Per-sistant** — personal assistant. Tasks, scheduled emails, notes, calendar, an AI daily briefing, and a personal **Knowledge base** — RAG over an Obsidian vault with cited Q&A, structured facts, and a never-sent-to-AI secret tier.
 
 A small **shell** authenticates the user with a unified PIN, renders a tile picker, then routes traffic to whichever sub-app is selected. Both sub-apps mount under their own URL prefix (`/perfin` and `/per-sistant`) and continue to keep their own databases, routes, and migrations.
 
@@ -428,7 +428,7 @@ subsystem in `CLAUDE.md`'s Cycle Workflow Config.
 | `SESSION_PASSWORD` / `SESSION_PIN` / `SESSION_SECRET` | Legacy standalone-Perfin auth (bypassed when embedded under the shell) |
 | `API_KEY` | `x-api-key` for non-browser clients (cron, GitHub Actions daily-sync.yml + keep-alive.yml). Honored by the shell's `requireAuth` as an alternate credential parallel to the PIN cookie |
 | `ANTHROPIC_API_KEY` | Enables AI features in both apps |
-| `INSIGHTS_MONTHLY_BUDGET_CENTS` | Perfin AI spending cap, default 50 = $0.50/month |
+| `INSIGHTS_MONTHLY_BUDGET_CENTS` | Perfin AI spending cap fallback (default 50 = $0.50/month) — overridable at runtime in Settings → AI Insights → Monthly Budget Cap |
 | `GOOGLE_SHEETS_ID` | Google Sheets spreadsheet ID (Perfin sync, optional) |
 | `GOOGLE_SERVICE_ACCOUNT_KEY` | Google service account JSON key (Perfin sync, optional) |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | Per-sistant email scheduling |

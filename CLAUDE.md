@@ -340,7 +340,11 @@ shell/
   atomic claim — and `tests/broad-scan-fixes.test.js`, pinning the June 2026
   broad-scan fixes: backup workflow shape, fail-fast token passphrase,
   compromised-cert fingerprint check, job-health watchdog, budget-alert
-  24h dedup).
+  24h dedup — plus tests/investment-performance.test.js (benchmark fetch +
+  portfolio series), tests/investment-flows.test.js (TWR/XIRR + Plaid flow
+  classification), tests/budget-cap-webauthn.test.js (tunable AI cap +
+  embedded biometric registration), and tests/pwa-polish.test.js
+  (pull-to-refresh + safe-area pins).
 - `.github/workflows/ci.yml` — CI pipeline (single `npm ci` at root via npm workspaces, then `npm test`)
 - `.claude/commands/` — Project slash-command prompts: `/broad-scan`, `/broad-implement`,
   `/test-sync`, `/sync-docs`
@@ -2505,8 +2509,8 @@ Test Coverage Quality | tests that pass regardless of the code under test
 ### Subsystems
 Bank Sync & Ingestion:
   teller/routes/enrollments.js, teller/routes/investments.js,
-  teller/services/teller-api.js, teller/data/csv-formats.js,
-  scripts/import-csv-cli.js
+  teller/services/teller-api.js, teller/services/benchmarks.js,
+  teller/data/csv-formats.js, scripts/import-csv-cli.js
   (Teller and Plaid are co-equal, first-class linking paths — both write the
    same transactions/linked_accounts tables. Plaid additionally covers banks
    Teller doesn't, plus investment holdings.)

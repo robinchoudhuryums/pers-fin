@@ -32,7 +32,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **Tests**: `tests/` (node:test runner, `npm test`, 343 tests (api + integration + cycle-fixes))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
-## Current State (as of March 2026)
+## Current State (as of June 2026)
 - Modular Express server with separated routes, pages, and middleware (matches Perfin aesthetic exactly)
 - **Authentication**: Set `SESSION_PASSWORD` (text) or `SESSION_PIN` (numeric PIN pad) env var
 - **Dark/Light theme**: Toggle in Settings, persisted to DB + localStorage
@@ -71,7 +71,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **iCal Export**: Export tasks and scheduled emails as .ics file for Google Calendar, Outlook, etc.
 - **Voice Input**: Web Speech API microphone button on Quick Add and notes (Chrome/Edge)
 - **Location-Based Reminders**: Set location (name + coordinates + radius) on tasks, periodic geofence checking with browser notifications
-- **Mobile-Optimized**: Bottom navigation bar, hamburger menu, swipe between pages, floating action button, horizontal-scroll filters, responsive layouts
+- **Mobile-Optimized**: Bottom navigation bar, hamburger menu, swipe between pages, floating action button, horizontal-scroll filters, responsive layouts, pull-to-refresh in standalone PWA mode (views/js.js `initPullToRefresh` — passive listeners, overlay exclusions; the shared-JS module is one exported template literal, so the PTR block must stay backtick-free)
 - **Offline Support**: Service worker caches pages and API responses, queues mutations for sync when back online, offline banner indicator
 - **Global Search**: Search across todos, emails, and notes
 - **Calendar View**: Monthly calendar with iCal export, showing tasks, emails, and notes by date

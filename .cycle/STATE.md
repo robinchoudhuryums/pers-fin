@@ -81,6 +81,21 @@ chain-linked exact) + computeXIRR (bisection) on performance-history with flow_c
 scoping {coverage_pct, scope all|partial|none}. Dashboard: TWR/XIRR line + log-flow form
 (Plaid accounts excluded from dropdown). Tests: 837 across 28 files (+25
 tests/investment-flows.test.js).
+
+### PWA Phase-0 fixes + polish (same session, same branch)
+Phase-0 PWA testing surfaced: (1) biometric registration 401'd under the shell —
+register endpoints checked Perfin's standalone session, never written when embedded;
+fixed with the INV-25 embedded bail (tests pin both guards). (2) VAPID keys were never
+generated — operator set all three on Render (resolved, no code). (3) AI budget cap
+\$0.512/\$0.50 = documented check-then-charge overshoot, working as designed; added
+Settings-tunable cap (user_settings.ai_monthly_budget_cents, getAiBudgetCents() single
+resolver, INV-14). (4) PWA polish: pull-to-refresh in both apps' shared JS
+(standalone-only, passive, overlay/pyramid/canvas exclusions) + safe-area pass (Perfin
+body pads env(safe-area-inset-*) under viewport-fit=cover — the notch collision was
+structural, not per-page; shell login/landing same; Per-sistant deliberately untouched,
+auto-insets, pinned by test). Native iOS app DEFERRED: no APNs without \$99/yr, web push
+doesn't run in native WebViews, free-signing loses notifications vs the PWA.
+Tests: 856 across 30 files (+9 budget-cap-webauthn, +10 pwa-polish).
 **Where I left off:** everything committed + pushed on `claude/exciting-albattani-ug1gjv`
 (F1-F10 + docs + investment performance + TWR/XIRR); awaiting review/merge + operator actions
 (Render passphrase check BLOCKS DEPLOY; backup secrets; cert rotation; clasp push for
