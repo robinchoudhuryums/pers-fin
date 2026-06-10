@@ -11,6 +11,28 @@ to the "none in progress" state.
 
 - **Status:** /broad-scan + /broad-implement (H1/M5/M2/M3/M1 + Tier-1 M6/M4/L2) + /sync-docs; then /targeted-audit+implement of Knowledge/RAG (A1–A4); Detection & Categorization (A1–A4); AI Insights & Audit (A1–A2) — all on branch `claude/sweet-brahmagupta-3uwc4r`; awaiting review/deploy. Tests now 760 (was 745, +15 AIA1 classification cases).
 
+### Broad-scan + broad-implement (June 2026 session, branch `claude/exciting-albattani-ug1gjv`)
+Full 3-stage /broad-scan completed (4 subsystem deep-dives + gap-fill on Web UI/A11y,
+Export Fidelity, Notification Correctness, Income Classification). Implemented F1-F5:
+- **F1** `.github/workflows/db-backup.yml` — nightly pg_dump of both Neon DBs from
+  GitHub Actions, AES-256 artifacts, 90-day retention, restore runbook in header.
+  README "Backups" section. OPERATOR: set NEON_DATABASE_URL, PERSISTENT_DATABASE_URL,
+  BACKUP_ENCRYPTION_PASSPHRASE repo secrets; do one restore drill.
+- **F2** database.js — missing TOKEN_ENCRYPTION_PASSPHRASE now fatal at boot
+  (ALLOW_MISSING_TOKEN_PASSPHRASE=true escape hatch). Test files set mock passphrase.
+- **F3** teller-api.js — boot warning when loaded Teller cert matches the compromised
+  fingerprint (d58d1d12...0954) from git history. OPERATOR (still open): rotate cert in
+  Teller dashboard, then scrub history (git filter-repo).
+- **F4** services/job-health.js + job_runs table + ticks in every startup.js interval +
+  6-hourly/post-boot watchdog ("jobs-missed" notification, signature-deduped, 36h+ threshold).
+- **F5** notifications.sentRecently(tag, hours) — budget alerts max 1/category/severity/24h.
+Tests: 779 pass (764 -> 779, +15 in tests/broad-scan-fixes.test.js).
+**Open follow-ons:** F6 Code.gs splits divergence; F7 Per-sistant CSP nonces; F8 notif-panel
+a11y + contrast; F9 recurrence_interval CHECK; F10 insights-email escaping audit; docs drift
+(test count 745 -> 779 in CLAUDE.md x3 + README) -> /sync-docs.
+**Where I left off:** F1-F5 committed + pushed on `claude/exciting-albattani-ug1gjv`; awaiting
+review/merge + the three operator actions above.
+
 ### AI Insights & Audit targeted cycle (this session)
 Audited; 3 findings (1 Medium AIA1, 2 Low AIA2/AIA3). Implemented A1–A2, deferred A3:
 - **A1 (AIA1)** ai-audit.js: Tier-1 dollar-claim arithmetic now SKIPS claims whose context signals a non-current-month window (annual / multi-month / YTD / projected / average — `CROSS_PERIOD_RE`), since the only per-category + subscription actuals it has are this-month. Stops false-positive CRITICAL findings (audit-alert notification spam + deflated audit_accuracy%) on annualized advice. this-month/unqualified claims still checked. Exported `CROSS_PERIOD_RE` + added 15 classification tests.
