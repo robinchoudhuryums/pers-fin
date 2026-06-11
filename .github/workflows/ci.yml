@@ -20,3 +20,35 @@ jobs:
       # no longer needed and would warn about missing per-package lockfiles.
       - run: npm ci
       - run: npm test
+
+  # Live-Postgres migration test: boots both apps' auto-migrations against a
+  # real empty database, twice each (second run = idempotency check; both
+  # apps' migrations are fatal-on-error, so a non-idempotent statement that
+  # would crash the NEXT production deploy fails here first). Uses the
+  # pgvector image so the Knowledge vector path is exercised too (INV-28's
+  # keyword-degraded path is still covered by the migration's own guards).
+  migrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - name: Run migrations twice against a fresh database
+        run: node scripts/ci-migration-test.js
+        env:
+          MIGRATION_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres

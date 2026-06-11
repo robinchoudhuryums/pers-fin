@@ -151,6 +151,7 @@ module.exports = {
   tick,
   flush,
   checkMissedJobs,
+  thresholdMs,
   JOB_INTERVALS_MS,
   // exported for tests
   _memoryTicks: memoryTicks,

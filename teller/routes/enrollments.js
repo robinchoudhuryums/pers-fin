@@ -336,6 +336,20 @@ async function syncAllEnrollments(opts = {}) {
           notifyFailed = true;
           console.error("Anomaly notification dispatch error:", notifyErr.message);
         }
+        // Opt-in critical-alert email — ONE summary per sync run, not one per
+        // anomaly. Email failure is deliberately NOT notifyFailed: it must not
+        // hold back the push watermark (the push already went out).
+        try {
+          const { sendCriticalAlertEmail } = require("./persistent");
+          const lines = anomalies.rows.map(a => {
+            const m = a.user_merchant_name || a.merchant_name || a.name;
+            return m + ": $" + parseFloat(a.amount).toFixed(2) + " (typical: $" + parseFloat(a.avg_amount).toFixed(2) + ")";
+          }).join("\n");
+          await sendCriticalAlertEmail(
+            anomalies.rows.length > 1 ? "Unusual charges detected" : "Unusual charge detected",
+            lines
+          );
+        } catch (e) { console.error("Anomaly alert email error:", e.message); }
       }
       if (!notifyFailed) {
         await pool.query("UPDATE user_settings SET last_anomaly_check_at = now() WHERE id = 1")

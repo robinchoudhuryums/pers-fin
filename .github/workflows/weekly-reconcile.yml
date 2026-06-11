@@ -1,0 +1,34 @@
+# Weekly self-healing reconcile — out-of-process guarantee.
+# The in-process scheduler runs reconcileTeller(90) at most weekly, but only
+# while the Render process is awake; this workflow guarantees the heal fires
+# regardless. All writes are idempotent ON CONFLICT upserts (INV-05), the
+# Teller watermark is never advanced, and the anomaly push is suppressed —
+# so overlapping with an in-process run is harmless.
+# Requires repo secrets: SERVER_URL, API_KEY (same as daily-sync.yml).
+
+name: Weekly Reconcile
+
+on:
+  schedule:
+    - cron: '0 9 * * 0'   # Sundays 9 AM UTC
+  workflow_dispatch:
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake server (Render free tier cold start)
+        run: |
+          curl -s -o /dev/null -w "%{http_code}" "${{ secrets.SERVER_URL }}/health" || true
+          sleep 10
+
+      - name: Reconcile trailing 90 days (Teller)
+        run: |
+          STATUS=$(curl -s -o /tmp/reconcile.json -w "%{http_code}" --max-time 540 \
+            -X POST "${{ secrets.SERVER_URL }}/perfin/api/sync/reconcile" \
+            -H "x-api-key: ${{ secrets.API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d '{"days": 90, "provider": "teller"}')
+          echo "Reconcile status: $STATUS"
+          cat /tmp/reconcile.json
+          if [ "$STATUS" -ne 200 ]; then echo "Reconcile failed"; exit 1; fi

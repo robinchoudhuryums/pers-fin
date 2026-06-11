@@ -153,7 +153,7 @@
           if (!r.ok) return;
           var data = await r.json();
           if (data.unread_count > 0) {
-            badge.textContent = data.unread_count > 9 ? '9+' : data.unread_count;
+            badge.textContent = data.unread_count > 99 ? '99+' : data.unread_count;
             badge.style.display = '';
             bell.setAttribute('aria-label', 'Notifications, ' + data.unread_count + ' unread');
           } else {

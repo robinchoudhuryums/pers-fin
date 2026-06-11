@@ -1104,19 +1104,18 @@ router.post("/api/transactions/:id/splits", async (req, res) => {
     const parentAmount = parseFloat(txn.rows[0].amount);
 
     if (splits.length > 0) {
-      let sum = 0;
+      // Accumulate in integer cents (DC4/A4): per-amount rounding happens at
+      // parse time, so many-way splits can't accumulate FP noise into the
+      // tolerance check. Honors the documented "within $0.01" exactly.
+      let sumCents = 0;
       for (const s of splits) {
         const n = parseFloat(s.amount);
         if (isNaN(n) || n <= 0) return res.status(400).json({ error: "Each split amount must be a positive number" });
-        sum += n;
+        sumCents += Math.round(n * 100);
       }
-      // Compare in integer cents (DC4/A4): honors the documented "within $0.01"
-      // exactly (reject only when off by MORE than one cent) AND avoids the
-      // floating-point noise the old `> 0.011` padding was working around — a
-      // legitimately-on-the-cent split no longer depends on FP slop.
-      if (Math.abs(Math.round(sum * 100) - Math.round(parentAmount * 100)) > 1) {
+      if (Math.abs(sumCents - Math.round(parentAmount * 100)) > 1) {
         return res.status(400).json({
-          error: `Splits sum to $${sum.toFixed(2)} but parent transaction is $${parentAmount.toFixed(2)} — must match within $0.01`,
+          error: `Splits sum to $${(sumCents / 100).toFixed(2)} but parent transaction is $${parentAmount.toFixed(2)} — must match within $0.01`,
         });
       }
     }
@@ -1410,5 +1409,102 @@ router.get("/api/bill-payments", async (req, res) => {
   }
 });
 
+
+// ---------------------------------------------------------------------------
+// Bill-calendar iCalendar feed (subscribed from iOS/Google Calendar). Pure
+// read: projects the next `days` of expected charges — detected subscriptions
+// stepping next_expected by cadence_days, plus active manual bills (monthly =
+// every occurrence in the window; quarterly/yearly = next occurrence only,
+// since their anchor month is ambiguous). All-day VEVENTs with stable UIDs so
+// re-fetches update in place. Served via the shell's token-gated public
+// /calendar.ics route (calendar apps can't send headers or cookies).
+// ---------------------------------------------------------------------------
+function icsEscape(t) {
+  return String(t).replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
+}
+function icsDate(d) {
+  return d.toISOString().slice(0, 10).replace(/-/g, "");
+}
+async function buildBillCalendarIcs(days) {
+  const horizon = Math.min(365, Math.max(7, parseInt(days) || 90));
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0);
+  const end = new Date(today.getTime() + horizon * 86400000);
+  const events = [];
+
+  const subs = await pool.query(
+    `SELECT id, display_name, amount, cadence_days, next_expected
+     FROM detected_subscriptions
+     WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL
+       AND cadence_days > 0`
+  );
+  for (const sub of subs.rows) {
+    let d = new Date(sub.next_expected);
+    let guard = 0;
+    while (d < today && guard++ < 60) d = new Date(d.getTime() + sub.cadence_days * 86400000);
+    guard = 0;
+    while (d <= end && guard++ < 60) {
+      events.push({
+        uid: "sub-" + sub.id + "-" + icsDate(d) + "@perfin",
+        date: new Date(d),
+        summary: sub.display_name + " — $" + parseFloat(sub.amount).toFixed(2),
+      });
+      d = new Date(d.getTime() + sub.cadence_days * 86400000);
+    }
+  }
+
+  const bills = await pool.query(
+    "SELECT id, name, amount, due_day, cadence FROM manual_bills WHERE is_active = true"
+  );
+  for (const b of bills.rows) {
+    const dueDay = Math.min(28, Math.max(1, parseInt(b.due_day) || 1)); // month-end safety, same as Important Dates
+    const occurrences = [];
+    if (b.cadence === "monthly") {
+      for (let m = 0; m <= Math.ceil(horizon / 28) + 1; m++) {
+        const d = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + m, dueDay));
+        if (d >= today && d <= end) occurrences.push(d);
+      }
+    } else {
+      // quarterly/yearly: next occurrence only (anchor month is ambiguous)
+      const step = b.cadence === "quarterly" ? 3 : 12;
+      for (let m = 0; m <= 12; m += step) {
+        const d = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + m, dueDay));
+        if (d >= today) { if (d <= end) occurrences.push(d); break; }
+      }
+    }
+    for (const d of occurrences) {
+      events.push({
+        uid: "bill-" + b.id + "-" + icsDate(d) + "@perfin",
+        date: d,
+        summary: b.name + " — $" + parseFloat(b.amount).toFixed(2) + " (bill)",
+      });
+    }
+  }
+
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15) + "Z";
+  const lines = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//Perfin//Bill Calendar//EN",
+    "CALSCALE:GREGORIAN",
+    "METHOD:PUBLISH",
+    "X-WR-CALNAME:Perfin Bills",
+  ];
+  for (const ev of events.sort((a, b2) => a.date - b2.date)) {
+    lines.push(
+      "BEGIN:VEVENT",
+      "UID:" + ev.uid,
+      "DTSTAMP:" + stamp,
+      "DTSTART;VALUE=DATE:" + icsDate(ev.date),
+      "SUMMARY:" + icsEscape(ev.summary),
+      "TRANSP:TRANSPARENT",
+      "END:VEVENT"
+    );
+  }
+  lines.push("END:VCALENDAR");
+  return lines.join("\r\n") + "\r\n";
+}
+
 module.exports = router;
 module.exports.runSubscriptionDetection = runSubscriptionDetection;
+module.exports.buildBillCalendarIcs = buildBillCalendarIcs;

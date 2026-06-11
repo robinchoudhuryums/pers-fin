@@ -19,6 +19,8 @@
 
 require("dotenv").config();
 
+const crypto = require("crypto");
+
 const express = require("express");
 const cookieParser = require("cookie-parser");
 const rateLimit = require("express-rate-limit");
@@ -119,6 +121,33 @@ app.get("/android-chrome-512x512.png", sendShellIcon("android-chrome-512x512.png
 // touch the DB so a brief DB blip doesn't surface here as a false negative.
 // Mounted before requireAuth.
 app.get("/health", (_req, res) => res.json({ ok: true }));
+
+// Bill-calendar iCalendar feed — public route with its own dedicated token,
+// because calendar apps (iOS Calendar, Google Calendar) fetch subscription
+// URLs with no headers and no cookies. This is the ONE sanctioned
+// query-string credential: a read-only, single-purpose CALENDAR_FEED_TOKEN,
+// deliberately separate from API_KEY (which stays header-only per the
+// security posture). Unset env → 404, feature off. Constant-time compare.
+app.get("/calendar.ics", async (req, res) => {
+  const expected = process.env.CALENDAR_FEED_TOKEN || "";
+  if (!expected) return res.status(404).end();
+  const provided = String(req.query.token || "");
+  const a = Buffer.from(provided.padEnd(expected.length, " ").slice(0, expected.length));
+  const b = Buffer.from(expected);
+  if (provided.length !== expected.length || !crypto.timingSafeEqual(a, b)) {
+    return res.status(401).end();
+  }
+  try {
+    const { buildBillCalendarIcs } = require("../teller/routes/subscriptions");
+    const ics = await buildBillCalendarIcs(req.query.days);
+    res.set("Content-Type", "text/calendar; charset=utf-8");
+    res.set("Cache-Control", "private, max-age=3600");
+    res.send(ics);
+  } catch (err) {
+    console.error("calendar.ics error:", err.message);
+    res.status(500).end();
+  }
+});
 
 app.get("/login", (req, res) => {
   if (auth.isValidSession(req.cookies[auth.COOKIE_NAME])) return res.redirect("/");

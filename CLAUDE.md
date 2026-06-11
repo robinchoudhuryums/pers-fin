@@ -339,9 +339,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (874 tests as of latest); use
+  Perfin and Per-sistant test files (901 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 874 tests across 31 test files (incl.
+  Current count: 901 tests across 33 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -357,7 +357,7 @@ shell/
   classification), tests/budget-cap-webauthn.test.js (tunable AI cap +
   embedded biometric registration), and tests/pwa-polish.test.js
   (pull-to-refresh + safe-area pins).
-- `.github/workflows/ci.yml` — CI pipeline (single `npm ci` at root via npm workspaces, then `npm test`)
+- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container.
 - `.claude/commands/` — Project slash-command prompts: `/broad-scan`, `/broad-implement`,
   `/test-sync`, `/sync-docs`
 - `Dockerfile`, `fly.toml`, `render.yaml` — Deployment configs (the Dockerfile
@@ -759,6 +759,14 @@ shell/
   toggle (default off). Hourly scheduler; `runDailyDigest` dedupes via
   a 20-hour gate from `last_daily_digest_at` and skips silently when
   `gatherWhatsNew` returns zero counts.
+- **Critical-alert emails** (opt-in, Settings → AI Insights/Notifications →
+  "Critical Alert Emails", `user_settings.critical_alert_emails_enabled`,
+  default off): budget-exceeded (100%+, shares the push path's 24h
+  `sentRecently` dedup) and 3x-anomaly charges (one summary email per sync
+  run; email failure never holds the anomaly push watermark) email
+  immediately via the digest channel (`critical_alert` event —
+  `sendCriticalAlertEmail` in routes/persistent.js; in-process under the
+  shell, HTTP webhook standalone).
 - `user_settings.last_reconcile_at TIMESTAMPTZ`: watermark for the weekly
   self-healing reconcile and the manual `POST /api/sync/reconcile`. The
   scheduler runs the trailing-window Teller backfill at most once per 7-day
@@ -1165,7 +1173,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 874 tests passing across 31 test files (Perfin + Per-sistant)
+- 901 tests passing across 33 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash
@@ -1301,7 +1309,9 @@ PATCH /api/settings        # update user settings. Accepts: theme,
                            # to fall back to env), etc.
 GET  /api/data-freshness   # per-source sync timestamps with staleness flags
 GET  /api/data-health      # operator health surface — per-source freshness,
-                           # Teller/Plaid connection status, derived issues[]
+                           # Teller/Plaid connection status, scheduled-job
+                           # heartbeats (jobs[] with per-job staleness from
+                           # job_runs + thresholdMs), derived issues[]
                            # (disconnected links, stale balances, never-synced,
                            # + per-item errors from last_sync_result), recent sync
                            # notifications, last_reconcile_at, last_sync_result, and
@@ -1487,6 +1497,18 @@ GET  /apple-touch-icon.png                # iOS home-screen icon (mask-crop PNG)
 GET  /apple-touch-icon-precomposed.png    # older-iOS probe path; same bytes
 GET  /android-chrome-192x192.png          # PWA icon, 192 (mask-crop PNG)
 GET  /android-chrome-512x512.png          # PWA icon, 512 (mask-crop PNG)
+GET  /calendar.ics                        # bill-calendar iCalendar feed (subscribe from
+                                          # iOS/Google Calendar). Token-gated via
+                                          # ?token=CALENDAR_FEED_TOKEN — the ONE sanctioned
+                                          # query-string credential (calendar apps send no
+                                          # headers/cookies); read-only, single-purpose,
+                                          # deliberately separate from API_KEY (which stays
+                                          # header-only). Unset env = 404/feature off.
+                                          # Events: detected-subscription charges projected
+                                          # by cadence + manual bills (monthly = all in
+                                          # window; quarterly/yearly = next occurrence),
+                                          # 90 days default (?days=7-365). Builder:
+                                          # subscriptions.buildBillCalendarIcs.
 ```
 
 `PATCH /api/settings` accepts a new `shell_idle_timeout_minutes` field
@@ -1506,6 +1528,7 @@ validation (SN-5).
 - `SHELL_PIN` — unified PIN that fronts both apps. Constant-time compare with a 750ms throttle on incorrect attempts, backed by an IP rate limiter (10 failed attempts / 15 min) on `/login` and the biometric authenticate endpoints.
 - `SHELL_SECRET` — random ~32+ char string (`openssl rand -hex 32`). Signs the shell session cookie. Rotating it invalidates every active session.
 - `SHELL_PORT` — optional listener port override (defaults to `PORT` or `3000`)
+- `CALENDAR_FEED_TOKEN` — optional long random token enabling the public `/calendar.ics` bill feed (unset = feature off)
 
 ### Databases (one per sub-app)
 - `NEON_DATABASE_URL` — Perfin's Neon PostgreSQL connection string
@@ -1910,7 +1933,13 @@ rows) can dismiss them from the UI or run `POST /api/cleanup`.
 - **Subscription matching**: Word boundary regex to prevent false positives
 
 ## Scheduled Tasks (intervals)
-All run automatically after server startup. Per-app jobs live in
+All run automatically after server startup — and the CRITICAL ones are
+additionally guaranteed out-of-process by GitHub Actions cron (so Render
+free-tier sleep can't skip them): `daily-sync.yml` (transactions + balances/
+holdings/flows + net-worth snapshot + detection, daily 7AM UTC) and
+`weekly-reconcile.yml` (Teller 90-day reconcile, Sundays). Both hit the
+x-api-key'd endpoints; all writes are idempotent so overlap with the
+in-process jobs is harmless. Per-app jobs live in
 `teller/startup.js`; keep-alive runs at the shell layer (`shell/index.js`)
 under the unified shell so the timezone-aware self-ping fires regardless of
 which sub-app owns its own listener (sub-app `startKeepAlive` is no-op in
@@ -2639,10 +2668,10 @@ INV-25 | Embedded sub-apps detect req.app.get("embedded") and skip their own aut
 INV-26 | Teller transaction pagination terminates on an empty page (count-explicit + from_id), never a hard-coded page-size compare | Subsystem: Bank Sync & Ingestion | Verify: tests/cycle-fixes.test.js (BS-1 block)
 INV-27 | Only sensitivity='normal' docs/facts are embedded AND retrieved; private/secret are never embedded or sent to AI | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js (buildRetrievalQuery), tests/knowledge-facts.test.js
 INV-28 | pgvector objects are created defensively (only if the `vector` extension is available); the migration succeeds and Knowledge degrades to keyword retrieval rather than failing boot | Subsystem: Knowledge / RAG | Verify: code read db/014_vault_vectors.sql + vault-sync.vectorReady
-INV-29 | Retrieval is vector-first with keyword fallback; /query & /diagram degrade to sources-only / null when AI is off or unavailable | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js, tests/knowledge-crossapp.test.js
+INV-29 | Retrieval is HYBRID (vector + keyword legs fused via Reciprocal Rank Fusion, dedupe on kind:id) — either leg failing degrades to the other alone; /query & /diagram degrade to sources-only / null when AI is off or unavailable | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js, apps/per-sistant/tests/rag-v2.test.js
 INV-30 | Embedding dimension (1024) matches chunks.embedding vector(1024); a provider/dimension change is a re-embed migration, not a config flip | Subsystem: Knowledge / RAG | Verify: code read services/embeddings.js EMBED_DIM
 INV-31 | embed_state content-hash skip prevents re-embedding unchanged sources | Subsystem: Knowledge / RAG | Verify: code read vault-sync.embedSource
-INV-32 | Answer cache keyed on query+model+corpus_version (notes+documents+facts max(updated_at)+count); finance-grounded answers bypass the cache | Subsystem: Knowledge / RAG | Verify: tests/knowledge-cache.test.js + routes/rag.js useCache gate
+INV-32 | Answer cache keyed on query+model+corpus_version (notes+documents+facts max(updated_at)+count), with a SEMANTIC fallback layer (query-embedding cosine >= 0.97, same model+corpus_version+TTL — RAG v2, db/019); finance-grounded answers bypass both layers | Subsystem: Knowledge / RAG | Verify: tests/knowledge-cache.test.js + apps/per-sistant/tests/rag-v2.test.js + routes/rag.js useCache gate
 INV-33 | Vault sync is read-only (VAULT_GITHUB_TOKEN); capture writes only with the separate write-scoped VAULT_GITHUB_WRITE_TOKEN (400 until set) | Subsystem: Knowledge / RAG | Verify: tests/knowledge-capture.test.js
 INV-34 | Citations enabled all-or-none per request; incompatible with structured outputs (unused here) | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js (answerWithCitations)
 INV-35 | Cross-app finance grounding reads perfinPool read-only, only on finance queries, never an HTTP self-fetch (parallels INV-25) | Subsystem: Knowledge / RAG | Verify: tests/knowledge-crossapp.test.js

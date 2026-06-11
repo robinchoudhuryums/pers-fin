@@ -11,7 +11,10 @@ if (!process.env.NEON_DATABASE_URL) {
 
 const pool = new Pool({
   connectionString: process.env.NEON_DATABASE_URL,
-  ssl: { rejectUnauthorized: true },
+  // PGSSLMODE=disable opts out for the CI migration test's plaintext service
+  // container (an explicit ssl object would otherwise override the env var).
+  // Production (Neon) never sets it, so TLS verification stays on.
+  ssl: process.env.PGSSLMODE === "disable" ? false : { rejectUnauthorized: true },
   // Single-user app — 3 connections is sufficient. Each idle connection
   // holds a Postgres backend process on Neon, consuming compute hours
   // even when not running queries. The previous max of 5 was oversized.
@@ -667,6 +670,8 @@ async function runMigrations() {
     // by getAiBudgetCents() in routes/insights.js — the single read path
     // shared by insights, categorize, and rebuild.
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS ai_monthly_budget_cents INT");
+    // Critical-alert emails (budget exceeded / anomaly charges) — opt-in.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS critical_alert_emails_enabled BOOLEAN NOT NULL DEFAULT false");
 
     // ---- Watchlist ----
     // User-curated list of merchants / categories / keywords to monitor.
