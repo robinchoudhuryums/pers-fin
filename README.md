@@ -204,6 +204,8 @@ When mounted under the unified shell, all of these are accessed via the `/perfin
 | `PATCH` | `/api/subscriptions/:id/category` | Reclassify as subscription/utility |
 | `POST` | `/api/import-csv` | Import bank CSV export |
 | `GET/POST/PATCH/DELETE` | `/api/goals` | Financial goals CRUD |
+| `GET` | `/api/fire-projection` | FIRE number/progress/time-to-FIRE + spending runway (assumptions from settings) |
+| `POST` | `/api/ask` | Ask Perfin — NL finance Q&A via Claude tool use (body: `{ question }`, ≤500 chars) |
 | `POST` | `/api/net-worth/snapshot` | Manual net worth snapshot |
 | `GET` | `/api/net-worth/history` | Net worth snapshots over time |
 | `GET` | `/api/context-export` | Structured data dump for Claude chat (markdown/JSON) |
@@ -340,9 +342,17 @@ The AI maintains a **persistent running summary** across analyses — a cumulati
 - **Cadence**: Weekly, biweekly, monthly, every 2 months, or quarterly
 - **Reset/Rebuild**: Clear or regenerate long-term memory from Settings
 
+### Ask Perfin (NL Finance Q&A)
+
+A dashboard widget (`POST /api/ask`) that answers natural-language questions about your own data ("how much did I spend on dining last month?", "when do I hit FIRE?") via Claude tool use. Seven read-only tools — monthly overview, category spending, transaction search, net worth, subscriptions, budget status, FIRE projection — are bound to the same shared query helpers the dashboard uses, so cited numbers match the UI by construction; the model never writes SQL. The tool loop is bounded (6 rounds), spend shares the monthly AI budget cap (429 once exhausted, charged via an `entry_type='ask'` usage row), and each answer shows the tools used + cost. Typical questions cost well under a cent on Haiku.
+
 ### Financial Goals
 
 Track progress toward savings targets (house, car, retirement, etc.) with compound interest projections, monthly contribution tracking, and AI-powered progress assessment.
+
+### FIRE / Runway Projections
+
+The Goals page carries a FIRE card backed by `GET /api/fire-projection`: FIRE number (annual spending × 100/withdrawal-rate), progress %, projected FIRE date, a 40-year net-worth projection chart, and a spending runway (how long net worth covers spending with no income, growth included). Inputs are the deduped `getNetWorth()` figure plus averages over **completed** months of income/spending — the current partial month never drags the averages. Three assumptions are editable inline and persisted to settings: expected annual return (default 5%), withdrawal rate (default 4%), and an optional monthly-spending override for "my retirement spending won't match today's". Pure math lives in `teller/services/projections.js`.
 
 ### Net Worth Tracking
 
@@ -376,6 +386,8 @@ AI-flagged deductions are accumulated year-round in a persistent table, availabl
 The unified shell installs as a single PWA with its own icon and start URL (`/`). Each sub-app's manifest still works under its prefix if you want to install it separately, but the recommended install is the shell.
 - **iPhone**: Open in Safari → Share → "Add to Home Screen"
 - **Android**: Chrome → Menu → "Install app"
+
+A native iOS wrapper (Capacitor, remote-URL mode) is scaffolded in `mobile/` and deliberately coexists with the PWA as a separate icon/session for A/B comparison — build runbook in `mobile/README.md` (free signing, no APNs; notifications keep flowing through the PWA).
 
 ### Personal Knowledge Base / RAG (Per-sistant)
 

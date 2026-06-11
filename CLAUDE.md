@@ -1364,6 +1364,9 @@ PATCH /api/settings        # update user settings. Accepts: theme,
                            # pyramid_*, debt_baseline_amount,
                            # shell_idle_timeout_minutes, target_allocation_pct,
                            # weekly/daily digest toggles,
+                           # fire_expected_return_pct (0-20),
+                           # fire_withdrawal_rate_pct (1-10),
+                           # fire_monthly_spending_override (>=0 or null),
                            # ai_monthly_budget_cents (1-10000 cents or null
                            # to fall back to env), etc.
 GET  /api/data-freshness   # per-source sync timestamps with staleness flags
@@ -1615,7 +1618,7 @@ validation (SN-5).
 
 ### AI / Insights (Perfin)
 - `ANTHROPIC_API_KEY` — enables AI features in both apps
-- `INSIGHTS_MONTHLY_BUDGET_CENTS` — monthly API spending cap fallback (default 50 = $0.50); shared between `/api/insights` and `/api/categorize`. Overridable at runtime from Settings → AI Insights → Monthly Budget Cap (`user_settings.ai_monthly_budget_cents`, resolved by `getAiBudgetCents()` in routes/insights.js — the single cap reader)
+- `INSIGHTS_MONTHLY_BUDGET_CENTS` — monthly API spending cap fallback (default 50 = $0.50); shared between `/api/insights`, `/api/categorize`, `/api/insights/rebuild`, and `/api/ask`. Overridable at runtime from Settings → AI Insights → Monthly Budget Cap (`user_settings.ai_monthly_budget_cents`, resolved by `getAiBudgetCents()` in routes/insights.js — the single cap reader)
 
 ### Push notifications (Perfin)
 - `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` — Web Push keypair (`npx web-push generate-vapid-keys`); without these `/api/notifications/*` returns 501
@@ -1769,6 +1772,14 @@ standalone-mode fallback if either app is run on its own Render service.
   the actual portfolio breakdown and emits `target_pct` + `drift_pct`
   per asset class. Empty `{}` → no drift fields on the response. Set
   via Settings → Target Allocation form.
+- `user_settings` FIRE assumptions: `fire_expected_return_pct NUMERIC(5,2)`
+  (annual real return, 0-20, default 5 when NULL),
+  `fire_withdrawal_rate_pct NUMERIC(5,2)` (safe withdrawal rate, 1-10,
+  default 4 when NULL), `fire_monthly_spending_override NUMERIC(12,2)`
+  (optional retirement-spending override; NULL = use trailing completed-month
+  average). Read by `GET /api/fire-projection` (goals.js) and the ask.js
+  `get_fire_projection` tool; editable inline on the Goals-page FIRE card
+  via `PATCH /api/settings`.
 - `user_settings` data freshness: `last_txn_sync_at TIMESTAMPTZ` (updated by
   `POST /api/sync`), `last_balance_sync_at TIMESTAMPTZ` (updated by
   `POST /api/sync-balances`). The nav badge uses the most recent of these plus
@@ -2604,15 +2615,32 @@ income module, and bill-calendar income detection.
   isolated debugging.
 
 ## Priority Next Features
-1. **Mobile app** — React Native or Capacitor wrapper for native experience
+1. **Health/habits tracker** — DECIDED (June 2026): built as an **expansion of
+   Per-sistant**, NOT a third shell sub-app. Rationale: Per-sistant already owns
+   the needed machinery (recurring tasks with streak/habit tracking, analytics
+   heatmaps, notifications, calendar, AI daily briefing as the nudge surface,
+   Knowledge/RAG grounding over the same DB); a third sub-app costs a new DB +
+   migration chain + nav/PWA identity, justified only for app-sized domains.
+   Planned shape: `apps/per-sistant/routes/health.js` + a health page + 2-3
+   tables. Escape hatch: if it outgrows that, extract via the proven
+   route-split + identity re-export recipe. Decision recorded in
+   `.cycle/STATE.md`.
+2. **Mobile app (operator step)** — the Capacitor iOS wrapper is scaffolded in
+   `mobile/` (remote-URL mode, coexists with the PWA); what remains is the
+   free-signing Xcode build on the operator's Mac per `mobile/README.md`.
+
+Shipped (June 2026): **Investment performance & allocation** — cost-basis
+returns + asset-class allocation + target-drift
+(`GET /api/investments/performance`) and portfolio value history vs S&P 500
+benchmark (`GET /api/investments/performance-history`). **FIRE/runway
+projections** — `GET /api/fire-projection` + Goals-page card
+(`services/projections.js`). **Ask Perfin** — NL finance Q&A via Claude tool
+use (`POST /api/ask`, dashboard widget).
 
 Dropped by design (June 2026): **multi-user support** — the single-user
 assumption (single-row `user_settings`, server-side watermarks, no tenancy
 dimension in queries) is a load-bearing simplification, not a gap; and
-**onboarding flow** — single operator, already onboarded. **Investment
-performance & allocation** shipped: cost-basis returns + asset-class
-allocation + target-drift (`GET /api/investments/performance`) and portfolio
-value history vs S&P 500 benchmark (`GET /api/investments/performance-history`).
+**onboarding flow** — single operator, already onboarded.
 
 ## Cycle Workflow Config
 
@@ -2637,6 +2665,7 @@ Test Coverage Quality | tests that pass regardless of the code under test
 ### Subsystems
 Bank Sync & Ingestion:
   teller/routes/enrollments.js, teller/routes/investments.js,
+  teller/routes/investment-performance.js, teller/services/plaid-client.js,
   teller/services/teller-api.js, teller/services/benchmarks.js,
   teller/data/csv-formats.js, scripts/import-csv-cli.js
   (Teller and Plaid are co-equal, first-class linking paths — both write the
@@ -2649,11 +2678,12 @@ Detection & Categorization:
   scripts/detect-subscriptions.js, scripts/detect-transfers.js
 Financial Analytics:
   teller/services/financial-queries.js, teller/routes/spending-analytics.js,
-  teller/routes/budgets.js,
+  teller/services/projections.js, teller/routes/budgets.js,
   teller/routes/goals.js, teller/routes/credit-scores.js,
   teller/routes/whats-new.js, teller/routes/watchlist.js
 AI Insights & Audit:
-  teller/routes/insights.js, teller/services/ai-audit.js
+  teller/routes/insights.js, teller/routes/insights-email.js,
+  teller/routes/ask.js, teller/services/ai-audit.js
 Settings, Notifications & Cross-app:
   teller/routes/settings.js, teller/routes/notifications.js,
   teller/routes/persistent.js
