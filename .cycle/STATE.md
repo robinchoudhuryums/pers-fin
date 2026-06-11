@@ -141,8 +141,22 @@ data-health jobs[] surface. Tests: 901 across 33 files (+27).
 OPERATOR (new): optionally set CALENDAR_FEED_TOKEN (long random) to enable the calendar
 feed; subscribe iOS Calendar to https://<host>/calendar.ics?token=<token>.
 **Where I left off:** everything committed + pushed on `claude/exciting-albattani-ug1gjv`.
-Remaining my-court items: Playwright smokes (optional), route-file splits, custom income
-keywords UI. Operator items unchanged (merge w/ passphrase check, backup secrets+drill,
+Remaining my-court items: custom income keywords UI only.
+
+### Chunking + splits + browser smokes (broad-implement round 4, same branch)
+1) Token-aware chunking SHIPPED (vault empty = zero re-embed cost): estimated-token
+budgets (max(words×1.32, chars/4)), heading→paragraph→sentence→word cascade (no
+mid-word slicing), CHUNKING_VERSION salts the embed_state hash so future chunker
+changes auto-re-embed. 2) Route splits (interface-preserving, helpers re-exported BY
+IDENTITY): investments.js 2153→1649 (+ routes/investment-performance.js 503 + shared
+services/plaid-client.js); insights.js 1622→1376 (+ routes/insights-email.js 264).
+3) Playwright smokes: e2e/ harness (boot-server.js scratch DBs → shell boot), 8 specs
+(login wrong/right incl. /per-sistant default, both apps' pages, feed gate), CI 'e2e'
+job, npm run test:e2e (kept out of npm test). REAL local verification: started the
+sandbox's Postgres 16 — scripts/ci-migration-test.js passed clean (both apps × 2, all
+19 per-sistant migrations, keyword-degraded path), and the harness booted the full
+shell with every smoke flow verified over HTTP. Chromium itself couldn't download
+(sandbox CDN allowlist) — browser layer executes in CI. Tests: 911 across 33 files. Operator items unchanged (merge w/ passphrase check, backup secrets+drill,
 cert rotation, clasp push, VAPID done).
 **Where I left off:** everything committed + pushed on `claude/exciting-albattani-ug1gjv`
 (F1-F10 + docs + investment performance + TWR/XIRR); awaiting review/merge + operator actions
