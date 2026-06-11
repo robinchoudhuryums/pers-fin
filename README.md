@@ -87,7 +87,7 @@ Under the unified shell the cross-app integration endpoints (Per-sistant's Perfi
 | `scripts/detect-subscriptions.js` | Recurring charge detection algorithm |
 | `scripts/sheets-sync.js` | Google Sheets sync + dashboard builder |
 | `apps-script/Code.gs` | Google Sheets Apps Script (standalone + server sync) |
-| `tests/` | Test suite (node:test, 934 tests across 34 files incl. apps/per-sistant/tests) |
+| `tests/` | Test suite (node:test, 963 tests across 35 files incl. apps/per-sistant/tests) |
 | `Dockerfile` | Container build — installs all workspaces and boots `node shell/index.js` |
 | `render.yaml` | Render deployment blueprint (unified shell) |
 | `fly.toml` | Fly.io deployment config |
@@ -177,7 +177,7 @@ npm run test:perfin       # Perfin tests only
 npm run test:persistent   # Per-sistant tests only
 ```
 
-934 tests covering detection, CSV parsing, date handling, API logic, cost calculations, financial-queries semantics (incl. the net-worth single-source-of-truth + the $0-brokerage dedupe direction), AI-audit pattern extraction, pinned regression tests for auth/SSO/template/exclusion behavior and the latest cycle fixes (net-worth dedupe, budget-rollover month-keying, webhook replay/expiry, XSS/header sanitization, CSV dedup-ID parity, Plaid balance-sync status filter, Plaid holdings-items UNION + liabilities re-link hint, categorize bulk-sweep/loop + auto-sweep + accuracy sampler, in-process digest delivery, background reconcile, login→dashboard redirect, $0-brokerage dedupe, page-size-independent Teller pagination, Schwab CSV sign preservation, Wells Fargo CSV detection tightening, Plaid sync observability, and the June 2026 broad-scan fixes: backup workflow, fail-fast token passphrase, compromised-cert detection, missed-job watchdog, budget-alert dedup), and integration tests for the feedback, whats-new, performance, and trust-overview endpoints. No database required — all tests run against pure functions and mock pools.
+963 tests covering detection, CSV parsing, date handling, API logic, cost calculations, financial-queries semantics (incl. the net-worth single-source-of-truth + the $0-brokerage dedupe direction), AI-audit pattern extraction, pinned regression tests for auth/SSO/template/exclusion behavior and the latest cycle fixes (net-worth dedupe, budget-rollover month-keying, webhook replay/expiry, XSS/header sanitization, CSV dedup-ID parity, Plaid balance-sync status filter, Plaid holdings-items UNION + liabilities re-link hint, categorize bulk-sweep/loop + auto-sweep + accuracy sampler, in-process digest delivery, background reconcile, login→dashboard redirect, $0-brokerage dedupe, page-size-independent Teller pagination, Schwab CSV sign preservation, Wells Fargo CSV detection tightening, Plaid sync observability, and the June 2026 broad-scan fixes: backup workflow, fail-fast token passphrase, compromised-cert detection, missed-job watchdog, budget-alert dedup), and integration tests for the feedback, whats-new, performance, and trust-overview endpoints. No database required — all tests run against pure functions and mock pools.
 
 ## API Endpoints
 
@@ -269,7 +269,7 @@ Shell-level public endpoints (no auth, mounted before the PIN gate):
 
 `PATCH /api/settings` accepts an additional `shell_idle_timeout_minutes` (5–10080) that drives the shell's sliding-window auth.
 
-Per-sistant exposes its own set of routes (todos, emails, notes, AI briefing, calendar, etc.) under `/per-sistant/...`. See `apps/per-sistant/CLAUDE.md` for the per-app reference.
+Per-sistant exposes its own set of routes (todos, emails, notes, AI briefing, calendar, health/habits, etc.) under `/per-sistant/...`. See `apps/per-sistant/CLAUDE.md` for the per-app reference.
 
 ## Features
 
@@ -417,6 +417,18 @@ Optional setup: `VOYAGE_API_KEY` (semantic search), `VAULT_GITHUB_TOKEN`
 extension on Neon. Without them, Knowledge degrades to keyword search over notes.
 Full detail: `apps/per-sistant/CLAUDE.md` (Knowledge block) and the Knowledge / RAG
 subsystem in `CLAUDE.md`'s Cycle Workflow Config.
+
+### Health & Habits Tracker (Per-sistant)
+
+Daily habits and measurements on Per-sistant's Health page — check-off or
+quantity-vs-target habits on daily / weekdays / specific-days / N-per-week
+schedules, with streaks **computed at read time** from the log history (a
+backfilled day retroactively repairs a streak; an unlogged *today* never breaks
+one). One-tap today list, clickable 7-day backfill grid, 90-day consistency
+heatmap, and a measurements time series (weight, sleep, mood, custom) with
+inline trend charts. Habit streaks at risk surface in the notification check
+and the AI daily briefing. No setup required — three tables ride Per-sistant's
+existing migration chain.
 
 ## How Subscription Detection Works
 

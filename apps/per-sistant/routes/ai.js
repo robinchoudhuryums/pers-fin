@@ -7,6 +7,7 @@ const { callAI, getAIModelForFeature, getCached, setCache, isAIAvailable } = req
 const { VALID_AI_FEATURES } = require("../config");
 
 const { serverError } = require("../errors");
+const { gatherHealthSummary } = require("./health");
 
 module.exports = function ({ pool }) {
   const router = express.Router();
@@ -124,21 +125,26 @@ module.exports = function ({ pool }) {
       const model = await getAIModelForFeature("daily_briefing");
       if (model === "off") return res.status(400).json({ error: "AI daily briefing is disabled." });
       const today = new Date().toISOString().split("T")[0];
-      const [pending, overdue, scheduled, upcoming] = await Promise.all([
+      const [pending, overdue, scheduled, upcoming, health] = await Promise.all([
         pool.query("SELECT title, priority, category, due_date FROM todos WHERE deleted_at IS NULL AND NOT completed ORDER BY CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END LIMIT 15"),
         pool.query("SELECT title, due_date FROM todos WHERE deleted_at IS NULL AND NOT completed AND due_date < $1", [today]),
         pool.query("SELECT subject, recipient_name, scheduled_at FROM emails WHERE deleted_at IS NULL AND status = 'scheduled' AND DATE(scheduled_at) = $1", [today]),
         pool.query("SELECT title, due_date FROM todos WHERE deleted_at IS NULL AND NOT completed AND due_date = $1", [today]),
+        // Fail-soft — a health-tables error just drops the habits line.
+        gatherHealthSummary(pool).catch(() => null),
       ]);
       // Check response cache (briefing cached for 10 minutes)
       const cacheKey = `briefing_${today}`;
       const cached = getCached(cacheKey, 10 * 60 * 1000);
       if (cached) return res.json({ briefing: cached });
 
+      const habitLine = health && health.due_today
+        ? `\nHabits due today: ${health.done_today}/${health.due_today} done${health.streaks_at_risk.length ? `; streaks at risk: ${health.streaks_at_risk.map(h => `${h.name} (${h.current_streak}-day)`).join(", ")}` : ""}`
+        : "";
       const text = await callAI(model,
-        `Today: ${today}\nToday's tasks (${upcoming.rows.length}): ${upcoming.rows.map(t => t.title).join(", ") || "none"}\nOverdue tasks (${overdue.rows.length}): ${overdue.rows.map(t => t.title).join(", ") || "none"}\nScheduled emails today: ${scheduled.rows.map(e => `"${e.subject}" to ${e.recipient_name}`).join(", ") || "none"}\nTotal pending tasks: ${pending.rows.length}\nTop priorities: ${pending.rows.slice(0, 5).map(t => `${t.title} (${t.priority})`).join(", ")}`,
+        `Today: ${today}\nToday's tasks (${upcoming.rows.length}): ${upcoming.rows.map(t => t.title).join(", ") || "none"}\nOverdue tasks (${overdue.rows.length}): ${overdue.rows.map(t => t.title).join(", ") || "none"}\nScheduled emails today: ${scheduled.rows.map(e => `"${e.subject}" to ${e.recipient_name}`).join(", ") || "none"}\nTotal pending tasks: ${pending.rows.length}\nTop priorities: ${pending.rows.slice(0, 5).map(t => `${t.title} (${t.priority})`).join(", ")}${habitLine}`,
         300,
-        `You are a daily briefing assistant. Generate a brief, helpful daily briefing (3-5 sentences). Be conversational and actionable. Summarize what needs attention today. Don't use emojis.`);
+        `You are a daily briefing assistant. Generate a brief, helpful daily briefing (3-5 sentences). Be conversational and actionable. Summarize what needs attention today. If habit streaks are at risk, nudge the user to keep them alive. Don't use emojis.`);
       setCache(cacheKey, text);
       res.json({ briefing: text });
     } catch (err) {

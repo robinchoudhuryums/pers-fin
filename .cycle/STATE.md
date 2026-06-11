@@ -181,6 +181,22 @@ parameterized only, injection-tested), bounded loop, shared AI cap (429) + entry
 both UI surfaces render. Tests: 934 across 34 files (+19).
 DECISION RECORDED: health/habits tracker → expand Per-sistant (streaks/analytics/
 notifications already there), extract to third sub-app only if it outgrows a page.
+### Health/habits tracker built (round 7, same branch)
+Implemented per the decision: db/020_health.sql (habits, habit_logs UNIQUE(habit_id,
+log_date), health_metrics UNIQUE(metric, recorded_on)); routes/health.js (CRUD + log
+upsert + summary/heatmap/metrics; READ-TIME streaks — computeStreaks/isDueOn pure +
+exported, INV-19 attach-after-factory; DELETE archives, never hard-deletes; future-date
+400; streak_milestone webhook at 7/30/100/365); pages/health.js (/health: today list w/
+quantity steppers, clickable 7-day backfill grid, 90-day heatmap, measurements + SVG
+trend; backtick-free page JS, nonceAttr, zero inline handlers); NAV + heart icon;
+notification check gained habit_streak_at_risk + habits_due counts (fail-soft .catch);
+AI daily briefing gained habits line (fail-soft). gatherHealthSummary is the ONE
+aggregator shared by page/notifications/briefing. Live-verified on scratch PG16:
+migration fresh + idempotent (2nd boot "20 files"), streak build 0→2→3 incl. backfill
+repair, quantity 5/8 not-met → 8 met, future 400, metrics upsert+lowercase, heatmap,
+notification counts, archive/restore. Tests: 963 across 35 files (+29 in
+apps/per-sistant/tests/health.test.js). Docs synced (both CLAUDE.mds, both READMEs,
+roadmap → Shipped).
 
 **PRIOR MERGE DONE; this round needs a fresh merge** —  (pre-merge: confirm
 TOKEN_ENCRYPTION_PASSPHRASE in Render; watch the first CI run's 3 jobs). Operator items unchanged (merge w/ passphrase check, backup secrets+drill,

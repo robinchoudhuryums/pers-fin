@@ -9,7 +9,9 @@ Single Node process that hosts two related personal tools behind one PIN gate:
   and transaction syncing for banks Teller doesn't cover (Capital One,
   Discover, Schwab, etc.).
 - **Per-sistant** — personal assistant. Tasks, scheduled emails, notes,
-  calendar, AI daily briefing, and a **personal Knowledge base** — RAG over an
+  calendar, AI daily briefing, a **health/habits tracker** (read-time streaks,
+  7-day grid + heatmap, measurements; nudges via the notification check and
+  daily briefing), and a **personal Knowledge base** — RAG over an
   Obsidian vault (pgvector semantic retrieval): source-cited Q&A, structured
   facts with temporal validity, Mermaid diagrams, capture-to-vault, a
   never-sent-to-AI "secret" tier, and cross-app finance grounding from Perfin.
@@ -387,9 +389,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (934 tests as of latest); use
+  Perfin and Per-sistant test files (963 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 934 tests across 34 test files (incl.
+  Current count: 963 tests across 35 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -1221,7 +1223,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 934 tests passing across 34 test files (Perfin + Per-sistant), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 963 tests passing across 35 test files (Perfin + Per-sistant), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
@@ -2615,17 +2617,7 @@ income module, and bill-calendar income detection.
   isolated debugging.
 
 ## Priority Next Features
-1. **Health/habits tracker** — DECIDED (June 2026): built as an **expansion of
-   Per-sistant**, NOT a third shell sub-app. Rationale: Per-sistant already owns
-   the needed machinery (recurring tasks with streak/habit tracking, analytics
-   heatmaps, notifications, calendar, AI daily briefing as the nudge surface,
-   Knowledge/RAG grounding over the same DB); a third sub-app costs a new DB +
-   migration chain + nav/PWA identity, justified only for app-sized domains.
-   Planned shape: `apps/per-sistant/routes/health.js` + a health page + 2-3
-   tables. Escape hatch: if it outgrows that, extract via the proven
-   route-split + identity re-export recipe. Decision recorded in
-   `.cycle/STATE.md`.
-2. **Mobile app (operator step)** — the Capacitor iOS wrapper is scaffolded in
+1. **Mobile app (operator step)** — the Capacitor iOS wrapper is scaffolded in
    `mobile/` (remote-URL mode, coexists with the PWA); what remains is the
    free-signing Xcode build on the operator's Mac per `mobile/README.md`.
 
@@ -2635,7 +2627,14 @@ returns + asset-class allocation + target-drift
 benchmark (`GET /api/investments/performance-history`). **FIRE/runway
 projections** — `GET /api/fire-projection` + Goals-page card
 (`services/projections.js`). **Ask Perfin** — NL finance Q&A via Claude tool
-use (`POST /api/ask`, dashboard widget).
+use (`POST /api/ask`, dashboard widget). **Health/habits tracker** — built as
+a Per-sistant expansion per the June 2026 decision (NOT a third shell sub-app:
+Per-sistant already owned streaks/notifications/briefing; a third sub-app
+costs a new DB + migration chain + nav/PWA identity). Shape as planned:
+`apps/per-sistant/routes/health.js` + `pages/health.js` + 3 tables (db/020 —
+habits, habit_logs, health_metrics), read-time streak computation, nudges via
+the notification check + AI daily briefing. Escape hatch if it outgrows
+Per-sistant: extract via the proven route-split + identity re-export recipe.
 
 Dropped by design (June 2026): **multi-user support** — the single-user
 assumption (single-row `user_settings`, server-side watermarks, no tenancy

@@ -110,6 +110,7 @@ const NAV = [
   { href: "/emails",   label: "Emails",    id: "emails" },
   { href: "/notes",    label: "Notes",     id: "notes" },
   { href: "/knowledge",label: "Knowledge", id: "knowledge" },
+  { href: "/health",   label: "Health",    id: "health" },
   { href: "/contacts", label: "Contacts",  id: "contacts" },
   { href: "/calendar", label: "Calendar",  id: "calendar" },
   { href: "/review",   label: "Review",    id: "review" },
@@ -126,6 +127,7 @@ function navIcon(id) {
     case 'emails': return `<svg width="14" height="14" viewBox="0 0 14 14"><rect x="1.5" y="3" width="11" height="8" fill="none" stroke="${c}" stroke-width="${sw}"/><path d="M1.5 3.5 L7 8 L12.5 3.5" fill="none" stroke="${c}" stroke-width="${sw}"/></svg>`;
     case 'notes': return `<svg width="14" height="14" viewBox="0 0 14 14"><path d="M3 1.5 L11 1.5 L11 12.5 L3 12.5 Z" fill="none" stroke="${c}" stroke-width="${sw}"/><line x1="5" y1="5" x2="9" y2="5" stroke="${c}" stroke-width="1"/><line x1="5" y1="7.5" x2="9" y2="7.5" stroke="${c}" stroke-width="1"/><line x1="5" y1="10" x2="7.5" y2="10" stroke="${c}" stroke-width="1"/></svg>`;
     case 'knowledge': return `<svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 1.5 A3.5 3.5 0 0 1 9.2 7.7 Q8.5 8.3 8.5 9.5 L5.5 9.5 Q5.5 8.3 4.8 7.7 A3.5 3.5 0 0 1 7 1.5 Z" fill="none" stroke="${c}" stroke-width="${sw}"/><line x1="5.6" y1="11" x2="8.4" y2="11" stroke="${c}" stroke-width="${sw}" stroke-linecap="round"/><line x1="6.1" y1="12.5" x2="7.9" y2="12.5" stroke="${c}" stroke-width="${sw}" stroke-linecap="round"/></svg>`;
+    case 'health': return `<svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 12 C4 9.5 1.5 7.5 1.5 5 A2.8 2.8 0 0 1 7 3.5 A2.8 2.8 0 0 1 12.5 5 C12.5 7.5 10 9.5 7 12 Z" fill="none" stroke="${c}" stroke-width="${sw}" stroke-linejoin="round"/><path d="M3.5 7 L5.5 7 L6.3 5.5 L7.7 8.5 L8.5 7 L10.5 7" fill="none" stroke="${c}" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
     case 'contacts': return `<svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="5" r="2.3" fill="none" stroke="${c}" stroke-width="${sw}"/><path d="M2.5 12.5 Q2.5 8.5 7 8.5 Q11.5 8.5 11.5 12.5" fill="none" stroke="${c}" stroke-width="${sw}"/></svg>`;
     case 'calendar': return `<svg width="14" height="14" viewBox="0 0 14 14"><rect x="1.5" y="2.5" width="11" height="10" fill="none" stroke="${c}" stroke-width="${sw}"/><line x1="1.5" y1="5.5" x2="12.5" y2="5.5" stroke="${c}" stroke-width="1"/><line x1="4.5" y1="1" x2="4.5" y2="4" stroke="${c}" stroke-width="${sw}" stroke-linecap="round"/><line x1="9.5" y1="1" x2="9.5" y2="4" stroke="${c}" stroke-width="${sw}" stroke-linecap="round"/></svg>`;
     case 'review': return `<svg width="14" height="14" viewBox="0 0 14 14"><rect x="2" y="8" width="2" height="5" fill="${c}"/><rect x="6" y="5" width="2" height="8" fill="${c}"/><rect x="10" y="2" width="2" height="11" fill="${c}"/></svg>`;
