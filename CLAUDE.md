@@ -67,6 +67,12 @@ teller/
                            keyword-filtered income, current-month per-category spending
                            that honors transaction_splits) — single source of truth used
                            by AI insights and budgets so the numbers match the dashboard
+    projections.js       — FIRE/runway math (pure): computeFireProjection
+                           (FIRE number = annual spend × 100/withdrawal-rate,
+                           monthly geometric compounding, 40-yr series) +
+                           computeRunwayMonths (no-income depletion with
+                           growth). Consumed by GET /api/fire-projection
+                           (goals.js) and the ask.js get_fire_projection tool.
     benchmarks.js        — S&P 500 benchmark closes for portfolio comparison.
                            Stooq daily-close CSV (keyless), cached in
                            benchmark_prices, fetched lazily at most once/day
@@ -188,6 +194,17 @@ teller/
                            POST /api/persistent/webhook/test, POST /api/persistent/webhook/send,
                            GET /api/persistent/status, GET /api/persistent/productivity-context,
                            POST /api/sso/generate, POST /api/sso/validate
+    ask.js               — POST /api/ask: NL finance Q&A via Claude tool use.
+                           7 READ-ONLY tools bound to the shared helpers
+                           (monthly overview, category spending, transaction
+                           search w/ split-adjusted totals, net worth,
+                           subscriptions, budget status, FIRE projection) so
+                           cited numbers match the dashboard by construction —
+                           the model never writes SQL. Bounded tool loop
+                           (MAX_TOOL_ROUNDS=6); shares the monthly AI cap
+                           (getAiBudgetCents) and charges it via an
+                           entry_type='ask' usage row. Dashboard "Ask Perfin"
+                           widget (key: ask).
     whats-new.js         — GET /api/whats-new, POST /api/whats-new/seen
                            ("since you last looked" dashboard widget feed —
                            new transactions, balance deltas, new subscriptions,
@@ -370,9 +387,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (915 tests as of latest); use
+  Perfin and Per-sistant test files (934 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 915 tests across 33 test files (incl.
+  Current count: 934 tests across 34 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -716,7 +733,7 @@ shell/
   `modules_failed` array — so a swallowed query error no longer reports a module as
   analyzed when Claude actually received no data for it.
 - **Auto-trigger**: Insights auto-generate based on `insights_cadence_days` setting (checked every 6 hours)
-- **Cost tracking**: Granular token-level pricing — `input_tokens` from Anthropic's API (already excludes cache tokens) is multiplied by the input rate; `cache_read_input_tokens` and `cache_creation_input_tokens` are billed separately at their own rates. This restores accurate `INSIGHTS_MONTHLY_BUDGET_CENTS` enforcement when prompt caching is active. The monthly budget is shared between `/api/insights`, `/api/categorize`, and `/api/insights/rebuild` — all check the same cap before calling Claude AND each writes a `financial_insights` usage row after its AI call (`entry_type='categorize'` / `'rebuild'`) so its spend counts toward the cap (not just the read side). `/api/insights/rebuild` records that usage row IMMEDIATELY after the Claude call — before its tool-block validation early-returns and the summary UPDATE — so a rebuild that truncated or failed validation (which 500s) still charges the cap for the spend it already incurred (AIA2); `/api/categorize` likewise stops its AI loop if a usage-row write fails rather than spending uncapped (M2). Display queries that surface "AI Insights" filter `entry_type='insight'` to keep categorize/rebuild tracking rows out of the user-facing feed. The cap is checked-then-charged; for the insight path the insight row IS the usage row (atomic — a failed write loses the insight and its charge together), and the only gap (two concurrent generate calls both passing the pre-check) is accepted for a single-operator app rather than guarded with a provisional reservation (AI-11). `/api/insights/status` rounds the accumulated cost once and derives `budget_remaining_cents` from it so estimated + remaining == budget (AI-10).
+- **Cost tracking**: Granular token-level pricing — `input_tokens` from Anthropic's API (already excludes cache tokens) is multiplied by the input rate; `cache_read_input_tokens` and `cache_creation_input_tokens` are billed separately at their own rates. This restores accurate `INSIGHTS_MONTHLY_BUDGET_CENTS` enforcement when prompt caching is active. The monthly budget is shared between `/api/insights`, `/api/categorize`, and `/api/insights/rebuild` — all check the same cap before calling Claude AND each writes a `financial_insights` usage row after its AI call (`entry_type='categorize'` / `'rebuild'` / `'ask'`) so its spend counts toward the cap (not just the read side). `/api/insights/rebuild` records that usage row IMMEDIATELY after the Claude call — before its tool-block validation early-returns and the summary UPDATE — so a rebuild that truncated or failed validation (which 500s) still charges the cap for the spend it already incurred (AIA2); `/api/categorize` likewise stops its AI loop if a usage-row write fails rather than spending uncapped (M2). Display queries that surface "AI Insights" filter `entry_type='insight'` to keep categorize/rebuild tracking rows out of the user-facing feed. The cap is checked-then-charged; for the insight path the insight row IS the usage row (atomic — a failed write loses the insight and its charge together), and the only gap (two concurrent generate calls both passing the pre-check) is accepted for a single-operator app rather than guarded with a provisional reservation (AI-11). `/api/insights/status` rounds the accumulated cost once and derives `budget_remaining_cents` from it so estimated + remaining == budget (AI-10).
 - **Insight inputs are split-adjusted**: AI insights see the same `spending_split_pct`-adjusted monthly spend totals and the same keyword-filtered income that the dashboard and `/api/savings-rate` show, via `services/financial-queries.js`.
 - **Structured running summary**: AI long-term memory is structured JSON, not plain text. `POST /api/insights` uses Anthropic tool_use (`generate_financial_insight` tool, forced via `tool_choice`) to return BOTH the user-facing `insights_text` AND a typed `summary` object with four arrays: `trends`, `completed_goals`, `pending_actions`, `alerts`. The summary is saved to `user_settings.insights_running_summary_json` (JSONB); the legacy `insights_running_summary` TEXT column gets a human-readable rendering for backward-compat callers. `sanitizeStructuredSummary` enforces shape/length bounds (max items per array, string lengths, enum values) so a pathological tool response can't pollute long-term memory. The response includes `summary_status` — `"updated"` (normal), `"preserved_due_to_truncation"` (tool block missing because hit max_tokens), `"preserved_no_tool_block"` (model didn't comply with tool_choice — rare), or `"preserved_validation_failed"` (sanitizer rejected the shape) — so callers can surface when long-term memory didn't advance. `GET /api/insights/status` returns the full `running_summary` object plus a `running_summary_counts` block (`{trends, completed_goals, pending_actions, alerts}`) so dashboards can show "tracking 3 trends · 2 goals · 5 actions · 1 alert" without a second fetch.
 - **AI insight auditing**: Post-generation validation via `services/ai-audit.js`. Four tiers:
@@ -1204,7 +1221,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 915 tests passing across 33 test files (Perfin + Per-sistant), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 934 tests passing across 34 test files (Perfin + Per-sistant), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
@@ -1321,6 +1338,16 @@ GET  /api/goals            # list financial goals with projections; each goal in
                            # account is gone (orphaned), current_amount falls back to
                            # current_amount_manual so pre-link progress is preserved.
 GET  /api/goals/funding-options # depository + investment accounts a goal can link to (Phase C)
+GET  /api/fire-projection  # FIRE number/progress/time-to-FIRE + spending runway.
+                           # Inputs: getNetWorth + trailing COMPLETED months'
+                           # income/spending averages (partial month excluded) +
+                           # fire_* assumption settings (real return % default 5,
+                           # withdrawal rate % default 4, optional monthly-spending
+                           # override). Goals page card with inline assumptions +
+                           # 40-yr projection SVG. Math: services/projections.js.
+POST /api/ask              # NL finance Q&A (body: { question, <=500 chars }).
+                           # 501 without ANTHROPIC_API_KEY; 429 past the shared
+                           # monthly AI cap; charges the cap (entry_type='ask').
 POST /api/goals            # create a financial goal
 GET  /api/investment-accounts # list manual investment accounts (manual + Plaid-synced rows in investment_accounts)
 POST /api/investment-accounts # add manual investment account

@@ -169,7 +169,20 @@ via INCOME_PREDICATE_T t.-qualified derivation (insights' t2-rewrite convention)
 live-verified 200. All moved endpoints live-verified against a real boot. Subsystem
 lists updated (spending-analytics → Financial Analytics; transactions → Detection &
 Categorization). Tests: 915 across 33 files.
-**BRANCH COMPLETE — handing to operator for merge** (pre-merge: confirm
+### Post-merge features (round 6, same branch — new PR needed)
+FIRE/runway projections: services/projections.js (pure math: FIRE number = annual spend
+× 100/SWR, geometric monthly compounding, 40-yr series; runway w/ growth), GET
+/api/fire-projection (completed-month averages, fire_* settings w/ PATCH bounds), Goals
+page card (stats + SVG + inline assumptions). Ask Perfin NL Q&A: routes/ask.js — Claude
+tool use over 7 read-only tools bound to shared helpers (numbers match dashboard;
+parameterized only, injection-tested), bounded loop, shared AI cap (429) + entry_type=
+'ask' usage row; dashboard widget (key 'ask'). Caught my own alias bug in test
+(total_spend not total_spent). Live-verified: fire 200 graceful-empty, ask 501-gated,
+both UI surfaces render. Tests: 934 across 34 files (+19).
+DECISION RECORDED: health/habits tracker → expand Per-sistant (streaks/analytics/
+notifications already there), extract to third sub-app only if it outgrows a page.
+
+**PRIOR MERGE DONE; this round needs a fresh merge** —  (pre-merge: confirm
 TOKEN_ENCRYPTION_PASSPHRASE in Render; watch the first CI run's 3 jobs). Operator items unchanged (merge w/ passphrase check, backup secrets+drill,
 cert rotation, clasp push, VAPID done).
 **Where I left off:** everything committed + pushed on `claude/exciting-albattani-ug1gjv`
