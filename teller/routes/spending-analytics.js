@@ -13,6 +13,18 @@ const router = express.Router();
 const { pool } = require("../services/database");
 const { INCOME_PREDICATE, NOT_TRANSFER, SPLIT_AMOUNT, getMonthlySpending, getMonthlyIncome, getCategorySpendingForMonth } = require("../services/financial-queries");
 
+// INCOME_PREDICATE writes its outer column references UNQUALIFIED (so it works
+// however the caller aliases `transactions`) — which breaks the one query here
+// that JOINs linked_accounts: `name` exists on both tables and Postgres
+// rejects the ambiguity (this 500'd /api/income-summary in production; found
+// by the e2e harness's live boot). Derive a t.-qualified variant in place —
+// same convention as insights' NOT_TRANSFER.replace(/\bt\./, "t2.") — leaving
+// the predicate's internal __t2.* subquery references untouched.
+const INCOME_PREDICATE_T = INCOME_PREDICATE.replace(
+  /(?<!__t2\.)\b(merchant_name|name|account_id|amount|date|user_category|category)\b/g,
+  "t.$1"
+);
+
 // GET /api/spending-categories?month=YYYY-MM — per-month category breakdown
 // for the dashboard's "Spending by Category" month selector. Uses the shared
 // getCategorySpendingForMonth helper (splits-replacement, reimbursed
@@ -562,7 +574,7 @@ router.get("/api/income-summary", async (req, res) => {
          LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
          WHERE t.amount < 0 AND t.pending = false
            AND t.date >= CURRENT_DATE - make_interval(months => $1)
-           AND ${INCOME_PREDICATE}
+           AND ${INCOME_PREDICATE_T}
          GROUP BY la.id, la.name, te.institution_name, pi.institution_name, la.institution_name_manual
          ORDER BY total_income DESC`,
         [months]

@@ -79,15 +79,33 @@ teller/
     enrollments.js       — POST /api/enroll, POST /api/sync, GET /api/items,
                            DELETE /api/enrollments/:id, GET /api/accounts,
                            PATCH /api/accounts/:id, PATCH /api/accounts/:id/shared,
-                           POST /api/sync-balances, GET /api/spending-summary,
-                           GET /api/cash-flow, GET /api/savings-rate,
-                           GET /api/spending-yoy.
+                           POST /api/sync-balances, reconcile endpoints, the
+                           Teller sync engine, and account management. Mounts
+                           spending-analytics.js (route-file split).
+    spending-analytics.js — split from enrollments.js: the six read-only
+                           aggregation endpoints — /api/spending-summary,
+                           /api/spending-categories, /api/cash-flow,
+                           /api/spending-yoy, /api/savings-rate,
+                           /api/income-summary. Includes INCOME_PREDICATE_T,
+                           the t.-qualified predicate derivation for the one
+                           query that JOINs linked_accounts (unqualified
+                           `name` was ambiguous and 500'd /api/income-summary
+                           — found by the e2e harness's live boot).
                            Also exports `syncAllEnrollments` and `syncAllBalances` for
                            the scheduled bank-auto-sync task in `server.js` (in-process,
                            no HTTP self-fetch).
     subscriptions.js     — GET/POST /api/subscriptions, PATCH dismiss/undismiss/cancel/
-                           uncancel/category, GET /api/transactions,
-                           GET /api/transactions/search, POST /api/detect,
+                           uncancel/category, POST /api/detect, CSV import,
+                           recurring transfers, manual bills, bill payments,
+                           bill-calendar (+ICS builder), settlement. Mounts
+                           transactions.js (route-file split).
+    transactions.js      — split from subscriptions.js: per-transaction
+                           endpoints — GET /api/transactions (+/search,
+                           /duplicates, /csv-overlap +resolve),
+                           PATCH/DELETE /api/transactions/:id,
+                           GET/POST/DELETE /api/transactions/:id/splits.
+                           (Original subscriptions.js entry continues:)
+                           GET /api/transactions, GET /api/transactions/search, POST /api/detect,
                            POST /api/import-csv, GET /api/csv-imports, POST /api/cleanup,
                            GET /api/recurring-transfers, POST /api/detect-transfers,
                            PATCH /api/recurring-transfers/:id/dismiss|undismiss|type,
@@ -352,9 +370,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (911 tests as of latest); use
+  Perfin and Per-sistant test files (915 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 911 tests across 33 test files (incl.
+  Current count: 915 tests across 33 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -1186,7 +1204,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 911 tests passing across 33 test files (Perfin + Per-sistant), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 915 tests passing across 33 test files (Perfin + Per-sistant), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
@@ -2598,11 +2616,13 @@ Bank Sync & Ingestion:
    same transactions/linked_accounts tables. Plaid additionally covers banks
    Teller doesn't, plus investment holdings.)
 Detection & Categorization:
-  teller/routes/subscriptions.js, teller/routes/categorize.js,
+  teller/routes/subscriptions.js, teller/routes/transactions.js,
+  teller/routes/categorize.js,
   teller/routes/categorize-helpers.js, teller/data/reference-data.js,
   scripts/detect-subscriptions.js, scripts/detect-transfers.js
 Financial Analytics:
-  teller/services/financial-queries.js, teller/routes/budgets.js,
+  teller/services/financial-queries.js, teller/routes/spending-analytics.js,
+  teller/routes/budgets.js,
   teller/routes/goals.js, teller/routes/credit-scores.js,
   teller/routes/whats-new.js, teller/routes/watchlist.js
 AI Insights & Audit:
