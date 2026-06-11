@@ -106,6 +106,16 @@ installed alongside (separate session; web push keeps flowing through the PWA �
 free-signed build has no APNs; notification taps open the PWA). Operator next: on the
 Mac — cd mobile && npm install && npx cap sync ios && npx cap open ios, personal-team
 signing, run on device. Tests: 859 across 30 files (+3 scaffold pins).
+
+### UI polish round 2 (field-testing feedback, same branch)
+Opaque floating chrome (--surface-solid token; toasts/notif-panel/nav-drawer were 3-10%
+alpha — content bled through, screenshot-confirmed). Recent Transactions removed from
+dashboard → Activity page is the surface: mobile filters collapse behind a toggle,
+rows use new txn-compact 2-line grid (~3x density vs responsive-cards). Dashboard:
+4 sections collapsible (localStorage-persisted), Spending by Category month selector
+backed by new GET /api/spending-categories (getCategorySpendingForMonth). Updated 2
+stale cycle-fixes pins that encoded the old layout. Tests: 870 across 31 files
+(+11 ui-polish).
 **Where I left off:** everything committed + pushed on `claude/exciting-albattani-ug1gjv`
 (F1-F10 + docs + investment performance + TWR/XIRR); awaiting review/merge + operator actions
 (Render passphrase check BLOCKS DEPLOY; backup secrets; cert rotation; clasp push for
