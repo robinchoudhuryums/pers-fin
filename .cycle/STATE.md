@@ -156,7 +156,21 @@ job, npm run test:e2e (kept out of npm test). REAL local verification: started t
 sandbox's Postgres 16 — scripts/ci-migration-test.js passed clean (both apps × 2, all
 19 per-sistant migrations, keyword-degraded path), and the harness booted the full
 shell with every smoke flow verified over HTTP. Chromium itself couldn't download
-(sandbox CDN allowlist) — browser layer executes in CI. Tests: 911 across 33 files. Operator items unchanged (merge w/ passphrase check, backup secrets+drill,
+(sandbox CDN allowlist) — browser layer executes in CI. Tests: 911 across 33 files.
+
+### Final route splits (round 5, same branch) — user merging after this
+enrollments.js 1555→992 (+ routes/spending-analytics.js 589: the six read-only
+aggregation endpoints); subscriptions.js 1510→1069 (+ routes/transactions.js 467:
+per-transaction search/list/duplicates/csv-overlap/PATCH/splits/DELETE). Mount-based,
+paths unchanged, helper exports stayed put; 2 stale pins relocated. BONUS REAL BUG
+found by the live e2e boot: /api/income-summary 500'd ('column reference name is
+ambiguous' — INCOME_PREDICATE unqualified outer refs × linked_accounts JOIN); fixed
+via INCOME_PREDICATE_T t.-qualified derivation (insights' t2-rewrite convention),
+live-verified 200. All moved endpoints live-verified against a real boot. Subsystem
+lists updated (spending-analytics → Financial Analytics; transactions → Detection &
+Categorization). Tests: 915 across 33 files.
+**BRANCH COMPLETE — handing to operator for merge** (pre-merge: confirm
+TOKEN_ENCRYPTION_PASSPHRASE in Render; watch the first CI run's 3 jobs). Operator items unchanged (merge w/ passphrase check, backup secrets+drill,
 cert rotation, clasp push, VAPID done).
 **Where I left off:** everything committed + pushed on `claude/exciting-albattani-ug1gjv`
 (F1-F10 + docs + investment performance + TWR/XIRR); awaiting review/merge + operator actions
