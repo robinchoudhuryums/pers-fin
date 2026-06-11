@@ -653,4 +653,76 @@ router.get("/api/context-export", async (req, res) => {
   }
 });
 
+// GET /api/fire-projection — FIRE number, time-to-FIRE, and spending runway.
+// Inputs: getNetWorth (the single net-worth source of truth), trailing
+// COMPLETED months of income/spending from the shared helpers (current
+// partial month excluded so a mid-month call doesn't skew the averages), and
+// the fire_* assumption settings. Math lives in services/projections.js.
+router.get("/api/fire-projection", async (req, res) => {
+  try {
+    const { getNetWorth, getMonthlyIncome, getMonthlySpending } = require("../services/financial-queries");
+    const { computeFireProjection, computeRunwayMonths } = require("../services/projections");
+
+    const [nw, incomeRows, spendingRows, settingsRow] = await Promise.all([
+      getNetWorth(pool),
+      getMonthlyIncome(pool, 7),
+      getMonthlySpending(pool, 7),
+      pool.query("SELECT fire_expected_return_pct, fire_withdrawal_rate_pct, fire_monthly_spending_override FROM user_settings WHERE id = 1"),
+    ]);
+    const s = settingsRow.rows[0] || {};
+    const annualReturnPct = s.fire_expected_return_pct != null ? parseFloat(s.fire_expected_return_pct) : 5;
+    const withdrawalRatePct = s.fire_withdrawal_rate_pct != null ? parseFloat(s.fire_withdrawal_rate_pct) : 4;
+
+    // Drop the current (partial) month, average the completed remainder.
+    const thisMonth = new Date().toISOString().slice(0, 7);
+    const completed = (rows) => rows.filter(r => String(r.month).slice(0, 7) !== thisMonth);
+    const avg = (rows, key) => {
+      const vals = completed(rows).map(r => parseFloat(r[key]) || 0);
+      return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+    };
+    const avgIncome = avg(incomeRows, "total_income");
+    const avgSpending = avg(spendingRows, "total_spend");
+    const monthlySpending = s.fire_monthly_spending_override != null
+      ? parseFloat(s.fire_monthly_spending_override)
+      : avgSpending;
+    const monthlySavings = avgIncome - avgSpending;
+
+    const proj = computeFireProjection({
+      netWorth: nw.net_worth, monthlySavings, monthlySpending, annualReturnPct, withdrawalRatePct,
+    });
+    const runwayMonths = computeRunwayMonths({
+      netWorth: nw.net_worth, monthlySpending, annualReturnPct,
+    });
+
+    let fireDate = null;
+    if (proj.months_to_fire !== null) {
+      const d = new Date();
+      d.setMonth(d.getMonth() + proj.months_to_fire);
+      fireDate = d.toISOString().slice(0, 7);
+    }
+
+    res.json({
+      net_worth: nw.net_worth,
+      assumptions: {
+        annual_return_pct: annualReturnPct,
+        withdrawal_rate_pct: withdrawalRatePct,
+        monthly_spending: Math.round(monthlySpending * 100) / 100,
+        spending_overridden: s.fire_monthly_spending_override != null,
+      },
+      data_basis: {
+        completed_months_used: completed(spendingRows).length,
+        avg_monthly_income: Math.round(avgIncome * 100) / 100,
+        avg_monthly_spending: Math.round(avgSpending * 100) / 100,
+        monthly_savings: Math.round(monthlySavings * 100) / 100,
+      },
+      ...proj,
+      projected_fire_date: fireDate,
+      runway_months: runwayMonths,
+    });
+  } catch (err) {
+    console.error("fire-projection error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
 module.exports = router;

@@ -67,6 +67,12 @@ teller/
                            keyword-filtered income, current-month per-category spending
                            that honors transaction_splits) — single source of truth used
                            by AI insights and budgets so the numbers match the dashboard
+    projections.js       — FIRE/runway math (pure): computeFireProjection
+                           (FIRE number = annual spend × 100/withdrawal-rate,
+                           monthly geometric compounding, 40-yr series) +
+                           computeRunwayMonths (no-income depletion with
+                           growth). Consumed by GET /api/fire-projection
+                           (goals.js) and the ask.js get_fire_projection tool.
     benchmarks.js        — S&P 500 benchmark closes for portfolio comparison.
                            Stooq daily-close CSV (keyless), cached in
                            benchmark_prices, fetched lazily at most once/day
@@ -188,6 +194,17 @@ teller/
                            POST /api/persistent/webhook/test, POST /api/persistent/webhook/send,
                            GET /api/persistent/status, GET /api/persistent/productivity-context,
                            POST /api/sso/generate, POST /api/sso/validate
+    ask.js               — POST /api/ask: NL finance Q&A via Claude tool use.
+                           7 READ-ONLY tools bound to the shared helpers
+                           (monthly overview, category spending, transaction
+                           search w/ split-adjusted totals, net worth,
+                           subscriptions, budget status, FIRE projection) so
+                           cited numbers match the dashboard by construction —
+                           the model never writes SQL. Bounded tool loop
+                           (MAX_TOOL_ROUNDS=6); shares the monthly AI cap
+                           (getAiBudgetCents) and charges it via an
+                           entry_type='ask' usage row. Dashboard "Ask Perfin"
+                           widget (key: ask).
     whats-new.js         — GET /api/whats-new, POST /api/whats-new/seen
                            ("since you last looked" dashboard widget feed —
                            new transactions, balance deltas, new subscriptions,
@@ -370,9 +387,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (915 tests as of latest); use
+  Perfin and Per-sistant test files (934 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 915 tests across 33 test files (incl.
+  Current count: 934 tests across 34 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -716,7 +733,7 @@ shell/
   `modules_failed` array — so a swallowed query error no longer reports a module as
   analyzed when Claude actually received no data for it.
 - **Auto-trigger**: Insights auto-generate based on `insights_cadence_days` setting (checked every 6 hours)
-- **Cost tracking**: Granular token-level pricing — `input_tokens` from Anthropic's API (already excludes cache tokens) is multiplied by the input rate; `cache_read_input_tokens` and `cache_creation_input_tokens` are billed separately at their own rates. This restores accurate `INSIGHTS_MONTHLY_BUDGET_CENTS` enforcement when prompt caching is active. The monthly budget is shared between `/api/insights`, `/api/categorize`, and `/api/insights/rebuild` — all check the same cap before calling Claude AND each writes a `financial_insights` usage row after its AI call (`entry_type='categorize'` / `'rebuild'`) so its spend counts toward the cap (not just the read side). `/api/insights/rebuild` records that usage row IMMEDIATELY after the Claude call — before its tool-block validation early-returns and the summary UPDATE — so a rebuild that truncated or failed validation (which 500s) still charges the cap for the spend it already incurred (AIA2); `/api/categorize` likewise stops its AI loop if a usage-row write fails rather than spending uncapped (M2). Display queries that surface "AI Insights" filter `entry_type='insight'` to keep categorize/rebuild tracking rows out of the user-facing feed. The cap is checked-then-charged; for the insight path the insight row IS the usage row (atomic — a failed write loses the insight and its charge together), and the only gap (two concurrent generate calls both passing the pre-check) is accepted for a single-operator app rather than guarded with a provisional reservation (AI-11). `/api/insights/status` rounds the accumulated cost once and derives `budget_remaining_cents` from it so estimated + remaining == budget (AI-10).
+- **Cost tracking**: Granular token-level pricing — `input_tokens` from Anthropic's API (already excludes cache tokens) is multiplied by the input rate; `cache_read_input_tokens` and `cache_creation_input_tokens` are billed separately at their own rates. This restores accurate `INSIGHTS_MONTHLY_BUDGET_CENTS` enforcement when prompt caching is active. The monthly budget is shared between `/api/insights`, `/api/categorize`, and `/api/insights/rebuild` — all check the same cap before calling Claude AND each writes a `financial_insights` usage row after its AI call (`entry_type='categorize'` / `'rebuild'` / `'ask'`) so its spend counts toward the cap (not just the read side). `/api/insights/rebuild` records that usage row IMMEDIATELY after the Claude call — before its tool-block validation early-returns and the summary UPDATE — so a rebuild that truncated or failed validation (which 500s) still charges the cap for the spend it already incurred (AIA2); `/api/categorize` likewise stops its AI loop if a usage-row write fails rather than spending uncapped (M2). Display queries that surface "AI Insights" filter `entry_type='insight'` to keep categorize/rebuild tracking rows out of the user-facing feed. The cap is checked-then-charged; for the insight path the insight row IS the usage row (atomic — a failed write loses the insight and its charge together), and the only gap (two concurrent generate calls both passing the pre-check) is accepted for a single-operator app rather than guarded with a provisional reservation (AI-11). `/api/insights/status` rounds the accumulated cost once and derives `budget_remaining_cents` from it so estimated + remaining == budget (AI-10).
 - **Insight inputs are split-adjusted**: AI insights see the same `spending_split_pct`-adjusted monthly spend totals and the same keyword-filtered income that the dashboard and `/api/savings-rate` show, via `services/financial-queries.js`.
 - **Structured running summary**: AI long-term memory is structured JSON, not plain text. `POST /api/insights` uses Anthropic tool_use (`generate_financial_insight` tool, forced via `tool_choice`) to return BOTH the user-facing `insights_text` AND a typed `summary` object with four arrays: `trends`, `completed_goals`, `pending_actions`, `alerts`. The summary is saved to `user_settings.insights_running_summary_json` (JSONB); the legacy `insights_running_summary` TEXT column gets a human-readable rendering for backward-compat callers. `sanitizeStructuredSummary` enforces shape/length bounds (max items per array, string lengths, enum values) so a pathological tool response can't pollute long-term memory. The response includes `summary_status` — `"updated"` (normal), `"preserved_due_to_truncation"` (tool block missing because hit max_tokens), `"preserved_no_tool_block"` (model didn't comply with tool_choice — rare), or `"preserved_validation_failed"` (sanitizer rejected the shape) — so callers can surface when long-term memory didn't advance. `GET /api/insights/status` returns the full `running_summary` object plus a `running_summary_counts` block (`{trends, completed_goals, pending_actions, alerts}`) so dashboards can show "tracking 3 trends · 2 goals · 5 actions · 1 alert" without a second fetch.
 - **AI insight auditing**: Post-generation validation via `services/ai-audit.js`. Four tiers:
@@ -1204,7 +1221,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 915 tests passing across 33 test files (Perfin + Per-sistant), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 934 tests passing across 34 test files (Perfin + Per-sistant), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
@@ -1321,6 +1338,16 @@ GET  /api/goals            # list financial goals with projections; each goal in
                            # account is gone (orphaned), current_amount falls back to
                            # current_amount_manual so pre-link progress is preserved.
 GET  /api/goals/funding-options # depository + investment accounts a goal can link to (Phase C)
+GET  /api/fire-projection  # FIRE number/progress/time-to-FIRE + spending runway.
+                           # Inputs: getNetWorth + trailing COMPLETED months'
+                           # income/spending averages (partial month excluded) +
+                           # fire_* assumption settings (real return % default 5,
+                           # withdrawal rate % default 4, optional monthly-spending
+                           # override). Goals page card with inline assumptions +
+                           # 40-yr projection SVG. Math: services/projections.js.
+POST /api/ask              # NL finance Q&A (body: { question, <=500 chars }).
+                           # 501 without ANTHROPIC_API_KEY; 429 past the shared
+                           # monthly AI cap; charges the cap (entry_type='ask').
 POST /api/goals            # create a financial goal
 GET  /api/investment-accounts # list manual investment accounts (manual + Plaid-synced rows in investment_accounts)
 POST /api/investment-accounts # add manual investment account
@@ -1337,6 +1364,9 @@ PATCH /api/settings        # update user settings. Accepts: theme,
                            # pyramid_*, debt_baseline_amount,
                            # shell_idle_timeout_minutes, target_allocation_pct,
                            # weekly/daily digest toggles,
+                           # fire_expected_return_pct (0-20),
+                           # fire_withdrawal_rate_pct (1-10),
+                           # fire_monthly_spending_override (>=0 or null),
                            # ai_monthly_budget_cents (1-10000 cents or null
                            # to fall back to env), etc.
 GET  /api/data-freshness   # per-source sync timestamps with staleness flags
@@ -1588,7 +1618,7 @@ validation (SN-5).
 
 ### AI / Insights (Perfin)
 - `ANTHROPIC_API_KEY` — enables AI features in both apps
-- `INSIGHTS_MONTHLY_BUDGET_CENTS` — monthly API spending cap fallback (default 50 = $0.50); shared between `/api/insights` and `/api/categorize`. Overridable at runtime from Settings → AI Insights → Monthly Budget Cap (`user_settings.ai_monthly_budget_cents`, resolved by `getAiBudgetCents()` in routes/insights.js — the single cap reader)
+- `INSIGHTS_MONTHLY_BUDGET_CENTS` — monthly API spending cap fallback (default 50 = $0.50); shared between `/api/insights`, `/api/categorize`, `/api/insights/rebuild`, and `/api/ask`. Overridable at runtime from Settings → AI Insights → Monthly Budget Cap (`user_settings.ai_monthly_budget_cents`, resolved by `getAiBudgetCents()` in routes/insights.js — the single cap reader)
 
 ### Push notifications (Perfin)
 - `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` — Web Push keypair (`npx web-push generate-vapid-keys`); without these `/api/notifications/*` returns 501
@@ -1742,6 +1772,14 @@ standalone-mode fallback if either app is run on its own Render service.
   the actual portfolio breakdown and emits `target_pct` + `drift_pct`
   per asset class. Empty `{}` → no drift fields on the response. Set
   via Settings → Target Allocation form.
+- `user_settings` FIRE assumptions: `fire_expected_return_pct NUMERIC(5,2)`
+  (annual real return, 0-20, default 5 when NULL),
+  `fire_withdrawal_rate_pct NUMERIC(5,2)` (safe withdrawal rate, 1-10,
+  default 4 when NULL), `fire_monthly_spending_override NUMERIC(12,2)`
+  (optional retirement-spending override; NULL = use trailing completed-month
+  average). Read by `GET /api/fire-projection` (goals.js) and the ask.js
+  `get_fire_projection` tool; editable inline on the Goals-page FIRE card
+  via `PATCH /api/settings`.
 - `user_settings` data freshness: `last_txn_sync_at TIMESTAMPTZ` (updated by
   `POST /api/sync`), `last_balance_sync_at TIMESTAMPTZ` (updated by
   `POST /api/sync-balances`). The nav badge uses the most recent of these plus
@@ -2577,15 +2615,32 @@ income module, and bill-calendar income detection.
   isolated debugging.
 
 ## Priority Next Features
-1. **Mobile app** — React Native or Capacitor wrapper for native experience
+1. **Health/habits tracker** — DECIDED (June 2026): built as an **expansion of
+   Per-sistant**, NOT a third shell sub-app. Rationale: Per-sistant already owns
+   the needed machinery (recurring tasks with streak/habit tracking, analytics
+   heatmaps, notifications, calendar, AI daily briefing as the nudge surface,
+   Knowledge/RAG grounding over the same DB); a third sub-app costs a new DB +
+   migration chain + nav/PWA identity, justified only for app-sized domains.
+   Planned shape: `apps/per-sistant/routes/health.js` + a health page + 2-3
+   tables. Escape hatch: if it outgrows that, extract via the proven
+   route-split + identity re-export recipe. Decision recorded in
+   `.cycle/STATE.md`.
+2. **Mobile app (operator step)** — the Capacitor iOS wrapper is scaffolded in
+   `mobile/` (remote-URL mode, coexists with the PWA); what remains is the
+   free-signing Xcode build on the operator's Mac per `mobile/README.md`.
+
+Shipped (June 2026): **Investment performance & allocation** — cost-basis
+returns + asset-class allocation + target-drift
+(`GET /api/investments/performance`) and portfolio value history vs S&P 500
+benchmark (`GET /api/investments/performance-history`). **FIRE/runway
+projections** — `GET /api/fire-projection` + Goals-page card
+(`services/projections.js`). **Ask Perfin** — NL finance Q&A via Claude tool
+use (`POST /api/ask`, dashboard widget).
 
 Dropped by design (June 2026): **multi-user support** — the single-user
 assumption (single-row `user_settings`, server-side watermarks, no tenancy
 dimension in queries) is a load-bearing simplification, not a gap; and
-**onboarding flow** — single operator, already onboarded. **Investment
-performance & allocation** shipped: cost-basis returns + asset-class
-allocation + target-drift (`GET /api/investments/performance`) and portfolio
-value history vs S&P 500 benchmark (`GET /api/investments/performance-history`).
+**onboarding flow** — single operator, already onboarded.
 
 ## Cycle Workflow Config
 
@@ -2610,6 +2665,7 @@ Test Coverage Quality | tests that pass regardless of the code under test
 ### Subsystems
 Bank Sync & Ingestion:
   teller/routes/enrollments.js, teller/routes/investments.js,
+  teller/routes/investment-performance.js, teller/services/plaid-client.js,
   teller/services/teller-api.js, teller/services/benchmarks.js,
   teller/data/csv-formats.js, scripts/import-csv-cli.js
   (Teller and Plaid are co-equal, first-class linking paths — both write the
@@ -2622,11 +2678,12 @@ Detection & Categorization:
   scripts/detect-subscriptions.js, scripts/detect-transfers.js
 Financial Analytics:
   teller/services/financial-queries.js, teller/routes/spending-analytics.js,
-  teller/routes/budgets.js,
+  teller/services/projections.js, teller/routes/budgets.js,
   teller/routes/goals.js, teller/routes/credit-scores.js,
   teller/routes/whats-new.js, teller/routes/watchlist.js
 AI Insights & Audit:
-  teller/routes/insights.js, teller/services/ai-audit.js
+  teller/routes/insights.js, teller/routes/insights-email.js,
+  teller/routes/ask.js, teller/services/ai-audit.js
 Settings, Notifications & Cross-app:
   teller/routes/settings.js, teller/routes/notifications.js,
   teller/routes/persistent.js

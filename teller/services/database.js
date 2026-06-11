@@ -672,6 +672,12 @@ async function runMigrations() {
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS ai_monthly_budget_cents INT");
     // Critical-alert emails (budget exceeded / anomaly charges) — opt-in.
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS critical_alert_emails_enabled BOOLEAN NOT NULL DEFAULT false");
+    // FIRE / runway projection assumptions (Goals page card). NULLs fall back
+    // to defaults in GET /api/fire-projection (return 5%, withdrawal 4%,
+    // spending derived from trailing months).
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS fire_expected_return_pct NUMERIC(5,2)");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS fire_withdrawal_rate_pct NUMERIC(5,2)");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS fire_monthly_spending_override NUMERIC(12,2)");
 
     // ---- Watchlist ----
     // User-curated list of merchants / categories / keywords to monitor.

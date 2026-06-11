@@ -390,6 +390,19 @@
     </div>
   </div>
 
+  <!-- Ask Perfin — NL finance Q&A (Claude tool-use over the shared helpers,
+       so cited numbers match the dashboard). Widget key: ask. -->
+  <div class="section" id="ask-section" style="margin-bottom:28px;">
+    <h2>Ask Perfin</h2>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <input id="ask-input" type="text" maxlength="500" placeholder="e.g. How much did I spend on dining last month?"
+             style="flex:1;min-width:220px;" aria-label="Ask a question about your finances">
+      <button class="btn primary" id="ask-btn" type="button">Ask</button>
+    </div>
+    <div id="ask-answer" style="display:none;margin-top:12px;padding:14px;background:var(--bg-elevated);border:1px solid var(--card-border);border-radius:8px;font-size:13px;line-height:1.6;white-space:pre-wrap;"></div>
+    <div id="ask-meta" style="margin-top:6px;font-size:10px;color:var(--text-muted);"></div>
+  </div>
+
   <!-- Two-column: Monthly trend + Categories -->
   <div class="two-col">
     <div class="section collapsible" data-collapse-key="monthlySpend">
@@ -2942,6 +2955,40 @@
       } catch (e) { /* non-critical */ }
     }
 
+    // Ask Perfin — NL Q&A
+    (function initAsk() {
+      var input = document.getElementById('ask-input');
+      var btn = document.getElementById('ask-btn');
+      var out = document.getElementById('ask-answer');
+      var meta = document.getElementById('ask-meta');
+      if (!input || !btn) return;
+      async function ask() {
+        var q = input.value.trim();
+        if (!q) return;
+        btn.disabled = true;
+        out.style.display = 'block';
+        out.textContent = 'Thinking…';
+        meta.textContent = '';
+        try {
+          var r = await apiFetch('/api/ask', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ question: q }),
+          });
+          var data = await r.json().catch(function() { return {}; });
+          if (!r.ok) { out.textContent = data.error || ('Error ' + r.status); return; }
+          out.textContent = data.answer;
+          meta.textContent = (data.tools_used && data.tools_used.length ? 'Checked: ' + data.tools_used.join(', ') + ' · ' : '') +
+            '~$' + (data.estimated_cost_usd || 0).toFixed(4);
+        } catch (e) {
+          out.textContent = 'Request failed: ' + e.message;
+        } finally {
+          btn.disabled = false;
+        }
+      }
+      btn.addEventListener('click', ask);
+      input.addEventListener('keydown', function(e) { if (e.key === 'Enter') ask(); });
+    })();
+
     // Collapsible dashboard sections — persisted per-section in localStorage.
     (function initCollapsibles() {
       document.querySelectorAll('.section.collapsible').forEach(function(sec) {
@@ -2984,6 +3031,7 @@
           pyramid: '.wellness-section',
           accounts: '#accounts-section',
           charts: '.charts-grid',
+          ask: '#ask-section',
           forecast: '#forecast-section',
           savingsRate: '#savings-rate-section',
           cashFlow: '#cashflow-section',
