@@ -116,6 +116,14 @@ rows use new txn-compact 2-line grid (~3x density vs responsive-cards). Dashboar
 backed by new GET /api/spending-categories (getCategorySpendingForMonth). Updated 2
 stale cycle-fixes pins that encoded the old layout. Tests: 870 across 31 files
 (+11 ui-polish).
+
+### Login default + icon particle transition (same branch)
+Post-login default → /per-sistant (DEFAULT_POST_LOGIN in shell auth.js; landing still at
+/; safeReturnTo open-redirect guard unchanged, fallback destination updated incl. the
+biometric path in login.ejs — sync-durability pins updated). transition.js rewritten
+around a canvas particle engine: samples the PWA icon img into ~3k colored particles,
+assemble 950ms → shimmer 280ms → burst 520ms → navigate; prefers-reduced-motion =
+instant nav; CSS-mask-reveal kept as fallback. Tests: 874 across 31 files.
 **Where I left off:** everything committed + pushed on `claude/exciting-albattani-ug1gjv`
 (F1-F10 + docs + investment performance + TWR/XIRR); awaiting review/merge + operator actions
 (Render passphrase check BLOCKS DEPLOY; backup secrets; cert rotation; clasp push for

@@ -14,8 +14,10 @@ Single Node process that hosts two related personal tools behind one PIN gate:
   facts with temporal validity, Mermaid diagrams, capture-to-vault, a
   never-sent-to-AI "secret" tier, and cross-app finance grounding from Perfin.
 
-A `shell/` Express app authenticates the user with `SHELL_PIN`, renders a tile
-picker landing page, then mounts each sub-app under its own URL prefix:
+A `shell/` Express app authenticates the user with `SHELL_PIN` (successful
+login lands directly in Per-sistant — the tile-picker landing is still served
+at `/` but skipped as the default destination, `DEFAULT_POST_LOGIN` in
+shell/middleware/auth.js), and mounts each sub-app under its own URL prefix:
 `/perfin/*` → `teller/server.js`, `/per-sistant/*` → `apps/per-sistant/server.js`.
 Each sub-app keeps its own database, routes, and migrations; the shell just
 owns the listener, the auth gate, and the cross-app navigation. Sub-apps
@@ -255,13 +257,23 @@ shell/
     landing.css                — Shell-only styles
     manifest.json              — Unified PWA manifest (mask-crop PNG icons,
                                  not the placeholder SVG it had originally)
-    transition.css             — Cosmic mask-reveal transition (Per-sistant
-                                 entry from landing tile + Perfin nav's
-                                 cross-app icon). Scoped under .atrans-*.
+    transition.css             — Per-sistant entry transition (landing tile +
+                                 Perfin nav's cross-app icon). Scoped under
+                                 .atrans-*; cosmic star/nebula backdrop +
+                                 particle-canvas mode styles.
     transition.js              — Auto-init module: scans for [data-atrans]
-                                 triggers, populates twinkling stars +
-                                 rising particles in any .atrans-overlay,
-                                 binds click→activate→navigate.
+                                 triggers, binds click→activate→navigate.
+                                 Primary effect: particle assembly/disassembly
+                                 of the PWA icon — samples the overlay's
+                                 .atrans-art <img> via canvas getImageData
+                                 into ~3k colored particles that fly in to
+                                 assemble the icon, shimmer, then burst
+                                 (assemble 950ms / hold 280ms / disperse
+                                 520ms; navigates ~90ms before the end).
+                                 Honors prefers-reduced-motion (instant
+                                 navigation); falls back to the original CSS
+                                 mask reveal if the image isn't ready or the
+                                 canvas is tainted.
     perfin-materialize.css     — Iron Man helmet stroke-draw + fill + pulse
                                  ring + particle burst + HUD scan animation
                                  (Perfin entry from landing tile + Per-sistant
@@ -327,9 +339,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (870 tests as of latest); use
+  Perfin and Per-sistant test files (874 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 870 tests across 31 test files (incl.
+  Current count: 874 tests across 31 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -1153,7 +1165,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 870 tests passing across 31 test files (Perfin + Per-sistant)
+- 874 tests passing across 31 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash

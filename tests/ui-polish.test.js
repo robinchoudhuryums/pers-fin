@@ -142,3 +142,37 @@ describe("GET /api/spending-categories", () => {
     assert.equal(res.body.categories[1].category, "Groceries");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Login defaults to Per-sistant + particle-assembly transition
+// ---------------------------------------------------------------------------
+describe("post-login default + icon particle transition", () => {
+  it("successful auth lands in Per-sistant (landing still served at /)", () => {
+    const auth = read("shell", "middleware", "auth.js");
+    assert.match(auth, /DEFAULT_POST_LOGIN = "\/per-sistant"/);
+    const login = read("shell", "views", "login.ejs");
+    assert.match(login, /window\.location\.href = '\/per-sistant';/,
+      "biometric path must match the PIN path's default destination");
+  });
+
+  it("transition samples the icon image into particles (assemble/hold/disperse)", () => {
+    const js = read("shell", "public", "transition.js");
+    assert.match(js, /getImageData/, "pixel-samples the .atrans-art icon");
+    assert.match(js, /ASSEMBLE_MS = 950, HOLD_MS = 280, DISPERSE_MS = 520/);
+    assert.match(js, /startParticleAssembly\(overlay, navigate\)/);
+    assert.match(js, /data\[i \+ 3\] < 110/, "transparent pixels skipped");
+  });
+
+  it("respects prefers-reduced-motion and keeps the CSS-reveal fallback", () => {
+    const js = read("shell", "public", "transition.js");
+    assert.match(js, /prefers-reduced-motion: reduce.*matches.*return navigate\(\)/s);
+    assert.match(js, /setTimeout\(navigate, 1350\)/,
+      "tainted-canvas / unloaded-image path falls back to the original reveal");
+  });
+
+  it("particle mode hides the mask-reveal art via CSS", () => {
+    const css = read("shell", "public", "transition.css");
+    assert.match(css, /\.atrans-canvas \{ position: relative; z-index: 3/);
+    assert.match(css, /\.atrans-overlay\.atrans--particles \.atrans-art-wrap,\n\.atrans-overlay\.atrans--particles \.atrans-ring \{ display: none; \}/);
+  });
+});

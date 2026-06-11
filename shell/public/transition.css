@@ -170,3 +170,9 @@
   .atrans-overlay.active .atrans-scanline,
   .atrans-overlay.active .atrans-particle { display: none; }
 }
+
+/* Particle-assembly mode (transition.js startParticleAssembly): the canvas
+   replaces the CSS mask-reveal art + ring; stars/nebula stay as backdrop. */
+.atrans-canvas { position: relative; z-index: 3; width: 240px; height: 240px; }
+.atrans-overlay.atrans--particles .atrans-art-wrap,
+.atrans-overlay.atrans--particles .atrans-ring { display: none; }

@@ -120,7 +120,7 @@
           throw new Error(verr.error || 'Verification failed');
         }
         status.textContent = 'Verified. Redirecting…';
-        window.location.href = '/';
+        window.location.href = '/per-sistant';
       } catch (e) {
         status.textContent = 'Biometric login failed: ' + (e.message || e);
         btn.disabled = false;
