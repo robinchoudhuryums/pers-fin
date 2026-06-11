@@ -944,7 +944,9 @@ describe("BS-5/6/7/8 — sync-helper correctness (source-pinned)", () => {
     assert.match(enroll, /plaidThrew \? \[\{ provider: "plaid", result: \{ errors:/);
   });
   it("BS-7: monthly income projection clamps the pay-day to the month length", () => {
-    assert.match(enroll, /const payDay = Math\.min\(inc\.typical_day, daysInMonth\)/);
+    // cash-flow moved to routes/spending-analytics.js in the route-file split
+    const analytics = fs.readFileSync(path.join(__dirname, "../teller/routes/spending-analytics.js"), "utf8");
+    assert.match(analytics, /const payDay = Math\.min\(inc\.typical_day, daysInMonth\)/);
   });
   it("BS-8: holdings sync skips items lacking the Investments product", () => {
     assert.match(inv, /PRODUCTS_NOT_SUPPORTED" \|\| code === "PRODUCT_NOT_READY"\) continue/);
