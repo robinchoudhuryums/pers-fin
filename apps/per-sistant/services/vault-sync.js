@@ -72,33 +72,101 @@ function resolveSensitivity(meta) {
   return "normal";
 }
 
-// Heading-aware chunker (~512 tokens ≈ ~2000 chars) with overlap.
+// ---------------------------------------------------------------------------
+// Token-aware chunker (RAG v2). Budgets are in ESTIMATED tokens, not chars:
+// the old chars/4 assumption under-counted dense content (code blocks, URLs
+// tokenize near 3 chars/token) so those chunks overshot the embedding
+// window, and it sliced mid-word when a paragraph ran long. Estimation needs
+// no tokenizer dep: max(words × 1.32, chars / 4) — the word term tracks
+// prose, the char term catches dense text. Splitting cascades heading →
+// paragraph → sentence → word, so a chunk never breaks mid-word.
+//
+// CHUNKING_VERSION is baked into the embed_state content hash (embedSource):
+// bumping it invalidates every hash and forces a clean re-embed on the next
+// sync — the mechanism that makes future chunker changes safe to ship.
+const CHUNKING_VERSION = 2;
+const DEFAULT_MAX_TOKENS = 480;   // comfortably inside voyage-3.5's window
+const DEFAULT_OVERLAP_TOKENS = 60;
+
+function estimateTokens(text) {
+  const t = String(text || "");
+  if (!t.trim()) return 0;
+  const words = (t.match(/\S+/g) || []).length;
+  return Math.max(Math.ceil(words * 1.32), Math.ceil(t.length / 4));
+}
+
+function splitSentences(text) {
+  return String(text).split(/(?<=[.!?])\s+(?=[A-Z0-9"'([])/);
+}
+
+// Tail of `text` worth ~overlapTokens, on a word boundary (context carry-over
+// between adjacent chunks).
+function overlapTail(text, overlapTokens) {
+  if (!overlapTokens) return "";
+  const words = String(text).split(/\s+/);
+  const keep = Math.max(1, Math.floor(overlapTokens / 1.32));
+  return words.slice(-keep).join(" ");
+}
+
 function chunkMarkdown(text, opts = {}) {
-  const maxChars = opts.maxChars || 2000;
-  const overlap = opts.overlap || 200;
+  // Legacy {maxChars, overlap} options map at the old chars/4 assumption so
+  // existing callers keep a comparable budget.
+  const maxTokens = opts.maxTokens
+    || (opts.maxChars ? Math.ceil(opts.maxChars / 4) : DEFAULT_MAX_TOKENS);
+  const overlapTokens = opts.overlapTokens !== undefined ? opts.overlapTokens
+    : (opts.overlap !== undefined ? Math.ceil(opts.overlap / 4) : DEFAULT_OVERLAP_TOKENS);
   const clean = String(text || "").trim();
   if (!clean) return [];
-  const sections = clean.split(/\n(?=#{1,6}\s)/); // keep each heading with its body
+
   const chunks = [];
+  let buf = "";
+  function flush() {
+    if (buf.trim()) chunks.push(buf.trim());
+    buf = "";
+  }
+  // Append a unit (paragraph/sentence/word run) that itself fits the budget.
+  function append(unit, sep) {
+    if (!buf) { buf = unit; return; }
+    if (estimateTokens(buf) + estimateTokens(unit) > maxTokens) {
+      const tail = overlapTail(buf, overlapTokens);
+      flush();
+      buf = tail ? tail + sep + unit : unit;
+    } else {
+      buf = buf + sep + unit;
+    }
+  }
+  // Break an over-budget unit down a level and append the pieces.
+  function appendOversized(unit, level) {
+    const parts = level === "sentence" ? splitSentences(unit) : unit.split(/\s+/);
+    for (const part of parts) {
+      if (!part) continue;
+      if (estimateTokens(part) <= maxTokens) {
+        append(part, level === "sentence" ? " " : " ");
+      } else if (level === "sentence") {
+        appendOversized(part, "word"); // run-on sentence → word packing
+      } else {
+        // single "word" beyond the budget (a megabyte URL?) — hard-split
+        flush();
+        chunks.push(part.slice(0, maxTokens * 4));
+      }
+    }
+  }
+
+  const sections = clean.split(/\n(?=#{1,6}\s)/); // keep each heading with its body
   for (const section of sections) {
     const sec = section.trim();
     if (!sec) continue;
-    if (sec.length <= maxChars) { chunks.push(sec); continue; }
-    let buf = "";
+    flush(); // heading boundaries never share a chunk
+    if (estimateTokens(sec) <= maxTokens) { chunks.push(sec); continue; }
     for (const para of sec.split(/\n\s*\n/)) {
-      if (buf && buf.length + para.length + 2 > maxChars) {
-        chunks.push(buf.trim());
-        buf = overlap > 0 ? buf.slice(-overlap) + "\n\n" + para : para;
-      } else {
-        buf = buf ? buf + "\n\n" + para : para;
-      }
-      while (buf.length > maxChars) {
-        chunks.push(buf.slice(0, maxChars).trim());
-        buf = buf.slice(maxChars - overlap);
-      }
+      const pt = para.trim();
+      if (!pt) continue;
+      if (estimateTokens(pt) <= maxTokens) append(pt, "\n\n");
+      else appendOversized(pt, "sentence");
     }
-    if (buf.trim()) chunks.push(buf.trim());
+    flush();
   }
+  flush();
   return chunks.filter(Boolean);
 }
 
@@ -207,7 +275,9 @@ async function clearSource(pool, kind, id) {
 // unchanged. Replaces all chunks for the source atomically.
 async function embedSource(pool, kind, id, text) {
   const body = String(text || "");
-  const sha = sha256(body);
+  // CHUNKING_VERSION salts the hash: a chunker change invalidates every
+  // stored hash → clean re-embed on next sync, no manual migration.
+  const sha = sha256("chunkv" + CHUNKING_VERSION + "\n" + body);
   const st = await pool.query("SELECT content_sha FROM embed_state WHERE source_kind = $1 AND source_id = $2", [kind, id]);
   if (st.rows[0] && st.rows[0].content_sha === sha) return { skipped: true };
 
@@ -522,6 +592,8 @@ module.exports = {
   parseFrontmatter,
   resolveSensitivity,
   chunkMarkdown,
+  estimateTokens,
+  CHUNKING_VERSION,
   shouldIndex,
   sha256,
   titleFromPath,

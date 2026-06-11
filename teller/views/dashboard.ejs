@@ -70,16 +70,6 @@
       .pyramid-switcher { flex-direction: row; flex-wrap: wrap; justify-content: center; padding-top: 0; }
     }
 
-    /* ── Recent Transactions ── */
-    .recent-txn-table { width: 100%; border-collapse: collapse; }
-    .recent-txn-table th { font-size: 10px; font-weight: 500; color: var(--text-muted);
-      text-transform: uppercase; letter-spacing: 1px; text-align: left; padding: 6px 8px;
-      border-bottom: 1px solid var(--border); }
-    .recent-txn-table td { padding: 8px; font-size: 13px; border-bottom: 1px solid var(--border); }
-    .badge-pending { display: inline-block; font-size: 9px; padding: 1px 6px; border-radius: 8px;
-      background: var(--warm-glow); color: #1a1a2e; font-weight: 600; letter-spacing: 0.5px; }
-    .badge-posted { display: inline-block; font-size: 9px; padding: 1px 6px; border-radius: 8px;
-      background: var(--green); color: #1a1a2e; font-weight: 600; letter-spacing: 0.5px; }
 
     /* ── Financial Pyramid — Separated Layers with Neon Hologram ── */
     .wellness-section {
@@ -400,20 +390,9 @@
     </div>
   </div>
 
-  <!-- Recent Transactions -->
-  <div class="section" style="margin-bottom:28px; animation: fadeInUp 0.4s ease both; animation-delay: 0.3s;">
-    <h2>Recent Transactions</h2>
-    <div class="table-wrap">
-    <table class="recent-txn-table responsive-cards">
-      <thead><tr><th>Date</th><th>Description</th><th>Category</th><th>Amount</th><th class="hide-mobile">Status</th></tr></thead>
-      <tbody id="recent-txn-body"><tr><td colspan="5" class="empty-msg">Loading...</td></tr></tbody>
-    </table>
-    </div>
-  </div>
-
   <!-- Two-column: Monthly trend + Categories -->
   <div class="two-col">
-    <div class="section">
+    <div class="section collapsible" data-collapse-key="monthlySpend">
       <h2>Monthly Spending</h2>
       <div class="table-wrap">
       <table class="responsive-cards">
@@ -422,8 +401,13 @@
       </table>
       </div>
     </div>
-    <div class="section">
-      <h2>Spending by Category</h2>
+    <div class="section collapsible" data-collapse-key="categories">
+      <h2>Spending by Category
+        <select id="cat-month-select" aria-label="Category breakdown month"
+                style="font-size:11px;text-transform:none;letter-spacing:normal;padding:2px 6px;max-width:140px;">
+          <option value="">Recent months</option>
+        </select>
+      </h2>
       <div class="table-wrap">
       <table class="responsive-cards">
         <thead><tr><th>Category</th><th>Total</th><th style="width:30%">Share</th></tr></thead>
@@ -435,7 +419,7 @@
 
   <!-- Two-column: Top merchants + Upcoming subscriptions -->
   <div class="two-col">
-    <div class="section">
+    <div class="section collapsible" data-collapse-key="merchants">
       <h2>Top Merchants</h2>
       <div class="table-wrap">
       <table class="responsive-cards">
@@ -444,7 +428,7 @@
       </table>
       </div>
     </div>
-    <div class="section">
+    <div class="section collapsible" data-collapse-key="upcoming">
       <h2>Upcoming Charges</h2>
       <div class="table-wrap">
       <table class="responsive-cards">
@@ -1067,17 +1051,47 @@
         }
 
         const catBody = document.getElementById('category-body');
-        if (data.by_category.length) {
-          const maxCat = parseFloat(data.by_category[0].total);
-          catBody.innerHTML = data.by_category.map((c, i) => {
-            const pct = Math.round((parseFloat(c.total) / maxCat) * 100);
+        function renderCategoryRows(rows) {
+          if (!rows.length) {
+            catBody.innerHTML = '<tr><td colspan="3" class="empty-msg">No category data yet.</td></tr>';
+            return;
+          }
+          const maxCat = parseFloat(rows[0].total);
+          catBody.innerHTML = rows.map((c, i) => {
+            const pct = maxCat > 0 ? Math.round((parseFloat(c.total) / maxCat) * 100) : 0;
             const color = barColors[i % barColors.length];
             return '<tr><td class="cell-primary">' + esc(c.category) + '</td>' +
               '<td class="amount warm" data-label="Total">' + fmt(c.total) + '</td>' +
               '<td data-label="Share"><div class="bar-container"><div class="bar-fill" style="width:' + pct + '%;background:' + color + '"></div></div></td></tr>';
           }).join('');
-        } else {
-          catBody.innerHTML = '<tr><td colspan="3" class="empty-msg">No category data yet.</td></tr>';
+        }
+        renderCategoryRows(data.by_category);
+        // Per-month category breakdown: default option = the N-month aggregate
+        // already in this response; picking a month fetches
+        // /api/spending-categories (same splits/reimbursed/share-adjusted
+        // helper the budgets use, so the numbers match everywhere).
+        const catSel = document.getElementById('cat-month-select');
+        if (catSel && !catSel.dataset.wired) {
+          catSel.dataset.wired = '1';
+          (data.monthly_trend || []).forEach(function(m) {
+            const opt = document.createElement('option');
+            opt.value = m.month; opt.textContent = m.month;
+            catSel.appendChild(opt);
+          });
+          catSel.addEventListener('change', async function() {
+            if (!catSel.value) { renderCategoryRows(data.by_category); return; }
+            catBody.innerHTML = '<tr><td colspan="3" class="empty-msg">Loading...</td></tr>';
+            try {
+              const r = await apiFetch('/api/spending-categories?month=' + encodeURIComponent(catSel.value));
+              if (!r.ok) throw new Error('HTTP ' + r.status);
+              const dm = await r.json();
+              renderCategoryRows((dm.categories || []).map(function(c) {
+                return { category: c.category, total: c.spent };
+              }));
+            } catch (e) {
+              catBody.innerHTML = '<tr><td colspan="3" class="empty-msg">Could not load that month.</td></tr>';
+            }
+          });
         }
 
         const merchBody = document.getElementById('merchant-body');
@@ -1105,23 +1119,8 @@
         } else {
           upBody.innerHTML = '<tr><td colspan="3" class="empty-msg">No upcoming charges.</td></tr>';
         }
-        const recentBody = document.getElementById('recent-txn-body');
-        if (data.recent_transactions && data.recent_transactions.length) {
-          recentBody.innerHTML = data.recent_transactions.map(t => {
-            const isPending = t.pending;
-            const badge = isPending
-              ? '<span class="badge-pending">PENDING</span>'
-              : '<span class="badge-posted">POSTED</span>';
-            const amtClass = parseFloat(t.amount) > 0 ? 'warm' : 'teal';
-            return '<tr><td data-label="Date">' + fmtDate(t.date) + '</td>' +
-              '<td class="cell-primary">' + esc(t.description) + '</td>' +
-              '<td data-label="Category" style="font-size:11px;color:var(--text-muted)">' + esc(t.category) + '</td>' +
-              '<td class="amount ' + amtClass + '" data-label="Amount">' + fmt(t.amount) + '</td>' +
-              '<td data-label="Status">' + badge + '</td></tr>';
-          }).join('');
-        } else {
-          recentBody.innerHTML = '<tr><td colspan="5" class="empty-msg">No transactions yet.</td></tr>';
-        }
+        // Recent Transactions moved to the Activity (Transactions) page,
+        // which auto-loads the latest transactions in a compact list.
 
       } catch (e) {
         showMsg('Could not load spending data: ' + e.message, false);
@@ -2943,6 +2942,36 @@
       } catch (e) { /* non-critical */ }
     }
 
+    // Collapsible dashboard sections — persisted per-section in localStorage.
+    (function initCollapsibles() {
+      document.querySelectorAll('.section.collapsible').forEach(function(sec) {
+        var key = 'perfin_collapse_' + (sec.getAttribute('data-collapse-key') || '');
+        var h2 = sec.querySelector('h2');
+        if (!h2) return;
+        h2.setAttribute('tabindex', '0');
+        h2.setAttribute('role', 'button');
+        function apply(collapsed) {
+          sec.classList.toggle('collapsed', collapsed);
+          h2.setAttribute('aria-expanded', String(!collapsed));
+        }
+        var saved = false;
+        try { saved = localStorage.getItem(key) === '1'; } catch (_) {}
+        apply(saved);
+        function toggle() {
+          var c = !sec.classList.contains('collapsed');
+          apply(c);
+          try { c ? localStorage.setItem(key, '1') : localStorage.removeItem(key); } catch (_) {}
+        }
+        h2.addEventListener('click', function(e) {
+          if (e.target.closest('select, button, input, a')) return;
+          toggle();
+        });
+        h2.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
+        });
+      });
+    })();
+
     // Dashboard widget visibility
     async function applyWidgetVisibility() {
       try {
@@ -2954,7 +2983,6 @@
         var map = {
           pyramid: '.wellness-section',
           accounts: '#accounts-section',
-          recentTxns: '.recent-txn-table',
           charts: '.charts-grid',
           forecast: '#forecast-section',
           savingsRate: '#savings-rate-section',

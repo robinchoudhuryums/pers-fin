@@ -20,7 +20,8 @@
     "detect-transfers": "node scripts/detect-transfers.js",
     "sheets-sync": "node scripts/sheets-sync.js",
     "import-csv": "node scripts/import-csv-cli.js",
-    "reset:fresh": "node scripts/reset-fresh.js"
+    "reset:fresh": "node scripts/reset-fresh.js",
+    "test:e2e": "playwright test --config e2e/playwright.config.js"
   },
   "engines": {
     "node": ">=18"
@@ -30,6 +31,7 @@
     "pg": "^8.20.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "csv-parse": "^6.1.0",
     "express": "^4.21.0",
     "multer": "^2.1.1",

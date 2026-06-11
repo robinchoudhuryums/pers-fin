@@ -20,7 +20,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   (keyword fallback), Citations, answer cache, structured facts with temporal
   validity, Mermaid diagrams, capture-to-vault, never-sent-to-AI "secret" tier,
   and cross-app finance grounding from Perfin (read-only `perfinPool`). Migrations
-  `db/013`–`db/017`. Full detail in the Knowledge block under **Database** below.
+  `db/013`–`db/019`. Full detail in the Knowledge block under **Database** below.
 - **Email**: nodemailer (SMTP) with scheduled sending via node-cron. The
   scheduler atomically CLAIMS due emails before sending — `UPDATE emails SET
   status='sent' WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED) RETURNING *`,
@@ -390,12 +390,20 @@ hoisted version.
     `vault_repo` / `vault_branch` / `vault_last_sha` / `vault_last_synced_at` /
     `vault_last_error`. The vault GitHub token is the `VAULT_GITHUB_TOKEN` env
     var, never a DB column.
+  - Chunking is TOKEN-AWARE (RAG v2): budgets in estimated tokens
+    (max(words×1.32, chars/4) — no tokenizer dep), cascade heading →
+    paragraph → sentence → word so chunks never break mid-word; default 480
+    tokens with 60-token word-boundary overlap. `CHUNKING_VERSION` is baked
+    into the embed_state content hash, so bumping it (any future chunker
+    change) invalidates every hash and forces a clean re-embed on the next
+    sync — shipped while the vault was empty, so v2 itself cost nothing.
   - Sync: `services/vault-sync.js` (GitHub Contents/Trees/compare API, no clone;
     frontmatter `embed:false`/`private:true`/`sensitivity:` honored). Hourly
     in-process cron + `POST /api/rag/reindex` (also driven by the
     `knowledge-reindex.yml` GitHub Action via `x-api-key`). Embeddings via
-    `services/embeddings.js` (Voyage, native fetch). Retrieval is vector-first
-    with keyword fallback.
+    `services/embeddings.js` (Voyage, native fetch). Retrieval is HYBRID (RAG v2):
+    vector + keyword legs fused via Reciprocal Rank Fusion (fuseRetrieval,
+    dedupe on kind:id) — either leg failing degrades to the other alone.
   - **Citations (Phase 2):** `POST /api/rag/query` answers via the Anthropic
     Citations feature (`ai.answerWithCitations` — each retrieved source is a
     plain-text document block with citations enabled; response flags each
@@ -407,7 +415,11 @@ hoisted version.
     row count over notes+documents+facts), 24h freshness. Auto-invalidates when
     the corpus changes; survives restarts (unlike the in-memory ai.js cache).
     Helpers in `routes/rag.js` swallow errors so a pre-migration/missing table
-    degrades to "no cache". Semantic (paraphrase) caching is deferred.
+    degrades to "no cache". Semantic (paraphrase) caching shipped (RAG v2, db/019): rag_answer_cache
+    rows carry the query embedding; a paraphrase hits at cosine >= 0.97 with
+    the same model + corpus version + TTL. One Voyage call per /query serves
+    retrieval AND the cache (embedQuerySafe). Pre-019 / no-pgvector schemas
+    degrade to exact-match only.
   - **Structured facts (Phase 2c):** `facts` — precise, supersedable
     `(entity, attribute, value)` rows with `valid_from`/`valid_to` (NULL = still
     current) and `sensitivity`. Authored as flat frontmatter in vault "fact

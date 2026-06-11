@@ -333,7 +333,9 @@ describe("investment-flows wiring", () => {
   });
 
   it("the Plaid sync is idempotent (ON CONFLICT on the Plaid txn id) with a page guard", () => {
-    const src = fs.readFileSync(path.join(ROOT, "teller", "routes", "investments.js"), "utf8");
+    // Moved to routes/investment-performance.js in the route-file split;
+    // investments.js re-exports the helpers so callers are unchanged.
+    const src = fs.readFileSync(path.join(ROOT, "teller", "routes", "investment-performance.js"), "utf8");
     assert.match(src, /ON CONFLICT \(plaid_investment_transaction_id\) DO NOTHING/);
     assert.match(src, /FLOW_MAX_PAGES/);
     assert.match(src, /investmentsTransactionsGet/);

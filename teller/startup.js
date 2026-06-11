@@ -112,7 +112,7 @@ function startBackgroundJobs() {
       // value (F13). Orphaned funding links (FK set but row gone) fall back to
       // the stored value via the la.id / ia.id NULL guards.
       const goals = await pool.query(
-        `SELECT g.id, g.name, g.target_amount,
+        `SELECT g.id, g.name, g.target_amount, g.notes,
                 CASE
                   WHEN g.funding_account_id IS NOT NULL AND la.id IS NOT NULL
                     THEN GREATEST(0, COALESCE(la.available_balance, la.current_balance, 0) - COALESCE(g.goal_baseline_amount, 0))
@@ -130,13 +130,13 @@ function startBackgroundJobs() {
         const target = parseFloat(g.target_amount);
         if (target <= 0) continue;
         const pct = Math.floor((parseFloat(g.current_amount) / target) * 100);
+        // Notes come from the main SELECT (no per-goal re-query) and are
+        // tracked locally so multiple milestones crossed in one pass append
+        // correctly before the single UPDATE per milestone.
+        let notes = g.notes || "";
         for (const m of MILESTONES) {
           if (pct >= m) {
             const key = `milestone_${m}`;
-            const check = await pool.query(
-              "SELECT notes FROM financial_goals WHERE id = $1", [g.id]
-            );
-            const notes = check.rows[0]?.notes || "";
             if (notes.includes(key)) continue;
             try {
               const { sendToAll } = require("./routes/notifications");
@@ -147,8 +147,8 @@ function startBackgroundJobs() {
                 data: { url: "/goals" },
               });
             } catch {}
-            const newNotes = (notes ? notes + " " : "") + key;
-            await pool.query("UPDATE financial_goals SET notes = $1 WHERE id = $2", [newNotes, g.id]);
+            notes = (notes ? notes + " " : "") + key;
+            await pool.query("UPDATE financial_goals SET notes = $1 WHERE id = $2", [notes, g.id]);
           }
         }
       }
@@ -254,6 +254,15 @@ function startBackgroundJobs() {
             tag,
             data: { url: "/budgets" },
           });
+          // Opt-in critical-alert email — shares the 24h sentRecently dedup
+          // above, so an over-budget category emails at most once per day.
+          try {
+            const { sendCriticalAlertEmail } = require("./routes/persistent");
+            await sendCriticalAlertEmail(
+              "Budget exceeded: " + b.category,
+              "$" + spent.toFixed(2) + " spent of $" + limit.toFixed(2) + " budget (" + pct + "%) this month."
+            );
+          } catch (e) { console.error("Budget alert email error:", e.message); }
         } else if (pct >= 80) {
           const tag = "budget-warn-" + b.category.toLowerCase().replace(/\s+/g, "-");
           if (await sentRecently(tag, 24)) continue;

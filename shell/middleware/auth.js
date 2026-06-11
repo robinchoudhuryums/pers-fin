@@ -179,16 +179,22 @@ async function handleLogin(req, res) {
   res.redirect(safeReturnTo(req.body.return_to));
 }
 
+// Default post-login destination. The tile-picker landing (still served at
+// "/") proved an unnecessary extra hop in practice — successful auth lands
+// directly in Per-sistant, and each app's nav carries the cross-app link.
+const DEFAULT_POST_LOGIN = "/per-sistant";
+
 // Sanitize a post-login redirect target. Only same-origin absolute paths are
 // allowed: a value must start with a single "/" and NOT be a scheme-relative
 // "//host" or contain a backslash (which some browsers normalize to "/"),
 // otherwise "//evil.com" would pass a naive startsWith("/") check and produce
-// an open redirect off the auth endpoint. Anything else falls back to "/".
+// an open redirect off the auth endpoint. Anything else falls back to the
+// default destination (an explicit return_to="/" still reaches the landing).
 function safeReturnTo(target) {
-  if (typeof target !== "string") return "/";
-  if (!target.startsWith("/")) return "/";
-  if (target.startsWith("//")) return "/";
-  if (target.includes("\\")) return "/";
+  if (typeof target !== "string") return DEFAULT_POST_LOGIN;
+  if (!target.startsWith("/")) return DEFAULT_POST_LOGIN;
+  if (target.startsWith("//")) return DEFAULT_POST_LOGIN;
+  if (target.includes("\\")) return DEFAULT_POST_LOGIN;
   return target;
 }
 

@@ -14,8 +14,10 @@ Single Node process that hosts two related personal tools behind one PIN gate:
   facts with temporal validity, Mermaid diagrams, capture-to-vault, a
   never-sent-to-AI "secret" tier, and cross-app finance grounding from Perfin.
 
-A `shell/` Express app authenticates the user with `SHELL_PIN`, renders a tile
-picker landing page, then mounts each sub-app under its own URL prefix:
+A `shell/` Express app authenticates the user with `SHELL_PIN` (successful
+login lands directly in Per-sistant — the tile-picker landing is still served
+at `/` but skipped as the default destination, `DEFAULT_POST_LOGIN` in
+shell/middleware/auth.js), and mounts each sub-app under its own URL prefix:
 `/perfin/*` → `teller/server.js`, `/per-sistant/*` → `apps/per-sistant/server.js`.
 Each sub-app keeps its own database, routes, and migrations; the shell just
 owns the listener, the auth gate, and the cross-app navigation. Sub-apps
@@ -50,6 +52,9 @@ teller/
   services/
     database.js          — Postgres pool + transactional auto-migrations with schema versioning
     teller-api.js        — mTLS HTTP client for Teller API (retry with exponential backoff)
+    plaid-client.js      — Plaid client factory (shared by investments.js +
+                           investment-performance.js so the two route modules
+                           don't need a circular require)
     keep-alive.js        — Self-ping to prevent Render free tier sleep (with fetch timeout)
     job-health.js        — Scheduled-job heartbeats + missed-job watchdog. Every
                            startup.js interval calls tick(name) BEFORE its activity
@@ -74,15 +79,33 @@ teller/
     enrollments.js       — POST /api/enroll, POST /api/sync, GET /api/items,
                            DELETE /api/enrollments/:id, GET /api/accounts,
                            PATCH /api/accounts/:id, PATCH /api/accounts/:id/shared,
-                           POST /api/sync-balances, GET /api/spending-summary,
-                           GET /api/cash-flow, GET /api/savings-rate,
-                           GET /api/spending-yoy.
+                           POST /api/sync-balances, reconcile endpoints, the
+                           Teller sync engine, and account management. Mounts
+                           spending-analytics.js (route-file split).
+    spending-analytics.js — split from enrollments.js: the six read-only
+                           aggregation endpoints — /api/spending-summary,
+                           /api/spending-categories, /api/cash-flow,
+                           /api/spending-yoy, /api/savings-rate,
+                           /api/income-summary. Includes INCOME_PREDICATE_T,
+                           the t.-qualified predicate derivation for the one
+                           query that JOINs linked_accounts (unqualified
+                           `name` was ambiguous and 500'd /api/income-summary
+                           — found by the e2e harness's live boot).
                            Also exports `syncAllEnrollments` and `syncAllBalances` for
                            the scheduled bank-auto-sync task in `server.js` (in-process,
                            no HTTP self-fetch).
     subscriptions.js     — GET/POST /api/subscriptions, PATCH dismiss/undismiss/cancel/
-                           uncancel/category, GET /api/transactions,
-                           GET /api/transactions/search, POST /api/detect,
+                           uncancel/category, POST /api/detect, CSV import,
+                           recurring transfers, manual bills, bill payments,
+                           bill-calendar (+ICS builder), settlement. Mounts
+                           transactions.js (route-file split).
+    transactions.js      — split from subscriptions.js: per-transaction
+                           endpoints — GET /api/transactions (+/search,
+                           /duplicates, /csv-overlap +resolve),
+                           PATCH/DELETE /api/transactions/:id,
+                           GET/POST/DELETE /api/transactions/:id/splits.
+                           (Original subscriptions.js entry continues:)
+                           GET /api/transactions, GET /api/transactions/search, POST /api/detect,
                            POST /api/import-csv, GET /api/csv-imports, POST /api/cleanup,
                            GET /api/recurring-transfers, POST /api/detect-transfers,
                            PATCH /api/recurring-transfers/:id/dismiss|undismiss|type,
@@ -120,7 +143,10 @@ teller/
                            POST /api/categorization-rules/from-transaction
                            (ML categorization via Claude tool_use structured output,
                            with user-defined rules applied first before AI)
-    investments.js       — GET /api/plaid/status, POST /api/plaid/link-token,
+    investments.js       — AGGREGATOR for the investment routes: mounts
+                           investment-performance.js and re-exports its helpers
+                           (route-file split — import paths unchanged).
+                           GET /api/plaid/status, POST /api/plaid/link-token,
                            POST /api/plaid/exchange, POST /api/plaid/sync-holdings,
                            GET /api/plaid/holdings (Plaid investment accounts).
                            POST /api/plaid/link-token-transactions,
@@ -145,6 +171,13 @@ teller/
                            from its linked_accounts branch (la.plaid_item_id IS
                            NULL) so Plaid investments come only from
                            investment_accounts — no $0 double-listing.
+    investment-performance.js — split from investments.js: investment_flows
+                           CRUD + Plaid flow sync (classifyPlaidFlow,
+                           syncAllPlaidInvestmentFlows), TWR/XIRR math, and
+                           GET /api/investments/performance-history
+    insights-email.js    — split from insights.js: the pure email renderers
+                           (renderInsightEmail, weekly/daily digest HTML+text,
+                           escapeHtml); insights.js imports + re-exports them
     credit-scores.js     — GET/POST/DELETE /api/credit-scores
                            (manual credit score tracking with trend computation)
     notifications.js     — GET /api/notifications/vapid, POST/DELETE /api/notifications/subscribe,
@@ -255,13 +288,23 @@ shell/
     landing.css                — Shell-only styles
     manifest.json              — Unified PWA manifest (mask-crop PNG icons,
                                  not the placeholder SVG it had originally)
-    transition.css             — Cosmic mask-reveal transition (Per-sistant
-                                 entry from landing tile + Perfin nav's
-                                 cross-app icon). Scoped under .atrans-*.
+    transition.css             — Per-sistant entry transition (landing tile +
+                                 Perfin nav's cross-app icon). Scoped under
+                                 .atrans-*; cosmic star/nebula backdrop +
+                                 particle-canvas mode styles.
     transition.js              — Auto-init module: scans for [data-atrans]
-                                 triggers, populates twinkling stars +
-                                 rising particles in any .atrans-overlay,
-                                 binds click→activate→navigate.
+                                 triggers, binds click→activate→navigate.
+                                 Primary effect: particle assembly/disassembly
+                                 of the PWA icon — samples the overlay's
+                                 .atrans-art <img> via canvas getImageData
+                                 into ~3k colored particles that fly in to
+                                 assemble the icon, shimmer, then burst
+                                 (assemble 950ms / hold 280ms / disperse
+                                 520ms; navigates ~90ms before the end).
+                                 Honors prefers-reduced-motion (instant
+                                 navigation); falls back to the original CSS
+                                 mask reveal if the image isn't ready or the
+                                 canvas is tainted.
     perfin-materialize.css     — Iron Man helmet stroke-draw + fill + pulse
                                  ring + particle burst + HUD scan animation
                                  (Perfin entry from landing tile + Per-sistant
@@ -327,9 +370,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (859 tests as of latest); use
+  Perfin and Per-sistant test files (915 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 859 tests across 30 test files (incl.
+  Current count: 915 tests across 33 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -345,7 +388,7 @@ shell/
   classification), tests/budget-cap-webauthn.test.js (tunable AI cap +
   embedded biometric registration), and tests/pwa-polish.test.js
   (pull-to-refresh + safe-area pins).
-- `.github/workflows/ci.yml` — CI pipeline (single `npm ci` at root via npm workspaces, then `npm test`)
+- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js`.
 - `.claude/commands/` — Project slash-command prompts: `/broad-scan`, `/broad-implement`,
   `/test-sync`, `/sync-docs`
 - `Dockerfile`, `fly.toml`, `render.yaml` — Deployment configs (the Dockerfile
@@ -747,6 +790,14 @@ shell/
   toggle (default off). Hourly scheduler; `runDailyDigest` dedupes via
   a 20-hour gate from `last_daily_digest_at` and skips silently when
   `gatherWhatsNew` returns zero counts.
+- **Critical-alert emails** (opt-in, Settings → AI Insights/Notifications →
+  "Critical Alert Emails", `user_settings.critical_alert_emails_enabled`,
+  default off): budget-exceeded (100%+, shares the push path's 24h
+  `sentRecently` dedup) and 3x-anomaly charges (one summary email per sync
+  run; email failure never holds the anomaly push watermark) email
+  immediately via the digest channel (`critical_alert` event —
+  `sendCriticalAlertEmail` in routes/persistent.js; in-process under the
+  shell, HTTP webhook standalone).
 - `user_settings.last_reconcile_at TIMESTAMPTZ`: watermark for the weekly
   self-healing reconcile and the manual `POST /api/sync/reconcile`. The
   scheduler runs the trailing-window Teller backfill at most once per 7-day
@@ -828,9 +879,24 @@ shell/
   visually hidden and each `<td>` (with a `data-label`) renders as a label:value
   line inside a card. Special cells: `cell-primary` (full-width title),
   `cell-actions` (wrap row of 40px-min buttons), `cell-check`, `empty`/`empty-msg`.
-  Applied to the Subscriptions and Transactions lists AND all five dashboard
-  mini-tables (Recent Transactions, Monthly Spending, Spending by Category, Top
-  Merchants, Upcoming Charges). New wide tables should add
+  Applied to the Subscriptions list AND the four dashboard mini-tables
+  (Monthly Spending, Spending by Category, Top Merchants, Upcoming Charges).
+  The Transactions (Activity) page uses a denser variant instead —
+  `txn-compact` (perfin-shared.css): a two-line CSS-grid row (merchant +
+  amount / date · category · actions, account hidden) at ~⅓ the height of a
+  responsive-card, with the filter bar collapsed behind a "Filters" toggle on
+  mobile so the recent-transactions list sits at the top of the page (the
+  dashboard's Recent Transactions section was removed in favor of it). The
+  four dashboard mini-table sections are collapsible (h2 toggles, chevron,
+  state persisted per-section in localStorage `perfin_collapse_<key>`), and
+  Spending by Category has a month selector ("Recent months" aggregate
+  default, or any month from the trend — backed by GET
+  /api/spending-categories, which uses getCategorySpendingForMonth so the
+  per-month figures match budgets/snapshots). Floating chrome (toasts,
+  notification panel, mobile nav drawer) sits on the opaque
+  `--surface-solid` token — the translucent 4%-alpha `--surface` is for
+  in-flow cards only; anything floating OVER content needs full opacity or
+  the page bleeds through. New wide tables should add
   `class="responsive-cards"` + `data-label`s rather than relying on horizontal
   scroll.
 - **Money formatting**: the shared global `fmt()` (`perfin-shared.js`) renders
@@ -1138,13 +1204,14 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 859 tests passing across 30 test files (Perfin + Per-sistant)
+- 915 tests passing across 33 test files (Perfin + Per-sistant), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
 cd teller && npm install && node server.js    # Run locally
 npm install                                    # ALSO required at repo root for tests
 npm test                                       # Run all tests (Perfin + Per-sistant)
+npm run test:e2e                               # Playwright browser smokes (needs local Postgres; see e2e/boot-server.js)
 npm run test:perfin                            # Perfin tests only (tests/*.test.js)
 npm run test:persistent                        # Per-sistant tests only
 npm run reset:fresh                            # DRY RUN: print what a fresh-start reset would wipe/keep
@@ -1237,6 +1304,8 @@ GET  /api/shared-settlement/:account_id/transactions # flat list of every charge
                             # shared account in the given month with each row's
                             # personal_for state, for reconciliation.
 GET  /api/spending-summary # monthly trends, categories, top merchants (split-adjusted)
+GET  /api/spending-categories # per-month category breakdown (query: month=YYYY-MM;
+                           # splits/reimbursed/share-adjusted via getCategorySpendingForMonth)
 GET  /api/cash-flow        # rolling cash flow projection (query: days, default 90)
 GET  /api/savings-rate     # income vs spending analysis (query: months, default 3)
 GET  /api/income-summary   # income trend + top sources + by_account (query: months, default 6)
@@ -1272,7 +1341,9 @@ PATCH /api/settings        # update user settings. Accepts: theme,
                            # to fall back to env), etc.
 GET  /api/data-freshness   # per-source sync timestamps with staleness flags
 GET  /api/data-health      # operator health surface — per-source freshness,
-                           # Teller/Plaid connection status, derived issues[]
+                           # Teller/Plaid connection status, scheduled-job
+                           # heartbeats (jobs[] with per-job staleness from
+                           # job_runs + thresholdMs), derived issues[]
                            # (disconnected links, stale balances, never-synced,
                            # + per-item errors from last_sync_result), recent sync
                            # notifications, last_reconcile_at, last_sync_result, and
@@ -1458,6 +1529,18 @@ GET  /apple-touch-icon.png                # iOS home-screen icon (mask-crop PNG)
 GET  /apple-touch-icon-precomposed.png    # older-iOS probe path; same bytes
 GET  /android-chrome-192x192.png          # PWA icon, 192 (mask-crop PNG)
 GET  /android-chrome-512x512.png          # PWA icon, 512 (mask-crop PNG)
+GET  /calendar.ics                        # bill-calendar iCalendar feed (subscribe from
+                                          # iOS/Google Calendar). Token-gated via
+                                          # ?token=CALENDAR_FEED_TOKEN — the ONE sanctioned
+                                          # query-string credential (calendar apps send no
+                                          # headers/cookies); read-only, single-purpose,
+                                          # deliberately separate from API_KEY (which stays
+                                          # header-only). Unset env = 404/feature off.
+                                          # Events: detected-subscription charges projected
+                                          # by cadence + manual bills (monthly = all in
+                                          # window; quarterly/yearly = next occurrence),
+                                          # 90 days default (?days=7-365). Builder:
+                                          # subscriptions.buildBillCalendarIcs.
 ```
 
 `PATCH /api/settings` accepts a new `shell_idle_timeout_minutes` field
@@ -1477,6 +1560,7 @@ validation (SN-5).
 - `SHELL_PIN` — unified PIN that fronts both apps. Constant-time compare with a 750ms throttle on incorrect attempts, backed by an IP rate limiter (10 failed attempts / 15 min) on `/login` and the biometric authenticate endpoints.
 - `SHELL_SECRET` — random ~32+ char string (`openssl rand -hex 32`). Signs the shell session cookie. Rotating it invalidates every active session.
 - `SHELL_PORT` — optional listener port override (defaults to `PORT` or `3000`)
+- `CALENDAR_FEED_TOKEN` — optional long random token enabling the public `/calendar.ics` bill feed (unset = feature off)
 
 ### Databases (one per sub-app)
 - `NEON_DATABASE_URL` — Perfin's Neon PostgreSQL connection string
@@ -1881,7 +1965,13 @@ rows) can dismiss them from the UI or run `POST /api/cleanup`.
 - **Subscription matching**: Word boundary regex to prevent false positives
 
 ## Scheduled Tasks (intervals)
-All run automatically after server startup. Per-app jobs live in
+All run automatically after server startup — and the CRITICAL ones are
+additionally guaranteed out-of-process by GitHub Actions cron (so Render
+free-tier sleep can't skip them): `daily-sync.yml` (transactions + balances/
+holdings/flows + net-worth snapshot + detection, daily 7AM UTC) and
+`weekly-reconcile.yml` (Teller 90-day reconcile, Sundays). Both hit the
+x-api-key'd endpoints; all writes are idempotent so overlap with the
+in-process jobs is harmless. Per-app jobs live in
 `teller/startup.js`; keep-alive runs at the shell layer (`shell/index.js`)
 under the unified shell so the timezone-aware self-ping fires regardless of
 which sub-app owns its own listener (sub-app `startKeepAlive` is no-op in
@@ -2526,11 +2616,13 @@ Bank Sync & Ingestion:
    same transactions/linked_accounts tables. Plaid additionally covers banks
    Teller doesn't, plus investment holdings.)
 Detection & Categorization:
-  teller/routes/subscriptions.js, teller/routes/categorize.js,
+  teller/routes/subscriptions.js, teller/routes/transactions.js,
+  teller/routes/categorize.js,
   teller/routes/categorize-helpers.js, teller/data/reference-data.js,
   scripts/detect-subscriptions.js, scripts/detect-transfers.js
 Financial Analytics:
-  teller/services/financial-queries.js, teller/routes/budgets.js,
+  teller/services/financial-queries.js, teller/routes/spending-analytics.js,
+  teller/routes/budgets.js,
   teller/routes/goals.js, teller/routes/credit-scores.js,
   teller/routes/whats-new.js, teller/routes/watchlist.js
 AI Insights & Audit:
@@ -2610,10 +2702,10 @@ INV-25 | Embedded sub-apps detect req.app.get("embedded") and skip their own aut
 INV-26 | Teller transaction pagination terminates on an empty page (count-explicit + from_id), never a hard-coded page-size compare | Subsystem: Bank Sync & Ingestion | Verify: tests/cycle-fixes.test.js (BS-1 block)
 INV-27 | Only sensitivity='normal' docs/facts are embedded AND retrieved; private/secret are never embedded or sent to AI | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js (buildRetrievalQuery), tests/knowledge-facts.test.js
 INV-28 | pgvector objects are created defensively (only if the `vector` extension is available); the migration succeeds and Knowledge degrades to keyword retrieval rather than failing boot | Subsystem: Knowledge / RAG | Verify: code read db/014_vault_vectors.sql + vault-sync.vectorReady
-INV-29 | Retrieval is vector-first with keyword fallback; /query & /diagram degrade to sources-only / null when AI is off or unavailable | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js, tests/knowledge-crossapp.test.js
+INV-29 | Retrieval is HYBRID (vector + keyword legs fused via Reciprocal Rank Fusion, dedupe on kind:id) — either leg failing degrades to the other alone; /query & /diagram degrade to sources-only / null when AI is off or unavailable | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js, apps/per-sistant/tests/rag-v2.test.js
 INV-30 | Embedding dimension (1024) matches chunks.embedding vector(1024); a provider/dimension change is a re-embed migration, not a config flip | Subsystem: Knowledge / RAG | Verify: code read services/embeddings.js EMBED_DIM
 INV-31 | embed_state content-hash skip prevents re-embedding unchanged sources | Subsystem: Knowledge / RAG | Verify: code read vault-sync.embedSource
-INV-32 | Answer cache keyed on query+model+corpus_version (notes+documents+facts max(updated_at)+count); finance-grounded answers bypass the cache | Subsystem: Knowledge / RAG | Verify: tests/knowledge-cache.test.js + routes/rag.js useCache gate
+INV-32 | Answer cache keyed on query+model+corpus_version (notes+documents+facts max(updated_at)+count), with a SEMANTIC fallback layer (query-embedding cosine >= 0.97, same model+corpus_version+TTL — RAG v2, db/019); finance-grounded answers bypass both layers | Subsystem: Knowledge / RAG | Verify: tests/knowledge-cache.test.js + apps/per-sistant/tests/rag-v2.test.js + routes/rag.js useCache gate
 INV-33 | Vault sync is read-only (VAULT_GITHUB_TOKEN); capture writes only with the separate write-scoped VAULT_GITHUB_WRITE_TOKEN (400 until set) | Subsystem: Knowledge / RAG | Verify: tests/knowledge-capture.test.js
 INV-34 | Citations enabled all-or-none per request; incompatible with structured outputs (unused here) | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js (answerWithCitations)
 INV-35 | Cross-app finance grounding reads perfinPool read-only, only on finance queries, never an HTTP self-fetch (parallels INV-25) | Subsystem: Knowledge / RAG | Verify: tests/knowledge-crossapp.test.js

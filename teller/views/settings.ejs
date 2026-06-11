@@ -165,6 +165,15 @@
     </div>
     <div class="setting-row">
       <div class="setting-info">
+        <div class="name">Critical Alert Emails</div>
+        <div class="desc">Email immediately (not just push/bell) when a budget is exceeded or an unusually large charge lands. At most one per category/merchant per day.</div>
+      </div>
+      <div class="setting-control">
+        <label class="toggle"><input type="checkbox" id="critical-alert-toggle"><span class="slider"></span></label>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info">
         <div class="name">Daily Activity Digest</div>
         <div class="desc">Mail a once-per-day digest of new transactions, balance changes, new subscriptions, and notifications from the last 24h. Skipped silently when nothing's new.</div>
       </div>
@@ -519,6 +528,8 @@
           digestPrereq.style.display = (s.embedded || hasWebhook) ? 'none' : 'block';
         }
         // #19: daily digest control
+        var critToggle = document.getElementById('critical-alert-toggle');
+        if (critToggle) critToggle.checked = !!s.critical_alert_emails_enabled;
         var dailyToggle = document.getElementById('daily-digest-toggle');
         if (dailyToggle) dailyToggle.checked = !!s.daily_digest_enabled;
         // Follow-on for #8: target allocation editor
@@ -973,7 +984,7 @@
 
     // --- Widget toggles ---
     var WIDGET_LABELS = {
-      pyramid: 'Financial Pyramid', accounts: 'Account Balances', recentTxns: 'Recent Transactions',
+      pyramid: 'Financial Pyramid', accounts: 'Account Balances', 
       monthlySpend: 'Monthly Spending', categories: 'Categories', merchants: 'Top Merchants',
       upcoming: 'Upcoming Charges', forecast: '30-Day Forecast', charts: 'Charts',
       calendar: 'Bill Calendar Link', cashFlow: 'Cash Flow', savingsRate: 'Savings Rate', yoy: 'Year-over-Year',
@@ -1319,6 +1330,7 @@
       ['weekly-digest-toggle', 'change', function() { updateSetting('weekly_digest_enabled', this.checked); }],
       ['weekly-digest-day-select', 'change', function() { updateSetting('weekly_digest_day', parseInt(this.value)); }],
       ['daily-digest-toggle', 'change', function() { updateSetting('daily_digest_enabled', this.checked); }],
+      ['critical-alert-toggle', 'change', function() { updateSetting('critical_alert_emails_enabled', this.checked); }],
       ['install-btn', 'click', async function() {
         const result = await perfinPromptInstall();
         if (result && result.outcome === 'accepted') showMsg('Installing Perfin…', true);

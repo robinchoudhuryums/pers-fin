@@ -36,6 +36,31 @@ jobs:
           cat /tmp/sync.json
           if [ "$STATUS" -ne 200 ]; then echo "Sync failed"; exit 1; fi
 
+      - name: Sync balances + holdings + investment flows
+        run: |
+          # One call refreshes Teller balances, Plaid balances/liabilities,
+          # investment holdings, and external cash flows (TWR/XIRR) — the
+          # in-process hourly job only runs while the server is awake, so this
+          # guarantees at least daily freshness.
+          STATUS=$(curl -s -o /tmp/balances.json -w "%{http_code}" --max-time 240 \
+            -X POST "${{ secrets.SERVER_URL }}/perfin/api/sync-balances" \
+            -H "x-api-key: ${{ secrets.API_KEY }}" \
+            -H "Content-Type: application/json")
+          echo "Balance sync status: $STATUS"
+          cat /tmp/balances.json
+          if [ "$STATUS" -ne 200 ]; then echo "Balance sync failed"; exit 1; fi
+
+      - name: Net worth snapshot
+        run: |
+          # Daily guaranteed snapshot (ON CONFLICT (snapshot_date) upsert —
+          # the awake-hours in-process job just overwrites with fresher data).
+          STATUS=$(curl -s -o /tmp/networth.json -w "%{http_code}" --max-time 120 \
+            -X POST "${{ secrets.SERVER_URL }}/perfin/api/net-worth/snapshot" \
+            -H "x-api-key: ${{ secrets.API_KEY }}" \
+            -H "Content-Type: application/json")
+          echo "Snapshot status: $STATUS"
+          cat /tmp/networth.json
+
       - name: Run subscription detection
         run: |
           STATUS=$(curl -s -o /tmp/detect.json -w "%{http_code}" \

@@ -72,19 +72,22 @@ describe("classifyTransfer word-boundary matching", () => {
 // safeReturnTo — shell open-redirect guard (F17)
 // ---------------------------------------------------------------------------
 describe("auth.safeReturnTo (open-redirect guard)", () => {
+  // Rejected/absent targets fall back to /per-sistant (the post-login default
+  // — the tile-picker landing at "/" is skipped by design); the security
+  // property under test is unchanged: evil targets never pass through.
   it("allows same-origin absolute paths", () => {
     assert.equal(auth.safeReturnTo("/perfin/dashboard"), "/perfin/dashboard");
     assert.equal(auth.safeReturnTo("/"), "/");
   });
   it("rejects scheme-relative //host targets", () => {
-    assert.equal(auth.safeReturnTo("//evil.com/path"), "/");
+    assert.equal(auth.safeReturnTo("//evil.com/path"), "/per-sistant");
   });
   it("rejects backslash targets and non-absolute / non-string input", () => {
-    assert.equal(auth.safeReturnTo("/\\evil.com"), "/");
-    assert.equal(auth.safeReturnTo("https://evil.com"), "/");
-    assert.equal(auth.safeReturnTo("evil"), "/");
-    assert.equal(auth.safeReturnTo(undefined), "/");
-    assert.equal(auth.safeReturnTo(null), "/");
+    assert.equal(auth.safeReturnTo("/\\evil.com"), "/per-sistant");
+    assert.equal(auth.safeReturnTo("https://evil.com"), "/per-sistant");
+    assert.equal(auth.safeReturnTo("evil"), "/per-sistant");
+    assert.equal(auth.safeReturnTo(undefined), "/per-sistant");
+    assert.equal(auth.safeReturnTo(null), "/per-sistant");
   });
 });
 

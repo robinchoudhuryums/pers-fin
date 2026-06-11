@@ -106,6 +106,72 @@ installed alongside (separate session; web push keeps flowing through the PWA �
 free-signed build has no APNs; notification taps open the PWA). Operator next: on the
 Mac — cd mobile && npm install && npx cap sync ios && npx cap open ios, personal-team
 signing, run on device. Tests: 859 across 30 files (+3 scaffold pins).
+
+### UI polish round 2 (field-testing feedback, same branch)
+Opaque floating chrome (--surface-solid token; toasts/notif-panel/nav-drawer were 3-10%
+alpha — content bled through, screenshot-confirmed). Recent Transactions removed from
+dashboard → Activity page is the surface: mobile filters collapse behind a toggle,
+rows use new txn-compact 2-line grid (~3x density vs responsive-cards). Dashboard:
+4 sections collapsible (localStorage-persisted), Spending by Category month selector
+backed by new GET /api/spending-categories (getCategorySpendingForMonth). Updated 2
+stale cycle-fixes pins that encoded the old layout. Tests: 870 across 31 files
+(+11 ui-polish).
+
+### Login default + icon particle transition (same branch)
+Post-login default → /per-sistant (DEFAULT_POST_LOGIN in shell auth.js; landing still at
+/; safeReturnTo open-redirect guard unchanged, fallback destination updated incl. the
+biometric path in login.ejs — sync-durability pins updated). transition.js rewritten
+around a canvas particle engine: samples the PWA icon img into ~3k colored particles,
+assemble 950ms → shimmer 280ms → burst 520ms → navigate; prefers-reduced-motion =
+instant nav; CSS-mask-reveal kept as fallback. Tests: 874 across 31 files.
+
+### Ops & alerts batch (broad-implement round 3, same branch)
+1) CI migration test: ci.yml 'migrations' job (pgvector/pgvector:pg16 service container)
+runs both apps' migrations twice via scripts/ci-migration-test.js; pools honor
+PGSSLMODE=disable (CI-only escape hatch). 2) Out-of-process scheduling: daily-sync.yml
++= sync-balances + net-worth snapshot; new weekly-reconcile.yml (Teller 90d, Sundays).
+3) RAG v2: hybrid retrieval (RRF fuseRetrieval, INV-29 text updated) + semantic answer
+cache (db/019 query_embedding, cosine>=0.97, INV-32 updated); token-aware chunking
+DEFERRED (full re-embed churn vs marginal gain). 4) Critical-alert emails (opt-in
+critical_alert_emails_enabled; budget-exceeded shares 24h dedup; anomaly = one summary
+email/run, never holds watermark) + bill-calendar .ics (buildBillCalendarIcs + shell
+public /calendar.ics gated on new CALENDAR_FEED_TOKEN env — the one sanctioned query
+credential). 5) Small fry: badge 99+, integer-cent split sum, milestone N+1 removed,
+data-health jobs[] surface. Tests: 901 across 33 files (+27).
+OPERATOR (new): optionally set CALENDAR_FEED_TOKEN (long random) to enable the calendar
+feed; subscribe iOS Calendar to https://<host>/calendar.ics?token=<token>.
+**Where I left off:** everything committed + pushed on `claude/exciting-albattani-ug1gjv`.
+Remaining my-court items: custom income keywords UI only.
+
+### Chunking + splits + browser smokes (broad-implement round 4, same branch)
+1) Token-aware chunking SHIPPED (vault empty = zero re-embed cost): estimated-token
+budgets (max(words×1.32, chars/4)), heading→paragraph→sentence→word cascade (no
+mid-word slicing), CHUNKING_VERSION salts the embed_state hash so future chunker
+changes auto-re-embed. 2) Route splits (interface-preserving, helpers re-exported BY
+IDENTITY): investments.js 2153→1649 (+ routes/investment-performance.js 503 + shared
+services/plaid-client.js); insights.js 1622→1376 (+ routes/insights-email.js 264).
+3) Playwright smokes: e2e/ harness (boot-server.js scratch DBs → shell boot), 8 specs
+(login wrong/right incl. /per-sistant default, both apps' pages, feed gate), CI 'e2e'
+job, npm run test:e2e (kept out of npm test). REAL local verification: started the
+sandbox's Postgres 16 — scripts/ci-migration-test.js passed clean (both apps × 2, all
+19 per-sistant migrations, keyword-degraded path), and the harness booted the full
+shell with every smoke flow verified over HTTP. Chromium itself couldn't download
+(sandbox CDN allowlist) — browser layer executes in CI. Tests: 911 across 33 files.
+
+### Final route splits (round 5, same branch) — user merging after this
+enrollments.js 1555→992 (+ routes/spending-analytics.js 589: the six read-only
+aggregation endpoints); subscriptions.js 1510→1069 (+ routes/transactions.js 467:
+per-transaction search/list/duplicates/csv-overlap/PATCH/splits/DELETE). Mount-based,
+paths unchanged, helper exports stayed put; 2 stale pins relocated. BONUS REAL BUG
+found by the live e2e boot: /api/income-summary 500'd ('column reference name is
+ambiguous' — INCOME_PREDICATE unqualified outer refs × linked_accounts JOIN); fixed
+via INCOME_PREDICATE_T t.-qualified derivation (insights' t2-rewrite convention),
+live-verified 200. All moved endpoints live-verified against a real boot. Subsystem
+lists updated (spending-analytics → Financial Analytics; transactions → Detection &
+Categorization). Tests: 915 across 33 files.
+**BRANCH COMPLETE — handing to operator for merge** (pre-merge: confirm
+TOKEN_ENCRYPTION_PASSPHRASE in Render; watch the first CI run's 3 jobs). Operator items unchanged (merge w/ passphrase check, backup secrets+drill,
+cert rotation, clasp push, VAPID done).
 **Where I left off:** everything committed + pushed on `claude/exciting-albattani-ug1gjv`
 (F1-F10 + docs + investment performance + TWR/XIRR); awaiting review/merge + operator actions
 (Render passphrase check BLOCKS DEPLOY; backup secrets; cert rotation; clasp push for

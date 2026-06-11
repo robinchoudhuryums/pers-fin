@@ -1,5 +1,13 @@
 <%- include('partials/head', { title: 'Transactions', extraStyles: `
     .container { max-width: 1060px; }
+    .filters-toggle { display: none; }
+    @media (max-width: 640px) {
+      /* The Activity list IS the page on mobile — filters collapse behind a
+         toggle so recent transactions are immediately at the top. */
+      .filters-toggle { display: inline-flex; margin-bottom: 12px; }
+      .search-bar { display: none !important; }
+      .search-bar.open { display: flex !important; }
+    }
     .search-bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; margin-bottom: 20px;
                   padding: 20px; background: var(--surface); border: 1px solid var(--border);
                   border-radius: var(--radius); backdrop-filter: blur(12px); }
@@ -76,7 +84,8 @@
   <p class="subtitle">Search, filter, and categorize transactions</p>
   <div id="status-msg" class="status-msg"></div>
 
-  <div class="search-bar">
+  <button type="button" class="btn btn-sm filters-toggle" id="filters-toggle" aria-expanded="false" aria-controls="search-bar">Filters &#9662;</button>
+  <div class="search-bar" id="search-bar">
     <div class="field" style="flex:1;min-width:180px;">
       <label>Search</label>
       <input type="text" id="search-input" placeholder="Merchant name...">
@@ -161,7 +170,7 @@
 
   <div id="result-count" class="result-count"></div>
   <div class="table-wrap">
-    <table class="txn-table responsive-cards">
+    <table class="txn-table txn-compact">
       <thead>
         <tr>
           <th style="width:30px;"><input type="checkbox" id="header-check"></th>

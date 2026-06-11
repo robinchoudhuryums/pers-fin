@@ -65,6 +65,30 @@ function buildRetrievalQuery(query, limit) {
   return { sql, params };
 }
 
+// Reciprocal Rank Fusion (RAG v2): merge vector + keyword result lists into
+// one ranking. Each list contributes 1/(K + rank) per item; items found by
+// BOTH retrievers rank above single-leg hits. Dedupe key is kind:id, so
+// multiple chunks of one document collapse to the best-ranked one. K=60 is
+// the standard RRF damping constant.
+const RRF_K = 60;
+function fuseRetrieval(vecRows, kwRows, limit) {
+  const byKey = new Map();
+  function add(rows) {
+    (rows || []).forEach((r, i) => {
+      const key = r.kind + ":" + r.id;
+      const entry = byKey.get(key) || { row: r, score: 0 };
+      entry.score += 1 / (RRF_K + i + 1);
+      byKey.set(key, entry);
+    });
+  }
+  add(vecRows);
+  add(kwRows);
+  return Array.from(byKey.values())
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map((e) => e.row);
+}
+
 function snippet(text) {
   const t = String(text || "");
   return t.length > MAX_SNIPPET_CHARS ? t.slice(0, MAX_SNIPPET_CHARS) + "…" : t;
@@ -112,8 +136,18 @@ async function cacheGet(pool, qn, model, ver) {
   }
 }
 
-async function cacheSet(pool, qn, model, ver, answer, sources) {
+async function cacheSet(pool, qn, model, ver, answer, sources, qvecLiteral) {
   try {
+    if (qvecLiteral) {
+      await pool.query(
+        `INSERT INTO rag_answer_cache (query_norm, model, corpus_version, answer, sources, query_embedding, created_at)
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6::vector, now())
+         ON CONFLICT (query_norm, model, corpus_version)
+         DO UPDATE SET answer = EXCLUDED.answer, sources = EXCLUDED.sources, query_embedding = EXCLUDED.query_embedding, created_at = now()`,
+        [qn, model, ver, answer, JSON.stringify(sources || []), qvecLiteral]
+      );
+      return;
+    }
     await pool.query(
       `INSERT INTO rag_answer_cache (query_norm, model, corpus_version, answer, sources, created_at)
        VALUES ($1, $2, $3, $4, $5::jsonb, now())
@@ -122,7 +156,32 @@ async function cacheSet(pool, qn, model, ver, answer, sources) {
       [qn, model, ver, answer, JSON.stringify(sources || [])]
     );
   } catch {
-    /* cache write is best-effort */
+    /* cache write is best-effort — incl. pre-019 schemas without the column */
+  }
+}
+
+// Semantic cache lookup (RAG v2): a paraphrase of a previously-answered
+// question hits when its embedding sits within cosine >= SEMANTIC_CACHE_SIM
+// of a cached query (same model + corpus version, same 24h TTL). Swallows
+// every error — pre-019 schema or no pgvector just means exact-match only.
+const SEMANTIC_CACHE_SIM = 0.97;
+async function semanticCacheGet(pool, qvecLiteral, model, ver) {
+  try {
+    const r = await pool.query(
+      `SELECT answer, sources, created_at,
+              1 - (query_embedding <=> $1::vector) AS sim
+       FROM rag_answer_cache
+       WHERE model = $2 AND corpus_version = $3 AND query_embedding IS NOT NULL
+       ORDER BY query_embedding <=> $1::vector
+       LIMIT 1`,
+      [qvecLiteral, model, ver]
+    );
+    if (!r.rows.length) return null;
+    if (parseFloat(r.rows[0].sim) < SEMANTIC_CACHE_SIM) return null;
+    if (Date.now() - new Date(r.rows[0].created_at).getTime() > CACHE_TTL_MS) return null;
+    return { answer: r.rows[0].answer, sources: r.rows[0].sources };
+  } catch {
+    return null;
   }
 }
 
@@ -318,21 +377,42 @@ module.exports = function ({ pool }) {
     ORDER BY c.embedding <=> $1::vector
     LIMIT $2`;
 
-  // Vector-first; falls back to keyword (Phase 0) when Voyage isn't configured,
-  // the chunks table doesn't exist, the query embed fails, or nothing matched.
-  async function retrieve(query, limit) {
+  // Hybrid retrieval (RAG v2): run vector AND keyword legs, fuse with RRF.
+  // A term the embedding under-weights (an exact ID, a rare name) still
+  // surfaces via the keyword leg; semantically-phrased questions still match
+  // via vectors. Either leg failing/unconfigured degrades to the other alone
+  // — the pre-v2 behaviors are both strict subsets of this. `qvec` lets the
+  // caller pass an already-computed query embedding (the /query handler also
+  // needs it for the semantic answer cache — one Voyage call, two uses).
+  async function retrieve(query, limit, qvec) {
+    let vecRows = [];
     if (embeddings.isConfigured() && (await vaultSync.vectorReady(pool))) {
       try {
-        const [qvec] = await embeddings.embed([query], { inputType: "query" });
-        const r = await pool.query(VECTOR_SQL, [embeddings.toVectorLiteral(qvec), limit]);
-        if (r.rows.length) return r.rows;
+        const v = qvec || (await embeddings.embed([query], { inputType: "query" }))[0];
+        const r = await pool.query(VECTOR_SQL, [embeddings.toVectorLiteral(v), limit]);
+        vecRows = r.rows;
       } catch (e) {
-        // fall through to keyword retrieval on any embedding/vector error
+        // vector leg unavailable — keyword leg still runs
       }
     }
-    const { sql, params } = buildRetrievalQuery(query, limit);
-    const r = await pool.query(sql, params);
-    return r.rows;
+    let kwRows = [];
+    try {
+      const { sql, params } = buildRetrievalQuery(query, limit);
+      kwRows = (await pool.query(sql, params)).rows;
+    } catch (e) {
+      // keyword leg failed — vector leg may still have results
+    }
+    return fuseRetrieval(vecRows, kwRows, limit);
+  }
+
+  // Best-effort query embedding for the handler (semantic cache + retrieval).
+  async function embedQuerySafe(query) {
+    try {
+      if (embeddings.isConfigured() && (await vaultSync.vectorReady(pool))) {
+        return (await embeddings.embed([query], { inputType: "query" }))[0] || null;
+      }
+    } catch (e) { /* no embedding — exact cache + keyword retrieval only */ }
+    return null;
   }
 
   // Retrieval only — no model call, so this is free and works without an API key.
@@ -362,7 +442,9 @@ module.exports = function ({ pool }) {
       const query = (req.body && req.body.query || "").toString().trim();
       if (!query) return res.status(400).json({ error: "Query is required." });
 
-      const rows = await retrieve(query, MAX_SOURCES);
+      // One Voyage call serves both hybrid retrieval and the semantic cache.
+      const qvec = await embedQuerySafe(query);
+      const rows = await retrieve(query, MAX_SOURCES, qvec);
       const factDoc = factsToDocument(await matchFacts(pool, query, FACTS_LIMIT));
 
       // Combine current structured facts (authoritative, listed first) with the
@@ -419,7 +501,12 @@ module.exports = function ({ pool }) {
       // the 24h window would serve a stale affordability answer.
       const useCache = !looksFinancial(query);
       if (useCache) {
-        const cached = await cacheGet(pool, qn, model, ver);
+        // Exact match first (free), then semantic (one cheap vector scan):
+        // a paraphrase of an answered question is also a free repeat.
+        let cached = await cacheGet(pool, qn, model, ver);
+        if (!cached && qvec) {
+          cached = await semanticCacheGet(pool, embeddings.toVectorLiteral(qvec), model, ver);
+        }
         if (cached) {
           return res.json({
             answer: cached.answer,
@@ -457,7 +544,7 @@ module.exports = function ({ pool }) {
       // ungrounded answer (no citations) may have drawn on outside knowledge —
       // the UI flags it for the user to double-check.
       const grounded = finalSources.some((s) => s.cited);
-      if (useCache) await cacheSet(pool, qn, model, ver, answer, finalSources);
+      if (useCache) await cacheSet(pool, qn, model, ver, answer, finalSources, qvec ? embeddings.toVectorLiteral(qvec) : null);
       res.json({ answer, sources: finalSources, cached: false, grounded });
     } catch (err) {
       serverError(res, err);
@@ -472,7 +559,9 @@ module.exports = function ({ pool }) {
       const query = (req.body && req.body.query || "").toString().trim();
       if (!query) return res.status(400).json({ error: "Query is required." });
 
-      const rows = await retrieve(query, MAX_SOURCES);
+      // One Voyage call serves both hybrid retrieval and the semantic cache.
+      const qvec = await embedQuerySafe(query);
+      const rows = await retrieve(query, MAX_SOURCES, qvec);
       const factDoc = factsToDocument(await matchFacts(pool, query, FACTS_LIMIT));
       const documents = [];
       const sources = [];
@@ -737,6 +826,8 @@ module.exports = function ({ pool }) {
 
 // Exported for unit tests.
 module.exports.buildRetrievalQuery = buildRetrievalQuery;
+module.exports.fuseRetrieval = fuseRetrieval;
+module.exports.semanticCacheGet = semanticCacheGet;
 module.exports.normalizeQuery = normalizeQuery;
 module.exports.corpusVersion = corpusVersion;
 module.exports.cacheGet = cacheGet;

@@ -837,16 +837,19 @@ describe("Mobile UX: tables reflow to cards (responsive-cards)", () => {
     assert.match(subs, /class="cell-actions"/);
     assert.match(subs, /data-label="Amount"/);
   });
-  it("transactions table opts in and labels its cells", () => {
-    assert.match(txnTpl, /class="txn-table responsive-cards"/);
+  it("transactions table uses the compact mobile layout and labels its cells", () => {
+    // Switched from generic responsive-cards to the dense txn-compact grid
+    // (UI polish round 2) — data-labels still drive the CSS grid areas.
+    assert.match(txnTpl, /class="txn-table txn-compact"/);
     assert.match(txnJs, /class="cell-primary"/);
     assert.match(txnJs, /class="row-actions cell-actions"/);
     assert.match(txnJs, /data-label="Amount"/);
   });
-  it("all five dashboard mini-tables opt in and label their cells", () => {
+  it("all four dashboard mini-tables opt in and label their cells", () => {
     const dash = fs.readFileSync(path.join(__dirname, "../teller/views/dashboard.ejs"), "utf8");
-    // 5 tables: recent txns, monthly, category, merchants, upcoming.
-    assert.equal((dash.match(/responsive-cards/g) || []).length, 5);
+    // 4 tables: monthly, category, merchants, upcoming. (Recent Transactions
+    // moved to the Activity page — UI polish round 2.)
+    assert.equal((dash.match(/responsive-cards/g) || []).length, 4);
     assert.match(dash, /data-label="Total"/);
     assert.match(dash, /data-label="Share"/);
     assert.match(dash, /data-label="Next"/);
@@ -941,7 +944,9 @@ describe("BS-5/6/7/8 — sync-helper correctness (source-pinned)", () => {
     assert.match(enroll, /plaidThrew \? \[\{ provider: "plaid", result: \{ errors:/);
   });
   it("BS-7: monthly income projection clamps the pay-day to the month length", () => {
-    assert.match(enroll, /const payDay = Math\.min\(inc\.typical_day, daysInMonth\)/);
+    // cash-flow moved to routes/spending-analytics.js in the route-file split
+    const analytics = fs.readFileSync(path.join(__dirname, "../teller/routes/spending-analytics.js"), "utf8");
+    assert.match(analytics, /const payDay = Math\.min\(inc\.typical_day, daysInMonth\)/);
   });
   it("BS-8: holdings sync skips items lacking the Investments product", () => {
     assert.match(inv, /PRODUCTS_NOT_SUPPORTED" \|\| code === "PRODUCT_NOT_READY"\) continue/);

@@ -60,8 +60,8 @@ async function getPersistentConfig() {
 let _embeddedPersistentPool = null;
 function setEmbeddedPersistentPool(p) { _embeddedPersistentPool = p; }
 
-// The three email-bearing events all carry { subject, html_body, plain_text }.
-const EMAIL_EVENTS = new Set(["insights_generated", "weekly_summary", "daily_summary"]);
+// The email-bearing events all carry { subject, html_body, plain_text }.
+const EMAIL_EVENTS = new Set(["insights_generated", "weekly_summary", "daily_summary", "critical_alert"]);
 
 // In-process delivery — mirrors what apps/per-sistant/routes/perfin.js does on
 // receipt of the HTTP webhook (recipient resolution + emails-table insert), but
@@ -83,6 +83,7 @@ async function deliverDigestInProcess(event, data) {
       weekly_summary: "Perfin Weekly Digest",
       daily_summary: "Perfin Daily Digest",
       insights_generated: "Perfin Insights",
+      critical_alert: "Perfin Alerts",
     }[event] || "Perfin";
     const subject = (data && data.subject) || fallbackSubject;
     const body = (data && data.plain_text) || "(no body)";
@@ -103,6 +104,42 @@ async function deliverDigestInProcess(event, data) {
     return { sent: true, delivery: "in_process", stored: "scheduled", recipient };
   } catch (err) {
     console.error(`deliverDigestInProcess[${event}]: ${err.message}`);
+    return { sent: false, error: err.message };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helper: critical-alert email (opt-in via Settings → Notifications)
+// ---------------------------------------------------------------------------
+// Sends an immediate email for events the user shouldn't have to discover via
+// the bell: budget exceeded (100%+) and 3x anomaly charges. Reuses the digest
+// email channel (in-process under the shell, HTTP webhook standalone), so it
+// inherits the same recipient resolution. Never throws; disabled by default.
+function escAlertHtml(t) {
+  return String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+async function sendCriticalAlertEmail(title, body) {
+  try {
+    const s = await pool.query(
+      "SELECT critical_alert_emails_enabled FROM user_settings WHERE id = 1"
+    );
+    if (!s.rows[0] || !s.rows[0].critical_alert_emails_enabled) {
+      return { sent: false, reason: "disabled" };
+    }
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="margin:0;padding:0;background:#080b12;font-family:Inter,system-ui,sans-serif;">
+      <div style="max-width:640px;margin:0 auto;padding:32px 24px;">
+        <h1 style="color:#eb6b6b;font-size:18px;margin:0 0 12px;">${escAlertHtml(title)}</h1>
+        <div style="background:#0f1320;border:1px solid #663333;border-radius:12px;padding:20px;color:#cccccc;font-size:13px;line-height:1.7;white-space:pre-line;">${escAlertHtml(body)}</div>
+        <p style="color:#555555;font-size:10px;margin:16px 0 0;">Perfin critical alert — toggle off under Settings &rarr; Notifications.</p>
+      </div>
+    </body></html>`;
+    return await sendPerSistantWebhook("critical_alert", {
+      subject: "Perfin alert: " + title,
+      html_body: html,
+      plain_text: title + "\n\n" + body,
+    });
+  } catch (err) {
+    console.error("sendCriticalAlertEmail error:", err.message);
     return { sent: false, error: err.message };
   }
 }
@@ -405,5 +442,6 @@ router.post("/api/sso/validate", ssoLimiter, async (req, res) => {
 
 // Export both the router and the webhook sender function (for use by other routes)
 module.exports = router;
+module.exports.sendCriticalAlertEmail = sendCriticalAlertEmail;
 module.exports.sendPerSistantWebhook = sendPerSistantWebhook;
 module.exports.setEmbeddedPersistentPool = setEmbeddedPersistentPool;

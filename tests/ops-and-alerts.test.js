@@ -1,0 +1,318 @@
+// ============================================================================
+// Ops & alerts batch (broad-implement round 3)
+// ============================================================================
+//   - CI migration test plumbing (script + workflow job + SSL escape hatch)
+//   - Out-of-process scheduling workflows (daily balances/snapshot, weekly
+//     reconcile)
+//   - Critical-alert emails (opt-in, budget-exceeded + anomaly)
+//   - Bill-calendar .ics feed (builder + token-gated shell route)
+//   - Small fry: badge cap, integer-cent splits, data-health jobs surface,
+//     goal-milestone N+1
+
+const { describe, it, before, afterEach } = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("fs");
+const path = require("path");
+
+if (!process.env.NEON_DATABASE_URL) process.env.NEON_DATABASE_URL = "postgres://mock:mock@localhost/mock";
+if (!process.env.TOKEN_ENCRYPTION_PASSPHRASE) process.env.TOKEN_ENCRYPTION_PASSPHRASE = "test-passphrase";
+
+const ROOT = path.join(__dirname, "..");
+const read = (...p) => fs.readFileSync(path.join(ROOT, ...p), "utf8");
+
+// ---------------------------------------------------------------------------
+// CI migration test + out-of-process scheduling
+// ---------------------------------------------------------------------------
+describe("CI migration test plumbing", () => {
+  it("ci.yml gains a migrations job against a real Postgres (pgvector image)", () => {
+    const ci = read(".github", "workflows", "ci.yml");
+    assert.match(ci, /migrations:/);
+    assert.match(ci, /pgvector\/pgvector:pg16/);
+    assert.match(ci, /scripts\/ci-migration-test\.js/);
+  });
+
+  it("the script runs both apps' migrations twice (idempotency)", () => {
+    const s = read("scripts", "ci-migration-test.js");
+    assert.equal((s.match(/perfin\.runMigrations\(\)/g) || []).length, 2);
+    assert.equal((s.match(/persistent\.runMigrations\(\)/g) || []).length, 2);
+    assert.match(s, /PGSSLMODE = "disable"/);
+  });
+
+  it("both pools honor PGSSLMODE=disable ONLY as the CI escape hatch", () => {
+    assert.match(read("teller", "services", "database.js"),
+      /ssl: process\.env\.PGSSLMODE === "disable" \? false : \{ rejectUnauthorized: true \}/);
+    assert.match(read("apps", "per-sistant", "db.js"),
+      /process\.env\.PGSSLMODE !== "disable"\) \? \{ rejectUnauthorized: true \} : false/);
+  });
+
+  it("daily-sync also refreshes balances + net worth; weekly reconcile exists", () => {
+    const daily = read(".github", "workflows", "daily-sync.yml");
+    assert.match(daily, /\/perfin\/api\/sync-balances/);
+    assert.match(daily, /\/perfin\/api\/net-worth\/snapshot/);
+    const weekly = read(".github", "workflows", "weekly-reconcile.yml");
+    assert.match(weekly, /\/perfin\/api\/sync\/reconcile/);
+    assert.match(weekly, /"provider": "teller"/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Critical-alert emails
+// ---------------------------------------------------------------------------
+describe("critical-alert emails", () => {
+  let dbModule, originalPoolQuery, persistent;
+
+  before(() => {
+    dbModule = require("../teller/services/database");
+    originalPoolQuery = dbModule.pool.query;
+    persistent = require("../teller/routes/persistent");
+  });
+
+  afterEach(() => { dbModule.pool.query = originalPoolQuery; });
+
+  it("is disabled by default and short-circuits without touching the webhook path", async () => {
+    let calls = 0;
+    dbModule.pool.query = async (sql) => {
+      calls++;
+      if (/critical_alert_emails_enabled/.test(sql)) return { rows: [{ critical_alert_emails_enabled: false }] };
+      return { rows: [] };
+    };
+    const r = await persistent.sendCriticalAlertEmail("Budget exceeded: Dining", "details");
+    assert.deepEqual(r, { sent: false, reason: "disabled" });
+    assert.equal(calls, 1, "only the settings read — no config/webhook queries");
+  });
+
+  it("never throws — a DB error reports { sent: false }", async () => {
+    dbModule.pool.query = async () => { throw new Error("boom"); };
+    const r = await persistent.sendCriticalAlertEmail("t", "b");
+    assert.equal(r.sent, false);
+  });
+
+  it("the email channel accepts the critical_alert event and escapes HTML", () => {
+    const src = read("teller", "routes", "persistent.js");
+    assert.match(src, /EMAIL_EVENTS = new Set\(\["insights_generated", "weekly_summary", "daily_summary", "critical_alert"\]\)/);
+    assert.match(src, /escAlertHtml\(title\)/);
+    assert.match(src, /escAlertHtml\(body\)/);
+  });
+
+  it("budget-exceeded emails share the 24h push dedup; anomaly emails are one-per-run and never hold the watermark", () => {
+    const startup = read("teller", "startup.js");
+    const exceedBlock = startup.slice(startup.indexOf('tag = "budget-over-'), startup.indexOf('} else if (pct >= 80)'));
+    assert.match(exceedBlock, /sendCriticalAlertEmail/);
+    const enroll = read("teller", "routes", "enrollments.js");
+    assert.match(enroll, /sendCriticalAlertEmail\(\s*anomalies\.rows\.length > 1/);
+    // The email try/catch must not set notifyFailed (that would hold the
+    // anomaly watermark and re-push every later sync).
+    const emailBlock = enroll.slice(enroll.indexOf("Opt-in critical-alert email"), enroll.indexOf("Anomaly alert email error"));
+    assert.ok(!emailBlock.includes("notifyFailed = true"), "email failure must not hold the push watermark");
+  });
+
+  it("PATCH /api/settings persists the toggle", async () => {
+    const supertest = require("supertest");
+    const express = require("express");
+    const app = express();
+    app.use(express.json());
+    app.use(require("../teller/routes/settings"));
+    let captured;
+    dbModule.pool.query = async (sql, params) => {
+      if (/UPDATE user_settings SET/i.test(sql)) { captured = { sql, params }; return { rows: [{ id: 1 }] }; }
+      return { rows: [] };
+    };
+    await supertest(app).patch("/api/settings").send({ critical_alert_emails_enabled: true }).expect(200);
+    assert.match(captured.sql, /critical_alert_emails_enabled = \$/);
+    assert.ok(captured.params.includes(true));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bill-calendar .ics feed
+// ---------------------------------------------------------------------------
+describe("bill-calendar .ics feed", () => {
+  let dbModule, originalPoolQuery;
+  const subs = require("../teller/routes/subscriptions");
+
+  before(() => {
+    dbModule = require("../teller/services/database");
+    originalPoolQuery = dbModule.pool.query;
+  });
+  afterEach(() => { dbModule.pool.query = originalPoolQuery; });
+
+  it("projects subscription charges and manual bills as all-day VEVENTs", async () => {
+    const past = new Date(Date.now() - 5 * 86400000).toISOString().slice(0, 10);
+    dbModule.pool.query = async (sql) => {
+      if (/FROM detected_subscriptions/i.test(sql)) return { rows: [
+        { id: 1, display_name: "Netflix, Inc; LLC", amount: "15.49", cadence_days: 30, next_expected: past },
+      ]};
+      if (/FROM manual_bills/i.test(sql)) return { rows: [
+        { id: 7, name: "Rent", amount: "1800", due_day: 1, cadence: "monthly" },
+      ]};
+      return { rows: [] };
+    };
+    const ics = await subs.buildBillCalendarIcs(90);
+    assert.match(ics, /BEGIN:VCALENDAR/);
+    assert.match(ics, /X-WR-CALNAME:Perfin Bills/);
+    // Past next_expected advanced into the window, then projected by cadence
+    const events = ics.match(/BEGIN:VEVENT/g) || [];
+    assert.ok(events.length >= 4, "30d cadence over 90d + monthly rent = several events, got " + events.length);
+    assert.match(ics, /SUMMARY:Netflix\\, Inc\\; LLC — \$15\.49/, "RFC5545 comma/semicolon escaping");
+    assert.match(ics, /UID:sub-1-\d{8}@perfin/, "stable UIDs so refetches update in place");
+    assert.match(ics, /DTSTART;VALUE=DATE:\d{8}/, "all-day events");
+    assert.match(ics, /SUMMARY:Rent — \$1800\.00 \(bill\)/);
+  });
+
+  it("the shell route is token-gated, constant-time, and off when unconfigured", () => {
+    const shell = read("shell", "index.js");
+    assert.match(shell, /CALENDAR_FEED_TOKEN/);
+    assert.match(shell, /timingSafeEqual/);
+    assert.match(shell, /if \(!expected\) return res\.status\(404\)\.end\(\);/, "unset env = feature off");
+    // The documented API_KEY header-only rule stays intact — this is a
+    // separate single-purpose token, the one sanctioned query credential.
+    assert.match(shell, /deliberately separate from API_KEY/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Small fry
+// ---------------------------------------------------------------------------
+describe("small fry", () => {
+  it("unread badge caps at 99+", () => {
+    assert.match(read("teller", "views", "partials", "nav.ejs"), /unread_count > 99 \? '99\+'/);
+  });
+
+  it("split validation accumulates in integer cents", () => {
+    // splits moved to routes/transactions.js in the route-file split
+    const src = read("teller", "routes", "transactions.js");
+    assert.match(src, /sumCents \+= Math\.round\(n \* 100\);/);
+    assert.match(src, /Math\.abs\(sumCents - Math\.round\(parentAmount \* 100\)\) > 1/);
+  });
+
+  it("goal-milestone job reads notes from the main SELECT (no N+1)", () => {
+    const src = read("teller", "startup.js");
+    assert.match(src, /SELECT g\.id, g\.name, g\.target_amount, g\.notes,/);
+    assert.ok(!src.includes('"SELECT notes FROM financial_goals WHERE id = $1"'), "per-goal re-query removed");
+  });
+
+  it("data-health surfaces job heartbeats with per-job staleness", () => {
+    const src = read("teller", "routes", "settings.js");
+    assert.match(src, /FROM job_runs WHERE job_name != '_watchdog'/);
+    assert.match(src, /jobHealth\.thresholdMs\(j\.job_name\)/);
+  });
+
+  it("thresholdMs floors at 36h and scales with the interval", () => {
+    const jobHealth = require("../teller/services/job-health");
+    const H = 60 * 60 * 1000;
+    assert.equal(jobHealth.thresholdMs("bank-auto-sync"), 36 * H, "hourly job → 36h floor");
+    assert.equal(jobHealth.thresholdMs("csv-reminder"), 96 * H, "24h job → 4× interval");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Route-file splits (interface-preserving)
+// ---------------------------------------------------------------------------
+describe("route-file splits preserve every import path", () => {
+  it("investments re-exports the performance module's helpers by identity", () => {
+    const inv = require("../teller/routes/investments");
+    const perf = require("../teller/routes/investment-performance");
+    for (const fn of ["computeTWR", "computeXIRR", "classifyPlaidFlow", "buildPortfolioSeries", "syncAllPlaidInvestmentFlows"]) {
+      assert.equal(inv[fn], perf[fn], fn + " must be the same function object");
+    }
+    assert.match(read("teller", "routes", "investments.js"), /router\.use\(investmentPerformance\)/);
+  });
+
+  it("insights re-exports the email renderers by identity", () => {
+    const insights = require("../teller/routes/insights");
+    const email = require("../teller/routes/insights-email");
+    for (const fn of ["renderInsightEmail", "renderWeeklyDigestEmail", "renderDailyDigestEmail"]) {
+      assert.equal(insights[fn], email[fn], fn + " must be the same function object");
+    }
+  });
+
+  it("the Plaid client factory is shared, not duplicated", () => {
+    const inv = read("teller", "routes", "investments.js");
+    const perf = read("teller", "routes", "investment-performance.js");
+    assert.match(inv, /require\("\.\.\/services\/plaid-client"\)/);
+    assert.match(perf, /require\("\.\.\/services\/plaid-client"\)/);
+    assert.ok(!inv.includes("new PlaidApi("), "client construction lives only in the service");
+    assert.ok(!perf.includes("new PlaidApi("));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Playwright e2e harness
+// ---------------------------------------------------------------------------
+describe("e2e harness", () => {
+  it("boot script creates scratch DBs and disables TLS for the local container", () => {
+    const boot = read("e2e", "boot-server.js");
+    assert.match(boot, /perfin_e2e/);
+    assert.match(boot, /persistent_e2e/);
+    assert.match(boot, /PGSSLMODE = "disable"/);
+    assert.match(boot, /require\("\.\.\/shell\/index\.js"\)/);
+  });
+
+  it("config waits on /health and CI runs it with a Postgres service", () => {
+    const cfg = read("e2e", "playwright.config.js");
+    assert.match(cfg, /url: "http:\/\/localhost:3000\/health"/);
+    const ci = read(".github", "workflows", "ci.yml");
+    assert.match(ci, /e2e:/);
+    assert.match(ci, /playwright install chromium --with-deps/);
+    assert.match(ci, /npm run test:e2e/);
+    const pkg = JSON.parse(read("package.json"));
+    assert.equal(pkg.scripts["test:e2e"], "playwright test --config e2e/playwright.config.js");
+  });
+
+  it("smokes cover login (wrong+right PIN), both apps, and the feed gate", () => {
+    const spec = read("e2e", "smoke.spec.js");
+    assert.match(spec, /incorrect pin/i);
+    assert.match(spec, /toHaveURL\(\/\\\/per-sistant\/\)/, "asserts the post-login default");
+    assert.match(spec, /\/perfin\/dashboard/);
+    assert.match(spec, /\/perfin\/transactions/);
+    assert.match(spec, /calendar\.ics/);
+  });
+});
+
+describe("route-file splits round 2 (enrollments + subscriptions)", () => {
+  it("enrollments mounts the analytics sub-router; sync helpers stay put", () => {
+    const enr = read("teller", "routes", "enrollments.js");
+    assert.match(enr, /router\.use\(spendingAnalytics\)/);
+    assert.match(enr, /module\.exports\.syncAllEnrollments = syncAllEnrollments;/);
+    const an = read("teller", "routes", "spending-analytics.js");
+    for (const ep of ["/api/spending-summary", "/api/spending-categories", "/api/cash-flow", "/api/spending-yoy", "/api/savings-rate", "/api/income-summary"]) {
+      assert.ok(an.includes('"' + ep + '"'), ep + " lives in spending-analytics");
+      assert.ok(!enr.includes('"' + ep + '"'), ep + " removed from enrollments");
+    }
+  });
+
+  it("subscriptions mounts the transactions sub-router; detection + ICS stay put", () => {
+    const subs = read("teller", "routes", "subscriptions.js");
+    assert.match(subs, /router\.use\(transactionRoutes\)/);
+    assert.match(subs, /module\.exports\.runSubscriptionDetection = runSubscriptionDetection;/);
+    assert.match(subs, /module\.exports\.buildBillCalendarIcs = buildBillCalendarIcs;/);
+    const txn = read("teller", "routes", "transactions.js");
+    for (const marker of ['"/api/transactions/search"', '"/api/transactions"', '"/api/transactions/duplicates"', "/api/transactions/:id/splits"]) {
+      assert.ok(txn.includes(marker), marker + " lives in routes/transactions");
+    }
+    assert.ok(!subs.includes('"/api/transactions/search"'), "search removed from subscriptions");
+  });
+});
+
+describe("income-summary join ambiguity (found by live e2e boot)", () => {
+  it("the by-account query uses the t.-qualified predicate derivation", () => {
+    const src = read("teller", "routes", "spending-analytics.js");
+    assert.match(src, /const INCOME_PREDICATE_T = INCOME_PREDICATE\.replace\(/);
+    assert.match(src, /\$\{INCOME_PREDICATE_T\}[\s\S]{0,200}GROUP BY la\.id/,
+      "the linked_accounts-joined query must use the qualified variant");
+  });
+
+  it("the derivation qualifies outer refs but not the __t2 subquery refs", () => {
+    const { INCOME_PREDICATE } = require("../teller/services/financial-queries");
+    const qualified = INCOME_PREDICATE.replace(
+      /(?<!__t2\.)\b(merchant_name|name|account_id|amount|date|user_category|category)\b/g,
+      "t.$1"
+    );
+    assert.ok(!/(?<![._\w])name\b(?!\()/.test(qualified.replace(/t\.name|merchant_name|__t2\.\w+/g, "")),
+      "no bare unqualified name remains");
+    assert.match(qualified, /COALESCE\(t\.merchant_name, t\.name, ''\)/);
+    assert.match(qualified, /__t2\.account_id <> t\.account_id/, "outer qualified, subquery alias untouched");
+    assert.match(qualified, /__t2\.amount = ABS\(t\.amount\)/);
+    assert.ok(!qualified.includes("__t2.t."), "lookbehind protects __t2.* references");
+  });
+});
