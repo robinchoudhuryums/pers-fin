@@ -316,9 +316,14 @@ shell/
                                  Primary effect: particle assembly/disassembly
                                  of the PWA icon — samples the overlay's
                                  .atrans-art <img> via canvas getImageData
-                                 into ~3k colored particles that fly in to
-                                 assemble the icon, shimmer, then burst
-                                 (assemble 950ms / hold 280ms / disperse
+                                 (96×96 grid → ~2.5px particles, capped at
+                                 7500 with uniform thinning, dpr-aware up to
+                                 3x) that fly in to assemble the icon, then
+                                 the REAL image crossfades in at full
+                                 resolution (drawImage sharpen — the finale
+                                 is never just the particle mosaic), holds,
+                                 and bursts apart as the image fades back out
+                                 (assemble 950ms / hold 430ms / disperse
                                  520ms; navigates ~90ms before the end).
                                  Honors prefers-reduced-motion (instant
                                  navigation); falls back to the original CSS
@@ -389,9 +394,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (963 tests as of latest); use
+  Perfin and Per-sistant test files (967 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 963 tests across 35 test files (incl.
+  Current count: 967 tests across 35 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -1223,7 +1228,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 963 tests passing across 35 test files (Perfin + Per-sistant), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 967 tests passing across 35 test files (Perfin + Per-sistant), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
@@ -1974,6 +1979,14 @@ rows) can dismiss them from the UI or run `POST /api/cleanup`.
   `verifyAuthenticationResponse` (matching the `userVerification:"required"` it
   requests) — @simplewebauthn v11 already defaults it true, so this is a
   defense-in-depth pin against a future SDK-default flip (PSA2).
+- **WebAuthn transports**: registration persists the authenticator's
+  `transports` (`webauthn_credentials.transports TEXT[]`), and BOTH
+  authenticate-options endpoints (shell + standalone) echo them in
+  `allowCredentials`. Without them the browser can't tell the credential is a
+  platform authenticator and offers only cross-device options (QR code / USB
+  key) at login. Pre-column rows (NULL) fall back to `['internal','hybrid']` —
+  always correct because registration pins `authenticatorAttachment:
+  'platform'`. Pinned by tests/budget-cap-webauthn.test.js.
 - **Biometric registration UI**: Settings → Security → "Biometric Login"
   section lists registered credentials and provides Register / Remove
   buttons via the existing `/api/webauthn/*` endpoints. The register

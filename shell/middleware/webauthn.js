@@ -62,11 +62,21 @@ function attach(app, perfinPool) {
   // No prior session needed (biometric auth is the alternative to PIN entry).
   app.post("/api/shell/webauthn/authenticate-options", async (req, res) => {
     try {
-      const creds = await perfinPool.query("SELECT credential_id FROM webauthn_credentials");
+      const creds = await perfinPool.query("SELECT credential_id, transports FROM webauthn_credentials");
       if (creds.rows.length === 0) {
         return res.status(404).json({ error: "No biometric credentials registered" });
       }
-      const allowCredentials = creds.rows.map(r => ({ id: r.credential_id, type: "public-key" }));
+      // Include each credential's transports — without them the browser can't
+      // tell this is a platform (FaceID/TouchID) credential and shows only the
+      // cross-device options (QR code / USB security key) on the login screen.
+      // Rows registered before the transports column existed fall back to
+      // ['internal','hybrid'], which is always right here because registration
+      // pins authenticatorAttachment: 'platform' (teller/pages/login.js).
+      const allowCredentials = creds.rows.map(r => ({
+        id: r.credential_id,
+        type: "public-key",
+        transports: (Array.isArray(r.transports) && r.transports.length) ? r.transports : ["internal", "hybrid"],
+      }));
       const rp = getRp(req);
       const options = await simplewebauthn.generateAuthenticationOptions({
         rpID: rp.id,
