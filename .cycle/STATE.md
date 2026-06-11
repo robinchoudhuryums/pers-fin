@@ -124,6 +124,26 @@ biometric path in login.ejs — sync-durability pins updated). transition.js rew
 around a canvas particle engine: samples the PWA icon img into ~3k colored particles,
 assemble 950ms → shimmer 280ms → burst 520ms → navigate; prefers-reduced-motion =
 instant nav; CSS-mask-reveal kept as fallback. Tests: 874 across 31 files.
+
+### Ops & alerts batch (broad-implement round 3, same branch)
+1) CI migration test: ci.yml 'migrations' job (pgvector/pgvector:pg16 service container)
+runs both apps' migrations twice via scripts/ci-migration-test.js; pools honor
+PGSSLMODE=disable (CI-only escape hatch). 2) Out-of-process scheduling: daily-sync.yml
++= sync-balances + net-worth snapshot; new weekly-reconcile.yml (Teller 90d, Sundays).
+3) RAG v2: hybrid retrieval (RRF fuseRetrieval, INV-29 text updated) + semantic answer
+cache (db/019 query_embedding, cosine>=0.97, INV-32 updated); token-aware chunking
+DEFERRED (full re-embed churn vs marginal gain). 4) Critical-alert emails (opt-in
+critical_alert_emails_enabled; budget-exceeded shares 24h dedup; anomaly = one summary
+email/run, never holds watermark) + bill-calendar .ics (buildBillCalendarIcs + shell
+public /calendar.ics gated on new CALENDAR_FEED_TOKEN env — the one sanctioned query
+credential). 5) Small fry: badge 99+, integer-cent split sum, milestone N+1 removed,
+data-health jobs[] surface. Tests: 901 across 33 files (+27).
+OPERATOR (new): optionally set CALENDAR_FEED_TOKEN (long random) to enable the calendar
+feed; subscribe iOS Calendar to https://<host>/calendar.ics?token=<token>.
+**Where I left off:** everything committed + pushed on `claude/exciting-albattani-ug1gjv`.
+Remaining my-court items: Playwright smokes (optional), route-file splits, custom income
+keywords UI. Operator items unchanged (merge w/ passphrase check, backup secrets+drill,
+cert rotation, clasp push, VAPID done).
 **Where I left off:** everything committed + pushed on `claude/exciting-albattani-ug1gjv`
 (F1-F10 + docs + investment performance + TWR/XIRR); awaiting review/merge + operator actions
 (Render passphrase check BLOCKS DEPLOY; backup secrets; cert rotation; clasp push for
