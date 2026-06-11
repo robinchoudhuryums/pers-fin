@@ -6,7 +6,7 @@ const express = require("express");
 const router = express.Router();
 const { pool, ENCRYPTION_PASSPHRASE } = require("../services/database");
 const { tellerRequest } = require("../services/teller-api");
-const { INCOME_PREDICATE, NOT_TRANSFER, INVESTMENT_ACCOUNT_TYPES, SPLIT_AMOUNT, getMonthlySpending, getMonthlyIncome } = require("../services/financial-queries");
+const { INCOME_PREDICATE, NOT_TRANSFER, INVESTMENT_ACCOUNT_TYPES, SPLIT_AMOUNT, getMonthlySpending, getMonthlyIncome, getCategorySpendingForMonth } = require("../services/financial-queries");
 
 // POST /api/enroll — store Teller Connect enrollment
 router.post("/api/enroll", async (req, res) => {
@@ -870,6 +870,25 @@ router.post("/api/sync-balances", async (_req, res) => {
     });
   } catch (err) {
     console.error("sync-balances error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// GET /api/spending-categories?month=YYYY-MM — per-month category breakdown
+// for the dashboard's "Spending by Category" month selector. Uses the shared
+// getCategorySpendingForMonth helper (splits-replacement, reimbursed
+// exclusion, shared-card split_pct) so the figures match budgets/snapshots.
+router.get("/api/spending-categories", async (req, res) => {
+  const month = String(req.query.month || "");
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
+    return res.status(400).json({ error: "month must be 'YYYY-MM'" });
+  }
+  try {
+    const rows = await getCategorySpendingForMonth(pool, month);
+    rows.sort((a, b) => parseFloat(b.spent) - parseFloat(a.spent));
+    res.json({ month, categories: rows });
+  } catch (err) {
+    console.error("spending-categories error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
   }
 });

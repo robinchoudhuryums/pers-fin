@@ -450,6 +450,17 @@
       });
     });
 
+    // Mobile filters toggle (the list is the page; filters collapse on top)
+    var filtersToggle = document.getElementById('filters-toggle');
+    if (filtersToggle) {
+      filtersToggle.addEventListener('click', function() {
+        var bar = document.getElementById('search-bar');
+        var open = bar.classList.toggle('open');
+        filtersToggle.setAttribute('aria-expanded', String(open));
+        filtersToggle.innerHTML = open ? 'Filters &#9652;' : 'Filters &#9662;';
+      });
+    }
+
     // Set default date range to last 6 months
     var now = new Date();
     var sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 6, now.getDate());

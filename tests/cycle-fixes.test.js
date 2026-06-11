@@ -837,16 +837,19 @@ describe("Mobile UX: tables reflow to cards (responsive-cards)", () => {
     assert.match(subs, /class="cell-actions"/);
     assert.match(subs, /data-label="Amount"/);
   });
-  it("transactions table opts in and labels its cells", () => {
-    assert.match(txnTpl, /class="txn-table responsive-cards"/);
+  it("transactions table uses the compact mobile layout and labels its cells", () => {
+    // Switched from generic responsive-cards to the dense txn-compact grid
+    // (UI polish round 2) — data-labels still drive the CSS grid areas.
+    assert.match(txnTpl, /class="txn-table txn-compact"/);
     assert.match(txnJs, /class="cell-primary"/);
     assert.match(txnJs, /class="row-actions cell-actions"/);
     assert.match(txnJs, /data-label="Amount"/);
   });
-  it("all five dashboard mini-tables opt in and label their cells", () => {
+  it("all four dashboard mini-tables opt in and label their cells", () => {
     const dash = fs.readFileSync(path.join(__dirname, "../teller/views/dashboard.ejs"), "utf8");
-    // 5 tables: recent txns, monthly, category, merchants, upcoming.
-    assert.equal((dash.match(/responsive-cards/g) || []).length, 5);
+    // 4 tables: monthly, category, merchants, upcoming. (Recent Transactions
+    // moved to the Activity page — UI polish round 2.)
+    assert.equal((dash.match(/responsive-cards/g) || []).length, 4);
     assert.match(dash, /data-label="Total"/);
     assert.match(dash, /data-label="Share"/);
     assert.match(dash, /data-label="Next"/);

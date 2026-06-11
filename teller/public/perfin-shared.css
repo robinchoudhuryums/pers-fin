@@ -13,6 +13,11 @@
   --red: #eb6b6b; --red-bg: rgba(235,107,107,0.1);
   --yellow: #f0c36d; --yellow-bg: rgba(240,195,109,0.1);
   --blue: #7fb5e6; --blue-bg: rgba(127,181,230,0.1);
+  /* Opaque surface for floating chrome (toasts, notif panel, nav drawer).
+     The translucent --surface (4% alpha) is fine for in-flow cards over the
+     page background, but anything that floats OVER content needs full
+     opacity or the content bleeds through and the text is unreadable. */
+  --surface-solid: #151a26;
   --radius: 12px;
 }
 [data-theme="light"] {
@@ -27,6 +32,7 @@
   --red: #c94444; --red-bg: rgba(201,68,68,0.1);
   --yellow: #c49a2a; --yellow-bg: rgba(196,154,42,0.1);
   --blue: #4a8abf; --blue-bg: rgba(74,138,191,0.1);
+  --surface-solid: #fdfbf6;
 }
 /* Skip-to-content link for keyboard users */
 .skip-link {
@@ -128,7 +134,7 @@ a:hover { color: var(--text); }
 .notif-panel { position: fixed; top: calc(56px + env(safe-area-inset-top)); right: 12px;
                width: 340px; max-height: 60vh;
                overflow-y: auto;
-               background: var(--surface); border: 1px solid var(--border);
+               background: var(--surface-solid); border: 1px solid var(--border);
                border-radius: 12px;
                box-shadow: 0 8px 32px rgba(0,0,0,0.4);
                z-index: 99; padding: 0;
@@ -137,7 +143,7 @@ a:hover { color: var(--text); }
 .notif-grabber { display: none; }
 .notif-header { display: flex; align-items: center; justify-content: space-between;
                 padding: 12px 16px; border-bottom: 1px solid var(--border);
-                position: sticky; top: 0; background: var(--surface); z-index: 1; }
+                position: sticky; top: 0; background: var(--surface-solid); z-index: 1; }
 .notif-header strong { font-size: 14px; }
 .notif-mark-all { font-size: 11px; background: none; border: none;
                   color: var(--teal); cursor: pointer; padding: 4px 8px;
@@ -237,8 +243,9 @@ h1 { font-size: 42px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 8
          cursor: pointer; word-break: break-word;
          animation: toastIn 0.25s ease both;
          --tdir: -12px; }
-.toast.success { background: var(--green-bg); border: 1px solid rgba(111,207,151,0.18); color: var(--green); }
-.toast.error   { background: var(--red-bg);   border: 1px solid rgba(235,107,107,0.18); color: var(--red); }
+.toast { background-color: var(--surface-solid); }
+.toast.success { background-image: linear-gradient(var(--green-bg), var(--green-bg)); border: 1px solid rgba(111,207,151,0.45); color: var(--green); }
+.toast.error   { background-image: linear-gradient(var(--red-bg), var(--red-bg));   border: 1px solid rgba(235,107,107,0.45); color: var(--red); }
 .toast-leaving { animation: toastOut 0.2s ease both; }
 @keyframes toastIn  { from { transform: translateY(var(--tdir)); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 @keyframes toastOut { to { transform: translateY(var(--tdir)); opacity: 0; } }
@@ -349,7 +356,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   .topnav .logo { flex: 1; min-width: 0; }
   .nav-hamburger { display: flex; }
   .topnav .nav-links { display: none; position: absolute; top: 100%; left: 0; right: 0;
-    flex-direction: column; gap: 0; background: var(--surface, #16181d);
+    flex-direction: column; gap: 0; background: var(--surface-solid);
     border: 1px solid var(--border); border-radius: 10px; padding: 6px; margin-top: 4px;
     box-shadow: 0 12px 32px rgba(0,0,0,0.4); z-index: 95; }
   .topnav.nav-open .nav-links { display: flex; }
@@ -466,3 +473,57 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   background: var(--bg); box-shadow: 0 2px 8px rgba(0,0,0,0.25); }
 #ptr-indicator.ptr-ready .ptr-ring { border-top-color: var(--green); }
 #ptr-indicator.ptr-refreshing .ptr-ring { animation: spin 0.8s linear infinite; }
+
+/* ---------------------------------------------------------------------------
+ * Collapsible dashboard sections — h2 toggles, chevron rotates, state kept in
+ * localStorage (perfin_collapse_<key>). Controls inside the h2 (the category
+ * month <select>) don't toggle — the click handler ignores form elements.
+ * --------------------------------------------------------------------------- */
+.section.collapsible > h2 { cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: 10px; }
+.section.collapsible > h2::after { content: '\25be'; margin-left: auto;
+  font-size: 13px; color: var(--text-muted); transition: transform 0.2s ease; }
+.section.collapsible > h2 > select { margin-left: auto; }
+.section.collapsible > h2 > select + nothing, .section.collapsible > h2 > select ~ * { margin-left: 0; }
+.section.collapsible > h2:has(> select)::after { margin-left: 0; }
+.section.collapsed > h2 { margin-bottom: 0; }
+.section.collapsed > h2::after { transform: rotate(-90deg); }
+.section.collapsed > *:not(h2) { display: none !important; }
+
+/* ---------------------------------------------------------------------------
+ * Compact transaction rows (Activity page, ≤640px). Replaces the generic
+ * responsive-cards label:value stack (~150px/row) with a dense two-line grid
+ * (~64px/row): merchant + amount on line 1, date · category + actions on
+ * line 2. Account column is hidden at this width (visible in the Edit modal).
+ * --------------------------------------------------------------------------- */
+@media (max-width: 640px) {
+  table.txn-compact { border-collapse: separate; }
+  table.txn-compact thead { position: absolute; width: 1px; height: 1px;
+    margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); border: 0; }
+  table.txn-compact tbody tr { display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "check merchant merchant amount"
+      "check date category actions";
+    column-gap: 10px; row-gap: 3px; align-items: center;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; }
+  table.txn-compact tbody tr td { display: block; padding: 0; border: 0; }
+  table.txn-compact tbody tr td::before { content: none; }
+  table.txn-compact td.cell-check { grid-area: check; }
+  table.txn-compact td.cell-primary { grid-area: merchant; text-align: left;
+    font-size: 14px; font-weight: 500; min-width: 0; overflow-wrap: anywhere; }
+  table.txn-compact td.amount { grid-area: amount; text-align: right; font-size: 14px; }
+  table.txn-compact td[data-label="Date"] { grid-area: date;
+    font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+  table.txn-compact td[data-label="Category"] { grid-area: category;
+    font-size: 11px; color: var(--text-muted); min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  table.txn-compact td[data-label="Account"] { display: none; }
+  table.txn-compact td.cell-actions { grid-area: actions;
+    display: flex; gap: 6px; justify-content: flex-end; }
+  table.txn-compact td.cell-actions .btn-xs { min-height: 32px !important;
+    padding: 4px 10px; font-size: 11px; }
+  table.txn-compact td.empty, table.txn-compact td.empty-msg {
+    grid-column: 1 / -1; grid-area: auto; text-align: center; }
+}

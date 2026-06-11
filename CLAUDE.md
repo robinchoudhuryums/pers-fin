@@ -327,9 +327,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (859 tests as of latest); use
+  Perfin and Per-sistant test files (870 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 859 tests across 30 test files (incl.
+  Current count: 870 tests across 31 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -828,9 +828,24 @@ shell/
   visually hidden and each `<td>` (with a `data-label`) renders as a label:value
   line inside a card. Special cells: `cell-primary` (full-width title),
   `cell-actions` (wrap row of 40px-min buttons), `cell-check`, `empty`/`empty-msg`.
-  Applied to the Subscriptions and Transactions lists AND all five dashboard
-  mini-tables (Recent Transactions, Monthly Spending, Spending by Category, Top
-  Merchants, Upcoming Charges). New wide tables should add
+  Applied to the Subscriptions list AND the four dashboard mini-tables
+  (Monthly Spending, Spending by Category, Top Merchants, Upcoming Charges).
+  The Transactions (Activity) page uses a denser variant instead —
+  `txn-compact` (perfin-shared.css): a two-line CSS-grid row (merchant +
+  amount / date · category · actions, account hidden) at ~⅓ the height of a
+  responsive-card, with the filter bar collapsed behind a "Filters" toggle on
+  mobile so the recent-transactions list sits at the top of the page (the
+  dashboard's Recent Transactions section was removed in favor of it). The
+  four dashboard mini-table sections are collapsible (h2 toggles, chevron,
+  state persisted per-section in localStorage `perfin_collapse_<key>`), and
+  Spending by Category has a month selector ("Recent months" aggregate
+  default, or any month from the trend — backed by GET
+  /api/spending-categories, which uses getCategorySpendingForMonth so the
+  per-month figures match budgets/snapshots). Floating chrome (toasts,
+  notification panel, mobile nav drawer) sits on the opaque
+  `--surface-solid` token — the translucent 4%-alpha `--surface` is for
+  in-flow cards only; anything floating OVER content needs full opacity or
+  the page bleeds through. New wide tables should add
   `class="responsive-cards"` + `data-label`s rather than relying on horizontal
   scroll.
 - **Money formatting**: the shared global `fmt()` (`perfin-shared.js`) renders
@@ -1138,7 +1153,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 859 tests passing across 30 test files (Perfin + Per-sistant)
+- 870 tests passing across 31 test files (Perfin + Per-sistant)
 
 ## Commands
 ```bash
@@ -1237,6 +1252,8 @@ GET  /api/shared-settlement/:account_id/transactions # flat list of every charge
                             # shared account in the given month with each row's
                             # personal_for state, for reconciliation.
 GET  /api/spending-summary # monthly trends, categories, top merchants (split-adjusted)
+GET  /api/spending-categories # per-month category breakdown (query: month=YYYY-MM;
+                           # splits/reimbursed/share-adjusted via getCategorySpendingForMonth)
 GET  /api/cash-flow        # rolling cash flow projection (query: days, default 90)
 GET  /api/savings-rate     # income vs spending analysis (query: months, default 3)
 GET  /api/income-summary   # income trend + top sources + by_account (query: months, default 6)
