@@ -4,3 +4,5 @@ node_modules/
 *.pem
 service-account-key.json
 .claude/worktrees/
+test-results/
+playwright-report/

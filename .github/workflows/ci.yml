@@ -52,3 +52,33 @@ jobs:
         run: node scripts/ci-migration-test.js
         env:
           MIGRATION_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres
+
+  # Browser smokes (Playwright): real login flow + both apps' core pages in
+  # Chromium against a real scratch database — the layer mock-pool unit tests
+  # can't see. e2e/boot-server.js creates the DBs; the shell's normal startup
+  # migrates them.
+  e2e:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npx playwright install chromium --with-deps
+      - run: npm run test:e2e
+        env:
+          E2E_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres

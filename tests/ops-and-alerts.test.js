@@ -203,3 +203,67 @@ describe("small fry", () => {
     assert.equal(jobHealth.thresholdMs("csv-reminder"), 96 * H, "24h job → 4× interval");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Route-file splits (interface-preserving)
+// ---------------------------------------------------------------------------
+describe("route-file splits preserve every import path", () => {
+  it("investments re-exports the performance module's helpers by identity", () => {
+    const inv = require("../teller/routes/investments");
+    const perf = require("../teller/routes/investment-performance");
+    for (const fn of ["computeTWR", "computeXIRR", "classifyPlaidFlow", "buildPortfolioSeries", "syncAllPlaidInvestmentFlows"]) {
+      assert.equal(inv[fn], perf[fn], fn + " must be the same function object");
+    }
+    assert.match(read("teller", "routes", "investments.js"), /router\.use\(investmentPerformance\)/);
+  });
+
+  it("insights re-exports the email renderers by identity", () => {
+    const insights = require("../teller/routes/insights");
+    const email = require("../teller/routes/insights-email");
+    for (const fn of ["renderInsightEmail", "renderWeeklyDigestEmail", "renderDailyDigestEmail"]) {
+      assert.equal(insights[fn], email[fn], fn + " must be the same function object");
+    }
+  });
+
+  it("the Plaid client factory is shared, not duplicated", () => {
+    const inv = read("teller", "routes", "investments.js");
+    const perf = read("teller", "routes", "investment-performance.js");
+    assert.match(inv, /require\("\.\.\/services\/plaid-client"\)/);
+    assert.match(perf, /require\("\.\.\/services\/plaid-client"\)/);
+    assert.ok(!inv.includes("new PlaidApi("), "client construction lives only in the service");
+    assert.ok(!perf.includes("new PlaidApi("));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Playwright e2e harness
+// ---------------------------------------------------------------------------
+describe("e2e harness", () => {
+  it("boot script creates scratch DBs and disables TLS for the local container", () => {
+    const boot = read("e2e", "boot-server.js");
+    assert.match(boot, /perfin_e2e/);
+    assert.match(boot, /persistent_e2e/);
+    assert.match(boot, /PGSSLMODE = "disable"/);
+    assert.match(boot, /require\("\.\.\/shell\/index\.js"\)/);
+  });
+
+  it("config waits on /health and CI runs it with a Postgres service", () => {
+    const cfg = read("e2e", "playwright.config.js");
+    assert.match(cfg, /url: "http:\/\/localhost:3000\/health"/);
+    const ci = read(".github", "workflows", "ci.yml");
+    assert.match(ci, /e2e:/);
+    assert.match(ci, /playwright install chromium --with-deps/);
+    assert.match(ci, /npm run test:e2e/);
+    const pkg = JSON.parse(read("package.json"));
+    assert.equal(pkg.scripts["test:e2e"], "playwright test --config e2e/playwright.config.js");
+  });
+
+  it("smokes cover login (wrong+right PIN), both apps, and the feed gate", () => {
+    const spec = read("e2e", "smoke.spec.js");
+    assert.match(spec, /incorrect pin/i);
+    assert.match(spec, /toHaveURL\(\/\\\/per-sistant\/\)/, "asserts the post-login default");
+    assert.match(spec, /\/perfin\/dashboard/);
+    assert.match(spec, /\/perfin\/transactions/);
+    assert.match(spec, /calendar\.ics/);
+  });
+});

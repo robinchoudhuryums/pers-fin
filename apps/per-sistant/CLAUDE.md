@@ -390,6 +390,13 @@ hoisted version.
     `vault_repo` / `vault_branch` / `vault_last_sha` / `vault_last_synced_at` /
     `vault_last_error`. The vault GitHub token is the `VAULT_GITHUB_TOKEN` env
     var, never a DB column.
+  - Chunking is TOKEN-AWARE (RAG v2): budgets in estimated tokens
+    (max(words×1.32, chars/4) — no tokenizer dep), cascade heading →
+    paragraph → sentence → word so chunks never break mid-word; default 480
+    tokens with 60-token word-boundary overlap. `CHUNKING_VERSION` is baked
+    into the embed_state content hash, so bumping it (any future chunker
+    change) invalidates every hash and forces a clean re-embed on the next
+    sync — shipped while the vault was empty, so v2 itself cost nothing.
   - Sync: `services/vault-sync.js` (GitHub Contents/Trees/compare API, no clone;
     frontmatter `embed:false`/`private:true`/`sensitivity:` honored). Hourly
     in-process cron + `POST /api/rag/reindex` (also driven by the

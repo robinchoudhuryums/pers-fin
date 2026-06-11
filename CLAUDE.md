@@ -52,6 +52,9 @@ teller/
   services/
     database.js          — Postgres pool + transactional auto-migrations with schema versioning
     teller-api.js        — mTLS HTTP client for Teller API (retry with exponential backoff)
+    plaid-client.js      — Plaid client factory (shared by investments.js +
+                           investment-performance.js so the two route modules
+                           don't need a circular require)
     keep-alive.js        — Self-ping to prevent Render free tier sleep (with fetch timeout)
     job-health.js        — Scheduled-job heartbeats + missed-job watchdog. Every
                            startup.js interval calls tick(name) BEFORE its activity
@@ -122,7 +125,10 @@ teller/
                            POST /api/categorization-rules/from-transaction
                            (ML categorization via Claude tool_use structured output,
                            with user-defined rules applied first before AI)
-    investments.js       — GET /api/plaid/status, POST /api/plaid/link-token,
+    investments.js       — AGGREGATOR for the investment routes: mounts
+                           investment-performance.js and re-exports its helpers
+                           (route-file split — import paths unchanged).
+                           GET /api/plaid/status, POST /api/plaid/link-token,
                            POST /api/plaid/exchange, POST /api/plaid/sync-holdings,
                            GET /api/plaid/holdings (Plaid investment accounts).
                            POST /api/plaid/link-token-transactions,
@@ -147,6 +153,13 @@ teller/
                            from its linked_accounts branch (la.plaid_item_id IS
                            NULL) so Plaid investments come only from
                            investment_accounts — no $0 double-listing.
+    investment-performance.js — split from investments.js: investment_flows
+                           CRUD + Plaid flow sync (classifyPlaidFlow,
+                           syncAllPlaidInvestmentFlows), TWR/XIRR math, and
+                           GET /api/investments/performance-history
+    insights-email.js    — split from insights.js: the pure email renderers
+                           (renderInsightEmail, weekly/daily digest HTML+text,
+                           escapeHtml); insights.js imports + re-exports them
     credit-scores.js     — GET/POST/DELETE /api/credit-scores
                            (manual credit score tracking with trend computation)
     notifications.js     — GET /api/notifications/vapid, POST/DELETE /api/notifications/subscribe,
@@ -339,9 +352,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (901 tests as of latest); use
+  Perfin and Per-sistant test files (911 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 901 tests across 33 test files (incl.
+  Current count: 911 tests across 33 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -357,7 +370,7 @@ shell/
   classification), tests/budget-cap-webauthn.test.js (tunable AI cap +
   embedded biometric registration), and tests/pwa-polish.test.js
   (pull-to-refresh + safe-area pins).
-- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container.
+- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js`.
 - `.claude/commands/` — Project slash-command prompts: `/broad-scan`, `/broad-implement`,
   `/test-sync`, `/sync-docs`
 - `Dockerfile`, `fly.toml`, `render.yaml` — Deployment configs (the Dockerfile
@@ -1173,13 +1186,14 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 901 tests passing across 33 test files (Perfin + Per-sistant)
+- 911 tests passing across 33 test files (Perfin + Per-sistant), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
 cd teller && npm install && node server.js    # Run locally
 npm install                                    # ALSO required at repo root for tests
 npm test                                       # Run all tests (Perfin + Per-sistant)
+npm run test:e2e                               # Playwright browser smokes (needs local Postgres; see e2e/boot-server.js)
 npm run test:perfin                            # Perfin tests only (tests/*.test.js)
 npm run test:persistent                        # Per-sistant tests only
 npm run reset:fresh                            # DRY RUN: print what a fresh-start reset would wipe/keep

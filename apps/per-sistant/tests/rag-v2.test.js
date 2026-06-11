@@ -94,3 +94,42 @@ describe("RAG v2 — semantic answer cache", () => {
     assert.match(sql, /ADD COLUMN IF NOT EXISTS query_embedding vector\(1024\)/);
   });
 });
+
+describe("RAG v2 — token-aware chunking", () => {
+  const vault = require("../services/vault-sync");
+
+  it("estimateTokens tracks prose by words and dense text by chars", () => {
+    assert.equal(vault.estimateTokens(""), 0);
+    const prose = "the quick brown fox jumps over the lazy dog";
+    assert.equal(vault.estimateTokens(prose), Math.ceil(9 * 1.32));
+    const dense = "x".repeat(400); // one "word", 400 chars → char term wins
+    assert.equal(vault.estimateTokens(dense), 100);
+  });
+
+  it("chunks respect a token budget without slicing mid-word", () => {
+    const words = Array.from({ length: 800 }, (_, i) => "word" + i).join(" ");
+    const chunks = vault.chunkMarkdown(words, { maxTokens: 120, overlapTokens: 0 });
+    assert.ok(chunks.length >= 6, "got " + chunks.length);
+    for (const c of chunks) {
+      assert.ok(vault.estimateTokens(c) <= 120 + 5, "within budget: " + vault.estimateTokens(c));
+      // every fragment is a whole wordN token — nothing was cut mid-word
+      for (const w of c.split(/\s+/)) assert.match(w, /^word\d+$/);
+    }
+  });
+
+  it("oversized paragraphs split on sentence boundaries first", () => {
+    const sentences = Array.from({ length: 40 }, (_, i) => `Sentence number ${i} ends here.`).join(" ");
+    const chunks = vault.chunkMarkdown(sentences, { maxTokens: 60, overlapTokens: 0 });
+    assert.ok(chunks.length >= 3);
+    for (const c of chunks.slice(0, -1)) {
+      assert.match(c.trim(), /\.$/, "chunk ends at a sentence boundary");
+    }
+  });
+
+  it("CHUNKING_VERSION salts the embed_state hash (future changes auto-re-embed)", () => {
+    const src = fs.readFileSync(path.join(ROOT, "services", "vault-sync.js"), "utf8");
+    assert.match(src, /sha256\("chunkv" \+ CHUNKING_VERSION \+ "\\n" \+ body\)/);
+    assert.equal(typeof vault.CHUNKING_VERSION, "number");
+    assert.ok(vault.CHUNKING_VERSION >= 2);
+  });
+});
