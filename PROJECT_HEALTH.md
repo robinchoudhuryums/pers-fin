@@ -139,14 +139,18 @@ chunking — but still unexercised against a live vault/Voyage, which caps
 confidence, not quality), Startup Ordering 9, Operator Gaps 8 (well-documented
 but cert rotation + backup secrets + clasp push still open), Money/Precision 8.
 
-**New failure modes this cycle: none.** PSB1 (Per-sistant DB TLS verify)
-remains "confirm on first deploy" — the branch is still unmerged, so that
-check transfers to the upcoming deploy.
+**New failure modes this cycle: none at synthesis time.** The cycle-4
+`/reflect` (post-merge) later tallied 2 Low (fail-fast passphrase boot,
+deliberate + escape-hatched; CI Playwright CDN dependency, CI-only). PSB1
+(Per-sistant DB TLS verify) transfers to the first deploy of the merged main
+(PR #116).
 
-**Candidate invariants from this cycle** (for the next `/reflect`, alongside
-the still-unpromoted INV-37…47): (a) the SPLIT_AMOUNT never-re-inlined scan
-rule; (b) every EMAIL_EVENTS member must be accepted + named by the
-Per-sistant receiver.
+**Candidate invariants — RESOLVED by the cycle-4 reflect:** promoted as
+INV-48…53 into CLAUDE.md's Invariant Library (scan rule, EMAIL_EVENTS
+symmetry, webauthn transports, read-time streaks, health fail-soft,
+GH-Actions job backstops); INV-14 amended to include /api/ask. INV-37…47
+(cycle-3 candidates) RETIRED — definitions were never written to the repo
+and are unrecoverable; numbers burned, never reuse.
 
 **Most likely problem before next cycle:** the first deploy of this large
 unmerged branch (PSB1 TLS verify + first CI run of the new migrations/e2e
@@ -184,9 +188,11 @@ drags to probe next cycle:
 weren't in Node's trust store; mitigated by Perfin's working precedent + the
 post-deploy connectivity check. Confirm on the next deploy.
 
-**Pending:** promote INV-37…47 into CLAUDE.md's Invariant Library (still open
-as of cycle 4); ~~a Seams & Invariants audit is DUE~~ — completed 2026-06-12
-(cycle 4).
+**Pending:** ~~promote INV-37…47 into CLAUDE.md's Invariant Library~~ —
+resolved at cycle 4: definitions were never written to the repo and are
+unrecoverable, so 37…47 are RETIRED (numbers burned; subject matter is
+test-pinned) and the cycle-4 candidates were promoted as INV-48…53 instead.
+~~A Seams & Invariants audit is DUE~~ — completed 2026-06-12 (cycle 4).
 
 ## Notes / Standing Decisions
 - Single-operator app: the only attacker is the operator; threat model weights

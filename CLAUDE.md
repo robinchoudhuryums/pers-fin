@@ -394,9 +394,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (967 tests as of latest); use
+  Perfin and Per-sistant test files (971 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 967 tests across 35 test files (incl.
+  Current count: 971 tests across 36 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -407,11 +407,14 @@ shell/
   atomic claim — and `tests/broad-scan-fixes.test.js`, pinning the June 2026
   broad-scan fixes: backup workflow shape, fail-fast token passphrase,
   compromised-cert fingerprint check, job-health watchdog, budget-alert
-  24h dedup — plus tests/investment-performance.test.js (benchmark fetch +
+  24h dedup — and `tests/seams-audit.test.js` (seams audit #2 pins: the
+  repo-wide SPLIT_AMOUNT never-re-inlined scan, INV-48, and the
+  EMAIL_EVENTS↔receiver symmetry check, INV-49) — plus
+  tests/investment-performance.test.js (benchmark fetch +
   portfolio series), tests/investment-flows.test.js (TWR/XIRR + Plaid flow
   classification), tests/budget-cap-webauthn.test.js (tunable AI cap +
-  embedded biometric registration), and tests/pwa-polish.test.js
-  (pull-to-refresh + safe-area pins).
+  embedded biometric registration + webauthn transports, INV-50), and
+  tests/pwa-polish.test.js (pull-to-refresh + safe-area pins).
 - `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js`.
 - `.claude/commands/` — Project slash-command prompts: `/broad-scan`, `/broad-implement`,
   `/test-sync`, `/sync-docs`
@@ -1228,7 +1231,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 967 tests passing across 35 test files (Perfin + Per-sistant), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 971 tests passing across 36 test files (Perfin + Per-sistant), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
@@ -2764,7 +2767,7 @@ INV-10 | Keyword filters use word-boundary regex, never LIKE '%kw%' | Subsystem:
 INV-11 | Goal current_amount derived (balance − baseline) when funding-linked | Subsystem: Financial Analytics
 INV-12 | Categorization writes user_category, never category | Subsystem: Detection & Categorization
 INV-13 | Categorization rules applied before AI; only unmatched rows sent to Claude | Subsystem: Detection & Categorization
-INV-14 | INSIGHTS_MONTHLY_BUDGET_CENTS enforced across insight+categorize+rebuild | Subsystem: AI Insights & Audit
+INV-14 | INSIGHTS_MONTHLY_BUDGET_CENTS enforced across insight+categorize+rebuild+ask | Subsystem: AI Insights & Audit
 INV-15 | Insight cost uses granular token pricing (input + cache_read + cache_creation) | Subsystem: AI Insights & Audit
 INV-16 | sanitizeStructuredSummary bounds the summary; failure preserves prior | Subsystem: AI Insights & Audit
 INV-17 | Migrations run in one transaction; failure is fatal | Subsystem: Platform, Shell & Auth
@@ -2787,6 +2790,13 @@ INV-33 | Vault sync is read-only (VAULT_GITHUB_TOKEN); capture writes only with 
 INV-34 | Citations enabled all-or-none per request; incompatible with structured outputs (unused here) | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js (answerWithCitations)
 INV-35 | Cross-app finance grounding reads perfinPool read-only, only on finance queries, never an HTTP self-fetch (parallels INV-25) | Subsystem: Knowledge / RAG | Verify: tests/knowledge-crossapp.test.js
 INV-36 | Single in-process vault-sync lock (isSyncing) prevents overlapping cron/reindex/GH-Action runs — BOTH syncVault AND syncNotes acquire it (busy→no-op), so the cron's notes phase can't overlap a concurrent reindex (K4); vault_last_sha advances only on success (errors stamp vault_last_error) | Subsystem: Knowledge / RAG | Verify: code read vault-sync.syncVault + syncNotes
+INV-37..47 | RETIRED — assigned by the cycle-3 reflect but their definitions were never written into the repo and are unrecoverable; numbers burned, never reuse (their subject matter — the cycle-3 fixes — is test-pinned via tests/cycle-fixes.test.js + audit-regressions) | — | Verify: n/a
+INV-48 | SPLIT_AMOUNT / INCOME_PREDICATE are never re-inlined: every spending aggregation imports from financial-queries.js (aliased variants derived in place via .replace); the only permitted literal copies are scripts/sheets-sync.js (byte-pinned) + apps-script/Code.gs | Subsystem: Financial Analytics (seam) | Verify: tests/seams-audit.test.js repo-wide literal-CASE scan
+INV-49 | Every member of Perfin's EMAIL_EVENTS set is accepted AND named (sendNameByEvent) by Per-sistant's HTTP webhook receiver — an unrecognized email event is 200-and-dropped in standalone deployments | Subsystem: Settings, Notifications & Cross-app (seam) | Verify: tests/seams-audit.test.js symmetry pin
+INV-50 | WebAuthn allowCredentials always carries transports — stored from registration, else the ['internal','hybrid'] platform fallback (registration pins authenticatorAttachment:'platform', so the fallback is always correct); both shell and standalone auth-options endpoints comply | Subsystem: Platform, Shell & Auth | Verify: tests/budget-cap-webauthn.test.js
+INV-51 | Habit streaks are computed at read time from habit_logs (a backfilled log retroactively repairs a streak; an unlogged today never breaks one); no stored streak counters exist for habits | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/health.test.js backfill-repair test
+INV-52 | Health consumers (notification check, AI daily briefing) call gatherHealthSummary fail-soft (.catch) — a health-tables error degrades to "no habit data", never 500s those surfaces | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/health.test.js integration pins
+INV-53 | CRITICAL scheduled jobs (transaction/balance sync + snapshot + detection; weekly reconcile; backups; knowledge reindex) have out-of-process GitHub-Actions backstops hitting x-api-key endpoints with idempotent writes, so Render free-tier sleep can't skip them | Subsystem: Platform, Shell & Auth | Verify: .github/workflows/{daily-sync,weekly-reconcile,db-backup,knowledge-reindex}.yml exist + idempotent-write invariants INV-01/05
 
 ### Policy Configuration
 Policy threshold: 6/10
