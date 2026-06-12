@@ -412,3 +412,23 @@ never-re-inlined scan; EMAIL_EVENTS↔receiver symmetry).
 `claude/exciting-albattani-ug1gjv`. Branch has 6 unmerged commits (FIRE/Ask,
 sync-docs, health tracker, animation+webauthn, seams audit, synthesis) —
 recommend merging before further feature work.
+
+### /reflect — cycle 4 (2026-06-12) — COMPLETE; branch MERGED (PR #116)
+Net +5: 7 production fixes (4 Medium — biometric registration 401, webauthn
+transports QR/USB-only, income-summary 500, Render-sleep job misses; 3 Low —
+budget-alert spam, transparent floating chrome, notch overlap) − 2 Low new
+failure modes (fail-fast passphrase boot [deliberate, escape-hatched]; CI
+Playwright CDN dependency [CI-only]). ~17 capabilities, ~15 defensive.
+Invariant candidates INV-48..53 recorded in the cycle summary (48 scan-rule,
+49 EMAIL_EVENTS symmetry, 50 webauthn transports, 51 read-time streaks,
+52 health fail-soft, 53 GH-Actions job backstops); INV-14 amended (+ask).
+INV-37..47 (cycle-3 candidates) RETIRED — definitions were never written to
+the repo and are unrecoverable; numbers burned, never reuse. Most significant:
+live-PG + browser e2e verification posture. Should-have-deferred: mobile/
+scaffold. Seams counter stays 0 (this cycle ended WITH the seams audit; no
+subsystem audit has run since). Estimates skipped — no estimates.csv and no
+recorded per-action estimates this cycle.
+**Where I left off:** cycle 4 fully closed (audit→implement→seams→synthesis→
+reflect), everything merged to main via PR #116. Next per rotation: fresh
+/broad-scan or next targeted subsystem when feature work resumes; promote
+INV-48..53 into CLAUDE.md's library at the next docs touch.
