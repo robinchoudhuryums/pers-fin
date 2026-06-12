@@ -29,7 +29,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   at-most-once delivery). The manual `POST /api/emails/:id/send` claims the row
   the same way (`UPDATE … WHERE id = $1 AND status <> 'sent' RETURNING`) so a
   double-click / retry returns 409 instead of re-sending (PB-4).
-- **Tests**: `tests/` (node:test runner, `npm test`, 343 tests (api + integration + cycle-fixes))
+- **Tests**: `tests/` (node:test runner, `npm test`, 387 tests (api + integration + cycle-fixes + knowledge + health))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of June 2026)
@@ -66,6 +66,18 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   that's findable locally but never embedded/sent to AI; proactive renewal/expiry
   surfacing via the notification check; and cross-app finance grounding that reads
   Perfin data read-only. Answers carry a grounded/trust signal + per-fact verify.
+- **Health & Habits tracker**: Health page (`/health`) with habit definitions
+  (check-off or quantity-vs-target; daily / weekdays / specific-days /
+  N-times-per-week schedules), one-log-per-day upserts, streaks **computed at
+  read time** from `habit_logs` (a backfilled log retroactively repairs a
+  streak; an unlogged *today* never breaks one), a clickable 7-day grid, a
+  90-day consistency heatmap, and a measurements time series (weight, sleep,
+  mood, custom…) with inline trend charts. Routes: `routes/health.js`
+  (exports `gatherHealthSummary` + pure `computeStreaks`/`isDueOn` helpers);
+  tables: `habits`, `habit_logs`, `health_metrics` (db/020). Habit streaks at
+  risk feed the notification check and the AI daily briefing (both fail-soft);
+  `streak_milestone` webhooks fire at 7/30/100/365-day streaks. DELETE
+  archives (history kept) — restore from the page's Archived section.
 - **Automations/Rules Engine**: Create trigger→action rules (e.g., "when task created with category=work, set priority=high"), configurable in Settings
 - **File Attachments**: Upload files (up to 10MB) to tasks, emails, and notes via local storage. The download route sanitizes the stored `original_name` in the `Content-Disposition` header (strips quotes/backslashes/control chars) and emits RFC 5987 `filename*=UTF-8''…`, so a crafted filename can't inject/spoof a header (PS-5).
 - **iCal Export**: Export tasks and scheduled emails as .ics file for Google Calendar, Outlook, etc.
@@ -125,6 +137,11 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `services/vault-sync.js` — Obsidian-vault ingest (GitHub API), chunking, frontmatter,
   facts extraction, capture commit
 - `pages/knowledge.js` — Knowledge page (ask / search / diagram / capture / facts / secret)
+- `routes/health.js` — Health & Habits API (habits CRUD, daily logs, metrics,
+  summary/heatmap) + pure streak helpers (`computeStreaks`, `isDueOn`) and the
+  shared `gatherHealthSummary` aggregator (notification check + AI briefing)
+- `pages/health.js` — Health page (today check-offs, 7-day grid, heatmap, measurements)
+- `db/020_health.sql` — habits, habit_logs, health_metrics tables
 - `errors.js` — `serverError(res, err)` shared 500 responder (logs real error, returns generic message; PB-2)
 - `views.js` — pageHead, navBar, themeScript (imports from `views/`)
 - `routes/` — 21 API route modules (auth, todos, emails, notes, contacts, etc.)
@@ -149,7 +166,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (343 tests)
+# Run tests (387 tests)
 npm test
 
 # Pages
@@ -236,7 +253,27 @@ DELETE /api/webhooks/:id           # Delete webhook
 POST   /api/webhooks/:id/test      # Test a webhook
 
 # Notifications
-GET    /api/notifications/check    # Check for due tasks, overdue, streaks at risk, reminders
+GET    /api/notifications/check    # Check for due tasks, overdue, streaks at risk (todos AND
+                                   # habits), reminders, upcoming facts (habit leg fail-soft)
+
+# Health & Habits API
+GET    /api/habits                 # Active habits + streaks + 7-day grid (?all=1 adds archived)
+POST   /api/habits                 # Create habit (name, kind, target_value, unit, schedule,
+                                   #   schedule_days, times_per_week)
+PATCH  /api/habits/:id             # Update habit; is_active toggles archive/restore
+DELETE /api/habits/:id             # ARCHIVE (history kept — no hard delete via API)
+POST   /api/habits/:id/log         # Upsert a day's log (body: date?, value?, note?; future 400);
+                                   #   returns recomputed current/best streak; fires
+                                   #   streak_milestone webhook at 7/30/100/365
+DELETE /api/habits/:id/log/:date   # Remove a day's log
+GET    /api/habits/:id/history     # Log series (query: days, default 180, max 730)
+GET    /api/health/summary         # Due/done today, streaks at risk, latest metrics
+                                   #   (shared gatherHealthSummary — same data the
+                                   #   notification check + AI briefing see)
+GET    /api/health/heatmap         # Per-day count of habits that met their bar (query: days)
+GET    /api/health/metrics         # Latest per metric; ?metric=&days= for one series
+POST   /api/health/metrics         # Upsert a measurement (metric, value, unit?, date?, note?)
+DELETE /api/health/metrics/:id     # Remove a measurement
 
 # Analytics
 GET    /api/analytics              # Productivity analytics (query: period=week|month|quarter|year)

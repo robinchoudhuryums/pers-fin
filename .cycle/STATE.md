@@ -181,6 +181,22 @@ parameterized only, injection-tested), bounded loop, shared AI cap (429) + entry
 both UI surfaces render. Tests: 934 across 34 files (+19).
 DECISION RECORDED: health/habits tracker → expand Per-sistant (streaks/analytics/
 notifications already there), extract to third sub-app only if it outgrows a page.
+### Health/habits tracker built (round 7, same branch)
+Implemented per the decision: db/020_health.sql (habits, habit_logs UNIQUE(habit_id,
+log_date), health_metrics UNIQUE(metric, recorded_on)); routes/health.js (CRUD + log
+upsert + summary/heatmap/metrics; READ-TIME streaks — computeStreaks/isDueOn pure +
+exported, INV-19 attach-after-factory; DELETE archives, never hard-deletes; future-date
+400; streak_milestone webhook at 7/30/100/365); pages/health.js (/health: today list w/
+quantity steppers, clickable 7-day backfill grid, 90-day heatmap, measurements + SVG
+trend; backtick-free page JS, nonceAttr, zero inline handlers); NAV + heart icon;
+notification check gained habit_streak_at_risk + habits_due counts (fail-soft .catch);
+AI daily briefing gained habits line (fail-soft). gatherHealthSummary is the ONE
+aggregator shared by page/notifications/briefing. Live-verified on scratch PG16:
+migration fresh + idempotent (2nd boot "20 files"), streak build 0→2→3 incl. backfill
+repair, quantity 5/8 not-met → 8 met, future 400, metrics upsert+lowercase, heatmap,
+notification counts, archive/restore. Tests: 963 across 35 files (+29 in
+apps/per-sistant/tests/health.test.js). Docs synced (both CLAUDE.mds, both READMEs,
+roadmap → Shipped).
 
 **PRIOR MERGE DONE; this round needs a fresh merge** —  (pre-merge: confirm
 TOKEN_ENCRYPTION_PASSPHRASE in Render; watch the first CI run's 3 jobs). Operator items unchanged (merge w/ passphrase check, backup secrets+drill,
@@ -350,6 +366,49 @@ then rotate to Detection & Categorization.
 10. Per-sistant Web UI
 
 - **Seams audit:** every 3 subsystem cycles.
-- **Subsystem cycles since last Seams audit:** 5 — DUE (Platform, Settings/Cross-app, Per-sistant Web UI, Per-sistant Backend, Sheets ran after this session's mid-rotation seams audit). Run a Seams & Invariants audit next cycle (resets to 0).
+- **Subsystem cycles since last Seams audit:** 0 (June 2026 Seams & Invariants audit COMPLETE — see record below).
 - **Last subsystem audited:** Sheets & External Export
 - **Cycles completed:** rotation complete this session (broad-scan + 8 targeted + 1 seams); reflect recorded (cycle 3, net +4); Health Synthesis still pending.
+
+### Seams & Invariants audit #2 (June 2026, round 8 — counter reset to 0)
+Scope: all documented seams + the seams NEW since audit #1 (4 route-file splits,
+ask.js cap seam, health.js→notifications/briefing, webauthn transports contract,
+critical_alert event, whats-new↔daily-digest, job-health name map). 14 invariants
+code-read-verified (INV-02/03/04/06/08/12/14/17/18/21/23/26/27/33/36): ALL PASS.
+Route splits: all 4 structurally sound (mounts, no duplicate paths, identity
+re-exports resolve, INV-19 ordering, no require cycles). Cross-app contracts:
+email-insert columns/status/recipient-chain identical across in-process + HTTP
+paths; rag.js perfinPool columns all exist; widget fallback unwraps the real
+shape; productivity-context columns exist; cross-pool wiring null-checked.
+Findings (all FIXED this session):
+- **SEAMS-1 (Medium):** Per-sistant's HTTP webhook receiver didn't recognize
+  `critical_alert` (Perfin's EMAIL_EVENTS sends it) — standalone deployments
+  200-and-dropped critical alert emails; embedded in-process path unaffected.
+  Added to the receiver condition + fallbackSubject + sendNameByEvent.
+- **SEAMS-2 (Low, drift):** cash-flow (spending-analytics.js ×4 sites incl. the
+  yoy splits-CTE pair) and insights.js anomaly+seasonal (×7 sites) held LITERAL
+  copies of the SPLIT_AMOUNT CASE while CLAUDE.md claimed "cannot drift" (seams
+  audit #1's SEAM-1 under-counted). All converted to `${SPLIT_AMOUNT}` +
+  in-place derivations (new SPLIT_AMOUNT_2 = la2./t2. rewrite). Live-verified:
+  cash-flow/yoy/summary 200 against real PG; anomaly+seasonal SQL EXPLAIN-valid.
+- **SEAMS-3 (Trivial):** getAiBudgetCents comment named 3 cap sharers; now 4
+  (added /api/ask). Settlement FILTER buckets confirmed NOT copies (by design).
+New pins: tests/seams-audit.test.js — repo-wide literal-CASE scan (fails on any
+future re-inlining) + EMAIL_EVENTS↔receiver symmetry (every sender event must be
+accepted + named by the receiver). Tests: 971 across 36 files (+4).
+
+### Health Synthesis — cycle 4 (2026-06-12) — COMPLETE
+First synthesis since cycle 3. Axis-A min 7→8, mean 8.1→≈8.5; Axis-B min 7→8,
+mean 7.8→≈8.3. No policy flags (nothing ≤6). All five cycle-3 drags moved:
+UI/UX 7→9 (PB-3 closed + a11y + e2e smokes), Export 7→8 (F6), Test Quality
+7→8 both axes (e2e + live-PG migration CI), Silent Degradation 7→8, plus
+Accuracy 8→9 (copy elimination + scan pin), Scheduler 8→9 (GH-Actions cron
+guarantees), Cross-app 8→9 (contracts verified + symmetry pin), Drift 8→9.
+Recorded in PROJECT_HEALTH.md (tables + cycle-4 notes) + metrics.csv row 4.
+No new failure modes; PSB1 deploy-time check transfers to the upcoming merge.
+NEXT /reflect: promote INV-37..47 (carry-over) + 2 new candidates (SPLIT_AMOUNT
+never-re-inlined scan; EMAIL_EVENTS↔receiver symmetry).
+**Where I left off:** seams audit #2 + health synthesis committed on
+`claude/exciting-albattani-ug1gjv`. Branch has 6 unmerged commits (FIRE/Ask,
+sync-docs, health tracker, animation+webauthn, seams audit, synthesis) —
+recommend merging before further feature work.

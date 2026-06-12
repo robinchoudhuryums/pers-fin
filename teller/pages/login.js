@@ -141,12 +141,20 @@ router.post("/api/webauthn/register", async (req, res) => {
     const publicKeyBase64 = Buffer.from(credential.publicKey).toString("base64url");
 
     const deviceName = (req.body.deviceName || credentialDeviceType || "Biometric Device").slice(0, 100);
+    // Persist the authenticator's transports (e.g. ['internal','hybrid']).
+    // They must be echoed back in allowCredentials at login time or browsers
+    // assume a roaming key and offer only QR-code / USB options.
+    const transports = Array.isArray(credential.transports) && credential.transports.length
+      ? credential.transports.map(String).slice(0, 8)
+      : (Array.isArray(req.body.response && req.body.response.transports)
+          ? req.body.response.transports.map(String).slice(0, 8)
+          : null);
 
     await pool.query(
-      `INSERT INTO webauthn_credentials (credential_id, public_key, counter, device_name)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (credential_id) DO UPDATE SET public_key = $2, counter = $3, device_name = $4`,
-      [credentialIdBase64, publicKeyBase64, credential.counter, deviceName]
+      `INSERT INTO webauthn_credentials (credential_id, public_key, counter, device_name, transports)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (credential_id) DO UPDATE SET public_key = $2, counter = $3, device_name = $4, transports = $5`,
+      [credentialIdBase64, publicKeyBase64, credential.counter, deviceName, transports]
     );
 
     delete req.session.webauthnChallenge;
@@ -173,14 +181,19 @@ router.post("/api/webauthn/authenticate-options", async (req, res) => {
   if (!simplewebauthn) return res.status(501).json({ error: "WebAuthn not available" });
   try {
     const rp = getRp(req);
-    const creds = await pool.query("SELECT credential_id FROM webauthn_credentials");
+    const creds = await pool.query("SELECT credential_id, transports FROM webauthn_credentials");
     if (creds.rows.length === 0) {
       return res.status(404).json({ error: "No biometric credentials registered" });
     }
 
+    // transports tell the browser this is a platform credential so it offers
+    // FaceID/TouchID directly. Pre-transports rows (NULL) fall back to
+    // ['internal','hybrid'] — always correct here because registration pins
+    // authenticatorAttachment: 'platform'.
     const allowCredentials = creds.rows.map(r => ({
       id: r.credential_id,
       type: "public-key",
+      transports: (Array.isArray(r.transports) && r.transports.length) ? r.transports : ["internal", "hybrid"],
     }));
 
     const options = await simplewebauthn.generateAuthenticationOptions({

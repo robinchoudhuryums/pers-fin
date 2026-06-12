@@ -427,6 +427,15 @@ async function runMigrations() {
       device_name TEXT DEFAULT 'Unknown Device',
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
+    // Authenticator transports (e.g. {internal,hybrid}) captured at
+    // registration. Without them in allowCredentials, browsers can't tell a
+    // stored credential is a platform authenticator and offer only
+    // cross-device options (QR code / USB key) on the login screen. NULL for
+    // pre-existing rows — the auth-options endpoints fall back to
+    // ['internal','hybrid'], which is always right here because registration
+    // pins authenticatorAttachment: 'platform'.
+    await client.query(`ALTER TABLE webauthn_credentials
+      ADD COLUMN IF NOT EXISTS transports TEXT[]`);
     // Recurring transfers — detected recurring transfers between accounts
     await client.query(`CREATE TABLE IF NOT EXISTS recurring_transfers (
       id SERIAL PRIMARY KEY,

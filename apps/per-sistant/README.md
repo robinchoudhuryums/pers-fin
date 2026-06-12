@@ -209,6 +209,22 @@ Optional env: `VOYAGE_API_KEY`, `VAULT_GITHUB_TOKEN` (read-only), `VAULT_GITHUB_
 (capture), plus the `vector` extension on Neon. Without them, Knowledge degrades to keyword
 search over notes. See `CLAUDE.md` (Knowledge block) for full detail.
 
+### Health & Habits
+A daily habits and measurements tracker on the **Health** page (no env vars, no AI required):
+
+- **Habits** — check-off or quantity-vs-target (e.g. 8 glasses of water), scheduled
+  daily / weekdays / specific days / N-times-per-week.
+- **Streaks computed at read time** from the log history — a backfilled day
+  retroactively repairs a streak; nothing stored can drift. An unlogged *today*
+  never breaks a streak (the day isn't over).
+- **Today list** with one-tap check-off and quantity steppers, a clickable
+  7-day grid for backfill, and a 90-day consistency heatmap.
+- **Measurements** — weight, sleep, steps, water, mood, or custom metrics with
+  one entry per day (upsert) and an inline 90-day trend chart.
+- **Integrated nudges** — habit streaks at risk surface in the notification
+  check, and the AI daily briefing weaves in today's habit status.
+- **Archive, don't delete** — archiving a habit keeps its history; restore any time.
+
 ### Authentication
 Two login modes — set one in your environment variables:
 - **`SESSION_PASSWORD`** — text password, shows a standard password input

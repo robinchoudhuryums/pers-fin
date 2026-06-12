@@ -9,7 +9,9 @@ Single Node process that hosts two related personal tools behind one PIN gate:
   and transaction syncing for banks Teller doesn't cover (Capital One,
   Discover, Schwab, etc.).
 - **Per-sistant** — personal assistant. Tasks, scheduled emails, notes,
-  calendar, AI daily briefing, and a **personal Knowledge base** — RAG over an
+  calendar, AI daily briefing, a **health/habits tracker** (read-time streaks,
+  7-day grid + heatmap, measurements; nudges via the notification check and
+  daily briefing), and a **personal Knowledge base** — RAG over an
   Obsidian vault (pgvector semantic retrieval): source-cited Q&A, structured
   facts with temporal validity, Mermaid diagrams, capture-to-vault, a
   never-sent-to-AI "secret" tier, and cross-app finance grounding from Perfin.
@@ -314,9 +316,14 @@ shell/
                                  Primary effect: particle assembly/disassembly
                                  of the PWA icon — samples the overlay's
                                  .atrans-art <img> via canvas getImageData
-                                 into ~3k colored particles that fly in to
-                                 assemble the icon, shimmer, then burst
-                                 (assemble 950ms / hold 280ms / disperse
+                                 (96×96 grid → ~2.5px particles, capped at
+                                 7500 with uniform thinning, dpr-aware up to
+                                 3x) that fly in to assemble the icon, then
+                                 the REAL image crossfades in at full
+                                 resolution (drawImage sharpen — the finale
+                                 is never just the particle mosaic), holds,
+                                 and bursts apart as the image fades back out
+                                 (assemble 950ms / hold 430ms / disperse
                                  520ms; navigates ~90ms before the end).
                                  Honors prefers-reduced-motion (instant
                                  navigation); falls back to the original CSS
@@ -387,9 +394,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (934 tests as of latest); use
+  Perfin and Per-sistant test files (967 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 934 tests across 34 test files (incl.
+  Current count: 967 tests across 35 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -1221,7 +1228,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 934 tests passing across 34 test files (Perfin + Per-sistant), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 967 tests passing across 35 test files (Perfin + Per-sistant), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
@@ -1972,6 +1979,14 @@ rows) can dismiss them from the UI or run `POST /api/cleanup`.
   `verifyAuthenticationResponse` (matching the `userVerification:"required"` it
   requests) — @simplewebauthn v11 already defaults it true, so this is a
   defense-in-depth pin against a future SDK-default flip (PSA2).
+- **WebAuthn transports**: registration persists the authenticator's
+  `transports` (`webauthn_credentials.transports TEXT[]`), and BOTH
+  authenticate-options endpoints (shell + standalone) echo them in
+  `allowCredentials`. Without them the browser can't tell the credential is a
+  platform authenticator and offers only cross-device options (QR code / USB
+  key) at login. Pre-column rows (NULL) fall back to `['internal','hybrid']` —
+  always correct because registration pins `authenticatorAttachment:
+  'platform'`. Pinned by tests/budget-cap-webauthn.test.js.
 - **Biometric registration UI**: Settings → Security → "Biometric Login"
   section lists registered credentials and provides Register / Remove
   buttons via the existing `/api/webauthn/*` endpoints. The register
@@ -2101,17 +2116,25 @@ expression with two layers — per-transaction `personal_for` override
  END)
 ```
 Non-shared accounts always fall through to the spending_split_pct branch
-(which defaults to 100 = full amount). `routes/enrollments.js`
-(spending-summary monthly/category/merchants, cash-flow daily/DOW averages),
-`routes/insights.js` (anomaly baseline + candidate, seasonal patterns), and
-`routes/subscriptions.js` (bill-calendar income) **IMPORT** `SPLIT_AMOUNT` /
-`NOT_TRANSFER` / `INCOME_PREDICATE` from `financial-queries.js` and
-template-interpolate them — they are NOT independent copies and cannot drift
-(the split-row variant is derived in-place via `SPLIT_AMOUNT.replace(/t\.amount/g,
-"s.amount")`, and insights' anomaly subquery via `NOT_TRANSFER.replace(/\bt\./g,
-"t2.")`). The only place that holds a TRUE inline copy (because it can't `require`
-the services layer) is the standalone `scripts/sheets-sync.js` (verified byte-
-matching the canonical) and the legacy Apps Script `apps-script/Code.gs` fork.
+(which defaults to 100 = full amount). `routes/spending-analytics.js`
+(spending-summary monthly/category/merchants, cash-flow daily/DOW averages,
+spending-yoy), `routes/insights.js` (anomaly baseline + candidate, seasonal
+patterns), and `routes/subscriptions.js` (bill-calendar income) **IMPORT**
+`SPLIT_AMOUNT` / `NOT_TRANSFER` / `INCOME_PREDICATE` from
+`financial-queries.js` and template-interpolate them — they are NOT
+independent copies and cannot drift. Aliased variants are derived in place,
+never re-typed: the split-row variant via `SPLIT_AMOUNT.replace(/t\.amount/g,
+"s.amount")`, insights' anomaly-baseline subquery via `SPLIT_AMOUNT_2 =
+SPLIT_AMOUNT.replace(/\bla\./g, "la2.").replace(/\bt\./g, "t2.")` and
+`NOT_TRANSFER.replace(/\bt\./g, "t2.")`. (The June 2026 seams audit found and
+converted the last literal copies — two in cash-flow, seven in insights
+anomaly/seasonal; `tests/seams-audit.test.js` now scans every route/service
+file and fails on any future re-inlining. The settlement endpoint's per-bucket
+`FILTER (WHERE t.personal_for = …)` clauses are NOT copies of this CASE — they
+implement the deliberately different who-owes-who bucket math.) The only place
+that holds a TRUE inline copy (because it can't `require` the services layer)
+is the standalone `scripts/sheets-sync.js` (verified byte-matching the
+canonical) and the legacy Apps Script `apps-script/Code.gs` fork.
 The standalone `scripts/sheets-sync.js` `buildDashboard` also
 inlines a `SPLIT_AMT` + `NOT_TRANSFER` + reimbursed-exclusion copy (it can't
 import the services layer). As of M4 it ALSO mirrors splits-REPLACEMENT for its
@@ -2615,17 +2638,7 @@ income module, and bill-calendar income detection.
   isolated debugging.
 
 ## Priority Next Features
-1. **Health/habits tracker** — DECIDED (June 2026): built as an **expansion of
-   Per-sistant**, NOT a third shell sub-app. Rationale: Per-sistant already owns
-   the needed machinery (recurring tasks with streak/habit tracking, analytics
-   heatmaps, notifications, calendar, AI daily briefing as the nudge surface,
-   Knowledge/RAG grounding over the same DB); a third sub-app costs a new DB +
-   migration chain + nav/PWA identity, justified only for app-sized domains.
-   Planned shape: `apps/per-sistant/routes/health.js` + a health page + 2-3
-   tables. Escape hatch: if it outgrows that, extract via the proven
-   route-split + identity re-export recipe. Decision recorded in
-   `.cycle/STATE.md`.
-2. **Mobile app (operator step)** — the Capacitor iOS wrapper is scaffolded in
+1. **Mobile app (operator step)** — the Capacitor iOS wrapper is scaffolded in
    `mobile/` (remote-URL mode, coexists with the PWA); what remains is the
    free-signing Xcode build on the operator's Mac per `mobile/README.md`.
 
@@ -2635,7 +2648,14 @@ returns + asset-class allocation + target-drift
 benchmark (`GET /api/investments/performance-history`). **FIRE/runway
 projections** — `GET /api/fire-projection` + Goals-page card
 (`services/projections.js`). **Ask Perfin** — NL finance Q&A via Claude tool
-use (`POST /api/ask`, dashboard widget).
+use (`POST /api/ask`, dashboard widget). **Health/habits tracker** — built as
+a Per-sistant expansion per the June 2026 decision (NOT a third shell sub-app:
+Per-sistant already owned streaks/notifications/briefing; a third sub-app
+costs a new DB + migration chain + nav/PWA identity). Shape as planned:
+`apps/per-sistant/routes/health.js` + `pages/health.js` + 3 tables (db/020 —
+habits, habit_logs, health_metrics), read-time streak computation, nudges via
+the notification check + AI daily briefing. Escape hatch if it outgrows
+Per-sistant: extract via the proven route-split + identity re-export recipe.
 
 Dropped by design (June 2026): **multi-user support** — the single-user
 assumption (single-row `user_settings`, server-side watermarks, no tenancy

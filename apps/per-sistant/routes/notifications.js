@@ -6,6 +6,7 @@ const express = require("express");
 
 const { serverError } = require("../errors");
 const { upcomingFacts } = require("./rag");
+const { gatherHealthSummary } = require("./health");
 
 // How far ahead to surface a fact's renewal/expiration (days).
 const FACT_LOOKAHEAD_DAYS = 30;
@@ -16,12 +17,15 @@ module.exports = function ({ pool }) {
   router.get("/api/notifications/check", async (req, res) => {
     try {
       const today = new Date().toISOString().split("T")[0];
-      const [dueSoon, overdue, streaksAtRisk, reminders, facts] = await Promise.all([
+      const [dueSoon, overdue, streaksAtRisk, reminders, facts, health] = await Promise.all([
         pool.query("SELECT id, title, due_date FROM todos WHERE deleted_at IS NULL AND completed = false AND due_date = $1", [today]),
         pool.query("SELECT id, title, due_date FROM todos WHERE deleted_at IS NULL AND completed = false AND due_date < $1", [today]),
         pool.query("SELECT id, title, streak_count, due_date FROM todos WHERE deleted_at IS NULL AND completed = false AND recurring = true AND streak_count >= 3 AND due_date = $1", [today]),
         pool.query("SELECT id, COALESCE(title, LEFT(content,50)) as title, reminder_at FROM notes WHERE deleted_at IS NULL AND reminder_at IS NOT NULL AND DATE(reminder_at) = $1", [today]),
         upcomingFacts(pool, FACT_LOOKAHEAD_DAYS),
+        // Fail-soft: a health-tables error degrades to "no habit alerts"
+        // rather than 500ing the whole notification check.
+        gatherHealthSummary(pool).catch(() => ({ due_today: 0, done_today: 0, streaks_at_risk: [] })),
       ]);
       const notifications = [];
       dueSoon.rows.forEach(t => notifications.push({ type: "due_today", title: t.title, id: t.id, entity: "todo" }));
@@ -40,6 +44,14 @@ module.exports = function ({ pool }) {
           days_away: Number.isFinite(days) ? days : null,
         });
       });
+      // Habit streaks at risk: due today, not yet done, 3+ day streak on the
+      // line. Same gatherHealthSummary the Health page and AI briefing use.
+      health.streaks_at_risk.forEach(h => notifications.push({
+        type: "habit_streak_at_risk",
+        title: `${h.name} (${h.current_streak} streak)`,
+        id: h.id,
+        entity: "habit",
+      }));
       res.json({
         notifications,
         counts: {
@@ -48,6 +60,8 @@ module.exports = function ({ pool }) {
           streaks_at_risk: streaksAtRisk.rows.length,
           reminders: reminders.rows.length,
           fact_upcoming: facts.length,
+          habits_due: Math.max(health.due_today - health.done_today, 0),
+          habit_streaks_at_risk: health.streaks_at_risk.length,
         },
       });
     } catch (err) { serverError(res, err); }

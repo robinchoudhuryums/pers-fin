@@ -73,6 +73,7 @@ app.use(require("./routes/review")(deps));
 app.use(require("./routes/search")(deps));
 app.use(require("./routes/ai")(deps));
 app.use(require("./routes/rag")(deps));
+app.use(require("./routes/health")(deps));
 app.use(require("./routes/perfin")(deps));
 app.use(require("./routes/pwa")(deps));
 
@@ -85,6 +86,7 @@ app.get("/todos", require("./pages/todos")());
 app.get("/emails", require("./pages/emails")());
 app.get("/notes", require("./pages/notes")());
 app.get("/knowledge", require("./pages/knowledge")());
+app.get("/health", require("./pages/health")());
 app.get("/contacts", require("./pages/contacts")());
 app.get("/calendar", require("./pages/calendar")());
 app.get("/review", require("./pages/review")());

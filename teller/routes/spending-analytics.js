@@ -259,7 +259,7 @@ router.get("/api/cash-flow", async (req, res) => {
     const avgSpendResult = await pool.query(`
       SELECT COALESCE(AVG(daily_total), 0) AS avg_daily
       FROM (
-        SELECT t.date, ROUND(SUM((CASE WHEN la.is_shared AND t.personal_for = 'self' THEN t.amount WHEN la.is_shared AND t.personal_for = 'partner' THEN 0 ELSE t.amount * COALESCE(la.spending_split_pct, 100) / 100.0 END)), 2) AS daily_total
+        SELECT t.date, ROUND(SUM(${SPLIT_AMOUNT}), 2) AS daily_total
         FROM transactions t
         LEFT JOIN linked_accounts la ON la.account_id = t.account_id
         WHERE t.amount > 0 AND t.pending = false
@@ -282,7 +282,7 @@ router.get("/api/cash-flow", async (req, res) => {
       ),
       daily_totals AS (
         SELECT t.date,
-               SUM((CASE WHEN la.is_shared AND t.personal_for = 'self' THEN t.amount WHEN la.is_shared AND t.personal_for = 'partner' THEN 0 ELSE t.amount * COALESCE(la.spending_split_pct, 100) / 100.0 END)) AS daily_total
+               SUM(${SPLIT_AMOUNT}) AS daily_total
         FROM transactions t
         LEFT JOIN linked_accounts la ON la.account_id = t.account_id
         WHERE t.amount > 0 AND t.pending = false
@@ -396,7 +396,7 @@ router.get("/api/spending-yoy", async (req, res) => {
     const result = await pool.query(`
       WITH parent_no_splits AS (
         SELECT t.date, COALESCE(t.user_category, t.category[1], 'Uncategorized') AS category,
-               (CASE WHEN la.is_shared AND t.personal_for = 'self' THEN t.amount WHEN la.is_shared AND t.personal_for = 'partner' THEN 0 ELSE t.amount * COALESCE(la.spending_split_pct, 100) / 100.0 END) AS amount
+               ${SPLIT_AMOUNT} AS amount
         FROM transactions t
         LEFT JOIN linked_accounts la ON la.account_id = t.account_id
         WHERE t.amount > 0 AND t.pending = false
@@ -408,7 +408,7 @@ router.get("/api/spending-yoy", async (req, res) => {
       ),
       from_splits AS (
         SELECT t.date, COALESCE(s.category, t.user_category, t.category[1], 'Uncategorized') AS category,
-               (CASE WHEN la.is_shared AND t.personal_for = 'self' THEN s.amount WHEN la.is_shared AND t.personal_for = 'partner' THEN 0 ELSE s.amount * COALESCE(la.spending_split_pct, 100) / 100.0 END) AS amount
+               ${SPLIT_AMOUNT.replace(/t\.amount/g, "s.amount")} AS amount
         FROM transaction_splits s
         JOIN transactions t ON t.transaction_id = s.parent_transaction_id
         LEFT JOIN linked_accounts la ON la.account_id = t.account_id

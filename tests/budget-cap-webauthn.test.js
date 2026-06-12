@@ -34,6 +34,37 @@ describe("WebAuthn registration honors embedded mode", () => {
 });
 
 // ---------------------------------------------------------------------------
+// WebAuthn transports — platform-authenticator hint (QR-code/USB-only fix)
+// ---------------------------------------------------------------------------
+// Without transports in allowCredentials, browsers can't tell the stored
+// credential is a platform (FaceID/TouchID) authenticator and offer only the
+// cross-device options (QR code / USB security key) on the login screen.
+describe("WebAuthn transports flow to allowCredentials", () => {
+  const read = (...p) => fs.readFileSync(path.join(ROOT, ...p), "utf8");
+
+  it("migration adds the transports column idempotently", () => {
+    const src = read("teller", "services", "database.js");
+    assert.match(src, /ALTER TABLE webauthn_credentials\s+ADD COLUMN IF NOT EXISTS transports TEXT\[\]/);
+  });
+
+  it("registration persists the authenticator's transports", () => {
+    const src = read("teller", "pages", "login.js");
+    assert.match(src, /INSERT INTO webauthn_credentials \(credential_id, public_key, counter, device_name, transports\)/);
+    assert.match(src, /credential\.transports/);
+  });
+
+  it("both auth-options endpoints echo transports with the platform fallback", () => {
+    for (const file of [["teller", "pages", "login.js"], ["shell", "middleware", "webauthn.js"]]) {
+      const src = read(...file);
+      assert.match(src, /SELECT credential_id, transports FROM webauthn_credentials/,
+        file.join("/") + " must select transports");
+      assert.match(src, /\["internal", "hybrid"\]/,
+        file.join("/") + " must fall back to platform transports for pre-column rows");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // getAiBudgetCents — Settings-tunable cap with env fallback
 // ---------------------------------------------------------------------------
 describe("getAiBudgetCents", () => {
