@@ -396,3 +396,19 @@ Findings (all FIXED this session):
 New pins: tests/seams-audit.test.js — repo-wide literal-CASE scan (fails on any
 future re-inlining) + EMAIL_EVENTS↔receiver symmetry (every sender event must be
 accepted + named by the receiver). Tests: 971 across 36 files (+4).
+
+### Health Synthesis — cycle 4 (2026-06-12) — COMPLETE
+First synthesis since cycle 3. Axis-A min 7→8, mean 8.1→≈8.5; Axis-B min 7→8,
+mean 7.8→≈8.3. No policy flags (nothing ≤6). All five cycle-3 drags moved:
+UI/UX 7→9 (PB-3 closed + a11y + e2e smokes), Export 7→8 (F6), Test Quality
+7→8 both axes (e2e + live-PG migration CI), Silent Degradation 7→8, plus
+Accuracy 8→9 (copy elimination + scan pin), Scheduler 8→9 (GH-Actions cron
+guarantees), Cross-app 8→9 (contracts verified + symmetry pin), Drift 8→9.
+Recorded in PROJECT_HEALTH.md (tables + cycle-4 notes) + metrics.csv row 4.
+No new failure modes; PSB1 deploy-time check transfers to the upcoming merge.
+NEXT /reflect: promote INV-37..47 (carry-over) + 2 new candidates (SPLIT_AMOUNT
+never-re-inlined scan; EMAIL_EVENTS↔receiver symmetry).
+**Where I left off:** seams audit #2 + health synthesis committed on
+`claude/exciting-albattani-ug1gjv`. Branch has 6 unmerged commits (FIRE/Ask,
+sync-docs, health tracker, animation+webauthn, seams audit, synthesis) —
+recommend merging before further feature work.
