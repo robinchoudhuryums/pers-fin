@@ -196,6 +196,12 @@ async function runMigrations() {
     await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS balance_currency TEXT DEFAULT 'USD'");
     await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS balance_updated_at TIMESTAMPTZ");
     await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS apr NUMERIC(5,2)");
+    // Manual monthly payment for loan accounts (auto loans etc.). Plaid's
+    // Liabilities product covers only credit/student/mortgage — auto-loan APR
+    // and payment are never reported, so both are operator-entered fields
+    // (same pattern as the manual Discover credit limit). Drives the
+    // dashboard's loan payoff projection (computeLoanPayoff).
+    await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS monthly_payment NUMERIC(12,2)");
     // keep-alive settings
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS keep_alive_enabled BOOLEAN NOT NULL DEFAULT false");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS keep_alive_start INT NOT NULL DEFAULT 6");
@@ -427,8 +433,7 @@ async function runMigrations() {
       device_name TEXT DEFAULT 'Unknown Device',
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
-    // Authenticator transports (e.g. {internal,hybrid}) captured at
-    // registration. Without them in allowCredentials, browsers can't tell a
+    // Authenticator transports (e.g. {internal,hybrid}) captured at    // registration. Without them in allowCredentials, browsers can't tell a
     // stored credential is a platform authenticator and offer only
     // cross-device options (QR code / USB key) on the login screen. NULL for
     // pre-existing rows — the auth-options endpoints fall back to

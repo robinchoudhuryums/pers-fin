@@ -69,12 +69,16 @@ teller/
                            keyword-filtered income, current-month per-category spending
                            that honors transaction_splits) — single source of truth used
                            by AI insights and budgets so the numbers match the dashboard
-    projections.js       — FIRE/runway math (pure): computeFireProjection
+    projections.js       — FIRE/runway/loan math (pure): computeFireProjection
                            (FIRE number = annual spend × 100/withdrawal-rate,
                            monthly geometric compounding, 40-yr series) +
                            computeRunwayMonths (no-income depletion with
-                           growth). Consumed by GET /api/fire-projection
-                           (goals.js) and the ask.js get_fire_projection tool.
+                           growth) + computeLoanPayoff (iterative amortization
+                           — months/interest/payoff-date, insufficient-payment
+                           flag). Consumed by GET /api/fire-projection
+                           (goals.js), the ask.js get_fire_projection tool,
+                           and the insights debt-optimizer loan block; the
+                           dashboard loan card inlines a pinned mirror.
     benchmarks.js        — S&P 500 benchmark closes for portfolio comparison.
                            Stooq daily-close CSV (keyless), cached in
                            benchmark_prices, fetched lazily at most once/day
@@ -394,9 +398,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (971 tests as of latest); use
+  Perfin and Per-sistant test files (987 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 971 tests across 36 test files (incl.
+  Current count: 987 tests across 37 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -554,16 +558,36 @@ shell/
 - **Dashboard**: Monthly spending trend (line chart), category breakdown (doughnut), account balances,
   3D financial wellness pyramid, savings rate widget, cash flow forecast widget, Per-sistant productivity widget
 - **Grouped accounts grid**: The dashboard accounts list groups under section
-  headers — Cash (depository), Credit, Investments, Other — using the
-  `is_investment` flag returned from `GET /api/accounts`. Teller-linked
-  brokerage / IRA / 401k accounts surface under their own header instead of
-  being mixed in with checking/savings. A Plaid brokerage linked via the
-  combined flow lands in BOTH `linked_accounts` (often $0 from accountsGet) and
-  `investment_accounts` (correct balance from holdings sync), so the grid drops
-  any `linked_accounts` row whose `account_id` matches an
+  headers — Cash (depository), Credit, Loans, Investments, Other — using the
+  `is_investment` flag returned from `GET /api/accounts` plus the raw `type`.
+  Teller-linked brokerage / IRA / 401k accounts surface under their own header
+  instead of being mixed in with checking/savings. A Plaid brokerage linked via
+  the combined flow lands in BOTH `linked_accounts` (often $0 from accountsGet)
+  and `investment_accounts` (correct balance from holdings sync), so the grid
+  drops any `linked_accounts` row whose `account_id` matches an
   `investment_accounts.plaid_account_id` — only the correct card shows, no $0
   phantom twin (parallels the `la.plaid_item_id IS NULL` dedupe in
   `GET /api/investments`).
+- **Loan accounts (auto loans etc.)**: `type='loan'` rows (Plaid-linked via the
+  combined flow — credit-union auto loans arrive from accountsGet — or created
+  via `POST /api/accounts/manual` with `type:"loan"`, subtype defaults `auto`)
+  are first-class DEBT: the dashboard renders the balance negative/red under a
+  Loans group header (an $18k loan never shows as +$18k), the grid net total
+  subtracts it, and `getNetWorth` counts it as a liability (F1). Plaid's
+  Liabilities product does NOT cover auto loans (any issuer — only
+  credit/student/mortgage), so **APR and monthly payment are manual fields on
+  the loan card** (→ `PATCH /api/accounts/:id { apr, monthly_payment }`), same
+  pattern as the manual Discover credit limit. With both set, the card shows a
+  payoff projection — months remaining, payoff date, interest remaining — via
+  `services/projections.js computeLoanPayoff` (iterative amortization at
+  APR/12, exact partial final month; flags a payment below monthly interest
+  instead of showing a bogus horizon; the dashboard inlines a pinned mirror of
+  the iteration since the browser can't require the services layer). Loan
+  accounts (with payoff figures when known) feed the AI debt-optimizer module
+  alongside credit cards, with instructions to treat them as installment (no
+  revolving-utilization advice). Loan payments are auto-detected as recurring
+  transfers (`bill_payment` type, "loan payment" keyword) for the bill
+  calendar; balance refreshes ride the normal accountsGet sync.
 - **Investments widget**: Total invested across all sources, per-source
   breakdown (Teller / Plaid / Manual), and per-account cards with inline SVG
   sparklines (computed client-side from `/api/accounts/:id/balance-history`,
@@ -1183,6 +1207,13 @@ the Liabilities product entirely (PRODUCTS_NOT_SUPPORTED) AND carries a credit
 account — it stays silent when Liabilities is present but the issuer simply
 returns no APR/limit data, which is the un-fixable Discover case.
 
+**Gotcha — Plaid Liabilities never covers auto loans (any issuer).** The
+product supports only credit cards, student loans, and mortgages, so an auto
+loan's APR/term/payment will NEVER arrive from Plaid — do not chase it with a
+re-link. The loan's balance DOES sync via plain accountsGet. APR and monthly
+payment are manual fields on the dashboard loan card (`PATCH /api/accounts/:id
+{ apr, monthly_payment }`), which drive the payoff projection.
+
 ### Render (Free, recommended — currently deployed)
 1. Connect GitHub repo in Render dashboard
 2. Create Web Service from `render.yaml` blueprint
@@ -1231,7 +1262,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 971 tests passing across 36 test files (Perfin + Per-sistant), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 987 tests passing across 37 test files (Perfin + Per-sistant), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
@@ -1317,10 +1348,12 @@ DELETE /api/bill-payments/:id # unmark a bill payment
 GET  /api/csv-reminder     # list manual accounts overdue for a CSV refresh
 GET  /api/subscriptions    # list detected subscriptions
 GET  /api/accounts         # list linked accounts with balances (includes is_shared, spending_split_pct)
-PATCH /api/accounts/:id    # update account details
+PATCH /api/accounts/:id    # update account details (apr 0-99.99; monthly_payment > 0
+                           # or null — the manual loan fields driving the payoff projection)
 PATCH /api/accounts/:id/shared # mark account as shared/joint (body: is_shared, spending_split_pct)
 PATCH /api/accounts/:id/balance # update balance fields (current_balance, available_balance, credit_limit)
 POST /api/accounts/manual  # create a manual (non-Teller, non-Plaid) account
+                           # (type: depository | credit | loan — loan subtype defaults 'auto')
 DELETE /api/accounts/manual/:id # delete a manual account
 GET  /api/shared-settlement # who-owes-who on shared cards for a given month
                             # (query: month=YYYY-MM, account_id?). Returns per-
@@ -1687,6 +1720,9 @@ standalone-mode fallback if either app is run on its own Render service.
   Stooq by `services/benchmarks.js` — PK (symbol, price_date); read by
   `GET /api/investments/performance-history`)
 - `user_settings`: single-row pattern (CHECK id = 1) for app preferences
+- `linked_accounts` loan/debt columns: `apr NUMERIC(5,2)` (manual — also used by
+  credit cards) and `monthly_payment NUMERIC(12,2)` (manual, loans) drive the
+  loan payoff projection; Plaid Liabilities never reports auto-loan terms.
 - `linked_accounts` columns include: `is_shared BOOLEAN`, `spending_split_pct INT DEFAULT 100`,
   `is_manual BOOLEAN` — constraint `chk_account_source` allows `plaid_item_id IS NOT NULL OR
   teller_enrollment_id IS NOT NULL OR is_manual = true`
