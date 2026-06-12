@@ -528,7 +528,10 @@ async function generateInsights() {
         "2. PAYOFF STRATEGY: If APRs are known, compare avalanche (highest APR first) vs snowball (smallest balance first) approaches. " +
         "Calculate interest saved with the optimal strategy over 6-12 months.\n" +
         "3. QUICK WINS: Identify any cards near a utilization threshold (e.g. just over 30%) where a small payment would have outsized credit score impact.\n" +
-        "4. If APR is unknown for any card, note that the user should add it in their Accounts page for more accurate projections.";
+        "4. LOANS: When installment loan data is provided (auto loans etc.), include them in the avalanche/snowball comparison by APR, " +
+        "and comment on whether extra principal payments beat other uses of the money given the loan's rate. " +
+        "Installment utilization barely affects credit scores — do not apply revolving-utilization advice to loans.\n" +
+        "5. If APR is unknown for any card or loan, note that the user should add it on the Dashboard account card for more accurate projections.";
     }
     if (modules.bill_negotiation !== false) {
       activeModules.push("bill_negotiation");
@@ -708,8 +711,17 @@ async function generateInsights() {
              AND (current_balance IS NOT NULL OR available_balance IS NOT NULL)
            ORDER BY current_balance DESC NULLS LAST`
         );
+        // Loans (auto etc.) join the debt picture. APR/payment are the manual
+        // fields (Plaid Liabilities doesn't cover auto loans), so they may be
+        // null — Claude is told "unknown" rather than the row being dropped.
+        const loanAccounts = await pool.query(
+          `SELECT name, mask, subtype, current_balance, apr, monthly_payment
+           FROM linked_accounts
+           WHERE type = 'loan' AND current_balance IS NOT NULL AND current_balance > 0
+           ORDER BY current_balance DESC`
+        );
         const cards = creditAccounts.rows.filter(r => parseFloat(r.current_balance || 0) > 0);
-        if (cards.length > 0) {
+        if (cards.length > 0 || loanAccounts.rows.length > 0) {
           let cardLines = cards.map(c => {
             const owed = parseFloat(c.current_balance || 0);
             const avail = parseFloat(c.available_balance || 0);
@@ -727,11 +739,31 @@ async function generateInsights() {
           const totalDebt = cards.reduce((s, c) => s + parseFloat(c.current_balance || 0), 0);
           const totalLimit = cards.reduce((s, c) => s + parseFloat(c.current_balance || 0) + parseFloat(c.available_balance || 0), 0);
           const overallUtil = totalLimit > 0 ? Math.round((totalDebt / totalLimit) * 100) : 0;
-          userMsg += "\n\n=== DEBT PAYOFF DATA ===\n" +
-            "Credit Card Accounts:\n" + cardLines +
-            "\nTotal credit card debt: $" + totalDebt.toFixed(2) +
-            "\nTotal credit limit: $" + totalLimit.toFixed(2) +
-            "\nOverall utilization: " + overallUtil + "%";
+          userMsg += "\n\n=== DEBT PAYOFF DATA ===";
+          if (cards.length > 0) {
+            userMsg += "\nCredit Card Accounts:\n" + cardLines +
+              "\nTotal credit card debt: $" + totalDebt.toFixed(2) +
+              "\nTotal credit limit: $" + totalLimit.toFixed(2) +
+              "\nOverall utilization: " + overallUtil + "%";
+          }
+          if (loanAccounts.rows.length > 0) {
+            const { computeLoanPayoff } = require("../services/projections");
+            const loanLines = loanAccounts.rows.map(l => {
+              const owed = parseFloat(l.current_balance || 0);
+              let line = l.name + (l.mask ? " (****" + l.mask + ")" : "") +
+                " [" + (l.subtype || "loan") + "]: Balance $" + owed.toFixed(2) +
+                (l.apr ? ", APR " + l.apr + "%" : ", APR unknown") +
+                (l.monthly_payment ? ", Payment $" + parseFloat(l.monthly_payment).toFixed(2) + "/mo" : ", payment unknown");
+              if (l.apr && l.monthly_payment) {
+                const p = computeLoanPayoff({ balance: owed, aprPct: parseFloat(l.apr), monthlyPayment: parseFloat(l.monthly_payment) });
+                if (p.months_to_payoff) line += ", ~" + p.months_to_payoff + " months to payoff ($" + p.total_interest.toFixed(2) + " interest remaining)";
+              }
+              return line;
+            }).join("\n");
+            const totalLoanDebt = loanAccounts.rows.reduce((s, l) => s + parseFloat(l.current_balance || 0), 0);
+            userMsg += "\nLoan Accounts (auto/personal — installment, not revolving):\n" + loanLines +
+              "\nTotal loan debt: $" + totalLoanDebt.toFixed(2);
+          }
         }
       } catch (err) { console.error("Debt optimizer query error:", err.message); failedModules.add("debt_optimizer"); }
     }

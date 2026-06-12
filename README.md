@@ -87,7 +87,7 @@ Under the unified shell the cross-app integration endpoints (Per-sistant's Perfi
 | `scripts/detect-subscriptions.js` | Recurring charge detection algorithm |
 | `scripts/sheets-sync.js` | Google Sheets sync + dashboard builder |
 | `apps-script/Code.gs` | Google Sheets Apps Script (standalone + server sync) |
-| `tests/` | Test suite (node:test, 971 tests across 36 files incl. apps/per-sistant/tests) |
+| `tests/` | Test suite (node:test, 987 tests across 37 files incl. apps/per-sistant/tests) |
 | `Dockerfile` | Container build — installs all workspaces and boots `node shell/index.js` |
 | `render.yaml` | Render deployment blueprint (unified shell) |
 | `fly.toml` | Fly.io deployment config |
@@ -177,7 +177,7 @@ npm run test:perfin       # Perfin tests only
 npm run test:persistent   # Per-sistant tests only
 ```
 
-971 tests covering detection, CSV parsing, date handling, API logic, cost calculations, financial-queries semantics (incl. the net-worth single-source-of-truth + the $0-brokerage dedupe direction), AI-audit pattern extraction, pinned regression tests for auth/SSO/template/exclusion behavior and the latest cycle fixes (net-worth dedupe, budget-rollover month-keying, webhook replay/expiry, XSS/header sanitization, CSV dedup-ID parity, Plaid balance-sync status filter, Plaid holdings-items UNION + liabilities re-link hint, categorize bulk-sweep/loop + auto-sweep + accuracy sampler, in-process digest delivery, background reconcile, login→dashboard redirect, $0-brokerage dedupe, page-size-independent Teller pagination, Schwab CSV sign preservation, Wells Fargo CSV detection tightening, Plaid sync observability, and the June 2026 broad-scan fixes: backup workflow, fail-fast token passphrase, compromised-cert detection, missed-job watchdog, budget-alert dedup), and integration tests for the feedback, whats-new, performance, and trust-overview endpoints. No database required — all tests run against pure functions and mock pools.
+987 tests covering detection, CSV parsing, date handling, API logic, cost calculations, financial-queries semantics (incl. the net-worth single-source-of-truth + the $0-brokerage dedupe direction), AI-audit pattern extraction, pinned regression tests for auth/SSO/template/exclusion behavior and the latest cycle fixes (net-worth dedupe, budget-rollover month-keying, webhook replay/expiry, XSS/header sanitization, CSV dedup-ID parity, Plaid balance-sync status filter, Plaid holdings-items UNION + liabilities re-link hint, categorize bulk-sweep/loop + auto-sweep + accuracy sampler, in-process digest delivery, background reconcile, login→dashboard redirect, $0-brokerage dedupe, page-size-independent Teller pagination, Schwab CSV sign preservation, Wells Fargo CSV detection tightening, Plaid sync observability, and the June 2026 broad-scan fixes: backup workflow, fail-fast token passphrase, compromised-cert detection, missed-job watchdog, budget-alert dedup), and integration tests for the feedback, whats-new, performance, and trust-overview endpoints. No database required — all tests run against pure functions and mock pools.
 
 ## API Endpoints
 
@@ -304,6 +304,10 @@ The Edit modal includes a category dropdown plus a "Remember this merchant" chec
 ### Investment Accounts
 
 Track brokerage, retirement, and crypto holdings via Plaid API integration. Holdings sync with market values.
+
+### Loan Accounts (Auto Loans etc.)
+
+Loans linked via Plaid (e.g. a credit-union auto loan) — or added manually — are first-class debt: they render under a **Loans** group on the dashboard with a negative balance, count as liabilities in net worth, and feed the AI debt-payoff optimizer alongside credit cards. Plaid never reports auto-loan APR/terms (its Liabilities product covers only credit/student/mortgage), so the loan card has **manual APR + monthly payment fields**; with both set it shows a payoff projection — months remaining, payoff date, and interest left to pay. Loan payments are auto-detected as recurring transfers for the bill calendar.
 
 ### ML Transaction Categorization
 

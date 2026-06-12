@@ -922,10 +922,15 @@
         // markup without duplicating the per-card HTML.
         function renderAcctCard(a) {
           const isCredit = a.type === 'credit';
-          const bal = isCredit
+          // Loans are debt like credit: the reported balance is what's OWED,
+          // so display it negative and subtract from the grid's net total
+          // (a $18k auto loan must not render as +$18k green).
+          const isLoan = a.type === 'loan';
+          const isDebt = isCredit || isLoan;
+          const bal = isDebt
             ? parseFloat(a.current_balance || 0)
             : parseFloat(a.available_balance || a.current_balance || 0);
-          const displayBal = isCredit ? -bal : bal;
+          const displayBal = isDebt ? -bal : bal;
           netBalance += displayBal;
 
           const balClass = !hasBalances ? 'neutral' : displayBal > 0 ? 'positive' : displayBal < 0 ? 'negative' : 'neutral';
@@ -955,6 +960,29 @@
             creditExtra += '<div style="font-size:11px;margin-top:4px;display:flex;align-items:center;gap:6px;color:var(--text-muted);">Limit: $<input type="number" step="1" min="0" value="' + (storedLimit > 0 ? storedLimit : '') + '" placeholder="—" data-limit-account="' + a.id + '" style="width:80px;padding:2px 6px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);font-family:inherit;"></div>';
             creditExtra += '<div style="font-size:11px;margin-top:4px;display:flex;align-items:center;gap:6px;color:var(--text-muted);">APR: <input type="number" step="0.01" min="0" max="99.99" value="' + (a.apr || '') + '" placeholder="\u2014" data-apr-account="' + a.id + '" style="width:60px;padding:2px 6px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);font-family:inherit;">%</div>';
           }
+          if (isLoan && hasBalances) {
+            // Auto-loan terms are MANUAL fields: Plaid's Liabilities product
+            // covers only credit/student/mortgage, so APR + payment are never
+            // reported for an auto loan (same pattern as the manual Discover
+            // credit limit). With both set, show the payoff projection.
+            const owed = parseFloat(a.current_balance || 0);
+            const aprVal = parseFloat(a.apr);
+            const payVal = parseFloat(a.monthly_payment);
+            creditExtra += '<div style="font-size:11px;margin-top:4px;display:flex;align-items:center;gap:6px;color:var(--text-muted);">APR: <input type="number" step="0.01" min="0" max="99.99" value="' + (a.apr || '') + '" placeholder="\u2014" data-apr-account="' + a.id + '" style="width:60px;padding:2px 6px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);font-family:inherit;">%</div>';
+            creditExtra += '<div style="font-size:11px;margin-top:4px;display:flex;align-items:center;gap:6px;color:var(--text-muted);">Payment: $<input type="number" step="1" min="1" value="' + (a.monthly_payment ? parseFloat(a.monthly_payment) : '') + '" placeholder="\u2014" data-payment-account="' + a.id + '" style="width:80px;padding:2px 6px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);font-family:inherit;">/mo</div>';
+            if (owed > 0 && payVal > 0) {
+              const p = loanPayoff(owed, isNaN(aprVal) ? 0 : aprVal, payVal);
+              if (p.insufficient) {
+                creditExtra += '<div style="font-size:11px;margin-top:4px;color:var(--red);">Payment is below the monthly interest \u2014 balance grows</div>';
+              } else if (p.months) {
+                const yrs = Math.floor(p.months / 12), mos = p.months % 12;
+                const horizon = (yrs ? yrs + 'y ' : '') + mos + 'mo';
+                creditExtra += '<div style="font-size:11px;margin-top:4px;color:var(--text-muted);">Paid off in <span style="color:var(--teal);font-weight:500;">' + horizon + '</span> (' + p.label + ') \u00b7 ' + fmt(p.interest) + ' interest remaining</div>';
+              }
+            } else {
+              creditExtra += '<div style="font-size:11px;margin-top:4px;color:var(--text-muted);">Set APR + payment to see the payoff projection</div>';
+            }
+          }
           return '<div class="acct-card">' +
             '<div class="acct-inst">' + esc(a.institution_name || 'Unknown') + '</div>' +
             '<div class="acct-name">' + esc(a.name) + (a.mask ? ' <span class="acct-mask">\u2022\u2022\u2022\u2022 ' + esc(a.mask) + '</span>' : '') + '</div>' +
@@ -973,8 +1001,9 @@
         // their own header instead of mixed in with checking/savings.
         const cashAccts = accounts.filter(a => !a.is_investment && a.type === 'depository');
         const creditAccts = accounts.filter(a => a.type === 'credit');
+        const loanAccts = accounts.filter(a => a.type === 'loan');
         const investmentAccts = accounts.filter(a => a.is_investment);
-        const otherAccts = accounts.filter(a => !a.is_investment && a.type !== 'depository' && a.type !== 'credit');
+        const otherAccts = accounts.filter(a => !a.is_investment && a.type !== 'depository' && a.type !== 'credit' && a.type !== 'loan');
 
         const groupHeader = (label, count) =>
           '<div style="grid-column:1/-1;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);margin:8px 0 4px;padding-top:8px;border-top:1px solid var(--border);">' +
@@ -988,6 +1017,10 @@
         if (creditAccts.length) {
           html += groupHeader('Credit', creditAccts.length);
           html += creditAccts.map(renderAcctCard).join('');
+        }
+        if (loanAccts.length) {
+          html += groupHeader('Loans', loanAccts.length);
+          html += loanAccts.map(renderAcctCard).join('');
         }
         if (investmentAccts.length || investments.length) {
           html += groupHeader('Investments', investmentAccts.length + investments.length);
@@ -1221,6 +1254,38 @@
       } catch (e) {}
     }
 
+    // Mirrors services/projections.js computeLoanPayoff (the browser can't
+    // require the services layer) — iterative amortization at APR/12, exact
+    // partial final payment. Pinned against the canonical by tests.
+    function loanPayoff(balance, aprPct, payment) {
+      const r = (aprPct || 0) / 100 / 12;
+      if (r > 0 && payment <= balance * r) return { insufficient: true };
+      let b = balance, interest = 0;
+      for (let m = 1; m <= 1200; m++) {
+        const i = b * r;
+        interest += i;
+        b = b + i - payment;
+        if (b <= 0) {
+          const d = new Date();
+          d.setMonth(d.getMonth() + m);
+          return { months: m, interest: interest, label: d.toLocaleDateString(undefined, { month: 'short', year: 'numeric' }) };
+        }
+      }
+      return {};
+    }
+
+    async function setMonthlyPayment(accountId, value) {
+      try {
+        const payment = value === '' ? null : parseFloat(value);
+        const res = await apiFetch('/api/accounts/' + accountId, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ monthly_payment: payment })
+        });
+        if (res.ok) { showMsg('Payment saved.', true); loadAccounts(); }
+        else { const d = await res.json().catch(() => ({})); showMsg(d.error || 'Failed to save payment', false); }
+      } catch (e) { showMsg(e.message, false); }
+    }
+
     async function setApr(accountId, value) {
       try {
         const apr = value === '' ? null : parseFloat(value);
@@ -1228,7 +1293,7 @@
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ apr: apr })
         });
-        if (res.ok) showMsg('APR saved.', true);
+        if (res.ok) { showMsg('APR saved.', true); loadAccounts(); }
         else { const d = await res.json().catch(() => ({})); showMsg(d.error || 'Failed to save APR', false); }
       } catch (e) { showMsg(e.message, false); }
     }
@@ -1280,6 +1345,9 @@
     });
     onDelegate('accounts-grid', 'change', 'input[data-limit-account]', function() {
       setCreditLimit(parseInt(this.dataset.limitAccount), this.value);
+    });
+    onDelegate('accounts-grid', 'change', 'input[data-payment-account]', function() {
+      setMonthlyPayment(parseInt(this.dataset.paymentAccount), this.value);
     });
     onDelegate('accounts-grid', 'click', 'button[data-shared-toggle]', function() {
       toggleShared(parseInt(this.dataset.sharedToggle));

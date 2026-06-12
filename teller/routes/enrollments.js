@@ -625,6 +625,7 @@ router.get("/api/accounts", async (_req, res) => {
     const result = await pool.query(
       `SELECT la.id, la.account_id, la.name, la.official_name, la.type, la.subtype, la.mask,
               la.available_balance, la.current_balance, la.balance_currency, la.balance_updated_at, la.apr,
+              la.monthly_payment,
               COALESCE(te.institution_name, pi.institution_name, la.institution_name_manual) AS institution_name,
               CASE WHEN te.id IS NOT NULL THEN 'teller' WHEN la.is_manual THEN 'manual' ELSE 'plaid' END AS provider,
               la.is_manual, la.credit_limit, la.is_shared, la.spending_split_pct,
@@ -645,14 +646,17 @@ router.get("/api/accounts", async (_req, res) => {
 router.post("/api/accounts/manual", async (req, res) => {
   const { name, institution_name, type, subtype, current_balance, available_balance, credit_limit } = req.body;
   if (!name || !type) return res.status(400).json({ error: "name and type are required" });
-  const validTypes = ["depository", "credit"];
-  if (!validTypes.includes(type)) return res.status(400).json({ error: "type must be depository or credit" });
+  // "loan" supports manually-tracked debt (e.g. an auto loan at a credit
+  // union whose loan account doesn't surface through Plaid) — counts as a
+  // liability in net worth and renders under the dashboard's Loans group.
+  const validTypes = ["depository", "credit", "loan"];
+  if (!validTypes.includes(type)) return res.status(400).json({ error: "type must be depository, credit, or loan" });
   try {
     const accountId = "manual_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
     const result = await pool.query(
       `INSERT INTO linked_accounts (account_id, name, type, subtype, is_manual, institution_name_manual, current_balance, available_balance, credit_limit, balance_updated_at)
        VALUES ($1, $2, $3, $4, true, $5, $6, $7, $8, now()) RETURNING *`,
-      [accountId, name, type, subtype || (type === "credit" ? "credit_card" : "checking"),
+      [accountId, name, type, subtype || (type === "credit" ? "credit_card" : type === "loan" ? "auto" : "checking"),
        institution_name || "Manual",
        parseFloat(current_balance) || 0, parseFloat(available_balance) || 0,
        credit_limit ? parseFloat(credit_limit) : null]
@@ -719,7 +723,7 @@ router.delete("/api/accounts/manual/:id", async (req, res) => {
 
 // PATCH /api/accounts/:id
 router.patch("/api/accounts/:id", async (req, res) => {
-  const { apr } = req.body;
+  const { apr, monthly_payment } = req.body;
   try {
     const updates = []; const values = []; let idx = 1;
     if (apr !== undefined) {
@@ -728,6 +732,15 @@ router.patch("/api/accounts/:id", async (req, res) => {
         return res.status(400).json({ error: "APR must be between 0 and 99.99" });
       }
       updates.push("apr = $" + idx++); values.push(val);
+    }
+    // Manual monthly payment for loan accounts — Plaid Liabilities never
+    // reports auto-loan terms, so this drives the payoff projection.
+    if (monthly_payment !== undefined) {
+      const val = monthly_payment === null || monthly_payment === "" ? null : parseFloat(monthly_payment);
+      if (val !== null && (isNaN(val) || val <= 0 || val > 9999999)) {
+        return res.status(400).json({ error: "monthly_payment must be a positive number" });
+      }
+      updates.push("monthly_payment = $" + idx++); values.push(val);
     }
     if (!updates.length) return res.status(400).json({ error: "No valid fields" });
     values.push(req.params.id);

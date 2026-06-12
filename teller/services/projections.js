@@ -79,4 +79,38 @@ function computeRunwayMonths({ netWorth = 0, monthlySpending = 0, annualReturnPc
   return null; // portfolio sustains the draw indefinitely (or > 100 years)
 }
 
-module.exports = { computeFireProjection, computeRunwayMonths, monthlyRate };
+// Loan amortization payoff — months remaining, total interest, payoff date.
+// Iterative (monthly compounding at APR/12, simple periodic rate as lenders
+// quote it) so the partial final payment is exact rather than a log-formula
+// approximation. Returns null months when the payment doesn't cover the
+// monthly interest (balance grows — surfaced as insufficient_payment so the
+// UI can say so instead of showing a bogus horizon).
+const LOAN_CAP_MONTHS = 1200;
+
+function computeLoanPayoff({ balance = 0, aprPct = 0, monthlyPayment = 0 }) {
+  const out = { months_to_payoff: null, total_interest: null, payoff_date: null, insufficient_payment: false };
+  if (!(balance > 0) || !(monthlyPayment > 0)) return out;
+  const r = (aprPct || 0) / 100 / 12;
+  if (r > 0 && monthlyPayment <= balance * r) {
+    out.insufficient_payment = true;
+    return out;
+  }
+  let b = balance;
+  let interest = 0;
+  for (let m = 1; m <= LOAN_CAP_MONTHS; m++) {
+    const i = b * r;
+    interest += i;
+    b = b + i - monthlyPayment;
+    if (b <= 0) {
+      out.months_to_payoff = m;
+      out.total_interest = Math.round(interest * 100) / 100;
+      const d = new Date();
+      d.setMonth(d.getMonth() + m);
+      out.payoff_date = d.toISOString().slice(0, 7);
+      return out;
+    }
+  }
+  return out; // > 100 years — treat as never (months_to_payoff null)
+}
+
+module.exports = { computeFireProjection, computeRunwayMonths, computeLoanPayoff, monthlyRate };
