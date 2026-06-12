@@ -9,7 +9,12 @@ const { pool } = require("../services/database");
 // module keeps using and RE-EXPORTING them, so import paths are unchanged.
 const { renderInsightEmail, renderWeeklyDigestEmail, renderWeeklyDigestText,
         renderDailyDigestEmail, renderDailyDigestText, escapeHtml } = require("./insights-email");
-const { getMonthlySpending, getMonthlyIncomeAndSpending, NOT_TRANSFER } = require("../services/financial-queries");
+const { getMonthlySpending, getMonthlyIncomeAndSpending, NOT_TRANSFER, SPLIT_AMOUNT } = require("../services/financial-queries");
+
+// t2/la2-aliased variant of the canonical split expression, for the anomaly
+// baseline subquery (same in-place derivation convention as the NOT_TRANSFER
+// t2-rewrite below — never an independent copy, so it can't drift).
+const SPLIT_AMOUNT_2 = SPLIT_AMOUNT.replace(/\bla\./g, "la2.").replace(/\bt\./g, "t2.");
 const { auditInsight, getAuditStats, getAuditAccuracy } = require("../services/ai-audit");
 const {
   MODEL_COST_PER_M, modelFamily, estimateCostUsd, estimateCostGranular,
@@ -257,7 +262,7 @@ async function runDailyDigest() {
 }
 
 // Effective monthly AI budget cap (cents). Single source of truth shared by
-// /api/insights, /api/insights/rebuild, and /api/categorize (INV-14):
+// /api/insights, /api/insights/rebuild, /api/categorize, and /api/ask (INV-14):
 // user_settings.ai_monthly_budget_cents (Settings-tunable) wins when set and
 // positive, then the INSIGHTS_MONTHLY_BUDGET_CENTS env var, then 50 ($0.50).
 // Fails open to the env/default on a DB blip — the cap still applies, just at
@@ -617,15 +622,15 @@ async function generateInsights() {
         //     a different question.)
         const anomalyData = await pool.query(
           `SELECT t.merchant_name, t.name, t.user_merchant_name,
-                  ROUND((CASE WHEN la.is_shared AND t.personal_for = 'self' THEN t.amount WHEN la.is_shared AND t.personal_for = 'partner' THEN 0 ELSE t.amount * COALESCE(la.spending_split_pct, 100) / 100.0 END), 2) AS amount,
+                  ROUND(${SPLIT_AMOUNT}, 2) AS amount,
                   t.date,
                   avg_tbl.avg_amount, avg_tbl.txn_count
            FROM transactions t
            LEFT JOIN linked_accounts la ON la.account_id = t.account_id
            JOIN (
              SELECT LOWER(COALESCE(t2.user_merchant_name, t2.merchant_name, t2.name)) AS merchant,
-                    AVG((CASE WHEN la2.is_shared AND t2.personal_for = 'self' THEN t2.amount WHEN la2.is_shared AND t2.personal_for = 'partner' THEN 0 ELSE t2.amount * COALESCE(la2.spending_split_pct, 100) / 100.0 END)) AS avg_amount,
-                    STDDEV((CASE WHEN la2.is_shared AND t2.personal_for = 'self' THEN t2.amount WHEN la2.is_shared AND t2.personal_for = 'partner' THEN 0 ELSE t2.amount * COALESCE(la2.spending_split_pct, 100) / 100.0 END)) AS std_amount,
+                    AVG(${SPLIT_AMOUNT_2}) AS avg_amount,
+                    STDDEV(${SPLIT_AMOUNT_2}) AS std_amount,
                     COUNT(*) AS txn_count
              FROM transactions t2
              LEFT JOIN linked_accounts la2 ON la2.account_id = t2.account_id
@@ -640,10 +645,10 @@ async function generateInsights() {
              AND COALESCE(t.is_reimbursed, false) = false
              AND t.date >= CURRENT_DATE - INTERVAL '2 months'
              AND ${NOT_TRANSFER}
-             AND ((CASE WHEN la.is_shared AND t.personal_for = 'self' THEN t.amount WHEN la.is_shared AND t.personal_for = 'partner' THEN 0 ELSE t.amount * COALESCE(la.spending_split_pct, 100) / 100.0 END)) > avg_tbl.avg_amount * 2
+             AND ${SPLIT_AMOUNT} > avg_tbl.avg_amount * 2
              AND (
                avg_tbl.std_amount IS NULL OR avg_tbl.std_amount = 0
-               OR ((CASE WHEN la.is_shared AND t.personal_for = 'self' THEN t.amount WHEN la.is_shared AND t.personal_for = 'partner' THEN 0 ELSE t.amount * COALESCE(la.spending_split_pct, 100) / 100.0 END)) > avg_tbl.avg_amount + 2 * avg_tbl.std_amount
+               OR ${SPLIT_AMOUNT} > avg_tbl.avg_amount + 2 * avg_tbl.std_amount
              )
            ORDER BY t.date DESC
            LIMIT 10`
@@ -673,7 +678,7 @@ async function generateInsights() {
           `SELECT EXTRACT(MONTH FROM t.date)::int AS month_num,
                   TO_CHAR(t.date, 'Mon') AS month_name,
                   EXTRACT(YEAR FROM t.date)::int AS year,
-                  ROUND(SUM((CASE WHEN la.is_shared AND t.personal_for = 'self' THEN t.amount WHEN la.is_shared AND t.personal_for = 'partner' THEN 0 ELSE t.amount * COALESCE(la.spending_split_pct, 100) / 100.0 END)), 2) AS total
+                  ROUND(SUM(${SPLIT_AMOUNT}), 2) AS total
            FROM transactions t
            LEFT JOIN linked_accounts la ON la.account_id = t.account_id
            WHERE t.amount > 0 AND t.pending = false

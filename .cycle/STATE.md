@@ -366,6 +366,33 @@ then rotate to Detection & Categorization.
 10. Per-sistant Web UI
 
 - **Seams audit:** every 3 subsystem cycles.
-- **Subsystem cycles since last Seams audit:** 5 — DUE (Platform, Settings/Cross-app, Per-sistant Web UI, Per-sistant Backend, Sheets ran after this session's mid-rotation seams audit). Run a Seams & Invariants audit next cycle (resets to 0).
+- **Subsystem cycles since last Seams audit:** 0 (June 2026 Seams & Invariants audit COMPLETE — see record below).
 - **Last subsystem audited:** Sheets & External Export
 - **Cycles completed:** rotation complete this session (broad-scan + 8 targeted + 1 seams); reflect recorded (cycle 3, net +4); Health Synthesis still pending.
+
+### Seams & Invariants audit #2 (June 2026, round 8 — counter reset to 0)
+Scope: all documented seams + the seams NEW since audit #1 (4 route-file splits,
+ask.js cap seam, health.js→notifications/briefing, webauthn transports contract,
+critical_alert event, whats-new↔daily-digest, job-health name map). 14 invariants
+code-read-verified (INV-02/03/04/06/08/12/14/17/18/21/23/26/27/33/36): ALL PASS.
+Route splits: all 4 structurally sound (mounts, no duplicate paths, identity
+re-exports resolve, INV-19 ordering, no require cycles). Cross-app contracts:
+email-insert columns/status/recipient-chain identical across in-process + HTTP
+paths; rag.js perfinPool columns all exist; widget fallback unwraps the real
+shape; productivity-context columns exist; cross-pool wiring null-checked.
+Findings (all FIXED this session):
+- **SEAMS-1 (Medium):** Per-sistant's HTTP webhook receiver didn't recognize
+  `critical_alert` (Perfin's EMAIL_EVENTS sends it) — standalone deployments
+  200-and-dropped critical alert emails; embedded in-process path unaffected.
+  Added to the receiver condition + fallbackSubject + sendNameByEvent.
+- **SEAMS-2 (Low, drift):** cash-flow (spending-analytics.js ×4 sites incl. the
+  yoy splits-CTE pair) and insights.js anomaly+seasonal (×7 sites) held LITERAL
+  copies of the SPLIT_AMOUNT CASE while CLAUDE.md claimed "cannot drift" (seams
+  audit #1's SEAM-1 under-counted). All converted to `${SPLIT_AMOUNT}` +
+  in-place derivations (new SPLIT_AMOUNT_2 = la2./t2. rewrite). Live-verified:
+  cash-flow/yoy/summary 200 against real PG; anomaly+seasonal SQL EXPLAIN-valid.
+- **SEAMS-3 (Trivial):** getAiBudgetCents comment named 3 cap sharers; now 4
+  (added /api/ask). Settlement FILTER buckets confirmed NOT copies (by design).
+New pins: tests/seams-audit.test.js — repo-wide literal-CASE scan (fails on any
+future re-inlining) + EMAIL_EVENTS↔receiver symmetry (every sender event must be
+accepted + named by the receiver). Tests: 971 across 36 files (+4).

@@ -2116,17 +2116,25 @@ expression with two layers — per-transaction `personal_for` override
  END)
 ```
 Non-shared accounts always fall through to the spending_split_pct branch
-(which defaults to 100 = full amount). `routes/enrollments.js`
-(spending-summary monthly/category/merchants, cash-flow daily/DOW averages),
-`routes/insights.js` (anomaly baseline + candidate, seasonal patterns), and
-`routes/subscriptions.js` (bill-calendar income) **IMPORT** `SPLIT_AMOUNT` /
-`NOT_TRANSFER` / `INCOME_PREDICATE` from `financial-queries.js` and
-template-interpolate them — they are NOT independent copies and cannot drift
-(the split-row variant is derived in-place via `SPLIT_AMOUNT.replace(/t\.amount/g,
-"s.amount")`, and insights' anomaly subquery via `NOT_TRANSFER.replace(/\bt\./g,
-"t2.")`). The only place that holds a TRUE inline copy (because it can't `require`
-the services layer) is the standalone `scripts/sheets-sync.js` (verified byte-
-matching the canonical) and the legacy Apps Script `apps-script/Code.gs` fork.
+(which defaults to 100 = full amount). `routes/spending-analytics.js`
+(spending-summary monthly/category/merchants, cash-flow daily/DOW averages,
+spending-yoy), `routes/insights.js` (anomaly baseline + candidate, seasonal
+patterns), and `routes/subscriptions.js` (bill-calendar income) **IMPORT**
+`SPLIT_AMOUNT` / `NOT_TRANSFER` / `INCOME_PREDICATE` from
+`financial-queries.js` and template-interpolate them — they are NOT
+independent copies and cannot drift. Aliased variants are derived in place,
+never re-typed: the split-row variant via `SPLIT_AMOUNT.replace(/t\.amount/g,
+"s.amount")`, insights' anomaly-baseline subquery via `SPLIT_AMOUNT_2 =
+SPLIT_AMOUNT.replace(/\bla\./g, "la2.").replace(/\bt\./g, "t2.")` and
+`NOT_TRANSFER.replace(/\bt\./g, "t2.")`. (The June 2026 seams audit found and
+converted the last literal copies — two in cash-flow, seven in insights
+anomaly/seasonal; `tests/seams-audit.test.js` now scans every route/service
+file and fails on any future re-inlining. The settlement endpoint's per-bucket
+`FILTER (WHERE t.personal_for = …)` clauses are NOT copies of this CASE — they
+implement the deliberately different who-owes-who bucket math.) The only place
+that holds a TRUE inline copy (because it can't `require` the services layer)
+is the standalone `scripts/sheets-sync.js` (verified byte-matching the
+canonical) and the legacy Apps Script `apps-script/Code.gs` fork.
 The standalone `scripts/sheets-sync.js` `buildDashboard` also
 inlines a `SPLIT_AMT` + `NOT_TRANSFER` + reimbursed-exclusion copy (it can't
 import the services layer). As of M4 it ALSO mirrors splits-REPLACEMENT for its

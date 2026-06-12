@@ -136,13 +136,17 @@ module.exports = function ({ pool, config }) {
     if (event === "test") {
       return res.json({ ok: true, message: "Perfin → Per-sistant webhook OK." });
     }
-    if (event === "insights_generated" || event === "weekly_summary" || event === "daily_summary") {
-      // All three events share the same { subject, html_body, plain_text } shape.
+    if (event === "insights_generated" || event === "weekly_summary" || event === "daily_summary" || event === "critical_alert") {
+      // All four events share the same { subject, html_body, plain_text } shape.
       // insights_generated fires per scheduled-cadence insight run; weekly_summary
       // is a once-per-week digest from the running_summary; daily_summary is the
-      // optional once-per-day "what changed yesterday" digest from gatherWhatsNew.
-      // We mail all three the same way — the difference is just the subject line
-      // and payload contents, which Perfin's side already composes.
+      // optional once-per-day "what changed yesterday" digest from gatherWhatsNew;
+      // critical_alert is the immediate budget-exceeded / anomaly email. We mail
+      // all four the same way — the difference is just the subject line and
+      // payload contents, which Perfin's side already composes. (critical_alert
+      // was missing here while Perfin's EMAIL_EVENTS sent it — a standalone
+      // deployment silently 200-and-dropped critical alerts; the embedded
+      // in-process path was unaffected. Found by the June 2026 seams audit.)
       try {
         const setR = await pool.query("SELECT perfin_webhook_recipient FROM user_settings WHERE id = 1").catch(() => ({ rows: [] }));
         const recipient = (setR.rows[0] && setR.rows[0].perfin_webhook_recipient)
@@ -153,11 +157,14 @@ module.exports = function ({ pool, config }) {
           ? "Perfin: Your Weekly Financial Digest"
           : event === "daily_summary"
             ? "Perfin: Yesterday's Activity"
-            : "Perfin AI Financial Analysis";
+            : event === "critical_alert"
+              ? "Perfin: Critical Alert"
+              : "Perfin AI Financial Analysis";
         const sendNameByEvent = {
           weekly_summary: "Perfin Weekly Digest",
           daily_summary:  "Perfin Daily Digest",
           insights_generated: "Perfin Insights",
+          critical_alert: "Perfin Alerts",
         };
         const subject = data.subject || fallbackSubject;
         const body = data.plain_text || "(no body)";
