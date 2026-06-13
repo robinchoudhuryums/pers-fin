@@ -74,7 +74,8 @@ async function load() {
     var subDone = subs.filter(s=>s.completed).length;
     var subHtml = '';
     if (subs.length) {
-      subHtml = '<div class="subtask-progress"><div class="subtask-progress-fill" style="width:'+(subDone/subs.length*100)+'%"></div></div>';
+      var subPct = Math.round(subDone/subs.length*100);
+      subHtml = '<div class="subtask-progress-row"><div class="subtask-progress"><div class="subtask-progress-fill" style="width:'+subPct+'%"></div></div><span class="subtask-progress-label">'+subPct+'%</span></div>';
       subHtml += '<div class="subtask-list">'+subs.map(s =>
         '<div class="subtask-item"><div class="subtask-check'+(s.completed?' done':'')+'" data-action="toggle-subtask" data-id="'+s.id+'" data-completed="'+(!s.completed)+'"></div><span class="subtask-text'+(s.completed?' done':'')+'" data-action="edit-subtask" data-id="'+s.id+'">'+esc(s.title)+'</span><button class="subtask-edit-btn" data-action="edit-subtask-btn" data-id="'+s.id+'">&#9998;</button></div>'
       ).join('')+'</div>';

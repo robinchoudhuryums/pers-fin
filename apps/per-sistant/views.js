@@ -168,11 +168,53 @@ const NAV_CHROME_CSS = `
   width: 20px; height: 20px; object-fit: contain; display: block;
 }
 
+/* "Ask Per-sistant" button in the appbar — mirrors the cross-app link chrome
+   but is a <button> (needs an explicit background/font reset), and toggles the
+   shared #ask-ps-popover wired in views/js.js (available on every page). */
+.appbar .ask-ps-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 10px; border: 1px solid var(--line); border-radius: 2px;
+  background: transparent; color: var(--muted); cursor: pointer;
+  font-family: var(--mono); font-size: 10px; font-weight: 500;
+  letter-spacing: 0.1em; text-transform: uppercase;
+}
+.appbar .ask-ps-btn:hover { background: var(--paper-2); color: var(--ink); }
+.appbar .ask-ps-btn .icon { display: inline-flex; }
+.appbar .ask-ps-btn .icon img {
+  width: 20px; height: 20px; object-fit: contain; display: block; border-radius: 4px;
+}
+
+/* Shared Ask popover (floating chrome — opaque card surface, never alpha) */
+#ask-ps-popover {
+  position: fixed; top: 60px; right: 16px; z-index: 1200;
+  width: min(380px, calc(100vw - 32px));
+  background: var(--paper-card); border: 1px solid var(--line); border-radius: 8px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.28); padding: 14px;
+}
+#ask-ps-popover[hidden] { display: none; }
+.ask-ps-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.ask-ps-title { font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.ask-ps-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 13px; padding: 2px 6px; line-height: 1; }
+.ask-ps-close:hover { color: var(--ink); }
+.ask-ps-row { display: flex; gap: 8px; }
+.ask-ps-input { flex: 1; min-width: 0; }
+.ask-ps-answer {
+  margin-top: 12px; padding: 12px 14px; background: var(--paper-2);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  font-size: 13px; line-height: 1.6; white-space: pre-wrap; color: var(--ink);
+  max-height: 320px; overflow-y: auto;
+}
+.ask-ps-answer[hidden] { display: none; }
+
 @media (max-width: 480px) {
   .mode-toggle { padding: 4px 8px; font-size: 9px; }
   .appbar .cross-app-link { padding: 4px 8px; font-size: 9px; }
   /* Collapse the cross-link to icon-only on small screens */
   .appbar .cross-app-link .label { display: none; }
+  .appbar .ask-ps-btn { padding: 4px 8px; font-size: 9px; }
+  .appbar .ask-ps-btn .label { display: none; }
+  /* Bottom-sheet the popover on phones so it clears the on-screen keyboard */
+  #ask-ps-popover { top: auto; bottom: 0; right: 0; left: 0; width: 100%; border-radius: 12px 12px 0 0; }
 }
 `;
 
@@ -209,6 +251,13 @@ function navBar(activePath) {
          <span class="icon"><img src="${perfinIconSrc}" alt="" aria-hidden="true" width="20" height="20"></span>
          <span class="label">Perfin</span>
        </a>` : '';
+  // "Ask Per-sistant" lives in the appbar so the assistant Q&A is reachable
+  // from every page (the dashboard card it replaced was dashboard-only). The
+  // popover + wiring live in views/js.js (SHARED_JS); this is just the trigger.
+  const askBtn = `<button id="ask-ps-btn" type="button" class="ask-ps-btn" aria-label="Ask Per-sistant" aria-haspopup="dialog" aria-expanded="false">
+         <span class="icon"><img src="${bp}/android-chrome-mask-crop.png" alt="" aria-hidden="true" width="20" height="20"></span>
+         <span class="label">Ask</span>
+       </button>`;
   const here = (NAV.find(n => n.href === activePath) || {}).label || 'Per-sistant';
   return `
 <aside class="sidebar">
@@ -238,6 +287,7 @@ function navBar(activePath) {
   </nav>
   <div class="spacer"></div>
   <div class="ui-controls">
+    ${askBtn}
     ${perfinLink}
   </div>
 </header>`;

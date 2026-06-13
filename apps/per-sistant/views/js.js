@@ -219,4 +219,71 @@ document.addEventListener('click',function(e){
     dist = 0;
   }, { passive: true });
 })();
+
+// ---------------------------------------------------------------------------
+// Ask Per-sistant — global popover triggered from the appbar (#ask-ps-btn).
+// Posts to /api/ai/query (the same endpoint the retired dashboard "Ask your
+// assistant" card used) so the assistant Q&A is reachable from every page.
+// Built lazily on first open; event delegation means it works regardless of
+// when the nav renders. Backtick-free (this whole module is a template literal).
+// ---------------------------------------------------------------------------
+(function initAskPopover() {
+  var pop = null, input = null, answer = null, sendBtn = null, trigger = null;
+  function build() {
+    if (pop) return pop;
+    pop = document.createElement('div');
+    pop.id = 'ask-ps-popover';
+    pop.setAttribute('role', 'dialog');
+    pop.setAttribute('aria-label', 'Ask Per-sistant');
+    pop.hidden = true;
+    pop.innerHTML =
+      '<div class="ask-ps-head"><span class="ask-ps-title">Ask your assistant</span>' +
+      '<button type="button" class="ask-ps-close" aria-label="Close">&#10005;</button></div>' +
+      '<div class="ask-ps-row"><input type="text" class="ask-ps-input" ' +
+      'placeholder="What did I do last week? How many tasks are overdue?">' +
+      '<button type="button" class="ask-ps-send btn primary">Ask</button></div>' +
+      '<div class="ask-ps-answer" hidden></div>';
+    document.body.appendChild(pop);
+    input = pop.querySelector('.ask-ps-input');
+    answer = pop.querySelector('.ask-ps-answer');
+    sendBtn = pop.querySelector('.ask-ps-send');
+    pop.querySelector('.ask-ps-close').addEventListener('click', close);
+    sendBtn.addEventListener('click', submit);
+    input.addEventListener('keydown', function (e) { if (e.key === 'Enter') submit(); });
+    return pop;
+  }
+  function open() {
+    build();
+    pop.hidden = false;
+    if (trigger) trigger.setAttribute('aria-expanded', 'true');
+    setTimeout(function () { if (input) input.focus(); }, 30);
+  }
+  function close() {
+    if (!pop || pop.hidden) return;
+    pop.hidden = true;
+    if (trigger) trigger.setAttribute('aria-expanded', 'false');
+  }
+  function submit() {
+    var q = (input.value || '').trim();
+    if (!q) return;
+    answer.hidden = false;
+    answer.textContent = 'Thinking…';
+    sendBtn.disabled = true;
+    fetch('/api/ai/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: q }),
+    }).then(function (r) { return r.json(); }).then(function (r) {
+      answer.textContent = (r && r.answer) || 'No answer available.';
+    }).catch(function (err) {
+      answer.textContent = 'Error: ' + ((err && err.message) || 'request failed');
+    }).then(function () { sendBtn.disabled = false; });
+  }
+  document.addEventListener('click', function (e) {
+    var t = e.target.closest('#ask-ps-btn');
+    if (t) { e.preventDefault(); trigger = t; if (pop && !pop.hidden) close(); else open(); return; }
+    if (pop && !pop.hidden && !e.target.closest('#ask-ps-popover')) close();
+  });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
+})();
 `;

@@ -5,32 +5,38 @@ const { test, expect } = require("@playwright/test");
 
 const PIN = process.env.E2E_SHELL_PIN || "246810";
 
+// The shell login now uses a numeric keypad (text input + Continue are hidden
+// by progressive enhancement). Drive the pad: tap each digit's key, then "Go".
+async function loginWithPin(page, pin) {
+  await page.goto("/login");
+  await expect(page.locator("#pin-pad .pin-key").first()).toBeVisible();
+  for (const d of String(pin)) {
+    await page.locator('.pin-key[data-digit="' + d + '"]').click();
+  }
+  await page.locator('.pin-key[data-action="go"]').click();
+}
+
 test("unauthenticated visit redirects to the PIN login", async ({ page }) => {
   await page.goto("/");
   await expect(page).toHaveURL(/\/login/);
-  await expect(page.locator('input[name="pin"]')).toBeVisible();
+  // The keypad is the visible credential entry (the text input is hidden by JS).
+  await expect(page.locator("#pin-pad")).toBeVisible();
 });
 
 test("wrong PIN shows an error and does not authenticate", async ({ page }) => {
-  await page.goto("/login");
-  await page.fill('input[name="pin"]', "000000");
-  await page.locator('form[action="/login"] button[type="submit"], form[action="/login"] input[type="submit"]').first().click();
+  await loginWithPin(page, "000000");
   await expect(page.locator("body")).toContainText(/incorrect pin/i);
 });
 
 test("correct PIN lands directly in Per-sistant (landing skipped by default)", async ({ page }) => {
-  await page.goto("/login");
-  await page.fill('input[name="pin"]', PIN);
-  await page.locator('form[action="/login"] button[type="submit"], form[action="/login"] input[type="submit"]').first().click();
+  await loginWithPin(page, PIN);
   await expect(page).toHaveURL(/\/per-sistant/);
   await expect(page.locator(".sidebar-brand")).toContainText(/per-sistant/i);
 });
 
 test.describe("authenticated", () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto("/login");
-    await page.fill('input[name="pin"]', PIN);
-    await page.locator('form[action="/login"] button[type="submit"], form[action="/login"] input[type="submit"]').first().click();
+    await loginWithPin(page, PIN);
     await page.waitForURL(/\/per-sistant/);
   });
 

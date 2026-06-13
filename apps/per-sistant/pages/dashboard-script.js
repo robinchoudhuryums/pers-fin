@@ -15,6 +15,59 @@
 module.exports = `
 var BP = window.BASE_PATH || '';
 var searchTimeout = null;
+
+// ---------------------------------------------------------------------------
+// Reminder notification ledger + snooze
+// ----------------------------------------------------------------------------
+// Browser notifications for overdue tasks / streaks-at-risk / upcoming facts
+// fire on dashboard load. Without a ledger, the SAME item re-notifies every
+// single time you open the dashboard. We keep a localStorage map of
+// "notification identity -> last-fired timestamp" and suppress anything fired
+// within NOTIFY_WINDOW_MS. A separate "snooze" timestamp mutes ALL reminders
+// until it elapses. Tunable: bump NOTIFY_WINDOW_MS / SNOOZE_MS as needed.
+// ---------------------------------------------------------------------------
+var NOTIFY_WINDOW_MS = 12 * 60 * 60 * 1000; // 12h re-notify window per item
+var SNOOZE_MS = 8 * 60 * 60 * 1000;         // "Snooze reminders" duration
+var NOTIFY_LEDGER_KEY = 'ps-notify-ledger';
+var NOTIFY_SNOOZE_KEY = 'ps-notify-snooze-until';
+
+function notifyLedger() { try { return JSON.parse(localStorage.getItem(NOTIFY_LEDGER_KEY) || '{}') || {}; } catch (e) { return {}; } }
+function notifyKey(n) { return n.type + '|' + (n.id == null ? '' : n.id) + '|' + (n.title || ''); }
+function snoozeUntil() { return parseInt(localStorage.getItem(NOTIFY_SNOOZE_KEY) || '0', 10) || 0; }
+function remindersSnoozed() { return Date.now() < snoozeUntil(); }
+
+function shouldNotifyReminder(n) {
+  if (remindersSnoozed()) return false;
+  var last = notifyLedger()[notifyKey(n)] || 0;
+  return (Date.now() - last) >= NOTIFY_WINDOW_MS;
+}
+function markReminderNotified(n) {
+  var ledger = notifyLedger();
+  ledger[notifyKey(n)] = Date.now();
+  // Keep the map bounded — drop entries older than 2x the re-notify window.
+  var cutoff = Date.now() - NOTIFY_WINDOW_MS * 2;
+  Object.keys(ledger).forEach(function (k) { if (ledger[k] < cutoff) delete ledger[k]; });
+  try { localStorage.setItem(NOTIFY_LEDGER_KEY, JSON.stringify(ledger)); } catch (e) {}
+}
+
+function updateSnoozeBtn() {
+  var btn = document.getElementById('snooze-reminders-btn');
+  if (!btn) return;
+  if (remindersSnoozed()) {
+    var mins = Math.round((snoozeUntil() - Date.now()) / 60000);
+    var label = mins >= 60 ? (Math.round(mins / 60) + 'h') : (Math.max(1, mins) + 'm');
+    btn.textContent = 'Reminders snoozed (' + label + ') — resume';
+    btn.classList.add('primary');
+  } else {
+    btn.textContent = 'Snooze reminders';
+    btn.classList.remove('primary');
+  }
+}
+function toggleSnoozeReminders() {
+  if (remindersSnoozed()) localStorage.removeItem(NOTIFY_SNOOZE_KEY);
+  else { try { localStorage.setItem(NOTIFY_SNOOZE_KEY, String(Date.now() + SNOOZE_MS)); } catch (e) {} }
+  updateSnoozeBtn();
+}
 function doSearch(q) {
   clearTimeout(searchTimeout);
   if (!q || q.length < 2) { document.getElementById('search-results').style.display='none'; return; }
@@ -82,7 +135,14 @@ function renderDashTodo(t) {
     ? '<button data-action="dash-complete-recurring" data-id="'+t.id+'" title="Complete & create next" style="background:none;border:1px solid var(--good);color:var(--good);width:22px;height:22px;border-radius:2px;cursor:pointer;font-size:12px;flex-shrink:0;display:flex;align-items:center;justify-content:center;">&#10003;</button>'
     : '<button data-action="dash-complete" data-id="'+t.id+'" title="Mark complete" style="background:none;border:1px solid var(--good);color:var(--good);width:22px;height:22px;border-radius:2px;cursor:pointer;font-size:12px;flex-shrink:0;display:flex;align-items:center;justify-content:center;">&#10003;</button>';
   var streakBadge = t.recurring && t.streak_count > 0 ? '<span class="badge streak">&#x1F525; '+t.streak_count+'</span>' : '';
-  return '<div class="todo-item" style="display:flex;align-items:center;gap:10px;">'+completeBtn+'<div class="todo-content" style="flex:1;"><div class="todo-title">'+esc(t.title)+'</div><div class="todo-meta"><span class="badge '+t.priority+'">'+t.priority+'</span>'+(t.category?'<span>'+esc(t.category)+'</span>':'')+(t.due_date?'<span'+overdue+'>Due: '+new Date(t.due_date).toLocaleDateString()+'</span>':'')+(t.recurring?'<span class="badge recurring">recurring</span>':'')+streakBadge+'</div></div></div>';
+  // Subtask progress (counts come from /api/todos — no per-card fetch).
+  var subTotal = t.subtask_total || 0, subDone = t.subtask_done || 0;
+  var subBar = '';
+  if (subTotal > 0) {
+    var subPct = Math.round(subDone/subTotal*100);
+    subBar = '<div class="subtask-progress-row" style="margin-top:6px;"><div class="subtask-progress"><div class="subtask-progress-fill" style="width:'+subPct+'%"></div></div><span class="subtask-progress-label">'+subDone+'/'+subTotal+'</span></div>';
+  }
+  return '<div class="todo-item" style="display:flex;align-items:center;gap:10px;">'+completeBtn+'<div class="todo-content" style="flex:1;"><div class="todo-title">'+esc(t.title)+'</div><div class="todo-meta"><span class="badge '+t.priority+'">'+t.priority+'</span>'+(t.category?'<span>'+esc(t.category)+'</span>':'')+(t.due_date?'<span'+overdue+'>Due: '+new Date(t.due_date).toLocaleDateString()+'</span>':'')+(t.recurring?'<span class="badge recurring">recurring</span>':'')+streakBadge+'</div>'+subBar+'</div></div>';
 }
 
 async function dashComplete(id) {
@@ -180,9 +240,17 @@ async function load() {
         n.type === 'streak_at_risk' ||
         (n.type === 'fact_upcoming' && n.days_away != null && n.days_away <= 7)
       );
-      important.slice(0,3).forEach(n => {
+      // Per-notification dedup ledger + global snooze (see helpers above) so the
+      // same overdue/streak item doesn't re-fire a browser notification on every
+      // dashboard load. Cap at 3 actual fires per load.
+      var fired = 0;
+      important.forEach(n => {
+        if (fired >= 3) return;
+        if (!shouldNotifyReminder(n)) return;
         var prefix = n.type==='overdue' ? 'Overdue: ' : n.type==='streak_at_risk' ? 'Streak at risk: ' : 'Upcoming: ';
         new Notification('Per-sistant', { body: prefix+n.title, icon: BP+'/android-chrome-192x192.png' });
+        markReminderNotified(n);
+        fired++;
       });
     }
   }).catch(function(){});
@@ -205,22 +273,12 @@ async function load() {
   }).catch(function(){});
 }
 
-async function askAI() {
-  var input = document.getElementById('ai-query-input');
-  var q = input.value.trim();
-  if (!q) return;
-  var answerEl = document.getElementById('ai-query-answer');
-  answerEl.textContent = 'Thinking...';
-  answerEl.style.display = 'block';
-  try {
-    var r = await fetch('/api/ai/query', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:q})}).then(r=>r.json());
-    answerEl.textContent = r.answer || 'No answer available.';
-  } catch (err) { answerEl.textContent = 'Error: '+err.message; }
-}
+// "Ask your assistant" was retired from the dashboard — it now lives as the
+// "Ask" button in the top bar (global popover, available on every page).
 
 // Widget customization
-var widgetNames = {search:'Search',cards:'Stats Cards',briefing:'AI Briefing',suggestions:'Smart Suggestions',ai_query:'Ask AI',tasks:'Task Overview',upcoming_emails:'Upcoming & Emails',mini_cal:'Mini Calendar',perfin:'Perfin',shortcuts:'Shortcuts'};
-var dashLayout = {widgets:['search','cards','briefing','suggestions','ai_query','tasks','upcoming_emails','mini_cal','perfin','shortcuts'],hidden:[]};
+var widgetNames = {search:'Search',cards:'Stats Cards',briefing:'AI Briefing',suggestions:'Smart Suggestions',tasks:'Task Overview',upcoming_emails:'Upcoming & Emails',mini_cal:'Mini Calendar',perfin:'Perfin',shortcuts:'Shortcuts'};
+var dashLayout = {widgets:['search','cards','briefing','suggestions','tasks','upcoming_emails','mini_cal','perfin','shortcuts'],hidden:[]};
 var wdragSrcWidget = null;
 
 async function loadLayout() {
@@ -228,9 +286,10 @@ async function loadLayout() {
     var settings = await fetch('/api/settings').then(r=>r.json());
     if (settings.dashboard_layout) {
       dashLayout = settings.dashboard_layout;
-      // Drop any retired widgets (tree) from saved layout
-      dashLayout.widgets = dashLayout.widgets.filter(function(id){ return id !== 'tree'; });
-      dashLayout.hidden = (dashLayout.hidden || []).filter(function(id){ return id !== 'tree'; });
+      // Drop any retired widgets (tree, ai_query) from saved layout
+      var RETIRED = ['tree','ai_query'];
+      dashLayout.widgets = dashLayout.widgets.filter(function(id){ return RETIRED.indexOf(id) === -1; });
+      dashLayout.hidden = (dashLayout.hidden || []).filter(function(id){ return RETIRED.indexOf(id) === -1; });
       var allWidgetIds = Array.from(document.querySelectorAll('.dash-widget')).map(function(w){return w.dataset.widget;});
       allWidgetIds.forEach(function(id) {
         if (dashLayout.widgets.indexOf(id) === -1) dashLayout.widgets.push(id);
@@ -276,7 +335,7 @@ function toggleCustomize() {
 }
 
 function resetLayout() {
-  dashLayout = {widgets:['search','cards','briefing','suggestions','ai_query','tasks','upcoming_emails','mini_cal','perfin','shortcuts'],hidden:[]};
+  dashLayout = {widgets:['search','cards','briefing','suggestions','tasks','upcoming_emails','mini_cal','perfin','shortcuts'],hidden:[]};
   applyLayout();
   saveLayout();
 }
@@ -407,14 +466,12 @@ document.addEventListener('keydown', function(e) {
 bindEvents([
   ['customize-btn','click',toggleCustomize],
   ['reset-layout-btn','click',resetLayout],
-  ['ask-ai-btn','click',askAI],
+  ['snooze-reminders-btn','click',toggleSnoozeReminders],
   ['mini-cal-prev','click',miniCalPrev],
   ['mini-cal-next','click',miniCalNext],
 ]);
 var searchInput=document.getElementById('global-search');
 if(searchInput)searchInput.addEventListener('input',function(){doSearch(this.value);});
-var aiInput=document.getElementById('ai-query-input');
-if(aiInput)aiInput.addEventListener('keydown',function(e){if(e.key==='Enter')askAI();});
 onDelegate('dash-task-filters','click','button[data-view]',function(){setDashView(this,this.dataset.view);});
 onDelegate('widget-toggles','click','[data-toggle-widget]',function(e){e.stopPropagation();toggleWidget(this.dataset.toggleWidget);});
 onDelegate('mini-cal-grid','click','[data-cal-day]',function(){showMiniCalEvents(parseInt(this.dataset.calDay));});
@@ -432,5 +489,6 @@ document.addEventListener('click',function(e){
   else if(act==='search-pin')searchTogglePin(id,btn.dataset.pinned==='true');
 });
 
+updateSnoozeBtn();
 loadLayout().then(load);
 `;

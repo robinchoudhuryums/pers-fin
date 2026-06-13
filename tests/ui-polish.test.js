@@ -180,6 +180,16 @@ describe("post-login default + icon particle transition", () => {
       "tainted-canvas / unloaded-image path falls back to the original reveal");
   });
 
+  it("is a hybrid: particles on desktop, the lighter CSS reveal on mobile/touch", () => {
+    const js = read("shell", "public", "transition.js");
+    assert.match(js, /function prefersLightTransition\(\)/, "device gate exists");
+    assert.match(js, /\(pointer: coarse\)/, "coarse pointer → light transition");
+    assert.match(js, /\(max-width: 768px\)/, "narrow viewport → light transition");
+    // The gate short-circuits the particle engine before it ever runs.
+    assert.match(js, /prefersLightTransition\(\) \|\| !startParticleAssembly\(overlay, navigate\)/,
+      "mobile takes the CSS mask-reveal path; desktop still tries particles");
+  });
+
   it("particle mode hides the mask-reveal art via CSS", () => {
     const css = read("shell", "public", "transition.css");
     assert.match(css, /\.atrans-canvas \{ position: relative; z-index: 3/);

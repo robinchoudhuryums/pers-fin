@@ -53,13 +53,18 @@ describe("WebAuthn transports flow to allowCredentials", () => {
     assert.match(src, /credential\.transports/);
   });
 
-  it("both auth-options endpoints echo transports with the platform fallback", () => {
+  it("both auth-options endpoints advertise internal-only transports (suppresses the QR path)", () => {
+    // 'hybrid' is the cross-device transport — advertising it is what made
+    // browsers offer the "use a phone" QR option instead of the local
+    // Touch/Face ID. Registration pins authenticatorAttachment:'platform', so
+    // credentials are same-device and internal-only is correct AND it sends the
+    // browser straight to the local biometric (QR-only fix follow-up).
     for (const file of [["teller", "pages", "login.js"], ["shell", "middleware", "webauthn.js"]]) {
       const src = read(...file);
-      assert.match(src, /SELECT credential_id, transports FROM webauthn_credentials/,
-        file.join("/") + " must select transports");
-      assert.match(src, /\["internal", "hybrid"\]/,
-        file.join("/") + " must fall back to platform transports for pre-column rows");
+      assert.match(src, /transports: \["internal"\],/,
+        file.join("/") + " must advertise internal-only transports at login");
+      assert.ok(!/transports:.*\bhybrid\b/.test(src.replace(/\/\/[^\n]*/g, "")),
+        file.join("/") + " must NOT advertise 'hybrid' in allowCredentials (it triggers the QR path)");
     }
   });
 });

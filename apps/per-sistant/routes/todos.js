@@ -29,7 +29,14 @@ module.exports = function ({ pool, config }) {
       let pagination = "";
       if (limit) { pagination += ` LIMIT $${idx++}`; params.push(Math.min(Math.max(1, parseInt(limit, 10) || 20), MAX_PAGINATION_LIMIT)); }
       if (offset) { pagination += ` OFFSET $${idx++}`; params.push(Math.max(0, parseInt(offset, 10) || 0)); }
-      const r = await pool.query(`SELECT * FROM todos ${clause} ORDER BY completed ASC, sort_order ASC, CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, created_at DESC${pagination}`, params);
+      // subtask_total / subtask_done let callers (dashboard task cards, todos
+      // list) render a progress bar without an N+1 fetch per todo. Unqualified
+      // column refs in ${clause}/ORDER BY still resolve against the aliased base
+      // table (todos t) since it's the only table in scope.
+      const r = await pool.query(`SELECT t.*,
+          (SELECT COUNT(*)::int FROM subtasks s WHERE s.todo_id = t.id) AS subtask_total,
+          (SELECT COUNT(*)::int FROM subtasks s WHERE s.todo_id = t.id AND s.completed) AS subtask_done
+        FROM todos t ${clause} ORDER BY completed ASC, sort_order ASC, CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, created_at DESC${pagination}`, params);
       res.json(r.rows);
     } catch (err) {
       serverError(res, err);

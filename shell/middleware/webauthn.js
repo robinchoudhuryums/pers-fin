@@ -62,20 +62,22 @@ function attach(app, perfinPool) {
   // No prior session needed (biometric auth is the alternative to PIN entry).
   app.post("/api/shell/webauthn/authenticate-options", async (req, res) => {
     try {
-      const creds = await perfinPool.query("SELECT credential_id, transports FROM webauthn_credentials");
+      const creds = await perfinPool.query("SELECT credential_id FROM webauthn_credentials");
       if (creds.rows.length === 0) {
         return res.status(404).json({ error: "No biometric credentials registered" });
       }
-      // Include each credential's transports — without them the browser can't
-      // tell this is a platform (FaceID/TouchID) credential and shows only the
-      // cross-device options (QR code / USB security key) on the login screen.
-      // Rows registered before the transports column existed fall back to
-      // ['internal','hybrid'], which is always right here because registration
-      // pins authenticatorAttachment: 'platform' (teller/pages/login.js).
+      // Advertise ONLY the internal (platform) transport. Registration pins
+      // authenticatorAttachment:'platform' (teller/pages/login.js), so every
+      // stored credential lives on THIS device. Echoing the authenticator's
+      // 'hybrid' transport (which iCloud/synced passkeys report) is exactly what
+      // made browsers surface the cross-device "use a phone" QR option instead
+      // of going straight to Touch/Face ID — internal-only suppresses that QR
+      // path. (The real transports are still persisted at registration; they're
+      // just not used as the login hint.)
       const allowCredentials = creds.rows.map(r => ({
         id: r.credential_id,
         type: "public-key",
-        transports: (Array.isArray(r.transports) && r.transports.length) ? r.transports : ["internal", "hybrid"],
+        transports: ["internal"],
       }));
       const rp = getRp(req);
       const options = await simplewebauthn.generateAuthenticationOptions({
