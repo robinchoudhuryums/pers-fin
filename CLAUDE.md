@@ -2024,13 +2024,19 @@ rows) can dismiss them from the UI or run `POST /api/cleanup`.
   requests) — @simplewebauthn v11 already defaults it true, so this is a
   defense-in-depth pin against a future SDK-default flip (PSA2).
 - **WebAuthn transports**: registration persists the authenticator's
-  `transports` (`webauthn_credentials.transports TEXT[]`), and BOTH
-  authenticate-options endpoints (shell + standalone) echo them in
-  `allowCredentials`. Without them the browser can't tell the credential is a
-  platform authenticator and offers only cross-device options (QR code / USB
-  key) at login. Pre-column rows (NULL) fall back to `['internal','hybrid']` —
-  always correct because registration pins `authenticatorAttachment:
-  'platform'`. Pinned by tests/budget-cap-webauthn.test.js.
+  `transports` (`webauthn_credentials.transports TEXT[]`), but BOTH
+  authenticate-options endpoints (shell + standalone) deliberately advertise
+  `transports: ['internal']` ONLY in `allowCredentials` at login. Registration
+  pins `authenticatorAttachment: 'platform'`, so every credential lives on the
+  same device — and echoing the authenticator's `'hybrid'` transport (which
+  iCloud/synced passkeys report) is exactly what made browsers surface the
+  cross-device "use a phone" QR option instead of going straight to Touch/Face
+  ID. Internal-only suppresses that QR path and sends the browser to the local
+  biometric. (Earlier this echoed the stored transports with an
+  `['internal','hybrid']` fallback, which kept the QR option visible — the
+  `'hybrid'` advert was the bug.) The real transports are still stored at
+  registration; they're just not used as the login hint. Pinned by
+  tests/budget-cap-webauthn.test.js.
 - **Biometric registration UI**: Settings → Security → "Biometric Login"
   section lists registered credentials and provides Register / Remove
   buttons via the existing `/api/webauthn/*` endpoints. The register
@@ -2834,7 +2840,7 @@ INV-36 | Single in-process vault-sync lock (isSyncing) prevents overlapping cron
 INV-37..47 | RETIRED — assigned by the cycle-3 reflect but their definitions were never written into the repo and are unrecoverable; numbers burned, never reuse (their subject matter — the cycle-3 fixes — is test-pinned via tests/cycle-fixes.test.js + audit-regressions) | — | Verify: n/a
 INV-48 | SPLIT_AMOUNT / INCOME_PREDICATE are never re-inlined: every spending aggregation imports from financial-queries.js (aliased variants derived in place via .replace); the only permitted literal copies are scripts/sheets-sync.js (byte-pinned) + apps-script/Code.gs | Subsystem: Financial Analytics (seam) | Verify: tests/seams-audit.test.js repo-wide literal-CASE scan
 INV-49 | Every member of Perfin's EMAIL_EVENTS set is accepted AND named (sendNameByEvent) by Per-sistant's HTTP webhook receiver — an unrecognized email event is 200-and-dropped in standalone deployments | Subsystem: Settings, Notifications & Cross-app (seam) | Verify: tests/seams-audit.test.js symmetry pin
-INV-50 | WebAuthn allowCredentials always carries transports — stored from registration, else the ['internal','hybrid'] platform fallback (registration pins authenticatorAttachment:'platform', so the fallback is always correct); both shell and standalone auth-options endpoints comply | Subsystem: Platform, Shell & Auth | Verify: tests/budget-cap-webauthn.test.js
+INV-50 | WebAuthn auth-options advertise transports ['internal'] ONLY in allowCredentials (NOT 'hybrid') — registration pins authenticatorAttachment:'platform' so credentials are same-device; advertising the cross-device 'hybrid' transport is what surfaced the "use a phone" QR option instead of local Touch/Face ID, so internal-only suppresses the QR path; both shell and standalone auth-options endpoints comply (transports still persisted at registration, just not used as the login hint) | Subsystem: Platform, Shell & Auth | Verify: tests/budget-cap-webauthn.test.js
 INV-51 | Habit streaks are computed at read time from habit_logs (a backfilled log retroactively repairs a streak; an unlogged today never breaks one); no stored streak counters exist for habits | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/health.test.js backfill-repair test
 INV-52 | Health consumers (notification check, AI daily briefing) call gatherHealthSummary fail-soft (.catch) — a health-tables error degrades to "no habit data", never 500s those surfaces | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/health.test.js integration pins
 INV-53 | CRITICAL scheduled jobs (transaction/balance sync + snapshot + detection; weekly reconcile; backups; knowledge reindex) have out-of-process GitHub-Actions backstops hitting x-api-key endpoints with idempotent writes, so Render free-tier sleep can't skip them | Subsystem: Platform, Shell & Auth | Verify: .github/workflows/{daily-sync,weekly-reconcile,db-backup,knowledge-reindex}.yml exist + idempotent-write invariants INV-01/05

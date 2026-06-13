@@ -13,7 +13,29 @@ body {
 }
 
 /* --- Login screen ---------------------------------------------------------- */
-.login-body { display: flex; align-items: center; justify-content: center; padding: 24px; }
+.login-body { display: flex; align-items: center; justify-content: center; padding: 24px; min-height: 100vh; position: relative; z-index: 1; }
+
+/* Cosmic nebula/starfield backdrop (matches shell transition.css palette:
+   purple #a88cdc / gold #d4a574 / teal glow over a near-black base). Fixed
+   behind the card; the stars are injected by login.ejs and twinkle via CSS. */
+.cosmic-bg { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none;
+  background: radial-gradient(ellipse at center, #0c0e14 0%, #060709 78%); }
+.cosmic-nebula { position: absolute; inset: -10%;
+  background:
+    radial-gradient(circle at 28% 32%, rgba(168,140,220,0.30) 0%, transparent 55%),
+    radial-gradient(circle at 72% 66%, rgba(212,165,116,0.22) 0%, transparent 55%),
+    radial-gradient(circle at 50% 50%, rgba(95,191,191,0.10) 0%, transparent 72%);
+  animation: cosmic-drift 22s ease-in-out infinite; }
+@keyframes cosmic-drift {
+  0%, 100% { transform: scale(1) translate(0, 0); opacity: 0.9; }
+  50%      { transform: scale(1.08) translate(1.5%, -1.5%); opacity: 1; }
+}
+.cosmic-stars { position: absolute; inset: 0; }
+.cosmic-stars span { position: absolute; display: block; border-radius: 50%;
+  background: #f3ece0; box-shadow: 0 0 6px rgba(212,165,116,0.7); opacity: 0.5;
+  animation: cosmic-twinkle 2.6s ease-in-out infinite; }
+@keyframes cosmic-twinkle { 0%, 100% { opacity: 0.2; } 50% { opacity: 0.95; } }
+
 .login-card {
   background: #14161e;
   border: 1px solid #232634;
@@ -21,6 +43,24 @@ body {
   padding: 32px;
   max-width: 360px;
   width: 100%;
+  position: relative;
+  z-index: 1;
+  text-align: center;
+  box-shadow: 0 24px 70px rgba(0,0,0,0.55), 0 0 0 1px rgba(168,140,220,0.06);
+  animation: login-card-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes login-card-in {
+  from { opacity: 0; transform: translateY(14px) scale(0.985); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+/* Branding glyph (PWA mask-crop icon) atop the card. */
+.login-glyph { margin: 0 auto 16px; width: 64px; height: 64px;
+  animation: login-glyph-in 0.6s cubic-bezier(0.22, 1, 0.36, 1) 0.05s both; }
+.login-glyph img { width: 64px; height: 64px; border-radius: 16px; display: block;
+  box-shadow: 0 0 24px rgba(168,140,220,0.35), 0 0 48px rgba(212,165,116,0.18); }
+@keyframes login-glyph-in {
+  from { opacity: 0; transform: translateY(-10px) scale(0.9); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 .login-card h1 { margin: 0 0 6px; font-weight: 400; font-size: 24px; }
 .login-card .subtitle { margin: 0 0 24px; font-size: 13px; color: #8a8e99; font-weight: 300; }
@@ -47,6 +87,42 @@ body {
   margin-bottom: 12px;
 }
 .pin-input:focus { outline: none; border-color: #d4a574; }
+
+/* Numeric PIN pad (progressive enhancement — revealed by login.ejs JS, which
+   hides the text input + Continue button on capable browsers). Mirrors Perfin's
+   standalone pad: fixed 8-dot masked display + 3x4 keypad. */
+.pin-dots { display: flex; justify-content: center; gap: 12px; margin: 4px 0 22px; }
+.pin-dot { width: 13px; height: 13px; border-radius: 50%;
+  border: 2px solid #2d3140; transition: background 0.15s ease, border-color 0.15s ease; }
+.pin-dot.filled { background: #d4a574; border-color: #d4a574; animation: dot-pop 0.18s ease; }
+.pin-dot.error { background: #eb6b6b; border-color: #eb6b6b; }
+@keyframes dot-pop { 0% { transform: scale(0.7); } 100% { transform: scale(1); } }
+.pin-dots.shake { animation: pin-shake 0.4s ease; }
+@keyframes pin-shake {
+  10%, 90% { transform: translateX(-1px); }
+  20%, 80% { transform: translateX(2px); }
+  30%, 50%, 70% { transform: translateX(-4px); }
+  40%, 60% { transform: translateX(4px); }
+}
+.pin-pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; max-width: 252px; margin: 0 auto; }
+.pin-key { padding: 16px 0; font-size: 22px; font-weight: 300; font-family: inherit;
+  border: 1px solid #232634; border-radius: 10px; background: transparent; color: #eaeaea;
+  cursor: pointer; -webkit-tap-highlight-color: transparent; transition: border-color 0.12s ease, transform 0.06s ease; }
+.pin-key:hover { border-color: #d4a574; }
+.pin-key:active { background: rgba(212,165,116,0.12); transform: scale(0.95); }
+.pin-key.fn { font-size: 16px; font-weight: 400; color: #8a8e99; }
+.pin-key.fn.go { color: #d4a574; font-size: 15px; letter-spacing: 0.5px; text-transform: uppercase; }
+.biometric-btn { margin-top: 12px; width: 100%; background: transparent; border: 1px solid #232634; }
+.biometric-btn:hover { border-color: #d4a574; }
+#biometric-status { margin-top: 8px; font-size: 12px; text-align: center; color: #8a8e99; }
+
+/* Respect reduced-motion: kill the ambient + entrance animation. */
+@media (prefers-reduced-motion: reduce) {
+  .cosmic-nebula, .cosmic-stars span, .login-card, .login-glyph, .pin-dot.filled, .pin-dots.shake {
+    animation: none !important;
+  }
+  .cosmic-stars span { opacity: 0.55; }
+}
 
 .btn {
   padding: 10px 16px;

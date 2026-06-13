@@ -19,13 +19,22 @@
   <link rel="stylesheet" href="/shell-static/landing.css">
 </head>
 <body class="login-body">
+  <div class="cosmic-bg" aria-hidden="true">
+    <div class="cosmic-nebula"></div>
+    <div class="cosmic-stars" id="cosmic-stars"></div>
+  </div>
   <main class="login-card">
+    <div class="login-glyph"><img src="/android-chrome-512x512.png?v=2" alt="" aria-hidden="true" width="64" height="64"></div>
     <h1>Welcome</h1>
     <p class="subtitle">Enter your PIN to continue.</p>
     <% if (error) { %>
       <div class="login-error" role="alert"><%= error %></div>
     <% } %>
-    <form method="POST" action="/login" autocomplete="off">
+    <form id="login-form" method="POST" action="/login" autocomplete="off">
+      <!-- Real PIN field — the only credential the form posts. On JS-capable
+           browsers setupPinPad() hides it (+ the Continue button) and reveals
+           the keypad below, writing taps straight into this input. With JS off
+           it stays a normal numeric field, so login still works. -->
       <input
         type="password"
         name="pin"
@@ -35,13 +44,18 @@
         required
         aria-label="PIN"
         class="pin-input"
+        id="pin-input"
       >
-      <button type="submit" class="btn primary">Continue</button>
+      <button type="submit" class="btn primary" id="continue-btn">Continue</button>
+      <div class="pin-pad-wrap" id="pin-pad-wrap" hidden>
+        <div class="pin-dots" id="pin-dots"></div>
+        <div class="pin-pad" id="pin-pad"></div>
+      </div>
     </form>
-    <button type="button" id="biometric-btn" class="btn" style="display:none;margin-top:12px;width:100%;background:transparent;border:1px solid currentColor;">
+    <button type="button" id="biometric-btn" class="btn biometric-btn" style="display:none;">
       Use Biometric
     </button>
-    <div id="biometric-status" style="margin-top:8px;font-size:12px;text-align:center;"></div>
+    <div id="biometric-status"></div>
   </main>
   <script>
     // Helpers — base64url ↔ Uint8Array. WebAuthn responses use base64url.
@@ -126,6 +140,89 @@
         btn.disabled = false;
       }
     });
+  </script>
+  <script>
+    // Cosmic starfield — inject twinkling stars into the backdrop. Sizes/
+    // positions/delays randomized so the field doesn't pulse in unison. CSS
+    // handles the twinkle (and silences it under prefers-reduced-motion).
+    (function populateStars() {
+      var box = document.getElementById('cosmic-stars');
+      if (!box) return;
+      var html = '';
+      for (var i = 0; i < 54; i++) {
+        var x = (Math.random() * 100).toFixed(2);
+        var y = (Math.random() * 100).toFixed(2);
+        var size = (Math.random() * 1.8 + 1).toFixed(2);
+        var delay = (Math.random() * 2.6).toFixed(2);
+        var dur = (Math.random() * 1.8 + 1.8).toFixed(2);
+        html += '<span style="left:' + x + '%;top:' + y + '%;width:' + size +
+                'px;height:' + size + 'px;animation-delay:' + delay +
+                's;animation-duration:' + dur + 's;"></span>';
+      }
+      box.innerHTML = html;
+    })();
+
+    // Numeric PIN pad — progressive enhancement. Replaces the text input with a
+    // keypad that writes into the same #pin-input and submits the same form.
+    // Fixed 8-dot masked display (length-agnostic, like Perfin's pad). Physical
+    // keyboard digits / Backspace / Enter work too.
+    (function setupPinPad() {
+      var form = document.getElementById('login-form');
+      var input = document.getElementById('pin-input');
+      var wrap = document.getElementById('pin-pad-wrap');
+      var continueBtn = document.getElementById('continue-btn');
+      var dotsEl = document.getElementById('pin-dots');
+      var padEl = document.getElementById('pin-pad');
+      if (!form || !input || !wrap || !dotsEl || !padEl) return;
+
+      var DOTS = 8;
+      var pin = '';
+
+      // Swap the plain field for the pad.
+      input.style.display = 'none';
+      input.removeAttribute('autofocus');
+      if (continueBtn) continueBtn.style.display = 'none';
+      wrap.hidden = false;
+
+      var dh = '';
+      for (var i = 0; i < DOTS; i++) dh += '<div class="pin-dot" id="pd-' + i + '"></div>';
+      dotsEl.innerHTML = dh;
+
+      var ph = '';
+      [1, 2, 3, 4, 5, 6, 7, 8, 9].forEach(function (n) {
+        ph += '<button class="pin-key" type="button" data-digit="' + n + '">' + n + '</button>';
+      });
+      ph += '<button class="pin-key fn" type="button" data-action="back" aria-label="Delete">&#9003;</button>';
+      ph += '<button class="pin-key" type="button" data-digit="0">0</button>';
+      ph += '<button class="pin-key fn go" type="button" data-action="go">Go</button>';
+      padEl.innerHTML = ph;
+
+      function render() {
+        for (var j = 0; j < DOTS; j++) {
+          var d = document.getElementById('pd-' + j);
+          if (d) d.className = 'pin-dot' + (j < pin.length ? ' filled' : '');
+        }
+        input.value = pin;
+      }
+      function add(n) { if (pin.length >= DOTS) return; pin += n; render(); }
+      function back() { pin = pin.slice(0, -1); render(); }
+      function go() { if (pin.length) form.submit(); }
+
+      padEl.addEventListener('click', function (e) {
+        var b = e.target.closest('button');
+        if (!b) return;
+        e.preventDefault();
+        if (b.dataset.digit !== undefined) add(b.dataset.digit);
+        else if (b.dataset.action === 'back') back();
+        else if (b.dataset.action === 'go') go();
+      });
+      document.addEventListener('keydown', function (e) {
+        if (/^[0-9]$/.test(e.key)) { add(e.key); }
+        else if (e.key === 'Backspace') { e.preventDefault(); back(); }
+        else if (e.key === 'Enter') { e.preventDefault(); go(); }
+      });
+      render();
+    })();
   </script>
 </body>
 </html>

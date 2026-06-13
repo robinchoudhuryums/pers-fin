@@ -181,19 +181,22 @@ router.post("/api/webauthn/authenticate-options", async (req, res) => {
   if (!simplewebauthn) return res.status(501).json({ error: "WebAuthn not available" });
   try {
     const rp = getRp(req);
-    const creds = await pool.query("SELECT credential_id, transports FROM webauthn_credentials");
+    const creds = await pool.query("SELECT credential_id FROM webauthn_credentials");
     if (creds.rows.length === 0) {
       return res.status(404).json({ error: "No biometric credentials registered" });
     }
 
-    // transports tell the browser this is a platform credential so it offers
-    // FaceID/TouchID directly. Pre-transports rows (NULL) fall back to
-    // ['internal','hybrid'] — always correct here because registration pins
-    // authenticatorAttachment: 'platform'.
+    // Advertise ONLY the internal (platform) transport. Registration pins
+    // authenticatorAttachment:'platform', so every stored credential lives on
+    // THIS device. Echoing the authenticator's 'hybrid' transport (which iCloud/
+    // synced passkeys report) is exactly what made browsers surface the
+    // cross-device "use a phone" QR option instead of going straight to Touch/
+    // Face ID. Internal-only suppresses that QR path. (The real transports are
+    // still persisted at registration; they're just not used as the login hint.)
     const allowCredentials = creds.rows.map(r => ({
       id: r.credential_id,
       type: "public-key",
-      transports: (Array.isArray(r.transports) && r.transports.length) ? r.transports : ["internal", "hybrid"],
+      transports: ["internal"],
     }));
 
     const options = await simplewebauthn.generateAuthenticationOptions({
