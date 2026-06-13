@@ -1097,12 +1097,13 @@ describe("Streak tracking", () => {
 // ---------------------------------------------------------------------------
 describe("Dashboard customization", () => {
   it("default layout contains all widgets", () => {
-    const layout = { widgets: ["search", "cards", "briefing", "suggestions", "ai_query", "tasks", "upcoming_emails", "perfin", "shortcuts"], hidden: [] };
-    assert.equal(layout.widgets.length, 9);
+    // ai_query retired — "Ask your assistant" moved to the top-bar Ask popover.
+    const layout = { widgets: ["search", "cards", "briefing", "suggestions", "tasks", "upcoming_emails", "perfin", "shortcuts"], hidden: [] };
+    assert.equal(layout.widgets.length, 8);
     assert.ok(layout.widgets.includes("search"));
     assert.ok(layout.widgets.includes("tasks"));
     assert.ok(layout.widgets.includes("suggestions"));
-    assert.ok(layout.widgets.includes("ai_query"));
+    assert.ok(!layout.widgets.includes("ai_query"), "ai_query is retired from the dashboard");
   });
 
   it("hidden widgets are excluded from display", () => {

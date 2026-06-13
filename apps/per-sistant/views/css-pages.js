@@ -63,13 +63,23 @@ module.exports = `
   cursor: pointer; padding: 6px 0; letter-spacing: 0.1em; text-transform: uppercase;
 }
 .subtask-add:hover { color: var(--accent); }
-.subtask-progress {
-  height: 2px; background: var(--paper-2); border-radius: 1px;
-  margin-top: 6px; overflow: hidden;
+.subtask-progress-row {
+  display: flex; align-items: center; gap: 8px; margin-top: 6px;
 }
+.subtask-progress {
+  flex: 1; height: 4px; background: var(--paper-2); border-radius: 2px;
+  overflow: hidden;
+}
+/* Standalone bar (when not wrapped in a row) keeps its own top margin. */
+.subtask-progress-row .subtask-progress { margin-top: 0; }
 .subtask-progress-fill {
-  height: 100%; background: var(--good); border-radius: 1px;
+  height: 100%; background: var(--good); border-radius: 2px;
   transition: width 0.3s;
+}
+.subtask-progress-label {
+  font-family: var(--mono); font-size: 10px; color: var(--muted);
+  font-variant-numeric: tabular-nums; flex-shrink: 0; min-width: 2.5em;
+  text-align: right;
 }
 
 /* Drag-and-drop */

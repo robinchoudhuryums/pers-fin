@@ -77,6 +77,19 @@
   var NAVIGATE_AT = ASSEMBLE_MS + HOLD_MS + DISPERSE_MS - 90;
   var MAX_PARTICLES = 7500; // frame-budget cap for low-power devices
 
+  // Hybrid effect selection: the particle assembly is GPU/CPU-heavy (thousands
+  // of canvas rects per frame). Desktops have the headroom; phones/tablets felt
+  // "stressful for the app", so they get the lighter CSS mask reveal instead.
+  // Gate on a coarse pointer OR a narrow viewport — either signals a touch /
+  // mobile device. Desktop (fine pointer + wide viewport) keeps the particles.
+  function prefersLightTransition() {
+    try {
+      if (window.matchMedia('(pointer: coarse)').matches) return true;
+      if (window.matchMedia('(max-width: 768px)').matches) return true;
+    } catch (err) {}
+    return false;
+  }
+
   function easeOutQuart(t) { var u = 1 - t; return 1 - u * u * u * u; }
   function easeInCubic(t) { return t * t * t; }
   function smoothstep(t) { return t * t * (3 - 2 * t); }
@@ -221,9 +234,12 @@
           if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return navigate();
         } catch (err) {}
         overlay.classList.add('active');
-        // Particle assembly/disassembly of the app icon; falls back to the
-        // original CSS mask reveal when the engine can't run.
-        if (!startParticleAssembly(overlay, navigate)) {
+        // Hybrid: desktop runs the particle assembly of the app icon; mobile /
+        // touch devices use the lighter CSS mask reveal (best of both — see
+        // prefersLightTransition). The particle engine also falls back to the
+        // CSS reveal on its own when it can't run (tainted canvas / image not
+        // ready).
+        if (prefersLightTransition() || !startParticleAssembly(overlay, navigate)) {
           setTimeout(navigate, 1350);
         }
       });

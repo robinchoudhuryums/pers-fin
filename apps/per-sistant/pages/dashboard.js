@@ -13,7 +13,8 @@ ${navBar("/")}
       <h1>Dashboard</h1>
       <p class="subtitle" style="margin-bottom:0;">Your personal command center.</p>
     </div>
-    <div style="display:flex;gap:8px;align-items:center;">
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <button id="snooze-reminders-btn" class="btn" title="Mute reminder notifications for a while">Snooze reminders</button>
       <button id="customize-btn" class="btn">Customize</button>
     </div>
   </div>
@@ -64,17 +65,10 @@ ${navBar("/")}
       </div>
     </div>
 
-    <!-- AI Natural Language Query -->
-    <div class="dash-widget" data-widget="ai_query" draggable="true">
-      <div class="section" style="margin-bottom:20px;">
-        <h2>Ask your assistant</h2>
-        <div style="display:flex;gap:8px;">
-          <input type="text" id="ai-query-input" placeholder="Ask anything — what did I do last week? How many tasks are overdue?" style="flex:1;">
-          <button id="ask-ai-btn" class="btn primary">Ask</button>
-        </div>
-        <div id="ai-query-answer" style="display:none;margin-top:12px;padding:12px 14px;background:var(--paper-2);border:1px solid var(--line);border-radius:var(--radius);font-size:13px;line-height:1.6;white-space:pre-wrap;color:var(--ink);"></div>
-      </div>
-    </div>
+    <!-- AI Natural Language Query retired — now the "Ask" button in the top bar
+         (views.js ui-controls + the global popover in views/js.js), reachable
+         from every page. Saved layouts that still list "ai_query" are pruned in
+         loadLayout(). -->
 
     <!-- Task Overview -->
     <div class="dash-widget" data-widget="tasks" draggable="true">

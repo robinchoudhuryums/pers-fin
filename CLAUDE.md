@@ -332,7 +332,12 @@ shell/
                                  Honors prefers-reduced-motion (instant
                                  navigation); falls back to the original CSS
                                  mask reveal if the image isn't ready or the
-                                 canvas is tainted.
+                                 canvas is tainted. HYBRID by device
+                                 (prefersLightTransition): desktop (fine
+                                 pointer + wide viewport) runs the particle
+                                 assembly; mobile/touch (coarse pointer OR
+                                 ≤768px) takes the lighter CSS mask reveal —
+                                 the particle field felt heavy on phones.
     perfin-materialize.css     — Iron Man helmet stroke-draw + fill + pulse
                                  ring + particle burst + HUD scan animation
                                  (Perfin entry from landing tile + Per-sistant

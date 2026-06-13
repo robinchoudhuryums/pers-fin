@@ -40,7 +40,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **Todo Categories**: Preset categories (work, personal, health, finance, errands, home, learning) + custom; filterable on todos page and dashboard
 - **Dashboard Task Views**: All / By Category / By Urgency / Due Soon tabs
 - **Recurring Tasks**: Daily, weekly, monthly, yearly, weekdays + custom intervals (every N days/weeks/months) with auto-generation, streak/habit tracking, skip, and snooze. The midnight auto-roll cron atomically CLAIMS each overdue recurring row (`UPDATE … WHERE id = $1 AND completed = false RETURNING`) before generating the next instance, so it can't race the manual complete-recurring path into a double-generated instance (PS-11).
-- **Subtasks**: Checklists within tasks with progress tracking
+- **Subtasks**: Checklists within tasks with progress tracking — a progress bar with a `%` label on the To-Dos page, and a compact `done/total` progress bar on the dashboard task cards (counts come from `subtask_total`/`subtask_done` on `GET /api/todos`, so no per-card N+1 fetch)
 - **Natural Language Quick Add**: Create todos from natural language with auto-detected priority/horizon/due date (AI-enhanced when enabled)
 - **Email Drafting**: Compose, schedule, send; natural language "Quick Send" parser
 - **AI Email Drafting**: Claude-powered email composition (requires `ANTHROPIC_API_KEY`)
@@ -55,9 +55,9 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **Task Dependencies**: Blocking/blocked-by relationships between tasks with circular dependency prevention
 - **Streak Tracking**: Recurring tasks track completion streaks (current + best) with on-time detection
 - **Contacts**: Name→email lookup for quick email addressing
-- **Dashboard**: Customizable widget layout (drag-to-reorder, show/hide widgets), overview cards, task views, AI briefing, smart suggestions, natural language AI query, scheduled emails, Perfin widget, global search
+- **Dashboard**: Customizable widget layout (drag-to-reorder, show/hide widgets), overview cards, task views (with subtask progress bars), AI briefing, smart suggestions, scheduled emails, Perfin widget, global search, a "Snooze reminders" button. (The "Ask your assistant" card was retired — it's now the top-bar **Ask** button, available on every page; saved layouts still listing `ai_query` are pruned in `loadLayout()`.)
 - **AI Smart Suggestions**: AI-powered productivity coaching based on task priorities, due dates, and streaks
-- **AI Natural Language Query**: Ask questions about your data ("what did I do last week?", "how many tasks are overdue?")
+- **AI Natural Language Query**: Ask questions about your data ("what did I do last week?", "how many tasks are overdue?"). Surfaced as the **Ask** button in the top bar (appbar `ui-controls` slot, next to the Perfin cross-app link) — a global popover wired in `views/js.js`, reachable from every page, posting to `POST /api/ai/query`.
 - **Knowledge base (RAG)**: a personal master knowledge store on the Knowledge page.
   Indexes an Obsidian vault (private GitHub repo) + your notes into pgvector for
   source-cited semantic Q&A (keyword fallback when embeddings are off); structured
@@ -100,7 +100,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **System Theme Auto-Detection**: Auto option follows OS dark/light preference via prefers-color-scheme
 - **Backend Validation**: Server-side enum validation for priority, horizon, recurrence rules, note colors, email format. The email `PATCH` validates `status` against `VALID_EMAIL_STATUSES` too (not just `POST`), so a client can't force `status='scheduled'` with a past `scheduled_at` to inject a cron-pickable row (PS-7).
 - **Cross-Entity Links**: Link todos, emails, and notes to each other; create todos from notes or emails with auto-linking
-- **Notification System**: Centralized notification check for due tasks, overdue items, streaks at risk, and note reminders; browser push notifications on dashboard load
+- **Notification System**: Centralized notification check for due tasks, overdue items, streaks at risk, and note reminders; browser push notifications on dashboard load. A client-side **dedup ledger** (`localStorage['ps-notify-ledger']`, keyed by `type|id|title`) suppresses re-firing the same reminder within a 12h window (`NOTIFY_WINDOW_MS`), and a **snooze** affordance (`ps-notify-snooze-until`, 8h via the dashboard "Snooze reminders" button) mutes all reminder notifications for a while.
 - **Analytics Dashboard**: Productivity insights with completion trends, day-of-week analysis, priority/category breakdowns, average completion time, streak leaderboard, productivity score, activity heatmap (90 days), emails sent/notes created counts; filterable by week/month/quarter/year
 - **Todo Templates**: Save task structures (with subtasks) as reusable templates; apply from templates list; "Save as Template" from edit modal
 - **Batch Contact Import**: CSV upload for bulk contact import with validation and error reporting
