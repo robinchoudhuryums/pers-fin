@@ -209,8 +209,12 @@ teller/
                            the model never writes SQL. Bounded tool loop
                            (MAX_TOOL_ROUNDS=6); shares the monthly AI cap
                            (getAiBudgetCents) and charges it via an
-                           entry_type='ask' usage row. Dashboard "Ask Perfin"
-                           widget (key: ask).
+                           entry_type='ask' usage row. The charge runs in a
+                           `finally` (idempotent via a `charged` flag), so a
+                           throw on a LATER tool round still records the tokens
+                           already consumed instead of letting the spend escape
+                           the cap — parity with rebuild (AIA2) / categorize
+                           (M2) (F1). Dashboard "Ask Perfin" widget (key: ask).
     whats-new.js         — GET /api/whats-new, POST /api/whats-new/seen
                            ("since you last looked" dashboard widget feed —
                            new transactions, balance deltas, new subscriptions,
@@ -403,9 +407,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (988 tests as of latest); use
+  Perfin and Per-sistant test files (997 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 988 tests across 37 test files (incl.
+  Current count: 997 tests across 39 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -422,8 +426,16 @@ shell/
   tests/investment-performance.test.js (benchmark fetch +
   portfolio series), tests/investment-flows.test.js (TWR/XIRR + Plaid flow
   classification), tests/budget-cap-webauthn.test.js (tunable AI cap +
-  embedded biometric registration + webauthn transports, INV-50), and
-  tests/pwa-polish.test.js (pull-to-refresh + safe-area pins).
+  embedded biometric registration + webauthn transports, INV-50),
+  tests/pwa-polish.test.js (pull-to-refresh + safe-area pins),
+  tests/sync-idempotency.test.js (BEHAVIORAL S1/INV-01/03/04: runs Teller
+  syncAllEnrollments + Plaid syncPlaidItemTransactions TWICE over the same
+  mock fixtures and asserts the 2nd run adds 0 with no dupes + stable
+  watermark — previously source-string-pinned only), and
+  tests/ai-cap-charge.test.js (BEHAVIORAL S3/INV-13/14 via a Module._load
+  fake @anthropic-ai/sdk: /api/ask + runCategorize charge their usage rows,
+  429 once the cap is hit, ask charges accumulated tokens AND still charges
+  on a mid-loop failure — F1).
 - `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js`.
 - `.claude/commands/` — Project slash-command prompts: `/broad-scan`, `/broad-implement`,
   `/test-sync`, `/sync-docs`
@@ -1267,7 +1279,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 988 tests passing across 37 test files (Perfin + Per-sistant), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 997 tests passing across 39 test files (Perfin 610 + Per-sistant 387), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
