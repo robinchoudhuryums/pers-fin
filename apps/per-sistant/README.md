@@ -82,7 +82,7 @@ Personal assistant tool for task management, email scheduling, and note-taking. 
 - **Task overview tabs**: All / By Category / By Urgency / Due Soon views
 - **AI Daily Briefing**: AI-generated summary of your day's priorities and schedule
 - **AI Smart Suggestions**: AI-powered productivity coaching based on priorities, due dates, and streaks
-- **AI Natural Language Query**: Ask questions about your data ("what did I do last week?")
+- **AI Natural Language Query**: Ask questions about your data ("what did I do last week?"). Surfaced as the **Ask** button in the top bar (next to the Perfin cross-app link), reachable from every page — the old dashboard "Ask your assistant" card was retired.
 - **Notification center**: Browser notifications for due tasks, overdue items, and streak-at-risk alerts
 - **Upcoming tasks**: Next due items at a glance
 - **Scheduled emails**: Pending sends
@@ -130,6 +130,7 @@ Personal assistant tool for task management, email scheduling, and note-taking. 
 - **Browser push notifications**: For due tasks, overdue items, and streak-at-risk alerts
 - **Notification preferences**: Toggle notifications per category in Settings
 - **Real-time checks**: Dashboard polls for pending notifications on load
+- **Reminder dedup + snooze**: a client-side ledger suppresses re-firing the same reminder within a 12h window (so opening/switching to Per-sistant doesn't re-alert the same items), plus a dashboard "Snooze reminders" button mutes all reminders for 8h
 
 ### Task Dependencies
 - **Blocking/blocked-by**: Define relationships between tasks
@@ -311,7 +312,7 @@ docker compose up --build
 npm test
 ```
 
-181 tests across 52 suites covering: time parsing, input validation, data structures, sorting, security, CSRF protection, recurring tasks, custom recurrence intervals, skip/snooze, subtasks, email templates, natural language parsing, global search, calendar, weekly review, drag-and-drop, keyboard shortcuts, AI model selection, AI task breakdown, AI tone adjustment, todo categories, note tags, dashboard views, task dependencies, streaks, bulk actions, trash/undo, automations, attachments, location reminders, cross-entity links, webhooks, Slack integration, notifications, analytics, productivity score, heatmap, todo templates, batch contact import, quick search actions, undo actions, calendar projections, pagination, health check, rate limiting, and AI API optimization.
+387 tests across 121 suites covering: time parsing, input validation, data structures, sorting, security, CSRF protection, recurring tasks, custom recurrence intervals, skip/snooze, subtasks, email templates, natural language parsing, global search, calendar, weekly review, drag-and-drop, keyboard shortcuts, AI model selection, AI task breakdown, AI tone adjustment, todo categories, note tags, dashboard views, task dependencies, streaks, bulk actions, trash/undo, automations, attachments, location reminders, cross-entity links, webhooks, Slack integration, notifications, analytics, productivity score, heatmap, todo templates, batch contact import, quick search actions, undo actions, calendar projections, pagination, health check, rate limiting, and AI API optimization.
 
 ## API Endpoints
 
