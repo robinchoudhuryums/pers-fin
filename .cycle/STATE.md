@@ -15,8 +15,8 @@ to the "none in progress" state.
   Post-cycle FEATURE rounds since (not audit cycles, all merged): auto-loan
   support (PR #117/#118) and notifications-dedup/subtask-progress/hybrid-
   transition/top-bar-Ask/login+biometric (PR #119). Tests: **988** across 37
-  files (Perfin 601 + Per-sistant 387) + 8 Playwright smokes. Seams counter: 0
-  of 3 (no subsystem audit cycle has run since the cycle-4 seams audit).
+  files (Perfin 601 + Per-sistant 387) + 8 Playwright smokes. Seams counter: 1
+  of 3 (cycle-5 broad-scan full sweep reflected 2026-06-15; cadence not yet due).
   **Next:** a FRESH `/broad-scan` or `/targeted-audit` — the un-audited churn
   (health.js, ask.js, loan-payoff math, transition rewrite, top-bar Ask) is the
   highest-value target. History of prior cycles preserved in the records below.
@@ -470,7 +470,7 @@ then rotate to Detection & Categorization.
 10. Per-sistant Web UI
 
 - **Seams audit:** every 3 subsystem cycles.
-- **Subsystem cycles since last Seams audit:** 0 (June 2026 Seams & Invariants audit COMPLETE — see record below).
+- **Subsystem cycles since last Seams audit:** 1 (cycle-5 broad-scan full sweep reflected 2026-06-15; cadence 3 — not yet due. June 2026 Seams & Invariants audit #2 record below.)
 - **Last subsystem audited:** Sheets & External Export
 - **Cycles completed:** rotation complete this session (broad-scan + 8 targeted + 1 seams); reflect recorded (cycle 3, net +4); Health Synthesis still pending.
 
