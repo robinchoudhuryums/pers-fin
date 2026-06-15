@@ -12,11 +12,19 @@
   };
 
   // --- HTML escape ---
+  // F3: escape quotes too. The previous textContent→innerHTML approach escaped
+  // & < > but NOT " or ', so values interpolated into double-quoted attribute
+  // contexts (e.g. data-name="'+esc(x)+'", aria-label="'+esc(x)+'") could break
+  // out of the attribute when a bank-supplied merchant/account name contained a
+  // quote. Explicit 5-char escaping is safe in both text and attribute contexts.
   function esc(s) {
     if (s == null) return '';
-    var d = document.createElement('div');
-    d.textContent = String(s);
-    return d.innerHTML;
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   // --- Prefix helper for sub-app mounting ---

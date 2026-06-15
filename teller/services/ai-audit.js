@@ -18,7 +18,14 @@ const { getMonthlySpending, getMonthlyIncomeAndSpending, getCategorySpendingThis
 // Unqualified or explicitly "this month" claims (which refer to the this-month
 // data the model was actually given) are still checked, so this-month
 // hallucinations are still caught.
-const CROSS_PERIOD_RE = /\b(per year|\/?yr\b|\/year|annual|annually|a year|yearly|year[- ]?to[- ]?date|ytd|this year|over the (?:past|last)|(?:last|past|over)\s+\d+\s+months?|\d+\s+months?|average|avg|projected|projection|annualized|run[- ]?rate|on track)\b/;
+// F6: widened with UNAMBIGUOUS cross-period tokens that the original regex
+// missed — explicit other-month references (last/previous/prior month, "N
+// months ago"), year-over-year, "trailing", and "estimate(d)". These are never
+// this-month, so comparing them to getCategorySpendingThisMonth produced false
+// CRITICALs. Deliberately NOT added: bare/unqualified or "per month" claims —
+// AIA1 intentionally checks those against this-month (pinned in tests), since
+// they refer to the this-month data the model was given.
+const CROSS_PERIOD_RE = /\b(per year|\/?yr\b|\/year|annual|annually|a year|yearly|year[- ]?to[- ]?date|ytd|this year|last month|previous month|prior month|months? ago|year[- ]?over[- ]?year|yoy|trailing|estimated?|over the (?:past|last)|(?:last|past|over)\s+\d+\s+months?|\d+\s+months?|average|avg|projected|projection|annualized|run[- ]?rate|on track)\b/;
 
 // Extract dollar amounts from text: "$1,234.56" or "$500"
 function extractDollarClaims(text) {

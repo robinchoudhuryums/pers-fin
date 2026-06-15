@@ -59,10 +59,36 @@ Tests: 988 → 997 (8 active + 1 skip). Full `npm test` green (996 pass / 1 skip
   ±$0.01, insufficient-payment flag) across 5 scenarios.
 Tests: 997 pass / 0 skip / 0 fail. No production behavior change for T2/T4 (test-quality);
 F1 fixes a real uncapped-spend gap.
-**Where I left off:** T1/T3 + F1/T2/T4 committed on `claude/beautiful-hamilton-abf4h0`.
-Open findings (await operator pick): F2 (net-worth snapshot bare-catch), F3 (esc
-quote-unsafe), F4 (Plaid holdings balance clobber), F5/F6 (audit-alert dedup + tier-1
-false positives), F7-F12.
+### Broad-implement F2–F6 + /sync-docs (2026-06-15, same branch) — follow-on
+- **F2** `teller/routes/enrollments.js` — `syncAllBalances` net-worth snapshot bare
+  `catch {}` now logs (`console.error`), so a getNetWorth/snapshot failure isn't silent.
+- **F3** `teller/public/perfin-shared.js` — `esc()` now escapes `"`/`'` (5-char replace)
+  so bank-supplied names can't break out of double-quoted attribute contexts
+  (data-name/aria-label). CSP already blocked injected inline handlers; this closes the
+  markup-injection vector. (NOTE follow-on: api.test.js:344 has a separate tautological
+  esc COPY that already encodes the correct behavior — couldn't de-tautologize without
+  jsdom; left in place, now consistent with the real fn.)
+- **F4** `teller/routes/investments.js` `syncAllPlaidHoldings` — the linked_accounts
+  MIRROR UPDATE now guards the holdings-sum FALLBACK case (`current_balance IS NULL OR
+  = 0`) so it doesn't clobber a real cash-inclusive balance; a real account-level current
+  still updates unconditionally. investment_accounts (authoritative) + the Schwab $0
+  fallback are unchanged.
+- **F5** `teller/routes/insights.js` — audit-alert push gated by
+  `sentRecently('audit-alert', 24)` so a steady-state critical finding doesn't re-push on
+  every 6h auto-insight tick (fail-open if the dedup check errors).
+- **F6** `teller/services/ai-audit.js` — widened `CROSS_PERIOD_RE` with unambiguous
+  cross-period tokens (last/previous/prior month, N months ago, year-over-year, trailing,
+  estimate(d)) so those claims skip the this-month dollar comparison. Deliberately did NOT
+  skip bare/`per month` claims — AIA1 + pinned tests intentionally check those. +7 test
+  cases in tests/ai-audit.test.js.
+- /sync-docs: CLAUDE.md + README test counts 988→1004 (Perfin 617 + Per-sistant 387),
+  37→39 files; F5/F6 behavior notes added to the AI-audit section.
+Tests: 1004 pass / 0 skip / 0 fail.
+**Where I left off:** T1/T3 + F1/T2/T4 + F2–F6 committed on `claude/beautiful-hamilton-abf4h0`.
+Open findings (await operator pick): F7 (zero/partial-month avg skew), F8 (cadence-advance
+loop guard), F9 (health PATCH quantity-target), F10 (benchmark all-day suppression),
+F11 (settings partial-PATCH semantics), F12 (loan-payoff date TZ label). Also the
+api.test.js esc tautology (separate from T2).
 
 ### Broad-scan + broad-implement (June 2026 session, branch `claude/exciting-albattani-ug1gjv`)
 Full 3-stage /broad-scan completed (4 subsystem deep-dives + gap-fill on Web UI/A11y,

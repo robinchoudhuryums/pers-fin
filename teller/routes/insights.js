@@ -1069,13 +1069,19 @@ async function generateInsights() {
       auditResult = await auditInsight(insightText, insightId);
       if (auditResult.summary.critical > 0) {
         try {
-          const { sendToAll } = require("./notifications");
-          await sendToAll({
-            title: "AI Insight audit: issues found",
-            body: `${auditResult.summary.critical} critical, ${auditResult.summary.warning} warning findings. Review in Settings.`,
-            tag: "audit-alert",
-            data: { url: "/settings" },
-          });
+          const { sendToAll, sentRecently } = require("./notifications");
+          // F5: dedup — at most one audit-alert per 24h so a steady-state
+          // critical finding (e.g. a recurring tier-1 false positive) doesn't
+          // re-push on every 6-hour auto-insight tick, mirroring the budget-alert
+          // 24h dedup. Escalation isn't a concern here (single severity/tag).
+          if (!(await sentRecently("audit-alert", 24))) {
+            await sendToAll({
+              title: "AI Insight audit: issues found",
+              body: `${auditResult.summary.critical} critical, ${auditResult.summary.warning} warning findings. Review in Settings.`,
+              tag: "audit-alert",
+              data: { url: "/settings" },
+            });
+          }
         } catch {}
       }
     } catch (auditErr) {

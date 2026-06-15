@@ -407,9 +407,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (997 tests as of latest); use
+  Perfin and Per-sistant test files (1004 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 997 tests across 39 test files (incl.
+  Current count: 1004 tests across 39 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -796,13 +796,19 @@ shell/
   non-current-month window (annual / multi-month / YTD / projected / running-average, matched by
   `CROSS_PERIOD_RE`) is SKIPPED rather than mis-compared — otherwise an annualized figure (×12) read
   near a category name false-flagged CRITICAL, spamming the audit notification and deflating the
-  `audit_accuracy` % (AIA1). this-month + unqualified claims (which refer to the data the model was
-  given) are still checked. (2) entity existence — merchant/goal/subscription names verified against DB via
+  `audit_accuracy` % (AIA1). `CROSS_PERIOD_RE` also matches explicit other-month / trailing / YoY /
+  estimate phrasings (`last|previous|prior month`, `N months ago`, `year-over-year`, `trailing`,
+  `estimate(d)` — F6); it deliberately does NOT skip bare/unqualified or `per month` claims, which
+  AIA1 still checks against this-month. this-month + unqualified claims (which refer to the data the
+  model was given) are still checked. (2) entity existence — merchant/goal/subscription names verified against DB via
   whole-word match with a ≥4-char min, so a tiny known entity (a "Car" goal) can't wildcard-match
   every claimed name and let hallucinations pass (AI-4); (3) trend direction — only **total/overall**
   spending claims are checked against the monthly total; category-specific claims are skipped rather
   than mis-flagged against the total baseline (AI-1); (4) consistency — detects self-contradictions
-  within the same report. Results stored in `ai_audit_log` table. Critical findings trigger in-app notification.
+  within the same report. Results stored in `ai_audit_log` table. Critical findings trigger an in-app
+  notification, deduped to at most one per 24h via `sentRecently('audit-alert', 24)` (F5) so a
+  steady-state critical finding doesn't re-push on every 6-hour auto-insight tick (parity with the
+  budget-alert dedup; fail-open if the dedup check errors).
   Module auto-disable requires user confirmation. `GET /api/insights/audit` returns
   `{ findings, stats, accuracy }`; `GET /api/insights/status` includes an
   `audit_accuracy` block — both surfaced via `getAuditAccuracy(days=90)`, which
@@ -1279,7 +1285,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 997 tests passing across 39 test files (Perfin 610 + Per-sistant 387), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1004 tests passing across 39 test files (Perfin 617 + Per-sistant 387), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
