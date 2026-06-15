@@ -142,17 +142,19 @@ describe("POST /api/ask cap enforcement + charging (S3 / INV-14)", () => {
     assert.equal(state.inserts[0].params[4], 60, "accumulated output tokens (20+40)");
   });
 
-  // F1 (out of scope here — documented gap): a throw on a LATER tool round
-  // spends round-1 tokens but never reaches the post-loop usage INSERT, so the
-  // spend escapes the cap. Un-skip when ask.js charges before the loop / in a
-  // finally. Pinned now so the fix has a behavioral target.
-  it("charges the cap even when a later tool round throws (documents F1)", { skip: "F1 not yet fixed — ask.js charges only after the loop completes" }, async () => {
+  // F1 (FIXED): a throw on a LATER tool round spends round-1 tokens; ask.js now
+  // charges them via a finally block so the spend still counts against the cap.
+  it("charges the cap even when a later tool round throws (F1)", async () => {
     anthropicQueue = [
       { usage: { input_tokens: 80, output_tokens: 20 }, stop_reason: "tool_use", content: [{ type: "tool_use", id: "tu1", name: "get_net_worth", input: {} }] },
       new Error("network blip on round 2"),
     ];
-    await supertest(app).post("/api/ask").send({ question: "net worth?" });
+    const res = await supertest(app).post("/api/ask").send({ question: "net worth?" });
+    assert.equal(res.status, 500, "the failed round still surfaces as a 500 to the caller");
     assert.equal(state.inserts.length, 1, "round-1 spend must still be charged to the cap");
+    assert.match(state.inserts[0].sql, /'ask'/);
+    assert.equal(state.inserts[0].params[3], 80, "the consumed input tokens are charged");
+    assert.equal(state.inserts[0].params[4], 20, "the consumed output tokens are charged");
   });
 });
 

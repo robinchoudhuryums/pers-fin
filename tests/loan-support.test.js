@@ -161,15 +161,37 @@ describe("loan support integration pins", () => {
     assert.match(src, /data-payment-account/);
   });
 
-  it("client loanPayoff mirrors the canonical iteration (parity smoke)", () => {
-    const client = read("teller", "views", "dashboard.ejs");
-    const server = read("teller", "services", "projections.js");
-    for (const [src, expr] of [[client, "b = b + i - payment"], [server, "b = b + i - monthlyPayment"]]) {
-      assert.ok(src.includes(expr), expr);
-      assert.ok(src.includes("1200"), "same 100-year cap");
+  it("client loanPayoff produces NUMERICALLY identical output to the canonical (T4)", () => {
+    // T4: extract the inlined dashboard loanPayoff() and RUN it against the same
+    // inputs as computeLoanPayoff, asserting equal numbers — a string-presence
+    // smoke would pass even if the inlined rounding/iteration drifted.
+    const ejs = read("teller", "views", "dashboard.ejs");
+    const m = ejs.match(/function loanPayoff\(balance, aprPct, payment\) \{[\s\S]*?return \{\};\s*\}/);
+    assert.ok(m, "inlined loanPayoff() must be present in dashboard.ejs");
+    // eslint-disable-next-line no-new-func
+    const clientLoanPayoff = new Function("return (" + m[0] + ")")();
+
+    const scenarios = [
+      { balance: 10000, apr: 6, payment: 300 },   // normal
+      { balance: 5000, apr: 0, payment: 500 },    // zero APR
+      { balance: 10000, apr: 24, payment: 100 },  // insufficient (100 <= 10000*0.02)
+      { balance: 20000, apr: 5.5, payment: 450 }, // long horizon
+      { balance: 1234.56, apr: 7.25, payment: 200 }, // fractional balance
+    ];
+    for (const s of scenarios) {
+      const client = clientLoanPayoff(s.balance, s.apr, s.payment);
+      const canonical = computeLoanPayoff({ balance: s.balance, aprPct: s.apr, monthlyPayment: s.payment });
+      assert.equal(
+        !!client.insufficient, canonical.insufficient_payment,
+        `insufficient-payment parity for ${JSON.stringify(s)}`
+      );
+      if (canonical.insufficient_payment) continue;
+      assert.equal(client.months, canonical.months_to_payoff, `months parity for ${JSON.stringify(s)}`);
+      assert.ok(
+        Math.abs(client.interest - canonical.total_interest) < 0.01,
+        `total-interest parity for ${JSON.stringify(s)} (client ${client.interest} vs canonical ${canonical.total_interest})`
+      );
     }
-    assert.match(client, /payment <= balance \* r/, "same insufficient-payment guard");
-    assert.match(server, /monthlyPayment <= balance \* r/);
   });
 
   it("debt optimizer feeds loan accounts (with payoff figures) to Claude", () => {

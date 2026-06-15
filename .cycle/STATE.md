@@ -40,10 +40,29 @@ the test-quality findings **T1 + T3 ONLY** (operator scope):
   applied. Includes a SKIPPED test documenting **F1** (ask charges only after the loop →
   mid-loop throw escapes the cap) as a behavioral target for when F1 is fixed.
 Tests: 988 → 997 (8 active + 1 skip). Full `npm test` green (996 pass / 1 skip / 0 fail).
-**Where I left off:** T1/T3 committed on `claude/beautiful-hamilton-abf4h0`. Open
-findings NOT implemented (await operator pick): F1 (ask uncapped on mid-loop fail),
-F2 (net-worth snapshot bare-catch), F3 (esc quote-unsafe), F4 (Plaid holdings balance
-clobber), F5/F6 (audit-alert dedup + tier-1 false positives), F7-F12, T2/T4.
+
+### Broad-implement F1 + T2 + T4 (2026-06-15, same branch) — follow-on
+- **F1** `teller/routes/ask.js` — the entry_type='ask' usage-row INSERT was moved
+  into a `chargeAsk()` closure called on success AND in a `finally` block when tokens
+  were consumed but not yet charged, so a mid-tool-loop throw no longer spends tokens
+  that escape the shared monthly cap (parity with rebuild AIA2 / categorize M2). Charge
+  is idempotent (`charged` flag); 429/400/501 early-returns consume nothing so finally
+  skips. Un-skipped the F1 behavioral test in tests/ai-cap-charge.test.js (now asserts
+  500 + one charged 'ask' row with the round-1 tokens).
+- **T2** `teller/routes/insights.js` — hoisted `sanitizeForPrompt` from a closure inside
+  generateInsights to a module-scope function + exported it; tests/coverage-gaps.test.js
+  now exercises the REAL deployed function instead of a re-implemented copy (was
+  tautological). Behavior unchanged.
+- **T4** tests/loan-support.test.js — replaced the string-presence "parity smoke" with a
+  test that EXTRACTS the inlined dashboard `loanPayoff()` (regex) and RUNS it against the
+  same inputs as `computeLoanPayoff`, asserting numeric parity (months, total_interest
+  ±$0.01, insufficient-payment flag) across 5 scenarios.
+Tests: 997 pass / 0 skip / 0 fail. No production behavior change for T2/T4 (test-quality);
+F1 fixes a real uncapped-spend gap.
+**Where I left off:** T1/T3 + F1/T2/T4 committed on `claude/beautiful-hamilton-abf4h0`.
+Open findings (await operator pick): F2 (net-worth snapshot bare-catch), F3 (esc
+quote-unsafe), F4 (Plaid holdings balance clobber), F5/F6 (audit-alert dedup + tier-1
+false positives), F7-F12.
 
 ### Broad-scan + broad-implement (June 2026 session, branch `claude/exciting-albattani-ug1gjv`)
 Full 3-stage /broad-scan completed (4 subsystem deep-dives + gap-fill on Web UI/A11y,

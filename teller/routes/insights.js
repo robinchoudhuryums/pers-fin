@@ -15,6 +15,18 @@ const { getMonthlySpending, getMonthlyIncomeAndSpending, NOT_TRANSFER, SPLIT_AMO
 // baseline subquery (same in-place derivation convention as the NOT_TRANSFER
 // t2-rewrite below — never an independent copy, so it can't drift).
 const SPLIT_AMOUNT_2 = SPLIT_AMOUNT.replace(/\bla\./g, "la2.").replace(/\bt\./g, "t2.");
+
+// Neutralizes structural markers (the legacy ---RUNNING_SUMMARY--- delimiter +
+// runs of dashes) in user-controlled strings before they're interpolated into
+// the AI prompt. NOT a general prompt-injection defense — it only guards the
+// delimiter shape in case a delimited-parsing fallback ever re-enters the code.
+// Hoisted to module scope + exported (T2) so the deployed function is the one
+// under test — it was previously a closure inside generateInsights, and the
+// test re-implemented a copy that passed regardless of this code.
+function sanitizeForPrompt(s) {
+  if (!s) return "";
+  return String(s).replace(/---+RUNNING_SUMMARY---+/gi, "[redacted]").replace(/---+/g, "--");
+}
 const { auditInsight, getAuditStats, getAuditAccuracy } = require("../services/ai-audit");
 const {
   MODEL_COST_PER_M, modelFamily, estimateCostUsd, estimateCostGranular,
@@ -578,11 +590,8 @@ async function generateInsights() {
     // we still strip the patterns in case a delimited fallback ever re-enters
     // the codebase. A malicious string like "ignore previous instructions"
     // passes through unchanged; this is a personal single-user app so the
-    // only attacker is the operator.
-    function sanitizeForPrompt(s) {
-      if (!s) return "";
-      return String(s).replace(/---+RUNNING_SUMMARY---+/gi, "[redacted]").replace(/---+/g, "--");
-    }
+    // only attacker is the operator. (sanitizeForPrompt is now a module-scope
+    // function — see top of file — so the test exercises the deployed code.)
 
     // ---- Build DYNAMIC user message (changes each request) ----
     let userMsg = "=== CURRENT DATA ===\n" +
@@ -1411,3 +1420,4 @@ module.exports.renderDailyDigestEmail = renderDailyDigestEmail;
 module.exports.generateInsights = generateInsights;
 module.exports.runWeeklyDigest = runWeeklyDigest;
 module.exports.runDailyDigest = runDailyDigest;
+module.exports.sanitizeForPrompt = sanitizeForPrompt; // exported for testing (T2)
