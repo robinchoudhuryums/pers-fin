@@ -17,9 +17,15 @@ const STOOQ_URL = (d1, d2) =>
   `https://stooq.com/q/d/l/?s=${encodeURIComponent(SYMBOL)}&d1=${d1}&d2=${d2}&i=d`;
 const FETCH_TIMEOUT_MS = 10000;
 
-// In-memory once-per-day fetch gate (cheap; the DB max(price_date) check is
-// the durable gate — this just avoids re-querying after a failed fetch).
-let _lastAttemptDay = null;
+// In-memory fetch gate (cheap; the DB max(price_date) check is the durable
+// gate). F10: a SUCCESSFUL fetch gates at most one refetch per UTC day, but a
+// transient FAILURE only throttles briefly (FAIL_RETRY_MS) instead of
+// suppressing all retries for the rest of the day — Stooq recovering minutes
+// later shouldn't leave the benchmark line missing until tomorrow. Back-to-back
+// calls still don't re-stall on a dead source (the throttle covers that).
+let _lastSuccessDay = null;
+let _lastFailAt = 0;
+const FAIL_RETRY_MS = 30 * 60 * 1000; // retry a failed fetch after 30 min
 
 function ymd(date) {
   return date.toISOString().slice(0, 10);
@@ -69,11 +75,12 @@ async function ensureBenchmark(pool, months, { fetchImpl } = {}) {
     const covered = minD && minD <= start;
     if (fresh && covered) return true;
 
-    // At most one fetch attempt per UTC day, even if it fails — Stooq being
-    // down shouldn't add a 10s stall to every dashboard load all day.
+    // Gate: skip if we already fetched successfully today, OR if a recent fetch
+    // FAILED less than FAIL_RETRY_MS ago (so a dead source doesn't stall every
+    // dashboard load, but a transient blip retries within the day — F10).
     const dayKey = ymd(today);
-    if (_lastAttemptDay === dayKey) return !!(maxD && covered);
-    _lastAttemptDay = dayKey;
+    if (_lastSuccessDay === dayKey) return !!(maxD && covered);
+    if (_lastFailAt && (Date.now() - _lastFailAt) < FAIL_RETRY_MS) return !!(maxD && covered);
 
     // Fetch the union of what's missing: from min(needed start, day after
     // existing max) so one call fills both a stale tail and a short head.
@@ -96,6 +103,8 @@ async function ensureBenchmark(pool, months, { fetchImpl } = {}) {
       clearTimeout(timer);
     }
 
+    // Fetch succeeded (no throw) — gate further attempts for the rest of the day.
+    _lastSuccessDay = dayKey;
     const rows = parseStooqCsv(body);
     for (const r of rows) {
       await pool.query(
@@ -109,6 +118,8 @@ async function ensureBenchmark(pool, months, { fetchImpl } = {}) {
     // Empty body with prior coverage: stale but usable.
     return !!maxD;
   } catch (err) {
+    // Transient failure — throttle retries for FAIL_RETRY_MS, not the whole day.
+    _lastFailAt = Date.now();
     console.error("Benchmark refresh error:", err.message);
     return false;
   }
@@ -137,5 +148,5 @@ module.exports = {
   ensureBenchmark,
   getBenchmarkSeries,
   // exported for tests
-  _resetFetchGate: () => { _lastAttemptDay = null; },
+  _resetFetchGate: () => { _lastSuccessDay = null; _lastFailAt = 0; },
 };

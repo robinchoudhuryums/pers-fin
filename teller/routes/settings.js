@@ -223,19 +223,22 @@ router.patch("/api/settings", async (req, res) => {
     // partial coverage. Empty {} clears it.
     if (req.body.target_allocation_pct !== undefined) {
       const t = req.body.target_allocation_pct;
-      if (t === null || (typeof t === "object" && !Array.isArray(t))) {
-        const clean = {};
-        let valid = true;
-        for (const [k, v] of Object.entries(t || {})) {
-          const n = Number(v);
-          if (!Number.isFinite(n) || n < 0 || n > 100) { valid = false; break; }
-          clean[String(k).toLowerCase()] = n;
-        }
-        if (valid) {
-          updates.push("target_allocation_pct = $" + idx++);
-          values.push(JSON.stringify(clean));
-        }
+      // F11: reject invalid input with 400 (consistent with the fire_*/budget
+      // validations above) instead of silently dropping it and returning 200 —
+      // a silent drop made the client believe a bad allocation had saved.
+      if (!(t === null || (typeof t === "object" && !Array.isArray(t)))) {
+        return res.status(400).json({ error: "target_allocation_pct must be an object of {security_type: 0-100} or null" });
       }
+      const clean = {};
+      for (const [k, v] of Object.entries(t || {})) {
+        const n = Number(v);
+        if (!Number.isFinite(n) || n < 0 || n > 100) {
+          return res.status(400).json({ error: "target_allocation_pct values must be numbers between 0 and 100" });
+        }
+        clean[String(k).toLowerCase()] = n;
+      }
+      updates.push("target_allocation_pct = $" + idx++);
+      values.push(JSON.stringify(clean));
     }
     // Shell-layer idle-session timeout (minutes). Sliding window — the shell's
     // requireAuth refreshes the cookie on every request with this many minutes
@@ -244,10 +247,13 @@ router.patch("/api/settings", async (req, res) => {
     let invalidateShellIdleCache = false;
     if (req.body.shell_idle_timeout_minutes !== undefined) {
       const m = parseInt(req.body.shell_idle_timeout_minutes);
-      if (Number.isFinite(m) && m >= 5 && m <= 10080) {
-        updates.push("shell_idle_timeout_minutes = $" + idx++); values.push(m);
-        invalidateShellIdleCache = true;
+      // F11: 400 on out-of-bounds instead of silently dropping (consistent with
+      // the other bounded numeric settings) so a bad value isn't a silent no-op.
+      if (!(Number.isFinite(m) && m >= 5 && m <= 10080)) {
+        return res.status(400).json({ error: "shell_idle_timeout_minutes must be an integer between 5 and 10080" });
       }
+      updates.push("shell_idle_timeout_minutes = $" + idx++); values.push(m);
+      invalidateShellIdleCache = true;
     }
     if (!updates.length) return res.status(400).json({ error: "No valid settings" });
     updates.push("updated_at = now()");

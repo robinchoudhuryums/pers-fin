@@ -84,11 +84,36 @@ F1 fixes a real uncapped-spend gap.
 - /sync-docs: CLAUDE.md + README test counts 988→1004 (Perfin 617 + Per-sistant 387),
   37→39 files; F5/F6 behavior notes added to the AI-audit section.
 Tests: 1004 pass / 0 skip / 0 fail.
-**Where I left off:** T1/T3 + F1/T2/T4 + F2–F6 committed on `claude/beautiful-hamilton-abf4h0`.
-Open findings (await operator pick): F7 (zero/partial-month avg skew), F8 (cadence-advance
-loop guard), F9 (health PATCH quantity-target), F10 (benchmark all-day suppression),
-F11 (settings partial-PATCH semantics), F12 (loan-payoff date TZ label). Also the
-api.test.js esc tautology (separate from T2).
+### Broad-implement F7–F12 + /sync-docs (2026-06-15, same branch) — follow-on
+- **F7** `teller/routes/spending-analytics.js` `/api/savings-rate` — averages now
+  exclude the partial CURRENT month (parity with FIRE + getMonthly* semantics), with a
+  fallback to all rows when the only data is the current month. `months` array unchanged.
+  (FIRE in goals.js already excluded current month; the zero-empty-month omission in
+  getMonthly* GROUP BY is a shared-helper concern, deliberately left out of scope.)
+- **F8** `teller/routes/subscriptions.js` — forecast + bill-calendar cadence-advance
+  `while` loops now `continue` on `cadence_days <= 0`/NaN (latent infinite-loop guard,
+  matching the ICS builder).
+- **F9** `apps/per-sistant/routes/health.js` — PATCH enforces the quantity⇒target_value
+  invariant on the MERGED post-update state (fetches existing kind/target) so switching
+  to quantity without a target — or nulling a quantity habit's target — 400s instead of
+  silently degrading meetsTarget. +4 tests.
+- **F10** `teller/services/benchmarks.js` — the once/day fetch gate now gates per-day only
+  on SUCCESS; a transient FAILURE throttles retries ~30 min (FAIL_RETRY_MS) instead of
+  suppressing the benchmark all day. `_resetFetchGate` updated; existing "attempts===1"
+  test still green.
+- **F11** `teller/routes/settings.js` — `target_allocation_pct` and
+  `shell_idle_timeout_minutes` now 400 on invalid input (consistent with fire_*/budget)
+  instead of silently dropping + returning 200. +3 tests.
+- **F12** `teller/views/dashboard.ejs` — inlined loanPayoff date label formatted in UTC
+  (timeZone:'UTC') so the displayed month matches the API's UTC payoff_date.
+- /sync-docs: counts 1004→1011 (Perfin 620 + Per-sistant 391); benchmarks once/day note
+  updated for the F10 fail-retry behavior.
+Tests: 1011 pass / 0 skip / 0 fail.
+**Where I left off:** ALL broad-scan findings F1–F12 + T1–T4 implemented & committed on
+`claude/beautiful-hamilton-abf4h0`. Remaining notes (not findings): the api.test.js esc
+tautology (separate test-quality item, needs jsdom to de-tautologize); the getMonthly*
+zero-empty-month GROUP BY omission (shared-helper, would need zero-filling across all
+callers — deliberately deferred).
 
 ### Broad-scan + broad-implement (June 2026 session, branch `claude/exciting-albattani-ug1gjv`)
 Full 3-stage /broad-scan completed (4 subsystem deep-dives + gap-fill on Web UI/A11y,

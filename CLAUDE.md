@@ -81,8 +81,11 @@ teller/
                            dashboard loan card inlines a pinned mirror.
     benchmarks.js        — S&P 500 benchmark closes for portfolio comparison.
                            Stooq daily-close CSV (keyless), cached in
-                           benchmark_prices, fetched lazily at most once/day
-                           and only the missing range; every failure path
+                           benchmark_prices, fetched lazily — at most once/day
+                           on SUCCESS, but a transient fetch FAILURE only
+                           throttles retries ~30 min (FAIL_RETRY_MS) instead of
+                           suppressing the benchmark all day (F10) — and only
+                           the missing range; every failure path
                            degrades to "no benchmark line" rather than erroring
     ai-audit.js        — Post-generation insight auditing (4 tiers: arithmetic
                            validation, entity existence, trend direction, consistency).
@@ -407,9 +410,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1004 tests as of latest); use
+  Perfin and Per-sistant test files (1011 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1004 tests across 39 test files (incl.
+  Current count: 1011 tests across 39 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -1285,7 +1288,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1004 tests passing across 39 test files (Perfin 617 + Per-sistant 387), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1011 tests passing across 39 test files (Perfin 620 + Per-sistant 391), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
