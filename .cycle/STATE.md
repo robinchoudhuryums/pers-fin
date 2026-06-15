@@ -9,7 +9,17 @@ to the "none in progress" state.
 
 ## Current Cycle
 
-- **Status:** /broad-scan + /broad-implement (H1/M5/M2/M3/M1 + Tier-1 M6/M4/L2) + /sync-docs; then /targeted-audit+implement of Knowledge/RAG (A1–A4); Detection & Categorization (A1–A4); AI Insights & Audit (A1–A2) — all on branch `claude/sweet-brahmagupta-3uwc4r`; awaiting review/deploy. Tests now 760 (was 745, +15 AIA1 classification cases).
+- **Status:** **NONE IN PROGRESS.** Last completed cycle: **4** (2026-06-12 —
+  Seams & Invariants audit #2 + health synthesis + reflect), fully merged to
+  main (PR #116); results recorded in `PROJECT_HEALTH.md` + `.cycle/metrics.csv`.
+  Post-cycle FEATURE rounds since (not audit cycles, all merged): auto-loan
+  support (PR #117/#118) and notifications-dedup/subtask-progress/hybrid-
+  transition/top-bar-Ask/login+biometric (PR #119). Tests: **988** across 37
+  files (Perfin 601 + Per-sistant 387) + 8 Playwright smokes. Seams counter: 0
+  of 3 (no subsystem audit cycle has run since the cycle-4 seams audit).
+  **Next:** a FRESH `/broad-scan` or `/targeted-audit` — the un-audited churn
+  (health.js, ask.js, loan-payoff math, transition rewrite, top-bar Ask) is the
+  highest-value target. History of prior cycles preserved in the records below.
 
 ### Broad-scan + broad-implement (June 2026 session, branch `claude/exciting-albattani-ug1gjv`)
 Full 3-stage /broad-scan completed (4 subsystem deep-dives + gap-fill on Web UI/A11y,
