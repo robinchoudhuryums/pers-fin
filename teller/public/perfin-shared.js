@@ -49,6 +49,9 @@
   }
 
   // --- API fetch with headers ---
+  // W3: a single in-flight guard so concurrent expired calls trigger one nav.
+  var _authRedirecting = false;
+  var ON_LOGIN_RE = /\/login(\?|#|$)/;
   function apiFetch(url, opts) {
     opts = opts || {};
     opts.headers = Object.assign({}, opts.headers, { 'X-Requested-With': 'XMLHttpRequest' });
@@ -56,7 +59,21 @@
     if (key) {
       opts.headers['x-api-key'] = key;
     }
-    return fetch(withBase(url), opts);
+    return fetch(withBase(url), opts).then(function(res) {
+      // Session expiry: the shell answers an unauthenticated API call with a
+      // 401 (XHR/POST) or a 302→/login that fetch transparently follows (GET).
+      // Without this, callers would render a blank/error state instead of
+      // sending the user to re-login (silent degradation under the 60-min idle
+      // window). Redirect once to the ROOT /login (shell login when embedded,
+      // Perfin login standalone — both un-prefixed); guard against loops.
+      var expired = res.status === 401 ||
+        (res.redirected && ON_LOGIN_RE.test(res.url || ''));
+      if (expired && !_authRedirecting && !ON_LOGIN_RE.test(win.location.pathname)) {
+        _authRedirecting = true;
+        win.location.href = '/login';
+      }
+      return res;
+    });
   }
 
   // --- Toast stack ---

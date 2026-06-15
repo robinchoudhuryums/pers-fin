@@ -9,6 +9,33 @@ to the "none in progress" state.
 
 ## Current Cycle
 
+### Targeted cycle: Web UI (Perfin) — audit + implement (2026-06-15, branch `claude/beautiful-hamilton-abf4h0`)
+`/targeted-audit` Web UI (Perfin): 8 findings (0C/0H/4M/4L), 1 retracted (enrollments_synced
+false positive). `/targeted-implement` completed A1–A5 (the Fix-now + low-risk batch):
+- **A1 (W2)** `settings.ejs` logout → root `POST /logout` + redirect `/login` (un-prefixed) so
+  "Sign Out" clears the shell_session under embedded mode (was `/api/logout` + basePath'd → 404,
+  session survived). X-Requested-With for CSRF.
+- **A2 (W4)** `budgets.ejs`/`goals.ejs`/`settings.ejs` — `res.ok` guard before `.json()` use so an
+  API 5xx shows a clean error instead of throwing / "No goals yet".
+- **A3 (W3)** `perfin-shared.js` apiFetch — on 401 or a followed 302→/login (session expiry), redirect
+  once to root `/login` (loop-guarded `_authRedirecting`); returns the same Response to callers.
+- **A4 (W1)** `shell/index.js` + `shell/views/login.ejs` — added `helmet` to the shell (was NO CSP at
+  all): nonce-based CSP + `frame-ancestors 'none'` + X-Frame-Options on the login/landing/auth surface;
+  nonced the 2 login inline scripts. **COOP/CORP/COEP disabled** so the global middleware doesn't break
+  Plaid/Teller Link popups on sub-app pages (caught in regression check). Verified via header harness:
+  frame-ancestors none ✓, COOP/CORP absent ✓, both scripts nonced ✓, login renders 200.
+- **A5 (W5)** `transactions.js`/`settings-rules.js` — `.json().catch(()=>({}))` on bulk/split/rule-apply
+  so a non-JSON 5xx body gives a meaningful message.
+Deferred (per handoff): A6 (W6 a11y label associations), A7 (W7/W8 cancel_url scheme, fmt(null)→"—",
+calendar shared-fmt). Tests: 1011 pass / 0 fail. Net +3 (3 prod fixes A1/A2/A3 − 0 new failure modes).
+Invariant candidates: INV-60 (logout clears shell session), INV-61 (apiFetch 401→login), INV-62
+(shell CSP/frame-ancestors, COOP/CORP off). **Where I left off:** A1–A5 committed on
+`claude/beautiful-hamilton-abf4h0`; follow-on: standalone Perfin has no POST /logout *handler*
+(pre-existing, debug-only); re-run CI Playwright smoke to confirm login/transitions under the new shell CSP;
+/sync-docs to document the shell helmet + logout behavior.
+
+## Current Cycle (prior — broad-scan F1-F12 + T1-T4, cycle 5 reflected)
+
 - **Status:** **NONE IN PROGRESS.** Last completed cycle: **4** (2026-06-12 —
   Seams & Invariants audit #2 + health synthesis + reflect), fully merged to
   main (PR #116); results recorded in `PROJECT_HEALTH.md` + `.cycle/metrics.csv`.

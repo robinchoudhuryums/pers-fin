@@ -135,7 +135,7 @@
       applyBtn.textContent = "Applying…";
       try {
         var res = await apiFetch("/api/categorization-rules/apply", { method: "POST" });
-        var data = await res.json();
+        var data = await res.json().catch(function() { return {}; });
         if (res.ok) {
           msg("Applied " + (data.applied || 0) + " categorization" + (data.applied === 1 ? "" : "s") + ".", true);
           loadRules();

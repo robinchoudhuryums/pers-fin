@@ -24,6 +24,7 @@ const crypto = require("crypto");
 const express = require("express");
 const cookieParser = require("cookie-parser");
 const rateLimit = require("express-rate-limit");
+const helmet = require("helmet");
 const path = require("path");
 const auth = require("./middleware/auth");
 const webauthn = require("./middleware/webauthn");
@@ -44,6 +45,41 @@ app.use(cookieParser());
 // payload. Mirrors the verify hook in apps/per-sistant/server.js.
 app.use(express.json({ limit: "64kb", verify: (req, _res, buf) => { req.rawBody = buf; } }));
 app.use(express.urlencoded({ extended: false, limit: "64kb" }));
+
+// --- Security headers (W1) -------------------------------------------------
+// The shell previously sent NO CSP / X-Frame-Options on its own routes (login,
+// landing, /health, icons) — the PIN-entry page was framable (clickjacking) and
+// had no CSP backstop. Mount helmet at the shell so those pages get
+// frame-ancestors 'none' + a nonce-based CSP. Sub-apps mounted past this set
+// their OWN (stricter, vendor-allowlisted) CSP, which overwrites this baseline
+// for their responses — this just closes the shell-root gap. Each request gets
+// a fresh nonce that the shell's own inline <script>s reference via <%= nonce %>.
+app.use((_req, res, next) => { res.locals.nonce = crypto.randomBytes(16).toString("base64"); next(); });
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", (_req, res) => `'nonce-${res.locals.nonce}'`],
+      // 'unsafe-inline' for inline style="" attributes (the login starfield sets
+      // them via JS); landing.css is same-origin ('self').
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:"],
+      connectSrc: ["'self'"],
+      frameAncestors: ["'none'"],
+      baseUri: ["'self'"],
+      formAction: ["'self'"],
+      objectSrc: ["'none'"],
+    },
+  },
+  // Disable the cross-origin isolation policies: this middleware runs for
+  // sub-app requests too, and COOP/CORP/COEP can break the Plaid/Teller Link
+  // popup + iframe flows (which rely on window.opener postMessage across
+  // origins) on Perfin's accounts page. We only want CSP (frame-ancestors) +
+  // X-Frame-Options + nosniff here; the clickjacking fix needs nothing more.
+  crossOriginEmbedderPolicy: false,
+  crossOriginOpenerPolicy: false,
+  crossOriginResourcePolicy: false,
+}));
 
 // --- Brute-force protection (F4) -------------------------------------------
 // The shell is the SOLE auth gate for both sub-apps, and previously the only

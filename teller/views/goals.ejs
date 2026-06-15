@@ -160,8 +160,10 @@
 
     async function loadGoals() {
       try {
-        const res = await apiFetch('/api/goals'); const goals = await res.json();
+        const res = await apiFetch('/api/goals');
         const el = document.getElementById('goals-list');
+        if (!res.ok) { el.innerHTML = '<div style="color:var(--red);font-size:13px;padding:20px 0;">Couldn\'t load goals. Try again.</div>'; return; }
+        const goals = await res.json();
         if (!goals.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:20px 0;">No goals yet. Add one above.</div>'; return; }
         el.innerHTML = goals.map(g => {
           const pct = g.percent_complete;
