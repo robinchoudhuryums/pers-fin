@@ -1638,6 +1638,7 @@ router.post("/api/plaid/migrate-overrides", async (req, res) => {
 // declarations, so they're defined by the time this runs.
 module.exports = router;
 module.exports.syncAllPlaidTransactions = syncAllPlaidTransactions;
+module.exports.syncPlaidItemTransactions = syncPlaidItemTransactions; // exported for testing (sync idempotency — T1)
 module.exports.reconcilePlaidTransactions = reconcilePlaidTransactions;
 module.exports.syncAllPlaidBalances = syncAllPlaidBalances;
 module.exports.syncAllPlaidHoldings = syncAllPlaidHoldings;

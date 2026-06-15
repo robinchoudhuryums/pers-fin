@@ -21,6 +21,30 @@ to the "none in progress" state.
   (health.js, ask.js, loan-payoff math, transition rewrite, top-bar Ask) is the
   highest-value target. History of prior cycles preserved in the records below.
 
+### Broad-scan + broad-implement T1/T3 (2026-06-15, branch `claude/beautiful-hamilton-abf4h0`)
+Full 3-stage /broad-scan run (6 subsystem deep-dive agents + Stage-2 test-quality &
+migration-safety dives). Findings F1-F12 + T1-T4 in the session report. Implemented
+the test-quality findings **T1 + T3 ONLY** (operator scope):
+- **T1** `tests/sync-idempotency.test.js` (NEW) — behavioral idempotency: runs
+  `syncAllEnrollments` (Teller) and `syncPlaidItemTransactions` (Plaid) TWICE over the
+  same mock fixtures; asserts 2nd run adds 0, no dupes, watermark stable. Closes the
+  gap where INV-01/03/04 + S1 were source-string-pinned only and the one reconcile
+  test ran against empty enrollments. Required a 1-line test-only export
+  `module.exports.syncPlaidItemTransactions` in investments.js (matches the existing
+  `sumHoldingsByAccount` precedent; INV-19-compliant, after the router export).
+- **T3** `tests/ai-cap-charge.test.js` (NEW) — behavioral cap enforcement for /api/ask
+  + runCategorize via a Module._load-injected fake @anthropic-ai/sdk (CI-safe, no prod
+  change): ask charges one entry_type='ask' row on success, 429-without-charge once cap
+  hit, tool loop runs + charges accumulated tokens; categorize charges
+  entry_type='categorize' + writes user_category source 'ai', 429 with free rules still
+  applied. Includes a SKIPPED test documenting **F1** (ask charges only after the loop →
+  mid-loop throw escapes the cap) as a behavioral target for when F1 is fixed.
+Tests: 988 → 997 (8 active + 1 skip). Full `npm test` green (996 pass / 1 skip / 0 fail).
+**Where I left off:** T1/T3 committed on `claude/beautiful-hamilton-abf4h0`. Open
+findings NOT implemented (await operator pick): F1 (ask uncapped on mid-loop fail),
+F2 (net-worth snapshot bare-catch), F3 (esc quote-unsafe), F4 (Plaid holdings balance
+clobber), F5/F6 (audit-alert dedup + tier-1 false positives), F7-F12, T2/T4.
+
 ### Broad-scan + broad-implement (June 2026 session, branch `claude/exciting-albattani-ug1gjv`)
 Full 3-stage /broad-scan completed (4 subsystem deep-dives + gap-fill on Web UI/A11y,
 Export Fidelity, Notification Correctness, Income Classification). Implemented F1-F5:
