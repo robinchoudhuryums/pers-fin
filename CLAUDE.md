@@ -2010,6 +2010,25 @@ rows) can dismiss them from the UI or run `POST /api/cleanup`.
   carries `nonce="<%= nonce %>"`). `styleSrcAttr` keeps `'unsafe-inline'` so the
   hundreds of inline `style="..."` attributes across templates continue to
   work; migrating each one is out of scope for now.
+- **Shell-layer CSP + clickjacking guard (W1)**: the unified shell (`shell/index.js`)
+  mounts its OWN `helmet` so its routes — the PIN `login`, the landing tile picker,
+  icons, `/health` — get a nonce-based CSP + `frame-ancestors 'none'` + `X-Frame-Options`
+  (previously the shell sent NO security headers, leaving the auth page framable). The
+  shell nonce flows to `res.locals.nonce`; the two inline `<script>`s in
+  `shell/views/login.ejs` carry `nonce="<%= nonce %>"`. **COOP/CORP/COEP are explicitly
+  disabled** in the shell helmet because that middleware runs for sub-app requests too and
+  `Cross-Origin-Opener-Policy: same-origin` breaks the Plaid/Teller Link popup/iframe flows
+  (which rely on cross-origin `window.opener` postMessage) on Perfin's accounts page. Each
+  sub-app still sets its own stricter, vendor-allowlisted CSP, which overwrites this baseline
+  for its responses. `helmet` is declared in `shell/package.json` (not just hoisted) so the
+  shell boot doesn't depend on a sub-app keeping the dep.
+- **Logout clears the shell session (W2)**: Perfin's "Sign Out" POSTs the ROOT `/logout`
+  (shell-owned `auth.handleLogout`, clears the `shell_session` cookie) and redirects to the
+  root `/login` — both un-prefixed, never basePath'd. The earlier `/api/logout` + basePath'd
+  redirect 404'd and left the shell session intact, so Sign Out didn't actually sign out.
+- **Client session-expiry handling (W3)**: `apiFetch` (`perfin-shared.js`) redirects once to
+  `/login` on a 401 or a followed `302→/login` (loop-guarded), so a mid-session idle timeout
+  sends the user to re-auth instead of silently rendering a blank/error UI.
 - **CORS**: Rejects cross-origin requests when `ALLOWED_ORIGINS` not configured
 - **API key**: Header-only (`X-API-Key`), no query string support
 - **Token encryption**: pgcrypto `pgp_sym_encrypt` for Teller/Plaid access tokens AND the Per-sistant webhook HMAC secret (`persistent_webhook_secret_enc`) at rest, all keyed by `TOKEN_ENCRYPTION_PASSPHRASE`
@@ -2865,6 +2884,15 @@ INV-50 | WebAuthn auth-options advertise transports ['internal'] ONLY in allowCr
 INV-51 | Habit streaks are computed at read time from habit_logs (a backfilled log retroactively repairs a streak; an unlogged today never breaks one); no stored streak counters exist for habits | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/health.test.js backfill-repair test
 INV-52 | Health consumers (notification check, AI daily briefing) call gatherHealthSummary fail-soft (.catch) — a health-tables error degrades to "no habit data", never 500s those surfaces | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/health.test.js integration pins
 INV-53 | CRITICAL scheduled jobs (transaction/balance sync + snapshot + detection; weekly reconcile; backups; knowledge reindex) have out-of-process GitHub-Actions backstops hitting x-api-key endpoints with idempotent writes, so Render free-tier sleep can't skip them | Subsystem: Platform, Shell & Auth | Verify: .github/workflows/{daily-sync,weekly-reconcile,db-backup,knowledge-reindex}.yml exist + idempotent-write invariants INV-01/05
+INV-54 | Re-sync is BEHAVIORALLY idempotent: syncAllEnrollments (Teller) + syncPlaidItemTransactions (Plaid) run twice over identical inputs add 0 on the 2nd run, no duplicate rows, watermark/cursor stable (not merely source-string-pinned) | Subsystem: Bank Sync & Ingestion | Verify: tests/sync-idempotency.test.js
+INV-55 | /api/ask charges the shared AI cap even on a mid-tool-loop failure — the usage row is written in a `finally` (idempotent `charged` flag) when tokens were consumed, so a throw on a later round doesn't let spend escape the cap (parity with rebuild AIA2 / categorize M2) | Subsystem: AI Insights & Audit | Verify: tests/ai-cap-charge.test.js
+INV-56 | The dashboard's inlined loanPayoff() is NUMERICALLY identical to services/projections.computeLoanPayoff across scenarios (months / total_interest ±$0.01 / insufficient flag), not merely string-equal | Subsystem: Web UI ↔ Financial Analytics (seam) | Verify: tests/loan-support.test.js (extract-and-run parity test)
+INV-57 | The critical-audit notification is deduped to ≤1 per 24h via sentRecently('audit-alert', 24), fail-open — a steady-state critical finding doesn't re-push on every 6h auto-insight tick | Subsystem: AI Insights & Audit / Notification Correctness | Verify: code read routes/insights.js audit-alert gate
+INV-58 | A kind='quantity' habit always has a non-null target_value, enforced on POST AND on PATCH against the MERGED post-update state (so switching to quantity without a target, or nulling a quantity habit's target, 400s instead of silently degrading meetsTarget) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/health.test.js (F9 PATCH tests)
+INV-59 | Bounded settings (target_allocation_pct, shell_idle_timeout_minutes, fire_*, ai_monthly_budget_cents) reject invalid input with 400 — never silent-drop + 200 | Subsystem: Settings, Notifications & Cross-app | Verify: tests/budget-cap-webauthn.test.js (PATCH /api/settings validation)
+INV-60 | Perfin "Sign Out" clears the SHELL session via the root POST /logout under the unified shell (not a basePath'd /api/logout); redirect target is the root /login — both un-prefixed | Subsystem: Web UI ↔ Platform, Shell & Auth (seam) | Verify: code read teller/views/settings.ejs logout() + shell POST /logout (auth.handleLogout)
+INV-61 | apiFetch redirects once to /login on a 401 or a followed 302→/login (session expiry), loop-guarded, while returning the Response unchanged to callers — idle timeout never leaves a blank/error UI | Subsystem: Web UI | Verify: code read teller/public/perfin-shared.js apiFetch
+INV-62 | The shell sets a nonce CSP + frame-ancestors 'none' + X-Frame-Options on its own routes (login/landing), with COOP/CORP/COEP DISABLED so the global middleware doesn't break sub-app Plaid/Teller Link popups; helmet is a declared shell dependency | Subsystem: Platform, Shell & Auth | Verify: header assertion on GET /login (frame-ancestors none, COOP/CORP absent, login scripts nonced)
 
 ### Policy Configuration
 Policy threshold: 6/10
