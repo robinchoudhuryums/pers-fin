@@ -65,8 +65,10 @@
 
     async function loadBudgets() {
       try {
-        const res = await apiFetch('/api/budgets'); const budgets = await res.json();
+        const res = await apiFetch('/api/budgets');
         const el = document.getElementById('budgets-list');
+        if (!res.ok) { el.innerHTML = '<div style="color:var(--red);font-size:13px;padding:20px 0;">Couldn\'t load budgets. Try again.</div>'; renderSummary([]); return; }
+        const budgets = await res.json();
         if (!budgets.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:20px 0;">No budgets set. Add one or use AI suggestions above.</div>'; renderSummary([]); return; }
         renderSummary(budgets);
         el.innerHTML = budgets.map(function(b) {

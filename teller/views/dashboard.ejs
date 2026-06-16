@@ -1268,7 +1268,11 @@
         if (b <= 0) {
           const d = new Date();
           d.setMonth(d.getMonth() + m);
-          return { months: m, interest: interest, label: d.toLocaleDateString(undefined, { month: 'short', year: 'numeric' }) };
+          // F12: format in UTC so the displayed month matches the API's
+          // payoff_date (computeLoanPayoff uses toISOString → UTC 'YYYY-MM');
+          // otherwise near a month boundary the label could show a different
+          // month than the API in a non-UTC timezone.
+          return { months: m, interest: interest, label: d.toLocaleDateString(undefined, { timeZone: 'UTC', month: 'short', year: 'numeric' }) };
         }
       }
       return {};

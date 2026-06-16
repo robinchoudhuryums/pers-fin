@@ -129,6 +129,14 @@ describe("CROSS_PERIOD_RE — skip non-current-month dollar claims (AIA1)", () =
     "your monthly average is $300",
     "projected $400 on travel",
     "on track to spend $5,000 this year",
+    // F6 — unambiguous cross-period tokens the original regex missed
+    "you spent $450 last month on dining",
+    "$520 in the previous month on groceries",
+    "prior month you paid $300",
+    "$600 two months ago on travel",
+    "$1,200 year over year on subscriptions",
+    "trailing spend is $350 on shopping",
+    "estimated $400 on travel next month",
   ];
   for (const t of crosses) {
     it(`flags cross-period: "${t}"`, () => {

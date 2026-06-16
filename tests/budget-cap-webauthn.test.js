@@ -179,4 +179,29 @@ describe("PATCH /api/settings ai_monthly_budget_cents", () => {
     await supertest(app).patch("/api/settings").send({ ai_monthly_budget_cents: 20000 }).expect(400);
     await supertest(app).patch("/api/settings").send({ ai_monthly_budget_cents: 1.5 }).expect(400);
   });
+
+  // F11: invalid target_allocation_pct / shell_idle_timeout_minutes must 400
+  // (consistent with the other bounded numeric settings) rather than silently
+  // dropping the field and returning 200, which made the client believe a bad
+  // value had saved.
+  it("accepts a valid target_allocation_pct object", async () => {
+    const calls = capturePool();
+    await supertest(app).patch("/api/settings").send({ target_allocation_pct: { equity: 70, bond: 30 } }).expect(200);
+    const upd = calls.find(c => /UPDATE user_settings SET/i.test(c.sql));
+    assert.ok(upd && /target_allocation_pct = \$/.test(upd.sql));
+  });
+
+  it("rejects invalid target_allocation_pct (F11 — no longer a silent drop)", async () => {
+    capturePool();
+    await supertest(app).patch("/api/settings").send({ target_allocation_pct: { equity: 150 } }).expect(400);
+    await supertest(app).patch("/api/settings").send({ target_allocation_pct: { equity: "abc" } }).expect(400);
+    await supertest(app).patch("/api/settings").send({ target_allocation_pct: [1, 2] }).expect(400);
+  });
+
+  it("rejects out-of-bounds shell_idle_timeout_minutes (F11)", async () => {
+    capturePool();
+    await supertest(app).patch("/api/settings").send({ shell_idle_timeout_minutes: 2 }).expect(400);
+    await supertest(app).patch("/api/settings").send({ shell_idle_timeout_minutes: 99999 }).expect(400);
+    await supertest(app).patch("/api/settings").send({ shell_idle_timeout_minutes: "x" }).expect(400);
+  });
 });

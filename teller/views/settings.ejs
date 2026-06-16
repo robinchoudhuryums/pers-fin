@@ -659,7 +659,16 @@
         await updateSetting('insight_modules', mods);
       } catch (e) { showMsg(e.message, false); }
     }
-    async function logout() { await fetch('/api/logout', { method: 'POST' }); window.location.href = '<%= basePath %>/login'; }
+    async function logout() {
+      // W2: logout is owned by the shell when embedded (POST /logout clears the
+      // shell_session cookie) and by Perfin standalone — BOTH at the ROOT
+      // /logout, never basePath-prefixed. The old '/api/logout' + basePath'd
+      // redirect 404'd and left the shell session intact under the unified shell,
+      // so "Sign Out" didn't actually sign you out. X-Requested-With satisfies
+      // the CSRF header check.
+      try { await fetch('/logout', { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' } }); } catch (e) {}
+      window.location.href = '/login';
+    }
     async function generateInsights() {
       const btn = document.getElementById('insights-btn');
       btn.classList.add('btn-loading'); btn.disabled = true;
@@ -690,8 +699,10 @@
     }
     async function loadInsights() {
       try {
-        const res = await apiFetch('/api/insights'); const data = await res.json();
-        if (data.length > 0) {
+        const res = await apiFetch('/api/insights');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (Array.isArray(data) && data.length > 0) {
           renderInsight(data[0].insight_text);
           const meta = document.querySelector('.insight-meta');
           if (meta) meta.textContent = 'Generated ' + new Date(data[0].created_at).toLocaleDateString();

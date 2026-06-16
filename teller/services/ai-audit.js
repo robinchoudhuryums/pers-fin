@@ -18,14 +18,20 @@ const { getMonthlySpending, getMonthlyIncomeAndSpending, getCategorySpendingThis
 // Unqualified or explicitly "this month" claims (which refer to the this-month
 // data the model was actually given) are still checked, so this-month
 // hallucinations are still caught.
-// "average"/"avg" is only a cross-period signal when it's PERIOD-qualified
-// (running / trailing / monthly / N-month / per-month average). A bare
-// "average" used as a BENCHMARK comparator ("above the national average",
+// F6: widened with UNAMBIGUOUS cross-period tokens the original regex missed —
+// explicit other-month references (last/previous/prior month, "N months ago"),
+// year-over-year, "trailing", and "estimate(d)". These are never this-month, so
+// comparing them to getCategorySpendingThisMonth produced false CRITICALs.
+// F7: "average"/"avg" is only a cross-period signal when PERIOD-qualified
+// (running / rolling / monthly / N-month / per-month average, or the verb
+// "averaging") — a bare BENCHMARK comparator ("above the national average",
 // "below average") refers to a this-month figure and must NOT suppress the
-// arithmetic check (F7) — previously the bare token matched anywhere in the
-// ±context window and silently skipped genuine this-month hallucinations,
-// inflating the headline audit_accuracy metric in the false-negative direction.
-const CROSS_PERIOD_RE = /\b(per year|\/?yr\b|\/year|annual|annually|a year|yearly|year[- ]?to[- ]?date|ytd|this year|over the (?:past|last)|(?:last|past|over)\s+\d+\s+months?|\d+\s+months?|running[- ]?average|trailing[- ]?average|rolling[- ]?average|monthly average|average monthly|average per month|\d+[- ]?month average|avg[ ./]*mo|averaging|projected|projection|annualized|run[- ]?rate|on track)\b/;
+// arithmetic check, so the bare token was replaced with the qualified forms
+// (previously it matched anywhere in the ±context window and silently skipped
+// genuine this-month hallucinations, inflating audit_accuracy as a false
+// negative). Deliberately NOT added: bare/unqualified or "per month" claims —
+// AIA1 intentionally checks those against this-month (pinned in tests).
+const CROSS_PERIOD_RE = /\b(per year|\/?yr\b|\/year|annual|annually|a year|yearly|year[- ]?to[- ]?date|ytd|this year|last month|previous month|prior month|months? ago|year[- ]?over[- ]?year|yoy|trailing|estimated?|over the (?:past|last)|(?:last|past|over)\s+\d+\s+months?|\d+\s+months?|running[- ]?average|rolling[- ]?average|monthly average|average monthly|average per month|\d+[- ]?month average|avg[ ./]*mo|averaging|projected|projection|annualized|run[- ]?rate|on track)\b/;
 
 // An explicit this-month qualifier OVERRIDES a cross-period match: the model
 // was given this-month actuals, so a claim it tags "this month" is checkable

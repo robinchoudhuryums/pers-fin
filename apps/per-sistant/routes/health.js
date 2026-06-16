@@ -352,6 +352,20 @@ module.exports = function ({ pool, helpers }) {
       const body = req.body || {};
       const { errors, out } = validateHabitFields(body, { partial: true });
       if (errors.length) return res.status(400).json({ error: errors.join(" ") });
+      // F9: enforce the quantity⇒target_value invariant on the MERGED post-update
+      // state (validateHabitFields only sees the partial body). Switching a habit
+      // to kind='quantity' without a target — or nulling the target of a quantity
+      // habit — would silently degrade meetsTarget to "any value > 0 counts".
+      if (out.kind === "quantity" || out.target_value === null) {
+        const ex = await pool.query("SELECT kind, target_value FROM habits WHERE id = $1", [req.params.id]);
+        if (ex.rows.length) {
+          const mergedKind = out.kind !== undefined ? out.kind : ex.rows[0].kind;
+          const mergedTarget = out.target_value !== undefined ? out.target_value : ex.rows[0].target_value;
+          if (mergedKind === "quantity" && mergedTarget == null) {
+            return res.status(400).json({ error: "Quantity habits require a target_value." });
+          }
+        }
+      }
       const fields = [];
       const params = [];
       let idx = 1;

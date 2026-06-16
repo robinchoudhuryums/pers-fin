@@ -164,9 +164,17 @@ async function saveEmail() {
   var data = getEmailData();
   if (!data) return;
   var id = document.getElementById('e-id').value;
-  if (id) await fetch('/api/emails/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
-  else await fetch('/api/emails', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+  if (id) {
+    await fetch('/api/emails/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+  } else {
+    // Capture the created id so sendNow() targets THIS email instead of
+    // re-fetching the list and grabbing emails[0] (which assumed newest-first
+    // server ordering and could send the wrong email).
+    var r = await fetch('/api/emails', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}).then(function(x){return x.json();}).catch(function(){return {};});
+    id = r && r.id;
+  }
   closeCompose(); load();
+  return id;
 }
 
 async function saveAndSchedule() {
@@ -182,7 +190,7 @@ async function saveAndSchedule() {
 
 async function sendNow() {
   var id = document.getElementById('e-id').value;
-  if (!id) { await saveEmail(); var emails = await fetch('/api/emails').then(r=>r.json()); id = emails[0]?.id; }
+  if (!id) { id = await saveEmail(); }
   if (!id) return;
   var r = await fetch('/api/emails/'+id+'/send', {method:'POST'}).then(r=>r.json());
   if (r.ok) { alert('Email sent!'); closeCompose(); load(); }
@@ -221,7 +229,7 @@ async function aiDraft() {
   var name = document.getElementById('e-name').value;
   var prompt = subject || document.getElementById('e-body').value;
   if (!prompt) { prompt = window.prompt('Describe the email you want to write:'); if (!prompt) return; }
-  var btn = event.target; btn.textContent = 'Drafting...'; btn.disabled = true;
+  var btn = document.getElementById('ai-draft-btn'); btn.textContent = 'Drafting...'; btn.disabled = true;
   try {
     var r = await fetch('/api/ai/draft-email', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt, recipient_name: name})}).then(r=>r.json());
     if (r.error) { alert(r.error); return; }

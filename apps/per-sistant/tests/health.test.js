@@ -221,6 +221,45 @@ describe("habit routes — validation", () => {
     assert.doesNotMatch(sql, /DELETE FROM habits/);
   });
 
+  // F9: PATCH must enforce the quantity⇒target_value invariant on the MERGED
+  // state, not just the partial body — otherwise switching a habit to quantity
+  // without a target silently degrades meetsTarget to "any value > 0 counts".
+  it("PATCH kind:'quantity' without a target rejects when the habit has no existing target (F9)", async () => {
+    const app = buildApp(async (sql) => {
+      if (/SELECT kind, target_value FROM habits/.test(sql)) return { rows: [{ kind: "boolean", target_value: null }] };
+      if (/UPDATE habits SET/.test(sql)) return { rows: [{ id: 1 }] };
+      return { rows: [] };
+    });
+    await supertest(app).patch("/api/habits/1").send({ kind: "quantity" }).expect(400);
+  });
+
+  it("PATCH kind:'quantity' is allowed when the habit already has a target (F9)", async () => {
+    const app = buildApp(async (sql) => {
+      if (/SELECT kind, target_value FROM habits/.test(sql)) return { rows: [{ kind: "quantity", target_value: 8 }] };
+      if (/UPDATE habits SET/.test(sql)) return { rows: [{ id: 1, kind: "quantity", target_value: 8 }] };
+      return { rows: [] };
+    });
+    await supertest(app).patch("/api/habits/1").send({ kind: "quantity" }).expect(200);
+  });
+
+  it("PATCH kind:'quantity' with a target in the same body succeeds (F9)", async () => {
+    const app = buildApp(async (sql) => {
+      if (/SELECT kind, target_value FROM habits/.test(sql)) return { rows: [{ kind: "boolean", target_value: null }] };
+      if (/UPDATE habits SET/.test(sql)) return { rows: [{ id: 1, kind: "quantity", target_value: 5 }] };
+      return { rows: [] };
+    });
+    await supertest(app).patch("/api/habits/1").send({ kind: "quantity", target_value: 5 }).expect(200);
+  });
+
+  it("PATCH target_value:null on an existing quantity habit rejects (F9)", async () => {
+    const app = buildApp(async (sql) => {
+      if (/SELECT kind, target_value FROM habits/.test(sql)) return { rows: [{ kind: "quantity", target_value: 8 }] };
+      if (/UPDATE habits SET/.test(sql)) return { rows: [{ id: 1 }] };
+      return { rows: [] };
+    });
+    await supertest(app).patch("/api/habits/1").send({ target_value: null }).expect(400);
+  });
+
   it("POST /api/health/metrics validates and lowercases the metric name", async () => {
     let captured;
     const app = buildApp(async (sql, params) => {

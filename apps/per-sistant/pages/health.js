@@ -209,7 +209,7 @@ function renderWeekGrid() {
       var bg = c.met ? 'var(--good)' : (c.value > 0 ? 'color-mix(in oklch, var(--good) 40%, transparent)' : (c.due ? 'var(--paper-2)' : 'transparent'));
       var border = c.due ? '1px solid var(--line)' : '1px dashed var(--line)';
       var title = c.date + (c.value ? ': ' + c.value : '');
-      return '<td style="text-align:center;"><button data-action="cell" data-id="'+h.id+'" data-date="'+c.date+'" data-value="'+c.value+'" title="'+title+'" aria-label="'+esc(h.name)+' '+title+'" style="width:22px;height:22px;border-radius:3px;border:'+border+';background:'+bg+';cursor:pointer;padding:0;"></button></td>';
+      return '<td style="text-align:center;"><button data-action="cell" data-id="'+h.id+'" data-date="'+escAttr(c.date)+'" data-value="'+escAttr(c.value)+'" title="'+escAttr(title)+'" aria-label="'+escAttr(h.name)+' '+escAttr(title)+'" style="width:22px;height:22px;border-radius:3px;border:'+border+';background:'+bg+';cursor:pointer;padding:0;"></button></td>';
     }).join('') + '</tr>';
   }).join('');
   document.getElementById('week-grid').innerHTML = '<table style="border-collapse:separate;border-spacing:2px;">'+head+rows+'</table>';

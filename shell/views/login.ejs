@@ -57,7 +57,7 @@
     </button>
     <div id="biometric-status"></div>
   </main>
-  <script>
+  <script nonce="<%= nonce %>">
     // Helpers — base64url ↔ Uint8Array. WebAuthn responses use base64url.
     function b64uToBuf(s) {
       var pad = '===='.slice(0, (4 - s.length % 4) % 4);
@@ -141,7 +141,7 @@
       }
     });
   </script>
-  <script>
+  <script nonce="<%= nonce %>">
     // Cosmic starfield — inject twinkling stars into the backdrop. Sizes/
     // positions/delays randomized so the field doesn't pulse in unison. CSS
     // handles the twinkle (and silences it under prefers-reduced-motion).

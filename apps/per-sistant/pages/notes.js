@@ -206,14 +206,19 @@ async function saveNote() {
   };
   if (!data.content) return alert('Content is required');
   var id = document.getElementById('n-id').value;
-  if (id) await fetch('/api/notes/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
-  else await fetch('/api/notes', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+  var r = id
+    ? await fetch('/api/notes/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)})
+    : await fetch('/api/notes', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+  // Don't close+reload as if it saved when the request failed (the note would
+  // appear lost). Keep the modal open so the user can retry.
+  if (!r.ok) { alert('Could not save the note — please retry.'); return; }
   closeNote(); load();
 }
 
 async function deleteNote() {
   var id = document.getElementById('n-id').value;
-  await fetch('/api/notes/'+id, {method:'DELETE'});
+  var r = await fetch('/api/notes/'+id, {method:'DELETE'});
+  if (!r.ok) { alert('Could not delete the note — please retry.'); return; }
   closeNote(); load();
   showUndo('Note moved to trash','note',id);
 }

@@ -542,6 +542,10 @@ router.get("/api/forecast", async (req, res) => {
     for (const sub of result.rows) {
       const amount = parseFloat(sub.amount);
       const cadence = parseInt(sub.cadence_days);
+      // Guard against cadence_days <= 0 / NaN: the advance loops below add
+      // `cadence * 86400000` each iteration, so a 0/NaN cadence would never
+      // advance and would hang the request (the ICS builder guards the same way, F8).
+      if (!(cadence > 0)) continue;
       let nextDate = new Date(sub.next_expected);
 
       // If next_expected is in the past, advance it
@@ -622,6 +626,9 @@ router.get("/api/bill-calendar", async (req, res) => {
     for (const sub of subs.rows) {
       const amount = parseFloat(sub.amount);
       const cadence = parseInt(sub.cadence_days);
+      // Guard against cadence_days <= 0 / NaN — the advance loop below would
+      // otherwise never progress and hang the request (F8, same as the ICS builder).
+      if (!(cadence > 0)) continue;
       let nextDate = new Date(sub.next_expected);
 
       // Advance past dates

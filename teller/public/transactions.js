@@ -117,7 +117,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ transaction_ids: Array.from(selectedIds), category: category }),
         });
-        var data = await res.json();
+        var data = await res.json().catch(function() { return {}; });
         if (res.ok) {
           showMsg('Updated ' + data.updated + ' transactions to ' + category + '.', true);
           selectedIds.clear();
@@ -299,7 +299,7 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ splits: rows.map(function(x) { return { amount: x.amount, category: x.category, notes: x.notes }; }) }),
           });
-          var d = await r.json();
+          var d = await r.json().catch(function() { return {}; });
           if (r.ok) { showMsg('Splits saved.', true); close(); searchTransactions(currentOffset); }
           else showMsg(d.error || 'Failed', false);
         } catch (e) { showMsg(e.message, false); }
