@@ -70,14 +70,15 @@ async function saveSettings() {
     default_horizon: document.getElementById('s-horizon').value,
     perfin_url: document.getElementById('s-perfin').value || null,
   };
-  await fetch('/api/settings', {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+  var r = await fetch('/api/settings', {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
 
-  // Apply theme immediately
+  // Apply theme immediately (harmless even if the server save failed — theme
+  // also persists to localStorage).
   applyTheme(data.theme);
 
   var el = document.getElementById('status');
-  el.className = 'status-msg success';
-  el.textContent = 'Settings saved.';
+  if (r.ok) { el.className = 'status-msg success'; el.textContent = 'Settings saved.'; }
+  else { el.className = 'status-msg error'; el.textContent = 'Could not save settings — please retry.'; }
   setTimeout(()=>{ el.className = 'status-msg'; }, 3000);
 }
 
@@ -94,10 +95,10 @@ async function saveAIModels() {
   var data = {};
   var features = ['email_draft','task_breakdown','quick_add','review_summary','email_tone','daily_briefing','note_tagging','rag'];
   features.forEach(f => { data['ai_model_'+f] = document.getElementById('aim-'+f).value; });
-  await fetch('/api/ai/models', {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+  var r = await fetch('/api/ai/models', {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
   var el = document.getElementById('status');
-  el.className = 'status-msg success';
-  el.textContent = 'AI model preferences saved.';
+  if (r.ok) { el.className = 'status-msg success'; el.textContent = 'AI model preferences saved.'; }
+  else { el.className = 'status-msg error'; el.textContent = 'Could not save AI preferences — please retry.'; }
   setTimeout(()=>{ el.className = 'status-msg'; }, 3000);
 }
 
@@ -297,8 +298,10 @@ async function testWebhook(id) {
 // Slack
 async function saveSlack() {
   var url=document.getElementById('s-slack').value||null;
-  await fetch('/api/settings',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({slack_webhook_url:url})});
-  var el=document.getElementById('status');el.className='status-msg success';el.textContent='Slack webhook saved.';
+  var r=await fetch('/api/settings',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({slack_webhook_url:url})});
+  var el=document.getElementById('status');
+  if (r.ok) { el.className='status-msg success'; el.textContent='Slack webhook saved.'; }
+  else { el.className='status-msg error'; el.textContent='Could not save — check the URL and retry.'; }
   setTimeout(function(){el.className='status-msg';},3000);
 }
 
@@ -364,8 +367,10 @@ async function saveKeepAlive(){
     keep_alive_end:parseInt(document.getElementById('ka-end').value),
     keep_alive_timezone:document.getElementById('ka-tz').value,
   };
-  await fetch('/api/settings',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
-  var el=document.getElementById('status');el.className='status-msg success';el.textContent='Keep-alive settings saved.';
+  var r=await fetch('/api/settings',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+  var el=document.getElementById('status');
+  if (r.ok) { el.className='status-msg success'; el.textContent='Keep-alive settings saved.'; }
+  else { el.className='status-msg error'; el.textContent='Could not save keep-alive settings — please retry.'; }
   setTimeout(function(){el.className='status-msg';},3000);
 }
 load();

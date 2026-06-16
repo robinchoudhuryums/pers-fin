@@ -9,6 +9,31 @@ to the "none in progress" state.
 
 ## Current Cycle
 
+### Targeted cycle: Per-sistant Web UI — audit + implement (2026-06-16, branch `claude/beautiful-hamilton-abf4h0`)
+`/targeted-audit` Per-sistant Web UI: 7 findings (0C/0H/4M/3L). `/targeted-implement` A1–A4:
+- **A1 (PW1)** `views/js.js` shared fetch wrapper — ported Perfin INV-61: on a 401 or a
+  followed 302→/login, redirect once to root `/login` (loop-guarded), Response returned
+  unchanged. Closes the idle-timeout-blank-page gap across every page + the Ask popover.
+  GOTCHA HIT+FIXED: the module is one backtick template literal, so a regex's backslashes
+  (`\/`,`\?`) were eaten → emitted `//login…` (a line comment) and broke the bundle; rewrote
+  `_isLoginPath` with `indexOf('/login')` (no backslashes). Caught pre-commit by a
+  node --check on the EMITTED bundle.
+- **A2 (PW2)** `pages/health.js:200` — `escAttr()` for the week-grid `aria-label`/`title`/`data-*`
+  (was quote-unsafe `esc()` on user habit names; CSP limited it to markup injection).
+- **A3 (PW4+PW5)** `pages/emails.js` — `saveEmail()` returns the created id; `sendNow()` uses it
+  instead of `emails[0]` (removes the wrong-email-on-non-newest-first risk); `aiDraft()` uses
+  `getElementById` instead of the deprecated global `event.target`.
+- **A4 (PW3)** `settings-script.js` (saveSettings/saveSlack/saveKeepAlive/saveAIModels),
+  `dashboard-script.js` (dashComplete), `notes.js` (saveNote/deleteNote) — gate success
+  message / optimistic card removal / modal-close on `res.ok` so a transient 5xx no longer
+  shows false "saved" or makes a card vanish.
+Deferred: A5 (PW6 parseQuickTodo date off-by-one — needs verification), A6 (PW7 defensive batch:
+server-enum attr escaping, renderMd link-text hardening, nonceAttr empty-scope guard, knowledge
+loadKStatus error surfacing, esc(null)→''). Tests: 1011 pass / 0 fail (emitted bundles
+node --check'd). Net +2 (A1+A4 prod fixes − 0 new failure modes). Invariant candidate: INV-63
+(Per-sistant fetch-wrapper 401→login, parity with INV-61). **Where I left off:** A1–A4 ready to
+commit; /sync-docs should add INV-63 + the template-literal-regex gotcha to Per-sistant CLAUDE.md.
+
 ### Targeted cycle: Web UI (Perfin) — audit + implement (2026-06-15, branch `claude/beautiful-hamilton-abf4h0`)
 `/targeted-audit` Web UI (Perfin): 8 findings (0C/0H/4M/4L), 1 retracted (enrollments_synced
 false positive). `/targeted-implement` completed A1–A5 (the Fix-now + low-risk batch):

@@ -146,7 +146,11 @@ function renderDashTodo(t) {
 }
 
 async function dashComplete(id) {
-  await fetch('/api/todos/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({completed:true})});
+  // Don't optimistically remove the card before the server confirms — a failed
+  // PATCH (transient 5xx / offline) would make the task silently vanish from the
+  // dashboard while staying incomplete in the DB.
+  var r = await fetch('/api/todos/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({completed:true})});
+  if (!r.ok) { alert('Could not complete the task — please retry.'); return; }
   allTodos = allTodos.filter(t=>t.id!==id);
   renderDashTasks();
   showUndo('Task completed','todo',id,'complete');
