@@ -18,7 +18,19 @@ const { getMonthlySpending, getMonthlyIncomeAndSpending, getCategorySpendingThis
 // Unqualified or explicitly "this month" claims (which refer to the this-month
 // data the model was actually given) are still checked, so this-month
 // hallucinations are still caught.
-const CROSS_PERIOD_RE = /\b(per year|\/?yr\b|\/year|annual|annually|a year|yearly|year[- ]?to[- ]?date|ytd|this year|over the (?:past|last)|(?:last|past|over)\s+\d+\s+months?|\d+\s+months?|average|avg|projected|projection|annualized|run[- ]?rate|on track)\b/;
+// "average"/"avg" is only a cross-period signal when it's PERIOD-qualified
+// (running / trailing / monthly / N-month / per-month average). A bare
+// "average" used as a BENCHMARK comparator ("above the national average",
+// "below average") refers to a this-month figure and must NOT suppress the
+// arithmetic check (F7) — previously the bare token matched anywhere in the
+// ±context window and silently skipped genuine this-month hallucinations,
+// inflating the headline audit_accuracy metric in the false-negative direction.
+const CROSS_PERIOD_RE = /\b(per year|\/?yr\b|\/year|annual|annually|a year|yearly|year[- ]?to[- ]?date|ytd|this year|over the (?:past|last)|(?:last|past|over)\s+\d+\s+months?|\d+\s+months?|running[- ]?average|trailing[- ]?average|rolling[- ]?average|monthly average|average monthly|average per month|\d+[- ]?month average|avg[ ./]*mo|averaging|projected|projection|annualized|run[- ]?rate|on track)\b/;
+
+// An explicit this-month qualifier OVERRIDES a cross-period match: the model
+// was given this-month actuals, so a claim it tags "this month" is checkable
+// regardless of any nearby period word (F7).
+const THIS_MONTH_RE = /\b(this month|this period|so far this month|month[- ]to[- ]date|mtd|current month)\b/;
 
 // Extract dollar amounts from text: "$1,234.56" or "$500"
 function extractDollarClaims(text) {
@@ -179,7 +191,7 @@ async function auditInsight(insightText, insightId) {
       // projected/average) — the per-category + subscription actuals below are
       // this-month figures, so comparing a cross-period dollar amount would
       // false-flag (AIA1).
-      const crossPeriod = CROSS_PERIOD_RE.test(ctx);
+      const crossPeriod = CROSS_PERIOD_RE.test(ctx) && !THIS_MONTH_RE.test(ctx);
       // Find the single BEST (longest = most specific) category whose name
       // appears as a whole word in the claim's context, and emit at most one
       // finding per dollar claim — word boundaries stop short category names

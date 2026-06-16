@@ -51,7 +51,7 @@ function analyzeGroup(merchantTxns, opts = {}) {
   merchantTxns.sort((a, b) => new Date(a.date) - new Date(b.date));
 
   for (const targetCadence of CADENCES) {
-    const minOcc = targetCadence >= 365 ? MIN_OCCURRENCES_YEARLY : MIN_OCCURRENCES;
+    const minOcc = targetCadence >= 60 ? MIN_OCCURRENCES_YEARLY : MIN_OCCURRENCES;
     const minGap = targetCadence * (1 - TOLERANCE);
     const maxGap = targetCadence * (1 + TOLERANCE);
 
@@ -76,7 +76,7 @@ function analyzeGroup(merchantTxns, opts = {}) {
 
     const matchingGaps = gaps.filter((g) => g >= minGap && g <= maxGap);
 
-    const minMatchingGaps = targetCadence >= 365 ? 1 : 2;
+    const minMatchingGaps = targetCadence >= 60 ? 1 : 2;
     if (matchingGaps.length >= Math.floor(gaps.length * 0.5) && matchingGaps.length >= minMatchingGaps) {
       const lastTxn = filtered[filtered.length - 1];
       const firstTxn = filtered[0];
@@ -276,6 +276,41 @@ describe("analyzeGroup", () => {
     const result = analyzeGroup(txns);
     assert.ok(result, "Should detect yearly subscription with 3 charges");
     assert.equal(result.cadence_days, 365);
+  });
+
+  it("detects a quarterly subscription (2 charges ~90 days apart) — F2", () => {
+    const start = new Date("2025-01-15");
+    const txns = [0, 90].map((offset) => ({
+      merchant_key: "quarterly_svc",
+      display_name: "Quarterly Membership",
+      amount: 45.00,
+      date: addDays(start, offset).toISOString().split("T")[0],
+    }));
+    const result = analyzeGroup(txns);
+    assert.ok(result, "Should detect quarterly subscription with 2 charges (F2)");
+    assert.equal(result.cadence_days, 90);
+    assert.equal(result.amount, 45.00);
+  });
+
+  it("detects a bi-monthly subscription (2 charges ~60 days apart) — F2", () => {
+    const start = new Date("2025-02-01");
+    const txns = [0, 60].map((offset) => ({
+      merchant_key: "bimonthly_svc",
+      display_name: "Bi-monthly Box",
+      amount: 30.00,
+      date: addDays(start, offset).toISOString().split("T")[0],
+    }));
+    const result = analyzeGroup(txns);
+    assert.ok(result, "Should detect bi-monthly subscription with 2 charges (F2)");
+    assert.equal(result.cadence_days, 60);
+  });
+
+  it("still requires 3 charges for a 30-day cadence (2 monthly charges → none)", () => {
+    const txns = monthlyCharges("TwoMonthly", 9.99, 2);
+    const result = analyzeGroup(txns);
+    // 2 charges 30 days apart: 30-day cadence needs 3, and the single ~30-day
+    // gap doesn't match 60/90/365 — so no detection.
+    assert.equal(result, null, "30-day cadence still needs 3 charges");
   });
 
   it("does not detect yearly from 2 charges with wrong gap", () => {

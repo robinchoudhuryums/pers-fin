@@ -13,8 +13,9 @@
 //   1. Pull all non-pending transactions from the last 36 months
 //   2. Group by merchant key (merchant_name || normalized name)
 //   3. For each merchant group, sort by date and compute inter-charge gaps
-//   4. If 3+ charges exist with consistent gaps (~30, ~60, or ~90 days),
-//      flag it as a subscription
+//   4. If enough charges exist with consistent gaps, flag it as a subscription:
+//      30-day cadence needs 3+ charges; 60/90/365-day cadences need only 2+
+//      (1 matching gap) — same ≥60-day rule the transfer detector uses (F2)
 //   5. Upsert into detected_subscriptions
 // ============================================================================
 
@@ -69,22 +70,27 @@ async function detectSubscriptions(externalPool) {
     const CADENCES = [30, 60, 90, 365]; // target intervals in days
     const TOLERANCE = 0.25;        // ±25% tolerance on interval (e.g. 30 ± 7.5 days)
     const AMOUNT_TOLERANCE = 0.10; // ±10% for "similar amount" (catches price creep)
-    const MIN_OCCURRENCES = 3;     // need at least 3 charges to call it recurring
-    const MIN_OCCURRENCES_YEARLY = 2; // yearly subs only need 2 charges
+    const MIN_OCCURRENCES = 3;     // short cadences (30d) need at least 3 charges
+    const MIN_OCCURRENCES_LONG = 2; // 60+ day cadences (bi-monthly/quarterly/yearly) only need 2
 
     const detected = [];
 
     for (const [merchantKey, merchantTxns] of Object.entries(groups)) {
       // Skip merchant groups that match non-subscription patterns
       if (isExcludedMerchant(merchantKey)) continue;
-      if (merchantTxns.length < MIN_OCCURRENCES_YEARLY) continue;
+      if (merchantTxns.length < MIN_OCCURRENCES_LONG) continue;
 
       // Sort by date ascending
       merchantTxns.sort((a, b) => new Date(a.date) - new Date(b.date));
 
       // Try each cadence
       for (const targetCadence of CADENCES) {
-        const minOcc = targetCadence >= 365 ? MIN_OCCURRENCES_YEARLY : MIN_OCCURRENCES;
+        // 60+ day cadences (bi-monthly/quarterly/yearly) are confident at 2
+        // occurrences (1 matching gap); only short 30-day cadences need 3 — same
+        // ≥60-day rule the recurring-transfer detector uses (F2). Previously this
+        // gated on ≥365, so quarterly/bi-monthly subscriptions were never
+        // detected until a third charge (~9 months of history).
+        const minOcc = targetCadence >= 60 ? MIN_OCCURRENCES_LONG : MIN_OCCURRENCES;
         const minGap = targetCadence * (1 - TOLERANCE);
         const maxGap = targetCadence * (1 + TOLERANCE);
 
@@ -115,7 +121,7 @@ async function detectSubscriptions(externalPool) {
 
         // If >50% of gaps match this cadence, it's recurring
         // For yearly cadence, a single matching gap (2 charges ~365 days apart) is sufficient
-        const minMatchingGaps = targetCadence >= 365 ? 1 : 2;
+        const minMatchingGaps = targetCadence >= 60 ? 1 : 2;
         if (matchingGaps.length >= Math.floor(gaps.length * 0.5) && matchingGaps.length >= minMatchingGaps) {
           const lastTxn = filtered[filtered.length - 1];
           const firstTxn = filtered[0];

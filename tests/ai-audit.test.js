@@ -141,10 +141,28 @@ describe("CROSS_PERIOD_RE — skip non-current-month dollar claims (AIA1)", () =
     "$234.56 on dining this month",
     "Food & Drink: $234.56",
     "$50 per month on subscriptions",
+    // F7: benchmark "average" comparators are NOT cross-period — the dollar
+    // figure they sit next to is a this-month actual that must stay checked.
+    "dining $450 this month, above the national average",
+    "groceries $300 — below average for the area",
+    "$420 on transport, near the average household",
   ];
   for (const t of currentOrUnqualified) {
     it(`does NOT flag current/unqualified: "${t}"`, () => {
       assert.ok(!CROSS_PERIOD_RE.test(t.toLowerCase()), "this-month/unqualified claims stay checked");
+    });
+  }
+
+  // F7: period-qualified averages remain cross-period (running/monthly/N-month).
+  const qualifiedAverages = [
+    "your running average is $300",
+    "trailing average of $1,200",
+    "3-month average is $450",
+    "averaging $40/mo on coffee",
+  ];
+  for (const t of qualifiedAverages) {
+    it(`still flags period-qualified average: "${t}"`, () => {
+      assert.ok(CROSS_PERIOD_RE.test(t.toLowerCase()), "period-qualified averages stay cross-period");
     });
   }
 });

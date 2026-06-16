@@ -214,7 +214,11 @@ async function syncEnrollment(enrollment, opts = {}) {
   }
 
   console.log(`  ${institution_name}: ${added} added/updated`);
-  return { added };
+  // `incomplete` = at least one account in this enrollment failed to fetch, so
+  // the watermark was held back (INV-02) and the next sync will retry that
+  // range. Surfaced by syncAllEnrollments so the partial failure is visible in
+  // Sync Health rather than reported as a clean success (F15).
+  return { added, incomplete: fetchError };
 }
 
 // syncAllEnrollments — in-process sync of every non-suspended Teller enrollment.
@@ -246,6 +250,11 @@ async function syncAllEnrollments(opts = {}) {
 
   let totalAdded = 0;
   const errors = [];
+  // Hard failures = enrollments that did NOT sync at all (token decryption
+  // failed, or syncEnrollment threw). A partial failure (some accounts synced,
+  // one fetch errored) is NOT a hard failure — it's surfaced in errors[] for
+  // visibility but still counts as a synced enrollment (F15).
+  let hardFailures = 0;
 
   for (const enrollment of enrollments) {
     // A NULL decrypted token means the TOKEN_ENCRYPTION_PASSPHRASE no longer
@@ -256,11 +265,19 @@ async function syncAllEnrollments(opts = {}) {
     if (!enrollment.access_token) {
       console.error(`Teller enrollment "${enrollment.institution_name}": token decryption failed (passphrase mismatch?) — skipping, not disconnecting.`);
       errors.push({ institution: enrollment.institution_name, error: "decryption_failed" });
+      hardFailures++;
       continue;
     }
     try {
       const result = await syncEnrollment(enrollment, { backfillFrom });
       totalAdded += result.added;
+      if (result.incomplete) {
+        // Partial failure: some accounts synced, one fetch errored and the
+        // watermark was held back. Surface it (without marking the whole
+        // enrollment unsynced) so Sync Health / last_sync_result shows the
+        // enrollment needs a retry instead of looking clean (F15).
+        errors.push({ institution: enrollment.institution_name, error: "partial_sync_incomplete" });
+      }
     } catch (err) {
       console.error(`Sync error for ${enrollment.institution_name}:`, err.message);
       if (err.status === 401 || err.status === 403) {
@@ -271,6 +288,7 @@ async function syncAllEnrollments(opts = {}) {
         );
       }
       errors.push({ institution: enrollment.institution_name, error: err.message });
+      hardFailures++;
     }
   }
 
@@ -361,7 +379,10 @@ async function syncAllEnrollments(opts = {}) {
   }
 
   return {
-    enrollments_synced: enrollments.length - errors.length,
+    // Count enrollments that connected and synced (fully or partially); only
+    // HARD failures (decryption/throw) are excluded. A partial-sync enrollment
+    // still appears in errors[] for visibility but counts as synced (F15).
+    enrollments_synced: enrollments.length - hardFailures,
     transactions_added: totalAdded,
     errors: errors.length > 0 ? errors : undefined,
   };

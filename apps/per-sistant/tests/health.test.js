@@ -50,6 +50,17 @@ describe("isDueOn / meetsTarget", () => {
     assert.equal(weekKey(MON), MON);
     assert.equal(weekKey("2026-06-14"), MON); // Sunday belongs to Monday's week
   });
+
+  // F11: "today" is timezone-aware. Default (no/UTC) matches the old UTC date;
+  // a passed IANA zone resolves a YYYY-MM-DD in that zone; a bad zone falls back.
+  it("todayStr is timezone-aware and falls back safely (F11)", () => {
+    const { todayStr } = health;
+    const utc = new Date().toISOString().split("T")[0];
+    assert.equal(todayStr("UTC"), utc, "UTC matches the legacy ISO date");
+    assert.match(todayStr("America/New_York"), /^\d{4}-\d{2}-\d{2}$/);
+    // Unknown timezone must not throw — it degrades to the UTC date.
+    assert.equal(todayStr("Not/AZone"), utc);
+  });
 });
 
 describe("computeStreaks — daily schedules", () => {

@@ -175,10 +175,39 @@ function parseDate(dateStr) {
 // and dedup against re-imports of the same rows continues to work. Only
 // rows containing `|` (rare, but the bug class) get a different hash;
 // those rows were collision-prone under the old scheme anyway.
-function csvTransactionId(accountLabel, date, amount, merchant) {
+function csvTxnIdBase(accountLabel, date, amount, merchant) {
   const esc = (v) => String(v == null ? "" : v).replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
-  const raw = `${esc(accountLabel)}|${esc(date)}|${esc(amount)}|${esc(merchant)}`;
+  return `${esc(accountLabel)}|${esc(date)}|${esc(amount)}|${esc(merchant)}`;
+}
+
+function csvTransactionId(accountLabel, date, amount, merchant, occurrence = 0) {
+  let raw = csvTxnIdBase(accountLabel, date, amount, merchant);
+  // `occurrence` distinguishes genuinely-distinct rows that share
+  // (accountLabel, date, amount, merchant) within ONE import — e.g. two
+  // identical $4.95 coffees or two $20 ATM withdrawals on the same day. Without
+  // it both rows hashed to the same id and the second was silently dropped by
+  // `ON CONFLICT (transaction_id) DO NOTHING`, under-counting real spending
+  // (F1). occurrence 0 produces the historical hash UNCHANGED, so existing
+  // csv_* IDs stay stable and ordinary (single-occurrence) rows still dedup
+  // against prior imports of the same file exactly as before.
+  if (occurrence > 0) raw += `|#${occurrence}`;
   return "csv_" + crypto.createHash("sha256").update(raw).digest("hex");
+}
+
+// Per-import occurrence-tracking id generator. Both the /api/import-csv route
+// and scripts/import-csv-cli.js create ONE generator per import and call it
+// once per row, so they assign the SAME occurrence index to the Nth identical
+// tuple and therefore produce IDENTICAL dedup IDs for the same file (the F2
+// CLI/route parity contract). Deterministic in row order: re-importing the same
+// file reproduces the same indices and still deduplicates against itself.
+function makeCsvTxnIdGenerator() {
+  const seen = new Map();
+  return function nextCsvTxnId(accountLabel, date, amount, merchant) {
+    const base = csvTxnIdBase(accountLabel, date, amount, merchant);
+    const occ = seen.get(base) || 0;
+    seen.set(base, occ + 1);
+    return csvTransactionId(accountLabel, date, amount, merchant, occ);
+  };
 }
 
 module.exports = {
@@ -187,5 +216,6 @@ module.exports = {
   detectCsvFormat,
   parseDate,
   csvTransactionId,
+  makeCsvTxnIdGenerator,
   parseMoney,
 };

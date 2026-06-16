@@ -8,7 +8,7 @@ const multer = require("multer");
 const { parse } = require("csv-parse/sync");
 const { pool, ENCRYPTION_PASSPHRASE } = require("../services/database");
 const { categorizeSubscription, findCancelUrl } = require("../data/reference-data");
-const { CSV_FORMATS, INSTITUTION_LABELS, detectCsvFormat, parseDate, csvTransactionId } = require("../data/csv-formats");
+const { CSV_FORMATS, INSTITUTION_LABELS, detectCsvFormat, parseDate, csvTransactionId, makeCsvTxnIdGenerator } = require("../data/csv-formats");
 const { detectSubscriptions } = require("../../scripts/detect-subscriptions");
 const { detectRecurringTransfers } = require("../../scripts/detect-transfers");
 const { INCOME_PREDICATE } = require("../services/financial-queries");
@@ -282,6 +282,11 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
 
       let imported = 0;
       let skipped = 0;
+      let duplicates = 0;
+      // One occurrence-tracking generator per import so two genuinely-distinct
+      // rows sharing (label,date,amount,merchant) get distinct IDs instead of
+      // the second silently deduping against the first (F1). Mirrors the CLI.
+      const nextTxnId = makeCsvTxnIdGenerator();
 
       for (let i = 0; i < records.length; i++) {
         const row = records[i];
@@ -294,7 +299,7 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
         const date = parseDate(parsed.date);
         if (!date || isNaN(parsed.amount) || parsed.amount === 0) { skipped++; continue; }
 
-        const txnId = csvTransactionId(accountLabel, date, parsed.amount, parsed.merchant_name);
+        const txnId = nextTxnId(accountLabel, date, parsed.amount, parsed.merchant_name);
 
         const result = await client.query(
           `INSERT INTO transactions (account_id, transaction_id, amount, date, merchant_name, name, category, pending)
@@ -306,8 +311,11 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
             parsed.category ? `{${parsed.category}}` : null,
           ]
         );
+        // rowCount 0 here now means a TRUE re-import of an already-present row
+        // (the occurrence index already separated same-file identical rows), so
+        // it's surfaced as `duplicates` rather than lumped into `skipped`.
         if (result.rowCount > 0) imported++;
-        else skipped++;
+        else { skipped++; duplicates++; }
       }
 
       await client.query(
@@ -353,6 +361,7 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
         format_detected: formatName,
         rows_imported: imported,
         rows_skipped: skipped,
+        rows_duplicate: duplicates,
         account_label: accountLabel,
       });
     } catch (err) {

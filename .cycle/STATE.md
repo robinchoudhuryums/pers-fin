@@ -9,7 +9,35 @@ to the "none in progress" state.
 
 ## Current Cycle
 
-- **Status:** **NONE IN PROGRESS.** Last completed cycle: **4** (2026-06-12 —
+- **Status:** **broad-implement in progress** on branch `claude/loving-rubin-1tkzs5`
+  (2026-06-16). A fresh 3-stage `/broad-scan` produced findings F1–F27; the
+  operator selected **F1, F2, F7, F11, F15** for implementation. All five
+  implemented + tested (Perfin 611 pass, Per-sistant 388 pass = 999, 0 fail).
+  NOT yet committed/pushed.
+  - **F1** CSV dedup occurrence-index (`makeCsvTxnIdGenerator`, teller/data/csv-formats.js)
+    — genuinely-identical same-day rows no longer silently drop; occ0==legacy hash
+    (re-import dedup intact); route + CLI both use it (F2 CLI/route parity kept);
+    route response gains `rows_duplicate`.
+  - **F2** subscription cadence threshold ≥365 → ≥60 (scripts/detect-subscriptions.js):
+    quarterly/bi-monthly subs now detect at 2 occurrences, matching the transfer
+    detector. TRADEOFF: mild false-positive risk on two coincidental ~90d-apart
+    same-amount charges. Test double + docstring updated; +3 tests.
+  - **F7** ai-audit CROSS_PERIOD_RE narrowed: bare `average|avg` → period-qualified
+    forms + `averaging`; added THIS_MONTH_RE override so benchmark "national average"
+    no longer suppresses this-month arithmetic checks. +6 tests.
+  - **F11** health day-math timezone-aware via `APP_TIMEZONE` env (default UTC);
+    server todayStr() + injected client todayLocal() both read it so they agree.
+    OPERATOR: set APP_TIMEZONE to your zone or the off-by-one persists. Residual:
+    heatmap grid + SQL CURRENT_DATE windows still UTC (cosmetic). +1 test.
+  - **F15** partial-failure Teller enrollment surfaces `partial_sync_incomplete` in
+    errors[]/last_sync_result (Sync Health) instead of clean success; enrollments_synced
+    now subtracts only HARD failures.
+  - **Where I left off:** edits done, tests green, NOT committed. Next: commit + push.
+    /sync-docs drift: test count 988→999, F1/F2/F7/F11/F15 notes, APP_TIMEZONE env,
+    rows_duplicate field, SW cache perfin-v4→v5 (F27, not implemented).
+  - Open scan findings (not implemented): F3,F4,F5,F6,F8,F9,F10,F12,F13,F14,F16–F27.
+
+### (prior) Last completed cycle: **4** (2026-06-12 —
   Seams & Invariants audit #2 + health synthesis + reflect), fully merged to
   main (PR #116); results recorded in `PROJECT_HEALTH.md` + `.cycle/metrics.csv`.
   Post-cycle FEATURE rounds since (not audit cycles, all merged): auto-loan

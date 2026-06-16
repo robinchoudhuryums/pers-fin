@@ -30,7 +30,7 @@ const { parse } = require("csv-parse/sync");
 // CSV_FORMATS is the single source of truth in teller/data/csv-formats.js;
 // this CLI used to redefine it inline (and drift). We now import it so any
 // future bank-format change propagates to both the API route and the CLI.
-const { CSV_FORMATS, INSTITUTION_LABELS, detectCsvFormat, parseDate, csvTransactionId } = require("../teller/data/csv-formats");
+const { CSV_FORMATS, INSTITUTION_LABELS, detectCsvFormat, parseDate, makeCsvTxnIdGenerator } = require("../teller/data/csv-formats");
 
 const ENCRYPTION_PASSPHRASE = process.env.TOKEN_ENCRYPTION_PASSPHRASE;
 const pool = new Pool({
@@ -121,6 +121,10 @@ async function importCsvFile(filePath) {
 
     let imported = 0;
     let skipped = 0;
+    // One occurrence-tracking generator per import (mirrors the route) so the
+    // CLI and /api/import-csv produce IDENTICAL dedup IDs for the same file,
+    // including for genuinely-distinct same-day/same-amount/same-merchant rows (F1).
+    const nextTxnId = makeCsvTxnIdGenerator();
 
     for (let i = 0; i < records.length; i++) {
       const row = records[i];
@@ -140,12 +144,14 @@ async function importCsvFile(filePath) {
         continue;
       }
 
-      // Use the SHARED dedup-ID helper so the CLI and the API route generate
+      // Use the SHARED dedup-ID generator so the CLI and the API route generate
       // identical transaction IDs for the same row (F29). The old scheme hashed
       // virtualAccountId (route hashes accountLabel), truncated to 24 chars, AND
-      // folded in the row index `i` — so re-importing the same file produced
-      // brand-new IDs and never deduped against itself.
-      const transactionId = csvTransactionId(accountLabel, date, parsed.amount, parsed.merchant_name);
+      // folded in the raw row index `i` — so re-importing the same file produced
+      // brand-new IDs and never deduped against itself. The generator instead
+      // folds in a DETERMINISTIC per-tuple occurrence index, which keeps
+      // re-import dedup intact while still separating genuinely-identical rows (F1).
+      const transactionId = nextTxnId(accountLabel, date, parsed.amount, parsed.merchant_name);
 
       try {
         const ins = await client.query(

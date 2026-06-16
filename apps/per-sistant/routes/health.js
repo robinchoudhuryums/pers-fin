@@ -27,8 +27,25 @@ const STREAK_MILESTONES = [7, 30, 100, 365];
 // ---------------------------------------------------------------------------
 // Pure date/streak helpers (exported for tests + notifications + briefing)
 // ---------------------------------------------------------------------------
-function todayStr() {
-  return new Date().toISOString().split("T")[0];
+// "Today" resolved in the configured app timezone (APP_TIMEZONE — an IANA name
+// like "America/New_York"; default "UTC"). All habit day-math (streaks, due/
+// done, the 7-day grid, the future-log guard) flows from this, so a user west
+// of UTC logging in the evening gets their correct LOCAL day. Previously this
+// used the raw UTC date, so an 8pm-local log landed on tomorrow's UTC date and
+// the real local "today" read as unlogged — an off-by-one for the whole feature
+// (F11). The client (pages/health.js) reads the SAME APP_TIMEZONE so the two
+// never disagree about "today". Default "UTC" preserves the prior behavior
+// exactly (no change unless the operator sets APP_TIMEZONE).
+const APP_TIMEZONE = process.env.APP_TIMEZONE || "UTC";
+function todayStr(tz = APP_TIMEZONE) {
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
+    }).format(new Date());
+  } catch {
+    // Bad/unknown timezone → fall back to UTC rather than throwing.
+    return new Date().toISOString().split("T")[0];
+  }
 }
 
 function normDate(d) {
@@ -528,3 +545,4 @@ module.exports.computeStreaks = computeStreaks;
 module.exports.gatherHealthSummary = gatherHealthSummary;
 module.exports.weekKey = weekKey;
 module.exports.addDays = addDays;
+module.exports.todayStr = todayStr;
