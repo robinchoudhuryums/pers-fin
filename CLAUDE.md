@@ -247,7 +247,7 @@ teller/
                            served from shell/public/manifest.json.
     offline.html         — Branded offline fallback page served by the SW when navigation
                            fails and no cache hit exists
-    sw.js                — Service worker (cache `perfin-v4`, network-first with offline
+    sw.js                — Service worker (cache `perfin-v5`, network-first with offline
                            fallback. Precaches CSS/JS/SVG/offline.html on install. `/api/*`
                            is intentionally NOT cached — stale balances are worse than a
                            clear network error. Push notifications.)
@@ -372,12 +372,19 @@ shell/
   flags the drift risk).
 - `scripts/import-csv-cli.js` — Standalone CLI for importing bank CSVs. Shares
   the route's logic via `teller/data/csv-formats.js`: content-only
-  `detectCsvFormat` (no filename heuristic), the same `csvTransactionId`
-  dedup-ID helper, AND the same `INSTITUTION_LABELS` map. Both derive the
+  `detectCsvFormat` (no filename heuristic), the same `makeCsvTxnIdGenerator`
+  dedup-ID generator (wrapping `csvTransactionId`), AND the same
+  `INSTITUTION_LABELS` map. Both derive the
   default account label (`"<institution> Account"`) from the detected format,
   so when the caller doesn't supply an explicit label the CLI and the
   `/api/import-csv` route produce **identical** dedup IDs for the same row
-  (F2). The route still honors an explicitly-provided `institution` /
+  (F2). The generator assigns a DETERMINISTIC per-tuple occurrence index so two
+  genuinely-distinct rows sharing (label, date, amount, merchant) within one
+  file — e.g. two identical same-day coffees — get distinct IDs instead of the
+  second silently deduping against the first (F1). Occurrence 0 hashes
+  byte-identically to the legacy single-arg `csvTransactionId`, so existing
+  csv_* IDs stay stable and re-importing the same file still deduplicates
+  against itself. The route still honors an explicitly-provided `institution` /
   `account_label` (e.g. the web dropdown) — those are intentionally separate
   accounts. (Earlier the CLI used a divergent, row-index-based ID and
   filename-based format detection — audit H8/F29/F31, now resolved.)
@@ -403,9 +410,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (988 tests as of latest); use
+  Perfin and Per-sistant test files (999 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 988 tests across 37 test files (incl.
+  Current count: 999 tests across 37 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -480,7 +487,12 @@ shell/
   - **Manual**: user-entered via `POST /api/investment-accounts`. Stored in
     `investment_accounts` with no `plaid_account_id`.
 - **CSV import**: Auto-detect Chase, Capital One, Discover, Wells Fargo, Schwab formats
-- **Transaction deduplication**: SHA256-based duplicate detection across CSV imports and API syncs
+- **Transaction deduplication**: SHA256-based duplicate detection across CSV imports and API syncs.
+  CSV dedup IDs fold in a deterministic per-file occurrence index, so two genuinely-distinct rows
+  sharing (account, date, amount, merchant) on the same day no longer collide and silently drop the
+  second (F1); re-importing the same file still deduplicates against itself. `POST /api/import-csv`
+  returns `rows_duplicate` (true re-imports of already-present rows) alongside `rows_imported` /
+  `rows_skipped`.
 - **Transaction editing** (Phase B1): rename merchants and add notes via
   `PATCH /api/transactions/:id`. User overrides live in `user_merchant_name` /
   `user_notes` columns so re-syncs from Teller don't clobber edits. The display
@@ -504,6 +516,10 @@ shell/
   sum to the parent. Powered by `getCategorySpendingThisMonth` in
   `services/financial-queries.js`.
 - **Subscription detection**: Automatic recurring charge identification (30/60/90/365-day cadences).
+  The 30-day cadence requires 3+ charges; 60/90/365-day cadences need only 2+
+  (1 matching gap) — the same `>= 60` relaxation the recurring-transfer detector
+  uses, so quarterly/bi-monthly subscriptions are detected without waiting for a
+  third charge (F2; previously gated on `>= 365`).
   The upsert respects user state via an `is_active` CASE: if the user cancelled a subscription
   (`cancelled_at IS NOT NULL`) or dismissed it (`is_dismissed = true`), detection will not
   re-activate it even if the merchant charges again.
@@ -784,8 +800,13 @@ shell/
   non-current-month window (annual / multi-month / YTD / projected / running-average, matched by
   `CROSS_PERIOD_RE`) is SKIPPED rather than mis-compared — otherwise an annualized figure (×12) read
   near a category name false-flagged CRITICAL, spamming the audit notification and deflating the
-  `audit_accuracy` % (AIA1). this-month + unqualified claims (which refer to the data the model was
-  given) are still checked. (2) entity existence — merchant/goal/subscription names verified against DB via
+  `audit_accuracy` % (AIA1). `CROSS_PERIOD_RE` treats "average" as cross-period only when it is
+  PERIOD-qualified (running / trailing / monthly / N-month average, or the verb "averaging") — a bare
+  benchmark comparator like "above the national average" no longer suppresses the check, and an
+  explicit "this month"/"month-to-date" qualifier (`THIS_MONTH_RE`) OVERRIDES any cross-period match,
+  so a genuine this-month hallucination adjacent to the word "average" is still caught instead of
+  silently inflating `audit_accuracy` in the false-negative direction (F7). this-month + unqualified
+  claims (which refer to the data the model was given) are still checked. (2) entity existence — merchant/goal/subscription names verified against DB via
   whole-word match with a ≥4-char min, so a tiny known entity (a "Car" goal) can't wildcard-match
   every claimed name and let hallucinations pass (AI-4); (3) trend direction — only **total/overall**
   spending claims are checked against the monthly total; category-specific claims are skipped rather
@@ -904,7 +925,7 @@ shell/
   in templates so any direct DOM writes are silent no-ops.
 - **Dark/Light theme**: Toggle in Settings, persisted to DB + localStorage
 - **PWA**: Installable home screen app (manifest.json + service worker, helmet icon centered on home screen).
-  Service worker (cache `perfin-v4`) uses network-first, caches successful same-origin
+  Service worker (cache `perfin-v5`) uses network-first, caches successful same-origin
   static GETs, and explicitly skips `/api/*` so the dashboard never serves stale balances
   when offline.
 - **Offline fallback page** (Phase D): when navigation fails and no cache hit exists,
@@ -1267,7 +1288,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 988 tests passing across 37 test files (Perfin + Per-sistant), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 999 tests passing across 37 test files (Perfin + Per-sistant), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
@@ -1686,6 +1707,13 @@ validation (SN-5).
 ### SMTP (Per-sistant — email scheduling)
 - `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM`
 
+### Per-sistant Health & Habits
+- `APP_TIMEZONE` — IANA zone (e.g. `America/New_York`) for the Health & Habits
+  day-math (streaks / due-today / 7-day grid / future-log guard). Server and
+  injected client both resolve "today" in this zone so they agree. Default
+  `UTC` (unchanged behavior); set it to your zone or evening logs west of UTC
+  land on the wrong day (F11). See `apps/per-sistant/CLAUDE.md`.
+
 ### Cross-app integration (legacy, two-Render-services era)
 Unused under the unified shell — both apps run in-process. Documented as the
 standalone-mode fallback if either app is run on its own Render service.
@@ -1843,6 +1871,11 @@ standalone-mode fallback if either app is run on its own Render service.
   raw `last_sync_result`, so a per-item error that does NOT disconnect an
   enrollment — notably `decryption_failed` (passphrase mismatch) — is visible in
   the Sync Health card instead of staying silent on scheduled runs (addition D).
+  A PARTIAL Teller failure (one account in an enrollment fetched cleanly, a
+  sibling threw, so the watermark was held back per INV-02) surfaces as
+  `partial_sync_incomplete` here too, instead of the enrollment reporting a clean
+  success — `enrollments_synced` counts it as synced (it did connect) but the
+  errors[] entry flags that a range still needs a retry (F15).
   The auto-sync fires a one-shot "Sync error" notification only when the error
   signature CHANGES, so a persistent mismatch doesn't spam hourly. A *wholesale*
   Plaid balance/holdings throw inside `POST /api/sync-balances` (vs. the per-item

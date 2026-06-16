@@ -29,7 +29,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   at-most-once delivery). The manual `POST /api/emails/:id/send` claims the row
   the same way (`UPDATE … WHERE id = $1 AND status <> 'sent' RETURNING`) so a
   double-click / retry returns 409 instead of re-sending (PB-4).
-- **Tests**: `tests/` (node:test runner, `npm test`, 387 tests (api + integration + cycle-fixes + knowledge + health))
+- **Tests**: `tests/` (node:test runner, `npm test`, 388 tests (api + integration + cycle-fixes + knowledge + health))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of June 2026)
@@ -70,7 +70,9 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   (check-off or quantity-vs-target; daily / weekdays / specific-days /
   N-times-per-week schedules), one-log-per-day upserts, streaks **computed at
   read time** from `habit_logs` (a backfilled log retroactively repairs a
-  streak; an unlogged *today* never breaks one), a clickable 7-day grid, a
+  streak; an unlogged *today* never breaks one) in the `APP_TIMEZONE` zone
+  (default UTC — see Environment Variables; set it to your zone so day-math
+  matches your local calendar, F11), a clickable 7-day grid, a
   90-day consistency heatmap, and a measurements time series (weight, sleep,
   mood, custom…) with inline trend charts. Routes: `routes/health.js`
   (exports `gatherHealthSummary` + pure `computeStreaks`/`isDueOn` helpers);
@@ -155,7 +157,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `db/007_enhancements.sql` — custom recurrence, entity links, webhooks, notification preferences
 - `db/008_templates_performance.sql` — todo templates table, performance indexes
 - `uploads/` — local file attachment storage
-- `tests/api.test.js` — unit test suite (the bulk of the 343 per-sistant tests)
+- `tests/api.test.js` — unit test suite (the bulk of the 388 per-sistant tests)
 - `tests/integration.test.js` — integration tests (requires DB, auto-skips without)
 - `Dockerfile` / `docker-compose.yml` — container deployment
 - `fly.toml` — Fly.io config
@@ -166,7 +168,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (387 tests)
+# Run tests (388 tests)
 npm test
 
 # Pages
@@ -352,6 +354,14 @@ GET    /sw.js               # Service worker
 - `CONTACTS` — JSON map of name→email (e.g. `{"mom":"mom@email.com"}`)
 - `ANTHROPIC_API_KEY` — Claude API key for AI features (optional)
 - `PERFIN_URL` — URL to linked Perfin instance (for navigation + dashboard integration)
+- `APP_TIMEZONE` — IANA timezone name (e.g. `America/New_York`) used for the
+  Health & Habits day-math: the server's `todayStr()` and the injected client
+  `todayLocal()` both resolve "today" in this zone so streaks, due-today, the
+  7-day grid, and the future-log guard match the user's LOCAL calendar day
+  (F11). Default `UTC` (reproduces the prior behavior exactly). Set it to your
+  zone or an evening log west of UTC lands on the wrong day. (Residual: the
+  90-day heatmap grid + the SQL `CURRENT_DATE` range windows are still UTC —
+  cosmetic 1-day edge only.)
 - `VOYAGE_API_KEY` — Voyage AI key for Knowledge embeddings (optional). Without
   it, Knowledge falls back to keyword retrieval over notes/documents.
 - `VOYAGE_MODEL` — embedding model (default `voyage-3.5`, 1024-dim — must match
