@@ -211,6 +211,33 @@ router.post("/api/ask", async (req, res) => {
   const question = String((req.body && req.body.question) || "").trim().slice(0, MAX_QUESTION_CHARS);
   if (!question) return res.status(400).json({ error: "question is required" });
 
+  // F1: hoisted so the `finally` block can charge the cap for tokens already
+  // consumed even when a LATER tool round throws — parity with the rebuild
+  // (AIA2) and categorize (M2) "charge the spend you incurred" pattern. The
+  // previous code wrote the usage row only after the loop completed, so a
+  // mid-loop failure spent tokens that escaped the shared monthly cap.
+  let modelId = MODEL_MAP.haiku;
+  let totalUsage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+  let charged = false;
+  const chargeAsk = async () => {
+    if (charged) return;
+    charged = true;
+    // entry_type='ask' — counted by the cap queries, filtered out of the
+    // user-facing insights feed (which selects entry_type='insight').
+    await pool.query(
+      `INSERT INTO financial_insights
+         (insight_text, model_used, tokens_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, entry_type)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'ask')`,
+      [
+        `[Ask] ${question.slice(0, 120)}`,
+        modelId,
+        totalUsage.input_tokens + totalUsage.output_tokens,
+        totalUsage.input_tokens, totalUsage.output_tokens,
+        totalUsage.cache_read_input_tokens, totalUsage.cache_creation_input_tokens,
+      ]
+    );
+  };
+
   try {
     // Shared monthly cap (INV-14): same resolver + month-spend computation
     // family as insights/categorize; this endpoint both checks AND charges.
@@ -232,7 +259,7 @@ router.post("/api/ask", async (req, res) => {
     }
 
     const settingsRow = await pool.query("SELECT insights_model FROM user_settings WHERE id = 1");
-    const modelId = MODEL_MAP[settingsRow.rows[0]?.insights_model] || MODEL_MAP.haiku;
+    modelId = MODEL_MAP[settingsRow.rows[0]?.insights_model] || MODEL_MAP.haiku;
 
     const client = new Anthropic();
     const system =
@@ -244,7 +271,6 @@ router.post("/api/ask", async (req, res) => {
 
     const messages = [{ role: "user", content: question }];
     const toolCalls = [];
-    let totalUsage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
     let answer = null;
 
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
@@ -287,20 +313,8 @@ router.post("/api/ask", async (req, res) => {
       messages.push({ role: "user", content: results });
     }
 
-    // Charge the cap (entry_type='ask' — counted by the cap queries, filtered
-    // out of the user-facing insights feed which selects entry_type='insight').
-    await pool.query(
-      `INSERT INTO financial_insights
-         (insight_text, model_used, tokens_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, entry_type)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'ask')`,
-      [
-        `[Ask] ${question.slice(0, 120)}`,
-        modelId,
-        totalUsage.input_tokens + totalUsage.output_tokens,
-        totalUsage.input_tokens, totalUsage.output_tokens,
-        totalUsage.cache_read_input_tokens, totalUsage.cache_creation_input_tokens,
-      ]
-    );
+    // Charge the cap for the completed run.
+    await chargeAsk();
 
     res.json({
       answer: answer || "I couldn't produce an answer — try rephrasing.",
@@ -310,6 +324,17 @@ router.post("/api/ask", async (req, res) => {
   } catch (err) {
     console.error("ask error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
+  } finally {
+    // F1: a mid-loop failure (e.g. a network error on a later tool round) spent
+    // tokens but skipped the charge above. If anything was consumed and we
+    // haven't charged yet, record the usage row now so the spend still counts
+    // against the shared monthly cap. A charge-write failure here must not mask
+    // the response, so it's swallowed-with-log.
+    const consumed = totalUsage.input_tokens || totalUsage.output_tokens ||
+                     totalUsage.cache_read_input_tokens || totalUsage.cache_creation_input_tokens;
+    if (!charged && consumed) {
+      try { await chargeAsk(); } catch (e) { console.error("ask cap-charge (post-failure) error:", e.message); }
+    }
   }
 });
 

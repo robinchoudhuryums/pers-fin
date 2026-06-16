@@ -14,11 +14,31 @@ module.exports = `
     return b+u;
   }
   window.withBase=withBase;
+  var _authRedirecting=false;
+  // indexOf, not a regex: this whole module is one backtick template literal,
+  // so regex backslashes (\\/ , \\?) get eaten by the template string. A plain
+  // substring match for '/login' is enough for both the loop guard and the
+  // redirect-target check.
+  function _isLoginPath(p){return (p||'').indexOf('/login')!==-1;}
   window.fetch=function(url,opts){
     opts=opts||{};
     var u=typeof url==='string'?url:(url&&url.url)||'';
     if(u.startsWith('/api/')){opts.headers=opts.headers||{};if(!opts.headers['X-Requested-With'])opts.headers['X-Requested-With']='XMLHttpRequest';}
-    return _f.call(this,typeof url==='string'?withBase(url):url,opts);
+    return _f.call(this,typeof url==='string'?withBase(url):url,opts).then(function(res){
+      // Session expiry (parallels Perfin INV-61): an unauthenticated /api call
+      // gets a 401 (XHR/POST) or a 302->/login that fetch transparently follows
+      // (GET). Redirect once to the root /login (shell login when embedded,
+      // Per-sistant login standalone -- both un-prefixed), loop-guarded, so an
+      // idle-timeout sends the user to re-auth instead of leaving a blank page.
+      try{
+        var expired=res.status===401||(res.redirected&&_isLoginPath(res.url));
+        if(expired&&!_authRedirecting&&!_isLoginPath(window.location.pathname)){
+          _authRedirecting=true;
+          window.location.href='/login';
+        }
+      }catch(e){}
+      return res;
+    });
   };
 })();
 function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML;}

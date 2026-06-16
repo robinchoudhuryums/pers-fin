@@ -839,7 +839,12 @@ async function syncAllBalances() {
          total_assets = $1, total_liabilities = $2, net_worth = $3, breakdown = $4`,
       [nw.total_assets, nw.total_liabilities, nw.net_worth, JSON.stringify(nw.breakdown)]
     );
-  } catch { /* non-critical */ }
+  } catch (snapErr) {
+    // Non-critical to the sync's success, but LOG it (F2) — the prior bare
+    // `catch {}` hid a getNetWorth/snapshot failure, so net worth could
+    // silently stop updating while the sync kept reporting success.
+    console.error("Net-worth snapshot after balance sync failed (non-critical):", snapErr.message);
+  }
   return { accounts_updated: updated, errors: errors.length > 0 ? errors : undefined };
 }
 

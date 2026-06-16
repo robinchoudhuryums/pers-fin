@@ -1114,7 +1114,11 @@ async function syncAllPlaidHoldings() {
           // for brokerage accounts and put the real value in holdings. With `??`
           // a literal 0 isn't nullish, so the holdings-sum fallback was skipped
           // and the account persisted as $0. `||` falls through 0 → holdings sum.
-          const balance = acct.balances?.current || acctValue[acct.account_id] || 0;
+          const acctCurrent = acct.balances?.current;
+          // `usedFallback` = we had no real account-level current (Schwab et al.
+          // report 0/null) and fell through to the holdings sum.
+          const usedFallback = !acctCurrent;
+          const balance = acctCurrent || acctValue[acct.account_id] || 0;
           // RETURNING the investment_accounts.id so the snapshot below can
           // attribute history to the right account (we key by plaid_account_id
           // here but the snapshot table uses the local SERIAL id).
@@ -1129,8 +1133,15 @@ async function syncAllPlaidHoldings() {
              acct.subtype || "brokerage", balance, acct.account_id]
           );
           // Keep the linked_accounts mirror in sync so the accounts grid agrees.
+          // F4: when `balance` is only the holdings-sum FALLBACK (no real
+          // account-level current), don't clobber an existing non-zero mirror
+          // balance a prior accountsGet balance-sync wrote — it may include
+          // uninvested cash the holdings sum omits. A real account-level current
+          // always updates (matches the exchange path's guard at line ~367).
           await pool.query(
-            "UPDATE linked_accounts SET current_balance = $1, balance_updated_at = now() WHERE account_id = $2",
+            usedFallback
+              ? "UPDATE linked_accounts SET current_balance = $1, balance_updated_at = now() WHERE account_id = $2 AND (current_balance IS NULL OR current_balance = 0)"
+              : "UPDATE linked_accounts SET current_balance = $1, balance_updated_at = now() WHERE account_id = $2",
             [balance, acct.account_id]
           );
           totalAccounts++;
@@ -1638,6 +1649,7 @@ router.post("/api/plaid/migrate-overrides", async (req, res) => {
 // declarations, so they're defined by the time this runs.
 module.exports = router;
 module.exports.syncAllPlaidTransactions = syncAllPlaidTransactions;
+module.exports.syncPlaidItemTransactions = syncPlaidItemTransactions; // exported for testing (sync idempotency — T1)
 module.exports.reconcilePlaidTransactions = reconcilePlaidTransactions;
 module.exports.syncAllPlaidBalances = syncAllPlaidBalances;
 module.exports.syncAllPlaidHoldings = syncAllPlaidHoldings;

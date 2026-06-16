@@ -9,17 +9,163 @@ to the "none in progress" state.
 
 ## Current Cycle
 
+### Targeted cycle: Per-sistant Web UI — audit + implement (2026-06-16, branch `claude/beautiful-hamilton-abf4h0`)
+`/targeted-audit` Per-sistant Web UI: 7 findings (0C/0H/4M/3L). `/targeted-implement` A1–A4:
+- **A1 (PW1)** `views/js.js` shared fetch wrapper — ported Perfin INV-61: on a 401 or a
+  followed 302→/login, redirect once to root `/login` (loop-guarded), Response returned
+  unchanged. Closes the idle-timeout-blank-page gap across every page + the Ask popover.
+  GOTCHA HIT+FIXED: the module is one backtick template literal, so a regex's backslashes
+  (`\/`,`\?`) were eaten → emitted `//login…` (a line comment) and broke the bundle; rewrote
+  `_isLoginPath` with `indexOf('/login')` (no backslashes). Caught pre-commit by a
+  node --check on the EMITTED bundle.
+- **A2 (PW2)** `pages/health.js:200` — `escAttr()` for the week-grid `aria-label`/`title`/`data-*`
+  (was quote-unsafe `esc()` on user habit names; CSP limited it to markup injection).
+- **A3 (PW4+PW5)** `pages/emails.js` — `saveEmail()` returns the created id; `sendNow()` uses it
+  instead of `emails[0]` (removes the wrong-email-on-non-newest-first risk); `aiDraft()` uses
+  `getElementById` instead of the deprecated global `event.target`.
+- **A4 (PW3)** `settings-script.js` (saveSettings/saveSlack/saveKeepAlive/saveAIModels),
+  `dashboard-script.js` (dashComplete), `notes.js` (saveNote/deleteNote) — gate success
+  message / optimistic card removal / modal-close on `res.ok` so a transient 5xx no longer
+  shows false "saved" or makes a card vanish.
+Deferred: A5 (PW6 parseQuickTodo date off-by-one — needs verification), A6 (PW7 defensive batch:
+server-enum attr escaping, renderMd link-text hardening, nonceAttr empty-scope guard, knowledge
+loadKStatus error surfacing, esc(null)→''). Tests: 1011 pass / 0 fail (emitted bundles
+node --check'd). Net +2 (A1+A4 prod fixes − 0 new failure modes). Invariant candidate: INV-63
+(Per-sistant fetch-wrapper 401→login, parity with INV-61). **Where I left off:** A1–A4 ready to
+commit; /sync-docs should add INV-63 + the template-literal-regex gotcha to Per-sistant CLAUDE.md.
+
+### Targeted cycle: Web UI (Perfin) — audit + implement (2026-06-15, branch `claude/beautiful-hamilton-abf4h0`)
+`/targeted-audit` Web UI (Perfin): 8 findings (0C/0H/4M/4L), 1 retracted (enrollments_synced
+false positive). `/targeted-implement` completed A1–A5 (the Fix-now + low-risk batch):
+- **A1 (W2)** `settings.ejs` logout → root `POST /logout` + redirect `/login` (un-prefixed) so
+  "Sign Out" clears the shell_session under embedded mode (was `/api/logout` + basePath'd → 404,
+  session survived). X-Requested-With for CSRF.
+- **A2 (W4)** `budgets.ejs`/`goals.ejs`/`settings.ejs` — `res.ok` guard before `.json()` use so an
+  API 5xx shows a clean error instead of throwing / "No goals yet".
+- **A3 (W3)** `perfin-shared.js` apiFetch — on 401 or a followed 302→/login (session expiry), redirect
+  once to root `/login` (loop-guarded `_authRedirecting`); returns the same Response to callers.
+- **A4 (W1)** `shell/index.js` + `shell/views/login.ejs` — added `helmet` to the shell (was NO CSP at
+  all): nonce-based CSP + `frame-ancestors 'none'` + X-Frame-Options on the login/landing/auth surface;
+  nonced the 2 login inline scripts. **COOP/CORP/COEP disabled** so the global middleware doesn't break
+  Plaid/Teller Link popups on sub-app pages (caught in regression check). Verified via header harness:
+  frame-ancestors none ✓, COOP/CORP absent ✓, both scripts nonced ✓, login renders 200.
+- **A5 (W5)** `transactions.js`/`settings-rules.js` — `.json().catch(()=>({}))` on bulk/split/rule-apply
+  so a non-JSON 5xx body gives a meaningful message.
+Deferred (per handoff): A6 (W6 a11y label associations), A7 (W7/W8 cancel_url scheme, fmt(null)→"—",
+calendar shared-fmt). Tests: 1011 pass / 0 fail. Net +3 (3 prod fixes A1/A2/A3 − 0 new failure modes).
+Invariant candidates: INV-60 (logout clears shell session), INV-61 (apiFetch 401→login), INV-62
+(shell CSP/frame-ancestors, COOP/CORP off). **Where I left off:** A1–A5 committed on
+`claude/beautiful-hamilton-abf4h0`; follow-on: standalone Perfin has no POST /logout *handler*
+(pre-existing, debug-only); re-run CI Playwright smoke to confirm login/transitions under the new shell CSP;
+/sync-docs to document the shell helmet + logout behavior.
+
+## Current Cycle (prior — broad-scan F1-F12 + T1-T4, cycle 5 reflected)
+
 - **Status:** **NONE IN PROGRESS.** Last completed cycle: **4** (2026-06-12 —
   Seams & Invariants audit #2 + health synthesis + reflect), fully merged to
   main (PR #116); results recorded in `PROJECT_HEALTH.md` + `.cycle/metrics.csv`.
   Post-cycle FEATURE rounds since (not audit cycles, all merged): auto-loan
   support (PR #117/#118) and notifications-dedup/subtask-progress/hybrid-
   transition/top-bar-Ask/login+biometric (PR #119). Tests: **988** across 37
-  files (Perfin 601 + Per-sistant 387) + 8 Playwright smokes. Seams counter: 0
-  of 3 (no subsystem audit cycle has run since the cycle-4 seams audit).
+  files (Perfin 601 + Per-sistant 387) + 8 Playwright smokes. Seams counter: 1
+  of 3 (cycle-5 broad-scan full sweep reflected 2026-06-15; cadence not yet due).
   **Next:** a FRESH `/broad-scan` or `/targeted-audit` — the un-audited churn
   (health.js, ask.js, loan-payoff math, transition rewrite, top-bar Ask) is the
   highest-value target. History of prior cycles preserved in the records below.
+
+### Broad-scan + broad-implement T1/T3 (2026-06-15, branch `claude/beautiful-hamilton-abf4h0`)
+Full 3-stage /broad-scan run (6 subsystem deep-dive agents + Stage-2 test-quality &
+migration-safety dives). Findings F1-F12 + T1-T4 in the session report. Implemented
+the test-quality findings **T1 + T3 ONLY** (operator scope):
+- **T1** `tests/sync-idempotency.test.js` (NEW) — behavioral idempotency: runs
+  `syncAllEnrollments` (Teller) and `syncPlaidItemTransactions` (Plaid) TWICE over the
+  same mock fixtures; asserts 2nd run adds 0, no dupes, watermark stable. Closes the
+  gap where INV-01/03/04 + S1 were source-string-pinned only and the one reconcile
+  test ran against empty enrollments. Required a 1-line test-only export
+  `module.exports.syncPlaidItemTransactions` in investments.js (matches the existing
+  `sumHoldingsByAccount` precedent; INV-19-compliant, after the router export).
+- **T3** `tests/ai-cap-charge.test.js` (NEW) — behavioral cap enforcement for /api/ask
+  + runCategorize via a Module._load-injected fake @anthropic-ai/sdk (CI-safe, no prod
+  change): ask charges one entry_type='ask' row on success, 429-without-charge once cap
+  hit, tool loop runs + charges accumulated tokens; categorize charges
+  entry_type='categorize' + writes user_category source 'ai', 429 with free rules still
+  applied. Includes a SKIPPED test documenting **F1** (ask charges only after the loop →
+  mid-loop throw escapes the cap) as a behavioral target for when F1 is fixed.
+Tests: 988 → 997 (8 active + 1 skip). Full `npm test` green (996 pass / 1 skip / 0 fail).
+
+### Broad-implement F1 + T2 + T4 (2026-06-15, same branch) — follow-on
+- **F1** `teller/routes/ask.js` — the entry_type='ask' usage-row INSERT was moved
+  into a `chargeAsk()` closure called on success AND in a `finally` block when tokens
+  were consumed but not yet charged, so a mid-tool-loop throw no longer spends tokens
+  that escape the shared monthly cap (parity with rebuild AIA2 / categorize M2). Charge
+  is idempotent (`charged` flag); 429/400/501 early-returns consume nothing so finally
+  skips. Un-skipped the F1 behavioral test in tests/ai-cap-charge.test.js (now asserts
+  500 + one charged 'ask' row with the round-1 tokens).
+- **T2** `teller/routes/insights.js` — hoisted `sanitizeForPrompt` from a closure inside
+  generateInsights to a module-scope function + exported it; tests/coverage-gaps.test.js
+  now exercises the REAL deployed function instead of a re-implemented copy (was
+  tautological). Behavior unchanged.
+- **T4** tests/loan-support.test.js — replaced the string-presence "parity smoke" with a
+  test that EXTRACTS the inlined dashboard `loanPayoff()` (regex) and RUNS it against the
+  same inputs as `computeLoanPayoff`, asserting numeric parity (months, total_interest
+  ±$0.01, insufficient-payment flag) across 5 scenarios.
+Tests: 997 pass / 0 skip / 0 fail. No production behavior change for T2/T4 (test-quality);
+F1 fixes a real uncapped-spend gap.
+### Broad-implement F2–F6 + /sync-docs (2026-06-15, same branch) — follow-on
+- **F2** `teller/routes/enrollments.js` — `syncAllBalances` net-worth snapshot bare
+  `catch {}` now logs (`console.error`), so a getNetWorth/snapshot failure isn't silent.
+- **F3** `teller/public/perfin-shared.js` — `esc()` now escapes `"`/`'` (5-char replace)
+  so bank-supplied names can't break out of double-quoted attribute contexts
+  (data-name/aria-label). CSP already blocked injected inline handlers; this closes the
+  markup-injection vector. (NOTE follow-on: api.test.js:344 has a separate tautological
+  esc COPY that already encodes the correct behavior — couldn't de-tautologize without
+  jsdom; left in place, now consistent with the real fn.)
+- **F4** `teller/routes/investments.js` `syncAllPlaidHoldings` — the linked_accounts
+  MIRROR UPDATE now guards the holdings-sum FALLBACK case (`current_balance IS NULL OR
+  = 0`) so it doesn't clobber a real cash-inclusive balance; a real account-level current
+  still updates unconditionally. investment_accounts (authoritative) + the Schwab $0
+  fallback are unchanged.
+- **F5** `teller/routes/insights.js` — audit-alert push gated by
+  `sentRecently('audit-alert', 24)` so a steady-state critical finding doesn't re-push on
+  every 6h auto-insight tick (fail-open if the dedup check errors).
+- **F6** `teller/services/ai-audit.js` — widened `CROSS_PERIOD_RE` with unambiguous
+  cross-period tokens (last/previous/prior month, N months ago, year-over-year, trailing,
+  estimate(d)) so those claims skip the this-month dollar comparison. Deliberately did NOT
+  skip bare/`per month` claims — AIA1 + pinned tests intentionally check those. +7 test
+  cases in tests/ai-audit.test.js.
+- /sync-docs: CLAUDE.md + README test counts 988→1004 (Perfin 617 + Per-sistant 387),
+  37→39 files; F5/F6 behavior notes added to the AI-audit section.
+Tests: 1004 pass / 0 skip / 0 fail.
+### Broad-implement F7–F12 + /sync-docs (2026-06-15, same branch) — follow-on
+- **F7** `teller/routes/spending-analytics.js` `/api/savings-rate` — averages now
+  exclude the partial CURRENT month (parity with FIRE + getMonthly* semantics), with a
+  fallback to all rows when the only data is the current month. `months` array unchanged.
+  (FIRE in goals.js already excluded current month; the zero-empty-month omission in
+  getMonthly* GROUP BY is a shared-helper concern, deliberately left out of scope.)
+- **F8** `teller/routes/subscriptions.js` — forecast + bill-calendar cadence-advance
+  `while` loops now `continue` on `cadence_days <= 0`/NaN (latent infinite-loop guard,
+  matching the ICS builder).
+- **F9** `apps/per-sistant/routes/health.js` — PATCH enforces the quantity⇒target_value
+  invariant on the MERGED post-update state (fetches existing kind/target) so switching
+  to quantity without a target — or nulling a quantity habit's target — 400s instead of
+  silently degrading meetsTarget. +4 tests.
+- **F10** `teller/services/benchmarks.js` — the once/day fetch gate now gates per-day only
+  on SUCCESS; a transient FAILURE throttles retries ~30 min (FAIL_RETRY_MS) instead of
+  suppressing the benchmark all day. `_resetFetchGate` updated; existing "attempts===1"
+  test still green.
+- **F11** `teller/routes/settings.js` — `target_allocation_pct` and
+  `shell_idle_timeout_minutes` now 400 on invalid input (consistent with fire_*/budget)
+  instead of silently dropping + returning 200. +3 tests.
+- **F12** `teller/views/dashboard.ejs` — inlined loanPayoff date label formatted in UTC
+  (timeZone:'UTC') so the displayed month matches the API's UTC payoff_date.
+- /sync-docs: counts 1004→1011 (Perfin 620 + Per-sistant 391); benchmarks once/day note
+  updated for the F10 fail-retry behavior.
+Tests: 1011 pass / 0 skip / 0 fail.
+**Where I left off:** ALL broad-scan findings F1–F12 + T1–T4 implemented & committed on
+`claude/beautiful-hamilton-abf4h0`. Remaining notes (not findings): the api.test.js esc
+tautology (separate test-quality item, needs jsdom to de-tautologize); the getMonthly*
+zero-empty-month GROUP BY omission (shared-helper, would need zero-filling across all
+callers — deliberately deferred).
 
 ### Broad-scan + broad-implement (June 2026 session, branch `claude/exciting-albattani-ug1gjv`)
 Full 3-stage /broad-scan completed (4 subsystem deep-dives + gap-fill on Web UI/A11y,
@@ -376,7 +522,7 @@ then rotate to Detection & Categorization.
 10. Per-sistant Web UI
 
 - **Seams audit:** every 3 subsystem cycles.
-- **Subsystem cycles since last Seams audit:** 0 (June 2026 Seams & Invariants audit COMPLETE — see record below).
+- **Subsystem cycles since last Seams audit:** 1 (cycle-5 broad-scan full sweep reflected 2026-06-15; cadence 3 — not yet due. June 2026 Seams & Invariants audit #2 record below.)
 - **Last subsystem audited:** Sheets & External Export
 - **Cycles completed:** rotation complete this session (broad-scan + 8 targeted + 1 seams); reflect recorded (cycle 3, net +4); Health Synthesis still pending.
 

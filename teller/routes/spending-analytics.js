@@ -498,10 +498,19 @@ router.get("/api/savings-rate", async (req, res) => {
       return { month: m, income: Math.round(income * 100) / 100, spending: Math.round(spending * 100) / 100, saved: Math.round(saved * 100) / 100, savings_rate: rate };
     });
 
-    const totalIncome = monthly.reduce((s, m) => s + m.income, 0);
-    const totalSpending = monthly.reduce((s, m) => s + m.spending, 0);
-    const avgIncome = monthly.length ? totalIncome / monthly.length : 0;
-    const avgSpending = monthly.length ? totalSpending / monthly.length : 0;
+    // Average over COMPLETED months only — the current month is partial-to-date
+    // and including it drags the average down mid-month (F7). This matches the
+    // FIRE projection (goals.js) and the documented getMonthly* "current month
+    // is partial" semantics. The current month still appears in `months` for the
+    // trend; only the averages exclude it. Fall back to all rows if the only
+    // data is the current month (brand-new user) so averages aren't 0.
+    const thisMonth = new Date().toISOString().slice(0, 7);
+    const avgBase = monthly.filter(m => m.month !== thisMonth);
+    const base = avgBase.length ? avgBase : monthly;
+    const totalIncome = base.reduce((s, m) => s + m.income, 0);
+    const totalSpending = base.reduce((s, m) => s + m.spending, 0);
+    const avgIncome = base.length ? totalIncome / base.length : 0;
+    const avgSpending = base.length ? totalSpending / base.length : 0;
     const avgSaved = avgIncome - avgSpending;
     const avgRate = avgIncome > 0 ? Math.round((avgSaved / avgIncome) * 10000) / 100 : 0;
 

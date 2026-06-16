@@ -81,8 +81,11 @@ teller/
                            dashboard loan card inlines a pinned mirror.
     benchmarks.js        — S&P 500 benchmark closes for portfolio comparison.
                            Stooq daily-close CSV (keyless), cached in
-                           benchmark_prices, fetched lazily at most once/day
-                           and only the missing range; every failure path
+                           benchmark_prices, fetched lazily — at most once/day
+                           on SUCCESS, but a transient fetch FAILURE only
+                           throttles retries ~30 min (FAIL_RETRY_MS) instead of
+                           suppressing the benchmark all day (F10) — and only
+                           the missing range; every failure path
                            degrades to "no benchmark line" rather than erroring
     ai-audit.js        — Post-generation insight auditing (4 tiers: arithmetic
                            validation, entity existence, trend direction, consistency).
@@ -209,8 +212,12 @@ teller/
                            the model never writes SQL. Bounded tool loop
                            (MAX_TOOL_ROUNDS=6); shares the monthly AI cap
                            (getAiBudgetCents) and charges it via an
-                           entry_type='ask' usage row. Dashboard "Ask Perfin"
-                           widget (key: ask).
+                           entry_type='ask' usage row. The charge runs in a
+                           `finally` (idempotent via a `charged` flag), so a
+                           throw on a LATER tool round still records the tokens
+                           already consumed instead of letting the spend escape
+                           the cap — parity with rebuild (AIA2) / categorize
+                           (M2) (F1). Dashboard "Ask Perfin" widget (key: ask).
     whats-new.js         — GET /api/whats-new, POST /api/whats-new/seen
                            ("since you last looked" dashboard widget feed —
                            new transactions, balance deltas, new subscriptions,
@@ -403,9 +410,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (988 tests as of latest); use
+  Perfin and Per-sistant test files (1011 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 988 tests across 37 test files (incl.
+  Current count: 1011 tests across 39 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -422,8 +429,16 @@ shell/
   tests/investment-performance.test.js (benchmark fetch +
   portfolio series), tests/investment-flows.test.js (TWR/XIRR + Plaid flow
   classification), tests/budget-cap-webauthn.test.js (tunable AI cap +
-  embedded biometric registration + webauthn transports, INV-50), and
-  tests/pwa-polish.test.js (pull-to-refresh + safe-area pins).
+  embedded biometric registration + webauthn transports, INV-50),
+  tests/pwa-polish.test.js (pull-to-refresh + safe-area pins),
+  tests/sync-idempotency.test.js (BEHAVIORAL S1/INV-01/03/04: runs Teller
+  syncAllEnrollments + Plaid syncPlaidItemTransactions TWICE over the same
+  mock fixtures and asserts the 2nd run adds 0 with no dupes + stable
+  watermark — previously source-string-pinned only), and
+  tests/ai-cap-charge.test.js (BEHAVIORAL S3/INV-13/14 via a Module._load
+  fake @anthropic-ai/sdk: /api/ask + runCategorize charge their usage rows,
+  429 once the cap is hit, ask charges accumulated tokens AND still charges
+  on a mid-loop failure — F1).
 - `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js`.
 - `.claude/commands/` — Project slash-command prompts: `/broad-scan`, `/broad-implement`,
   `/test-sync`, `/sync-docs`
@@ -784,13 +799,19 @@ shell/
   non-current-month window (annual / multi-month / YTD / projected / running-average, matched by
   `CROSS_PERIOD_RE`) is SKIPPED rather than mis-compared — otherwise an annualized figure (×12) read
   near a category name false-flagged CRITICAL, spamming the audit notification and deflating the
-  `audit_accuracy` % (AIA1). this-month + unqualified claims (which refer to the data the model was
-  given) are still checked. (2) entity existence — merchant/goal/subscription names verified against DB via
+  `audit_accuracy` % (AIA1). `CROSS_PERIOD_RE` also matches explicit other-month / trailing / YoY /
+  estimate phrasings (`last|previous|prior month`, `N months ago`, `year-over-year`, `trailing`,
+  `estimate(d)` — F6); it deliberately does NOT skip bare/unqualified or `per month` claims, which
+  AIA1 still checks against this-month. this-month + unqualified claims (which refer to the data the
+  model was given) are still checked. (2) entity existence — merchant/goal/subscription names verified against DB via
   whole-word match with a ≥4-char min, so a tiny known entity (a "Car" goal) can't wildcard-match
   every claimed name and let hallucinations pass (AI-4); (3) trend direction — only **total/overall**
   spending claims are checked against the monthly total; category-specific claims are skipped rather
   than mis-flagged against the total baseline (AI-1); (4) consistency — detects self-contradictions
-  within the same report. Results stored in `ai_audit_log` table. Critical findings trigger in-app notification.
+  within the same report. Results stored in `ai_audit_log` table. Critical findings trigger an in-app
+  notification, deduped to at most one per 24h via `sentRecently('audit-alert', 24)` (F5) so a
+  steady-state critical finding doesn't re-push on every 6-hour auto-insight tick (parity with the
+  budget-alert dedup; fail-open if the dedup check errors).
   Module auto-disable requires user confirmation. `GET /api/insights/audit` returns
   `{ findings, stats, accuracy }`; `GET /api/insights/status` includes an
   `audit_accuracy` block — both surfaced via `getAuditAccuracy(days=90)`, which
@@ -1267,7 +1288,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 988 tests passing across 37 test files (Perfin + Per-sistant), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1011 tests passing across 39 test files (Perfin 620 + Per-sistant 391), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
@@ -1989,6 +2010,25 @@ rows) can dismiss them from the UI or run `POST /api/cleanup`.
   carries `nonce="<%= nonce %>"`). `styleSrcAttr` keeps `'unsafe-inline'` so the
   hundreds of inline `style="..."` attributes across templates continue to
   work; migrating each one is out of scope for now.
+- **Shell-layer CSP + clickjacking guard (W1)**: the unified shell (`shell/index.js`)
+  mounts its OWN `helmet` so its routes — the PIN `login`, the landing tile picker,
+  icons, `/health` — get a nonce-based CSP + `frame-ancestors 'none'` + `X-Frame-Options`
+  (previously the shell sent NO security headers, leaving the auth page framable). The
+  shell nonce flows to `res.locals.nonce`; the two inline `<script>`s in
+  `shell/views/login.ejs` carry `nonce="<%= nonce %>"`. **COOP/CORP/COEP are explicitly
+  disabled** in the shell helmet because that middleware runs for sub-app requests too and
+  `Cross-Origin-Opener-Policy: same-origin` breaks the Plaid/Teller Link popup/iframe flows
+  (which rely on cross-origin `window.opener` postMessage) on Perfin's accounts page. Each
+  sub-app still sets its own stricter, vendor-allowlisted CSP, which overwrites this baseline
+  for its responses. `helmet` is declared in `shell/package.json` (not just hoisted) so the
+  shell boot doesn't depend on a sub-app keeping the dep.
+- **Logout clears the shell session (W2)**: Perfin's "Sign Out" POSTs the ROOT `/logout`
+  (shell-owned `auth.handleLogout`, clears the `shell_session` cookie) and redirects to the
+  root `/login` — both un-prefixed, never basePath'd. The earlier `/api/logout` + basePath'd
+  redirect 404'd and left the shell session intact, so Sign Out didn't actually sign out.
+- **Client session-expiry handling (W3)**: `apiFetch` (`perfin-shared.js`) redirects once to
+  `/login` on a 401 or a followed `302→/login` (loop-guarded), so a mid-session idle timeout
+  sends the user to re-auth instead of silently rendering a blank/error UI.
 - **CORS**: Rejects cross-origin requests when `ALLOWED_ORIGINS` not configured
 - **API key**: Header-only (`X-API-Key`), no query string support
 - **Token encryption**: pgcrypto `pgp_sym_encrypt` for Teller/Plaid access tokens AND the Per-sistant webhook HMAC secret (`persistent_webhook_secret_enc`) at rest, all keyed by `TOKEN_ENCRYPTION_PASSPHRASE`
@@ -2844,6 +2884,16 @@ INV-50 | WebAuthn auth-options advertise transports ['internal'] ONLY in allowCr
 INV-51 | Habit streaks are computed at read time from habit_logs (a backfilled log retroactively repairs a streak; an unlogged today never breaks one); no stored streak counters exist for habits | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/health.test.js backfill-repair test
 INV-52 | Health consumers (notification check, AI daily briefing) call gatherHealthSummary fail-soft (.catch) — a health-tables error degrades to "no habit data", never 500s those surfaces | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/health.test.js integration pins
 INV-53 | CRITICAL scheduled jobs (transaction/balance sync + snapshot + detection; weekly reconcile; backups; knowledge reindex) have out-of-process GitHub-Actions backstops hitting x-api-key endpoints with idempotent writes, so Render free-tier sleep can't skip them | Subsystem: Platform, Shell & Auth | Verify: .github/workflows/{daily-sync,weekly-reconcile,db-backup,knowledge-reindex}.yml exist + idempotent-write invariants INV-01/05
+INV-54 | Re-sync is BEHAVIORALLY idempotent: syncAllEnrollments (Teller) + syncPlaidItemTransactions (Plaid) run twice over identical inputs add 0 on the 2nd run, no duplicate rows, watermark/cursor stable (not merely source-string-pinned) | Subsystem: Bank Sync & Ingestion | Verify: tests/sync-idempotency.test.js
+INV-55 | /api/ask charges the shared AI cap even on a mid-tool-loop failure — the usage row is written in a `finally` (idempotent `charged` flag) when tokens were consumed, so a throw on a later round doesn't let spend escape the cap (parity with rebuild AIA2 / categorize M2) | Subsystem: AI Insights & Audit | Verify: tests/ai-cap-charge.test.js
+INV-56 | The dashboard's inlined loanPayoff() is NUMERICALLY identical to services/projections.computeLoanPayoff across scenarios (months / total_interest ±$0.01 / insufficient flag), not merely string-equal | Subsystem: Web UI ↔ Financial Analytics (seam) | Verify: tests/loan-support.test.js (extract-and-run parity test)
+INV-57 | The critical-audit notification is deduped to ≤1 per 24h via sentRecently('audit-alert', 24), fail-open — a steady-state critical finding doesn't re-push on every 6h auto-insight tick | Subsystem: AI Insights & Audit / Notification Correctness | Verify: code read routes/insights.js audit-alert gate
+INV-58 | A kind='quantity' habit always has a non-null target_value, enforced on POST AND on PATCH against the MERGED post-update state (so switching to quantity without a target, or nulling a quantity habit's target, 400s instead of silently degrading meetsTarget) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/health.test.js (F9 PATCH tests)
+INV-59 | Bounded settings (target_allocation_pct, shell_idle_timeout_minutes, fire_*, ai_monthly_budget_cents) reject invalid input with 400 — never silent-drop + 200 | Subsystem: Settings, Notifications & Cross-app | Verify: tests/budget-cap-webauthn.test.js (PATCH /api/settings validation)
+INV-60 | Perfin "Sign Out" clears the SHELL session via the root POST /logout under the unified shell (not a basePath'd /api/logout); redirect target is the root /login — both un-prefixed | Subsystem: Web UI ↔ Platform, Shell & Auth (seam) | Verify: code read teller/views/settings.ejs logout() + shell POST /logout (auth.handleLogout)
+INV-61 | apiFetch redirects once to /login on a 401 or a followed 302→/login (session expiry), loop-guarded, while returning the Response unchanged to callers — idle timeout never leaves a blank/error UI | Subsystem: Web UI | Verify: code read teller/public/perfin-shared.js apiFetch
+INV-62 | The shell sets a nonce CSP + frame-ancestors 'none' + X-Frame-Options on its own routes (login/landing), with COOP/CORP/COEP DISABLED so the global middleware doesn't break sub-app Plaid/Teller Link popups; helmet is a declared shell dependency | Subsystem: Platform, Shell & Auth | Verify: header assertion on GET /login (frame-ancestors none, COOP/CORP absent, login scripts nonced)
+INV-63 | Per-sistant's shared fetch wrapper (apps/per-sistant/views/js.js) redirects once to the root /login on a 401 or a followed 302→/login (session expiry), loop-guarded, returning the Response unchanged to callers — parity with Perfin INV-61, so an idle-timeout never leaves a blank/error page. The check uses indexOf('/login'), NOT a regex, because the module is one backtick template literal that eats regex backslashes (see Per-sistant CLAUDE.md gotcha) | Subsystem: Per-sistant Web UI | Verify: code read views/js.js fetch wrapper
 
 ### Policy Configuration
 Policy threshold: 6/10

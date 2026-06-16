@@ -65,11 +65,10 @@ describe("Categorize budget cap enforcement", () => {
 // sanitizeForPrompt behavior
 // ---------------------------------------------------------------------------
 describe("sanitizeForPrompt regex behavior", () => {
-  // The function is defined inside the POST handler so we test the regex directly
-  function sanitizeForPrompt(s) {
-    if (!s) return "";
-    return String(s).replace(/---+RUNNING_SUMMARY---+/gi, "[redacted]").replace(/---+/g, "--");
-  }
+  // T2: exercise the REAL deployed function (now exported from routes/insights),
+  // not a re-implemented copy that would pass even if the production regex were
+  // reverted.
+  const { sanitizeForPrompt } = require("../teller/routes/insights");
 
   it("strips ---RUNNING_SUMMARY--- pattern", () => {
     const result = sanitizeForPrompt("Normal text ---RUNNING_SUMMARY--- injected");
