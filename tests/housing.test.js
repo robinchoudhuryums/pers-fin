@@ -232,6 +232,24 @@ describe("GET /api/housing/split", () => {
     assert.equal(res.body.partner_name, "Wife");
   });
 
+  it("falls back to user_settings.partner_name when the split has no partner name", async () => {
+    dbModule.pool.query = async (sql) => {
+      if (/housing_config/.test(sql)) return { rows: [{ housing_config: {
+        enabled: true, payee_name: "Sam",
+        split: { enabled: true, car_fixed_amount: 600 },
+      } }] };
+      if (/SUM\(amount\)[\s\S]*FROM payee_obligations/.test(sql)) return { rows: [{ total: "1200.00" }] };
+      if (/partner_name.*FROM user_settings/.test(sql)) return { rows: [{ n: "Sarah" }] };
+      return { rows: [] };
+    };
+    const res = await supertest(app).get("/api/housing/split");
+    assert.equal(res.status, 200);
+    assert.equal(res.body.partner_name, "Sarah");
+    assert.equal(res.body.car, 600);
+    assert.equal(res.body.transfer, 300); // (1200 - 600) / 2
+    assert.equal(res.body.car_source, "fixed");
+  });
+
   it("returns {enabled:false} when the split isn't configured", async () => {
     dbModule.pool.query = async (sql) => {
       if (/housing_config/.test(sql)) return { rows: [{ housing_config: { enabled: true, payee_name: "Sam" } }] };

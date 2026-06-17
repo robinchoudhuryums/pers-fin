@@ -426,9 +426,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1047 tests as of latest); use
+  Perfin and Per-sistant test files (1048 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1047 tests across 41 test files (incl.
+  Current count: 1048 tests across 41 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -724,17 +724,30 @@ shell/
   100%, muted otherwise (the API doesn't require sum = 100). Saved to
   `user_settings.target_allocation_pct` via PATCH /api/settings. Drives
   the drift fields on `GET /api/investments/performance`.
-- **Shared Card Settlement widget**: For each is_shared account, shows
-  "You owe $X" + "{partner_name} owes $Y" for the selected month, broken
-  down as `(split_pct × shared_total) + your_personal_total` per side.
-  Month dropdown defaults to the prior month when the user opens it in
-  the first week (reconciliation usually happens after the statement
-  closes). "Review →" link jumps to the Transactions page filtered to
-  that account + month. Auto-hides when no is_shared accounts exist.
-  Backed by `GET /api/shared-settlement`. Toggleable from Settings
-  (widget key: `settlement`, default on). Partner display name set via
-  Settings → Partner Name (`user_settings.partner_name`); defaults to
-  "Partner" until set.
+- **Settle Up widget** (formerly "Shared Card Settlement"): a single net
+  "settle up with {partner}" figure for the selected month that COMBINES two
+  independent sources — the shared-card settlement AND the Rent & Utilities
+  partner even-up — with an expandable "Show breakdown". Net convention:
+  positive = partner owes you (you collect), negative = you owe (you send). The
+  shared-card leg contributes `Σ partner_share` (you pay the statement, the
+  partner reimburses their share); the housing leg contributes the even-up
+  `transfer` signed by its `direction` (`you_send_partner` = money out). The
+  headline shows the net; the breakdown lists the housing even-up card plus a
+  per-shared-account card. For each is_shared account the card shows "You owe $X"
+  + "{partner_name} owes $Y" broken down as `(split_pct × shared_total) +
+  your_personal_total` per side. Both legs are fetched for the SAME month
+  (`?month=`), so the periods align; the housing even-up defaults its partner
+  name to `user_settings.partner_name` so the two legs name the same person.
+  Month dropdown defaults to the prior month when opened in the first week
+  (reconciliation usually happens after the statement closes). Auto-hides when
+  there are no is_shared accounts AND the housing split isn't configured.
+  Backed by `GET /api/shared-settlement` + `GET /api/housing/split`. Toggleable
+  from Settings (widget key: `settlement`, default on). Partner display name set
+  via Settings → Partner Name (`user_settings.partner_name`); defaults to
+  "Partner" until set. (Double-count caveat: the two legs are assumed disjoint —
+  the car pays via its own loan account and rent/utilities via the payee
+  transfer, neither on a shared card; if a utility ever lands on the shared card
+  it would appear in both legs.)
 - **Since-you-last-looked widget**: aggregates new transactions, balance
   deltas (oldest snapshot ≤ watermark vs latest, dropped if |Δ| < $0.01),
   new subscriptions, and recent notifications since `last_dashboard_view_at`.
@@ -1381,7 +1394,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1047 tests passing across 41 test files (Perfin 650 + Per-sistant 397), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1048 tests passing across 41 test files (Perfin 651 + Per-sistant 397), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash

@@ -521,15 +521,16 @@
     </details>
   </div>
 
-  <!-- Shared-card settlement (who-owes-who on a joint card) -->
+  <!-- Settle-up: combined shared-card + housing even-up net (who-owes-who) -->
   <div class="section" id="settlement-section" style="display:none;margin-bottom:28px;">
     <details open>
       <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;justify-content:space-between;">
-        <h2 style="margin:0;display:inline;">Shared Card Settlement</h2>
+        <h2 style="margin:0;display:inline;">Settle Up</h2>
         <span style="display:flex;gap:8px;align-items:center;">
           <select id="settlement-month-pick" style="font-size:11px;padding:3px 6px;background:var(--bg-elevated);color:var(--text);border:1px solid var(--card-border);border-radius:4px;"></select>
         </span>
       </summary>
+      <div id="settlement-headline" style="margin-top:12px;"></div>
       <div id="settlement-body" style="margin-top:12px;font-size:13px;"></div>
     </details>
   </div>
@@ -3106,20 +3107,63 @@
     async function loadSettlement() {
       buildSettlementMonthOptions();
       var section = document.getElementById('settlement-section');
+      var headline = document.getElementById('settlement-headline');
       var body = document.getElementById('settlement-body');
       var sel = document.getElementById('settlement-month-pick');
       var month = sel ? sel.value : '';
       try {
-        var r = await apiFetch('/api/shared-settlement' + (month ? '?month=' + month : ''));
-        if (!r.ok) return;
-        var d = await r.json();
-        if (!d.accounts || !d.accounts.length) {
-          section.style.display = 'none';
-          return;
-        }
+        // Pull the shared-card settlement AND the housing even-up for the SAME
+        // month, then combine into one net "settle up with [partner]" figure.
+        var qs = month ? ('?month=' + month) : '';
+        var hqs = month ? ('?month=' + month) : '';
+        var results = await Promise.all([
+          apiFetch('/api/shared-settlement' + qs).then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
+          apiFetch('/api/housing/split' + hqs).then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; })
+        ]);
+        var d = results[0] || { month: month, accounts: [] };
+        var housing = results[1] && results[1].enabled ? results[1] : null;
+        var hasShared = d.accounts && d.accounts.length;
+        if (!hasShared && !housing) { section.style.display = 'none'; return; }
         section.style.display = '';
-        var partner = d.partner_name || 'Partner';
-        body.innerHTML = d.accounts.map(function(a) {
+        var partner = (d && d.partner_name) || (housing && housing.partner_name) || 'Partner';
+
+        // Net convention: positive = partner owes you (partner sends you).
+        // Shared card: you pay the statement, partner reimburses their share.
+        var sharedNet = hasShared ? d.accounts.reduce(function(s, a){ return s + (a.partner_share || 0); }, 0) : 0;
+        // Housing even-up: 'you_send_partner' is money OUT (negative).
+        var housingSigned = 0;
+        if (housing) housingSigned = housing.direction === 'you_send_partner' ? -housing.transfer : housing.transfer;
+        var net = Math.round((sharedNet + housingSigned) * 100) / 100;
+        var netLabel, netColor;
+        if (Math.abs(net) < 0.01) { netLabel = "You're square with " + esc(partner) + ' this month'; netColor = 'var(--teal)'; }
+        else if (net > 0) { netLabel = esc(partner) + ' sends you <strong>' + fmtMoney(net) + '</strong>'; netColor = 'var(--teal)'; }
+        else { netLabel = 'Send ' + esc(partner) + ' <strong>' + fmtMoney(Math.abs(net)) + '</strong>'; netColor = 'var(--warm)'; }
+        var parts = [];
+        if (hasShared) parts.push('Shared card ' + fmtMoney(sharedNet) + ' (' + esc(partner) + ' owes you)');
+        if (housing) parts.push('Housing even-up ' + fmtMoney(Math.abs(housing.transfer)) + ' (' + (housing.direction === 'you_send_partner' ? 'you owe' : esc(partner) + ' owes') + ')');
+        headline.innerHTML =
+          '<div style="padding:14px;background:var(--card);border:1px solid var(--card-border);border-radius:8px;">' +
+            '<div style="font-size:11px;color:var(--text-muted);">Net to settle up &middot; ' + monthLabel(d.month || month) + '</div>' +
+            '<div style="font-size:26px;font-weight:600;color:' + netColor + ';margin-top:2px;">' + netLabel + '</div>' +
+            (parts.length > 1 ? '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;">' + parts.join(' &nbsp;+&nbsp; ') + '</div>' : '') +
+          '</div>';
+
+        // Housing even-up detail card (rendered above the per-card breakdown).
+        var housingCard = '';
+        if (housing) {
+          var hWho = housing.direction === 'you_send_partner' ? ('Send ' + esc(partner)) : (esc(partner) + ' sends you');
+          housingCard =
+            '<div style="margin-bottom:14px;padding:14px;background:var(--card);border:1px solid var(--card-border);border-radius:8px;">' +
+              '<div style="display:flex;justify-content:space-between;align-items:baseline;">' +
+                '<strong style="font-size:14px;">Rent &amp; Utilities even-up</strong>' +
+                '<a href="/housing" style="font-size:11px;color:var(--teal);text-decoration:none;">Rent page &rarr;</a>' +
+              '</div>' +
+              '<div style="font-size:18px;color:var(--teal);font-weight:500;margin-top:6px;">' + hWho + ' ' + fmtMoney(housing.transfer) + '</div>' +
+              '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Rent + utilities ' + fmtMoney(housing.rent_utilities) + ' &minus; car ' + fmtMoney(housing.car) + ', split evenly &middot; each bears ' + fmtMoney(housing.each_share) + '</div>' +
+            '</div>';
+        }
+
+        var cards = (hasShared ? d.accounts.map(function(a) {
           var explainer = a.txn_count === 0
             ? '<div style="color:var(--text-muted);padding:8px 0;">No charges on this card in ' + monthLabel(d.month) + '.</div>'
             : (
@@ -3149,7 +3193,13 @@
               explainer +
             '</div>'
           );
-        }).join('');
+        }).join('') : '');
+
+        // Expandable breakdown: housing even-up + per-shared-card detail.
+        var detail = housingCard + cards;
+        body.innerHTML = detail
+          ? ('<details><summary style="cursor:pointer;font-size:12px;color:var(--text-muted);margin-bottom:10px;">Show breakdown</summary>' + detail + '</details>')
+          : '';
       } catch (e) { /* non-critical */ }
     }
 

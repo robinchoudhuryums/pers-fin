@@ -541,7 +541,17 @@ router.get("/api/housing/split", async (req, res) => {
       }
     }
 
-    res.json({ enabled: true, month, partner_name: split.partner_name || "Partner", car_source: carSource, ...computeSplit(rentUtilities, car) });
+    // Partner display name: the split's own name, else the global
+    // user_settings.partner_name (so the shared-card settlement and the housing
+    // split agree on who the partner is — the same-partner guard for the
+    // combined dashboard settle-up view), else "Partner".
+    let partnerName = split.partner_name;
+    if (!partnerName) {
+      const pn = await pool.query("SELECT NULLIF(TRIM(partner_name), '') AS n FROM user_settings WHERE id = 1");
+      partnerName = pn.rows[0]?.n || "Partner";
+    }
+
+    res.json({ enabled: true, month, partner_name: partnerName, car_source: carSource, ...computeSplit(rentUtilities, car) });
   } catch (err) {
     console.error("housing split error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
