@@ -151,9 +151,12 @@ async function detectRecurringTransfers(externalPool) {
             gaps.push(daysDiff);
           }
 
-          // Count matching gaps
+          // Count matching gaps. Threshold matches `minOcc` (>= 60 → 2 occurrences
+          // = 1 matching gap): previously this was >= 90, so a 60-day cadence
+          // demanded 2 matching gaps (3 occurrences) even though minOcc allowed 2
+          // — making the 2-occurrence allowance for 60-day transfers unreachable (F4).
           const matchingGaps = gaps.filter(g => g >= minGap && g <= maxGap);
-          const minMatchingGaps = targetCadence >= 90 ? 1 : 2;
+          const minMatchingGaps = targetCadence >= 60 ? 1 : 2;
 
           if (matchingGaps.length >= Math.floor(gaps.length * 0.5) && matchingGaps.length >= minMatchingGaps) {
             const lastTxn = filtered[filtered.length - 1];

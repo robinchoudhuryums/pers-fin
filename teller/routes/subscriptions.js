@@ -8,7 +8,7 @@ const multer = require("multer");
 const { parse } = require("csv-parse/sync");
 const { pool, ENCRYPTION_PASSPHRASE } = require("../services/database");
 const { categorizeSubscription, findCancelUrl } = require("../data/reference-data");
-const { CSV_FORMATS, INSTITUTION_LABELS, detectCsvFormat, parseDate, csvTransactionId } = require("../data/csv-formats");
+const { CSV_FORMATS, INSTITUTION_LABELS, detectCsvFormat, parseDate, csvTransactionId, makeCsvTxnIdGenerator } = require("../data/csv-formats");
 const { detectSubscriptions } = require("../../scripts/detect-subscriptions");
 const { detectRecurringTransfers } = require("../../scripts/detect-transfers");
 const { INCOME_PREDICATE } = require("../services/financial-queries");
@@ -92,9 +92,13 @@ router.post("/api/subscriptions", async (req, res) => {
          display_name = EXCLUDED.display_name,
          amount = EXCLUDED.amount,
          notes = EXCLUDED.notes,
-         is_active = true,
-         is_dismissed = false,
-         cancelled_at = NULL,
+         -- Only reset user state when the existing row is itself a MANUAL entry
+         -- (the user is re-adding their own bill). If a generated manual_<name>
+         -- key collides with an auto-detected row the user cancelled/dismissed,
+         -- preserve that state instead of silently re-activating it (F5).
+         is_active = CASE WHEN detected_subscriptions.source = 'manual' THEN true ELSE detected_subscriptions.is_active END,
+         is_dismissed = CASE WHEN detected_subscriptions.source = 'manual' THEN false ELSE detected_subscriptions.is_dismissed END,
+         cancelled_at = CASE WHEN detected_subscriptions.source = 'manual' THEN NULL ELSE detected_subscriptions.cancelled_at END,
          updated_at = now()
        RETURNING *`,
       [merchantKey, name, parsedAmount, parsedCadence, today, nextExpected, notes || null]
@@ -227,34 +231,102 @@ router.post("/api/detect", async (_req, res) => {
   }
 });
 
+// parseCsvUpload — shared parse + format-detect + label-derivation for the CSV
+// import + preview endpoints. Keeping it in ONE place guarantees the preview's
+// dedup-ID classification matches what the real import will actually do (same
+// format, same account label → same csvTransactionId occurrence sequence).
+// Returns { error } on a bad file, else { formatName, fmt, institution,
+// accountLabel, records, headers }.
+function parseCsvUpload(buffer, body = {}) {
+  const content = buffer.toString("utf-8");
+  let records = parse(content, { columns: true, skip_empty_lines: true, trim: true, bom: true });
+  if (!records.length) return { error: "CSV file is empty or unparseable" };
+  const headers = Object.keys(records[0]);
+  const formatName = detectCsvFormat(headers);
+  const fmt = CSV_FORMATS[formatName];
+  if (!fmt) return { error: `Unrecognized CSV format: ${formatName}` };
+  // Default institution/account label from the DETECTED format when the caller
+  // omits them (F2 — matches the CLI's content-derived label so dedup IDs align).
+  const institution = body.institution || INSTITUTION_LABELS[formatName] || "CSV Import";
+  const accountLabel = body.account_label || `${institution} Account`;
+  // Headerless formats (Wells Fargo) re-parse with explicit columns.
+  if (fmt.headerless && fmt.columns) {
+    records = parse(content, { columns: fmt.columns, skip_empty_lines: true, trim: true, bom: true });
+  }
+  return { formatName, fmt, institution, accountLabel, records, headers };
+}
+
+// POST /api/import-csv/preview — dry-run a CSV import: detect the format and
+// classify every row as new / duplicate / skipped WITHOUT writing anything, so
+// the user can confirm before committing. Duplicate detection uses the SAME
+// occurrence-aware dedup ID the import writes (makeCsvTxnIdGenerator) checked
+// against existing transaction_ids, so rows_new/rows_duplicate here equal the
+// import's rows_imported/rows_duplicate for the same file (modulo concurrent
+// syncs). Surfaces the silent drop that import would otherwise do quietly.
+router.post("/api/import-csv/preview", upload.single("file"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+  try {
+    const parsed = parseCsvUpload(req.file.buffer, req.body);
+    if (parsed.error) return res.status(400).json({ error: parsed.error });
+    const { formatName, fmt, institution, accountLabel, records, headers } = parsed;
+
+    const nextTxnId = makeCsvTxnIdGenerator();
+    const rows = [];
+    let skipped = 0;
+    for (const row of records) {
+      let p;
+      try { p = fmt.parse(row, fmt.headerless ? fmt.columns : headers); }
+      catch { skipped++; continue; }
+      const date = parseDate(p.date);
+      if (!date || isNaN(p.amount) || p.amount === 0) { skipped++; continue; }
+      const txnId = nextTxnId(accountLabel, date, p.amount, p.merchant_name);
+      rows.push({ txnId, date, amount: p.amount, merchant: p.merchant_name || "", category: p.category || "" });
+    }
+
+    let existing = new Set();
+    if (rows.length) {
+      const r = await pool.query(
+        "SELECT transaction_id FROM transactions WHERE transaction_id = ANY($1)",
+        [rows.map(x => x.txnId)]
+      );
+      existing = new Set(r.rows.map(x => x.transaction_id));
+    }
+
+    let newCount = 0, dupCount = 0;
+    const sample = [];
+    for (const row of rows) {
+      const isDup = existing.has(row.txnId);
+      if (isDup) dupCount++; else newCount++;
+      if (sample.length < 12) {
+        sample.push({ date: row.date, amount: row.amount, merchant: row.merchant, category: row.category, status: isDup ? "duplicate" : "new" });
+      }
+    }
+
+    res.json({
+      format_detected: formatName,
+      institution,
+      account_label: accountLabel,
+      rows_total: records.length,
+      rows_parseable: rows.length,
+      rows_skipped: skipped,
+      rows_new: newCount,
+      rows_duplicate: dupCount,
+      sample,
+    });
+  } catch (err) {
+    console.error("CSV preview error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
 // POST /api/import-csv
 router.post("/api/import-csv", upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
   try {
-    const content = req.file.buffer.toString("utf-8");
-    let records = parse(content, { columns: true, skip_empty_lines: true, trim: true, bom: true });
-    if (!records.length) return res.status(400).json({ error: "CSV file is empty or unparseable" });
-
-    const headers = Object.keys(records[0]);
-    const formatName = detectCsvFormat(headers);
-    const fmt = CSV_FORMATS[formatName];
-    if (!fmt) return res.status(400).json({ error: `Unrecognized CSV format: ${formatName}` });
-
-    // Default institution/account label from the DETECTED format when the
-    // caller omits them, so a headless/API import matches the CLI's
-    // content-derived label (and therefore its dedup IDs) for the same file
-    // (F2). A client that explicitly supplies these (e.g. the web dropdown)
-    // still gets its chosen account name — those are intentionally separate.
-    const institution = req.body.institution || INSTITUTION_LABELS[formatName] || "CSV Import";
-    const accountLabel = req.body.account_label || `${institution} Account`;
-
-    // Headerless formats (Wells Fargo) need a re-parse with explicit columns so
-    // each record is keyed by the declared column names rather than the values
-    // that columns:true mis-promoted to headers.
-    if (fmt.headerless && fmt.columns) {
-      records = parse(content, { columns: fmt.columns, skip_empty_lines: true, trim: true, bom: true });
-    }
+    const up = parseCsvUpload(req.file.buffer, req.body);
+    if (up.error) return res.status(400).json({ error: up.error });
+    const { formatName, fmt, institution, accountLabel, records, headers } = up;
 
     const client = await pool.connect();
     try {
@@ -282,6 +354,11 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
 
       let imported = 0;
       let skipped = 0;
+      let duplicates = 0;
+      // One occurrence-tracking generator per import so two genuinely-distinct
+      // rows sharing (label,date,amount,merchant) get distinct IDs instead of
+      // the second silently deduping against the first (F1). Mirrors the CLI.
+      const nextTxnId = makeCsvTxnIdGenerator();
 
       for (let i = 0; i < records.length; i++) {
         const row = records[i];
@@ -294,7 +371,7 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
         const date = parseDate(parsed.date);
         if (!date || isNaN(parsed.amount) || parsed.amount === 0) { skipped++; continue; }
 
-        const txnId = csvTransactionId(accountLabel, date, parsed.amount, parsed.merchant_name);
+        const txnId = nextTxnId(accountLabel, date, parsed.amount, parsed.merchant_name);
 
         const result = await client.query(
           `INSERT INTO transactions (account_id, transaction_id, amount, date, merchant_name, name, category, pending)
@@ -306,8 +383,11 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
             parsed.category ? `{${parsed.category}}` : null,
           ]
         );
+        // rowCount 0 here now means a TRUE re-import of an already-present row
+        // (the occurrence index already separated same-file identical rows), so
+        // it's surfaced as `duplicates` rather than lumped into `skipped`.
         if (result.rowCount > 0) imported++;
-        else skipped++;
+        else { skipped++; duplicates++; }
       }
 
       await client.query(
@@ -353,6 +433,7 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
         format_detected: formatName,
         rows_imported: imported,
         rows_skipped: skipped,
+        rows_duplicate: duplicates,
         account_label: accountLabel,
       });
     } catch (err) {
@@ -667,6 +748,30 @@ router.get("/api/bill-calendar", async (req, res) => {
         });
       }
     }
+
+    // Rent & utilities ledger — show UNPAID obligations for this month on their
+    // due day (bill_source 'housing', distinct from subscription/manual). Once
+    // recorded as paid they drop off the calendar (tracked on the Rent page).
+    // Only rows with a known amount appear (a utility awaiting its bill has none).
+    try {
+      const periodStr = `${year}-${String(month).padStart(2, "0")}`;
+      const housing = await pool.query(
+        "SELECT id, label, amount, due_day FROM payee_obligations WHERE status = 'unpaid' AND period = $1 AND amount IS NOT NULL",
+        [periodStr]
+      );
+      for (const o of housing.rows) {
+        const day = Math.min(o.due_day || 1, daysInMonth);
+        // No bill_id — housing is settled via its own payment flow (the Rent
+        // page), so it's display-only on the calendar (the paid-state toggle
+        // keys on bill_source+bill_id against bill_payments, which we skip here).
+        calendar[day].push({
+          name: o.label,
+          amount: parseFloat(o.amount),
+          category: "housing",
+          bill_source: "housing",
+        });
+      }
+    } catch (e) { /* payee_obligations not migrated yet — omit from calendar */ }
 
     // Load payments for this month to mark paid bills
     const payments = await pool.query(
@@ -1046,6 +1151,29 @@ async function buildBillCalendarIcs(days) {
       });
     }
   }
+
+  // Rent & utilities ledger — unpaid obligations with a known amount, placed on
+  // their period's due day (display-only; settled via the Rent page). Stable
+  // per-obligation UID so a due-day edit updates the event in place. Defensive:
+  // a pre-migration DB just omits them.
+  try {
+    const housing = await pool.query(
+      "SELECT id, label, amount, period, due_day FROM payee_obligations WHERE status = 'unpaid' AND amount IS NOT NULL"
+    );
+    for (const o of housing.rows) {
+      const [y, m] = String(o.period).split("-").map(Number);
+      if (!y || !m) continue;
+      const dueDay = Math.min(28, Math.max(1, parseInt(o.due_day) || 1));
+      const d = new Date(Date.UTC(y, m - 1, dueDay));
+      if (d >= today && d <= end) {
+        events.push({
+          uid: "housing-" + o.id + "@perfin",
+          date: d,
+          summary: o.label + " — $" + parseFloat(o.amount).toFixed(2) + " (rent/utilities)",
+        });
+      }
+    }
+  } catch (e) { /* payee_obligations not migrated yet — omit */ }
 
   const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15) + "Z";
   const lines = [

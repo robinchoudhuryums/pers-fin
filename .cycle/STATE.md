@@ -9,6 +9,86 @@ to the "none in progress" state.
 
 ## Current Cycle
 
+- **Status:** **broad-implement Tier-3 features DONE** on branch
+  `claude/loving-rubin-1tkzs5` (2026-06-17). Two strategic additions:
+  - **Sync-degradation UI strip** — dashboard banner (`#sync-health-strip`) fetches
+    `/api/data-health` and surfaces warning-level issues[] up front (disconnected
+    links, stale sync, decryption_failed), dismissible per-session (sessionStorage,
+    so a persistent issue re-appears next visit). Deep-links to Settings → Sync
+    Health (added `id="sync-health"` anchor). Best-effort; never blocks the dashboard.
+  - **CSV preview-and-confirm import** — new `POST /api/import-csv/preview` dry-runs
+    the import via the shared `parseCsvUpload` helper (extracted so preview/import
+    can't drift on dedup IDs) + the SAME `makeCsvTxnIdGenerator`, classifying every
+    row new/duplicate/skipped against existing `transaction_id`s WITHOUT writing.
+    Dashboard CSV modal is now two-step (Preview → "Import N new") with a sample
+    table + new/dup/skip counts; changing any input drops back to the preview step.
+    New test `tests/csv-preview.test.js` (2 tests).
+  - Suite: **Perfin 633 + Per-sistant 392 = 1025, 0 fail** (40 test files).
+  - **Where I left off:** implemented + tests green; committing + pushing. Remaining
+    Tier-3: full timezone pass (F11 residual), manual cash txn entry, AI-audit
+    confidence badge. Roadmap: mobile iOS build (operator). /sync-docs: test count
+    1023→1025 + the new preview endpoint + two-step modal note.
+
+- **Status:** **broad-implement Tier 2 + Tier 1 DONE** on branch
+  `claude/loving-rubin-1tkzs5` (2026-06-17). Implemented the remaining scan
+  backlog the operator selected. Suite: **Perfin 631 + Per-sistant 392 = 1023, 0 fail.**
+  - Tier 2: **F20** top-merchants COALESCE filter · **F18** income-summary month-floored
+    window · **F21** budgets/accept limit validation · **F16** Plaid snapshot
+    current_balance mirrors picked balance (both sites) · **F19** whats-new drops
+    Plaid phantom from balance deltas · **F8** audit subscription-total warning tier ·
+    **F5** manual-sub re-add source-guards state clear (DC-5 test re-pinned) ·
+    **F4** 60-day transfer detect at 2 occ (test double + new test) · **F9**
+    tax_deductions persistence failure → modules_failed · **F13** briefing
+    streaks_at_risk guard · **F14** corpusVersion folds fact_verifications ·
+    **F17** CapOne 0-debit-vs-credit fix · **F22** API-key digest compare (no length
+    oracle) · **F26** transports migration comment + SSO nonce doc (12-byte) · **F10**
+    audit savings-rate synonym matching (utilization/budget % deferred — needs
+    reliable per-entity actuals, false-positive risk).
+  - Tier 1: **F12** RAG semantic-cache hit flagged `sources_from_similar_query` +
+    Knowledge-page caveat (kept original sources — [n] links tied to that ordering) ·
+    **F23** getPersistentConfig DB error → `config_error` (not "not_configured"), 4
+    callers updated · **F24** sendToAll returns `logged`; budget-alert email gated on it.
+  - **Already-resolved on merge (skipped):** F25 (settings target_allocation already
+    400s) and F3 (forecast/calendar cadence>0 guards already landed via main's "F8").
+  - **Where I left off:** all implemented + tests green; committing + pushing next.
+    Remaining open scan findings: F6(in main), plus the Tier-3 completeness/strategic
+    items (full timezone, manual cash txn, CSV preview, sync-warning UI strip, audit
+    confidence badge) and roadmap (mobile iOS build — operator). /sync-docs: test
+    count 1022→1023, rows_duplicate already done; F10 partial noted.
+
+- **Status:** **broad-implement DONE + merged with main** on branch
+  `claude/loving-rubin-1tkzs5` (2026-06-16). A fresh 3-stage `/broad-scan`
+  produced findings F1–F27; the operator selected **F1, F2, F7, F11, F15**.
+  All five implemented + tested + committed (5ed4ef3 code, 493fcca docs), then
+  `origin/main` merged in (the cycle-5 / Web-UI targeted work below). Merge
+  resolved: ai-audit `CROSS_PERIOD_RE` combines main's F6 other-month tokens
+  with this branch's F7 "average" narrowing + `THIS_MONTH_RE` (the merged
+  ai-audit test pins both); doc test-counts reconciled. Post-merge suite:
+  **Perfin 630 + Per-sistant 392 = 1022 pass, 0 fail.**
+  - **F1** CSV dedup occurrence-index (`makeCsvTxnIdGenerator`, teller/data/csv-formats.js)
+    — genuinely-identical same-day rows no longer silently drop; occ0==legacy hash
+    (re-import dedup intact); route + CLI both use it (F2 CLI/route parity kept);
+    route response gains `rows_duplicate`.
+  - **F2** subscription cadence threshold ≥365 → ≥60 (scripts/detect-subscriptions.js):
+    quarterly/bi-monthly subs now detect at 2 occurrences, matching the transfer
+    detector. TRADEOFF: mild false-positive risk on two coincidental ~90d-apart
+    same-amount charges. Test double + docstring updated; +3 tests.
+  - **F7** ai-audit CROSS_PERIOD_RE narrowed: bare `average|avg` → period-qualified
+    forms + `averaging`; added THIS_MONTH_RE override so benchmark "national average"
+    no longer suppresses this-month arithmetic checks. +6 tests.
+  - **F11** health day-math timezone-aware via `APP_TIMEZONE` env (default UTC);
+    server todayStr() + injected client todayLocal() both read it so they agree.
+    OPERATOR: set APP_TIMEZONE to your zone or the off-by-one persists. Residual:
+    heatmap grid + SQL CURRENT_DATE windows still UTC (cosmetic). +1 test.
+  - **F15** partial-failure Teller enrollment surfaces `partial_sync_incomplete` in
+    errors[]/last_sync_result (Sync Health) instead of clean success; enrollments_synced
+    now subtracts only HARD failures.
+  - **Where I left off:** all five committed + pushed; origin/main merged &
+    conflicts resolved; full suite green (1022). /sync-docs applied (counts,
+    APP_TIMEZONE, rows_duplicate, F1/F2/F7/F11/F15 notes, SW cache v4→v5).
+  - Open scan findings (not implemented): F3,F4,F5,F6(landed via main),F8,F9,F10,
+    F12,F13,F14,F16–F27.
+
 ### Targeted cycle: Per-sistant Web UI — audit + implement (2026-06-16, branch `claude/beautiful-hamilton-abf4h0`)
 `/targeted-audit` Per-sistant Web UI: 7 findings (0C/0H/4M/3L). `/targeted-implement` A1–A4:
 - **A1 (PW1)** `views/js.js` shared fetch wrapper — ported Perfin INV-61: on a 401 or a
@@ -61,7 +141,7 @@ Invariant candidates: INV-60 (logout clears shell session), INV-61 (apiFetch 401
 
 ## Current Cycle (prior — broad-scan F1-F12 + T1-T4, cycle 5 reflected)
 
-- **Status:** **NONE IN PROGRESS.** Last completed cycle: **4** (2026-06-12 —
+- **Status (this cycle 5 entry is historical):** Last completed cycle: **4** (2026-06-12 —
   Seams & Invariants audit #2 + health synthesis + reflect), fully merged to
   main (PR #116); results recorded in `PROJECT_HEALTH.md` + `.cycle/metrics.csv`.
   Post-cycle FEATURE rounds since (not audit cycles, all merged): auto-loan

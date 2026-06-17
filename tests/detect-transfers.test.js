@@ -95,7 +95,7 @@ describe("Transfer gap analysis", () => {
     txns.sort((a, b) => new Date(a.date) - new Date(b.date));
 
     for (const targetCadence of CADENCES) {
-      const minOcc = targetCadence >= 90 ? MIN_OCCURRENCES_LONG : MIN_OCCURRENCES;
+      const minOcc = targetCadence >= 60 ? MIN_OCCURRENCES_LONG : MIN_OCCURRENCES;
       const minGap = targetCadence * (1 - TOLERANCE);
       const maxGap = targetCadence * (1 + TOLERANCE);
 
@@ -114,7 +114,7 @@ describe("Transfer gap analysis", () => {
       }
 
       const matchingGaps = gaps.filter(g => g >= minGap && g <= maxGap);
-      const minMatchingGaps = targetCadence >= 90 ? 1 : 2;
+      const minMatchingGaps = targetCadence >= 60 ? 1 : 2;
 
       if (matchingGaps.length >= Math.floor(gaps.length * 0.5) && matchingGaps.length >= minMatchingGaps) {
         return { cadence_days: targetCadence, amount: modeAmount, count: filtered.length };
@@ -158,6 +158,16 @@ describe("Transfer gap analysis", () => {
     const result = analyzeTransferGroup(txns);
     assert.ok(result, "Should detect monthly pattern");
     assert.equal(result.cadence_days, 30);
+  });
+
+  it("detects a bi-monthly transfer from just 2 occurrences (60-day cadence) — F4", () => {
+    const txns = [
+      { date: "2024-01-01", amount: "500.00" },
+      { date: "2024-03-01", amount: "500.00" }, // ~60 days later
+    ];
+    const result = analyzeTransferGroup(txns);
+    assert.ok(result, "60-day cadence should detect at 2 occurrences (1 matching gap, F4)");
+    assert.equal(result.cadence_days, 60);
   });
 
   it("handles amount variance within 15% tolerance", () => {

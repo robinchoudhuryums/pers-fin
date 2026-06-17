@@ -111,10 +111,17 @@ function normalizeQuery(q) {
 async function corpusVersion(pool) {
   try {
     const r = await pool.query(
+      // fact_verifications is folded in too (F14): verifying/unverifying a fact
+      // changes the authoritative "[verified]" annotation fed to the model but
+      // doesn't touch notes/documents/facts, so without this a stale answer
+      // (missing/carrying an outdated verify mark) could serve for up to the TTL.
+      // verified_at bumps max(updated_at) on verify; the row count changes on
+      // verify/unverify (clearing deletes the content-keyed row).
       `SELECT COALESCE(to_char(max(u), 'YYYYMMDDHH24MISS'), '0') AS v, count(*) AS n
        FROM ( SELECT updated_at AS u FROM notes WHERE deleted_at IS NULL
               UNION ALL SELECT updated_at FROM documents WHERE deleted_at IS NULL
-              UNION ALL SELECT updated_at FROM facts WHERE deleted_at IS NULL ) x`
+              UNION ALL SELECT updated_at FROM facts WHERE deleted_at IS NULL
+              UNION ALL SELECT verified_at FROM fact_verifications ) x`
     );
     return `${r.rows[0].v}:${r.rows[0].n}`;
   } catch {
@@ -504,14 +511,24 @@ module.exports = function ({ pool }) {
         // Exact match first (free), then semantic (one cheap vector scan):
         // a paraphrase of an answered question is also a free repeat.
         let cached = await cacheGet(pool, qn, model, ver);
+        let cacheKind = cached ? "exact" : null;
         if (!cached && qvec) {
           cached = await semanticCacheGet(pool, embeddings.toVectorLiteral(qvec), model, ver);
+          if (cached) cacheKind = "semantic";
         }
         if (cached) {
+          // On a SEMANTIC (paraphrase) hit the cached `sources` reflect the
+          // ORIGINAL question's retrieval, not this phrasing — and the answer's
+          // inline [n] citations are tied to that original ordering, so we keep
+          // the sources as-is (re-retrieving would break the [n] links) but flag
+          // it so the UI can caveat that the citations are from a similar earlier
+          // question rather than this exact query (F12).
           return res.json({
             answer: cached.answer,
             sources: cached.sources,
             cached: true,
+            cache_kind: cacheKind,
+            sources_from_similar_query: cacheKind === "semantic",
             grounded: (cached.sources || []).some((s) => s.cited),
           });
         }

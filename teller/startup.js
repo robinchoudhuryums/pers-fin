@@ -248,21 +248,27 @@ function startBackgroundJobs() {
         if (pct >= 100) {
           const tag = "budget-over-" + b.category.toLowerCase().replace(/\s+/g, "-");
           if (await sentRecently(tag, 24)) continue;
-          await sendToAll({
+          const r = await sendToAll({
             title: "Budget exceeded: " + b.category,
             body: "$" + spent.toFixed(2) + " spent of $" + limit.toFixed(2) + " budget (" + pct + "%)",
             tag,
             data: { url: "/budgets" },
           });
           // Opt-in critical-alert email — shares the 24h sentRecently dedup
-          // above, so an over-budget category emails at most once per day.
-          try {
-            const { sendCriticalAlertEmail } = require("./routes/persistent");
-            await sendCriticalAlertEmail(
-              "Budget exceeded: " + b.category,
-              "$" + spent.toFixed(2) + " spent of $" + limit.toFixed(2) + " budget (" + pct + "%) this month."
-            );
-          } catch (e) { console.error("Budget alert email error:", e.message); }
+          // above. Only email when the dedup marker (notification_log row) actually
+          // persisted: if it didn't, sentRecently can't see it and the next tick
+          // would re-email, so skip rather than risk daily-cap-breaking spam (F24).
+          if (r && r.logged) {
+            try {
+              const { sendCriticalAlertEmail } = require("./routes/persistent");
+              await sendCriticalAlertEmail(
+                "Budget exceeded: " + b.category,
+                "$" + spent.toFixed(2) + " spent of $" + limit.toFixed(2) + " budget (" + pct + "%) this month."
+              );
+            } catch (e) { console.error("Budget alert email error:", e.message); }
+          } else {
+            console.error("Budget alert: dedup marker not persisted for", tag, "— skipping email to avoid re-send spam.");
+          }
         } else if (pct >= 80) {
           const tag = "budget-warn-" + b.category.toLowerCase().replace(/\s+/g, "-");
           if (await sentRecently(tag, 24)) continue;
@@ -278,6 +284,24 @@ function startBackgroundJobs() {
       console.error("Budget alert notification error:", err.message);
     }
   }, 3 * 60 * 60 * 1000));
+
+  // Rent & Utilities ledger (every 6 hours): generate the current/missing
+  // months' obligations from housing_config (idempotent), then fire the two
+  // reminders — payment-due (balance owed near the rent due day) and
+  // missing-utility-amount (a placeholder whose bill should have arrived). Both
+  // are deduped via sentRecently inside runHousingReminders. No-op when the
+  // ledger isn't configured. In-process helpers, never an HTTP self-fetch (INV-18).
+  intervalHandles.push(setInterval(async () => {
+    jobHealth.tick("housing-ledger");
+    if (!isUserActive()) return;
+    try {
+      const housing = require("./routes/housing");
+      await housing.generateHousingObligations();
+      await housing.runHousingReminders();
+    } catch (err) {
+      console.error("Housing ledger task error:", err.message);
+    }
+  }, 6 * 60 * 60 * 1000));
 
   // Budget snapshot auto-trigger (every 6 hours). Snapshots the PRIOR (now-
   // complete) month's spending + rollover so rollover-enabled budgets advance.

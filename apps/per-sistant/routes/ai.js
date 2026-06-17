@@ -138,13 +138,49 @@ module.exports = function ({ pool }) {
       const cached = getCached(cacheKey, 10 * 60 * 1000);
       if (cached) return res.json({ briefing: cached });
 
+      // (health.streaks_at_risk || []) — the .catch() above only guards a thrown
+      // error, not a success-shaped summary that omits the array; defend it so a
+      // future shape change can't throw a TypeError outside the fail-soft path (F13).
+      const atRisk = (health && health.streaks_at_risk) || [];
       const habitLine = health && health.due_today
-        ? `\nHabits due today: ${health.done_today}/${health.due_today} done${health.streaks_at_risk.length ? `; streaks at risk: ${health.streaks_at_risk.map(h => `${h.name} (${h.current_streak}-day)`).join(", ")}` : ""}`
+        ? `\nHabits due today: ${health.done_today}/${health.due_today} done${atRisk.length ? `; streaks at risk: ${atRisk.map(h => `${h.name} (${h.current_streak}-day)`).join(", ")}` : ""}`
         : "";
+
+      // Rent & utilities — cross-app, READ-ONLY via the shell-wired perfinPool
+      // (INV-25/35, never an HTTP self-fetch). Fail-soft: no perfinPool
+      // (standalone Per-sistant) or any error just drops the line.
+      let housingLine = "";
+      try {
+        const perfinPool = req.app.get("perfinPool");
+        if (perfinPool) {
+          const [bal, cfgR] = await Promise.all([
+            perfinPool.query("SELECT COALESCE(SUM(amount),0) AS balance, COUNT(*) AS n FROM payee_obligations WHERE status='unpaid'"),
+            perfinPool.query("SELECT housing_config FROM user_settings WHERE id = 1"),
+          ]);
+          let cfg = cfgR.rows[0] && cfgR.rows[0].housing_config;
+          if (typeof cfg === "string") { try { cfg = JSON.parse(cfg); } catch { cfg = {}; } }
+          cfg = cfg || {};
+          const balance = parseFloat(bal.rows[0].balance);
+          const n = parseInt(bal.rows[0].n);
+          if (cfg.enabled && cfg.payee_name && balance > 0) {
+            let dueStr = "";
+            const dueDay = parseInt(cfg.rent_due_day, 10);
+            if (dueDay >= 1 && dueDay <= 31) {
+              const now = new Date();
+              let due = new Date(now.getFullYear(), now.getMonth(), Math.min(dueDay, 28));
+              if (due < now) due = new Date(now.getFullYear(), now.getMonth() + 1, Math.min(dueDay, 28));
+              const days = Math.round((due - now) / 86400000);
+              dueStr = days <= 0 ? " (due now)" : ` (due in ${days} day${days === 1 ? "" : "s"})`;
+            }
+            housingLine = `\nRent & utilities: $${balance.toFixed(2)} owed to ${cfg.payee_name} across ${n} item(s)${dueStr}`;
+          }
+        }
+      } catch { /* cross-app read is best-effort — drop the line on any error */ }
+
       const text = await callAI(model,
-        `Today: ${today}\nToday's tasks (${upcoming.rows.length}): ${upcoming.rows.map(t => t.title).join(", ") || "none"}\nOverdue tasks (${overdue.rows.length}): ${overdue.rows.map(t => t.title).join(", ") || "none"}\nScheduled emails today: ${scheduled.rows.map(e => `"${e.subject}" to ${e.recipient_name}`).join(", ") || "none"}\nTotal pending tasks: ${pending.rows.length}\nTop priorities: ${pending.rows.slice(0, 5).map(t => `${t.title} (${t.priority})`).join(", ")}${habitLine}`,
+        `Today: ${today}\nToday's tasks (${upcoming.rows.length}): ${upcoming.rows.map(t => t.title).join(", ") || "none"}\nOverdue tasks (${overdue.rows.length}): ${overdue.rows.map(t => t.title).join(", ") || "none"}\nScheduled emails today: ${scheduled.rows.map(e => `"${e.subject}" to ${e.recipient_name}`).join(", ") || "none"}\nTotal pending tasks: ${pending.rows.length}\nTop priorities: ${pending.rows.slice(0, 5).map(t => `${t.title} (${t.priority})`).join(", ")}${habitLine}${housingLine}`,
         300,
-        `You are a daily briefing assistant. Generate a brief, helpful daily briefing (3-5 sentences). Be conversational and actionable. Summarize what needs attention today. If habit streaks are at risk, nudge the user to keep them alive. Don't use emojis.`);
+        `You are a daily briefing assistant. Generate a brief, helpful daily briefing (3-5 sentences). Be conversational and actionable. Summarize what needs attention today. If habit streaks are at risk, nudge the user to keep them alive. If rent or utilities are owed and due soon, remind the user to send the payment. Don't use emojis.`);
       setCache(cacheKey, text);
       res.json({ briefing: text });
     } catch (err) {

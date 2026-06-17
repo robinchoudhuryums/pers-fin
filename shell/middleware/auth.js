@@ -114,10 +114,12 @@ function isValidApiKey(req) {
   if (!expected) return false;
   const provided = req.headers["x-api-key"];
   if (!provided) return false;
-  const providedBuf = Buffer.from(String(provided));
-  const expectedBuf = Buffer.from(expected);
-  if (providedBuf.length !== expectedBuf.length) return false;
-  try { return crypto.timingSafeEqual(providedBuf, expectedBuf); } catch { return false; }
+  // Compare fixed-length SHA-256 digests so the timing-safe compare never
+  // short-circuits on a length mismatch — a raw length check leaked the exact
+  // API_KEY length to a timing observer (F22). Both digests are 32 bytes.
+  const providedHash = crypto.createHash("sha256").update(String(provided)).digest();
+  const expectedHash = crypto.createHash("sha256").update(expected).digest();
+  try { return crypto.timingSafeEqual(providedHash, expectedHash); } catch { return false; }
 }
 
 async function requireAuth(req, res, next) {

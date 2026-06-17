@@ -291,6 +291,7 @@ app.use(require("./routes/whats-new"));
 app.use(require("./routes/watchlist"));
 app.use(require("./routes/credit-scores"));
 app.use(require("./routes/ask"));
+app.use(require("./routes/housing"));
 
 // ---------------------------------------------------------------------------
 // Prevent browser caching of HTML pages and API mutation responses
@@ -318,6 +319,7 @@ app.use(require("./pages/subscriptions")(pageConfig));
 app.use(require("./pages/accounts")(pageConfig));
 app.use(require("./pages/goals")(pageConfig));
 app.use(require("./pages/budgets")(pageConfig));
+app.use(require("./pages/housing")(pageConfig));
 app.use(require("./pages/login")(authConfig));
 app.use(require("./pages/settings")(pageConfig));
 app.use(require("./pages/transactions")(pageConfig));

@@ -433,12 +433,14 @@ async function runMigrations() {
       device_name TEXT DEFAULT 'Unknown Device',
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
-    // Authenticator transports (e.g. {internal,hybrid}) captured at    // registration. Without them in allowCredentials, browsers can't tell a
-    // stored credential is a platform authenticator and offer only
-    // cross-device options (QR code / USB key) on the login screen. NULL for
-    // pre-existing rows — the auth-options endpoints fall back to
-    // ['internal','hybrid'], which is always right here because registration
-    // pins authenticatorAttachment: 'platform'.
+    // Authenticator transports captured at registration (stored, but NOT used
+    // as the login hint). Per INV-50 both auth-options endpoints advertise
+    // transports: ['internal'] ONLY in allowCredentials — registration pins
+    // authenticatorAttachment: 'platform', so every credential is same-device,
+    // and advertising the cross-device 'hybrid' transport is exactly what
+    // surfaced the "use a phone" QR option instead of local Touch/Face ID.
+    // NULL for pre-existing rows is fine — the endpoints don't read this column
+    // for the hint.
     await client.query(`ALTER TABLE webauthn_credentials
       ADD COLUMN IF NOT EXISTS transports TEXT[]`);
     // Recurring transfers — detected recurring transfers between accounts
@@ -726,6 +728,42 @@ async function runMigrations() {
       UNIQUE(checked_at, score_type)
     )`);
     await client.query("CREATE INDEX IF NOT EXISTS idx_credit_scores_date ON credit_scores (checked_at DESC)");
+
+    // ---- Rent & Utilities payee ledger ----------------------------------
+    // A single-payee accounts-payable ledger: rent + per-utility obligations
+    // accumulate monthly (utilities start as `pending_amount` until the bill
+    // arrives and the amount is entered), settled by `payee_payments` that can
+    // cover several months at once with a memo. Config (payee, rent, due day,
+    // utilities, reminder lead) lives in user_settings.housing_config (below).
+    // payee_obligations.paid_payment_id is an FK-by-convention (like
+    // bill_payments) — the route reverts status on payment delete, so no
+    // DB-level cascade/constraint-existence migration is needed.
+    await client.query(`CREATE TABLE IF NOT EXISTS payee_obligations (
+      id              SERIAL PRIMARY KEY,
+      payee           TEXT NOT NULL,
+      category        TEXT NOT NULL DEFAULT 'rent' CHECK (category IN ('rent','utility','other')),
+      label           TEXT NOT NULL,
+      period          TEXT NOT NULL,
+      amount          NUMERIC(12,2),
+      due_day         INT NOT NULL DEFAULT 1 CHECK (due_day BETWEEN 1 AND 31),
+      status          TEXT NOT NULL DEFAULT 'unpaid' CHECK (status IN ('pending_amount','unpaid','paid')),
+      paid_payment_id INT,
+      notes           TEXT,
+      auto_generated  BOOLEAN NOT NULL DEFAULT false,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(payee, period, category, label)
+    )`);
+    await client.query("CREATE INDEX IF NOT EXISTS idx_payee_obligations_status ON payee_obligations (status, period)");
+    await client.query(`CREATE TABLE IF NOT EXISTS payee_payments (
+      id          SERIAL PRIMARY KEY,
+      payee       TEXT NOT NULL,
+      paid_date   DATE NOT NULL DEFAULT CURRENT_DATE,
+      amount      NUMERIC(12,2) NOT NULL,
+      memo        TEXT,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS housing_config JSONB NOT NULL DEFAULT '{}'::jsonb");
 
     // ---- Add 'investments' to dashboard_widgets default for new users ----
     // For existing rows: merge the new key into the JSONB without overwriting

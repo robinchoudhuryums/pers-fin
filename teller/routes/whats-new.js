@@ -98,6 +98,13 @@ async function gatherWhatsNew(since) {
        LEFT JOIN investment_accounts ia ON c.source = 'investment' AND ia.id = c.source_id
        WHERE c.current_date > $1::date
          AND ABS(c.current_balance - b.baseline_balance) >= 0.01
+         -- Drop the Plaid brokerage phantom: a brokerage linked via the combined
+         -- flow lives in BOTH linked_accounts and investment_accounts, so without
+         -- this it surfaces as two balance-change rows for one account. The
+         -- investment_accounts row is authoritative (parallels getNetWorth, F19).
+         AND (c.source <> 'linked' OR NOT EXISTS (
+                SELECT 1 FROM investment_accounts ia2
+                WHERE ia2.plaid_account_id = la.account_id AND ia2.is_active = true))
        ORDER BY ABS(c.current_balance - b.baseline_balance) DESC
        LIMIT 10`,
       [since]

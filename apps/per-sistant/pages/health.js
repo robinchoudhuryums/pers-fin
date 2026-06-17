@@ -116,7 +116,19 @@ var habits = [], archived = [], latestMetrics = [];
 var DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 var UNIT_PRESETS = {weight:'lb', sleep:'hours', steps:'', water:'oz', calories:'kcal', mood:'/10', energy:'/10'};
 
-function todayLocal() { return new Date().toISOString().split('T')[0]; }
+// Same timezone the server uses for habit day-math (APP_TIMEZONE, default UTC),
+// injected server-side so client and server never disagree about "today" — the
+// tick action defaults to the server's todayStr() while untick / the
+// measurement-date input use this; a mismatch would delete/overwrite the wrong
+// day (F11). Default "UTC" reproduces the prior behavior exactly.
+var APP_TZ = ${JSON.stringify(process.env.APP_TIMEZONE || "UTC")};
+function todayLocal() {
+  try {
+    return new Intl.DateTimeFormat('en-CA', {timeZone: APP_TZ, year:'numeric', month:'2-digit', day:'2-digit'}).format(new Date());
+  } catch (e) {
+    return new Date().toISOString().split('T')[0];
+  }
+}
 
 function scheduleLabel(h) {
   if (h.schedule === 'weekdays') return 'Weekdays';

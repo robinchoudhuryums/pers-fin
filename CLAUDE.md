@@ -137,6 +137,11 @@ teller/
     budgets.js           — GET/POST/PATCH/DELETE /api/budgets, POST /api/budgets/suggest,
                            POST /api/budgets/accept, GET /api/budgets/alerts,
                            POST /api/budgets/snapshot, GET /api/budgets/history
+    housing.js           — Rent & Utilities payee ledger: GET/PATCH /api/housing/config,
+                           GET /api/housing/ledger, POST /api/housing/generate,
+                           POST/PATCH/DELETE /api/housing/obligations, POST/DELETE
+                           /api/housing/payments. Exports generateHousingObligations
+                           + runHousingReminders for the scheduled task (INV-18/19).
     settings.js          — GET/PATCH /api/settings, POST /api/sheets/sync,
                            POST /api/sheets/dashboard, GET /api/export,
                            GET /api/data-freshness
@@ -237,6 +242,8 @@ teller/
     accounts.js          — Teller Connect enrollment + CSV import page
     goals.js             — Financial goals tracking page
     budgets.js           — Budget tracking page with AI suggestions and alerts
+    housing.js           — Rent & Utilities ledger page (balance owed, obligations,
+                           record-payment modal, payment history, config)
     transactions.js      — Transaction search/filter page with full-text search
     calendar.js          — Bill calendar page with subscription charges, manual bills,
                            and click-to-mark-paid functionality
@@ -254,7 +261,7 @@ teller/
                            served from shell/public/manifest.json.
     offline.html         — Branded offline fallback page served by the SW when navigation
                            fails and no cache hit exists
-    sw.js                — Service worker (cache `perfin-v4`, network-first with offline
+    sw.js                — Service worker (cache `perfin-v5`, network-first with offline
                            fallback. Precaches CSS/JS/SVG/offline.html on install. `/api/*`
                            is intentionally NOT cached — stale balances are worse than a
                            clear network error. Push notifications.)
@@ -271,6 +278,8 @@ teller/
     calendar.ejs         — Bill calendar template with Add Bill modal and paid-state toggling
     account-history.ejs  — Per-account balance history chart (range selector, summary cards)
     budgets.ejs          — Budget tracking template with progress bars and alerts
+    housing.ejs          — Rent & Utilities ledger template (balance, obligations,
+                           record-payment modal, config form, payment history)
     goals.ejs            — Financial goals template with progress and projections
     settings.ejs         — Settings template (theme, AI, keep-alive, sync, exports)
     subscriptions.ejs    — Subscription/utility management template
@@ -379,12 +388,19 @@ shell/
   flags the drift risk).
 - `scripts/import-csv-cli.js` — Standalone CLI for importing bank CSVs. Shares
   the route's logic via `teller/data/csv-formats.js`: content-only
-  `detectCsvFormat` (no filename heuristic), the same `csvTransactionId`
-  dedup-ID helper, AND the same `INSTITUTION_LABELS` map. Both derive the
+  `detectCsvFormat` (no filename heuristic), the same `makeCsvTxnIdGenerator`
+  dedup-ID generator (wrapping `csvTransactionId`), AND the same
+  `INSTITUTION_LABELS` map. Both derive the
   default account label (`"<institution> Account"`) from the detected format,
   so when the caller doesn't supply an explicit label the CLI and the
   `/api/import-csv` route produce **identical** dedup IDs for the same row
-  (F2). The route still honors an explicitly-provided `institution` /
+  (F2). The generator assigns a DETERMINISTIC per-tuple occurrence index so two
+  genuinely-distinct rows sharing (label, date, amount, merchant) within one
+  file — e.g. two identical same-day coffees — get distinct IDs instead of the
+  second silently deduping against the first (F1). Occurrence 0 hashes
+  byte-identically to the legacy single-arg `csvTransactionId`, so existing
+  csv_* IDs stay stable and re-importing the same file still deduplicates
+  against itself. The route still honors an explicitly-provided `institution` /
   `account_label` (e.g. the web dropdown) — those are intentionally separate
   accounts. (Earlier the CLI used a divergent, row-index-based ID and
   filename-based format detection — audit H8/F29/F31, now resolved.)
@@ -410,9 +426,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1011 tests as of latest); use
+  Perfin and Per-sistant test files (1040 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1011 tests across 39 test files (incl.
+  Current count: 1040 tests across 41 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -494,8 +510,20 @@ shell/
     `/transactions/refresh` but cursor-based sync handles it.
   - **Manual**: user-entered via `POST /api/investment-accounts`. Stored in
     `investment_accounts` with no `plaid_account_id`.
-- **CSV import**: Auto-detect Chase, Capital One, Discover, Wells Fargo, Schwab formats
-- **Transaction deduplication**: SHA256-based duplicate detection across CSV imports and API syncs
+- **CSV import**: Auto-detect Chase, Capital One, Discover, Wells Fargo, Schwab formats.
+  The dashboard CSV modal is **preview-and-confirm**: it first POSTs `POST
+  /api/import-csv/preview` (a dry-run that detects the format and classifies every
+  row new/duplicate/skipped against existing `transaction_id`s WITHOUT writing,
+  using the SAME `makeCsvTxnIdGenerator` the commit uses), shows the counts + a
+  sample table, then the user confirms to `POST /api/import-csv`. Both routes share
+  the `parseCsvUpload()` helper (in `routes/subscriptions.js`) so format detection,
+  account-label derivation, and dedup IDs can't drift between preview and commit.
+- **Transaction deduplication**: SHA256-based duplicate detection across CSV imports and API syncs.
+  CSV dedup IDs fold in a deterministic per-file occurrence index, so two genuinely-distinct rows
+  sharing (account, date, amount, merchant) on the same day no longer collide and silently drop the
+  second (F1); re-importing the same file still deduplicates against itself. `POST /api/import-csv`
+  returns `rows_duplicate` (true re-imports of already-present rows) alongside `rows_imported` /
+  `rows_skipped`.
 - **Transaction editing** (Phase B1): rename merchants and add notes via
   `PATCH /api/transactions/:id`. User overrides live in `user_merchant_name` /
   `user_notes` columns so re-syncs from Teller don't clobber edits. The display
@@ -519,6 +547,10 @@ shell/
   sum to the parent. Powered by `getCategorySpendingThisMonth` in
   `services/financial-queries.js`.
 - **Subscription detection**: Automatic recurring charge identification (30/60/90/365-day cadences).
+  The 30-day cadence requires 3+ charges; 60/90/365-day cadences need only 2+
+  (1 matching gap) — the same `>= 60` relaxation the recurring-transfer detector
+  uses, so quarterly/bi-monthly subscriptions are detected without waiting for a
+  third charge (F2; previously gated on `>= 365`).
   The upsert respects user state via an `is_active` CASE: if the user cancelled a subscription
   (`cancelled_at IS NOT NULL`) or dismissed it (`is_dismissed = true`), detection will not
   re-activate it even if the merchant charges again.
@@ -561,6 +593,46 @@ shell/
 - **Bill payment tracking**: Mark bills (both detected subscriptions and manual) as paid
   for specific dates via `/api/bill-payments`. Calendar shows paid state with
   strikethrough + checkmark. Click to toggle paid/unpaid.
+- **Rent & Utilities ledger** (`/housing` page, `routes/housing.js`): a
+  single-payee accounts-payable ledger for the common "we pay a person for rent +
+  utilities via bank transfer" case. Models it as **obligations** (rent = fixed;
+  a utility starts `pending_amount` with a NULL amount until the mailed bill
+  arrives and you enter it) + **payments** (a transfer that settles a BATCH of
+  obligations with a memo). The running **balance owed** = sum of `unpaid`
+  obligations. Config (payee, monthly rent, due day, utilities + cadence,
+  reminder lead days) lives in `user_settings.housing_config` (JSONB); a 6-hour
+  scheduled task auto-**generates** each month's rent (`unpaid`) + per-utility
+  placeholders (`pending_amount`) from `start_month`→current, idempotently, then
+  fires two deduped reminders: **payment-due** (balance owed near the rent due
+  day) and **missing-utility-amount** (a placeholder whose bill should have
+  arrived). Recording a payment ticks the unpaid obligations being settled,
+  auto-sums the amount, and **auto-derives the memo** by collapsing consecutive
+  months into ranges (`deriveMemo` → "Jan–Mar 2026 Rent, Jan 2026 Electricity");
+  obligations link back via `paid_payment_id` (FK-by-convention) and an
+  Undo reverts them. Unpaid obligations with a known amount also surface on the
+  **bill calendar** (`bill_source='housing'`, display-only — settled via the Rent
+  page, not the calendar's `bill_payments` toggle) AND on the public token-gated
+  `/calendar.ics` feed (unpaid, known-amount obligations as all-day VEVENTs with
+  a stable `housing-<id>@perfin` UID). The Rent page also shows a **per-utility
+  trend** section — an inline-SVG amount sparkline per utility with a
+  vs-same-month-last-year (falling back to vs-previous) % delta, computed
+  client-side from the ledger's obligation history (no extra endpoint). A
+  **dashboard widget** (`#housing-widget-section`, toggle key `housing`, default
+  on) shows the current balance owed + unpaid/awaiting counts, auto-hiding when
+  the ledger isn't configured. A **landlord-ready export** (`GET
+  /api/housing/export?year=&format=csv|pdf|json`) lists a year's payments with
+  memos + covered months + total (PDF via pdfkit, mirroring the tax-report
+  exporter). Under the unified shell, Per-sistant's **AI daily briefing** also
+  weaves in a rent line ("$X owed to [payee], due in N days") read READ-ONLY
+  from the wired `perfinPool` (`payee_obligations` + `housing_config`),
+  fail-soft (INV-25/35). **Bill OCR**: each awaiting-bill row has a "Scan"
+  button → `POST /api/housing/scan-bill` runs the bill image/PDF through Claude
+  vision (tool_use forcing a `report_bill` tool) and SUGGESTS `{amount, period,
+  label}` for the user to confirm before the existing amount-PATCH writes it —
+  it never auto-writes, and the image is processed then discarded. Shares the
+  monthly AI cap (`entry_type='scan'`; 501 without `ANTHROPIC_API_KEY`). The
+  missing-utility-amount reminder deep-links to `/housing#pending` so entering
+  the figure is one tap. Tables: `payee_obligations`, `payee_payments`.
 - **Merchant categorization rules**: Persistent merchant→category rules applied before
   AI categorization to reduce API costs. CRUD via `/api/categorization-rules`.
   Match types: `contains`, `exact`, `starts_with`. `POST /api/categorize` applies
@@ -787,7 +859,7 @@ shell/
   `modules_failed` array — so a swallowed query error no longer reports a module as
   analyzed when Claude actually received no data for it.
 - **Auto-trigger**: Insights auto-generate based on `insights_cadence_days` setting (checked every 6 hours)
-- **Cost tracking**: Granular token-level pricing — `input_tokens` from Anthropic's API (already excludes cache tokens) is multiplied by the input rate; `cache_read_input_tokens` and `cache_creation_input_tokens` are billed separately at their own rates. This restores accurate `INSIGHTS_MONTHLY_BUDGET_CENTS` enforcement when prompt caching is active. The monthly budget is shared between `/api/insights`, `/api/categorize`, and `/api/insights/rebuild` — all check the same cap before calling Claude AND each writes a `financial_insights` usage row after its AI call (`entry_type='categorize'` / `'rebuild'` / `'ask'`) so its spend counts toward the cap (not just the read side). `/api/insights/rebuild` records that usage row IMMEDIATELY after the Claude call — before its tool-block validation early-returns and the summary UPDATE — so a rebuild that truncated or failed validation (which 500s) still charges the cap for the spend it already incurred (AIA2); `/api/categorize` likewise stops its AI loop if a usage-row write fails rather than spending uncapped (M2). Display queries that surface "AI Insights" filter `entry_type='insight'` to keep categorize/rebuild tracking rows out of the user-facing feed. The cap is checked-then-charged; for the insight path the insight row IS the usage row (atomic — a failed write loses the insight and its charge together), and the only gap (two concurrent generate calls both passing the pre-check) is accepted for a single-operator app rather than guarded with a provisional reservation (AI-11). `/api/insights/status` rounds the accumulated cost once and derives `budget_remaining_cents` from it so estimated + remaining == budget (AI-10).
+- **Cost tracking**: Granular token-level pricing — `input_tokens` from Anthropic's API (already excludes cache tokens) is multiplied by the input rate; `cache_read_input_tokens` and `cache_creation_input_tokens` are billed separately at their own rates. This restores accurate `INSIGHTS_MONTHLY_BUDGET_CENTS` enforcement when prompt caching is active. The monthly budget is shared between `/api/insights`, `/api/categorize`, and `/api/insights/rebuild` — all check the same cap before calling Claude AND each writes a `financial_insights` usage row after its AI call (`entry_type='categorize'` / `'rebuild'` / `'ask'` / `'scan'` for the housing bill-OCR) so its spend counts toward the cap (not just the read side). `/api/insights/rebuild` records that usage row IMMEDIATELY after the Claude call — before its tool-block validation early-returns and the summary UPDATE — so a rebuild that truncated or failed validation (which 500s) still charges the cap for the spend it already incurred (AIA2); `/api/categorize` likewise stops its AI loop if a usage-row write fails rather than spending uncapped (M2). Display queries that surface "AI Insights" filter `entry_type='insight'` to keep categorize/rebuild tracking rows out of the user-facing feed. The cap is checked-then-charged; for the insight path the insight row IS the usage row (atomic — a failed write loses the insight and its charge together), and the only gap (two concurrent generate calls both passing the pre-check) is accepted for a single-operator app rather than guarded with a provisional reservation (AI-11). `/api/insights/status` rounds the accumulated cost once and derives `budget_remaining_cents` from it so estimated + remaining == budget (AI-10).
 - **Insight inputs are split-adjusted**: AI insights see the same `spending_split_pct`-adjusted monthly spend totals and the same keyword-filtered income that the dashboard and `/api/savings-rate` show, via `services/financial-queries.js`.
 - **Structured running summary**: AI long-term memory is structured JSON, not plain text. `POST /api/insights` uses Anthropic tool_use (`generate_financial_insight` tool, forced via `tool_choice`) to return BOTH the user-facing `insights_text` AND a typed `summary` object with four arrays: `trends`, `completed_goals`, `pending_actions`, `alerts`. The summary is saved to `user_settings.insights_running_summary_json` (JSONB); the legacy `insights_running_summary` TEXT column gets a human-readable rendering for backward-compat callers. `sanitizeStructuredSummary` enforces shape/length bounds (max items per array, string lengths, enum values) so a pathological tool response can't pollute long-term memory. The response includes `summary_status` — `"updated"` (normal), `"preserved_due_to_truncation"` (tool block missing because hit max_tokens), `"preserved_no_tool_block"` (model didn't comply with tool_choice — rare), or `"preserved_validation_failed"` (sanitizer rejected the shape) — so callers can surface when long-term memory didn't advance. `GET /api/insights/status` returns the full `running_summary` object plus a `running_summary_counts` block (`{trends, completed_goals, pending_actions, alerts}`) so dashboards can show "tracking 3 trends · 2 goals · 5 actions · 1 alert" without a second fetch.
 - **AI insight auditing**: Post-generation validation via `services/ai-audit.js`. Four tiers:
@@ -801,9 +873,15 @@ shell/
   near a category name false-flagged CRITICAL, spamming the audit notification and deflating the
   `audit_accuracy` % (AIA1). `CROSS_PERIOD_RE` also matches explicit other-month / trailing / YoY /
   estimate phrasings (`last|previous|prior month`, `N months ago`, `year-over-year`, `trailing`,
-  `estimate(d)` — F6); it deliberately does NOT skip bare/unqualified or `per month` claims, which
-  AIA1 still checks against this-month. this-month + unqualified claims (which refer to the data the
-  model was given) are still checked. (2) entity existence — merchant/goal/subscription names verified against DB via
+  `estimate(d)` — F6). It treats "average" as cross-period only when PERIOD-qualified (running /
+  rolling / monthly / N-month average, or the verb "averaging") — a bare benchmark comparator like
+  "above the national average" no longer suppresses the check, and an explicit "this month"/
+  "month-to-date" qualifier (`THIS_MONTH_RE`) OVERRIDES any cross-period match, so a genuine
+  this-month hallucination adjacent to the word "average" is still caught instead of silently
+  inflating `audit_accuracy` in the false-negative direction (F7). It deliberately does NOT skip
+  bare/unqualified or `per month` claims, which AIA1 still checks against this-month. this-month +
+  unqualified claims (which refer to the data the model was given) are still checked.
+  (2) entity existence — merchant/goal/subscription names verified against DB via
   whole-word match with a ≥4-char min, so a tiny known entity (a "Car" goal) can't wildcard-match
   every claimed name and let hallucinations pass (AI-4); (3) trend direction — only **total/overall**
   spending claims are checked against the monthly total; category-specific claims are skipped rather
@@ -925,7 +1003,7 @@ shell/
   in templates so any direct DOM writes are silent no-ops.
 - **Dark/Light theme**: Toggle in Settings, persisted to DB + localStorage
 - **PWA**: Installable home screen app (manifest.json + service worker, helmet icon centered on home screen).
-  Service worker (cache `perfin-v4`) uses network-first, caches successful same-origin
+  Service worker (cache `perfin-v5`) uses network-first, caches successful same-origin
   static GETs, and explicitly skips `/api/*` so the dashboard never serves stale balances
   when offline.
 - **Offline fallback page** (Phase D): when navigation fails and no cache hit exists,
@@ -1010,6 +1088,14 @@ shell/
   per-item errors from the most recent sync run — see `last_sync_result` below),
   and the last reconcile time — plus a "Reconcile Now" button that POSTs
   `/api/sync/reconcile` to recover any dropped transactions.
+- **Sync-degradation strip** (dashboard): a banner (`#sync-health-strip`) fetches
+  `GET /api/data-health` on load and surfaces its warning-level `issues[]`
+  (disconnected links, stale sync, `decryption_failed`, stale scheduled jobs) at
+  the top of the dashboard — so silent degradation is visible without opening
+  Settings → Sync Health (deep-links there via the `#sync-health` anchor).
+  Dismissible per-session (`sessionStorage`), so a persistent issue re-appears on
+  the next visit rather than being permanently silenced. Hidden when healthy;
+  best-effort — a failed probe never blocks the dashboard.
 - **Web Push notifications**: VAPID-based push notifications for anomalies, budget alerts,
   goal milestones
 - **Accessibility**: Skip-to-content link, `<main>` landmark, chart aria-labels, :focus-visible
@@ -1288,7 +1374,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1011 tests passing across 39 test files (Perfin 620 + Per-sistant 391), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1040 tests passing across 41 test files (Perfin 647 + Per-sistant 393), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
@@ -1371,6 +1457,22 @@ DELETE /api/manual-bills/:id # delete a manual bill
 GET  /api/bill-payments    # list payments for a month (query: year, month)
 POST /api/bill-payments    # mark a bill as paid (body: bill_source, bill_id, paid_date)
 DELETE /api/bill-payments/:id # unmark a bill payment
+GET  /api/housing/config   # rent/utilities ledger config (payee, rent, due day, utilities)
+PATCH /api/housing/config  # replace config (validated/normalized; 400 if enabling w/o payee)
+GET  /api/housing/ledger   # balance owed + obligations + payment history (with covered months)
+POST /api/housing/generate # generate current/missing months' obligations from config (idempotent)
+POST /api/housing/obligations # add an ad-hoc obligation (body: label, period, amount?, category?, due_day?)
+PATCH /api/housing/obligations/:id # set amount (bill arrived → unpaid), notes, due_day, label
+DELETE /api/housing/obligations/:id # remove an obligation
+POST /api/housing/payments # settle a batch of unpaid obligations (body: obligation_ids[],
+                           # paid_date?, amount? (default=sum), memo? (default=derived)); marks paid
+DELETE /api/housing/payments/:id # undo a payment, reverting its obligations to unpaid/pending_amount
+GET  /api/housing/export   # landlord-ready record of a year's payments (query: year,
+                           # format=csv|pdf|json) — memos + covered months + total (pdfkit PDF)
+POST /api/housing/scan-bill # OCR a utility-bill image/PDF via Claude vision → SUGGEST
+                           # { amount, period, label } WITHOUT writing (user confirms +
+                           # PATCHes). Shares the AI cap (entry_type='scan'); 501 w/o
+                           # ANTHROPIC_API_KEY, 429 past the cap. Image discarded, not stored.
 GET  /api/csv-reminder     # list manual accounts overdue for a CSV refresh
 GET  /api/subscriptions    # list detected subscriptions
 GET  /api/accounts         # list linked accounts with balances (includes is_shared, spending_split_pct)
@@ -1495,7 +1597,13 @@ POST /api/categorization-rules       # create a rule (body: merchant_pattern, ca
 DELETE /api/categorization-rules/:id # delete a rule
 POST /api/categorization-rules/apply # apply all active rules to uncategorized transactions
 POST /api/categorization-rules/from-transaction # create rule from a manual categorization
-POST /api/import-csv       # import bank CSV file (with deduplication)
+POST /api/import-csv/preview # dry-run a CSV import: detect format + classify each
+                           # row new/duplicate/skipped vs existing transaction_ids,
+                           # WITHOUT writing. Returns { format_detected, account_label,
+                           # rows_total, rows_parseable, rows_skipped, rows_new,
+                           # rows_duplicate, sample[] }. Backs the two-step upload modal.
+POST /api/import-csv       # import bank CSV file (with deduplication). Returns
+                           # { rows_imported, rows_skipped, rows_duplicate, format_detected }
 GET  /api/csv-imports      # list CSV import history
 GET  /api/export           # download transactions/subscriptions CSV
 POST /api/sheets/sync      # full sync to Google Sheets (all 16+ tabs, ~30-60s)
@@ -1613,6 +1721,7 @@ GET  /transactions              # transaction search/filter page
 GET  /calendar                  # bill calendar page
 GET  /goals                     # financial goals page
 GET  /budgets                   # budget tracking page
+GET  /housing                   # Rent & Utilities ledger page
 GET  /settings                  # settings page
 GET  /accounts/:id/history      # per-account balance chart (query: source=linked|investment, months)
 GET  /login                     # login page (if auth enabled)
@@ -1637,7 +1746,9 @@ GET  /calendar.ics                        # bill-calendar iCalendar feed (subscr
                                           # header-only). Unset env = 404/feature off.
                                           # Events: detected-subscription charges projected
                                           # by cadence + manual bills (monthly = all in
-                                          # window; quarterly/yearly = next occurrence),
+                                          # window; quarterly/yearly = next occurrence) +
+                                          # unpaid Rent & Utilities obligations (known
+                                          # amount, on their period's due day),
                                           # 90 days default (?days=7-365). Builder:
                                           # subscriptions.buildBillCalendarIcs.
 ```
@@ -1707,6 +1818,13 @@ validation (SN-5).
 ### SMTP (Per-sistant — email scheduling)
 - `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM`
 
+### Per-sistant Health & Habits
+- `APP_TIMEZONE` — IANA zone (e.g. `America/New_York`) for the Health & Habits
+  day-math (streaks / due-today / 7-day grid / future-log guard). Server and
+  injected client both resolve "today" in this zone so they agree. Default
+  `UTC` (unchanged behavior); set it to your zone or evening logs west of UTC
+  land on the wrong day (F11). See `apps/per-sistant/CLAUDE.md`.
+
 ### Cross-app integration (legacy, two-Render-services era)
 Unused under the unified shell — both apps run in-process. Documented as the
 standalone-mode fallback if either app is run on its own Render service.
@@ -1735,7 +1853,8 @@ standalone-mode fallback if either app is run on its own Render service.
   `net_worth_snapshots`, `tax_deductions`, `csv_imports`, `budgets`, `budget_snapshots`,
   `push_subscriptions`, `webauthn_credentials`, `investment_accounts`, `investment_holdings`,
   `plaid_investment_items`, `plaid_items`, `sync_cursors`, `schema_migrations`,
-  `categorization_rules`, `manual_bills`, `bill_payments`, `notification_log`,
+  `categorization_rules`, `manual_bills`, `bill_payments`,
+  `payee_obligations`, `payee_payments` (Rent & Utilities ledger), `notification_log`,
   `ai_audit_log`, `account_balance_snapshots`, `watchlist_items`, `credit_scores`,
   `job_runs` (scheduled-job heartbeats — one row per background job, UPSERTed by
   `services/job-health.js`; the `_watchdog` row stores the last-notified
@@ -1864,6 +1983,11 @@ standalone-mode fallback if either app is run on its own Render service.
   raw `last_sync_result`, so a per-item error that does NOT disconnect an
   enrollment — notably `decryption_failed` (passphrase mismatch) — is visible in
   the Sync Health card instead of staying silent on scheduled runs (addition D).
+  A PARTIAL Teller failure (one account in an enrollment fetched cleanly, a
+  sibling threw, so the watermark was held back per INV-02) surfaces as
+  `partial_sync_incomplete` here too, instead of the enrollment reporting a clean
+  success — `enrollments_synced` counts it as synced (it did connect) but the
+  errors[] entry flags that a range still needs a retry (F15).
   The auto-sync fires a one-shot "Sync error" notification only when the error
   signature CHANGES, so a persistent mismatch doesn't spam hourly. A *wholesale*
   Plaid balance/holdings throw inside `POST /api/sync-balances` (vs. the per-item
@@ -1905,6 +2029,23 @@ standalone-mode fallback if either app is run on its own Render service.
 - `bill_payments`: tracks which bills have been paid. Columns: `bill_source`
   (subscription or manual), `bill_id`, `paid_date`, `paid_amount`, `notes`.
   UNIQUE on (bill_source, bill_id, paid_date). Calendar shows paid state.
+- `payee_obligations`: Rent & Utilities ledger rows. Columns: `payee`,
+  `category` (CHECK rent/utility/other), `label` ('Rent', 'Electricity', …),
+  `period` (YYYY-MM), `amount NUMERIC(12,2)` (NULL = awaiting bill),
+  `due_day` (1-31), `status` (CHECK `pending_amount`/`unpaid`/`paid`),
+  `paid_payment_id` (FK-by-convention to `payee_payments` — the route reverts
+  status on payment delete, no DB cascade), `notes`, `auto_generated`. UNIQUE
+  (payee, period, category, label) so monthly generation is idempotent.
+  Balance owed = SUM(amount) WHERE status='unpaid'.
+- `payee_payments`: a transfer settling a batch of obligations. Columns:
+  `payee`, `paid_date`, `amount`, `memo` (auto-derived from covered months when
+  blank). Obligations point back via `paid_payment_id`.
+- `user_settings.housing_config JSONB NOT NULL DEFAULT '{}'`: Rent & Utilities
+  config — `{ enabled, payee_name, rent_amount, rent_due_day, reminder_lead_days,
+  start_month, utilities: [{label, cadence_months, due_day, anchor}] }`. Read by
+  `routes/housing.js getConfig()`; drives monthly obligation generation +
+  reminders. `start_month` is preserved across edits so the generation window
+  doesn't shift.
 - `notification_log`: in-app notification history. Columns: `type`, `title`, `body`,
   `data` (JSONB), `is_read`. `sendToAll()` inserts here on every push notification.
   Indexed on (is_read, created_at DESC) for fast unread queries.
@@ -1973,8 +2114,11 @@ Transfers are identified by keyword matching on merchant_name/name fields:
   single recurring-transfer entry instead of fragmenting across raw merchant strings.
 - Detection algorithm reuses subscription detection gap analysis (findModeAmount, addDays)
   with wider 15% amount tolerance and 7/14-day cadences for weekly/biweekly patterns
-- Cadences ≥60 days (bi-monthly, quarterly, yearly) require only 2+ occurrences;
-  shorter cadences (7/14/30) require 3+ occurrences
+- Cadences ≥60 days (bi-monthly, quarterly, yearly) require only 2+ occurrences
+  (1 matching gap); shorter cadences (7/14/30) require 3+ occurrences. Both the
+  occurrence floor and the matching-gap threshold gate on `>= 60` — previously
+  the gap threshold was `>= 90`, so a 60-day transfer still demanded 3 occurrences
+  and the 2-occurrence allowance was unreachable (F4).
 - Outgoing and incoming transactions analyzed as separate streams
 - Outgoing recurring transfers integrated into cash flow forecast
 - User-dismissed transfers are preserved across detection runs: the upsert's
@@ -2050,7 +2194,7 @@ rows) can dismiss them from the UI or run `POST /api/cleanup`.
   `//host` targets and backslash paths, so the login endpoint can't be turned
   into an open redirect (a naive `startsWith("/")` would have let `//evil.com`
   through).
-- **SSO replay protection**: Each SSO token embeds a 24-byte random nonce; validate tracks
+- **SSO replay protection**: Each SSO token embeds a 12-byte (96-bit) random nonce; validate tracks
   used nonces in an in-memory Map (2-minute TTL cleanup) and rejects duplicates. Nonce is
   consumed after signature verification so timing attacks can't burn legitimate nonces.
   Additionally, the nonce is *reserved* immediately before HMAC verification (atomic
@@ -2157,6 +2301,12 @@ embedded mode).
 - **CSV import reminders**: every 24 hours, checks manual (CSV-only) accounts
   whose most recent CSV import is older than `csv_reminder_days` setting.
   Sends notification listing specific account names needing a fresh upload.
+- **Rent & Utilities ledger**: every 6 hours (activity-gated). Calls
+  `generateHousingObligations()` (idempotently create this/missing months' rent
+  + utility placeholders from `housing_config`) then `runHousingReminders()`
+  (payment-due + missing-utility-amount push notifications, deduped via
+  `sentRecently` to ≤1 per ~3 days). No-op when the ledger isn't configured.
+  In-process helpers (INV-18).
 - **Self-healing reconcile**: every 1 hour, acts at most weekly (gated on
   `last_reconcile_at`). Runs `reconcileTeller(90)` — re-fetches the trailing
   90 days from every Teller enrollment regardless of the incremental
@@ -2489,11 +2639,13 @@ income module, and bill-calendar income detection.
   Outbound HTTP helpers (`sendPerSistantWebhook`) follow a parallel
   contract: `{ sent: bool, status?, reason?, error? }`. `reason` is an
   enum-style string (`"not_configured"`, `"missing_secret"`,
-  `"decryption_failed"`) so callers can branch on the specific failure mode
-  rather than parsing logs. `getPersistentConfig` decrypts the webhook secret
+  `"decryption_failed"`, `"config_error"`) so callers can branch on the specific
+  failure mode rather than parsing logs. `getPersistentConfig` decrypts the webhook secret
   in a separate query from the url/enabled read, so a `TOKEN_ENCRYPTION_PASSPHRASE`
   mismatch surfaces as `"decryption_failed"` instead of masquerading as
-  `"not_configured"` (SN-3).
+  `"not_configured"` (SN-3); likewise a DB error on the url/enabled read itself
+  returns `{ configError: true }` → reason `"config_error"` rather than the
+  misleading `"not_configured"` (F23).
 - **"Since last X" watermarks live in `user_settings`, not in cookies.**
   The anomaly notifier (`last_anomaly_check_at`) and the "since you last
   looked" dashboard widget (`last_dashboard_view_at`) both use a single
@@ -2872,7 +3024,7 @@ INV-28 | pgvector objects are created defensively (only if the `vector` extensio
 INV-29 | Retrieval is HYBRID (vector + keyword legs fused via Reciprocal Rank Fusion, dedupe on kind:id) — either leg failing degrades to the other alone; /query & /diagram degrade to sources-only / null when AI is off or unavailable | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js, apps/per-sistant/tests/rag-v2.test.js
 INV-30 | Embedding dimension (1024) matches chunks.embedding vector(1024); a provider/dimension change is a re-embed migration, not a config flip | Subsystem: Knowledge / RAG | Verify: code read services/embeddings.js EMBED_DIM
 INV-31 | embed_state content-hash skip prevents re-embedding unchanged sources | Subsystem: Knowledge / RAG | Verify: code read vault-sync.embedSource
-INV-32 | Answer cache keyed on query+model+corpus_version (notes+documents+facts max(updated_at)+count), with a SEMANTIC fallback layer (query-embedding cosine >= 0.97, same model+corpus_version+TTL — RAG v2, db/019); finance-grounded answers bypass both layers | Subsystem: Knowledge / RAG | Verify: tests/knowledge-cache.test.js + apps/per-sistant/tests/rag-v2.test.js + routes/rag.js useCache gate
+INV-32 | Answer cache keyed on query+model+corpus_version (notes+documents+facts+fact_verifications max(updated_at)+count — F14 folds in fact_verifications so verify/unverify invalidates), with a SEMANTIC fallback layer (query-embedding cosine >= 0.97, same model+corpus_version+TTL — RAG v2, db/019); a SEMANTIC hit returns sources_from_similar_query=true (the cached sources reflect the original query's retrieval and the answer's [n] links are tied to that ordering, so they're kept, not re-retrieved — the Knowledge page caveats it; F12); finance-grounded answers bypass both layers | Subsystem: Knowledge / RAG | Verify: tests/knowledge-cache.test.js + apps/per-sistant/tests/rag-v2.test.js + routes/rag.js useCache gate
 INV-33 | Vault sync is read-only (VAULT_GITHUB_TOKEN); capture writes only with the separate write-scoped VAULT_GITHUB_WRITE_TOKEN (400 until set) | Subsystem: Knowledge / RAG | Verify: tests/knowledge-capture.test.js
 INV-34 | Citations enabled all-or-none per request; incompatible with structured outputs (unused here) | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js (answerWithCitations)
 INV-35 | Cross-app finance grounding reads perfinPool read-only, only on finance queries, never an HTTP self-fetch (parallels INV-25) | Subsystem: Knowledge / RAG | Verify: tests/knowledge-crossapp.test.js

@@ -40,7 +40,14 @@ const CSV_FORMATS = {
       // Capital One uses separate Debit/Credit columns; Debit = positive spending, Credit = negative (payment/refund)
       const debit = parseMoney(row["Debit"]);
       const credit = parseMoney(row["Credit"]);
-      const amount = !isNaN(debit) ? debit : -(isNaN(credit) ? 0 : credit);
+      // A non-zero Debit is spending; otherwise a real Credit is a refund/payment.
+      // Treat a literal 0 Debit as "no debit" so a refund row that happens to ship
+      // Debit="0" with a populated Credit isn't read as a $0 charge, losing the
+      // credit (F17). A genuine $0 authorization (Debit 0, no Credit) stays 0 and
+      // is skipped by the amount===0 guard, exactly as before.
+      const amount = (!isNaN(debit) && debit !== 0)
+        ? debit
+        : (!isNaN(credit) ? -credit : (isNaN(debit) ? NaN : 0));
       return {
         date: row["Transaction Date"],
         merchant_name: row["Description"],
@@ -175,10 +182,39 @@ function parseDate(dateStr) {
 // and dedup against re-imports of the same rows continues to work. Only
 // rows containing `|` (rare, but the bug class) get a different hash;
 // those rows were collision-prone under the old scheme anyway.
-function csvTransactionId(accountLabel, date, amount, merchant) {
+function csvTxnIdBase(accountLabel, date, amount, merchant) {
   const esc = (v) => String(v == null ? "" : v).replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
-  const raw = `${esc(accountLabel)}|${esc(date)}|${esc(amount)}|${esc(merchant)}`;
+  return `${esc(accountLabel)}|${esc(date)}|${esc(amount)}|${esc(merchant)}`;
+}
+
+function csvTransactionId(accountLabel, date, amount, merchant, occurrence = 0) {
+  let raw = csvTxnIdBase(accountLabel, date, amount, merchant);
+  // `occurrence` distinguishes genuinely-distinct rows that share
+  // (accountLabel, date, amount, merchant) within ONE import — e.g. two
+  // identical $4.95 coffees or two $20 ATM withdrawals on the same day. Without
+  // it both rows hashed to the same id and the second was silently dropped by
+  // `ON CONFLICT (transaction_id) DO NOTHING`, under-counting real spending
+  // (F1). occurrence 0 produces the historical hash UNCHANGED, so existing
+  // csv_* IDs stay stable and ordinary (single-occurrence) rows still dedup
+  // against prior imports of the same file exactly as before.
+  if (occurrence > 0) raw += `|#${occurrence}`;
   return "csv_" + crypto.createHash("sha256").update(raw).digest("hex");
+}
+
+// Per-import occurrence-tracking id generator. Both the /api/import-csv route
+// and scripts/import-csv-cli.js create ONE generator per import and call it
+// once per row, so they assign the SAME occurrence index to the Nth identical
+// tuple and therefore produce IDENTICAL dedup IDs for the same file (the F2
+// CLI/route parity contract). Deterministic in row order: re-importing the same
+// file reproduces the same indices and still deduplicates against itself.
+function makeCsvTxnIdGenerator() {
+  const seen = new Map();
+  return function nextCsvTxnId(accountLabel, date, amount, merchant) {
+    const base = csvTxnIdBase(accountLabel, date, amount, merchant);
+    const occ = seen.get(base) || 0;
+    seen.set(base, occ + 1);
+    return csvTransactionId(accountLabel, date, amount, merchant, occ);
+  };
 }
 
 module.exports = {
@@ -187,5 +223,6 @@ module.exports = {
   detectCsvFormat,
   parseDate,
   csvTransactionId,
+  makeCsvTxnIdGenerator,
   parseMoney,
 };

@@ -359,7 +359,7 @@
     </div>
   </div>
 
-  <div class="section"><h2>Sync Health</h2>
+  <div class="section" id="sync-health"><h2>Sync Health</h2>
     <div id="data-health-body" style="font-size:13px;color:var(--text-muted);">Loading…</div>
     <div class="setting-row" style="margin-top:12px;">
       <div class="setting-info"><div class="name">Reconcile Now</div><div class="desc">Re-fetch the last 90 days from every linked bank to recover any missed transactions. Safe to run anytime — duplicates are ignored.</div></div>
@@ -1001,7 +1001,8 @@
       calendar: 'Bill Calendar Link', cashFlow: 'Cash Flow', savingsRate: 'Savings Rate', yoy: 'Year-over-Year',
       investments: 'Investments',
       reviewQueue: 'Review Uncategorized',
-      aiMemory: 'AI Memory'
+      aiMemory: 'AI Memory',
+      housing: 'Rent & Utilities'
     };
     function renderWidgetToggles(widgets) {
       var container = document.getElementById('widget-toggles');

@@ -18,14 +18,25 @@ const { getMonthlySpending, getMonthlyIncomeAndSpending, getCategorySpendingThis
 // Unqualified or explicitly "this month" claims (which refer to the this-month
 // data the model was actually given) are still checked, so this-month
 // hallucinations are still caught.
-// F6: widened with UNAMBIGUOUS cross-period tokens that the original regex
-// missed — explicit other-month references (last/previous/prior month, "N
-// months ago"), year-over-year, "trailing", and "estimate(d)". These are never
-// this-month, so comparing them to getCategorySpendingThisMonth produced false
-// CRITICALs. Deliberately NOT added: bare/unqualified or "per month" claims —
-// AIA1 intentionally checks those against this-month (pinned in tests), since
-// they refer to the this-month data the model was given.
-const CROSS_PERIOD_RE = /\b(per year|\/?yr\b|\/year|annual|annually|a year|yearly|year[- ]?to[- ]?date|ytd|this year|last month|previous month|prior month|months? ago|year[- ]?over[- ]?year|yoy|trailing|estimated?|over the (?:past|last)|(?:last|past|over)\s+\d+\s+months?|\d+\s+months?|average|avg|projected|projection|annualized|run[- ]?rate|on track)\b/;
+// F6: widened with UNAMBIGUOUS cross-period tokens the original regex missed —
+// explicit other-month references (last/previous/prior month, "N months ago"),
+// year-over-year, "trailing", and "estimate(d)". These are never this-month, so
+// comparing them to getCategorySpendingThisMonth produced false CRITICALs.
+// F7: "average"/"avg" is only a cross-period signal when PERIOD-qualified
+// (running / rolling / monthly / N-month / per-month average, or the verb
+// "averaging") — a bare BENCHMARK comparator ("above the national average",
+// "below average") refers to a this-month figure and must NOT suppress the
+// arithmetic check, so the bare token was replaced with the qualified forms
+// (previously it matched anywhere in the ±context window and silently skipped
+// genuine this-month hallucinations, inflating audit_accuracy as a false
+// negative). Deliberately NOT added: bare/unqualified or "per month" claims —
+// AIA1 intentionally checks those against this-month (pinned in tests).
+const CROSS_PERIOD_RE = /\b(per year|\/?yr\b|\/year|annual|annually|a year|yearly|year[- ]?to[- ]?date|ytd|this year|last month|previous month|prior month|months? ago|year[- ]?over[- ]?year|yoy|trailing|estimated?|over the (?:past|last)|(?:last|past|over)\s+\d+\s+months?|\d+\s+months?|running[- ]?average|rolling[- ]?average|monthly average|average monthly|average per month|\d+[- ]?month average|avg[ ./]*mo|averaging|projected|projection|annualized|run[- ]?rate|on track)\b/;
+
+// An explicit this-month qualifier OVERRIDES a cross-period match: the model
+// was given this-month actuals, so a claim it tags "this month" is checkable
+// regardless of any nearby period word (F7).
+const THIS_MONTH_RE = /\b(this month|this period|so far this month|month[- ]to[- ]date|mtd|current month)\b/;
 
 // Extract dollar amounts from text: "$1,234.56" or "$500"
 function extractDollarClaims(text) {
@@ -186,7 +197,7 @@ async function auditInsight(insightText, insightId) {
       // projected/average) — the per-category + subscription actuals below are
       // this-month figures, so comparing a cross-period dollar amount would
       // false-flag (AIA1).
-      const crossPeriod = CROSS_PERIOD_RE.test(ctx);
+      const crossPeriod = CROSS_PERIOD_RE.test(ctx) && !THIS_MONTH_RE.test(ctx);
       // Find the single BEST (longest = most specific) category whose name
       // appears as a whole word in the claim's context, and emit at most one
       // finding per dollar claim — word boundaries stop short category names
@@ -213,18 +224,31 @@ async function auditInsight(insightText, insightId) {
       // Check subscription total claims (this-month dollars → same cross-period skip)
       if (!crossPeriod && ctx.includes("subscription") && Math.abs(claim.value - actualSubMonthly) > 1) {
         const pctOff = actualSubMonthly > 0 ? Math.abs(claim.value - actualSubMonthly) / actualSubMonthly : 1;
+        // Same critical/warning split as the per-category check above — a
+        // subscription-total claim off 5-20% now emits a warning instead of
+        // silently passing (F8).
         if (pctOff > 0.20) {
           findings.push({ severity: "critical", tier: 1, check: "subscription_total",
+            claim: `$${claim.value.toFixed(2)}`, expected: `$${actualSubMonthly.toFixed(2)}`,
+            pct_off: Math.round(pctOff * 100), context: claim.context });
+        } else if (pctOff > 0.05) {
+          findings.push({ severity: "warning", tier: 1, check: "subscription_total",
             claim: `$${claim.value.toFixed(2)}`, expected: `$${actualSubMonthly.toFixed(2)}`,
             pct_off: Math.round(pctOff * 100), context: claim.context });
         }
       }
     }
 
-    // Check percentage claims (savings rate)
+    // Check percentage claims (savings rate). Match common phrasings, not just
+    // the literal "savings rate", so "save rate"/"savings ratio"/"saving rate"
+    // claims are validated too (F10). Other percent types (utilization, budget
+    // used, trend %) are deliberately NOT checked here — they have no single
+    // reliable actual in scope and fuzzy per-entity matching would regress
+    // audit precision (the AI-2/AI-4 false-positive class); deferred.
+    const SAVINGS_RATE_RE = /\bsav(?:ings?|e|ing)\s+(?:rate|ratio)\b/;
     const pctClaims = extractPercentClaims(insightText);
     for (const claim of pctClaims) {
-      if (claim.context.toLowerCase().includes("savings rate") && actualSavingsRate !== null) {
+      if (SAVINGS_RATE_RE.test(claim.context.toLowerCase()) && actualSavingsRate !== null) {
         const diff = Math.abs(claim.value - actualSavingsRate);
         if (diff > 10) {
           findings.push({ severity: "critical", tier: 1, check: "savings_rate",

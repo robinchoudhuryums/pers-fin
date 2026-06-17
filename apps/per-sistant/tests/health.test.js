@@ -50,6 +50,17 @@ describe("isDueOn / meetsTarget", () => {
     assert.equal(weekKey(MON), MON);
     assert.equal(weekKey("2026-06-14"), MON); // Sunday belongs to Monday's week
   });
+
+  // F11: "today" is timezone-aware. Default (no/UTC) matches the old UTC date;
+  // a passed IANA zone resolves a YYYY-MM-DD in that zone; a bad zone falls back.
+  it("todayStr is timezone-aware and falls back safely (F11)", () => {
+    const { todayStr } = health;
+    const utc = new Date().toISOString().split("T")[0];
+    assert.equal(todayStr("UTC"), utc, "UTC matches the legacy ISO date");
+    assert.match(todayStr("America/New_York"), /^\d{4}-\d{2}-\d{2}$/);
+    // Unknown timezone must not throw — it degrades to the UTC date.
+    assert.equal(todayStr("Not/AZone"), utc);
+  });
 });
 
 describe("computeStreaks — daily schedules", () => {
@@ -342,6 +353,20 @@ describe("health integration pins", () => {
     const src = read("routes", "ai.js");
     assert.match(src, /gatherHealthSummary\(pool\)\.catch\(\(\) => null\)/);
     assert.match(src, /Habits due today/);
+  });
+
+  it("AI daily briefing reads Rent & Utilities via the wired perfinPool, fail-soft (INV-25/35)", () => {
+    const src = read("routes", "ai.js");
+    // Cross-app, read-only, via req.app.get("perfinPool"); the housing balance
+    // line is built from payee_obligations + housing_config and degrades silently
+    // (no perfinPool standalone, or any error). No HTTP self-fetch.
+    assert.match(src, /req\.app\.get\("perfinPool"\)/);
+    assert.match(src, /payee_obligations WHERE status='unpaid'/);
+    assert.match(src, /Rent & utilities/);
+    // The block is guarded so a cross-pool failure can't 500 the briefing.
+    const idx = src.indexOf('req.app.get("perfinPool")');
+    const before = src.slice(Math.max(0, idx - 200), idx);
+    assert.match(before, /try \{/, "perfinPool read is inside a try/catch");
   });
 
   it("helper exports are attached AFTER the factory assignment (INV-19)", () => {

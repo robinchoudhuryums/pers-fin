@@ -1,0 +1,421 @@
+<%- include('partials/head', { title: 'Rent & Utilities' }) %>
+<%- include('partials/nav', { activePage: 'housing' }) %>
+
+  <h1>Rent &amp; Utilities</h1>
+  <p class="subtitle">What you owe for rent + utilities, and a clear record of payments.</p>
+  <div id="status-msg" class="status-msg"></div>
+
+  <!-- Balance summary -->
+  <div class="card" id="hz-summary" style="margin-bottom:16px;">
+    <div style="font-size:13px;color:var(--text-muted);">Loading…</div>
+  </div>
+
+  <!-- Owed -->
+  <div class="card" id="hz-owed-card" style="margin-bottom:16px;display:none;">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+      <h2 style="margin:0;">Owed</h2>
+      <button class="btn-sm" id="hz-record-btn" disabled style="font-size:13px;padding:8px 14px;border:1px solid var(--teal);border-radius:6px;background:var(--teal);color:#000;cursor:pointer;font-family:inherit;font-weight:500;">Record payment</button>
+    </div>
+    <div id="hz-obligations" style="margin-top:10px;"></div>
+  </div>
+  <!-- Shared hidden file input for bill scanning (one per page; the clicked row sets the target). -->
+  <input type="file" id="hz-scan-file" accept="image/*,application/pdf" style="display:none;">
+
+  <!-- Utility trends -->
+  <div class="card" id="hz-trends-card" style="margin-bottom:16px;display:none;">
+    <h2 style="margin:0 0 10px;">Utility trends</h2>
+    <div id="hz-trends"></div>
+  </div>
+
+  <!-- Payment history -->
+  <div class="card" id="hz-history-card" style="margin-bottom:16px;display:none;">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+      <h2 style="margin:0;">Payment history</h2>
+      <div style="display:flex;align-items:center;gap:6px;font-size:12px;">
+        <span style="color:var(--text-muted);">Export</span>
+        <input id="hz-export-year" type="number" min="2000" max="2100" class="hz-in" style="width:78px;padding:5px 8px;">
+        <button class="btn-sm hz-export" data-fmt="csv" type="button" style="font-size:12px;padding:5px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-family:inherit;">CSV</button>
+        <button class="btn-sm hz-export" data-fmt="pdf" type="button" style="font-size:12px;padding:5px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-family:inherit;">PDF</button>
+      </div>
+    </div>
+    <div id="hz-payments" style="margin-top:10px;"></div>
+  </div>
+
+  <!-- Configuration -->
+  <details class="card" id="hz-config-wrap" style="margin-bottom:16px;">
+    <summary style="cursor:pointer;font-weight:600;">Setup &amp; configuration</summary>
+    <div style="display:flex;flex-direction:column;gap:12px;margin-top:14px;max-width:560px;">
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;">
+        <input type="checkbox" id="hz-enabled"> Track rent &amp; utilities for a payee
+      </label>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        <div><div class="hz-lbl">Payee name</div><input id="hz-payee" placeholder="e.g. Landlord" class="hz-in"></div>
+        <div><div class="hz-lbl">Reminder: days before due</div><input id="hz-lead" type="number" min="0" max="28" value="5" class="hz-in"></div>
+        <div><div class="hz-lbl">Monthly rent</div><input id="hz-rent" type="number" min="0" step="0.01" placeholder="0.00" class="hz-in"></div>
+        <div><div class="hz-lbl">Rent due day (1-31)</div><input id="hz-rent-day" type="number" min="1" max="31" value="1" class="hz-in"></div>
+      </div>
+      <div>
+        <div class="hz-lbl" style="display:flex;justify-content:space-between;align-items:center;">Utilities <button class="btn-sm" id="hz-add-util" type="button" style="font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-family:inherit;">+ Add utility</button></div>
+        <div id="hz-utils" style="display:flex;flex-direction:column;gap:8px;margin-top:6px;"></div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">Each utility gets an "awaiting bill" placeholder each cycle; you'll be reminded to enter the amount when the bill arrives.</div>
+      </div>
+      <div style="display:flex;gap:10px;">
+        <button class="btn-sm" id="hz-save-cfg" style="font-size:13px;padding:8px 16px;border:1px solid var(--teal);border-radius:6px;background:var(--teal);color:#000;cursor:pointer;font-family:inherit;font-weight:500;">Save &amp; generate</button>
+      </div>
+    </div>
+  </details>
+
+  <!-- Record-payment modal -->
+  <div id="hz-pay-modal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px);">
+    <div style="max-width:440px;margin:60px auto;padding:24px;background:var(--surface-solid, var(--bg));border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+      <h3 style="margin:0 0 12px;">Record payment</h3>
+      <div id="hz-pay-items" style="font-size:12px;color:var(--text-muted);margin-bottom:12px;"></div>
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        <div><div class="hz-lbl">Memo</div><input id="hz-pay-memo" class="hz-in" placeholder="(auto from selection)"></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+          <div><div class="hz-lbl">Date paid</div><input id="hz-pay-date" type="date" class="hz-in"></div>
+          <div><div class="hz-lbl">Amount sent</div><input id="hz-pay-amount" type="number" min="0" step="0.01" class="hz-in"></div>
+        </div>
+        <div id="hz-pay-status" style="font-size:12px;min-height:16px;"></div>
+        <div style="display:flex;gap:10px;justify-content:flex-end;">
+          <button class="btn-sm" id="hz-pay-cancel" style="font-size:13px;padding:10px 16px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-family:inherit;">Cancel</button>
+          <button class="btn-sm" id="hz-pay-confirm" style="font-size:13px;padding:10px 16px;border:1px solid var(--teal);border-radius:6px;background:var(--teal);color:#000;cursor:pointer;font-family:inherit;font-weight:500;">Confirm payment</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <style>
+    .hz-lbl { font-size:11px;color:var(--text-muted);margin-bottom:3px; }
+    .hz-in { width:100%;padding:9px 10px;font-size:13px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);font-family:inherit;box-sizing:border-box; }
+    .hz-row { display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px; }
+    .hz-row.paid { opacity:0.55; }
+    .hz-period { width:96px;color:var(--text-muted);font-size:12px;flex-shrink:0; }
+    .hz-amt { margin-left:auto;font-variant-numeric:tabular-nums;font-weight:500; }
+    .hz-util-row { display:grid;grid-template-columns:1.4fr 1fr 0.8fr auto;gap:6px;align-items:center; }
+  </style>
+
+<%- include('partials/foot') %>
+  <script nonce="<%= nonce %>">
+  (function () {
+    var MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+    function money(n){ return (typeof fmt === 'function') ? fmt(n) : ('$' + Number(n||0).toFixed(2)); }
+    function plabel(p){ if(!/^\d{4}-\d{2}$/.test(p||'')) return p||''; var a=p.split('-'); return MONTHS[(+a[1])-1] + ' ' + a[0]; }
+    function todayStr(){ var d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+
+    var state = { obligations: [], payee: '' };
+
+    // ---- Config form ----
+    function utilRow(u){
+      u = u || { label:'', cadence_months:1, due_day:15 };
+      var div = document.createElement('div');
+      div.className = 'hz-util-row';
+      div.innerHTML =
+        '<input class="hz-in hz-u-label" placeholder="e.g. Electricity" value="'+esc(u.label)+'">' +
+        '<select class="hz-in hz-u-cad">' +
+          '<option value="1"'+(u.cadence_months==1?' selected':'')+'>Monthly</option>' +
+          '<option value="2"'+(u.cadence_months==2?' selected':'')+'>Every 2 months</option>' +
+          '<option value="3"'+(u.cadence_months==3?' selected':'')+'>Quarterly</option>' +
+        '</select>' +
+        '<input class="hz-in hz-u-day" type="number" min="1" max="31" value="'+(u.due_day||15)+'" title="Due day">' +
+        '<button class="btn-sm hz-u-del" type="button" style="border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--red,#eb6b6b);cursor:pointer;padding:6px 10px;font-family:inherit;">&times;</button>';
+      div.querySelector('.hz-u-del').addEventListener('click', function(){ div.remove(); });
+      return div;
+    }
+    function fillConfig(cfg){
+      document.getElementById('hz-enabled').checked = !!cfg.enabled;
+      document.getElementById('hz-payee').value = cfg.payee_name || '';
+      document.getElementById('hz-lead').value = cfg.reminder_lead_days != null ? cfg.reminder_lead_days : 5;
+      document.getElementById('hz-rent').value = cfg.rent_amount || '';
+      document.getElementById('hz-rent-day').value = cfg.rent_due_day || 1;
+      var box = document.getElementById('hz-utils');
+      box.innerHTML = '';
+      (cfg.utilities || []).forEach(function(u){ box.appendChild(utilRow(u)); });
+    }
+    function readConfig(){
+      var utils = Array.prototype.map.call(document.querySelectorAll('.hz-util-row'), function(r){
+        return {
+          label: r.querySelector('.hz-u-label').value.trim(),
+          cadence_months: parseInt(r.querySelector('.hz-u-cad').value, 10) || 1,
+          due_day: parseInt(r.querySelector('.hz-u-day').value, 10) || 15
+        };
+      }).filter(function(u){ return u.label; });
+      return {
+        enabled: document.getElementById('hz-enabled').checked,
+        payee_name: document.getElementById('hz-payee').value.trim(),
+        reminder_lead_days: parseInt(document.getElementById('hz-lead').value, 10) || 0,
+        rent_amount: parseFloat(document.getElementById('hz-rent').value) || 0,
+        rent_due_day: parseInt(document.getElementById('hz-rent-day').value, 10) || 1,
+        utilities: utils
+      };
+    }
+
+    document.getElementById('hz-add-util').addEventListener('click', function(){
+      document.getElementById('hz-utils').appendChild(utilRow());
+    });
+    document.getElementById('hz-save-cfg').addEventListener('click', async function(){
+      var btn = this; btn.disabled = true;
+      try {
+        var cfg = readConfig();
+        if (cfg.enabled && !cfg.payee_name) { showMsg('Enter a payee name first.', false); btn.disabled = false; return; }
+        var res = await apiFetch('/api/housing/config', { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify(cfg) });
+        if (!res.ok) { var e = await res.json().catch(function(){return {};}); showMsg(e.error || 'Save failed', false); btn.disabled = false; return; }
+        await apiFetch('/api/housing/generate', { method:'POST' }).catch(function(){});
+        showMsg('Saved.', true);
+        load();
+      } catch (err) { showMsg('Save failed: ' + err.message, false); }
+      finally { btn.disabled = false; }
+    });
+
+    // ---- Ledger render ----
+    function renderObligations(obl){
+      var unpaidExists = false;
+      // Group by period desc (already sorted server-side).
+      var html = '';
+      obl.forEach(function(o){
+        if (o.status === 'pending_amount') {
+          html += '<div class="hz-row" data-id="'+o.id+'">' +
+            '<span class="hz-period">'+esc(plabel(o.period))+'</span>' +
+            '<span>'+esc(o.label)+' <span style="color:var(--yellow,#d9b25f);font-size:11px;">awaiting bill</span></span>' +
+            '<span class="hz-amt" style="display:flex;gap:6px;align-items:center;">' +
+              '<button class="btn-sm hz-scan" data-id="'+o.id+'" title="Scan the bill to fill the amount" style="border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--teal);cursor:pointer;padding:5px 10px;font-family:inherit;font-size:12px;">Scan</button>' +
+              '<input class="hz-in hz-set-amt" type="number" min="0" step="0.01" placeholder="amount" style="width:110px;padding:5px 8px;" data-id="'+o.id+'">' +
+              '<button class="btn-sm hz-save-amt" data-id="'+o.id+'" style="border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;padding:5px 10px;font-family:inherit;font-size:12px;">Set</button>' +
+            '</span></div>';
+        } else if (o.status === 'unpaid') {
+          unpaidExists = true;
+          html += '<div class="hz-row" data-id="'+o.id+'">' +
+            '<input type="checkbox" class="hz-pick" data-id="'+o.id+'" data-amt="'+o.amount+'" data-label="'+esc(o.label)+'" data-period="'+o.period+'">' +
+            '<span class="hz-period">'+esc(plabel(o.period))+'</span>' +
+            '<span>'+esc(o.label)+'</span>' +
+            '<span class="hz-amt">'+money(o.amount)+'</span></div>';
+        } else { // paid
+          html += '<div class="hz-row paid" data-id="'+o.id+'">' +
+            '<span class="hz-period">'+esc(plabel(o.period))+'</span>' +
+            '<span>'+esc(o.label)+' <span style="color:var(--green,#6fcf97);font-size:11px;">paid</span></span>' +
+            '<span class="hz-amt">'+money(o.amount)+'</span></div>';
+        }
+      });
+      var box = document.getElementById('hz-obligations');
+      box.innerHTML = obl.length ? html : '<div style="color:var(--text-muted);font-size:13px;">No obligations yet — save your config to generate this month.</div>';
+      box.querySelectorAll('.hz-pick').forEach(function(cb){ cb.addEventListener('change', updateRecordBtn); });
+      box.querySelectorAll('.hz-save-amt').forEach(function(b){ b.addEventListener('click', function(){ setAmount(this.dataset.id); }); });
+      box.querySelectorAll('.hz-scan').forEach(function(b){ b.addEventListener('click', function(){ startScan(this.dataset.id); }); });
+      updateRecordBtn();
+      maybeFocusPending();
+    }
+    // Quick-entry: when the reminder deep-links to #pending, scroll to and focus
+    // the first awaiting-bill amount input so entering the figure is one tap.
+    var pendingFocused = false;
+    function maybeFocusPending(){
+      if (pendingFocused || location.hash !== '#pending') return;
+      var input = document.querySelector('.hz-set-amt');
+      if (input) { pendingFocused = true; input.scrollIntoView({ block: 'center' }); input.focus(); }
+    }
+
+    // ---- Bill scan (OCR via Claude vision) ----
+    var scanTargetId = null;
+    var scanFile = document.getElementById('hz-scan-file');
+    function startScan(id){ scanTargetId = id; if (scanFile){ scanFile.value = ''; scanFile.click(); } }
+    if (scanFile) scanFile.addEventListener('change', async function(){
+      if (!scanFile.files || !scanFile.files[0] || !scanTargetId) return;
+      var id = scanTargetId;
+      var input = document.querySelector('.hz-set-amt[data-id="'+id+'"]');
+      var btn = document.querySelector('.hz-scan[data-id="'+id+'"]');
+      if (btn) { btn.disabled = true; btn.textContent = 'Scanning…'; }
+      try {
+        var fd = new FormData(); fd.append('file', scanFile.files[0]);
+        var res = await apiFetch('/api/housing/scan-bill', { method:'POST', body: fd });
+        var d = await res.json().catch(function(){ return {}; });
+        if (!res.ok) { showMsg(d.error || 'Scan failed', false); return; }
+        if (d.amount != null && input) {
+          input.value = d.amount;
+          input.focus();
+          showMsg('Found ' + money(d.amount) + (d.label ? ' for ' + d.label : '') + ' — review and Set.', true);
+        } else {
+          showMsg("Couldn't read an amount — enter it manually.", false);
+        }
+      } catch (err) { showMsg('Scan failed: ' + err.message, false); }
+      finally { if (btn) { btn.disabled = false; btn.textContent = 'Scan'; } scanTargetId = null; }
+    });
+    function selected(){ return Array.prototype.filter.call(document.querySelectorAll('.hz-pick'), function(c){ return c.checked; }); }
+    function updateRecordBtn(){
+      var sel = selected();
+      var btn = document.getElementById('hz-record-btn');
+      var sum = sel.reduce(function(s,c){ return s + parseFloat(c.dataset.amt||0); }, 0);
+      btn.disabled = sel.length === 0;
+      btn.textContent = sel.length ? ('Record payment (' + money(sum) + ')') : 'Record payment';
+    }
+    async function setAmount(id){
+      var input = document.querySelector('.hz-set-amt[data-id="'+id+'"]');
+      var val = input.value === '' ? null : parseFloat(input.value);
+      if (val !== null && (!isFinite(val) || val < 0)) { showMsg('Enter a valid amount.', false); return; }
+      var res = await apiFetch('/api/housing/obligations/'+id, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ amount: val }) });
+      if (res.ok) { showMsg('Amount saved.', true); load(); }
+      else { var e = await res.json().catch(function(){return {};}); showMsg(e.error || 'Failed', false); }
+    }
+
+    function renderPayments(payments){
+      if (!payments.length) { document.getElementById('hz-payments').innerHTML = '<div style="color:var(--text-muted);font-size:13px;">No payments recorded yet.</div>'; return; }
+      document.getElementById('hz-payments').innerHTML = payments.map(function(p){
+        var covers = (p.covers || []).map(function(c){ return plabel(c.period) + ' ' + esc(c.label); }).join(', ');
+        return '<div class="hz-row" style="align-items:flex-start;">' +
+          '<span class="hz-period">'+esc(p.paid_date)+'</span>' +
+          '<span style="flex:1;"><strong>'+money(p.amount)+'</strong>'+(p.memo?' — '+esc(p.memo):'')+
+            (covers?'<div style="font-size:11px;color:var(--text-muted);">'+covers+'</div>':'')+'</span>' +
+          '<button class="btn-sm hz-pay-del" data-id="'+p.id+'" title="Undo this payment" style="border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--red,#eb6b6b);cursor:pointer;padding:4px 9px;font-family:inherit;font-size:12px;">Undo</button>' +
+          '</div>';
+      }).join('');
+      document.querySelectorAll('.hz-pay-del').forEach(function(b){ b.addEventListener('click', function(){ undoPayment(this.dataset.id); }); });
+    }
+    async function undoPayment(id){
+      if (!confirm('Undo this payment? The covered months go back to unpaid.')) return;
+      var res = await apiFetch('/api/housing/payments/'+id, { method:'DELETE' });
+      if (res.ok) { showMsg('Payment undone.', true); load(); }
+      else { showMsg('Failed to undo.', false); }
+    }
+
+    // ---- Record-payment modal ----
+    var modal = document.getElementById('hz-pay-modal');
+    function openPay(){
+      var sel = selected();
+      if (!sel.length) return;
+      var sum = sel.reduce(function(s,c){ return s + parseFloat(c.dataset.amt||0); }, 0);
+      document.getElementById('hz-pay-items').innerHTML = 'Settling ' + sel.length + ' item(s): ' +
+        sel.map(function(c){ return esc(plabel(c.dataset.period)) + ' ' + esc(c.dataset.label); }).join(', ');
+      document.getElementById('hz-pay-memo').value = '';
+      document.getElementById('hz-pay-date').value = todayStr();
+      document.getElementById('hz-pay-amount').value = (Math.round(sum*100)/100);
+      document.getElementById('hz-pay-status').textContent = '';
+      modal.style.display = 'block';
+    }
+    function closePay(){ modal.style.display = 'none'; }
+    document.getElementById('hz-record-btn').addEventListener('click', openPay);
+    document.getElementById('hz-pay-cancel').addEventListener('click', closePay);
+    modal.addEventListener('click', function(e){ if (e.target === modal) closePay(); });
+    document.addEventListener('keydown', function(e){ if (e.key === 'Escape' && modal.style.display === 'block') closePay(); });
+    document.getElementById('hz-pay-confirm').addEventListener('click', async function(){
+      var sel = selected();
+      if (!sel.length) return;
+      var btn = this; btn.disabled = true;
+      var st = document.getElementById('hz-pay-status'); st.style.color = 'var(--text-muted)'; st.textContent = 'Saving…';
+      try {
+        var body = {
+          obligation_ids: sel.map(function(c){ return parseInt(c.dataset.id, 10); }),
+          paid_date: document.getElementById('hz-pay-date').value,
+          amount: parseFloat(document.getElementById('hz-pay-amount').value),
+          memo: document.getElementById('hz-pay-memo').value.trim() || undefined
+        };
+        var res = await apiFetch('/api/housing/payments', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+        var data = await res.json().catch(function(){return {};});
+        if (res.ok) { closePay(); showMsg('Payment recorded.', true); load(); }
+        else { st.style.color = 'var(--red,#eb6b6b)'; st.textContent = data.error || 'Failed'; }
+      } catch (err) { st.style.color = 'var(--red,#eb6b6b)'; st.textContent = err.message; }
+      finally { btn.disabled = false; }
+    });
+
+    // ---- Export (landlord-ready record) ----
+    (function wireExport(){
+      var yr = document.getElementById('hz-export-year');
+      if (yr && !yr.value) yr.value = new Date().getFullYear();
+      Array.prototype.forEach.call(document.querySelectorAll('.hz-export'), function(b){
+        b.addEventListener('click', function(){
+          var year = (yr && yr.value) || new Date().getFullYear();
+          var url = '/api/housing/export?year=' + encodeURIComponent(year) + '&format=' + this.dataset.fmt;
+          // Direct navigation carries the session cookie; withBase prefixes the
+          // shell mount path. The endpoint returns an attachment (Content-Disposition).
+          window.location.href = (typeof withBase === 'function' ? withBase(url) : url);
+        });
+      });
+    })();
+
+    // ---- Utility trends (per-utility amount history + delta) ----
+    function sparkline(values){
+      // values: [{period, amount}] oldest→newest. Inline SVG polyline, no deps.
+      var W = 120, H = 28, P = 2;
+      if (values.length < 2) return '';
+      var amts = values.map(function(v){ return v.amount; });
+      var min = Math.min.apply(null, amts), max = Math.max.apply(null, amts);
+      var range = (max - min) || 1;
+      var pts = values.map(function(v, i){
+        var x = P + (values.length === 1 ? (W-2*P)/2 : i * (W - 2*P) / (values.length - 1));
+        var y = H - P - ((v.amount - min) / range) * (H - 2*P);
+        return x.toFixed(1) + ',' + y.toFixed(1);
+      }).join(' ');
+      var lastX = P + (values.length - 1) * (W - 2*P) / (values.length - 1);
+      var lastY = H - P - ((amts[amts.length-1] - min) / range) * (H - 2*P);
+      return '<svg width="'+W+'" height="'+H+'" viewBox="0 0 '+W+' '+H+'" style="overflow:visible;">' +
+        '<polyline points="'+pts+'" fill="none" stroke="var(--teal)" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>' +
+        '<circle cx="'+lastX.toFixed(1)+'" cy="'+lastY.toFixed(1)+'" r="2.2" fill="var(--teal)"/></svg>';
+    }
+    function monthsBack(period, n){
+      var a = period.split('-').map(Number); var idx = a[0]*12 + (a[1]-1) - n;
+      return Math.floor(idx/12) + '-' + String((idx%12)+1).padStart(2,'0');
+    }
+    function renderTrends(obl){
+      // Group known-amount utility obligations by label, oldest→newest.
+      var byLabel = {};
+      obl.forEach(function(o){
+        if (o.category !== 'utility' || o.amount == null) return;
+        (byLabel[o.label] = byLabel[o.label] || []).push({ period: o.period, amount: parseFloat(o.amount) });
+      });
+      var labels = Object.keys(byLabel).filter(function(l){ return byLabel[l].length >= 1; });
+      if (!labels.length) { document.getElementById('hz-trends-card').style.display = 'none'; return; }
+      var html = labels.map(function(label){
+        var series = byLabel[label].sort(function(a,b){ return a.period < b.period ? -1 : 1; });
+        var latest = series[series.length - 1];
+        var byPeriod = {}; series.forEach(function(s){ byPeriod[s.period] = s.amount; });
+        // Prefer same-month-last-year; fall back to the previous reading.
+        var yoyP = monthsBack(latest.period, 12);
+        var cmp = byPeriod[yoyP] != null ? { v: byPeriod[yoyP], label: 'vs last year' }
+                : (series.length >= 2 ? { v: series[series.length-2].amount, label: 'vs prev' } : null);
+        var delta = '';
+        if (cmp && cmp.v > 0) {
+          var pct = Math.round(((latest.amount - cmp.v) / cmp.v) * 100);
+          var col = pct > 0 ? 'var(--warm)' : 'var(--green)';
+          delta = '<span style="color:'+col+';font-size:11px;">'+(pct>0?'+':'')+pct+'% '+cmp.label+'</span>';
+        }
+        return '<div style="display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--border);">' +
+          '<span style="min-width:110px;font-size:13px;">'+esc(label)+'</span>' +
+          '<span style="font-variant-numeric:tabular-nums;font-weight:500;min-width:80px;">'+money(latest.amount)+'</span>' +
+          '<span>'+delta+'</span>' +
+          '<span style="margin-left:auto;">'+sparkline(series)+'</span>' +
+        '</div>';
+      }).join('');
+      document.getElementById('hz-trends').innerHTML = html;
+      document.getElementById('hz-trends-card').style.display = 'block';
+    }
+
+    // ---- Load ----
+    async function load(){
+      try {
+        var res = await apiFetch('/api/housing/ledger');
+        if (!res.ok) { document.getElementById('hz-summary').innerHTML = '<div style="color:var(--text-muted);">Could not load.</div>'; return; }
+        var d = await res.json();
+        state.payee = d.config.payee_name || '';
+        fillConfig(d.config);
+        var configured = d.config.enabled && d.config.payee_name;
+        // Summary
+        var awaiting = d.awaiting_count ? (' · <span style="color:var(--yellow,#d9b25f);">'+d.awaiting_count+' awaiting bill</span>') : '';
+        document.getElementById('hz-summary').innerHTML = configured
+          ? ('<div style="font-size:12px;color:var(--text-muted);">Owed to '+esc(d.config.payee_name)+'</div>' +
+             '<div style="font-size:30px;font-weight:600;margin-top:2px;">'+money(d.balance)+'</div>' +
+             '<div style="font-size:12px;color:var(--text-muted);margin-top:2px;">'+(d.obligations.filter(function(o){return o.status==="unpaid";}).length)+' unpaid item(s)'+awaiting+'</div>')
+          : '<div style="font-size:13px;color:var(--text-muted);">Set up a payee below to start tracking rent &amp; utilities. Open <strong>Setup &amp; configuration</strong>.</div>';
+        // Sections
+        document.getElementById('hz-owed-card').style.display = configured ? 'block' : 'none';
+        document.getElementById('hz-history-card').style.display = configured ? 'block' : 'none';
+        if (!configured) { document.getElementById('hz-config-wrap').open = true; }
+        renderObligations(d.obligations);
+        renderPayments(d.payments);
+        if (configured) renderTrends(d.obligations);
+        else document.getElementById('hz-trends-card').style.display = 'none';
+      } catch (err) {
+        document.getElementById('hz-summary').innerHTML = '<div style="color:var(--text-muted);">Could not load.</div>';
+      }
+    }
+    load();
+  })();
+  </script>
+</body></html>
