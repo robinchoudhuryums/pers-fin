@@ -417,9 +417,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1022 tests as of latest); use
+  Perfin and Per-sistant test files (1023 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1022 tests across 39 test files (incl.
+  Current count: 1023 tests across 39 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -1310,7 +1310,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1022 tests passing across 39 test files (Perfin 630 + Per-sistant 392), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1023 tests passing across 39 test files (Perfin 631 + Per-sistant 392), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
@@ -2007,8 +2007,11 @@ Transfers are identified by keyword matching on merchant_name/name fields:
   single recurring-transfer entry instead of fragmenting across raw merchant strings.
 - Detection algorithm reuses subscription detection gap analysis (findModeAmount, addDays)
   with wider 15% amount tolerance and 7/14-day cadences for weekly/biweekly patterns
-- Cadences ≥60 days (bi-monthly, quarterly, yearly) require only 2+ occurrences;
-  shorter cadences (7/14/30) require 3+ occurrences
+- Cadences ≥60 days (bi-monthly, quarterly, yearly) require only 2+ occurrences
+  (1 matching gap); shorter cadences (7/14/30) require 3+ occurrences. Both the
+  occurrence floor and the matching-gap threshold gate on `>= 60` — previously
+  the gap threshold was `>= 90`, so a 60-day transfer still demanded 3 occurrences
+  and the 2-occurrence allowance was unreachable (F4).
 - Outgoing and incoming transactions analyzed as separate streams
 - Outgoing recurring transfers integrated into cash flow forecast
 - User-dismissed transfers are preserved across detection runs: the upsert's
@@ -2523,11 +2526,13 @@ income module, and bill-calendar income detection.
   Outbound HTTP helpers (`sendPerSistantWebhook`) follow a parallel
   contract: `{ sent: bool, status?, reason?, error? }`. `reason` is an
   enum-style string (`"not_configured"`, `"missing_secret"`,
-  `"decryption_failed"`) so callers can branch on the specific failure mode
-  rather than parsing logs. `getPersistentConfig` decrypts the webhook secret
+  `"decryption_failed"`, `"config_error"`) so callers can branch on the specific
+  failure mode rather than parsing logs. `getPersistentConfig` decrypts the webhook secret
   in a separate query from the url/enabled read, so a `TOKEN_ENCRYPTION_PASSPHRASE`
   mismatch surfaces as `"decryption_failed"` instead of masquerading as
-  `"not_configured"` (SN-3).
+  `"not_configured"` (SN-3); likewise a DB error on the url/enabled read itself
+  returns `{ configError: true }` → reason `"config_error"` rather than the
+  misleading `"not_configured"` (F23).
 - **"Since last X" watermarks live in `user_settings`, not in cookies.**
   The anomaly notifier (`last_anomaly_check_at`) and the "since you last
   looked" dashboard widget (`last_dashboard_view_at`) both use a single
@@ -2906,7 +2911,7 @@ INV-28 | pgvector objects are created defensively (only if the `vector` extensio
 INV-29 | Retrieval is HYBRID (vector + keyword legs fused via Reciprocal Rank Fusion, dedupe on kind:id) — either leg failing degrades to the other alone; /query & /diagram degrade to sources-only / null when AI is off or unavailable | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js, apps/per-sistant/tests/rag-v2.test.js
 INV-30 | Embedding dimension (1024) matches chunks.embedding vector(1024); a provider/dimension change is a re-embed migration, not a config flip | Subsystem: Knowledge / RAG | Verify: code read services/embeddings.js EMBED_DIM
 INV-31 | embed_state content-hash skip prevents re-embedding unchanged sources | Subsystem: Knowledge / RAG | Verify: code read vault-sync.embedSource
-INV-32 | Answer cache keyed on query+model+corpus_version (notes+documents+facts max(updated_at)+count), with a SEMANTIC fallback layer (query-embedding cosine >= 0.97, same model+corpus_version+TTL — RAG v2, db/019); finance-grounded answers bypass both layers | Subsystem: Knowledge / RAG | Verify: tests/knowledge-cache.test.js + apps/per-sistant/tests/rag-v2.test.js + routes/rag.js useCache gate
+INV-32 | Answer cache keyed on query+model+corpus_version (notes+documents+facts+fact_verifications max(updated_at)+count — F14 folds in fact_verifications so verify/unverify invalidates), with a SEMANTIC fallback layer (query-embedding cosine >= 0.97, same model+corpus_version+TTL — RAG v2, db/019); a SEMANTIC hit returns sources_from_similar_query=true (the cached sources reflect the original query's retrieval and the answer's [n] links are tied to that ordering, so they're kept, not re-retrieved — the Knowledge page caveats it; F12); finance-grounded answers bypass both layers | Subsystem: Knowledge / RAG | Verify: tests/knowledge-cache.test.js + apps/per-sistant/tests/rag-v2.test.js + routes/rag.js useCache gate
 INV-33 | Vault sync is read-only (VAULT_GITHUB_TOKEN); capture writes only with the separate write-scoped VAULT_GITHUB_WRITE_TOKEN (400 until set) | Subsystem: Knowledge / RAG | Verify: tests/knowledge-capture.test.js
 INV-34 | Citations enabled all-or-none per request; incompatible with structured outputs (unused here) | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js (answerWithCitations)
 INV-35 | Cross-app finance grounding reads perfinPool read-only, only on finance queries, never an HTTP self-fetch (parallels INV-25) | Subsystem: Knowledge / RAG | Verify: tests/knowledge-crossapp.test.js
