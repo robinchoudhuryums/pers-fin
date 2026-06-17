@@ -534,6 +534,15 @@
     </details>
   </div>
 
+  <!-- Rent & Utilities — balance owed to the payee -->
+  <div class="section" id="housing-widget-section" style="display:none;margin-bottom:28px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+      <h2 style="margin:0;">Rent &amp; Utilities</h2>
+      <a href="<%= basePath %>/housing" style="font-size:12px;color:var(--teal);text-decoration:none;">Manage &rarr;</a>
+    </div>
+    <div id="housing-widget-body" style="margin-top:10px;font-size:13px;"></div>
+  </div>
+
   <!-- Investments (Teller-linked + Plaid + manual, unified) -->
   <div class="section" id="investments-section" style="margin-bottom:28px;">
     <details open>
@@ -3144,6 +3153,36 @@
       } catch (e) { /* non-critical */ }
     }
 
+    // Rent & Utilities widget — current balance owed to the payee. Auto-hides
+    // when the ledger isn't configured. Backed by GET /api/housing/ledger.
+    async function loadHousingWidget() {
+      var section = document.getElementById('housing-widget-section');
+      var body = document.getElementById('housing-widget-body');
+      if (!section || !body) return;
+      try {
+        var r = await apiFetch('/api/housing/ledger');
+        if (!r.ok) return;
+        var d = await r.json();
+        if (!d.config || !d.config.enabled || !d.config.payee_name) { section.style.display = 'none'; return; }
+        var unpaid = (d.obligations || []).filter(function(o){ return o.status === 'unpaid'; }).length;
+        var awaiting = d.awaiting_count || 0;
+        var bits = [];
+        bits.push(unpaid + ' unpaid item' + (unpaid === 1 ? '' : 's'));
+        if (awaiting) bits.push('<span style="color:var(--yellow,#d9b25f);">' + awaiting + ' awaiting bill</span>');
+        var color = d.balance > 0 ? 'var(--warm)' : 'var(--green)';
+        body.innerHTML =
+          '<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap;">' +
+            '<div>' +
+              '<div style="font-size:11px;color:var(--text-muted);">Owed to ' + esc(d.config.payee_name) + '</div>' +
+              '<div style="font-size:26px;font-weight:600;color:' + color + ';margin-top:2px;">' + fmtMoney(d.balance) + '</div>' +
+            '</div>' +
+            '<div style="font-size:11px;color:var(--text-muted);text-align:right;">' + bits.join(' &middot; ') + '</div>' +
+          '</div>' +
+          (awaiting ? '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;">Enter the latest utility amount on the Rent page to keep the balance accurate.</div>' : '');
+        section.style.display = '';
+      } catch (e) { /* non-critical */ }
+    }
+
     // Ask Perfin — NL Q&A
     (function initAsk() {
       var input = document.getElementById('ask-input');
@@ -3229,6 +3268,7 @@
           reviewQueue: '#review-queue-section',
           aiMemory: '#ai-memory-section',
           settlement: '#settlement-section',
+          housing: '#housing-widget-section',
         };
         Object.entries(map).forEach(function(e) {
           var key = e[0], selector = e[1];
@@ -3251,6 +3291,7 @@
     loadReviewQueue();
     loadAiMemory();
     loadSettlement();
+    loadHousingWidget();
 
     computeWellness();
 

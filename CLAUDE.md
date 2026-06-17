@@ -611,8 +611,10 @@ shell/
   obligations link back via `paid_payment_id` (FK-by-convention) and an
   Undo reverts them. Unpaid obligations with a known amount also surface on the
   **bill calendar** (`bill_source='housing'`, display-only — settled via the Rent
-  page, not the calendar's `bill_payments` toggle). Tables: `payee_obligations`,
-  `payee_payments`.
+  page, not the calendar's `bill_payments` toggle). A **dashboard widget**
+  (`#housing-widget-section`, toggle key `housing`, default on) shows the current
+  balance owed + unpaid/awaiting counts, auto-hiding when the ledger isn't
+  configured. Tables: `payee_obligations`, `payee_payments`.
 - **Merchant categorization rules**: Persistent merchant→category rules applied before
   AI categorization to reduce API costs. CRUD via `/api/categorization-rules`.
   Match types: `contains`, `exact`, `starts_with`. `POST /api/categorize` applies
