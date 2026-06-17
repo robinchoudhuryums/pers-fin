@@ -256,7 +256,8 @@ POST   /api/webhooks/:id/test      # Test a webhook
 
 # Notifications
 GET    /api/notifications/check    # Check for due tasks, overdue, streaks at risk (todos AND
-                                   # habits), reminders, upcoming facts (habit leg fail-soft)
+                                   # habits), reminders, upcoming facts, and rent/utilities due
+                                   # (housing_due — cross-app via perfinPool, read-only, fail-soft)
 
 # Health & Habits API
 GET    /api/habits                 # Active habits + streaks + 7-day grid (?all=1 adds archived)
