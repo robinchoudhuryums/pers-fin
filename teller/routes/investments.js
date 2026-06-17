@@ -631,7 +631,10 @@ async function syncAllPlaidTransactions() {
                ON CONFLICT (source, source_id, snapshot_date) DO UPDATE SET
                  balance = EXCLUDED.balance, current_balance = EXCLUDED.current_balance,
                  available_balance = EXCLUDED.available_balance`,
-              [la.id, ba.balances.current ?? ba.balances.available, ba.balances.current, ba.balances.available]
+              // current_balance mirrors the picked balance (current ?? available)
+              // so a card reporting current=null/available=N doesn't snapshot a
+              // null current_balance inconsistent with the `balance` column (F16).
+              [la.id, ba.balances.current ?? ba.balances.available, ba.balances.current ?? ba.balances.available, ba.balances.available]
             ).catch(e => console.error("Plaid balance snapshot error:", e.message));
           }
         }
@@ -731,7 +734,9 @@ async function syncAllPlaidBalances() {
                balance = EXCLUDED.balance,
                available_balance = EXCLUDED.available_balance,
                current_balance = EXCLUDED.current_balance`,
-            [upd.rows[0].id, daily, avail, cur]
+            // current_balance uses `daily` (cur ?? avail) so it matches the
+            // `balance` column when Plaid reports current=null (F16).
+            [upd.rows[0].id, daily, avail, daily]
           ).catch(e => console.error("Plaid balance snapshot error:", e.message));
         }
       }

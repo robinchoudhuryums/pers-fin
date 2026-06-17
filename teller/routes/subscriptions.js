@@ -92,9 +92,13 @@ router.post("/api/subscriptions", async (req, res) => {
          display_name = EXCLUDED.display_name,
          amount = EXCLUDED.amount,
          notes = EXCLUDED.notes,
-         is_active = true,
-         is_dismissed = false,
-         cancelled_at = NULL,
+         -- Only reset user state when the existing row is itself a MANUAL entry
+         -- (the user is re-adding their own bill). If a generated manual_<name>
+         -- key collides with an auto-detected row the user cancelled/dismissed,
+         -- preserve that state instead of silently re-activating it (F5).
+         is_active = CASE WHEN detected_subscriptions.source = 'manual' THEN true ELSE detected_subscriptions.is_active END,
+         is_dismissed = CASE WHEN detected_subscriptions.source = 'manual' THEN false ELSE detected_subscriptions.is_dismissed END,
+         cancelled_at = CASE WHEN detected_subscriptions.source = 'manual' THEN NULL ELSE detected_subscriptions.cancelled_at END,
          updated_at = now()
        RETURNING *`,
       [merchantKey, name, parsedAmount, parsedCadence, today, nextExpected, notes || null]

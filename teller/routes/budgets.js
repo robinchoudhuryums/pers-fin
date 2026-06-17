@@ -262,7 +262,15 @@ router.post("/api/budgets/accept", async (req, res) => {
     return res.status(400).json({ error: "budgets array is required" });
   }
   try {
-    const valid = budgets.filter(b => b.category && b.monthly_limit != null);
+    // Validate monthly_limit (parity with POST /api/budgets + /suggest): finite,
+    // non-negative, bounded — so a tampered/malformed array can't persist a
+    // negative/NaN/absurd limit that yields a negative effective_limit and
+    // nonsensical alert math downstream (F21).
+    const valid = budgets.filter(b => {
+      if (!b.category || b.monthly_limit == null) return false;
+      const n = parseFloat(b.monthly_limit);
+      return Number.isFinite(n) && n >= 0 && n <= 100000;
+    });
     if (valid.length === 0) return res.status(400).json({ error: "No valid budgets in array" });
 
     // Build batch upsert

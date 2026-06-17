@@ -40,7 +40,14 @@ const CSV_FORMATS = {
       // Capital One uses separate Debit/Credit columns; Debit = positive spending, Credit = negative (payment/refund)
       const debit = parseMoney(row["Debit"]);
       const credit = parseMoney(row["Credit"]);
-      const amount = !isNaN(debit) ? debit : -(isNaN(credit) ? 0 : credit);
+      // A non-zero Debit is spending; otherwise a real Credit is a refund/payment.
+      // Treat a literal 0 Debit as "no debit" so a refund row that happens to ship
+      // Debit="0" with a populated Credit isn't read as a $0 charge, losing the
+      // credit (F17). A genuine $0 authorization (Debit 0, no Credit) stays 0 and
+      // is skipped by the amount===0 guard, exactly as before.
+      const amount = (!isNaN(debit) && debit !== 0)
+        ? debit
+        : (!isNaN(credit) ? -credit : (isNaN(debit) ? NaN : 0));
       return {
         date: row["Transaction Date"],
         merchant_name: row["Description"],

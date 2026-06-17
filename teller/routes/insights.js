@@ -842,6 +842,7 @@ async function generateInsights() {
           // token cap or errors. The UPSERT is idempotent (ON CONFLICT), so a
           // subsequent run re-affirms them harmlessly. ('ai_detected' labels the
           // detection *channel*, not a dependency on the model's reply.)
+          let taxPersistFailed = false;
           for (const row of taxData.rows) {
             await pool.query(
               `INSERT INTO tax_deductions (tax_year, merchant, amount, category, deduction_type)
@@ -849,8 +850,12 @@ async function generateInsights() {
                ON CONFLICT (merchant, tax_year) WHERE transaction_id IS NULL
                DO UPDATE SET amount = EXCLUDED.amount, flagged_at = now()`,
               [row.merchant, parseFloat(row.total)]
-            ).catch(err => console.error("tax_deductions upsert error for", row.merchant, ":", err.message));
+            ).catch(err => { taxPersistFailed = true; console.error("tax_deductions upsert error for", row.merchant, ":", err.message); });
           }
+          // The deterministic YTD persistence (AI-8) is the module's real output;
+          // if those upserts silently failed (e.g. a broken tax_deductions table),
+          // surface it via modules_failed rather than reporting clean success (F9).
+          if (taxPersistFailed) failedModules.add("tax_deductions");
         }
       } catch (err) { console.error("Tax deductions query error:", err.message); failedModules.add("tax_deductions"); }
     }

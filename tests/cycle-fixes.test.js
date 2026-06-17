@@ -386,8 +386,11 @@ describe("Tier 4 — source-pinned (DC-1/DC-5/DC-7/F7)", () => {
   it("DC-1: leftover uncategorized count excludes user_category-set rows", () => {
     assert.match(cat, /WHERE user_category IS NULL/);
   });
-  it("DC-5: manual-sub re-add clears is_dismissed", () => {
-    assert.match(subs, /is_active = true,\s*\n\s*is_dismissed = false/);
+  it("DC-5/F5: manual-sub re-add clears state only for an existing MANUAL row", () => {
+    // F5: the clear is now source-guarded — a manual_<name> key colliding with an
+    // auto-detected row the user cancelled/dismissed must NOT silently re-activate it.
+    assert.match(subs, /is_dismissed = CASE WHEN detected_subscriptions\.source = 'manual' THEN false/);
+    assert.match(subs, /cancelled_at = CASE WHEN detected_subscriptions\.source = 'manual' THEN NULL/);
   });
   it("DC-7: recurring-transfer monthly_equivalent guards divide-by-zero", () => {
     assert.match(subs, /30\.0 \/ NULLIF\(rt\.cadence_days, 0\)/);

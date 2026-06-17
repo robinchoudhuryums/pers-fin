@@ -433,12 +433,14 @@ async function runMigrations() {
       device_name TEXT DEFAULT 'Unknown Device',
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
-    // Authenticator transports (e.g. {internal,hybrid}) captured at    // registration. Without them in allowCredentials, browsers can't tell a
-    // stored credential is a platform authenticator and offer only
-    // cross-device options (QR code / USB key) on the login screen. NULL for
-    // pre-existing rows — the auth-options endpoints fall back to
-    // ['internal','hybrid'], which is always right here because registration
-    // pins authenticatorAttachment: 'platform'.
+    // Authenticator transports captured at registration (stored, but NOT used
+    // as the login hint). Per INV-50 both auth-options endpoints advertise
+    // transports: ['internal'] ONLY in allowCredentials — registration pins
+    // authenticatorAttachment: 'platform', so every credential is same-device,
+    // and advertising the cross-device 'hybrid' transport is exactly what
+    // surfaced the "use a phone" QR option instead of local Touch/Face ID.
+    // NULL for pre-existing rows is fine — the endpoints don't read this column
+    // for the hint.
     await client.query(`ALTER TABLE webauthn_credentials
       ADD COLUMN IF NOT EXISTS transports TEXT[]`);
     // Recurring transfers — detected recurring transfers between accounts

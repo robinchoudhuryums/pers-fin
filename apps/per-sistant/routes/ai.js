@@ -138,8 +138,12 @@ module.exports = function ({ pool }) {
       const cached = getCached(cacheKey, 10 * 60 * 1000);
       if (cached) return res.json({ briefing: cached });
 
+      // (health.streaks_at_risk || []) — the .catch() above only guards a thrown
+      // error, not a success-shaped summary that omits the array; defend it so a
+      // future shape change can't throw a TypeError outside the fail-soft path (F13).
+      const atRisk = (health && health.streaks_at_risk) || [];
       const habitLine = health && health.due_today
-        ? `\nHabits due today: ${health.done_today}/${health.due_today} done${health.streaks_at_risk.length ? `; streaks at risk: ${health.streaks_at_risk.map(h => `${h.name} (${h.current_streak}-day)`).join(", ")}` : ""}`
+        ? `\nHabits due today: ${health.done_today}/${health.due_today} done${atRisk.length ? `; streaks at risk: ${atRisk.map(h => `${h.name} (${h.current_streak}-day)`).join(", ")}` : ""}`
         : "";
       const text = await callAI(model,
         `Today: ${today}\nToday's tasks (${upcoming.rows.length}): ${upcoming.rows.map(t => t.title).join(", ") || "none"}\nOverdue tasks (${overdue.rows.length}): ${overdue.rows.map(t => t.title).join(", ") || "none"}\nScheduled emails today: ${scheduled.rows.map(e => `"${e.subject}" to ${e.recipient_name}`).join(", ") || "none"}\nTotal pending tasks: ${pending.rows.length}\nTop priorities: ${pending.rows.slice(0, 5).map(t => `${t.title} (${t.priority})`).join(", ")}${habitLine}`,

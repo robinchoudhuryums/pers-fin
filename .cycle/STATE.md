@@ -9,6 +9,33 @@ to the "none in progress" state.
 
 ## Current Cycle
 
+- **Status:** **broad-implement Tier 2 + Tier 1 DONE** on branch
+  `claude/loving-rubin-1tkzs5` (2026-06-17). Implemented the remaining scan
+  backlog the operator selected. Suite: **Perfin 631 + Per-sistant 392 = 1023, 0 fail.**
+  - Tier 2: **F20** top-merchants COALESCE filter · **F18** income-summary month-floored
+    window · **F21** budgets/accept limit validation · **F16** Plaid snapshot
+    current_balance mirrors picked balance (both sites) · **F19** whats-new drops
+    Plaid phantom from balance deltas · **F8** audit subscription-total warning tier ·
+    **F5** manual-sub re-add source-guards state clear (DC-5 test re-pinned) ·
+    **F4** 60-day transfer detect at 2 occ (test double + new test) · **F9**
+    tax_deductions persistence failure → modules_failed · **F13** briefing
+    streaks_at_risk guard · **F14** corpusVersion folds fact_verifications ·
+    **F17** CapOne 0-debit-vs-credit fix · **F22** API-key digest compare (no length
+    oracle) · **F26** transports migration comment + SSO nonce doc (12-byte) · **F10**
+    audit savings-rate synonym matching (utilization/budget % deferred — needs
+    reliable per-entity actuals, false-positive risk).
+  - Tier 1: **F12** RAG semantic-cache hit flagged `sources_from_similar_query` +
+    Knowledge-page caveat (kept original sources — [n] links tied to that ordering) ·
+    **F23** getPersistentConfig DB error → `config_error` (not "not_configured"), 4
+    callers updated · **F24** sendToAll returns `logged`; budget-alert email gated on it.
+  - **Already-resolved on merge (skipped):** F25 (settings target_allocation already
+    400s) and F3 (forecast/calendar cadence>0 guards already landed via main's "F8").
+  - **Where I left off:** all implemented + tests green; committing + pushing next.
+    Remaining open scan findings: F6(in main), plus the Tier-3 completeness/strategic
+    items (full timezone, manual cash txn, CSV preview, sync-warning UI strip, audit
+    confidence badge) and roadmap (mobile iOS build — operator). /sync-docs: test
+    count 1022→1023, rows_duplicate already done; F10 partial noted.
+
 - **Status:** **broad-implement DONE + merged with main** on branch
   `claude/loving-rubin-1tkzs5` (2026-06-16). A fresh 3-stage `/broad-scan`
   produced findings F1–F27; the operator selected **F1, F2, F7, F11, F15**.

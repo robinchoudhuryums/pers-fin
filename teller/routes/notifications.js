@@ -144,17 +144,23 @@ router.post("/api/notifications/read-all", async (_req, res) => {
 // Utility: send notification to all subscribers (called internally)
 // Also logs to notification_log for in-app history.
 async function sendToAll(payload) {
-  // Always log to notification_log, even if push isn't configured
+  // Always log to notification_log, even if push isn't configured. This row is
+  // ALSO the dedup marker that sentRecently() reads, so the return value carries
+  // `logged` — if this insert fails, the marker didn't persist and a dedup-gated
+  // caller (e.g. the budget-alert scheduler) must not treat the alert as
+  // recorded, or it would re-fire on the next tick (F24).
+  let logged = false;
   try {
     await pool.query(
       "INSERT INTO notification_log (type, title, body, data) VALUES ($1, $2, $3, $4)",
       [payload.tag || "general", payload.title || "", payload.body || "", JSON.stringify(payload.data || {})]
     );
+    logged = true;
   } catch (err) {
     console.error("notification_log insert error:", err.message);
   }
 
-  if (!pushConfigured()) return { sent: 0, failed: 0 };
+  if (!pushConfigured()) return { sent: 0, failed: 0, logged };
   try {
     const result = await pool.query("SELECT endpoint, keys FROM push_subscriptions");
     let sent = 0, failed = 0;
@@ -170,10 +176,10 @@ async function sendToAll(payload) {
         failed++;
       }
     }
-    return { sent, failed };
+    return { sent, failed, logged };
   } catch (err) {
     console.error("sendToAll push delivery error:", err.message);
-    return { sent: 0, failed: 0 };
+    return { sent: 0, failed: 0, logged };
   }
 }
 

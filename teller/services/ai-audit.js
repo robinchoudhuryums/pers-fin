@@ -224,18 +224,31 @@ async function auditInsight(insightText, insightId) {
       // Check subscription total claims (this-month dollars → same cross-period skip)
       if (!crossPeriod && ctx.includes("subscription") && Math.abs(claim.value - actualSubMonthly) > 1) {
         const pctOff = actualSubMonthly > 0 ? Math.abs(claim.value - actualSubMonthly) / actualSubMonthly : 1;
+        // Same critical/warning split as the per-category check above — a
+        // subscription-total claim off 5-20% now emits a warning instead of
+        // silently passing (F8).
         if (pctOff > 0.20) {
           findings.push({ severity: "critical", tier: 1, check: "subscription_total",
+            claim: `$${claim.value.toFixed(2)}`, expected: `$${actualSubMonthly.toFixed(2)}`,
+            pct_off: Math.round(pctOff * 100), context: claim.context });
+        } else if (pctOff > 0.05) {
+          findings.push({ severity: "warning", tier: 1, check: "subscription_total",
             claim: `$${claim.value.toFixed(2)}`, expected: `$${actualSubMonthly.toFixed(2)}`,
             pct_off: Math.round(pctOff * 100), context: claim.context });
         }
       }
     }
 
-    // Check percentage claims (savings rate)
+    // Check percentage claims (savings rate). Match common phrasings, not just
+    // the literal "savings rate", so "save rate"/"savings ratio"/"saving rate"
+    // claims are validated too (F10). Other percent types (utilization, budget
+    // used, trend %) are deliberately NOT checked here — they have no single
+    // reliable actual in scope and fuzzy per-entity matching would regress
+    // audit precision (the AI-2/AI-4 false-positive class); deferred.
+    const SAVINGS_RATE_RE = /\bsav(?:ings?|e|ing)\s+(?:rate|ratio)\b/;
     const pctClaims = extractPercentClaims(insightText);
     for (const claim of pctClaims) {
-      if (claim.context.toLowerCase().includes("savings rate") && actualSavingsRate !== null) {
+      if (SAVINGS_RATE_RE.test(claim.context.toLowerCase()) && actualSavingsRate !== null) {
         const diff = Math.abs(claim.value - actualSavingsRate);
         if (diff > 10) {
           findings.push({ severity: "critical", tier: 1, check: "savings_rate",

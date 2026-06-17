@@ -31,6 +31,7 @@ ${navBar("/knowledge")}
   <div id="k-answer-wrap" class="section" style="display:none;">
     <h2 style="font-size:14px;">Answer</h2>
     <div id="k-ungrounded" style="display:none;font-size:11px;color:var(--warn);border-left:2px solid var(--warn);padding:6px 10px;margin-bottom:8px;">This answer didn't cite any of your sources, so it may not be grounded in your knowledge base &mdash; double-check it.</div>
+    <div id="k-similar" style="display:none;font-size:11px;color:var(--muted);border-left:2px solid var(--muted);padding:6px 10px;margin-bottom:8px;">Answered from a similar earlier question &mdash; the cited sources reflect that question's retrieval, not this exact phrasing.</div>
     <div id="k-answer" style="font-size:14px;line-height:1.7;"></div>
   </div>
 
@@ -139,6 +140,7 @@ async function ask(){
     if(r.error){ document.getElementById('k-empty-msg').textContent = r.error; kShow('k-empty', true); return; }
     if(r.answer){
       document.getElementById('k-ungrounded').style.display = (r.grounded === false) ? 'block' : 'none';
+      document.getElementById('k-similar').style.display = r.sources_from_similar_query ? 'block' : 'none';
       document.getElementById('k-answer').innerHTML = renderMd(r.answer);
       kShow('k-answer-wrap', true);
     } else if(r.note){

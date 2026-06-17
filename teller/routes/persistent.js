@@ -47,8 +47,13 @@ async function getPersistentConfig() {
       }
     }
     return { url, secret, enabled: s.persistent_webhook_enabled, decryptFailed };
-  } catch {
-    return null;
+  } catch (e) {
+    // A DB error here is NOT the same as "not configured" (null). Returning null
+    // made sendPerSistantWebhook report reason="not_configured" for a transient
+    // pool/query failure (the same silent-degradation class SN-3 closed, on the
+    // outer query). Signal it distinctly so callers don't mislabel it (F23).
+    console.error("getPersistentConfig error:", e.message);
+    return { configError: true };
   }
 }
 
@@ -156,6 +161,7 @@ async function sendPerSistantWebhook(event, data) {
     return deliverDigestInProcess(event, data);
   }
   const config = await getPersistentConfig();
+  if (config && config.configError) return { sent: false, reason: "config_error" };
   if (!config || !config.enabled) return { sent: false, reason: "not_configured" };
   // A configured-but-undecryptable secret means TOKEN_ENCRYPTION_PASSPHRASE no
   // longer matches the stored ciphertext (e.g. after a rotation). Surface it
@@ -280,11 +286,11 @@ router.get("/api/persistent/status", async (req, res) => {
       connected: true,
       embedded: true,
       uptime: Math.floor(process.uptime()),
-      webhook_enabled: cfg ? cfg.enabled : false,
+      webhook_enabled: !!(cfg && cfg.enabled),
     });
   }
   const config = await getPersistentConfig();
-  if (!config) return res.json({ connected: false });
+  if (!config || config.configError) return res.json({ connected: false });
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
   try {
@@ -335,7 +341,7 @@ router.get("/api/persistent/productivity-context", async (req, res) => {
     }
   }
   const config = await getPersistentConfig();
-  if (!config) return res.json({ connected: false });
+  if (!config || config.configError) return res.json({ connected: false });
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
   try {

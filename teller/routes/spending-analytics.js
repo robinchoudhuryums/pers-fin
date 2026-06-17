@@ -115,7 +115,7 @@ router.get("/api/spending-summary", async (req, res) => {
        FROM transactions t
        LEFT JOIN linked_accounts la ON la.account_id = t.account_id
        WHERE t.amount > 0 AND t.pending = false AND COALESCE(t.is_reimbursed, false) = false
-             AND t.merchant_name IS NOT NULL
+             AND COALESCE(t.user_merchant_name, t.merchant_name, t.name) IS NOT NULL
              AND ${NOT_TRANSFER}
              AND t.date >= CURRENT_DATE - ($1 || ' months')::INTERVAL
        GROUP BY COALESCE(t.user_merchant_name, t.merchant_name, t.name)
@@ -552,7 +552,10 @@ router.get("/api/income-summary", async (req, res) => {
                 COUNT(*) AS deposit_count
          FROM transactions
          WHERE amount < 0 AND pending = false
-           AND date >= CURRENT_DATE - make_interval(months => $1)
+           -- Whole-month window (FA-4): floor to the 1st so the oldest bucket is
+           -- a FULL month, matching getMonthlyIncome — otherwise avg_monthly_income
+           -- divides a rolling-window total by a count that includes a partial month.
+           AND date >= date_trunc('month', CURRENT_DATE) - make_interval(months => $1 - 1)
            AND ${INCOME_PREDICATE}
          GROUP BY TO_CHAR(date, 'YYYY-MM')
          ORDER BY month`,
@@ -565,7 +568,10 @@ router.get("/api/income-summary", async (req, res) => {
                 MAX(date) AS last_seen
          FROM transactions
          WHERE amount < 0 AND pending = false
-           AND date >= CURRENT_DATE - make_interval(months => $1)
+           -- Whole-month window (FA-4): floor to the 1st so the oldest bucket is
+           -- a FULL month, matching getMonthlyIncome — otherwise avg_monthly_income
+           -- divides a rolling-window total by a count that includes a partial month.
+           AND date >= date_trunc('month', CURRENT_DATE) - make_interval(months => $1 - 1)
            AND ${INCOME_PREDICATE}
          GROUP BY COALESCE(merchant_name, name)
          ORDER BY total_income DESC
@@ -582,7 +588,7 @@ router.get("/api/income-summary", async (req, res) => {
          LEFT JOIN teller_enrollments te ON te.id = la.teller_enrollment_id
          LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
          WHERE t.amount < 0 AND t.pending = false
-           AND t.date >= CURRENT_DATE - make_interval(months => $1)
+           AND t.date >= date_trunc('month', CURRENT_DATE) - make_interval(months => $1 - 1)
            AND ${INCOME_PREDICATE_T}
          GROUP BY la.id, la.name, te.institution_name, pi.institution_name, la.institution_name_manual
          ORDER BY total_income DESC`,

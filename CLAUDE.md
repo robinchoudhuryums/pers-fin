@@ -2084,7 +2084,7 @@ rows) can dismiss them from the UI or run `POST /api/cleanup`.
   `//host` targets and backslash paths, so the login endpoint can't be turned
   into an open redirect (a naive `startsWith("/")` would have let `//evil.com`
   through).
-- **SSO replay protection**: Each SSO token embeds a 24-byte random nonce; validate tracks
+- **SSO replay protection**: Each SSO token embeds a 12-byte (96-bit) random nonce; validate tracks
   used nonces in an in-memory Map (2-minute TTL cleanup) and rejects duplicates. Nonce is
   consumed after signature verification so timing attacks can't burn legitimate nonces.
   Additionally, the nonce is *reserved* immediately before HMAC verification (atomic
