@@ -417,9 +417,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1023 tests as of latest); use
+  Perfin and Per-sistant test files (1025 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1023 tests across 39 test files (incl.
+  Current count: 1025 tests across 40 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -501,7 +501,14 @@ shell/
     `/transactions/refresh` but cursor-based sync handles it.
   - **Manual**: user-entered via `POST /api/investment-accounts`. Stored in
     `investment_accounts` with no `plaid_account_id`.
-- **CSV import**: Auto-detect Chase, Capital One, Discover, Wells Fargo, Schwab formats
+- **CSV import**: Auto-detect Chase, Capital One, Discover, Wells Fargo, Schwab formats.
+  The dashboard CSV modal is **preview-and-confirm**: it first POSTs `POST
+  /api/import-csv/preview` (a dry-run that detects the format and classifies every
+  row new/duplicate/skipped against existing `transaction_id`s WITHOUT writing,
+  using the SAME `makeCsvTxnIdGenerator` the commit uses), shows the counts + a
+  sample table, then the user confirms to `POST /api/import-csv`. Both routes share
+  the `parseCsvUpload()` helper (in `routes/subscriptions.js`) so format detection,
+  account-label derivation, and dedup IDs can't drift between preview and commit.
 - **Transaction deduplication**: SHA256-based duplicate detection across CSV imports and API syncs.
   CSV dedup IDs fold in a deterministic per-file occurrence index, so two genuinely-distinct rows
   sharing (account, date, amount, merchant) on the same day no longer collide and silently drop the
@@ -1032,6 +1039,14 @@ shell/
   per-item errors from the most recent sync run — see `last_sync_result` below),
   and the last reconcile time — plus a "Reconcile Now" button that POSTs
   `/api/sync/reconcile` to recover any dropped transactions.
+- **Sync-degradation strip** (dashboard): a banner (`#sync-health-strip`) fetches
+  `GET /api/data-health` on load and surfaces its warning-level `issues[]`
+  (disconnected links, stale sync, `decryption_failed`, stale scheduled jobs) at
+  the top of the dashboard — so silent degradation is visible without opening
+  Settings → Sync Health (deep-links there via the `#sync-health` anchor).
+  Dismissible per-session (`sessionStorage`), so a persistent issue re-appears on
+  the next visit rather than being permanently silenced. Hidden when healthy;
+  best-effort — a failed probe never blocks the dashboard.
 - **Web Push notifications**: VAPID-based push notifications for anomalies, budget alerts,
   goal milestones
 - **Accessibility**: Skip-to-content link, `<main>` landmark, chart aria-labels, :focus-visible
@@ -1310,7 +1325,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1023 tests passing across 39 test files (Perfin 631 + Per-sistant 392), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1025 tests passing across 40 test files (Perfin 633 + Per-sistant 392), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
@@ -1517,7 +1532,13 @@ POST /api/categorization-rules       # create a rule (body: merchant_pattern, ca
 DELETE /api/categorization-rules/:id # delete a rule
 POST /api/categorization-rules/apply # apply all active rules to uncategorized transactions
 POST /api/categorization-rules/from-transaction # create rule from a manual categorization
-POST /api/import-csv       # import bank CSV file (with deduplication)
+POST /api/import-csv/preview # dry-run a CSV import: detect format + classify each
+                           # row new/duplicate/skipped vs existing transaction_ids,
+                           # WITHOUT writing. Returns { format_detected, account_label,
+                           # rows_total, rows_parseable, rows_skipped, rows_new,
+                           # rows_duplicate, sample[] }. Backs the two-step upload modal.
+POST /api/import-csv       # import bank CSV file (with deduplication). Returns
+                           # { rows_imported, rows_skipped, rows_duplicate, format_detected }
 GET  /api/csv-imports      # list CSV import history
 GET  /api/export           # download transactions/subscriptions CSV
 POST /api/sheets/sync      # full sync to Google Sheets (all 16+ tabs, ~30-60s)
