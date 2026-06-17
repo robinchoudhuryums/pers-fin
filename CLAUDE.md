@@ -2969,7 +2969,12 @@ Financial Analytics:
   teller/services/financial-queries.js, teller/routes/spending-analytics.js,
   teller/services/projections.js, teller/routes/budgets.js,
   teller/routes/goals.js, teller/routes/credit-scores.js,
-  teller/routes/whats-new.js, teller/routes/watchlist.js
+  teller/routes/whats-new.js, teller/routes/watchlist.js,
+  teller/routes/housing.js
+  (housing.js = the Rent & Utilities single-payee ledger: obligations/payments,
+   monthly generation + reminders, bill OCR, landlord export, and the partner
+   even-up split feeding the dashboard Settle Up widget. Its page/view are
+   covered by the Web UI globs.)
 AI Insights & Audit:
   teller/routes/insights.js, teller/routes/insights-email.js,
   teller/routes/ask.js, teller/services/ai-audit.js

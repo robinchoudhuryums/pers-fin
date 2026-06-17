@@ -67,6 +67,7 @@ Under the unified shell the cross-app integration endpoints (Per-sistant's Perfi
 | `teller/routes/categorize.js` | ML transaction categorization via Claude |
 | `teller/routes/categorize-helpers.js` | Categories, descriptions, Teller→ours map |
 | `teller/routes/investments.js` | Plaid investment accounts (holdings, sync) |
+| `teller/routes/housing.js` | Rent & Utilities ledger (obligations, payments, OCR, landlord export, partner split) |
 | `teller/routes/notifications.js` | Web Push notifications (VAPID) |
 | `teller/pages/*.js` | HTML page generators (dashboard, subscriptions, etc.) |
 | `teller/public/transactions.js` | Transactions page client (Edit modal w/ "remember merchant") |
@@ -309,6 +310,17 @@ Track brokerage, retirement, and crypto holdings via Plaid API integration. Hold
 ### Loan Accounts (Auto Loans etc.)
 
 Loans linked via Plaid (e.g. a credit-union auto loan) — or added manually — are first-class debt: they render under a **Loans** group on the dashboard with a negative balance, count as liabilities in net worth, and feed the AI debt-payoff optimizer alongside credit cards. Plaid never reports auto-loan APR/terms (its Liabilities product covers only credit/student/mortgage), so the loan card has **manual APR + monthly payment fields**; with both set it shows a payoff projection — months remaining, payoff date, and interest left to pay. Loan payments are auto-detected as recurring transfers for the bill calendar.
+
+### Rent & Utilities Ledger
+
+A single-payee accounts-payable tracker (`/housing`) for the common "we pay a person for rent + utilities by bank transfer" case. It models **obligations** (rent = a fixed monthly charge; each utility starts as an "awaiting bill" placeholder until the mailed amount arrives) and **payments** (one transfer settles a batch of obligations, with the memo auto-derived from the covered months, e.g. "Jan–Mar 2026 Rent, Jan 2026 Electricity"). The running **balance owed** is the sum of unpaid obligations. A scheduled job generates each month's rows idempotently from the config and fires two deduped reminders — payment-due and missing-utility-amount.
+
+Extras:
+- **Bill OCR** — snap a photo or PDF of a utility bill and Claude vision *suggests* `{amount, period, label}` for you to confirm before it's saved. The image is processed in memory and **never stored** (no disk write, no DB row); only the confirmed number is persisted. Shares the monthly AI budget cap.
+- **Landlord-ready export** — `GET /api/housing/export?year=&format=csv|pdf|json` produces a year's payment record with memos, covered months, and total.
+- **Calendar + dashboard** — unpaid known-amount obligations appear on the bill calendar and the public `/calendar.ics` feed; a dashboard widget shows the current balance owed, auto-hiding when the ledger isn't configured.
+- **Per-utility trend** — an inline-SVG sparkline per utility with a year-over-year % delta.
+- **Partner even-up split** — for the arrangement where your partner sends the full payee payment and you pay the car separately: you reimburse the partner `(rent + utilities − car) / 2` so each of you bears half of the total (the direction flips when the car exceeds rent+utilities). The car amount auto-pulls from a selected loan account's monthly payment (or a fixed fallback). This folds into the dashboard's combined **Settle Up** widget alongside the shared-card settlement, showing one net "send/collect $X with [partner]" figure per month with an expandable breakdown.
 
 ### ML Transaction Categorization
 
