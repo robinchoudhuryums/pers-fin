@@ -27,8 +27,16 @@
 
   <!-- Payment history -->
   <div class="card" id="hz-history-card" style="margin-bottom:16px;display:none;">
-    <h2 style="margin:0 0 10px;">Payment history</h2>
-    <div id="hz-payments"></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+      <h2 style="margin:0;">Payment history</h2>
+      <div style="display:flex;align-items:center;gap:6px;font-size:12px;">
+        <span style="color:var(--text-muted);">Export</span>
+        <input id="hz-export-year" type="number" min="2000" max="2100" class="hz-in" style="width:78px;padding:5px 8px;">
+        <button class="btn-sm hz-export" data-fmt="csv" type="button" style="font-size:12px;padding:5px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-family:inherit;">CSV</button>
+        <button class="btn-sm hz-export" data-fmt="pdf" type="button" style="font-size:12px;padding:5px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-family:inherit;">PDF</button>
+      </div>
+    </div>
+    <div id="hz-payments" style="margin-top:10px;"></div>
   </div>
 
   <!-- Configuration -->
@@ -267,6 +275,21 @@
       } catch (err) { st.style.color = 'var(--red,#eb6b6b)'; st.textContent = err.message; }
       finally { btn.disabled = false; }
     });
+
+    // ---- Export (landlord-ready record) ----
+    (function wireExport(){
+      var yr = document.getElementById('hz-export-year');
+      if (yr && !yr.value) yr.value = new Date().getFullYear();
+      Array.prototype.forEach.call(document.querySelectorAll('.hz-export'), function(b){
+        b.addEventListener('click', function(){
+          var year = (yr && yr.value) || new Date().getFullYear();
+          var url = '/api/housing/export?year=' + encodeURIComponent(year) + '&format=' + this.dataset.fmt;
+          // Direct navigation carries the session cookie; withBase prefixes the
+          // shell mount path. The endpoint returns an attachment (Content-Disposition).
+          window.location.href = (typeof withBase === 'function' ? withBase(url) : url);
+        });
+      });
+    })();
 
     // ---- Utility trends (per-utility amount history + delta) ----
     function sparkline(values){

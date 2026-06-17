@@ -166,6 +166,35 @@ function housingThisMonth() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
+// ---- GET /api/housing/export (#3) -----------------------------------------
+describe("GET /api/housing/export", () => {
+  it("returns a year's payments with total (json) + CSV attachment", async () => {
+    dbModule.pool.query = async (sql, params) => {
+      if (/housing_config/.test(sql)) return { rows: [{ housing_config: { enabled: true, payee_name: "Sam" } }] };
+      if (/FROM payee_payments/.test(sql)) {
+        assert.equal(params[0], 2026);
+        return { rows: [
+          { id: 1, payee: "Sam", paid_date: "2026-03-01", amount: "3000.00", memo: "Jan–Mar 2026 Rent", covers: [{ label: "Rent", period: "2026-01" }] },
+          { id: 2, payee: "Sam", paid_date: "2026-06-01", amount: "80.00", memo: "Jun 2026 Electricity", covers: [{ label: "Electricity", period: "2026-06" }] },
+        ] };
+      }
+      return { rows: [] };
+    };
+    const j = await supertest(app).get("/api/housing/export?year=2026&format=json");
+    assert.equal(j.status, 200);
+    assert.equal(j.body.total, 3080);
+    assert.equal(j.body.payments.length, 2);
+    assert.equal(j.body.payee, "Sam");
+
+    const c = await supertest(app).get("/api/housing/export?year=2026&format=csv");
+    assert.equal(c.status, 200);
+    assert.match(c.headers["content-type"], /text\/csv/);
+    assert.match(c.headers["content-disposition"], /rent_utilities_2026\.csv/);
+    assert.match(c.text, /Jan–Mar 2026 Rent/);
+    assert.match(c.text, /3080\.00/); // total row
+  });
+});
+
 // ---- buildBillCalendarIcs — housing obligations on the calendar feed --------
 describe("buildBillCalendarIcs — housing obligations (#1)", () => {
   const subs = require("../teller/routes/subscriptions");

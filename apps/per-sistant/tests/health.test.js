@@ -355,6 +355,20 @@ describe("health integration pins", () => {
     assert.match(src, /Habits due today/);
   });
 
+  it("AI daily briefing reads Rent & Utilities via the wired perfinPool, fail-soft (INV-25/35)", () => {
+    const src = read("routes", "ai.js");
+    // Cross-app, read-only, via req.app.get("perfinPool"); the housing balance
+    // line is built from payee_obligations + housing_config and degrades silently
+    // (no perfinPool standalone, or any error). No HTTP self-fetch.
+    assert.match(src, /req\.app\.get\("perfinPool"\)/);
+    assert.match(src, /payee_obligations WHERE status='unpaid'/);
+    assert.match(src, /Rent & utilities/);
+    // The block is guarded so a cross-pool failure can't 500 the briefing.
+    const idx = src.indexOf('req.app.get("perfinPool")');
+    const before = src.slice(Math.max(0, idx - 200), idx);
+    assert.match(before, /try \{/, "perfinPool read is inside a try/catch");
+  });
+
   it("helper exports are attached AFTER the factory assignment (INV-19)", () => {
     const src = read("routes", "health.js");
     const factoryIdx = src.indexOf("module.exports = function");

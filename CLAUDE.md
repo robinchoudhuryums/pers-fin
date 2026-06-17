@@ -426,9 +426,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1035 tests as of latest); use
+  Perfin and Per-sistant test files (1037 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1035 tests across 41 test files (incl.
+  Current count: 1037 tests across 41 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -619,7 +619,13 @@ shell/
   client-side from the ledger's obligation history (no extra endpoint). A
   **dashboard widget** (`#housing-widget-section`, toggle key `housing`, default
   on) shows the current balance owed + unpaid/awaiting counts, auto-hiding when
-  the ledger isn't configured. Tables: `payee_obligations`, `payee_payments`.
+  the ledger isn't configured. A **landlord-ready export** (`GET
+  /api/housing/export?year=&format=csv|pdf|json`) lists a year's payments with
+  memos + covered months + total (PDF via pdfkit, mirroring the tax-report
+  exporter). Under the unified shell, Per-sistant's **AI daily briefing** also
+  weaves in a rent line ("$X owed to [payee], due in N days") read READ-ONLY
+  from the wired `perfinPool` (`payee_obligations` + `housing_config`),
+  fail-soft (INV-25/35). Tables: `payee_obligations`, `payee_payments`.
 - **Merchant categorization rules**: Persistent merchant→category rules applied before
   AI categorization to reduce API costs. CRUD via `/api/categorization-rules`.
   Match types: `contains`, `exact`, `starts_with`. `POST /api/categorize` applies
@@ -1361,7 +1367,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1035 tests passing across 41 test files (Perfin 643 + Per-sistant 392), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1037 tests passing across 41 test files (Perfin 644 + Per-sistant 393), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
@@ -1454,6 +1460,8 @@ DELETE /api/housing/obligations/:id # remove an obligation
 POST /api/housing/payments # settle a batch of unpaid obligations (body: obligation_ids[],
                            # paid_date?, amount? (default=sum), memo? (default=derived)); marks paid
 DELETE /api/housing/payments/:id # undo a payment, reverting its obligations to unpaid/pending_amount
+GET  /api/housing/export   # landlord-ready record of a year's payments (query: year,
+                           # format=csv|pdf|json) — memos + covered months + total (pdfkit PDF)
 GET  /api/csv-reminder     # list manual accounts overdue for a CSV refresh
 GET  /api/subscriptions    # list detected subscriptions
 GET  /api/accounts         # list linked accounts with balances (includes is_shared, spending_split_pct)
