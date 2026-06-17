@@ -67,6 +67,7 @@ Under the unified shell the cross-app integration endpoints (Per-sistant's Perfi
 | `teller/routes/categorize.js` | ML transaction categorization via Claude |
 | `teller/routes/categorize-helpers.js` | Categories, descriptions, Teller→ours map |
 | `teller/routes/investments.js` | Plaid investment accounts (holdings, sync) |
+| `teller/routes/housing.js` | Rent & Utilities ledger (obligations, payments, OCR, landlord export, partner split) |
 | `teller/routes/notifications.js` | Web Push notifications (VAPID) |
 | `teller/pages/*.js` | HTML page generators (dashboard, subscriptions, etc.) |
 | `teller/public/transactions.js` | Transactions page client (Edit modal w/ "remember merchant") |
@@ -87,7 +88,7 @@ Under the unified shell the cross-app integration endpoints (Per-sistant's Perfi
 | `scripts/detect-subscriptions.js` | Recurring charge detection algorithm |
 | `scripts/sheets-sync.js` | Google Sheets sync + dashboard builder |
 | `apps-script/Code.gs` | Google Sheets Apps Script (standalone + server sync) |
-| `tests/` | Test suite (node:test, 1040 tests across 41 files incl. apps/per-sistant/tests) |
+| `tests/` | Test suite (node:test, 1048 tests across 41 files incl. apps/per-sistant/tests) |
 | `Dockerfile` | Container build — installs all workspaces and boots `node shell/index.js` |
 | `render.yaml` | Render deployment blueprint (unified shell) |
 | `fly.toml` | Fly.io deployment config |
@@ -178,7 +179,7 @@ npm run test:perfin       # Perfin tests only
 npm run test:persistent   # Per-sistant tests only
 ```
 
-1040 tests covering detection, CSV parsing, date handling, API logic, cost calculations, financial-queries semantics (incl. the net-worth single-source-of-truth + the $0-brokerage dedupe direction), AI-audit pattern extraction, pinned regression tests for auth/SSO/template/exclusion behavior and the latest cycle fixes (net-worth dedupe, budget-rollover month-keying, webhook replay/expiry, XSS/header sanitization, CSV dedup-ID parity, Plaid balance-sync status filter, Plaid holdings-items UNION + liabilities re-link hint, categorize bulk-sweep/loop + auto-sweep + accuracy sampler, in-process digest delivery, background reconcile, login→dashboard redirect, $0-brokerage dedupe, page-size-independent Teller pagination, Schwab CSV sign preservation, Wells Fargo CSV detection tightening, Plaid sync observability, and the June 2026 broad-scan fixes: backup workflow, fail-fast token passphrase, compromised-cert detection, missed-job watchdog, budget-alert dedup, CSV occurrence-indexed dedup, quarterly/bi-monthly subscription detection, audit cross-period "average" narrowing, and timezone-aware habit streaks), BEHAVIORAL sync-idempotency tests (Teller + Plaid synced twice over the same fixtures → 0 added, no dupes, stable watermark) and AI cap-charge tests (/api/ask + categorize charge their usage rows and 429 at the cap; ask charges even on a mid-loop failure), and integration tests for the feedback, whats-new, performance, and trust-overview endpoints. No database required — all tests run against pure functions and mock pools.
+1047 tests covering detection, CSV parsing, date handling, API logic, cost calculations, financial-queries semantics (incl. the net-worth single-source-of-truth + the $0-brokerage dedupe direction), AI-audit pattern extraction, pinned regression tests for auth/SSO/template/exclusion behavior and the latest cycle fixes (net-worth dedupe, budget-rollover month-keying, webhook replay/expiry, XSS/header sanitization, CSV dedup-ID parity, Plaid balance-sync status filter, Plaid holdings-items UNION + liabilities re-link hint, categorize bulk-sweep/loop + auto-sweep + accuracy sampler, in-process digest delivery, background reconcile, login→dashboard redirect, $0-brokerage dedupe, page-size-independent Teller pagination, Schwab CSV sign preservation, Wells Fargo CSV detection tightening, Plaid sync observability, and the June 2026 broad-scan fixes: backup workflow, fail-fast token passphrase, compromised-cert detection, missed-job watchdog, budget-alert dedup, CSV occurrence-indexed dedup, quarterly/bi-monthly subscription detection, audit cross-period "average" narrowing, and timezone-aware habit streaks), BEHAVIORAL sync-idempotency tests (Teller + Plaid synced twice over the same fixtures → 0 added, no dupes, stable watermark) and AI cap-charge tests (/api/ask + categorize charge their usage rows and 429 at the cap; ask charges even on a mid-loop failure), and integration tests for the feedback, whats-new, performance, and trust-overview endpoints. No database required — all tests run against pure functions and mock pools.
 
 ## API Endpoints
 
@@ -309,6 +310,17 @@ Track brokerage, retirement, and crypto holdings via Plaid API integration. Hold
 ### Loan Accounts (Auto Loans etc.)
 
 Loans linked via Plaid (e.g. a credit-union auto loan) — or added manually — are first-class debt: they render under a **Loans** group on the dashboard with a negative balance, count as liabilities in net worth, and feed the AI debt-payoff optimizer alongside credit cards. Plaid never reports auto-loan APR/terms (its Liabilities product covers only credit/student/mortgage), so the loan card has **manual APR + monthly payment fields**; with both set it shows a payoff projection — months remaining, payoff date, and interest left to pay. Loan payments are auto-detected as recurring transfers for the bill calendar.
+
+### Rent & Utilities Ledger
+
+A single-payee accounts-payable tracker (`/housing`) for the common "we pay a person for rent + utilities by bank transfer" case. It models **obligations** (rent = a fixed monthly charge; each utility starts as an "awaiting bill" placeholder until the mailed amount arrives) and **payments** (one transfer settles a batch of obligations, with the memo auto-derived from the covered months, e.g. "Jan–Mar 2026 Rent, Jan 2026 Electricity"). The running **balance owed** is the sum of unpaid obligations. A scheduled job generates each month's rows idempotently from the config and fires two deduped reminders — payment-due and missing-utility-amount.
+
+Extras:
+- **Bill OCR** — snap a photo or PDF of a utility bill and Claude vision *suggests* `{amount, period, label}` for you to confirm before it's saved. The image is processed in memory and **never stored** (no disk write, no DB row); only the confirmed number is persisted. Shares the monthly AI budget cap.
+- **Landlord-ready export** — `GET /api/housing/export?year=&format=csv|pdf|json` produces a year's payment record with memos, covered months, and total.
+- **Calendar + dashboard** — unpaid known-amount obligations appear on the bill calendar and the public `/calendar.ics` feed; a dashboard widget shows the current balance owed, auto-hiding when the ledger isn't configured.
+- **Per-utility trend** — an inline-SVG sparkline per utility with a year-over-year % delta.
+- **Partner even-up split** — for the arrangement where your partner sends the full payee payment and you pay the car separately: you reimburse the partner `(rent + utilities − car) / 2` so each of you bears half of the total (the direction flips when the car exceeds rent+utilities). The car amount auto-pulls from a selected loan account's monthly payment (or a fixed fallback). This folds into the dashboard's combined **Settle Up** widget alongside the shared-card settlement, showing one net "send/collect $X with [partner]" figure per month with an expandable breakdown.
 
 ### ML Transaction Categorization
 

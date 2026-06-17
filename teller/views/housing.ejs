@@ -21,6 +21,12 @@
   <!-- Shared hidden file input for bill scanning (one per page; the clicked row sets the target). -->
   <input type="file" id="hz-scan-file" accept="image/*,application/pdf" style="display:none;">
 
+  <!-- Partner split — what to send to even up 50/50 -->
+  <div class="card" id="hz-split-card" style="margin-bottom:16px;display:none;">
+    <h2 style="margin:0 0 8px;">Even up with <span id="hz-split-partner">your partner</span></h2>
+    <div id="hz-split-body" style="font-size:13px;"></div>
+  </div>
+
   <!-- Utility trends -->
   <div class="card" id="hz-trends-card" style="margin-bottom:16px;display:none;">
     <h2 style="margin:0 0 10px;">Utility trends</h2>
@@ -58,6 +64,23 @@
         <div class="hz-lbl" style="display:flex;justify-content:space-between;align-items:center;">Utilities <button class="btn-sm" id="hz-add-util" type="button" style="font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-family:inherit;">+ Add utility</button></div>
         <div id="hz-utils" style="display:flex;flex-direction:column;gap:8px;margin-top:6px;"></div>
         <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">Each utility gets an "awaiting bill" placeholder each cycle; you'll be reminded to enter the amount when the bill arrives.</div>
+      </div>
+      <div style="border-top:1px solid var(--border);padding-top:12px;">
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;">
+          <input type="checkbox" id="hz-split-enabled"> Split with a partner (even-up calculator)
+        </label>
+        <div id="hz-split-cfg" style="display:none;margin-top:10px;">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+            <div><div class="hz-lbl">Partner name</div><input id="hz-split-name" placeholder="e.g. Sarah" class="hz-in"></div>
+            <div><div class="hz-lbl">Car payment source</div>
+              <select id="hz-split-carsrc" class="hz-in">
+                <option value="fixed">Enter a fixed amount</option>
+              </select>
+            </div>
+          </div>
+          <div id="hz-split-fixedwrap" style="margin-top:8px;"><div class="hz-lbl">Car payment ($/mo)</div><input id="hz-split-fixed" type="number" min="0" step="0.01" placeholder="0.00" class="hz-in" style="max-width:200px;"></div>
+          <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">You send your partner (rent+utilities − car) ÷ 2 so each of you bears half of the total. Pick the car loan to auto-pull its monthly payment, or enter a fixed amount.</div>
+        </div>
       </div>
       <div style="display:flex;gap:10px;">
         <button class="btn-sm" id="hz-save-cfg" style="font-size:13px;padding:8px 16px;border:1px solid var(--teal);border-radius:6px;background:var(--teal);color:#000;cursor:pointer;font-family:inherit;font-weight:500;">Save &amp; generate</button>
@@ -132,6 +155,38 @@
       var box = document.getElementById('hz-utils');
       box.innerHTML = '';
       (cfg.utilities || []).forEach(function(u){ box.appendChild(utilRow(u)); });
+      fillSplitConfig(cfg.split || {});
+    }
+    var loanAccounts = [];
+    function fillSplitConfig(sp){
+      document.getElementById('hz-split-enabled').checked = !!sp.enabled;
+      document.getElementById('hz-split-name').value = sp.partner_name || '';
+      document.getElementById('hz-split-fixed').value = sp.car_fixed_amount != null ? sp.car_fixed_amount : '';
+      // Rebuild the car-source dropdown: a "fixed" option + every loan account.
+      var sel = document.getElementById('hz-split-carsrc');
+      sel.innerHTML = '<option value="fixed">Enter a fixed amount</option>' +
+        loanAccounts.map(function(a){
+          var mp = a.monthly_payment != null ? ' ($' + Number(a.monthly_payment).toFixed(0) + '/mo)' : ' (set its monthly payment on the dashboard)';
+          return '<option value="loan:' + a.id + '">' + esc(a.name) + mp + '</option>';
+        }).join('');
+      sel.value = sp.car_loan_account_id ? ('loan:' + sp.car_loan_account_id) : 'fixed';
+      toggleSplitUi();
+    }
+    function toggleSplitUi(){
+      document.getElementById('hz-split-cfg').style.display = document.getElementById('hz-split-enabled').checked ? 'block' : 'none';
+      document.getElementById('hz-split-fixedwrap').style.display = document.getElementById('hz-split-carsrc').value === 'fixed' ? 'block' : 'none';
+    }
+    document.getElementById('hz-split-enabled').addEventListener('change', toggleSplitUi);
+    document.getElementById('hz-split-carsrc').addEventListener('change', toggleSplitUi);
+    function readSplit(){
+      var src = document.getElementById('hz-split-carsrc').value;
+      var loanId = src.indexOf('loan:') === 0 ? parseInt(src.slice(5), 10) : null;
+      return {
+        enabled: document.getElementById('hz-split-enabled').checked,
+        partner_name: document.getElementById('hz-split-name').value.trim(),
+        car_loan_account_id: loanId,
+        car_fixed_amount: loanId ? null : (parseFloat(document.getElementById('hz-split-fixed').value) || 0)
+      };
     }
     function readConfig(){
       var utils = Array.prototype.map.call(document.querySelectorAll('.hz-util-row'), function(r){
@@ -147,7 +202,8 @@
         reminder_lead_days: parseInt(document.getElementById('hz-lead').value, 10) || 0,
         rent_amount: parseFloat(document.getElementById('hz-rent').value) || 0,
         rent_due_day: parseInt(document.getElementById('hz-rent-day').value, 10) || 1,
-        utilities: utils
+        utilities: utils,
+        split: readSplit()
       };
     }
 
@@ -387,9 +443,38 @@
       document.getElementById('hz-trends-card').style.display = 'block';
     }
 
+    // Partner split — "even up" card for the current month.
+    async function loadSplit(){
+      var card = document.getElementById('hz-split-card');
+      var body = document.getElementById('hz-split-body');
+      try {
+        var res = await apiFetch('/api/housing/split');
+        if (!res.ok) { card.style.display = 'none'; return; }
+        var d = await res.json();
+        if (!d.enabled) { card.style.display = 'none'; return; }
+        document.getElementById('hz-split-partner').textContent = d.partner_name;
+        var who = d.direction === 'you_send_partner'
+          ? ('Send <strong>' + esc(d.partner_name) + '</strong>')
+          : ('<strong>' + esc(d.partner_name) + '</strong> sends you');
+        var note = d.car_source === 'loan_unset'
+          ? '<div style="font-size:11px;color:var(--yellow,#d9b25f);margin-top:6px;">Pick the car loan and set its monthly payment on the dashboard to auto-pull the amount.</div>' : '';
+        body.innerHTML =
+          '<div style="font-size:13px;color:var(--text-muted);">' + monthName(d.month) + ' — even-up transfer</div>' +
+          '<div style="font-size:30px;font-weight:600;margin-top:2px;color:var(--teal);">' + who + ' ' + money(d.transfer) + '</div>' +
+          '<div style="font-size:12px;color:var(--text-muted);margin-top:6px;">Rent + utilities ' + money(d.rent_utilities) + ' − car ' + money(d.car) + ', split evenly. Each of you bears ' + money(d.each_share) + '.</div>' + note;
+        card.style.display = 'block';
+      } catch (e) { card.style.display = 'none'; }
+    }
+    function monthName(p){ if(!/^\d{4}-\d{2}$/.test(p||'')) return p||''; var a=p.split('-'); return MONTHS[(+a[1])-1] + ' ' + a[0]; }
+
     // ---- Load ----
     async function load(){
       try {
+        // Loan accounts power the split config's car-source dropdown (auto-pull).
+        try {
+          var ar = await apiFetch('/api/accounts');
+          if (ar.ok) { var accts = await ar.json(); loanAccounts = (Array.isArray(accts) ? accts : (accts.accounts || [])).filter(function(a){ return a.type === 'loan'; }); }
+        } catch (e) { loanAccounts = []; }
         var res = await apiFetch('/api/housing/ledger');
         if (!res.ok) { document.getElementById('hz-summary').innerHTML = '<div style="color:var(--text-muted);">Could not load.</div>'; return; }
         var d = await res.json();
@@ -411,6 +496,8 @@
         renderPayments(d.payments);
         if (configured) renderTrends(d.obligations);
         else document.getElementById('hz-trends-card').style.display = 'none';
+        if (configured) loadSplit();
+        else document.getElementById('hz-split-card').style.display = 'none';
       } catch (err) {
         document.getElementById('hz-summary').innerHTML = '<div style="color:var(--text-muted);">Could not load.</div>';
       }

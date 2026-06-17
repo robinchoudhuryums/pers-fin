@@ -47,6 +47,17 @@ describe("housing helpers", () => {
     );
   });
 
+  it("computeSplit: you send the partner (rent+util − car)/2, each bears half the total", () => {
+    const r = housing.computeSplit(1000, 560);
+    assert.equal(r.transfer, 220);
+    assert.equal(r.direction, "you_send_partner");
+    assert.equal(r.each_share, 780);
+    // car > rent+util → the partner reimburses you instead.
+    const flip = housing.computeSplit(500, 560);
+    assert.equal(flip.transfer, 30);
+    assert.equal(flip.direction, "partner_sends_you");
+  });
+
   it("normalizeConfig bounds + types", () => {
     const c = housing.normalizeConfig({
       enabled: 1, payee_name: "Sam", rent_amount: "1500", rent_due_day: 40,
@@ -192,6 +203,61 @@ describe("GET /api/housing/export", () => {
     assert.match(c.headers["content-disposition"], /rent_utilities_2026\.csv/);
     assert.match(c.text, /Jan–Mar 2026 Rent/);
     assert.match(c.text, /3080\.00/); // total row
+  });
+});
+
+// ---- GET /api/housing/split (partner even-up) ------------------------------
+describe("GET /api/housing/split", () => {
+  it("auto-pulls the car loan's monthly_payment and computes the even-up transfer", async () => {
+    dbModule.pool.query = async (sql, params) => {
+      if (/housing_config/.test(sql)) return { rows: [{ housing_config: {
+        enabled: true, payee_name: "Sam",
+        split: { enabled: true, partner_name: "Wife", car_loan_account_id: 7 },
+      } }] };
+      if (/SUM\(amount\)[\s\S]*FROM payee_obligations/.test(sql)) return { rows: [{ total: "1000.00" }] };
+      if (/FROM linked_accounts WHERE id = \$1 AND type = 'loan'/.test(sql)) {
+        assert.equal(params[0], 7);
+        return { rows: [{ monthly_payment: "560.00" }] };
+      }
+      return { rows: [] };
+    };
+    const res = await supertest(app).get("/api/housing/split");
+    assert.equal(res.status, 200);
+    assert.equal(res.body.enabled, true);
+    assert.equal(res.body.rent_utilities, 1000);
+    assert.equal(res.body.car, 560);
+    assert.equal(res.body.transfer, 220);
+    assert.equal(res.body.direction, "you_send_partner");
+    assert.equal(res.body.car_source, "loan");
+    assert.equal(res.body.partner_name, "Wife");
+  });
+
+  it("falls back to user_settings.partner_name when the split has no partner name", async () => {
+    dbModule.pool.query = async (sql) => {
+      if (/housing_config/.test(sql)) return { rows: [{ housing_config: {
+        enabled: true, payee_name: "Sam",
+        split: { enabled: true, car_fixed_amount: 600 },
+      } }] };
+      if (/SUM\(amount\)[\s\S]*FROM payee_obligations/.test(sql)) return { rows: [{ total: "1200.00" }] };
+      if (/partner_name.*FROM user_settings/.test(sql)) return { rows: [{ n: "Sarah" }] };
+      return { rows: [] };
+    };
+    const res = await supertest(app).get("/api/housing/split");
+    assert.equal(res.status, 200);
+    assert.equal(res.body.partner_name, "Sarah");
+    assert.equal(res.body.car, 600);
+    assert.equal(res.body.transfer, 300); // (1200 - 600) / 2
+    assert.equal(res.body.car_source, "fixed");
+  });
+
+  it("returns {enabled:false} when the split isn't configured", async () => {
+    dbModule.pool.query = async (sql) => {
+      if (/housing_config/.test(sql)) return { rows: [{ housing_config: { enabled: true, payee_name: "Sam" } }] };
+      return { rows: [] };
+    };
+    const res = await supertest(app).get("/api/housing/split");
+    assert.equal(res.status, 200);
+    assert.equal(res.body.enabled, false);
   });
 });
 

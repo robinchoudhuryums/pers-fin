@@ -94,6 +94,25 @@ function deriveMemo(obligations) {
   return parts.join(", ");
 }
 
+// Pure split math: the operator reimburses the partner so each bears half of
+// (rentUtilities + car). The partner sends the full rentUtilities to the payee;
+// the operator pays the car. transfer = (rentUtilities − car) / 2:
+//   transfer > 0 → operator sends the partner that much ("you_send_partner")
+//   transfer < 0 → the partner sends the operator |transfer| ("partner_sends_you")
+// Each then nets (rentUtilities + car) / 2 — an even 50/50.
+function computeSplit(rentUtilities, car) {
+  const R = Number(rentUtilities) || 0;
+  const C = Number(car) || 0;
+  const raw = Math.round(((R - C) / 2) * 100) / 100;
+  return {
+    rent_utilities: Math.round(R * 100) / 100,
+    car: Math.round(C * 100) / 100,
+    transfer: Math.abs(raw),
+    direction: raw >= 0 ? "you_send_partner" : "partner_sends_you",
+    each_share: Math.round(((R + C) / 2) * 100) / 100,
+  };
+}
+
 // Normalize a stored housing_config (JSONB) into a safe, typed shape.
 function normalizeConfig(raw) {
   const c = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
@@ -111,6 +130,22 @@ function normalizeConfig(raw) {
       due_day: clampDay(u.due_day, 15),
       anchor: MONTH_RE.test(String(u.anchor || "")) ? u.anchor : (MONTH_RE.test(String(c.start_month || "")) ? c.start_month : thisMonth()),
     })),
+    split: normalizeSplit(c.split),
+  };
+}
+// Partner-split config: the inter-spouse reconciliation layer. The partner
+// sends the full payee payment; the operator pays the car; the operator then
+// sends the partner (rent+utilities − car) / 2 so each bears half of the total
+// (rent+utilities+car). car_loan_account_id pulls the car payment from a Perfin
+// loan's monthly_payment; car_fixed_amount is the manual fallback.
+function normalizeSplit(raw) {
+  const s = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  const loanId = parseInt(s.car_loan_account_id, 10);
+  return {
+    enabled: !!s.enabled,
+    partner_name: typeof s.partner_name === "string" ? s.partner_name.slice(0, 60) : "",
+    car_loan_account_id: Number.isInteger(loanId) && loanId > 0 ? loanId : null,
+    car_fixed_amount: Number.isFinite(Number(s.car_fixed_amount)) && Number(s.car_fixed_amount) >= 0 ? Number(s.car_fixed_amount) : null,
   };
 }
 function clampDay(v, dflt) {
@@ -473,6 +508,56 @@ router.post("/api/housing/scan-bill", upload.single("file"), async (req, res) =>
   }
 });
 
+// GET /api/housing/split?month=YYYY-MM — what the operator sends the partner to
+// even up the month (50/50). rent+utilities = the month's known-amount
+// obligations; car = the configured loan's monthly_payment (or fixed fallback).
+router.get("/api/housing/split", async (req, res) => {
+  try {
+    const cfg = await getConfig();
+    const split = cfg.split || {};
+    if (!split.enabled) return res.json({ enabled: false });
+    const month = MONTH_RE.test(String(req.query.month || "")) ? req.query.month : thisMonth();
+
+    const ru = await pool.query(
+      `SELECT COALESCE(SUM(amount), 0) AS total
+       FROM payee_obligations
+       WHERE period = $1 AND amount IS NOT NULL AND status IN ('unpaid', 'paid')`,
+      [month]
+    );
+    const rentUtilities = parseFloat(ru.rows[0].total);
+
+    let car = split.car_fixed_amount || 0;
+    let carSource = split.car_fixed_amount != null ? "fixed" : "none";
+    if (split.car_loan_account_id) {
+      const loan = await pool.query(
+        "SELECT monthly_payment FROM linked_accounts WHERE id = $1 AND type = 'loan'",
+        [split.car_loan_account_id]
+      );
+      if (loan.rows.length && loan.rows[0].monthly_payment != null) {
+        car = parseFloat(loan.rows[0].monthly_payment);
+        carSource = "loan";
+      } else if (split.car_fixed_amount == null) {
+        carSource = "loan_unset"; // loan picked but no monthly_payment on it yet
+      }
+    }
+
+    // Partner display name: the split's own name, else the global
+    // user_settings.partner_name (so the shared-card settlement and the housing
+    // split agree on who the partner is — the same-partner guard for the
+    // combined dashboard settle-up view), else "Partner".
+    let partnerName = split.partner_name;
+    if (!partnerName) {
+      const pn = await pool.query("SELECT NULLIF(TRIM(partner_name), '') AS n FROM user_settings WHERE id = 1");
+      partnerName = pn.rows[0]?.n || "Partner";
+    }
+
+    res.json({ enabled: true, month, partner_name: partnerName, car_source: carSource, ...computeSplit(rentUtilities, car) });
+  } catch (err) {
+    console.error("housing split error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
 // POST /api/housing/obligations — add an ad-hoc obligation (e.g. a one-off).
 router.post("/api/housing/obligations", async (req, res) => {
   const { payee, category, label, period, amount, due_day, notes } = req.body || {};
@@ -615,3 +700,4 @@ module.exports.monthRange = monthRange;
 module.exports.deriveMemo = deriveMemo;
 module.exports.normalizeConfig = normalizeConfig;
 module.exports.periodLabel = periodLabel;
+module.exports.computeSplit = computeSplit;
