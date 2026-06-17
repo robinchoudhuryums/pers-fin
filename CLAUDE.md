@@ -426,9 +426,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1044 tests as of latest); use
+  Perfin and Per-sistant test files (1047 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1044 tests across 41 test files (incl.
+  Current count: 1047 tests across 41 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -632,7 +632,14 @@ shell/
   it never auto-writes, and the image is processed then discarded. Shares the
   monthly AI cap (`entry_type='scan'`; 501 without `ANTHROPIC_API_KEY`). The
   missing-utility-amount reminder deep-links to `/housing#pending` so entering
-  the figure is one tap. Tables: `payee_obligations`, `payee_payments`.
+  the figure is one tap. **Partner split** (`GET /api/housing/split`,
+  `housing_config.split`): an even-up calculator for the case where the partner
+  sends the full payee payment and the operator pays the car separately —
+  `you send the partner = (rent+utilities − car) / 2`, so each bears half of the
+  total (sign flips to "partner sends you" when the car exceeds rent+utilities).
+  The car amount auto-pulls from a selected Perfin loan account's
+  `monthly_payment` (or a fixed fallback). Surfaced as an "Even up with [partner]"
+  card on the Rent page. Tables: `payee_obligations`, `payee_payments`.
 - **Merchant categorization rules**: Persistent merchant→category rules applied before
   AI categorization to reduce API costs. CRUD via `/api/categorization-rules`.
   Match types: `contains`, `exact`, `starts_with`. `POST /api/categorize` applies
@@ -1374,7 +1381,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1044 tests passing across 41 test files (Perfin 647 + Per-sistant 397), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1047 tests passing across 41 test files (Perfin 650 + Per-sistant 397), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
@@ -1469,6 +1476,10 @@ POST /api/housing/payments # settle a batch of unpaid obligations (body: obligat
 DELETE /api/housing/payments/:id # undo a payment, reverting its obligations to unpaid/pending_amount
 GET  /api/housing/export   # landlord-ready record of a year's payments (query: year,
                            # format=csv|pdf|json) — memos + covered months + total (pdfkit PDF)
+GET  /api/housing/split    # partner "even-up" for a month (query: month=YYYY-MM): what you
+                           # send the partner = (rent+utilities − car)/2 so each bears half.
+                           # Car pulled from a Perfin loan's monthly_payment or a fixed amount.
+                           # Returns { enabled, transfer, direction, each_share, car_source, ... }
 POST /api/housing/scan-bill # OCR a utility-bill image/PDF via Claude vision → SUGGEST
                            # { amount, period, label } WITHOUT writing (user confirms +
                            # PATCHes). Shares the AI cap (entry_type='scan'); 501 w/o
@@ -2042,10 +2053,13 @@ standalone-mode fallback if either app is run on its own Render service.
   blank). Obligations point back via `paid_payment_id`.
 - `user_settings.housing_config JSONB NOT NULL DEFAULT '{}'`: Rent & Utilities
   config — `{ enabled, payee_name, rent_amount, rent_due_day, reminder_lead_days,
-  start_month, utilities: [{label, cadence_months, due_day, anchor}] }`. Read by
-  `routes/housing.js getConfig()`; drives monthly obligation generation +
-  reminders. `start_month` is preserved across edits so the generation window
-  doesn't shift.
+  start_month, utilities: [{label, cadence_months, due_day, anchor}],
+  split: {enabled, partner_name, car_loan_account_id, car_fixed_amount} }`. Read
+  by `routes/housing.js getConfig()`; drives monthly obligation generation +
+  reminders + the partner even-up split (`GET /api/housing/split`). `start_month`
+  is preserved across edits so the generation window doesn't shift;
+  `car_loan_account_id` references a `linked_accounts.id` (type='loan') whose
+  `monthly_payment` is the car amount.
 - `notification_log`: in-app notification history. Columns: `type`, `title`, `body`,
   `data` (JSONB), `is_read`. `sendToAll()` inserts here on every push notification.
   Indexed on (is_read, created_at DESC) for fast unread queries.
