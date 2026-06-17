@@ -231,34 +231,102 @@ router.post("/api/detect", async (_req, res) => {
   }
 });
 
+// parseCsvUpload — shared parse + format-detect + label-derivation for the CSV
+// import + preview endpoints. Keeping it in ONE place guarantees the preview's
+// dedup-ID classification matches what the real import will actually do (same
+// format, same account label → same csvTransactionId occurrence sequence).
+// Returns { error } on a bad file, else { formatName, fmt, institution,
+// accountLabel, records, headers }.
+function parseCsvUpload(buffer, body = {}) {
+  const content = buffer.toString("utf-8");
+  let records = parse(content, { columns: true, skip_empty_lines: true, trim: true, bom: true });
+  if (!records.length) return { error: "CSV file is empty or unparseable" };
+  const headers = Object.keys(records[0]);
+  const formatName = detectCsvFormat(headers);
+  const fmt = CSV_FORMATS[formatName];
+  if (!fmt) return { error: `Unrecognized CSV format: ${formatName}` };
+  // Default institution/account label from the DETECTED format when the caller
+  // omits them (F2 — matches the CLI's content-derived label so dedup IDs align).
+  const institution = body.institution || INSTITUTION_LABELS[formatName] || "CSV Import";
+  const accountLabel = body.account_label || `${institution} Account`;
+  // Headerless formats (Wells Fargo) re-parse with explicit columns.
+  if (fmt.headerless && fmt.columns) {
+    records = parse(content, { columns: fmt.columns, skip_empty_lines: true, trim: true, bom: true });
+  }
+  return { formatName, fmt, institution, accountLabel, records, headers };
+}
+
+// POST /api/import-csv/preview — dry-run a CSV import: detect the format and
+// classify every row as new / duplicate / skipped WITHOUT writing anything, so
+// the user can confirm before committing. Duplicate detection uses the SAME
+// occurrence-aware dedup ID the import writes (makeCsvTxnIdGenerator) checked
+// against existing transaction_ids, so rows_new/rows_duplicate here equal the
+// import's rows_imported/rows_duplicate for the same file (modulo concurrent
+// syncs). Surfaces the silent drop that import would otherwise do quietly.
+router.post("/api/import-csv/preview", upload.single("file"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+  try {
+    const parsed = parseCsvUpload(req.file.buffer, req.body);
+    if (parsed.error) return res.status(400).json({ error: parsed.error });
+    const { formatName, fmt, institution, accountLabel, records, headers } = parsed;
+
+    const nextTxnId = makeCsvTxnIdGenerator();
+    const rows = [];
+    let skipped = 0;
+    for (const row of records) {
+      let p;
+      try { p = fmt.parse(row, fmt.headerless ? fmt.columns : headers); }
+      catch { skipped++; continue; }
+      const date = parseDate(p.date);
+      if (!date || isNaN(p.amount) || p.amount === 0) { skipped++; continue; }
+      const txnId = nextTxnId(accountLabel, date, p.amount, p.merchant_name);
+      rows.push({ txnId, date, amount: p.amount, merchant: p.merchant_name || "", category: p.category || "" });
+    }
+
+    let existing = new Set();
+    if (rows.length) {
+      const r = await pool.query(
+        "SELECT transaction_id FROM transactions WHERE transaction_id = ANY($1)",
+        [rows.map(x => x.txnId)]
+      );
+      existing = new Set(r.rows.map(x => x.transaction_id));
+    }
+
+    let newCount = 0, dupCount = 0;
+    const sample = [];
+    for (const row of rows) {
+      const isDup = existing.has(row.txnId);
+      if (isDup) dupCount++; else newCount++;
+      if (sample.length < 12) {
+        sample.push({ date: row.date, amount: row.amount, merchant: row.merchant, category: row.category, status: isDup ? "duplicate" : "new" });
+      }
+    }
+
+    res.json({
+      format_detected: formatName,
+      institution,
+      account_label: accountLabel,
+      rows_total: records.length,
+      rows_parseable: rows.length,
+      rows_skipped: skipped,
+      rows_new: newCount,
+      rows_duplicate: dupCount,
+      sample,
+    });
+  } catch (err) {
+    console.error("CSV preview error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
 // POST /api/import-csv
 router.post("/api/import-csv", upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
   try {
-    const content = req.file.buffer.toString("utf-8");
-    let records = parse(content, { columns: true, skip_empty_lines: true, trim: true, bom: true });
-    if (!records.length) return res.status(400).json({ error: "CSV file is empty or unparseable" });
-
-    const headers = Object.keys(records[0]);
-    const formatName = detectCsvFormat(headers);
-    const fmt = CSV_FORMATS[formatName];
-    if (!fmt) return res.status(400).json({ error: `Unrecognized CSV format: ${formatName}` });
-
-    // Default institution/account label from the DETECTED format when the
-    // caller omits them, so a headless/API import matches the CLI's
-    // content-derived label (and therefore its dedup IDs) for the same file
-    // (F2). A client that explicitly supplies these (e.g. the web dropdown)
-    // still gets its chosen account name — those are intentionally separate.
-    const institution = req.body.institution || INSTITUTION_LABELS[formatName] || "CSV Import";
-    const accountLabel = req.body.account_label || `${institution} Account`;
-
-    // Headerless formats (Wells Fargo) need a re-parse with explicit columns so
-    // each record is keyed by the declared column names rather than the values
-    // that columns:true mis-promoted to headers.
-    if (fmt.headerless && fmt.columns) {
-      records = parse(content, { columns: fmt.columns, skip_empty_lines: true, trim: true, bom: true });
-    }
+    const up = parseCsvUpload(req.file.buffer, req.body);
+    if (up.error) return res.status(400).json({ error: up.error });
+    const { formatName, fmt, institution, accountLabel, records, headers } = up;
 
     const client = await pool.connect();
     try {

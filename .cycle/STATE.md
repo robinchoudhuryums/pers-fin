@@ -9,6 +9,26 @@ to the "none in progress" state.
 
 ## Current Cycle
 
+- **Status:** **broad-implement Tier-3 features DONE** on branch
+  `claude/loving-rubin-1tkzs5` (2026-06-17). Two strategic additions:
+  - **Sync-degradation UI strip** — dashboard banner (`#sync-health-strip`) fetches
+    `/api/data-health` and surfaces warning-level issues[] up front (disconnected
+    links, stale sync, decryption_failed), dismissible per-session (sessionStorage,
+    so a persistent issue re-appears next visit). Deep-links to Settings → Sync
+    Health (added `id="sync-health"` anchor). Best-effort; never blocks the dashboard.
+  - **CSV preview-and-confirm import** — new `POST /api/import-csv/preview` dry-runs
+    the import via the shared `parseCsvUpload` helper (extracted so preview/import
+    can't drift on dedup IDs) + the SAME `makeCsvTxnIdGenerator`, classifying every
+    row new/duplicate/skipped against existing `transaction_id`s WITHOUT writing.
+    Dashboard CSV modal is now two-step (Preview → "Import N new") with a sample
+    table + new/dup/skip counts; changing any input drops back to the preview step.
+    New test `tests/csv-preview.test.js` (2 tests).
+  - Suite: **Perfin 633 + Per-sistant 392 = 1025, 0 fail** (40 test files).
+  - **Where I left off:** implemented + tests green; committing + pushing. Remaining
+    Tier-3: full timezone pass (F11 residual), manual cash txn entry, AI-audit
+    confidence badge. Roadmap: mobile iOS build (operator). /sync-docs: test count
+    1023→1025 + the new preview endpoint + two-step modal note.
+
 - **Status:** **broad-implement Tier 2 + Tier 1 DONE** on branch
   `claude/loving-rubin-1tkzs5` (2026-06-17). Implemented the remaining scan
   backlog the operator selected. Suite: **Perfin 631 + Per-sistant 392 = 1023, 0 fail.**

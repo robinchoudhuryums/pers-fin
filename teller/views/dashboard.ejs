@@ -313,6 +313,21 @@
   <h1>Dashboard</h1>
   <p class="subtitle">Personal finance overview</p>
 
+  <!-- Sync-degradation strip: surfaces /api/data-health issues[] up front so a
+       disconnected link / stale sync / decryption_failed is visible without
+       digging into Settings → Sync Health. Hidden when everything's healthy. -->
+  <div id="sync-health-strip" role="status" style="display:none;margin:0 0 16px;border:1px solid var(--yellow,#d9b25f);border-left-width:4px;border-radius:8px;padding:10px 14px;background:color-mix(in srgb, var(--yellow,#d9b25f) 8%, transparent);font-size:13px;">
+    <div style="display:flex;align-items:flex-start;gap:10px;">
+      <span aria-hidden="true" style="font-size:15px;line-height:1.2;">&#9888;</span>
+      <div style="flex:1;min-width:0;">
+        <strong style="display:block;margin-bottom:2px;">Sync needs attention</strong>
+        <div id="sync-health-strip-list" style="color:var(--text-muted);"></div>
+        <a href="<%= basePath %>/settings#sync-health" style="display:inline-block;margin-top:6px;color:var(--teal);font-size:12px;">Open Sync Health &rarr;</a>
+      </div>
+      <button type="button" id="sync-health-strip-dismiss" aria-label="Dismiss" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:18px;line-height:1;padding:0 2px;">&times;</button>
+    </div>
+  </div>
+
   <!-- Financial Pyramid — Separated Layers -->
   <div class="wellness-section">
     <h3 id="pyramid-title">Financial Wellness</h3>
@@ -757,10 +772,11 @@
         <input id="dash-csv-custom" placeholder="Institution name" style="display:none;padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
         <input id="dash-csv-label" placeholder="Account label (e.g. Chase Checking)" style="padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
         <input id="dash-csv-file" type="file" accept=".csv,text/csv,.CSV" style="padding:8px;font-size:13px;color:var(--text-muted);">
+        <div id="dash-csv-preview" style="display:none;font-size:12px;border:1px solid var(--border);border-radius:8px;padding:10px 12px;max-height:240px;overflow:auto;"></div>
         <div id="dash-csv-status" style="font-size:12px;min-height:18px;"></div>
         <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:4px;">
           <button class="btn-sm" id="dash-csv-cancel" style="font-size:13px;padding:10px 16px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-family:inherit;min-height:40px;">Cancel</button>
-          <button class="btn-sm" id="dash-csv-submit" style="font-size:13px;padding:10px 16px;border:1px solid var(--teal);border-radius:6px;background:var(--teal);color:#000;cursor:pointer;font-family:inherit;font-weight:500;min-height:40px;">Upload &amp; Import</button>
+          <button class="btn-sm" id="dash-csv-submit" style="font-size:13px;padding:10px 16px;border:1px solid var(--teal);border-radius:6px;background:var(--teal);color:#000;cursor:pointer;font-family:inherit;font-weight:500;min-height:40px;">Preview</button>
         </div>
       </div>
     </div>
@@ -1480,6 +1496,35 @@
       });
     })();
 
+    // Sync-degradation strip — fetch /api/data-health and surface warning-level
+    // issues at the top of the dashboard. Dismissible per-session (sessionStorage),
+    // so it re-appears on the next visit if the issue persists (i.e. the operator
+    // can't permanently silence a real degradation).
+    (function wireSyncHealthStrip() {
+      var strip = document.getElementById('sync-health-strip');
+      if (!strip) return;
+      var list = document.getElementById('sync-health-strip-list');
+      var dismiss = document.getElementById('sync-health-strip-dismiss');
+      if (dismiss) dismiss.addEventListener('click', function () {
+        strip.style.display = 'none';
+        try { sessionStorage.setItem('perfin_synchealth_dismissed', '1'); } catch (e) {}
+      });
+      (async function () {
+        try {
+          var res = await apiFetch('/api/data-health');
+          if (!res.ok) return;
+          var h = await res.json();
+          var warnings = (h.issues || []).filter(function (i) { return i.severity === 'warning'; });
+          if (!warnings.length) return; // healthy (or info-only) → stay hidden
+          try { if (sessionStorage.getItem('perfin_synchealth_dismissed') === '1') return; } catch (e) {}
+          var esc = (window.esc) || function (s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); };
+          list.innerHTML = warnings.slice(0, 3).map(function (i) { return esc(i.message); }).join('<br>') +
+            (warnings.length > 3 ? '<br>+' + (warnings.length - 3) + ' more' : '');
+          strip.style.display = 'block';
+        } catch (e) { /* health probe is best-effort — never block the dashboard */ }
+      })();
+    })();
+
     // Dashboard CSV upload modal + Sync-to-Sheets button.
     // The CSV modal POSTs to /api/import-csv (same endpoint the Accounts
     // page uses); the Sheets button POSTs to /api/sheets/sync. Both are
@@ -1496,13 +1541,61 @@
       var csvLabel = document.getElementById('dash-csv-label');
       var csvFile = document.getElementById('dash-csv-file');
       var csvStatus = document.getElementById('dash-csv-status');
+      var csvPreview = document.getElementById('dash-csv-preview');
+      // Two-step flow: 'preview' → dry-run classify, 'confirm' → real import.
+      var csvStage = 'preview';
       function closeCsvModal() { if (csvModal) csvModal.style.display = 'none'; }
+      function clearPreview() {
+        csvStage = 'preview';
+        if (csvPreview) { csvPreview.style.display = 'none'; csvPreview.innerHTML = ''; }
+        if (csvSubmitBtn) csvSubmitBtn.textContent = 'Preview';
+      }
       function resetCsv() {
         if (csvFile) csvFile.value = '';
         if (csvLabel) csvLabel.value = '';
         if (csvCustom) { csvCustom.value = ''; csvCustom.style.display = 'none'; }
         if (csvInstitution) csvInstitution.value = 'Chase';
         if (csvStatus) { csvStatus.textContent = ''; csvStatus.style.color = ''; }
+        clearPreview();
+      }
+      // Any change to the inputs invalidates a shown preview (the dedup counts
+      // were computed for the prior file/label) — drop back to the preview step.
+      [csvFile, csvLabel, csvCustom, csvInstitution].forEach(function (el) {
+        if (el) el.addEventListener('change', clearPreview);
+      });
+      function csvEsc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+      function csvFormData() {
+        var institution = csvInstitution.value === 'Other'
+          ? (csvCustom.value.trim() || 'Unknown')
+          : csvInstitution.value;
+        var label = (csvLabel.value || '').trim() || (institution + ' Account');
+        var fd = new FormData();
+        fd.append('file', csvFile.files[0]);
+        fd.append('institution', institution);
+        fd.append('account_label', label);
+        return fd;
+      }
+      function renderPreview(d) {
+        var rows = (d.sample || []).map(function (r) {
+          var color = r.status === 'duplicate' ? 'var(--text-muted)' : 'var(--text)';
+          var badge = r.status === 'duplicate'
+            ? '<span style="color:var(--yellow,#d9b25f);">dup</span>'
+            : '<span style="color:var(--green,#6fcf97);">new</span>';
+          return '<tr style="color:' + color + ';"><td style="padding:2px 6px 2px 0;">' + csvEsc(r.date) +
+            '</td><td style="padding:2px 6px;text-align:right;">' + (typeof fmt === 'function' ? fmt(r.amount) : r.amount) +
+            '</td><td style="padding:2px 6px;overflow:hidden;text-overflow:ellipsis;max-width:160px;white-space:nowrap;">' + csvEsc(r.merchant) +
+            '</td><td style="padding:2px 0 2px 6px;">' + badge + '</td></tr>';
+        }).join('');
+        csvPreview.innerHTML =
+          '<div style="margin-bottom:8px;"><strong>' + csvEsc(d.format_detected) + '</strong> &middot; ' + csvEsc(d.account_label) + '</div>' +
+          '<div style="margin-bottom:8px;">' +
+            '<span style="color:var(--green,#6fcf97);">' + d.rows_new + ' new</span> &middot; ' +
+            '<span style="color:var(--yellow,#d9b25f);">' + d.rows_duplicate + ' already imported</span> &middot; ' +
+            '<span style="color:var(--text-muted);">' + d.rows_skipped + ' skipped</span>' +
+          '</div>' +
+          (d.sample && d.sample.length ? '<table style="width:100%;border-collapse:collapse;font-size:11px;">' + rows + '</table>' : '') +
+          (d.rows_new === 0 ? '<div style="margin-top:8px;color:var(--text-muted);">Nothing new to import.</div>' : '');
+        csvPreview.style.display = 'block';
       }
       if (csvOpenBtn && csvModal) {
         csvOpenBtn.addEventListener('click', function() {
@@ -1521,31 +1614,46 @@
       document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape' && csvModal && csvModal.style.display === 'block') closeCsvModal();
       });
-      if (csvSubmitBtn) csvSubmitBtn.addEventListener('click', async function() {
-        if (!csvFile || !csvFile.files[0]) {
-          csvStatus.textContent = 'Please select a CSV file.';
+      async function doPreview() {
+        csvSubmitBtn.disabled = true;
+        csvSubmitBtn.textContent = 'Previewing…';
+        csvStatus.style.color = 'var(--text-muted)';
+        csvStatus.textContent = 'Reading file…';
+        try {
+          var res = await apiFetch('/api/import-csv/preview', { method: 'POST', body: csvFormData() });
+          var data = await res.json().catch(function() { return {}; });
+          if (res.ok) {
+            csvStatus.textContent = '';
+            renderPreview(data);
+            csvStage = 'confirm';
+            csvSubmitBtn.textContent = data.rows_new > 0 ? ('Import ' + data.rows_new + ' new') : 'Nothing to import';
+            csvSubmitBtn.disabled = data.rows_new === 0;
+          } else {
+            csvStatus.style.color = 'var(--red, #eb6b6b)';
+            csvStatus.textContent = 'Preview failed: ' + (data.error || ('HTTP ' + res.status));
+            csvSubmitBtn.textContent = 'Preview';
+          }
+        } catch (err) {
           csvStatus.style.color = 'var(--red, #eb6b6b)';
-          return;
+          csvStatus.textContent = 'Preview failed: ' + err.message;
+          csvSubmitBtn.textContent = 'Preview';
+        } finally {
+          if (csvStage !== 'confirm') csvSubmitBtn.disabled = false;
         }
-        var institution = csvInstitution.value === 'Other'
-          ? (csvCustom.value.trim() || 'Unknown')
-          : csvInstitution.value;
-        var label = (csvLabel.value || '').trim() || (institution + ' Account');
-        var fd = new FormData();
-        fd.append('file', csvFile.files[0]);
-        fd.append('institution', institution);
-        fd.append('account_label', label);
+      }
+      async function doImport() {
         csvSubmitBtn.disabled = true;
         csvSubmitBtn.textContent = 'Importing…';
         csvStatus.style.color = 'var(--text-muted)';
         csvStatus.textContent = 'Uploading…';
         try {
-          var res = await apiFetch('/api/import-csv', { method: 'POST', body: fd });
+          var res = await apiFetch('/api/import-csv', { method: 'POST', body: csvFormData() });
           var data = await res.json().catch(function() { return {}; });
           if (res.ok) {
             csvStatus.style.color = 'var(--green, #6fcf97)';
             csvStatus.textContent = 'Imported ' + data.rows_imported + ' transactions (' +
-              data.rows_skipped + ' skipped) — ' + (data.format_detected || 'unknown format');
+              (data.rows_duplicate || 0) + ' already imported, ' + data.rows_skipped + ' skipped) — ' +
+              (data.format_detected || 'unknown format');
             // Fire-and-forget targeted Transactions-tab refresh (faster
             // than a full syncAll which touches all 16 tabs). Endpoint
             // returns 400/501 cleanly if Sheets isn't configured.
@@ -1554,14 +1662,23 @@
           } else {
             csvStatus.style.color = 'var(--red, #eb6b6b)';
             csvStatus.textContent = 'Import failed: ' + (data.error || ('HTTP ' + res.status));
+            csvSubmitBtn.disabled = false;
+            csvSubmitBtn.textContent = 'Import';
           }
         } catch (err) {
           csvStatus.style.color = 'var(--red, #eb6b6b)';
           csvStatus.textContent = 'Import failed: ' + err.message;
-        } finally {
           csvSubmitBtn.disabled = false;
-          csvSubmitBtn.textContent = 'Upload & Import';
+          csvSubmitBtn.textContent = 'Import';
         }
+      }
+      if (csvSubmitBtn) csvSubmitBtn.addEventListener('click', function() {
+        if (!csvFile || !csvFile.files[0]) {
+          csvStatus.textContent = 'Please select a CSV file.';
+          csvStatus.style.color = 'var(--red, #eb6b6b)';
+          return;
+        }
+        if (csvStage === 'confirm') doImport(); else doPreview();
       });
 
       // ---- Sync to Sheets button ----
