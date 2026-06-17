@@ -13,7 +13,15 @@
 
 const express = require("express");
 const router = express.Router();
+const multer = require("multer");
 const { pool } = require("../services/database");
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+
+// Lazy Anthropic client (for OCR bill scanning) — optional dependency, mirrors ask.js.
+let Anthropic;
+try { Anthropic = require("@anthropic-ai/sdk").default || require("@anthropic-ai/sdk"); }
+catch { Anthropic = null; }
 
 const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -214,7 +222,8 @@ async function runHousingReminders(pool_) {
         title: "Enter " + o.label + " amount",
         body: periodLabel(o.period) + " " + o.label + " bill should have arrived — add the amount.",
         tag,
-        data: { url: "/housing" },
+        // Deep-link to the awaiting-bill input so entering the figure is one tap.
+        data: { url: "/housing#pending" },
       });
       if (r && r.logged) sent++;
     }
@@ -366,6 +375,100 @@ router.get("/api/housing/export", async (req, res) => {
     res.send(csv);
   } catch (err) {
     console.error("housing export error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// POST /api/housing/scan-bill — OCR a utility bill image/PDF via Claude vision
+// and SUGGEST { amount, period, label } WITHOUT writing (the user confirms, then
+// PATCHes the obligation). Shares the monthly AI cap (entry_type='scan'); 501
+// without ANTHROPIC_API_KEY, 429 past the cap. The image is processed and
+// discarded — never persisted.
+const SCAN_TOOL = {
+  name: "report_bill",
+  description: "Report the fields extracted from a utility/rent bill image.",
+  input_schema: {
+    type: "object",
+    properties: {
+      amount: { type: "number", description: "the total amount due, as a number (no currency symbol)" },
+      period: { type: "string", description: "the billing month this bill is for, as YYYY-MM" },
+      label: { type: "string", description: "the utility / biller name, e.g. Electricity, Water, Gas" },
+    },
+  },
+};
+router.post("/api/housing/scan-bill", upload.single("file"), async (req, res) => {
+  if (!Anthropic || !process.env.ANTHROPIC_API_KEY) {
+    return res.status(501).json({ error: "AI not configured. Set ANTHROPIC_API_KEY to scan bills." });
+  }
+  if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+  const mt = req.file.mimetype;
+  let block;
+  const data = req.file.buffer.toString("base64");
+  if (mt === "application/pdf") {
+    block = { type: "document", source: { type: "base64", media_type: "application/pdf", data } };
+  } else if (/^image\/(jpeg|png|webp|gif)$/.test(mt)) {
+    block = { type: "image", source: { type: "base64", media_type: mt, data } };
+  } else {
+    return res.status(400).json({ error: "Unsupported file type — upload a JPG, PNG, WEBP, GIF, or PDF." });
+  }
+
+  try {
+    // Shared monthly AI cap (parity with /api/ask, INV-14): check then charge.
+    const { getAiBudgetCents } = require("./insights");
+    const { MODEL_MAP, estimateCostGranular, estimateCostUsd } = require("../data/reference-data");
+    const budgetCents = await getAiBudgetCents();
+    const u = await pool.query(
+      "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights WHERE created_at >= date_trunc('month', CURRENT_DATE)"
+    );
+    let spendCents = 0;
+    u.rows.forEach((r) => {
+      const cost = r.input_tokens
+        ? estimateCostGranular({ input_tokens: r.input_tokens, output_tokens: r.output_tokens, cache_read_input_tokens: r.cache_read_tokens || 0, cache_creation_input_tokens: r.cache_creation_tokens || 0 }, r.model_used)
+        : estimateCostUsd(r.tokens_used || 0, r.model_used);
+      spendCents += cost * 100;
+    });
+    if (spendCents >= budgetCents) {
+      return res.status(429).json({ error: `Monthly AI budget reached ($${(budgetCents / 100).toFixed(2)} cap). Raise it under Settings → AI Insights.` });
+    }
+
+    const sRow = await pool.query("SELECT insights_model FROM user_settings WHERE id = 1");
+    const modelId = MODEL_MAP[sRow.rows[0]?.insights_model] || MODEL_MAP.haiku;
+    const client = new Anthropic();
+    const msg = await client.messages.create({
+      model: modelId,
+      max_tokens: 300,
+      tools: [SCAN_TOOL],
+      tool_choice: { type: "tool", name: "report_bill" },
+      messages: [{
+        role: "user",
+        content: [
+          block,
+          { type: "text", text: "This is a utility or rent bill. Extract the total amount due, the billing month it is for (as YYYY-MM), and the biller/utility name. If any field isn't clearly present, omit it." },
+        ],
+      }],
+    });
+
+    // Charge the cap (entry_type='scan' — counted by the cap queries, filtered
+    // out of the user-facing insights feed which selects entry_type='insight').
+    const usage = msg.usage || {};
+    await pool.query(
+      `INSERT INTO financial_insights
+         (insight_text, model_used, tokens_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, entry_type)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'scan')`,
+      ["[Scan] utility bill", modelId,
+        (usage.input_tokens || 0) + (usage.output_tokens || 0),
+        usage.input_tokens || 0, usage.output_tokens || 0,
+        usage.cache_read_input_tokens || 0, usage.cache_creation_input_tokens || 0]
+    ).catch((e) => console.error("scan-bill usage charge error:", e.message));
+
+    const tool = (msg.content || []).find((b) => b.type === "tool_use");
+    const out = (tool && tool.input) || {};
+    const amount = Number.isFinite(Number(out.amount)) && Number(out.amount) >= 0 ? Math.round(Number(out.amount) * 100) / 100 : null;
+    const period = MONTH_RE.test(String(out.period || "")) ? out.period : null;
+    const label = typeof out.label === "string" ? out.label.slice(0, 60) : null;
+    res.json({ amount, period, label });
+  } catch (err) {
+    console.error("scan-bill error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
   }
 });

@@ -195,6 +195,42 @@ describe("GET /api/housing/export", () => {
   });
 });
 
+// ---- POST /api/housing/scan-bill (#5 OCR) ----------------------------------
+describe("POST /api/housing/scan-bill", () => {
+  const origKey = process.env.ANTHROPIC_API_KEY;
+  afterEach(() => {
+    if (origKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = origKey;
+  });
+
+  it("501 when ANTHROPIC_API_KEY is unset", async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    const res = await supertest(app)
+      .post("/api/housing/scan-bill")
+      .attach("file", Buffer.from("img"), { filename: "bill.png", contentType: "image/png" });
+    assert.equal(res.status, 501);
+  });
+
+  it("400 on an unsupported file type (before any AI call)", async () => {
+    process.env.ANTHROPIC_API_KEY = "test-key";
+    const res = await supertest(app)
+      .post("/api/housing/scan-bill")
+      .attach("file", Buffer.from("hello"), { filename: "bill.txt", contentType: "text/plain" });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /Unsupported file type/);
+  });
+
+  it("source: charges the cap as entry_type='scan', forces the report_bill tool, image+pdf blocks", () => {
+    const fs = require("fs"); const path = require("path");
+    const src = fs.readFileSync(path.join(__dirname, "../teller/routes/housing.js"), "utf8");
+    assert.match(src, /'scan'\)/, "usage row uses entry_type='scan'");
+    assert.match(src, /tool_choice: \{ type: "tool", name: "report_bill" \}/);
+    assert.match(src, /getAiBudgetCents/, "checks the shared AI cap");
+    assert.match(src, /application\/pdf/, "accepts PDF bills");
+    assert.match(src, /type: "image"/, "accepts image bills");
+  });
+});
+
 // ---- buildBillCalendarIcs — housing obligations on the calendar feed --------
 describe("buildBillCalendarIcs — housing obligations (#1)", () => {
   const subs = require("../teller/routes/subscriptions");
