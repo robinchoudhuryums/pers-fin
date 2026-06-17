@@ -426,9 +426,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1033 tests as of latest); use
+  Perfin and Per-sistant test files (1035 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1033 tests across 41 test files (incl.
+  Current count: 1035 tests across 41 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -611,10 +611,15 @@ shell/
   obligations link back via `paid_payment_id` (FK-by-convention) and an
   Undo reverts them. Unpaid obligations with a known amount also surface on the
   **bill calendar** (`bill_source='housing'`, display-only — settled via the Rent
-  page, not the calendar's `bill_payments` toggle). A **dashboard widget**
-  (`#housing-widget-section`, toggle key `housing`, default on) shows the current
-  balance owed + unpaid/awaiting counts, auto-hiding when the ledger isn't
-  configured. Tables: `payee_obligations`, `payee_payments`.
+  page, not the calendar's `bill_payments` toggle) AND on the public token-gated
+  `/calendar.ics` feed (unpaid, known-amount obligations as all-day VEVENTs with
+  a stable `housing-<id>@perfin` UID). The Rent page also shows a **per-utility
+  trend** section — an inline-SVG amount sparkline per utility with a
+  vs-same-month-last-year (falling back to vs-previous) % delta, computed
+  client-side from the ledger's obligation history (no extra endpoint). A
+  **dashboard widget** (`#housing-widget-section`, toggle key `housing`, default
+  on) shows the current balance owed + unpaid/awaiting counts, auto-hiding when
+  the ledger isn't configured. Tables: `payee_obligations`, `payee_payments`.
 - **Merchant categorization rules**: Persistent merchant→category rules applied before
   AI categorization to reduce API costs. CRUD via `/api/categorization-rules`.
   Match types: `contains`, `exact`, `starts_with`. `POST /api/categorize` applies
@@ -1356,7 +1361,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1033 tests passing across 41 test files (Perfin 641 + Per-sistant 392), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1035 tests passing across 41 test files (Perfin 643 + Per-sistant 392), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
@@ -1722,7 +1727,9 @@ GET  /calendar.ics                        # bill-calendar iCalendar feed (subscr
                                           # header-only). Unset env = 404/feature off.
                                           # Events: detected-subscription charges projected
                                           # by cadence + manual bills (monthly = all in
-                                          # window; quarterly/yearly = next occurrence),
+                                          # window; quarterly/yearly = next occurrence) +
+                                          # unpaid Rent & Utilities obligations (known
+                                          # amount, on their period's due day),
                                           # 90 days default (?days=7-365). Builder:
                                           # subscriptions.buildBillCalendarIcs.
 ```

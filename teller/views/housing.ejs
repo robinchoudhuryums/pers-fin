@@ -19,6 +19,12 @@
     <div id="hz-obligations" style="margin-top:10px;"></div>
   </div>
 
+  <!-- Utility trends -->
+  <div class="card" id="hz-trends-card" style="margin-bottom:16px;display:none;">
+    <h2 style="margin:0 0 10px;">Utility trends</h2>
+    <div id="hz-trends"></div>
+  </div>
+
   <!-- Payment history -->
   <div class="card" id="hz-history-card" style="margin-bottom:16px;display:none;">
     <h2 style="margin:0 0 10px;">Payment history</h2>
@@ -262,6 +268,63 @@
       finally { btn.disabled = false; }
     });
 
+    // ---- Utility trends (per-utility amount history + delta) ----
+    function sparkline(values){
+      // values: [{period, amount}] oldest→newest. Inline SVG polyline, no deps.
+      var W = 120, H = 28, P = 2;
+      if (values.length < 2) return '';
+      var amts = values.map(function(v){ return v.amount; });
+      var min = Math.min.apply(null, amts), max = Math.max.apply(null, amts);
+      var range = (max - min) || 1;
+      var pts = values.map(function(v, i){
+        var x = P + (values.length === 1 ? (W-2*P)/2 : i * (W - 2*P) / (values.length - 1));
+        var y = H - P - ((v.amount - min) / range) * (H - 2*P);
+        return x.toFixed(1) + ',' + y.toFixed(1);
+      }).join(' ');
+      var lastX = P + (values.length - 1) * (W - 2*P) / (values.length - 1);
+      var lastY = H - P - ((amts[amts.length-1] - min) / range) * (H - 2*P);
+      return '<svg width="'+W+'" height="'+H+'" viewBox="0 0 '+W+' '+H+'" style="overflow:visible;">' +
+        '<polyline points="'+pts+'" fill="none" stroke="var(--teal)" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>' +
+        '<circle cx="'+lastX.toFixed(1)+'" cy="'+lastY.toFixed(1)+'" r="2.2" fill="var(--teal)"/></svg>';
+    }
+    function monthsBack(period, n){
+      var a = period.split('-').map(Number); var idx = a[0]*12 + (a[1]-1) - n;
+      return Math.floor(idx/12) + '-' + String((idx%12)+1).padStart(2,'0');
+    }
+    function renderTrends(obl){
+      // Group known-amount utility obligations by label, oldest→newest.
+      var byLabel = {};
+      obl.forEach(function(o){
+        if (o.category !== 'utility' || o.amount == null) return;
+        (byLabel[o.label] = byLabel[o.label] || []).push({ period: o.period, amount: parseFloat(o.amount) });
+      });
+      var labels = Object.keys(byLabel).filter(function(l){ return byLabel[l].length >= 1; });
+      if (!labels.length) { document.getElementById('hz-trends-card').style.display = 'none'; return; }
+      var html = labels.map(function(label){
+        var series = byLabel[label].sort(function(a,b){ return a.period < b.period ? -1 : 1; });
+        var latest = series[series.length - 1];
+        var byPeriod = {}; series.forEach(function(s){ byPeriod[s.period] = s.amount; });
+        // Prefer same-month-last-year; fall back to the previous reading.
+        var yoyP = monthsBack(latest.period, 12);
+        var cmp = byPeriod[yoyP] != null ? { v: byPeriod[yoyP], label: 'vs last year' }
+                : (series.length >= 2 ? { v: series[series.length-2].amount, label: 'vs prev' } : null);
+        var delta = '';
+        if (cmp && cmp.v > 0) {
+          var pct = Math.round(((latest.amount - cmp.v) / cmp.v) * 100);
+          var col = pct > 0 ? 'var(--warm)' : 'var(--green)';
+          delta = '<span style="color:'+col+';font-size:11px;">'+(pct>0?'+':'')+pct+'% '+cmp.label+'</span>';
+        }
+        return '<div style="display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--border);">' +
+          '<span style="min-width:110px;font-size:13px;">'+esc(label)+'</span>' +
+          '<span style="font-variant-numeric:tabular-nums;font-weight:500;min-width:80px;">'+money(latest.amount)+'</span>' +
+          '<span>'+delta+'</span>' +
+          '<span style="margin-left:auto;">'+sparkline(series)+'</span>' +
+        '</div>';
+      }).join('');
+      document.getElementById('hz-trends').innerHTML = html;
+      document.getElementById('hz-trends-card').style.display = 'block';
+    }
+
     // ---- Load ----
     async function load(){
       try {
@@ -284,6 +347,8 @@
         if (!configured) { document.getElementById('hz-config-wrap').open = true; }
         renderObligations(d.obligations);
         renderPayments(d.payments);
+        if (configured) renderTrends(d.obligations);
+        else document.getElementById('hz-trends-card').style.display = 'none';
       } catch (err) {
         document.getElementById('hz-summary').innerHTML = '<div style="color:var(--text-muted);">Could not load.</div>';
       }

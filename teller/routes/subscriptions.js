@@ -1152,6 +1152,29 @@ async function buildBillCalendarIcs(days) {
     }
   }
 
+  // Rent & utilities ledger — unpaid obligations with a known amount, placed on
+  // their period's due day (display-only; settled via the Rent page). Stable
+  // per-obligation UID so a due-day edit updates the event in place. Defensive:
+  // a pre-migration DB just omits them.
+  try {
+    const housing = await pool.query(
+      "SELECT id, label, amount, period, due_day FROM payee_obligations WHERE status = 'unpaid' AND amount IS NOT NULL"
+    );
+    for (const o of housing.rows) {
+      const [y, m] = String(o.period).split("-").map(Number);
+      if (!y || !m) continue;
+      const dueDay = Math.min(28, Math.max(1, parseInt(o.due_day) || 1));
+      const d = new Date(Date.UTC(y, m - 1, dueDay));
+      if (d >= today && d <= end) {
+        events.push({
+          uid: "housing-" + o.id + "@perfin",
+          date: d,
+          summary: o.label + " — $" + parseFloat(o.amount).toFixed(2) + " (rent/utilities)",
+        });
+      }
+    }
+  } catch (e) { /* payee_obligations not migrated yet — omit */ }
+
   const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15) + "Z";
   const lines = [
     "BEGIN:VCALENDAR",

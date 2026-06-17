@@ -165,3 +165,31 @@ function housingThisMonth() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
+
+// ---- buildBillCalendarIcs — housing obligations on the calendar feed --------
+describe("buildBillCalendarIcs — housing obligations (#1)", () => {
+  const subs = require("../teller/routes/subscriptions");
+  const fs = require("fs");
+  const path = require("path");
+
+  it("emits a VEVENT for an unpaid, known-amount housing obligation in the window", async () => {
+    // Next month's 15th — always in the future and within a 90-day horizon.
+    const now = new Date();
+    const fut = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+    const period = `${fut.getUTCFullYear()}-${String(fut.getUTCMonth() + 1).padStart(2, "0")}`;
+    dbModule.pool.query = async (sql) => {
+      if (/detected_subscriptions/.test(sql)) return { rows: [] };
+      if (/manual_bills/.test(sql)) return { rows: [] };
+      if (/payee_obligations/.test(sql)) return { rows: [{ id: 5, label: "Electricity", amount: "80.00", period, due_day: 15 }] };
+      return { rows: [] };
+    };
+    const ics = await subs.buildBillCalendarIcs(90);
+    assert.match(ics, /UID:housing-5@perfin/);
+    assert.match(ics, /SUMMARY:Electricity .* \$80\.00 \(rent\/utilities\)/);
+  });
+
+  it("only queries unpaid obligations with a known amount", () => {
+    const src = fs.readFileSync(path.join(__dirname, "../teller/routes/subscriptions.js"), "utf8");
+    assert.match(src, /payee_obligations WHERE status = 'unpaid' AND amount IS NOT NULL/);
+  });
+});
