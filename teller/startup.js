@@ -285,6 +285,24 @@ function startBackgroundJobs() {
     }
   }, 3 * 60 * 60 * 1000));
 
+  // Rent & Utilities ledger (every 6 hours): generate the current/missing
+  // months' obligations from housing_config (idempotent), then fire the two
+  // reminders — payment-due (balance owed near the rent due day) and
+  // missing-utility-amount (a placeholder whose bill should have arrived). Both
+  // are deduped via sentRecently inside runHousingReminders. No-op when the
+  // ledger isn't configured. In-process helpers, never an HTTP self-fetch (INV-18).
+  intervalHandles.push(setInterval(async () => {
+    jobHealth.tick("housing-ledger");
+    if (!isUserActive()) return;
+    try {
+      const housing = require("./routes/housing");
+      await housing.generateHousingObligations();
+      await housing.runHousingReminders();
+    } catch (err) {
+      console.error("Housing ledger task error:", err.message);
+    }
+  }, 6 * 60 * 60 * 1000));
+
   // Budget snapshot auto-trigger (every 6 hours). Snapshots the PRIOR (now-
   // complete) month's spending + rollover so rollover-enabled budgets advance.
   // M5: this used to only act when today.getDate()===1, which — combined with

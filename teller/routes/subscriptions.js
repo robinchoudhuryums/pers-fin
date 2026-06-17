@@ -749,6 +749,30 @@ router.get("/api/bill-calendar", async (req, res) => {
       }
     }
 
+    // Rent & utilities ledger — show UNPAID obligations for this month on their
+    // due day (bill_source 'housing', distinct from subscription/manual). Once
+    // recorded as paid they drop off the calendar (tracked on the Rent page).
+    // Only rows with a known amount appear (a utility awaiting its bill has none).
+    try {
+      const periodStr = `${year}-${String(month).padStart(2, "0")}`;
+      const housing = await pool.query(
+        "SELECT id, label, amount, due_day FROM payee_obligations WHERE status = 'unpaid' AND period = $1 AND amount IS NOT NULL",
+        [periodStr]
+      );
+      for (const o of housing.rows) {
+        const day = Math.min(o.due_day || 1, daysInMonth);
+        // No bill_id — housing is settled via its own payment flow (the Rent
+        // page), so it's display-only on the calendar (the paid-state toggle
+        // keys on bill_source+bill_id against bill_payments, which we skip here).
+        calendar[day].push({
+          name: o.label,
+          amount: parseFloat(o.amount),
+          category: "housing",
+          bill_source: "housing",
+        });
+      }
+    } catch (e) { /* payee_obligations not migrated yet — omit from calendar */ }
+
     // Load payments for this month to mark paid bills
     const payments = await pool.query(
       "SELECT * FROM bill_payments WHERE paid_date >= $1 AND paid_date <= $2",

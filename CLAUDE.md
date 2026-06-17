@@ -137,6 +137,11 @@ teller/
     budgets.js           — GET/POST/PATCH/DELETE /api/budgets, POST /api/budgets/suggest,
                            POST /api/budgets/accept, GET /api/budgets/alerts,
                            POST /api/budgets/snapshot, GET /api/budgets/history
+    housing.js           — Rent & Utilities payee ledger: GET/PATCH /api/housing/config,
+                           GET /api/housing/ledger, POST /api/housing/generate,
+                           POST/PATCH/DELETE /api/housing/obligations, POST/DELETE
+                           /api/housing/payments. Exports generateHousingObligations
+                           + runHousingReminders for the scheduled task (INV-18/19).
     settings.js          — GET/PATCH /api/settings, POST /api/sheets/sync,
                            POST /api/sheets/dashboard, GET /api/export,
                            GET /api/data-freshness
@@ -237,6 +242,8 @@ teller/
     accounts.js          — Teller Connect enrollment + CSV import page
     goals.js             — Financial goals tracking page
     budgets.js           — Budget tracking page with AI suggestions and alerts
+    housing.js           — Rent & Utilities ledger page (balance owed, obligations,
+                           record-payment modal, payment history, config)
     transactions.js      — Transaction search/filter page with full-text search
     calendar.js          — Bill calendar page with subscription charges, manual bills,
                            and click-to-mark-paid functionality
@@ -271,6 +278,8 @@ teller/
     calendar.ejs         — Bill calendar template with Add Bill modal and paid-state toggling
     account-history.ejs  — Per-account balance history chart (range selector, summary cards)
     budgets.ejs          — Budget tracking template with progress bars and alerts
+    housing.ejs          — Rent & Utilities ledger template (balance, obligations,
+                           record-payment modal, config form, payment history)
     goals.ejs            — Financial goals template with progress and projections
     settings.ejs         — Settings template (theme, AI, keep-alive, sync, exports)
     subscriptions.ejs    — Subscription/utility management template
@@ -417,9 +426,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1025 tests as of latest); use
+  Perfin and Per-sistant test files (1033 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1025 tests across 40 test files (incl.
+  Current count: 1033 tests across 41 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -584,6 +593,26 @@ shell/
 - **Bill payment tracking**: Mark bills (both detected subscriptions and manual) as paid
   for specific dates via `/api/bill-payments`. Calendar shows paid state with
   strikethrough + checkmark. Click to toggle paid/unpaid.
+- **Rent & Utilities ledger** (`/housing` page, `routes/housing.js`): a
+  single-payee accounts-payable ledger for the common "we pay a person for rent +
+  utilities via bank transfer" case. Models it as **obligations** (rent = fixed;
+  a utility starts `pending_amount` with a NULL amount until the mailed bill
+  arrives and you enter it) + **payments** (a transfer that settles a BATCH of
+  obligations with a memo). The running **balance owed** = sum of `unpaid`
+  obligations. Config (payee, monthly rent, due day, utilities + cadence,
+  reminder lead days) lives in `user_settings.housing_config` (JSONB); a 6-hour
+  scheduled task auto-**generates** each month's rent (`unpaid`) + per-utility
+  placeholders (`pending_amount`) from `start_month`→current, idempotently, then
+  fires two deduped reminders: **payment-due** (balance owed near the rent due
+  day) and **missing-utility-amount** (a placeholder whose bill should have
+  arrived). Recording a payment ticks the unpaid obligations being settled,
+  auto-sums the amount, and **auto-derives the memo** by collapsing consecutive
+  months into ranges (`deriveMemo` → "Jan–Mar 2026 Rent, Jan 2026 Electricity");
+  obligations link back via `paid_payment_id` (FK-by-convention) and an
+  Undo reverts them. Unpaid obligations with a known amount also surface on the
+  **bill calendar** (`bill_source='housing'`, display-only — settled via the Rent
+  page, not the calendar's `bill_payments` toggle). Tables: `payee_obligations`,
+  `payee_payments`.
 - **Merchant categorization rules**: Persistent merchant→category rules applied before
   AI categorization to reduce API costs. CRUD via `/api/categorization-rules`.
   Match types: `contains`, `exact`, `starts_with`. `POST /api/categorize` applies
@@ -1325,7 +1354,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1025 tests passing across 40 test files (Perfin 633 + Per-sistant 392), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1033 tests passing across 41 test files (Perfin 641 + Per-sistant 392), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
@@ -1408,6 +1437,16 @@ DELETE /api/manual-bills/:id # delete a manual bill
 GET  /api/bill-payments    # list payments for a month (query: year, month)
 POST /api/bill-payments    # mark a bill as paid (body: bill_source, bill_id, paid_date)
 DELETE /api/bill-payments/:id # unmark a bill payment
+GET  /api/housing/config   # rent/utilities ledger config (payee, rent, due day, utilities)
+PATCH /api/housing/config  # replace config (validated/normalized; 400 if enabling w/o payee)
+GET  /api/housing/ledger   # balance owed + obligations + payment history (with covered months)
+POST /api/housing/generate # generate current/missing months' obligations from config (idempotent)
+POST /api/housing/obligations # add an ad-hoc obligation (body: label, period, amount?, category?, due_day?)
+PATCH /api/housing/obligations/:id # set amount (bill arrived → unpaid), notes, due_day, label
+DELETE /api/housing/obligations/:id # remove an obligation
+POST /api/housing/payments # settle a batch of unpaid obligations (body: obligation_ids[],
+                           # paid_date?, amount? (default=sum), memo? (default=derived)); marks paid
+DELETE /api/housing/payments/:id # undo a payment, reverting its obligations to unpaid/pending_amount
 GET  /api/csv-reminder     # list manual accounts overdue for a CSV refresh
 GET  /api/subscriptions    # list detected subscriptions
 GET  /api/accounts         # list linked accounts with balances (includes is_shared, spending_split_pct)
@@ -1656,6 +1695,7 @@ GET  /transactions              # transaction search/filter page
 GET  /calendar                  # bill calendar page
 GET  /goals                     # financial goals page
 GET  /budgets                   # budget tracking page
+GET  /housing                   # Rent & Utilities ledger page
 GET  /settings                  # settings page
 GET  /accounts/:id/history      # per-account balance chart (query: source=linked|investment, months)
 GET  /login                     # login page (if auth enabled)
@@ -1785,7 +1825,8 @@ standalone-mode fallback if either app is run on its own Render service.
   `net_worth_snapshots`, `tax_deductions`, `csv_imports`, `budgets`, `budget_snapshots`,
   `push_subscriptions`, `webauthn_credentials`, `investment_accounts`, `investment_holdings`,
   `plaid_investment_items`, `plaid_items`, `sync_cursors`, `schema_migrations`,
-  `categorization_rules`, `manual_bills`, `bill_payments`, `notification_log`,
+  `categorization_rules`, `manual_bills`, `bill_payments`,
+  `payee_obligations`, `payee_payments` (Rent & Utilities ledger), `notification_log`,
   `ai_audit_log`, `account_balance_snapshots`, `watchlist_items`, `credit_scores`,
   `job_runs` (scheduled-job heartbeats — one row per background job, UPSERTed by
   `services/job-health.js`; the `_watchdog` row stores the last-notified
@@ -1960,6 +2001,23 @@ standalone-mode fallback if either app is run on its own Render service.
 - `bill_payments`: tracks which bills have been paid. Columns: `bill_source`
   (subscription or manual), `bill_id`, `paid_date`, `paid_amount`, `notes`.
   UNIQUE on (bill_source, bill_id, paid_date). Calendar shows paid state.
+- `payee_obligations`: Rent & Utilities ledger rows. Columns: `payee`,
+  `category` (CHECK rent/utility/other), `label` ('Rent', 'Electricity', …),
+  `period` (YYYY-MM), `amount NUMERIC(12,2)` (NULL = awaiting bill),
+  `due_day` (1-31), `status` (CHECK `pending_amount`/`unpaid`/`paid`),
+  `paid_payment_id` (FK-by-convention to `payee_payments` — the route reverts
+  status on payment delete, no DB cascade), `notes`, `auto_generated`. UNIQUE
+  (payee, period, category, label) so monthly generation is idempotent.
+  Balance owed = SUM(amount) WHERE status='unpaid'.
+- `payee_payments`: a transfer settling a batch of obligations. Columns:
+  `payee`, `paid_date`, `amount`, `memo` (auto-derived from covered months when
+  blank). Obligations point back via `paid_payment_id`.
+- `user_settings.housing_config JSONB NOT NULL DEFAULT '{}'`: Rent & Utilities
+  config — `{ enabled, payee_name, rent_amount, rent_due_day, reminder_lead_days,
+  start_month, utilities: [{label, cadence_months, due_day, anchor}] }`. Read by
+  `routes/housing.js getConfig()`; drives monthly obligation generation +
+  reminders. `start_month` is preserved across edits so the generation window
+  doesn't shift.
 - `notification_log`: in-app notification history. Columns: `type`, `title`, `body`,
   `data` (JSONB), `is_read`. `sendToAll()` inserts here on every push notification.
   Indexed on (is_read, created_at DESC) for fast unread queries.
@@ -2215,6 +2273,12 @@ embedded mode).
 - **CSV import reminders**: every 24 hours, checks manual (CSV-only) accounts
   whose most recent CSV import is older than `csv_reminder_days` setting.
   Sends notification listing specific account names needing a fresh upload.
+- **Rent & Utilities ledger**: every 6 hours (activity-gated). Calls
+  `generateHousingObligations()` (idempotently create this/missing months' rent
+  + utility placeholders from `housing_config`) then `runHousingReminders()`
+  (payment-due + missing-utility-amount push notifications, deduped via
+  `sentRecently` to ≤1 per ~3 days). No-op when the ledger isn't configured.
+  In-process helpers (INV-18).
 - **Self-healing reconcile**: every 1 hour, acts at most weekly (gated on
   `last_reconcile_at`). Runs `reconcileTeller(90)` — re-fetches the trailing
   90 days from every Teller enrollment regardless of the incremental
