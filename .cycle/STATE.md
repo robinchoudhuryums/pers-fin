@@ -9,6 +9,31 @@ to the "none in progress" state.
 
 ## Current Cycle
 
+- **Status:** **broad-implement (4 follow-on features) DONE** on branch
+  `claude/loving-rubin-1tkzs5` (2026-06-18). Implemented the operator-selected
+  backlog items from the prioritized roadmap:
+  - **Manual cash entry** — `POST /api/transactions/manual` (routes/transactions.js)
+    + "+ Add cash transaction" modal on the Transactions page. Positive-amount
+    expense, `manual_<ts>_<rand>` id, requires an existing is_manual depository
+    account. Expense-only (cash income deferred).
+  - **Mark-settled** — new `settlements` table (db migration) + GET/POST/DELETE
+    `/api/settlement[/settle|/:period]` (subscriptions.js). Dashboard Settle Up
+    widget grew a "Mark settled" button → "✓ Settled on <date>" + Undo. Display-only.
+  - **Audit confidence badge** — `GET /api/insights` returns per-insight
+    `audit_critical_count`/`audit_warning_count` (ai_audit_log subqueries); the
+    dashboard AI Insights widget header shows ✓ Verified / N cautions / ⚠ N issues
+    / audit incomplete.
+  - **Camera button** — housing OCR rows gained a "📷" capture-direct input
+    alongside "Scan"; both feed one handler. OCR image still memory-only (never stored).
+  - New test file `tests/manual-cash-settlement.test.js` (8 tests). Suite:
+    **Perfin 659 + Per-sistant 397 = 1056, 0 fail** (42 test files).
+  - Docs (CLAUDE.md + README) updated: counts, 4 endpoints, `settlements` table,
+    4 feature notes. NET: 4 features, 0 new failure modes; no invariants violated.
+  - **Where I left off:** implemented + tests green + docs synced; committing +
+    pushing to the branch (PR #124 open). Remaining roadmap: timezone full pass
+    (F11 residual), mobile iOS build (operator), settle-up double-count guard
+    (low pri), targeted audit of housing.js.
+
 - **Status:** **broad-implement Tier-3 features DONE** on branch
   `claude/loving-rubin-1tkzs5` (2026-06-17). Two strategic additions:
   - **Sync-degradation UI strip** — dashboard banner (`#sync-health-strip`) fetches

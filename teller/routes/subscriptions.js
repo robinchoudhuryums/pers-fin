@@ -573,6 +573,62 @@ router.get("/api/shared-settlement/:account_id/transactions", async (req, res) =
   }
 });
 
+// GET /api/settlement?month=YYYY-MM — whether the user has marked a month
+// squared with the partner (combined shared-card + housing even-up). Returns
+// { period, settled, net_amount?, direction?, note?, settled_at? }.
+router.get("/api/settlement", async (req, res) => {
+  const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(req.query.month || ""))
+    ? req.query.month
+    : new Date().toISOString().slice(0, 7);
+  try {
+    const r = await pool.query(
+      "SELECT period, net_amount, direction, note, settled_at FROM settlements WHERE period = $1",
+      [month]
+    );
+    if (!r.rows.length) return res.json({ period: month, settled: false });
+    const row = r.rows[0];
+    res.json({ period: month, settled: true, net_amount: parseFloat(row.net_amount), direction: row.direction, note: row.note, settled_at: row.settled_at });
+  } catch (err) {
+    console.error("settlement get error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// POST /api/settlement/settle — mark a month squared (upsert). Body:
+// { month, net_amount, direction, note? }. net_amount/direction are the
+// client-computed combined figure at settle time, stored for the record.
+router.post("/api/settlement/settle", async (req, res) => {
+  const { month, net_amount, direction, note } = req.body || {};
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(String(month || ""))) return res.status(400).json({ error: "month must be YYYY-MM" });
+  const amt = Number.isFinite(Number(net_amount)) ? Number(net_amount) : 0;
+  const dir = ["you_send_partner", "partner_sends_you", "square"].includes(direction) ? direction : "square";
+  try {
+    await pool.query(
+      `INSERT INTO settlements (period, net_amount, direction, note, settled_at)
+       VALUES ($1, $2, $3, $4, now())
+       ON CONFLICT (period) DO UPDATE SET net_amount = EXCLUDED.net_amount, direction = EXCLUDED.direction, note = EXCLUDED.note, settled_at = now()`,
+      [month, amt, dir, note ? String(note).slice(0, 200) : null]
+    );
+    res.json({ ok: true, period: month, settled: true });
+  } catch (err) {
+    console.error("settlement settle error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// DELETE /api/settlement/:period — undo a month's settlement.
+router.delete("/api/settlement/:period", async (req, res) => {
+  const month = req.params.period;
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(String(month || ""))) return res.status(400).json({ error: "invalid period" });
+  try {
+    await pool.query("DELETE FROM settlements WHERE period = $1", [month]);
+    res.json({ ok: true, period: month, settled: false });
+  } catch (err) {
+    console.error("settlement delete error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
 // POST /api/cleanup
 router.post("/api/cleanup", async (_req, res) => {
   try {

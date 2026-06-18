@@ -426,9 +426,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1048 tests as of latest); use
+  Perfin and Per-sistant test files (1056 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1048 tests across 41 test files (incl.
+  Current count: 1056 tests across 42 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -524,6 +524,16 @@ shell/
   second (F1); re-importing the same file still deduplicates against itself. `POST /api/import-csv`
   returns `rows_duplicate` (true re-imports of already-present rows) alongside `rows_imported` /
   `rows_skipped`.
+- **Manual cash entry**: a one-off expense the bank never sees (cash spending),
+  added via `POST /api/transactions/manual` and an "+ Add cash transaction"
+  modal on the Transactions page. Requires an existing `is_manual` (depository)
+  account — make a "Cash" account via `POST /api/accounts/manual` first; the
+  modal lists only those and links to the Accounts page when none exist. Stores
+  the amount POSITIVE (the spending sign every aggregation sums on `amount > 0`),
+  category in `category` (CSV-import precedent), notes in `user_notes`, and a
+  unique `manual_<ts>_<rand>` transaction_id so it's distinct and untouched by
+  re-sync. Flows through every spending query like any other transaction.
+  Expense-only by design (cash income is a rare follow-on).
 - **Transaction editing** (Phase B1): rename merchants and add notes via
   `PATCH /api/transactions/:id`. User overrides live in `user_merchant_name` /
   `user_notes` columns so re-syncs from Teller don't clobber edits. The display
@@ -626,10 +636,13 @@ shell/
   weaves in a rent line ("$X owed to [payee], due in N days") read READ-ONLY
   from the wired `perfinPool` (`payee_obligations` + `housing_config`),
   fail-soft (INV-25/35). **Bill OCR**: each awaiting-bill row has a "Scan"
-  button → `POST /api/housing/scan-bill` runs the bill image/PDF through Claude
+  button (upload a photo/PDF) AND a "📷" button (camera-direct via a `capture`
+  input — straight to the rear camera on mobile); both feed the same handler →
+  `POST /api/housing/scan-bill` runs the bill image/PDF through Claude
   vision (tool_use forcing a `report_bill` tool) and SUGGESTS `{amount, period,
   label}` for the user to confirm before the existing amount-PATCH writes it —
-  it never auto-writes, and the image is processed then discarded. Shares the
+  it never auto-writes, and the image is processed in memory then discarded
+  (never written to disk or a DB row). Shares the
   monthly AI cap (`entry_type='scan'`; 501 without `ANTHROPIC_API_KEY`). The
   missing-utility-amount reminder deep-links to `/housing#pending` so entering
   the figure is one tap. **Partner split** (`GET /api/housing/split`,
@@ -747,7 +760,11 @@ shell/
   "Partner" until set. (Double-count caveat: the two legs are assumed disjoint —
   the car pays via its own loan account and rent/utilities via the payee
   transfer, neither on a shared card; if a utility ever lands on the shared card
-  it would appear in both legs.)
+  it would appear in both legs.) A **"Mark settled"** button records that the
+  month was squared (the client-computed net + direction → `settlements` table
+  via `POST /api/settlement/settle`); once settled the headline dims and shows
+  "✓ Settled on <date>" with an Undo (`DELETE /api/settlement/:period`). This is
+  display-only bookkeeping — it never alters the shared-card or housing math.
 - **Since-you-last-looked widget**: aggregates new transactions, balance
   deltas (oldest snapshot ≤ watermark vs latest, dropped if |Δ| < $0.01),
   new subscriptions, and recent notifications since `last_dashboard_view_at`.
@@ -771,6 +788,15 @@ shell/
 - **AI audit-accuracy card**: Settings → AI shows the percentage of insight
   runs (last 90 days) with zero critical findings, color-coded green/yellow/red,
   with severity counts. Backed by `/api/insights/status.audit_accuracy`.
+- **Audit confidence badge** (dashboard): the AI Insights widget header shows a
+  per-insight badge for the latest insight's own post-generation audit result —
+  green "✓ Verified" (audited, no critical/warning findings), yellow "N
+  caution(s)" (warnings), red "⚠ N issue(s) flagged" (critical), or muted "audit
+  incomplete" (a tier threw). `GET /api/insights` now returns
+  `audit_critical_count` / `audit_warning_count` per row (subqueries over
+  `ai_audit_log`) alongside the existing `audited_at` / `audit_incomplete`. Hidden
+  until the insight has been audited. Per-insight parity with the Settings
+  90-day audit-accuracy card.
 - **Insight feedback loop**: dashboard's AI Insights widget grew per-insight
   thumbs-up / thumbs-down / mixed buttons plus an optional correction
   textarea. The last 5 rated insights are pulled into the next
@@ -1394,7 +1420,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1048 tests passing across 41 test files (Perfin 651 + Per-sistant 397), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1056 tests passing across 42 test files (Perfin 659 + Per-sistant 397), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
@@ -1464,6 +1490,12 @@ PATCH /api/transactions/:id # user overrides: merchant_name, notes, is_reimburse
                             # (Phase B1/B2), personal_for ('self'|'partner'|null —
                             # shared-card settlement override; invalid values
                             # silently coerced to NULL)
+POST /api/transactions/manual # add a one-off manual EXPENSE (e.g. cash spending
+                            # bank sync never sees). Body: account_id (an existing
+                            # is_manual account), amount (>0), date (YYYY-MM-DD),
+                            # merchant_name?, category?, notes?. Stores amount
+                            # POSITIVE (the spending sign), a unique manual_<ts>_<rand>
+                            # transaction_id (never touched by re-sync), notes→user_notes.
 DELETE /api/transactions/:id # delete a single transaction (deduplication tool)
 GET  /api/transactions/:id/splits # list splits for a transaction (Phase B3)
 POST /api/transactions/:id/splits # replace splits, validates sum matches parent ±$0.01
@@ -1515,6 +1547,14 @@ GET  /api/shared-settlement # who-owes-who on shared cards for a given month
 GET  /api/shared-settlement/:account_id/transactions # flat list of every charge on a
                             # shared account in the given month with each row's
                             # personal_for state, for reconciliation.
+GET  /api/settlement       # whether a month is marked squared with the partner
+                            # (query: month=YYYY-MM) → { period, settled, net_amount?,
+                            # direction?, note?, settled_at? }. Backs the Settle Up
+                            # widget's "Mark settled" state.
+POST /api/settlement/settle # mark a month squared (upsert by period; body: month,
+                            # net_amount, direction, note?). Records the client-computed
+                            # combined net at settle time.
+DELETE /api/settlement/:period # undo a month's settlement (period=YYYY-MM)
 GET  /api/spending-summary # monthly trends, categories, top merchants (split-adjusted)
 GET  /api/spending-categories # per-month category breakdown (query: month=YYYY-MM;
                            # splits/reimbursed/share-adjusted via getCategorySpendingForMonth)
@@ -2064,6 +2104,13 @@ standalone-mode fallback if either app is run on its own Render service.
 - `payee_payments`: a transfer settling a batch of obligations. Columns:
   `payee`, `paid_date`, `amount`, `memo` (auto-derived from covered months when
   blank). Obligations point back via `paid_payment_id`.
+- `settlements`: settle-up log for the dashboard Settle Up widget — one row per
+  month the user marks squared with the partner. Columns: `period` (YYYY-MM,
+  UNIQUE so re-marking upserts), `net_amount`, `direction`
+  (`you_send_partner`/`partner_sends_you`/`square`), `note`, `settled_at`.
+  Written by `POST /api/settlement/settle`, read by `GET /api/settlement`,
+  cleared by `DELETE /api/settlement/:period`. Display-only state — does not
+  alter the underlying shared-card or housing math.
 - `user_settings.housing_config JSONB NOT NULL DEFAULT '{}'`: Rent & Utilities
   config — `{ enabled, payee_name, rent_amount, rent_due_day, reminder_lead_days,
   start_month, utilities: [{label, cadence_months, due_day, anchor}],

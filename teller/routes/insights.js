@@ -380,7 +380,17 @@ router.get("/api/insights", async (_req, res) => {
     // entry_type filter excludes /api/categorize tracking rows from the user-facing feed.
     // Rows include user_feedback / user_feedback_text / user_feedback_at so the
     // dashboard widget can pre-fill the thumbs-up/down state on render.
-    const result = await pool.query("SELECT * FROM financial_insights WHERE entry_type = 'insight' ORDER BY created_at DESC LIMIT 5");
+    // Per-insight audit finding counts power the dashboard "confidence badge"
+    // (verified / cautions / issues). audited_at + audit_incomplete already live
+    // on the row; the critical/warning tallies come from ai_audit_log.
+    const result = await pool.query(
+      `SELECT fi.*,
+              (SELECT COUNT(*) FROM ai_audit_log al WHERE al.insight_id = fi.id AND al.severity = 'critical')::int AS audit_critical_count,
+              (SELECT COUNT(*) FROM ai_audit_log al WHERE al.insight_id = fi.id AND al.severity = 'warning')::int AS audit_warning_count
+       FROM financial_insights fi
+       WHERE fi.entry_type = 'insight'
+       ORDER BY fi.created_at DESC LIMIT 5`
+    );
     res.json(result.rows);
   } catch (err) { console.error("Insights list query error:", err.message); res.json([]); }
 });

@@ -313,6 +313,36 @@ router.post("/api/transactions/csv-overlap/resolve", async (req, res) => {
 // User edits are stored in `user_*` columns so a subsequent sync from Teller
 // does not clobber them. `merchant_name` in the PATCH body writes to
 // `user_merchant_name`; the raw `merchant_name` column keeps Teller's value.
+// POST /api/transactions/manual — add a one-off manual EXPENSE (e.g. cash
+// spending that bank sync never sees). Requires an existing account_id — create
+// a manual "Cash" account via POST /api/accounts/manual first. A unique
+// manual_<ts>_<rand> transaction_id makes every entry distinct (no dedup
+// collision) and Teller/Plaid re-sync never touches it. Amount is stored
+// POSITIVE = expense (the sign every spending aggregation sums on `amount > 0`).
+router.post("/api/transactions/manual", async (req, res) => {
+  const { account_id, amount, date, merchant_name, category, notes } = req.body || {};
+  if (!account_id) return res.status(400).json({ error: "account_id is required" });
+  const amt = parseFloat(amount);
+  if (!Number.isFinite(amt) || amt <= 0) return res.status(400).json({ error: "amount must be a positive number" });
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(String(date))) return res.status(400).json({ error: "date must be YYYY-MM-DD" });
+  try {
+    const acct = await pool.query("SELECT account_id FROM linked_accounts WHERE account_id = $1", [account_id]);
+    if (!acct.rows.length) return res.status(404).json({ error: "Account not found" });
+    const txnId = "manual_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+    const merchant = (merchant_name && String(merchant_name).trim()) || "Cash";
+    const cat = category && String(category).trim() ? `{${String(category).trim()}}` : null;
+    const result = await pool.query(
+      `INSERT INTO transactions (account_id, transaction_id, amount, date, merchant_name, name, category, user_notes, pending)
+       VALUES ($1, $2, $3, $4, $5, $5, $6, $7, false) RETURNING *`,
+      [account_id, txnId, Math.abs(amt), date, merchant, cat, notes ? String(notes).slice(0, 500) : null]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("manual transaction error:", err.message);
+    res.status(500).json({ error: "Failed to add transaction" });
+  }
+});
+
 router.patch("/api/transactions/:id", async (req, res) => {
   const { merchant_name, notes, is_reimbursed, personal_for } = req.body;
   const updates = []; const values = []; let idx = 1;
