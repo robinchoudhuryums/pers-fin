@@ -11,7 +11,7 @@ const { categorizeSubscription, findCancelUrl } = require("../data/reference-dat
 const { CSV_FORMATS, INSTITUTION_LABELS, detectCsvFormat, parseDate, csvTransactionId, makeCsvTxnIdGenerator } = require("../data/csv-formats");
 const { detectSubscriptions } = require("../../scripts/detect-subscriptions");
 const { detectRecurringTransfers } = require("../../scripts/detect-transfers");
-const { INCOME_PREDICATE } = require("../services/financial-queries");
+const { INCOME_PREDICATE, currentMonth } = require("../services/financial-queries");
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -470,7 +470,7 @@ router.get("/api/csv-imports", async (_req, res) => {
 router.get("/api/shared-settlement", async (req, res) => {
   const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(req.query.month || ""))
     ? req.query.month
-    : new Date().toISOString().slice(0, 7);
+    : currentMonth();
   const accountIdFilter = req.query.account_id ? parseInt(req.query.account_id) : null;
   try {
     const partnerNameRow = await pool.query(
@@ -549,7 +549,7 @@ router.get("/api/shared-settlement", async (req, res) => {
 router.get("/api/shared-settlement/:account_id/transactions", async (req, res) => {
   const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(req.query.month || ""))
     ? req.query.month
-    : new Date().toISOString().slice(0, 7);
+    : currentMonth();
   const accountId = parseInt(req.params.account_id);
   if (!accountId) return res.status(400).json({ error: "account_id required" });
   try {
@@ -579,7 +579,7 @@ router.get("/api/shared-settlement/:account_id/transactions", async (req, res) =
 router.get("/api/settlement", async (req, res) => {
   const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(req.query.month || ""))
     ? req.query.month
-    : new Date().toISOString().slice(0, 7);
+    : currentMonth();
   try {
     const r = await pool.query(
       "SELECT period, net_amount, direction, note, settled_at FROM settlements WHERE period = $1",

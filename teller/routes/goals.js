@@ -6,7 +6,7 @@ const express = require("express");
 const router = express.Router();
 const { pool } = require("../services/database");
 const { zipToState } = require("../data/reference-data");
-const { INVESTMENT_ACCOUNT_TYPES, getMonthlySpending } = require("../services/financial-queries");
+const { INVESTMENT_ACCOUNT_TYPES, getMonthlySpending, currentMonth } = require("../services/financial-queries");
 
 // Derive a goal's effective current_amount + funding status from a row that has
 // been LEFT JOINed to its funding account/investment (columns:
@@ -674,7 +674,7 @@ router.get("/api/fire-projection", async (req, res) => {
     const withdrawalRatePct = s.fire_withdrawal_rate_pct != null ? parseFloat(s.fire_withdrawal_rate_pct) : 4;
 
     // Drop the current (partial) month, average the completed remainder.
-    const thisMonth = new Date().toISOString().slice(0, 7);
+    const thisMonth = currentMonth();
     const completed = (rows) => rows.filter(r => String(r.month).slice(0, 7) !== thisMonth);
     const avg = (rows, key) => {
       const vals = completed(rows).map(r => parseFloat(r[key]) || 0);

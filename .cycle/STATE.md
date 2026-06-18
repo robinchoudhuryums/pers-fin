@@ -9,6 +9,36 @@ to the "none in progress" state.
 
 ## Current Cycle
 
+- **Status:** **broad-implement (double-count guard + timezone pass) DONE** on
+  branch `claude/loving-rubin-1tkzs5` (2026-06-18).
+  - **Settle-up double-count guard** — `GET /api/housing/split` returns
+    `double_count_warning` (fail-soft) flagging shared-card charges that month
+    whose merchant matches the payee/utility names (word-boundary `~*`, INV-10);
+    the dashboard Settle Up widget shows an inline ⚠ when both legs combine.
+    `buildDoubleCountPattern(cfg)` pure helper (escapes regex metachars, ≥3-char
+    terms). 
+  - **Timezone full pass (F11 residual)** — `financial-queries.js` now exports
+    `currentMonth(tz)`/`todayStr(tz)` (APP_TIMEZONE, default UTC). Routed the
+    user-facing "current month"/"today" anchors through it IN LOCKSTEP with their
+    paired SQL: `getCategorySpendingThisMonth` (→ delegates to ForMonth(currentMonth)),
+    `getMonthlySpending`/`getMonthlyIncome` window anchors (now `$2::date` param,
+    not CURRENT_DATE), budgets `currentMonthKey`, spending-analytics/goals/ask
+    `thisMonth`, subscriptions settlement-month defaults, housing `thisMonth()`.
+    Rolling-window CURRENT_DATE lookbacks left UTC (tz-insensitive). Default UTC =
+    byte-identical behavior; needs operator to SET APP_TIMEZONE to take effect.
+  - Tests: +5 (tz helpers, double-count helper + 2 endpoint behaviors); updated 3
+    doubles encoding the old anchor (FA-4 ×2 in cycle-fixes, getMonthlySpending
+    param-arity in financial-queries). Suite: **Perfin 664 + Per-sistant 397 =
+    1061, 0 fail** (42 files).
+  - Docs: CLAUDE.md (counts, APP_TIMEZONE broadened to both apps, tz design
+    decision, double_count_warning on the endpoint + widget caveat) + README counts.
+  - **OPERATOR ACTION (non-blocking):** set `APP_TIMEZONE=America/New_York` (or your
+    zone) on Render so Perfin's month/day anchors use wall-clock time. Same var
+    Per-sistant health already uses — if already set for health, Perfin now honors it too.
+  - **Where I left off:** implemented + tests green + docs synced; committing +
+    pushing (PR #124). Remaining roadmap: mobile iOS build (operator),
+    targeted audit of housing.js.
+
 - **Status:** **broad-implement (4 follow-on features) DONE** on branch
   `claude/loving-rubin-1tkzs5` (2026-06-18). Implemented the operator-selected
   backlog items from the prioritized roadmap:

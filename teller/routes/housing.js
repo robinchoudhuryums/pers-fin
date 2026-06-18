@@ -15,6 +15,7 @@ const express = require("express");
 const router = express.Router();
 const multer = require("multer");
 const { pool } = require("../services/database");
+const { currentMonth } = require("../services/financial-queries");
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -29,9 +30,29 @@ const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for tests)
 // ---------------------------------------------------------------------------
+// tz-aware (APP_TIMEZONE; default UTC) so monthly obligation generation +
+// the partner-split month default honor the operator's wall-clock month (F11).
 function thisMonth() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  return currentMonth();
+}
+
+// Settle-up double-count guard: build a Postgres word-boundary regex (\y…\y,
+// per the keyword-filter gotcha INV-10) from the payee name + utility labels.
+// A shared-card charge matching one of these would be counted in BOTH the
+// shared-card settlement leg AND the housing even-up leg of the dashboard
+// Settle Up widget. Returns null when there are no usable (>=3 char) terms.
+// Regex metacharacters in user-entered labels are escaped so they can't break
+// (or inject into) the query.
+function buildDoubleCountPattern(cfg) {
+  const terms = [];
+  if (cfg && cfg.payee_name) terms.push(cfg.payee_name);
+  for (const u of (cfg && cfg.utilities) || []) if (u && u.label) terms.push(u.label);
+  const escaped = terms
+    .map((t) => String(t).trim())
+    .filter((t) => t.length >= 3)
+    .map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  if (!escaped.length) return null;
+  return "\\y(" + escaped.join("|") + ")\\y";
 }
 
 // Whole months from a→b (both 'YYYY-MM'); negative if b precedes a.
@@ -551,7 +572,39 @@ router.get("/api/housing/split", async (req, res) => {
       partnerName = pn.rows[0]?.n || "Partner";
     }
 
-    res.json({ enabled: true, month, partner_name: partnerName, car_source: carSource, ...computeSplit(rentUtilities, car) });
+    // Double-count guard: flag shared-card charges this month whose merchant
+    // matches the payee/utility names — they'd be counted in both the
+    // shared-card leg and this even-up leg of the combined Settle Up widget.
+    let doubleCountWarning = null;
+    const dcPattern = buildDoubleCountPattern(cfg);
+    if (dcPattern) {
+      try {
+        const dc = await pool.query(
+          `SELECT COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS merchant,
+                  ROUND(t.amount::numeric, 2) AS amount
+           FROM transactions t
+           JOIN linked_accounts la ON la.account_id = t.account_id
+           WHERE la.is_shared = true
+             AND t.amount > 0 AND COALESCE(t.is_reimbursed, false) = false
+             AND t.date >= $1::date AND t.date < ($1::date + INTERVAL '1 month')::date
+             AND COALESCE(t.user_merchant_name, t.merchant_name, t.name) ~* $2
+           ORDER BY t.amount DESC LIMIT 5`,
+          [month + "-01", dcPattern]
+        );
+        if (dc.rows.length) {
+          doubleCountWarning = {
+            count: dc.rows.length,
+            total: Math.round(dc.rows.reduce((s, r) => s + parseFloat(r.amount), 0) * 100) / 100,
+            sample: dc.rows.slice(0, 3).map((r) => ({ merchant: r.merchant, amount: parseFloat(r.amount) })),
+          };
+        }
+      } catch (dcErr) {
+        // Non-essential guard — never let it fail the split computation.
+        console.error("double-count guard error:", dcErr.message);
+      }
+    }
+
+    res.json({ enabled: true, month, partner_name: partnerName, car_source: carSource, double_count_warning: doubleCountWarning, ...computeSplit(rentUtilities, car) });
   } catch (err) {
     console.error("housing split error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
@@ -701,3 +754,4 @@ module.exports.deriveMemo = deriveMemo;
 module.exports.normalizeConfig = normalizeConfig;
 module.exports.periodLabel = periodLabel;
 module.exports.computeSplit = computeSplit;
+module.exports.buildDoubleCountPattern = buildDoubleCountPattern;

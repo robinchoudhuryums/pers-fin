@@ -426,9 +426,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1056 tests as of latest); use
+  Perfin and Per-sistant test files (1061 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1056 tests across 42 test files (incl.
+  Current count: 1061 tests across 42 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -760,7 +760,11 @@ shell/
   "Partner" until set. (Double-count caveat: the two legs are assumed disjoint —
   the car pays via its own loan account and rent/utilities via the payee
   transfer, neither on a shared card; if a utility ever lands on the shared card
-  it would appear in both legs.) A **"Mark settled"** button records that the
+  it would appear in both legs. A **double-count guard** detects this: when both
+  legs combine, `GET /api/housing/split` returns `double_count_warning` listing
+  any shared-card charge that month whose merchant matches the payee/utility
+  names — word-boundary `~*` match (INV-10), fail-soft — and the widget shows an
+  inline ⚠ note so you can adjust before settling.) A **"Mark settled"** button records that the
   month was squared (the client-computed net + direction → `settlements` table
   via `POST /api/settlement/settle`); once settled the headline dims and shows
   "✓ Settled on <date>" with an Undo (`DELETE /api/settlement/:period`). This is
@@ -1420,7 +1424,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1056 tests passing across 42 test files (Perfin 659 + Per-sistant 397), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1061 tests passing across 42 test files (Perfin 664 + Per-sistant 397), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
@@ -1524,7 +1528,10 @@ GET  /api/housing/export   # landlord-ready record of a year's payments (query: 
 GET  /api/housing/split    # partner "even-up" for a month (query: month=YYYY-MM): what you
                            # send the partner = (rent+utilities − car)/2 so each bears half.
                            # Car pulled from a Perfin loan's monthly_payment or a fixed amount.
-                           # Returns { enabled, transfer, direction, each_share, car_source, ... }
+                           # Returns { enabled, transfer, direction, each_share, car_source,
+                           # double_count_warning }. double_count_warning (or null) flags
+                           # shared-card charges that month matching the payee/utility names
+                           # (word-boundary, fail-soft) so the Settle Up widget can warn.
 POST /api/housing/scan-bill # OCR a utility-bill image/PDF via Claude vision → SUGGEST
                            # { amount, period, label } WITHOUT writing (user confirms +
                            # PATCHes). Shares the AI cap (entry_type='scan'); 501 w/o
@@ -1882,12 +1889,22 @@ validation (SN-5).
 ### SMTP (Per-sistant — email scheduling)
 - `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM`
 
-### Per-sistant Health & Habits
-- `APP_TIMEZONE` — IANA zone (e.g. `America/New_York`) for the Health & Habits
-  day-math (streaks / due-today / 7-day grid / future-log guard). Server and
-  injected client both resolve "today" in this zone so they agree. Default
-  `UTC` (unchanged behavior); set it to your zone or evening logs west of UTC
-  land on the wrong day (F11). See `apps/per-sistant/CLAUDE.md`.
+### Shared — timezone
+- `APP_TIMEZONE` — IANA zone (e.g. `America/New_York`). Used by BOTH apps.
+  - **Per-sistant Health & Habits** day-math (streaks / due-today / 7-day grid /
+    future-log guard) — server and injected client resolve "today" in this zone
+    so they agree. See `apps/per-sistant/CLAUDE.md`.
+  - **Perfin "current month" / "today" anchors** — `services/financial-queries.js`
+    exports `currentMonth(tz)` / `todayStr(tz)` (the single tz source), and the
+    user-facing month-bucketed surfaces resolve the month boundary in this zone:
+    `getCategorySpendingThisMonth` (budgets/insights/ask), `getMonthlySpending` /
+    `getMonthlyIncome` window anchors (savings-rate/trends/FIRE), budgets'
+    `currentMonthKey`, the settlement/housing month defaults. Rolling-window
+    `CURRENT_DATE` lookbacks (90-day cash-flow, retention) are intentionally left
+    UTC — tz-insensitive.
+  - Default `UTC` (byte-identical to the prior UTC-anchored behavior); set it to
+    your zone or evening logs/figures west of UTC land in the wrong day/month
+    (F11). An invalid zone falls back to UTC (no crash).
 
 ### Cross-app integration (legacy, two-Render-services era)
 Unused under the unified shell — both apps run in-process. Documented as the
@@ -2518,6 +2535,22 @@ income module, and bill-calendar income detection.
   authenticate via session cookie; the `X-API-Key` header path exists for
   cron and external integrations. The dashboard never injects the key into
   the DOM and never appends it to a URL.
+- **One timezone source for "current month" / "today" (F11).**
+  `services/financial-queries.js` exports `currentMonth(tz)` / `todayStr(tz)`
+  (APP_TIMEZONE, default UTC) — the single tz anchor every user-facing
+  month-bucketed surface routes through, so the month boundary is the operator's
+  wall-clock month, not UTC's. Server-side callers compute the month/day in JS
+  and pass it into SQL as a parameter (e.g. `getMonthlySpending` anchors its
+  window to `$2 = currentMonth()+'-01'`, not `date_trunc('month', CURRENT_DATE)`);
+  `getCategorySpendingThisMonth` delegates to `getCategorySpendingForMonth(currentMonth())`.
+  Rule: a path that mixes a JS month with a SQL anchor must convert BOTH in
+  lockstep (or pass the JS month into the SQL) so they can't disagree — the JS
+  and SQL "current month" were previously independent UTC anchors that happened
+  to agree only because both were UTC. Rolling-window `CURRENT_DATE` lookbacks
+  (90-day cash-flow, retention sweeps) stay UTC: a few hours of skew is
+  immaterial over a multi-month window, and they're not month-bucketed. New
+  "this month"/"today" surfaces MUST use `currentMonth()`/`todayStr()` rather
+  than `new Date().toISOString()` or `CURRENT_DATE`.
 - **Shared financial queries.** `services/financial-queries.js` is the
   source of truth for "income" and "spending" computations: keyword-filtered
   payroll/direct-dep income (excluding transfers/payments/refunds) and

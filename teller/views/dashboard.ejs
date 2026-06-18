@@ -3161,6 +3161,16 @@
         if (hasShared) parts.push('Shared card ' + fmtMoney(sharedNet) + ' (' + esc(partner) + ' owes you)');
         if (housing) parts.push('Housing even-up ' + fmtMoney(Math.abs(housing.transfer)) + ' (' + (housing.direction === 'you_send_partner' ? 'you owe' : esc(partner) + ' owes') + ')');
         var theMonth = d.month || month;
+        // Double-count guard: a shared-card charge matching a payee/utility name
+        // would be counted in BOTH legs. Only meaningful when both legs combine.
+        var dcw = (hasShared && housing) ? housing.double_count_warning : null;
+        var dcNote = dcw
+          ? ('<div style="margin-top:8px;padding:8px 10px;background:rgba(217,178,95,0.14);border:1px solid rgba(217,178,95,0.4);border-radius:6px;font-size:11px;color:var(--yellow,#d9b25f);">' +
+               '⚠ ' + dcw.count + ' shared-card charge' + (dcw.count === 1 ? '' : 's') + ' (' + fmtMoney(dcw.total) + ') match your rent/utilities — e.g. ' +
+               esc(dcw.sample.map(function(s){ return s.merchant; }).join(', ')) +
+               '. If a utility is on the shared card it may be double-counted across both legs.' +
+             '</div>')
+          : '';
         var isSettled = settlement && settlement.settled;
         // Settle/undo control: when settled, show a confirmation pill + Undo;
         // otherwise a "Mark settled" button that records the current net.
@@ -3177,6 +3187,7 @@
             '<div style="font-size:11px;color:var(--text-muted);">Net to settle up &middot; ' + monthLabel(theMonth) + '</div>' +
             '<div style="font-size:26px;font-weight:600;color:' + netColor + ';margin-top:2px;">' + netLabel + '</div>' +
             (parts.length > 1 ? '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;">' + parts.join(' &nbsp;+&nbsp; ') + '</div>' : '') +
+            dcNote +
             settleRow +
           '</div>';
 

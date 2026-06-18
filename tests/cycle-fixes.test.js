@@ -365,16 +365,18 @@ describe("SN-5 — sanitizeBoolMap", () => {
 
 describe("FA-4 — getMonthlySpending uses a whole-month window", () => {
   const { getMonthlySpending, getMonthlyIncome } = require("../teller/services/financial-queries");
+  // FA-4 still holds (whole-month flooring); the anchor is now the tz-aware
+  // current month passed as $2 instead of UTC CURRENT_DATE (F11).
   it("spending SQL floors to the 1st via date_trunc('month', ...)", async () => {
     let sql = "";
     await getMonthlySpending({ query: async (s) => { sql = s; return { rows: [] }; } }, 6);
-    assert.match(sql, /date_trunc\('month', CURRENT_DATE\)/);
+    assert.match(sql, /date_trunc\('month', \$2::date\)/);
     assert.match(sql, /make_interval\(months => \$1 - 1\)/);
   });
   it("income SQL floors to the 1st too", async () => {
     let sql = "";
     await getMonthlyIncome({ query: async (s) => { sql = s; return { rows: [] }; } }, 3);
-    assert.match(sql, /date_trunc\('month', CURRENT_DATE\)/);
+    assert.match(sql, /date_trunc\('month', \$2::date\)/);
   });
 });
 

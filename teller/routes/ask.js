@@ -17,7 +17,7 @@ const router = express.Router();
 const { pool } = require("../services/database");
 const {
   getMonthlyIncome, getMonthlySpending, getNetWorth,
-  getCategorySpendingForMonth, SPLIT_AMOUNT, NOT_REIMBURSED,
+  getCategorySpendingForMonth, SPLIT_AMOUNT, NOT_REIMBURSED, currentMonth,
 } = require("../services/financial-queries");
 const { MODEL_MAP, estimateCostGranular } = require("../data/reference-data");
 
@@ -143,7 +143,7 @@ async function toolBudgetStatus() {
   const spendMap = {};
   for (const s of spending) spendMap[s.category] = parseFloat(s.spent);
   return {
-    month: new Date().toISOString().slice(0, 7),
+    month: currentMonth(),
     budgets: budgets.rows.map(b => ({
       category: b.category,
       monthly_limit: parseFloat(b.monthly_limit),
@@ -161,7 +161,7 @@ async function toolFireProjection() {
     pool.query("SELECT fire_expected_return_pct, fire_withdrawal_rate_pct, fire_monthly_spending_override FROM user_settings WHERE id = 1"),
   ]);
   const s = sRow.rows[0] || {};
-  const thisMonth = new Date().toISOString().slice(0, 7);
+  const thisMonth = currentMonth();
   const avg = (rows, key) => {
     const v = rows.filter(r => String(r.month).slice(0, 7) !== thisMonth).map(r => parseFloat(r[key]) || 0);
     return v.length ? v.reduce((a, b) => a + b, 0) / v.length : 0;

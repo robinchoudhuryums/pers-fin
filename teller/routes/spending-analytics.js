@@ -11,7 +11,7 @@
 const express = require("express");
 const router = express.Router();
 const { pool } = require("../services/database");
-const { INCOME_PREDICATE, NOT_TRANSFER, SPLIT_AMOUNT, getMonthlySpending, getMonthlyIncome, getCategorySpendingForMonth } = require("../services/financial-queries");
+const { INCOME_PREDICATE, NOT_TRANSFER, SPLIT_AMOUNT, getMonthlySpending, getMonthlyIncome, getCategorySpendingForMonth, currentMonth } = require("../services/financial-queries");
 
 // INCOME_PREDICATE writes its outer column references UNQUALIFIED (so it works
 // however the caller aliases `transactions`) — which breaks the one query here
@@ -504,7 +504,7 @@ router.get("/api/savings-rate", async (req, res) => {
     // is partial" semantics. The current month still appears in `months` for the
     // trend; only the averages exclude it. Fall back to all rows if the only
     // data is the current month (brand-new user) so averages aren't 0.
-    const thisMonth = new Date().toISOString().slice(0, 7);
+    const thisMonth = currentMonth();
     const avgBase = monthly.filter(m => m.month !== thisMonth);
     const base = avgBase.length ? avgBase : monthly;
     const totalIncome = base.reduce((s, m) => s + m.income, 0);
