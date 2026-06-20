@@ -9,11 +9,11 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **Config**: `config.js` (constants, env parsing, validation arrays)
 - **Database**: `db.js` (pool + migrations), Neon PostgreSQL (schema in `db/`)
 - **Middleware**: `middleware.js` (auth, CSRF, rate limiting, session)
-- **AI**: `ai.js` (Anthropic Claude client, model helpers, caching) — 10 features with per-feature model selection (incl. Knowledge Q&A)
+- **AI**: `ai.js` (Anthropic Claude client, model helpers, caching) — 11 features with per-feature model selection (incl. Knowledge Q&A + Job Fit). Also hosts the monthly **AI cost cap** (`ai_usage` ledger + `getAiBudgetCents`/`recordAiUsage` + `callAIWithUsage`), introduced by Job Radar.
 - **Helpers**: `helpers.js` (recurrence, webhooks, Slack, automations)
 - **Views**: `views.js` + `views/css.js` + `views/js.js` (shared HTML/CSS/JS helpers)
-- **Routes**: `routes/` (22 route modules — auth, todos, emails, notes, contacts, settings, rag, etc.)
-- **Pages**: `pages/` (10 page modules — dashboard, todos, emails, notes, contacts, calendar, review, analytics, settings, knowledge)
+- **Routes**: `routes/` (23 route modules — auth, todos, emails, notes, contacts, settings, rag, health, jobs, etc.)
+- **Pages**: `pages/` (11 page modules — dashboard, todos, emails, notes, contacts, calendar, review, analytics, settings, knowledge, health, jobs)
 - **Knowledge / RAG**: `routes/rag.js` + `services/embeddings.js` (Voyage) +
   `services/vault-sync.js` (Obsidian-vault ingest, GitHub API) + `pages/knowledge.js`.
   Personal knowledge base — pgvector semantic retrieval over the vault + notes
@@ -29,7 +29,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   at-most-once delivery). The manual `POST /api/emails/:id/send` claims the row
   the same way (`UPDATE … WHERE id = $1 AND status <> 'sent' RETURNING`) so a
   double-click / retry returns 409 instead of re-sending (PB-4).
-- **Tests**: `tests/` (node:test runner, `npm test`, 392 tests (api + integration + cycle-fixes + knowledge + health))
+- **Tests**: `tests/` (node:test runner, `npm test`, 433 tests (api + integration + cycle-fixes + knowledge + health + jobs))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of June 2026)
@@ -80,6 +80,38 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   risk feed the notification check and the AI daily briefing (both fail-soft);
   `streak_milestone` webhooks fire at 7/30/100/365-day streaks. DELETE
   archives (history kept) — restore from the page's Archived section.
+- **Job Radar**: a personal job-listing radar (`/jobs` page) built INTO
+  Per-sistant (the Health & Habits module recipe — `db/021_jobs.sql` +
+  `routes/jobs.js` + `pages/jobs.js` + `tests/jobs.test.js`). Pulls listings
+  from sanctioned APIs (Adzuna aggregator + direct ATS boards —
+  Greenhouse/Lever/Ashby/Workable — over a curated, UI-editable
+  `job_target_companies` allowlist; seeded with one example), normalizes them,
+  and **dedups on a `content_hash`** (re-fetch hashes identically → upsert →
+  2nd run adds 0). A **trust pass** (`job_sources.trust_weight` + ghost-job
+  freshness decay from our own `first_seen` — never the source's claimed
+  `posted_at` — + cross-source corroboration + apply-domain check + word-
+  boundary regex scam heuristics → `trust_score` + `legitimacy`). A **fit pass**
+  (Voyage embed the listing as a `document`, cosine vs the single `job_profile`
+  row's `query` embedding, then a per-feature **Job Fit** Claude pass → 0-100
+  `fit_score` + one-line rationale) and a **legitimacy pass** (borderline
+  `suspect` rows → Claude `{legitimacy, reasons[]}`) — both **cap-charged**
+  (see the AI cost cap below; charge in a `finally`, 429-when-capped) and
+  fully fail-soft (no Voyage / no pgvector / AI off → degrade, never throw).
+  A single fail-soft `gatherJobRadarSummary(pool)` aggregator (the
+  `gatherHealthSummary` mirror) splits a **main** bucket (trust ≥ 60, fit ≥ 65)
+  from a **"verify first"** bucket (trust 40-59) and feeds three surfaces: the
+  `/jobs` page, the **notification check** (`job_radar` entry, weekly cadence
+  from the refresh, gated on `job_radar_enabled`), and **one AI daily-briefing
+  line** — there is NO email digest (D3: Per-sistant's proactive surface is the
+  notification check). Saving/applying/dismissing a listing **archives** it
+  (status change, never a row delete) and nudges its source's trust (B7
+  feedback). Weekly refresh via in-process node-cron (Mon 07:23 UTC, no
+  heartbeat — D2: Per-sistant crons don't tick; gated on `job_radar_enabled`) +
+  `POST /api/jobs/refresh` + the `.github/workflows/job-radar.yml` backstop.
+  Retention strips old `description`s from unsaved/dismissed rows while keeping
+  the hash+status tombstone. Default OFF — enable on the `/jobs` page. New env:
+  `ADZUNA_APP_ID` / `ADZUNA_APP_KEY` (free tier; ATS-only without them); reuses
+  `VOYAGE_API_KEY` + `ANTHROPIC_API_KEY`.
 - **Automations/Rules Engine**: Create trigger→action rules (e.g., "when task created with category=work, set priority=high"), configurable in Settings
 - **File Attachments**: Upload files (up to 10MB) to tasks, emails, and notes via local storage. The download route sanitizes the stored `original_name` in the `Content-Disposition` header (strips quotes/backslashes/control chars) and emits RFC 5987 `filename*=UTF-8''…`, so a crafted filename can't inject/spoof a header (PS-5).
 - **iCal Export**: Export tasks and scheduled emails as .ics file for Google Calendar, Outlook, etc.
@@ -144,6 +176,14 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   shared `gatherHealthSummary` aggregator (notification check + AI briefing)
 - `pages/health.js` — Health page (today check-offs, 7-day grid, heatmap, measurements)
 - `db/020_health.sql` — habits, habit_logs, health_metrics tables
+- `routes/jobs.js` — Job Radar API (ingest/dedup/trust/fit/legitimacy passes,
+  `runRefresh`, profile + allowlist CRUD, status PATCH) + the shared
+  `gatherJobRadarSummary` aggregator + pure helpers (content hash, scam, domain,
+  trust, near-dup, normalizers) and the `cappedCall` AI-cap guard
+- `pages/jobs.js` — Job Radar page (enable toggle, top-matches + verify-first
+  lists, profile + companies modals)
+- `db/021_jobs.sql` — job_sources, job_target_companies, job_listings,
+  job_profile + the `ai_usage` AI-cost-cap ledger
 - `errors.js` — `serverError(res, err)` shared 500 responder (logs real error, returns generic message; PB-2)
 - `views.js` — pageHead, navBar, themeScript (imports from `views/`)
 - `routes/` — 21 API route modules (auth, todos, emails, notes, contacts, etc.)
@@ -157,7 +197,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `db/007_enhancements.sql` — custom recurrence, entity links, webhooks, notification preferences
 - `db/008_templates_performance.sql` — todo templates table, performance indexes
 - `uploads/` — local file attachment storage
-- `tests/api.test.js` — unit test suite (the bulk of the 392 per-sistant tests)
+- `tests/api.test.js` — unit test suite (the bulk of the 433 per-sistant tests)
 - `tests/integration.test.js` — integration tests (requires DB, auto-skips without)
 - `Dockerfile` / `docker-compose.yml` — container deployment
 - `fly.toml` — Fly.io config
@@ -168,7 +208,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (392 tests)
+# Run tests (433 tests)
 npm test
 
 # Pages
@@ -256,8 +296,24 @@ POST   /api/webhooks/:id/test      # Test a webhook
 
 # Notifications
 GET    /api/notifications/check    # Check for due tasks, overdue, streaks at risk (todos AND
-                                   # habits), reminders, upcoming facts, and rent/utilities due
-                                   # (housing_due — cross-app via perfinPool, read-only, fail-soft)
+                                   # habits), reminders, upcoming facts, rent/utilities due
+                                   # (housing_due — cross-app via perfinPool, read-only, fail-soft),
+                                   # AND Job Radar high-fit leads (job_radar — gated on
+                                   # job_radar_enabled, fail-soft)
+
+# Job Radar API
+GET    /jobs                       # Job Radar page (enable toggle, top matches + verify-first)
+GET    /api/jobs                   # gatherJobRadarSummary — main + verify_first buckets + top_pick
+POST   /api/jobs/refresh           # run the pipeline (ingest → dedup → trust → fit → legitimacy →
+                                   #   retention); also hit by the weekly cron + job-radar.yml backstop
+PATCH  /api/jobs/:id               # set status new|saved|applied|dismissed (ARCHIVE — never deletes;
+                                   #   nudges the source's trust). Invalid status/id → 400
+GET    /api/job-profile            # single-row resume/preferences/min_salary/locations/remote_pref
+PATCH  /api/job-profile            # update the profile (validated; bad min_salary/remote_pref → 400)
+GET    /api/job-companies          # list the curated ATS allowlist
+POST   /api/job-companies          # add/re-activate a company (body: slug, ats greenhouse|lever|
+                                   #   ashby|workable, display_name?; bad ats/slug → 400)
+DELETE /api/job-companies/:id      # remove a company from the allowlist
 
 # Health & Habits API
 GET    /api/habits                 # Active habits + streaks + 7-day grid (?all=1 adds archived)
@@ -373,6 +429,12 @@ GET    /sw.js               # Service worker
 - `VAULT_GITHUB_WRITE_TOKEN` — SEPARATE write-scoped PAT (Contents read+write)
   for "Capture to vault" (`POST /api/rag/capture`). Kept distinct from the
   read-only sync token (least privilege); capture is disabled until it's set.
+- `ADZUNA_APP_ID` / `ADZUNA_APP_KEY` — Adzuna API credentials for the Job Radar
+  aggregator ingest (free tier — register at developer.adzuna.com). Optional:
+  without them Job Radar ingests ATS boards only (fail-soft per source).
+- `PERSISTENT_AI_BUDGET_CENTS` — monthly AI budget fallback (cents, default 100 =
+  $1.00) for the Job Fit + legitimacy passes. Overridden at runtime by
+  `user_settings.ai_monthly_budget_cents`. Caps the `ai_usage` ledger spend.
 
 ## Database
 - Auto-migration runs on server startup — no manual SQL execution needed.
@@ -418,7 +480,18 @@ Perfin sub-app and the shell. Do not introduce v5-only idioms (`req.host`,
 `app.del`, removed wildcard path patterns, etc.) — the workspace install
 hoists v4 across all sub-apps and a v5 idiom would break under the
 hoisted version.
-- Tables: `todos`, `emails`, `notes`, `contacts`, `user_settings`, `subtasks`, `email_templates`, `todo_templates`, `weekly_reviews`, `task_dependencies`, `automations`, `attachments`, `documents`, `chunks`, `embed_state`, `rag_answer_cache`, `facts`, `fact_verifications`
+- Tables: `todos`, `emails`, `notes`, `contacts`, `user_settings`, `subtasks`, `email_templates`, `todo_templates`, `weekly_reviews`, `task_dependencies`, `automations`, `attachments`, `documents`, `chunks`, `embed_state`, `rag_answer_cache`, `facts`, `fact_verifications`, `habits`, `habit_logs`, `health_metrics`, `job_sources`, `job_target_companies`, `job_listings`, `job_profile`, `ai_usage`
+- **Job Radar** (`db/021_jobs.sql`): `job_sources` (provider registry +
+  `trust_weight`; seeded ATS=90 / Adzuna=70), `job_target_companies` (curated,
+  UI-editable ATS allowlist, UNIQUE(ats, slug), seeded with one example),
+  `job_listings` (normalized + deduped on `content_hash` UNIQUE; `trust_score` /
+  `legitimacy` / `fit_score` / `fit_rationale` / `embedding vector(1024)` [added
+  defensively behind the db/014 `pg_available_extensions` guard] / `status`
+  new|saved|applied|dismissed; HNSW cosine index), `job_profile` (single row:
+  resume/preferences + `profile_embedding`). `ai_usage` (entry_type / model /
+  tokens / `cost_cents`) is the AI-cost-cap ledger; `user_settings` gains
+  `ai_model_job_fit` (default haiku), `job_radar_enabled` (default false), and
+  `ai_monthly_budget_cents`.
 - **Knowledge / RAG** (`db/013_knowledge.sql`, `db/014_vault_vectors.sql`):
   - `documents` — personal knowledge corpus (`source` manual/vault/note,
     `source_ref`, `sensitivity` normal/private/secret). Filled by the Obsidian
@@ -556,11 +629,20 @@ Migrations and cron jobs run in both modes; only the listener, keep-alive,
 and signal handlers are owned by the shell when embedded.
 
 ## AI Features & Models
-- 10 AI features, each independently configurable: Haiku (fast/cheap), Sonnet (smarter), or Off
+- 11 AI features, each independently configurable: Haiku (fast/cheap), Sonnet (smarter), or Off
 - Models: `claude-haiku-4-5-20251001`, `claude-sonnet-4-6`
-- Features: email drafting, task breakdown, smart quick add, weekly review summary, email tone adjustment, daily briefing, note auto-tagging, smart suggestions, natural language query, **Knowledge Q&A** (`ai_model_rag`, default sonnet — the RAG answer/diagram/capture model)
+- Features: email drafting, task breakdown, smart quick add, weekly review summary, email tone adjustment, daily briefing, note auto-tagging, smart suggestions, natural language query, **Knowledge Q&A** (`ai_model_rag`, default sonnet — the RAG answer/diagram/capture model), **Job Fit** (`ai_model_job_fit`, default haiku — the Job Radar fit + legitimacy scoring model)
 - Configuration stored in `user_settings` table (ai_model_* columns)
 - Settings page provides per-feature dropdowns
+- **AI cost cap** (introduced by Job Radar, reusable by other features): the
+  Job Fit + legitimacy passes are checked-then-charged against a monthly budget.
+  `ai.js getAiBudgetCents()` resolves `user_settings.ai_monthly_budget_cents` →
+  env `PERSISTENT_AI_BUDGET_CENTS` → default ($1.00); `monthlyAiSpendCents()`
+  sums the `ai_usage` ledger for the current month; over-budget → the call
+  throws `{ code: "CAP" }` (the pass stops, 429-equivalent). `callAIWithUsage`
+  returns token usage so `recordAiUsage()` can charge a row in a `finally`
+  (idempotent) when tokens were consumed. The 10 pre-existing AI features still
+  use the uncapped `callAI` (unchanged) — the cap is opt-in per call site.
 
 ## Design System (shared with Perfin)
 - Font: Inter (300/400/500/600/700)

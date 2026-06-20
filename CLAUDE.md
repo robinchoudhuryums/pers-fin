@@ -2987,33 +2987,31 @@ income module, and bill-calendar income detection.
   isolated debugging.
 
 ## Priority Next Features
-1. **Job Radar (Per-sistant)** — a personal job-listing radar built INTO
-   Per-sistant (mirrors the Health & Habits module recipe: `db/021_jobs.sql` +
-   `routes/jobs.js` + `pages/jobs.js` + `tests/jobs.test.js`). Pulls listings
-   from sanctioned APIs (Adzuna + direct ATS boards — Greenhouse/Lever/Ashby/
-   Workable over a curated `job_target_companies` allowlist), dedups on a
-   content hash, then runs a **trust pass** (source weight + ghost-job
-   freshness decay + cross-source corroboration + near-dup collapse via
-   embeddings + apply-domain check + regex scam heuristics, with a Claude
-   legitimacy pass for borderline rows) and a **fit pass** (Voyage embedding
-   cosine vs a single `job_profile` row → a per-feature "Job Fit" Claude pass →
-   0–100 fit_score + rationale). Surfaces high-fit/high-trust roles (plus a
-   smaller "verify first" bucket) on a `/jobs` page, the weekly digest, and one
-   AI daily-briefing line via a single fail-soft `gatherJobRadarSummary`
-   aggregator (the gatherHealthSummary pattern). Reuses `services/embeddings.js`
-   (voyage-3.5, 1024-dim) and `ai.js`; weekly refresh via in-process node-cron +
-   `POST /api/jobs/refresh` + a `job-radar.yml` Actions backstop. New env:
-   `ADZUNA_APP_ID` / `ADZUNA_APP_KEY`. **Open design decisions (see /plan):**
-   Per-sistant has no existing monthly-AI-cap/usage table (unlike Perfin's
-   `financial_insights`) nor a `job-health.js` heartbeat — so the `job_fit`
-   cap-charge and the scheduler-tick patterns need either new minimal
-   infrastructure or adaptation to Per-sistant's existing cron/model-selection
-   controls.
-2. **Mobile app (operator step)** — the Capacitor iOS wrapper is scaffolded in
+1. **Mobile app (operator step)** — the Capacitor iOS wrapper is scaffolded in
    `mobile/` (remote-URL mode, coexists with the PWA); what remains is the
    free-signing Xcode build on the operator's Mac per `mobile/README.md`.
 
-Shipped (June 2026): **Investment performance & allocation** — cost-basis
+Shipped (June 2026): **Job Radar (Per-sistant)** — a personal job-listing radar
+built INTO Per-sistant (the Health & Habits module recipe: `db/021_jobs.sql` +
+`apps/per-sistant/routes/jobs.js` + `pages/jobs.js` + `tests/jobs.test.js`).
+Ingests Adzuna + direct ATS boards (Greenhouse/Lever/Ashby/Workable over a
+curated, UI-editable `job_target_companies` allowlist), dedups on `content_hash`
+(idempotent), then a **trust pass** (source weight + ghost-job freshness decay
+from our own `first_seen` + corroboration + apply-domain + word-boundary scam
+heuristics → trust_score/legitimacy) and a **fit pass** (Voyage embed cosine vs
+a single `job_profile` row → a per-feature "Job Fit" Claude pass → 0–100
+fit_score + rationale) + a **legitimacy** Claude pass for borderline rows. One
+fail-soft `gatherJobRadarSummary` aggregator feeds the `/jobs` page, the
+notification check, and one AI daily-briefing line (NO email digest — D3:
+Per-sistant's proactive surface is the notification check; NO scheduler
+heartbeat — D2). AI passes are **cap-charged** against a NEW Per-sistant AI
+budget (`ai_usage` ledger + `ai_monthly_budget_cents` + `PERSISTENT_AI_BUDGET_CENTS`
++ `callAIWithUsage`/`recordAiUsage` in `ai.js` — D1; the 10 pre-existing AI
+features still use the uncapped `callAI`). Weekly refresh via in-process
+node-cron + `POST /api/jobs/refresh` + `.github/workflows/job-radar.yml`.
+Default OFF (`job_radar_enabled`); reuses `services/embeddings.js` (voyage-3.5,
+1024-dim) + `ANTHROPIC_API_KEY`; new env `ADZUNA_APP_ID`/`ADZUNA_APP_KEY`.
+AI features 10→11 (Job Fit, default haiku). **Investment performance & allocation** — cost-basis
 returns + asset-class allocation + target-drift
 (`GET /api/investments/performance`) and portfolio value history vs S&P 500
 benchmark (`GET /api/investments/performance-history`). **FIRE/runway
@@ -3180,6 +3178,9 @@ INV-60 | Perfin "Sign Out" clears the SHELL session via the root POST /logout un
 INV-61 | apiFetch redirects once to /login on a 401 or a followed 302→/login (session expiry), loop-guarded, while returning the Response unchanged to callers — idle timeout never leaves a blank/error UI | Subsystem: Web UI | Verify: code read teller/public/perfin-shared.js apiFetch
 INV-62 | The shell sets a nonce CSP + frame-ancestors 'none' + X-Frame-Options on its own routes (login/landing), with COOP/CORP/COEP DISABLED so the global middleware doesn't break sub-app Plaid/Teller Link popups; helmet is a declared shell dependency | Subsystem: Platform, Shell & Auth | Verify: header assertion on GET /login (frame-ancestors none, COOP/CORP absent, login scripts nonced)
 INV-63 | Per-sistant's shared fetch wrapper (apps/per-sistant/views/js.js) redirects once to the root /login on a 401 or a followed 302→/login (session expiry), loop-guarded, returning the Response unchanged to callers — parity with Perfin INV-61, so an idle-timeout never leaves a blank/error page. The check uses indexOf('/login'), NOT a regex, because the module is one backtick template literal that eats regex backslashes (see Per-sistant CLAUDE.md gotcha) | Subsystem: Per-sistant Web UI | Verify: code read views/js.js fetch wrapper
+INV-64 | Job Radar's AI passes (job_fit + legitimacy) are cap-charged: cappedCall reads getAiBudgetCents()+monthlyAiSpendCents() and throws { code:'CAP' } BEFORE calling the model when over budget; on a successful call it charges an ai_usage row via recordAiUsage in a `finally` (idempotent, only when tokens were consumed). The 10 pre-existing Per-sistant AI features still use the uncapped callAI (unchanged) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (cappedCall charge-on-success + throw-CAP-before-model-call)
+INV-65 | Job Radar ingest is content_hash-idempotent: dedupPersist upserts ON CONFLICT (content_hash) and counts genuine inserts via (xmax = 0), so a re-run over identical listings adds 0, no duplicate rows. Retention strips old new/dismissed descriptions but KEEPS the hash+status tombstone so a dismissed job re-ingested stays dismissed | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (dedup idempotency, retention)
+INV-66 | gatherJobRadarSummary is the SINGLE fail-soft aggregator feeding the /jobs page, the notification check, and the AI daily-briefing line (the gatherHealthSummary pattern) — a query error returns the safe empty shape, never 500s those surfaces; the notif-check + briefing call it gated on job_radar_enabled. Listing status changes ARCHIVE (saved/applied/dismissed), never hard-delete | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (aggregator fail-soft + archive-not-delete)
 
 ### Policy Configuration
 Policy threshold: 6/10
