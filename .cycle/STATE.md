@@ -9,6 +9,43 @@ to the "none in progress" state.
 
 ## Current Cycle
 
+- **Status:** **Job Radar Batch 2 DONE** (Per-sistant) on branch
+  `claude/loving-rubin-1tkzs5` (2026-06-18). AI fit/legitimacy + cap + surfaces.
+  Feature is now end-to-end (ingest→trust→fit→surface).
+  - **B1** AI cost cap (D1) — db/021 adds `ai_usage` ledger + `ai_monthly_budget_cents`;
+    ai.js adds estimateCostCents / getAiBudgetCents / monthlyAiSpendCents /
+    recordAiUsage + `callAIWithUsage` (usage-returning variant; `callAI` UNTOUCHED —
+    10 existing features unaffected). Dependency check confirmed safe (the two
+    api.test.js feature-count tests use LOCAL fixtures, not config).
+  - **B4** registered "job_fit" feature — config.VALID_AI_FEATURES += job_fit;
+    /api/ai/models GET+PATCH include ai_model_job_fit; Settings page Job Fit
+    dropdown (both features arrays in settings-script.js). AI features 10→11.
+  - **B2** fit pass — embed new above-trust rows (document), cosine vs profile
+    (query) embedding, top candidates → Job Fit Claude pass → fit_score+rationale;
+    cappedCall (check-then-charge, charge in finally, throws CAP). Fail-soft on
+    no-Voyage / no-pgvector / ai-off.
+  - **B3** legitimacy pass — borderline 'suspect' rows → Claude {legitimacy,reasons[]};
+    same cap+charge.
+  - **B7** feedback — saved/applied/dismissed nudges source trust_weight (bounded).
+  - **B5** surfaces — pages/jobs.js (/jobs page: enable toggle, profile + companies
+    modals, main + verify-first lists; nonceAttr/escAttr, bindEvents/onDelegate, no
+    inline handlers, backtick-free, emitted-script node --check'd) + nav link +
+    notification-check job_radar entry (gated on job_radar_enabled, fail-soft) +
+    AI daily-briefing job line (fail-soft). settings.js PATCH accepts job_radar_enabled.
+  - **B6** .github/workflows/job-radar.yml — weekly Actions backstop (Mon 07:23 UTC,
+    x-api-key → POST /per-sistant/api/jobs/refresh).
+  - **B10b** tests — parseFitJson/parseLegitimacyJson, estimateCostCents, cappedCall
+    (charge-on-success + throw-CAP-before-model-call via injected fake SDK client),
+    applyFeedbackToSource, ai_usage migration markers.
+  - Suite: **Perfin 664 + Per-sistant 433 = 1097, 0 fail** (43 files). Canonical
+    count line updated.
+  - **Where I left off:** Batch 1 + Batch 2 implemented + green + committed/pushed
+    (PR #124). NEXT: run **/sync-docs** for the full module docs (per-sistant CLAUDE.md
+    Job Radar section + AI features 10→11 + migration 020→021 + env vars; root
+    CLAUDE.md roadmap Priority→Shipped + Per-sistant Backend subsystem file list +
+    new INVs; both READMEs). OPERATOR: ADZUNA_APP_ID/KEY (optional), job-radar.yml
+    repo secrets (SERVER_URL/API_KEY), enable Job Radar on the /jobs page.
+
 - **Status:** **Job Radar Batch 1 DONE** (Per-sistant) on branch
   `claude/loving-rubin-1tkzs5` (2026-06-18). Backend pipeline + scheduler + tests;
   NO AI/embeddings yet (deferred to Batch 2 by design — clean seam).

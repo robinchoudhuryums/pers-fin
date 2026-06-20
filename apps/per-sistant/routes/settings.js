@@ -42,7 +42,7 @@ module.exports = function ({ pool, config }) {
 
   router.patch("/api/settings", async (req, res) => {
     try {
-      const { theme, session_timeout_minutes, default_horizon, perfin_url, perfin_webhook_recipient, palette, dashboard_layout, slack_webhook_url, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, vault_enabled, vault_repo, vault_branch } = req.body;
+      const { theme, session_timeout_minutes, default_horizon, perfin_url, perfin_webhook_recipient, palette, dashboard_layout, slack_webhook_url, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, vault_enabled, vault_repo, vault_branch, job_radar_enabled } = req.body;
       const fields = [];
       const params = [];
       let idx = 1;
@@ -71,6 +71,7 @@ module.exports = function ({ pool, config }) {
       // Knowledge / Obsidian vault config (non-secret — the GitHub token is the
       // VAULT_GITHUB_TOKEN env var, never stored here).
       if (vault_enabled !== undefined) { fields.push(`vault_enabled = $${idx++}`); params.push(!!vault_enabled); }
+      if (job_radar_enabled !== undefined) { fields.push(`job_radar_enabled = $${idx++}`); params.push(!!job_radar_enabled); }
       if (vault_repo !== undefined) {
         const repo = vault_repo ? String(vault_repo).trim() : null;
         if (repo && !/^[\w.-]+\/[\w.-]+$/.test(repo)) {

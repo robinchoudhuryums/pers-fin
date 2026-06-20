@@ -17,6 +17,8 @@
 const express = require("express");
 const crypto = require("crypto");
 const { serverError } = require("../errors");
+const ai = require("../ai");
+const embeddings = require("../services/embeddings");
 
 // ---- Thresholds (tunable; surfaced as constants so they're easy to find) ----
 const TRUST_MAIN = 60;     // main list floor
@@ -347,6 +349,177 @@ async function runTrustPass(pool, ids) {
 }
 
 // ---------------------------------------------------------------------------
+// AI cap guard (D1) — check-then-charge mirroring Perfin's ask.js. Throws a
+// { code: 'CAP' } error when the monthly budget is exhausted (so the caller can
+// 429/stop); charges the usage row in a `finally` when tokens were consumed
+// (idempotent via `charged`) so a later-round failure can't let spend escape.
+// `client` is injectable for tests.
+// ---------------------------------------------------------------------------
+async function cappedCall(pool, { entry_type, model, prompt, system, maxTokens = 400, client = null }) {
+  const budget = await ai.getAiBudgetCents();
+  const spent = await ai.monthlyAiSpendCents(pool);
+  if (spent >= budget) { const e = new Error("AI monthly budget cap reached"); e.code = "CAP"; throw e; }
+  let usage = null, charged = false;
+  try {
+    const r = await ai.callAIWithUsage(model, prompt, maxTokens, system, client);
+    usage = r.usage;
+    return r;
+  } finally {
+    if (usage && !charged) {
+      charged = true;
+      try { await ai.recordAiUsage(pool, { entry_type, model, usage }); }
+      catch (e) { console.error("job-radar usage charge error:", e.message); }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Fit pass — B2. Embeds new above-trust rows (document), ranks by cosine vs the
+// profile embedding (query), then runs the Job Fit Claude pass on the top
+// candidates → fit_score (0-100) + one-line rationale. Fully fail-soft: no
+// Voyage → skip embedding; no pgvector column → caught + skipped; model 'off' /
+// no Anthropic → embeddings only; cap hit → stops, returns capped:true.
+// ---------------------------------------------------------------------------
+async function ensureProfileEmbedding(pool, opts = {}) {
+  const r = await pool.query("SELECT preferences_text, resume_text, profile_embedding FROM job_profile WHERE id = 1");
+  const p = r.rows[0];
+  if (!p) return null;
+  const text = [p.preferences_text, p.resume_text].filter(Boolean).join("\n\n").trim();
+  if (!text) return null;
+  if (p.profile_embedding) return p.profile_embedding; // already embedded (string literal)
+  const [vec] = await embeddings.embed([text], { inputType: "query", fetchImpl: opts.fetchImpl });
+  const lit = embeddings.toVectorLiteral(vec);
+  await pool.query("UPDATE job_profile SET profile_embedding = $1::vector, updated_at = now() WHERE id = 1", [lit]);
+  return lit;
+}
+
+async function runFitPass(pool, ids, opts = {}) {
+  if (!ids || !ids.length) return { embedded: 0, scored: 0 };
+  if (!embeddings.isConfigured()) return { embedded: 0, scored: 0, reason: "no_voyage" };
+  const model = await ai.getAIModelForFeature("job_fit"); // haiku | sonnet | off
+  let embedded = 0, scored = 0, capped = false;
+  try {
+    // 1) Embed new above-trust listings as documents.
+    const rows = (await pool.query(
+      `SELECT id, title, company, location, description FROM job_listings
+       WHERE id = ANY($1) AND COALESCE(trust_score, 0) >= $2`, [ids, TRUST_VERIFY])).rows;
+    for (const row of rows) {
+      const text = [row.title, row.company, row.location, row.description].filter(Boolean).join("\n").slice(0, 8000);
+      if (!text) continue;
+      const [vec] = await embeddings.embed([text], { inputType: "document", fetchImpl: opts.fetchImpl });
+      await pool.query("UPDATE job_listings SET embedding = $1::vector WHERE id = $2", [embeddings.toVectorLiteral(vec), row.id]);
+      embedded++;
+    }
+    // 2) Rank by cosine vs the profile, Claude-score the top candidates.
+    const profileEmb = await ensureProfileEmbedding(pool, opts);
+    if (!profileEmb) return { embedded, scored, reason: "no_profile" };
+    if (model === "off" || !ai.isAIAvailable()) return { embedded, scored, reason: "ai_off" };
+    const cands = (await pool.query(
+      `SELECT id, title, company, location, description, 1 - (embedding <=> $1::vector) AS cosine
+       FROM job_listings
+       WHERE id = ANY($2) AND embedding IS NOT NULL
+       ORDER BY embedding <=> $1::vector ASC
+       LIMIT $3`, [profileEmb, ids, opts.maxFit || 12])).rows;
+    const profileRow = (await pool.query("SELECT preferences_text, resume_text FROM job_profile WHERE id = 1")).rows[0] || {};
+    const system = "You are a job-fit scorer. Given a candidate profile and a job listing, return ONLY a compact JSON object {\"fit_score\": <0-100 integer>, \"rationale\": \"<one sentence>\"}. Score on skills/seniority/location/comp alignment. No prose outside the JSON.";
+    for (const c of cands) {
+      const prompt = `=== CANDIDATE PROFILE ===\n${(profileRow.preferences_text || "")}\n${(profileRow.resume_text || "").slice(0, 4000)}\n\n=== JOB ===\n${c.title} at ${c.company} (${c.location || "?"})\n${(c.description || "").slice(0, 4000)}\n\nReturn the JSON now.`;
+      let out;
+      try {
+        out = await cappedCall(pool, { entry_type: "job_fit", model, prompt, system, maxTokens: 200, client: opts.aiClient });
+      } catch (e) {
+        if (e.code === "CAP") { capped = true; break; }
+        console.error("job-radar fit call:", e.message);
+        continue;
+      }
+      const parsed = parseFitJson(out.text);
+      if (parsed) {
+        await pool.query("UPDATE job_listings SET fit_score = $1, fit_rationale = $2 WHERE id = $3",
+          [parsed.fit_score, parsed.rationale, c.id]);
+        scored++;
+      }
+    }
+  } catch (e) {
+    console.error("job-radar fit pass:", e.message); // pgvector-absent / schema drift → fail-soft
+  }
+  return { embedded, scored, capped };
+}
+
+function parseFitJson(text) {
+  try {
+    const m = String(text).match(/\{[\s\S]*\}/);
+    if (!m) return null;
+    const o = JSON.parse(m[0]);
+    let score = Math.round(Number(o.fit_score));
+    if (!Number.isFinite(score)) return null;
+    score = Math.max(0, Math.min(100, score));
+    return { fit_score: score, rationale: String(o.rationale || "").slice(0, 300) };
+  } catch { return null; }
+}
+
+// ---------------------------------------------------------------------------
+// Legitimacy pass — B3. For borderline-trust rows ('suspect'), a Claude pass
+// returns { legitimacy, reasons[] } to refine the coarse heuristic verdict.
+// Same cap+charge; fail-soft.
+// ---------------------------------------------------------------------------
+async function runLegitimacyPass(pool, ids, opts = {}) {
+  if (!ids || !ids.length) return { reviewed: 0 };
+  const model = await ai.getAIModelForFeature("job_fit");
+  if (model === "off" || !ai.isAIAvailable()) return { reviewed: 0, reason: "ai_off" };
+  let reviewed = 0;
+  try {
+    const rows = (await pool.query(
+      `SELECT id, title, company, apply_domain, description FROM job_listings
+       WHERE id = ANY($1) AND legitimacy = 'suspect'`, [ids])).rows;
+    const system = "You assess whether a job listing is legitimate. Return ONLY JSON {\"legitimacy\":\"real|suspect|scam\",\"reasons\":[\"...\"]}. Consider recruiter-scam signals (up-front fees, personal email, off-platform contact, identity-doc requests, comp far above market).";
+    for (const row of rows) {
+      const prompt = `Job: ${row.title} at ${row.company}\nApply domain: ${row.apply_domain || "?"}\n\n${(row.description || "").slice(0, 4000)}\n\nReturn the JSON now.`;
+      let out;
+      try {
+        out = await cappedCall(pool, { entry_type: "job_legitimacy", model, prompt, system, maxTokens: 200, client: opts.aiClient });
+      } catch (e) {
+        if (e.code === "CAP") break;
+        console.error("job-radar legitimacy call:", e.message);
+        continue;
+      }
+      const parsed = parseLegitimacyJson(out.text);
+      if (parsed) {
+        await pool.query("UPDATE job_listings SET legitimacy = $1, legitimacy_reasons = $2 WHERE id = $3",
+          [parsed.legitimacy, JSON.stringify(parsed.reasons), row.id]);
+        reviewed++;
+      }
+    }
+  } catch (e) {
+    console.error("job-radar legitimacy pass:", e.message);
+  }
+  return { reviewed };
+}
+
+function parseLegitimacyJson(text) {
+  try {
+    const m = String(text).match(/\{[\s\S]*\}/);
+    if (!m) return null;
+    const o = JSON.parse(m[0]);
+    if (!["real", "suspect", "scam"].includes(o.legitimacy)) return null;
+    const reasons = Array.isArray(o.reasons) ? o.reasons.map(String).slice(0, 6) : [];
+    return { legitimacy: o.legitimacy, reasons };
+  } catch { return null; }
+}
+
+// ---------------------------------------------------------------------------
+// Feedback — B7. Saving/applying a listing nudges its source's trust_weight up;
+// dismissing nudges it down (bounded 0-100). Cheap reinforcement; the v1.1
+// profile-embedding refinement is deferred.
+// ---------------------------------------------------------------------------
+async function applyFeedbackToSource(pool, listingId, status) {
+  const delta = status === "applied" ? 2 : status === "saved" ? 1 : status === "dismissed" ? -1 : 0;
+  if (!delta) return;
+  await pool.query(
+    `UPDATE job_sources SET trust_weight = GREATEST(0, LEAST(100, trust_weight + $1))
+     WHERE id = (SELECT source_id FROM job_listings WHERE id = $2)`, [delta, listingId]).catch(() => {});
+}
+
+// ---------------------------------------------------------------------------
 // Retention — A11. Strip the heavy `description` from old new/dismissed
 // (unsaved) listings while KEEPING the row (hash + status) as a dedup tombstone
 // so a re-ingested dismissed job stays dismissed and never re-surfaces. saved/
@@ -369,8 +542,19 @@ async function runRefresh(pool, opts = {}) {
   const normalized = await runIngest(pool, opts);
   const { newIds, seen } = await dedupPersist(pool, normalized);
   const trust = await runTrustPass(pool, newIds);
+  // AI passes (B2/B3) — fail-soft + cap-guarded; no-op without Voyage/Anthropic.
+  // Skipped entirely when opts.skipAi (the weekly cron may run lean).
+  let fit = { embedded: 0, scored: 0 }, legit = { reviewed: 0 };
+  if (!opts.skipAi) {
+    fit = await runFitPass(pool, newIds, opts).catch((e) => { console.error("fit pass:", e.message); return { embedded: 0, scored: 0 }; });
+    legit = await runLegitimacyPass(pool, newIds, opts).catch((e) => { console.error("legitimacy pass:", e.message); return { reviewed: 0 }; });
+  }
   const purge = await purgeRetention(pool, opts.retentionDays || 90);
-  return { fetched: normalized.length, seen, added: newIds.length, scored: trust.scored, purged: purge.purged };
+  return {
+    fetched: normalized.length, seen, added: newIds.length, scored: trust.scored,
+    embedded: fit.embedded, fit_scored: fit.scored, legitimacy_reviewed: legit.reviewed,
+    capped: !!fit.capped, purged: purge.purged,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -493,6 +677,8 @@ module.exports = function ({ pool }) {
     try {
       const r = await pool.query("UPDATE job_listings SET status = $1 WHERE id = $2 RETURNING id, status", [status, id]);
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
+      // B7: nudge the source's trust from the user's signal (fail-soft).
+      await applyFeedbackToSource(pool, id, status);
       res.json(r.rows[0]);
     } catch (err) { serverError(res, err); }
   });
@@ -554,3 +740,9 @@ module.exports.purgeRetention = purgeRetention;
 module.exports.runRefresh = runRefresh;
 module.exports.runIngest = runIngest;
 module.exports.gatherJobRadarSummary = gatherJobRadarSummary;
+module.exports.cappedCall = cappedCall;
+module.exports.runFitPass = runFitPass;
+module.exports.runLegitimacyPass = runLegitimacyPass;
+module.exports.parseFitJson = parseFitJson;
+module.exports.parseLegitimacyJson = parseLegitimacyJson;
+module.exports.applyFeedbackToSource = applyFeedbackToSource;

@@ -87,9 +87,13 @@ ${navBar("/settings")}
           <div><div style="font-size:13px;">Note Auto-Tagging</div><div style="font-size:10px;color:var(--muted);">Suggest tags when creating notes</div></div>
           <select id="aim-note_tagging" class="aim-select" style="width:120px;"><option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="off">Off</option></select>
         </div>
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--line);">
           <div><div style="font-size:13px;">Knowledge Q&amp;A</div><div style="font-size:10px;color:var(--muted);">Ask questions across your notes &amp; documents (Knowledge page)</div></div>
           <select id="aim-rag" class="aim-select" style="width:120px;"><option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="off">Off</option></select>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;">
+          <div><div style="font-size:13px;">Job Fit</div><div style="font-size:10px;color:var(--muted);">Score &amp; vet job listings on the Job Radar page</div></div>
+          <select id="aim-job_fit" class="aim-select" style="width:120px;"><option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="off">Off</option></select>
         </div>
       </div>
     </div>

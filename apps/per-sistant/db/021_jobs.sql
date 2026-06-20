@@ -133,3 +133,21 @@ $vec$;
 -- here so the migration owns the schema). Default 'haiku' (cheap fit scoring).
 ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS ai_model_job_fit TEXT NOT NULL DEFAULT 'haiku';
 ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS job_radar_enabled BOOLEAN NOT NULL DEFAULT false;
+
+-- ---- AI cost cap (D1) — Per-sistant's first monthly AI budget, introduced by
+-- Job Radar's fit/legitimacy passes and reusable by the other AI features. The
+-- cap is checked-then-charged like Perfin (ai.js getAiBudgetCents +
+-- recordAiUsage). ai_usage is the usage ledger; ai_monthly_budget_cents is the
+-- per-operator override (NULL → env PERSISTENT_AI_BUDGET_CENTS → default).
+CREATE TABLE IF NOT EXISTS ai_usage (
+  id            SERIAL PRIMARY KEY,
+  entry_type    TEXT NOT NULL,           -- 'job_fit' | 'job_legitimacy' | future features
+  model         TEXT,
+  input_tokens  INT NOT NULL DEFAULT 0,
+  output_tokens INT NOT NULL DEFAULT 0,
+  cost_cents    NUMERIC(10,4) NOT NULL DEFAULT 0,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_created ON ai_usage (created_at);
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS ai_monthly_budget_cents INT;
+

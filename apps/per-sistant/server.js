@@ -88,6 +88,7 @@ app.get("/emails", require("./pages/emails")());
 app.get("/notes", require("./pages/notes")());
 app.get("/knowledge", require("./pages/knowledge")());
 app.get("/health", require("./pages/health")());
+app.get("/jobs", require("./pages/jobs")());
 app.get("/contacts", require("./pages/contacts")());
 app.get("/calendar", require("./pages/calendar")());
 app.get("/review", require("./pages/review")());

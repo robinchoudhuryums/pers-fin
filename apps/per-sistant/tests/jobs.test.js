@@ -269,6 +269,81 @@ describe("job routes — validation + archive-not-delete", () => {
 // Migration idempotency markers (the migration runs inside the fatal-on-error
 // boot transaction; CI runs it twice — every statement must be idempotent)
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// B2/B3 — JSON parsers + AI cap charge (cappedCall) with an injected fake SDK
+// ---------------------------------------------------------------------------
+const aiMod = require("../ai");
+
+describe("parseFitJson / parseLegitimacyJson", () => {
+  it("extracts + clamps a fit score, ignores surrounding prose", () => {
+    assert.deepEqual(jobs.parseFitJson('here: {"fit_score": 88, "rationale": "great"} ok'), { fit_score: 88, rationale: "great" });
+    assert.equal(jobs.parseFitJson('{"fit_score": 150}').fit_score, 100); // clamped
+    assert.equal(jobs.parseFitJson("no json"), null);
+  });
+  it("validates legitimacy enum + reasons array", () => {
+    assert.deepEqual(jobs.parseLegitimacyJson('{"legitimacy":"scam","reasons":["fee","telegram"]}'), { legitimacy: "scam", reasons: ["fee", "telegram"] });
+    assert.equal(jobs.parseLegitimacyJson('{"legitimacy":"maybe"}'), null);
+  });
+});
+
+describe("estimateCostCents", () => {
+  it("prices input + output per model", () => {
+    const c = aiMod.estimateCostCents("haiku", { input_tokens: 10000, output_tokens: 1000 });
+    assert.ok(c > 0);
+    assert.ok(aiMod.estimateCostCents("sonnet", { input_tokens: 10000, output_tokens: 1000 }) > c, "sonnet costs more");
+  });
+});
+
+describe("cappedCall (AI cost cap, D1)", () => {
+  function withCapStubs(budget, spent, fn) {
+    const o = { b: aiMod.getAiBudgetCents, s: aiMod.monthlyAiSpendCents, r: aiMod.recordAiUsage };
+    const charged = [];
+    aiMod.getAiBudgetCents = async () => budget;
+    aiMod.monthlyAiSpendCents = async () => spent;
+    aiMod.recordAiUsage = async (_pool, row) => { charged.push(row); return aiMod.estimateCostCents(row.model, row.usage); };
+    return fn(charged).finally(() => { aiMod.getAiBudgetCents = o.b; aiMod.monthlyAiSpendCents = o.s; aiMod.recordAiUsage = o.r; });
+  }
+  const fakeClient = (calls) => ({ messages: { create: async () => { calls.count++; return { content: [{ type: "text", text: '{"fit_score":77,"rationale":"good"}' }], usage: { input_tokens: 120, output_tokens: 30 } }; } } });
+
+  it("under cap: calls the model AND charges a usage row", async () => {
+    const calls = { count: 0 };
+    await withCapStubs(100, 0, async (charged) => {
+      const r = await jobs.cappedCall({}, { entry_type: "job_fit", model: "haiku", prompt: "x", system: "s", client: fakeClient(calls) });
+      assert.equal(calls.count, 1, "model called");
+      assert.match(r.text, /fit_score/);
+      assert.equal(charged.length, 1, "usage row charged");
+      assert.equal(charged[0].entry_type, "job_fit");
+      assert.equal(charged[0].usage.input_tokens, 120);
+    });
+  });
+
+  it("over cap: throws CAP BEFORE calling the model, charges nothing", async () => {
+    const calls = { count: 0 };
+    await withCapStubs(100, 150, async (charged) => {
+      await assert.rejects(
+        () => jobs.cappedCall({}, { entry_type: "job_fit", model: "haiku", prompt: "x", client: fakeClient(calls) }),
+        (e) => e.code === "CAP");
+      assert.equal(calls.count, 0, "model NOT called once capped");
+      assert.equal(charged.length, 0, "nothing charged");
+    });
+  });
+});
+
+describe("applyFeedbackToSource", () => {
+  it("nudges source trust by status (applied +2, dismissed -1, bounded)", async () => {
+    const captured = [];
+    const pool = { query: async (sql, params) => { captured.push({ sql, params }); return { rows: [] }; } };
+    await jobs.applyFeedbackToSource(pool, 5, "applied");
+    assert.equal(captured[0].params[0], 2);
+    captured.length = 0;
+    await jobs.applyFeedbackToSource(pool, 5, "dismissed");
+    assert.equal(captured[0].params[0], -1);
+    captured.length = 0;
+    await jobs.applyFeedbackToSource(pool, 5, "new"); // no delta → no query
+    assert.equal(captured.length, 0);
+  });
+});
+
 describe("db/021_jobs.sql is idempotent + pgvector-defensive", () => {
   const sql = read("db", "021_jobs.sql");
   it("uses CREATE TABLE IF NOT EXISTS for all four tables", () => {
@@ -288,5 +363,9 @@ describe("db/021_jobs.sql is idempotent + pgvector-defensive", () => {
   });
   it("adds the Job Fit model column idempotently", () => {
     assert.match(sql, /ADD COLUMN IF NOT EXISTS ai_model_job_fit/);
+  });
+  it("creates the ai_usage cap ledger idempotently (D1)", () => {
+    assert.match(sql, /CREATE TABLE IF NOT EXISTS ai_usage/);
+    assert.match(sql, /ADD COLUMN IF NOT EXISTS ai_monthly_budget_cents/);
   });
 });

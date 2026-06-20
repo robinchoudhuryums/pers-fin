@@ -177,10 +177,24 @@ module.exports = function ({ pool }) {
         }
       } catch { /* cross-app read is best-effort — drop the line on any error */ }
 
+      // Job Radar — one line of high-fit leads via the shared aggregator (fail-soft).
+      let jobLine = "";
+      try {
+        const s = await pool.query("SELECT job_radar_enabled FROM user_settings WHERE id = 1");
+        if (s.rows.length && s.rows[0].job_radar_enabled) {
+          const { gatherJobRadarSummary } = require("./jobs");
+          const jr = await gatherJobRadarSummary(pool);
+          if (jr.counts.main > 0) {
+            const t = jr.top_pick;
+            jobLine = `\nJob Radar: ${jr.counts.main} new high-fit role(s)${t ? `; top: ${t.title || "a role"}${t.company ? " @ " + t.company : ""}` : ""}`;
+          }
+        }
+      } catch { /* best-effort — drop the line on any error */ }
+
       const text = await callAI(model,
-        `Today: ${today}\nToday's tasks (${upcoming.rows.length}): ${upcoming.rows.map(t => t.title).join(", ") || "none"}\nOverdue tasks (${overdue.rows.length}): ${overdue.rows.map(t => t.title).join(", ") || "none"}\nScheduled emails today: ${scheduled.rows.map(e => `"${e.subject}" to ${e.recipient_name}`).join(", ") || "none"}\nTotal pending tasks: ${pending.rows.length}\nTop priorities: ${pending.rows.slice(0, 5).map(t => `${t.title} (${t.priority})`).join(", ")}${habitLine}${housingLine}`,
+        `Today: ${today}\nToday's tasks (${upcoming.rows.length}): ${upcoming.rows.map(t => t.title).join(", ") || "none"}\nOverdue tasks (${overdue.rows.length}): ${overdue.rows.map(t => t.title).join(", ") || "none"}\nScheduled emails today: ${scheduled.rows.map(e => `"${e.subject}" to ${e.recipient_name}`).join(", ") || "none"}\nTotal pending tasks: ${pending.rows.length}\nTop priorities: ${pending.rows.slice(0, 5).map(t => `${t.title} (${t.priority})`).join(", ")}${habitLine}${housingLine}${jobLine}`,
         300,
-        `You are a daily briefing assistant. Generate a brief, helpful daily briefing (3-5 sentences). Be conversational and actionable. Summarize what needs attention today. If habit streaks are at risk, nudge the user to keep them alive. If rent or utilities are owed and due soon, remind the user to send the payment. Don't use emojis.`);
+        `You are a daily briefing assistant. Generate a brief, helpful daily briefing (3-5 sentences). Be conversational and actionable. Summarize what needs attention today. If habit streaks are at risk, nudge the user to keep them alive. If rent or utilities are owed and due soon, remind the user to send the payment. If high-fit job leads are waiting, mention them briefly. Don't use emojis.`);
       setCache(cacheKey, text);
       res.json({ briefing: text });
     } catch (err) {
@@ -270,7 +284,7 @@ module.exports = function ({ pool }) {
   // ============================================================================
   router.get("/api/ai/models", async (req, res) => {
     try {
-      const r = await pool.query("SELECT ai_model_email_draft, ai_model_task_breakdown, ai_model_quick_add, ai_model_review_summary, ai_model_email_tone, ai_model_daily_briefing, ai_model_note_tagging, ai_model_rag FROM user_settings WHERE id = 1");
+      const r = await pool.query("SELECT ai_model_email_draft, ai_model_task_breakdown, ai_model_quick_add, ai_model_review_summary, ai_model_email_tone, ai_model_daily_briefing, ai_model_note_tagging, ai_model_rag, ai_model_job_fit FROM user_settings WHERE id = 1");
       const models = r.rows[0] || {};
       models.available = isAIAvailable();
       res.json(models);
@@ -279,7 +293,7 @@ module.exports = function ({ pool }) {
 
   router.patch("/api/ai/models", async (req, res) => {
     try {
-      const allowed = ["ai_model_email_draft", "ai_model_task_breakdown", "ai_model_quick_add", "ai_model_review_summary", "ai_model_email_tone", "ai_model_daily_briefing", "ai_model_note_tagging", "ai_model_rag"];
+      const allowed = ["ai_model_email_draft", "ai_model_task_breakdown", "ai_model_quick_add", "ai_model_review_summary", "ai_model_email_tone", "ai_model_daily_briefing", "ai_model_note_tagging", "ai_model_rag", "ai_model_job_fit"];
       const validValues = ["haiku", "sonnet", "off"];
       const fields = []; const params = []; let idx = 1;
       for (const key of allowed) {
