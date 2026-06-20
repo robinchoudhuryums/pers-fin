@@ -9,6 +9,41 @@ to the "none in progress" state.
 
 ## Current Cycle
 
+- **Status:** **Job Radar Batch 1 DONE** (Per-sistant) on branch
+  `claude/loving-rubin-1tkzs5` (2026-06-18). Backend pipeline + scheduler + tests;
+  NO AI/embeddings yet (deferred to Batch 2 by design — clean seam).
+  - **A1** `apps/per-sistant/db/021_jobs.sql` — job_sources / job_target_companies /
+    job_listings / job_profile + indexes; pgvector embedding columns + HNSW guarded
+    by the db/014 `DO $vec$ … pg_available_extensions` defensive pattern; idempotent
+    seeds (5 sources + 1 example company); additive `ai_model_job_fit` +
+    `job_radar_enabled` on user_settings.
+  - **A2-A7,A11** `apps/per-sistant/routes/jobs.js` — factory + INV-19 attach-after
+    pure helpers (computeContentHash, scamHeuristics [word-boundary INV-10],
+    applyDomainScore, computeTrustScore, cosineSim/collapseNearDups [pure, no-op w/o
+    embeddings], normalize{Adzuna,Greenhouse,Lever,Ashby,Workable}); fail-soft ingest;
+    dedupPersist (content_hash upsert, (xmax=0) genuine-insert count = idempotent);
+    runTrustPass (corroboration+decay+domain+scam → trust_score/legitimacy);
+    purgeRetention (strip description on old new/dismissed, keep hash+status tombstone);
+    gatherJobRadarSummary (single fail-soft aggregator, main + verify_first buckets);
+    endpoints (refresh, GET /api/jobs, profile CRUD, PATCH status archive-not-delete +
+    400 guards, job-companies CRUD).
+  - **A8** `server.js` — route registration + weekly node-cron (Mon 07:23, no tick,
+    gated on job_radar_enabled).
+  - **A10a** `tests/jobs.test.js` (29) — content-hash stability, scam/domain/trust,
+    near-dup collapse, dedup idempotency (2nd run adds 0), trust-pass write, retention,
+    aggregator bucketing + fail-soft, endpoint validation, migration idempotency markers.
+  - Suite: **Perfin 664 + Per-sistant 426 = 1090, 0 fail** (43 files). Canonical
+    count line updated; full feature docs deferred to Batch 2 /sync-docs.
+  - **Decisions locked:** D1=new ai_usage cap table (Batch 2), D2=no heartbeat (done),
+    D3=notif-check + briefing surface (Batch 2), D4=seed + UI editable (done), D5=post-embed
+    near-dup (helper ready), D6=trust/fit thresholds (TRUST_MAIN 60 / FIT_MAIN 65 / TRUST_VERIFY 40).
+  - **Where I left off:** Batch 1 implemented + green + committed/pushed (PR #124). NEXT:
+    Batch 2 (B1 ai_usage cap + getAiBudgetCents in ai.js [High-risk — shared by 10 features],
+    B4 ai_model_job_fit registration + Settings, B2 fit pass [embed+cosine+Claude], B3
+    legitimacy AI pass, B7 feedback trust decay, B5 pages/jobs.js + notif-check + briefing,
+    B6 job-radar.yml, B10b AI-cap-charge tests), then full /sync-docs (both CLAUDE.mds,
+    both READMEs, roadmap→Shipped, AI feature 10→11).
+
 - **Status:** **broad-implement (double-count guard + timezone pass) DONE** on
   branch `claude/loving-rubin-1tkzs5` (2026-06-18).
   - **Settle-up double-count guard** — `GET /api/housing/split` returns

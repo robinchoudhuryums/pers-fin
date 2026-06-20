@@ -74,6 +74,7 @@ app.use(require("./routes/search")(deps));
 app.use(require("./routes/ai")(deps));
 app.use(require("./routes/rag")(deps));
 app.use(require("./routes/health")(deps));
+app.use(require("./routes/jobs")(deps));
 app.use(require("./routes/perfin")(deps));
 app.use(require("./routes/pwa")(deps));
 
@@ -239,6 +240,27 @@ async function start(opts = {}) {
       }
     });
     console.log("Knowledge vault sync started (hourly when configured)");
+  }
+
+  // Job Radar — weekly refresh (ingest → dedup → trust → retention). Mirrors
+  // the plain node-cron pattern above (no job-health tick — Per-sistant crons
+  // don't heartbeat). A GitHub Actions cron (job-radar.yml) also hits
+  // POST /api/jobs/refresh while the Render free tier sleeps; all writes are
+  // idempotent (content_hash upsert) so overlap is harmless. Self-guards on
+  // job_radar_enabled so it's a no-op until the operator turns it on.
+  if (cron) {
+    const jobs = require("./routes/jobs");
+    cron.schedule("23 7 * * 1", async () => {
+      try {
+        const s = await pool.query("SELECT job_radar_enabled FROM user_settings WHERE id = 1");
+        if (!s.rows.length || !s.rows[0].job_radar_enabled) return;
+        const r = await jobs.runRefresh(pool, {});
+        console.log(`Job Radar refresh: +${r.added} new of ${r.seen} seen (${r.scored} scored, ${r.purged} purged)`);
+      } catch (err) {
+        console.error("Job Radar refresh error:", err.message);
+      }
+    });
+    console.log("Job Radar weekly refresh started (Mondays, when enabled)");
   }
 
   if (!standalone) {

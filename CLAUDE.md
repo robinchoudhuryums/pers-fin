@@ -426,9 +426,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1061 tests as of latest); use
+  Perfin and Per-sistant test files (1090 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1061 tests across 42 test files (incl.
+  Current count: 1090 tests across 43 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -1424,7 +1424,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1061 tests passing across 42 test files (Perfin 664 + Per-sistant 397), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1090 tests passing across 43 test files (Perfin 664 + Per-sistant 426), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
@@ -2987,7 +2987,29 @@ income module, and bill-calendar income detection.
   isolated debugging.
 
 ## Priority Next Features
-1. **Mobile app (operator step)** — the Capacitor iOS wrapper is scaffolded in
+1. **Job Radar (Per-sistant)** — a personal job-listing radar built INTO
+   Per-sistant (mirrors the Health & Habits module recipe: `db/021_jobs.sql` +
+   `routes/jobs.js` + `pages/jobs.js` + `tests/jobs.test.js`). Pulls listings
+   from sanctioned APIs (Adzuna + direct ATS boards — Greenhouse/Lever/Ashby/
+   Workable over a curated `job_target_companies` allowlist), dedups on a
+   content hash, then runs a **trust pass** (source weight + ghost-job
+   freshness decay + cross-source corroboration + near-dup collapse via
+   embeddings + apply-domain check + regex scam heuristics, with a Claude
+   legitimacy pass for borderline rows) and a **fit pass** (Voyage embedding
+   cosine vs a single `job_profile` row → a per-feature "Job Fit" Claude pass →
+   0–100 fit_score + rationale). Surfaces high-fit/high-trust roles (plus a
+   smaller "verify first" bucket) on a `/jobs` page, the weekly digest, and one
+   AI daily-briefing line via a single fail-soft `gatherJobRadarSummary`
+   aggregator (the gatherHealthSummary pattern). Reuses `services/embeddings.js`
+   (voyage-3.5, 1024-dim) and `ai.js`; weekly refresh via in-process node-cron +
+   `POST /api/jobs/refresh` + a `job-radar.yml` Actions backstop. New env:
+   `ADZUNA_APP_ID` / `ADZUNA_APP_KEY`. **Open design decisions (see /plan):**
+   Per-sistant has no existing monthly-AI-cap/usage table (unlike Perfin's
+   `financial_insights`) nor a `job-health.js` heartbeat — so the `job_fit`
+   cap-charge and the scheduler-tick patterns need either new minimal
+   infrastructure or adaptation to Per-sistant's existing cron/model-selection
+   controls.
+2. **Mobile app (operator step)** — the Capacitor iOS wrapper is scaffolded in
    `mobile/` (remote-URL mode, coexists with the PWA); what remains is the
    free-signing Xcode build on the operator's Mac per `mobile/README.md`.
 
