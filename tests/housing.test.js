@@ -47,6 +47,16 @@ describe("housing helpers", () => {
     );
   });
 
+  it("buildDoubleCountPattern: word-boundary regex from payee + utility labels, metachars escaped", () => {
+    const p = housing.buildDoubleCountPattern({ payee_name: "Sam Vance", utilities: [{ label: "Electricity" }, { label: "Water" }] });
+    assert.equal(p, "\\y(Sam Vance|Electricity|Water)\\y");
+    // <3-char and empty labels dropped; regex metachars escaped.
+    const p2 = housing.buildDoubleCountPattern({ payee_name: "AB", utilities: [{ label: "Gas (PG&E)" }, { label: "" }] });
+    assert.equal(p2, "\\y(Gas \\(PG&E\\))\\y");
+    // No usable terms → null (so the guard query is skipped entirely).
+    assert.equal(housing.buildDoubleCountPattern({ payee_name: "", utilities: [] }), null);
+  });
+
   it("computeSplit: you send the partner (rent+util − car)/2, each bears half the total", () => {
     const r = housing.computeSplit(1000, 560);
     assert.equal(r.transfer, 220);
@@ -248,6 +258,40 @@ describe("GET /api/housing/split", () => {
     assert.equal(res.body.car, 600);
     assert.equal(res.body.transfer, 300); // (1200 - 600) / 2
     assert.equal(res.body.car_source, "fixed");
+  });
+
+  it("flags a shared-card charge matching a utility as a potential double-count", async () => {
+    dbModule.pool.query = async (sql, params) => {
+      if (/housing_config/.test(sql)) return { rows: [{ housing_config: {
+        enabled: true, payee_name: "Landlord", utilities: [{ label: "Electricity" }],
+        split: { enabled: true, partner_name: "Wife", car_fixed_amount: 500 },
+      } }] };
+      if (/SUM\(amount\)[\s\S]*FROM payee_obligations/.test(sql)) return { rows: [{ total: "1000.00" }] };
+      if (/la\.is_shared = true/.test(sql)) {
+        assert.ok(params[1].includes("Electricity"), "pattern includes the utility label");
+        return { rows: [{ merchant: "ELECTRICITY CO", amount: "85.00" }] };
+      }
+      return { rows: [] };
+    };
+    const res = await supertest(app).get("/api/housing/split");
+    assert.equal(res.status, 200);
+    assert.ok(res.body.double_count_warning, "warning present");
+    assert.equal(res.body.double_count_warning.count, 1);
+    assert.equal(res.body.double_count_warning.total, 85);
+    assert.equal(res.body.double_count_warning.sample[0].merchant, "ELECTRICITY CO");
+  });
+
+  it("no double-count warning when no shared-card charge matches", async () => {
+    dbModule.pool.query = async (sql) => {
+      if (/housing_config/.test(sql)) return { rows: [{ housing_config: {
+        enabled: true, payee_name: "Landlord", utilities: [{ label: "Electricity" }],
+        split: { enabled: true, car_fixed_amount: 500 },
+      } }] };
+      if (/SUM\(amount\)[\s\S]*FROM payee_obligations/.test(sql)) return { rows: [{ total: "1000.00" }] };
+      return { rows: [] }; // is_shared query returns nothing
+    };
+    const res = await supertest(app).get("/api/housing/split");
+    assert.equal(res.body.double_count_warning, null);
   });
 
   it("returns {enabled:false} when the split isn't configured", async () => {

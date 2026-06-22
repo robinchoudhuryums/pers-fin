@@ -730,6 +730,7 @@
     <details open>
       <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;">
         <h2 style="margin:0;">AI Financial Insights</h2>
+        <span id="insights-audit-badge" style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;display:none;" title="Post-generation audit result"></span>
         <span id="insights-widget-meta" style="font-size:11px;color:var(--text-muted);"></span>
       </summary>
       <div id="insights-widget-body" style="margin-top:12px;font-size:13px;line-height:1.6;color:var(--text-secondary);">
@@ -1746,6 +1747,22 @@
         if (latest.created_at) {
           var d = new Date(latest.created_at);
           meta.textContent = '\u2014 ' + d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        }
+
+        // Audit confidence badge \u2014 surfaces this insight's post-generation audit
+        // result inline (parity with the Settings AI trust card, but per-insight).
+        var badge = document.getElementById('insights-audit-badge');
+        if (badge) {
+          var crit = latest.audit_critical_count || 0;
+          var warn = latest.audit_warning_count || 0;
+          var bg, fg, txt;
+          if (!latest.audited_at) { bg = ''; fg = ''; txt = ''; }
+          else if (latest.audit_incomplete) { bg = 'rgba(150,150,150,0.2)'; fg = 'var(--text-muted)'; txt = 'audit incomplete'; }
+          else if (crit > 0) { bg = 'rgba(235,107,107,0.18)'; fg = 'var(--warm,#eb6b6b)'; txt = '\u26a0 ' + crit + ' issue' + (crit === 1 ? '' : 's') + ' flagged'; }
+          else if (warn > 0) { bg = 'rgba(217,178,95,0.18)'; fg = 'var(--yellow,#d9b25f)'; txt = warn + ' caution' + (warn === 1 ? '' : 's'); }
+          else { bg = 'rgba(95,200,150,0.18)'; fg = 'var(--teal,#5fc896)'; txt = '\u2713 Verified'; }
+          if (txt) { badge.textContent = txt; badge.style.background = bg; badge.style.color = fg; badge.style.display = ''; }
+          else { badge.style.display = 'none'; }
         }
 
         // S1: feedback panel. Pre-fills if the user already rated this insight.
@@ -3118,10 +3135,12 @@
         var hqs = month ? ('?month=' + month) : '';
         var results = await Promise.all([
           apiFetch('/api/shared-settlement' + qs).then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
-          apiFetch('/api/housing/split' + hqs).then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; })
+          apiFetch('/api/housing/split' + hqs).then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
+          apiFetch('/api/settlement' + qs).then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; })
         ]);
         var d = results[0] || { month: month, accounts: [] };
         var housing = results[1] && results[1].enabled ? results[1] : null;
+        var settlement = results[2] || null;
         var hasShared = d.accounts && d.accounts.length;
         if (!hasShared && !housing) { section.style.display = 'none'; return; }
         section.style.display = '';
@@ -3141,12 +3160,55 @@
         var parts = [];
         if (hasShared) parts.push('Shared card ' + fmtMoney(sharedNet) + ' (' + esc(partner) + ' owes you)');
         if (housing) parts.push('Housing even-up ' + fmtMoney(Math.abs(housing.transfer)) + ' (' + (housing.direction === 'you_send_partner' ? 'you owe' : esc(partner) + ' owes') + ')');
+        var theMonth = d.month || month;
+        // Double-count guard: a shared-card charge matching a payee/utility name
+        // would be counted in BOTH legs. Only meaningful when both legs combine.
+        var dcw = (hasShared && housing) ? housing.double_count_warning : null;
+        var dcNote = dcw
+          ? ('<div style="margin-top:8px;padding:8px 10px;background:rgba(217,178,95,0.14);border:1px solid rgba(217,178,95,0.4);border-radius:6px;font-size:11px;color:var(--yellow,#d9b25f);">' +
+               '⚠ ' + dcw.count + ' shared-card charge' + (dcw.count === 1 ? '' : 's') + ' (' + fmtMoney(dcw.total) + ') match your rent/utilities — e.g. ' +
+               esc(dcw.sample.map(function(s){ return s.merchant; }).join(', ')) +
+               '. If a utility is on the shared card it may be double-counted across both legs.' +
+             '</div>')
+          : '';
+        var isSettled = settlement && settlement.settled;
+        // Settle/undo control: when settled, show a confirmation pill + Undo;
+        // otherwise a "Mark settled" button that records the current net.
+        var settleRow = isSettled
+          ? ('<div style="display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap;">' +
+               '<span style="font-size:12px;color:var(--teal);">&#10003; Settled' + (settlement.settled_at ? ' on ' + new Date(settlement.settled_at).toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '') + '</span>' +
+               '<button id="settle-undo-btn" class="btn btn-sm" data-month="' + esc(theMonth) + '" style="font-size:11px;">Undo</button>' +
+             '</div>')
+          : ('<div style="margin-top:10px;">' +
+               '<button id="settle-mark-btn" class="btn btn-sm primary" data-month="' + esc(theMonth) + '" data-net="' + net + '" style="font-size:12px;">Mark settled</button>' +
+             '</div>');
         headline.innerHTML =
-          '<div style="padding:14px;background:var(--card);border:1px solid var(--card-border);border-radius:8px;">' +
-            '<div style="font-size:11px;color:var(--text-muted);">Net to settle up &middot; ' + monthLabel(d.month || month) + '</div>' +
+          '<div style="padding:14px;background:var(--card);border:1px solid var(--card-border);border-radius:8px;' + (isSettled ? 'opacity:0.75;' : '') + '">' +
+            '<div style="font-size:11px;color:var(--text-muted);">Net to settle up &middot; ' + monthLabel(theMonth) + '</div>' +
             '<div style="font-size:26px;font-weight:600;color:' + netColor + ';margin-top:2px;">' + netLabel + '</div>' +
             (parts.length > 1 ? '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;">' + parts.join(' &nbsp;+&nbsp; ') + '</div>' : '') +
+            dcNote +
+            settleRow +
           '</div>';
+
+        // Wire the settle/undo buttons (headline is re-rendered each load).
+        var markBtn = document.getElementById('settle-mark-btn');
+        if (markBtn) markBtn.addEventListener('click', async function() {
+          this.disabled = true;
+          var dir = Math.abs(net) < 0.01 ? 'square' : (net > 0 ? 'partner_sends_you' : 'you_send_partner');
+          try {
+            await apiFetch('/api/settlement/settle', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ month: theMonth, net_amount: net, direction: dir }) });
+            loadSettlement();
+          } catch (e) { this.disabled = false; }
+        });
+        var undoBtn = document.getElementById('settle-undo-btn');
+        if (undoBtn) undoBtn.addEventListener('click', async function() {
+          this.disabled = true;
+          try {
+            await apiFetch('/api/settlement/' + encodeURIComponent(theMonth), { method:'DELETE' });
+            loadSettlement();
+          } catch (e) { this.disabled = false; }
+        });
 
         // Housing even-up detail card (rendered above the per-card breakdown).
         var housingCard = '';

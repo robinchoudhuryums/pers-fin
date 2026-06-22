@@ -88,7 +88,7 @@ Under the unified shell the cross-app integration endpoints (Per-sistant's Perfi
 | `scripts/detect-subscriptions.js` | Recurring charge detection algorithm |
 | `scripts/sheets-sync.js` | Google Sheets sync + dashboard builder |
 | `apps-script/Code.gs` | Google Sheets Apps Script (standalone + server sync) |
-| `tests/` | Test suite (node:test, 1048 tests across 41 files incl. apps/per-sistant/tests) |
+| `tests/` | Test suite (node:test, 1097 tests across 43 files incl. apps/per-sistant/tests) |
 | `Dockerfile` | Container build — installs all workspaces and boots `node shell/index.js` |
 | `render.yaml` | Render deployment blueprint (unified shell) |
 | `fly.toml` | Fly.io deployment config |
@@ -447,6 +447,26 @@ inline trend charts. Habit streaks at risk surface in the notification check
 and the AI daily briefing. No setup required — three tables ride Per-sistant's
 existing migration chain.
 
+### Job Radar (Per-sistant)
+
+A personal job-listing radar on Per-sistant's `/jobs` page. Pulls listings from
+sanctioned APIs — the **Adzuna** aggregator plus direct **ATS boards**
+(Greenhouse / Lever / Ashby / Workable) over a curated, UI-editable company
+allowlist — dedups them on a content hash, then scores each for **trust**
+(source weight + ghost-job freshness decay + cross-source corroboration +
+apply-domain check + scam-pattern heuristics) and **fit** (a Voyage embedding
+cosine vs your single job profile, then a Claude "Job Fit" pass → 0–100 score +
+rationale), with a Claude legitimacy pass on borderline rows. High-fit /
+high-trust roles surface on the page (with a smaller "verify first" bucket so a
+strict filter never silently eats a real lead), in the notification check, and
+as one AI daily-briefing line. Saving / applying / dismissing a role archives it
+(never deletes) and tunes the source's trust. Weekly refresh via in-process
+cron + a GitHub Actions backstop. The Claude passes are charged against a
+monthly **AI cost cap** (Per-sistant's first — also reusable by other AI
+features). Off by default — enable it on the `/jobs` page. Optional
+`ADZUNA_APP_ID` / `ADZUNA_APP_KEY` (free tier) widen ingest beyond the ATS
+boards; reuses `VOYAGE_API_KEY` + `ANTHROPIC_API_KEY`.
+
 ## How Subscription Detection Works
 
 1. Pulls all non-pending debit transactions from the last 36 months
@@ -475,3 +495,5 @@ existing migration chain.
 | `GOOGLE_SERVICE_ACCOUNT_KEY` | Google service account JSON key (Perfin sync, optional) |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | Per-sistant email scheduling |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_EMAIL` | Push notifications (Perfin) |
+| `ADZUNA_APP_ID` / `ADZUNA_APP_KEY` | Job Radar aggregator ingest (Per-sistant, optional — ATS boards work without them) |
+| `PERSISTENT_AI_BUDGET_CENTS` | Per-sistant monthly AI cap fallback (default 100 = $1.00/month) — overridable via `user_settings.ai_monthly_budget_cents` |

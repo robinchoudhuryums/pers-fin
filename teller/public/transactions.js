@@ -467,5 +467,60 @@
     document.getElementById('filter-start').value = sixMonthsAgo.toISOString().split('T')[0];
     document.getElementById('filter-end').value = now.toISOString().split('T')[0];
 
+    // --- Manual cash-transaction modal --------------------------------------
+    (function initCashModal() {
+      var modal = document.getElementById('cash-modal');
+      var openBtn = document.getElementById('add-cash-btn');
+      if (!modal || !openBtn) return;
+      var acctSel = document.getElementById('cash-account');
+      var catSel = document.getElementById('cash-category');
+      var noAccts = document.getElementById('cash-no-accounts');
+      var formWrap = document.getElementById('cash-form');
+      var saveBtn = document.getElementById('cash-save');
+      // Category dropdown reuses the shared CATEGORIES list.
+      catSel.innerHTML = CATEGORIES.map(function(c) { return '<option value="' + esc(c) + '">' + esc(c) + '</option>'; }).join('');
+      function close() { modal.style.display = 'none'; }
+      async function open() {
+        document.getElementById('cash-date').value = new Date().toISOString().split('T')[0];
+        document.getElementById('cash-amount').value = '';
+        document.getElementById('cash-merchant').value = '';
+        document.getElementById('cash-notes').value = '';
+        // Manual (cash) accounts only — adding cash to a synced account would
+        // desync its balance. Backed by the is_manual flag from /api/accounts.
+        try {
+          var r = await apiFetch('/api/accounts');
+          var accts = r.ok ? await r.json() : [];
+          var manual = (Array.isArray(accts) ? accts : (accts.accounts || [])).filter(function(a) { return a.is_manual && a.type === 'depository'; });
+          if (!manual.length) { noAccts.style.display = 'block'; formWrap.style.display = 'none'; saveBtn.style.display = 'none'; }
+          else {
+            noAccts.style.display = 'none'; formWrap.style.display = 'flex'; saveBtn.style.display = '';
+            acctSel.innerHTML = manual.map(function(a) { return '<option value="' + esc(a.account_id) + '">' + esc(a.name) + '</option>'; }).join('');
+          }
+        } catch (e) { noAccts.style.display = 'block'; formWrap.style.display = 'none'; saveBtn.style.display = 'none'; }
+        modal.style.display = 'block';
+      }
+      openBtn.addEventListener('click', open);
+      document.getElementById('cash-cancel').addEventListener('click', close);
+      modal.addEventListener('click', function(e) { if (e.target === modal) close(); });
+      saveBtn.addEventListener('click', async function() {
+        var body = {
+          account_id: acctSel.value,
+          amount: parseFloat(document.getElementById('cash-amount').value),
+          date: document.getElementById('cash-date').value,
+          merchant_name: document.getElementById('cash-merchant').value.trim(),
+          category: catSel.value,
+          notes: document.getElementById('cash-notes').value.trim() || undefined,
+        };
+        if (!body.amount || body.amount <= 0) { showMsg('Enter an amount.', false); return; }
+        saveBtn.disabled = true;
+        try {
+          var res = await apiFetch('/api/transactions/manual', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+          if (!res.ok) { var d = await res.json().catch(function() { return {}; }); showMsg(d.error || 'Failed', false); return; }
+          close(); showMsg('Transaction added.', true); searchTransactions(0);
+        } catch (e) { showMsg(e.message, false); }
+        finally { saveBtn.disabled = false; }
+      });
+    })();
+
     searchTransactions(0);
     loadDuplicates();

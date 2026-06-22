@@ -9,6 +9,133 @@ to the "none in progress" state.
 
 ## Current Cycle
 
+- **Status:** **Job Radar Batch 2 DONE** (Per-sistant) on branch
+  `claude/loving-rubin-1tkzs5` (2026-06-18). AI fit/legitimacy + cap + surfaces.
+  Feature is now end-to-end (ingest→trust→fit→surface).
+  - **B1** AI cost cap (D1) — db/021 adds `ai_usage` ledger + `ai_monthly_budget_cents`;
+    ai.js adds estimateCostCents / getAiBudgetCents / monthlyAiSpendCents /
+    recordAiUsage + `callAIWithUsage` (usage-returning variant; `callAI` UNTOUCHED —
+    10 existing features unaffected). Dependency check confirmed safe (the two
+    api.test.js feature-count tests use LOCAL fixtures, not config).
+  - **B4** registered "job_fit" feature — config.VALID_AI_FEATURES += job_fit;
+    /api/ai/models GET+PATCH include ai_model_job_fit; Settings page Job Fit
+    dropdown (both features arrays in settings-script.js). AI features 10→11.
+  - **B2** fit pass — embed new above-trust rows (document), cosine vs profile
+    (query) embedding, top candidates → Job Fit Claude pass → fit_score+rationale;
+    cappedCall (check-then-charge, charge in finally, throws CAP). Fail-soft on
+    no-Voyage / no-pgvector / ai-off.
+  - **B3** legitimacy pass — borderline 'suspect' rows → Claude {legitimacy,reasons[]};
+    same cap+charge.
+  - **B7** feedback — saved/applied/dismissed nudges source trust_weight (bounded).
+  - **B5** surfaces — pages/jobs.js (/jobs page: enable toggle, profile + companies
+    modals, main + verify-first lists; nonceAttr/escAttr, bindEvents/onDelegate, no
+    inline handlers, backtick-free, emitted-script node --check'd) + nav link +
+    notification-check job_radar entry (gated on job_radar_enabled, fail-soft) +
+    AI daily-briefing job line (fail-soft). settings.js PATCH accepts job_radar_enabled.
+  - **B6** .github/workflows/job-radar.yml — weekly Actions backstop (Mon 07:23 UTC,
+    x-api-key → POST /per-sistant/api/jobs/refresh).
+  - **B10b** tests — parseFitJson/parseLegitimacyJson, estimateCostCents, cappedCall
+    (charge-on-success + throw-CAP-before-model-call via injected fake SDK client),
+    applyFeedbackToSource, ai_usage migration markers.
+  - Suite: **Perfin 664 + Per-sistant 433 = 1097, 0 fail** (43 files). Canonical
+    count line updated.
+  - **Where I left off:** Batch 1 + Batch 2 implemented + green + committed/pushed
+    (PR #124). NEXT: run **/sync-docs** for the full module docs (per-sistant CLAUDE.md
+    Job Radar section + AI features 10→11 + migration 020→021 + env vars; root
+    CLAUDE.md roadmap Priority→Shipped + Per-sistant Backend subsystem file list +
+    new INVs; both READMEs). OPERATOR: ADZUNA_APP_ID/KEY (optional), job-radar.yml
+    repo secrets (SERVER_URL/API_KEY), enable Job Radar on the /jobs page.
+
+- **Status:** **Job Radar Batch 1 DONE** (Per-sistant) on branch
+  `claude/loving-rubin-1tkzs5` (2026-06-18). Backend pipeline + scheduler + tests;
+  NO AI/embeddings yet (deferred to Batch 2 by design — clean seam).
+  - **A1** `apps/per-sistant/db/021_jobs.sql` — job_sources / job_target_companies /
+    job_listings / job_profile + indexes; pgvector embedding columns + HNSW guarded
+    by the db/014 `DO $vec$ … pg_available_extensions` defensive pattern; idempotent
+    seeds (5 sources + 1 example company); additive `ai_model_job_fit` +
+    `job_radar_enabled` on user_settings.
+  - **A2-A7,A11** `apps/per-sistant/routes/jobs.js` — factory + INV-19 attach-after
+    pure helpers (computeContentHash, scamHeuristics [word-boundary INV-10],
+    applyDomainScore, computeTrustScore, cosineSim/collapseNearDups [pure, no-op w/o
+    embeddings], normalize{Adzuna,Greenhouse,Lever,Ashby,Workable}); fail-soft ingest;
+    dedupPersist (content_hash upsert, (xmax=0) genuine-insert count = idempotent);
+    runTrustPass (corroboration+decay+domain+scam → trust_score/legitimacy);
+    purgeRetention (strip description on old new/dismissed, keep hash+status tombstone);
+    gatherJobRadarSummary (single fail-soft aggregator, main + verify_first buckets);
+    endpoints (refresh, GET /api/jobs, profile CRUD, PATCH status archive-not-delete +
+    400 guards, job-companies CRUD).
+  - **A8** `server.js` — route registration + weekly node-cron (Mon 07:23, no tick,
+    gated on job_radar_enabled).
+  - **A10a** `tests/jobs.test.js` (29) — content-hash stability, scam/domain/trust,
+    near-dup collapse, dedup idempotency (2nd run adds 0), trust-pass write, retention,
+    aggregator bucketing + fail-soft, endpoint validation, migration idempotency markers.
+  - Suite: **Perfin 664 + Per-sistant 426 = 1090, 0 fail** (43 files). Canonical
+    count line updated; full feature docs deferred to Batch 2 /sync-docs.
+  - **Decisions locked:** D1=new ai_usage cap table (Batch 2), D2=no heartbeat (done),
+    D3=notif-check + briefing surface (Batch 2), D4=seed + UI editable (done), D5=post-embed
+    near-dup (helper ready), D6=trust/fit thresholds (TRUST_MAIN 60 / FIT_MAIN 65 / TRUST_VERIFY 40).
+  - **Where I left off:** Batch 1 implemented + green + committed/pushed (PR #124). NEXT:
+    Batch 2 (B1 ai_usage cap + getAiBudgetCents in ai.js [High-risk — shared by 10 features],
+    B4 ai_model_job_fit registration + Settings, B2 fit pass [embed+cosine+Claude], B3
+    legitimacy AI pass, B7 feedback trust decay, B5 pages/jobs.js + notif-check + briefing,
+    B6 job-radar.yml, B10b AI-cap-charge tests), then full /sync-docs (both CLAUDE.mds,
+    both READMEs, roadmap→Shipped, AI feature 10→11).
+
+- **Status:** **broad-implement (double-count guard + timezone pass) DONE** on
+  branch `claude/loving-rubin-1tkzs5` (2026-06-18).
+  - **Settle-up double-count guard** — `GET /api/housing/split` returns
+    `double_count_warning` (fail-soft) flagging shared-card charges that month
+    whose merchant matches the payee/utility names (word-boundary `~*`, INV-10);
+    the dashboard Settle Up widget shows an inline ⚠ when both legs combine.
+    `buildDoubleCountPattern(cfg)` pure helper (escapes regex metachars, ≥3-char
+    terms). 
+  - **Timezone full pass (F11 residual)** — `financial-queries.js` now exports
+    `currentMonth(tz)`/`todayStr(tz)` (APP_TIMEZONE, default UTC). Routed the
+    user-facing "current month"/"today" anchors through it IN LOCKSTEP with their
+    paired SQL: `getCategorySpendingThisMonth` (→ delegates to ForMonth(currentMonth)),
+    `getMonthlySpending`/`getMonthlyIncome` window anchors (now `$2::date` param,
+    not CURRENT_DATE), budgets `currentMonthKey`, spending-analytics/goals/ask
+    `thisMonth`, subscriptions settlement-month defaults, housing `thisMonth()`.
+    Rolling-window CURRENT_DATE lookbacks left UTC (tz-insensitive). Default UTC =
+    byte-identical behavior; needs operator to SET APP_TIMEZONE to take effect.
+  - Tests: +5 (tz helpers, double-count helper + 2 endpoint behaviors); updated 3
+    doubles encoding the old anchor (FA-4 ×2 in cycle-fixes, getMonthlySpending
+    param-arity in financial-queries). Suite: **Perfin 664 + Per-sistant 397 =
+    1061, 0 fail** (42 files).
+  - Docs: CLAUDE.md (counts, APP_TIMEZONE broadened to both apps, tz design
+    decision, double_count_warning on the endpoint + widget caveat) + README counts.
+  - **OPERATOR ACTION (non-blocking):** set `APP_TIMEZONE=America/New_York` (or your
+    zone) on Render so Perfin's month/day anchors use wall-clock time. Same var
+    Per-sistant health already uses — if already set for health, Perfin now honors it too.
+  - **Where I left off:** implemented + tests green + docs synced; committing +
+    pushing (PR #124). Remaining roadmap: mobile iOS build (operator),
+    targeted audit of housing.js.
+
+- **Status:** **broad-implement (4 follow-on features) DONE** on branch
+  `claude/loving-rubin-1tkzs5` (2026-06-18). Implemented the operator-selected
+  backlog items from the prioritized roadmap:
+  - **Manual cash entry** — `POST /api/transactions/manual` (routes/transactions.js)
+    + "+ Add cash transaction" modal on the Transactions page. Positive-amount
+    expense, `manual_<ts>_<rand>` id, requires an existing is_manual depository
+    account. Expense-only (cash income deferred).
+  - **Mark-settled** — new `settlements` table (db migration) + GET/POST/DELETE
+    `/api/settlement[/settle|/:period]` (subscriptions.js). Dashboard Settle Up
+    widget grew a "Mark settled" button → "✓ Settled on <date>" + Undo. Display-only.
+  - **Audit confidence badge** — `GET /api/insights` returns per-insight
+    `audit_critical_count`/`audit_warning_count` (ai_audit_log subqueries); the
+    dashboard AI Insights widget header shows ✓ Verified / N cautions / ⚠ N issues
+    / audit incomplete.
+  - **Camera button** — housing OCR rows gained a "📷" capture-direct input
+    alongside "Scan"; both feed one handler. OCR image still memory-only (never stored).
+  - New test file `tests/manual-cash-settlement.test.js` (8 tests). Suite:
+    **Perfin 659 + Per-sistant 397 = 1056, 0 fail** (42 test files).
+  - Docs (CLAUDE.md + README) updated: counts, 4 endpoints, `settlements` table,
+    4 feature notes. NET: 4 features, 0 new failure modes; no invariants violated.
+  - **Where I left off:** implemented + tests green + docs synced; committing +
+    pushing to the branch (PR #124 open). Remaining roadmap: timezone full pass
+    (F11 residual), mobile iOS build (operator), settle-up double-count guard
+    (low pri), targeted audit of housing.js.
+
 - **Status:** **broad-implement Tier-3 features DONE** on branch
   `claude/loving-rubin-1tkzs5` (2026-06-17). Two strategic additions:
   - **Sync-degradation UI strip** — dashboard banner (`#sync-health-strip`) fetches

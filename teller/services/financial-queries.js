@@ -114,6 +114,27 @@ const INVESTMENT_ACCOUNT_TYPES = `(
 )`;
 
 /**
+ * Timezone-aware "today" / "current month" anchors. APP_TIMEZONE is an IANA
+ * zone name (default "UTC" → no behavior change vs. the prior JS-UTC /
+ * Postgres-CURRENT_DATE anchors). Mirrors Per-sistant's health.js todayStr so
+ * both apps resolve "today" the same way (F11). Server-side callers compute the
+ * month/day string here and pass it into SQL as a parameter, so the boundary
+ * is the operator's wall-clock month rather than UTC's — fixing evening logs
+ * west of UTC that landed in the wrong month.
+ */
+const APP_TIMEZONE = process.env.APP_TIMEZONE || "UTC";
+function todayStr(tz = APP_TIMEZONE) {
+  try {
+    return new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+  } catch {
+    return new Date().toISOString().slice(0, 10); // bad tz → UTC fallback
+  }
+}
+function currentMonth(tz = APP_TIMEZONE) {
+  return todayStr(tz).slice(0, 7);
+}
+
+/**
  * Monthly spending totals for the last N months, split-adjusted.
  * Returns rows: { month: 'YYYY-MM', total_spend: NUMERIC, txn_count: INT }
  */
@@ -130,10 +151,11 @@ async function getMonthlySpending(pool, months = 6) {
        -- Whole-month window (FA-4): floor to the 1st of the month so the
        -- oldest bucket is a FULL month, not a partial one — callers (savings-
        -- rate, context-export, AI trends) treat each returned month as complete.
-       AND t.date >= date_trunc('month', CURRENT_DATE) - make_interval(months => $1 - 1)
+       -- Anchor is the tz-aware current month ($2), not UTC CURRENT_DATE (F11).
+       AND t.date >= date_trunc('month', $2::date) - make_interval(months => $1 - 1)
      GROUP BY TO_CHAR(t.date, 'YYYY-MM')
      ORDER BY month`,
-    [months]
+    [months, currentMonth() + "-01"]
   );
   return result.rows;
 }
@@ -149,12 +171,12 @@ async function getMonthlyIncome(pool, months = 6) {
             SUM(ABS(amount)) AS total_income
      FROM transactions
      WHERE amount < 0 AND pending = false
-       -- Whole-month window (FA-4) — see getMonthlySpending.
-       AND date >= date_trunc('month', CURRENT_DATE) - make_interval(months => $1 - 1)
+       -- Whole-month window (FA-4) — see getMonthlySpending. tz-aware anchor (F11).
+       AND date >= date_trunc('month', $2::date) - make_interval(months => $1 - 1)
        AND ${INCOME_PREDICATE}
      GROUP BY TO_CHAR(date, 'YYYY-MM')
      ORDER BY month`,
-    [months]
+    [months, currentMonth() + "-01"]
   );
   return result.rows;
 }
@@ -244,51 +266,16 @@ async function getCategorySpendingForMonth(pool, monthStr) {
 }
 
 /**
- * Spending-by-category for the current month. Anchored to Postgres CURRENT_DATE
- * (not JS Date) so the boundary at month-end stays consistent with the rest of
- * the SQL in this codebase. Used by /api/insights, /api/budgets/alerts, and the
- * scheduled budget-alert push — all of which mean "this calendar month, now".
- *
- * Kept structurally identical to its pre-existing implementation; the new
- * `getCategorySpendingForMonth` exists alongside it for callers that need to
- * snapshot a specific historical month.
+ * Spending-by-category for the current month. Delegates to
+ * getCategorySpendingForMonth with the tz-aware current month (APP_TIMEZONE,
+ * default UTC) so the month boundary is the operator's wall-clock month rather
+ * than UTC's (F11). With APP_TIMEZONE unset this is byte-identical to the prior
+ * `date_trunc('month', CURRENT_DATE)` anchor on a UTC server. Used by
+ * /api/insights, /api/budgets/alerts, and the scheduled budget-alert push — all
+ * of which mean "this calendar month, now".
  */
 async function getCategorySpendingThisMonth(pool) {
-  const result = await pool.query(`
-    WITH parent_no_splits AS (
-      SELECT COALESCE(t.user_category, t.category[1], 'Uncategorized') AS category,
-             ${SPLIT_AMOUNT} AS amount
-      FROM transactions t
-      LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-      WHERE t.amount > 0 AND t.pending = false
-        AND COALESCE(t.is_reimbursed, false) = false
-        AND ${NOT_TRANSFER}
-        AND t.date >= date_trunc('month', CURRENT_DATE)
-        AND t.date <  date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
-        AND NOT EXISTS (SELECT 1 FROM transaction_splits s WHERE s.parent_transaction_id = t.transaction_id)
-    ),
-    from_splits AS (
-      SELECT COALESCE(s.category, t.user_category, t.category[1], 'Uncategorized') AS category,
-             (CASE WHEN la.is_shared AND t.personal_for = 'self' THEN s.amount WHEN la.is_shared AND t.personal_for = 'partner' THEN 0 ELSE s.amount * COALESCE(la.spending_split_pct, 100) / 100.0 END) AS amount
-      FROM transaction_splits s
-      JOIN transactions t ON t.transaction_id = s.parent_transaction_id
-      LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-      WHERE t.amount > 0 AND t.pending = false
-        AND COALESCE(t.is_reimbursed, false) = false
-        AND ${NOT_TRANSFER}
-        AND t.date >= date_trunc('month', CURRENT_DATE)
-        AND t.date <  date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
-    ),
-    all_lines AS (
-      SELECT category, amount FROM parent_no_splits
-      UNION ALL
-      SELECT category, amount FROM from_splits
-    )
-    SELECT category, ROUND(SUM(amount), 2) AS spent
-    FROM all_lines
-    GROUP BY category
-  `);
-  return result.rows;
+  return getCategorySpendingForMonth(pool, currentMonth());
 }
 
 // getNetWorth — single source of truth for the net-worth computation.
@@ -381,4 +368,7 @@ module.exports = {
   getCategorySpendingThisMonth,
   getCategorySpendingForMonth,
   getNetWorth,
+  currentMonth,
+  todayStr,
+  APP_TIMEZONE,
 };

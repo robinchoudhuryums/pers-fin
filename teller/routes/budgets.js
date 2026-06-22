@@ -5,7 +5,7 @@
 const express = require("express");
 const router = express.Router();
 const { pool } = require("../services/database");
-const { getCategorySpendingThisMonth, getCategorySpendingForMonth } = require("../services/financial-queries");
+const { getCategorySpendingThisMonth, getCategorySpendingForMonth, currentMonth } = require("../services/financial-queries");
 const { MODEL_MAP } = require("../data/reference-data");
 
 let Anthropic;
@@ -15,10 +15,10 @@ try {
   Anthropic = null;
 }
 
-// Current month key (YYYY-MM)
+// Current month key (YYYY-MM), tz-aware (APP_TIMEZONE; default UTC) so the
+// "this month" budget figures honor the operator's wall-clock month (F11).
 function currentMonthKey() {
-  const d = new Date();
-  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+  return currentMonth();
 }
 
 // Previous-month key for a given 'YYYY-MM'. The rollover that applies to

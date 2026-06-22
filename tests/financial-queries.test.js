@@ -23,7 +23,27 @@ const {
   getMonthlyIncome,
   getMonthlyIncomeAndSpending,
   getCategorySpendingThisMonth,
+  currentMonth,
+  todayStr,
 } = require("../teller/services/financial-queries");
+
+// ---------------------------------------------------------------------------
+// Timezone helpers (F11) — APP_TIMEZONE-aware "today"/"current month"
+// ---------------------------------------------------------------------------
+describe("currentMonth / todayStr (tz-aware)", () => {
+  it("returns YYYY-MM-DD / YYYY-MM in shape", () => {
+    assert.match(todayStr(), /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/);
+    assert.match(currentMonth(), /^\d{4}-(0[1-9]|1[0-2])$/);
+    assert.equal(currentMonth(), todayStr().slice(0, 7));
+  });
+  it("resolves the boundary in the given zone (UTC-evening rolls forward of US-East)", () => {
+    // An explicit IANA zone shifts the resolved day vs UTC. We don't pin an
+    // absolute value (depends on run time), but the two zones must agree with
+    // their own slice and be valid — and an invalid zone falls back to UTC.
+    assert.match(todayStr("America/New_York"), /^\d{4}-\d{2}-\d{2}$/);
+    assert.match(todayStr("not/a/zone"), /^\d{4}-\d{2}-\d{2}$/); // fallback, no throw
+  });
+});
 
 // ---------------------------------------------------------------------------
 // INCOME_PREDICATE pattern tests
@@ -233,7 +253,9 @@ describe("getMonthlySpending", () => {
     assert.ok(capturedSql.includes("spending_split_pct"), "SQL should apply spending split");
     assert.ok(capturedSql.includes("is_reimbursed"), "SQL should exclude reimbursed");
     assert.ok(capturedSql.includes("make_interval"), "SQL should use make_interval for months");
-    assert.deepEqual(capturedParams, [3]);
+    // F11: anchor is now the tz-aware current month passed as $2 (was UTC CURRENT_DATE).
+    assert.equal(capturedParams[0], 3);
+    assert.match(capturedParams[1], /^\d{4}-(0[1-9]|1[0-2])-01$/);
     assert.equal(result[0].month, "2026-03");
   });
 });

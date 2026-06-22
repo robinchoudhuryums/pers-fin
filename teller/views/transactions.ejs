@@ -84,6 +84,7 @@
   <p class="subtitle">Search, filter, and categorize transactions</p>
   <div id="status-msg" class="status-msg"></div>
 
+  <button type="button" class="btn btn-sm" id="add-cash-btn" style="margin-bottom:8px;">+ Add cash transaction</button>
   <button type="button" class="btn btn-sm filters-toggle" id="filters-toggle" aria-expanded="false" aria-controls="search-bar">Filters &#9662;</button>
   <div class="search-bar" id="search-bar">
     <div class="field" style="flex:1;min-width:180px;">
@@ -194,6 +195,36 @@
     <h2>Potential Duplicates</h2>
     <p class="subtitle">Transactions with same date, amount, and merchant across different accounts</p>
     <div id="dup-list"></div>
+  </div>
+
+  <!-- Manual cash-transaction modal (expense entry invisible to bank sync) -->
+  <div id="cash-modal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.5);">
+    <div style="max-width:420px;margin:8vh auto;background:var(--surface-solid,var(--card));border:1px solid var(--card-border);border-radius:10px;padding:18px;">
+      <h2 style="margin:0 0 12px;font-size:17px;">Add cash transaction</h2>
+      <div id="cash-no-accounts" style="display:none;font-size:13px;color:var(--text-muted);margin-bottom:10px;">
+        No manual account yet. Create a "Cash" account on the <a href="<%= basePath %>/accounts" style="color:var(--teal);">Accounts page</a> first.
+      </div>
+      <div id="cash-form" style="display:flex;flex-direction:column;gap:10px;">
+        <div><label style="font-size:12px;color:var(--text-muted);">Account</label>
+          <select id="cash-account" style="width:100%;padding:8px;"></select></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+          <div><label style="font-size:12px;color:var(--text-muted);">Amount spent ($)</label>
+            <input id="cash-amount" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00" style="width:100%;padding:8px;"></div>
+          <div><label style="font-size:12px;color:var(--text-muted);">Date</label>
+            <input id="cash-date" type="date" style="width:100%;padding:8px;"></div>
+        </div>
+        <div><label style="font-size:12px;color:var(--text-muted);">Merchant / description</label>
+          <input id="cash-merchant" type="text" placeholder="e.g. Coffee" style="width:100%;padding:8px;"></div>
+        <div><label style="font-size:12px;color:var(--text-muted);">Category</label>
+          <select id="cash-category" style="width:100%;padding:8px;"></select></div>
+        <div><label style="font-size:12px;color:var(--text-muted);">Notes (optional)</label>
+          <input id="cash-notes" type="text" style="width:100%;padding:8px;"></div>
+      </div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px;">
+        <button type="button" class="btn btn-sm" id="cash-cancel">Cancel</button>
+        <button type="button" class="btn primary btn-sm" id="cash-save">Add</button>
+      </div>
+    </div>
   </div>
 
 <%- include('partials/foot') %>

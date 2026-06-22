@@ -426,9 +426,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1048 tests as of latest); use
+  Perfin and Per-sistant test files (1097 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1048 tests across 41 test files (incl.
+  Current count: 1097 tests across 43 test files (incl.
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -524,6 +524,16 @@ shell/
   second (F1); re-importing the same file still deduplicates against itself. `POST /api/import-csv`
   returns `rows_duplicate` (true re-imports of already-present rows) alongside `rows_imported` /
   `rows_skipped`.
+- **Manual cash entry**: a one-off expense the bank never sees (cash spending),
+  added via `POST /api/transactions/manual` and an "+ Add cash transaction"
+  modal on the Transactions page. Requires an existing `is_manual` (depository)
+  account — make a "Cash" account via `POST /api/accounts/manual` first; the
+  modal lists only those and links to the Accounts page when none exist. Stores
+  the amount POSITIVE (the spending sign every aggregation sums on `amount > 0`),
+  category in `category` (CSV-import precedent), notes in `user_notes`, and a
+  unique `manual_<ts>_<rand>` transaction_id so it's distinct and untouched by
+  re-sync. Flows through every spending query like any other transaction.
+  Expense-only by design (cash income is a rare follow-on).
 - **Transaction editing** (Phase B1): rename merchants and add notes via
   `PATCH /api/transactions/:id`. User overrides live in `user_merchant_name` /
   `user_notes` columns so re-syncs from Teller don't clobber edits. The display
@@ -626,10 +636,13 @@ shell/
   weaves in a rent line ("$X owed to [payee], due in N days") read READ-ONLY
   from the wired `perfinPool` (`payee_obligations` + `housing_config`),
   fail-soft (INV-25/35). **Bill OCR**: each awaiting-bill row has a "Scan"
-  button → `POST /api/housing/scan-bill` runs the bill image/PDF through Claude
+  button (upload a photo/PDF) AND a "📷" button (camera-direct via a `capture`
+  input — straight to the rear camera on mobile); both feed the same handler →
+  `POST /api/housing/scan-bill` runs the bill image/PDF through Claude
   vision (tool_use forcing a `report_bill` tool) and SUGGESTS `{amount, period,
   label}` for the user to confirm before the existing amount-PATCH writes it —
-  it never auto-writes, and the image is processed then discarded. Shares the
+  it never auto-writes, and the image is processed in memory then discarded
+  (never written to disk or a DB row). Shares the
   monthly AI cap (`entry_type='scan'`; 501 without `ANTHROPIC_API_KEY`). The
   missing-utility-amount reminder deep-links to `/housing#pending` so entering
   the figure is one tap. **Partner split** (`GET /api/housing/split`,
@@ -747,7 +760,15 @@ shell/
   "Partner" until set. (Double-count caveat: the two legs are assumed disjoint —
   the car pays via its own loan account and rent/utilities via the payee
   transfer, neither on a shared card; if a utility ever lands on the shared card
-  it would appear in both legs.)
+  it would appear in both legs. A **double-count guard** detects this: when both
+  legs combine, `GET /api/housing/split` returns `double_count_warning` listing
+  any shared-card charge that month whose merchant matches the payee/utility
+  names — word-boundary `~*` match (INV-10), fail-soft — and the widget shows an
+  inline ⚠ note so you can adjust before settling.) A **"Mark settled"** button records that the
+  month was squared (the client-computed net + direction → `settlements` table
+  via `POST /api/settlement/settle`); once settled the headline dims and shows
+  "✓ Settled on <date>" with an Undo (`DELETE /api/settlement/:period`). This is
+  display-only bookkeeping — it never alters the shared-card or housing math.
 - **Since-you-last-looked widget**: aggregates new transactions, balance
   deltas (oldest snapshot ≤ watermark vs latest, dropped if |Δ| < $0.01),
   new subscriptions, and recent notifications since `last_dashboard_view_at`.
@@ -771,6 +792,15 @@ shell/
 - **AI audit-accuracy card**: Settings → AI shows the percentage of insight
   runs (last 90 days) with zero critical findings, color-coded green/yellow/red,
   with severity counts. Backed by `/api/insights/status.audit_accuracy`.
+- **Audit confidence badge** (dashboard): the AI Insights widget header shows a
+  per-insight badge for the latest insight's own post-generation audit result —
+  green "✓ Verified" (audited, no critical/warning findings), yellow "N
+  caution(s)" (warnings), red "⚠ N issue(s) flagged" (critical), or muted "audit
+  incomplete" (a tier threw). `GET /api/insights` now returns
+  `audit_critical_count` / `audit_warning_count` per row (subqueries over
+  `ai_audit_log`) alongside the existing `audited_at` / `audit_incomplete`. Hidden
+  until the insight has been audited. Per-insight parity with the Settings
+  90-day audit-accuracy card.
 - **Insight feedback loop**: dashboard's AI Insights widget grew per-insight
   thumbs-up / thumbs-down / mixed buttons plus an optional correction
   textarea. The last 5 rated insights are pulled into the next
@@ -1394,7 +1424,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1048 tests passing across 41 test files (Perfin 651 + Per-sistant 397), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1097 tests passing across 43 test files (Perfin 664 + Per-sistant 433), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
@@ -1464,6 +1494,12 @@ PATCH /api/transactions/:id # user overrides: merchant_name, notes, is_reimburse
                             # (Phase B1/B2), personal_for ('self'|'partner'|null —
                             # shared-card settlement override; invalid values
                             # silently coerced to NULL)
+POST /api/transactions/manual # add a one-off manual EXPENSE (e.g. cash spending
+                            # bank sync never sees). Body: account_id (an existing
+                            # is_manual account), amount (>0), date (YYYY-MM-DD),
+                            # merchant_name?, category?, notes?. Stores amount
+                            # POSITIVE (the spending sign), a unique manual_<ts>_<rand>
+                            # transaction_id (never touched by re-sync), notes→user_notes.
 DELETE /api/transactions/:id # delete a single transaction (deduplication tool)
 GET  /api/transactions/:id/splits # list splits for a transaction (Phase B3)
 POST /api/transactions/:id/splits # replace splits, validates sum matches parent ±$0.01
@@ -1492,7 +1528,10 @@ GET  /api/housing/export   # landlord-ready record of a year's payments (query: 
 GET  /api/housing/split    # partner "even-up" for a month (query: month=YYYY-MM): what you
                            # send the partner = (rent+utilities − car)/2 so each bears half.
                            # Car pulled from a Perfin loan's monthly_payment or a fixed amount.
-                           # Returns { enabled, transfer, direction, each_share, car_source, ... }
+                           # Returns { enabled, transfer, direction, each_share, car_source,
+                           # double_count_warning }. double_count_warning (or null) flags
+                           # shared-card charges that month matching the payee/utility names
+                           # (word-boundary, fail-soft) so the Settle Up widget can warn.
 POST /api/housing/scan-bill # OCR a utility-bill image/PDF via Claude vision → SUGGEST
                            # { amount, period, label } WITHOUT writing (user confirms +
                            # PATCHes). Shares the AI cap (entry_type='scan'); 501 w/o
@@ -1515,6 +1554,14 @@ GET  /api/shared-settlement # who-owes-who on shared cards for a given month
 GET  /api/shared-settlement/:account_id/transactions # flat list of every charge on a
                             # shared account in the given month with each row's
                             # personal_for state, for reconciliation.
+GET  /api/settlement       # whether a month is marked squared with the partner
+                            # (query: month=YYYY-MM) → { period, settled, net_amount?,
+                            # direction?, note?, settled_at? }. Backs the Settle Up
+                            # widget's "Mark settled" state.
+POST /api/settlement/settle # mark a month squared (upsert by period; body: month,
+                            # net_amount, direction, note?). Records the client-computed
+                            # combined net at settle time.
+DELETE /api/settlement/:period # undo a month's settlement (period=YYYY-MM)
 GET  /api/spending-summary # monthly trends, categories, top merchants (split-adjusted)
 GET  /api/spending-categories # per-month category breakdown (query: month=YYYY-MM;
                            # splits/reimbursed/share-adjusted via getCategorySpendingForMonth)
@@ -1842,12 +1889,22 @@ validation (SN-5).
 ### SMTP (Per-sistant — email scheduling)
 - `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM`
 
-### Per-sistant Health & Habits
-- `APP_TIMEZONE` — IANA zone (e.g. `America/New_York`) for the Health & Habits
-  day-math (streaks / due-today / 7-day grid / future-log guard). Server and
-  injected client both resolve "today" in this zone so they agree. Default
-  `UTC` (unchanged behavior); set it to your zone or evening logs west of UTC
-  land on the wrong day (F11). See `apps/per-sistant/CLAUDE.md`.
+### Shared — timezone
+- `APP_TIMEZONE` — IANA zone (e.g. `America/New_York`). Used by BOTH apps.
+  - **Per-sistant Health & Habits** day-math (streaks / due-today / 7-day grid /
+    future-log guard) — server and injected client resolve "today" in this zone
+    so they agree. See `apps/per-sistant/CLAUDE.md`.
+  - **Perfin "current month" / "today" anchors** — `services/financial-queries.js`
+    exports `currentMonth(tz)` / `todayStr(tz)` (the single tz source), and the
+    user-facing month-bucketed surfaces resolve the month boundary in this zone:
+    `getCategorySpendingThisMonth` (budgets/insights/ask), `getMonthlySpending` /
+    `getMonthlyIncome` window anchors (savings-rate/trends/FIRE), budgets'
+    `currentMonthKey`, the settlement/housing month defaults. Rolling-window
+    `CURRENT_DATE` lookbacks (90-day cash-flow, retention) are intentionally left
+    UTC — tz-insensitive.
+  - Default `UTC` (byte-identical to the prior UTC-anchored behavior); set it to
+    your zone or evening logs/figures west of UTC land in the wrong day/month
+    (F11). An invalid zone falls back to UTC (no crash).
 
 ### Cross-app integration (legacy, two-Render-services era)
 Unused under the unified shell — both apps run in-process. Documented as the
@@ -2064,6 +2121,13 @@ standalone-mode fallback if either app is run on its own Render service.
 - `payee_payments`: a transfer settling a batch of obligations. Columns:
   `payee`, `paid_date`, `amount`, `memo` (auto-derived from covered months when
   blank). Obligations point back via `paid_payment_id`.
+- `settlements`: settle-up log for the dashboard Settle Up widget — one row per
+  month the user marks squared with the partner. Columns: `period` (YYYY-MM,
+  UNIQUE so re-marking upserts), `net_amount`, `direction`
+  (`you_send_partner`/`partner_sends_you`/`square`), `note`, `settled_at`.
+  Written by `POST /api/settlement/settle`, read by `GET /api/settlement`,
+  cleared by `DELETE /api/settlement/:period`. Display-only state — does not
+  alter the underlying shared-card or housing math.
 - `user_settings.housing_config JSONB NOT NULL DEFAULT '{}'`: Rent & Utilities
   config — `{ enabled, payee_name, rent_amount, rent_due_day, reminder_lead_days,
   start_month, utilities: [{label, cadence_months, due_day, anchor}],
@@ -2471,6 +2535,22 @@ income module, and bill-calendar income detection.
   authenticate via session cookie; the `X-API-Key` header path exists for
   cron and external integrations. The dashboard never injects the key into
   the DOM and never appends it to a URL.
+- **One timezone source for "current month" / "today" (F11).**
+  `services/financial-queries.js` exports `currentMonth(tz)` / `todayStr(tz)`
+  (APP_TIMEZONE, default UTC) — the single tz anchor every user-facing
+  month-bucketed surface routes through, so the month boundary is the operator's
+  wall-clock month, not UTC's. Server-side callers compute the month/day in JS
+  and pass it into SQL as a parameter (e.g. `getMonthlySpending` anchors its
+  window to `$2 = currentMonth()+'-01'`, not `date_trunc('month', CURRENT_DATE)`);
+  `getCategorySpendingThisMonth` delegates to `getCategorySpendingForMonth(currentMonth())`.
+  Rule: a path that mixes a JS month with a SQL anchor must convert BOTH in
+  lockstep (or pass the JS month into the SQL) so they can't disagree — the JS
+  and SQL "current month" were previously independent UTC anchors that happened
+  to agree only because both were UTC. Rolling-window `CURRENT_DATE` lookbacks
+  (90-day cash-flow, retention sweeps) stay UTC: a few hours of skew is
+  immaterial over a multi-month window, and they're not month-bucketed. New
+  "this month"/"today" surfaces MUST use `currentMonth()`/`todayStr()` rather
+  than `new Date().toISOString()` or `CURRENT_DATE`.
 - **Shared financial queries.** `services/financial-queries.js` is the
   source of truth for "income" and "spending" computations: keyword-filtered
   payroll/direct-dep income (excluding transfers/payments/refunds) and
@@ -2911,7 +2991,27 @@ income module, and bill-calendar income detection.
    `mobile/` (remote-URL mode, coexists with the PWA); what remains is the
    free-signing Xcode build on the operator's Mac per `mobile/README.md`.
 
-Shipped (June 2026): **Investment performance & allocation** — cost-basis
+Shipped (June 2026): **Job Radar (Per-sistant)** — a personal job-listing radar
+built INTO Per-sistant (the Health & Habits module recipe: `db/021_jobs.sql` +
+`apps/per-sistant/routes/jobs.js` + `pages/jobs.js` + `tests/jobs.test.js`).
+Ingests Adzuna + direct ATS boards (Greenhouse/Lever/Ashby/Workable over a
+curated, UI-editable `job_target_companies` allowlist), dedups on `content_hash`
+(idempotent), then a **trust pass** (source weight + ghost-job freshness decay
+from our own `first_seen` + corroboration + apply-domain + word-boundary scam
+heuristics → trust_score/legitimacy) and a **fit pass** (Voyage embed cosine vs
+a single `job_profile` row → a per-feature "Job Fit" Claude pass → 0–100
+fit_score + rationale) + a **legitimacy** Claude pass for borderline rows. One
+fail-soft `gatherJobRadarSummary` aggregator feeds the `/jobs` page, the
+notification check, and one AI daily-briefing line (NO email digest — D3:
+Per-sistant's proactive surface is the notification check; NO scheduler
+heartbeat — D2). AI passes are **cap-charged** against a NEW Per-sistant AI
+budget (`ai_usage` ledger + `ai_monthly_budget_cents` + `PERSISTENT_AI_BUDGET_CENTS`
++ `callAIWithUsage`/`recordAiUsage` in `ai.js` — D1; the 10 pre-existing AI
+features still use the uncapped `callAI`). Weekly refresh via in-process
+node-cron + `POST /api/jobs/refresh` + `.github/workflows/job-radar.yml`.
+Default OFF (`job_radar_enabled`); reuses `services/embeddings.js` (voyage-3.5,
+1024-dim) + `ANTHROPIC_API_KEY`; new env `ADZUNA_APP_ID`/`ADZUNA_APP_KEY`.
+AI features 10→11 (Job Fit, default haiku). **Investment performance & allocation** — cost-basis
 returns + asset-class allocation + target-drift
 (`GET /api/investments/performance`) and portfolio value history vs S&P 500
 benchmark (`GET /api/investments/performance-history`). **FIRE/runway
@@ -3078,6 +3178,9 @@ INV-60 | Perfin "Sign Out" clears the SHELL session via the root POST /logout un
 INV-61 | apiFetch redirects once to /login on a 401 or a followed 302→/login (session expiry), loop-guarded, while returning the Response unchanged to callers — idle timeout never leaves a blank/error UI | Subsystem: Web UI | Verify: code read teller/public/perfin-shared.js apiFetch
 INV-62 | The shell sets a nonce CSP + frame-ancestors 'none' + X-Frame-Options on its own routes (login/landing), with COOP/CORP/COEP DISABLED so the global middleware doesn't break sub-app Plaid/Teller Link popups; helmet is a declared shell dependency | Subsystem: Platform, Shell & Auth | Verify: header assertion on GET /login (frame-ancestors none, COOP/CORP absent, login scripts nonced)
 INV-63 | Per-sistant's shared fetch wrapper (apps/per-sistant/views/js.js) redirects once to the root /login on a 401 or a followed 302→/login (session expiry), loop-guarded, returning the Response unchanged to callers — parity with Perfin INV-61, so an idle-timeout never leaves a blank/error page. The check uses indexOf('/login'), NOT a regex, because the module is one backtick template literal that eats regex backslashes (see Per-sistant CLAUDE.md gotcha) | Subsystem: Per-sistant Web UI | Verify: code read views/js.js fetch wrapper
+INV-64 | Job Radar's AI passes (job_fit + legitimacy) are cap-charged: cappedCall reads getAiBudgetCents()+monthlyAiSpendCents() and throws { code:'CAP' } BEFORE calling the model when over budget; on a successful call it charges an ai_usage row via recordAiUsage in a `finally` (idempotent, only when tokens were consumed). The 10 pre-existing Per-sistant AI features still use the uncapped callAI (unchanged) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (cappedCall charge-on-success + throw-CAP-before-model-call)
+INV-65 | Job Radar ingest is content_hash-idempotent: dedupPersist upserts ON CONFLICT (content_hash) and counts genuine inserts via (xmax = 0), so a re-run over identical listings adds 0, no duplicate rows. Retention strips old new/dismissed descriptions but KEEPS the hash+status tombstone so a dismissed job re-ingested stays dismissed | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (dedup idempotency, retention)
+INV-66 | gatherJobRadarSummary is the SINGLE fail-soft aggregator feeding the /jobs page, the notification check, and the AI daily-briefing line (the gatherHealthSummary pattern) — a query error returns the safe empty shape, never 500s those surfaces; the notif-check + briefing call it gated on job_radar_enabled. Listing status changes ARCHIVE (saved/applied/dismissed), never hard-delete | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (aggregator fail-soft + archive-not-delete)
 
 ### Policy Configuration
 Policy threshold: 6/10

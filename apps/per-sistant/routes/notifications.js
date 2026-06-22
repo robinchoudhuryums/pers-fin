@@ -7,6 +7,19 @@ const express = require("express");
 const { serverError } = require("../errors");
 const { upcomingFacts } = require("./rag");
 const { gatherHealthSummary } = require("./health");
+const { gatherJobRadarSummary } = require("./jobs");
+
+// Job Radar leads for the notification check (weekly cadence is driven by the
+// weekly refresh; the client's 12h dedup ledger prevents re-firing). No-op +
+// fail-soft when the feature is off or the tables aren't there yet.
+async function jobRadarLeads(pool) {
+  try {
+    const s = await pool.query("SELECT job_radar_enabled FROM user_settings WHERE id = 1");
+    if (!s.rows.length || !s.rows[0].job_radar_enabled) return { count: 0, top: null };
+    const summary = await gatherJobRadarSummary(pool);
+    return { count: summary.counts.main, top: summary.top_pick };
+  } catch { return { count: 0, top: null }; }
+}
 
 // How far ahead to surface a fact's renewal/expiration (days).
 const FACT_LOOKAHEAD_DAYS = 30;
@@ -50,7 +63,7 @@ module.exports = function ({ pool }) {
     try {
       const today = new Date().toISOString().split("T")[0];
       const perfinPool = req.app.get("perfinPool");
-      const [dueSoon, overdue, streaksAtRisk, reminders, facts, health, housing] = await Promise.all([
+      const [dueSoon, overdue, streaksAtRisk, reminders, facts, health, housing, jobRadar] = await Promise.all([
         pool.query("SELECT id, title, due_date FROM todos WHERE deleted_at IS NULL AND completed = false AND due_date = $1", [today]),
         pool.query("SELECT id, title, due_date FROM todos WHERE deleted_at IS NULL AND completed = false AND due_date < $1", [today]),
         pool.query("SELECT id, title, streak_count, due_date FROM todos WHERE deleted_at IS NULL AND completed = false AND recurring = true AND streak_count >= 3 AND due_date = $1", [today]),
@@ -61,6 +74,8 @@ module.exports = function ({ pool }) {
         gatherHealthSummary(pool).catch(() => ({ due_today: 0, done_today: 0, streaks_at_risk: [] })),
         // Cross-app rent/utilities (read-only via perfinPool), fail-soft.
         housingDue(perfinPool),
+        // Job Radar high-fit leads (fail-soft; no-op when disabled).
+        jobRadarLeads(pool),
       ]);
       const notifications = [];
       dueSoon.rows.forEach(t => notifications.push({ type: "due_today", title: t.title, id: t.id, entity: "todo" }));
@@ -99,6 +114,17 @@ module.exports = function ({ pool }) {
           days_away: due,
         });
       }
+      // Job Radar: a single summary line when there are high-fit/high-trust leads.
+      if (jobRadar && jobRadar.count > 0) {
+        const t = jobRadar.top;
+        const lead = t ? `${t.title || "a role"}${t.company ? " @ " + t.company : ""}` : "new roles";
+        notifications.push({
+          type: "job_radar",
+          title: `Job Radar: ${jobRadar.count} new high-fit role${jobRadar.count === 1 ? "" : "s"} — top: ${lead}`,
+          id: null,
+          entity: "job",
+        });
+      }
       res.json({
         notifications,
         counts: {
@@ -110,6 +136,7 @@ module.exports = function ({ pool }) {
           habits_due: Math.max(health.due_today - health.done_today, 0),
           habit_streaks_at_risk: health.streaks_at_risk.length,
           housing_due: housing ? 1 : 0,
+          job_radar: jobRadar ? jobRadar.count : 0,
         },
       });
     } catch (err) { serverError(res, err); }

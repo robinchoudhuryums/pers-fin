@@ -20,6 +20,8 @@
   </div>
   <!-- Shared hidden file input for bill scanning (one per page; the clicked row sets the target). -->
   <input type="file" id="hz-scan-file" accept="image/*,application/pdf" style="display:none;">
+  <!-- Camera-direct input: `capture` opens the rear camera straight away on mobile. -->
+  <input type="file" id="hz-camera-file" accept="image/*" capture="environment" style="display:none;">
 
   <!-- Partner split — what to send to even up 50/50 -->
   <div class="card" id="hz-split-card" style="margin-bottom:16px;display:none;">
@@ -235,7 +237,8 @@
             '<span class="hz-period">'+esc(plabel(o.period))+'</span>' +
             '<span>'+esc(o.label)+' <span style="color:var(--yellow,#d9b25f);font-size:11px;">awaiting bill</span></span>' +
             '<span class="hz-amt" style="display:flex;gap:6px;align-items:center;">' +
-              '<button class="btn-sm hz-scan" data-id="'+o.id+'" title="Scan the bill to fill the amount" style="border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--teal);cursor:pointer;padding:5px 10px;font-family:inherit;font-size:12px;">Scan</button>' +
+              '<button class="btn-sm hz-camera" data-id="'+o.id+'" title="Take a photo of the bill" style="border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--teal);cursor:pointer;padding:5px 9px;font-family:inherit;font-size:13px;">📷</button>' +
+              '<button class="btn-sm hz-scan" data-id="'+o.id+'" title="Upload a bill photo/PDF to fill the amount" style="border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--teal);cursor:pointer;padding:5px 10px;font-family:inherit;font-size:12px;">Scan</button>' +
               '<input class="hz-in hz-set-amt" type="number" min="0" step="0.01" placeholder="amount" style="width:110px;padding:5px 8px;" data-id="'+o.id+'">' +
               '<button class="btn-sm hz-save-amt" data-id="'+o.id+'" style="border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;padding:5px 10px;font-family:inherit;font-size:12px;">Set</button>' +
             '</span></div>';
@@ -258,6 +261,7 @@
       box.querySelectorAll('.hz-pick').forEach(function(cb){ cb.addEventListener('change', updateRecordBtn); });
       box.querySelectorAll('.hz-save-amt').forEach(function(b){ b.addEventListener('click', function(){ setAmount(this.dataset.id); }); });
       box.querySelectorAll('.hz-scan').forEach(function(b){ b.addEventListener('click', function(){ startScan(this.dataset.id); }); });
+      box.querySelectorAll('.hz-camera').forEach(function(b){ b.addEventListener('click', function(){ startCamera(this.dataset.id); }); });
       updateRecordBtn();
       maybeFocusPending();
     }
@@ -271,17 +275,21 @@
     }
 
     // ---- Bill scan (OCR via Claude vision) ----
+    // Two entry points feed one handler: "Scan" (file/library/PDF) and "📷"
+    // (camera-direct via the capture input). Both run the same OCR request.
     var scanTargetId = null;
     var scanFile = document.getElementById('hz-scan-file');
+    var cameraFile = document.getElementById('hz-camera-file');
     function startScan(id){ scanTargetId = id; if (scanFile){ scanFile.value = ''; scanFile.click(); } }
-    if (scanFile) scanFile.addEventListener('change', async function(){
-      if (!scanFile.files || !scanFile.files[0] || !scanTargetId) return;
+    function startCamera(id){ scanTargetId = id; if (cameraFile){ cameraFile.value = ''; cameraFile.click(); } }
+    async function handleScanFile(fileInput){
+      if (!fileInput.files || !fileInput.files[0] || !scanTargetId) return;
       var id = scanTargetId;
       var input = document.querySelector('.hz-set-amt[data-id="'+id+'"]');
       var btn = document.querySelector('.hz-scan[data-id="'+id+'"]');
       if (btn) { btn.disabled = true; btn.textContent = 'Scanning…'; }
       try {
-        var fd = new FormData(); fd.append('file', scanFile.files[0]);
+        var fd = new FormData(); fd.append('file', fileInput.files[0]);
         var res = await apiFetch('/api/housing/scan-bill', { method:'POST', body: fd });
         var d = await res.json().catch(function(){ return {}; });
         if (!res.ok) { showMsg(d.error || 'Scan failed', false); return; }
@@ -294,7 +302,9 @@
         }
       } catch (err) { showMsg('Scan failed: ' + err.message, false); }
       finally { if (btn) { btn.disabled = false; btn.textContent = 'Scan'; } scanTargetId = null; }
-    });
+    }
+    if (scanFile) scanFile.addEventListener('change', function(){ handleScanFile(scanFile); });
+    if (cameraFile) cameraFile.addEventListener('change', function(){ handleScanFile(cameraFile); });
     function selected(){ return Array.prototype.filter.call(document.querySelectorAll('.hz-pick'), function(c){ return c.checked; }); }
     function updateRecordBtn(){
       var sel = selected();

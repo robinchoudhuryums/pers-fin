@@ -175,8 +175,24 @@ Personal assistant tool for task management, email scheduling, and note-taking. 
 - **Geofencing**: Set location (name + coordinates + radius) on tasks
 - **Periodic checking**: Browser-based geofence monitoring with notifications
 
-### AI Features (10 total)
-All AI features are optional and independently configurable. Choose **Haiku** (fast, ~$0.0003/call), **Sonnet** (smarter, ~$0.002/call), or **Off** for each feature in Settings.
+### Job Radar
+A personal job-listing radar on the **Job Radar** (`/jobs`) page. Pulls listings
+from the **Adzuna** aggregator plus direct **ATS boards** (Greenhouse / Lever /
+Ashby / Workable) over a curated, UI-editable company allowlist, dedups them on a
+content hash, and scores each for **trust** (source weight + ghost-job freshness
+decay + cross-source corroboration + apply-domain + scam heuristics) and **fit**
+(a Voyage embedding cosine vs your job profile, then a Claude "Job Fit" pass →
+0–100 + rationale), with a Claude legitimacy pass on borderline rows. Surfaces
+high-fit/high-trust roles (plus a "verify first" bucket) on the page, in the
+notification check, and as one AI daily-briefing line. Saving/applying/dismissing
+a role archives it and tunes the source's trust. Weekly refresh via in-process
+cron + a GitHub Actions backstop. Off by default — enable on the page. Optional
+`ADZUNA_APP_ID` / `ADZUNA_APP_KEY` widen ingest beyond the ATS boards; reuses
+`VOYAGE_API_KEY` + `ANTHROPIC_API_KEY`. The Claude passes are charged against a
+monthly AI cost cap (`PERSISTENT_AI_BUDGET_CENTS`, default $1.00).
+
+### AI Features (11 total)
+All AI features are optional and independently configurable. Choose **Haiku** (fast, ~$0.0003/call), **Sonnet** (smarter, ~$0.002/call), or **Off** for each feature in Settings. The Job Fit + legitimacy passes are additionally bounded by a monthly AI cost cap.
 
 | Feature | Description | Default |
 |---------|-------------|---------|
@@ -190,6 +206,7 @@ All AI features are optional and independently configurable. Choose **Haiku** (f
 | Smart Suggestions | AI productivity coaching based on your tasks | Off |
 | Natural Language Query | Ask questions about your data in plain English | Off |
 | Knowledge Q&A | Source-cited RAG over your vault + notes (answers, diagrams, capture) | Sonnet |
+| Job Fit | Score & vet Job Radar listings (fit + legitimacy) | Haiku |
 
 ### Knowledge Base (RAG)
 A private "master journal/database" on the **Knowledge** page. Indexes a local-first
@@ -429,5 +446,7 @@ npm test
 | `SMTP_PASS` | SMTP password |
 | `SMTP_FROM` | From email address |
 | `CONTACTS` | JSON map of name→email |
-| `ANTHROPIC_API_KEY` | Claude API key for all 9 AI features (optional) |
+| `ANTHROPIC_API_KEY` | Claude API key for all 11 AI features (optional) |
+| `PERSISTENT_AI_BUDGET_CENTS` | Monthly AI cost-cap fallback for Job Fit/legitimacy (default 100 = $1.00) |
+| `ADZUNA_APP_ID` / `ADZUNA_APP_KEY` | Job Radar aggregator ingest (optional — ATS boards work without them) |
 | `PERFIN_URL` | URL to linked Perfin instance |

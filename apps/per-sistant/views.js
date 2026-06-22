@@ -111,6 +111,7 @@ const NAV = [
   { href: "/notes",    label: "Notes",     id: "notes" },
   { href: "/knowledge",label: "Knowledge", id: "knowledge" },
   { href: "/health",   label: "Health",    id: "health" },
+  { href: "/jobs",     label: "Job Radar", id: "jobs" },
   { href: "/contacts", label: "Contacts",  id: "contacts" },
   { href: "/calendar", label: "Calendar",  id: "calendar" },
   { href: "/review",   label: "Review",    id: "review" },

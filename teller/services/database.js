@@ -765,6 +765,19 @@ async function runMigrations() {
     )`);
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS housing_config JSONB NOT NULL DEFAULT '{}'::jsonb");
 
+    // ---- Settle-up log: one row per month the user marks squared with the
+    // partner (combined shared-card + housing even-up). UNIQUE(period) so
+    // re-marking a month updates rather than duplicates. ----
+    await client.query(`CREATE TABLE IF NOT EXISTS settlements (
+      id          SERIAL PRIMARY KEY,
+      period      TEXT NOT NULL,
+      net_amount  NUMERIC(12,2) NOT NULL DEFAULT 0,
+      direction   TEXT,
+      note        TEXT,
+      settled_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(period)
+    )`);
+
     // ---- Add 'investments' to dashboard_widgets default for new users ----
     // For existing rows: merge the new key into the JSONB without overwriting
     // user customizations to other keys. jsonb concat (||) is right-precedence,

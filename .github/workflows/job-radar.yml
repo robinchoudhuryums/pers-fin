@@ -1,0 +1,40 @@
+# Job Radar weekly refresh — ingests sanctioned job sources, dedups, and runs
+# the trust/fit passes. Backstop for the in-process weekly node-cron so the
+# refresh still happens while the Render free tier is asleep (the request wakes
+# it). All writes are idempotent (content_hash upsert), so overlap with the
+# in-process cron is harmless.
+#
+# Requires these repository secrets:
+#   SERVER_URL  — e.g. https://pers-fin-tracker.onrender.com
+#   API_KEY     — the API key set on the server (shell validates x-api-key)
+
+name: Job Radar Refresh
+
+on:
+  schedule:
+    - cron: '23 7 * * 1'   # Mondays 07:23 UTC (matches the in-process cron)
+  workflow_dispatch:        # manual trigger
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake server (Render free tier cold start)
+        run: |
+          curl -s -o /dev/null -w "%{http_code}" "${{ secrets.SERVER_URL }}/health" || true
+          sleep 10
+
+      - name: Trigger Job Radar refresh
+        run: |
+          # Job Radar runs under the Per-sistant sub-app behind the unified
+          # shell; the shell's requireAuth honors x-api-key. Returns 200 with a
+          # JSON summary; a non-200 fails the job so the run is visible.
+          STATUS=$(curl -s -o /tmp/jobradar.json -w "%{http_code}" \
+            -X POST "${{ secrets.SERVER_URL }}/per-sistant/api/jobs/refresh" \
+            -H "x-api-key: ${{ secrets.API_KEY }}" \
+            -H "Content-Type: application/json")
+          echo "Refresh status: $STATUS"
+          cat /tmp/jobradar.json || true
+          if [ "$STATUS" != "200" ]; then
+            echo "Job Radar refresh failed"; exit 1
+          fi
