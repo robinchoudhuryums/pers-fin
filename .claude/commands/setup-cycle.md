@@ -40,6 +40,8 @@ Produce a PROJECT PROFILE:
   error handling patterns, logging patterns]
 - External dependencies: [APIs, databases, cloud services, SDKs]
 - Multi-tenant: [yes/no — how is data isolated?]
+- User-facing surfaces: [web UI / mobile / desktop / TUI / operator
+  console / none — and which subsystem owns each]
 - Key architectural patterns: [monolith/microservices, storage abstraction,
   auth model, job queue, real-time, etc.]
 
@@ -89,7 +91,8 @@ Quality checks — verify all of these before proceeding:
 If any check fails, adjust the groupings and explain the tradeoff.
 
 Flag SEAM FILES — files that sit at the boundary between subsystems
-and could reasonably belong to either.
+and could reasonably belong to either. These are important for the
+Seams & Invariants audit.
 
 Flag FROZEN SUBSYSTEM CANDIDATES — subsystems that are explicitly
 legacy / being retired / being migrated out (e.g., a deprecated
@@ -107,6 +110,10 @@ Propose health dimensions for this project's scoring. These should:
 - Be scorable with evidence from code reads
 - Cover both technical health and feature/product effectiveness
 - Include domain-specific dimensions
+- Include one interface dimension (e.g. "UI/UX & Accessibility") if the
+  Phase 1 profile found any user-facing surface. Omit it only when the
+  profile found none — otherwise /broad-scan Stage 3's interface
+  findings have no dimension to score against.
 - Be between 10-15 dimensions total
 
 For each dimension:
@@ -115,8 +122,14 @@ For each dimension:
 - Which subsystem(s) primarily feed evidence into this score
 
 Also recommend:
-- Policy threshold: [score ≤ N triggers policy response]
-- Consecutive cycles before trigger: [typically 2]
+- Policy threshold: [the ABSOLUTE FLOOR backstop — recommend a value based
+  on project maturity: 4/10 for mature projects, 5/10 for early-stage
+  projects that need faster feedback loops. Note this is NOT the primary
+  trigger: the primary trigger is relative (a category that declines, or
+  stays lowest without recovering), because a fixed floor never fires on a
+  healthy project]
+- Consecutive cycles before trigger: [typically 2, but 1 for
+  safety-critical projects]
 
 Also propose the project's HORIZONTAL (Axis B) bug-shape categories —
 cross-cutting failure patterns that no single subsystem owns, scored in
@@ -126,7 +139,8 @@ Guarantees, Operator-Only State Gaps, Parallel Source-of-Truth Drift,
 Test Coverage Quality. Keep these unless the domain calls for different
 shapes (e.g. a data pipeline might add "Numerical / Precision Drift," a
 mobile app "Offline / Sync Integrity," a library "Public API
-Compatibility"). Aim for 4–6 categories, each with a name + one-sentence
+Compatibility," a client-heavy app "Visual / Interaction Regression
+Posture"). Aim for 4–6 categories, each with a name + one-sentence
 "what it measures."
 
 ═══════════════════════════════════════════
@@ -170,6 +184,8 @@ OUTPUT 1 — CYCLE WORKFLOW CONFIG (paste into the project's CLAUDE.md):
 
 ### Health Dimensions
 [dim1], [dim2], [dim3], ...
+(include one interface dimension — e.g. "UI/UX & Accessibility" — if the
+ Phase 1 profile found any user-facing surface)
 
 ### Horizontal (Axis B) Categories   ← optional; defaults to the standard 5 if omitted
 [Category name] | [what it measures]
@@ -198,7 +214,9 @@ S1 | [short scenario name] | Subsystem: [name]
     - [step]
     - [step]
   Expected: [outcome]
-(repeat for each scenario; aim for 5–15 covering golden paths and known regression hotspots)
+(repeat for each scenario; aim for 5–15 covering golden paths and known regression hotspots;
+ include a visual check per user-facing surface — /broad-scan Stage 3 emits
+ OPERATOR VISUAL CHECKS in this format so they can be promoted here directly)
 
 ### Frozen Subsystems   ← optional; omit if no subsystems are frozen
 - [subsystem name] — [reason: why frozen, what's replacing it, what would unfreeze it]
@@ -220,3 +238,4 @@ Seams audit frequency: every [N] subsystem cycles
 CONFIDENCE ASSESSMENT:
 For each subsystem, rate confidence that file list is complete
 and boundary is correct: High / Medium / Low.
+For any Medium or Low, explain what you'd need to verify.

@@ -73,4 +73,8 @@ not finished, open follow-on items, decisions made, and a "Where I left
 off" line. This lets /cycle-resume continue cleanly in a fresh session
 if context runs out. If .cycle/ does not exist, skip this step.
 
+ALSO write the summary block VERBATIM to
+.cycle/blocks/<cycle>-<version-or-scope>-targeted-implement.md (create the
+directory if needed) — §4v and §6a read these in a fresh session.
+
 Suggest /test-sync and /sync-docs if applicable.
