@@ -33,8 +33,17 @@ to the "none in progress" state.
   - **Open follow-ons:** see `.cycle/blocks/6-batch3-broad-implement.md`.
   - **Operator:** none required (optional re-file of old accommodation/loan
     map rows — SQL in the block).
-  - **Where I left off:** Batch 3 committed + pushed. NEXT: /sync-docs for
-    Batch 3 (doc list in the block), then Batch 4 (detection & calendar).
+  - **/sync-docs DONE (Batch 3):** CLAUDE.md — Income Detection rewritten
+    (incomePredicate(alias) + FAN-2 root cause, CONCAT_WS text, branch (c)
+    case-insensitive, new branch (d) PFC INCOME, NOT_TRANSFER semantics);
+    cash-flow feature (depository cash, DD-4 de-dup); spending-summary avg_*
+    fields; categorization rules (exact implicit rules, text[] categories);
+    free-path design decision (PFC map + credit→Income, DC-12 map); Ask total
+    semantics; user_category_source 'plaid_map'; sheets-sync SX3 structure pin;
+    INV-10/INV-48 wording + NEW INV-69 (alias-qualified income predicate); test
+    counts 1194/47 (Perfin 725). README count. Subsystem paths 79/79.
+  - **Where I left off:** Batch 3 + docs committed + pushed (no PR). NEXT:
+    Batch 4 (detection & calendar) per the broad-scan plan.
 
 - **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 2 DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-09-27). Batch 2 (ingestion completeness

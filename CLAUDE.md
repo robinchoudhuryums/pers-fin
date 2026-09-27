@@ -105,11 +105,12 @@ teller/
                            aggregation endpoints — /api/spending-summary,
                            /api/spending-categories, /api/cash-flow,
                            /api/spending-yoy, /api/savings-rate,
-                           /api/income-summary. Includes INCOME_PREDICATE_T,
-                           the t.-qualified predicate derivation for the one
-                           query that JOINs linked_accounts (unqualified
-                           `name` was ambiguous and 500'd /api/income-summary
-                           — found by the e2e harness's live boot).
+                           /api/income-summary. Includes INCOME_PREDICATE_T =
+                           incomePredicate("t"), the t.-aliased build of the
+                           canonical predicate for the one query that JOINs
+                           linked_accounts (unqualified `name` was ambiguous
+                           and 500'd /api/income-summary — found by the e2e
+                           harness's live boot).
                            Also exports `syncAllEnrollments` and `syncAllBalances` for
                            the scheduled bank-auto-sync task in `server.js` (in-process,
                            no HTTP self-fetch).
@@ -215,7 +216,11 @@ teller/
     ask.js               — POST /api/ask: NL finance Q&A via Claude tool use.
                            7 READ-ONLY tools bound to the shared helpers
                            (monthly overview, category spending, transaction
-                           search w/ split-adjusted totals, net worth,
+                           search w/ adjusted totals — the total applies
+                           the dashboard spending filters: shared-card split,
+                           reimbursed AND NOT_TRANSFER excluded; match_count
+                           counts the listed rows; LIKE metacharacters escaped
+                           (AIN-13) — net worth,
                            subscriptions, budget status, FIRE projection) so
                            cited numbers match the dashboard by construction —
                            the model never writes SQL. Bounded tool loop
@@ -387,9 +392,10 @@ shell/
   (user-curated merchant/category/keyword monitor). Plus immutable
   per-month archive tabs (`YYYY-MM Transactions`) created once per
   completed month. Intentionally standalone — does not import the
-  route/services layer, so `INCOME_PREDICATE` is duplicated from
-  `services/financial-queries.js` (single-source-of-truth comment
-  flags the drift risk).
+  route/services layer, so `incomePredicate` / `NOT_TRANSFER` /
+  `SPLIT_AMOUNT` are duplicated from `services/financial-queries.js` —
+  their full structure is byte-pinned (whitespace-normalized) by SX3 in
+  `tests/audit-regressions.test.js`, so a drift fails CI.
 - `scripts/import-csv-cli.js` — Standalone CLI for importing bank CSVs. Shares
   the route's logic via `teller/data/csv-formats.js`: content-only
   `detectCsvFormat` (no filename heuristic), the same `makeCsvTxnIdGenerator`
@@ -430,9 +436,16 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1169 tests as of latest); use
+  Perfin and Per-sistant test files (1194 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1169 tests across 46 test files (incl.
+  Current count: 1194 tests across 47 test files (incl.
+  `tests/scan-sept-batch3.test.js` — the Sept 2026 broad-scan Batch 3
+  income/spending-classification pins: alias-qualified incomePredicate
+  (FAN-2), raw-description matching (DD-2), Plaid PFC income/transfer +
+  free PFC map + credit→Income pass (DD-3), depository-only cash-flow balance
+  + subscription/autopay de-duplication (FAN-5/DD-4), completed-month
+  spending averages (FAN-6), Teller map fixes (DC-12), exact "remember" rules
+  (DC-13), text[] category params (DC-14), Ask total filters (AIN-13);
   `tests/scan-sept-batch2.test.js` — the Sept 2026 broad-scan Batch 2
   BEHAVIORAL sync pins (mock pool + stubbed Teller/Plaid clients): unified
   Teller+Plaid /api/sync with one anomaly check, Plaid new-account
@@ -682,6 +695,14 @@ shell/
   rules first, then sends only unmatched transactions to Claude. Rules can be
   created from a manual categorization via `POST /api/categorization-rules/from-transaction`.
   `POST /api/categorization-rules/apply` bulk-applies all active rules.
+  The IMPLICIT "remember" paths — the dashboard Review widget
+  (`POST /api/categorize/review`), the accuracy review, and from-transaction —
+  default to **`exact`** match (DC-13: a `contains` rule from a short merchant
+  like "ARCO" also caught "Marco's Pizza"); an explicit `match_type` is still
+  honored, and the explicit `POST /api/categorization-rules` keeps its
+  `contains` default. CSV-import and manual-entry categories are stored via a
+  one-element `text[]` parameter, never a concatenated `{…}` literal (DC-14 — a
+  comma split the category and a quote/brace 500'd the whole import).
 - **Budget rollover**: Budgets can enable `rollover_enabled` to carry unused budget
   to the next month. `budget_type` can be `recurring` (perpetual) or `one_time`
   (applies only to `effective_month`). Monthly snapshots via `POST /api/budgets/snapshot`
@@ -802,7 +823,7 @@ shell/
 - **Review Uncategorized widget** (engagement loop): Surfaces 5-8 transactions
   that would otherwise be sent to Claude on the next AI categorize call.
   Each row has a category dropdown (pre-filled with the deterministic
-  Teller-map suggestion when available) + "Remember" checkbox + Apply
+  Teller-map or Plaid-PFC suggestion when available, `mapCategoryFor`) + "Remember" checkbox (exact-match rule, DC-13) + Apply
   button. Apply sets `user_category` and (when "Remember" is checked)
   inserts a `categorization_rules` row. Auto-hides when the queue is empty.
   Toggleable (key: `reviewQueue`).
@@ -861,7 +882,14 @@ shell/
   projected from cadences, user-created manual bills, and detected income. Click events
   to toggle paid/unpaid status. "Add Bill" modal for creating manual expected charges.
 - **Cash flow forecast**: Rolling 30–180 day projection with day-of-week spending averages,
-  income detection (keyword matching, excludes transfers/payments/refunds), bill scheduling
+  income detection (keyword matching, excludes transfers/payments/refunds), bill scheduling.
+  Starting balance = **depository, non-investment** cash only (FAN-5 — loans and
+  Teller brokerage/IRA balances used to count as spendable). Nothing is counted
+  twice (DD-4): active detected-subscription merchants are excluded from the
+  60-day daily/DOW spending averages (they're projected as scheduled bills), and
+  card **autopays** (`bill_payment` recurring transfers without "loan"/"mortgage"
+  in the name) are NOT billed — the card purchases they pay off are already in
+  the average. Loan/mortgage payments are still billed.
 - **Savings rate**: Income vs spending analysis with configurable lookback (default 3 months)
 - **Year-over-year comparisons**: Month-by-month spending comparison vs prior year
 - **Budget alerts** (`GET /api/budgets/alerts`): Spending velocity/pacing warnings with severity levels — `critical` ≥100% (over budget), `warning` ≥80% (approaching limit), `info` when pace > 1.2× and ≥50% (spending faster than the month's progress). Alerts compare spending against the **effective limit** (base `monthly_limit` + this month's `rollover_amount` from `budget_snapshots`) and skip one-time budgets outside their `effective_month` — matching `GET /api/budgets`. The 3-hour scheduled push-notification path uses the same effective-limit logic and 80% / 100% thresholds; the in-app `info`/pace heuristic is intentionally not pushed (too noisy as a notification).
@@ -1209,8 +1237,8 @@ shell/
   - **Net Worth History** (new): one row per month (last snapshot per
     YYYY-MM via DISTINCT ON), month-over-month delta column.
   - **Income** (new): monthly totals (24mo) + top sources (12mo) using
-    the canonical `INCOME_PREDICATE` (inlined to keep the script
-    standalone — sole intentional duplication).
+    the canonical income predicate (inlined `incomePredicate` to keep the
+    script standalone; its full structure is SX3-pinned to the canonical).
   - **AI Trust** (new): 50 most-recent `ai_audit_log` findings
     (severity-colored) + 50 most-recent user feedback ratings on
     insights (feedback-colored).
@@ -1466,7 +1494,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1169 tests passing across 46 test files (Perfin 700 + Per-sistant 469), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1194 tests passing across 47 test files (Perfin 725 + Per-sistant 469), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
@@ -1619,7 +1647,12 @@ POST /api/settlement/settle # mark a month squared (upsert by period; body: mont
                             # net_amount, direction, note?). Records the client-computed
                             # combined net at settle time.
 DELETE /api/settlement/:period # undo a month's settlement (period=YYYY-MM)
-GET  /api/spending-summary # monthly trends, categories, top merchants (split-adjusted)
+GET  /api/spending-summary # monthly trends, categories, top merchants (split-adjusted).
+                           # monthly_trend uses WHOLE months (months=6 → 6 buckets
+                           # incl. the current month-to-date); avg_monthly_spend /
+                           # avg_daily_spend / avg_months are over COMPLETED months
+                           # only, with real month lengths (FAN-6) — the dashboard
+                           # "Avg Monthly"/"Avg Daily" cards read these.
 GET  /api/spending-categories # per-month category breakdown (query: month=YYYY-MM;
                            # splits/reimbursed/share-adjusted via getCategorySpendingForMonth)
 GET  /api/cash-flow        # rolling cash flow projection (query: days, default 90)
@@ -2030,7 +2063,7 @@ standalone-mode fallback if either app is run on its own Render service.
   layers use `COALESCE(user_category, category[1])` everywhere, including the
   categorize candidate filter so already-categorized rows aren't re-sent to AI.
   Categorization provenance + accuracy: `user_category_source TEXT`
-  (`'ai'|'rule'|'teller_map'|'manual'|'review'`) records HOW `user_category`
+  (`'ai'|'rule'|'teller_map'|'plaid_map'|'manual'|'review'`) records HOW `user_category`
   was set; `category_verified_at TIMESTAMPTZ` + `category_was_correct BOOLEAN`
   capture the user's verdict when reviewing a sampled AI categorization. The
   accuracy sampler (`GET /api/categorize/accuracy[-sample]`,
@@ -2558,10 +2591,21 @@ savings-rate, spending-yoy, budgets, budget alerts, cash flow, AI insights
 anomaly detection + seasonal, and the Settlement widget.
 
 ## Income Detection
-Income is identified via three OR'd branches in
-`services/financial-queries.js INCOME_PREDICATE`. All matching uses Postgres
-word-boundary regex (`\y`) on transaction `merchant_name` / `name` (NOT amount
-thresholds). Each branch is independently gated:
+Income is identified via OR'd branches built by
+`services/financial-queries.js incomePredicate(alias)`. `INCOME_PREDICATE` is
+`incomePredicate("transactions")` (for callers that don't alias the table —
+Postgres accepts the bare table name as a qualifier); aliased callers use
+`incomePredicate("t")` (e.g. `INCOME_PREDICATE_T` in spending-analytics).
+**Every outer column is qualified with the caller's alias (FAN-2)** — the
+predicate used to write them unqualified on the theory that only the outer row
+had those columns in scope, which is false inside `FROM transactions __t2`: the
+branch (b) guard became `__t2.account_id <> __t2.account_id` (always false), so
+a brokerage paycheck + its "Funds transfer from brokerage" counted twice.
+Keyword matching uses Postgres word-boundary regex (`\y`) over
+`CONCAT_WS(' ', user_merchant_name, merchant_name, name)` — the user override,
+the cleaned merchant AND the raw description (DD-2: Teller stores the
+counterparty in `merchant_name` and the raw description — where "PAYROLL"
+lives — in `name`). No amount thresholds. Each branch is independently gated:
 
 **Branch (a) — strict keyword match with negative filter.** Matches deposits
 that look like payroll/direct-dep traffic AND are NOT excluded as transfers:
@@ -2573,19 +2617,34 @@ specific case of paychecks landing in a brokerage account and the user then
 transferring to checking, leaving a "Funds transfer from brokerage" credit
 that's the real paycheck from the user's perspective. To avoid double-
 counting when both ends are linked, branch (b) requires NO matching debit
-on a different account within ±2 days (subquery uses `__t2` alias and
-unqualified outer references so it works regardless of how the caller
-aliases the outer `transactions` table).
+on a different account within ±2 days (the `__t2` subquery compares against
+the alias-qualified OUTER row — FAN-2).
 
-**Branch (c) — explicit category match.** `COALESCE(user_category, category[1]) = 'Income'`
-covers Plaid's own taxonomy AND any row the user manually overrode to
-'Income' via `PATCH /api/transactions/:id/category`.
+**Branch (c) — explicit category match.** `LOWER(COALESCE(user_category,
+category[1])) = 'income'` — case-insensitive, so Teller's lower-case `income`
+category counts too — covers any row the user manually overrode to 'Income' via
+`PATCH /api/transactions/:id/category` and rows the free categorize map set.
+
+**Branch (d) — Plaid personal_finance_category (DD-3).**
+`user_category IS NULL AND personal_finance_category->>'primary' = 'INCOME'`
+(Plaid's current taxonomy; the legacy `category` array has no top-level Income).
+Includes Plaid's dividend/interest sub-codes. A user category wins.
+
+`NOT_TRANSFER` (the spending-side negative filter) matches
+`COALESCE(user_merchant_name, CONCAT_WS(' ', merchant_name, name))` — merchant +
+raw description (DD-2), but a user rename takes precedence so renaming stays the
+escape hatch for a payment that really is spending — AND excludes Plaid
+`TRANSFER_IN` / `TRANSFER_OUT` / `LOAN_PAYMENTS` rows unless the user has
+categorized the row as something other than `Transfer` (DD-3). It is a single
+parenthesized boolean, safe after `AND` and for the insights `t.`→`t2.`
+derivation.
 
 Constants exported from the same module: `INCOME_PREDICATE` (full predicate),
-`NOT_TRANSFER` (the negative-filter list reused by spending queries),
-`SPLIT_AMOUNT`, `NOT_REIMBURSED`, `INVESTMENT_ACCOUNT_TYPES`. Used by
-`/api/cash-flow`, `/api/savings-rate`, `/api/income-summary`, AI insights
-income module, and bill-calendar income detection.
+`incomePredicate(alias)`, `NOT_TRANSFER`, `SPLIT_AMOUNT`, `NOT_REIMBURSED`,
+`INVESTMENT_ACCOUNT_TYPES`. Used by `/api/cash-flow`, `/api/savings-rate`,
+`/api/income-summary` (its `by_account` now agrees with `monthly_trend`), AI
+insights income module, bill-calendar income detection, and — byte-mirrored,
+SX3-pinned — the Sheets Income tab.
 
 ## Key Design Decisions
 - **Test-time devDeps re-declared at the root.** Tests in `tests/` directly
@@ -2738,9 +2797,15 @@ income module, and bill-calendar income detection.
   CTE — that helper already handles splits + reimbursed + spending-split.
 - **Categorization rules first, then AI — free paths sweep the whole backlog,
   only AI is batched.** When `POST /api/categorize` (or `runCategorize`) runs,
-  the two FREE deterministic paths — user `categorization_rules` and the
-  deterministic Teller/Plaid `TELLER_CATEGORY_MAP` — are applied as **bulk
+  the FREE deterministic paths — user `categorization_rules`, the Teller
+  `TELLER_CATEGORY_MAP` (`accommodation` = lodging → Travel and `loan` →
+  Transfer since DC-12), and the Plaid `personal_finance_category` map
+  (`PLAID_PFC_DETAILED_MAP` then `PLAID_PFC_PRIMARY_MAP`, source `'plaid_map'`,
+  counted in `by_teller_map` — DD-3) — are applied as **bulk
   `UPDATE … RETURNING` over the ENTIRE uncategorized backlog** (no row cap),
+  and a fourth free pass sets `user_category='Income'` on CREDITS whose
+  provider category is income (Teller `income` / PFC `INCOME`) — every other
+  path is limited to debits (`amount > 0`),
   because they're pure SQL and cost nothing. The paid Claude call **loops** in
   `AI_BATCH` (50)-row pages up to `AI_MAX_PER_RUN` (300) rows per invocation,
   re-checking the shared `INSIGHTS_MONTHLY_BUDGET_CENTS` cap before each page and
@@ -3261,7 +3326,7 @@ INV-06 | User overrides never clobbered by re-sync; display uses COALESCE | Subs
 INV-07 | Every spending aggregation applies SPLIT_AMOUNT | Subsystem: Financial Analytics | Verify: tests/financial-queries.test.js
 INV-08 | Reimbursed transactions excluded from all spending aggregations | Subsystem: Financial Analytics
 INV-09 | transaction_splits replace parent in per-category totals; sum matches parent ±$0.01 | Subsystem: Financial Analytics
-INV-10 | Keyword filters use word-boundary regex, never LIKE '%kw%' | Subsystem: Financial Analytics | Verify: tests/audit-regressions.test.js
+INV-10 | Keyword filters use word-boundary regex, never LIKE '%kw%' (a user-supplied LIKE pattern — rules, Ask merchant search — escapes \ % _) | Subsystem: Financial Analytics | Verify: tests/audit-regressions.test.js
 INV-11 | Goal current_amount derived (balance − baseline) when funding-linked | Subsystem: Financial Analytics
 INV-12 | Categorization writes user_category, never category | Subsystem: Detection & Categorization
 INV-13 | Categorization rules applied before AI; only unmatched rows sent to Claude | Subsystem: Detection & Categorization
@@ -3289,7 +3354,7 @@ INV-34 | Citations enabled all-or-none per request; incompatible with structured
 INV-35 | Cross-app finance grounding reads perfinPool read-only, only on finance queries, never an HTTP self-fetch (parallels INV-25) | Subsystem: Knowledge / RAG | Verify: tests/knowledge-crossapp.test.js
 INV-36 | Single in-process vault-sync lock (isSyncing) prevents overlapping cron/reindex/GH-Action runs — BOTH syncVault AND syncNotes acquire it (busy→no-op), so the cron's notes phase can't overlap a concurrent reindex (K4); vault_last_sha advances only on success (errors stamp vault_last_error) | Subsystem: Knowledge / RAG | Verify: code read vault-sync.syncVault + syncNotes
 INV-37..47 | RETIRED — assigned by the cycle-3 reflect but their definitions were never written into the repo and are unrecoverable; numbers burned, never reuse (their subject matter — the cycle-3 fixes — is test-pinned via tests/cycle-fixes.test.js + audit-regressions) | — | Verify: n/a
-INV-48 | SPLIT_AMOUNT / INCOME_PREDICATE are never re-inlined: every spending aggregation imports from financial-queries.js (aliased variants derived in place via .replace); the only permitted literal copies are scripts/sheets-sync.js (byte-pinned) + apps-script/Code.gs | Subsystem: Financial Analytics (seam) | Verify: tests/seams-audit.test.js repo-wide literal-CASE scan
+INV-48 | SPLIT_AMOUNT / INCOME_PREDICATE / NOT_TRANSFER are never re-inlined: every spending aggregation imports from financial-queries.js (aliased variants via incomePredicate(alias) or derived in place via .replace); the only permitted literal copies are scripts/sheets-sync.js (full structure byte-pinned by SX3) + apps-script/Code.gs (legacy, unpinned) | Subsystem: Financial Analytics (seam) | Verify: tests/seams-audit.test.js repo-wide literal-CASE scan
 INV-49 | Every member of Perfin's EMAIL_EVENTS set is accepted AND named (sendNameByEvent) by Per-sistant's HTTP webhook receiver — an unrecognized email event is 200-and-dropped in standalone deployments | Subsystem: Settings, Notifications & Cross-app (seam) | Verify: tests/seams-audit.test.js symmetry pin
 INV-50 | WebAuthn auth-options advertise transports ['internal'] ONLY in allowCredentials (NOT 'hybrid') — registration pins authenticatorAttachment:'platform' so credentials are same-device; advertising the cross-device 'hybrid' transport is what surfaced the "use a phone" QR option instead of local Touch/Face ID, so internal-only suppresses the QR path; both shell and standalone auth-options endpoints comply (transports still persisted at registration, just not used as the login hint) | Subsystem: Platform, Shell & Auth | Verify: tests/budget-cap-webauthn.test.js
 INV-51 | Habit streaks are computed at read time from habit_logs (a backfilled log retroactively repairs a streak; an unlogged today never breaks one); no stored streak counters exist for habits | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/health.test.js backfill-repair test
@@ -3310,6 +3375,7 @@ INV-65 | Job Radar ingest is content_hash-idempotent: dedupPersist upserts ON CO
 INV-66 | gatherJobRadarSummary is the SINGLE fail-soft aggregator feeding the /jobs page, the notification check, and the AI daily-briefing line (the gatherHealthSummary pattern) — a query error returns the safe empty shape, never 500s those surfaces; the notif-check + briefing call it gated on job_radar_enabled. Listing status changes ARCHIVE (saved/applied/dismissed), never hard-delete | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (aggregator fail-soft + archive-not-delete)
 INV-67 | Every transaction-sync trigger (POST /api/sync + daily-sync.yml, bank auto-sync, pre-insights chain) goes through syncAllTransactions — Teller then Plaid, each failure-isolated — and runAnomalyCheck runs ONCE over the combined added count; reconcile/backfill never runs it | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-sept-batch2.test.js (BSI-2 / DD-1 block)
 INV-68 | last_sync_result is merged PER PROVIDER (a write replaces only the providers it ran; null result = untouched), never last-writer-wins; errors[] is the flat union | Subsystem: Bank Sync & Ingestion / Data Freshness | Verify: tests/scan-sept-batch2.test.js (BSI-11 block)
+INV-69 | incomePredicate(alias) qualifies EVERY outer column reference with the caller's alias, including inside the __t2 double-count guard (an unqualified ref inside a subquery resolves to the subquery's own table) | Subsystem: Financial Analytics | Verify: tests/scan-sept-batch3.test.js (FAN-2) + tests/ops-and-alerts.test.js
 
 ### Policy Configuration
 Policy threshold: 5/10
