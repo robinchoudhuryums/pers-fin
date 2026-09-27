@@ -426,9 +426,15 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1097 tests as of latest); use
+  Perfin and Per-sistant test files (1143 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1097 tests across 43 test files (incl.
+  Current count: 1143 tests across 45 test files (incl.
+  `tests/scan-sept-fixes.test.js` + `apps/per-sistant/tests/scan-sept-fixes.test.js`
+  — the Sept 2026 broad-scan Batch 1 pins: housing PATCH typed param,
+  bulk-category route order in the real server.js mount order, calendar
+  paid-state key, basePath tax links, no un-nonced `<style>`, fail-closed
+  vault sensitivity, vault mark-and-sweep, hard-deleted-note retrieval
+  guard, Save-Draft/Send-now/local-datetime email fixes;
   `tests/cycle-fixes.test.js` + `apps/per-sistant/tests/cycle-fixes.test.js`
   — regression tests pinning the net-worth single-source-of-truth,
   budget-rollover month-keying, the AI-audit completion marker, and the
@@ -456,8 +462,14 @@ shell/
   429 once the cap is hit, ask charges accumulated tokens AND still charges
   on a mid-loop failure — F1).
 - `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js`.
-- `.claude/commands/` — Project slash-command prompts: `/broad-scan`, `/broad-implement`,
-  `/test-sync`, `/sync-docs`
+- `.claude/commands/` — Project slash-command prompts, generated from the
+  claude-workflow-tools templates (synced to v1.33.0 via `/sync-commands`):
+  the cycle commands (`/broad-scan`, `/broad-implement`, `/targeted-audit`,
+  `/targeted-implement`, `/audit`, `/plan`, `/implement`, `/regression`,
+  `/reflect`, `/health-pulse`, `/pr-review`, …), navigation (`/cycle-status`,
+  `/cycle-resume`, `/cycle-init`), and maintenance (`/test-sync`,
+  `/sync-docs`, `/sync-commands`, `/setup-cycle`, `/systems-map`, `/roadmap`).
+  Summary blocks for fresh-session consumption land in `.cycle/blocks/`.
 - `Dockerfile`, `fly.toml`, `render.yaml` — Deployment configs (the Dockerfile
   installs all workspaces and boots `node shell/index.js`; render.yaml uses
   `npm install` + `npm start` and bypasses the Dockerfile)
@@ -1327,6 +1339,12 @@ on the operator's machine (or fed via env vars) before the app boots:
      `API_KEY` repo secrets so the scheduled reindex can reach
      `/per-sistant/api/rag/reindex` (via the shell's x-api-key path) while the
      Render free tier sleeps.
+   - **After any deploy that changes vault frontmatter parsing or sync
+     semantics, run ONE full reindex** (`POST /per-sistant/api/rag/reindex`, or
+     let the Action fire). Incremental syncs only re-read CHANGED files, so rows
+     stored under the old rules (e.g. the pre-Sept-2026 fail-OPEN sensitivity
+     parser, KR-2) keep their old classification until a full walk re-files
+     them and sweeps deleted-file orphans (KR-1).
 4. **`db-backup.yml` GitHub Action secrets** — `NEON_DATABASE_URL`,
    `PERSISTENT_DATABASE_URL` (optional), and `BACKUP_ENCRYPTION_PASSPHRASE`
    repo secrets for the nightly encrypted backup workflow (pg_dump of both
@@ -1424,7 +1442,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1097 tests passing across 43 test files (Perfin 664 + Per-sistant 433), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1143 tests passing across 45 test files (Perfin 674 + Per-sistant 469), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
@@ -2244,7 +2262,12 @@ rows) can dismiss them from the UI or run `POST /api/cleanup`.
   `<style>` blocks (the only such block lives in `partials/head.ejs` and now
   carries `nonce="<%= nonce %>"`). `styleSrcAttr` keeps `'unsafe-inline'` so the
   hundreds of inline `style="..."` attributes across templates continue to
-  work; migrating each one is out of scope for now.
+  work; migrating each one is out of scope for now. **Every `<style>` element
+  must carry the nonce** — a bare `<style>` in a view, or one injected at
+  runtime via `document.createElement('style')`, is silently CSP-blocked (the
+  Rent page's whole layout and the rules-panel caret were, WUI-1/WD-14). Put
+  page CSS in the head partial's `extraStyles`, a nonced `<style>`, or
+  `perfin-shared.css`; pinned by `tests/scan-sept-fixes.test.js`.
 - **Shell-layer CSP + clickjacking guard (W1)**: the unified shell (`shell/index.js`)
   mounts its OWN `helmet` so its routes — the PIN `login`, the landing tile picker,
   icons, `/health` — get a nonce-based CSP + `frame-ancestors 'none'` + `X-Frame-Options`
@@ -2963,6 +2986,15 @@ income module, and bill-calendar income detection.
   unexported, so the scheduler's Plaid steps were no-ops caught by try/catch.)
   All such helpers are hoisted `async function` declarations, so attaching them
   at the very end works.
+- **Route modules mount specific-before-generic.** Express matches in mount
+  order, so a module with a generic `/:id` route shadows a LATER module's
+  literal sibling path. `routes/subscriptions.js` mounts `transactions.js`,
+  whose `PATCH /api/transactions/:id` captured `PATCH
+  /api/transactions/bulk-category` (id = "bulk-category") and 400'd every bulk
+  recategorize until `routes/categorize` was mounted first in `server.js`
+  (DC-1). When adding a literal path next to an existing `/:param` route in
+  another module, mount the literal one's module earlier (the order is pinned
+  by `tests/scan-sept-fixes.test.js`, which mounts modules in server.js order).
 
 ## Git
 - Render deploys from `main` (configured in the Render dashboard, not in `render.yaml`)
@@ -3088,7 +3120,7 @@ Platform, Shell & Auth:
   shell/index.js, shell/middleware/auth.js, shell/middleware/webauthn.js,
   teller/server.js, teller/startup.js, teller/services/database.js,
   teller/services/keep-alive.js, teller/services/job-health.js,
-  scripts/reset-fresh.js, db/*.sql
+  scripts/reset-fresh.js, scripts/ci-migration-test.js, db/*.sql
 Web UI (Perfin):
   teller/pages/*.js, teller/views/*.ejs, teller/views/partials/*.ejs,
   teller/public/*.js, teller/public/*.css, teller/public/sw.js,
@@ -3159,7 +3191,7 @@ INV-23 | Service worker never caches /api/* | Subsystem: Web UI
 INV-24 | sheets-sync.syncAll isolates each tab (per-tab try/catch + errors[]) | Subsystem: Sheets & External Export
 INV-25 | Embedded sub-apps detect req.app.get("embedded") and skip their own auth; cross-app calls use the wired pool (perfinPool/persistentPool), never HTTP self-fetch | Subsystem: Per-sistant Backend / Platform, Shell & Auth
 INV-26 | Teller transaction pagination terminates on an empty page (count-explicit + from_id), never a hard-coded page-size compare | Subsystem: Bank Sync & Ingestion | Verify: tests/cycle-fixes.test.js (BS-1 block)
-INV-27 | Only sensitivity='normal' docs/facts are embedded AND retrieved; private/secret are never embedded or sent to AI | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js (buildRetrievalQuery), tests/knowledge-facts.test.js
+INV-27 | Only sensitivity='normal' docs/facts are embedded AND retrieved; private/secret are never embedded or sent to AI. Frontmatter sensitivity resolution FAILS CLOSED: YAML comments stripped, block lists parsed, yes/no/on/off understood, the most restrictive of sensitivity/embed/private wins, and any unrecognized value → private (KR-2). Hard-deleted notes/documents are never vector-retrieved (the joined source row must exist, KR-6) | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js (buildRetrievalQuery), tests/knowledge-facts.test.js, apps/per-sistant/tests/scan-sept-fixes.test.js (KR-2/KR-6)
 INV-28 | pgvector objects are created defensively (only if the `vector` extension is available); the migration succeeds and Knowledge degrades to keyword retrieval rather than failing boot | Subsystem: Knowledge / RAG | Verify: code read db/014_vault_vectors.sql + vault-sync.vectorReady
 INV-29 | Retrieval is HYBRID (vector + keyword legs fused via Reciprocal Rank Fusion, dedupe on kind:id) — either leg failing degrades to the other alone; /query & /diagram degrade to sources-only / null when AI is off or unavailable | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js, apps/per-sistant/tests/rag-v2.test.js
 INV-30 | Embedding dimension (1024) matches chunks.embedding vector(1024); a provider/dimension change is a re-embed migration, not a config flip | Subsystem: Knowledge / RAG | Verify: code read services/embeddings.js EMBED_DIM

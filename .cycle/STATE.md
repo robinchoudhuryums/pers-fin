@@ -29,9 +29,15 @@ to the "none in progress" state.
     Draft" on a scheduled email unschedules it.
   - **Open follow-ons:** see `.cycle/blocks/6-batch1-broad-implement.md`.
   - **Operator:** after deploy, run one full Knowledge reindex.
-  - **Where I left off:** Batch 1 committed + pushed (no PR opened). NEXT:
-    /sync-docs for the doc updates listed in the block, then Batch 2
-    (ingestion completeness & silent sync failures) per the broad-scan plan.
+  - **/sync-docs DONE:** test counts (1143/45 files; Perfin 674 + Per-sistant
+    469), INV-27 fail-closed + KR-6 wording, CSP "every <style> nonced" rule,
+    new "mount specific-before-generic" design decision (DC-1), Knowledge
+    post-deploy full-reindex operator note, `.claude/commands` list,
+    scripts/ci-migration-test.js added to Platform subsystem; Per-sistant
+    CLAUDE.md email/trash/vault-sync semantics; both READMEs.
+  - **Where I left off:** Batch 1 + docs committed + pushed (no PR opened).
+    NEXT: Batch 2 (ingestion completeness & silent sync failures) per the
+    broad-scan plan.
 
 ### Prior entries
 

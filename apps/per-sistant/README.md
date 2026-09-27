@@ -219,7 +219,9 @@ answers across all of it with **source citations**:
   `(entity, attribute, value)` records with `valid_from`/`valid_to` for "current X?"
   lookups; per-fact verify.
 - **Mermaid diagrams**, **capture-to-vault** (write-scoped token), and a **"secret" tier**
-  (locally searchable, never embedded or sent to AI).
+  (locally searchable, never embedded or sent to AI). Frontmatter sensitivity fails
+  closed — an unrecognized or ambiguous value is treated as private — and a full
+  vault sync removes files you deleted from the vault.
 - **Proactive surfacing** of upcoming renewals/expirations, and **cross-app finance
   grounding** that reads Perfin data read-only.
 

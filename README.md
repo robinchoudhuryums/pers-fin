@@ -88,7 +88,7 @@ Under the unified shell the cross-app integration endpoints (Per-sistant's Perfi
 | `scripts/detect-subscriptions.js` | Recurring charge detection algorithm |
 | `scripts/sheets-sync.js` | Google Sheets sync + dashboard builder |
 | `apps-script/Code.gs` | Google Sheets Apps Script (standalone + server sync) |
-| `tests/` | Test suite (node:test, 1097 tests across 43 files incl. apps/per-sistant/tests) |
+| `tests/` | Test suite (node:test, 1143 tests across 45 files incl. apps/per-sistant/tests) |
 | `Dockerfile` | Container build — installs all workspaces and boots `node shell/index.js` |
 | `render.yaml` | Render deployment blueprint (unified shell) |
 | `fly.toml` | Fly.io deployment config |
@@ -424,7 +424,8 @@ your notes into **Neon + pgvector**, and answers questions across all of it with
 - **Capture-to-vault** — paste an email / dictate → structured note or fact
   committed back to the vault (separate write-scoped token).
 - **"Secret" tier** — items flagged `sensitivity: secret` are stored and locally
-  searchable but **never embedded and never sent to any AI**.
+  searchable but **never embedded and never sent to any AI**. Sensitivity
+  parsing fails closed: an unrecognized or ambiguous value is treated as private.
 - **Proactive surfacing** — upcoming renewals/expirations via the notification check.
 - **Cross-app finance grounding** — finance questions read Perfin's accounts +
   subscriptions (read-only) so "can I afford my renewal?" is answerable.

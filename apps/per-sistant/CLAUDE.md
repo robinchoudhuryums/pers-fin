@@ -29,7 +29,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   at-most-once delivery). The manual `POST /api/emails/:id/send` claims the row
   the same way (`UPDATE … WHERE id = $1 AND status <> 'sent' RETURNING`) so a
   double-click / retry returns 409 instead of re-sending (PB-4).
-- **Tests**: `tests/` (node:test runner, `npm test`, 433 tests (api + integration + cycle-fixes + knowledge + health + jobs))
+- **Tests**: `tests/` (node:test runner, `npm test`, 469 tests (api + integration + cycle-fixes + knowledge + health + jobs + scan-sept-fixes))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of June 2026)
@@ -42,7 +42,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **Recurring Tasks**: Daily, weekly, monthly, yearly, weekdays + custom intervals (every N days/weeks/months) with auto-generation, streak/habit tracking, skip, and snooze. The midnight auto-roll cron atomically CLAIMS each overdue recurring row (`UPDATE … WHERE id = $1 AND completed = false RETURNING`) before generating the next instance, so it can't race the manual complete-recurring path into a double-generated instance (PS-11).
 - **Subtasks**: Checklists within tasks with progress tracking — a progress bar with a `%` label on the To-Dos page, and a compact `done/total` progress bar on the dashboard task cards (counts come from `subtask_total`/`subtask_done` on `GET /api/todos`, so no per-card N+1 fetch)
 - **Natural Language Quick Add**: Create todos from natural language with auto-detected priority/horizon/due date (AI-enhanced when enabled)
-- **Email Drafting**: Compose, schedule, send; natural language "Quick Send" parser
+- **Email Drafting**: Compose, schedule, send; natural language "Quick Send" parser. "Save Draft" always stores a DRAFT (the client sends `status:'draft'`; `POST /api/emails` honors an explicit `draft|scheduled` status and only infers `scheduled` from `scheduled_at` when none is sent) — a filled-in schedule time no longer turns a saved draft into a cron-sent email (PD-1). "Send now" saves the form first, so edits aren't dropped (PUI-2). Schedule/reminder `datetime-local` fields are filled via the shared `toLocalDatetimeInput(iso)` (views/js.js) in browser-local time, so open+save never shifts the time by the UTC offset (PUI-1).
 - **AI Email Drafting**: Claude-powered email composition (requires `ANTHROPIC_API_KEY`)
 - **AI Email Tone Adjustment**: Rewrite emails as formal/casual/shorter/friendlier/direct
 - **AI Task Breakdown**: Auto-generate subtasks from task title/description
@@ -128,7 +128,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **PWA**: Installable as home screen app
 - **Auto-migration**: Server runs all DB migrations on startup
 - **Perfin Integration**: Dashboard widget showing subscription data, cross-link navigation
-- **Trash/Undo**: Soft-delete with undo toast, restore from Settings trash, 30-day retention
+- **Trash/Undo**: Soft-delete with undo toast, restore from Settings trash, 30-day retention. Permanently deleting a note (or emptying the trash) also purges its Knowledge `chunks`/`embed_state` (fail-soft), and vector retrieval requires the note row to exist, so a hard-deleted note is never retrieved or sent to Claude (KR-6).
 - **Dashboard Inline Actions**: Complete tasks and send emails directly from dashboard
 - **Bulk Actions**: Multi-select mode on todos, emails, and notes for batch operations
 - **System Theme Auto-Detection**: Auto option follows OS dark/light preference via prefers-color-scheme
@@ -197,7 +197,8 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `db/007_enhancements.sql` — custom recurrence, entity links, webhooks, notification preferences
 - `db/008_templates_performance.sql` — todo templates table, performance indexes
 - `uploads/` — local file attachment storage
-- `tests/api.test.js` — unit test suite (the bulk of the 433 per-sistant tests)
+- `tests/api.test.js` — unit test suite (the bulk of the 469 per-sistant tests; NOTE: it tests inline copies of the logic and imports no production module — see TQ-1 in the Sept 2026 broad scan)
+- `tests/scan-sept-fixes.test.js` — Sept 2026 broad-scan Batch 1 pins (Save Draft status, Send-now save, local datetime fill, fail-closed vault sensitivity, vault mark-and-sweep, trash chunk purge)
 - `tests/integration.test.js` — integration tests (requires DB, auto-skips without)
 - `Dockerfile` / `docker-compose.yml` — container deployment
 - `fly.toml` — Fly.io config
@@ -208,7 +209,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (433 tests)
+# Run tests (469 tests)
 npm test
 
 # Pages
@@ -519,7 +520,18 @@ hoisted version.
     change) invalidates every hash and forces a clean re-embed on the next
     sync — shipped while the vault was empty, so v2 itself cost nothing.
   - Sync: `services/vault-sync.js` (GitHub Contents/Trees/compare API, no clone;
-    frontmatter `embed:false`/`private:true`/`sensitivity:` honored). Hourly
+    frontmatter `embed:false`/`private:true`/`sensitivity:` honored — and
+    resolved FAIL-CLOSED (KR-2): trailing ` # comments` are stripped (quote a
+    value that must contain " #"), Obsidian block lists (`key:` + `- item`) are
+    parsed, yes/no/on/off are understood, the MOST restrictive signal wins, and
+    any unrecognized sensitivity/embed/private value resolves to `private`).
+    A FULL sync mark-and-sweeps: vault documents/facts whose file is absent
+    from the (untruncated, well-formed) tree are removed, so deleted/renamed
+    vault files stop being retrieved (KR-1). An incremental sync falls back to
+    full when the compare base is gone (404/422, force-push) or GitHub caps the
+    diff at 300 files; changing `vault_repo`/`vault_branch` in Settings NULLs
+    `vault_last_sha` so the next sync is a full walk + sweep. After deploying a
+    parsing/sync change, run one full reindex so existing rows are re-filed. Hourly
     in-process cron + `POST /api/rag/reindex` (also driven by the
     `knowledge-reindex.yml` GitHub Action via `x-api-key`). Embeddings via
     `services/embeddings.js` (Voyage, native fetch). Retrieval is HYBRID (RAG v2):
