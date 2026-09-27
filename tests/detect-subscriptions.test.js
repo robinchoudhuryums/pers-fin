@@ -9,96 +9,35 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 
 // ---------------------------------------------------------------------------
-// Import helpers directly from detect-subscriptions.js
-// The module only exports detectSubscriptions (which needs DB), so we
-// re-implement the pure helpers here for unit testing, then verify they
-// match the module's behavior.
+// Exercise the REAL module. This file used to carry inline copies of
+// findModeAmount / addDays / the gap analysis, so it kept passing on the old
+// detection rules no matter what scripts/detect-subscriptions.js did (Batch 4
+// DC-2/DC-7/DC-8 changed them). analyzeGroup now runs the real
+// detectSubscriptions() over a mock pool that serves the given charges.
 // ---------------------------------------------------------------------------
+const { detectSubscriptions, findModeAmount, addDays } = require("../scripts/detect-subscriptions");
 
-// Exact copies of the helpers from detect-subscriptions.js
-function findModeAmount(amounts, tolerance) {
-  if (amounts.length === 0) return null;
-  let bestAmount = amounts[0];
-  let bestCount = 0;
-  for (const candidate of amounts) {
-    const count = amounts.filter(
-      (a) => Math.abs(a - candidate) / Math.max(candidate, 0.01) <= tolerance
-    ).length;
-    if (count > bestCount) {
-      bestCount = count;
-      bestAmount = candidate;
-    }
-  }
-  return bestAmount;
-}
-
-function addDays(date, days) {
-  const result = new Date(date);
-  result.setDate(result.getDate() + days);
-  return result;
-}
-
-// Detection logic extracted for testing without DB
-function analyzeGroup(merchantTxns, opts = {}) {
-  const CADENCES = opts.cadences || [30, 60, 90, 365];
-  const TOLERANCE = opts.tolerance || 0.25;
-  const AMOUNT_TOLERANCE = opts.amountTolerance || 0.10;
-  const MIN_OCCURRENCES = opts.minOccurrences || 3;
-  const MIN_OCCURRENCES_YEARLY = opts.minOccurrencesYearly || 2;
-
-  if (merchantTxns.length < MIN_OCCURRENCES_YEARLY) return null;
-
-  merchantTxns.sort((a, b) => new Date(a.date) - new Date(b.date));
-
-  for (const targetCadence of CADENCES) {
-    const minOcc = targetCadence >= 60 ? MIN_OCCURRENCES_YEARLY : MIN_OCCURRENCES;
-    const minGap = targetCadence * (1 - TOLERANCE);
-    const maxGap = targetCadence * (1 + TOLERANCE);
-
-    const amounts = merchantTxns.map((t) => parseFloat(t.amount));
-    const modeAmount = findModeAmount(amounts, AMOUNT_TOLERANCE);
-    if (modeAmount === null) continue;
-
-    const filtered = merchantTxns.filter((t) => {
-      const amt = parseFloat(t.amount);
-      return Math.abs(amt - modeAmount) / modeAmount <= AMOUNT_TOLERANCE;
-    });
-
-    if (filtered.length < minOcc) continue;
-
-    const gaps = [];
-    for (let i = 1; i < filtered.length; i++) {
-      const daysDiff =
-        (new Date(filtered[i].date) - new Date(filtered[i - 1].date)) /
-        (1000 * 60 * 60 * 24);
-      gaps.push(daysDiff);
-    }
-
-    const matchingGaps = gaps.filter((g) => g >= minGap && g <= maxGap);
-
-    const minMatchingGaps = targetCadence >= 60 ? 1 : 2;
-    if (matchingGaps.length >= Math.floor(gaps.length * 0.5) && matchingGaps.length >= minMatchingGaps) {
-      const lastTxn = filtered[filtered.length - 1];
-      const firstTxn = filtered[0];
-      const latestAmount = parseFloat(lastTxn.amount);
-      const priorAmount =
-        filtered.length >= 2
-          ? parseFloat(filtered[filtered.length - 2].amount)
-          : null;
-
-      return {
-        amount: latestAmount,
-        prior_amount: priorAmount,
-        cadence_days: targetCadence,
-        first_seen: firstTxn.date,
-        last_charged: lastTxn.date,
-        amount_changed:
-          priorAmount !== null &&
-          Math.abs(latestAmount - priorAmount) > 0.01,
-      };
-    }
-  }
-  return null;
+// The fixtures below are dated in 2023–2025; DC-2 (correctly) ignores a series
+// whose last charge is stale, so shift every fixture so its LATEST charge was
+// 5 days ago — the gaps (what's under test) are unchanged.
+async function analyzeGroup(merchantTxns) {
+  const ts = (d) => Date.parse(String(d).slice(0, 10) + "T00:00:00Z");
+  const latest = Math.max(...merchantTxns.map(t => ts(t.date)));
+  const now = new Date();
+  const target = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) - 5 * 86400000;
+  const shift = target - latest;
+  const rows = merchantTxns.map((t, i) => ({
+    transaction_id: "t" + i,
+    merchant_key: "fixture service",
+    display_name: t.display_name || "Fixture Service",
+    amount: t.amount,
+    date: new Date(ts(t.date) + shift).toISOString().slice(0, 10),
+  }));
+  const pool = {
+    query: async (sql) => (/FROM transactions/.test(sql) ? { rows } : { rows: [] }),
+  };
+  const detected = await detectSubscriptions(pool);
+  return detected[0] || null;
 }
 
 // Helper to generate monthly transactions
@@ -153,15 +92,15 @@ describe("findModeAmount", () => {
 // analyzeGroup (core detection) tests
 // ============================================================================
 describe("analyzeGroup", () => {
-  it("detects a monthly subscription (3 charges, ~30 days apart)", () => {
+  it("detects a monthly subscription (3 charges, ~30 days apart)", async () => {
     const txns = monthlyCharges("Netflix", 15.99, 4);
-    const result = analyzeGroup(txns);
+    const result = await analyzeGroup(txns);
     assert.ok(result, "Should detect a subscription");
     assert.equal(result.cadence_days, 30);
     assert.equal(result.amount, 15.99);
   });
 
-  it("detects a quarterly subscription (~90 days apart)", () => {
+  it("detects a quarterly subscription (~90 days apart)", async () => {
     const start = new Date("2025-01-01");
     const txns = [0, 90, 180, 270].map((offset) => ({
       merchant_key: "quarterly_svc",
@@ -169,12 +108,12 @@ describe("analyzeGroup", () => {
       amount: 49.99,
       date: addDays(start, offset).toISOString().split("T")[0],
     }));
-    const result = analyzeGroup(txns);
+    const result = await analyzeGroup(txns);
     assert.ok(result, "Should detect quarterly subscription");
     assert.equal(result.cadence_days, 90);
   });
 
-  it("rejects random non-recurring charges", () => {
+  it("rejects random non-recurring charges", async () => {
     const start = new Date("2025-01-01");
     // Gaps: 3, 15, 7, 2, 40 days — truly no consistent pattern
     const txns = [0, 3, 18, 25, 27, 67].map((offset) => ({
@@ -183,17 +122,17 @@ describe("analyzeGroup", () => {
       amount: 25.00,
       date: addDays(start, offset).toISOString().split("T")[0],
     }));
-    const result = analyzeGroup(txns);
+    const result = await analyzeGroup(txns);
     assert.equal(result, null, "Should not detect non-recurring charges");
   });
 
-  it("rejects groups with fewer than 3 charges", () => {
+  it("rejects groups with fewer than 3 charges", async () => {
     const txns = monthlyCharges("TwoTimer", 9.99, 2);
-    const result = analyzeGroup(txns);
+    const result = await analyzeGroup(txns);
     assert.equal(result, null, "Should require at least 3 charges");
   });
 
-  it("tolerates ±25% timing variance", () => {
+  it("tolerates ±25% timing variance", async () => {
     const start = new Date("2025-01-15");
     // Gaps: 27, 33, 28, 32 days — all within 25% of 30
     const txns = [0, 27, 60, 88, 120].map((offset) => ({
@@ -202,12 +141,12 @@ describe("analyzeGroup", () => {
       amount: 12.99,
       date: addDays(start, offset).toISOString().split("T")[0],
     }));
-    const result = analyzeGroup(txns);
+    const result = await analyzeGroup(txns);
     assert.ok(result, "Should tolerate timing variance within 25%");
     assert.equal(result.cadence_days, 30);
   });
 
-  it("tolerates ±10% amount variance", () => {
+  it("tolerates ±10% amount variance", async () => {
     const start = new Date("2025-01-15");
     const txns = [
       { amount: 10.00, date: addDays(start, 0).toISOString().split("T")[0] },
@@ -215,11 +154,11 @@ describe("analyzeGroup", () => {
       { amount: 10.20, date: addDays(start, 60).toISOString().split("T")[0] },
       { amount: 10.80, date: addDays(start, 90).toISOString().split("T")[0] },
     ].map((t) => ({ ...t, merchant_key: "flex_amt", display_name: "Flex Amt" }));
-    const result = analyzeGroup(txns);
+    const result = await analyzeGroup(txns);
     assert.ok(result, "Should tolerate amount variance within 10%");
   });
 
-  it("detects price changes", () => {
+  it("detects price changes", async () => {
     const start = new Date("2025-01-15");
     const txns = [
       { amount: 9.99, date: addDays(start, 0).toISOString().split("T")[0] },
@@ -227,31 +166,31 @@ describe("analyzeGroup", () => {
       { amount: 9.99, date: addDays(start, 60).toISOString().split("T")[0] },
       { amount: 10.99, date: addDays(start, 90).toISOString().split("T")[0] },
     ].map((t) => ({ ...t, merchant_key: "price_chg", display_name: "Price Changer" }));
-    const result = analyzeGroup(txns);
+    const result = await analyzeGroup(txns);
     assert.ok(result, "Should still detect with minor price change");
     assert.equal(result.amount_changed, true);
     assert.equal(result.amount, 10.99);
     assert.equal(result.prior_amount, 9.99);
   });
 
-  it("prefers shorter cadence (30-day over 60-day)", () => {
+  it("prefers shorter cadence (30-day over 60-day)", async () => {
     // 6 monthly charges also have 3 bimonthly pairs — should pick monthly
     const txns = monthlyCharges("Monthly", 19.99, 6);
-    const result = analyzeGroup(txns);
+    const result = await analyzeGroup(txns);
     assert.ok(result);
     assert.equal(result.cadence_days, 30, "Should prefer monthly cadence");
   });
 
-  it("handles unsorted input correctly", () => {
+  it("handles unsorted input correctly", async () => {
     const txns = monthlyCharges("Unsorted", 7.99, 5);
     // Shuffle
     const shuffled = [txns[3], txns[0], txns[4], txns[1], txns[2]];
-    const result = analyzeGroup(shuffled);
+    const result = await analyzeGroup(shuffled);
     assert.ok(result, "Should handle unsorted transactions");
     assert.equal(result.cadence_days, 30);
   });
 
-  it("detects a yearly subscription (2 charges ~365 days apart)", () => {
+  it("detects a yearly subscription (2 charges ~365 days apart)", async () => {
     const start = new Date("2024-01-15");
     const txns = [0, 365].map((offset) => ({
       merchant_key: "yearly_svc",
@@ -259,13 +198,13 @@ describe("analyzeGroup", () => {
       amount: 12.99,
       date: addDays(start, offset).toISOString().split("T")[0],
     }));
-    const result = analyzeGroup(txns);
+    const result = await analyzeGroup(txns);
     assert.ok(result, "Should detect yearly subscription with 2 charges");
     assert.equal(result.cadence_days, 365);
     assert.equal(result.amount, 12.99);
   });
 
-  it("detects a yearly subscription with 3 charges", () => {
+  it("detects a yearly subscription with 3 charges", async () => {
     const start = new Date("2023-03-01");
     const txns = [0, 365, 730].map((offset) => ({
       merchant_key: "yearly3",
@@ -273,12 +212,12 @@ describe("analyzeGroup", () => {
       amount: 99.00,
       date: addDays(start, offset).toISOString().split("T")[0],
     }));
-    const result = analyzeGroup(txns);
+    const result = await analyzeGroup(txns);
     assert.ok(result, "Should detect yearly subscription with 3 charges");
     assert.equal(result.cadence_days, 365);
   });
 
-  it("detects a quarterly subscription (2 charges ~90 days apart) — F2", () => {
+  it("detects a quarterly subscription (2 charges ~90 days apart) — F2", async () => {
     const start = new Date("2025-01-15");
     const txns = [0, 90].map((offset) => ({
       merchant_key: "quarterly_svc",
@@ -286,13 +225,13 @@ describe("analyzeGroup", () => {
       amount: 45.00,
       date: addDays(start, offset).toISOString().split("T")[0],
     }));
-    const result = analyzeGroup(txns);
+    const result = await analyzeGroup(txns);
     assert.ok(result, "Should detect quarterly subscription with 2 charges (F2)");
     assert.equal(result.cadence_days, 90);
     assert.equal(result.amount, 45.00);
   });
 
-  it("detects a bi-monthly subscription (2 charges ~60 days apart) — F2", () => {
+  it("detects a bi-monthly subscription (2 charges ~60 days apart) — F2", async () => {
     const start = new Date("2025-02-01");
     const txns = [0, 60].map((offset) => ({
       merchant_key: "bimonthly_svc",
@@ -300,20 +239,20 @@ describe("analyzeGroup", () => {
       amount: 30.00,
       date: addDays(start, offset).toISOString().split("T")[0],
     }));
-    const result = analyzeGroup(txns);
+    const result = await analyzeGroup(txns);
     assert.ok(result, "Should detect bi-monthly subscription with 2 charges (F2)");
     assert.equal(result.cadence_days, 60);
   });
 
-  it("still requires 3 charges for a 30-day cadence (2 monthly charges → none)", () => {
+  it("still requires 3 charges for a 30-day cadence (2 monthly charges → none)", async () => {
     const txns = monthlyCharges("TwoMonthly", 9.99, 2);
-    const result = analyzeGroup(txns);
+    const result = await analyzeGroup(txns);
     // 2 charges 30 days apart: 30-day cadence needs 3, and the single ~30-day
     // gap doesn't match 60/90/365 — so no detection.
     assert.equal(result, null, "30-day cadence still needs 3 charges");
   });
 
-  it("does not detect yearly from 2 charges with wrong gap", () => {
+  it("does not detect yearly from 2 charges with wrong gap", async () => {
     const start = new Date("2024-01-15");
     // 200 days apart — not yearly
     const txns = [0, 200].map((offset) => ({
@@ -322,7 +261,7 @@ describe("analyzeGroup", () => {
       amount: 50.00,
       date: addDays(start, offset).toISOString().split("T")[0],
     }));
-    const result = analyzeGroup(txns);
+    const result = await analyzeGroup(txns);
     assert.equal(result, null, "Should not detect yearly with wrong gap");
   });
 });

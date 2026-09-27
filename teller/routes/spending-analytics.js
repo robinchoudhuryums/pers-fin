@@ -11,6 +11,7 @@
 const express = require("express");
 const router = express.Router();
 const { pool } = require("../services/database");
+const { seriesOccurrences } = require("../services/cadence");
 const { INCOME_PREDICATE, incomePredicate, NOT_TRANSFER, SPLIT_AMOUNT, INVESTMENT_ACCOUNT_TYPES, getMonthlySpending, getMonthlyIncome, getCategorySpendingForMonth, currentMonth } = require("../services/financial-queries");
 
 // The one query here that JOINs linked_accounts must qualify its column refs
@@ -229,13 +230,13 @@ router.get("/api/cash-flow", async (req, res) => {
     // Get upcoming bills from subscriptions + recurring transfers
     const [subsResult, transfersResult] = await Promise.all([
       pool.query(`
-        SELECT display_name, amount, cadence_days, next_expected
+        SELECT display_name, amount, cadence_days, next_expected, last_charged AS last_date
         FROM detected_subscriptions
         WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL
           AND next_expected IS NOT NULL
       `),
       pool.query(`
-        SELECT display_name, amount, cadence_days, next_expected, transfer_type, direction
+        SELECT display_name, amount, cadence_days, next_expected, last_transferred AS last_date, transfer_type, direction
         FROM recurring_transfers
         WHERE is_active = true AND is_dismissed = false
           AND next_expected IS NOT NULL AND direction = 'outgoing'
@@ -254,17 +255,13 @@ router.get("/api/cash-flow", async (req, res) => {
     const allBills = [...subsResult.rows, ...transfersResult.rows.filter(tr => !isCardAutopay(tr))];
 
     // Pre-compute next occurrence for each bill (once, not per-day)
+    // Occurrences step by CALENDAR MONTH for month-scale cadences (DC-9) — a
+    // fixed 30-day step drifted and could double-bill a month.
     const now = new Date();
+    const todayUtc = now.toISOString().slice(0, 10);
+    const endUtc = new Date(now.getTime() + (days + 1) * 86400000).toISOString().slice(0, 10);
     const billSchedule = allBills.map(sub => {
-      let nextDate = new Date(sub.next_expected);
-      const cadence = parseInt(sub.cadence_days);
-      while (nextDate < now) nextDate = new Date(nextDate.getTime() + cadence * 86400000);
-      const occurrences = [];
-      const endDate = new Date(now.getTime() + (days + 1) * 86400000);
-      while (nextDate <= endDate) {
-        occurrences.push(nextDate.toISOString().split("T")[0]);
-        nextDate = new Date(nextDate.getTime() + cadence * 86400000);
-      }
+      const occurrences = seriesOccurrences(sub.last_date, sub.next_expected, sub.cadence_days, todayUtc, endUtc);
       return { name: sub.display_name, amount: parseFloat(sub.amount), dates: new Set(occurrences) };
     });
 

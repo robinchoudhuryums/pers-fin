@@ -261,7 +261,7 @@ describe("DC-14 — categories are text[] parameters, never concatenated literal
   it("manual cash entry passes a one-element array (commas/quotes survive)", async () => {
     let params = null;
     dbModule.pool.query = async (sql, p) => {
-      if (/SELECT account_id FROM linked_accounts/.test(sql)) return { rows: [{ account_id: "cash" }] };
+      if (/SELECT account_id, is_manual FROM linked_accounts/.test(sql)) return { rows: [{ account_id: "cash", is_manual: true }] };
       if (/INSERT INTO transactions/.test(sql)) { params = p; return { rows: [{}] }; }
       return { rows: [] };
     };

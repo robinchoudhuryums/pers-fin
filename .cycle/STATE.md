@@ -9,6 +9,40 @@ to the "none in progress" state.
 
 ## Current Cycle
 
+- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 4 DONE** on branch
+  `claude/lucid-darwin-7r8e59` (2026-09-27). Batch 4 (detection, calendar
+  projections, CSV/bill bookkeeping) implemented, tested, pushed (no PR opened).
+  - **Completed:** DC-2 (stale series never re-detected/re-activated), DC-8
+    (latest gap must match, ceil majority, ±2% two-charge rule), DC-7 (anchor on
+    the recent price cluster), DC-9 (calendar-month cadence stepping via new
+    teller/services/cadence.js, anchored on the last real charge — forecast,
+    bill calendar, ICS, cash flow, detection next_expected, POST
+    /api/subscriptions), DC-10 (cadence-based calendar income streams), DC-4
+    (recurring_transfers.transfer_type_user_set), DC-5 (csv-overlap via
+    plaid_items.status='CSV', distinct counts, resolve refuses manual accounts),
+    DC-6 (manual balance rolled forward by post-balance new rows only), SXE-11
+    (paid_amount defaults to the bill amount; Sheets blanks NULL variance),
+    DC-15 (manual-bill PATCH validation, manual cash needs is_manual,
+    rows_skipped excludes duplicates, shared manual-bill placement for calendar
+    + ICS, AI categorize reads user_merchant_name).
+  - **Not finished (selected):** none.
+  - **Tests:** 1224/1224 (Perfin 755 + Per-sistant 469; 48 files; +30 in
+    tests/scan-sept-batch4.test.js — 23 fail on the old source; the rest are
+    helper/positive controls). tests/detect-subscriptions.test.js now drives the
+    real module. Real-PG 16 checks of every new SQL path; migrations twice;
+    e2e 8/8.
+  - **Decisions:** DC-7/DC-8 scoped to subscriptions (finding location);
+    projections anchor on last_charged/last_transferred with next_expected as
+    the lower bound; DC-6 rolls forward only rows dated after
+    balance_updated_at and leaves accounts with no known balance alone;
+    csv_imports.rows_skipped keeps its "not imported" meaning.
+  - **Open follow-ons:** see `.cycle/blocks/6-batch4-broad-implement.md`.
+  - **Operator:** none required (idempotent ADD COLUMN; detection re-runs
+    automatically).
+  - **Where I left off:** Batch 4 committed + pushed (no PR). NEXT:
+    `/sync-docs` for Batch 4 (doc list in the block), then Batch 5 per the
+    broad-scan plan.
+
 - **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 3 DONE** on branch
   `claude/lucid-darwin-7r8e59` (restarted from main after PR #128 merged,
   2026-09-27). Batch 3 (income/spending classification) implemented, tested,

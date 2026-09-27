@@ -2587,17 +2587,19 @@ async function syncBillPayments(sheets, pool) {
 
   const headers = ["Paid Date", "Bill", "Source", "Category", "Paid Amount", "Expected Amount", "Variance", "Notes", "Logged"];
   const data = rows.map(r => {
-    const paid = parseFloat(r.paid_amount || 0);
+    // A payment logged without an amount (legacy calendar clicks — SXE-11)
+    // has no variance to report: blank it rather than showing −100%.
+    const hasPaid = r.paid_amount !== null && r.paid_amount !== undefined;
+    const paid = hasPaid ? parseFloat(r.paid_amount) : null;
     const expected = parseFloat(r.expected_amount || 0);
-    const variance = paid - expected;
     return [
       fmtDate(r.paid_date),
       r.bill_name || "(unknown bill)",
       r.bill_source || "",
       r.category || "",
-      fmtCurrency(paid),
+      hasPaid ? fmtCurrency(paid) : "",
       expected > 0 ? fmtCurrency(expected) : "",
-      expected > 0 ? fmtCurrency(variance) : "",
+      expected > 0 && hasPaid ? fmtCurrency(paid - expected) : "",
       r.notes || "",
       fmtDate(r.created_at),
     ];

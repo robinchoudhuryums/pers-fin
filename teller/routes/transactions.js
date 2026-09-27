@@ -219,30 +219,48 @@ router.get("/api/transactions/duplicates", async (_req, res) => {
 // scheme differs across sources so the existing ON CONFLICT dedup misses them.
 router.get("/api/transactions/csv-overlap", async (_req, res) => {
   try {
+    // CSV-imported accounts are NOT is_manual — /api/import-csv files them under
+    // a virtual plaid_items row with status = 'CSV' (DC-5). The old
+    // `la_csv.is_manual = true` filter matched only hand-made manual accounts
+    // (cash etc.), so real CSV/Plaid overlaps were never found, and a CSV
+    // account itself counted as the "synced" side (its plaid_item_id is set).
+    // Counts are over DISTINCT CSV rows: one CSV row matching two synced rows
+    // used to count (and sum) twice.
     const result = await pool.query(`
+      WITH pairs AS (
+        SELECT DISTINCT
+          la_csv.id AS csv_id, la_synced.id AS synced_id,
+          t_csv.transaction_id, t_csv.amount, t_csv.date
+        FROM linked_accounts la_csv
+        JOIN plaid_items pi_csv ON pi_csv.id = la_csv.plaid_item_id AND pi_csv.status = 'CSV'
+        JOIN transactions t_csv ON t_csv.account_id = la_csv.account_id
+        JOIN transactions t_synced ON t_synced.amount = t_csv.amount
+          AND ABS(t_synced.date - t_csv.date) <= 2
+          AND t_synced.account_id != t_csv.account_id
+        JOIN linked_accounts la_synced ON la_synced.account_id = t_synced.account_id
+        LEFT JOIN plaid_items pi_s ON pi_s.id = la_synced.plaid_item_id
+        WHERE (la_synced.teller_enrollment_id IS NOT NULL
+               OR (la_synced.plaid_item_id IS NOT NULL AND pi_s.status <> 'CSV'))
+      )
       SELECT
         la_csv.id AS csv_account_id,
         la_csv.name AS csv_account_name,
-        la_csv.institution_name_manual AS csv_institution,
+        COALESCE(la_csv.institution_name_manual, pi_csv.institution_name) AS csv_institution,
         la_synced.id AS synced_account_id,
         la_synced.name AS synced_account_name,
         COALESCE(pi.institution_name, te.institution_name) AS synced_institution,
         CASE WHEN pi.id IS NOT NULL THEN 'plaid' ELSE 'teller' END AS synced_source,
         COUNT(*)::int AS overlap_count,
-        SUM(t_csv.amount)::numeric(14,2) AS overlap_amount,
-        MIN(t_csv.date) AS overlap_first_date,
-        MAX(t_csv.date) AS overlap_last_date
-      FROM linked_accounts la_csv
-      JOIN transactions t_csv ON t_csv.account_id = la_csv.account_id
-      JOIN transactions t_synced ON t_synced.amount = t_csv.amount
-        AND ABS(EXTRACT(EPOCH FROM (t_synced.date::timestamp - t_csv.date::timestamp)) / 86400) <= 2
-        AND t_synced.account_id != t_csv.account_id
-      JOIN linked_accounts la_synced ON la_synced.account_id = t_synced.account_id
+        SUM(p.amount)::numeric(14,2) AS overlap_amount,
+        MIN(p.date) AS overlap_first_date,
+        MAX(p.date) AS overlap_last_date
+      FROM pairs p
+      JOIN linked_accounts la_csv ON la_csv.id = p.csv_id
+      JOIN plaid_items pi_csv ON pi_csv.id = la_csv.plaid_item_id
+      JOIN linked_accounts la_synced ON la_synced.id = p.synced_id
       LEFT JOIN plaid_items pi ON pi.id = la_synced.plaid_item_id
       LEFT JOIN teller_enrollments te ON te.id = la_synced.teller_enrollment_id
-      WHERE la_csv.is_manual = true
-        AND (la_synced.plaid_item_id IS NOT NULL OR la_synced.teller_enrollment_id IS NOT NULL)
-      GROUP BY la_csv.id, la_csv.name, la_csv.institution_name_manual,
+      GROUP BY la_csv.id, la_csv.name, la_csv.institution_name_manual, pi_csv.institution_name,
                la_synced.id, la_synced.name, pi.institution_name, te.institution_name, pi.id
       HAVING COUNT(*) >= 3
       ORDER BY COUNT(*) DESC
@@ -270,15 +288,22 @@ router.post("/api/transactions/csv-overlap/resolve", async (req, res) => {
   }
   try {
     const accts = await pool.query(
-      `SELECT id, account_id, is_manual, plaid_item_id, teller_enrollment_id
-       FROM linked_accounts WHERE id = ANY($1::int[])`,
+      `SELECT la.id, la.account_id, la.plaid_item_id, la.teller_enrollment_id,
+              pi.status AS plaid_status
+       FROM linked_accounts la
+       LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
+       WHERE la.id = ANY($1::int[])`,
       [[csvAccountId, syncedAccountId]]
     );
     if (accts.rows.length !== 2) return res.status(404).json({ error: "One or both accounts not found" });
     const csv = accts.rows.find(r => r.id === csvAccountId);
     const synced = accts.rows.find(r => r.id === syncedAccountId);
-    if (!csv?.is_manual) return res.status(400).json({ error: "csv_account_id must be a manual (CSV-imported) account" });
-    if (!synced?.plaid_item_id && !synced?.teller_enrollment_id) {
+    // The CSV side must be a CSV-import account (virtual plaid_items status
+    // 'CSV'), never a hand-made manual account — the old is_manual check let
+    // this DELETE manual cash entries that happened to match a bank row (DC-5).
+    if (csv?.plaid_status !== "CSV") return res.status(400).json({ error: "csv_account_id must be a CSV-imported account" });
+    const syncedIsLinked = synced?.teller_enrollment_id || (synced?.plaid_item_id && synced.plaid_status !== "CSV");
+    if (!syncedIsLinked) {
       return res.status(400).json({ error: "synced_account_id must be a Plaid- or Teller-linked account" });
     }
     const candidates = await pool.query(
@@ -326,8 +351,12 @@ router.post("/api/transactions/manual", async (req, res) => {
   if (!Number.isFinite(amt) || amt <= 0) return res.status(400).json({ error: "amount must be a positive number" });
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(String(date))) return res.status(400).json({ error: "date must be YYYY-MM-DD" });
   try {
-    const acct = await pool.query("SELECT account_id FROM linked_accounts WHERE account_id = $1", [account_id]);
+    const acct = await pool.query("SELECT account_id, is_manual FROM linked_accounts WHERE account_id = $1", [account_id]);
     if (!acct.rows.length) return res.status(404).json({ error: "Account not found" });
+    // Manual cash entries belong on a manual account only (DC-15, as documented):
+    // on a synced account the next reconcile/csv-overlap pass could treat the
+    // hand-entered row as a bank row, and bank balances never reflect it.
+    if (!acct.rows[0].is_manual) return res.status(400).json({ error: "account_id must be a manual account (create one via POST /api/accounts/manual)" });
     const txnId = "manual_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
     const merchant = (merchant_name && String(merchant_name).trim()) || "Cash";
     // One-element text[] parameter, not a concatenated array literal (DC-14).

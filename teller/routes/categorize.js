@@ -297,7 +297,7 @@ async function runCategorize() {
       if ((await monthSpendCents()) >= budgetCents) { budgetHit = true; break; }
 
       const batchRes = await pool.query(
-        `SELECT transaction_id, COALESCE(merchant_name, name) AS merchant, amount, date, category
+        `SELECT transaction_id, COALESCE(user_merchant_name, merchant_name, name) AS merchant, amount, date, category
          FROM transactions
          WHERE ${uncatPredicate}
          ORDER BY date DESC

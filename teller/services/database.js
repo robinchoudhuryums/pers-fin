@@ -465,6 +465,9 @@ async function runMigrations() {
       UNIQUE (merchant_key, cadence_days, direction)
     )`);
     await client.query("CREATE INDEX IF NOT EXISTS idx_recurring_transfers_active ON recurring_transfers (is_active, is_dismissed)");
+    // DC-4: a transfer_type the user picked (PATCH /api/recurring-transfers/:id/type)
+    // survives re-detection; the detector's upsert only overwrites auto types.
+    await client.query("ALTER TABLE recurring_transfers ADD COLUMN IF NOT EXISTS transfer_type_user_set BOOLEAN NOT NULL DEFAULT false");
     // Per-sistant integration: webhook target + enabled flag.
     // (The webhook HMAC secret is added below as encrypted BYTEA — older DBs
     // may have a plaintext TEXT column from before; that path migrates it.)

@@ -50,7 +50,7 @@ describe("POST /api/transactions/manual", () => {
   it("inserts a POSITIVE-amount expense with a manual_ id and chosen category", async () => {
     let insertParams = null;
     dbModule.pool.query = async (sql, params) => {
-      if (/FROM linked_accounts WHERE account_id/.test(sql)) return { rows: [{ account_id: "manual_cash" }] };
+      if (/FROM linked_accounts WHERE account_id/.test(sql)) return { rows: [{ account_id: "manual_cash", is_manual: true }] };
       if (/INSERT INTO transactions/.test(sql)) {
         insertParams = params;
         return { rows: [{ transaction_id: params[1], amount: params[2], category: params[5] }] };
@@ -72,7 +72,7 @@ describe("POST /api/transactions/manual", () => {
   it("defaults merchant to 'Cash' and category to null when omitted", async () => {
     let insertParams = null;
     dbModule.pool.query = async (sql, params) => {
-      if (/FROM linked_accounts WHERE account_id/.test(sql)) return { rows: [{ account_id: "manual_cash" }] };
+      if (/FROM linked_accounts WHERE account_id/.test(sql)) return { rows: [{ account_id: "manual_cash", is_manual: true }] };
       if (/INSERT INTO transactions/.test(sql)) { insertParams = params; return { rows: [{}] }; }
       return { rows: [] };
     };
