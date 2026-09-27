@@ -9,6 +9,37 @@ to the "none in progress" state.
 
 ## Current Cycle
 
+- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 2 DONE** on branch
+  `claude/lucid-darwin-7r8e59` (2026-09-27). Batch 2 (ingestion completeness
+  & silent sync failures) implemented, tested, pushed (no PR opened).
+  - **Completed:** BSI-1 (Plaid registers new accounts before the cursor walk;
+    stuck item surfaced), BSI-2+DD-1 (/api/sync = Teller + Plaid, one anomaly
+    check on the combined count, via new `syncAllTransactions`), BSI-7 (insert
+    failure holds the watermark), BSI-8 (7-day watermark lookback), BSI-9
+    (401/403 on every account → DISCONNECTED, self-restores to GOOD),
+    BSI-10 (CSV items out of the re-auth count; `plaid_items.last_error_code`),
+    BSI-11 (per-provider merged last_sync_result; reconcile + flows recorded),
+    DD-8 (Teller re-link re-points), DD-9 (new Teller accounts registered in
+    syncAllBalances), DD-10 (per-account balance errors, 429 retry, flow errors,
+    per-account unlink revoke), BSI-3 (Plaid unlink: itemRemove + registry
+    purge + investments deactivated), BSI-12 (mutation-during-pagination
+    restart from the loop-start cursor).
+  - **Not finished (selected):** none.
+  - **Tests:** 1169/1169 (Perfin 700 + Per-sistant 469; +26 in
+    tests/scan-sept-batch2.test.js). Real-PG 16 checks of every new SQL path;
+    migrations twice (idempotent); Playwright e2e 8/8.
+  - **Decisions:** Plaid re-auth is a `last_error_code` COLUMN, not a new
+    status (status='GOOD' filters would stop retrying); /api/sync stays 500
+    only when nothing synced; last_sync_result errors persist per provider until
+    that provider runs again; max_pages is not reported as an error.
+  - **Open follow-ons:** see `.cycle/blocks/6-batch2-broad-implement.md`.
+  - **Operator:** none required (idempotent auto-migration).
+  - **Where I left off:** Batch 2 committed + pushed. NEXT: /sync-docs for
+    Batch 2 (doc list in the block), then Batch 3 (income/spending
+    classification) per the broad-scan plan.
+
+### Prior entries (this cycle)
+
 - **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 1 DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-09-27). Broad-scan (9 Stage-1 auditors +
   3 Stage-2 deep dives, ~180 findings, 15-batch plan) run this session; Batch 1

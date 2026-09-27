@@ -1208,6 +1208,11 @@
         const data = await res.json().catch(() => ({}));
         if (res.ok) {
           showMsg('Synced: ' + (data.transactions_added || 0) + ' transactions added.', true);
+          // Teller + Plaid now both run; surface per-institution failures
+          // instead of a clean-looking toast (BSI-2).
+          if (data.errors && data.errors.length) {
+            showMsg('Sync issues: ' + data.errors.map(function (e) { return (e.institution || e.provider) + ': ' + e.error; }).join('; '), false);
+          }
           loadSpendingSummary();
         } else {
           showMsg('Sync error: ' + (data.error || 'HTTP ' + res.status), false);

@@ -42,6 +42,14 @@ router.post("/api/enroll", async (req, res) => {
         `INSERT INTO linked_accounts (teller_enrollment_id, account_id, name, official_name, type, subtype, mask)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (account_id) DO UPDATE SET
+           -- Re-point the account at THIS enrollment (DD-8). Teller Connect is
+           -- launched without an existing enrollment id, so every re-link (the
+           -- documented recovery after a passphrase rotation) creates a NEW
+           -- enrollment. When Teller reuses the account ids, the old upsert
+           -- left the rows bound to the old enrollment and its undecryptable
+           -- token (decryption_failed forever) while the new enrollment synced
+           -- nothing. Parity with the Plaid path's plaid_item_id = EXCLUDED.
+           teller_enrollment_id = EXCLUDED.teller_enrollment_id,
            name = EXCLUDED.name,
            official_name = EXCLUDED.official_name,
            type = EXCLUDED.type,
@@ -76,6 +84,33 @@ router.post("/api/enroll", async (req, res) => {
   }
 });
 
+// Incremental re-read window behind the enrollment watermark (BSI-8). The
+// watermark is the newest date seen across ALL accounts in an enrollment, so a
+// charge that posts late on one account — dated before a sibling account's
+// newest transaction — would fall below a bare `>= watermark` floor and be
+// skipped until the weekly reconcile (which also suppresses its anomaly push).
+// Re-reading the trailing week is cheap and idempotent: the upsert dedups on
+// transaction_id and counts only genuine inserts (INV-01), so re-read rows add 0.
+const WATERMARK_LOOKBACK_DAYS = 7;
+
+// watermark (pg DATE → JS Date at local midnight, or a 'YYYY-MM-DD' string)
+// minus `days`, as 'YYYY-MM-DD'. Built from the date PARTS (local getters for a
+// Date, the literal digits for a string) so the result never shifts a day with
+// the host's UTC offset. Unparseable input → null (full re-read, safe).
+function lookbackFloor(watermark, days) {
+  if (!watermark) return null;
+  let y, m, d;
+  if (watermark instanceof Date) {
+    if (isNaN(watermark.getTime())) return null;
+    y = watermark.getFullYear(); m = watermark.getMonth(); d = watermark.getDate();
+  } else {
+    const parts = String(watermark).slice(0, 10).split("-").map(Number);
+    if (parts.length !== 3 || parts.some(n => !Number.isFinite(n))) return null;
+    [y, m, d] = parts; m -= 1;
+  }
+  return new Date(Date.UTC(y, m, d - days)).toISOString().slice(0, 10);
+}
+
 // Helper: sync a single enrollment
 async function syncEnrollment(enrollment, opts = {}) {
   const { id: enrollmentDbId, access_token, last_synced_txn_date, institution_name } = enrollment;
@@ -85,7 +120,7 @@ async function syncEnrollment(enrollment, opts = {}) {
   // advance the watermark (this is a recovery pass, not the incremental cursor).
   // Re-fetching is safe because the INSERT below upserts on transaction_id.
   const backfillFrom = opts.backfillFrom || null;
-  const floorDate = backfillFrom || last_synced_txn_date;
+  const floorDate = backfillFrom || lookbackFloor(last_synced_txn_date, WATERMARK_LOOKBACK_DAYS);
 
   const { rows: accounts } = await pool.query(
     `SELECT account_id FROM linked_accounts WHERE teller_enrollment_id = $1`,
@@ -101,6 +136,17 @@ async function syncEnrollment(enrollment, opts = {}) {
   // un-synced transactions (F3). Re-processing is safe — the insert below
   // upserts on transaction_id.
   let fetchError = false;
+  // A row that failed to upsert must hold the watermark too (BSI-7) — the
+  // opposite (log and advance) permanently stepped past the lost row, unlike
+  // Plaid's halt-on-failure cursor rule (INV-04).
+  let insertError = false;
+  // 401/403 per-account fetch failures (BSI-9). When EVERY account fails auth
+  // the enrollment's token is dead, so we throw with the status and let
+  // syncAllEnrollments mark it DISCONNECTED — previously these were swallowed
+  // here and the enrollment reported a retryable partial_sync_incomplete
+  // forever, so DISCONNECTED could never be set.
+  let authFailures = 0;
+  let authStatus = null;
 
   // Teller paginates newest-first; `from_id` returns rows OLDER than that id.
   // We request an explicit page size and do NOT assume what Teller's default is:
@@ -127,6 +173,10 @@ async function syncEnrollment(enrollment, opts = {}) {
       } catch (fetchErr) {
         console.error(`  Error fetching transactions for account ${account_id}:`, fetchErr.message);
         fetchError = true;
+        if (fetchErr.status === 401 || fetchErr.status === 403) {
+          authFailures++;
+          authStatus = fetchErr.status;
+        }
         break;
       }
 
@@ -192,6 +242,7 @@ async function syncEnrollment(enrollment, opts = {}) {
         }
       } catch (insertErr) {
         console.error(`  Error inserting transaction ${txn.id}:`, insertErr.message);
+        insertError = true;
       }
 
       if (!latestDate || new Date(txn.date) > new Date(latestDate)) {
@@ -200,12 +251,18 @@ async function syncEnrollment(enrollment, opts = {}) {
     }
   }
 
-  // Only advance the watermark when every account fetched cleanly AND this is a
-  // normal incremental sync — a backfill/reconcile pass must not move the
+  if (accounts.length > 0 && authFailures === accounts.length) {
+    const authErr = new Error(`Teller authorization failed (${authStatus}) for every account — re-link required`);
+    authErr.status = authStatus;
+    throw authErr;
+  }
+
+  // Only advance the watermark when every account fetched AND upserted cleanly
+  // (BSI-7) AND this is a normal incremental sync — a backfill/reconcile pass must not move the
   // incremental cursor (it deliberately re-reads old data). On a fetch error we
   // leave last_synced_txn_date untouched so the next sync re-attempts the failed
   // account's range instead of stepping over it (F3).
-  if (latestDate && !fetchError && !backfillFrom) {
+  if (latestDate && !fetchError && !insertError && !backfillFrom) {
     await pool.query(
       `UPDATE teller_enrollments SET last_synced_txn_date = $1, updated_at = now()
        WHERE id = $2`,
@@ -214,11 +271,13 @@ async function syncEnrollment(enrollment, opts = {}) {
   }
 
   console.log(`  ${institution_name}: ${added} added/updated`);
-  // `incomplete` = at least one account in this enrollment failed to fetch, so
+  // `incomplete` = at least one account in this enrollment failed to fetch (or a
+  // row failed to upsert), so
   // the watermark was held back (INV-02) and the next sync will retry that
   // range. Surfaced by syncAllEnrollments so the partial failure is visible in
   // Sync Health rather than reported as a clean success (F15).
-  return { added, incomplete: fetchError };
+  // insertError counts too (BSI-7): a row failed to land and will be retried.
+  return { added, incomplete: fetchError || insertError };
 }
 
 // syncAllEnrollments — in-process sync of every non-suspended Teller enrollment.
@@ -241,7 +300,7 @@ async function syncAllEnrollments(opts = {}) {
   const { rows: enrollments } = await pool.query(
     `SELECT te.id, te.enrollment_id, te.institution_name,
             pgp_sym_decrypt(te.access_token_enc, $1) AS access_token,
-            te.last_synced_txn_date
+            te.last_synced_txn_date, te.status
      FROM teller_enrollments te
      WHERE te.status != 'SUSPENDED'
      ORDER BY te.id`,
@@ -271,6 +330,16 @@ async function syncAllEnrollments(opts = {}) {
     try {
       const result = await syncEnrollment(enrollment, { backfillFrom });
       totalAdded += result.added;
+      // The token authenticated again → self-heal a DISCONNECTED flag (BSI-9
+      // made DISCONNECTED reachable; syncAllBalances only runs GOOD
+      // enrollments, so a transient 401 must not stop balance syncs until a
+      // manual re-link).
+      if (enrollment.status === "DISCONNECTED") {
+        await pool.query(
+          "UPDATE teller_enrollments SET status = 'GOOD', updated_at = now() WHERE id = $1 AND status = 'DISCONNECTED'",
+          [enrollment.id]
+        ).catch(e => console.error("enrollment status restore error:", e.message));
+      }
       if (result.incomplete) {
         // Partial failure: some accounts synced, one fetch errored and the
         // watermark was held back. Surface it (without marking the whole
@@ -292,90 +361,12 @@ async function syncAllEnrollments(opts = {}) {
     }
   }
 
-  // Anomaly detection + push notifications. Correctness details:
-  //   1. Baseline average excludes the trailing 7 days so the candidate
-  //      doesn't inflate its own baseline.
-  //   2. Only transactions inserted since last_anomaly_check_at are considered,
-  //      so the same anomaly doesn't re-push on subsequent syncs.
-  if (totalAdded > 0 && !backfillFrom) {
-    try {
-      const settings = await pool.query("SELECT last_anomaly_check_at FROM user_settings WHERE id = 1");
-      const watermark = settings.rows[0]?.last_anomaly_check_at || null;
-      // Group merchants by user_merchant_name when the user has set one, so a
-      // user-merged merchant ('Amazon' replacing 'AMAZON MKTP*4321' / 'AMZN.COM')
-      // accumulates a single baseline rather than three under-the-threshold ones.
-      const anomalies = await pool.query(
-        `SELECT t.merchant_name, t.name, t.user_merchant_name, t.amount, t.date, avg_tbl.avg_amount
-         FROM transactions t
-         JOIN (
-           SELECT LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name)) AS merchant,
-                  AVG(t.amount) AS avg_amount, COUNT(*) AS txn_count
-           FROM transactions t
-           WHERE t.amount > 0 AND t.pending = false
-             AND t.date >= CURRENT_DATE - INTERVAL '12 months'
-             AND t.date <  CURRENT_DATE - INTERVAL '7 days'
-             AND ${NOT_TRANSFER}
-           GROUP BY LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name))
-           HAVING COUNT(*) >= 3
-         ) avg_tbl ON LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name)) = avg_tbl.merchant
-         WHERE t.amount > 0 AND t.pending = false
-           AND COALESCE(t.is_reimbursed, false) = false
-           AND ${NOT_TRANSFER}
-           -- 7-day window (F7) matches the baseline's 7-day exclusion below, so a
-           -- late-POSTING charge (synced today but dated up to a week ago — caught
-           -- by created_at > watermark) is still eligible, while staying disjoint
-           -- from the baseline so a candidate never inflates its own average.
-           AND t.date >= CURRENT_DATE - INTERVAL '7 days'
-           AND t.amount > avg_tbl.avg_amount * 3
-           AND ($1::timestamptz IS NULL OR t.created_at > $1)
-         ORDER BY t.amount DESC
-         LIMIT 5`,
-        [watermark]
-      );
-      // Track whether the notify loop itself failed. If it did, leave the
-      // watermark alone so the next sync re-considers the same candidates —
-      // otherwise a transient sendToAll error would permanently silence the
-      // anomaly (the watermark advances past the row's created_at, and the
-      // next pass filters it out).
-      let notifyFailed = false;
-      if (anomalies.rows.length > 0) {
-        try {
-          const { sendToAll } = require("./notifications");
-          for (const a of anomalies.rows) {
-            const merchant = a.user_merchant_name || a.merchant_name || a.name;
-            await sendToAll({
-              title: "Unusual charge detected",
-              body: merchant + ": $" + parseFloat(a.amount).toFixed(2) + " (avg: $" + parseFloat(a.avg_amount).toFixed(2) + ")",
-              tag: "anomaly-" + merchant.toLowerCase().replace(/\s+/g, "-"),
-              data: { url: "/transactions" },
-            });
-          }
-        } catch (notifyErr) {
-          notifyFailed = true;
-          console.error("Anomaly notification dispatch error:", notifyErr.message);
-        }
-        // Opt-in critical-alert email — ONE summary per sync run, not one per
-        // anomaly. Email failure is deliberately NOT notifyFailed: it must not
-        // hold back the push watermark (the push already went out).
-        try {
-          const { sendCriticalAlertEmail } = require("./persistent");
-          const lines = anomalies.rows.map(a => {
-            const m = a.user_merchant_name || a.merchant_name || a.name;
-            return m + ": $" + parseFloat(a.amount).toFixed(2) + " (typical: $" + parseFloat(a.avg_amount).toFixed(2) + ")";
-          }).join("\n");
-          await sendCriticalAlertEmail(
-            anomalies.rows.length > 1 ? "Unusual charges detected" : "Unusual charge detected",
-            lines
-          );
-        } catch (e) { console.error("Anomaly alert email error:", e.message); }
-      }
-      if (!notifyFailed) {
-        await pool.query("UPDATE user_settings SET last_anomaly_check_at = now() WHERE id = 1")
-          .catch(err => console.error("Anomaly watermark update error:", err.message));
-      }
-    } catch (err) {
-      console.error("Post-sync anomaly check error:", err.message);
-    }
+  // Anomaly check on NEW rows (DD-1). Skipped for reconcile/backfill (a
+  // re-upsert of history would look like a flood of new activity, INV-05) and
+  // when the caller runs it once over a combined Teller+Plaid count
+  // (syncAllTransactions, opts.skipAnomaly).
+  if (totalAdded > 0 && !backfillFrom && !opts.skipAnomaly) {
+    await runAnomalyCheck();
   }
 
   return {
@@ -388,26 +379,154 @@ async function syncAllEnrollments(opts = {}) {
   };
 }
 
-// recordSyncResult — persist a structured summary of the most recent sync run
-// (any path) to user_settings.last_sync_result so per-item errors surface in
-// the Sync Health card (GET /api/data-health) instead of only living in a
-// manual-sync HTTP payload (addition D). `parts` is [{ provider, result }];
-// each result's `errors` array (e.g. [{ institution, error: "decryption_failed" }])
-// is flattened. Returns the persisted payload so callers can diff it.
-async function recordSyncResult(parts) {
-  const errors = [];
-  for (const { provider, result } of parts) {
-    if (result && Array.isArray(result.errors)) {
-      for (const e of result.errors) {
-        errors.push({
-          provider,
-          institution: e && e.institution ? e.institution : null,
-          error: e && e.error ? e.error : String(e),
-        });
+// runAnomalyCheck — post-sync unusual-charge detection + push, shared by every
+// transaction-sync path (DD-1). It reads the transactions TABLE (not a
+// provider's result), so it covers Teller AND Plaid rows alike; before, it ran
+// only inside the Teller sync and was gated on the Teller-added count, so
+// Plaid-only charges never got an anomaly alert. Correctness details:
+//   1. Baseline average excludes the trailing 7 days so the candidate
+//      doesn't inflate its own baseline.
+//   2. Only transactions inserted since last_anomaly_check_at are considered,
+//      so the same anomaly doesn't re-push on subsequent syncs.
+// Never throws (a failed check must not fail the sync).
+async function runAnomalyCheck() {
+  try {
+    const settings = await pool.query("SELECT last_anomaly_check_at FROM user_settings WHERE id = 1");
+    const watermark = settings.rows[0]?.last_anomaly_check_at || null;
+    // Group merchants by user_merchant_name when the user has set one, so a
+    // user-merged merchant ('Amazon' replacing 'AMAZON MKTP*4321' / 'AMZN.COM')
+    // accumulates a single baseline rather than three under-the-threshold ones.
+    const anomalies = await pool.query(
+      `SELECT t.merchant_name, t.name, t.user_merchant_name, t.amount, t.date, avg_tbl.avg_amount
+       FROM transactions t
+       JOIN (
+         SELECT LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name)) AS merchant,
+                AVG(t.amount) AS avg_amount, COUNT(*) AS txn_count
+         FROM transactions t
+         WHERE t.amount > 0 AND t.pending = false
+           AND t.date >= CURRENT_DATE - INTERVAL '12 months'
+           AND t.date <  CURRENT_DATE - INTERVAL '7 days'
+           AND ${NOT_TRANSFER}
+         GROUP BY LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name))
+         HAVING COUNT(*) >= 3
+       ) avg_tbl ON LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name)) = avg_tbl.merchant
+       WHERE t.amount > 0 AND t.pending = false
+         AND COALESCE(t.is_reimbursed, false) = false
+         AND ${NOT_TRANSFER}
+         -- 7-day window (F7) matches the baseline's 7-day exclusion below, so a
+         -- late-POSTING charge (synced today but dated up to a week ago — caught
+         -- by created_at > watermark) is still eligible, while staying disjoint
+         -- from the baseline so a candidate never inflates its own average.
+         AND t.date >= CURRENT_DATE - INTERVAL '7 days'
+         AND t.amount > avg_tbl.avg_amount * 3
+         AND ($1::timestamptz IS NULL OR t.created_at > $1)
+       ORDER BY t.amount DESC
+       LIMIT 5`,
+      [watermark]
+    );
+    // Track whether the notify loop itself failed. If it did, leave the
+    // watermark alone so the next sync re-considers the same candidates —
+    // otherwise a transient sendToAll error would permanently silence the
+    // anomaly (the watermark advances past the row's created_at, and the
+    // next pass filters it out).
+    let notifyFailed = false;
+    if (anomalies.rows.length > 0) {
+      try {
+        const { sendToAll } = require("./notifications");
+        for (const a of anomalies.rows) {
+          const merchant = a.user_merchant_name || a.merchant_name || a.name;
+          await sendToAll({
+            title: "Unusual charge detected",
+            body: merchant + ": $" + parseFloat(a.amount).toFixed(2) + " (avg: $" + parseFloat(a.avg_amount).toFixed(2) + ")",
+            tag: "anomaly-" + merchant.toLowerCase().replace(/\s+/g, "-"),
+            data: { url: "/transactions" },
+          });
+        }
+      } catch (notifyErr) {
+        notifyFailed = true;
+        console.error("Anomaly notification dispatch error:", notifyErr.message);
       }
+      // Opt-in critical-alert email — ONE summary per sync run, not one per
+      // anomaly. Email failure is deliberately NOT notifyFailed: it must not
+      // hold back the push watermark (the push already went out).
+      try {
+        const { sendCriticalAlertEmail } = require("./persistent");
+        const lines = anomalies.rows.map(a => {
+          const m = a.user_merchant_name || a.merchant_name || a.name;
+          return m + ": $" + parseFloat(a.amount).toFixed(2) + " (typical: $" + parseFloat(a.avg_amount).toFixed(2) + ")";
+        }).join("\n");
+        await sendCriticalAlertEmail(
+          anomalies.rows.length > 1 ? "Unusual charges detected" : "Unusual charge detected",
+          lines
+        );
+      } catch (e) { console.error("Anomaly alert email error:", e.message); }
+    }
+    if (!notifyFailed) {
+      await pool.query("UPDATE user_settings SET last_anomaly_check_at = now() WHERE id = 1")
+        .catch(err => console.error("Anomaly watermark update error:", err.message));
+    }
+  } catch (err) {
+    console.error("Post-sync anomaly check error:", err.message);
+  }
+}
+
+// recordSyncResult — persist a structured summary of the most recent run of
+// each sync provider to user_settings.last_sync_result so per-item errors
+// surface in the Sync Health card (GET /api/data-health) instead of only living
+// in a manual-sync HTTP payload (addition D). `parts` is [{ provider, result }];
+// each result's `errors` array (e.g. [{ institution, error: "decryption_failed" }])
+// is flattened.
+//
+// MERGED per provider (BSI-11): each call replaces ONLY the providers it ran and
+// keeps the others' last-known errors. It used to be last-writer-wins, so
+// daily-sync.yml's /api/sync-balances call wiped the Teller transaction errors
+// /api/sync had written seconds earlier, and a manual Sync wiped the Plaid
+// errors the auto-sync recorded. A part whose result is null/undefined (step
+// not run / not configured) leaves that provider's prior entry untouched.
+// Shape: { at, errors: [...union of every provider...], providers: { [p]: { at, errors } } }
+// — `errors` stays the flat union so data-health and the auto-sync error-
+// signature diff read it unchanged. Returns the persisted payload.
+function flattenSyncErrors(provider, result) {
+  const out = [];
+  if (result && Array.isArray(result.errors)) {
+    for (const e of result.errors) {
+      out.push({
+        provider,
+        institution: e && e.institution ? e.institution : null,
+        error: e && e.error ? e.error : String(e),
+      });
     }
   }
-  const payload = { at: new Date().toISOString(), errors };
+  return out;
+}
+
+async function recordSyncResult(parts) {
+  const at = new Date().toISOString();
+  let providers = {};
+  try {
+    const { rows } = await pool.query("SELECT last_sync_result FROM user_settings WHERE id = 1");
+    const prev = rows[0] && rows[0].last_sync_result;
+    if (prev && prev.providers && typeof prev.providers === "object") {
+      providers = { ...prev.providers };
+    } else if (prev && Array.isArray(prev.errors)) {
+      // Legacy flat payload: regroup its errors by provider so they're kept.
+      for (const e of prev.errors) {
+        const k = (e && e.provider) || "unknown";
+        (providers[k] = providers[k] || { at: prev.at || null, errors: [] }).errors.push(e);
+      }
+    }
+  } catch (e) {
+    console.error("read last sync result error:", e.message);
+  }
+  for (const { provider, result } of parts) {
+    if (result === null || result === undefined) continue;
+    providers[provider] = { at, errors: flattenSyncErrors(provider, result) };
+  }
+  const errors = [];
+  for (const k of Object.keys(providers).sort()) {
+    for (const e of (providers[k].errors || [])) errors.push(e);
+  }
+  const payload = { at, errors, providers };
   await pool.query(
     "UPDATE user_settings SET last_sync_result = $1 WHERE id = 1",
     [JSON.stringify(payload)]
@@ -415,15 +534,72 @@ async function recordSyncResult(parts) {
   return payload;
 }
 
+// syncAllTransactions — the ONE transaction-sync entry point for every trigger
+// (POST /api/sync → the dashboard button + daily-sync.yml backstop, the bank
+// auto-sync, and the pre-insights chain). BSI-2: /api/sync and the daily
+// backstop used to call Teller only while stamping last_txn_sync_at, so with
+// the defaults (auto-sync off) Plaid transactions arrived ~monthly behind a
+// green freshness badge. Runs Teller then Plaid (each failure-isolated), then
+// the anomaly check ONCE over the combined added count (DD-1).
+// Returns { enrollments_synced, transactions_added (combined), errors?,
+//           teller, plaid } — the top-level fields keep the legacy Teller-only
+// response keys the UI reads.
+async function syncAllTransactions() {
+  let teller;
+  try {
+    teller = await syncAllEnrollments({ skipAnomaly: true });
+  } catch (e) {
+    console.error("Teller transaction sync error:", e.message);
+    teller = { failed: true, enrollments_synced: 0, transactions_added: 0, errors: [{ institution: null, error: e.message }] };
+  }
+  let plaid = null;
+  try {
+    const inv = require("./investments"); // lazy: avoid a circular import
+    if (typeof inv.syncAllPlaidTransactions === "function") {
+      const r = await inv.syncAllPlaidTransactions();
+      // { ok:false, error:"Plaid not configured" } = feature off, not a failure.
+      plaid = r && r.ok === false && !r.errors ? null : r;
+    }
+  } catch (e) {
+    console.error("Plaid transaction sync error:", e.message);
+    plaid = { ok: false, transactions_added: 0, errors: [{ institution: null, error: e.message }] };
+  }
+  const tellerAdded = (teller && teller.transactions_added) || 0;
+  const plaidAdded = (plaid && plaid.transactions_added) || 0;
+  if (tellerAdded + plaidAdded > 0) await runAnomalyCheck();
+  const errors = [].concat(
+    ((teller && teller.errors) || []).map(e => ({ provider: "teller", ...e })),
+    ((plaid && plaid.errors) || []).map(e => ({ provider: "plaid", ...e }))
+  );
+  return {
+    enrollments_synced: ((teller && teller.enrollments_synced) || 0) + ((plaid && plaid.items_synced) || 0),
+    transactions_added: tellerAdded + plaidAdded,
+    errors: errors.length ? errors : undefined,
+    teller,
+    plaid,
+  };
+}
+
 // POST /api/sync
 router.post("/api/sync", async (req, res) => {
   try {
-    const result = await syncAllEnrollments();
+    // Teller AND Plaid (BSI-2) — last_txn_sync_at now honestly covers both.
+    const result = await syncAllTransactions();
     // Update data freshness timestamp
     await pool.query(
       "UPDATE user_settings SET last_txn_sync_at = now() WHERE id = 1"
     ).catch(() => {});
-    await recordSyncResult([{ provider: "teller_txn", result }]);
+    await recordSyncResult([
+      { provider: "teller_txn", result: result.teller },
+      { provider: "plaid_txn", result: result.plaid },
+    ]);
+    // Nothing synced at all (the Teller run threw outright and Plaid didn't
+    // succeed either) → still a 500, as before the Plaid leg was added, so the
+    // daily-sync.yml backstop goes red instead of reporting a green no-op.
+    const plaidOk = result.plaid && result.plaid.ok !== false;
+    if (result.teller && result.teller.failed && !plaidOk) {
+      return res.status(500).json({ error: "An internal error occurred.", errors: result.errors });
+    }
     res.json(result);
   } catch (err) {
     console.error("Sync error:", err.message);
@@ -459,7 +635,23 @@ async function runReconcile(days, provider) {
     } catch (e) { out.plaid = { error: e.message }; }
   }
   reconcileJob.phase = "Finalizing";
-  await pool.query("UPDATE user_settings SET last_reconcile_at = now(), last_txn_sync_at = now() WHERE id = 1").catch(() => {});
+  // Record the reconcile outcome in last_sync_result (BSI-11) — it was never
+  // recorded, so a failing reconcile was invisible. A leg that threw becomes a
+  // single error entry.
+  const asResult = (r) => r && r.error && !r.errors ? { errors: [{ institution: null, error: r.error }] } : r;
+  await recordSyncResult([
+    { provider: "teller_reconcile", result: asResult(out.teller) },
+    { provider: "plaid_reconcile", result: out.plaid && out.plaid.error === "Plaid not configured" ? null : asResult(out.plaid) },
+  ]);
+  // last_reconcile_at = the attempt (so the weekly scheduler doesn't retry a
+  // persistent failure every hour); last_txn_sync_at only when every leg that
+  // ran actually completed — a failed reconcile no longer greens the badge.
+  const legFailed = [out.teller, out.plaid].some(r => r && r.error && r.error !== "Plaid not configured");
+  await pool.query(
+    legFailed
+      ? "UPDATE user_settings SET last_reconcile_at = now() WHERE id = 1"
+      : "UPDATE user_settings SET last_reconcile_at = now(), last_txn_sync_at = now() WHERE id = 1"
+  ).catch(() => {});
   return out;
 }
 
@@ -575,7 +767,13 @@ router.delete("/api/enrollments/:id", async (req, res) => {
     try {
       const accounts = await tellerRequest("/accounts", rows[0].access_token);
       for (const acct of accounts) {
-        await tellerRequest(`/accounts/${acct.id}`, rows[0].access_token, { method: "DELETE" });
+        // Per-account try (DD-10): one failed DELETE used to abort revocation
+        // of every remaining account.
+        try {
+          await tellerRequest(`/accounts/${acct.id}`, rows[0].access_token, { method: "DELETE" });
+        } catch (acctErr) {
+          console.warn(`Could not revoke Teller account ${acct.id}:`, acctErr.message);
+        }
       }
     } catch (err) {
       console.warn("Could not revoke at Teller (may already be disconnected):", err.message);
@@ -609,9 +807,56 @@ router.delete("/api/enrollments/:id", async (req, res) => {
 router.delete("/api/items/:id", async (req, res) => {
   const { id } = req.params;
   try {
-    const check = await pool.query("SELECT id, institution_name FROM plaid_items WHERE id = $1", [id]);
+    const check = await pool.query(
+      "SELECT id, item_id, institution_name, status FROM plaid_items WHERE id = $1", [id]
+    );
     if (!check.rows.length) return res.status(404).json({ error: "Item not found" });
-    const name = check.rows[0].institution_name;
+    const { item_id: plaidItemId, institution_name: name, status } = check.rows[0];
+    // Decrypt separately and fail-soft: pgp_sym_decrypt THROWS on a passphrase
+    // mismatch, and unlinking must still work then (it's the recovery path).
+    let accessToken = null;
+    if (status !== "CSV") {
+      try {
+        const tok = await pool.query(
+          "SELECT pgp_sym_decrypt(access_token_enc, $2) AS access_token FROM plaid_items WHERE id = $1",
+          [id, ENCRYPTION_PASSPHRASE]
+        );
+        accessToken = tok.rows[0]?.access_token || null;
+      } catch (e) { console.warn("Plaid unlink: token decrypt failed (skipping itemRemove):", e.message); }
+    }
+
+    // BSI-3: release the Item at Plaid and take its investments down with it.
+    // Before, unlink never called itemRemove (the Item kept one of the 10
+    // Trial-plan slots, and the local row that could remove it was gone), left
+    // the plaid_investment_items row (a second encrypted copy of the token),
+    // and left the brokerage's investment_accounts active — so the next
+    // sync-balances re-upserted it into net worth. Gather the item's account
+    // ids from linked_accounts AND Plaid (investment-only accounts have no
+    // linked_accounts row), then best-effort itemRemove. CSV virtual items
+    // (status='CSV', placeholder token) never touch Plaid.
+    const { rows: laRows } = await pool.query(
+      "SELECT account_id FROM linked_accounts WHERE plaid_item_id = $1", [id]
+    );
+    const accountIds = new Set(laRows.map(r => r.account_id));
+    let plaidRemoved = false;
+    if (status !== "CSV" && accessToken) {
+      try {
+        const { getPlaidClient } = require("../services/plaid-client");
+        const client = getPlaidClient();
+        if (client) {
+          try {
+            const acctRes = await client.accountsGet({ access_token: accessToken });
+            for (const a of acctRes.data.accounts || []) accountIds.add(a.account_id);
+          } catch (e) { console.warn("Plaid unlink: accountsGet failed (continuing):", e.response?.data?.error_code || e.message); }
+          await client.itemRemove({ access_token: accessToken });
+          plaidRemoved = true;
+        }
+      } catch (e) {
+        console.warn("Plaid unlink: itemRemove failed (item may already be removed):", e.response?.data?.error_code || e.message);
+      }
+    }
+    const ids = [...accountIds];
+
     const delClient = await pool.connect();
     try {
       await delClient.query("BEGIN");
@@ -620,6 +865,16 @@ router.delete("/api/items/:id", async (req, res) => {
         [id]
       );
       await delClient.query("DELETE FROM linked_accounts WHERE plaid_item_id = $1", [id]);
+      if (plaidItemId) {
+        await delClient.query("DELETE FROM plaid_investment_items WHERE item_id = $1", [plaidItemId]);
+      }
+      if (ids.length) {
+        await delClient.query(
+          "UPDATE investment_accounts SET is_active = false, updated_at = now() WHERE plaid_account_id = ANY($1::text[])",
+          [ids]
+        );
+        await delClient.query("DELETE FROM investment_holdings WHERE plaid_account_id = ANY($1::text[])", [ids]);
+      }
       await delClient.query("DELETE FROM plaid_items WHERE id = $1", [id]);
       await delClient.query("COMMIT");
     } catch (delErr) {
@@ -628,7 +883,7 @@ router.delete("/api/items/:id", async (req, res) => {
     } finally {
       delClient.release();
     }
-    res.json({ deleted: true, institution_name: name });
+    res.json({ deleted: true, institution_name: name, plaid_item_removed: plaidRemoved });
   } catch (err) {
     console.error("delete plaid item error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
@@ -788,6 +1043,7 @@ async function syncAllBalances() {
   );
 
   let updated = 0;
+  let registered = 0;
   const errors = [];
 
   for (const enrollment of enrollments.rows) {
@@ -800,10 +1056,39 @@ async function syncAllBalances() {
     try {
       const accounts = await tellerRequest("/accounts", enrollment.access_token);
       for (const acct of accounts) {
+        // Register accounts opened AFTER enrollment (DD-9). Rows were only
+        // created at /api/enroll, so a new savings account at the same bank
+        // never got a balance or transactions (syncEnrollment iterates
+        // linked_accounts). ON CONFLICT DO NOTHING — never re-points or
+        // renames an existing row.
+        try {
+          const reg = await pool.query(
+            `INSERT INTO linked_accounts (teller_enrollment_id, account_id, name, official_name, type, subtype, mask)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             ON CONFLICT (account_id) DO NOTHING
+             RETURNING id`,
+            [enrollment.id, acct.id, acct.name, acct.name, acct.type, acct.subtype || acct.type, acct.last_four || null]
+          );
+          if (reg.rows.length) {
+            registered++;
+            console.log(`Teller ${enrollment.institution_name}: registered new account ${acct.name || acct.id}`);
+          }
+        } catch (regErr) {
+          console.error("Teller account register error for", acct.id, ":", regErr.message);
+        }
+
         let balances = null;
         try {
           balances = await tellerRequest(`/accounts/${acct.id}/balances`, enrollment.access_token);
-        } catch (err) { console.error("Balance fetch error for", acct.id, ":", err.message); }
+        } catch (err) {
+          // Surface per-account failures (DD-10) — they were only logged, so a
+          // stale balance sat behind a green "Synced" badge.
+          console.error("Balance fetch error for", acct.id, ":", err.message);
+          errors.push({
+            institution: enrollment.institution_name,
+            error: `balance fetch failed for ${acct.name || acct.id}` + (err.status ? ` (${err.status})` : ""),
+          });
+        }
 
         const available = balances?.available || acct.balance?.available || null;
         const ledger = balances?.ledger || acct.balance?.ledger || acct.balance?.current || null;
@@ -823,7 +1108,9 @@ async function syncAllBalances() {
              RETURNING id`,
             [availNum, ledgerNum, acct.id]
           );
-          updated++;
+          // Count only rows that actually matched (DD-9: an unknown account
+          // matched 0 rows but was still counted).
+          if (updateResult.rows.length) updated++;
           const linkedAcctId = updateResult.rows[0]?.id;
           if (linkedAcctId) {
             const dailyBalance = ledgerNum !== null ? ledgerNum : availNum;
@@ -866,7 +1153,11 @@ async function syncAllBalances() {
     // silently stop updating while the sync kept reporting success.
     console.error("Net-worth snapshot after balance sync failed (non-critical):", snapErr.message);
   }
-  return { accounts_updated: updated, errors: errors.length > 0 ? errors : undefined };
+  return {
+    accounts_updated: updated,
+    accounts_registered: registered || undefined,
+    errors: errors.length > 0 ? errors : undefined,
+  };
 }
 
 // POST /api/sync-balances
@@ -909,6 +1200,8 @@ router.post("/api/sync-balances", async (_req, res) => {
       { provider: "teller_balance", result: tellerResult },
       { provider: "plaid_balance", result: plaidResult },
       { provider: "plaid_holdings", result: holdingsResult },
+      // Investment-flow errors were never recorded (DD-10).
+      { provider: "plaid_flows", result: flowsResult && flowsResult.ok === false && !flowsResult.errors ? null : flowsResult },
       ...(plaidThrew ? [{ provider: "plaid", result: { errors: [{ institution: null, error: plaidThrew }] } }] : []),
     ]);
     res.json({
@@ -1029,3 +1322,6 @@ module.exports.syncAllEnrollments = syncAllEnrollments;
 module.exports.syncAllBalances = syncAllBalances;
 module.exports.reconcileTeller = reconcileTeller;
 module.exports.recordSyncResult = recordSyncResult;
+module.exports.syncAllTransactions = syncAllTransactions;
+module.exports.runAnomalyCheck = runAnomalyCheck;
+module.exports.lookbackFloor = lookbackFloor; // exported for testing (BSI-8)

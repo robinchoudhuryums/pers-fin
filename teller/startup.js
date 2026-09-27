@@ -172,15 +172,15 @@ function startBackgroundJobs() {
       const lastRun = s.insights_last_run ? new Date(s.insights_last_run) : null;
       const now = new Date();
       if (!lastRun || (now - lastRun) / 86400000 >= cadenceDays) {
-        const { syncAllEnrollments, syncAllBalances } = require("./routes/enrollments");
+        const { syncAllTransactions, syncAllBalances } = require("./routes/enrollments");
         const { runSubscriptionDetection } = require("./routes/subscriptions");
-        const { syncAllPlaidTransactions, syncAllPlaidHoldings, syncAllPlaidInvestmentFlows } = require("./routes/investments");
+        const { syncAllPlaidHoldings, syncAllPlaidInvestmentFlows } = require("./routes/investments");
         const { detectRecurringTransfers } = require("../scripts/detect-transfers");
         const { runCategorize } = require("./routes/categorize");
         const { generateInsights } = require("./routes/insights");
 
-        try { await syncAllEnrollments(); } catch (e) { console.error("Pre-insights sync error:", e.message); }
-        try { await syncAllPlaidTransactions(); } catch (e) { console.error("Pre-insights Plaid sync error:", e.message); }
+        // Teller + Plaid + ONE anomaly check over the combined count (DD-1).
+        try { await syncAllTransactions(); } catch (e) { console.error("Pre-insights sync error:", e.message); }
         try { await syncAllPlaidHoldings(); } catch (e) { console.error("Pre-insights holdings sync error:", e.message); }
         try { await syncAllPlaidInvestmentFlows(); } catch (e) { console.error("Pre-insights investment-flows error:", e.message); }
         try { await syncAllBalances(); } catch (e) { console.error("Pre-insights balance error:", e.message); }
@@ -367,18 +367,22 @@ function startBackgroundJobs() {
       const dueMs = intervalHours * 60 * 60 * 1000;
       if (lastSync && (now - lastSync) < dueMs) return;
 
-      const { syncAllEnrollments, syncAllBalances, recordSyncResult } = require("./routes/enrollments");
-      const { syncAllPlaidTransactions, syncAllPlaidHoldings, syncAllPlaidInvestmentFlows } = require("./routes/investments");
-      let txnResult = null, balResult = null, plaidResult = null, holdingsResult = null;
-      try { txnResult = await syncAllEnrollments(); }
-      catch (e) { console.error("Auto-sync Teller error:", e.message); }
-      try { plaidResult = await syncAllPlaidTransactions(); }
-      catch (e) { console.error("Auto-sync Plaid error:", e.message); }
+      const { syncAllTransactions, syncAllBalances, recordSyncResult } = require("./routes/enrollments");
+      const { syncAllPlaidHoldings, syncAllPlaidInvestmentFlows } = require("./routes/investments");
+      let txnResult = null, balResult = null, plaidResult = null, holdingsResult = null, flowsResult = null;
+      // Teller + Plaid via the shared entry point so the anomaly check runs
+      // ONCE over the combined added count — Plaid charges get anomaly alerts
+      // too (DD-1). Each provider is failure-isolated inside it.
+      try {
+        const all = await syncAllTransactions();
+        txnResult = all.teller;
+        plaidResult = all.plaid;
+      } catch (e) { console.error("Auto-sync transaction error:", e.message); }
       try { holdingsResult = await syncAllPlaidHoldings(); }
       catch (e) { console.error("Auto-sync holdings error:", e.message); }
       // External cash flows for TWR/XIRR — full-window idempotent re-pull,
       // cheap (≤1 page for a personal account) and failure-isolated.
-      try { await syncAllPlaidInvestmentFlows(); }
+      try { flowsResult = await syncAllPlaidInvestmentFlows(); }
       catch (e) { console.error("Auto-sync investment-flows error:", e.message); }
       try { balResult = await syncAllBalances(); }
       catch (e) { console.error("Auto-sync balances error:", e.message); }
@@ -410,6 +414,8 @@ function startBackgroundJobs() {
         { provider: "teller_txn", result: txnResult },
         { provider: "plaid_txn", result: plaidResult },
         { provider: "plaid_holdings", result: holdingsResult },
+        // Investment-flow errors were never recorded (DD-10).
+        { provider: "plaid_flows", result: flowsResult && flowsResult.ok === false && !flowsResult.errors ? null : flowsResult },
         { provider: "teller_balance", result: balResult },
       ]);
       // Notify ONLY when the error set changes (new errors appeared) so a
@@ -437,7 +443,7 @@ function startBackgroundJobs() {
       console.log("Auto-sync complete: " + syncMsg);
       const txnsAdded = tellerTxns + plaidTxns;
       const balancesUpdated = balResult ? balResult.accounts_updated : 0;
-      const anyFailed = !txnResult || !balResult;
+      const anyFailed = !txnResult || txnResult.failed === true || !balResult;
       const anyChanged = txnsAdded > 0 || balancesUpdated > 0;
       if (s.sync_notifications_enabled !== false && (anyChanged || anyFailed)) {
         try {
@@ -472,6 +478,9 @@ function startBackgroundJobs() {
       const { reconcileTeller } = require("./routes/enrollments");
       const result = await reconcileTeller(90);
       await pool.query("UPDATE user_settings SET last_reconcile_at = now() WHERE id = 1").catch(() => {});
+      // Record the outcome so a failing weekly heal is visible (BSI-11).
+      const { recordSyncResult } = require("./routes/enrollments");
+      await recordSyncResult([{ provider: "teller_reconcile", result }]);
       console.log("Self-healing Teller reconcile complete:", JSON.stringify(result));
     } catch (err) {
       console.error("Self-healing reconcile error:", err.message);
