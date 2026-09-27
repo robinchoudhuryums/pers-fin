@@ -56,14 +56,9 @@
 
     section.insertAdjacentElement("afterend", panel);
 
-    // Inline style for the caret rotation when open. ::-webkit-details-marker
-    // is hidden via list-style:none above; we draw our own caret instead so
-    // its position is consistent across browsers.
-    var caretStyle = document.createElement("style");
-    caretStyle.textContent =
-      "details.section[open] .rules-caret { transform: rotate(90deg); }" +
-      "details.section > summary::-webkit-details-marker { display: none; }";
-    document.head.appendChild(caretStyle);
+    // Caret rotation + ::-webkit-details-marker hiding live in
+    // perfin-shared.css — a runtime-injected <style> has no CSP nonce and is
+    // blocked by the nonce-only styleSrcElem policy (WD-14).
 
     var listEl = document.getElementById("rules-list");
     var countEl = document.getElementById("rules-count");

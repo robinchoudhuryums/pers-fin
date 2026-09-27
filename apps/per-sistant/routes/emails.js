@@ -37,7 +37,7 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
 
   router.post("/api/emails", async (req, res) => {
     try {
-      const { recipient_name, recipient_email, subject, body, body_html, scheduled_at } = req.body;
+      const { recipient_name, recipient_email, subject, body, body_html, scheduled_at, status: requestedStatus } = req.body;
       if (!recipient_email || !subject || !body) {
         return res.status(400).json({ error: "Recipient email, subject, and body are required." });
       }
@@ -45,7 +45,17 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
       if (!EMAIL_REGEX.test(recipient_email)) {
         return res.status(400).json({ error: "Invalid email address format." });
       }
-      const status = scheduled_at ? "scheduled" : "draft";
+      // An explicit client status wins (PD-1): "Save Draft" with a schedule
+      // time filled in must stay a DRAFT — inferring 'scheduled' from
+      // scheduled_at let the cron send mail the user only meant to save.
+      // Only draft/scheduled are creatable; sent/failed are cron/send states.
+      if (requestedStatus !== undefined && !["draft", "scheduled"].includes(requestedStatus)) {
+        return res.status(400).json({ error: "Invalid status." });
+      }
+      const status = requestedStatus || (scheduled_at ? "scheduled" : "draft");
+      if (status === "scheduled" && !scheduled_at) {
+        return res.status(400).json({ error: "A scheduled email needs scheduled_at." });
+      }
       const r = await pool.query(
         `INSERT INTO emails (recipient_name, recipient_email, subject, body, body_html, status, scheduled_at) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
         [recipient_name || null, recipient_email, subject, body, body_html || null, status, scheduled_at || null]

@@ -187,7 +187,10 @@
       try {
         const res = await apiFetch('/api/sync', { method: 'POST' });
         const data = await res.json();
-        if (res.ok) showMsg('Synced ' + data.transactions_added + ' transactions from ' + data.enrollments_synced + ' institution(s).', true);
+        if (res.ok) {
+          showMsg('Synced ' + (data.transactions_added || 0) + ' transactions from ' + (data.enrollments_synced || 0) + ' institution(s).', true);
+          if (data.errors && data.errors.length) showMsg('Sync issues: ' + data.errors.map(function (e) { return (e.institution || e.provider) + ': ' + e.error; }).join('; '), false);
+        }
         else showMsg('Sync failed: ' + (data.error || 'Unknown error (HTTP ' + res.status + ')'), false);
       } catch (e) { showMsg('Sync failed: Could not reach server. ' + e.message, false); }
       btnLoading(btn, false, 'Sync Transactions');

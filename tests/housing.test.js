@@ -154,6 +154,31 @@ describe("POST /api/housing/payments", () => {
 });
 
 // ---- generateHousingObligations (idempotency contract) ---------------------
+describe("PATCH /api/housing/obligations/:id (FAN-1)", () => {
+  it("setting an amount recomputes status with a TYPED null-check param (untyped `$n IS NULL` 500s on real Postgres)", async () => {
+    let captured;
+    dbModule.pool.query = async (sql, params) => {
+      captured = { sql, params };
+      return { rows: [{ id: 7, amount: 84.12, status: "unpaid" }] };
+    };
+    const res = await supertest(app).patch("/api/housing/obligations/7").send({ amount: 84.12 });
+    assert.equal(res.status, 200);
+    // A placeholder used only inside `IS NULL` has no inferable type — Postgres
+    // rejects the statement ("could not determine data type of parameter").
+    assert.doesNotMatch(captured.sql, /\$\d+ IS NULL/, "every IS-NULL-only param must carry an explicit cast");
+    assert.match(captured.sql, /\$\d+::numeric IS NULL THEN 'pending_amount'/);
+    assert.deepEqual(captured.params, [84.12, 84.12, "7"]);
+  });
+
+  it("clearing the amount passes null for both the column and the status check", async () => {
+    let captured;
+    dbModule.pool.query = async (sql, params) => { captured = { sql, params }; return { rows: [{ id: 7 }] }; };
+    const res = await supertest(app).patch("/api/housing/obligations/7").send({ amount: "" });
+    assert.equal(res.status, 200);
+    assert.deepEqual(captured.params, [null, null, "7"]);
+  });
+});
+
 describe("generateHousingObligations", () => {
   it("inserts rent + utility placeholders idempotently (ON CONFLICT DO NOTHING)", async () => {
     const inserts = [];

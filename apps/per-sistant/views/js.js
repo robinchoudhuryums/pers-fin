@@ -42,6 +42,19 @@ module.exports = `
   };
 })();
 function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML;}
+// ISO timestamp -> <input type=datetime-local> value in the BROWSER's local
+// time ("YYYY-MM-DDTHH:MM"). The API returns UTC ISO strings; iso.slice(0,16)
+// put UTC wall-time in the field, and the save path's new Date(local)
+// re-read it as LOCAL time, so every open+save shifted a scheduled email /
+// note reminder by the UTC offset (PUI-1). Backslash/backtick-free (template-
+// literal module, see gotcha).
+function toLocalDatetimeInput(iso){
+  if (!iso) return '';
+  var d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  var p = function(n){ return String(n).padStart(2,'0'); };
+  return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'T'+p(d.getHours())+':'+p(d.getMinutes());
+}
 // Attribute-safe escape: like esc() but ALSO encodes " and ' so a value placed
 // inside an HTML attribute (title="...", value="...") can't break out of the
 // quotes. esc() alone is only safe in element-text context. Use escAttr() for

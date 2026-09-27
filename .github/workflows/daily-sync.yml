@@ -27,8 +27,9 @@ jobs:
         run: |
           # Endpoints live under /perfin/* now that Perfin runs as a sub-app
           # behind the unified shell. The shell's requireAuth honors x-api-key
-          # the same way Perfin's standalone middleware did.
-          STATUS=$(curl -s -o /tmp/sync.json -w "%{http_code}" \
+          # the same way Perfin's standalone middleware did. /api/sync covers
+          # Teller AND Plaid transactions (+ one anomaly check over both).
+          STATUS=$(curl -s -o /tmp/sync.json -w "%{http_code}" --max-time 240 \
             -X POST "${{ secrets.SERVER_URL }}/perfin/api/sync" \
             -H "x-api-key: ${{ secrets.API_KEY }}" \
             -H "Content-Type: application/json")

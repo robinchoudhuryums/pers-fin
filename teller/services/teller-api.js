@@ -110,6 +110,9 @@ function tellerRequestOnce(url, authHeader, method, bodyData) {
             const err = new Error(`Teller API error ${res.statusCode}: ${text}`);
             err.status = res.statusCode;
             err.body = text;
+            // Retry-After (seconds) on a 429 so the retry loop can honor it.
+            const ra = parseInt(res.headers && res.headers["retry-after"], 10);
+            if (Number.isFinite(ra) && ra >= 0) err.retryAfterMs = ra * 1000;
             return reject(err);
           }
           if (res.statusCode === 204) return resolve(null);
@@ -139,10 +142,17 @@ async function tellerRequest(endpoint, accessToken, options = {}) {
     try {
       return await tellerRequestOnce(url, authHeader, method, bodyData);
     } catch (err) {
-      // Don't retry client errors (4xx) — only transient/network errors
-      if (err.status && err.status >= 400 && err.status < 500) throw err;
+      // Don't retry client errors (4xx) — only transient/network errors. 429
+      // (rate limited) IS transient: the request was not processed, so a retry
+      // is safe for any method (DD-10 — a burst of per-account balance calls
+      // used to fail outright on the first 429).
+      if (err.status && err.status >= 400 && err.status < 500 && err.status !== 429) throw err;
       if (attempt === MAX_RETRIES - 1) throw err;
-      const delay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
+      const backoff = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
+      // Honor a server Retry-After when larger, capped so a sync can't stall.
+      const delay = err.status === 429 && err.retryAfterMs
+        ? Math.min(Math.max(backoff, err.retryAfterMs), 10000)
+        : backoff;
       await new Promise(r => setTimeout(r, delay));
     }
   }

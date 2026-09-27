@@ -9,6 +9,78 @@ to the "none in progress" state.
 
 ## Current Cycle
 
+- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 2 DONE** on branch
+  `claude/lucid-darwin-7r8e59` (2026-09-27). Batch 2 (ingestion completeness
+  & silent sync failures) implemented, tested, pushed (no PR opened).
+  - **Completed:** BSI-1 (Plaid registers new accounts before the cursor walk;
+    stuck item surfaced), BSI-2+DD-1 (/api/sync = Teller + Plaid, one anomaly
+    check on the combined count, via new `syncAllTransactions`), BSI-7 (insert
+    failure holds the watermark), BSI-8 (7-day watermark lookback), BSI-9
+    (401/403 on every account → DISCONNECTED, self-restores to GOOD),
+    BSI-10 (CSV items out of the re-auth count; `plaid_items.last_error_code`),
+    BSI-11 (per-provider merged last_sync_result; reconcile + flows recorded),
+    DD-8 (Teller re-link re-points), DD-9 (new Teller accounts registered in
+    syncAllBalances), DD-10 (per-account balance errors, 429 retry, flow errors,
+    per-account unlink revoke), BSI-3 (Plaid unlink: itemRemove + registry
+    purge + investments deactivated), BSI-12 (mutation-during-pagination
+    restart from the loop-start cursor).
+  - **Not finished (selected):** none.
+  - **Tests:** 1169/1169 (Perfin 700 + Per-sistant 469; +26 in
+    tests/scan-sept-batch2.test.js). Real-PG 16 checks of every new SQL path;
+    migrations twice (idempotent); Playwright e2e 8/8.
+  - **Decisions:** Plaid re-auth is a `last_error_code` COLUMN, not a new
+    status (status='GOOD' filters would stop retrying); /api/sync stays 500
+    only when nothing synced; last_sync_result errors persist per provider until
+    that provider runs again; max_pages is not reported as an error.
+  - **Open follow-ons:** see `.cycle/blocks/6-batch2-broad-implement.md`.
+  - **Operator:** none required (idempotent auto-migration).
+  - **/sync-docs DONE (Batch 2):** CLAUDE.md — /api/sync (Teller+Plaid) +
+    DELETE /api/items/:id endpoint docs, anomaly-alert coverage, Sync Health
+    Plaid count (CSV excluded, last_error_code), last_sync_result per-provider
+    shape, scheduler chains (syncAllTransactions), Teller watermark design
+    decision (insert hold, 7-day lookback, DISCONNECTED + self-restore, DD-8/9),
+    Plaid cursor decision (BSI-1/10/12), reconcile stamping, Teller 429 retry,
+    plaid_items.last_error_code schema note, re-auth-by-re-link gotcha,
+    INV-02/03/04 wording, NEW INV-67 (unified sync) + INV-68 (merged
+    last_sync_result), test counts 1169/46 (Perfin 700). README endpoint table
+    + count. Subsystem path check: 79/79 exist.
+  - **Where I left off:** Batch 2 + docs merged via PR. NEXT: Batch 3
+    (income/spending classification) per the broad-scan plan.
+
+### Prior entries (this cycle)
+
+- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 1 DONE** on branch
+  `claude/lucid-darwin-7r8e59` (2026-09-27). Broad-scan (9 Stage-1 auditors +
+  3 Stage-2 deep dives, ~180 findings, 15-batch plan) run this session; Batch 1
+  (privacy + certain breakage) implemented, tested, pushed.
+  - **Completed:** KR-2 (fail-closed vault sensitivity), KR-1 (full-sync
+    mark-and-sweep + compare fallback + sha reset on repo/branch change), KR-6
+    (hard-deleted notes out of retrieval + chunk purge), FAN-1 (housing PATCH
+    typed param), DC-1 (bulk-category route order), WD-1 (tax links basePath),
+    WUI-1 (housing style nonce), WD-14 (runtime style → shared CSS), PD-1 (Save
+    Draft stays draft), PUI-1 (local datetime fill), PUI-2 (Send now saves
+    first), DC-3 (calendar paid state).
+  - **Not finished (selected):** none.
+  - **Tests:** 1143/1143 (Perfin 674 + Per-sistant 469; +46). Real-PG 16
+    verification of all new SQL; Playwright e2e 8/8 on a live boot.
+  - **Decisions:** vault sensitivity is most-restrictive-wins and unknown →
+    private (INV-27 strengthened; old "bogus → normal" test flipped on purpose).
+    YAML ` #` comments are stripped (quote values that contain " #"). "Save
+    Draft" on a scheduled email unschedules it.
+  - **Open follow-ons:** see `.cycle/blocks/6-batch1-broad-implement.md`.
+  - **Operator:** after deploy, run one full Knowledge reindex.
+  - **/sync-docs DONE:** test counts (1143/45 files; Perfin 674 + Per-sistant
+    469), INV-27 fail-closed + KR-6 wording, CSP "every <style> nonced" rule,
+    new "mount specific-before-generic" design decision (DC-1), Knowledge
+    post-deploy full-reindex operator note, `.claude/commands` list,
+    scripts/ci-migration-test.js added to Platform subsystem; Per-sistant
+    CLAUDE.md email/trash/vault-sync semantics; both READMEs.
+  - **Where I left off:** Batch 1 + docs committed + pushed (no PR opened).
+    NEXT: Batch 2 (ingestion completeness & silent sync failures) per the
+    broad-scan plan.
+
+### Prior entries
+
 - **Status:** **Job Radar Batch 2 DONE** (Per-sistant) on branch
   `claude/loving-rubin-1tkzs5` (2026-06-18). AI fit/legitimacy + cap + surfaces.
   Feature is now end-to-end (ingest→trust→fit→surface).

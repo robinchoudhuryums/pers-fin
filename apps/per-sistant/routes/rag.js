@@ -370,7 +370,11 @@ module.exports = function ({ pool }) {
 
   // Vector retrieval over the polymorphic chunk store, joining back to the
   // source row to get its title and honor deleted/sensitivity filters. Only
-  // 'normal' documents (and non-deleted notes) are retrievable.
+  // 'normal' documents (and non-deleted notes) are retrievable. The
+  // `n.id IS NOT NULL` / `d.id IS NOT NULL` guards are load-bearing (KR-6):
+  // with a LEFT JOIN, a chunk whose source row was HARD-deleted (trash
+  // emptied) gets n.deleted_at = NULL, which `deleted_at IS NULL` accepted —
+  // so a permanently deleted note kept being retrieved and sent to Claude.
   const VECTOR_SQL = `
     SELECT c.source_kind AS kind, c.source_id::text AS id, c.content,
            COALESCE(n.title, d.title) AS title,
@@ -379,8 +383,8 @@ module.exports = function ({ pool }) {
     LEFT JOIN notes n ON c.source_kind = 'note' AND n.id = c.source_id
     LEFT JOIN documents d ON c.source_kind = 'document' AND d.id = c.source_id
     WHERE c.embedding IS NOT NULL
-      AND ( (c.source_kind = 'note' AND n.deleted_at IS NULL)
-         OR (c.source_kind = 'document' AND d.deleted_at IS NULL AND d.sensitivity = 'normal') )
+      AND ( (c.source_kind = 'note' AND n.id IS NOT NULL AND n.deleted_at IS NULL)
+         OR (c.source_kind = 'document' AND d.id IS NOT NULL AND d.deleted_at IS NULL AND d.sensitivity = 'normal') )
     ORDER BY c.embedding <=> $1::vector
     LIMIT $2`;
 

@@ -765,6 +765,14 @@ async function runMigrations() {
     )`);
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS housing_config JSONB NOT NULL DEFAULT '{}'::jsonb");
 
+    // ---- Plaid item re-auth signal (BSI-10). A Plaid ITEM_* error that needs
+    // the user to re-authenticate (ITEM_LOGIN_REQUIRED, …) is recorded here and
+    // cleared on the next successful sync / re-link. Deliberately a separate
+    // column rather than a new `status` value: every sync path filters
+    // status = 'GOOD', so flipping status would STOP retrying the item and it
+    // could never self-clear. status stays 'GOOD' | 'CSV'. ----
+    await client.query("ALTER TABLE plaid_items ADD COLUMN IF NOT EXISTS last_error_code TEXT");
+
     // ---- Settle-up log: one row per month the user marks squared with the
     // partner (combined shared-card + housing even-up). UNIQUE(period) so
     // re-marking a month updates rather than duplicates. ----

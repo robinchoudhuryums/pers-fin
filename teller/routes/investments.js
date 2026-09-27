@@ -195,6 +195,7 @@ router.post("/api/plaid/hosted-link-complete", async (req, res) => {
        ON CONFLICT (item_id) DO UPDATE SET
          access_token_enc = pgp_sym_encrypt($3, $4),
          institution_name = $2,
+         last_error_code = NULL,
          updated_at = now()
        RETURNING id`,
       [itemId, institutionName, accessToken, ENCRYPTION_PASSPHRASE]
@@ -272,6 +273,7 @@ router.post("/api/plaid/exchange-transactions", async (req, res) => {
        ON CONFLICT (item_id) DO UPDATE SET
          access_token_enc = pgp_sym_encrypt($4, $5),
          institution_name = $3,
+         last_error_code = NULL,
          updated_at = now()
        RETURNING id`,
       [itemId, institution?.institution_id || null, institution?.name || "Unknown",
@@ -430,6 +432,14 @@ async function syncPlaidItemTransactions(client, plaidItemDbId, accessToken) {
     [plaidItemDbId]
   );
   let cursor = cursorRow.rows[0]?.cursor || "";
+  // Plaid's contract for TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION: restart
+  // the whole pagination loop from the cursor the loop STARTED with (BSI-12).
+  // Remember it so the error resets to it instead of leaving a mid-loop cursor
+  // saved (which could keep the item failing until a manual reconcile).
+  const loopStartCursor = cursor;
+  let mutationRestarts = 0;
+  const MAX_MUTATION_RESTARTS = 3;
+  let incompleteReason = null;
   let totalAdded = 0;
   let totalModified = 0;
   let totalRemoved = 0;
@@ -477,11 +487,35 @@ async function syncPlaidItemTransactions(client, plaidItemDbId, accessToken) {
 
   while (hasMore && pages < MAX_PAGES) {
     pages++;
-    const syncRes = await client.transactionsSync({
-      access_token: accessToken,
-      cursor: cursor,
-      count: 500,
-    });
+    let syncRes;
+    try {
+      syncRes = await client.transactionsSync({
+        access_token: accessToken,
+        cursor: cursor,
+        count: 500,
+      });
+    } catch (err) {
+      if (err.response?.data?.error_code !== "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION") throw err;
+      // Restart from the loop-start cursor (persisted, so the next sync also
+      // starts clean if we give up). Rows already processed on earlier pages
+      // are re-delivered and re-upserted idempotently — `added` counts only
+      // genuine inserts (INV-01), so the restart doesn't double-count.
+      await pool.query(
+        `UPDATE sync_cursors SET cursor = $1 WHERE plaid_item_id = $2`,
+        [loopStartCursor, plaidItemDbId]
+      );
+      cursor = loopStartCursor;
+      if (mutationRestarts >= MAX_MUTATION_RESTARTS) {
+        console.error(`Plaid sync (item ${plaidItemDbId}): data kept mutating during pagination; giving up this run (cursor reset to loop start).`);
+        incomplete = true;
+        incompleteReason = "mutation_during_pagination";
+        break;
+      }
+      mutationRestarts++;
+      pages = 0;
+      hasMore = true;
+      continue;
+    }
     const data = syncRes.data;
 
     // Track per-page row failures. Plaid's cursor contract is "everything up to
@@ -534,6 +568,7 @@ async function syncPlaidItemTransactions(client, plaidItemDbId, accessToken) {
       // the page on the next sync is safe; the failed rows get another chance
       // instead of being lost forever.
       incomplete = true;
+      incompleteReason = "row_failure";
       console.error(`Plaid sync (item ${plaidItemDbId}): row failure on page ${pages}; halting cursor advance to avoid data loss.`);
       break;
     }
@@ -551,9 +586,12 @@ async function syncPlaidItemTransactions(client, plaidItemDbId, accessToken) {
 
   // If MAX_PAGES was hit while has_more is still true, the sync is partial but
   // the cursor is correctly positioned for the next invocation to resume.
-  if (hasMore && !incomplete) incomplete = true;
+  if (hasMore && !incomplete) { incomplete = true; incompleteReason = "max_pages"; }
 
-  return { added: totalAdded, modified: totalModified, removed: totalRemoved, incomplete };
+  // incomplete_reason: 'row_failure' | 'mutation_during_pagination' = the item
+  // is STUCK/behind and must be surfaced; 'max_pages' = a long history walk that
+  // resumes from the correctly-positioned cursor next run (not an error).
+  return { added: totalAdded, modified: totalModified, removed: totalRemoved, incomplete, incomplete_reason: incompleteReason };
 }
 
 // POST /api/plaid/sync-transactions — sync transactions for all Plaid items
@@ -586,18 +624,50 @@ async function syncAllPlaidTransactions() {
   let totalAdded = 0;
   let totalModified = 0;
   let totalRemoved = 0;
+  let accountsRegistered = 0;
   const errors = [];
+  // Items that did NOT sync at all (decryption / throw). A stuck-but-connected
+  // item (partial_sync_incomplete) is surfaced in errors[] yet still counts as
+  // synced — parity with the Teller path (F15).
+  let itemsFailed = 0;
 
   for (const item of items.rows) {
     if (!item.access_token) {
       errors.push({ institution: item.institution_name, error: "decryption_failed" });
+      itemsFailed++;
       continue;
     }
     try {
+      // Fetch the item's accounts BEFORE walking the cursor and register any
+      // that aren't in linked_accounts yet (BSI-1). Rows only used to be
+      // created at link time, so an account the item gained later (a new card
+      // at the same bank, accounts added in update mode) had its transactions
+      // hit the transactions.account_id FK, fail the page, and — since the
+      // cursor never advances past a failed page (INV-04) — stall the WHOLE
+      // item forever. The same response feeds the balance refresh below.
+      // Fail-soft: an accountsGet error doesn't block the transaction sync
+      // (a genuinely broken item fails there too and is reported).
+      let balAccounts = null;
+      try {
+        const balRes = await client.accountsGet({ access_token: item.access_token });
+        balAccounts = balRes.data.accounts || [];
+        accountsRegistered += await registerMissingPlaidAccounts(item.id, balAccounts);
+      } catch (acctErr) {
+        console.error("Plaid accountsGet error for", item.institution_name, ":", acctErr.response?.data?.error_message || acctErr.message);
+      }
+
       const result = await syncPlaidItemTransactions(client, item.id, item.access_token);
       totalAdded += result.added;
       totalModified += result.modified;
       totalRemoved += result.removed;
+      // A halted cursor walk means the item is stuck/behind — surface it
+      // instead of reporting a clean success (BSI-1). max_pages is a normal
+      // resumable long walk, not an error.
+      if (result.incomplete && result.incomplete_reason !== "max_pages") {
+        errors.push({ institution: item.institution_name, error: "partial_sync_incomplete" });
+      }
+      // The item authenticated and synced → clear any recorded re-auth need.
+      await setPlaidItemErrorCode(item.id, null);
 
       // #1: sync liabilities (APR, min payment) on each auto-sync cycle
       try { await syncPlaidLiabilities(client, item.access_token, item.id); }
@@ -609,8 +679,11 @@ async function syncAllPlaidTransactions() {
         [item.id]
       );
       try {
-        const balRes = await client.accountsGet({ access_token: item.access_token });
-        for (const ba of balRes.data.accounts) {
+        if (!balAccounts) {
+          const balRes = await client.accountsGet({ access_token: item.access_token });
+          balAccounts = balRes.data.accounts || [];
+        }
+        for (const ba of balAccounts) {
           const la = accts.rows.find(a => a.account_id === ba.account_id);
           if (!la) continue;
           const bal = ba.balances?.current ?? ba.balances?.available ?? null;
@@ -644,17 +717,80 @@ async function syncAllPlaidTransactions() {
     } catch (err) {
       console.error("Plaid sync error for", item.institution_name, ":", err.response?.data?.error_message || err.message);
       errors.push({ institution: item.institution_name, error: err.response?.data?.error_message || err.message });
+      itemsFailed++;
+      // An ITEM_* error that needs the user to re-authenticate is recorded so
+      // Sync Health can say so (BSI-10) — nothing ever flagged it before.
+      if (isReauthErrorCode(err.response?.data?.error_code)) {
+        await setPlaidItemErrorCode(item.id, err.response.data.error_code);
+      }
     }
   }
 
   return {
     ok: true,
-    items_synced: items.rows.length - errors.length,
+    items_synced: items.rows.length - itemsFailed,
     transactions_added: totalAdded,
     transactions_modified: totalModified,
     transactions_removed: totalRemoved,
+    accounts_registered: accountsRegistered || undefined,
     errors: errors.length > 0 ? errors : undefined,
   };
+}
+
+// registerMissingPlaidAccounts — insert linked_accounts rows for any account an
+// item reports that we don't have yet (BSI-1). ON CONFLICT DO NOTHING: existing
+// rows (and their user edits — shared flags, APR, manual limit) are untouched;
+// balances for existing rows are refreshed by the callers' own UPDATE paths.
+// Returns the number of NEW rows.
+async function registerMissingPlaidAccounts(plaidItemDbId, accounts) {
+  let inserted = 0;
+  for (const acct of accounts || []) {
+    if (!acct || !acct.account_id) continue;
+    const r = await pool.query(
+      `INSERT INTO linked_accounts (plaid_item_id, account_id, name, official_name, type, subtype, mask,
+                                     current_balance, available_balance, credit_limit, balance_updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
+       ON CONFLICT (account_id) DO NOTHING
+       RETURNING id`,
+      [plaidItemDbId, acct.account_id, acct.name || "Account", acct.official_name || null,
+       acct.type || "other", acct.subtype || null, acct.mask || null,
+       acct.balances?.current ?? null, acct.balances?.available ?? null, acct.balances?.limit ?? null]
+    );
+    if (r.rows.length) {
+      inserted++;
+      console.log(`Plaid item ${plaidItemDbId}: registered new account ${acct.name || acct.account_id}`);
+    }
+  }
+  return inserted;
+}
+
+// Plaid ITEM_* error codes that can only be fixed by the user re-authenticating
+// the item in Plaid Link (BSI-10). Transient/rate-limit/institution-down codes
+// are deliberately NOT here — they clear on their own.
+const PLAID_REAUTH_CODES = new Set([
+  "ITEM_LOGIN_REQUIRED",
+  "PENDING_EXPIRATION",
+  "PENDING_DISCONNECT",
+  "INVALID_CREDENTIALS",
+  "INSUFFICIENT_CREDENTIALS",
+  "ITEM_LOCKED",
+  "USER_SETUP_REQUIRED",
+  "MFA_NOT_SUPPORTED",
+  "ACCESS_NOT_GRANTED",
+]);
+function isReauthErrorCode(code) {
+  return typeof code === "string" && PLAID_REAUTH_CODES.has(code);
+}
+
+// Record (code) or clear (null) the item's re-auth signal. Fail-soft: a missing
+// column (pre-migration) or DB blip must never break a sync.
+async function setPlaidItemErrorCode(plaidItemDbId, code) {
+  await pool.query(
+    code === null
+      ? "UPDATE plaid_items SET last_error_code = NULL WHERE id = $1 AND last_error_code IS NOT NULL"
+      : "UPDATE plaid_items SET last_error_code = $2, updated_at = now() WHERE id = $1",
+    code === null ? [plaidItemDbId] : [plaidItemDbId, code]
+  ).catch(e => console.error("plaid item error-code update error:", e.message));
 }
 
 
@@ -768,6 +904,9 @@ async function syncAllPlaidBalances() {
       console.error("Plaid balance refresh error for", item.institution_name, ":", err.response?.data?.error_message || err.message);
       errors.push({ institution: item.institution_name, error: err.response?.data?.error_message || err.message });
       itemsFailed++;
+      if (isReauthErrorCode(err.response?.data?.error_code)) {
+        await setPlaidItemErrorCode(item.id, err.response.data.error_code);
+      }
     }
   }
   return { ok: true, items_synced: items.rows.length - itemsFailed, accounts_updated: accountsUpdated, errors };

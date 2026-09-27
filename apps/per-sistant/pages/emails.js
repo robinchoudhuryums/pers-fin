@@ -143,7 +143,7 @@ async function openEditEmail(id) {
   document.getElementById('e-email').value = e.recipient_email;
   document.getElementById('e-subject').value = e.subject;
   document.getElementById('e-body').value = e.body;
-  document.getElementById('e-schedule').value = e.scheduled_at?e.scheduled_at.slice(0,16):'';
+  document.getElementById('e-schedule').value = toLocalDatetimeInput(e.scheduled_at);
   document.getElementById('e-delete-btn').style.display = 'inline-flex';
   document.getElementById('compose-modal').classList.add('active');
 }
@@ -163,15 +163,22 @@ document.getElementById('e-name').addEventListener('blur', async function() {
 async function saveEmail() {
   var data = getEmailData();
   if (!data) return;
+  // "Save Draft" means DRAFT: without an explicit status the server inferred
+  // 'scheduled' from a filled-in schedule time (and a PATCH left an existing
+  // 'scheduled' row scheduled), so the cron SENT a mail the user only meant
+  // to save (PD-1). Scheduling is saveAndSchedule's job.
+  data.status = 'draft';
   var id = document.getElementById('e-id').value;
   if (id) {
-    await fetch('/api/emails/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+    var pr = await fetch('/api/emails/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}).catch(function(){return null;});
+    if (!pr || !pr.ok) { alert('Could not save the email.'); return null; }
   } else {
     // Capture the created id so sendNow() targets THIS email instead of
     // re-fetching the list and grabbing emails[0] (which assumed newest-first
     // server ordering and could send the wrong email).
     var r = await fetch('/api/emails', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}).then(function(x){return x.json();}).catch(function(){return {};});
     id = r && r.id;
+    if (!id) { alert('Could not save the email.'); return null; }
   }
   closeCompose(); load();
   return id;
@@ -189,8 +196,10 @@ async function saveAndSchedule() {
 }
 
 async function sendNow() {
-  var id = document.getElementById('e-id').value;
-  if (!id) { id = await saveEmail(); }
+  // ALWAYS persist the form first — for an existing email the old
+  // "only save when new" path sent the STALE stored body, silently dropping
+  // any edits made in the modal (PUI-2). saveEmail returns null on failure.
+  var id = await saveEmail();
   if (!id) return;
   var r = await fetch('/api/emails/'+id+'/send', {method:'POST'}).then(r=>r.json());
   if (r.ok) { alert('Email sent!'); closeCompose(); load(); }

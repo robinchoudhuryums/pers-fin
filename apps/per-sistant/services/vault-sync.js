@@ -44,18 +44,46 @@ function shouldIndex(path) {
 }
 
 // Minimal YAML-ish frontmatter parser — enough for embed/private/sensitivity/
-// title/tags. Not a full YAML implementation by design.
+// title/tags. Not a full YAML implementation by design, but it follows the
+// YAML rules Obsidian users actually hit (KR-2): a trailing ` # comment` is
+// not part of the value, and a key with an empty value followed by `- item`
+// lines is a block list (what Obsidian's Properties UI writes for lists).
+function stripYamlComment(val) {
+  const q = val[0];
+  if (q === '"' || q === "'") {
+    // Quoted scalar: the value ends at the closing quote; anything after it
+    // (e.g. `"secret" # note`) is dropped. A `#` INSIDE the quotes is kept.
+    for (let i = 1; i < val.length; i++) {
+      if (val[i] === q && (q === "'" || val[i - 1] !== "\\")) return val.slice(0, i + 1);
+    }
+    return val;
+  }
+  if (val[0] === "#") return ""; // `key: # comment` → empty value
+  // Plain scalar / flow list: a comment starts at `#` preceded by whitespace
+  // (so `https://x.com/a#frag` and `C#` are kept intact).
+  return val.replace(/\s+#.*$/, "").trim();
+}
+
 function parseFrontmatter(text) {
   const s = String(text || "");
   const m = s.match(/^﻿?---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
   if (!m) return { meta: {}, body: s };
   const meta = {};
+  let listKey = null; // key whose empty value may be followed by `- item` lines
   for (const line of m[1].split(/\r?\n/)) {
+    const item = listKey !== null && line.match(/^\s*-\s+(.*)$/);
+    if (item) {
+      const v = stripYamlComment(item[1].trim()).replace(/^["']|["']$/g, "");
+      if (!Array.isArray(meta[listKey])) meta[listKey] = [];
+      if (v) meta[listKey].push(v);
+      continue;
+    }
+    listKey = null;
     const mm = line.match(/^([A-Za-z0-9_-]+)\s*:\s*(.*)$/);
     if (!mm) continue;
     const key = mm[1].toLowerCase();
-    let val = mm[2].trim();
-    if (val === "") { meta[key] = ""; continue; }
+    const val = stripYamlComment(mm[2].trim());
+    if (val === "") { meta[key] = ""; listKey = key; continue; }
     if (/^(true|false)$/i.test(val)) meta[key] = /^true$/i.test(val);
     else if (/^\[.*\]$/.test(val)) {
       meta[key] = val.slice(1, -1).split(",").map((x) => x.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
@@ -64,12 +92,45 @@ function parseFrontmatter(text) {
   return { meta, body: s.slice(m[0].length) };
 }
 
+// resolveSensitivity FAILS CLOSED (KR-2, INV-27). It used to fail OPEN: any
+// value it didn't recognize (`private: yes`, `embed: no`, a typo like
+// `secrets`, a list, a leftover comment) resolved to "normal", so content the
+// user explicitly marked restricted was embedded and sent to Voyage/Claude.
+// Now: the MOST restrictive signal wins, YAML-1.1 truthy/falsy words are
+// understood, and a present-but-unrecognized sensitivity/embed/private value
+// is treated as "private" (never embedded, never retrieved).
+const SENSITIVITY_RANK = { normal: 0, private: 1, secret: 2 };
+const TRUTHY_RE = /^(true|yes|on|y|1)$/i;
+const FALSY_RE = /^(false|no|off|n|0)$/i;
+
+// true | false | null (absent/blank) | "unknown"
+function frontmatterFlag(v) {
+  if (v === undefined || v === null || v === "") return null;
+  if (typeof v === "boolean") return v;
+  if (Array.isArray(v)) return v.length ? "unknown" : null;
+  const t = String(v).trim().replace(/^["']|["']$/g, "");
+  if (TRUTHY_RE.test(t)) return true;
+  if (FALSY_RE.test(t)) return false;
+  return "unknown";
+}
+
 function resolveSensitivity(meta) {
   const m = meta || {};
-  const explicit = m.sensitivity && String(m.sensitivity).toLowerCase();
-  if (explicit && ["normal", "private", "secret"].includes(explicit)) return explicit;
-  if (m.embed === false || m.private === true) return "private";
-  return "normal";
+  let level = "normal";
+  const raise = (l) => { if (SENSITIVITY_RANK[l] > SENSITIVITY_RANK[level]) level = l; };
+  if (m.sensitivity !== undefined && m.sensitivity !== null && m.sensitivity !== "") {
+    const values = Array.isArray(m.sensitivity) ? m.sensitivity : [m.sensitivity];
+    for (const raw of values) {
+      const v = String(raw).trim().replace(/^["']|["']$/g, "").toLowerCase();
+      if (Object.prototype.hasOwnProperty.call(SENSITIVITY_RANK, v)) raise(v);
+      else raise("private"); // unrecognized → fail closed
+    }
+  }
+  const embed = frontmatterFlag(m.embed);
+  if (embed === false || embed === "unknown") raise("private");
+  const priv = frontmatterFlag(m.private);
+  if (priv === true || priv === "unknown") raise("private");
+  return level;
 }
 
 // ---------------------------------------------------------------------------
@@ -399,9 +460,16 @@ async function getHeadSha(repo, branch, ctx) {
   return j.commit.sha;
 }
 
+// Full tree listing. `truncated` is GitHub's flag for a tree too large to
+// return whole — the caller must then NOT treat "absent from the listing" as
+// "deleted from the vault" (KR-1 sweep guard).
 async function listIndexableFiles(repo, sha, ctx) {
   const j = await ghJson(`/repos/${repo}/git/trees/${sha}?recursive=1`, ctx);
-  return (j.tree || []).filter((t) => t.type === "blob" && shouldIndex(t.path)).map((t) => t.path);
+  // A response without a `tree` array is malformed, not "an empty vault" —
+  // report it as truncated so the sweep never deletes the whole index on it.
+  if (!Array.isArray(j.tree)) return { paths: [], truncated: true };
+  const paths = j.tree.filter((t) => t.type === "blob" && shouldIndex(t.path)).map((t) => t.path);
+  return { paths, truncated: !!j.truncated };
 }
 
 async function getFileText(repo, path, ref, ctx) {
@@ -411,8 +479,14 @@ async function getFileText(repo, path, ref, ctx) {
   return j.content || "";
 }
 
+// GitHub's compare API lists at most 300 files; a diff that hits the cap is
+// silently incomplete (changes AND removals beyond it are lost), so the
+// caller falls back to a full sync instead (KR-1).
+const COMPARE_FILE_CAP = 300;
+
 async function listChangedFiles(repo, base, head, ctx) {
   const j = await ghJson(`/repos/${repo}/compare/${base}...${head}`, ctx);
+  if ((j.files || []).length >= COMPARE_FILE_CAP) return { incomplete: true, changed: [], removed: [] };
   const changed = [];
   const removed = [];
   for (const f of j.files || []) {
@@ -472,18 +546,47 @@ async function syncVault(pool, opts = {}) {
   _syncing = true;
   try {
     const head = await getHeadSha(repo, branch, ctx);
-    const full = !!opts.full || !cfg.vault_last_sha;
+    let full = !!opts.full || !cfg.vault_last_sha;
     let changed = [];
     let removed = [];
-    if (full) {
-      changed = await listIndexableFiles(repo, head, ctx);
-    } else if (cfg.vault_last_sha === head) {
+    if (!full && cfg.vault_last_sha === head) {
       await pool.query("UPDATE user_settings SET vault_last_synced_at = now(), vault_last_error = NULL WHERE id = 1");
       return { ok: true, up_to_date: true, changed: 0, removed: 0, embedded: 0, skipped: 0, head };
-    } else {
-      const cmp = await listChangedFiles(repo, cfg.vault_last_sha, head, ctx);
-      changed = cmp.changed;
-      removed = cmp.removed;
+    }
+    if (!full) {
+      // An incremental diff can't be trusted when the base commit is gone
+      // (force-push/history rewrite → compare 404/422) or GitHub capped the
+      // file list — fall back to a full walk + sweep rather than silently
+      // skipping those changes and deletions forever (KR-1).
+      let cmp = null;
+      try {
+        cmp = await listChangedFiles(repo, cfg.vault_last_sha, head, ctx);
+      } catch (e) {
+        if (!/^GitHub (404|422) /.test(String(e.message))) throw e;
+      }
+      if (!cmp || cmp.incomplete) full = true;
+      else { changed = cmp.changed; removed = cmp.removed; }
+    }
+    if (full) {
+      const tree = await listIndexableFiles(repo, head, ctx);
+      changed = tree.paths;
+      // Mark-and-sweep (KR-1): a full walk only sees files that EXIST, so a
+      // vault file deleted/renamed since the last sync (or everything from a
+      // previously configured repo) was never removed — its facts kept being
+      // injected as "Known facts" and its chunks kept being sent to Claude,
+      // while vault_last_sha advanced past the deletion. Anything we have
+      // indexed that the tree no longer contains is removed via the normal
+      // removal path. Skipped when GitHub truncated the tree (absence would
+      // not mean deletion).
+      if (!tree.truncated) {
+        const present = new Set(tree.paths);
+        const indexed = await pool.query(
+          `SELECT source_ref FROM documents WHERE source = 'vault' AND deleted_at IS NULL AND source_ref IS NOT NULL
+           UNION
+           SELECT source_ref FROM facts WHERE source = 'vault' AND source_ref IS NOT NULL`
+        );
+        removed = indexed.rows.map((r) => r.source_ref).filter((ref) => !present.has(ref));
+      }
     }
 
     let embedded = 0;

@@ -328,7 +328,11 @@ router.get("/api/data-health", async (_req, res) => {
     const [settingsRow, teller, plaid, events] = await Promise.all([
       pool.query("SELECT last_txn_sync_at, last_balance_sync_at, last_auto_sync_at, insights_last_run, last_reconcile_at, last_sync_result FROM user_settings WHERE id = 1"),
       pool.query("SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE status = 'DISCONNECTED')::int AS disconnected FROM teller_enrollments").catch(() => ({ rows: [{ total: 0, disconnected: 0 }] })),
-      pool.query("SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE status <> 'GOOD')::int AS not_good FROM plaid_items").catch(() => ({ rows: [{ total: 0, not_good: 0 }] })),
+      // CSV virtual items (status='CSV') are not Plaid links — exclude them from
+      // both counts; they used to raise a permanent "need re-authentication"
+      // warning after any CSV import (BSI-10). A real re-auth need is the
+      // last_error_code the sync paths record on an ITEM_* error.
+      pool.query("SELECT COUNT(*) FILTER (WHERE status <> 'CSV')::int AS total, COUNT(*) FILTER (WHERE status <> 'CSV' AND (status <> 'GOOD' OR last_error_code IS NOT NULL))::int AS not_good FROM plaid_items").catch(() => ({ rows: [{ total: 0, not_good: 0 }] })),
       pool.query("SELECT type, title, body, created_at FROM notification_log WHERE type IN ('auto-sync','csv-reminder') OR title ILIKE '%sync%' ORDER BY created_at DESC LIMIT 8").catch(() => ({ rows: [] })),
     ]);
     const s = settingsRow.rows[0] || {};
