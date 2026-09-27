@@ -984,7 +984,9 @@
       }
       function updateTaxLinks() {
         var yr = sel.value;
-        var base = '/api/export/tax-report?year=' + yr;
+        // Plain <a href> bypasses apiFetch's BASE_PATH prepend, so add it here —
+        // a root-relative href 404s under the shell's /perfin mount (WD-1).
+        var base = (window.BASE_PATH || '') + '/api/export/tax-report?year=' + yr;
         document.getElementById('tax-csv-link').href = base;
         document.getElementById('tax-json-link').href = base + '&format=json';
         document.getElementById('tax-pdf-link').href = base + '&format=pdf';

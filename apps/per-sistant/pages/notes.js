@@ -181,7 +181,7 @@ async function openEditNote(id) {
   document.getElementById('n-title').value = n.title||'';
   document.getElementById('n-content').value = n.content;
   document.getElementById('n-color').value = n.color||'default';
-  document.getElementById('n-reminder').value = n.reminder_at?n.reminder_at.slice(0,16):'';
+  document.getElementById('n-reminder').value = toLocalDatetimeInput(n.reminder_at);
   document.getElementById('n-pinned').checked = n.pinned;
   document.getElementById('n-markdown').checked = n.format === 'markdown';
   document.getElementById('n-preview-btn').style.display = n.format === 'markdown' ? 'inline-flex' : 'none';

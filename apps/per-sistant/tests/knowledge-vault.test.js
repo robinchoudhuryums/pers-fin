@@ -32,8 +32,11 @@ describe("Vault — resolveSensitivity", () => {
   it("defaults to normal", () => assert.equal(vault.resolveSensitivity({}), "normal"));
   it("embed:false -> private", () => assert.equal(vault.resolveSensitivity({ embed: false }), "private"));
   it("private:true -> private", () => assert.equal(vault.resolveSensitivity({ private: true }), "private"));
-  it("explicit sensitivity wins", () => assert.equal(vault.resolveSensitivity({ sensitivity: "secret" }), "secret"));
-  it("ignores invalid sensitivity values", () => assert.equal(vault.resolveSensitivity({ sensitivity: "bogus" }), "normal"));
+  it("explicit sensitivity is honored", () => assert.equal(vault.resolveSensitivity({ sensitivity: "secret" }), "secret"));
+  // KR-2: this used to pin FAIL-OPEN ("bogus" → normal), which embedded and
+  // sent restricted notes to Voyage/Claude. An unrecognized value now fails
+  // closed to private. (More cases: tests/scan-sept-fixes.test.js.)
+  it("fails closed on invalid sensitivity values", () => assert.equal(vault.resolveSensitivity({ sensitivity: "bogus" }), "private"));
 });
 
 describe("Vault — shouldIndex", () => {

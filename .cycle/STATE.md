@@ -9,6 +9,32 @@ to the "none in progress" state.
 
 ## Current Cycle
 
+- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 1 DONE** on branch
+  `claude/lucid-darwin-7r8e59` (2026-09-27). Broad-scan (9 Stage-1 auditors +
+  3 Stage-2 deep dives, ~180 findings, 15-batch plan) run this session; Batch 1
+  (privacy + certain breakage) implemented, tested, pushed.
+  - **Completed:** KR-2 (fail-closed vault sensitivity), KR-1 (full-sync
+    mark-and-sweep + compare fallback + sha reset on repo/branch change), KR-6
+    (hard-deleted notes out of retrieval + chunk purge), FAN-1 (housing PATCH
+    typed param), DC-1 (bulk-category route order), WD-1 (tax links basePath),
+    WUI-1 (housing style nonce), WD-14 (runtime style → shared CSS), PD-1 (Save
+    Draft stays draft), PUI-1 (local datetime fill), PUI-2 (Send now saves
+    first), DC-3 (calendar paid state).
+  - **Not finished (selected):** none.
+  - **Tests:** 1143/1143 (Perfin 674 + Per-sistant 469; +46). Real-PG 16
+    verification of all new SQL; Playwright e2e 8/8 on a live boot.
+  - **Decisions:** vault sensitivity is most-restrictive-wins and unknown →
+    private (INV-27 strengthened; old "bogus → normal" test flipped on purpose).
+    YAML ` #` comments are stripped (quote values that contain " #"). "Save
+    Draft" on a scheduled email unschedules it.
+  - **Open follow-ons:** see `.cycle/blocks/6-batch1-broad-implement.md`.
+  - **Operator:** after deploy, run one full Knowledge reindex.
+  - **Where I left off:** Batch 1 committed + pushed (no PR opened). NEXT:
+    /sync-docs for the doc updates listed in the block, then Batch 2
+    (ingestion completeness & silent sync failures) per the broad-scan plan.
+
+### Prior entries
+
 - **Status:** **Job Radar Batch 2 DONE** (Per-sistant) on branch
   `claude/loving-rubin-1tkzs5` (2026-06-18). AI fit/legitimacy + cap + surfaces.
   Feature is now end-to-end (ingest→trust→fit→surface).

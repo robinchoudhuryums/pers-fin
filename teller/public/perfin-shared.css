@@ -527,3 +527,10 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   table.txn-compact td.empty, table.txn-compact td.empty-msg {
     grid-column: 1 / -1; grid-area: auto; text-align: center; }
 }
+
+/* Settings → Categorization Rules panel (built by settings-rules.js). These
+   rules used to be injected at runtime via document.createElement('style'),
+   which the nonce-only styleSrcElem CSP blocks (WD-14) — so the caret never
+   rotated and the native details marker showed. Static CSS is CSP-safe. */
+details.section[open] .rules-caret { transform: rotate(90deg); }
+details.section > summary::-webkit-details-marker { display: none; }

@@ -72,14 +72,27 @@ module.exports = function ({ pool, config }) {
       // VAULT_GITHUB_TOKEN env var, never stored here).
       if (vault_enabled !== undefined) { fields.push(`vault_enabled = $${idx++}`); params.push(!!vault_enabled); }
       if (job_radar_enabled !== undefined) { fields.push(`job_radar_enabled = $${idx++}`); params.push(!!job_radar_enabled); }
+      // Switching the vault repo or branch invalidates the last-indexed SHA:
+      // an incremental diff from the OLD repo's commit is meaningless, and
+      // the old repo's documents/facts would never be swept. NULLing it forces
+      // the next sync to be a full walk, whose mark-and-sweep removes them
+      // (KR-1). One combined assignment — SET can't name a column twice.
+      const shaResetConds = [];
       if (vault_repo !== undefined) {
         const repo = vault_repo ? String(vault_repo).trim() : null;
         if (repo && !/^[\w.-]+\/[\w.-]+$/.test(repo)) {
           return res.status(400).json({ error: "vault_repo must be in 'owner/name' form." });
         }
+        shaResetConds.push(`vault_repo IS DISTINCT FROM $${idx}::text`);
         fields.push(`vault_repo = $${idx++}`); params.push(repo);
       }
-      if (vault_branch !== undefined) { fields.push(`vault_branch = $${idx++}`); params.push((vault_branch && String(vault_branch).trim()) || "main"); }
+      if (vault_branch !== undefined) {
+        shaResetConds.push(`vault_branch IS DISTINCT FROM $${idx}::text`);
+        fields.push(`vault_branch = $${idx++}`); params.push((vault_branch && String(vault_branch).trim()) || "main");
+      }
+      if (shaResetConds.length) {
+        fields.push(`vault_last_sha = CASE WHEN ${shaResetConds.join(" OR ")} THEN NULL ELSE vault_last_sha END`);
+      }
       if (!fields.length) return res.status(400).json({ error: "No fields to update." });
       const r = await pool.query(`UPDATE user_settings SET ${fields.join(", ")} WHERE id = 1 RETURNING *`, params);
       if (theme && req.session) req.session.theme = theme;

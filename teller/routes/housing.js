@@ -656,8 +656,11 @@ router.patch("/api/housing/obligations/:id", async (req, res) => {
   if (body.label !== undefined && String(body.label).trim()) { fields.push(`label = $${i++}`); params.push(String(body.label).trim()); }
   if (!fields.length) return res.status(400).json({ error: "No fields to update" });
   // Recompute status from the (possibly new) amount unless the row is paid.
+  // The ::numeric cast is load-bearing: a parameter used ONLY in `$n IS NULL`
+  // has no inferable type, and Postgres rejects the whole UPDATE with
+  // "could not determine data type of parameter $n" (every amount save 500'd).
   if (amountProvided) {
-    fields.push(`status = CASE WHEN status = 'paid' THEN 'paid' WHEN $${i} IS NULL THEN 'pending_amount' ELSE 'unpaid' END`);
+    fields.push(`status = CASE WHEN status = 'paid' THEN 'paid' WHEN $${i}::numeric IS NULL THEN 'pending_amount' ELSE 'unpaid' END`);
     params.push(newAmount); i++;
   }
   fields.push("updated_at = now()");

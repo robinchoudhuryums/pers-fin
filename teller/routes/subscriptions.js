@@ -836,14 +836,14 @@ router.get("/api/bill-calendar", async (req, res) => {
     );
     const paidSet = new Set();
     for (const p of payments.rows) {
-      paidSet.add(p.bill_source + ":" + p.bill_id + ":" + p.paid_date);
+      paidSet.add(paidKey(p.bill_source, p.bill_id, p.paid_date));
     }
     // Mark events as paid
     for (let d = 1; d <= daysInMonth; d++) {
       for (const ev of calendar[d]) {
         if (ev.bill_source && ev.bill_id) {
           const dateStr = `${year}-${String(month).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-          ev.is_paid = paidSet.has(ev.bill_source + ":" + ev.bill_id + ":" + dateStr);
+          ev.is_paid = paidSet.has(paidKey(ev.bill_source, ev.bill_id, dateStr));
         }
       }
     }
@@ -1255,6 +1255,23 @@ async function buildBillCalendarIcs(days) {
   return lines.join("\r\n") + "\r\n";
 }
 
+// Bill-calendar paid-state key. `paid_date` is a DATE column, which node-pg
+// returns as a JS Date at LOCAL midnight (no type-parser override) —
+// stringifying it yields "Tue Sep 01 2026 …", which never matched the
+// "YYYY-MM-DD" key the calendar looks up, so paid bills never rendered as
+// paid (DC-3). Format Dates with local getters (matching how pg built them);
+// strings pass through.
+function paidKey(billSource, billId, paidDate) {
+  let day = paidDate;
+  if (paidDate instanceof Date) {
+    day = `${paidDate.getFullYear()}-${String(paidDate.getMonth() + 1).padStart(2, "0")}-${String(paidDate.getDate()).padStart(2, "0")}`;
+  } else if (typeof paidDate === "string") {
+    day = paidDate.slice(0, 10);
+  }
+  return billSource + ":" + billId + ":" + day;
+}
+
 module.exports = router;
 module.exports.runSubscriptionDetection = runSubscriptionDetection;
 module.exports.buildBillCalendarIcs = buildBillCalendarIcs;
+module.exports.paidKey = paidKey;

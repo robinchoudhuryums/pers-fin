@@ -278,12 +278,16 @@ app.use("/api", (req, res, next) => {
 // Mount API route modules
 // ---------------------------------------------------------------------------
 app.use(require("./routes/enrollments"));
+// categorize MUST mount before subscriptions: subscriptions mounts
+// transactions.js, whose generic `PATCH /api/transactions/:id` would
+// otherwise capture `PATCH /api/transactions/bulk-category` (id =
+// "bulk-category") and 400 every bulk recategorize (DC-1).
+app.use(require("./routes/categorize"));
 app.use(require("./routes/subscriptions"));
 app.use(require("./routes/goals"));
 app.use(require("./routes/settings"));
 app.use(require("./routes/insights"));
 app.use(require("./routes/budgets"));
-app.use(require("./routes/categorize"));
 app.use(require("./routes/notifications"));
 app.use(require("./routes/investments"));
 app.use(require("./routes/persistent"));
