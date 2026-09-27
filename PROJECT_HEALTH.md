@@ -7,8 +7,11 @@ the Health Synthesis step at the end of each cycle. Read by `/cycle-status`.
   Higher = healthier. A score is only recorded when a cycle gathers evidence for
   that dimension; dimensions not touched in a cycle keep their prior value (with
   the cycle they were last scored noted).
-- **Policy:** a dimension at **≤ 6/10 for 2 consecutive cycles** triggers a
-  policy response (prioritized remediation before new feature work in that area).
+- **Policy:** a category that **declines for 2 consecutive cycles**, **drops
+  ≥1.5 in one cycle**, **stays lowest for 2 cycles without improving**, or sits
+  at the **absolute floor ≤ 5/10** triggers a policy response (prioritized
+  remediation before new feature work in that area). Relative trigger per
+  workflow-tools v1.33.0; floor lowered 6 → 5 after cycle 4.
 - **Axes:** *Axis A* = the 15 vertical health dimensions (per-subsystem concerns;
   Knowledge Retrieval & Grounding added in cycle 3 to match the Cycle Workflow
   Config's Health Dimensions). *Axis B* = 6 cross-cutting failure shapes scored
