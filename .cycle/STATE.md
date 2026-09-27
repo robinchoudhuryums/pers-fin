@@ -34,9 +34,18 @@ to the "none in progress" state.
     that provider runs again; max_pages is not reported as an error.
   - **Open follow-ons:** see `.cycle/blocks/6-batch2-broad-implement.md`.
   - **Operator:** none required (idempotent auto-migration).
-  - **Where I left off:** Batch 2 committed + pushed. NEXT: /sync-docs for
-    Batch 2 (doc list in the block), then Batch 3 (income/spending
-    classification) per the broad-scan plan.
+  - **/sync-docs DONE (Batch 2):** CLAUDE.md — /api/sync (Teller+Plaid) +
+    DELETE /api/items/:id endpoint docs, anomaly-alert coverage, Sync Health
+    Plaid count (CSV excluded, last_error_code), last_sync_result per-provider
+    shape, scheduler chains (syncAllTransactions), Teller watermark design
+    decision (insert hold, 7-day lookback, DISCONNECTED + self-restore, DD-8/9),
+    Plaid cursor decision (BSI-1/10/12), reconcile stamping, Teller 429 retry,
+    plaid_items.last_error_code schema note, re-auth-by-re-link gotcha,
+    INV-02/03/04 wording, NEW INV-67 (unified sync) + INV-68 (merged
+    last_sync_result), test counts 1169/46 (Perfin 700). README endpoint table
+    + count. Subsystem path check: 79/79 exist.
+  - **Where I left off:** Batch 2 + docs merged via PR. NEXT: Batch 3
+    (income/spending classification) per the broad-scan plan.
 
 ### Prior entries (this cycle)
 

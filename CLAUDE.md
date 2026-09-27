@@ -53,7 +53,8 @@ teller/
                            positional columns (BS-3).
   services/
     database.js          — Postgres pool + transactional auto-migrations with schema versioning
-    teller-api.js        — mTLS HTTP client for Teller API (retry with exponential backoff)
+    teller-api.js        — mTLS HTTP client for Teller API (retry with exponential backoff;
+                           5xx/network AND 429 — Retry-After honored, capped 10s)
     plaid-client.js      — Plaid client factory (shared by investments.js +
                            investment-performance.js so the two route modules
                            don't need a circular require)
@@ -92,11 +93,14 @@ teller/
                            Stores results in ai_audit_log table.
   routes/
     enrollments.js       — POST /api/enroll, POST /api/sync, GET /api/items,
-                           DELETE /api/enrollments/:id, GET /api/accounts,
+                           DELETE /api/enrollments/:id, DELETE /api/items/:id,
+                           GET /api/accounts,
                            PATCH /api/accounts/:id, PATCH /api/accounts/:id/shared,
                            POST /api/sync-balances, reconcile endpoints, the
-                           Teller sync engine, and account management. Mounts
-                           spending-analytics.js (route-file split).
+                           Teller sync engine, and account management. Also
+                           hosts syncAllTransactions (the single Teller+Plaid
+                           transaction-sync entry point) + runAnomalyCheck.
+                           Mounts spending-analytics.js (route-file split).
     spending-analytics.js — split from enrollments.js: the six read-only
                            aggregation endpoints — /api/spending-summary,
                            /api/spending-categories, /api/cash-flow,
@@ -426,9 +430,16 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1143 tests as of latest); use
+  Perfin and Per-sistant test files (1169 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1143 tests across 45 test files (incl.
+  Current count: 1169 tests across 46 test files (incl.
+  `tests/scan-sept-batch2.test.js` — the Sept 2026 broad-scan Batch 2
+  BEHAVIORAL sync pins (mock pool + stubbed Teller/Plaid clients): unified
+  Teller+Plaid /api/sync with one anomaly check, Plaid new-account
+  registration / mutation-restart / re-auth code, Teller insert-failure
+  watermark hold / 7-day lookback / DISCONNECTED + self-restore / re-link
+  re-point / new-account registration, per-provider last_sync_result merge,
+  Plaid unlink cleanup;
   `tests/scan-sept-fixes.test.js` + `apps/per-sistant/tests/scan-sept-fixes.test.js`
   — the Sept 2026 broad-scan Batch 1 pins: housing PATCH typed param,
   bulk-category route order in the real server.js mount order, calendar
@@ -1022,7 +1033,11 @@ shell/
   weekly digest — without webhook config, it's a no-op.
 - **Context export**: Structured financial data (markdown/JSON) for pasting into Claude chat deep-dives
 - **Real-time anomaly alerts**: Push notifications for charges 3x+ above merchant average during sync
-  (case-insensitive merchant grouping; separate from the 2x AI analysis threshold)
+  (case-insensitive merchant grouping; separate from the 2x AI analysis threshold).
+  Covers Teller AND Plaid rows: `runAnomalyCheck()` (routes/enrollments.js) runs ONCE
+  per `syncAllTransactions` over the combined added count — it reads the transactions
+  table, not a provider result. Previously it lived inside the Teller sync and was gated
+  on the Teller count, so Plaid charges never alerted (DD-1). Reconcile never runs it.
 - **Budget threshold alerts**: Push notifications at 80% (warning) and 100%+ (exceeded) every 3 hours
 
 ### UI & UX
@@ -1142,10 +1157,13 @@ shell/
   `"stale"` >24h or never synced). The response also includes a top-level
   `thresholds: { fresh_seconds, stale_seconds }` block so the nav badge's
   green/yellow/red mapping doesn't need to repeat threshold constants.
-  `POST /api/sync` updates `last_txn_sync_at`; `POST /api/sync-balances`
-  updates `last_balance_sync_at`.
+  `POST /api/sync` (Teller + Plaid) updates `last_txn_sync_at`;
+  `POST /api/sync-balances` updates `last_balance_sync_at`. A reconcile stamps
+  `last_txn_sync_at` only when every leg completed (BSI-11).
 - **Sync Health card** (Settings): renders `GET /api/data-health` — per-source
-  freshness dots (green/yellow/red), Teller/Plaid connection status, a derived
+  freshness dots (green/yellow/red), Teller/Plaid connection status (the Plaid
+  count EXCLUDES `status='CSV'` virtual items; "need re-auth" = a non-GOOD item or
+  one with `plaid_items.last_error_code` set — BSI-10), a derived
   `issues[]` list (disconnected links, stale balances, never-synced, plus the
   per-item errors from the most recent sync run — see `last_sync_result` below),
   and the last reconcile time — plus a "Reconcile Now" button that POSTs
@@ -1387,6 +1405,12 @@ the Liabilities product entirely (PRODUCTS_NOT_SUPPORTED) AND carries a credit
 account — it stays silent when Liabilities is present but the issuer simply
 returns no APR/limit data, which is the un-fixable Discover case.
 
+**Gotcha — a Plaid "needs re-authentication" item is fixed by RE-LINKING.** The
+app has no Plaid Link update mode, so an item flagged via `last_error_code`
+(Sync Health: "N Plaid item(s) need re-authentication") is recovered by running
+the Plaid link flow for that bank again — the exchange upsert (same `item_id`)
+clears the flag. CSV imports never count toward that warning.
+
 **Gotcha — Plaid Liabilities never covers auto loans (any issuer).** The
 product supports only credit cards, student loans, and mortgages, so an auto
 loan's APR/term/payment will NEVER arrive from Plaid — do not chase it with a
@@ -1442,7 +1466,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1143 tests passing across 45 test files (Perfin 674 + Per-sistant 469), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1169 tests passing across 46 test files (Perfin 700 + Per-sistant 469), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
@@ -1457,7 +1481,22 @@ npm run reset:fresh -- --yes                   # perform the reset (wipes data+c
 
 # Key API endpoints
 POST /api/enroll           # store Teller access token after Connect
-POST /api/sync             # pull transactions for all enrollments
+POST /api/sync             # pull transactions from Teller AND Plaid via
+                           # syncAllTransactions (BSI-2): Teller, then Plaid
+                           # (each failure-isolated), then ONE anomaly check over
+                           # the combined added count (DD-1). Response keeps the
+                           # legacy keys — { enrollments_synced, transactions_added
+                           # (combined), errors?[{provider, institution, error}],
+                           # teller, plaid }. 500 only when nothing synced (Teller
+                           # threw and Plaid didn't succeed) so daily-sync.yml goes
+                           # red. Stamps last_txn_sync_at; records teller_txn +
+                           # plaid_txn in last_sync_result.
+DELETE /api/items/:id      # unlink a Plaid item (BSI-3): best-effort itemRemove at
+                           # Plaid (frees a Trial slot; skipped for CSV virtual
+                           # items; token decrypt fail-soft), then in one txn delete
+                           # its transactions + linked_accounts + plaid_investment_items
+                           # registry row, deactivate its investment_accounts and
+                           # delete their holdings. Returns plaid_item_removed.
 POST /api/sync-balances    # fetch latest account balances. Refreshes Teller
                            # (`syncAllBalances`), Plaid balances + credit limit
                            # + liabilities/APR (`syncAllPlaidBalances`), AND
@@ -1935,6 +1974,10 @@ standalone-mode fallback if either app is run on its own Render service.
 - Auto-migration runs on server startup in a transaction (BEGIN/COMMIT/ROLLBACK) — no
   manual SQL needed. Migration failures are now fatal (the process throws and exits)
   rather than logging a "non-fatal" warning while leaving the schema half-applied.
+- `plaid_items.last_error_code TEXT` (BSI-10): the Plaid ITEM_* re-auth code from the
+  last failed sync (NULL = healthy). Set by `syncAllPlaidTransactions` /
+  `syncAllPlaidBalances`, cleared by a clean transaction sync and by both exchange
+  (re-link) upserts. `status` stays `'GOOD' | 'CSV'`.
 - Migration creates base tables (`plaid_items`, `teller_enrollments`, `linked_accounts`,
   `sync_cursors`, `transactions`, `detected_subscriptions`, `csv_imports`) idempotently
   via `CREATE TABLE IF NOT EXISTS` before the per-feature `ALTER TABLE` steps.
@@ -2075,10 +2118,18 @@ standalone-mode fallback if either app is run on its own Render service.
   `POST /api/sync-balances`). The nav badge uses the most recent of these plus
   `last_auto_sync_at` to display staleness.
 - `user_settings.last_sync_result JSONB` — structured summary of the most recent
-  sync run (any path): `{ at, errors: [{ provider, institution, error }] }`.
-  Written by `recordSyncResult()` (`routes/enrollments.js`) from `POST /api/sync`,
-  `POST /api/sync-balances`, and the bank auto-sync scheduler (the comprehensive,
-  all-provider writer). Surfaced by `GET /api/data-health` as `issues[]` + the
+  run of EACH sync provider: `{ at, errors: [{ provider, institution, error }],
+  providers: { <provider>: { at, errors } } }`. `errors` is the flat union across
+  providers (what data-health + the auto-sync signature diff read). Written by
+  `recordSyncResult()` (`routes/enrollments.js`), which MERGES per provider (BSI-11):
+  each call replaces only the providers it passes (a null result = step not run →
+  prior entry kept), so daily-sync's /api/sync-balances no longer wipes the Teller
+  errors /api/sync wrote seconds earlier. A legacy flat payload is regrouped by
+  provider on the next write. Provider keys: `teller_txn`, `plaid_txn`,
+  `teller_balance`, `plaid_balance`, `plaid_holdings`, `plaid_flows`, `plaid`
+  (wholesale throw), `teller_reconcile`, `plaid_reconcile`. Writers:
+  `POST /api/sync`, `POST /api/sync-balances`, the bank auto-sync, reconcile
+  (manual + weekly). A provider's errors persist until THAT provider runs again. Surfaced by `GET /api/data-health` as `issues[]` + the
   raw `last_sync_result`, so a per-item error that does NOT disconnect an
   enrollment — notably `decryption_failed` (passphrase mismatch) — is visible in
   the Sync Health card instead of staying silent on scheduled runs (addition D).
@@ -2347,7 +2398,7 @@ rows) can dismiss them from the UI or run `POST /api/cleanup`.
   and unified-shell deployments — registration always happens against
   Perfin's webauthn_credentials table; the shell-layer login endpoints
   read from that same pool.
-- **Teller API**: mTLS client certificates, retry with exponential backoff (1s/2s/4s), 30s timeout
+- **Teller API**: mTLS client certificates, retry with exponential backoff (1s/2s/4s) on 5xx/network errors AND 429 rate limits (Retry-After honored, capped at 10s; other 4xx never retried), 30s timeout
 - **AI prompt sanitization**: Two layers, with different scopes. First,
   `sanitizeForPrompt()` in `routes/insights.js` strips `---RUNNING_SUMMARY---`
   patterns and consecutive dashes from user-controlled strings (merchant
@@ -2368,8 +2419,9 @@ rows) can dismiss them from the UI or run `POST /api/cleanup`.
 ## Scheduled Tasks (intervals)
 All run automatically after server startup — and the CRITICAL ones are
 additionally guaranteed out-of-process by GitHub Actions cron (so Render
-free-tier sleep can't skip them): `daily-sync.yml` (transactions + balances/
-holdings/flows + net-worth snapshot + detection, daily 7AM UTC) and
+free-tier sleep can't skip them): `daily-sync.yml` (Teller + Plaid transactions
+via /api/sync + balances/holdings/flows + net-worth snapshot + detection, daily
+7AM UTC) and
 `weekly-reconcile.yml` (Teller 90-day reconcile, Sundays). Both hit the
 x-api-key'd endpoints; all writes are idempotent so overlap with the
 in-process jobs is harmless. Per-app jobs live in
@@ -2382,8 +2434,8 @@ embedded mode).
 - **Net worth snapshot**: every 1 hour (`ON CONFLICT (snapshot_date) DO UPDATE` so a same-day re-run rewrites the row with the latest balances — late-arriving syncs are reflected immediately). Computes the figure via the shared `getNetWorth()` helper, so this job, `syncAllBalances`, and `POST /api/net-worth/snapshot` all write the same investment-deduped value (F1)
 - **Goal milestones**: every 6 hours (push notifications at 25/50/75/100%)
 - **AI insights auto-trigger**: every 6 hours (respects `insights_cadence_days` setting).
-  Pre-analysis sync chain: syncAllEnrollments → syncAllPlaidTransactions →
-  syncAllPlaidHoldings → syncAllBalances → detect subscriptions →
+  Pre-analysis sync chain: syncAllTransactions (Teller → Plaid → one anomaly
+  check) → syncAllPlaidHoldings → syncAllBalances → detect subscriptions →
   detect transfers → categorize → generate insights → audit → email webhook.
   Ensures AI analyzes freshest data. Auto-categorization runs as part of this pipeline.
 - **Budget alerts**: every 3 hours (push notifications at 80% and 100%+ thresholds, aligned with the in-app `/api/budgets/alerts` `warning`/`critical` levels). Like the endpoint, the push compares against the effective limit (base + current-month rollover) and skips one-time budgets outside their `effective_month`. The in-app `info`/pace heuristic is intentionally not pushed (too noisy as a notification). **Deduped to at most one notification per category+severity per 24h** via `sentRecently(tag, 24)` (`routes/notifications.js`, backed by `notification_log`) — previously a category that stayed over budget re-logged a notification on every 3-hour tick for the rest of the month. Escalation (warn → over) still fires immediately because the two severities use distinct tags.
@@ -2396,7 +2448,7 @@ embedded mode).
   timing within the month doesn't matter. Gated on user activity.
 - **Bank auto-sync** (Phase A): every 1 hour, checks `auto_sync_enabled` and whether
   `auto_sync_interval_hours` has elapsed since `last_auto_sync_at`. When due, calls
-  `syncAllEnrollments()` (Teller) then `syncAllPlaidTransactions()` (Plaid) then
+  `syncAllTransactions()` (Teller then Plaid, one combined anomaly check) then
   `syncAllPlaidHoldings()` (Plaid investments) then `syncAllPlaidInvestmentFlows()`
   (external cash flows for TWR/XIRR) then
   `syncAllBalances()` then `runCategorize()` in-process — never via HTTP
@@ -2429,6 +2481,7 @@ embedded mode).
   only (free, cheap); Plaid reconcile is heavier (full cursor re-walk) and
   stays a manual `POST /api/sync/reconcile` action. Not gated on user
   activity — a weekly background heal should run even while the user is away.
+  Records its outcome as `teller_reconcile` in `last_sync_result` (BSI-11).
 - **Weekly digest**: every 1 hour, checks `weekly_digest_enabled` and that
   today matches `weekly_digest_day` (0=Sun..6=Sat). When both match,
   invokes `runWeeklyDigest()` in `routes/insights.js`, which itself gates
@@ -2751,7 +2804,7 @@ income module, and bill-calendar income detection.
 - **The scheduler calls helpers in-process, not via HTTP self-fetch.**
   Every route module that the scheduler invokes exports a callable helper
   alongside its Express router:
-  - `routes/enrollments.js` → `syncAllEnrollments`, `syncAllBalances`, `reconcileTeller`, `recordSyncResult`
+  - `routes/enrollments.js` → `syncAllTransactions` (the Teller+Plaid entry point every transaction-sync trigger uses), `syncAllEnrollments`, `syncAllBalances`, `reconcileTeller`, `recordSyncResult`, `runAnomalyCheck`
   - `routes/investments.js` → `syncAllPlaidTransactions`, `syncAllPlaidBalances`, `syncAllPlaidHoldings`, `syncAllPlaidInvestmentFlows`, `reconcilePlaidTransactions`
   - `routes/subscriptions.js` → `runSubscriptionDetection`
   - `routes/categorize.js` → `runCategorize`
@@ -2941,7 +2994,23 @@ income module, and bill-calendar income detection.
   idempotent (`ON CONFLICT` upserts / idempotent deletes). `modified`
   transactions are UPSERTED (not bare-UPDATEd) so a pending→posted re-delivery
   with no existing row is inserted rather than dropped. The helper returns
-  `incomplete: true` when it halted early or hit `MAX_PAGES`.
+  `incomplete: true` + `incomplete_reason` (`row_failure` |
+  `mutation_during_pagination` | `max_pages`); `syncAllPlaidTransactions`
+  surfaces the first two as `partial_sync_incomplete` (max_pages is a normal
+  resumable long walk). On `TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION` the
+  walk restarts from the cursor the loop STARTED with (persisted; ≤3 restarts,
+  then gives up with that cursor saved — BSI-12), per Plaid's contract.
+  **New accounts are registered BEFORE the cursor walk** (BSI-1):
+  `syncAllPlaidTransactions` calls `accountsGet` first (fail-soft) and
+  `registerMissingPlaidAccounts` (ON CONFLICT DO NOTHING) — an account the item
+  gained after link (new card, update mode) otherwise hit the
+  `transactions.account_id` FK, failed the page, and — since the cursor never
+  passes a failed page — stalled the whole item forever. The same accountsGet
+  response feeds the balance refresh (no extra call). ITEM_* errors that need
+  the user (ITEM_LOGIN_REQUIRED, PENDING_EXPIRATION, …; `PLAID_REAUTH_CODES`) set
+  `plaid_items.last_error_code`, cleared by a clean transaction sync or a re-link
+  (BSI-10) — a column, not a `status` value, because every sync path filters
+  `status = 'GOOD'` and a status flip would stop retrying and never self-clear.
 - **Sync "added" counts genuine inserts, not updates.** Both the Teller and
   Plaid transaction upserts `RETURNING (xmax = 0) AS inserted` and increment
   their `added`/`transactions_added` counters only when the row was a fresh
@@ -2952,10 +3021,24 @@ income module, and bill-calendar income detection.
   separately and unaffected.
 - **Teller incremental sync never steps over a failed account.** In
   `syncEnrollment`, the enrollment-level `last_synced_txn_date` watermark is
-  advanced ONLY when every account in the enrollment fetched cleanly — if any
-  account's fetch throws, the watermark is held back so the next sync retries
-  that range instead of permanently skipping a failed sibling account's older
-  transactions. The incremental filter uses `>=` (not `>`) against the
+  advanced ONLY when every account in the enrollment fetched AND upserted
+  cleanly — if any account's fetch throws, or any row fails to insert (BSI-7),
+  the watermark is held back so the next sync retries that range instead of
+  permanently skipping a failed sibling account's older transactions. The
+  incremental floor is `watermark − 7 days` (`WATERMARK_LOOKBACK_DAYS`,
+  `lookbackFloor`, BSI-8): the watermark is the newest date across ALL accounts,
+  so a charge posting late on one account (dated before a sibling's newest row)
+  would otherwise be skipped until the weekly reconcile; the re-read is
+  idempotent (INV-01 counts only inserts). A 401/403 on EVERY account throws
+  with the status so the enrollment is marked `DISCONNECTED` (BSI-9 — before,
+  per-account auth errors were swallowed and DISCONNECTED was unreachable); the
+  next clean sync restores it to `GOOD` (syncAllBalances runs GOOD enrollments
+  only, so a transient 401 must not strand balances). A single failing account
+  among healthy siblings stays a retryable `partial_sync_incomplete`. Accounts
+  opened after enrollment are registered by `syncAllBalances` (DD-9, ON CONFLICT
+  DO NOTHING), and `/api/enroll`'s account upsert re-points
+  `teller_enrollment_id` so a re-link that returns the same account ids moves
+  them to the new enrollment (DD-8). The incremental filter uses `>=` (not `>`) against the
   day-granular watermark so a transaction that posts on the watermark day after
   a sync ran isn't dropped; re-including the whole watermark day is safe because
   the `ON CONFLICT (transaction_id)` upsert dedups the re-processed rows.
@@ -2976,7 +3059,11 @@ income module, and bill-calendar income detection.
   `reconcilePlaidTransactions()` resets every `sync_cursors.cursor` to '' and
   re-walks `transactionsSync` (Plaid's cursor is all-or-nothing, so reconcile is
   a full re-pull). Driven by `POST /api/sync/reconcile` and the weekly
-  self-healing scheduler (Teller only; Plaid stays manual).
+  self-healing scheduler (Teller only; Plaid stays manual). Both record their
+  outcome in `last_sync_result` (`teller_reconcile` / `plaid_reconcile`);
+  `last_reconcile_at` always stamps the ATTEMPT (so a persistent failure isn't
+  retried hourly) but `last_txn_sync_at` only when every leg completed (BSI-11).
+  Reconcile never runs the anomaly check (INV-05).
 - **Named route helpers are attached AFTER `module.exports = router`.** In
   modules that export an Express router AND helper functions (e.g.
   `routes/investments.js`), the helper attachments (`module.exports.syncAll… = …`)
@@ -3166,9 +3253,9 @@ n8n Workflows:
 
 ### Invariant Library
 INV-01 | Sync "added" counts only genuine inserts (RETURNING xmax=0), never updates | Subsystem: Bank Sync & Ingestion | Verify: tests/sync-durability.test.js
-INV-02 | Teller watermark advances only when every account in the enrollment fetched cleanly | Subsystem: Bank Sync & Ingestion | Verify: code read syncEnrollment
-INV-03 | Teller incremental filter uses >= against the day-granular watermark | Subsystem: Bank Sync & Ingestion | Verify: code read
-INV-04 | Plaid cursor advances only after a fully-successful page; persisted progressively | Subsystem: Bank Sync & Ingestion | Verify: code read syncPlaidItemTransactions
+INV-02 | Teller watermark advances only when every account in the enrollment fetched AND upserted cleanly (a row-insert failure holds it too, BSI-7) | Subsystem: Bank Sync & Ingestion | Verify: code read syncEnrollment
+INV-03 | Teller incremental filter uses >= against a 7-day lookback floor behind the day-granular watermark (lookbackFloor, BSI-8) | Subsystem: Bank Sync & Ingestion | Verify: code read
+INV-04 | Plaid cursor advances only after a fully-successful page; persisted progressively; on mutation-during-pagination the loop restarts from (and re-persists) the loop-start cursor (BSI-12); new item accounts are registered before the walk so their rows can't FK-stall a page (BSI-1) | Subsystem: Bank Sync & Ingestion | Verify: code read syncPlaidItemTransactions
 INV-05 | Reconcile is watermark-independent + idempotent; anomaly push suppressed | Subsystem: Bank Sync & Ingestion | Verify: reconcileTeller / tests/sync-durability.test.js
 INV-06 | User overrides never clobbered by re-sync; display uses COALESCE | Subsystem: Bank Sync & Ingestion
 INV-07 | Every spending aggregation applies SPLIT_AMOUNT | Subsystem: Financial Analytics | Verify: tests/financial-queries.test.js
@@ -3221,6 +3308,8 @@ INV-63 | Per-sistant's shared fetch wrapper (apps/per-sistant/views/js.js) redir
 INV-64 | Job Radar's AI passes (job_fit + legitimacy) are cap-charged: cappedCall reads getAiBudgetCents()+monthlyAiSpendCents() and throws { code:'CAP' } BEFORE calling the model when over budget; on a successful call it charges an ai_usage row via recordAiUsage in a `finally` (idempotent, only when tokens were consumed). The 10 pre-existing Per-sistant AI features still use the uncapped callAI (unchanged) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (cappedCall charge-on-success + throw-CAP-before-model-call)
 INV-65 | Job Radar ingest is content_hash-idempotent: dedupPersist upserts ON CONFLICT (content_hash) and counts genuine inserts via (xmax = 0), so a re-run over identical listings adds 0, no duplicate rows. Retention strips old new/dismissed descriptions but KEEPS the hash+status tombstone so a dismissed job re-ingested stays dismissed | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (dedup idempotency, retention)
 INV-66 | gatherJobRadarSummary is the SINGLE fail-soft aggregator feeding the /jobs page, the notification check, and the AI daily-briefing line (the gatherHealthSummary pattern) — a query error returns the safe empty shape, never 500s those surfaces; the notif-check + briefing call it gated on job_radar_enabled. Listing status changes ARCHIVE (saved/applied/dismissed), never hard-delete | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (aggregator fail-soft + archive-not-delete)
+INV-67 | Every transaction-sync trigger (POST /api/sync + daily-sync.yml, bank auto-sync, pre-insights chain) goes through syncAllTransactions — Teller then Plaid, each failure-isolated — and runAnomalyCheck runs ONCE over the combined added count; reconcile/backfill never runs it | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-sept-batch2.test.js (BSI-2 / DD-1 block)
+INV-68 | last_sync_result is merged PER PROVIDER (a write replaces only the providers it ran; null result = untouched), never last-writer-wins; errors[] is the flat union | Subsystem: Bank Sync & Ingestion / Data Freshness | Verify: tests/scan-sept-batch2.test.js (BSI-11 block)
 
 ### Policy Configuration
 Policy threshold: 5/10
