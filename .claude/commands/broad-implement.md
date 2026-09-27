@@ -109,5 +109,11 @@ and a "Where I left off" line. This lets /cycle-resume continue cleanly
 in a fresh session if context runs out. If .cycle/ does not exist, skip
 this step — the summary block above is the record, as usual.
 
+ALSO write the summary block VERBATIM to
+.cycle/blocks/<cycle>-<version-or-scope>-broad-implement.md (create the
+directory if needed). §4v and §6a consume these blocks in a FRESH session
+that has none of this context, so a block that exists only in chat cannot
+reach them — STATE.md carries prose ABOUT the work, not the block itself.
+
 After the summary, suggest running /test-sync if any test failures remain,
 and /sync-docs if any documentation updates are needed.

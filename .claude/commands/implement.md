@@ -70,6 +70,9 @@ DOCUMENTATION UPDATES NEEDED:
 
 3. CHECKPOINT (optional — only if .cycle/ exists): create/update
    .cycle/STATE.md (completed/pending actions, follow-ons, decisions,
-   "Where I left off") so /cycle-resume can continue. Skip if no .cycle/.
+   "Where I left off") so /cycle-resume can continue, AND write the
+   summary block verbatim to
+   .cycle/blocks/<cycle>-<version-or-scope>-implement.md so §4v and §6a
+   can read it in a fresh session. Skip both if no .cycle/.
 
 Suggest /regression, /reflect, /test-sync, /sync-docs as applicable.
