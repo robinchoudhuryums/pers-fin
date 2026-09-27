@@ -1112,13 +1112,15 @@
             '<td class="amount" data-label="Avg">' + fmt(m.avg_transaction) + '</td></tr>'
           ).join('');
 
-          const totalSpend = data.monthly_trend.reduce((s, m) => s + parseFloat(m.total_spend), 0);
-          const avgMonthly = totalSpend / data.monthly_trend.length;
-          animateCurrency(document.getElementById('avg-monthly'), avgMonthly);
-          document.getElementById('avg-monthly-sub').textContent = data.monthly_trend.length + '-month avg';
-
-          const totalDays = data.monthly_trend.length * 30;
-          animateCurrency(document.getElementById('avg-daily'), totalSpend / totalDays);
+          // Averages come from the server over COMPLETED months only (FAN-6) —
+          // the month-to-date current month used to drag them down.
+          if (data.avg_months > 0) {
+            animateCurrency(document.getElementById('avg-monthly'), data.avg_monthly_spend || 0);
+            document.getElementById('avg-monthly-sub').textContent = data.avg_months + '-month avg';
+            animateCurrency(document.getElementById('avg-daily'), data.avg_daily_spend || 0);
+          } else {
+            document.getElementById('avg-monthly-sub').textContent = 'no complete month yet';
+          }
         } else {
           monthBody.innerHTML = '<tr><td colspan="4" class="empty-msg">No spending data yet.</td></tr>';
         }
@@ -3012,7 +3014,8 @@
             transaction_id: txnId,
             category: category,
             create_rule: createRule,
-            match_type: 'contains',
+            // "Remember" = this exact merchant (DC-13); a substring rule over-matched.
+            match_type: 'exact',
           }),
         });
         if (!res.ok) throw new Error('HTTP ' + res.status);

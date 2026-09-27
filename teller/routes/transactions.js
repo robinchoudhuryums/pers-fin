@@ -330,7 +330,8 @@ router.post("/api/transactions/manual", async (req, res) => {
     if (!acct.rows.length) return res.status(404).json({ error: "Account not found" });
     const txnId = "manual_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
     const merchant = (merchant_name && String(merchant_name).trim()) || "Cash";
-    const cat = category && String(category).trim() ? `{${String(category).trim()}}` : null;
+    // One-element text[] parameter, not a concatenated array literal (DC-14).
+    const cat = category && String(category).trim() ? [String(category).trim()] : null;
     const result = await pool.query(
       `INSERT INTO transactions (account_id, transaction_id, amount, date, merchant_name, name, category, user_notes, pending)
        VALUES ($1, $2, $3, $4, $5, $5, $6, $7, false) RETURNING *`,

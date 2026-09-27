@@ -380,7 +380,11 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
           [
             virtualAccountId, txnId, parsed.amount, date,
             parsed.merchant_name || null, parsed.merchant_name || "",
-            parsed.category ? `{${parsed.category}}` : null,
+            // text[] PARAMETER, not a `{...}` literal built by concatenation
+            // (DC-14): "Travel, Airfare" split into two elements, and a quote /
+            // brace / backslash produced an invalid literal that rolled back
+            // the whole import. Matches scripts/import-csv-cli.js.
+            parsed.category ? [String(parsed.category)] : null,
           ]
         );
         // rowCount 0 here now means a TRUE re-import of an already-present row

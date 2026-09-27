@@ -540,9 +540,14 @@ async function buildDashboard(sheets, pool) {
   // personal_for override. (Splits-REPLACEMENT — substituting transaction_splits
   // rows for their parent in category totals — is not mirrored here; see the
   // sheets-sync note in CLAUDE.md.)
-  const NOT_TRANSFER = `
-    COALESCE(t.user_merchant_name, t.merchant_name, t.name, '') !~*
-      '\\y(payment thank|pymt|autopay|auto pay|minimum payment|directpay|automatic payment|interest|int charge|finance charge|funds tran|funds transfer|transfer to|transfer from|ach transfer|wire transfer|internal transfer|zelle|venmo|paypal|cash app|cashapp|square cash|bank of america|wells fargo|chase|citi|citibank|capital one|discover|amex|american express|us bank|pnc bank|td bank|ally bank|truist|boa transfer|online transfer|mobile transfer|bill pay|epay|credit card payment|card payment|cc payment|loan payment|mortgage payment|deposit|direct dep|atm|withdrawal)\\y'`;
+  const NOT_TRANSFER = `(
+    COALESCE(t.user_merchant_name, CONCAT_WS(' ', t.merchant_name, t.name)) !~*
+      '\\y(payment thank|pymt|autopay|auto pay|minimum payment|directpay|automatic payment|interest|int charge|finance charge|funds tran|funds transfer|transfer to|transfer from|ach transfer|wire transfer|internal transfer|zelle|venmo|paypal|cash app|cashapp|square cash|bank of america|wells fargo|chase|citi|citibank|capital one|discover|amex|american express|us bank|pnc bank|td bank|ally bank|truist|boa transfer|online transfer|mobile transfer|bill pay|epay|credit card payment|card payment|cc payment|loan payment|mortgage payment|deposit|direct dep|atm|withdrawal)\\y'
+    AND NOT (
+      COALESCE(t.personal_finance_category->>'primary', '') IN ('TRANSFER_IN', 'TRANSFER_OUT', 'LOAN_PAYMENTS')
+      AND COALESCE(t.user_category, 'Transfer') = 'Transfer'
+    )
+  )`;
   const SPLIT_AMT = `(CASE
       WHEN la.is_shared AND t.personal_for = 'self' THEN t.amount
       WHEN la.is_shared AND t.personal_for = 'partner' THEN 0
@@ -2018,23 +2023,33 @@ async function syncNetWorthHistory(sheets, pool) {
 async function syncIncome(sheets, pool) {
   console.log("Syncing income summary to Google Sheets...");
 
-  const INCOME_PREDICATE = `
+  // Byte-mirror of financial-queries.js incomePredicate (FAN-2 / DD-2 / DD-3),
+  // pinned by SX3 in tests/audit-regressions.test.js.
+  function incomeText(a) {
+    return `CONCAT_WS(' ', ${a}.user_merchant_name, ${a}.merchant_name, ${a}.name)`;
+  }
+  function incomePredicate(a = "transactions") {
+    const txt = incomeText(a);
+    return `
     (
-      (COALESCE(merchant_name, name, '') ~* '\\y(payroll|direct dep|direct deposit|dir dep|salary|employer|deposit|ach credit)\\y'
-        AND COALESCE(merchant_name, name, '') !~* '\\y(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|reversal|atm|withdrawal|bill pay)\\y')
+      (${txt} ~* '\\y(payroll|direct dep|direct deposit|dir dep|salary|employer|deposit|ach credit)\\y'
+        AND ${txt} !~* '\\y(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|reversal|atm|withdrawal|bill pay)\\y')
       OR (
-        COALESCE(merchant_name, name, '') ~* 'funds transfer from brokerage'
+        ${txt} ~* 'funds transfer from brokerage'
         AND NOT EXISTS (
           SELECT 1 FROM transactions __t2
-          WHERE __t2.account_id <> account_id
-            AND __t2.amount = ABS(amount)
+          WHERE __t2.account_id <> ${a}.account_id
+            AND __t2.amount = ABS(${a}.amount)
             AND __t2.pending = false
-            AND __t2.date BETWEEN date - INTERVAL '2 days' AND date + INTERVAL '2 days'
+            AND __t2.date BETWEEN ${a}.date - INTERVAL '2 days' AND ${a}.date + INTERVAL '2 days'
         )
       )
-      OR COALESCE(user_category, category[1]) = 'Income'
+      OR LOWER(COALESCE(${a}.user_category, ${a}.category[1], '')) = 'income'
+      OR (${a}.user_category IS NULL AND ${a}.personal_finance_category->>'primary' = 'INCOME')
     )
   `;
+  }
+  const INCOME_PREDICATE = incomePredicate("transactions");
 
   // Monthly totals (last 24 months)
   const monthly = await pool.query(`

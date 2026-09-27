@@ -9,6 +9,33 @@ to the "none in progress" state.
 
 ## Current Cycle
 
+- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 3 DONE** on branch
+  `claude/lucid-darwin-7r8e59` (restarted from main after PR #128 merged,
+  2026-09-27). Batch 3 (income/spending classification) implemented, tested,
+  pushed (no PR opened).
+  - **Completed:** FAN-2 (incomePredicate(alias) — outer refs qualified, the
+    brokerage double-count guard works), DD-2 (raw description matched),
+    DD-3 (Plaid PFC: INCOME branch, TRANSFER_*/LOAN_PAYMENTS exclusion, free
+    PFC map + credit→Income pass), FAN-5 (depository-only cash), DD-4 (no
+    subs/autopay double count in cash flow), FAN-6 (whole-month, completed-month
+    averages), DC-12 (accommodation→Travel, loan→Transfer), DC-13 (implicit
+    rules exact), DC-14 (text[] category params), AIN-13 (Ask total filters).
+  - **Not finished (selected):** none.
+  - **Tests:** 1194/1194 (Perfin 725 + Per-sistant 469; +23 behavioral/pin
+    tests in tests/scan-sept-batch3.test.js, +2 SX3 structure pins). Real-PG 16
+    checks of every changed query; FAN-2 double count reproduced on the old
+    predicate. e2e 8/8.
+  - **Decisions:** NOT_TRANSFER keeps user-rename precedence (rename = escape
+    hatch) while reading merchant+raw description otherwise; income reads all
+    three concatenated. PFC transfer exclusion yields to a user category other
+    than Transfer. Card autopay = bill_payment transfer without loan/mortgage
+    in its name. New provenance value user_category_source='plaid_map'.
+  - **Open follow-ons:** see `.cycle/blocks/6-batch3-broad-implement.md`.
+  - **Operator:** none required (optional re-file of old accommodation/loan
+    map rows — SQL in the block).
+  - **Where I left off:** Batch 3 committed + pushed. NEXT: /sync-docs for
+    Batch 3 (doc list in the block), then Batch 4 (detection & calendar).
+
 - **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 2 DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-09-27). Batch 2 (ingestion completeness
   & silent sync failures) implemented, tested, pushed (no PR opened).

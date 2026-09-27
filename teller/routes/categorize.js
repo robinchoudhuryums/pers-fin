@@ -18,6 +18,9 @@ const {
   CATEGORIES,
   CATEGORY_DESCRIPTIONS,
   TELLER_CATEGORY_MAP,
+  PLAID_PFC_DETAILED_MAP,
+  PLAID_PFC_PRIMARY_MAP,
+  mapCategoryFor,
   OUR_CATEGORIES_PG,
 } = require("./categorize-helpers");
 
@@ -149,6 +152,41 @@ async function runCategorize() {
       );
       tellerMapped += r.rowCount;
     }
+
+    // FREE PATH 3 — Plaid personal_finance_category map (DD-3). Detailed codes
+    // first (more specific), then primaries. Counted with the Teller map in
+    // by_teller_map ("deterministic map") so the progress UI is unchanged.
+    const pfcPasses = [
+      ["detailed", PLAID_PFC_DETAILED_MAP],
+      ["primary", PLAID_PFC_PRIMARY_MAP],
+    ];
+    for (const [field, map] of pfcPasses) {
+      for (const [code, ourCat] of Object.entries(map)) {
+        if (!CATEGORIES.includes(ourCat)) continue;
+        const r = await pool.query(
+          `UPDATE transactions SET user_category = $3, user_category_source = 'plaid_map',
+             category_verified_at = NULL, category_was_correct = NULL
+           WHERE ${uncatPredicate} AND personal_finance_category->>'${field}' = $2
+           RETURNING transaction_id`,
+          [OUR_CATEGORIES_PG, code, ourCat]
+        );
+        tellerMapped += r.rowCount;
+      }
+    }
+
+    // FREE PATH 4 — credits whose provider category says Income (DD-3). Every
+    // path above is limited to debits (amount > 0), so Teller's `income` and
+    // Plaid's INCOME never reached the credits they describe, and income
+    // branch (c) only ever matched rows the user hand-set. Only the Income
+    // target is applied to credits (refunds etc. stay uncategorized).
+    const creditIncome = await pool.query(
+      `UPDATE transactions SET user_category = 'Income', user_category_source = 'plaid_map',
+         category_verified_at = NULL, category_was_correct = NULL
+       WHERE user_category IS NULL AND pending = false AND amount < 0
+         AND (LOWER(category[1]) = 'income' OR personal_finance_category->>'primary' = 'INCOME')
+       RETURNING transaction_id`
+    ).catch(e => { console.error("credit income map error:", e.message); return { rowCount: 0 }; });
+    tellerMapped += creditIncome.rowCount || 0;
 
     // -----------------------------------------------------------------
     // PAID AI path — LOOP bounded batches until the backlog is cleared, the
@@ -412,7 +450,8 @@ router.get("/api/categorize/review-queue", async (req, res) => {
       const tellerCat = Array.isArray(t.category) && t.category[0]
         ? String(t.category[0]).toLowerCase()
         : null;
-      const mapped = tellerCat ? TELLER_CATEGORY_MAP[tellerCat] : null;
+      // Teller map, then Plaid PFC (DD-3).
+      const mapped = mapCategoryFor(t);
       return {
         transaction_id: t.transaction_id,
         merchant: t.merchant,
@@ -444,7 +483,10 @@ router.post("/api/categorize/review", async (req, res) => {
     return res.status(400).json({ error: `Invalid category. Must be one of: ${CATEGORIES.join(", ")}` });
   }
   const validTypes = ["contains", "exact", "starts_with"];
-  const ruleType = validTypes.includes(match_type) ? match_type : "contains";
+  // Implicit "remember" rules default to EXACT (DC-13): a `contains` rule built
+  // from a short merchant ("ARCO") also swept up "Marco's Pizza". An explicit
+  // match_type is still honored.
+  const ruleType = validTypes.includes(match_type) ? match_type : "exact";
   try {
     // Set user_category — the same path PATCH /api/transactions/:id/category uses.
     const upd = await pool.query(
@@ -648,8 +690,9 @@ router.post("/api/categorize/accuracy-review", async (req, res) => {
       await pool.query(
         // DC3: implicit accuracy-review "remember" path — reactivate on conflict
         // but keep the existing rule's match_type (don't silently widen scope).
+        // DC-13: implicit rule → exact match (see /api/categorize/review).
         `INSERT INTO categorization_rules (merchant_pattern, category, match_type)
-         VALUES ($1, $2, 'contains')
+         VALUES ($1, $2, 'exact')
          ON CONFLICT (merchant_pattern, category) DO UPDATE SET
            is_active = true, updated_at = now()`,
         [merchant.trim(), corrected_category]
@@ -792,7 +835,8 @@ router.post("/api/categorization-rules/from-transaction", async (req, res) => {
     if (!merchant) return res.status(400).json({ error: "Transaction has no merchant name" });
 
     const validTypes = ["contains", "exact", "starts_with"];
-    const type = validTypes.includes(match_type) ? match_type : "contains";
+    // Implicit "remember this" rule → exact by default (DC-13).
+    const type = validTypes.includes(match_type) ? match_type : "exact";
 
     const result = await pool.query(
       // DC3: from-transaction is an implicit "create rule from this manual

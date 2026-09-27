@@ -441,6 +441,12 @@ describe("SX3 — sheets-sync inlined SQL fragments match financial-queries cano
   pin("NOT_TRANSFER keyword list", /payment thank\|[^']*withdrawal/);
   pin("INCOME include keywords", /payroll\|direct dep[^']*ach credit/);
   pin("INCOME exclude keywords", /payment\|transfer\|pymt[^']*bill pay/);
+  // FAN-2 / DD-2 / DD-3: the whole predicate STRUCTURE is mirrored, not just the
+  // keyword lists — the alias-qualified __t2 guard, the concatenated text
+  // expression, the case-insensitive category branch and the Plaid PFC
+  // branches. Whitespace-normalized (the script copy is indented).
+  pin("incomePredicate function", /function incomeText\(a\) \{[\s\S]*?'INCOME'\) \) `; \}/, true);
+  pin("NOT_TRANSFER structure", /const NOT_TRANSFER = `\( COALESCE\(t\.user_merchant_name, CONCAT_WS[\s\S]*?'Transfer'\) = 'Transfer' \) \)`;/, true);
   // SPLIT_AMOUNT CASE — multi-line in sheets-sync, single-line in canonical, so
   // compare whitespace-normalized.
   pin("SPLIT_AMOUNT CASE",

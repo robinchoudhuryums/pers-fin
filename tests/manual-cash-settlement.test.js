@@ -65,7 +65,8 @@ describe("POST /api/transactions/manual", () => {
     assert.match(insertParams[1], /^manual_/);
     assert.equal(insertParams[2], 12.5);          // stored positive (expense)
     assert.equal(insertParams[4], "Coffee");
-    assert.equal(insertParams[5], "{Food & Drink}");
+    // A one-element text[] parameter, not a concatenated '{...}' literal (DC-14).
+    assert.deepEqual(insertParams[5], ["Food & Drink"]);
   });
 
   it("defaults merchant to 'Cash' and category to null when omitted", async () => {

@@ -38,29 +38,54 @@
 // counted income when both ends of the transfer were linked (the original
 // payroll deposit on brokerage already matched branch (a); the later
 // brokerage→checking transfer matched branch (b) on the destination side).
-// Now branch (b) ALSO requires NO matching debit (positive amount) on a
-// different account within ±2 days of the credit. The subquery's outer
-// references (`account_id`, `amount`, `date`) resolve to the outer
-// transactions row whether the caller aliases it as `t` or uses bare
-// `transactions`, because they're unqualified and only the outer query has
-// those columns in scope.
-const INCOME_PREDICATE = `
+// Branch (b) therefore requires NO matching debit (positive amount) on a
+// different account within ±2 days of the credit.
+//
+// FAN-2: the predicate is built by incomePredicate(alias) and every OUTER
+// column reference is QUALIFIED with the caller's alias. It used to write them
+// unqualified on the theory that "only the outer query has those columns in
+// scope" — wrong: inside `FROM transactions __t2`, bare account_id / amount /
+// date resolve to __t2 ITSELF, so the guard became
+// `__t2.account_id <> __t2.account_id` (always false) and NOT EXISTS was always
+// true — a $3,000 payroll into brokerage + the "Funds transfer from brokerage"
+// credit into checking counted as $6,000. Callers that don't alias the table
+// use the default alias "transactions" (Postgres accepts the bare table name as
+// a qualifier), exported as INCOME_PREDICATE; aliased callers call
+// incomePredicate("t").
+//
+// DD-2: keyword branches read the user override, the cleaned merchant AND the
+// raw description together. Teller stores the counterparty in merchant_name
+// and the raw description in name ("ACME CORP" / "ACME CORP PAYROLL PPD"), so
+// matching only COALESCE(merchant_name, name) missed the payroll keyword.
+//
+// DD-3: Plaid's personal_finance_category.primary = 'INCOME' counts as income
+// unless the user has set a category of their own, and branch (c) compares
+// case-insensitively so Teller's lower-case 'income' category matches too.
+function incomeText(a) {
+  return `CONCAT_WS(' ', ${a}.user_merchant_name, ${a}.merchant_name, ${a}.name)`;
+}
+function incomePredicate(a = "transactions") {
+  const txt = incomeText(a);
+  return `
   (
-    (COALESCE(merchant_name, name, '') ~* '\\y(payroll|direct dep|direct deposit|dir dep|salary|employer|deposit|ach credit)\\y'
-      AND COALESCE(merchant_name, name, '') !~* '\\y(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|reversal|atm|withdrawal|bill pay)\\y')
+    (${txt} ~* '\\y(payroll|direct dep|direct deposit|dir dep|salary|employer|deposit|ach credit)\\y'
+      AND ${txt} !~* '\\y(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|reversal|atm|withdrawal|bill pay)\\y')
     OR (
-      COALESCE(merchant_name, name, '') ~* 'funds transfer from brokerage'
+      ${txt} ~* 'funds transfer from brokerage'
       AND NOT EXISTS (
         SELECT 1 FROM transactions __t2
-        WHERE __t2.account_id <> account_id
-          AND __t2.amount = ABS(amount)
+        WHERE __t2.account_id <> ${a}.account_id
+          AND __t2.amount = ABS(${a}.amount)
           AND __t2.pending = false
-          AND __t2.date BETWEEN date - INTERVAL '2 days' AND date + INTERVAL '2 days'
+          AND __t2.date BETWEEN ${a}.date - INTERVAL '2 days' AND ${a}.date + INTERVAL '2 days'
       )
     )
-    OR COALESCE(user_category, category[1]) = 'Income'
+    OR LOWER(COALESCE(${a}.user_category, ${a}.category[1], '')) = 'income'
+    OR (${a}.user_category IS NULL AND ${a}.personal_finance_category->>'primary' = 'INCOME')
   )
 `;
+}
+const INCOME_PREDICATE = incomePredicate("transactions");
 
 // Spending exclusion — filters out inter-account transfers and credit card
 // payments that would double-count spending. Applied to ALL spending
@@ -70,10 +95,23 @@ const INCOME_PREDICATE = `
 // Excludes: credit card payments (Chase, Capital One, Discover, Amex, etc.),
 // bank transfers (ACH, wire, Zelle, Venmo), loan/mortgage payments,
 // ATM transactions, and other non-spending movements.
-const NOT_TRANSFER = `
-  COALESCE(t.user_merchant_name, t.merchant_name, t.name, '') !~*
+//
+// DD-2: when the user hasn't renamed the merchant, the keywords are matched
+// against the cleaned merchant AND the raw description ("ZELLE TO JOHN SMITH"
+// with counterparty "John Smith" used to slip through as spending). A user
+// rename still takes precedence, so renaming stays the escape hatch for a
+// payment that really is spending.
+// DD-3: Plaid's personal_finance_category TRANSFER_IN / TRANSFER_OUT /
+// LOAN_PAYMENTS rows are excluded too — unless the user has categorized the
+// row as something other than Transfer (their call that it's spending).
+const NOT_TRANSFER = `(
+  COALESCE(t.user_merchant_name, CONCAT_WS(' ', t.merchant_name, t.name)) !~*
     '\\y(payment thank|pymt|autopay|auto pay|minimum payment|directpay|automatic payment|interest|int charge|finance charge|funds tran|funds transfer|transfer to|transfer from|ach transfer|wire transfer|internal transfer|zelle|venmo|paypal|cash app|cashapp|square cash|bank of america|wells fargo|chase|citi|citibank|capital one|discover|amex|american express|us bank|pnc bank|td bank|ally bank|truist|boa transfer|online transfer|mobile transfer|bill pay|epay|credit card payment|card payment|cc payment|loan payment|mortgage payment|deposit|direct dep|atm|withdrawal)\\y'
-`;
+  AND NOT (
+    COALESCE(t.personal_finance_category->>'primary', '') IN ('TRANSFER_IN', 'TRANSFER_OUT', 'LOAN_PAYMENTS')
+    AND COALESCE(t.user_category, 'Transfer') = 'Transfer'
+  )
+)`;
 
 // Spending split SQL fragment — multiplies each transaction's amount by the
 // account's spending_split_pct (defaults to 100 = 100%). Apply consistently in
@@ -357,6 +395,7 @@ async function getNetWorth(pool) {
 
 module.exports = {
   INCOME_PREDICATE,
+  incomePredicate,
   SPLIT_AMOUNT,
   NOT_REIMBURSED,
   NOT_REIMBURSED_UNALIASED,

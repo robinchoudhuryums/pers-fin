@@ -295,24 +295,21 @@ describe("route-file splits round 2 (enrollments + subscriptions)", () => {
 });
 
 describe("income-summary join ambiguity (found by live e2e boot)", () => {
-  it("the by-account query uses the t.-qualified predicate derivation", () => {
+  it("the by-account query uses the t.-aliased build of the canonical predicate", () => {
     const src = read("teller", "routes", "spending-analytics.js");
-    assert.match(src, /const INCOME_PREDICATE_T = INCOME_PREDICATE\.replace\(/);
+    assert.match(src, /const INCOME_PREDICATE_T = incomePredicate\("t"\);/);
     assert.match(src, /\$\{INCOME_PREDICATE_T\}[\s\S]{0,200}GROUP BY la\.id/,
       "the linked_accounts-joined query must use the qualified variant");
   });
 
-  it("the derivation qualifies outer refs but not the __t2 subquery refs", () => {
-    const { INCOME_PREDICATE } = require("../teller/services/financial-queries");
-    const qualified = INCOME_PREDICATE.replace(
-      /(?<!__t2\.)\b(merchant_name|name|account_id|amount|date|user_category|category)\b/g,
-      "t.$1"
-    );
+  it("incomePredicate qualifies every outer ref, including inside the __t2 guard (FAN-2)", () => {
+    const { incomePredicate } = require("../teller/services/financial-queries");
+    const qualified = incomePredicate("t");
     assert.ok(!/(?<![._\w])name\b(?!\()/.test(qualified.replace(/t\.name|merchant_name|__t2\.\w+/g, "")),
       "no bare unqualified name remains");
-    assert.match(qualified, /COALESCE\(t\.merchant_name, t\.name, ''\)/);
     assert.match(qualified, /__t2\.account_id <> t\.account_id/, "outer qualified, subquery alias untouched");
     assert.match(qualified, /__t2\.amount = ABS\(t\.amount\)/);
-    assert.ok(!qualified.includes("__t2.t."), "lookbehind protects __t2.* references");
+    assert.match(qualified, /t\.date - INTERVAL '2 days'/);
   });
 });
+
