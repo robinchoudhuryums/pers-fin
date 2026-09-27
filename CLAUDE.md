@@ -3123,6 +3123,14 @@ Knowledge / RAG (Per-sistant):
    (vault-sync cron). CROSS-APP SEAM: rag.js reads Perfin's perfinPool
    (linked_accounts, detected_subscriptions) read-only — a new seam between
    Knowledge and Perfin's Bank Sync & Ingestion / Financial Analytics.)
+Legacy Plaid Server:
+  plaid/server.js
+  (FROZEN — see Frozen Subsystems. The legacy standalone Plaid process only;
+   the active Plaid path is teller/routes/investments.js under Bank Sync &
+   Ingestion.)
+n8n Workflows:
+  n8n-workflows/*.json
+  (FROZEN — see Frozen Subsystems. Superseded by teller/startup.js.)
 
 ### Invariant Library
 INV-01 | Sync "added" counts only genuine inserts (RETURNING xmax=0), never updates | Subsystem: Bank Sync & Ingestion | Verify: tests/sync-durability.test.js
@@ -3183,7 +3191,7 @@ INV-65 | Job Radar ingest is content_hash-idempotent: dedupPersist upserts ON CO
 INV-66 | gatherJobRadarSummary is the SINGLE fail-soft aggregator feeding the /jobs page, the notification check, and the AI daily-briefing line (the gatherHealthSummary pattern) — a query error returns the safe empty shape, never 500s those surfaces; the notif-check + briefing call it gated on job_radar_enabled. Listing status changes ARCHIVE (saved/applied/dismissed), never hard-delete | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (aggregator fail-soft + archive-not-delete)
 
 ### Policy Configuration
-Policy threshold: 6/10
+Policy threshold: 5/10
 Consecutive cycles: 2
 
 ### Seams Audit Cadence
@@ -3239,8 +3247,8 @@ SK5 | Temporal validity | Subsystem: Knowledge / RAG
   Expected: it is NOT injected into the answer; GET /api/rag/facts?all=1 still lists it
 
 ### Frozen Subsystems
-- Legacy standalone Plaid server (plaid/server.js) — the LEGACY standalone process only. The active, co-equal Plaid linking path lives in teller/routes/investments.js and is NOT frozen. This file is kept solely for isolated standalone Plaid debugging; unfreeze if the in-app Plaid path is ever extracted to a standalone service.
-- n8n workflows (n8n-workflows/*.json) — superseded by in-process scheduled tasks in teller/startup.js. Unfreeze only if scheduling moves back out-of-process.
+- Legacy Plaid Server — plaid/server.js, the LEGACY standalone process only. The active, co-equal Plaid linking path lives in teller/routes/investments.js and is NOT frozen. This file is kept solely for isolated standalone Plaid debugging; unfreeze if the in-app Plaid path is ever extracted to a standalone service.
+- n8n Workflows — n8n-workflows/*.json, superseded by in-process scheduled tasks in teller/startup.js. Unfreeze only if scheduling moves back out-of-process.
 
 ### Deploy Command
 Platform, Shell & Auth: Render auto-deploys on push to `main` (configured in the Render dashboard, not via CLI). Alt: `fly deploy` (Dockerfile-based).
