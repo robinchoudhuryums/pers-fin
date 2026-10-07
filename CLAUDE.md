@@ -80,6 +80,23 @@ teller/
                            (goals.js), the ask.js get_fire_projection tool,
                            and the insights debt-optimizer loan block; the
                            dashboard loan card inlines a pinned mirror.
+    cadence.js           — Recurring-date math (pure, DC-9/DC-10/DC-15):
+                           month-scale cadences (30/60/90/365 days) step by
+                           1/2/3/12 CALENDAR MONTHS keeping the anchor day
+                           clamped per month (Jan 31 → Feb 28 → Mar 31);
+                           7/14 step in days. seriesOccurrences anchors a
+                           detected sub/transfer on its REAL last charge with
+                           next_expected as the lower bound (a clamped stored
+                           next_expected must not shift a 31st biller to the
+                           30th); manualBillOccurrences (creation month +
+                           due_day, real month-length clamp) is the ONE manual-
+                           bill rule for the calendar AND the ICS feed;
+                           buildIncomeStreams / incomeEventsBetween classify
+                           deposits into weekly/biweekly/semimonthly/monthly
+                           streams for the bill calendar. Used by both
+                           detectors, /api/forecast, /api/bill-calendar,
+                           /calendar.ics, the cash-flow bill schedule and
+                           POST /api/subscriptions. Requireable from scripts/.
     benchmarks.js        — S&P 500 benchmark closes for portfolio comparison.
                            Stooq daily-close CSV (keyless), cached in
                            benchmark_prices, fetched lazily — at most once/day
@@ -436,9 +453,19 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1194 tests as of latest); use
+  Perfin and Per-sistant test files (1224 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1194 tests across 47 test files (incl.
+  Current count: 1224 tests across 48 test files (incl.
+  `tests/scan-sept-batch4.test.js` — the Sept 2026 broad-scan Batch 4
+  detection/calendar/bookkeeping pins, run against the REAL detectors over a
+  mock pool: stale series never re-detected (DC-2), latest-gap + ceil-majority
+  + ±2% two-charge rules (DC-8), recent-price anchor (DC-7), calendar-month
+  stepping anchored on the last charge (DC-9), cadence-based calendar income
+  (DC-10), user-set transfer_type (DC-4), CSV-overlap via status='CSV' (DC-5),
+  manual-balance roll-forward (DC-6), default paid_amount (SXE-11), manual-bill
+  PATCH validation / manual-cash is_manual / rows_skipped / shared calendar+ICS
+  manual-bill placement (DC-15); `tests/detect-subscriptions.test.js` likewise
+  drives the real `detectSubscriptions` (it used to test an inline copy);
   `tests/scan-sept-batch3.test.js` — the Sept 2026 broad-scan Batch 3
   income/spending-classification pins: alias-qualified incomePredicate
   (FAN-2), raw-description matching (DD-2), Plaid PFC income/transfer +
@@ -559,14 +586,23 @@ shell/
   sharing (account, date, amount, merchant) on the same day no longer collide and silently drop the
   second (F1); re-importing the same file still deduplicates against itself. `POST /api/import-csv`
   returns `rows_duplicate` (true re-imports of already-present rows) alongside `rows_imported` /
-  `rows_skipped`.
+  `rows_skipped` — and `rows_skipped` counts ONLY unparseable rows (DC-15; it used to include the
+  duplicates too, so it disagreed with the preview). The `csv_imports` history row keeps its
+  "not imported" meaning (skipped + duplicates), same as the CLI.
+- **CSV import → manual account balance** (DC-6): when the import's institution/label exactly
+  matches a manual account, that account's KNOWN balance is ROLLED FORWARD by only the rows this
+  import genuinely inserted that are dated after its `balance_updated_at` (credit: + net spend;
+  depository: − net spend). An account with no known balance is left alone. (It used to be
+  OVERWRITTEN with the net of every CSV row ever imported — a partial statement history, not a
+  balance.)
 - **Manual cash entry**: a one-off expense the bank never sees (cash spending),
   added via `POST /api/transactions/manual` and an "+ Add cash transaction"
   modal on the Transactions page. Requires an existing `is_manual` (depository)
-  account — make a "Cash" account via `POST /api/accounts/manual` first; the
+  account — the route 400s a synced (Teller/Plaid/CSV) account (DC-15; before,
+  only existence was checked) — make a "Cash" account via `POST /api/accounts/manual` first; the
   modal lists only those and links to the Accounts page when none exist. Stores
   the amount POSITIVE (the spending sign every aggregation sums on `amount > 0`),
-  category in `category` (CSV-import precedent), notes in `user_notes`, and a
+  category in `category` (a one-element `text[]` parameter, DC-14), notes in `user_notes`, and a
   unique `manual_<ts>_<rand>` transaction_id so it's distinct and untouched by
   re-sync. Flows through every spending query like any other transaction.
   Expense-only by design (cash income is a rare follow-on).
@@ -600,8 +636,28 @@ shell/
   The upsert respects user state via an `is_active` CASE: if the user cancelled a subscription
   (`cancelled_at IS NOT NULL`) or dismissed it (`is_dismissed = true`), detection will not
   re-activate it even if the merchant charges again.
+  Matching rules (Sept 2026 Batch 4):
+  - **Recency (DC-2)**: a pattern whose last charge is past the stale window
+    (`isStale` — the same `max(120d, 1.5×cadence)` the stale sweep uses) is skipped,
+    so the upsert can't re-activate a row the sweep just retired. Before, 36 months
+    of history kept long-cancelled subscriptions "active" forever.
+  - **Strictness (DC-8)**: the LATEST gap must fit the cadence, a TRUE majority of
+    gaps must match (`Math.ceil(gaps × 0.5)` — `floor` let 1-of-2 / 1-of-3 through),
+    and 2-charge (≥60-day) detection needs amounts within ±2% — two similar
+    restaurant meals 55 days apart are no longer a "60-day subscription". Trade-off:
+    a charge more than 25% of the cadence late (7.5 days for monthly) isn't
+    re-matched on that run (the row just isn't refreshed until the next on-time charge).
+  - **Price anchor (DC-7)**: `findAnchorAmount` anchors on the most recent ±10% amount
+    cluster when it has ≥ minOcc charges (else the global mode), so 18 × $15.49 then
+    6 × $17.99 is reported at $17.99; the persisted row flags the change via the
+    upsert's `amount_changed = (EXCLUDED.amount != stored amount)`.
+  - `next_expected` steps by calendar month (`services/cadence.js`, DC-9).
+  DC-7/DC-8 apply to subscriptions only; the transfer detector keeps the
+  floor-majority + global-mode amount.
 - **Recurring transfer detection**: Auto-detect Zelle, Venmo, bill payments, savings transfers,
-  investment contributions, ACH/wire (7/14/30/60/90/365-day cadences, outgoing/incoming split)
+  investment contributions, ACH/wire (7/14/30/60/90/365-day cadences, outgoing/incoming split).
+  Stale patterns are skipped (DC-2) and a user-set `transfer_type` survives
+  re-detection (DC-4) — see Recurring Transfer Detection below.
 - **Utility separation**: Utilities tracked separately from optional subscriptions
 - **Shared accounts**: Joint/shared card support with two layers of split:
   account-level (`is_shared`, `spending_split_pct` on `linked_accounts`,
@@ -638,7 +694,11 @@ shell/
   subscriptions.
 - **Bill payment tracking**: Mark bills (both detected subscriptions and manual) as paid
   for specific dates via `/api/bill-payments`. Calendar shows paid state with
-  strikethrough + checkmark. Click to toggle paid/unpaid.
+  strikethrough + checkmark. Click to toggle paid/unpaid. A payment recorded
+  without an amount (the calendar's click-to-mark-paid sends none) defaults
+  `paid_amount` to the bill's own amount (SXE-11 — the NULL amount made the
+  Sheets Payments Log flag every row −100%). Manual-bill `PATCH` 400s a
+  non-numeric/≤0 amount or an out-of-range due_day (it used to store `NaN`).
 - **Rent & Utilities ledger** (`/housing` page, `routes/housing.js`): a
   single-payee accounts-payable ledger for the common "we pay a person for rent +
   utilities via bank transfer" case. Models it as **obligations** (rent = fixed;
@@ -881,6 +941,18 @@ shell/
 - **Bill calendar**: Monthly calendar view of upcoming charges — detected subscriptions
   projected from cadences, user-created manual bills, and detected income. Click events
   to toggle paid/unpaid status. "Add Bill" modal for creating manual expected charges.
+  Subscriptions step by CALENDAR MONTH from their last real charge (DC-9 — a fixed
+  30-day step drifted ~5 days/yr and could place a Sep-1 bill on both Oct 1 and
+  Oct 31); manual bills use the same creation-anchored, month-length-clamped rule as
+  the ICS feed (`manualBillOccurrences`, DC-15). **Income** (DC-10): the last 4
+  months of income deposits (`INCOME_PREDICATE`, source =
+  `COALESCE(user_merchant_name, merchant_name, name)`) are clustered per source by
+  amount (±10%, so cents-varying paychecks stay one stream), each stream's cadence is
+  classified from its gaps — weekly (median ≤10d), biweekly, semimonthly (gaps not a
+  steady 13–15 AND days-of-month form two tight clusters), monthly (≤45d; longer is
+  not projected) — and projected into the month at the median amount; a stream
+  whose last deposit is >35 days old (>50 for monthly) is dropped. (It used to show
+  ONE averaged-day event per month per exact amount, so biweekly pay read ~50% low.)
 - **Cash flow forecast**: Rolling 30–180 day projection with day-of-week spending averages,
   income detection (keyword matching, excludes transfers/payments/refunds), bill scheduling.
   Starting balance = **depository, non-investment** cash only (FAN-5 — loans and
@@ -889,7 +961,8 @@ shell/
   60-day daily/DOW spending averages (they're projected as scheduled bills), and
   card **autopays** (`bill_payment` recurring transfers without "loan"/"mortgage"
   in the name) are NOT billed — the card purchases they pay off are already in
-  the average. Loan/mortgage payments are still billed.
+  the average. Loan/mortgage payments are still billed. Bill dates step by
+  calendar month from each bill's last real charge (`seriesOccurrences`, DC-9).
 - **Savings rate**: Income vs spending analysis with configurable lookback (default 3 months)
 - **Year-over-year comparisons**: Month-by-month spending comparison vs prior year
 - **Budget alerts** (`GET /api/budgets/alerts`): Spending velocity/pacing warnings with severity levels — `critical` ≥100% (over budget), `warning` ≥80% (approaching limit), `info` when pace > 1.2× and ≥50% (spending faster than the month's progress). Alerts compare spending against the **effective limit** (base `monthly_limit` + this month's `rollover_amount` from `budget_snapshots`) and skip one-time budgets outside their `effective_month` — matching `GET /api/budgets`. The 3-hour scheduled push-notification path uses the same effective-limit logic and 80% / 100% thresholds; the in-app `info`/pace heuristic is intentionally not pushed (too noisy as a notification).
@@ -1248,7 +1321,9 @@ shell/
     monthly-equivalent TOTAL (quarterly /3, yearly /12).
   - **Bill Payments Log** (new): joins `bill_payments` to both
     `detected_subscriptions` and `manual_bills` depending on
-    `bill_source`; variance column flags >10% deviation.
+    `bill_source`; variance column flags >10% deviation. A payment with no
+    recorded amount (legacy calendar clicks) shows Paid Amount + Variance
+    blank instead of −100% (SXE-11).
   - **Important Dates** (new): 90-day upcoming-events view UNIONing
     subscription next-charge dates, manual-bill due dates (computed
     from `due_day` + `cadence` with month-end safety via
@@ -1494,7 +1569,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1194 tests passing across 47 test files (Perfin 725 + Per-sistant 469), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1224 tests passing across 48 test files (Perfin 755 + Per-sistant 469), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
@@ -1568,6 +1643,11 @@ GET  /api/transactions/duplicates # find candidate duplicate transactions across
 GET  /api/transactions/csv-overlap         # CSV virtual accounts whose transactions
                                            # overlap with Plaid/Teller-synced accounts
                                            # (same amount, date ±2 days, ≥3 matches).
+                                           # CSV accounts = linked_accounts under a
+                                           # plaid_items row with status='CSV' (NOT
+                                           # is_manual — DC-5: CSV accounts are never
+                                           # manual, so the old filter found nothing);
+                                           # counts/sums DISTINCT CSV rows.
                                            # Common after linking a previously
                                            # CSV-only bank via Plaid — historical
                                            # CSV rows + 2yr Plaid history double-count.
@@ -1575,13 +1655,17 @@ POST /api/transactions/csv-overlap/resolve # delete CSV-side rows that have a ma
                                            # Plaid/Teller row (body: csv_account_id,
                                            # synced_account_id, dry_run?). Keeps the
                                            # synced account as canonical going forward.
+                                           # 400s unless csv_account_id is a status='CSV'
+                                           # account (a manual cash account can't have
+                                           # its hand entries deleted) and the synced
+                                           # side is Teller or a non-CSV Plaid item.
 PATCH /api/transactions/:id # user overrides: merchant_name, notes, is_reimbursed
                             # (Phase B1/B2), personal_for ('self'|'partner'|null —
                             # shared-card settlement override; invalid values
                             # silently coerced to NULL)
 POST /api/transactions/manual # add a one-off manual EXPENSE (e.g. cash spending
                             # bank sync never sees). Body: account_id (an existing
-                            # is_manual account), amount (>0), date (YYYY-MM-DD),
+                            # is_manual account — 400 otherwise), amount (>0), date (YYYY-MM-DD),
                             # merchant_name?, category?, notes?. Stores amount
                             # POSITIVE (the spending sign), a unique manual_<ts>_<rand>
                             # transaction_id (never touched by re-sync), notes→user_notes.
@@ -1590,13 +1674,18 @@ GET  /api/transactions/:id/splits # list splits for a transaction (Phase B3)
 POST /api/transactions/:id/splits # replace splits, validates sum matches parent ±$0.01
 DELETE /api/transactions/:id/splits # clear all splits, revert to parent-row aggregation
 GET  /api/forecast         # 7-90 day projection of recurring subscription charges
+                           # (calendar-month stepping from the last charge, DC-9;
+                           # includes a charge due today, days_away 0)
 GET  /api/bill-calendar    # monthly calendar of expected charges + recurring income (query: year, month)
+                           # — income projected per stream cadence (DC-10)
 GET  /api/manual-bills     # list all active manual bills
 POST /api/manual-bills     # create a manual bill (body: name, amount, due_day, cadence, category)
-PATCH /api/manual-bills/:id # update a manual bill
+PATCH /api/manual-bills/:id # update a manual bill (400 on a non-numeric/≤0 amount
+                            # or a due_day outside 1-31 — DC-15)
 DELETE /api/manual-bills/:id # delete a manual bill
 GET  /api/bill-payments    # list payments for a month (query: year, month)
-POST /api/bill-payments    # mark a bill as paid (body: bill_source, bill_id, paid_date)
+POST /api/bill-payments    # mark a bill as paid (body: bill_source, bill_id, paid_date,
+                           # paid_amount? — defaults to the bill's amount, SXE-11)
 DELETE /api/bill-payments/:id # unmark a bill payment
 GET  /api/housing/config   # rent/utilities ledger config (payee, rent, due day, utilities)
 PATCH /api/housing/config  # replace config (validated/normalized; 400 if enabling w/o payee)
@@ -1765,6 +1854,9 @@ POST /api/import-csv/preview # dry-run a CSV import: detect format + classify ea
                            # rows_duplicate, sample[] }. Backs the two-step upload modal.
 POST /api/import-csv       # import bank CSV file (with deduplication). Returns
                            # { rows_imported, rows_skipped, rows_duplicate, format_detected }
+                           # (rows_skipped = unparseable only, matching the preview).
+                           # A name-matched manual account's balance is rolled
+                           # forward by the new post-balance rows (DC-6).
 GET  /api/csv-imports      # list CSV import history
 GET  /api/export           # download transactions/subscriptions CSV
 POST /api/sheets/sync      # full sync to Google Sheets (all 16+ tabs, ~30-60s)
@@ -1906,8 +1998,13 @@ GET  /calendar.ics                        # bill-calendar iCalendar feed (subscr
                                           # deliberately separate from API_KEY (which stays
                                           # header-only). Unset env = 404/feature off.
                                           # Events: detected-subscription charges projected
-                                          # by cadence + manual bills (monthly = all in
-                                          # window; quarterly/yearly = next occurrence) +
+                                          # by cadence (calendar-month stepping from the
+                                          # last charge, DC-9) + manual bills (every
+                                          # occurrence in the window, anchored on the bill's
+                                          # creation month + due_day clamped to the real
+                                          # month length — the SAME rule as the in-app
+                                          # calendar, DC-15; it used to cap at day 28 and
+                                          # anchor quarterly/yearly on "this month") +
                                           # unpaid Rent & Utilities obligations (known
                                           # amount, on their period's due day),
                                           # 90 days default (?days=7-365). Builder:
@@ -2195,7 +2292,9 @@ standalone-mode fallback if either app is run on its own Render service.
   UNIQUE on (merchant_pattern, category). Applied before AI in `POST /api/categorize`.
 - `manual_bills`: user-created expected charges for the bill calendar. Columns: `name`,
   `amount`, `due_day` (1-31), `cadence` (monthly/quarterly/yearly), `category`,
-  `is_active`, `notes`. Integrated into `/api/bill-calendar`.
+  `is_active`, `notes`. Integrated into `/api/bill-calendar` and `/calendar.ics`
+  via one placement rule (`cadence.manualBillOccurrences`: the series anchors on
+  the `created_at` month + `due_day`, clamped to each month's length).
 - `watchlist_items`: user-curated list of merchants / categories /
   keywords to monitor. Columns: `type` (CHECK enum: `merchant`,
   `category`, `keyword`), `value`, `notes`, `is_active`. UNIQUE
@@ -2209,9 +2308,16 @@ standalone-mode fallback if either app is run on its own Render service.
   same-day re-entry upserts. Dashboard widget renders current + trend;
   AI insights sees the last 6 entries. Synced to Google Sheets "Credit
   Scores" tab with per-entry Change column.
+- `recurring_transfers.transfer_type_user_set BOOLEAN NOT NULL DEFAULT false`
+  (DC-4): set by `PATCH /api/recurring-transfers/:id/type`; while true the
+  detector's upsert keeps the stored `transfer_type` instead of the keyword
+  classifier's. Idempotent ADD COLUMN — no backfill (pre-existing user edits
+  stay unflagged until re-set once).
 - `bill_payments`: tracks which bills have been paid. Columns: `bill_source`
   (subscription or manual), `bill_id`, `paid_date`, `paid_amount`, `notes`.
   UNIQUE on (bill_source, bill_id, paid_date). Calendar shows paid state.
+  `paid_amount` defaults to the bill's amount when the POST omits it (SXE-11);
+  rows written before that stay NULL.
 - `payee_obligations`: Rent & Utilities ledger rows. Columns: `payee`,
   `category` (CHECK rent/utility/other), `label` ('Rent', 'Electricity', …),
   `period` (YYYY-MM), `amount NUMERIC(12,2)` (NULL = awaiting bill),
@@ -2305,7 +2411,7 @@ Transfers are identified by keyword matching on merchant_name/name fields:
 - Merchant grouping uses `COALESCE(user_merchant_name, merchant_name, name)`
   (parallel to subscription detection) so user-merged merchant variants share a
   single recurring-transfer entry instead of fragmenting across raw merchant strings.
-- Detection algorithm reuses subscription detection gap analysis (findModeAmount, addDays)
+- Detection algorithm reuses subscription detection helpers (findModeAmount, isStale)
   with wider 15% amount tolerance and 7/14-day cadences for weekly/biweekly patterns
 - Cadences ≥60 days (bi-monthly, quarterly, yearly) require only 2+ occurrences
   (1 matching gap); shorter cadences (7/14/30) require 3+ occurrences. Both the
@@ -2317,6 +2423,15 @@ Transfers are identified by keyword matching on merchant_name/name fields:
 - User-dismissed transfers are preserved across detection runs: the upsert's
   `is_active` CASE checks `is_dismissed` and keeps dismissed transfers inactive,
   mirroring the subscription detection logic
+- Stale patterns (last transfer past `max(120d, 1.5×cadence)`, the stale sweep's
+  window) are skipped before the upsert (DC-2, shared `isStale` helper), so a
+  long-stopped transfer isn't re-activated from 36 months of history
+- A user's reclassification sticks (DC-4): `PATCH /api/recurring-transfers/:id/type`
+  sets `recurring_transfers.transfer_type_user_set = true`, and the upsert keeps
+  the stored type for such rows (`CASE WHEN transfer_type_user_set THEN …`); only
+  auto-classified rows follow the keyword classifier
+- `next_expected` steps by calendar month for month-scale cadences
+  (`services/cadence.js`, DC-9); 7/14-day cadences step in days
 
 ### Detection-key migration window
 Subscription and transfer detection now key on
@@ -2818,7 +2933,9 @@ SX3-pinned — the Sheets Income tab.
   "AI categorizing… N done" instead of a blind spinner. A user who creates a rule for
   "Amazon" → "Shopping" will never pay for AI to categorize Amazon
   transactions. Rules are matched against `COALESCE(user_merchant_name,
-  merchant_name, name)` so user-renamed merchants are also handled. All writes
+  merchant_name, name)` so user-renamed merchants are also handled, and the
+  paid AI batch sends Claude that same name (DC-15 — it used to send the raw
+  `COALESCE(merchant_name, name)`, ignoring the user's rename). All writes
   go to `user_category` so a Teller/Plaid re-sync can't clobber them. The
   HTTP route still returns 501 when `ANTHROPIC_API_KEY` is unset (the Settings
   button is disabled without it), so the free sweep runs as part of an
@@ -3248,6 +3365,7 @@ Detection & Categorization:
   teller/routes/subscriptions.js, teller/routes/transactions.js,
   teller/routes/categorize.js,
   teller/routes/categorize-helpers.js, teller/data/reference-data.js,
+  teller/services/cadence.js,
   scripts/detect-subscriptions.js, scripts/detect-transfers.js
 Financial Analytics:
   teller/services/financial-queries.js, teller/routes/spending-analytics.js,
@@ -3376,6 +3494,8 @@ INV-66 | gatherJobRadarSummary is the SINGLE fail-soft aggregator feeding the /j
 INV-67 | Every transaction-sync trigger (POST /api/sync + daily-sync.yml, bank auto-sync, pre-insights chain) goes through syncAllTransactions — Teller then Plaid, each failure-isolated — and runAnomalyCheck runs ONCE over the combined added count; reconcile/backfill never runs it | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-sept-batch2.test.js (BSI-2 / DD-1 block)
 INV-68 | last_sync_result is merged PER PROVIDER (a write replaces only the providers it ran; null result = untouched), never last-writer-wins; errors[] is the flat union | Subsystem: Bank Sync & Ingestion / Data Freshness | Verify: tests/scan-sept-batch2.test.js (BSI-11 block)
 INV-69 | incomePredicate(alias) qualifies EVERY outer column reference with the caller's alias, including inside the __t2 double-count guard (an unqualified ref inside a subquery resolves to the subquery's own table) | Subsystem: Financial Analytics | Verify: tests/scan-sept-batch3.test.js (FAN-2) + tests/ops-and-alerts.test.js
+INV-70 | Recurring projections (detection next_expected, /api/forecast, /api/bill-calendar, /calendar.ics, the /api/cash-flow bill schedule, POST /api/subscriptions) step month-scale cadences (30/60/90/365) by CALENDAR MONTH via services/cadence.js, anchored on the last real charge with next_expected as the lower bound — never a fixed N×86400000 step; manual bills use ONE placement rule (manualBillOccurrences) on both the calendar and the ICS feed | Subsystem: Detection & Categorization | Verify: tests/scan-sept-batch4.test.js (DC-9 / DC-15 blocks)
+INV-71 | Detection never re-activates a series whose last charge is past the stale window (isStale, same window as the stale sweep), and never overwrites a user-set transfer_type (transfer_type_user_set) | Subsystem: Detection & Categorization | Verify: tests/scan-sept-batch4.test.js (DC-2 / DC-4 blocks)
 
 ### Policy Configuration
 Policy threshold: 5/10

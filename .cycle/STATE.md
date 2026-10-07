@@ -39,9 +39,26 @@ to the "none in progress" state.
   - **Open follow-ons:** see `.cycle/blocks/6-batch4-broad-implement.md`.
   - **Operator:** none required (idempotent ADD COLUMN; detection re-runs
     automatically).
-  - **Where I left off:** Batch 4 committed + pushed (no PR). NEXT:
-    `/sync-docs` for Batch 4 (doc list in the block), then Batch 5 per the
-    broad-scan plan.
+  - **/sync-docs DONE (Batch 4):** CLAUDE.md — architecture tree gains
+    services/cadence.js; subscription detection matching rules (DC-2 recency,
+    DC-8 latest-gap/ceil/±2%, DC-7 recent-price anchor); recurring-transfer
+    detection (DC-2 skip, DC-4 transfer_type_user_set, calendar-month
+    next_expected; stale "addDays" reference fixed); bill calendar (DC-9
+    stepping, DC-10 income streams, shared manual-bill rule), cash-flow bill
+    stepping, /api/forecast, /calendar.ics manual-bill wording (the stale
+    "quarterly/yearly = next occurrence" + day-28 cap), csv-overlap + resolve
+    (status='CSV'), CSV import rows_skipped + manual-balance roll-forward,
+    manual cash is_manual enforced, bill-payments paid_amount default,
+    manual-bill PATCH validation, Sheets Payments Log blank variance, AI
+    categorize batch merchant name; DB bullets (recurring_transfers.
+    transfer_type_user_set, manual_bills placement, bill_payments default);
+    Detection & Categorization subsystem += teller/services/cadence.js
+    (80/80 paths resolve); NEW INV-70 (calendar-month projections) + INV-71
+    (no stale re-activation / user transfer_type kept); test counts 1224/48
+    (Perfin 755). README counts (incl. the stale "1047 tests" line).
+    No new operator state.
+  - **Where I left off:** Batch 4 + docs committed + pushed (no PR). NEXT:
+    Batch 5 per the broad-scan plan.
 
 - **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 3 DONE** on branch
   `claude/lucid-darwin-7r8e59` (restarted from main after PR #128 merged,
