@@ -124,6 +124,13 @@ teller/
                            "analyze" = medium — the 5.5 models think by
                            default), textOf / toolUseOf (read blocks by type).
                            Used by every Perfin model call.
+    csv-export.js        — Shared CSV cell helpers for every Perfin CSV
+                           download (/api/export, the tax-report CSV, the
+                           housing landlord export): csvText (quote-escapes AND
+                           prefixes "'" to a cell starting = + - @ tab/CR so a
+                           merchant name can't run as a spreadsheet formula —
+                           SXE-13) and csvDate / isoDate (a DATE as plain
+                           'YYYY-MM-DD', never a JS Date toString — SXE-8/PSC-10)
   routes/
     enrollments.js       — POST /api/enroll, POST /api/sync, GET /api/items,
                            DELETE /api/enrollments/:id, DELETE /api/items/:id,
@@ -478,7 +485,13 @@ shell/
   `KEEP_TABLES`, and `UNTOUCHED_TABLES` (`schema_migrations`, `job_runs`,
   `benchmark_prices`). `tests/scan-sept-batch9.test.js` asserts every table the
   migrations create is in exactly one list — add a new table to one of them.
-- `apps-script/Code.gs` — Google Sheets Apps Script (standalone + server sync)
+- `apps-script/Code.gs` — Google Sheets Apps Script (standalone + server sync).
+  Its column-index writes assume the script's own tab layout, so
+  `assertScriptLayout_` checks the Transactions / Subscriptions headers before
+  writing and throws on a server-sync layout instead of corrupting it (SXE-15) —
+  point it at a SEPARATE spreadsheet from the server `GOOGLE_SHEETS_ID`. Its
+  category column prefers the app category over Plaid's PFC
+  (`txn.category || txn.pfc_primary`).
 - `tests/` — Perfin test suite (node:test runner). Includes
   `tests/audit-regressions.test.js` which pins documented behavior for
   auth, SSO, template hygiene, exclusion rules, and the S1-S4 / #8 / #19
@@ -487,9 +500,20 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1490 tests as of latest); use
+  Perfin and Per-sistant test files (1519 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1490 tests across 60 test files (incl.
+  Current count: 1519 tests across 61 test files (incl.
+  `tests/scan-sept-batch10.test.js` — the Sept 2026 broad-scan Batch 10
+  Sheets/export pins, driven against a stateful fake Sheets API: persisted
+  sync outcome + signature-deduped alert + data-health issue + "Partial" UI
+  (SXE-1/WD-6), re-runnable formatting (banding/conditional rules deleted
+  before re-adding, Dashboard format reset — SXE-2), the sheet-id cache +
+  429-only POST retry (SXE-14), archive delay / completion marker / rebuild /
+  per-run cap (SXE-3), derived goal amounts (SXE-5), the app category
+  expression (SXE-6), the KPI count format (SXE-10), the formula-injection
+  guard for Sheets + CSV (SXE-13), ISO dates + user merchant names in
+  /api/export (SXE-8/PSC-10), context-export real insights / investments / no
+  phantom / debts as owed (SXE-9) and the Code.gs layout check (SXE-15);
   `tests/scan-sept-batch9.test.js` + `apps/per-sistant/tests/scan-sept-batch9.test.js`
   — the Sept 2026 broad-scan Batch 9 platform pins: Secure cookie via req.secure
   + no stack traces (PSC-4), SHELL_SECRET fail-fast (PSC-11), global PIN ceiling
@@ -1342,7 +1366,13 @@ shell/
   scheduler runs the trailing-window Teller backfill at most once per 7-day
   window from this timestamp. Same Per-sistant prereq as
   weekly digest — without webhook config, it's a no-op.
-- **Context export**: Structured financial data (markdown/JSON) for pasting into Claude chat deep-dives
+- **Context export**: Structured financial data (markdown/JSON) for pasting into Claude chat deep-dives.
+  Accounts drop the Plaid brokerage phantom (`NOT EXISTS` an active
+  `investment_accounts.plaid_account_id` — the same dedupe as `getNetWorth`),
+  `investment_accounts` are listed (markdown section + JSON `investment_accounts`),
+  credit/loan balances render as `-$X owed` (JSON rows carry `is_liability`), the
+  "latest insight" is a real insight (`entry_type = 'insight'`, not a categorize /
+  rebuild usage row), and dates are ISO `YYYY-MM-DD` (SXE-9).
 - **Real-time anomaly alerts**: Push notifications for charges 3x+ above merchant average during sync
   (case-insensitive merchant grouping; separate from the 2x AI analysis threshold).
   Covers Teller AND Plaid rows: `runAnomalyCheck()` (routes/enrollments.js) runs ONCE
@@ -1572,12 +1602,50 @@ shell/
     item + its last-90-day matching transactions. Items edited via
     Settings → Watchlist; the tab itself is read-only with warning-only
     protection. Empty-state writes a guidance row.
-  - **Per-month archive tabs** (new): once a month is complete (not the
-    current month), `syncMonthArchives()` creates a dedicated
-    `YYYY-MM Transactions` tab with all that month's transactions +
-    totals, then never touches it again (idempotent via tab-existence
-    check; warning-only protected). Immutable audit trail per month for
+  - **Per-month archive tabs** (new): `syncMonthArchives()` creates a
+    dedicated `YYYY-MM Transactions` tab with all that month's transactions +
+    totals once the month is SETTLED — 10 days after month-end
+    (`archiveReadyOn`, SXE-3: archiving on the 1st froze the month before
+    late-posting charges and pending→posted re-deliveries landed). A finished
+    archive carries a completion marker (protection description
+    `Perfin archive complete — YYYY-MM`, `archiveMarker`) and is never touched
+    again; a tab WITHOUT the marker (a run that died mid-write, or a legacy
+    archive written too early) is cleared and rebuilt. At most
+    `MAX_ARCHIVES_PER_RUN` (6) archives per run, so a first sync over years of
+    history doesn't blow the Sheets quota. Immutable audit trail per month for
     disputes / taxes / historical lookups.
+
+  **Re-runnable formatting (SXE-2).** Every tab's formatting goes through
+  `formatSheet(sheets, sheetId, requests, {resetFormats})`, which DELETES the
+  tab's existing banding and conditional-format rules before re-adding them —
+  `addBanding` on an already-banded range throws ("cannot add alternating
+  background colors"), which used to fail every tab's second sync. The
+  Dashboard (whose row layout shifts between runs) also resets cell formats
+  first. **Quota (SXE-14):** sheet ids come from a per-client cache
+  (`sheetIdMap`, one `spreadsheets.get` per run instead of one per tab), and
+  the client's `retryConfig` retries 429s (any method, honoring Retry-After,
+  else 15s × attempt ≤ 60s) but NEVER retries a POST on a 5xx (a
+  non-idempotent append could double-write). **Formula guard (SXE-13):** the
+  client is wrapped by `guardSheetsWrites`, which prefixes `'` to any string
+  cell starting with `= + - @` tab/CR or shaped like `1/2` / `3-4` (Sheets
+  would parse it as a date), so a merchant name can never execute as a
+  formula; the script's own formulas are wrapped in `sheetFormula()` to pass
+  through. **Goals** use the DERIVED amount (balance − baseline when
+  funding-linked, SXE-5 / INV-11) like `GET /api/goals`; the category
+  expressions are the app's (`COALESCE(user_category, category[1])`, no Plaid
+  PFC fallback — SXE-6, SX3-pinned); the Dashboard's KPI-count row is formatted
+  as a number, not currency (SXE-10).
+
+  **Outcome is persisted (SXE-1/WD-6).** Every `syncAll` caller (the
+  scheduled auto-sync and `POST /api/sheets/sync`, which now returns
+  `{ …result, partial, tabs_failed }`) records the run via
+  `recordSheetsSyncResult()` (`routes/settings.js`) into
+  `user_settings.last_sheets_sync_result`; a CHANGE in the set of failing tabs
+  pushes one "Google Sheets sync: N tabs failed" notification (tag
+  `sheets-sync`), `GET /api/data-health` raises an issue for a failed last run,
+  and the dashboard/Subscriptions/Settings UIs say "Partial: N tabs failed"
+  instead of reporting success. (Before, `syncAll` returned `errors[]` and
+  every caller ignored it — a tab could fail silently forever.)
 
   Triggered by:
   - Scheduled `sheets-auto-sync` job (configurable cadence: daily / weekly
@@ -1806,7 +1874,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1490 tests passing across 60 test files (Perfin 945 + Per-sistant 545), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1519 tests passing across 61 test files (Perfin 974 + Per-sistant 545), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -2026,7 +2094,10 @@ POST /api/investment-accounts # add manual investment account
 GET  /api/investments         # unified investment list across Teller-linked + Plaid + manual sources
                               # (returns total_value, by_source totals, accounts[] with source/supports_holdings flags)
 GET  /api/net-worth/history # net worth snapshots over time
-GET  /api/context-export   # structured data dump for Claude chat
+GET  /api/context-export   # structured data dump for Claude chat (query: format=
+                           # markdown|json). Latest REAL insight, investment_accounts
+                           # included, no Plaid phantom, debts as "-$X owed" (JSON:
+                           # is_liability), ISO dates (SXE-9)
 GET  /api/tax-deductions   # accumulated tax-deductible transactions
 GET  /api/settings         # retrieve user settings
 PATCH /api/settings        # update user settings. Accepts: theme,
@@ -2048,8 +2119,9 @@ GET  /api/data-health      # operator health surface — per-source freshness,
                            # job_runs + thresholdMs), derived issues[]
                            # (disconnected links, stale balances, never-synced,
                            # + per-item errors from last_sync_result), recent sync
-                           # notifications, last_reconcile_at, last_sync_result, and
-                           # a top-level `ok` flag. Does NOT live-decrypt tokens to
+                           # notifications, last_reconcile_at, last_sync_result,
+                           # last_sheets_sync_result (+ an issue when the last Sheets
+                           # run had failed tabs — SXE-1), and a top-level `ok` flag. Does NOT live-decrypt tokens to
                            # probe a passphrase mismatch (pgp_sym_decrypt throws on a
                            # wrong key); that condition surfaces here via
                            # last_sync_result.errors (decryption_failed) instead (D).
@@ -2114,8 +2186,13 @@ POST /api/import-csv       # import bank CSV file (with deduplication). Returns
                            # A name-matched manual account's balance is rolled
                            # forward by the new post-balance rows (DC-6).
 GET  /api/csv-imports      # list CSV import history
-GET  /api/export           # download transactions/subscriptions CSV
-POST /api/sheets/sync      # full sync to Google Sheets (all 16+ tabs, ~30-60s)
+GET  /api/export           # download transactions/subscriptions CSV — ISO
+                           # YYYY-MM-DD dates, the display merchant (user rename
+                           # first), text cells formula-guarded via csvText
+                           # (SXE-8/PSC-10/SXE-13)
+POST /api/sheets/sync      # full sync to Google Sheets (all 16+ tabs, ~30-60s).
+                           # Returns { ...result, partial, tabs_failed } and records
+                           # the outcome in last_sheets_sync_result (SXE-1)
 POST /api/sheets/sync-transactions # partial sync — Transactions tab only (~5s); called from CSV upload modal
 POST /api/sheets/dashboard # sync dashboard data to Sheets
 GET  /api/watchlist        # list watchlist items (merchant/category/keyword)
@@ -2524,6 +2601,13 @@ standalone-mode fallback if either app is run on its own Render service.
   `POST /api/sync`), `last_balance_sync_at TIMESTAMPTZ` (updated by
   `POST /api/sync-balances`). The nav badge uses the most recent of these plus
   `last_auto_sync_at` to display staleness.
+- `user_settings.last_sheets_sync_result JSONB` (SXE-1): the outcome of the
+  most recent Google Sheets `syncAll` — `{ at, ok, tabs_failed, errors: [{ step,
+  error }] }`. Written by `recordSheetsSyncResult()` (routes/settings.js) from the
+  scheduled auto-sync and `POST /api/sheets/sync`; read by `GET /api/data-health`
+  (issue on failed tabs), `GET /api/settings` and the Settings "Last Auto-Sync"
+  line. A change in the failing-tab set notifies once (tag `sheets-sync`).
+  Auto-migrated (`ADD COLUMN IF NOT EXISTS`).
 - `user_settings.last_sync_result JSONB` — structured summary of the most recent
   run of EACH sync provider: `{ at, errors: [{ provider, institution, error }],
   providers: { <provider>: { at, errors } } }`. `errors` is the flat union across
@@ -3743,7 +3827,11 @@ Web UI (Perfin):
   teller/public/*.js, teller/public/*.css, teller/public/sw.js,
   shell/views/*.ejs, shell/public/*
 Sheets & External Export:
-  scripts/sheets-sync.js, scripts/retention-cleanup.sql, apps-script/Code.gs
+  scripts/sheets-sync.js, scripts/retention-cleanup.sql, apps-script/Code.gs,
+  teller/services/csv-export.js
+  (csv-export.js = the shared CSV cell helpers behind /api/export, the tax-report
+   CSV and the housing landlord export; the routes themselves stay in their own
+   subsystems.)
 Per-sistant Backend:
   apps/per-sistant/server.js, apps/per-sistant/ai.js, apps/per-sistant/config.js,
   apps/per-sistant/db.js, apps/per-sistant/errors.js, apps/per-sistant/helpers.js,
@@ -3805,7 +3893,7 @@ INV-20 | Shell requireAuth honors x-api-key; embedded sub-apps skip own check | 
 INV-21 | Shell safeReturnTo allows only same-origin absolute paths | Subsystem: Platform, Shell & Auth
 INV-22 | Tokens + webhook secret encrypted at rest; mismatch surfaces as decryption_failed | Subsystem: Platform, Shell & Auth
 INV-23 | Service worker never caches /api/* | Subsystem: Web UI
-INV-24 | sheets-sync.syncAll isolates each tab (per-tab try/catch + errors[]) | Subsystem: Sheets & External Export
+INV-24 | sheets-sync.syncAll isolates each tab (per-tab try/catch + errors[]) AND every syncAll caller records the outcome via recordSheetsSyncResult (last_sheets_sync_result; one notification per change in the failing-tab set) — errors[] is never ignored | Subsystem: Sheets & External Export | Verify: tests/scan-sept-batch10.test.js (SXE-1 block)
 INV-25 | Embedded sub-apps detect req.app.get("embedded") and skip their own auth; cross-app calls use the wired pool (perfinPool/persistentPool), never HTTP self-fetch | Subsystem: Per-sistant Backend / Platform, Shell & Auth
 INV-26 | Teller transaction pagination terminates on an empty page (count-explicit + from_id), never a hard-coded page-size compare | Subsystem: Bank Sync & Ingestion | Verify: tests/cycle-fixes.test.js (BS-1 block)
 INV-27 | Only sensitivity='normal' docs/facts are embedded AND retrieved; private/secret are never embedded or sent to AI. Frontmatter sensitivity resolution FAILS CLOSED: YAML comments stripped, block lists parsed, yes/no/on/off understood, the most restrictive of sensitivity/embed/private wins, and any unrecognized value → private (KR-2). Hard-deleted notes/documents are never vector-retrieved (the joined source row must exist, KR-6) | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js (buildRetrievalQuery), tests/knowledge-facts.test.js, apps/per-sistant/tests/scan-sept-fixes.test.js (KR-2/KR-6)
@@ -3852,6 +3940,9 @@ INV-78 | The auto-sync "complete" notification fires only on genuinely new trans
 INV-79 | The shell PIN gate has a GLOBAL failure ceiling (30 failed PINs/hour across all IPs → PIN login locked 30 min, even for the correct PIN, with one sendToAll alert per lockout); biometric + x-api-key paths are unaffected; the shell refuses to boot without SHELL_SECRET | Subsystem: Platform, Shell & Auth | Verify: tests/scan-sept-batch9.test.js (PSC-14 / PSC-11 blocks)
 INV-80 | Per-sistant outbound webhooks/Slack are SSRF-checked at send time by resolveSafeWebhookTarget — literal IPs in any spelling (IPv4-mapped/compatible IPv6 unwrapped) and EVERY DNS-resolved address must be outside the net.BlockList private ranges; DNS failure fails closed; fetch uses redirect:'manual' | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch9.test.js (PB-14 blocks)
 INV-81 | scripts/reset-fresh.js classifies EVERY table the Perfin migrations create into exactly one of WIPE_TABLES / KEEP_TABLES / UNTOUCHED_TABLES (schema_migrations is never wiped) | Subsystem: Platform, Shell & Auth | Verify: tests/scan-sept-batch9.test.js (PSC-6 block)
+INV-82 | Sheets formatting is re-runnable: formatSheet deletes a tab's banding + conditional-format rules before re-adding them (Dashboard also resets cell formats), so a second syncAll over the same spreadsheet succeeds | Subsystem: Sheets & External Export | Verify: tests/scan-sept-batch10.test.js (SXE-2 block, stateful fake Sheets API)
+INV-83 | No exported text is ever evaluated as a formula: Sheets writes go through guardSheetsWrites (strings starting = + - @ tab/CR, or date-shaped, are "'"-prefixed; only sheetFormula() values pass through) and every CSV download builds text cells with csvText | Subsystem: Sheets & External Export | Verify: tests/scan-sept-batch10.test.js (SXE-13 block)
+INV-84 | A month archive tab is written only once the month is settled (month-end + 10 days) and is final only with its completion marker; an unmarked archive is rebuilt, never trusted | Subsystem: Sheets & External Export | Verify: tests/scan-sept-batch10.test.js (SXE-3 block)
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
 ### Policy Configuration

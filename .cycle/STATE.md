@@ -26,7 +26,8 @@ to the "none in progress" state.
   - **Decisions:** guard (apostrophe) rather than RAW writes; legacy archives rebuilt once (6/run); POSTs retried only on 429; "Partial" result shown under Settings → Last Auto-Sync for manual runs too.
   - **Open follow-ons:** see `.cycle/blocks/6-batch10-broad-implement.md`.
   - **Operator:** none required; legacy Apps Script users: clasp push + separate spreadsheet.
-  - **Where I left off:** Batch 10 committed and pushed (no PR). NEXT: /sync-docs for Batch 10, then Batch 11 (Knowledge lifecycle & retrieval).
+  - **/sync-docs DONE (Batch 10):** CLAUDE.md — new services/csv-export.js in the architecture tree + the Sheets & External Export subsystem list; Code.gs layout check + category precedence (separate spreadsheet); Sheets section: archive delay/marker/rebuild/6-per-run, re-runnable formatting, sheet-id cache + 429-only POST retry, formula guard, derived goals, app category expression, KPI count, persisted outcome + alert + data-health + Partial UI; Context export bullet + endpoint; /api/export, /api/sheets/sync, /api/data-health endpoint notes; new user_settings.last_sheets_sync_result DB bullet; INV-24 extended (outcome recorded), NEW INV-82 (re-runnable formatting), INV-83 (no formula evaluation in Sheets/CSV), INV-84 (settled-month archives + marker); test counts 1519/61 (Perfin 974) + batch10 test description. README — counts + Batch 10 coverage. Per-sistant CLAUDE.md unchanged (no Per-sistant code touched). Subsystem paths all resolve. Operator state: none new (last_sheets_sync_result auto-migrates).
+  - **Where I left off:** Batch 10 and its docs are committed and pushed (no PR). NEXT: Batch 11 (Knowledge lifecycle & retrieval).
 
 - **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 9 DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-10-08). Batch 9 (platform hardening) implemented, tested, pushed (no PR opened).
