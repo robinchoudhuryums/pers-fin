@@ -136,7 +136,10 @@
       u = u || { label:'', cadence_months:1, due_day:15 };
       var div = document.createElement('div');
       div.className = 'hz-util-row';
-      div.innerHTML =
+      // The label this row was loaded with — sent back as rename_from so a
+      // label edit renames the stored rows instead of backfilling a new
+      // placeholder for every past cycle (FAN-4).
+      if (u.label) div.setAttribute('data-orig-label', u.label);
         '<input class="hz-in hz-u-label" placeholder="e.g. Electricity" value="'+esc(u.label)+'">' +
         '<select class="hz-in hz-u-cad">' +
           '<option value="1"'+(u.cadence_months==1?' selected':'')+'>Monthly</option>' +
@@ -144,7 +147,10 @@
           '<option value="3"'+(u.cadence_months==3?' selected':'')+'>Quarterly</option>' +
         '</select>' +
         '<input class="hz-in hz-u-day" type="number" min="1" max="31" value="'+(u.due_day||15)+'" title="Due day">' +
-        '<button class="btn-sm hz-u-del" type="button" style="border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--red,#eb6b6b);cursor:pointer;padding:6px 10px;font-family:inherit;">&times;</button>';
+        '<button class="btn-sm hz-u-del" type="button" style="border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--red,#eb6b6b);cursor:pointer;padding:6px 10px;font-family:inherit;">&times;</button>' +
+        // Statement merchant names (FAN-10) — what the bill looks like on a card
+        // statement, for the Settle Up double-count check. Blank = the label.
+        '<input class="hz-in hz-u-merchants" style="grid-column:1/-1;" placeholder="Name on card statements, e.g. PG&amp;E, Pacific Gas (optional)" value="'+esc((u.merchant_patterns||[]).join(', '))+'" title="Merchant names this bill shows up as on a card statement — used to warn when it is also on the shared card">';
       div.querySelector('.hz-u-del').addEventListener('click', function(){ div.remove(); });
       return div;
     }
@@ -195,7 +201,9 @@
         return {
           label: r.querySelector('.hz-u-label').value.trim(),
           cadence_months: parseInt(r.querySelector('.hz-u-cad').value, 10) || 1,
-          due_day: parseInt(r.querySelector('.hz-u-day').value, 10) || 15
+          due_day: parseInt(r.querySelector('.hz-u-day').value, 10) || 15,
+          merchant_patterns: r.querySelector('.hz-u-merchants').value,
+          rename_from: r.getAttribute('data-orig-label') || undefined
         };
       }).filter(function(u){ return u.label; });
       return {

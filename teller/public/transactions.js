@@ -20,6 +20,7 @@
       return {
         q: document.getElementById('search-input').value.trim(),
         category: document.getElementById('filter-category').value,
+        account_id: document.getElementById('filter-account').value,
         min_amount: document.getElementById('filter-min').value,
         max_amount: document.getElementById('filter-max').value,
         start_date: document.getElementById('filter-start').value,
@@ -33,6 +34,7 @@
       var params = new URLSearchParams();
       if (filters.q) params.set('q', filters.q);
       if (filters.category) params.set('category', filters.category);
+      if (filters.account_id) params.set('account_id', filters.account_id);
       if (filters.min_amount) params.set('min_amount', filters.min_amount);
       if (filters.max_amount) params.set('max_amount', filters.max_amount);
       if (filters.start_date) params.set('start_date', filters.start_date);
@@ -167,6 +169,7 @@
       ['search-btn', 'click', function() { searchTransactions(0); }],
       ['search-input', 'keydown', function(e) { if (e.key === 'Enter') searchTransactions(0); }],
       ['filter-category', 'change', function() { searchTransactions(0); }],
+      ['filter-account', 'change', function() { searchTransactions(0); }],
       ['bulk-apply-btn', 'click', applyBulkCategory],
       ['header-check', 'change', function() {
         var checked = this.checked;
@@ -466,6 +469,64 @@
     var sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 6, now.getDate());
     document.getElementById('filter-start').value = sixMonthsAgo.toISOString().split('T')[0];
     document.getElementById('filter-end').value = now.toISOString().split('T')[0];
+
+    // Pre-fill filters from the query string (WUI-3) so deep links — e.g. the
+    // dashboard Settle Up "Review →" (?account_id=…&month=YYYY-MM) — open the
+    // page already filtered instead of silently dropping the parameters.
+    // Recognized: q, category, account_id, month, start_date, end_date,
+    // min_amount, max_amount.
+    var urlParams = new URLSearchParams(window.location.search);
+    function pad2(n) { return String(n).padStart(2, '0'); }
+    (function applyUrlFilters() {
+      var month = urlParams.get('month');
+      if (month && /^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
+        var y = parseInt(month.slice(0, 4), 10), m = parseInt(month.slice(5, 7), 10);
+        var last = new Date(y, m, 0).getDate();
+        document.getElementById('filter-start').value = month + '-01';
+        document.getElementById('filter-end').value = month + '-' + pad2(last);
+      }
+      var map = { q: 'search-input', category: 'filter-category', start_date: 'filter-start', end_date: 'filter-end', min_amount: 'filter-min', max_amount: 'filter-max' };
+      Object.keys(map).forEach(function(k) {
+        var v = urlParams.get(k);
+        if (v) document.getElementById(map[k]).value = v;
+      });
+      var acct = urlParams.get('account_id');
+      if (acct) {
+        // Placeholder option until the account list loads, so the very first
+        // search is already scoped.
+        var sel = document.getElementById('filter-account');
+        var opt = document.createElement('option');
+        opt.value = acct; opt.textContent = 'Selected account';
+        sel.appendChild(opt); sel.value = acct;
+      }
+      if (urlParams.toString()) {
+        var bar = document.getElementById('search-bar');
+        if (bar) bar.classList.add('open');
+      }
+    })();
+
+    // Account filter options (value = linked_accounts.account_id, the key the
+    // search endpoint filters on).
+    (async function loadAccountFilter() {
+      try {
+        var r = await apiFetch('/api/accounts');
+        if (!r.ok) return;
+        var data = await r.json();
+        var accts = Array.isArray(data) ? data : (data.accounts || []);
+        var sel = document.getElementById('filter-account');
+        var current = sel.value;
+        sel.innerHTML = '<option value="">All accounts</option>' + accts.map(function(a) {
+          return '<option value="' + esc(a.account_id) + '">' + esc(a.name || a.account_id) + (a.mask ? ' ••' + esc(a.mask) : '') + '</option>';
+        }).join('');
+        if (current) {
+          if (!accts.some(function(a) { return a.account_id === current; })) {
+            var o = document.createElement('option'); o.value = current; o.textContent = 'Selected account';
+            sel.appendChild(o);
+          }
+          sel.value = current;
+        }
+      } catch (e) { /* filter stays "All accounts" + any URL-provided value */ }
+    })();
 
     // --- Manual cash-transaction modal --------------------------------------
     (function initCashModal() {

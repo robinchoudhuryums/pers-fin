@@ -9,6 +9,36 @@ to the "none in progress" state.
 
 ## Current Cycle
 
+- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 5 DONE** on branch
+  `claude/lucid-darwin-7r8e59` (2026-10-08). Batch 5 (Rent, Utilities &
+  Settle Up) implemented, tested, pushed (no PR opened).
+  - **Completed:** FAN-3 (trailing-24-month generation), FAN-4 (payee/label
+    rename carried over via planConfigUpdate + rename_from; NOT EXISTS
+    generation guard; ledger/split payee-scoped; new utilities anchored at this
+    month), FAN-9 (split awaiting_count/labels; widget warns + holds Mark
+    settled), FAN-10 (utilities[].merchant_patterns drive the double-count
+    guard), FAN-11 (prior-month default in week 1), FAN-12 (settlement nets
+    non-transfer refunds, excludes pending; refunds_total + account_key),
+    WUI-3 (basePath links; Activity account filter + query-string prefill),
+    PB-2 (Per-sistant routes/housing-due.js shared day-granular helper with
+    overdue state, APP_TIMEZONE).
+  - **Not finished (selected):** none.
+  - **Tests:** 1249/1249 (Perfin 772 + Per-sistant 477; 50 files; +17
+    tests/scan-sept-batch5.test.js — 16 fail on old source, +8
+    apps/per-sistant/tests/scan-sept-batch5.test.js). Real-PG 16 checks of
+    every changed query; e2e 8/8.
+  - **Decisions:** the ledger stays single-payee — a payee_name change is a
+    rename (history follows); "Mark settled" is held while a utility for the
+    month awaits its bill; refunds = credits passing NOT_TRANSFER; the shared
+    housing helper lives in apps/per-sistant/routes/ (inside the Per-sistant
+    Backend routes/*.js glob, no subsystem-config change).
+  - **Open follow-ons:** see `.cycle/blocks/6-batch5-broad-implement.md`.
+  - **Operator:** none required (optional: add utility statement names on the
+    Rent page).
+  - **Where I left off:** Batch 5 committed + pushed (no PR). NEXT:
+    `/sync-docs` for Batch 5 (doc list in the block), then Batch 6 (budgets,
+    dates & timezones) per the broad-scan plan.
+
 - **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 4 DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-09-27). Batch 4 (detection, calendar
   projections, CSV/bill bookkeeping) implemented, tested, pushed (no PR opened).

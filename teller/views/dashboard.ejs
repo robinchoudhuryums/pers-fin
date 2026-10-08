@@ -478,7 +478,7 @@
   <div id="csv-reminder-banner" style="display:none;padding:14px 18px;background:var(--yellow-bg);border:1px solid rgba(240,195,109,0.2);border-radius:var(--radius);margin-bottom:20px;font-size:13px;color:var(--yellow);font-weight:400;">
     <div style="display:flex;align-items:center;justify-content:space-between;">
       <div id="csv-reminder-text"></div>
-      <a href="/" style="color:var(--warm);font-weight:500;text-decoration:none;white-space:nowrap;margin-left:12px;">Import CSV &rarr;</a>
+      <a href="<%= basePath %>/accounts" style="color:var(--warm);font-weight:500;text-decoration:none;white-space:nowrap;margin-left:12px;">Import CSV &rarr;</a>
     </div>
   </div>
 
@@ -937,7 +937,7 @@
         animateInt(document.getElementById('acct-count'), accounts.length + investments.length);
 
         if (!accounts.length && !investments.length) {
-          grid.innerHTML = '<div class="empty-msg">No accounts linked. <a href="/">Link an account</a> to get started.</div>';
+          grid.innerHTML = '<div class="empty-msg">No accounts linked. <a href="' + (window.BASE_PATH || '') + '/accounts">Link an account</a> to get started.</div>';
           return;
         }
 
@@ -3120,9 +3120,11 @@
         var opt = document.createElement('option');
         opt.value = ym;
         opt.textContent = monthLabel(ym) + (i === 0 ? ' (current)' : '');
-        // Default to the previous month if it's the first week — that's
-        // when the user typically checks who owes what for the statement.
-        if (i === (now.getDate() <= 7 && now.getMonth() !== d.getMonth() ? 0 : (now.getDate() <= 7 ? 1 : 0))) {
+        // Default to the previous month in the first week — that's when the
+        // user checks who owes what for the statement that just closed (FAN-11:
+        // the old index expression selected nothing in days 1–7, so the
+        // browser fell back to the current month).
+        if (i === (now.getDate() <= 7 ? 1 : 0)) {
           opt.selected = true;
         }
         sel.appendChild(opt);
@@ -3179,6 +3181,16 @@
                '. If a utility is on the shared card it may be double-counted across both legs.' +
              '</div>')
           : '';
+        // Utilities still awaiting their bill this month (FAN-9): the even-up
+        // isn't final yet, so warn and hold "Mark settled" until the amounts
+        // are entered on the Rent page.
+        var awaiting = (housing && housing.awaiting_count) ? housing.awaiting_labels || [] : [];
+        var awaitNote = awaiting.length
+          ? ('<div style="margin-top:8px;padding:8px 10px;background:rgba(217,178,95,0.14);border:1px solid rgba(217,178,95,0.4);border-radius:6px;font-size:11px;color:var(--yellow,#d9b25f);">' +
+               '⏳ Waiting on ' + esc(awaiting.join(', ')) + ' — the even-up is incomplete until ' + (awaiting.length === 1 ? 'that bill is' : 'those bills are') + ' entered. ' +
+               '<a href="' + (window.BASE_PATH || '') + '/housing#pending" style="color:var(--teal);">Enter amount' + (awaiting.length === 1 ? '' : 's') + ' &rarr;</a>' +
+             '</div>')
+          : '';
         var isSettled = settlement && settlement.settled;
         // Settle/undo control: when settled, show a confirmation pill + Undo;
         // otherwise a "Mark settled" button that records the current net.
@@ -3188,7 +3200,8 @@
                '<button id="settle-undo-btn" class="btn btn-sm" data-month="' + esc(theMonth) + '" style="font-size:11px;">Undo</button>' +
              '</div>')
           : ('<div style="margin-top:10px;">' +
-               '<button id="settle-mark-btn" class="btn btn-sm primary" data-month="' + esc(theMonth) + '" data-net="' + net + '" style="font-size:12px;">Mark settled</button>' +
+               '<button id="settle-mark-btn" class="btn btn-sm primary" data-month="' + esc(theMonth) + '" data-net="' + net + '" style="font-size:12px;"' +
+                 (awaiting.length ? ' disabled title="Enter the awaiting utility bill(s) first"' : '') + '>Mark settled</button>' +
              '</div>');
         headline.innerHTML =
           '<div style="padding:14px;background:var(--card);border:1px solid var(--card-border);border-radius:8px;' + (isSettled ? 'opacity:0.75;' : '') + '">' +
@@ -3196,6 +3209,7 @@
             '<div style="font-size:26px;font-weight:600;color:' + netColor + ';margin-top:2px;">' + netLabel + '</div>' +
             (parts.length > 1 ? '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;">' + parts.join(' &nbsp;+&nbsp; ') + '</div>' : '') +
             dcNote +
+            awaitNote +
             settleRow +
           '</div>';
 
@@ -3226,7 +3240,7 @@
             '<div style="margin-bottom:14px;padding:14px;background:var(--card);border:1px solid var(--card-border);border-radius:8px;">' +
               '<div style="display:flex;justify-content:space-between;align-items:baseline;">' +
                 '<strong style="font-size:14px;">Rent &amp; Utilities even-up</strong>' +
-                '<a href="/housing" style="font-size:11px;color:var(--teal);text-decoration:none;">Rent page &rarr;</a>' +
+                '<a href="' + (window.BASE_PATH || '') + '/housing" style="font-size:11px;color:var(--teal);text-decoration:none;">Rent page &rarr;</a>' +
               '</div>' +
               '<div style="font-size:18px;color:var(--teal);font-weight:500;margin-top:6px;">' + hWho + ' ' + fmtMoney(housing.transfer) + '</div>' +
               '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Rent + utilities ' + fmtMoney(housing.rent_utilities) + ' &minus; car ' + fmtMoney(housing.car) + ', split evenly &middot; each bears ' + fmtMoney(housing.each_share) + '</div>' +
@@ -3251,7 +3265,7 @@
               '</div>' +
               '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;display:flex;justify-content:space-between;">' +
                 '<span>Total charges: <strong>' + fmtMoney(a.total_charges) + '</strong> across ' + a.txn_count + ' transactions</span>' +
-                '<a href="/transactions?account_id=' + a.account_id + '&month=' + d.month + '" style="color:var(--teal);text-decoration:none;">Review &rarr;</a>' +
+                '<a href="' + (window.BASE_PATH || '') + '/transactions?account_id=' + encodeURIComponent(a.account_key || '') + '&month=' + encodeURIComponent(d.month) + '" style="color:var(--teal);text-decoration:none;">Review &rarr;</a>' +
               '</div>'
             );
           return (

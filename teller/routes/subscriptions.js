@@ -11,7 +11,7 @@ const { categorizeSubscription, findCancelUrl } = require("../data/reference-dat
 const { CSV_FORMATS, INSTITUTION_LABELS, detectCsvFormat, parseDate, csvTransactionId, makeCsvTxnIdGenerator } = require("../data/csv-formats");
 const { detectSubscriptions } = require("../../scripts/detect-subscriptions");
 const { detectRecurringTransfers } = require("../../scripts/detect-transfers");
-const { INCOME_PREDICATE, currentMonth, todayStr } = require("../services/financial-queries");
+const { INCOME_PREDICATE, NOT_TRANSFER, currentMonth, todayStr } = require("../services/financial-queries");
 const {
   nextOccurrence, seriesOccurrences, addDaysStr,
   manualBillOccurrences, buildIncomeStreams, isIncomeStreamLive, incomeEventsBetween,
@@ -505,13 +505,21 @@ router.get("/api/shared-settlement", async (req, res) => {
       accountClause += ` AND la.id = $${params.length}`;
     }
 
+    // Charges net of REFUNDS, posted only (FAN-12): a credit that isn't a
+    // payment/transfer (NOT_TRANSFER) is a refund and nets out of the bucket
+    // its personal_for puts it in — a $200 shared purchase refunded the same
+    // month no longer bills the partner $100. Pending holds are excluded, like
+    // every spending aggregation. Card payments (credits matching
+    // NOT_TRANSFER's payment/transfer words) still don't count.
     const result = await pool.query(`
       SELECT
         la.id AS account_id,
+        la.account_id AS account_key,
         la.name AS account_name,
         COALESCE(la.spending_split_pct, 50) AS split_pct,
         COUNT(t.transaction_id)::int AS txn_count,
         ROUND(COALESCE(SUM(t.amount), 0)::numeric, 2) AS total_charges,
+        ROUND(COALESCE(-SUM(t.amount) FILTER (WHERE t.amount < 0), 0)::numeric, 2) AS refunds_total,
         ROUND(COALESCE(SUM(t.amount) FILTER (WHERE t.personal_for IS NULL), 0)::numeric, 2) AS shared_total,
         COUNT(*) FILTER (WHERE t.personal_for IS NULL)::int AS shared_count,
         ROUND(COALESCE(SUM(t.amount) FILTER (WHERE t.personal_for = 'self'), 0)::numeric, 2) AS your_personal_total,
@@ -521,12 +529,13 @@ router.get("/api/shared-settlement", async (req, res) => {
       FROM linked_accounts la
       LEFT JOIN transactions t
         ON t.account_id = la.account_id
-        AND t.amount > 0
+        AND (t.amount > 0 OR (t.amount < 0 AND ${NOT_TRANSFER}))
+        AND t.pending = false
         AND COALESCE(t.is_reimbursed, false) = false
         AND t.date >= $1::date
         AND t.date <  ($1::date + INTERVAL '1 month')::date
       WHERE ${accountClause}
-      GROUP BY la.id, la.name, la.spending_split_pct
+      GROUP BY la.id, la.account_id, la.name, la.spending_split_pct
       ORDER BY la.name
     `, params);
 
@@ -539,10 +548,12 @@ router.get("/api/shared-settlement", async (req, res) => {
       const theirShare = shared * (1 - yourSplitPct) + theirs;
       return {
         account_id: r.account_id,
+        account_key: r.account_key,
         account_name: r.account_name,
         split_pct: parseInt(r.split_pct),
         txn_count: r.txn_count,
         total_charges: parseFloat(r.total_charges) || 0,
+        refunds_total: parseFloat(r.refunds_total) || 0,
         shared_total: shared,
         shared_count: r.shared_count,
         your_personal_total: yours,
@@ -581,7 +592,8 @@ router.get("/api/shared-settlement/:account_id/transactions", async (req, res) =
       FROM transactions t
       JOIN linked_accounts la ON la.account_id = t.account_id
       WHERE la.id = $1
-        AND t.amount > 0
+        AND (t.amount > 0 OR (t.amount < 0 AND ${NOT_TRANSFER}))
+        AND t.pending = false
         AND t.date >= $2::date
         AND t.date <  ($2::date + INTERVAL '1 month')::date
       ORDER BY t.date DESC, t.transaction_id
