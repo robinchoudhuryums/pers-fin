@@ -35,9 +35,23 @@ to the "none in progress" state.
   - **Open follow-ons:** see `.cycle/blocks/6-batch5-broad-implement.md`.
   - **Operator:** none required (optional: add utility statement names on the
     Rent page).
-  - **Where I left off:** Batch 5 committed + pushed (no PR). NEXT:
-    `/sync-docs` for Batch 5 (doc list in the block), then Batch 6 (budgets,
-    dates & timezones) per the broad-scan plan.
+  - **/sync-docs DONE (Batch 5):** CLAUDE.md — Rent & Utilities ledger
+    (trailing-24-month generation, skip-existing guard, rename carry-over via
+    planConfigUpdate / rename_from, payee change = rename, payee-scoped
+    ledger+split, new-utility anchoring), Per-sistant briefing rent line via
+    the shared housing-due helper; Settle Up widget (prior-month default,
+    refund-netted / pending-free shared leg, awaiting-bill hold, merchant
+    patterns in the double-count guard, basePath links); endpoint docs for
+    /api/housing/ledger, /api/housing/split (awaiting_*), /api/shared-settlement
+    (refunds_total, account_key); housing_config gains
+    utilities[].merchant_patterns; Activity page deep-link filters + Account
+    filter; NEW INV-72 (single-payee ledger generation/rename); test counts
+    1249/50 (Perfin 772 + Per-sistant 477). README counts. apps/per-sistant/
+    CLAUDE.md — routes/housing-due.js key file, housing_due status, test count
+    477. Subsystem paths 80/80 (housing-due.js is inside routes/*.js). No new
+    operator state.
+  - **Where I left off:** Batch 5 + docs committed + pushed (no PR). NEXT:
+    Batch 6 (budgets, dates & timezones) per the broad-scan plan.
 
 - **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 4 DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-09-27). Batch 4 (detection, calendar

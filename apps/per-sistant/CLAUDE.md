@@ -12,7 +12,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **AI**: `ai.js` (Anthropic Claude client, model helpers, caching) — 11 features with per-feature model selection (incl. Knowledge Q&A + Job Fit). Also hosts the monthly **AI cost cap** (`ai_usage` ledger + `getAiBudgetCents`/`recordAiUsage` + `callAIWithUsage`), introduced by Job Radar.
 - **Helpers**: `helpers.js` (recurrence, webhooks, Slack, automations)
 - **Views**: `views.js` + `views/css.js` + `views/js.js` (shared HTML/CSS/JS helpers)
-- **Routes**: `routes/` (23 route modules — auth, todos, emails, notes, contacts, settings, rag, health, jobs, etc.)
+- **Routes**: `routes/` (23 route modules + the `housing-due.js` helper — auth, todos, emails, notes, contacts, settings, rag, health, jobs, etc.)
 - **Pages**: `pages/` (11 page modules — dashboard, todos, emails, notes, contacts, calendar, review, analytics, settings, knowledge, health, jobs)
 - **Knowledge / RAG**: `routes/rag.js` + `services/embeddings.js` (Voyage) +
   `services/vault-sync.js` (Obsidian-vault ingest, GitHub API) + `pages/knowledge.js`.
@@ -29,7 +29,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   at-most-once delivery). The manual `POST /api/emails/:id/send` claims the row
   the same way (`UPDATE … WHERE id = $1 AND status <> 'sent' RETURNING`) so a
   double-click / retry returns 409 instead of re-sending (PB-4).
-- **Tests**: `tests/` (node:test runner, `npm test`, 469 tests (api + integration + cycle-fixes + knowledge + health + jobs + scan-sept-fixes))
+- **Tests**: `tests/` (node:test runner, `npm test`, 477 tests (api + integration + cycle-fixes + knowledge + health + jobs + scan-sept-fixes))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of June 2026)
@@ -174,6 +174,18 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `routes/health.js` — Health & Habits API (habits CRUD, daily logs, metrics,
   summary/heatmap) + pure streak helpers (`computeStreaks`, `isDueOn`) and the
   shared `gatherHealthSummary` aggregator (notification check + AI briefing)
+- `routes/housing-due.js` — shared Rent & Utilities due state (PB-2): pure
+  `computeHousingDue(cfg, balance, n, today)` (day-granular on APP_TIMEZONE
+  'YYYY-MM-DD' strings, due day clamped to the real month length; statuses
+  upcoming / due_today / overdue / unscheduled — an OVERDUE balance surfaces
+  every day until paid) + `housingDue(perfinPool)` (reads Perfin read-only,
+  balance scoped to the configured payee, fail-soft → null) + `housingDueSuffix`.
+  The ONLY copy of this math — used by both the notification check and the AI
+  daily briefing (the old per-file copies went silent ON the due day and while
+  rent was overdue). Not mounted as a router.
+- `tests/scan-sept-batch5.test.js` — Sept 2026 broad-scan Batch 5 pins for the
+  housingDue helper (due today, overdue, month-length clamp, payee scoping,
+  notification-check integration)
 - `pages/health.js` — Health page (today check-offs, 7-day grid, heatmap, measurements)
 - `db/020_health.sql` — habits, habit_logs, health_metrics tables
 - `routes/jobs.js` — Job Radar API (ingest/dedup/trust/fit/legitimacy passes,
@@ -197,7 +209,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `db/007_enhancements.sql` — custom recurrence, entity links, webhooks, notification preferences
 - `db/008_templates_performance.sql` — todo templates table, performance indexes
 - `uploads/` — local file attachment storage
-- `tests/api.test.js` — unit test suite (the bulk of the 469 per-sistant tests; NOTE: it tests inline copies of the logic and imports no production module — see TQ-1 in the Sept 2026 broad scan)
+- `tests/api.test.js` — unit test suite (the bulk of the 477 per-sistant tests; NOTE: it tests inline copies of the logic and imports no production module — see TQ-1 in the Sept 2026 broad scan)
 - `tests/scan-sept-fixes.test.js` — Sept 2026 broad-scan Batch 1 pins (Save Draft status, Send-now save, local datetime fill, fail-closed vault sensitivity, vault mark-and-sweep, trash chunk purge)
 - `tests/integration.test.js` — integration tests (requires DB, auto-skips without)
 - `Dockerfile` / `docker-compose.yml` — container deployment
@@ -209,7 +221,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (469 tests)
+# Run tests (477 tests)
 npm test
 
 # Pages
@@ -298,7 +310,9 @@ POST   /api/webhooks/:id/test      # Test a webhook
 # Notifications
 GET    /api/notifications/check    # Check for due tasks, overdue, streaks at risk (todos AND
                                    # habits), reminders, upcoming facts, rent/utilities due
-                                   # (housing_due — cross-app via perfinPool, read-only, fail-soft),
+                                   # (housing_due — cross-app via perfinPool, read-only, fail-soft;
+                                   # carries status upcoming|due_today|overdue|unscheduled from
+                                   # routes/housing-due.js),
                                    # AND Job Radar high-fit leads (job_radar — gated on
                                    # job_radar_enabled, fail-soft)
 

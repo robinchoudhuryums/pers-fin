@@ -453,9 +453,16 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1224 tests as of latest); use
+  Perfin and Per-sistant test files (1249 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1224 tests across 48 test files (incl.
+  Current count: 1249 tests across 50 test files (incl.
+  `tests/scan-sept-batch5.test.js` + `apps/per-sistant/tests/scan-sept-batch5.test.js`
+  — the Sept 2026 broad-scan Batch 5 Rent/Utilities/Settle Up pins: trailing
+  24-month generation (FAN-3), rename carry-over + payee scoping (FAN-4),
+  awaiting-bill gate (FAN-9), merchant-pattern double-count guard (FAN-10),
+  prior-month default (FAN-11), refund-netted / pending-free settlement
+  (FAN-12), basePath links + Activity deep-link filters (WUI-3), and the shared
+  day-granular Per-sistant housingDue helper (PB-2);
   `tests/scan-sept-batch4.test.js` — the Sept 2026 broad-scan Batch 4
   detection/calendar/bookkeeping pins, run against the REAL detectors over a
   mock pool: stale series never re-detected (DC-2), latest-gap + ceil-majority
@@ -708,12 +715,25 @@ shell/
   obligations. Config (payee, monthly rent, due day, utilities + cadence,
   reminder lead days) lives in `user_settings.housing_config` (JSONB); a 6-hour
   scheduled task auto-**generates** each month's rent (`unpaid`) + per-utility
-  placeholders (`pending_amount`) from `start_month`→current, idempotently, then
+  placeholders (`pending_amount`) over the TRAILING 24 months ending this month
+  (never earlier than `start_month` — FAN-3: the cap used to count forward from
+  the pinned start_month, so generation silently stopped two years after setup),
+  idempotently (a period that already has a rent row under any payee, or a
+  same-label utility row, is skipped — FAN-4), then
   fires two deduped reminders: **payment-due** (balance owed near the rent due
   day) and **missing-utility-amount** (a placeholder whose bill should have
   arrived). Recording a payment ticks the unpaid obligations being settled,
   auto-sums the amount, and **auto-derives the memo** by collapsing consecutive
   months into ranges (`deriveMemo` → "Jan–Mar 2026 Rent, Jan 2026 Electricity");
+  **Renames carry history over (FAN-4)**: the ledger is single-payee, so saving
+  a changed `payee_name` renames the stored obligations + payments to it (a
+  landlord SWITCH is therefore not modeled — the old history follows the new
+  name), and each utility row sends `rename_from` (the label it loaded with) so
+  a label edit renames its rows and keeps its cadence anchor; a brand-new
+  utility is anchored at the current month (it used to backfill a placeholder +
+  reminder for every past cycle). Pure `planConfigUpdate` computes the plan;
+  `PATCH /api/housing/config` applies it in one transaction. The ledger
+  balance and the even-up are scoped to the configured payee.
   obligations link back via `paid_payment_id` (FK-by-convention) and an
   Undo reverts them. Unpaid obligations with a known amount also surface on the
   **bill calendar** (`bill_source='housing'`, display-only — settled via the Rent
@@ -729,9 +749,12 @@ shell/
   /api/housing/export?year=&format=csv|pdf|json`) lists a year's payments with
   memos + covered months + total (PDF via pdfkit, mirroring the tax-report
   exporter). Under the unified shell, Per-sistant's **AI daily briefing** also
-  weaves in a rent line ("$X owed to [payee], due in N days") read READ-ONLY
-  from the wired `perfinPool` (`payee_obligations` + `housing_config`),
-  fail-soft (INV-25/35). **Bill OCR**: each awaiting-bill row has a "Scan"
+  weaves in a rent line ("$X owed to [payee] (due in N days | due today | overdue
+  by N days)") read READ-ONLY from the wired `perfinPool` (`payee_obligations` +
+  `housing_config`), fail-soft (INV-25/35) — via the same day-granular,
+  APP_TIMEZONE, payee-scoped helper as the Per-sistant `housing_due`
+  notification (`apps/per-sistant/routes/housing-due.js`, PB-2: the old copies
+  went silent ON the due day and while rent was overdue). **Bill OCR**: each awaiting-bill row has a "Scan"
   button (upload a photo/PDF) AND a "📷" button (camera-direct via a `capture`
   input — straight to the rear camera on mobile); both feed the same handler →
   `POST /api/housing/scan-bill` runs the bill image/PDF through Claude
@@ -856,7 +879,16 @@ shell/
   (`?month=`), so the periods align; the housing even-up defaults its partner
   name to `user_settings.partner_name` so the two legs name the same person.
   Month dropdown defaults to the prior month when opened in the first week
-  (reconciliation usually happens after the statement closes). Auto-hides when
+  (reconciliation usually happens after the statement closes; FAN-11 — the old
+  selection expression picked nothing in days 1–7, so it showed the current
+  month). The shared-card leg nets same-month REFUNDS (credits that pass
+  `NOT_TRANSFER`, so card payments stay out) against their `personal_for`
+  bucket and excludes PENDING charges (FAN-12). When a utility for the month is
+  still awaiting its bill, the widget shows a "Waiting on …" note linking to
+  `/housing#pending` and **disables "Mark settled"** until it's entered (enter 0
+  or delete the placeholder for a bill that won't come — FAN-9). Its links
+  (Rent page, per-card "Review →" → the Activity page filtered by
+  `?account_id=<account_key>&month=`) carry the basePath (WUI-3). Auto-hides when
   there are no is_shared accounts AND the housing split isn't configured.
   Backed by `GET /api/shared-settlement` + `GET /api/housing/split`. Toggleable
   from Settings (widget key: `settlement`, default on). Partner display name set
@@ -866,8 +898,11 @@ shell/
   transfer, neither on a shared card; if a utility ever lands on the shared card
   it would appear in both legs. A **double-count guard** detects this: when both
   legs combine, `GET /api/housing/split` returns `double_count_warning` listing
-  any shared-card charge that month whose merchant matches the payee/utility
-  names — word-boundary `~*` match (INV-10), fail-soft — and the widget shows an
+  any shared-card charge that month whose merchant matches the payee name or a
+  utility's **statement merchant names** (`utilities[].merchant_patterns`, set
+  per utility on the Rent page, e.g. "PG&E, Pacific Gas"; the label is the
+  fallback — FAN-10: a bare label like "Gas" flagged "SHELL GAS" and missed the
+  real PG&E charge) — word-boundary `~*` match (INV-10), fail-soft — and the widget shows an
   inline ⚠ note so you can adjust before settling.) A **"Mark settled"** button records that the
   month was squared (the client-computed net + direction → `settlements` table
   via `POST /api/settlement/settle`); once settled the headline dims and shows
@@ -937,7 +972,11 @@ shell/
   Configurable data sources: wellness, debt payoff, goal progress, etc. Mobile-optimized (reduced
   filters/shadows on small screens, `prefers-reduced-motion` support).
 - **Transaction search**: Full-text search with filters — category, account, amount range, date range
-  (GET /api/transactions/search)
+  (GET /api/transactions/search). The Activity page has an Account filter and
+  pre-fills its filters from the query string (`q`, `category`, `account_id`,
+  `month=YYYY-MM` → that month's date range, `start_date`, `end_date`,
+  `min_amount`, `max_amount`) so deep links like the Settle Up "Review →" open
+  already filtered (WUI-3).
 - **Bill calendar**: Monthly calendar view of upcoming charges — detected subscriptions
   projected from cadences, user-created manual bills, and detected income. Click events
   to toggle paid/unpaid status. "Add Bill" modal for creating manual expected charges.
@@ -1569,7 +1608,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1224 tests passing across 48 test files (Perfin 755 + Per-sistant 469), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1249 tests passing across 50 test files (Perfin 772 + Per-sistant 477), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
@@ -1689,7 +1728,8 @@ POST /api/bill-payments    # mark a bill as paid (body: bill_source, bill_id, pa
 DELETE /api/bill-payments/:id # unmark a bill payment
 GET  /api/housing/config   # rent/utilities ledger config (payee, rent, due day, utilities)
 PATCH /api/housing/config  # replace config (validated/normalized; 400 if enabling w/o payee)
-GET  /api/housing/ledger   # balance owed + obligations + payment history (with covered months)
+GET  /api/housing/ledger   # balance owed + obligations + payment history (with covered months),
+                           # scoped to the configured payee (FAN-4)
 POST /api/housing/generate # generate current/missing months' obligations from config (idempotent)
 POST /api/housing/obligations # add an ad-hoc obligation (body: label, period, amount?, category?, due_day?)
 PATCH /api/housing/obligations/:id # set amount (bill arrived → unpaid), notes, due_day, label
@@ -1703,9 +1743,12 @@ GET  /api/housing/split    # partner "even-up" for a month (query: month=YYYY-MM
                            # send the partner = (rent+utilities − car)/2 so each bears half.
                            # Car pulled from a Perfin loan's monthly_payment or a fixed amount.
                            # Returns { enabled, transfer, direction, each_share, car_source,
-                           # double_count_warning }. double_count_warning (or null) flags
-                           # shared-card charges that month matching the payee/utility names
-                           # (word-boundary, fail-soft) so the Settle Up widget can warn.
+                           # double_count_warning, awaiting_count, awaiting_labels }.
+                           # Payee-scoped. double_count_warning (or null) flags
+                           # shared-card charges that month matching the payee name /
+                           # utility merchant_patterns (word-boundary, fail-soft);
+                           # awaiting_* = the month's utilities still pending their bill
+                           # (FAN-9 — the widget holds "Mark settled" until entered).
 POST /api/housing/scan-bill # OCR a utility-bill image/PDF via Claude vision → SUGGEST
                            # { amount, period, label } WITHOUT writing (user confirms +
                            # PATCHes). Shares the AI cap (entry_type='scan'); 501 w/o
@@ -1724,7 +1767,11 @@ GET  /api/shared-settlement # who-owes-who on shared cards for a given month
                             # (query: month=YYYY-MM, account_id?). Returns per-
                             # account { total_charges, shared_total, your/partner
                             # personal totals + counts, your_share, partner_share }
-                            # plus the user's configured partner_name.
+                            # plus the user's configured partner_name. Charges are
+                            # NET of same-month refunds (non-transfer credits) and
+                            # exclude pending (FAN-12); each account also carries
+                            # refunds_total and account_key (linked_accounts.account_id,
+                            # for the Activity-page deep link).
 GET  /api/shared-settlement/:account_id/transactions # flat list of every charge on a
                             # shared account in the given month with each row's
                             # personal_for state, for reconciliation.
@@ -2338,11 +2385,14 @@ standalone-mode fallback if either app is run on its own Render service.
   alter the underlying shared-card or housing math.
 - `user_settings.housing_config JSONB NOT NULL DEFAULT '{}'`: Rent & Utilities
   config — `{ enabled, payee_name, rent_amount, rent_due_day, reminder_lead_days,
-  start_month, utilities: [{label, cadence_months, due_day, anchor}],
+  start_month, utilities: [{label, cadence_months, due_day, anchor, merchant_patterns[]}],
   split: {enabled, partner_name, car_loan_account_id, car_fixed_amount} }`. Read
   by `routes/housing.js getConfig()`; drives monthly obligation generation +
   reminders + the partner even-up split (`GET /api/housing/split`). `start_month`
-  is preserved across edits so the generation window doesn't shift;
+  is preserved across edits (generation covers the trailing 24 months, FAN-3);
+  `merchant_patterns` (≤8 statement names, FAN-10) feed the Settle Up
+  double-count guard; a utility's `anchor` is kept across edits/renames and a
+  new utility is anchored at the current month (FAN-4);
   `car_loan_account_id` references a `linked_accounts.id` (type='loan') whose
   `monthly_payment` is the car amount.
 - `notification_log`: in-app notification history. Columns: `type`, `title`, `body`,
@@ -3496,6 +3546,7 @@ INV-68 | last_sync_result is merged PER PROVIDER (a write replaces only the prov
 INV-69 | incomePredicate(alias) qualifies EVERY outer column reference with the caller's alias, including inside the __t2 double-count guard (an unqualified ref inside a subquery resolves to the subquery's own table) | Subsystem: Financial Analytics | Verify: tests/scan-sept-batch3.test.js (FAN-2) + tests/ops-and-alerts.test.js
 INV-70 | Recurring projections (detection next_expected, /api/forecast, /api/bill-calendar, /calendar.ics, the /api/cash-flow bill schedule, POST /api/subscriptions) step month-scale cadences (30/60/90/365) by CALENDAR MONTH via services/cadence.js, anchored on the last real charge with next_expected as the lower bound — never a fixed N×86400000 step; manual bills use ONE placement rule (manualBillOccurrences) on both the calendar and the ICS feed | Subsystem: Detection & Categorization | Verify: tests/scan-sept-batch4.test.js (DC-9 / DC-15 blocks)
 INV-71 | Detection never re-activates a series whose last charge is past the stale window (isStale, same window as the stale sweep), and never overwrites a user-set transfer_type (transfer_type_user_set) | Subsystem: Detection & Categorization | Verify: tests/scan-sept-batch4.test.js (DC-2 / DC-4 blocks)
+INV-72 | The Rent & Utilities ledger is single-payee: generation covers the trailing 24 months and never regenerates a period that already has a rent row (any payee) or a same-label utility row; a payee/label rename carries the stored rows over (planConfigUpdate) instead of creating new ones; ledger + split are scoped to the configured payee | Subsystem: Financial Analytics | Verify: tests/scan-sept-batch5.test.js (FAN-3 / FAN-4 blocks)
 
 ### Policy Configuration
 Policy threshold: 5/10
