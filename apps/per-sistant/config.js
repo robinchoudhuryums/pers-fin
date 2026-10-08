@@ -38,13 +38,63 @@ const MAX_CONTENT_LENGTH = 100000;
 const MAX_BULK_IDS = 500;
 const MAX_PAGINATION_LIMIT = 100;
 
-// URL validation for webhooks/external requests
+// ---- SSRF guard (PB-1/PB-5/PB-14) -----------------------------------------
+// Non-public address space, checked with node's built-in CIDR matcher. String
+// prefix checks alone were bypassable: `http://[::ffff:169.254.169.254]/`
+// normalizes to `[::ffff:a9fe:a9fe]` and slipped past, as did `[::]` and
+// `[::ffff:7f00:1]`; and a public hostname could simply RESOLVE to a private
+// address. IPv4-mapped / IPv4-compatible IPv6 addresses are unwrapped to IPv4
+// first.
+const net = require("net");
+const _blocked = new net.BlockList();
+[
+  ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8],
+  ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.168.0.0", 16],
+  ["198.18.0.0", 15], ["224.0.0.0", 4], ["240.0.0.0", 4],
+].forEach(([a, p]) => _blocked.addSubnet(a, p, "ipv4"));
+[
+  ["::", 96],          // unspecified, loopback and IPv4-compatible (::a.b.c.d)
+  ["64:ff9b::", 96],   // NAT64 — can be routed to an internal IPv4
+  ["fc00::", 7],       // unique local
+  ["fe80::", 10],      // link local
+  ["ff00::", 8],       // multicast
+].forEach(([a, p]) => _blocked.addSubnet(a, p, "ipv6"));
+
+function unwrapMappedIpv4(ip) {
+  const v = String(ip).toLowerCase();
+  let m = v.match(/^(?:0{0,4}:){0,5}:?ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (m) return m[1];
+  m = v.match(/^(?:0{0,4}:){0,5}:?ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (m) {
+    const hi = parseInt(m[1], 16), lo = parseInt(m[2], 16);
+    return [hi >> 8, hi & 255, lo >> 8, lo & 255].join(".");
+  }
+  return null;
+}
+
+// True for any address that is not publicly routable (or isn't an IP at all).
+function isPrivateAddress(ip) {
+  const bare = String(ip || "").replace(/^\[|\]$/g, "");
+  const kind = net.isIP(bare);
+  if (!kind) return true;
+  if (kind === 6) {
+    const v4 = unwrapMappedIpv4(bare);
+    if (v4) return _blocked.check(v4, "ipv4");
+    return _blocked.check(bare, "ipv6");
+  }
+  return _blocked.check(bare, "ipv4");
+}
+
+// URL validation for webhooks/external requests (synchronous, no DNS): scheme,
+// literal private IPs in any spelling, and internal names. The send paths ALSO
+// call resolveSafeWebhookTarget, which checks what the name resolves to.
 function isValidWebhookUrl(urlStr) {
   try {
     const u = new URL(urlStr);
     if (u.protocol !== "http:" && u.protocol !== "https:") return false;
     // Block private/internal IPs
     const hostname = u.hostname;
+    if (net.isIP(hostname.replace(/^\[|\]$/g, "")) && isPrivateAddress(hostname)) return false;
     if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "0.0.0.0" || hostname === "::1" || hostname === "[::1]") return false;
     if (hostname.startsWith("127.")) return false; // full loopback /8 (not just 127.0.0.1)
     // Link-local 169.254.0.0/16 — INCLUDES the cloud metadata endpoint
@@ -57,6 +107,24 @@ function isValidWebhookUrl(urlStr) {
     if (/^\[(::1|fe80:|fc[0-9a-f]{2}:|fd[0-9a-f]{2}:|::ffff:169\.254\.|::ffff:127\.|::ffff:10\.)/i.test(hostname)) return false;
     if (hostname.endsWith(".internal") || hostname.endsWith(".local")) return false;
     return true;
+  } catch {
+    return false;
+  }
+}
+
+// Async SSRF check for the moment of sending (PB-14): the URL must pass
+// isValidWebhookUrl AND every address its hostname resolves to must be public
+// (a public-looking name pointing at 169.254.169.254 / 10.x is rejected).
+// Callers must also fetch with redirect: "manual" so a public URL can't 30x to
+// an internal one. (A rebinding race between this lookup and fetch's own is
+// still possible; this closes the static cases.)
+async function resolveSafeWebhookTarget(urlStr) {
+  if (!isValidWebhookUrl(urlStr)) return false;
+  const host = new URL(urlStr).hostname.replace(/^\[|\]$/g, "");
+  if (net.isIP(host)) return !isPrivateAddress(host);
+  try {
+    const addrs = await require("dns").promises.lookup(host, { all: true, verbatim: true });
+    return addrs.length > 0 && addrs.every((a) => !isPrivateAddress(a.address));
   } catch {
     return false;
   }
@@ -79,6 +147,8 @@ function validateWebhookHeaders(headers) {
 }
 
 module.exports = {
+  isPrivateAddress,
+  resolveSafeWebhookTarget,
   SESSION_PASSWORD, SESSION_PIN, AUTH_SECRET, AUTH_MODE, SESSION_SECRET, PERFIN_URL,
   envContacts,
   VALID_PRIORITIES, VALID_HORIZONS, VALID_RECURRENCE_RULES,

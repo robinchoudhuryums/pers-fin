@@ -116,7 +116,10 @@ const sessionConfig = {
   saveUninitialized: false,
   cookie: {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    // PSC-4: NODE_ENV isn't set by the deploy configs, so also follow the
+    // request ("auto" = req.secure, honoring trust proxy) instead of sending
+    // the session cookie without Secure over HTTPS.
+    secure: process.env.NODE_ENV === "production" ? true : "auto",
     sameSite: "lax",
     maxAge: 24 * 60 * 60 * 1000, // 24 hours
   },
@@ -236,14 +239,25 @@ app.use((req, res, next) => {
 });
 
 // Rate limiting
+// PSC-8: under the unified shell every request has already passed the shell's
+// PIN/api-key gate (whose own limiters throttle credential guessing), and the
+// dashboard alone makes ~35-40 /api calls per load — 100 per 15 min per IP
+// 429'd the operator after a few reloads. Skip the general limiter when
+// embedded; it still protects a standalone deployment.
 const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
+  skip: (req) => !!req.app.get("embedded"),
   message: { error: "Too many requests, please try again later." },
 });
 const tightLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 5,
+  // The /api/sync prefix also matches GET /api/sync/reconcile/status, which the
+  // Settings page polls every 4 s during a reconcile — 10 of every 15 polls
+  // were 429s (PSC-8). Reads are cheap; only the sync/reconcile triggers are
+  // throttled.
+  skip: (req) => req.method === "GET",
   message: { error: "Too many requests, please try again later." },
 });
 const loginLimiter = rateLimit({

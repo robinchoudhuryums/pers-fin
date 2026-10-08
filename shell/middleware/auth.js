@@ -23,6 +23,20 @@ const DEFAULT_IDLE_MS = 60 * 60 * 1000;          // 60 min if DB lookup fails
 const IDLE_CACHE_TTL_MS = 60 * 1000;             // re-read setting every 60s
 const FAIL_DELAY_MS = 750;                       // soft brute-force throttle
 
+// Global PIN failure ceiling (PSC-14). The per-IP authLimiter alone lets an
+// attacker with ~100 IPs walk a 4-digit PIN space in a couple of hours. Count
+// failed PIN attempts across ALL IPs in a sliding window; past the ceiling,
+// PIN login is locked for LOCKOUT_MS (biometric login and x-api-key clients are
+// unaffected) and the onLockout hook fires once per lockout so the operator is
+// told. In-memory: a restart clears it, which is acceptable for a
+// single-process app (a restart costs the attacker far more than it saves).
+const GLOBAL_FAIL_WINDOW_MS = 60 * 60 * 1000;
+const GLOBAL_FAIL_CEILING = 30;
+const LOCKOUT_MS = 30 * 60 * 1000;
+let _failTimes = [];
+let _lockedUntil = 0;
+let _onLockout = null;
+
 // Pool pulled in via init() so the auth module isn't import-time coupled
 // to Perfin's database setup. When unset (or DB unavailable) we fall back
 // to DEFAULT_IDLE_MS — still a usable session, just non-tunable.
@@ -30,8 +44,9 @@ let _pool = null;
 let _cachedIdleMs = DEFAULT_IDLE_MS;
 let _cacheExpiresAt = 0;
 
-function init({ pool } = {}) {
+function init({ pool, onLockout } = {}) {
   _pool = pool || null;
+  if (typeof onLockout === "function") _onLockout = onLockout;
   // Reset cache so the first request after init re-reads fresh.
   _cacheExpiresAt = 0;
 }
@@ -94,10 +109,18 @@ function makeSession(idleMs) {
   return sign(String(Date.now() + (idleMs || DEFAULT_IDLE_MS)));
 }
 
+// Secure flag (PSC-4): NODE_ENV=production was never set in the deploy configs,
+// so the session cookie went out without `Secure`. Also derive it from the
+// request itself — `trust proxy` is set, so req.secure is true behind
+// Render's/Fly's TLS-terminating proxy — and keep plain-HTTP local runs working.
+function cookieSecure(req) {
+  return process.env.NODE_ENV === "production" || !!(req && req.secure);
+}
+
 function setSessionCookie(res, idleMs) {
   res.cookie(COOKIE_NAME, makeSession(idleMs), {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: cookieSecure(res.req),
     sameSite: "lax",
     maxAge: idleMs,
     path: "/",
@@ -122,15 +145,32 @@ function isValidApiKey(req) {
   try { return crypto.timingSafeEqual(providedHash, expectedHash); } catch { return false; }
 }
 
+// Requests that authenticate THEMSELVES and so pass the cookie gate (PB-15):
+// Per-sistant's Perfin webhook receiver verifies an HMAC over the raw body plus
+// a timestamp replay window (and 503s when no secret is configured). Perfin's
+// HTTP webhook path (e.g. the Settings "test" event) sends no shell cookie.
+function isSelfAuthenticatingRoute(req) {
+  return req.method === "POST" && req.path === "/per-sistant/api/perfin/webhook";
+}
+
 async function requireAuth(req, res, next) {
   // API key bypass for cron + CI. No cookie refresh — these aren't browser
   // sessions and the headers carry every time.
   if (isValidApiKey(req)) return next();
+  if (isSelfAuthenticatingRoute(req)) return next();
 
   if (!isValidSession(req.cookies[COOKIE_NAME])) {
     // Browsers get a redirect, API clients get JSON. Sub-apps mounted past
     // this gate will inherit the same behavior automatically.
-    if (req.method === "GET" && req.accepts("html")) return res.redirect("/login");
+    // Carry the requested page through the login (PSC-9) so a notification
+    // deep link (e.g. /perfin/housing#pending) survives an idle timeout. The
+    // fragment never reaches the server; the path + query do.
+    if (req.method === "GET" && req.accepts("html")) {
+      const back = safeReturnTo(req.originalUrl);
+      return res.redirect(back === DEFAULT_POST_LOGIN || back === "/"
+        ? "/login"
+        : "/login?return_to=" + encodeURIComponent(back));
+    }
     return res.status(401).json({ error: "Authentication required" });
   }
   // Sliding window: refresh cookie expiration on every authenticated request.
@@ -148,9 +188,50 @@ async function requireAuth(req, res, next) {
   next();
 }
 
+function pinLockedForMs(now = Date.now()) {
+  return _lockedUntil > now ? _lockedUntil - now : 0;
+}
+
+function recordPinFailure(now = Date.now()) {
+  _failTimes = _failTimes.filter((t) => now - t < GLOBAL_FAIL_WINDOW_MS);
+  _failTimes.push(now);
+  if (_failTimes.length >= GLOBAL_FAIL_CEILING && !pinLockedForMs(now)) {
+    _lockedUntil = now + LOCKOUT_MS;
+    _failTimes = [];
+    console.error(`SECURITY: ${GLOBAL_FAIL_CEILING} failed PIN attempts within an hour — PIN login locked for ${LOCKOUT_MS / 60000} min.`);
+    if (_onLockout) {
+      Promise.resolve()
+        .then(() => _onLockout({ failures: GLOBAL_FAIL_CEILING, lockedUntil: new Date(_lockedUntil) }))
+        .catch((e) => console.error("PIN lockout alert failed:", e.message));
+    }
+  }
+}
+
+function _resetPinFailures() { _failTimes = []; _lockedUntil = 0; }
+
+function renderLogin(res, status, error, returnTo) {
+  return res.status(status).render("login", { error, returnTo: loginReturnTo(returnTo) });
+}
+
+// The return_to value echoed into the login form: only a safe, non-default
+// target (anything else just lands on the default destination anyway).
+function loginReturnTo(target) {
+  const t = safeReturnTo(target);
+  return t === DEFAULT_POST_LOGIN ? "" : t;
+}
+
 async function handleLogin(req, res) {
   const submitted = String(req.body.pin || "");
   const expected = process.env.SHELL_PIN || "";
+  const returnTo = req.body.return_to;
+
+  const lockedMs = pinLockedForMs();
+  if (lockedMs) {
+    // Even a correct PIN is refused while locked — otherwise the lockout would
+    // not stop a distributed guesser.
+    const mins = Math.ceil(lockedMs / 60000);
+    return renderLogin(res, 429, `Too many failed attempts. PIN login is locked for ${mins} more minute${mins === 1 ? "" : "s"} — use biometric login or try later.`, returnTo);
+  }
 
   // Length-mismatch is itself information; pad before compare so we don't
   // leak the expected length via the early-exit branch.
@@ -165,14 +246,20 @@ async function handleLogin(req, res) {
     crypto.timingSafeEqual(submittedBuf, expectedBuf);
 
   if (!matches) {
-    return setTimeout(
-      () => res.status(401).render("login", { error: "Incorrect PIN." }),
-      FAIL_DELAY_MS
-    );
+    recordPinFailure();
+    return setTimeout(() => renderLogin(res, 401, "Incorrect PIN.", returnTo), FAIL_DELAY_MS);
   }
 
-  const idleMs = await getIdleMs();
-  setSessionCookie(res, idleMs);
+  // A throw here (e.g. SHELL_SECRET unset — the boot check normally prevents
+  // that, PSC-11) must not escape the async handler as an unhandled rejection,
+  // which crashed the process on every correct PIN.
+  try {
+    const idleMs = await getIdleMs();
+    setSessionCookie(res, idleMs);
+  } catch (err) {
+    console.error("Shell login error:", err.message);
+    return renderLogin(res, 500, "Login is unavailable — the server is misconfigured.", returnTo);
+  }
 
   // Allow ?return_to=/perfin/today on the form so a redirected request
   // bounces back to where the user wanted to go after login. safeReturnTo
@@ -208,6 +295,13 @@ function handleLogout(_req, res) {
 module.exports = {
   COOKIE_NAME,
   DEFAULT_IDLE_MS,
+  DEFAULT_POST_LOGIN,
+  GLOBAL_FAIL_CEILING,
+  cookieSecure,
+  loginReturnTo,
+  pinLockedForMs,
+  _resetPinFailures,
+  _recordPinFailure: recordPinFailure,
   init,
   invalidateIdleCache,
   isValidSession,

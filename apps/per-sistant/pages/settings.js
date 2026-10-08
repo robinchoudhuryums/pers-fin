@@ -225,7 +225,7 @@ ${navBar("/settings")}
     </div>
   </div>
 
-  ${AUTH_SECRET ? '<div class="section"><h2>Session</h2><div class="actions" style="margin-bottom:0;"><button class="btn danger" id="logout-btn">Log Out</button></div></div>' : ''}
+  ${(AUTH_SECRET || req.app.get("embedded")) ? '<div class="section"><h2>Session</h2><div class="actions" style="margin-bottom:0;"><button class="btn danger" id="logout-btn">Log Out</button></div></div>' : ''}
 </div>
 
 <!-- Automation Modal -->

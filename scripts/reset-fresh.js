@@ -15,7 +15,10 @@
 //          financial_goals, net_worth_snapshots, tax_deductions, csv_imports,
 //          budgets, budget_snapshots, categorization_rules, manual_bills,
 //          bill_payments, notification_log, ai_audit_log, financial_insights,
-//          account_balance_snapshots, watchlist_items, credit_scores
+//          account_balance_snapshots, watchlist_items, credit_scores,
+//          investment_flows, payee_obligations, payee_payments, settlements
+//   UNTOUCHED: schema_migrations, job_runs, benchmark_prices (operational /
+//          market-data cache)
 //   RESET: user_settings → single default row (clears zip, partner_name,
 //          AI running summary, all watermarks, integration config, etc.)
 //
@@ -33,11 +36,6 @@ require("dotenv").config({ path: require("path").resolve(__dirname, "../.env") }
 
 const { Pool } = require("pg");
 
-if (!process.env.NEON_DATABASE_URL) {
-  console.error("FATAL: NEON_DATABASE_URL is not set.");
-  process.exit(1);
-}
-
 const CONFIRMED = process.argv.includes("--yes") || process.env.CONFIRM_RESET === "YES";
 
 // Tables wiped completely. Order doesn't matter — a single TRUNCATE ... CASCADE
@@ -51,6 +49,12 @@ const WIPE_TABLES = [
   "budgets", "budget_snapshots", "categorization_rules", "manual_bills", "bill_payments",
   "notification_log", "ai_audit_log", "financial_insights",
   "account_balance_snapshots", "watchlist_items", "credit_scores",
+  // PSC-6: these were missing. investment_flows survived the RESTART IDENTITY
+  // of investment_accounts, so old flows pointed at re-used account ids (wrong
+  // TWR/XIRR); the rent ledger and settle-up marks survived a wiped
+  // housing_config. tests/scan-sept-batch9.test.js asserts every table the
+  // migrations create is classified in one of the three lists.
+  "investment_flows", "payee_obligations", "payee_payments", "settlements",
 ];
 
 // Preserved so the dry-run can show what's kept.
@@ -60,12 +64,20 @@ const KEEP_TABLES = [
   "push_subscriptions", "user_settings",
 ];
 
-const pool = new Pool({
-  connectionString: process.env.NEON_DATABASE_URL,
-  ssl: { rejectUnauthorized: true },
-  max: 2,
-  connectionTimeoutMillis: 10000,
-});
+// Never touched: migration bookkeeping, scheduler heartbeats, and the S&P 500
+// close cache (market data, not the user's).
+const UNTOUCHED_TABLES = ["schema_migrations", "job_runs", "benchmark_prices"];
+
+let pool = null;
+
+function makePool() {
+  return new Pool({
+    connectionString: process.env.NEON_DATABASE_URL,
+    ssl: { rejectUnauthorized: true },
+    max: 2,
+    connectionTimeoutMillis: 10000,
+  });
+}
 
 async function count(client, table) {
   try {
@@ -77,6 +89,7 @@ async function count(client, table) {
 }
 
 async function main() {
+  pool = makePool();
   const client = await pool.connect();
   try {
     console.log("\n=== Fresh-start reset ===\n");
@@ -137,4 +150,12 @@ async function main() {
   }
 }
 
-main().catch((err) => { console.error("Fatal:", err.message); process.exit(1); });
+module.exports = { WIPE_TABLES, KEEP_TABLES, UNTOUCHED_TABLES };
+
+if (require.main === module) {
+  if (!process.env.NEON_DATABASE_URL) {
+    console.error("FATAL: NEON_DATABASE_URL is not set.");
+    process.exit(1);
+  }
+  main().catch((err) => { console.error("Fatal:", err.message); process.exit(1); });
+}

@@ -24,6 +24,11 @@ services:
     # only where versions diverge (notably express v4 vs v5).
     buildCommand: npm install
     startCommand: npm start
+    # NODE_ENV is deliberately NOT set here: Render exposes envVars to the build
+    # too, and NODE_ENV=production would make `npm install` skip devDependencies
+    # (changing the installed tree). Secure cookies follow req.secure and the
+    # shell's error handler hides stack traces without it (PSC-4); set it in
+    # the dashboard only together with a build command you've checked.
     envVars:
       - key: PORT
         value: 3000

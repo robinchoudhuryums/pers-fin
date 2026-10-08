@@ -14,6 +14,11 @@ COPY plaid/package.json plaid/package-lock.json* ./plaid/
 
 RUN npm install --omit=dev --workspaces --include-workspace-root
 
+# Production mode at RUNTIME (PSC-4): always-Secure cookies, no stack traces
+# from Express's default error handler, cached view compilation. Set after the
+# install so it can't change what gets installed.
+ENV NODE_ENV=production
+
 # Copy source. The unified shell at shell/index.js is the entry point;
 # it require()s teller/ and apps/per-sistant/ as sub-apps and mounts them
 # behind a PIN gate. The legacy Plaid app stays for optional standalone use.

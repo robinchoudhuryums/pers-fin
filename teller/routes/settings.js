@@ -36,6 +36,20 @@ router.get("/api/settings", async (req, res) => {
 // and drops nested/over-long keys, so a pathological body can't be persisted
 // verbatim — unlike `target_allocation_pct`, these were stored after only a
 // `typeof === "object"` check (which `[]` and arbitrary nesting pass).
+// Strict integer parse for bounded settings (PSC-15): a number, or a string of
+// digits. null / "" / "6abc" are NOT integers (Number(null) is 0 and
+// parseInt("6abc") is 6, which would quietly accept garbage).
+function toInt(v) {
+  if (typeof v === "number") return v;
+  if (typeof v === "string" && /^\s*-?\d+\s*$/.test(v)) return parseInt(v, 10);
+  return NaN;
+}
+
+function isValidTimeZone(tz) {
+  if (typeof tz !== "string" || !tz || tz.length > 50) return false;
+  try { new Intl.DateTimeFormat("en-US", { timeZone: tz }); return true; } catch { return false; }
+}
+
 function sanitizeBoolMap(obj) {
   if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
   const out = {};
@@ -76,15 +90,21 @@ router.patch("/api/settings", async (req, res) => {
     if (keep_alive_enabled !== undefined) {
       updates.push("keep_alive_enabled = $" + idx++); values.push(!!keep_alive_enabled);
     }
+    // PSC-15: these bounded fields used to drop a bad value silently and still
+    // return 200 when sent alongside other fields — now a 400, like INV-59.
     if (keep_alive_start !== undefined) {
-      const h = parseInt(keep_alive_start);
-      if (h >= 0 && h <= 23) { updates.push("keep_alive_start = $" + idx++); values.push(h); }
+      const h = toInt(keep_alive_start);
+      if (!Number.isInteger(h) || h < 0 || h > 23) return res.status(400).json({ error: "keep_alive_start must be an hour 0-23" });
+      updates.push("keep_alive_start = $" + idx++); values.push(h);
     }
     if (keep_alive_end !== undefined) {
-      const h = parseInt(keep_alive_end);
-      if (h >= 0 && h <= 23) { updates.push("keep_alive_end = $" + idx++); values.push(h); }
+      const h = toInt(keep_alive_end);
+      if (!Number.isInteger(h) || h < 0 || h > 23) return res.status(400).json({ error: "keep_alive_end must be an hour 0-23" });
+      updates.push("keep_alive_end = $" + idx++); values.push(h);
     }
-    if (keep_alive_timezone !== undefined && typeof keep_alive_timezone === "string" && keep_alive_timezone.length <= 50) {
+    if (keep_alive_timezone !== undefined) {
+      // An unknown zone made isWithinActiveHours fail open (24/7 pings).
+      if (!isValidTimeZone(keep_alive_timezone)) return res.status(400).json({ error: "keep_alive_timezone must be a valid IANA time zone" });
       updates.push("keep_alive_timezone = $" + idx++); values.push(keep_alive_timezone);
     }
     if (zip_code !== undefined) {
@@ -123,12 +143,14 @@ router.patch("/api/settings", async (req, res) => {
       updates.push("auto_sync_enabled = $" + idx++); values.push(!!req.body.auto_sync_enabled);
     }
     if (req.body.auto_sync_interval_hours !== undefined) {
-      const h = parseInt(req.body.auto_sync_interval_hours);
-      if (h >= 1 && h <= 168) { updates.push("auto_sync_interval_hours = $" + idx++); values.push(h); }
+      const h = toInt(req.body.auto_sync_interval_hours);
+      if (!Number.isInteger(h) || h < 1 || h > 168) return res.status(400).json({ error: "auto_sync_interval_hours must be an integer 1-168" });
+      updates.push("auto_sync_interval_hours = $" + idx++); values.push(h);
     }
     if (req.body.csv_reminder_days !== undefined) {
-      const val = parseInt(req.body.csv_reminder_days);
-      if (val >= 1 && val <= 90) { updates.push("csv_reminder_days = $" + idx++); values.push(val); }
+      const val = toInt(req.body.csv_reminder_days);
+      if (!Number.isInteger(val) || val < 1 || val > 90) return res.status(400).json({ error: "csv_reminder_days must be an integer 1-90" });
+      updates.push("csv_reminder_days = $" + idx++); values.push(val);
     }
     if (req.body.csv_reminder_enabled !== undefined) {
       updates.push("csv_reminder_enabled = $" + idx++); values.push(!!req.body.csv_reminder_enabled);
@@ -162,8 +184,9 @@ router.patch("/api/settings", async (req, res) => {
       updates.push("weekly_digest_enabled = $" + idx++); values.push(!!req.body.weekly_digest_enabled);
     }
     if (req.body.weekly_digest_day !== undefined) {
-      const d = parseInt(req.body.weekly_digest_day);
-      if (d >= 0 && d <= 6) { updates.push("weekly_digest_day = $" + idx++); values.push(d); }
+      const d = toInt(req.body.weekly_digest_day);
+      if (!Number.isInteger(d) || d < 0 || d > 6) return res.status(400).json({ error: "weekly_digest_day must be 0 (Sun) - 6 (Sat)" });
+      updates.push("weekly_digest_day = $" + idx++); values.push(d);
     }
     // Daily digest (#19)
     if (req.body.daily_digest_enabled !== undefined) {

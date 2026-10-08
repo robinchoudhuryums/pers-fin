@@ -5,6 +5,11 @@ on:
     paths:
       - 'csv-uploads/*.csv'
 
+# The cleanup step pushes a commit; without this a repo whose default
+# GITHUB_TOKEN permission is read-only fails the push (PSC-15).
+permissions:
+  contents: write
+
 jobs:
   import:
     runs-on: ubuntu-latest
@@ -34,17 +39,20 @@ jobs:
         run: node scripts/sheets-sync.js
         continue-on-error: true
 
-      - name: Archive processed CSVs
+      # Remove the imported bank CSVs from the tree rather than archiving them
+      # under csv-uploads/processed/ (PSC-15): an in-repo archive kept raw bank
+      # statements in every future checkout. The rows now live in the database
+      # (and Sheets); the upload commit itself is still in history, so delete
+      # it with `git filter-repo` if that matters to you.
+      - name: Remove processed CSVs
         run: |
-          mkdir -p csv-uploads/processed
           for f in csv-uploads/*.csv; do
-            [ -f "$f" ] && mv "$f" "csv-uploads/processed/$(date +%Y%m%d)_$(basename "$f")"
+            if [ -f "$f" ]; then git rm -q "$f"; fi
           done
 
       - name: Commit cleanup
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add csv-uploads/
-          git diff --cached --quiet || git commit -m "Auto-import: move processed CSVs to archive"
+          git diff --cached --quiet || git commit -m "Auto-import: remove processed CSVs"
           git push

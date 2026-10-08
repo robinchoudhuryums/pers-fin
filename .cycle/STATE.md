@@ -9,7 +9,27 @@ to the "none in progress" state.
 
 ## Current Cycle
 
-- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 8 DONE** on branch
+- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 9 DONE** on branch
+  `claude/lucid-darwin-7r8e59` (2026-10-08). Batch 9 (platform hardening) implemented, tested, pushed (no PR opened).
+  - **Completed:**
+    - PSC-4: Secure cookies follow req.secure; shell error handler (no stack traces); NODE_ENV=production at runtime in Dockerfile/fly.toml (render.yaml deliberately not — build impact).
+    - PSC-11: boot fails fast without SHELL_SECRET; login can't crash.
+    - PSC-14: global PIN ceiling 30/h → 30 min lockout + "PIN login locked" alert; short-PIN boot warning.
+    - PSC-7: shell body limit 1mb. PSC-9: return_to carried through login (incl. biometric).
+    - PSC-8: general limiter skipped when embedded; tight limiter skips GETs.
+    - PSC-13: guarded constraint rebuilds. PSC-6: reset-fresh table lists complete + schema-classification test.
+    - PSC-15: shell deps declared; csv-import.yml permissions + no in-tree CSV archive; bounded settings 400.
+    - PB-14: CIDR SSRF check incl. mapped IPv6, DNS-resolving check at send, redirect:'manual'.
+    - PB-15: signed Perfin webhook passes Per-sistant standalone auth + the shell gate.
+    - PB-21 / WD-16: logout works in both modes for both apps.
+  - **Not finished (selected):** none.
+  - **Tests:** 1490/1490 (Perfin 945 + Per-sistant 545; 60 files). New tests/scan-sept-batch9.test.js (37) + apps/per-sistant/tests/scan-sept-batch9.test.js (27). Real-PG migrations ×2 + constraint/reset checks; e2e 8/8; live booted-shell HTTP checks.
+  - **Decisions:** PIN lockout refuses even the right PIN (biometric/API key unaffected); SSRF fails closed on DNS error; processed CSVs deleted rather than archived; NODE_ENV not set in render.yaml.
+  - **Open follow-ons:** see `.cycle/blocks/6-batch9-broad-implement.md` (notably per-boot ADD COLUMN locks remain — PSC-13 residual).
+  - **Operator:** SHELL_SECRET must be set (already is on Render); optionally lengthen a <6-digit SHELL_PIN.
+  - **Where I left off:** Batch 9 committed and pushed (no PR). NEXT: /sync-docs for Batch 9, then Batch 10 (Sheets & exports).
+
+- **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 8 DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-10-08). Batch 8 (schedulers & notifications) implemented, tested, pushed (no PR opened).
   - **Completed:**
     - PSC-1 (+DD-7): auto-sync reads sync_notifications_enabled; syncAllBalances returns accounts_changed (IS DISTINCT FROM CTE), so the "Auto-sync complete" gate fires only on real changes.
@@ -28,25 +48,6 @@ to the "none in progress" state.
   - **Operator:** none required (column auto-migrates).
   - **/sync-docs DONE (Batch 8):** CLAUDE.md — Scheduled Tasks (activity gate vs away channels, single-flight, keep-alive cache + /api/keep-alive-schedule not activity, budget alerts / weekly / daily digest not activity-gated, CSV reminder hourly + last_csv_reminder_at, auto-sync notify gate on accounts_changed + sync_notifications_enabled), Since-you-last-looked baseline + account_type/is_debt/favorable, /api/sync-balances accounts_changed, DB column last_csv_reminder_at, NEW INV-77 (away channels) + INV-78 (auto-sync notify gate), test counts 1426/58 (Perfin 908 + Per-sistant 518) + batch8 test files. apps/per-sistant/CLAUDE.md — one-row email claim, shared locked complete/skip + nextDueAfter + bulk, notification types + Reminders widget, jobs refresh flag/?force=1, 518 tests. README counts. Subsystem paths 80/80 resolve. No new operator state.
   - **Where I left off:** Batch 8 and its docs are committed and pushed (no PR). NEXT: the next broad-scan batch.
-
-- **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 7 DONE** on branch
-  `claude/lucid-darwin-7r8e59` (2026-10-08). Batch 7 (AI insights & audit) implemented, tested, pushed (no PR opened).
-  - **Completed:**
-    - AIN-9: ID-keyed model prices (Haiku 4.5 $1/$5, Opus 4.6 $5/$25).
-    - AIN-10: suggest capped + charged ('suggest'); one shared monthAiSpendCents().
-    - AIN-1/2/3: audit precision — nearest-amount attribution, skip windows, subscription-total phrasing, generic-name filter, complete-month savings/trend baselines.
-    - AIN-4/5/7: partial-month labels, anomaly self-exclusion (LATERAL), unknown-limit utilization.
-    - AIN-8: summary preserved on max_tokens / missing keys, strict tool, empty insight not stored/emailed, rebuild guard.
-    - AIN-11/14/16: module toggle, alert colours, empty weekly digest + doc alignment.
-    - SXE-7/AIN-12: tax report computed from transactions (export + Sheets); tax_deductions is the annotation layer, stale rows pruned.
-  - **Not finished (selected):** none.
-  - **Tests:** 1376/1376 (Perfin 878 + Per-sistant 498; 54 files). New tests/scan-sept-batch7.test.js (58; 47 fail on old source). Real-PG checks of the tax query, generateInsights end-to-end (anomaly LATERAL, prune), export JSON/CSV/PDF and a full sheets syncAll. Migrations ×2, e2e 8/8.
-  - **Decisions:** audit favours precision over recall; tax annotations apply per merchant; prior-year Sheets tab refreshed through April; empty insight → 502 + 'insight_empty' usage row; rebuild max_tokens 4000.
-  - **Open follow-ons:** see `.cycle/blocks/6-batch7-broad-implement.md`.
-  - **Operator:** none required.
-  - **Model upgrade DONE** (commit 43cb82a, user request): Perfin haiku/sonnet/opus → claude-haiku-5-5 / claude-sonnet-5-5 / claude-opus-5-5; Per-sistant haiku/sonnet → the 5.5 models. New teller/services/claude.js (createToolCall: tool_choice auto + strict tool + one re-ask, usage summed; effortParams low/medium) because Opus/Sonnet 5.5 reject forced tool_choice; explicit effort + thinking headroom on every call; text read by block type; refusal handling; 5.5 pricing (Haiku long-prompt card). Tests 1396/1396 (56 files; +tests/model-upgrade.test.js, apps/per-sistant/tests/model-upgrade.test.js). Not exercised against the live API (no key in this environment); request bodies verified through the real SDK with a stubbed fetch.
-  - **/sync-docs DONE (Batch 7 + model upgrade):** CLAUDE.md — architecture (reference-data model tiers/prices, new services/claude.js), test counts 1396/56 (Perfin 891 + Per-sistant 505) + new test files, tax report computed from transactions (feature, tax module, Sheets tab, export endpoint), MODEL_MAP, capped suggestions, anomaly LATERAL baseline, partial-month labels, unknown-limit utilization, model-call effort/max_tokens, cost tracking (ID-keyed rates, one spend reader, suggest/insight_empty), structured-summary preservation rules, audit attribution / generic names / complete-month baselines, weekly digest empty_summary + alert colours, POST /api/insights 502, env cap list, Current Status, AI Insights subsystem gains claude.js, INV-14/15/16 updated, NEW INV-75 (tax report from transactions) + INV-76 (no forced tool_choice; explicit effort). apps/per-sistant/CLAUDE.md — 5.5 models, thinking/effort/refusal handling, 5.5 cap pricing, 505 tests. READMEs — counts, model pricing. Subsystem paths 80/80 resolve. No new operator state.
-  - **Where I left off:** Batch 7, the model upgrade and their docs are committed and pushed (no PR). NEXT: the next broad-scan batch.
 
 ## Current Cycle (prior — broad-scan F1-F12 + T1-T4, cycle 5 reflected)
 

@@ -344,9 +344,22 @@ async function runMigrations() {
     // Shared/joint account support — spending_split_pct controls what fraction of spending counts as yours (default 100)
     await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS spending_split_pct INT NOT NULL DEFAULT 100");
     await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS is_shared BOOLEAN NOT NULL DEFAULT false");
-    // Fix check constraint to allow manual accounts (no plaid/teller enrollment)
-    await client.query("ALTER TABLE linked_accounts DROP CONSTRAINT IF EXISTS chk_account_source");
-    await client.query("ALTER TABLE linked_accounts ADD CONSTRAINT chk_account_source CHECK (plaid_item_id IS NOT NULL OR teller_enrollment_id IS NOT NULL OR is_manual = true)");
+    // Fix check constraint to allow manual accounts (no plaid/teller enrollment).
+    // Guarded (PSC-13): an unconditional DROP + ADD took an ACCESS EXCLUSIVE
+    // lock and re-validated every row on EVERY boot. Rebuild only when the
+    // constraint is missing or is the old definition without is_manual.
+    await client.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'chk_account_source' AND conrelid = 'linked_accounts'::regclass
+            AND pg_get_constraintdef(oid) LIKE '%is_manual%'
+        ) THEN
+          ALTER TABLE linked_accounts DROP CONSTRAINT IF EXISTS chk_account_source;
+          ALTER TABLE linked_accounts ADD CONSTRAINT chk_account_source CHECK (plaid_item_id IS NOT NULL OR teller_enrollment_id IS NOT NULL OR is_manual = true);
+        END IF;
+      END $$;
+    `);
     // Dashboard widget order/visibility
     await client.query(`ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS dashboard_widgets JSONB NOT NULL DEFAULT '{"pyramid":true,"accounts":true,"recentTxns":true,"monthlySpend":true,"categories":true,"merchants":true,"upcoming":true,"forecast":true,"charts":true,"calendar":true,"cashFlow":true,"savingsRate":true,"yoy":true,"investments":true,"reviewQueue":true,"aiMemory":true,"settlement":true}'::jsonb`);
     // Sheets auto-sync
@@ -683,8 +696,17 @@ async function runMigrations() {
     // Only honored when the account is is_shared = true; on non-shared accounts
     // the split formula falls back to spending_split_pct as before.
     await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS personal_for TEXT");
-    await client.query("ALTER TABLE transactions DROP CONSTRAINT IF EXISTS chk_personal_for");
-    await client.query("ALTER TABLE transactions ADD CONSTRAINT chk_personal_for CHECK (personal_for IS NULL OR personal_for IN ('self','partner'))");
+    // Guarded like chk_account_source (PSC-13) — no per-boot lock + full scan.
+    await client.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'chk_personal_for' AND conrelid = 'transactions'::regclass
+        ) THEN
+          ALTER TABLE transactions ADD CONSTRAINT chk_personal_for CHECK (personal_for IS NULL OR personal_for IN ('self','partner'));
+        END IF;
+      END $$;
+    `);
     // partner_name surfaces in the settlement widget + transaction-row UI so
     // amounts say "Sarah owes you $X" rather than "Partner owes you $X".
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS partner_name TEXT");

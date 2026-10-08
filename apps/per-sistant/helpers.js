@@ -3,7 +3,7 @@
 // ============================================================================
 
 const { pool } = require("./db");
-const { isValidWebhookUrl } = require("./config");
+const { resolveSafeWebhookTarget } = require("./config");
 
 // 'YYYY-MM-DD' of a Date using LOCAL getters — node-pg returns a DATE column
 // as LOCAL midnight, so local getters give the stored calendar day in any
@@ -110,8 +110,9 @@ async function sendWebhook(webhook, payload) {
     // are validated on create/PATCH, but re-checking here closes the gap if a
     // row ever lands outside the validated routes, and matches the documented
     // "validated before each send" invariant. Blocks private/loopback/
-    // link-local/metadata targets.
-    if (!isValidWebhookUrl(webhook.url)) {
+    // link-local/metadata targets — including a hostname that RESOLVES to one,
+    // and IPv4-mapped IPv6 spellings (PB-14).
+    if (!(await resolveSafeWebhookTarget(webhook.url))) {
       console.error("sendWebhook: url failed SSRF validation — skipping webhook", webhook.id);
       await pool.query("UPDATE webhooks SET last_triggered = now(), last_status = 0 WHERE id = $1", [webhook.id]).catch(() => {});
       return { ok: false, status: 0, error: "url_failed_validation" };
@@ -119,8 +120,11 @@ async function sendWebhook(webhook, payload) {
     const headers = { "Content-Type": "application/json", ...(webhook.headers || {}) };
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
+    // redirect: "manual" (PB-14) — a public URL must not 30x us to an internal
+    // one; a redirect is recorded as its 3xx status, not followed.
     const r = await fetch(webhook.url, {
       method: "POST", headers, body: JSON.stringify(payload), signal: controller.signal,
+      redirect: "manual",
     });
     clearTimeout(timeout);
     await pool.query("UPDATE webhooks SET last_triggered = now(), last_status = $1 WHERE id = $2", [r.status, webhook.id]);
@@ -148,7 +152,7 @@ async function sendSlackNotification(message) {
     // SSRF guard (PB-5): the Slack URL is a server-side fetch target, so run it
     // through the same validator as webhooks (blocks private/loopback/metadata
     // ranges). Skip silently on a bad/internal URL rather than firing the request.
-    if (!isValidWebhookUrl(url)) {
+    if (!(await resolveSafeWebhookTarget(url))) {
       console.error("sendSlackNotification: slack_webhook_url failed SSRF validation — skipping.");
       return;
     }
@@ -156,6 +160,7 @@ async function sendSlackNotification(message) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text: message }),
+      redirect: "manual", // PB-14
     });
   } catch {}
 }
