@@ -485,3 +485,22 @@ describe("FAN-13 — server defaults route through todayStr()", () => {
     assert.match(read("teller/startup.js"), /new Date\(todayStr\(\) \+ "T00:00:00Z"\)\.getUTCDay\(\)/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Follow-on (found during Batch 6 real-PG verification): the Sheets Utilities
+// tab's UNION query ordered by an expression, which Postgres rejects on a
+// UNION — the tab failed on every sync.
+// ---------------------------------------------------------------------------
+describe("Sheets Utilities — UNION wrapped before the expression ORDER BY", () => {
+  it("the query selects from a subquery and orders on its output columns", () => {
+    const src = read("scripts/sheets-sync.js");
+    const body = src.slice(src.indexOf("async function syncUtilities"), src.indexOf('const SHEET_UTILITIES = "Utilities"'));
+    const sql = body.slice(body.indexOf("pool.query(`") + 12, body.indexOf("`);"));
+    assert.match(sql, /^\s*SELECT \* FROM \(\s*SELECT/);
+    assert.match(sql, /UNION ALL/);
+    const tail = sql.slice(sql.lastIndexOf(") u"));
+    assert.match(tail, /^\) u\s+ORDER BY\s+CASE WHEN u\.status = 'Active' THEN 0 ELSE 1 END,\s+u\.next_due NULLS LAST\s*$/);
+    // No ORDER BY inside the UNION body itself.
+    assert.ok(!/ORDER BY/.test(sql.slice(0, sql.lastIndexOf(") u"))));
+  });
+});

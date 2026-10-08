@@ -1403,7 +1403,12 @@ async function syncInsights(sheets, pool) {
 async function syncUtilities(sheets, pool) {
   console.log("Syncing utilities to Google Sheets...");
 
+  // The UNION is wrapped in a subquery so the ORDER BY can use expressions
+  // over its output columns — Postgres rejects `ORDER BY CASE WHEN status …`
+  // directly on a UNION ("invalid UNION/INTERSECT/EXCEPT ORDER BY clause"),
+  // which failed this tab on every sync.
   const { rows } = await pool.query(`
+    SELECT * FROM (
     SELECT
       'auto' AS source,
       display_name AS name,
@@ -1476,10 +1481,10 @@ async function syncUtilities(sheets, pool) {
       notes
     FROM manual_bills
     WHERE category = 'utility'
-
+    ) u
     ORDER BY
-      CASE WHEN status = 'Active' THEN 0 ELSE 1 END,
-      next_due NULLS LAST
+      CASE WHEN u.status = 'Active' THEN 0 ELSE 1 END,
+      u.next_due NULLS LAST
   `);
 
   const SHEET_UTILITIES = "Utilities";

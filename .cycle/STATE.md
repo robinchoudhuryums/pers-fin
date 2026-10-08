@@ -46,7 +46,11 @@ to the "none in progress" state.
     - INV-32 date-prefixed corpus version; new INV-73 (getBudgetStatus) and INV-74 (Per-sistant recurrence anchor + missed).
     - Test counts 1317/53.
     apps/per-sistant/CLAUDE.md: rollMissedRecurring + local-midnight cron + missed semantics, anchor day + db/022, PD-4 on-time check, the APP_TIMEZONE consumers, KR-5 cache stamp + unchanged-row skip, 498 tests. README test counts + summary.
-  - **Where I left off:** Batch 6 + its docs committed and pushed (no PR). NEXT: the next broad-scan batch (or a fix for the Sheets Utilities-tab ORDER BY bug).
+  - **Follow-on DONE:** fixed the Sheets Utilities-tab bug. `syncUtilities` wraps its UNION in a subquery before the expression ORDER BY. Postgres rejected `ORDER BY CASE …` directly on a UNION, so the tab failed on every sync.
+    - Verified on real PG 16: a full `syncAll` with a faked Google client fails with that error on the old source, and returns `errors: []` on the new one.
+    - The ordering is right: Active rows first, then by next_due, across both the detected and the manual branch.
+    - Pinned by a new test in tests/scan-sept-batch6.test.js. The CLAUDE.md known-issue note was replaced. Tests now 1318.
+  - **Where I left off:** Batch 6, its docs and the Utilities fix are committed and pushed (no PR). NEXT: the next broad-scan batch.
 
 - **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 5 DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-10-08). Batch 5 (Rent, Utilities &

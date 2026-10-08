@@ -463,9 +463,9 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1317 tests as of latest); use
+  Perfin and Per-sistant test files (1318 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1317 tests across 53 test files (incl.
+  Current count: 1318 tests across 53 test files (incl.
   `tests/scan-sept-batch6.test.js` + `tests/scan-sept-batch6-tz.test.js` +
   `apps/per-sistant/tests/scan-sept-batch6.test.js` — the Sept 2026 broad-scan
   Batch 6 date/month/budget pins: prior-month snapshot refresh window (FAN-7),
@@ -1374,11 +1374,10 @@ shell/
     highlight; warning-only sheet protection.
   - **Utilities**: auto-detected utility subscriptions + `manual_bills`
     with `category='utility'`, TOTAL roll-up combining monthly + yearly.
-    **Known issue (pre-existing, found in Sept 2026 Batch 6):** the tab's
-    UNION query ends with `ORDER BY CASE WHEN status = 'Active' …`, which
-    Postgres rejects on a UNION ("invalid UNION/INTERSECT/EXCEPT ORDER BY
-    clause"), so this tab fails on EVERY sync — isolated into `errors[]`
-    (INV-24); the other tabs still update. Fix pending.
+    The UNION is wrapped in a subquery before its `ORDER BY CASE WHEN
+    u.status = 'Active' …` — Postgres rejects an expression ORDER BY directly
+    on a UNION, which had failed this tab on every sync (found Sept 2026
+    Batch 6; isolated into `errors[]` by INV-24 until fixed).
   - **AI Insights**: main grid (date / model / tokens / feedback /
     feedback note / insight) + four sub-tables below from the structured
     `insights_running_summary_json` (Trends, Pending Actions, Active
@@ -1660,7 +1659,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1317 tests passing across 53 test files (Perfin 819 + Per-sistant 498), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1318 tests passing across 53 test files (Perfin 820 + Per-sistant 498), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
