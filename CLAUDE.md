@@ -500,9 +500,19 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1519 tests as of latest); use
+  Perfin and Per-sistant test files (1551 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1519 tests across 61 test files (incl.
+  Current count: 1551 tests across 62 test files (incl.
+  `apps/per-sistant/tests/scan-sept-batch11.test.js` — the Sept 2026 broad-scan
+  Batch 11 Knowledge pins: vault ingest without Voyage/pgvector + embedding
+  backfill + unchanged-embedding retention (KR-3), stopwords / per-source vector
+  ranking / matching-passage window (KR-4), Voyage retry + per-file isolation +
+  removals first + sha hold (KR-7), the lock claimed before the first await
+  (KR-8), the finance snapshot vs getNetWorth (KR-9), capture reserved keys +
+  sensitivity with no AI call for private/secret (KR-10), success-only
+  last_synced_at + attempt stamp + reindex outcome + vault_sync_error reminder +
+  the polling Action (KR-11), inline-citation parsing (KR-12), cache prune
+  (KR-13) and word-segment attribute matching + vault_repo validation (KR-14);
   `tests/scan-sept-batch10.test.js` — the Sept 2026 broad-scan Batch 10
   Sheets/export pins, driven against a stateful fake Sheets API: persisted
   sync outcome + signature-deduped alert + data-health issue + "Partial" UI
@@ -1668,8 +1678,12 @@ shared session cookie. Cross-app surface area today:
   layout, only rendered when embedded. Same-origin, in-app navigation.
 - **Knowledge → Perfin finance grounding** (new seam): Per-sistant's Knowledge
   feature (`apps/per-sistant/routes/rag.js`) reads Perfin's pool **read-only**
-  (`linked_accounts`, `detected_subscriptions`) via the wired `perfinPool` to
-  ground finance-flavored questions ("can I afford my renewal?"). Owned by the
+  via the wired `perfinPool` to ground finance-flavored questions ("can I
+  afford my renewal?"): net worth, accounts and investments come from Perfin's
+  own `getNetWorth` (`teller/services/financial-queries.js`, loaded lazily — so
+  the Plaid-phantom dedupe and signed debts match the dashboard, KR-9), plus
+  card limits and active `detected_subscriptions` (monthly equivalent =
+  amount × 30 / cadence_days, Perfin's rule). Owned by the
   Knowledge / RAG subsystem; finance queries only; no Perfin schema changes;
   never an HTTP self-fetch (INV-35). This is why a Perfin-side audit should know
   Per-sistant consumes those tables.
@@ -1748,8 +1762,11 @@ on the operator's machine (or fed via env vars) before the app boots:
    mismatch).
 3. **Per-sistant Knowledge / RAG operator state** (all optional — the feature
    degrades to keyword-only without them; nothing blocks app boot):
-   - `VOYAGE_API_KEY` — Voyage embeddings for semantic retrieval. Without it,
-     Knowledge serves keyword search only. (`VOYAGE_MODEL` optional, default
+   - `VOYAGE_API_KEY` — Voyage embeddings for semantic retrieval. Without it
+     (or without pgvector) the vault is still synced — documents + facts are
+     ingested and keyword-searchable (KR-3); setting it later backfills the
+     embeddings (≤200 documents per sync). Voyage 429/5xx are retried with
+     backoff (KR-7). (`VOYAGE_MODEL` optional, default
      `voyage-3.5`; dimension 1024 is baked into `chunks.embedding vector(1024)`.)
    - `VAULT_GITHUB_TOKEN` — **read-only** fine-grained PAT for the private
      Obsidian-vault repo (sync/ingest). Repo + branch are set in Settings →
@@ -1874,7 +1891,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1519 tests passing across 61 test files (Perfin 974 + Per-sistant 545), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1551 tests passing across 62 test files (Perfin 974 + Per-sistant 577), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -3858,7 +3875,8 @@ Knowledge / RAG (Per-sistant):
    (fact_upcoming), routes/settings.js (vault config), ai.js (answerWithCitations),
    pages/settings.js + settings-script.js + pages/dashboard-script.js, server.js
    (vault-sync cron). CROSS-APP SEAM: rag.js reads Perfin's perfinPool
-   (linked_accounts, detected_subscriptions) read-only — a new seam between
+   (linked_accounts + investment_accounts via getNetWorth, detected_subscriptions)
+   read-only — a new seam between
    Knowledge and Perfin's Bank Sync & Ingestion / Financial Analytics.)
 Legacy Plaid Server:
   plaid/server.js
@@ -3897,15 +3915,15 @@ INV-24 | sheets-sync.syncAll isolates each tab (per-tab try/catch + errors[]) AN
 INV-25 | Embedded sub-apps detect req.app.get("embedded") and skip their own auth; cross-app calls use the wired pool (perfinPool/persistentPool), never HTTP self-fetch | Subsystem: Per-sistant Backend / Platform, Shell & Auth
 INV-26 | Teller transaction pagination terminates on an empty page (count-explicit + from_id), never a hard-coded page-size compare | Subsystem: Bank Sync & Ingestion | Verify: tests/cycle-fixes.test.js (BS-1 block)
 INV-27 | Only sensitivity='normal' docs/facts are embedded AND retrieved; private/secret are never embedded or sent to AI. Frontmatter sensitivity resolution FAILS CLOSED: YAML comments stripped, block lists parsed, yes/no/on/off understood, the most restrictive of sensitivity/embed/private wins, and any unrecognized value → private (KR-2). Hard-deleted notes/documents are never vector-retrieved (the joined source row must exist, KR-6) | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js (buildRetrievalQuery), tests/knowledge-facts.test.js, apps/per-sistant/tests/scan-sept-fixes.test.js (KR-2/KR-6)
-INV-28 | pgvector objects are created defensively (only if the `vector` extension is available); the migration succeeds and Knowledge degrades to keyword retrieval rather than failing boot | Subsystem: Knowledge / RAG | Verify: code read db/014_vault_vectors.sql + vault-sync.vectorReady
-INV-29 | Retrieval is HYBRID (vector + keyword legs fused via Reciprocal Rank Fusion, dedupe on kind:id) — either leg failing degrades to the other alone; /query & /diagram degrade to sources-only / null when AI is off or unavailable | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js, apps/per-sistant/tests/rag-v2.test.js
+INV-28 | pgvector objects are created defensively (only if the `vector` extension is available); the migration succeeds and Knowledge degrades to keyword retrieval rather than failing boot — and the vault sync still ingests documents + facts without Voyage/pgvector, embedding them later via the backfill (KR-3) | Subsystem: Knowledge / RAG | Verify: code read db/014_vault_vectors.sql + vault-sync.vectorReady
+INV-29 | Retrieval is HYBRID (vector + keyword legs fused via Reciprocal Rank Fusion, each leg ranked per distinct source — the vector leg over-fetched 4× and collapsed to the best chunk per source; keyword terms drop function-word stopwords; keyword hits carry the matching passage, KR-4) — either leg failing degrades to the other alone; /query & /diagram degrade to sources-only / null when AI is off or unavailable | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js, apps/per-sistant/tests/rag-v2.test.js
 INV-30 | Embedding dimension (1024) matches chunks.embedding vector(1024); a provider/dimension change is a re-embed migration, not a config flip | Subsystem: Knowledge / RAG | Verify: code read services/embeddings.js EMBED_DIM
 INV-31 | embed_state content-hash skip prevents re-embedding unchanged sources | Subsystem: Knowledge / RAG | Verify: code read vault-sync.embedSource
 INV-32 | Answer cache keyed on query+model+corpus_version ("<APP_TIMEZONE date>|" + notes+documents+facts+fact_verifications max(updated_at)+count — F14 folds in fact_verifications so verify/unverify invalidates; the date prefix (KR-5) expires cached answers when a fact's valid_from/valid_to boundary passes, and vault re-syncs no longer bump updated_at on unchanged documents/facts), with a SEMANTIC fallback layer (query-embedding cosine >= 0.97, same model+corpus_version+TTL — RAG v2, db/019); a SEMANTIC hit returns sources_from_similar_query=true (the cached sources reflect the original query's retrieval and the answer's [n] links are tied to that ordering, so they're kept, not re-retrieved — the Knowledge page caveats it; F12); finance-grounded answers bypass both layers | Subsystem: Knowledge / RAG | Verify: tests/knowledge-cache.test.js + apps/per-sistant/tests/rag-v2.test.js + routes/rag.js useCache gate
 INV-33 | Vault sync is read-only (VAULT_GITHUB_TOKEN); capture writes only with the separate write-scoped VAULT_GITHUB_WRITE_TOKEN (400 until set) | Subsystem: Knowledge / RAG | Verify: tests/knowledge-capture.test.js
 INV-34 | Citations enabled all-or-none per request; incompatible with structured outputs (unused here) | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js (answerWithCitations)
 INV-35 | Cross-app finance grounding reads perfinPool read-only, only on finance queries, never an HTTP self-fetch (parallels INV-25) | Subsystem: Knowledge / RAG | Verify: tests/knowledge-crossapp.test.js
-INV-36 | Single in-process vault-sync lock (isSyncing) prevents overlapping cron/reindex/GH-Action runs — BOTH syncVault AND syncNotes acquire it (busy→no-op), so the cron's notes phase can't overlap a concurrent reindex (K4); vault_last_sha advances only on success (errors stamp vault_last_error) | Subsystem: Knowledge / RAG | Verify: code read vault-sync.syncVault + syncNotes
+INV-36 | Single in-process vault-sync lock (isSyncing) prevents overlapping cron/reindex/GH-Action runs — BOTH syncVault AND syncNotes acquire it (busy→no-op), claimed synchronously before the first await (KR-8), so the cron's notes phase can't overlap a concurrent reindex (K4); vault_last_sha and vault_last_synced_at advance only when EVERY file succeeded (a failing file is isolated, removals run first, the error is recorded and the next sync retries the range — KR-7/KR-11); vault_last_attempt_at stamps every run | Subsystem: Knowledge / RAG | Verify: code read vault-sync.syncVault + syncNotes
 INV-37..47 | RETIRED — assigned by the cycle-3 reflect but their definitions were never written into the repo and are unrecoverable; numbers burned, never reuse (their subject matter — the cycle-3 fixes — is test-pinned via tests/cycle-fixes.test.js + audit-regressions) | — | Verify: n/a
 INV-48 | SPLIT_AMOUNT / INCOME_PREDICATE / NOT_TRANSFER are never re-inlined: every spending aggregation imports from financial-queries.js (aliased variants via incomePredicate(alias) or derived in place via .replace); the only permitted literal copies are scripts/sheets-sync.js (full structure byte-pinned by SX3) + apps-script/Code.gs (legacy, unpinned) | Subsystem: Financial Analytics (seam) | Verify: tests/seams-audit.test.js repo-wide literal-CASE scan
 INV-49 | Every member of Perfin's EMAIL_EVENTS set is accepted AND named (sendNameByEvent) by Per-sistant's HTTP webhook receiver — an unrecognized email event is 200-and-dropped in standalone deployments | Subsystem: Settings, Notifications & Cross-app (seam) | Verify: tests/seams-audit.test.js symmetry pin
@@ -3943,6 +3961,8 @@ INV-81 | scripts/reset-fresh.js classifies EVERY table the Perfin migrations cre
 INV-82 | Sheets formatting is re-runnable: formatSheet deletes a tab's banding + conditional-format rules before re-adding them (Dashboard also resets cell formats), so a second syncAll over the same spreadsheet succeeds | Subsystem: Sheets & External Export | Verify: tests/scan-sept-batch10.test.js (SXE-2 block, stateful fake Sheets API)
 INV-83 | No exported text is ever evaluated as a formula: Sheets writes go through guardSheetsWrites (strings starting = + - @ tab/CR, or date-shaped, are "'"-prefixed; only sheetFormula() values pass through) and every CSV download builds text cells with csvText | Subsystem: Sheets & External Export | Verify: tests/scan-sept-batch10.test.js (SXE-13 block)
 INV-84 | A month archive tab is written only once the month is settled (month-end + 10 days) and is final only with its completion marker; an unmarked archive is rebuilt, never trusted | Subsystem: Sheets & External Export | Verify: tests/scan-sept-batch10.test.js (SXE-3 block)
+INV-85 | A failed Knowledge sync is visible: vault_last_synced_at means last SUCCESS (vault_last_attempt_at records attempts), /api/rag/status reports reindex.ok, the knowledge-reindex Action polls it and fails on ok:false, and the notification check raises vault_sync_error while vault_last_error is set | Subsystem: Knowledge / RAG | Verify: apps/per-sistant/tests/scan-sept-batch11.test.js (KR-11 block)
+INV-86 | A capture marked private or secret is never sent to the AI for structuring and is committed with that sensitivity; model-supplied fields never write reserved frontmatter keys (type/sensitivity/embed/private/valid_*…) | Subsystem: Knowledge / RAG | Verify: apps/per-sistant/tests/scan-sept-batch11.test.js (KR-10 block)
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
 ### Policy Configuration
@@ -3991,7 +4011,7 @@ SK2 | Knowledge privacy | Subsystem: Knowledge / RAG
 SK3 | pgvector unavailable | Subsystem: Knowledge / RAG
   Steps:
     - Boot against a Postgres without the `vector` extension available
-  Expected: migration still succeeds (no boot crash); Knowledge serves keyword retrieval
+  Expected: migration still succeeds (no boot crash); the vault sync still ingests documents + facts (embeddings: false); Knowledge serves keyword retrieval
 SK4 | Capture write-gating | Subsystem: Knowledge / RAG
   Steps:
     - POST /api/rag/capture with VAULT_GITHUB_WRITE_TOKEN unset, then set
@@ -4012,5 +4032,5 @@ Sheets & External Export: Apps Script side deploys via clasp — `clasp push` fr
 ### Cycle Rotation Plan
 Recommended first subsystem: Bank Sync & Ingestion (widest blast radius — every downstream number depends on correct transaction data; most invariants; richest recent bug history).
 Recommended order (frozen excluded): Bank Sync & Ingestion → Financial Analytics → Detection & Categorization → AI Insights & Audit → Knowledge / RAG (Per-sistant) → Platform, Shell & Auth → Settings, Notifications & Cross-app → Sheets & External Export → Web UI (Perfin) → Per-sistant Backend → Per-sistant Web UI.
-Seams audit frequency: every 3 subsystem cycles (focus: enrollments.js, subscriptions.js, settings.js, financial-queries.js, notifications.js, the Per-sistant integration seam routes/perfin.js + routes/webhooks.js, and the Knowledge↔Perfin seam — rag.js's read-only perfinPool use of linked_accounts/detected_subscriptions).
+Seams audit frequency: every 3 subsystem cycles (focus: enrollments.js, subscriptions.js, settings.js, financial-queries.js, notifications.js, the Per-sistant integration seam routes/perfin.js + routes/webhooks.js, and the Knowledge↔Perfin seam — rag.js's read-only perfinPool use of getNetWorth (linked_accounts/investment_accounts) + detected_subscriptions).
 Confidence: Bank Sync, Analytics, Detection, AI, Platform = High; Integrations, Sheets, Web UI, Per-sistant Backend, Per-sistant Web UI, Knowledge / RAG = Medium (Knowledge: new code, heavily tested, but unexercised against a live vault/Voyage/pgvector).

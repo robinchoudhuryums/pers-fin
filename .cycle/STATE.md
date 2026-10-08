@@ -31,8 +31,17 @@ to the "none in progress" state.
     (lazy, fail-soft) instead of mirroring it; the Action polls status rather than a long request.
   - **Open follow-ons:** see `.cycle/blocks/6-batch11-broad-implement.md`.
   - **Operator:** none required (db/023 auto-migrates); the reindex Action can now go red.
-  - **Where I left off:** Batch 11 committed and pushed (no PR). NEXT: /sync-docs for Batch 11,
-    then Batch 12 (Investments).
+  - **/sync-docs DONE (Batch 11):** CLAUDE.md — Knowledge operator state (vault synced without
+    Voyage/pgvector, backfill, retry), finance-grounding seam via getNetWorth (+ subsystem note and
+    rotation-plan seam focus), INV-28/29/36 extended, NEW INV-85 (sync failures visible) and INV-86
+    (capture sensitivity / reserved keys), SK3 expected result, test counts 1551/62 (Per-sistant 577)
+    + batch11 test description. apps/per-sistant/CLAUDE.md — sync lifecycle, ranking, citation
+    fallback, cache prune, finance snapshot, capture sensitivity, attribute segments, db/023,
+    vault_sync_error, /api/rag/status + reindex + capture API notes, VOYAGE env, test counts 577.
+    README.md + apps/per-sistant/README.md — keyword-degrade wording (vault docs + facts too),
+    counts + Batch 11 coverage. Subsystem paths resolve. Operator state: none new.
+  - **Where I left off:** Batch 11 and its docs are committed and pushed (no PR). NEXT: Batch 12
+    (Investments) — restart the branch from main first if Batch 11 has been merged.
 
 - **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 10 DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-10-08). Batch 10 (Sheets & exports) implemented, tested, pushed (no PR opened).

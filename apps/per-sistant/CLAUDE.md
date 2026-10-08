@@ -33,7 +33,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   at-most-once delivery). The manual `POST /api/emails/:id/send` claims the row
   the same way (`UPDATE … WHERE id = $1 AND status <> 'sent' RETURNING`) so a
   double-click / retry returns 409 instead of re-sending (PB-4).
-- **Tests**: `tests/` (node:test runner, `npm test`, 545 tests (api + integration + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9 + model-upgrade))
+- **Tests**: `tests/` (node:test runner, `npm test`, 577 tests (api + integration + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11 + model-upgrade))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of June 2026)
@@ -142,7 +142,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **System Theme Auto-Detection**: Auto option follows OS dark/light preference via prefers-color-scheme
 - **Backend Validation**: Server-side enum validation for priority, horizon, recurrence rules, note colors, email format. The email `PATCH` validates `status` against `VALID_EMAIL_STATUSES` too (not just `POST`), so a client can't force `status='scheduled'` with a past `scheduled_at` to inject a cron-pickable row (PS-7).
 - **Cross-Entity Links**: Link todos, emails, and notes to each other; create todos from notes or emails with auto-linking
-- **Notification System**: Centralized notification check for due tasks, overdue items, streaks at risk, and note reminders; browser push notifications on dashboard load. Every check type reaches the user (PB-1 — the client used to drop all but overdue / streak_at_risk / near facts): browser notifications fire for `overdue`, `due_today`, `streak_at_risk`, `habit_streak_at_risk`, `reminder`, `job_radar`, `fact_upcoming` within 7 days and `housing_due` when due today / overdue / within 3 days, each with a per-type title prefix (`REMINDER_PREFIX` / `isImportantReminder` in `pages/dashboard-script.js`); and a **Reminders** dashboard widget (`data-widget="reminders"`, in the default layouts) renders the FULL check list (≤12, linked) whether or not Notification permission was granted. A client-side **dedup ledger** (`localStorage['ps-notify-ledger']`, keyed by `type|id|title`) suppresses re-firing the same reminder within a 12h window (`NOTIFY_WINDOW_MS`), and a **snooze** affordance (`ps-notify-snooze-until`, 8h via the dashboard "Snooze reminders" button) mutes all reminder notifications for a while.
+- **Notification System**: Centralized notification check for due tasks, overdue items, streaks at risk, and note reminders; browser push notifications on dashboard load. Every check type reaches the user (PB-1 — the client used to drop all but overdue / streak_at_risk / near facts): browser notifications fire for `overdue`, `due_today`, `streak_at_risk`, `habit_streak_at_risk`, `reminder`, `job_radar`, `vault_sync_error` (the Knowledge vault sync's last run left an error — KR-11; links to /knowledge), `fact_upcoming` within 7 days and `housing_due` when due today / overdue / within 3 days, each with a per-type title prefix (`REMINDER_PREFIX` / `isImportantReminder` in `pages/dashboard-script.js`); and a **Reminders** dashboard widget (`data-widget="reminders"`, in the default layouts) renders the FULL check list (≤12, linked) whether or not Notification permission was granted. A client-side **dedup ledger** (`localStorage['ps-notify-ledger']`, keyed by `type|id|title`) suppresses re-firing the same reminder within a 12h window (`NOTIFY_WINDOW_MS`), and a **snooze** affordance (`ps-notify-snooze-until`, 8h via the dashboard "Snooze reminders" button) mutes all reminder notifications for a while.
 - **Analytics Dashboard**: Productivity insights with completion trends, day-of-week analysis, priority/category breakdowns, average completion time, streak leaderboard, productivity score, activity heatmap (90 days), emails sent/notes created counts; filterable by week/month/quarter/year
 - **Todo Templates**: Save task structures (with subtasks) as reusable templates; apply from templates list; "Save as Template" from edit modal
 - **Batch Contact Import**: CSV upload for bulk contact import with validation and error reporting
@@ -205,6 +205,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `db/021_jobs.sql` — job_sources, job_target_companies, job_listings,
   job_profile + the `ai_usage` AI-cost-cap ledger
 - `db/022_recurrence_anchor_missed.sql` — `todos.recurrence_anchor_day` (CHECK 1–31) + `todos.missed` (PD-2 / PB-10; additive, idempotent)
+- `db/023_vault_sync_attempt.sql` — `user_settings.vault_last_attempt_at` (KR-11: `vault_last_synced_at` now means last SUCCESSFUL sync; additive, idempotent)
 - `errors.js` — `serverError(res, err)` shared 500 responder (logs real error, returns generic message; PB-2)
 - `views.js` — pageHead, navBar, themeScript (imports from `views/`)
 - `routes/` — 21 API route modules (auth, todos, emails, notes, contacts, etc.)
@@ -218,8 +219,9 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `db/007_enhancements.sql` — custom recurrence, entity links, webhooks, notification preferences
 - `db/008_templates_performance.sql` — todo templates table, performance indexes
 - `uploads/` — local file attachment storage
-- `tests/api.test.js` — unit test suite (the bulk of the 545 per-sistant tests; NOTE: it tests inline copies of the logic and imports no production module — see TQ-1 in the Sept 2026 broad scan)
+- `tests/api.test.js` — unit test suite (the bulk of the 577 per-sistant tests; NOTE: it tests inline copies of the logic and imports no production module — see TQ-1 in the Sept 2026 broad scan)
 - `tests/scan-sept-fixes.test.js` — Sept 2026 broad-scan Batch 1 pins (Save Draft status, Send-now save, local datetime fill, fail-closed vault sensitivity, vault mark-and-sweep, trash chunk purge)
+- `tests/scan-sept-batch11.test.js` — Batch 11 Knowledge pins (ingest without embeddings + backfill, Voyage retry, per-file isolation, lock, ranking, finance snapshot vs getNetWorth, capture sensitivity, sync-failure visibility, citation fallback, cache prune, attribute word segments, vault_repo validation)
 - `tests/integration.test.js` — integration tests (requires DB, auto-skips without)
 - `Dockerfile` / `docker-compose.yml` — container deployment
 - `fly.toml` — Fly.io config
@@ -230,7 +232,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (545 tests)
+# Run tests (577 tests)
 npm test
 
 # Pages
@@ -326,7 +328,8 @@ GET    /api/notifications/check    # Check for due tasks, overdue, streaks at ri
                                    # carries status upcoming|due_today|overdue|unscheduled from
                                    # routes/housing-due.js),
                                    # AND Job Radar high-fit leads (job_radar — gated on
-                                   # job_radar_enabled, fail-soft)
+                                   # job_radar_enabled, fail-soft), AND vault_sync_error while
+                                   # the Knowledge vault sync's last run left an error (KR-11)
 
 # Job Radar API
 GET    /jobs                       # Job Radar page (enable toggle, top matches + verify-first)
@@ -412,14 +415,17 @@ PATCH  /api/ai/models              # Update per-feature model preferences
 GET    /api/rag/search             # retrieval only (vector if configured, else keyword); zero LLM cost
 POST   /api/rag/query              # source-grounded answer via the Citations feature (each source
                                    #   flagged cited:true/false); exact-match answer cache (free repeats)
-GET    /api/rag/status             # vault config + index counts + embeddings/vector readiness + reindex state
-POST   /api/rag/reindex            # background full reindex (vault re-walk + notes); 202, poll status; 409 if running
+GET    /api/rag/status             # vault config (last_synced_at = last SUCCESS, last_attempt_at, last_error) +
+                                   #   index counts + embeddings/vector readiness + reindex state (incl. ok)
+POST   /api/rag/reindex            # background full reindex (vault re-walk + notes); 202, poll status (reindex.ok —
+                                   #   the knowledge-reindex Action fails on ok:false); 409 if running
 GET    /api/rag/facts              # browse current structured facts (query: entity, all=1 to include expired); includes `verified`
 POST   /api/rag/facts/verify       # mark/unmark a fact verified (body: entity, attribute, value, verified?)
 GET    /api/rag/secret-lookup       # local exact match over sensitivity='secret' items; never embedded/sent to AI
 POST   /api/rag/diagram            # generate a Mermaid diagram from the knowledge base (facts+finance+prose)
 POST   /api/rag/capture            # structure raw text into a note/fact and COMMIT it to the vault repo
-                                   #   (needs VAULT_GITHUB_WRITE_TOKEN; 400 if unset)
+                                   #   (needs VAULT_GITHUB_WRITE_TOKEN; 400 if unset). body: text, sensitivity?
+                                   #   normal|private|secret (400 otherwise) — private/secret skip the AI step
 
 POST   /api/login           # Authenticate
 POST   /api/logout          # End session
@@ -452,7 +458,10 @@ GET    /sw.js               # Service worker
   90-day heatmap grid + the SQL `CURRENT_DATE` range windows are still UTC —
   cosmetic 1-day edge only.)
 - `VOYAGE_API_KEY` — Voyage AI key for Knowledge embeddings (optional). Without
-  it, Knowledge falls back to keyword retrieval over notes/documents.
+  it (or without pgvector), the vault is still synced — documents and facts are
+  ingested and keyword-searchable; adding the key later backfills embeddings
+  (≤200 documents per sync, KR-3). Voyage 429/5xx/network errors are retried:
+  3 times while indexing, once for an interactive query (Retry-After honored, KR-7).
 - `VOYAGE_MODEL` — embedding model (default `voyage-3.5`, 1024-dim — must match
   the `chunks.embedding vector(1024)` column)
 - `VAULT_GITHUB_TOKEN` — read-only fine-grained GitHub PAT for the private
@@ -568,11 +577,33 @@ hoisted version.
     `services/embeddings.js` (Voyage, native fetch). Retrieval is HYBRID (RAG v2):
     vector + keyword legs fused via Reciprocal Rank Fusion (fuseRetrieval,
     dedupe on kind:id) — either leg failing degrades to the other alone.
+    Ranking (KR-4): each leg counts once per distinct source (one long document's
+    many chunks no longer add up); the vector leg fetches 4× chunks and keeps the
+    best one per source; keyword terms drop function-word stopwords ("what",
+    "the" — content words like "will"/"may"/"list" are kept) via `searchTerms`,
+    shared with the facts query; keyword hits send the passage around the first
+    match (`matchingWindow`), not the document's first 1500 characters.
+    **Sync lifecycle (Batch 11):** the vault is ingested even without
+    Voyage/pgvector (documents + facts; `embeddings: false` in the result) and a
+    backfill embeds normal vault documents that have no `embed_state` row once
+    embeddings work; an embedding of unchanged text is kept while Voyage is off
+    (KR-3). The lock is claimed before the first await (KR-8). Removals run
+    first and every file (and every note in syncNotes) is isolated in its own
+    try/catch — one failing file no longer aborts the sync; when anything failed
+    the result is `{ ok:false, partial:true, failed, failures[] }`, `vault_last_error`
+    names the first failure, and neither `vault_last_sha` nor `vault_last_synced_at`
+    advances, so the next sync retries the range (KR-7). `vault_last_attempt_at`
+    stamps every run (db/023, KR-11). The reindex endpoint still returns 202;
+    `/api/rag/status` carries `reindex.ok` (`reindexOutcome`: not_configured /
+    not_ready are not failures) and the GitHub Action polls it and goes red on a
+    failed reindex. A failing sync raises the `vault_sync_error` reminder.
   - **Citations (Phase 2):** `POST /api/rag/query` answers via the Anthropic
     Citations feature (`ai.answerWithCitations` — each retrieved source is a
     plain-text document block with citations enabled; response flags each
     source `cited:true/false`). Falls back to prompt-cite `callAI` if the
-    citations call throws. Citations are incompatible with structured outputs
+    citations call throws; that answer's inline `[n]` / `[2][3]` / `[1, 4]` markers
+    are parsed back into cited sources (`parseInlineCitations`, KR-12), so a
+    fallback answer that cites isn't flagged "ungrounded". Citations are incompatible with structured outputs
     (unused here).
   - **Answer cache (Phase 2):** `rag_answer_cache` — exact-match, keyed by
     normalized query + model + a corpus-version stamp (`"<APP_TIMEZONE date>|"` +
@@ -592,7 +623,9 @@ hoisted version.
     rows carry the query embedding; a paraphrase hits at cosine >= 0.97 with
     the same model + corpus version + TTL. One Voyage call per /query serves
     retrieval AND the cache (embedQuerySafe). Pre-019 / no-pgvector schemas
-    degrade to exact-match only.
+    degrade to exact-match only. Pruned on every write (KR-13): rows whose
+    corpus version isn't current or that are past the 24h TTL are deleted (they
+    can never hit again).
   - **Structured facts (Phase 2c):** `facts` — precise, supersedable
     `(entity, attribute, value)` rows with `valid_from`/`valid_to` (NULL = still
     current) and `sensitivity`. Authored as flat frontmatter in vault "fact
@@ -614,9 +647,14 @@ hoisted version.
   - **Cross-app finance grounding (Phase 3):** for finance-flavored questions
     (`looksFinancial` keyword gate), `POST /api/rag/query` pulls a READ-ONLY
     snapshot from Perfin (`perfinFinanceSnapshot` over the shell-wired
-    `perfinPool` — `linked_accounts` balances + active `detected_subscriptions`;
-    INV-25, never an HTTP self-fetch) and injects it as a cited "Finances (from
-    Perfin)" source. Only fires on finance queries (non-finance queries never
+    `perfinPool`; INV-25, never an HTTP self-fetch) and injects it as a cited
+    "Finances (from Perfin)" source. Net worth, accounts and investments come from
+    Perfin's own `getNetWorth` (`teller/services/financial-queries.js`, required
+    lazily — no Perfin code → no finance source), so the snapshot matches the
+    dashboard: no $0 Plaid brokerage phantom, investment_accounts included, card
+    and loan balances shown as "-$X owed" (KR-9). Card limits come from a small
+    query; subscriptions are summed as monthly equivalents (amount × 30 /
+    cadence_days, Perfin's rule — annual/quarterly ones used to be left out). Only fires on finance queries (non-finance queries never
     touch perfinPool) and is schema-drift safe (any error → no finance context).
     No Perfin schema changes. Standalone (no perfinPool) → silently skipped.
   - **Diagrams (Phase 3):** `POST /api/rag/diagram` retrieves like `/query`
@@ -631,11 +669,19 @@ hoisted version.
     raw note) and COMMITs it to the vault repo at `captures/<date>-<slug>-<rand>.md`
     via `vault-sync.commitVaultFile`. Outward write gated on a SEPARATE
     write-scoped `VAULT_GITHUB_WRITE_TOKEN` (the sync token stays read-only); 400
-    until set. Unique paths mean it's always a create. Kicks a background
+    until set. Unique paths mean it's always a create. A Sensitivity choice
+    (normal / private / secret) on the capture form is written as
+    `sensitivity:` frontmatter, and a private/secret capture is NEVER sent to the
+    AI for structuring — it is committed as a raw note/fact (KR-10). Fields the
+    model returns can't write reserved keys (`type`, `sensitivity`, `embed`,
+    `private`, `valid_*`, …), so they can't turn a fact into a note or relax its
+    sensitivity. Kicks a background
     syncVault so the capture is searchable soon. Capture box on the Knowledge page.
   - **Proactive surfacing (Phase 3):** `routes/rag.upcomingFacts(pool, days)`
     finds facts with an upcoming date — the validity window ending (`valid_to`)
-    or a date-valued attribute (`renew`/`expir`/`due`/`deadline`/…). `GET
+    or a date-valued attribute (`renew`/`expir`/`due`/`deadline`/…, matched as
+    whole snake_case/space segments — "trial_ends" yes, "friends"/"residue" no,
+    KR-14). `GET
     /api/notifications/check` includes these as `fact_upcoming` notifications (+
     a count) over a 30-day lookahead; the dashboard browser-notifies the
     imminent ones (≤7 days). Schema-drift safe (errors → no upcoming facts).
