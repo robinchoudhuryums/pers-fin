@@ -48,7 +48,7 @@ to the "none in progress" state.
     filter; NEW INV-72 (single-payee ledger generation/rename); test counts
     1249/50 (Perfin 772 + Per-sistant 477). README counts. apps/per-sistant/
     CLAUDE.md — routes/housing-due.js key file, housing_due status, test count
-    477. Subsystem paths 80/80 (housing-due.js is inside routes/*.js). No new
+    477. Subsystem paths 79/79, all resolve (housing-due.js is inside routes/*.js). No new
     operator state.
   - **Where I left off:** Batch 5 + docs committed + pushed (no PR). NEXT:
     Batch 6 (budgets, dates & timezones) per the broad-scan plan.
