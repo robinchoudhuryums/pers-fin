@@ -27,7 +27,8 @@ to the "none in progress" state.
   - **Decisions:** PIN lockout refuses even the right PIN (biometric/API key unaffected); SSRF fails closed on DNS error; processed CSVs deleted rather than archived; NODE_ENV not set in render.yaml.
   - **Open follow-ons:** see `.cycle/blocks/6-batch9-broad-implement.md` (notably per-boot ADD COLUMN locks remain — PSC-13 residual).
   - **Operator:** SHELL_SECRET must be set (already is on Render); optionally lengthen a <6-digit SHELL_PIN.
-  - **Where I left off:** Batch 9 committed and pushed (no PR). NEXT: /sync-docs for Batch 9, then Batch 10 (Sheets & exports).
+  - **/sync-docs DONE (Batch 9):** CLAUDE.md — shell architecture (auth.js exports, new error-handler.js, also in the Platform subsystem list), reset-fresh lists, deploy configs + NODE_ENV rationale, csv-import workflow, UI auth bullet (global PIN ceiling, return_to), Security (logout both modes incl. Per-sistant, Secure cookies/no stack traces, SHELL_SECRET fail-fast, self-authenticating webhook route, 1mb body limit, rate-limit skips), env vars (SHELL_PIN length, SHELL_SECRET required), chk_account_source guard, INV-59/INV-60 extended, NEW INV-79 (PIN ceiling + SHELL_SECRET), INV-80 (resolving SSRF), INV-81 (reset-fresh classification), test counts 1490/60. apps/per-sistant/CLAUDE.md — SSRF CIDR/DNS/redirect, webhook auth exemption, embedded Log Out, 545 tests. README — counts, SHELL_PIN/SHELL_SECRET, error-handler. Subsystem paths 80/80. Operator state: SHELL_SECRET now required (documented).
+  - **Where I left off:** Batch 9 and its docs are committed and pushed (no PR). NEXT: Batch 10 (Sheets & exports).
 
 - **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 8 DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-10-08). Batch 8 (schedulers & notifications) implemented, tested, pushed (no PR opened).

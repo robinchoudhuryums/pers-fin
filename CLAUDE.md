@@ -359,15 +359,22 @@ shell/
                                  Settings via user_settings.shell_idle_timeout_minutes,
                                  60s in-memory cache). Also honors `x-api-key`
                                  against process.env.API_KEY for cron / CI
-                                 clients. Exports init({pool}), requireAuth,
-                                 handleLogin, handleLogout, invalidateIdleCache,
-                                 makeSession, setSessionCookie, isValidSession,
-                                 COOKIE_NAME, DEFAULT_IDLE_MS.
+                                 clients. Exports init({pool, onLockout}),
+                                 requireAuth, handleLogin, handleLogout,
+                                 invalidateIdleCache, makeSession,
+                                 setSessionCookie, cookieSecure, isValidSession,
+                                 safeReturnTo, loginReturnTo, pinLockedForMs,
+                                 COOKIE_NAME, DEFAULT_IDLE_MS. Also owns the
+                                 global PIN-failure ceiling (PSC-14) and the
+                                 return_to carry-through (PSC-9).
     webauthn.js                — Shell-side biometric login: hosts
                                  `/api/shell/webauthn/{available,authenticate-options,authenticate}`
                                  mounted BEFORE requireAuth; reads
                                  `webauthn_credentials` from Perfin's pool;
                                  sets the shell session cookie on success
+    error-handler.js           — Last middleware (PSC-4): status + short
+                                 message, 5xx logged, never a stack trace
+                                 (malformed pre-auth JSON → 400 JSON)
   views/
     login.ejs                  — PIN form + biometric button (feature-detected)
     landing.ejs                — Post-login tile picker
@@ -465,7 +472,12 @@ shell/
   sync watermarks (Plaid cursors → '', Teller `last_synced_txn_date` → NULL) so
   the next sync re-pulls full clean history. Dry-run by default (prints per-table
   row counts); only mutates with `--yes` / `CONFIRM_RESET=YES`; runs in one
-  transaction.
+  transaction. Three exported lists: `WIPE_TABLES` (incl. `investment_flows`,
+  `payee_obligations`, `payee_payments`, `settlements` — PSC-6: missing them left
+  flows pointing at re-used `investment_accounts` ids after `RESTART IDENTITY`),
+  `KEEP_TABLES`, and `UNTOUCHED_TABLES` (`schema_migrations`, `job_runs`,
+  `benchmark_prices`). `tests/scan-sept-batch9.test.js` asserts every table the
+  migrations create is in exactly one list — add a new table to one of them.
 - `apps-script/Code.gs` — Google Sheets Apps Script (standalone + server sync)
 - `tests/` — Perfin test suite (node:test runner). Includes
   `tests/audit-regressions.test.js` which pins documented behavior for
@@ -475,9 +487,17 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1426 tests as of latest); use
+  Perfin and Per-sistant test files (1490 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1426 tests across 58 test files (incl.
+  Current count: 1490 tests across 60 test files (incl.
+  `tests/scan-sept-batch9.test.js` + `apps/per-sistant/tests/scan-sept-batch9.test.js`
+  — the Sept 2026 broad-scan Batch 9 platform pins: Secure cookie via req.secure
+  + no stack traces (PSC-4), SHELL_SECRET fail-fast (PSC-11), global PIN ceiling
+  + lockout alert (PSC-14), 1mb body limit (PSC-7), return_to carry-through
+  (PSC-9), limiter skips (PSC-8), guarded constraints (PSC-13), reset-fresh
+  schema classification (PSC-6), shell deps / csv-import workflow / settings 400s
+  (PSC-15), standalone Sign Out (WD-16), and Per-sistant's resolving SSRF check
+  (PB-14), signed-webhook auth exemption (PB-15) and embedded Log Out (PB-21);
   `tests/scan-sept-batch8.test.js` + `apps/per-sistant/tests/scan-sept-batch8.test.js`
   — the Sept 2026 broad-scan Batch 8 scheduler/notification pins: auto-sync
   notification gate on real balance changes + the sync-notifications toggle
@@ -586,7 +606,15 @@ shell/
   Summary blocks for fresh-session consumption land in `.cycle/blocks/`.
 - `Dockerfile`, `fly.toml`, `render.yaml` — Deployment configs (the Dockerfile
   installs all workspaces and boots `node shell/index.js`; render.yaml uses
-  `npm install` + `npm start` and bypasses the Dockerfile)
+  `npm install` + `npm start` and bypasses the Dockerfile). The Dockerfile sets
+  `ENV NODE_ENV=production` AFTER the install and fly.toml sets it in `[env]`
+  (PSC-4); render.yaml deliberately does NOT (Render passes envVars to the build
+  too, and NODE_ENV=production makes `npm install` skip devDependencies) — the
+  shell's Secure-cookie and error-handler behaviour don't depend on it.
+- `.github/workflows/csv-import.yml` — imports CSVs pushed to `csv-uploads/`
+  (scripts/import-csv-cli.js → Sheets), then `git rm`s them (PSC-15: they used to
+  be archived under `csv-uploads/processed/`, keeping raw bank statements in every
+  checkout) and pushes — hence its `permissions: contents: write`.
 - `mobile/` — Capacitor iOS wrapper (remote-URL mode: the WebView loads the
   live Render deployment, so server deploys ARE app updates; no bundled web
   build). Deliberately NOT in the root npm workspaces so server deploys never
@@ -1333,7 +1361,17 @@ shell/
   Brute-force protection: a 750ms wrong-PIN delay plus IP rate limiters —
   `authLimiter` (10 failed/15min) on `/login` + biometric authenticate, and
   `apiKeyLimiter` (20 failed/15min) on the `x-api-key` path (counts only
-  failed key attempts, so browser/cron traffic is unaffected).
+  failed key attempts, so browser/cron traffic is unaffected) — plus a GLOBAL
+  ceiling across all IPs (PSC-14): 30 failed PINs within an hour locks PIN login
+  for 30 minutes (429, even for the right PIN; biometric and x-api-key still
+  work) and pushes one "PIN login locked" notification (tag `pin-lockout`). The
+  counter is in memory (a restart clears it). Trade-off: anyone can trigger that
+  30-minute PIN lockout. Boot warns when `SHELL_PIN` is shorter than 6 characters.
+  A page requested while signed out (e.g. a notification deep link after the
+  idle timeout) is carried through login (PSC-9): `requireAuth` redirects to
+  `/login?return_to=<path>` (validated by `safeReturnTo`), the form keeps it as a
+  hidden field (also on a failed/locked re-render), and both the PIN and the
+  biometric path land there. (The `#fragment` doesn't reach the server.)
 - **Login animation (standalone Perfin)**: Iron Man helmet materialize on
   successful login (gold-amber stroke-draw → fill → particle burst → HUD
   scan → redirect). Lives inline in `teller/views/login.ejs`.
@@ -1768,7 +1806,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1426 tests passing across 58 test files (Perfin 908 + Per-sistant 518), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1490 tests passing across 60 test files (Perfin 945 + Per-sistant 545), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -2252,8 +2290,8 @@ validation (SN-5).
 ## Environment Variables
 
 ### Shell (unified PIN gate)
-- `SHELL_PIN` — unified PIN that fronts both apps. Constant-time compare with a 750ms throttle on incorrect attempts, backed by an IP rate limiter (10 failed attempts / 15 min) on `/login` and the biometric authenticate endpoints.
-- `SHELL_SECRET` — random ~32+ char string (`openssl rand -hex 32`). Signs the shell session cookie. Rotating it invalidates every active session.
+- `SHELL_PIN` — unified PIN that fronts both apps (use at least 6 digits — boot warns otherwise; a global 30-failures/hour ceiling locks PIN login for 30 min, PSC-14). Constant-time compare with a 750ms throttle on incorrect attempts, backed by an IP rate limiter (10 failed attempts / 15 min) on `/login` and the biometric authenticate endpoints.
+- `SHELL_SECRET` — random ~32+ char string (`openssl rand -hex 32`). Signs the shell session cookie. **Required — the shell refuses to boot without it** (PSC-11). Rotating it invalidates every active session.
 - `SHELL_PORT` — optional listener port override (defaults to `PORT` or `3000`)
 - `CALENDAR_FEED_TOKEN` — optional long random token enabling the public `/calendar.ics` bill feed (unset = feature off)
 
@@ -2373,7 +2411,9 @@ standalone-mode fallback if either app is run on its own Render service.
   credit cards) and `monthly_payment NUMERIC(12,2)` (manual, loans) drive the
   loan payoff projection; Plaid Liabilities never reports auto-loan terms.
 - `linked_accounts` columns include: `is_shared BOOLEAN`, `spending_split_pct INT DEFAULT 100`,
-  `is_manual BOOLEAN` — constraint `chk_account_source` allows `plaid_item_id IS NOT NULL OR
+  `is_manual BOOLEAN` — constraint `chk_account_source` (rebuilt only when missing or lacking
+  `is_manual` — PSC-13, it used to be dropped + re-added with a full rescan on every boot)
+  allows `plaid_item_id IS NOT NULL OR
   teller_enrollment_id IS NOT NULL OR is_manual = true`
 - `transactions` user-edit columns (Phase B1/B2/B4): `user_merchant_name TEXT` and
   `user_notes TEXT` hold user overrides separately from the raw Teller fields so a
@@ -2719,10 +2759,31 @@ rows) can dismiss them from the UI or run `POST /api/cleanup`.
   sub-app still sets its own stricter, vendor-allowlisted CSP, which overwrites this baseline
   for its responses. `helmet` is declared in `shell/package.json` (not just hoisted) so the
   shell boot doesn't depend on a sub-app keeping the dep.
-- **Logout clears the shell session (W2)**: Perfin's "Sign Out" POSTs the ROOT `/logout`
-  (shell-owned `auth.handleLogout`, clears the `shell_session` cookie) and redirects to the
-  root `/login` — both un-prefixed, never basePath'd. The earlier `/api/logout` + basePath'd
-  redirect 404'd and left the shell session intact, so Sign Out didn't actually sign out.
+- **Logout clears the shell session (W2)**: under the shell (`window.BASE_PATH` set) Perfin's
+  "Sign Out" POSTs the ROOT `/logout` (shell-owned `auth.handleLogout`, clears the
+  `shell_session` cookie) and redirects to the root `/login` — both un-prefixed, never
+  basePath'd. The earlier `/api/logout` + basePath'd redirect 404'd and left the shell session
+  intact. Standalone Perfin (no BASE_PATH) POSTs its own `/api/logout` instead — the root
+  `/logout` was a no-op there (WD-16). Per-sistant's embedded "Log Out" does the same: it is
+  shown whenever embedded and POSTs the root `/logout` via an absolute URL so the fetch
+  wrapper doesn't prefix BASE_PATH (PB-21).
+- **Secure cookies + no stack traces (PSC-4)**: the shell session cookie and the WebAuthn
+  challenge cookie are `Secure` when `NODE_ENV=production` OR `req.secure` (trust proxy is
+  set, so true behind Render's/Fly's TLS proxy; plain-HTTP local runs still work); Perfin's
+  session cookie uses express-session `secure: "auto"`. The shell mounts
+  `shell/middleware/error-handler.js` last, so errors — including malformed JSON posted to
+  `/login` before auth, and anything bubbling out of a sub-app — return a status + short
+  message, never Express's default stack-trace page.
+- **SHELL_SECRET fail-fast (PSC-11)**: `start()` throws before the sub-apps boot when
+  `SHELL_SECRET` is unset (it used to warn, then every correct PIN threw inside the async
+  login handler — an unhandled rejection that crash-looped the process); `handleLogin` also
+  renders a 500 instead of throwing.
+- **Self-authenticating webhook route (PB-15)**: `POST /per-sistant/api/perfin/webhook`
+  passes the shell's cookie gate (`isSelfAuthenticatingRoute`) and Per-sistant's standalone
+  session check — the receiver verifies an HMAC over the raw body plus a timestamp replay
+  window and 503s without a secret. Only that exact method + path is exempt.
+- **Body limit**: the shell's JSON/urlencoded parsers run first, so their limit is the
+  effective one for both sub-apps — 1mb (PSC-7; 64kb overrode Per-sistant's 1mb note limit).
 - **Client session-expiry handling (W3)**: `apiFetch` (`perfin-shared.js`) redirects once to
   `/login` on a 401 or a followed `302→/login` (loop-guarded), so a mid-session idle timeout
   sends the user to re-auth instead of silently rendering a blank/error UI.
@@ -2736,7 +2797,10 @@ rows) can dismiss them from the UI or run `POST /api/cleanup`.
   configurations, the per-app session never gets written, so the in-memory
   default suffices and the `session` table is no longer maintained for nothing.
 - **Rate limiting**: General (100/15min), tight (5/1min) for sync/detect, login (10/15min),
-  SSO validate (10/15min). Shell layer (the sole auth gate): `authLimiter`
+  SSO validate (10/15min). Under the shell the general limiter is SKIPPED (the request
+  already passed the shell gate; the dashboard alone makes ~35-40 /api calls per load), and
+  the tight limiter skips GETs so the 4-second `GET /api/sync/reconcile/status` poll isn't
+  429'd (PSC-8) — they still apply to a standalone deployment / the sync triggers. Shell layer (the sole auth gate): `authLimiter`
   (10 failed/15min, `skipSuccessfulRequests`) on `POST /login` and the
   biometric `authenticate`/`authenticate-options` endpoints, plus `apiKeyLimiter`
   (20/15min) that counts only FAILED `x-api-key` attempts (skips header-less
@@ -3670,6 +3734,7 @@ Settings, Notifications & Cross-app:
    together with this subsystem from both sides.)
 Platform, Shell & Auth:
   shell/index.js, shell/middleware/auth.js, shell/middleware/webauthn.js,
+  shell/middleware/error-handler.js,
   teller/server.js, teller/startup.js, teller/services/database.js,
   teller/services/keep-alive.js, teller/services/job-health.js,
   scripts/reset-fresh.js, scripts/ci-migration-test.js, db/*.sql
@@ -3765,8 +3830,8 @@ INV-55 | /api/ask charges the shared AI cap even on a mid-tool-loop failure — 
 INV-56 | The dashboard's inlined loanPayoff() is NUMERICALLY identical to services/projections.computeLoanPayoff across scenarios (months / total_interest ±$0.01 / insufficient flag), not merely string-equal | Subsystem: Web UI ↔ Financial Analytics (seam) | Verify: tests/loan-support.test.js (extract-and-run parity test)
 INV-57 | The critical-audit notification is deduped to ≤1 per 24h via sentRecently('audit-alert', 24), fail-open — a steady-state critical finding doesn't re-push on every 6h auto-insight tick | Subsystem: AI Insights & Audit / Notification Correctness | Verify: code read routes/insights.js audit-alert gate
 INV-58 | A kind='quantity' habit always has a non-null target_value, enforced on POST AND on PATCH against the MERGED post-update state (so switching to quantity without a target, or nulling a quantity habit's target, 400s instead of silently degrading meetsTarget) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/health.test.js (F9 PATCH tests)
-INV-59 | Bounded settings (target_allocation_pct, shell_idle_timeout_minutes, fire_*, ai_monthly_budget_cents) reject invalid input with 400 — never silent-drop + 200 | Subsystem: Settings, Notifications & Cross-app | Verify: tests/budget-cap-webauthn.test.js (PATCH /api/settings validation)
-INV-60 | Perfin "Sign Out" clears the SHELL session via the root POST /logout under the unified shell (not a basePath'd /api/logout); redirect target is the root /login — both un-prefixed | Subsystem: Web UI ↔ Platform, Shell & Auth (seam) | Verify: code read teller/views/settings.ejs logout() + shell POST /logout (auth.handleLogout)
+INV-59 | Bounded settings (target_allocation_pct, shell_idle_timeout_minutes, fire_*, ai_monthly_budget_cents, and since PSC-15 keep_alive_start/end, keep_alive_timezone (Intl-validated), auto_sync_interval_hours, csv_reminder_days, weekly_digest_day — strict integer parse, null/""/"6abc" rejected) reject invalid input with 400 — never silent-drop + 200 | Subsystem: Settings, Notifications & Cross-app | Verify: tests/budget-cap-webauthn.test.js (PATCH /api/settings validation) + tests/scan-sept-batch9.test.js (PSC-15)
+INV-60 | Perfin "Sign Out" clears the SHELL session via the root POST /logout under the unified shell (not a basePath'd /api/logout); redirect target is the root /login — both un-prefixed; standalone Perfin (no BASE_PATH) posts /api/logout instead (WD-16), and Per-sistant's embedded Log Out also posts the root /logout (PB-21) | Subsystem: Web UI ↔ Platform, Shell & Auth (seam) | Verify: code read teller/views/settings.ejs logout() + shell POST /logout (auth.handleLogout)
 INV-61 | apiFetch redirects once to /login on a 401 or a followed 302→/login (session expiry), loop-guarded, while returning the Response unchanged to callers — idle timeout never leaves a blank/error UI | Subsystem: Web UI | Verify: code read teller/public/perfin-shared.js apiFetch
 INV-62 | The shell sets a nonce CSP + frame-ancestors 'none' + X-Frame-Options on its own routes (login/landing), with COOP/CORP/COEP DISABLED so the global middleware doesn't break sub-app Plaid/Teller Link popups; helmet is a declared shell dependency | Subsystem: Platform, Shell & Auth | Verify: header assertion on GET /login (frame-ancestors none, COOP/CORP absent, login scripts nonced)
 INV-63 | Per-sistant's shared fetch wrapper (apps/per-sistant/views/js.js) redirects once to the root /login on a 401 or a followed 302→/login (session expiry), loop-guarded, returning the Response unchanged to callers — parity with Perfin INV-61, so an idle-timeout never leaves a blank/error page. The check uses indexOf('/login'), NOT a regex, because the module is one backtick template literal that eats regex backslashes (see Per-sistant CLAUDE.md gotcha) | Subsystem: Per-sistant Web UI | Verify: code read views/js.js fetch wrapper
@@ -3784,6 +3849,9 @@ INV-75 | The tax report (export + Sheets tab) is computed from transactions via 
 INV-76 | No model call uses a forced tool_choice (Opus/Sonnet 5.5 400 on it): structured calls go through createToolCall (auto + strict tool + one re-ask, usage summed for the cap); every call sets an explicit effort and reads content blocks by type | Subsystem: AI Insights & Audit (seam: categorize / budgets / housing / Per-sistant ai.js) | Verify: tests/model-upgrade.test.js + apps/per-sistant/tests/model-upgrade.test.js
 INV-77 | Away-from-app channels (budget alerts + critical-alert email, weekly digest, daily digest, CSV reminder) are never gated on isUserActive(); each is bounded by its own watermark (last_weekly_digest_at / last_daily_digest_at / last_csv_reminder_at / sentRecently) plus a per-local-day settled memo, so it neither misses an away user nor re-queries the DB all day | Subsystem: Platform, Shell & Auth / Notification Correctness | Verify: tests/scan-sept-batch8.test.js (PSC-3 block)
 INV-78 | The auto-sync "complete" notification fires only on genuinely new transactions or a balance that actually changed (accounts_changed), and never while sync_notifications_enabled is false | Subsystem: Bank Sync & Ingestion / Notification Correctness | Verify: tests/scan-sept-batch8.test.js (PSC-1 block)
+INV-79 | The shell PIN gate has a GLOBAL failure ceiling (30 failed PINs/hour across all IPs → PIN login locked 30 min, even for the correct PIN, with one sendToAll alert per lockout); biometric + x-api-key paths are unaffected; the shell refuses to boot without SHELL_SECRET | Subsystem: Platform, Shell & Auth | Verify: tests/scan-sept-batch9.test.js (PSC-14 / PSC-11 blocks)
+INV-80 | Per-sistant outbound webhooks/Slack are SSRF-checked at send time by resolveSafeWebhookTarget — literal IPs in any spelling (IPv4-mapped/compatible IPv6 unwrapped) and EVERY DNS-resolved address must be outside the net.BlockList private ranges; DNS failure fails closed; fetch uses redirect:'manual' | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch9.test.js (PB-14 blocks)
+INV-81 | scripts/reset-fresh.js classifies EVERY table the Perfin migrations create into exactly one of WIPE_TABLES / KEEP_TABLES / UNTOUCHED_TABLES (schema_migrations is never wiped) | Subsystem: Platform, Shell & Auth | Verify: tests/scan-sept-batch9.test.js (PSC-6 block)
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
 ### Policy Configuration

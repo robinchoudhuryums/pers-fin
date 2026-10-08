@@ -33,7 +33,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   at-most-once delivery). The manual `POST /api/emails/:id/send` claims the row
   the same way (`UPDATE … WHERE id = $1 AND status <> 'sent' RETURNING`) so a
   double-click / retry returns 409 instead of re-sending (PB-4).
-- **Tests**: `tests/` (node:test runner, `npm test`, 518 tests (api + integration + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8 + model-upgrade))
+- **Tests**: `tests/` (node:test runner, `npm test`, 545 tests (api + integration + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9 + model-upgrade))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of June 2026)
@@ -155,7 +155,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **Rate Limiting**: General (200/15min), auth (10/15min), and AI (20/min) rate limiters
 - **CSRF Protection**: State-changing requests require `X-Requested-With` or JSON/multipart content-type; auto-injected by the shared-JS `window.fetch` wrapper (`views/js.js`), which ALSO prepends `BASE_PATH` and (INV-63) redirects once to the root `/login` on a 401 / followed `302→/login` so a mid-session idle timeout sends the user to re-auth instead of leaving a blank/error page (loop-guarded; Response returned unchanged to callers)
 - **Postgres Sessions**: `connect-pg-simple` stores sessions in DB (survives restarts/deploys), auto-creates table, prunes expired sessions every 15 min
-- **Webhooks**: Configure external webhook endpoints to receive event notifications (task created/completed, email sent, streak milestones); test webhooks from Settings. Both the webhook URLs AND the Slack URL (`config.isValidWebhookUrl`) are SSRF-validated at write-time (on create/PATCH) AND re-validated before each outbound send (`helpers.sendWebhook` + `sendSlackNotification`, PSB2): `http(s)` only, and private/loopback/link-local ranges are blocked — including `169.254.0.0/16` (the cloud metadata endpoint `169.254.169.254`), the full `127.0.0.0/8`, RFC-1918, and bracketed IPv6 loopback/ULA (PB-1/PB-5).
+- **Webhooks**: Configure external webhook endpoints to receive event notifications (task created/completed, email sent, streak milestones); test webhooks from Settings. Both the webhook URLs AND the Slack URL (`config.isValidWebhookUrl`) are SSRF-validated at write-time (on create/PATCH) AND re-validated before each outbound send (`helpers.sendWebhook` + `sendSlackNotification`, PSB2): `http(s)` only, and private/loopback/link-local ranges are blocked — including `169.254.0.0/16` (the cloud metadata endpoint `169.254.169.254`), the full `127.0.0.0/8`, RFC-1918, and bracketed IPv6 loopback/ULA (PB-1/PB-5). Since PB-14 the check is a real CIDR match (`config.isPrivateAddress`, node's built-in `net.BlockList`: 0/8, 10/8, 100.64/10, 127/8, 169.254/16, 172.16/12, 192.0.0/24, 192.168/16, 198.18/15, 224/4, 240/4, ::/96, 64:ff9b::/96, fc00::/7, fe80::/10, ff00::/8) with IPv4-mapped/compatible IPv6 unwrapped first — `http://[::ffff:169.254.169.254]/` normalizes to `[::ffff:a9fe:a9fe]` and used to pass the string-prefix checks. At SEND time `config.resolveSafeWebhookTarget(url)` also DNS-resolves the hostname and rejects it if ANY address is private (fails closed on a DNS error), and both senders fetch with `redirect: "manual"` so a public URL can't 30x to an internal one (a redirect is recorded as its 3xx status). A rebinding race between that lookup and fetch's own remains possible.
 - **Slack Integration**: Add Slack Incoming Webhook URL in Settings for notifications (SSRF-validated — see Webhooks above)
 - **AI API Optimization**: Singleton client reuse, prompt caching via system prompts with `cache_control`, response caching for briefing (10min) and suggestions (5min)
 - **Helmet CSP**: Content Security Policy via helmet, **nonce-based** (PB-3 closed — parity with Perfin). `views.basePathMiddleware` generates a per-request `crypto.randomBytes(16)` nonce (it runs BEFORE `middleware.setup` installs helmet), exposing it as `res.locals.cspNonce` for the helmet `scriptSrc` directive function and via AsyncLocalStorage for view helpers. Every inline `<script>` — the 4 in `pageHead`, `themeScript`, all 11 pages, and the login page in `routes/auth.js` — carries `nonceAttr()` (exported from views.js). `script-src` has NO `'unsafe-inline'`; `https://cdn.jsdelivr.net` stays allowlisted for Mermaid on the Knowledge page. `script-src-attr` remains EXPLICITLY `'none'` (PWUI5) so inline `onclick`/`onchange` are blocked — all UI uses event delegation. Output-escaping (`renderMd` scheme-validation PS-4, `esc()` for element text, `escAttr()` for attribute contexts) remains the first line of defense; the nonce CSP is now the backstop. New inline scripts MUST use `<script${nonceAttr()}>` — a bare `<script>` will be refused by the browser (pinned by `tests/broad-scan-fixes.test.js`).
@@ -218,7 +218,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `db/007_enhancements.sql` — custom recurrence, entity links, webhooks, notification preferences
 - `db/008_templates_performance.sql` — todo templates table, performance indexes
 - `uploads/` — local file attachment storage
-- `tests/api.test.js` — unit test suite (the bulk of the 518 per-sistant tests; NOTE: it tests inline copies of the logic and imports no production module — see TQ-1 in the Sept 2026 broad scan)
+- `tests/api.test.js` — unit test suite (the bulk of the 545 per-sistant tests; NOTE: it tests inline copies of the logic and imports no production module — see TQ-1 in the Sept 2026 broad scan)
 - `tests/scan-sept-fixes.test.js` — Sept 2026 broad-scan Batch 1 pins (Save Draft status, Send-now save, local datetime fill, fail-closed vault sensitivity, vault mark-and-sweep, trash chunk purge)
 - `tests/integration.test.js` — integration tests (requires DB, auto-skips without)
 - `Dockerfile` / `docker-compose.yml` — container deployment
@@ -230,7 +230,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (518 tests)
+# Run tests (545 tests)
 npm test
 
 # Pages
@@ -664,6 +664,18 @@ hoisted version.
 When loaded by `shell/index.js` instead of run standalone, the Per-sistant app
 runs as an Express sub-app mounted at `/per-sistant`. Three things change:
 
+- **Signed-webhook exemption (PB-15).** `POST /api/perfin/webhook` is exempt from
+  `requireAuth` in standalone mode too (and from the shell's cookie gate at
+  `/per-sistant/api/perfin/webhook`): Perfin's HMAC-signed digest POST carries
+  no session, and the receiver authenticates it itself (signature over the raw
+  body + timestamp replay window, 503 without a secret). It used to 401 every
+  delivery on a standalone deployment with SESSION_PIN set. `requireAuth` is
+  exported from `middleware.js` for tests.
+- **Log Out (PB-21).** The Settings "Log Out" is shown whenever embedded (or
+  AUTH_SECRET is set). Embedded, it POSTs the ROOT `/logout` (the shell's
+  handler) via `location.origin + '/logout'` — an absolute URL so the fetch
+  wrapper doesn't prefix BASE_PATH — then goes to `/login`; standalone it still
+  uses `POST /api/logout`.
 - **Auth bails early.** `middleware.requireAuth` returns immediately when
   `req.app.get("embedded")` is true; the shell's PIN gate has already
   authenticated the user.
