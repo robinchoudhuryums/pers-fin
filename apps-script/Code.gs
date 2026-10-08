@@ -323,6 +323,7 @@ function importCsvsFromDrive() {
   const files = folder.getFilesByType(MimeType.CSV);
 
   const txnSheet = ss.getSheetByName(CONFIG.SHEET_TRANSACTIONS) || ensureSheet_(ss, CONFIG.SHEET_TRANSACTIONS, ["Date", "Merchant", "Amount", "Category", "Institution", "Account", "Import ID", "Transaction ID"]);
+  assertScriptLayout_(txnSheet, ["Date", "Merchant", "Amount", "Category", "Institution", "Account", "Import ID", "Transaction ID"]);
   const logSheet = ss.getSheetByName(CONFIG.SHEET_IMPORT_LOG) || ensureSheet_(ss, CONFIG.SHEET_IMPORT_LOG, ["Timestamp", "Filename", "Institution", "Format", "Rows Imported", "Rows Skipped"]);
 
   // Load existing transaction IDs for deduplication
@@ -637,6 +638,7 @@ function detectSubscriptions() {
 
   // Write to Subscriptions sheet
   const subSheet = ss.getSheetByName(CONFIG.SHEET_SUBSCRIPTIONS) || ensureSheet_(ss, CONFIG.SHEET_SUBSCRIPTIONS, ["Service", "Amount", "Cycle Days", "Monthly Cost", "Yearly Cost", "First Seen", "Last Charged", "Next Charge", "Status", "Source", "Cancel URL", "Notes"]);
+  assertScriptLayout_(subSheet, ["Service", "Amount", "Cycle Days", "Monthly Cost", "Yearly Cost", "First Seen", "Last Charged", "Next Charge", "Status", "Source", "Cancel URL", "Notes"]);
 
   // Preserve manually added subscriptions and dismissed/cancelled status
   const existingSubs = {};
@@ -1038,6 +1040,7 @@ function syncSubscriptionsFromServer_(ss) {
   const data = JSON.parse(res.getContentText());
   const serverSubs = data.subscriptions || [];
   const subSheet = ss.getSheetByName(CONFIG.SHEET_SUBSCRIPTIONS) || ensureSheet_(ss, CONFIG.SHEET_SUBSCRIPTIONS, ["Service", "Amount", "Cycle Days", "Monthly Cost", "Yearly Cost", "First Seen", "Last Charged", "Next Charge", "Status", "Source", "Cancel URL", "Notes"]);
+  assertScriptLayout_(subSheet, ["Service", "Amount", "Cycle Days", "Monthly Cost", "Yearly Cost", "First Seen", "Last Charged", "Next Charge", "Status", "Source", "Cancel URL", "Notes"]);
 
   // Load existing local entries (manual and CSV-detected)
   const localEntries = {};
@@ -1146,6 +1149,7 @@ function syncTransactionsFromServer_(ss) {
   if (serverTxns.length === 0) return 0;
 
   const txnSheet = ss.getSheetByName(CONFIG.SHEET_TRANSACTIONS) || ensureSheet_(ss, CONFIG.SHEET_TRANSACTIONS, ["Date", "Merchant", "Amount", "Category", "Institution", "Account", "Import ID", "Transaction ID"]);
+  assertScriptLayout_(txnSheet, ["Date", "Merchant", "Amount", "Category", "Institution", "Account", "Import ID", "Transaction ID"]);
 
   // Load existing transaction IDs for deduplication
   const existingIds = new Set();
@@ -1172,7 +1176,9 @@ function syncTransactionsFromServer_(ss) {
       date,
       txn.merchant || "",
       amount,
-      txn.pfc_primary || txn.category || "",
+      // SXE-15: the server-resolved category (user_category first) wins; PFC
+      // is only the fallback — preferring it threw away recategorizations.
+      txn.category || txn.pfc_primary || "",
       txn.institution_name || "",
       txn.account_name || "",
       "server",
@@ -1496,6 +1502,26 @@ function runAll() {
 // ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
+
+/**
+ * SXE-15: the server's scripts/sheets-sync.js ALSO writes tabs named
+ * "Transactions" and "Subscriptions", with a different column layout. If this
+ * script and the server share a spreadsheet, this script's dedup read column H
+ * (the server's "Category (Detailed)") as the Transaction ID and appended
+ * duplicates. Refuse to write into a tab whose header row isn't this script's
+ * layout — point GOOGLE_SHEETS_ID and this script at separate spreadsheets.
+ */
+function assertScriptLayout_(sheet, headers) {
+  if (!sheet || sheet.getLastRow() < 1) return;
+  var found = sheet.getRange(1, 1, 1, headers.length).getValues()[0];
+  for (var i = 0; i < headers.length; i++) {
+    if (String(found[i] || "").trim() !== headers[i]) {
+      throw new Error('The "' + sheet.getName() + '" tab does not have this script\'s column layout (found "' +
+        String(found[i] || "") + '" in column ' + (i + 1) + ', expected "' + headers[i] + '"). It was probably written by ' +
+        'the Perfin server sync — use a separate spreadsheet for this Apps Script.');
+    }
+  }
+}
 
 function ensureSheet_(ss, name, headers) {
   let sheet = ss.getSheetByName(name);

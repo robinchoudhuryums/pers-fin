@@ -6,8 +6,9 @@ const express = require("express");
 
 const { serverError } = require("../errors");
 const { upcomingFacts } = require("./rag");
-const { gatherHealthSummary } = require("./health");
+const { gatherHealthSummary, todayStr } = require("./health");
 const { gatherJobRadarSummary } = require("./jobs");
+const { housingDue, housingDueSuffix } = require("./housing-due");
 
 // Job Radar leads for the notification check (weekly cadence is driven by the
 // weekly refresh; the client's 12h dedup ledger prevents re-firing). No-op +
@@ -24,44 +25,15 @@ async function jobRadarLeads(pool) {
 // How far ahead to surface a fact's renewal/expiration (days).
 const FACT_LOOKAHEAD_DAYS = 30;
 
-// Rent & utilities owed (cross-app, READ-ONLY via the shell-wired perfinPool —
-// INV-25/35, never an HTTP self-fetch). Returns a summary only when configured,
-// a balance is owed, AND we're within the reminder lead window of the rent due
-// day. Fail-soft: any error → null (the caller drops the item).
-async function housingDue(perfinPool) {
-  if (!perfinPool) return null;
-  try {
-    const [bal, cfgR] = await Promise.all([
-      perfinPool.query("SELECT COALESCE(SUM(amount),0) AS balance, COUNT(*) AS n FROM payee_obligations WHERE status='unpaid'"),
-      perfinPool.query("SELECT housing_config FROM user_settings WHERE id = 1"),
-    ]);
-    let cfg = cfgR.rows[0] && cfgR.rows[0].housing_config;
-    if (typeof cfg === "string") { try { cfg = JSON.parse(cfg); } catch { cfg = {}; } }
-    cfg = cfg || {};
-    const balance = parseFloat(bal.rows[0].balance);
-    const n = parseInt(bal.rows[0].n);
-    if (!cfg.enabled || !cfg.payee_name || !(balance > 0)) return null;
-    const dueDay = parseInt(cfg.rent_due_day, 10);
-    const leadDays = Number.isFinite(parseInt(cfg.reminder_lead_days, 10)) ? parseInt(cfg.reminder_lead_days, 10) : 5;
-    let daysUntil = null;
-    if (dueDay >= 1 && dueDay <= 31) {
-      const now = new Date();
-      let due = new Date(now.getFullYear(), now.getMonth(), Math.min(dueDay, 28));
-      if (due < now) due = new Date(now.getFullYear(), now.getMonth() + 1, Math.min(dueDay, 28));
-      daysUntil = Math.round((due - now) / 86400000);
-    }
-    // Only surface within the lead window (or if no due day is configured).
-    if (daysUntil != null && daysUntil > leadDays) return null;
-    return { balance, payee: cfg.payee_name, n, days_until_due: daysUntil };
-  } catch { return null; }
-}
-
 module.exports = function ({ pool }) {
   const router = express.Router();
 
   router.get("/api/notifications/check", async (req, res) => {
     try {
-      const today = new Date().toISOString().split("T")[0];
+      // Todo "due today"/"overdue" in APP_TIMEZONE (PB-13) — the same day the
+      // habit + housing items on this surface use (it was the UTC date, so in
+      // the evening tomorrow's tasks read "due today").
+      const today = todayStr();
       const perfinPool = req.app.get("perfinPool");
       const [dueSoon, overdue, streaksAtRisk, reminders, facts, health, housing, jobRadar] = await Promise.all([
         pool.query("SELECT id, title, due_date FROM todos WHERE deleted_at IS NULL AND completed = false AND due_date = $1", [today]),
@@ -104,11 +76,13 @@ module.exports = function ({ pool }) {
       }));
       // Rent & utilities due (cross-app; non-AI, deterministic).
       if (housing) {
+        // Shared day-granular due state (PB-2): due today / overdue surface
+        // instead of rolling to next month.
         const due = housing.days_until_due;
-        const when = due == null ? "" : (due <= 0 ? " (due now)" : ` (due in ${due} day${due === 1 ? "" : "s"})`);
         notifications.push({
           type: "housing_due",
-          title: `Rent & utilities: $${housing.balance.toFixed(2)} owed to ${housing.payee}${when}`,
+          title: `Rent & utilities: $${housing.balance.toFixed(2)} owed to ${housing.payee}${housingDueSuffix(housing)}`,
+          status: housing.status,
           id: null,
           entity: "housing",
           days_away: due,

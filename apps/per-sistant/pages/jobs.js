@@ -138,7 +138,7 @@ async function refresh(){
   var s = document.getElementById('refresh-status');
   s.textContent = 'Refreshing...';
   try {
-    var r = await fetch('/api/jobs/refresh', {method:'POST'}).then(function(r){return r.json();});
+    var r = await fetch('/api/jobs/refresh?force=1', {method:'POST'}).then(function(r){return r.json();});
     s.textContent = 'Added '+(r.added||0)+' new of '+(r.seen||0)+' seen'+(r.fit_scored?(', '+r.fit_scored+' scored'):'')+(r.capped?' (AI cap reached)':'');
     load();
   } catch(e){ s.textContent = 'Refresh failed.'; }

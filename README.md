@@ -41,7 +41,8 @@ Under the unified shell the cross-app integration endpoints (Per-sistant's Perfi
 | Path | Description |
 |------|-------------|
 | `shell/index.js` | Unified PIN gate, landing tile picker, sub-app mounts |
-| `shell/middleware/auth.js` | HMAC-signed cookie session (SHELL_PIN + SHELL_SECRET) |
+| `shell/middleware/auth.js` | HMAC-signed cookie session (SHELL_PIN + SHELL_SECRET), global PIN-failure lockout, return_to carry-through |
+| `shell/middleware/error-handler.js` | Last-resort error handler — status + short message, never a stack trace |
 | `shell/views/login.ejs` | PIN entry screen |
 | `shell/views/landing.ejs` | Post-login tile picker |
 | `shell/public/manifest.json` | Unified PWA manifest (mask-crop PNG icons) |
@@ -88,7 +89,7 @@ Under the unified shell the cross-app integration endpoints (Per-sistant's Perfi
 | `scripts/detect-subscriptions.js` | Recurring charge detection algorithm |
 | `scripts/sheets-sync.js` | Google Sheets sync + dashboard builder |
 | `apps-script/Code.gs` | Google Sheets Apps Script (standalone + server sync) |
-| `tests/` | Test suite (node:test, 1169 tests across 46 files incl. apps/per-sistant/tests) |
+| `tests/` | Test suite (node:test, 1519 tests across 61 files incl. apps/per-sistant/tests) |
 | `Dockerfile` | Container build — installs all workspaces and boots `node shell/index.js` |
 | `render.yaml` | Render deployment blueprint (unified shell) |
 | `fly.toml` | Fly.io deployment config |
@@ -179,7 +180,7 @@ npm run test:perfin       # Perfin tests only
 npm run test:persistent   # Per-sistant tests only
 ```
 
-1047 tests covering detection, CSV parsing, date handling, API logic, cost calculations, financial-queries semantics (incl. the net-worth single-source-of-truth + the $0-brokerage dedupe direction), AI-audit pattern extraction, pinned regression tests for auth/SSO/template/exclusion behavior and the latest cycle fixes (net-worth dedupe, budget-rollover month-keying, webhook replay/expiry, XSS/header sanitization, CSV dedup-ID parity, Plaid balance-sync status filter, Plaid holdings-items UNION + liabilities re-link hint, categorize bulk-sweep/loop + auto-sweep + accuracy sampler, in-process digest delivery, background reconcile, login→dashboard redirect, $0-brokerage dedupe, page-size-independent Teller pagination, Schwab CSV sign preservation, Wells Fargo CSV detection tightening, Plaid sync observability, and the June 2026 broad-scan fixes: backup workflow, fail-fast token passphrase, compromised-cert detection, missed-job watchdog, budget-alert dedup, CSV occurrence-indexed dedup, quarterly/bi-monthly subscription detection, audit cross-period "average" narrowing, and timezone-aware habit streaks), BEHAVIORAL sync-idempotency tests (Teller + Plaid synced twice over the same fixtures → 0 added, no dupes, stable watermark) and AI cap-charge tests (/api/ask + categorize charge their usage rows and 429 at the cap; ask charges even on a mid-loop failure), and integration tests for the feedback, whats-new, performance, and trust-overview endpoints. No database required — all tests run against pure functions and mock pools.
+1519 tests covering detection, CSV parsing, date handling, API logic, cost calculations, financial-queries semantics (incl. the net-worth single-source-of-truth + the $0-brokerage dedupe direction), AI-audit pattern extraction, pinned regression tests for auth/SSO/template/exclusion behavior and the latest cycle fixes (net-worth dedupe, budget-rollover month-keying, webhook replay/expiry, XSS/header sanitization, CSV dedup-ID parity, Plaid balance-sync status filter, Plaid holdings-items UNION + liabilities re-link hint, categorize bulk-sweep/loop + auto-sweep + accuracy sampler, in-process digest delivery, background reconcile, login→dashboard redirect, $0-brokerage dedupe, page-size-independent Teller pagination, Schwab CSV sign preservation, Wells Fargo CSV detection tightening, Plaid sync observability, and the June 2026 broad-scan fixes: backup workflow, fail-fast token passphrase, compromised-cert detection, missed-job watchdog, budget-alert dedup, CSV occurrence-indexed dedup, quarterly/bi-monthly subscription detection, stricter/recency-aware detection + calendar-month cadence stepping + cadence-based calendar income (Sept 2026 Batch 4), Rent & Utilities trailing generation + rename carry-over + Settle Up refund/awaiting-bill handling (Batch 5), one shared budget-status helper + prior-month snapshot refresh + APP_TIMEZONE date anchors + local calendar-date rendering + month-end-safe date math + Per-sistant recurrence anchor/missed instances + knowledge-cache churn fixes (Batch 6), AI audit precision + model-ID pricing + capped budget suggestions + summary-preservation + the tax report computed from transactions (Batch 7), re-runnable Sheets formatting + persisted Sheets sync outcome + settled-month archives + spreadsheet formula-injection guards + ISO-dated CSV/context exports (Batch 10), the Claude 5.5 model upgrade (no forced tool_choice, explicit effort, text read by block type), audit cross-period "average" narrowing, and timezone-aware habit streaks), BEHAVIORAL sync-idempotency tests (Teller + Plaid synced twice over the same fixtures → 0 added, no dupes, stable watermark) and AI cap-charge tests (/api/ask + categorize charge their usage rows and 429 at the cap; ask charges even on a mid-loop failure), and integration tests for the feedback, whats-new, performance, and trust-overview endpoints. No database required — all tests run against pure functions and mock pools.
 
 ## API Endpoints
 
@@ -280,8 +281,8 @@ Per-sistant exposes its own set of routes (todos, emails, notes, AI briefing, ca
 
 The unified shell owns the only login screen and authenticates via PIN:
 
-- **`SHELL_PIN`** — numeric PIN that fronts both apps. Validated against a constant-time compare with a soft 750ms throttle on incorrect attempts.
-- **`SHELL_SECRET`** — random ~32+ char string. Signs the shell session cookie. Rotating it invalidates every active session.
+- **`SHELL_PIN`** — numeric PIN that fronts both apps (use at least 6 digits — boot warns otherwise). Validated against a constant-time compare with a soft 750ms throttle on incorrect attempts, per-IP rate limits, and a global ceiling: 30 failed PINs within an hour lock PIN login for 30 minutes (biometric and API-key access keep working) and send a "PIN login locked" notification.
+- **`SHELL_SECRET`** — random ~32+ char string. Signs the shell session cookie. Rotating it invalidates every active session. Required: the shell refuses to start without it.
 
 Sessions use a sliding idle window — the cookie's expiration is refreshed on every authenticated request. The default idle window is **60 minutes** and is configurable from Settings → Security → "App Idle Timeout" (5–10080 minutes, stored in `user_settings.shell_idle_timeout_minutes`). An active user never times out mid-use; an idle one is re-prompted after the window. Non-browser clients (cron, GitHub Actions) can authenticate via `x-api-key: $API_KEY` instead of the PIN cookie. Standalone Perfin still supports its legacy `SESSION_PASSWORD` / `SESSION_PIN` auth modes — those are bypassed when running embedded under the shell. Biometric login (WebAuthn) is supported in both deployments: standalone Perfin hosts `/api/webauthn/*` directly, and the unified shell hosts its own `/api/shell/webauthn/*` endpoints (mounted before the PIN gate) that read from the same `webauthn_credentials` table via Perfin's pool.
 
@@ -356,7 +357,7 @@ The AI maintains a **persistent running summary** across analyses — a cumulati
 11. **Goal tracking** — progress assessment with real-world economic context
 12. **Recurring transfers** — analyze Zelle, bill payments, savings, and investment patterns
 
-- **Model selector**: Haiku (~$0.005/run), Sonnet (~$0.02/run), or Opus (~$0.10/run)
+- **Model selector**: Haiku, Sonnet, or Opus — Claude Haiku 5.5 ($0.10 / $0.50 per million tokens), Sonnet 5.5 ($2 / $10) or Opus 5.5 ($4 / $20); each run's actual cost is tracked against the monthly AI cap
 - **Cadence**: Weekly, biweekly, monthly, every 2 months, or quarterly
 - **Reset/Rebuild**: Clear or regenerate long-term memory from Settings
 
@@ -482,7 +483,7 @@ boards; reuses `VOYAGE_API_KEY` + `ANTHROPIC_API_KEY`.
 | Variable | Description |
 |----------|-------------|
 | `SHELL_PIN` | Unified PIN that fronts both apps (set on the Render service) |
-| `SHELL_SECRET` | Random ~32+ char string; signs the shell session cookie |
+| `SHELL_SECRET` | Random ~32+ char string; signs the shell session cookie (required — boot fails without it) |
 | `NEON_DATABASE_URL` | Perfin's Neon PostgreSQL connection string |
 | `PERSISTENT_DATABASE_URL` | Per-sistant's Neon PostgreSQL connection string (separate DB) |
 | `TOKEN_ENCRYPTION_PASSPHRASE` | Encrypts stored access tokens |

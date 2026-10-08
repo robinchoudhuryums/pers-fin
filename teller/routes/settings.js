@@ -6,6 +6,7 @@ const express = require("express");
 const router = express.Router();
 const { pool, ENCRYPTION_PASSPHRASE } = require("../services/database");
 const { INSIGHT_MODULES } = require("../data/reference-data");
+const { csvText, csvDate } = require("../services/csv-export");
 
 let sheetsSync;
 try {
@@ -21,7 +22,7 @@ router.get("/api/settings", async (req, res) => {
   // suppresses the "configure the webhook" prereq warning.
   const embedded = req.app.get("embedded") === true;
   try {
-    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary, insights_running_summary_json, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules, pyramid_data_source, pyramid_color_mode, debt_baseline_amount, sheets_auto_sync_enabled, sheets_auto_sync_interval, sheets_last_auto_sync, csv_reminder_days, csv_reminder_enabled, dashboard_widgets, persistent_url, persistent_webhook_enabled, auto_sync_enabled, auto_sync_interval_hours, last_auto_sync_at, last_balance_sync_at, last_txn_sync_at, sync_notifications_enabled, shell_idle_timeout_minutes, weekly_digest_enabled, weekly_digest_day, last_weekly_digest_at, daily_digest_enabled, last_daily_digest_at, target_allocation_pct, partner_name, ai_monthly_budget_cents, critical_alert_emails_enabled, fire_expected_return_pct, fire_withdrawal_rate_pct, fire_monthly_spending_override FROM user_settings WHERE id = 1");
+    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary, insights_running_summary_json, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules, pyramid_data_source, pyramid_color_mode, debt_baseline_amount, sheets_auto_sync_enabled, sheets_auto_sync_interval, sheets_last_auto_sync, last_sheets_sync_result, csv_reminder_days, csv_reminder_enabled, dashboard_widgets, persistent_url, persistent_webhook_enabled, auto_sync_enabled, auto_sync_interval_hours, last_auto_sync_at, last_balance_sync_at, last_txn_sync_at, sync_notifications_enabled, shell_idle_timeout_minutes, weekly_digest_enabled, weekly_digest_day, last_weekly_digest_at, daily_digest_enabled, last_daily_digest_at, target_allocation_pct, partner_name, ai_monthly_budget_cents, critical_alert_emails_enabled, fire_expected_return_pct, fire_withdrawal_rate_pct, fire_monthly_spending_override FROM user_settings WHERE id = 1");
     const defaults = { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true, anomaly_detection: true, seasonal_forecast: true, debt_optimizer: true, bill_negotiation: true, income_savings: true, tax_deductions: true, goal_tracking: true, recurring_transfers: true }, pyramid_data_source: "wellness", pyramid_color_mode: "single", debt_baseline_amount: null, sheets_auto_sync_enabled: false, sheets_auto_sync_interval: 'weekly', sheets_last_auto_sync: null, csv_reminder_days: 14, csv_reminder_enabled: true, dashboard_widgets: {pyramid:true,accounts:true,monthlySpend:true,categories:true,merchants:true,upcoming:true,forecast:true,charts:true,calendar:true,cashFlow:true,savingsRate:true,yoy:true}, auto_sync_enabled: false, auto_sync_interval_hours: 6, last_auto_sync_at: null, last_balance_sync_at: null, last_txn_sync_at: null, sync_notifications_enabled: true, ai_monthly_budget_cents: null, critical_alert_emails_enabled: false };
     const row = result.rows[0] || defaults;
     if (typeof row.insight_modules === "string") row.insight_modules = JSON.parse(row.insight_modules);
@@ -36,6 +37,20 @@ router.get("/api/settings", async (req, res) => {
 // and drops nested/over-long keys, so a pathological body can't be persisted
 // verbatim — unlike `target_allocation_pct`, these were stored after only a
 // `typeof === "object"` check (which `[]` and arbitrary nesting pass).
+// Strict integer parse for bounded settings (PSC-15): a number, or a string of
+// digits. null / "" / "6abc" are NOT integers (Number(null) is 0 and
+// parseInt("6abc") is 6, which would quietly accept garbage).
+function toInt(v) {
+  if (typeof v === "number") return v;
+  if (typeof v === "string" && /^\s*-?\d+\s*$/.test(v)) return parseInt(v, 10);
+  return NaN;
+}
+
+function isValidTimeZone(tz) {
+  if (typeof tz !== "string" || !tz || tz.length > 50) return false;
+  try { new Intl.DateTimeFormat("en-US", { timeZone: tz }); return true; } catch { return false; }
+}
+
 function sanitizeBoolMap(obj) {
   if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
   const out = {};
@@ -76,15 +91,21 @@ router.patch("/api/settings", async (req, res) => {
     if (keep_alive_enabled !== undefined) {
       updates.push("keep_alive_enabled = $" + idx++); values.push(!!keep_alive_enabled);
     }
+    // PSC-15: these bounded fields used to drop a bad value silently and still
+    // return 200 when sent alongside other fields — now a 400, like INV-59.
     if (keep_alive_start !== undefined) {
-      const h = parseInt(keep_alive_start);
-      if (h >= 0 && h <= 23) { updates.push("keep_alive_start = $" + idx++); values.push(h); }
+      const h = toInt(keep_alive_start);
+      if (!Number.isInteger(h) || h < 0 || h > 23) return res.status(400).json({ error: "keep_alive_start must be an hour 0-23" });
+      updates.push("keep_alive_start = $" + idx++); values.push(h);
     }
     if (keep_alive_end !== undefined) {
-      const h = parseInt(keep_alive_end);
-      if (h >= 0 && h <= 23) { updates.push("keep_alive_end = $" + idx++); values.push(h); }
+      const h = toInt(keep_alive_end);
+      if (!Number.isInteger(h) || h < 0 || h > 23) return res.status(400).json({ error: "keep_alive_end must be an hour 0-23" });
+      updates.push("keep_alive_end = $" + idx++); values.push(h);
     }
-    if (keep_alive_timezone !== undefined && typeof keep_alive_timezone === "string" && keep_alive_timezone.length <= 50) {
+    if (keep_alive_timezone !== undefined) {
+      // An unknown zone made isWithinActiveHours fail open (24/7 pings).
+      if (!isValidTimeZone(keep_alive_timezone)) return res.status(400).json({ error: "keep_alive_timezone must be a valid IANA time zone" });
       updates.push("keep_alive_timezone = $" + idx++); values.push(keep_alive_timezone);
     }
     if (zip_code !== undefined) {
@@ -123,12 +144,14 @@ router.patch("/api/settings", async (req, res) => {
       updates.push("auto_sync_enabled = $" + idx++); values.push(!!req.body.auto_sync_enabled);
     }
     if (req.body.auto_sync_interval_hours !== undefined) {
-      const h = parseInt(req.body.auto_sync_interval_hours);
-      if (h >= 1 && h <= 168) { updates.push("auto_sync_interval_hours = $" + idx++); values.push(h); }
+      const h = toInt(req.body.auto_sync_interval_hours);
+      if (!Number.isInteger(h) || h < 1 || h > 168) return res.status(400).json({ error: "auto_sync_interval_hours must be an integer 1-168" });
+      updates.push("auto_sync_interval_hours = $" + idx++); values.push(h);
     }
     if (req.body.csv_reminder_days !== undefined) {
-      const val = parseInt(req.body.csv_reminder_days);
-      if (val >= 1 && val <= 90) { updates.push("csv_reminder_days = $" + idx++); values.push(val); }
+      const val = toInt(req.body.csv_reminder_days);
+      if (!Number.isInteger(val) || val < 1 || val > 90) return res.status(400).json({ error: "csv_reminder_days must be an integer 1-90" });
+      updates.push("csv_reminder_days = $" + idx++); values.push(val);
     }
     if (req.body.csv_reminder_enabled !== undefined) {
       updates.push("csv_reminder_enabled = $" + idx++); values.push(!!req.body.csv_reminder_enabled);
@@ -162,8 +185,9 @@ router.patch("/api/settings", async (req, res) => {
       updates.push("weekly_digest_enabled = $" + idx++); values.push(!!req.body.weekly_digest_enabled);
     }
     if (req.body.weekly_digest_day !== undefined) {
-      const d = parseInt(req.body.weekly_digest_day);
-      if (d >= 0 && d <= 6) { updates.push("weekly_digest_day = $" + idx++); values.push(d); }
+      const d = toInt(req.body.weekly_digest_day);
+      if (!Number.isInteger(d) || d < 0 || d > 6) return res.status(400).json({ error: "weekly_digest_day must be 0 (Sun) - 6 (Sat)" });
+      updates.push("weekly_digest_day = $" + idx++); values.push(d);
     }
     // Daily digest (#19)
     if (req.body.daily_digest_enabled !== undefined) {
@@ -265,6 +289,11 @@ router.patch("/api/settings", async (req, res) => {
     if (invalidateShellIdleCache) {
       try { const inv = req.app.get("shellAuthInvalidator"); if (inv) inv(); } catch {}
     }
+    // The keep-alive schedule is served from a cache (PSC-2); drop it when a
+    // keep_alive_* field changed so the next probe sees the new schedule.
+    if (Object.keys(req.body || {}).some(k => k.startsWith("keep_alive_"))) {
+      try { require("../services/keep-alive").invalidateKeepAliveCache(); } catch {}
+    }
     res.json(result.rows[0]);
   } catch (err) {
     console.error("settings error:", err.message);
@@ -326,7 +355,7 @@ router.get("/api/data-health", async (_req, res) => {
   }
   try {
     const [settingsRow, teller, plaid, events] = await Promise.all([
-      pool.query("SELECT last_txn_sync_at, last_balance_sync_at, last_auto_sync_at, insights_last_run, last_reconcile_at, last_sync_result FROM user_settings WHERE id = 1"),
+      pool.query("SELECT last_txn_sync_at, last_balance_sync_at, last_auto_sync_at, insights_last_run, last_reconcile_at, last_sync_result, last_sheets_sync_result FROM user_settings WHERE id = 1"),
       pool.query("SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE status = 'DISCONNECTED')::int AS disconnected FROM teller_enrollments").catch(() => ({ rows: [{ total: 0, disconnected: 0 }] })),
       // CSV virtual items (status='CSV') are not Plaid links — exclude them from
       // both counts; they used to raise a permanent "need re-authentication"
@@ -369,6 +398,13 @@ router.get("/api/data-health", async (_req, res) => {
       issues.push({ severity: "warning", message: `Last sync error — ${who}: ${e.error}${hint}` });
     }
 
+    // Google Sheets export (SXE-1): the last sync's failed tabs.
+    const sheetsResult = s.last_sheets_sync_result;
+    if (sheetsResult && Array.isArray(sheetsResult.errors) && sheetsResult.errors.length) {
+      const steps = sheetsResult.errors.map(e => e.step).join(", ");
+      issues.push({ severity: "warning", message: `Google Sheets sync: ${sheetsResult.errors.length} tab(s) failed last run (${steps}) — ${sheetsResult.errors[0].error}` });
+    }
+
     // Scheduled-job heartbeats (F4 surface): job_runs rows + per-job staleness
     // so the Sync Health card shows scheduler liveness, not just data
     // freshness. Defensive — a pre-migration DB just omits the block.
@@ -401,6 +437,7 @@ router.get("/api/data-health", async (_req, res) => {
       },
       last_reconcile_at: s.last_reconcile_at || null,
       last_sync_result: s.last_sync_result || null,
+      last_sheets_sync_result: s.last_sheets_sync_result || null,
       issues,
       recent_events: events.rows,
     });
@@ -409,6 +446,47 @@ router.get("/api/data-health", async (_req, res) => {
     res.status(500).json({ error: "An internal error occurred." });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Sheets sync outcome (SXE-1). syncAll isolates each tab and returns 200 with
+// errors[] (INV-24), but no caller read errors[] — an un-shared spreadsheet
+// failed every tab while the button said "Synced ✓" and the scheduler stamped
+// sheets_last_auto_sync, so the Sheets data went stale with no signal. Every
+// syncAll caller now records the outcome here: it is persisted for
+// /api/data-health + Settings, and a CHANGE in the set of failing tabs pushes
+// one notification (a persistent failure doesn't re-notify every run).
+// ---------------------------------------------------------------------------
+function sheetsErrorSignature(errors) {
+  return (errors || []).map(e => String(e.step)).sort().join(",");
+}
+
+async function recordSheetsSyncResult(result) {
+  const errors = (result && Array.isArray(result.errors) ? result.errors : [])
+    .map(e => ({ step: String(e.step || "sync"), error: String(e.error || "failed").slice(0, 300) }));
+  const record = { at: new Date().toISOString(), ok: errors.length === 0, tabs_failed: errors.length, errors };
+  let prevSig = "";
+  try {
+    const r = await pool.query("SELECT last_sheets_sync_result FROM user_settings WHERE id = 1");
+    const prev = r.rows[0] && r.rows[0].last_sheets_sync_result;
+    prevSig = prev && Array.isArray(prev.errors) ? sheetsErrorSignature(prev.errors) : "";
+  } catch { /* pre-migration — treat as no previous result */ }
+  try {
+    await pool.query("UPDATE user_settings SET last_sheets_sync_result = $1 WHERE id = 1", [JSON.stringify(record)]);
+  } catch (e) { console.error("Could not record Sheets sync result:", e.message); }
+  if (errors.length && sheetsErrorSignature(errors) !== prevSig) {
+    try {
+      const { sendToAll } = require("./notifications");
+      const steps = errors.map(e => e.step).join(", ");
+      await sendToAll({
+        title: `Google Sheets sync: ${errors.length} tab${errors.length === 1 ? "" : "s"} failed`,
+        body: `Failed: ${steps}. First error: ${errors[0].error}`,
+        tag: "sheets-sync",
+        data: { url: "/settings#sync-health" },
+      });
+    } catch (e) { console.error("Sheets sync alert failed:", e.message); }
+  }
+  return record;
+}
 
 // POST /api/sheets/sync
 router.post("/api/sheets/sync", async (_req, res) => {
@@ -420,9 +498,13 @@ router.post("/api/sheets/sync", async (_req, res) => {
   }
   try {
     const result = await sheetsSync.syncAll();
-    res.json(result);
+    const record = await recordSheetsSyncResult(result);
+    // `partial` lets the UI say "Partial: N tabs failed" instead of "Synced ✓"
+    // on a 200 that carried per-tab errors (WD-6).
+    res.json({ ...result, partial: !record.ok, tabs_failed: record.tabs_failed });
   } catch (err) {
     console.error("Sheets sync error:", err.message);
+    await recordSheetsSyncResult({ errors: [{ step: "sync", error: err.message }] });
     res.status(500).json({ error: "An internal error occurred." });
   }
 });
@@ -466,14 +548,18 @@ router.get("/api/export", async (req, res) => {
     if (type === "subscriptions") {
       const result = await pool.query("SELECT display_name, amount, cadence_days, category, first_seen, last_charged, next_expected, is_active FROM detected_subscriptions ORDER BY amount DESC");
       const header = "Name,Amount,Cadence Days,Category,First Seen,Last Charged,Next Expected,Active\n";
-      const rows = result.rows.map(r => `"${(r.display_name || "").replace(/"/g, '""')}",${r.amount},${r.cadence_days},"${(r.category || "").replace(/"/g, '""')}",${r.first_seen},${r.last_charged},${r.next_expected},${r.is_active}`).join("\n");
+      // SXE-8: dates as YYYY-MM-DD (a JS Date interpolated as "Mon Jan 05 2026
+      // 00:00:00 GMT…", and a NULL as "null"); SXE-13: text fields guarded.
+      const rows = result.rows.map(r => `${csvText(r.display_name)},${r.amount},${r.cadence_days},${csvText(r.category)},${csvDate(r.first_seen)},${csvDate(r.last_charged)},${csvDate(r.next_expected)},${r.is_active}`).join("\n");
       res.setHeader("Content-Type", "text/csv");
       res.setHeader("Content-Disposition", "attachment; filename=subscriptions.csv");
       return res.send(header + rows);
     }
     const months = parseInt(req.query.months) || 12;
     const result = await pool.query(
-      `SELECT t.date, COALESCE(t.merchant_name, t.name) AS merchant, t.amount, la.name AS account,
+      // SXE-8 / PSC-10: the user's merchant rename wins (INV-06), as on every
+      // display surface.
+      `SELECT t.date, COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS merchant, t.amount, la.name AS account,
               COALESCE(pi.institution_name, te.institution_name, 'CSV') AS institution,
               COALESCE(t.user_category, t.category[1]) AS category
        FROM transactions t
@@ -488,7 +574,8 @@ router.get("/api/export", async (req, res) => {
     // Quote-escape EVERY interpolated text field (SETT1) — a `"` in an account
     // label / institution / user_category would otherwise break the CSV quoting
     // and silently misalign columns in the downloaded records artifact.
-    const rows = result.rows.map(r => `${r.date},"${(r.merchant || "").replace(/"/g, '""')}",${r.amount},"${(r.account || "").replace(/"/g, '""')}","${(r.institution || "").replace(/"/g, '""')}","${(r.category || "").replace(/"/g, '""')}"`).join("\n");
+    // SXE-8: ISO date (was Date.toString()); SXE-13: formula-guarded text.
+    const rows = result.rows.map(r => `${csvDate(r.date)},${csvText(r.merchant)},${r.amount},${csvText(r.account)},${csvText(r.institution)},${csvText(r.category)}`).join("\n");
     res.setHeader("Content-Type", "text/csv");
     res.setHeader("Content-Disposition", `attachment; filename=transactions_${months}mo.csv`);
     res.send(header + rows);
@@ -499,17 +586,45 @@ router.get("/api/export", async (req, res) => {
 
 // GET /api/export/tax-report — Year-end tax deduction summary
 router.get("/api/export/tax-report", async (req, res) => {
-  const year = parseInt(req.query.year) || new Date().getFullYear();
+  const { todayStr, getTaxDeductionTransactions } = require("../services/financial-queries");
+  const year = parseInt(req.query.year) || parseInt(todayStr().slice(0, 4), 10);
   const format = req.query.format || "csv";
   try {
-    const deductions = await pool.query(
-      `SELECT td.*, t.date AS txn_date
-       FROM tax_deductions td
-       LEFT JOIN transactions t ON t.transaction_id = td.transaction_id
-       WHERE td.tax_year = $1
-       ORDER BY td.category, COALESCE(t.date, td.flagged_at) DESC`,
-      [year]
-    );
+    // SXE-7: computed at EXPORT time from the transactions ledger — one row
+    // per matching transaction (with its date), no LIMIT, the whole calendar
+    // year. The tax_deductions table (written by insights runs) is only the
+    // ANNOTATION layer here: a merchant's confirm flag / notes / category
+    // apply to that merchant's rows. (The export used to list those per-
+    // merchant snapshot rows directly: frozen at the last insights run, top
+    // 15 merchants only, double-counted renames, blank Date column.)
+    const [txns, notes] = await Promise.all([
+      getTaxDeductionTransactions(pool, year),
+      pool.query(
+        `SELECT merchant, category, is_confirmed, notes
+         FROM tax_deductions WHERE tax_year = $1 AND transaction_id IS NULL`,
+        [year]
+      ).catch(() => ({ rows: [] })),
+    ]);
+    const noteByMerchant = new Map();
+    for (const n of notes.rows) if (n.merchant) noteByMerchant.set(String(n.merchant).toLowerCase(), n);
+    const deductions = {
+      rows: txns.map(t => {
+        const n = noteByMerchant.get(String(t.merchant || "").toLowerCase());
+        const userCat = n && n.category && !["flagged", "uncategorized"].includes(n.category) ? n.category : null;
+        const d = t.date ? String(t.date).slice(0, 10) : ""; // 'YYYY-MM-DD' text from SQL
+        return {
+          tax_year: year,
+          txn_date: d,
+          transaction_id: t.transaction_id,
+          merchant: t.merchant,
+          amount: parseFloat(t.amount).toFixed(2),
+          category: userCat || t.category,
+          deduction_type: "keyword_match",
+          notes: n ? n.notes : null,
+          is_confirmed: !!(n && n.is_confirmed),
+        };
+      }).sort((a, b) => (a.category < b.category ? -1 : a.category > b.category ? 1 : (a.txn_date < b.txn_date ? -1 : a.txn_date > b.txn_date ? 1 : 0))),
+    };
 
     if (format === "json") {
       // Group by category
@@ -556,7 +671,7 @@ router.get("/api/export/tax-report", async (req, res) => {
           doc.fontSize(14).fillColor("#d4a574").text(cat, { underline: true });
           doc.moveDown(0.3);
           for (const d of data.items) {
-            const date = d.txn_date ? new Date(d.txn_date).toLocaleDateString() : "";
+            const date = d.txn_date || ""; // 'YYYY-MM-DD' — no Date() tz shift
             const confirmed = d.is_confirmed ? " [Confirmed]" : "";
             doc.fontSize(10).fillColor("#cccccc")
               .text(`  ${date}  ${d.merchant}  $${parseFloat(d.amount).toFixed(2)}${confirmed}`);
@@ -584,10 +699,10 @@ router.get("/api/export/tax-report", async (req, res) => {
     // CSV format
     const header = "Tax Year,Date,Merchant,Amount,Category,Type,Notes,Confirmed\n";
     const rows = deductions.rows.map(d =>
-      `${d.tax_year},${d.txn_date || ''},` +
-      `"${(d.merchant || '').replace(/"/g, '""')}",` +
-      `${d.amount},"${(d.category || '').replace(/"/g, '""')}","${(d.deduction_type || '').replace(/"/g, '""')}",` +
-      `"${(d.notes || '').replace(/"/g, '""')}",${d.is_confirmed}`
+      `${d.tax_year},${csvDate(d.txn_date)},` +
+      `${csvText(d.merchant)},` +
+      `${d.amount},${csvText(d.category)},${csvText(d.deduction_type)},` +
+      `${csvText(d.notes)},${d.is_confirmed}`
     ).join("\n");
 
     // Add summary section
@@ -598,7 +713,7 @@ router.get("/api/export/tax-report", async (req, res) => {
     }
     const grandTotal = deductions.rows.reduce((s, d) => s + parseFloat(d.amount), 0);
     const summary = "\n\nSUMMARY BY CATEGORY\nCategory,Total\n" +
-      Object.entries(byCategory).map(([cat, total]) => `"${(cat || '').replace(/"/g, '""')}",${total.toFixed(2)}`).join("\n") +
+      Object.entries(byCategory).map(([cat, total]) => `${csvText(cat)},${total.toFixed(2)}`).join("\n") +
       `\n\nGRAND TOTAL,${grandTotal.toFixed(2)}`;
 
     res.setHeader("Content-Type", "text/csv");
@@ -614,3 +729,4 @@ module.exports = router;
 // Exported for unit testing the toggle-map validation (SN-5). Attached after
 // `module.exports = router` so the router assignment doesn't drop it (INV-19).
 module.exports.sanitizeBoolMap = sanitizeBoolMap;
+module.exports.recordSheetsSyncResult = recordSheetsSyncResult;

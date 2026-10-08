@@ -478,7 +478,7 @@
   <div id="csv-reminder-banner" style="display:none;padding:14px 18px;background:var(--yellow-bg);border:1px solid rgba(240,195,109,0.2);border-radius:var(--radius);margin-bottom:20px;font-size:13px;color:var(--yellow);font-weight:400;">
     <div style="display:flex;align-items:center;justify-content:space-between;">
       <div id="csv-reminder-text"></div>
-      <a href="/" style="color:var(--warm);font-weight:500;text-decoration:none;white-space:nowrap;margin-left:12px;">Import CSV &rarr;</a>
+      <a href="<%= basePath %>/accounts" style="color:var(--warm);font-weight:500;text-decoration:none;white-space:nowrap;margin-left:12px;">Import CSV &rarr;</a>
     </div>
   </div>
 
@@ -937,7 +937,7 @@
         animateInt(document.getElementById('acct-count'), accounts.length + investments.length);
 
         if (!accounts.length && !investments.length) {
-          grid.innerHTML = '<div class="empty-msg">No accounts linked. <a href="/">Link an account</a> to get started.</div>';
+          grid.innerHTML = '<div class="empty-msg">No accounts linked. <a href="' + (window.BASE_PATH || '') + '/accounts">Link an account</a> to get started.</div>';
           return;
         }
 
@@ -1112,13 +1112,15 @@
             '<td class="amount" data-label="Avg">' + fmt(m.avg_transaction) + '</td></tr>'
           ).join('');
 
-          const totalSpend = data.monthly_trend.reduce((s, m) => s + parseFloat(m.total_spend), 0);
-          const avgMonthly = totalSpend / data.monthly_trend.length;
-          animateCurrency(document.getElementById('avg-monthly'), avgMonthly);
-          document.getElementById('avg-monthly-sub').textContent = data.monthly_trend.length + '-month avg';
-
-          const totalDays = data.monthly_trend.length * 30;
-          animateCurrency(document.getElementById('avg-daily'), totalSpend / totalDays);
+          // Averages come from the server over COMPLETED months only (FAN-6) —
+          // the month-to-date current month used to drag them down.
+          if (data.avg_months > 0) {
+            animateCurrency(document.getElementById('avg-monthly'), data.avg_monthly_spend || 0);
+            document.getElementById('avg-monthly-sub').textContent = data.avg_months + '-month avg';
+            animateCurrency(document.getElementById('avg-daily'), data.avg_daily_spend || 0);
+          } else {
+            document.getElementById('avg-monthly-sub').textContent = 'no complete month yet';
+          }
         } else {
           monthBody.innerHTML = '<tr><td colspan="4" class="empty-msg">No spending data yet.</td></tr>';
         }
@@ -1298,12 +1300,11 @@
         interest += i;
         b = b + i - payment;
         if (b <= 0) {
-          const d = new Date();
-          d.setMonth(d.getMonth() + m);
-          // F12: format in UTC so the displayed month matches the API's
-          // payoff_date (computeLoanPayoff uses toISOString → UTC 'YYYY-MM');
-          // otherwise near a month boundary the label could show a different
-          // month than the API in a non-UTC timezone.
+          // FAN-15: add months on the month INDEX, anchored on the 1st — the
+          // old setMonth(+m) on the 29th-31st overflowed and skipped a month.
+          // Formatted in UTC so the label matches the API's payoff_date (F12).
+          var now0 = new Date();
+          var d = new Date(Date.UTC(now0.getFullYear(), now0.getMonth() + m, 1));
           return { months: m, interest: interest, label: d.toLocaleDateString(undefined, { timeZone: 'UTC', month: 'short', year: 'numeric' }) };
         }
       }
@@ -1709,18 +1710,24 @@
         try {
           var res = await apiFetch('/api/sheets/sync', { method: 'POST' });
           var data = await res.json().catch(function() { return {}; });
-          if (res.ok) {
+          // WD-6: a 200 can carry per-tab errors (INV-24) — say so instead of
+          // "Synced ✓". showMsg is the page-global toast (the old showStatus
+          // was local to the Quick-Add-Bill IIFE, so no error ever showed).
+          var failedTabs = (data.errors && data.errors.length) || 0;
+          if (res.ok && !failedTabs) {
             syncBtn.textContent = 'Synced ✓';
             setTimeout(function() { syncBtn.textContent = orig; syncBtn.disabled = false; }, 2000);
+          } else if (res.ok) {
+            syncBtn.textContent = 'Partial: ' + failedTabs + ' tab' + (failedTabs === 1 ? '' : 's') + ' failed';
+            showMsg('Sheets sync partial — failed: ' + data.errors.map(function(e) { return e.step; }).join(', ') + '. ' + data.errors[0].error, false);
+            setTimeout(function() { syncBtn.textContent = orig; syncBtn.disabled = false; }, 4000);
           } else {
             syncBtn.textContent = data.error ? 'Failed' : ('HTTP ' + res.status);
-            // Use a status-msg toast if available so the error is readable.
-            if (typeof showStatus === 'function') {
-              showStatus(data.error || 'Sheets sync failed', false);
-            }
+            showMsg(data.error || ('Sheets sync failed (HTTP ' + res.status + ')'), false);
             setTimeout(function() { syncBtn.textContent = orig; syncBtn.disabled = false; }, 3000);
           }
         } catch (err) {
+          showMsg('Sheets sync failed: ' + err.message, false);
           syncBtn.textContent = 'Failed';
           setTimeout(function() { syncBtn.textContent = orig; syncBtn.disabled = false; }, 3000);
         }
@@ -2093,7 +2100,7 @@
         var form = document.getElementById('invflow-form');
         var acctSel = document.getElementById('invflow-account');
         if (!det || !form || !acctSel) return;
-        document.getElementById('invflow-date').value = new Date().toISOString().slice(0, 10);
+        document.getElementById('invflow-date').value = localTodayStr(); // local date (WUI-2)
         var loaded = false;
         det.addEventListener('toggle', async function() {
           if (!det.open || loaded) return;
@@ -2187,11 +2194,13 @@
           html.push('<div><strong style="font-size:12px;color:var(--text-secondary);">Balance changes</strong>');
           for (var i = 0; i < Math.min(5, data.balance_changes.length); i++) {
             var bc = data.balance_changes[i];
-            var sgn = bc.delta >= 0 ? '+' : '';
-            var col = bc.delta >= 0 ? 'var(--green)' : 'var(--red)';
+            var sgn = bc.delta >= 0 ? '+' : '-';
+            // Card/loan balances are amounts OWED — an increase is bad (DD-6).
+            var good = (typeof bc.favorable === 'boolean') ? bc.favorable : bc.delta >= 0;
+            var col = good ? 'var(--green)' : 'var(--red)';
             html.push('<div style="font-size:12px;color:var(--text-muted);">' +
               esc(bc.account_name || ('Account #' + bc.source_id)) +
-              ' <span style="color:' + col + ';">' + sgn + '$' + Math.abs(bc.delta).toFixed(2) + '</span>' +
+              ' <span style="color:' + col + ';">' + sgn + '$' + Math.abs(bc.delta).toFixed(2) + (bc.is_debt ? ' owed' : '') + '</span>' +
               ' <span style="color:var(--text-muted);">($' + bc.baseline_balance.toFixed(2) + ' → $' + bc.current_balance.toFixed(2) + ')</span>' +
             '</div>');
           }
@@ -2810,6 +2819,7 @@
         var arrow = comp.change_amount <= 0 ? '↓' : '↑';
         var html = '<div style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">' +
           data.month_name + ' ' + comp.current_year + ' vs ' + comp.previous_year +
+          (data.through_day ? ' <span style="font-size:11px;">(days 1–' + data.through_day + ' of each)</span>' : '') +
           ': <strong style="color:' + changeColor + ';">' + arrow + ' ' +
           (comp.change_percent !== null ? Math.abs(comp.change_percent) + '%' : 'N/A') +
           ' (' + (comp.change_amount > 0 ? '+' : '') + fmt(comp.change_amount) + ')</strong></div>';
@@ -3012,7 +3022,8 @@
             transaction_id: txnId,
             category: category,
             create_rule: createRule,
-            match_type: 'contains',
+            // "Remember" = this exact merchant (DC-13); a substring rule over-matched.
+            match_type: 'exact',
           }),
         });
         if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -3117,9 +3128,11 @@
         var opt = document.createElement('option');
         opt.value = ym;
         opt.textContent = monthLabel(ym) + (i === 0 ? ' (current)' : '');
-        // Default to the previous month if it's the first week — that's
-        // when the user typically checks who owes what for the statement.
-        if (i === (now.getDate() <= 7 && now.getMonth() !== d.getMonth() ? 0 : (now.getDate() <= 7 ? 1 : 0))) {
+        // Default to the previous month in the first week — that's when the
+        // user checks who owes what for the statement that just closed (FAN-11:
+        // the old index expression selected nothing in days 1–7, so the
+        // browser fell back to the current month).
+        if (i === (now.getDate() <= 7 ? 1 : 0)) {
           opt.selected = true;
         }
         sel.appendChild(opt);
@@ -3176,6 +3189,16 @@
                '. If a utility is on the shared card it may be double-counted across both legs.' +
              '</div>')
           : '';
+        // Utilities still awaiting their bill this month (FAN-9): the even-up
+        // isn't final yet, so warn and hold "Mark settled" until the amounts
+        // are entered on the Rent page.
+        var awaiting = (housing && housing.awaiting_count) ? housing.awaiting_labels || [] : [];
+        var awaitNote = awaiting.length
+          ? ('<div style="margin-top:8px;padding:8px 10px;background:rgba(217,178,95,0.14);border:1px solid rgba(217,178,95,0.4);border-radius:6px;font-size:11px;color:var(--yellow,#d9b25f);">' +
+               '⏳ Waiting on ' + esc(awaiting.join(', ')) + ' — the even-up is incomplete until ' + (awaiting.length === 1 ? 'that bill is' : 'those bills are') + ' entered. ' +
+               '<a href="' + (window.BASE_PATH || '') + '/housing#pending" style="color:var(--teal);">Enter amount' + (awaiting.length === 1 ? '' : 's') + ' &rarr;</a>' +
+             '</div>')
+          : '';
         var isSettled = settlement && settlement.settled;
         // Settle/undo control: when settled, show a confirmation pill + Undo;
         // otherwise a "Mark settled" button that records the current net.
@@ -3185,7 +3208,8 @@
                '<button id="settle-undo-btn" class="btn btn-sm" data-month="' + esc(theMonth) + '" style="font-size:11px;">Undo</button>' +
              '</div>')
           : ('<div style="margin-top:10px;">' +
-               '<button id="settle-mark-btn" class="btn btn-sm primary" data-month="' + esc(theMonth) + '" data-net="' + net + '" style="font-size:12px;">Mark settled</button>' +
+               '<button id="settle-mark-btn" class="btn btn-sm primary" data-month="' + esc(theMonth) + '" data-net="' + net + '" style="font-size:12px;"' +
+                 (awaiting.length ? ' disabled title="Enter the awaiting utility bill(s) first"' : '') + '>Mark settled</button>' +
              '</div>');
         headline.innerHTML =
           '<div style="padding:14px;background:var(--card);border:1px solid var(--card-border);border-radius:8px;' + (isSettled ? 'opacity:0.75;' : '') + '">' +
@@ -3193,6 +3217,7 @@
             '<div style="font-size:26px;font-weight:600;color:' + netColor + ';margin-top:2px;">' + netLabel + '</div>' +
             (parts.length > 1 ? '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;">' + parts.join(' &nbsp;+&nbsp; ') + '</div>' : '') +
             dcNote +
+            awaitNote +
             settleRow +
           '</div>';
 
@@ -3223,7 +3248,7 @@
             '<div style="margin-bottom:14px;padding:14px;background:var(--card);border:1px solid var(--card-border);border-radius:8px;">' +
               '<div style="display:flex;justify-content:space-between;align-items:baseline;">' +
                 '<strong style="font-size:14px;">Rent &amp; Utilities even-up</strong>' +
-                '<a href="/housing" style="font-size:11px;color:var(--teal);text-decoration:none;">Rent page &rarr;</a>' +
+                '<a href="' + (window.BASE_PATH || '') + '/housing" style="font-size:11px;color:var(--teal);text-decoration:none;">Rent page &rarr;</a>' +
               '</div>' +
               '<div style="font-size:18px;color:var(--teal);font-weight:500;margin-top:6px;">' + hWho + ' ' + fmtMoney(housing.transfer) + '</div>' +
               '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Rent + utilities ' + fmtMoney(housing.rent_utilities) + ' &minus; car ' + fmtMoney(housing.car) + ', split evenly &middot; each bears ' + fmtMoney(housing.each_share) + '</div>' +
@@ -3248,7 +3273,7 @@
               '</div>' +
               '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;display:flex;justify-content:space-between;">' +
                 '<span>Total charges: <strong>' + fmtMoney(a.total_charges) + '</strong> across ' + a.txn_count + ' transactions</span>' +
-                '<a href="/transactions?account_id=' + a.account_id + '&month=' + d.month + '" style="color:var(--teal);text-decoration:none;">Review &rarr;</a>' +
+                '<a href="' + (window.BASE_PATH || '') + '/transactions?account_id=' + encodeURIComponent(a.account_key || '') + '&month=' + encodeURIComponent(d.month) + '" style="color:var(--teal);text-decoration:none;">Review &rarr;</a>' +
               '</div>'
             );
           return (

@@ -344,15 +344,31 @@ async function runMigrations() {
     // Shared/joint account support — spending_split_pct controls what fraction of spending counts as yours (default 100)
     await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS spending_split_pct INT NOT NULL DEFAULT 100");
     await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS is_shared BOOLEAN NOT NULL DEFAULT false");
-    // Fix check constraint to allow manual accounts (no plaid/teller enrollment)
-    await client.query("ALTER TABLE linked_accounts DROP CONSTRAINT IF EXISTS chk_account_source");
-    await client.query("ALTER TABLE linked_accounts ADD CONSTRAINT chk_account_source CHECK (plaid_item_id IS NOT NULL OR teller_enrollment_id IS NOT NULL OR is_manual = true)");
+    // Fix check constraint to allow manual accounts (no plaid/teller enrollment).
+    // Guarded (PSC-13): an unconditional DROP + ADD took an ACCESS EXCLUSIVE
+    // lock and re-validated every row on EVERY boot. Rebuild only when the
+    // constraint is missing or is the old definition without is_manual.
+    await client.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'chk_account_source' AND conrelid = 'linked_accounts'::regclass
+            AND pg_get_constraintdef(oid) LIKE '%is_manual%'
+        ) THEN
+          ALTER TABLE linked_accounts DROP CONSTRAINT IF EXISTS chk_account_source;
+          ALTER TABLE linked_accounts ADD CONSTRAINT chk_account_source CHECK (plaid_item_id IS NOT NULL OR teller_enrollment_id IS NOT NULL OR is_manual = true);
+        END IF;
+      END $$;
+    `);
     // Dashboard widget order/visibility
     await client.query(`ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS dashboard_widgets JSONB NOT NULL DEFAULT '{"pyramid":true,"accounts":true,"recentTxns":true,"monthlySpend":true,"categories":true,"merchants":true,"upcoming":true,"forecast":true,"charts":true,"calendar":true,"cashFlow":true,"savingsRate":true,"yoy":true,"investments":true,"reviewQueue":true,"aiMemory":true,"settlement":true}'::jsonb`);
     // Sheets auto-sync
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sheets_auto_sync_enabled BOOLEAN NOT NULL DEFAULT false");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sheets_auto_sync_interval TEXT NOT NULL DEFAULT 'weekly'");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sheets_last_auto_sync TIMESTAMPTZ DEFAULT NULL");
+    // SXE-1: outcome of the most recent Sheets sync ({ at, ok, tabs_failed,
+    // errors: [{ step, error }] }) — surfaced by /api/data-health + Settings.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_sheets_sync_result JSONB");
     // Bank transaction auto-sync (Phase A) — scheduler calls syncAllEnrollments
     // in-process every auto_sync_interval_hours when enabled.
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS auto_sync_enabled BOOLEAN NOT NULL DEFAULT false");
@@ -465,6 +481,9 @@ async function runMigrations() {
       UNIQUE (merchant_key, cadence_days, direction)
     )`);
     await client.query("CREATE INDEX IF NOT EXISTS idx_recurring_transfers_active ON recurring_transfers (is_active, is_dismissed)");
+    // DC-4: a transfer_type the user picked (PATCH /api/recurring-transfers/:id/type)
+    // survives re-detection; the detector's upsert only overwrites auto types.
+    await client.query("ALTER TABLE recurring_transfers ADD COLUMN IF NOT EXISTS transfer_type_user_set BOOLEAN NOT NULL DEFAULT false");
     // Per-sistant integration: webhook target + enabled flag.
     // (The webhook HMAC secret is added below as encrypted BYTEA — older DBs
     // may have a plaintext TEXT column from before; that path migrates it.)
@@ -659,6 +678,10 @@ async function runMigrations() {
     // 20-hour gate from last_daily_digest_at.
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS daily_digest_enabled BOOLEAN NOT NULL DEFAULT false");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_daily_digest_at TIMESTAMPTZ");
+    // PSC-3: watermark for the CSV-import reminder (hourly tick, ≤ 1 per 24h,
+    // survives restarts — it used to be a 24-hour setInterval that needed 24h
+    // of continuous uptime and essentially never fired).
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_csv_reminder_at TIMESTAMPTZ");
 
     // ---- Self-healing reconcile watermark ----
     // Tracks the last time the trailing-window backfill (POST /api/sync/reconcile
@@ -676,8 +699,17 @@ async function runMigrations() {
     // Only honored when the account is is_shared = true; on non-shared accounts
     // the split formula falls back to spending_split_pct as before.
     await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS personal_for TEXT");
-    await client.query("ALTER TABLE transactions DROP CONSTRAINT IF EXISTS chk_personal_for");
-    await client.query("ALTER TABLE transactions ADD CONSTRAINT chk_personal_for CHECK (personal_for IS NULL OR personal_for IN ('self','partner'))");
+    // Guarded like chk_account_source (PSC-13) — no per-boot lock + full scan.
+    await client.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'chk_personal_for' AND conrelid = 'transactions'::regclass
+        ) THEN
+          ALTER TABLE transactions ADD CONSTRAINT chk_personal_for CHECK (personal_for IS NULL OR personal_for IN ('self','partner'));
+        END IF;
+      END $$;
+    `);
     // partner_name surfaces in the settlement widget + transaction-row UI so
     // amounts say "Sarah owes you $X" rather than "Partner owes you $X".
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS partner_name TEXT");

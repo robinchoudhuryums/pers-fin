@@ -306,6 +306,14 @@ async function saveSlack() {
 }
 
 async function logout() {
+  // Embedded (PB-21): the shell owns the session — POST the ROOT /logout
+  // (parity with Perfin INV-60). An absolute URL so the fetch wrapper doesn't
+  // prefix BASE_PATH onto it. Standalone keeps Per-sistant's own session.
+  if (BP) {
+    try { await fetch(location.origin + '/logout', {method:'POST', headers:{'X-Requested-With':'XMLHttpRequest'}}); } catch (e) {}
+    location.href = '/login';
+    return;
+  }
   await fetch('/api/logout', {method:'POST'});
   location.href = BP + '/login';
 }

@@ -17,7 +17,7 @@ const router = express.Router();
 const { pool } = require("../services/database");
 const {
   getMonthlyIncome, getMonthlySpending, getNetWorth,
-  getCategorySpendingForMonth, SPLIT_AMOUNT, NOT_REIMBURSED, currentMonth,
+  getCategorySpendingForMonth, SPLIT_AMOUNT, NOT_REIMBURSED, NOT_TRANSFER, currentMonth,
 } = require("../services/financial-queries");
 const { MODEL_MAP, estimateCostGranular } = require("../data/reference-data");
 
@@ -64,8 +64,9 @@ async function toolSearchTransactions(args) {
   const params = [];
   let i = 1;
   if (args.merchant) {
-    clauses.push(`COALESCE(t.user_merchant_name, t.merchant_name, t.name) ILIKE $${i++}`);
-    params.push("%" + String(args.merchant).slice(0, 80) + "%");
+    // Escape LIKE metacharacters so a model-supplied "%" / "_" is literal (AIN-13).
+    clauses.push(`COALESCE(t.user_merchant_name, t.merchant_name, t.name) ILIKE $${i++} ESCAPE '\\'`);
+    params.push("%" + String(args.merchant).slice(0, 80).replace(/[\\%_]/g, (c) => "\\" + c) + "%");
   }
   if (args.category) {
     clauses.push(`COALESCE(t.user_category, t.category[1]) = $${i++}`);
@@ -101,18 +102,23 @@ async function toolSearchTransactions(args) {
       params
     ),
     pool.query(
+      // AIN-13: match_count counts the SAME rows the list is drawn from; the
+      // spend total applies the dashboard's spending filters — reimbursed AND
+      // transfers / card payments (NOT_TRANSFER) excluded — so a date-range
+      // "how much did I spend" no longer adds card payments and Zelle moves.
       `SELECT COUNT(*) AS match_count,
-              ROUND(SUM(CASE WHEN t.amount > 0 THEN ${SPLIT_AMOUNT} ELSE 0 END), 2) AS total_spent_adjusted
+              ROUND(SUM(CASE WHEN t.amount > 0 AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER}
+                             THEN ${SPLIT_AMOUNT} ELSE 0 END), 2) AS total_spent_adjusted
        FROM transactions t
        LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-       WHERE ${where} AND ${NOT_REIMBURSED}`,
+       WHERE ${where}`,
       params
     ),
   ]);
   return {
     match_count: parseInt(totals.rows[0].match_count),
     total_spent_adjusted: totals.rows[0].total_spent_adjusted,
-    note: "total_spent_adjusted is split/shared-card adjusted and excludes reimbursed rows (matches the dashboard); the row list shows raw amounts.",
+    note: "total_spent_adjusted is shared-card adjusted and excludes reimbursed rows and transfers/card payments (the dashboard's spending filters); the row list shows raw amounts. With a category filter it counts a split transaction's FULL parent amount — use get_category_spending for exact per-category month totals.",
     transactions: rows.rows,
   };
 }
@@ -135,19 +141,21 @@ async function toolSubscriptions() {
 }
 
 async function toolBudgetStatus() {
-  const { getCategorySpendingThisMonth } = require("../services/financial-queries");
-  const [budgets, spending] = await Promise.all([
-    pool.query("SELECT category, monthly_limit, rollover_enabled FROM budgets"),
-    getCategorySpendingThisMonth(pool),
-  ]);
-  const spendMap = {};
-  for (const s of spending) spendMap[s.category] = parseFloat(s.spent);
+  // Shared getBudgetStatus (AIN-6): effective limit incl. the prior month's
+  // rollover, one-time budgets only in their month — the Budgets page's numbers.
+  const { getBudgetStatus } = require("../services/financial-queries");
+  const month = currentMonth();
+  const rows = await getBudgetStatus(pool, month);
   return {
-    month: currentMonth(),
-    budgets: budgets.rows.map(b => ({
+    month,
+    budgets: rows.map(b => ({
       category: b.category,
       monthly_limit: parseFloat(b.monthly_limit),
-      spent_this_month: spendMap[b.category] || 0,
+      rollover_amount: b.rollover_amount,
+      effective_limit: b.effective_limit,
+      spent_this_month: b.spent,
+      remaining: Math.round(b.remaining * 100) / 100,
+      percent_used: b.percent_used,
     })),
   };
 }
@@ -199,7 +207,7 @@ const TOOLS = [
   { name: "search_transactions", description: "Search transactions by merchant substring, category, date range, or minimum amount. Returns matching rows plus a dashboard-consistent adjusted spending total over ALL matches.", input_schema: { type: "object", properties: { merchant: { type: "string" }, category: { type: "string" }, start_date: { type: "string", description: "YYYY-MM-DD" }, end_date: { type: "string", description: "YYYY-MM-DD" }, min_amount: { type: "number" }, limit: { type: "integer", description: "max 50" } } } },
   { name: "get_net_worth", description: "Current net worth: assets, liabilities, total.", input_schema: { type: "object", properties: {} } },
   { name: "get_subscriptions", description: "Active detected subscriptions with monthly costs.", input_schema: { type: "object", properties: {} } },
-  { name: "get_budget_status", description: "This month's budgets and spending against them.", input_schema: { type: "object", properties: {} } },
+  { name: "get_budget_status", description: "This month's budgets: effective limit (base + rolled-over amount), spent, remaining and percent used — the Budgets page's numbers.", input_schema: { type: "object", properties: {} } },
   { name: "get_fire_projection", description: "FIRE number, progress, time to FIRE, and spending runway under the user's saved assumptions.", input_schema: { type: "object", properties: {} } },
 ];
 
@@ -241,19 +249,9 @@ router.post("/api/ask", async (req, res) => {
   try {
     // Shared monthly cap (INV-14): same resolver + month-spend computation
     // family as insights/categorize; this endpoint both checks AND charges.
-    const { getAiBudgetCents } = require("./insights");
+    const { getAiBudgetCents, monthAiSpendCents } = require("./insights");
     const budgetCents = await getAiBudgetCents();
-    const u = await pool.query(
-      "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights WHERE created_at >= date_trunc('month', CURRENT_DATE)"
-    );
-    let spendCents = 0;
-    u.rows.forEach(r => {
-      const { estimateCostUsd } = require("../data/reference-data");
-      const cost = r.input_tokens
-        ? estimateCostGranular({ input_tokens: r.input_tokens, output_tokens: r.output_tokens, cache_read_input_tokens: r.cache_read_tokens || 0, cache_creation_input_tokens: r.cache_creation_tokens || 0 }, r.model_used)
-        : estimateCostUsd(r.tokens_used || 0, r.model_used);
-      spendCents += cost * 100;
-    });
+    const spendCents = await monthAiSpendCents(pool);
     if (spendCents >= budgetCents) {
       return res.status(429).json({ error: `Monthly AI budget reached ($${(budgetCents / 100).toFixed(2)} cap). Raise it under Settings → AI Insights.` });
     }
@@ -276,7 +274,10 @@ router.post("/api/ask", async (req, res) => {
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
       const msg = await client.messages.create({
         model: modelId,
-        max_tokens: 1024,
+        // Room for adaptive thinking (5.5 models think by default; billed as
+        // output) at the "analyze" effort level.
+        max_tokens: 4096,
+        ...require("../services/claude").effortParams("analyze"),
         system,
         tools: TOOLS,
         messages,

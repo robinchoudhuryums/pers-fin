@@ -355,11 +355,13 @@ describe("POST /api/housing/scan-bill", () => {
     assert.match(res.body.error, /Unsupported file type/);
   });
 
-  it("source: charges the cap as entry_type='scan', forces the report_bill tool, image+pdf blocks", () => {
+  it("source: charges the cap as entry_type='scan', requests the report_bill tool, image+pdf blocks", () => {
     const fs = require("fs"); const path = require("path");
     const src = fs.readFileSync(path.join(__dirname, "../teller/routes/housing.js"), "utf8");
     assert.match(src, /'scan'\)/, "usage row uses entry_type='scan'");
-    assert.match(src, /tool_choice: \{ type: "tool", name: "report_bill" \}/);
+    // Opus/Sonnet 5.5 reject a forced tool_choice: auto + strict tool + re-ask.
+    assert.match(src, /createToolCall\([\s\S]*?"report_bill"\)/);
+    assert.match(src, /strict: true/);
     assert.match(src, /getAiBudgetCents/, "checks the shared AI cap");
     assert.match(src, /application\/pdf/, "accepts PDF bills");
     assert.match(src, /type: "image"/, "accepts image bills");

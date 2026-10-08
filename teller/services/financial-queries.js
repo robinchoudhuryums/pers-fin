@@ -38,29 +38,54 @@
 // counted income when both ends of the transfer were linked (the original
 // payroll deposit on brokerage already matched branch (a); the later
 // brokerage→checking transfer matched branch (b) on the destination side).
-// Now branch (b) ALSO requires NO matching debit (positive amount) on a
-// different account within ±2 days of the credit. The subquery's outer
-// references (`account_id`, `amount`, `date`) resolve to the outer
-// transactions row whether the caller aliases it as `t` or uses bare
-// `transactions`, because they're unqualified and only the outer query has
-// those columns in scope.
-const INCOME_PREDICATE = `
+// Branch (b) therefore requires NO matching debit (positive amount) on a
+// different account within ±2 days of the credit.
+//
+// FAN-2: the predicate is built by incomePredicate(alias) and every OUTER
+// column reference is QUALIFIED with the caller's alias. It used to write them
+// unqualified on the theory that "only the outer query has those columns in
+// scope" — wrong: inside `FROM transactions __t2`, bare account_id / amount /
+// date resolve to __t2 ITSELF, so the guard became
+// `__t2.account_id <> __t2.account_id` (always false) and NOT EXISTS was always
+// true — a $3,000 payroll into brokerage + the "Funds transfer from brokerage"
+// credit into checking counted as $6,000. Callers that don't alias the table
+// use the default alias "transactions" (Postgres accepts the bare table name as
+// a qualifier), exported as INCOME_PREDICATE; aliased callers call
+// incomePredicate("t").
+//
+// DD-2: keyword branches read the user override, the cleaned merchant AND the
+// raw description together. Teller stores the counterparty in merchant_name
+// and the raw description in name ("ACME CORP" / "ACME CORP PAYROLL PPD"), so
+// matching only COALESCE(merchant_name, name) missed the payroll keyword.
+//
+// DD-3: Plaid's personal_finance_category.primary = 'INCOME' counts as income
+// unless the user has set a category of their own, and branch (c) compares
+// case-insensitively so Teller's lower-case 'income' category matches too.
+function incomeText(a) {
+  return `CONCAT_WS(' ', ${a}.user_merchant_name, ${a}.merchant_name, ${a}.name)`;
+}
+function incomePredicate(a = "transactions") {
+  const txt = incomeText(a);
+  return `
   (
-    (COALESCE(merchant_name, name, '') ~* '\\y(payroll|direct dep|direct deposit|dir dep|salary|employer|deposit|ach credit)\\y'
-      AND COALESCE(merchant_name, name, '') !~* '\\y(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|reversal|atm|withdrawal|bill pay)\\y')
+    (${txt} ~* '\\y(payroll|direct dep|direct deposit|dir dep|salary|employer|deposit|ach credit)\\y'
+      AND ${txt} !~* '\\y(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|reversal|atm|withdrawal|bill pay)\\y')
     OR (
-      COALESCE(merchant_name, name, '') ~* 'funds transfer from brokerage'
+      ${txt} ~* 'funds transfer from brokerage'
       AND NOT EXISTS (
         SELECT 1 FROM transactions __t2
-        WHERE __t2.account_id <> account_id
-          AND __t2.amount = ABS(amount)
+        WHERE __t2.account_id <> ${a}.account_id
+          AND __t2.amount = ABS(${a}.amount)
           AND __t2.pending = false
-          AND __t2.date BETWEEN date - INTERVAL '2 days' AND date + INTERVAL '2 days'
+          AND __t2.date BETWEEN ${a}.date - INTERVAL '2 days' AND ${a}.date + INTERVAL '2 days'
       )
     )
-    OR COALESCE(user_category, category[1]) = 'Income'
+    OR LOWER(COALESCE(${a}.user_category, ${a}.category[1], '')) = 'income'
+    OR (${a}.user_category IS NULL AND ${a}.personal_finance_category->>'primary' = 'INCOME')
   )
 `;
+}
+const INCOME_PREDICATE = incomePredicate("transactions");
 
 // Spending exclusion — filters out inter-account transfers and credit card
 // payments that would double-count spending. Applied to ALL spending
@@ -70,10 +95,23 @@ const INCOME_PREDICATE = `
 // Excludes: credit card payments (Chase, Capital One, Discover, Amex, etc.),
 // bank transfers (ACH, wire, Zelle, Venmo), loan/mortgage payments,
 // ATM transactions, and other non-spending movements.
-const NOT_TRANSFER = `
-  COALESCE(t.user_merchant_name, t.merchant_name, t.name, '') !~*
+//
+// DD-2: when the user hasn't renamed the merchant, the keywords are matched
+// against the cleaned merchant AND the raw description ("ZELLE TO JOHN SMITH"
+// with counterparty "John Smith" used to slip through as spending). A user
+// rename still takes precedence, so renaming stays the escape hatch for a
+// payment that really is spending.
+// DD-3: Plaid's personal_finance_category TRANSFER_IN / TRANSFER_OUT /
+// LOAN_PAYMENTS rows are excluded too — unless the user has categorized the
+// row as something other than Transfer (their call that it's spending).
+const NOT_TRANSFER = `(
+  COALESCE(t.user_merchant_name, CONCAT_WS(' ', t.merchant_name, t.name)) !~*
     '\\y(payment thank|pymt|autopay|auto pay|minimum payment|directpay|automatic payment|interest|int charge|finance charge|funds tran|funds transfer|transfer to|transfer from|ach transfer|wire transfer|internal transfer|zelle|venmo|paypal|cash app|cashapp|square cash|bank of america|wells fargo|chase|citi|citibank|capital one|discover|amex|american express|us bank|pnc bank|td bank|ally bank|truist|boa transfer|online transfer|mobile transfer|bill pay|epay|credit card payment|card payment|cc payment|loan payment|mortgage payment|deposit|direct dep|atm|withdrawal)\\y'
-`;
+  AND NOT (
+    COALESCE(t.personal_finance_category->>'primary', '') IN ('TRANSFER_IN', 'TRANSFER_OUT', 'LOAN_PAYMENTS')
+    AND COALESCE(t.user_category, 'Transfer') = 'Transfer'
+  )
+)`;
 
 // Spending split SQL fragment — multiplies each transaction's amount by the
 // account's spending_split_pct (defaults to 100 = 100%). Apply consistently in
@@ -355,8 +393,114 @@ async function getNetWorth(pool) {
   };
 }
 
+// 'YYYY-MM' → the previous month's 'YYYY-MM' (pure string math, no Date).
+function previousMonthKey(monthKey) {
+  const [y, m] = monthKey.split("-").map(Number);
+  return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`;
+}
+
+// Budget status for a month — the ONE definition of "how is each budget
+// doing" (AIN-6 / WUI-5). Used by GET /api/budgets, /api/budgets/alerts, the
+// AI-insights prompt and the Ask tool, so all four agree:
+//   - spending via getCategorySpendingForMonth (splits, reimbursed, shared
+//     split, NOT_TRANSFER);
+//   - effective_limit = monthly_limit + the PRIOR month's snapshot
+//     rollover_amount when rollover is enabled (FA-1);
+//   - one-time budgets only appear in their effective_month.
+// The prompt/Ask used to read the bare monthly_limit for every budget, so a
+// rolled-over budget read as overspent and a June one-time budget showed in
+// September. Rows: { ...budget, spent, rollover_amount, effective_limit,
+// remaining, percent_used }.
+async function getBudgetStatus(pool, month = currentMonth()) {
+  const [budgets, spending, snapshots] = await Promise.all([
+    pool.query("SELECT * FROM budgets ORDER BY monthly_limit DESC"),
+    getCategorySpendingForMonth(pool, month),
+    pool.query("SELECT budget_id, rollover_amount FROM budget_snapshots WHERE month = $1", [previousMonthKey(month)]),
+  ]);
+  const spendMap = {};
+  for (const r of spending) spendMap[r.category] = parseFloat(r.spent);
+  const snapMap = {};
+  for (const s of snapshots.rows) snapMap[s.budget_id] = s;
+  return budgets.rows
+    .filter((b) => !(b.budget_type === "one_time" && b.effective_month && b.effective_month !== month))
+    .map((b) => {
+      const spent = spendMap[b.category] || 0;
+      const limit = parseFloat(b.monthly_limit) || 0;
+      const snap = snapMap[b.id];
+      const rollover = b.rollover_enabled && snap ? parseFloat(snap.rollover_amount || 0) : 0;
+      const effectiveLimit = limit + rollover;
+      return {
+        ...b,
+        spent,
+        rollover_amount: rollover,
+        effective_limit: effectiveLimit,
+        remaining: effectiveLimit - spent,
+        percent_used: effectiveLimit > 0 ? Math.round((spent / effectiveLimit) * 100) : 0,
+      };
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Tax-deduction candidates (SXE-7 / AIN-12) — ONE keyword list + ONE query
+// shared by the insights tax module, the year-end export
+// (/api/export/tax-report) and (byte-mirrored, pinned) the Sheets tab.
+//
+// Word-boundary matching (Postgres `\y`) so short tokens can't substring-match
+// unrelated merchants, and multi-word phrases instead of bare ambiguous words
+// ("office" → "Box Office", "interest" → a card's finance charge, "supplies" →
+// "Pet Supplies", "business" → "Business Casual"). Grouped so the report can
+// show a meaningful category per row; the LONGEST matching phrase wins
+// ("student loan interest" is tax, not education).
+const TAX_KEYWORD_GROUPS = {
+  medical: ["doctor", "medical", "pharmacy", "hospital", "dental"],
+  charity: ["charity", "donation", "goodwill", "salvation army", "red cross"],
+  education: ["tuition", "university", "college", "student loan"],
+  business: ["home office", "office supplies", "office depot", "business expense"],
+  tax: ["mortgage interest", "student loan interest", "property tax", "state tax"],
+};
+const TAX_KEYWORDS = Object.values(TAX_KEYWORD_GROUPS).flat();
+const TAX_REGEX = "\\y(" + TAX_KEYWORDS.join("|") + ")\\y";
+
+function taxCategoryFor(merchant) {
+  const m = String(merchant || "").toLowerCase();
+  let best = null;
+  for (const [group, words] of Object.entries(TAX_KEYWORD_GROUPS)) {
+    for (const w of words) {
+      const re = new RegExp("\\b" + w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b");
+      if (re.test(m) && (!best || w.length > best.len)) best = { group, len: w.length };
+    }
+  }
+  return best ? best.group : "other";
+}
+
+// Every matching transaction in calendar `year`, computed from the LEDGER at
+// call time (not from the per-merchant tax_deductions snapshot an insights run
+// last upserted — that froze the year at the last run, capped it at 15
+// merchants, double-counted renamed merchants and had no dates). Amounts are
+// the user's share (SPLIT_AMOUNT — a partner-owned shared-card charge isn't
+// your deduction); reimbursed and pending rows are excluded. Matched on the
+// DISPLAY merchant name (user rename wins, AI-7).
+async function getTaxDeductionTransactions(pool, year) {
+  const r = await pool.query(
+    `SELECT t.transaction_id, TO_CHAR(t.date, 'YYYY-MM-DD') AS date,
+            COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS merchant,
+            ROUND(${SPLIT_AMOUNT}, 2) AS amount
+     FROM transactions t
+     LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+     WHERE t.pending = false AND t.amount > 0
+       AND ${NOT_REIMBURSED}
+       AND t.date >= make_date($1, 1, 1) AND t.date < make_date($1 + 1, 1, 1)
+       AND COALESCE(t.user_merchant_name, t.merchant_name, t.name) ~* $2
+       AND ${SPLIT_AMOUNT} > 0
+     ORDER BY t.date, 3`,
+    [year, TAX_REGEX]
+  );
+  return r.rows.map(row => ({ ...row, category: taxCategoryFor(row.merchant) }));
+}
+
 module.exports = {
   INCOME_PREDICATE,
+  incomePredicate,
   SPLIT_AMOUNT,
   NOT_REIMBURSED,
   NOT_REIMBURSED_UNALIASED,
@@ -367,8 +511,15 @@ module.exports = {
   getMonthlyIncomeAndSpending,
   getCategorySpendingThisMonth,
   getCategorySpendingForMonth,
+  getBudgetStatus,
+  previousMonthKey,
   getNetWorth,
   currentMonth,
   todayStr,
   APP_TIMEZONE,
+  TAX_KEYWORD_GROUPS,
+  TAX_KEYWORDS,
+  TAX_REGEX,
+  taxCategoryFor,
+  getTaxDeductionTransactions,
 };

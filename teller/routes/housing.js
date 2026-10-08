@@ -15,7 +15,7 @@ const express = require("express");
 const router = express.Router();
 const multer = require("multer");
 const { pool } = require("../services/database");
-const { currentMonth } = require("../services/financial-queries");
+const { currentMonth, todayStr } = require("../services/financial-queries");
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -37,7 +37,11 @@ function thisMonth() {
 }
 
 // Settle-up double-count guard: build a Postgres word-boundary regex (\y…\y,
-// per the keyword-filter gotcha INV-10) from the payee name + utility labels.
+// per the keyword-filter gotcha INV-10) from the payee name + each utility's
+// statement merchant names (FAN-10: `merchant_patterns`, e.g. "PG&E, Con Ed").
+// A utility with no merchant patterns falls back to its label — but a label is
+// a category word ("Gas"), so it flags "SHELL GAS" and misses the real PG&E
+// charge; the Rent page prompts for the statement names.
 // A shared-card charge matching one of these would be counted in BOTH the
 // shared-card settlement leg AND the housing even-up leg of the dashboard
 // Settle Up widget. Returns null when there are no usable (>=3 char) terms.
@@ -46,7 +50,12 @@ function thisMonth() {
 function buildDoubleCountPattern(cfg) {
   const terms = [];
   if (cfg && cfg.payee_name) terms.push(cfg.payee_name);
-  for (const u of (cfg && cfg.utilities) || []) if (u && u.label) terms.push(u.label);
+  for (const u of (cfg && cfg.utilities) || []) {
+    if (!u) continue;
+    const pats = Array.isArray(u.merchant_patterns) ? u.merchant_patterns.filter(Boolean) : [];
+    if (pats.length) terms.push(...pats);
+    else if (u.label) terms.push(u.label);
+  }
   const escaped = terms
     .map((t) => String(t).trim())
     .filter((t) => t.length >= 3)
@@ -74,6 +83,23 @@ function monthRange(start, end, cap = 24) {
     m++; if (m > 12) { m = 1; y++; }
   }
   return out;
+}
+
+// 'YYYY-MM' shifted by n months (n may be negative).
+function addMonths(ym, n) {
+  const [y, m] = ym.split("-").map(Number);
+  const t = y * 12 + (m - 1) + n;
+  return `${Math.floor(t / 12)}-${String((t % 12) + 1).padStart(2, "0")}`;
+}
+
+// The months generation should cover (FAN-3): the TRAILING `cap` months ending
+// at `end`, never earlier than `start`. start_month is pinned forever, so a
+// cap counted forward from it stopped generating 24 months after setup — from
+// then on no new rent/utility rows were created and the balance, reminders,
+// calendar and even-up all silently showed nothing owed.
+function generationMonths(start, end, cap = 24) {
+  const floor = addMonths(end, -(cap - 1));
+  return monthRange(monthsBetween(start, floor) > 0 ? floor : start, end, cap);
 }
 
 // Human label for a period+label, e.g. "Jan 2026 Electricity".
@@ -150,6 +176,7 @@ function normalizeConfig(raw) {
       cadence_months: Math.min(12, Math.max(1, parseInt(u.cadence_months, 10) || 1)),
       due_day: clampDay(u.due_day, 15),
       anchor: MONTH_RE.test(String(u.anchor || "")) ? u.anchor : (MONTH_RE.test(String(c.start_month || "")) ? c.start_month : thisMonth()),
+      merchant_patterns: normalizePatterns(u.merchant_patterns),
     })),
     split: normalizeSplit(c.split),
   };
@@ -169,9 +196,50 @@ function normalizeSplit(raw) {
     car_fixed_amount: Number.isFinite(Number(s.car_fixed_amount)) && Number(s.car_fixed_amount) >= 0 ? Number(s.car_fixed_amount) : null,
   };
 }
+// Statement merchant names for a utility (FAN-10): a comma-separated string or
+// an array → up to 8 trimmed names (≤ 60 chars each).
+function normalizePatterns(raw) {
+  const list = Array.isArray(raw) ? raw : (typeof raw === "string" ? raw.split(",") : []);
+  return list.map((p) => String(p).trim().slice(0, 60)).filter(Boolean).slice(0, 8);
+}
 function clampDay(v, dflt) {
   const n = parseInt(v, 10);
   return Number.isInteger(n) && n >= 1 && n <= 31 ? n : dflt;
+}
+
+// Pure: merge a config PATCH body over the stored config (FAN-4).
+//  - start_month stays pinned.
+//  - A utility row may carry `rename_from` (its label when the form loaded);
+//    when that label existed and is no longer in use, it's a rename and the
+//    stored rows follow it. The utility keeps its old anchor.
+//  - A brand-new utility (no anchor in the body, not in the old config) is
+//    anchored at THIS month — it used to default to start_month, so adding
+//    (or renaming) a utility backfilled a pending placeholder + reminder for
+//    every past cycle.
+//  - A changed payee_name renames the stored rows (payeeRename).
+function planConfigUpdate(existing, body) {
+  const oldUtils = new Map((existing.utilities || []).map((u) => [u.label, u]));
+  const newLabels = new Set((Array.isArray(body.utilities) ? body.utilities : [])
+    .map((u) => (u && typeof u.label === "string" ? u.label.slice(0, 60) : "Utility")));
+  const labelRenames = [];
+  const utilities = (Array.isArray(body.utilities) ? body.utilities : []).map((u) => {
+    if (!u || typeof u !== "object") return u;
+    const label = typeof u.label === "string" ? u.label.slice(0, 60) : "Utility";
+    const from = typeof u.rename_from === "string" ? u.rename_from : null;
+    const out = { ...u };
+    delete out.rename_from;
+    let prior = oldUtils.get(label);
+    if (!prior && from && from !== label && oldUtils.has(from) && !newLabels.has(from)) {
+      prior = oldUtils.get(from);
+      labelRenames.push({ from, to: label });
+    }
+    if (!MONTH_RE.test(String(out.anchor || ""))) out.anchor = prior ? prior.anchor : thisMonth();
+    return out;
+  });
+  const config = normalizeConfig({ ...body, utilities, start_month: existing.start_month || body.start_month });
+  const from = existing.payee_name, to = config.payee_name;
+  const payeeRename = from && to && from !== to ? { from, to } : null;
+  return { config, payeeRename, labelRenames };
 }
 
 async function getConfig(db) {
@@ -191,13 +259,18 @@ async function generateHousingObligations(pool_) {
   const db = pool_ || pool;
   const cfg = await getConfig(db);
   if (!cfg.enabled || !cfg.payee_name) return { generated: 0, skipped: "not_configured" };
-  const months = monthRange(cfg.start_month, thisMonth());
+  const months = generationMonths(cfg.start_month, thisMonth());
   let generated = 0;
+  // A period that already has a rent row (under ANY payee name) — or a utility
+  // row with the same label — is not regenerated (FAN-4). The ON CONFLICT key
+  // includes the payee, so a payee rename that couldn't be propagated used to
+  // regenerate rent for every month since start_month as unpaid.
   for (const period of months) {
     if (cfg.rent_amount > 0) {
       const r = await db.query(
         `INSERT INTO payee_obligations (payee, category, label, period, amount, due_day, status, auto_generated)
-         VALUES ($1, 'rent', 'Rent', $2, $3, $4, 'unpaid', true)
+         SELECT $1, 'rent', 'Rent', $2, $3, $4, 'unpaid', true
+         WHERE NOT EXISTS (SELECT 1 FROM payee_obligations WHERE period = $2 AND category = 'rent')
          ON CONFLICT (payee, period, category, label) DO NOTHING`,
         [cfg.payee_name, period, cfg.rent_amount, cfg.rent_due_day]
       );
@@ -208,7 +281,8 @@ async function generateHousingObligations(pool_) {
       if (monthsBetween(u.anchor, period) % u.cadence_months !== 0) continue;
       const r = await db.query(
         `INSERT INTO payee_obligations (payee, category, label, period, amount, due_day, status, auto_generated)
-         VALUES ($1, 'utility', $2, $3, NULL, $4, 'pending_amount', true)
+         SELECT $1, 'utility', $2, $3, NULL, $4, 'pending_amount', true
+         WHERE NOT EXISTS (SELECT 1 FROM payee_obligations WHERE period = $3 AND category = 'utility' AND label = $2)
          ON CONFLICT (payee, period, category, label) DO NOTHING`,
         [cfg.payee_name, u.label, period, u.due_day]
       );
@@ -232,8 +306,8 @@ async function runHousingReminders(pool_) {
   try { ({ sendToAll, sentRecently } = require("./notifications")); }
   catch { return { sent: 0 }; }
 
-  const today = new Date();
-  const dom = today.getDate();
+  // Day-of-month in APP_TIMEZONE (FAN-13), matching thisMonth().
+  const dom = parseInt(todayStr().slice(8, 10), 10);
 
   // (1) Payment due — unpaid balance owed, and we're within the lead window of
   // the rent due day (or past it). One reminder per ~3 days while it stands.
@@ -311,25 +385,61 @@ router.patch("/api/housing/config", async (req, res) => {
   if (body.utilities != null && !Array.isArray(body.utilities)) {
     return res.status(400).json({ error: "utilities must be an array" });
   }
+  const client = await pool.connect();
   try {
     // Preserve the original start_month once set (so editing config later doesn't
     // shift the generation window and orphan/duplicate months).
-    const existing = await getConfig();
-    const merged = normalizeConfig({ ...body, start_month: existing.start_month || body.start_month });
-    await pool.query("INSERT INTO user_settings (id) VALUES (1) ON CONFLICT DO NOTHING");
-    await pool.query("UPDATE user_settings SET housing_config = $1, updated_at = now() WHERE id = 1", [JSON.stringify(merged)]);
+    const existing = await getConfig(client);
+    const plan = planConfigUpdate(existing, body);
+    const merged = plan.config;
+    await client.query("BEGIN");
+    await client.query("INSERT INTO user_settings (id) VALUES (1) ON CONFLICT DO NOTHING");
+    // FAN-4: carry existing rows over to a renamed payee / utility label, so a
+    // typo fix doesn't leave the history under the old name and regenerate
+    // every month since start_month as unpaid under the new one. A row whose
+    // new key already exists is left alone (unique key).
+    if (plan.payeeRename) {
+      await client.query(
+        `UPDATE payee_obligations o SET payee = $2, updated_at = now()
+         WHERE o.payee = $1
+           AND NOT EXISTS (SELECT 1 FROM payee_obligations x
+                           WHERE x.payee = $2 AND x.period = o.period AND x.category = o.category AND x.label = o.label)`,
+        [plan.payeeRename.from, plan.payeeRename.to]
+      );
+      await client.query("UPDATE payee_payments SET payee = $2 WHERE payee = $1", [plan.payeeRename.from, plan.payeeRename.to]);
+    }
+    for (const r of plan.labelRenames) {
+      await client.query(
+        `UPDATE payee_obligations o SET label = $3, updated_at = now()
+         WHERE o.payee = $1 AND o.category = 'utility' AND o.label = $2
+           AND NOT EXISTS (SELECT 1 FROM payee_obligations x
+                           WHERE x.payee = $1 AND x.period = o.period AND x.category = 'utility' AND x.label = $3)`,
+        [merged.payee_name, r.from, r.to]
+      );
+    }
+    await client.query("UPDATE user_settings SET housing_config = $1, updated_at = now() WHERE id = 1", [JSON.stringify(merged)]);
+    await client.query("COMMIT");
     res.json(merged);
-  } catch (err) { console.error("housing config patch error:", err.message); res.status(500).json({ error: "An internal error occurred." }); }
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("housing config patch error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  } finally { client.release(); }
 });
 
 // GET /api/housing/ledger — balance, obligations, payments.
 router.get("/api/housing/ledger", async (_req, res) => {
   try {
     const cfg = await getConfig();
+    // Scoped to the configured payee (FAN-4) so the balance agrees with the
+    // payment-due reminder (which always filtered by payee); with no payee
+    // configured, everything is shown.
+    const payee = cfg.payee_name || null;
     const [obl, pay] = await Promise.all([
       pool.query(
         `SELECT id, payee, category, label, period, amount, due_day, status, paid_payment_id, notes, auto_generated
-         FROM payee_obligations ORDER BY period DESC, category, label`
+         FROM payee_obligations WHERE ($1::text IS NULL OR payee = $1) ORDER BY period DESC, category, label`,
+        [payee]
       ),
       pool.query(
         `SELECT pp.id, pp.payee, pp.paid_date::text AS paid_date, pp.amount, pp.memo, pp.created_at,
@@ -337,9 +447,11 @@ router.get("/api/housing/ledger", async (_req, res) => {
                          ORDER BY o.period) FILTER (WHERE o.id IS NOT NULL), '[]') AS covers
          FROM payee_payments pp
          LEFT JOIN payee_obligations o ON o.paid_payment_id = pp.id
+         WHERE ($1::text IS NULL OR pp.payee = $1)
          GROUP BY pp.id
          ORDER BY pp.paid_date DESC, pp.id DESC
-         LIMIT 60`
+         LIMIT 60`,
+        [payee]
       ),
     ]);
     let balance = 0, awaiting = 0;
@@ -367,7 +479,7 @@ router.post("/api/housing/generate", async (_req, res) => {
 // of payments to the payee for a year, with memos + covered months. Mirrors the
 // tax-report exporter (pdfkit for PDF).
 router.get("/api/housing/export", async (req, res) => {
-  const year = parseInt(req.query.year, 10) || new Date().getFullYear();
+  const year = parseInt(req.query.year, 10) || parseInt(todayStr().slice(0, 4), 10);
   const format = String(req.query.format || "csv").toLowerCase();
   try {
     const cfg = await getConfig().catch(() => ({ payee_name: "" }));
@@ -420,10 +532,11 @@ router.get("/api/housing/export", async (req, res) => {
       }
     }
     // CSV (default)
-    const q = (v) => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`;
+    // SXE-13: formula-guarded text fields; ISO date whatever the driver returns.
+    const { csvText: q, csvDate } = require("../services/csv-export");
     let csv = "Date,Amount,Memo,Covers,Payee\n";
     for (const p of rows) {
-      csv += [p.paid_date, parseFloat(p.amount).toFixed(2), q(p.memo || ""), q(coversText(p)), q(p.payee)].join(",") + "\n";
+      csv += [csvDate(p.paid_date), parseFloat(p.amount).toFixed(2), q(p.memo || ""), q(coversText(p)), q(p.payee)].join(",") + "\n";
     }
     csv += `,${total.toFixed(2)},${q("Total " + year)},,\n`;
     res.setHeader("Content-Type", "text/csv");
@@ -443,8 +556,10 @@ router.get("/api/housing/export", async (req, res) => {
 const SCAN_TOOL = {
   name: "report_bill",
   description: "Report the fields extracted from a utility/rent bill image.",
+  strict: true, // schema-valid input (tool_choice is "auto" on the 5.5 models)
   input_schema: {
     type: "object",
+    additionalProperties: false,
     properties: {
       amount: { type: "number", description: "the total amount due, as a number (no currency symbol)" },
       period: { type: "string", description: "the billing month this bill is for, as YYYY-MM" },
@@ -470,19 +585,10 @@ router.post("/api/housing/scan-bill", upload.single("file"), async (req, res) =>
 
   try {
     // Shared monthly AI cap (parity with /api/ask, INV-14): check then charge.
-    const { getAiBudgetCents } = require("./insights");
-    const { MODEL_MAP, estimateCostGranular, estimateCostUsd } = require("../data/reference-data");
+    const { getAiBudgetCents, monthAiSpendCents } = require("./insights");
+    const { MODEL_MAP, estimateCostGranular } = require("../data/reference-data");
     const budgetCents = await getAiBudgetCents();
-    const u = await pool.query(
-      "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights WHERE created_at >= date_trunc('month', CURRENT_DATE)"
-    );
-    let spendCents = 0;
-    u.rows.forEach((r) => {
-      const cost = r.input_tokens
-        ? estimateCostGranular({ input_tokens: r.input_tokens, output_tokens: r.output_tokens, cache_read_input_tokens: r.cache_read_tokens || 0, cache_creation_input_tokens: r.cache_creation_tokens || 0 }, r.model_used)
-        : estimateCostUsd(r.tokens_used || 0, r.model_used);
-      spendCents += cost * 100;
-    });
+    const spendCents = await monthAiSpendCents(pool);
     if (spendCents >= budgetCents) {
       return res.status(429).json({ error: `Monthly AI budget reached ($${(budgetCents / 100).toFixed(2)} cap). Raise it under Settings → AI Insights.` });
     }
@@ -490,19 +596,20 @@ router.post("/api/housing/scan-bill", upload.single("file"), async (req, res) =>
     const sRow = await pool.query("SELECT insights_model FROM user_settings WHERE id = 1");
     const modelId = MODEL_MAP[sRow.rows[0]?.insights_model] || MODEL_MAP.haiku;
     const client = new Anthropic();
-    const msg = await client.messages.create({
+    const { createToolCall, effortParams } = require("../services/claude");
+    const msg = await createToolCall(client, {
       model: modelId,
-      max_tokens: 300,
+      max_tokens: 2000, // room for adaptive thinking at low effort
+      ...effortParams("extract"),
       tools: [SCAN_TOOL],
-      tool_choice: { type: "tool", name: "report_bill" },
       messages: [{
         role: "user",
         content: [
           block,
-          { type: "text", text: "This is a utility or rent bill. Extract the total amount due, the billing month it is for (as YYYY-MM), and the biller/utility name. If any field isn't clearly present, omit it." },
+          { type: "text", text: "This is a utility or rent bill. Extract the total amount due, the billing month it is for (as YYYY-MM), and the biller/utility name. If any field isn't clearly present, omit it. Report the fields with the report_bill tool." },
         ],
       }],
-    });
+    }, "report_bill");
 
     // Charge the cap (entry_type='scan' — counted by the cap queries, filtered
     // out of the user-facing insights feed which selects entry_type='insight').
@@ -539,13 +646,19 @@ router.get("/api/housing/split", async (req, res) => {
     if (!split.enabled) return res.json({ enabled: false });
     const month = MONTH_RE.test(String(req.query.month || "")) ? req.query.month : thisMonth();
 
+    // Scoped to the configured payee (FAN-4: an unpropagated rename used to
+    // double the month's rent here). Utilities still awaiting their bill are
+    // reported (FAN-9) so the Settle Up widget can warn + hold "Mark settled"
+    // instead of presenting an understated even-up as final.
     const ru = await pool.query(
-      `SELECT COALESCE(SUM(amount), 0) AS total
+      `SELECT COALESCE(SUM(amount) FILTER (WHERE amount IS NOT NULL AND status IN ('unpaid', 'paid')), 0) AS total,
+              COALESCE(array_agg(label ORDER BY label) FILTER (WHERE status = 'pending_amount'), '{}') AS awaiting
        FROM payee_obligations
-       WHERE period = $1 AND amount IS NOT NULL AND status IN ('unpaid', 'paid')`,
-      [month]
+       WHERE period = $1 AND payee = $2`,
+      [month, cfg.payee_name]
     );
     const rentUtilities = parseFloat(ru.rows[0].total);
+    const awaitingLabels = Array.isArray(ru.rows[0].awaiting) ? ru.rows[0].awaiting : [];
 
     let car = split.car_fixed_amount || 0;
     let carSource = split.car_fixed_amount != null ? "fixed" : "none";
@@ -604,7 +717,12 @@ router.get("/api/housing/split", async (req, res) => {
       }
     }
 
-    res.json({ enabled: true, month, partner_name: partnerName, car_source: carSource, double_count_warning: doubleCountWarning, ...computeSplit(rentUtilities, car) });
+    res.json({
+      enabled: true, month, partner_name: partnerName, car_source: carSource,
+      double_count_warning: doubleCountWarning,
+      awaiting_count: awaitingLabels.length, awaiting_labels: awaitingLabels,
+      ...computeSplit(rentUtilities, car),
+    });
   } catch (err) {
     console.error("housing split error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
@@ -688,7 +806,9 @@ router.delete("/api/housing/obligations/:id", async (req, res) => {
 router.post("/api/housing/payments", async (req, res) => {
   const ids = Array.isArray(req.body && req.body.obligation_ids) ? req.body.obligation_ids.map((x) => parseInt(x, 10)).filter(Number.isInteger) : [];
   if (!ids.length) return res.status(400).json({ error: "obligation_ids is required" });
-  const paidDate = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.paid_date || "")) ? req.body.paid_date : new Date().toISOString().slice(0, 10);
+  // Default paid_date = TODAY in APP_TIMEZONE (FAN-13): a Dec 31 evening
+  // payment defaulted to the UTC date and landed in next year's landlord export.
+  const paidDate = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.paid_date || "")) ? req.body.paid_date : todayStr();
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -753,6 +873,9 @@ module.exports.generateHousingObligations = generateHousingObligations;
 module.exports.runHousingReminders = runHousingReminders;
 module.exports.monthsBetween = monthsBetween;
 module.exports.monthRange = monthRange;
+module.exports.addMonths = addMonths;
+module.exports.generationMonths = generationMonths;
+module.exports.planConfigUpdate = planConfigUpdate;
 module.exports.deriveMemo = deriveMemo;
 module.exports.normalizeConfig = normalizeConfig;
 module.exports.periodLabel = periodLabel;

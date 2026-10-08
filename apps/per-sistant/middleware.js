@@ -115,6 +115,11 @@ function requireAuth(req, res, next) {
   if (!AUTH_SECRET) return next();
   if (["/login", "/api/login", "/manifest.json", "/sw.js", "/api/health", "/api/keep-alive-schedule"].includes(req.path)) return next();
   if (req.path.startsWith("/icon-")) return next();
+  // Perfin's HMAC-signed digest/critical-alert webhook carries no session —
+  // it authenticates itself (signature over the raw body + timestamp replay
+  // guard in routes/perfin.js, 503 without a secret). Gating it on the session
+  // 401'd every delivery in standalone deployments (PB-15).
+  if (req.method === "POST" && req.path === "/api/perfin/webhook") return next();
   if (req.session && req.session.authenticated) {
     const timeout = (req.session.timeoutMinutes || 15) * 60 * 1000;
     if (Date.now() - req.session.lastActivity < timeout) {
@@ -129,4 +134,4 @@ function requireAuth(req, res, next) {
   return res.redirect("/login");
 }
 
-module.exports = { setup };
+module.exports = { setup, requireAuth };

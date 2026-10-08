@@ -169,11 +169,10 @@ router.post("/api/webauthn/register", async (req, res) => {
 // WebAuthn (FaceID / Biometric) Authentication
 // ---------------------------------------------------------------------------
 // NOTE: Reachable in standalone mode only. Under the unified shell, the shell's
-// PIN gate runs before any /perfin/* request reaches these handlers, so the
-// browser can't initiate a biometric flow without first completing PIN auth.
-// The shell login page is plain PIN-only HTML. Wiring biometric login into the
-// shell requires shell-side WebAuthn endpoints + login UI; until that's built,
-// embedded deployments use PIN exclusively.
+// PIN gate runs before any /perfin/* request reaches these handlers; biometric
+// login there goes through the shell's own endpoints
+// (shell/middleware/webauthn.js — /api/shell/webauthn/*), which read the same
+// webauthn_credentials table these routes register into.
 
 // POST /api/webauthn/authenticate-options — generate auth challenge (no session needed)
 //   Standalone-only entry point — see note above.

@@ -20,6 +20,7 @@ const { callAI, answerWithCitations, getAIModelForFeature, isAIAvailable } = req
 const embeddings = require("../services/embeddings");
 const vaultSync = require("../services/vault-sync");
 const { serverError } = require("../errors");
+const { todayStr } = require("./health");
 
 // Cap how much of each source we feed the model, and how many sources.
 const MAX_SOURCES = 8;
@@ -108,7 +109,12 @@ function normalizeQuery(q) {
 // A stamp that changes whenever the corpus changes (edit bumps max(updated_at);
 // add/delete changes the active row count), so cached answers from a stale
 // corpus never match.
-async function corpusVersion(pool) {
+// KR-5: the version also carries TODAY (APP_TIMEZONE). Fact validity is
+// date-dependent — an answer cached at 22:00 that injected a fact with
+// valid_to = today must not be served at 09:00 tomorrow (SK5), and a
+// valid_from fact that starts today must appear — so the cache rolls over at
+// local midnight even when no row changed.
+async function corpusVersion(pool, today = todayStr()) {
   try {
     const r = await pool.query(
       // fact_verifications is folded in too (F14): verifying/unverifying a fact
@@ -123,7 +129,7 @@ async function corpusVersion(pool) {
               UNION ALL SELECT updated_at FROM facts WHERE deleted_at IS NULL
               UNION ALL SELECT verified_at FROM fact_verifications ) x`
     );
-    return `${r.rows[0].v}:${r.rows[0].n}`;
+    return `${today}|${r.rows[0].v}:${r.rows[0].n}`;
   } catch {
     return "0";
   }
@@ -201,7 +207,7 @@ async function semanticCacheGet(pool, qvecLiteral, model, ver) {
 // ---------------------------------------------------------------------------
 const FACTS_LIMIT = 12;
 
-function buildFactsQuery(query, limit) {
+function buildFactsQuery(query, limit, today = todayStr()) {
   const terms = (String(query).match(/\w+/g) || []).filter((t) => t.length > 2).slice(0, 8);
   const search = terms.length ? terms : [String(query).trim() || ""];
   const params = search.map((t) => `%${t}%`);
@@ -215,6 +221,10 @@ function buildFactsQuery(query, limit) {
     )
     .join(" + ");
   params.push(limit);
+  // Validity window on TODAY in APP_TIMEZONE (KR-5), the same day the cache
+  // version is keyed on — not Postgres' UTC CURRENT_DATE.
+  params.push(today);
+  const todayP = `$${params.length}::date`;
   const sql = `
     SELECT entity, attribute, value, valid_from, valid_to,
            EXISTS(SELECT 1 FROM fact_verifications fv
@@ -222,11 +232,11 @@ function buildFactsQuery(query, limit) {
            (${score}) AS score
     FROM facts
     WHERE deleted_at IS NULL AND sensitivity = 'normal'
-      AND (valid_to IS NULL OR valid_to >= CURRENT_DATE)
-      AND (valid_from IS NULL OR valid_from <= CURRENT_DATE)
+      AND (valid_to IS NULL OR valid_to >= ${todayP})
+      AND (valid_from IS NULL OR valid_from <= ${todayP})
       AND (${match})
     ORDER BY score DESC, entity
-    LIMIT $${params.length}`;
+    LIMIT $${params.length - 1}`;
   return { sql, params };
 }
 
@@ -794,7 +804,9 @@ module.exports = function ({ pool }) {
       const params = [];
       let where = "deleted_at IS NULL AND sensitivity = 'normal'";
       if (!all) {
-        where += " AND (valid_to IS NULL OR valid_to >= CURRENT_DATE) AND (valid_from IS NULL OR valid_from <= CURRENT_DATE)";
+        // Current = valid on TODAY in APP_TIMEZONE (KR-5).
+        params.push(todayStr());
+        where += ` AND (valid_to IS NULL OR valid_to >= $${params.length}::date) AND (valid_from IS NULL OR valid_from <= $${params.length}::date)`;
       }
       if (req.query.entity) {
         params.push(`%${String(req.query.entity)}%`);

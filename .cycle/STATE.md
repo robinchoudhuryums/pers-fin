@@ -9,334 +9,46 @@ to the "none in progress" state.
 
 ## Current Cycle
 
-- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 2 DONE** on branch
-  `claude/lucid-darwin-7r8e59` (2026-09-27). Batch 2 (ingestion completeness
-  & silent sync failures) implemented, tested, pushed (no PR opened).
-  - **Completed:** BSI-1 (Plaid registers new accounts before the cursor walk;
-    stuck item surfaced), BSI-2+DD-1 (/api/sync = Teller + Plaid, one anomaly
-    check on the combined count, via new `syncAllTransactions`), BSI-7 (insert
-    failure holds the watermark), BSI-8 (7-day watermark lookback), BSI-9
-    (401/403 on every account → DISCONNECTED, self-restores to GOOD),
-    BSI-10 (CSV items out of the re-auth count; `plaid_items.last_error_code`),
-    BSI-11 (per-provider merged last_sync_result; reconcile + flows recorded),
-    DD-8 (Teller re-link re-points), DD-9 (new Teller accounts registered in
-    syncAllBalances), DD-10 (per-account balance errors, 429 retry, flow errors,
-    per-account unlink revoke), BSI-3 (Plaid unlink: itemRemove + registry
-    purge + investments deactivated), BSI-12 (mutation-during-pagination
-    restart from the loop-start cursor).
+- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 10 DONE** on branch
+  `claude/lucid-darwin-7r8e59` (2026-10-08). Batch 10 (Sheets & exports) implemented, tested, pushed (no PR opened).
+  - **Completed:**
+    - SXE-1 / WD-6: Sheets sync outcome persisted (user_settings.last_sheets_sync_result), signature-deduped notification, data-health issue, "Partial: N tabs failed" in dashboard / Subscriptions / Settings.
+    - SXE-2: formatSheet() deletes banding + conditional rules before re-adding (Dashboard also resets formats).
+    - SXE-14: per-run sheet-id cache with fields mask; 429-aware retry (POST only on 429); 6 archives/run.
+    - SXE-3: archives 10 days after month-end + completion marker + rebuild of incomplete/legacy tabs.
+    - SXE-5 / SXE-6 / SXE-10: derived goals; app category expression (SX3-pinned); KPI count not currency.
+    - SXE-13: formula guard for Sheets writes (sheetFormula for our 3 formulas) + csvText for CSVs (new teller/services/csv-export.js).
+    - SXE-8 / PSC-10: ISO dates + user merchant names in /api/export.
+    - SXE-9: context-export — real insights, investment accounts, no Plaid phantom, debts negative, ISO dates.
+    - SXE-15: Code.gs category precedence + layout check. SXE-16: comment + CLAUDE.md drift.
   - **Not finished (selected):** none.
-  - **Tests:** 1169/1169 (Perfin 700 + Per-sistant 469; +26 in
-    tests/scan-sept-batch2.test.js). Real-PG 16 checks of every new SQL path;
-    migrations twice (idempotent); Playwright e2e 8/8.
-  - **Decisions:** Plaid re-auth is a `last_error_code` COLUMN, not a new
-    status (status='GOOD' filters would stop retrying); /api/sync stays 500
-    only when nothing synced; last_sync_result errors persist per provider until
-    that provider runs again; max_pages is not reported as an error.
-  - **Open follow-ons:** see `.cycle/blocks/6-batch2-broad-implement.md`.
-  - **Operator:** none required (idempotent auto-migration).
-  - **/sync-docs DONE (Batch 2):** CLAUDE.md — /api/sync (Teller+Plaid) +
-    DELETE /api/items/:id endpoint docs, anomaly-alert coverage, Sync Health
-    Plaid count (CSV excluded, last_error_code), last_sync_result per-provider
-    shape, scheduler chains (syncAllTransactions), Teller watermark design
-    decision (insert hold, 7-day lookback, DISCONNECTED + self-restore, DD-8/9),
-    Plaid cursor decision (BSI-1/10/12), reconcile stamping, Teller 429 retry,
-    plaid_items.last_error_code schema note, re-auth-by-re-link gotcha,
-    INV-02/03/04 wording, NEW INV-67 (unified sync) + INV-68 (merged
-    last_sync_result), test counts 1169/46 (Perfin 700). README endpoint table
-    + count. Subsystem path check: 79/79 exist.
-  - **Where I left off:** Batch 2 + docs merged via PR. NEXT: Batch 3
-    (income/spending classification) per the broad-scan plan.
+  - **Tests:** 1519/1519 (Perfin 974 + Per-sistant 545; 61 files). New tests/scan-sept-batch10.test.js (26) + 3 SX3 pins. Two full syncAll runs on real PG against a stateful fake Sheets API (2nd run clean; the pre-fix script fails it on banding); real-PG export/context-export/data-health checks; migrations ×2; e2e 8/8.
+  - **Decisions:** guard (apostrophe) rather than RAW writes; legacy archives rebuilt once (6/run); POSTs retried only on 429; "Partial" result shown under Settings → Last Auto-Sync for manual runs too.
+  - **Open follow-ons:** see `.cycle/blocks/6-batch10-broad-implement.md`.
+  - **Operator:** none required; legacy Apps Script users: clasp push + separate spreadsheet.
+  - **/sync-docs DONE (Batch 10):** CLAUDE.md — new services/csv-export.js in the architecture tree + the Sheets & External Export subsystem list; Code.gs layout check + category precedence (separate spreadsheet); Sheets section: archive delay/marker/rebuild/6-per-run, re-runnable formatting, sheet-id cache + 429-only POST retry, formula guard, derived goals, app category expression, KPI count, persisted outcome + alert + data-health + Partial UI; Context export bullet + endpoint; /api/export, /api/sheets/sync, /api/data-health endpoint notes; new user_settings.last_sheets_sync_result DB bullet; INV-24 extended (outcome recorded), NEW INV-82 (re-runnable formatting), INV-83 (no formula evaluation in Sheets/CSV), INV-84 (settled-month archives + marker); test counts 1519/61 (Perfin 974) + batch10 test description. README — counts + Batch 10 coverage. Per-sistant CLAUDE.md unchanged (no Per-sistant code touched). Subsystem paths all resolve. Operator state: none new (last_sheets_sync_result auto-migrates).
+  - **Where I left off:** Batch 10 and its docs are committed and pushed (no PR). NEXT: Batch 11 (Knowledge lifecycle & retrieval).
 
-### Prior entries (this cycle)
-
-- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 1 DONE** on branch
-  `claude/lucid-darwin-7r8e59` (2026-09-27). Broad-scan (9 Stage-1 auditors +
-  3 Stage-2 deep dives, ~180 findings, 15-batch plan) run this session; Batch 1
-  (privacy + certain breakage) implemented, tested, pushed.
-  - **Completed:** KR-2 (fail-closed vault sensitivity), KR-1 (full-sync
-    mark-and-sweep + compare fallback + sha reset on repo/branch change), KR-6
-    (hard-deleted notes out of retrieval + chunk purge), FAN-1 (housing PATCH
-    typed param), DC-1 (bulk-category route order), WD-1 (tax links basePath),
-    WUI-1 (housing style nonce), WD-14 (runtime style → shared CSS), PD-1 (Save
-    Draft stays draft), PUI-1 (local datetime fill), PUI-2 (Send now saves
-    first), DC-3 (calendar paid state).
+- **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 9 DONE** on branch
+  `claude/lucid-darwin-7r8e59` (2026-10-08). Batch 9 (platform hardening) implemented, tested, pushed (no PR opened).
+  - **Completed:**
+    - PSC-4: Secure cookies follow req.secure; shell error handler (no stack traces); NODE_ENV=production at runtime in Dockerfile/fly.toml (render.yaml deliberately not — build impact).
+    - PSC-11: boot fails fast without SHELL_SECRET; login can't crash.
+    - PSC-14: global PIN ceiling 30/h → 30 min lockout + "PIN login locked" alert; short-PIN boot warning.
+    - PSC-7: shell body limit 1mb. PSC-9: return_to carried through login (incl. biometric).
+    - PSC-8: general limiter skipped when embedded; tight limiter skips GETs.
+    - PSC-13: guarded constraint rebuilds. PSC-6: reset-fresh table lists complete + schema-classification test.
+    - PSC-15: shell deps declared; csv-import.yml permissions + no in-tree CSV archive; bounded settings 400.
+    - PB-14: CIDR SSRF check incl. mapped IPv6, DNS-resolving check at send, redirect:'manual'.
+    - PB-15: signed Perfin webhook passes Per-sistant standalone auth + the shell gate.
+    - PB-21 / WD-16: logout works in both modes for both apps.
   - **Not finished (selected):** none.
-  - **Tests:** 1143/1143 (Perfin 674 + Per-sistant 469; +46). Real-PG 16
-    verification of all new SQL; Playwright e2e 8/8 on a live boot.
-  - **Decisions:** vault sensitivity is most-restrictive-wins and unknown →
-    private (INV-27 strengthened; old "bogus → normal" test flipped on purpose).
-    YAML ` #` comments are stripped (quote values that contain " #"). "Save
-    Draft" on a scheduled email unschedules it.
-  - **Open follow-ons:** see `.cycle/blocks/6-batch1-broad-implement.md`.
-  - **Operator:** after deploy, run one full Knowledge reindex.
-  - **/sync-docs DONE:** test counts (1143/45 files; Perfin 674 + Per-sistant
-    469), INV-27 fail-closed + KR-6 wording, CSP "every <style> nonced" rule,
-    new "mount specific-before-generic" design decision (DC-1), Knowledge
-    post-deploy full-reindex operator note, `.claude/commands` list,
-    scripts/ci-migration-test.js added to Platform subsystem; Per-sistant
-    CLAUDE.md email/trash/vault-sync semantics; both READMEs.
-  - **Where I left off:** Batch 1 + docs committed + pushed (no PR opened).
-    NEXT: Batch 2 (ingestion completeness & silent sync failures) per the
-    broad-scan plan.
-
-### Prior entries
-
-- **Status:** **Job Radar Batch 2 DONE** (Per-sistant) on branch
-  `claude/loving-rubin-1tkzs5` (2026-06-18). AI fit/legitimacy + cap + surfaces.
-  Feature is now end-to-end (ingest→trust→fit→surface).
-  - **B1** AI cost cap (D1) — db/021 adds `ai_usage` ledger + `ai_monthly_budget_cents`;
-    ai.js adds estimateCostCents / getAiBudgetCents / monthlyAiSpendCents /
-    recordAiUsage + `callAIWithUsage` (usage-returning variant; `callAI` UNTOUCHED —
-    10 existing features unaffected). Dependency check confirmed safe (the two
-    api.test.js feature-count tests use LOCAL fixtures, not config).
-  - **B4** registered "job_fit" feature — config.VALID_AI_FEATURES += job_fit;
-    /api/ai/models GET+PATCH include ai_model_job_fit; Settings page Job Fit
-    dropdown (both features arrays in settings-script.js). AI features 10→11.
-  - **B2** fit pass — embed new above-trust rows (document), cosine vs profile
-    (query) embedding, top candidates → Job Fit Claude pass → fit_score+rationale;
-    cappedCall (check-then-charge, charge in finally, throws CAP). Fail-soft on
-    no-Voyage / no-pgvector / ai-off.
-  - **B3** legitimacy pass — borderline 'suspect' rows → Claude {legitimacy,reasons[]};
-    same cap+charge.
-  - **B7** feedback — saved/applied/dismissed nudges source trust_weight (bounded).
-  - **B5** surfaces — pages/jobs.js (/jobs page: enable toggle, profile + companies
-    modals, main + verify-first lists; nonceAttr/escAttr, bindEvents/onDelegate, no
-    inline handlers, backtick-free, emitted-script node --check'd) + nav link +
-    notification-check job_radar entry (gated on job_radar_enabled, fail-soft) +
-    AI daily-briefing job line (fail-soft). settings.js PATCH accepts job_radar_enabled.
-  - **B6** .github/workflows/job-radar.yml — weekly Actions backstop (Mon 07:23 UTC,
-    x-api-key → POST /per-sistant/api/jobs/refresh).
-  - **B10b** tests — parseFitJson/parseLegitimacyJson, estimateCostCents, cappedCall
-    (charge-on-success + throw-CAP-before-model-call via injected fake SDK client),
-    applyFeedbackToSource, ai_usage migration markers.
-  - Suite: **Perfin 664 + Per-sistant 433 = 1097, 0 fail** (43 files). Canonical
-    count line updated.
-  - **Where I left off:** Batch 1 + Batch 2 implemented + green + committed/pushed
-    (PR #124). NEXT: run **/sync-docs** for the full module docs (per-sistant CLAUDE.md
-    Job Radar section + AI features 10→11 + migration 020→021 + env vars; root
-    CLAUDE.md roadmap Priority→Shipped + Per-sistant Backend subsystem file list +
-    new INVs; both READMEs). OPERATOR: ADZUNA_APP_ID/KEY (optional), job-radar.yml
-    repo secrets (SERVER_URL/API_KEY), enable Job Radar on the /jobs page.
-
-- **Status:** **Job Radar Batch 1 DONE** (Per-sistant) on branch
-  `claude/loving-rubin-1tkzs5` (2026-06-18). Backend pipeline + scheduler + tests;
-  NO AI/embeddings yet (deferred to Batch 2 by design — clean seam).
-  - **A1** `apps/per-sistant/db/021_jobs.sql` — job_sources / job_target_companies /
-    job_listings / job_profile + indexes; pgvector embedding columns + HNSW guarded
-    by the db/014 `DO $vec$ … pg_available_extensions` defensive pattern; idempotent
-    seeds (5 sources + 1 example company); additive `ai_model_job_fit` +
-    `job_radar_enabled` on user_settings.
-  - **A2-A7,A11** `apps/per-sistant/routes/jobs.js` — factory + INV-19 attach-after
-    pure helpers (computeContentHash, scamHeuristics [word-boundary INV-10],
-    applyDomainScore, computeTrustScore, cosineSim/collapseNearDups [pure, no-op w/o
-    embeddings], normalize{Adzuna,Greenhouse,Lever,Ashby,Workable}); fail-soft ingest;
-    dedupPersist (content_hash upsert, (xmax=0) genuine-insert count = idempotent);
-    runTrustPass (corroboration+decay+domain+scam → trust_score/legitimacy);
-    purgeRetention (strip description on old new/dismissed, keep hash+status tombstone);
-    gatherJobRadarSummary (single fail-soft aggregator, main + verify_first buckets);
-    endpoints (refresh, GET /api/jobs, profile CRUD, PATCH status archive-not-delete +
-    400 guards, job-companies CRUD).
-  - **A8** `server.js` — route registration + weekly node-cron (Mon 07:23, no tick,
-    gated on job_radar_enabled).
-  - **A10a** `tests/jobs.test.js` (29) — content-hash stability, scam/domain/trust,
-    near-dup collapse, dedup idempotency (2nd run adds 0), trust-pass write, retention,
-    aggregator bucketing + fail-soft, endpoint validation, migration idempotency markers.
-  - Suite: **Perfin 664 + Per-sistant 426 = 1090, 0 fail** (43 files). Canonical
-    count line updated; full feature docs deferred to Batch 2 /sync-docs.
-  - **Decisions locked:** D1=new ai_usage cap table (Batch 2), D2=no heartbeat (done),
-    D3=notif-check + briefing surface (Batch 2), D4=seed + UI editable (done), D5=post-embed
-    near-dup (helper ready), D6=trust/fit thresholds (TRUST_MAIN 60 / FIT_MAIN 65 / TRUST_VERIFY 40).
-  - **Where I left off:** Batch 1 implemented + green + committed/pushed (PR #124). NEXT:
-    Batch 2 (B1 ai_usage cap + getAiBudgetCents in ai.js [High-risk — shared by 10 features],
-    B4 ai_model_job_fit registration + Settings, B2 fit pass [embed+cosine+Claude], B3
-    legitimacy AI pass, B7 feedback trust decay, B5 pages/jobs.js + notif-check + briefing,
-    B6 job-radar.yml, B10b AI-cap-charge tests), then full /sync-docs (both CLAUDE.mds,
-    both READMEs, roadmap→Shipped, AI feature 10→11).
-
-- **Status:** **broad-implement (double-count guard + timezone pass) DONE** on
-  branch `claude/loving-rubin-1tkzs5` (2026-06-18).
-  - **Settle-up double-count guard** — `GET /api/housing/split` returns
-    `double_count_warning` (fail-soft) flagging shared-card charges that month
-    whose merchant matches the payee/utility names (word-boundary `~*`, INV-10);
-    the dashboard Settle Up widget shows an inline ⚠ when both legs combine.
-    `buildDoubleCountPattern(cfg)` pure helper (escapes regex metachars, ≥3-char
-    terms). 
-  - **Timezone full pass (F11 residual)** — `financial-queries.js` now exports
-    `currentMonth(tz)`/`todayStr(tz)` (APP_TIMEZONE, default UTC). Routed the
-    user-facing "current month"/"today" anchors through it IN LOCKSTEP with their
-    paired SQL: `getCategorySpendingThisMonth` (→ delegates to ForMonth(currentMonth)),
-    `getMonthlySpending`/`getMonthlyIncome` window anchors (now `$2::date` param,
-    not CURRENT_DATE), budgets `currentMonthKey`, spending-analytics/goals/ask
-    `thisMonth`, subscriptions settlement-month defaults, housing `thisMonth()`.
-    Rolling-window CURRENT_DATE lookbacks left UTC (tz-insensitive). Default UTC =
-    byte-identical behavior; needs operator to SET APP_TIMEZONE to take effect.
-  - Tests: +5 (tz helpers, double-count helper + 2 endpoint behaviors); updated 3
-    doubles encoding the old anchor (FA-4 ×2 in cycle-fixes, getMonthlySpending
-    param-arity in financial-queries). Suite: **Perfin 664 + Per-sistant 397 =
-    1061, 0 fail** (42 files).
-  - Docs: CLAUDE.md (counts, APP_TIMEZONE broadened to both apps, tz design
-    decision, double_count_warning on the endpoint + widget caveat) + README counts.
-  - **OPERATOR ACTION (non-blocking):** set `APP_TIMEZONE=America/New_York` (or your
-    zone) on Render so Perfin's month/day anchors use wall-clock time. Same var
-    Per-sistant health already uses — if already set for health, Perfin now honors it too.
-  - **Where I left off:** implemented + tests green + docs synced; committing +
-    pushing (PR #124). Remaining roadmap: mobile iOS build (operator),
-    targeted audit of housing.js.
-
-- **Status:** **broad-implement (4 follow-on features) DONE** on branch
-  `claude/loving-rubin-1tkzs5` (2026-06-18). Implemented the operator-selected
-  backlog items from the prioritized roadmap:
-  - **Manual cash entry** — `POST /api/transactions/manual` (routes/transactions.js)
-    + "+ Add cash transaction" modal on the Transactions page. Positive-amount
-    expense, `manual_<ts>_<rand>` id, requires an existing is_manual depository
-    account. Expense-only (cash income deferred).
-  - **Mark-settled** — new `settlements` table (db migration) + GET/POST/DELETE
-    `/api/settlement[/settle|/:period]` (subscriptions.js). Dashboard Settle Up
-    widget grew a "Mark settled" button → "✓ Settled on <date>" + Undo. Display-only.
-  - **Audit confidence badge** — `GET /api/insights` returns per-insight
-    `audit_critical_count`/`audit_warning_count` (ai_audit_log subqueries); the
-    dashboard AI Insights widget header shows ✓ Verified / N cautions / ⚠ N issues
-    / audit incomplete.
-  - **Camera button** — housing OCR rows gained a "📷" capture-direct input
-    alongside "Scan"; both feed one handler. OCR image still memory-only (never stored).
-  - New test file `tests/manual-cash-settlement.test.js` (8 tests). Suite:
-    **Perfin 659 + Per-sistant 397 = 1056, 0 fail** (42 test files).
-  - Docs (CLAUDE.md + README) updated: counts, 4 endpoints, `settlements` table,
-    4 feature notes. NET: 4 features, 0 new failure modes; no invariants violated.
-  - **Where I left off:** implemented + tests green + docs synced; committing +
-    pushing to the branch (PR #124 open). Remaining roadmap: timezone full pass
-    (F11 residual), mobile iOS build (operator), settle-up double-count guard
-    (low pri), targeted audit of housing.js.
-
-- **Status:** **broad-implement Tier-3 features DONE** on branch
-  `claude/loving-rubin-1tkzs5` (2026-06-17). Two strategic additions:
-  - **Sync-degradation UI strip** — dashboard banner (`#sync-health-strip`) fetches
-    `/api/data-health` and surfaces warning-level issues[] up front (disconnected
-    links, stale sync, decryption_failed), dismissible per-session (sessionStorage,
-    so a persistent issue re-appears next visit). Deep-links to Settings → Sync
-    Health (added `id="sync-health"` anchor). Best-effort; never blocks the dashboard.
-  - **CSV preview-and-confirm import** — new `POST /api/import-csv/preview` dry-runs
-    the import via the shared `parseCsvUpload` helper (extracted so preview/import
-    can't drift on dedup IDs) + the SAME `makeCsvTxnIdGenerator`, classifying every
-    row new/duplicate/skipped against existing `transaction_id`s WITHOUT writing.
-    Dashboard CSV modal is now two-step (Preview → "Import N new") with a sample
-    table + new/dup/skip counts; changing any input drops back to the preview step.
-    New test `tests/csv-preview.test.js` (2 tests).
-  - Suite: **Perfin 633 + Per-sistant 392 = 1025, 0 fail** (40 test files).
-  - **Where I left off:** implemented + tests green; committing + pushing. Remaining
-    Tier-3: full timezone pass (F11 residual), manual cash txn entry, AI-audit
-    confidence badge. Roadmap: mobile iOS build (operator). /sync-docs: test count
-    1023→1025 + the new preview endpoint + two-step modal note.
-
-- **Status:** **broad-implement Tier 2 + Tier 1 DONE** on branch
-  `claude/loving-rubin-1tkzs5` (2026-06-17). Implemented the remaining scan
-  backlog the operator selected. Suite: **Perfin 631 + Per-sistant 392 = 1023, 0 fail.**
-  - Tier 2: **F20** top-merchants COALESCE filter · **F18** income-summary month-floored
-    window · **F21** budgets/accept limit validation · **F16** Plaid snapshot
-    current_balance mirrors picked balance (both sites) · **F19** whats-new drops
-    Plaid phantom from balance deltas · **F8** audit subscription-total warning tier ·
-    **F5** manual-sub re-add source-guards state clear (DC-5 test re-pinned) ·
-    **F4** 60-day transfer detect at 2 occ (test double + new test) · **F9**
-    tax_deductions persistence failure → modules_failed · **F13** briefing
-    streaks_at_risk guard · **F14** corpusVersion folds fact_verifications ·
-    **F17** CapOne 0-debit-vs-credit fix · **F22** API-key digest compare (no length
-    oracle) · **F26** transports migration comment + SSO nonce doc (12-byte) · **F10**
-    audit savings-rate synonym matching (utilization/budget % deferred — needs
-    reliable per-entity actuals, false-positive risk).
-  - Tier 1: **F12** RAG semantic-cache hit flagged `sources_from_similar_query` +
-    Knowledge-page caveat (kept original sources — [n] links tied to that ordering) ·
-    **F23** getPersistentConfig DB error → `config_error` (not "not_configured"), 4
-    callers updated · **F24** sendToAll returns `logged`; budget-alert email gated on it.
-  - **Already-resolved on merge (skipped):** F25 (settings target_allocation already
-    400s) and F3 (forecast/calendar cadence>0 guards already landed via main's "F8").
-  - **Where I left off:** all implemented + tests green; committing + pushing next.
-    Remaining open scan findings: F6(in main), plus the Tier-3 completeness/strategic
-    items (full timezone, manual cash txn, CSV preview, sync-warning UI strip, audit
-    confidence badge) and roadmap (mobile iOS build — operator). /sync-docs: test
-    count 1022→1023, rows_duplicate already done; F10 partial noted.
-
-- **Status:** **broad-implement DONE + merged with main** on branch
-  `claude/loving-rubin-1tkzs5` (2026-06-16). A fresh 3-stage `/broad-scan`
-  produced findings F1–F27; the operator selected **F1, F2, F7, F11, F15**.
-  All five implemented + tested + committed (5ed4ef3 code, 493fcca docs), then
-  `origin/main` merged in (the cycle-5 / Web-UI targeted work below). Merge
-  resolved: ai-audit `CROSS_PERIOD_RE` combines main's F6 other-month tokens
-  with this branch's F7 "average" narrowing + `THIS_MONTH_RE` (the merged
-  ai-audit test pins both); doc test-counts reconciled. Post-merge suite:
-  **Perfin 630 + Per-sistant 392 = 1022 pass, 0 fail.**
-  - **F1** CSV dedup occurrence-index (`makeCsvTxnIdGenerator`, teller/data/csv-formats.js)
-    — genuinely-identical same-day rows no longer silently drop; occ0==legacy hash
-    (re-import dedup intact); route + CLI both use it (F2 CLI/route parity kept);
-    route response gains `rows_duplicate`.
-  - **F2** subscription cadence threshold ≥365 → ≥60 (scripts/detect-subscriptions.js):
-    quarterly/bi-monthly subs now detect at 2 occurrences, matching the transfer
-    detector. TRADEOFF: mild false-positive risk on two coincidental ~90d-apart
-    same-amount charges. Test double + docstring updated; +3 tests.
-  - **F7** ai-audit CROSS_PERIOD_RE narrowed: bare `average|avg` → period-qualified
-    forms + `averaging`; added THIS_MONTH_RE override so benchmark "national average"
-    no longer suppresses this-month arithmetic checks. +6 tests.
-  - **F11** health day-math timezone-aware via `APP_TIMEZONE` env (default UTC);
-    server todayStr() + injected client todayLocal() both read it so they agree.
-    OPERATOR: set APP_TIMEZONE to your zone or the off-by-one persists. Residual:
-    heatmap grid + SQL CURRENT_DATE windows still UTC (cosmetic). +1 test.
-  - **F15** partial-failure Teller enrollment surfaces `partial_sync_incomplete` in
-    errors[]/last_sync_result (Sync Health) instead of clean success; enrollments_synced
-    now subtracts only HARD failures.
-  - **Where I left off:** all five committed + pushed; origin/main merged &
-    conflicts resolved; full suite green (1022). /sync-docs applied (counts,
-    APP_TIMEZONE, rows_duplicate, F1/F2/F7/F11/F15 notes, SW cache v4→v5).
-  - Open scan findings (not implemented): F3,F4,F5,F6(landed via main),F8,F9,F10,
-    F12,F13,F14,F16–F27.
-
-### Targeted cycle: Per-sistant Web UI — audit + implement (2026-06-16, branch `claude/beautiful-hamilton-abf4h0`)
-`/targeted-audit` Per-sistant Web UI: 7 findings (0C/0H/4M/3L). `/targeted-implement` A1–A4:
-- **A1 (PW1)** `views/js.js` shared fetch wrapper — ported Perfin INV-61: on a 401 or a
-  followed 302→/login, redirect once to root `/login` (loop-guarded), Response returned
-  unchanged. Closes the idle-timeout-blank-page gap across every page + the Ask popover.
-  GOTCHA HIT+FIXED: the module is one backtick template literal, so a regex's backslashes
-  (`\/`,`\?`) were eaten → emitted `//login…` (a line comment) and broke the bundle; rewrote
-  `_isLoginPath` with `indexOf('/login')` (no backslashes). Caught pre-commit by a
-  node --check on the EMITTED bundle.
-- **A2 (PW2)** `pages/health.js:200` — `escAttr()` for the week-grid `aria-label`/`title`/`data-*`
-  (was quote-unsafe `esc()` on user habit names; CSP limited it to markup injection).
-- **A3 (PW4+PW5)** `pages/emails.js` — `saveEmail()` returns the created id; `sendNow()` uses it
-  instead of `emails[0]` (removes the wrong-email-on-non-newest-first risk); `aiDraft()` uses
-  `getElementById` instead of the deprecated global `event.target`.
-- **A4 (PW3)** `settings-script.js` (saveSettings/saveSlack/saveKeepAlive/saveAIModels),
-  `dashboard-script.js` (dashComplete), `notes.js` (saveNote/deleteNote) — gate success
-  message / optimistic card removal / modal-close on `res.ok` so a transient 5xx no longer
-  shows false "saved" or makes a card vanish.
-Deferred: A5 (PW6 parseQuickTodo date off-by-one — needs verification), A6 (PW7 defensive batch:
-server-enum attr escaping, renderMd link-text hardening, nonceAttr empty-scope guard, knowledge
-loadKStatus error surfacing, esc(null)→''). Tests: 1011 pass / 0 fail (emitted bundles
-node --check'd). Net +2 (A1+A4 prod fixes − 0 new failure modes). Invariant candidate: INV-63
-(Per-sistant fetch-wrapper 401→login, parity with INV-61). **Where I left off:** A1–A4 ready to
-commit; /sync-docs should add INV-63 + the template-literal-regex gotcha to Per-sistant CLAUDE.md.
-
-### Targeted cycle: Web UI (Perfin) — audit + implement (2026-06-15, branch `claude/beautiful-hamilton-abf4h0`)
-`/targeted-audit` Web UI (Perfin): 8 findings (0C/0H/4M/4L), 1 retracted (enrollments_synced
-false positive). `/targeted-implement` completed A1–A5 (the Fix-now + low-risk batch):
-- **A1 (W2)** `settings.ejs` logout → root `POST /logout` + redirect `/login` (un-prefixed) so
-  "Sign Out" clears the shell_session under embedded mode (was `/api/logout` + basePath'd → 404,
-  session survived). X-Requested-With for CSRF.
-- **A2 (W4)** `budgets.ejs`/`goals.ejs`/`settings.ejs` — `res.ok` guard before `.json()` use so an
-  API 5xx shows a clean error instead of throwing / "No goals yet".
-- **A3 (W3)** `perfin-shared.js` apiFetch — on 401 or a followed 302→/login (session expiry), redirect
-  once to root `/login` (loop-guarded `_authRedirecting`); returns the same Response to callers.
-- **A4 (W1)** `shell/index.js` + `shell/views/login.ejs` — added `helmet` to the shell (was NO CSP at
-  all): nonce-based CSP + `frame-ancestors 'none'` + X-Frame-Options on the login/landing/auth surface;
-  nonced the 2 login inline scripts. **COOP/CORP/COEP disabled** so the global middleware doesn't break
-  Plaid/Teller Link popups on sub-app pages (caught in regression check). Verified via header harness:
-  frame-ancestors none ✓, COOP/CORP absent ✓, both scripts nonced ✓, login renders 200.
-- **A5 (W5)** `transactions.js`/`settings-rules.js` — `.json().catch(()=>({}))` on bulk/split/rule-apply
-  so a non-JSON 5xx body gives a meaningful message.
-Deferred (per handoff): A6 (W6 a11y label associations), A7 (W7/W8 cancel_url scheme, fmt(null)→"—",
-calendar shared-fmt). Tests: 1011 pass / 0 fail. Net +3 (3 prod fixes A1/A2/A3 − 0 new failure modes).
-Invariant candidates: INV-60 (logout clears shell session), INV-61 (apiFetch 401→login), INV-62
-(shell CSP/frame-ancestors, COOP/CORP off). **Where I left off:** A1–A5 committed on
-`claude/beautiful-hamilton-abf4h0`; follow-on: standalone Perfin has no POST /logout *handler*
-(pre-existing, debug-only); re-run CI Playwright smoke to confirm login/transitions under the new shell CSP;
-/sync-docs to document the shell helmet + logout behavior.
+  - **Tests:** 1490/1490 (Perfin 945 + Per-sistant 545; 60 files). New tests/scan-sept-batch9.test.js (37) + apps/per-sistant/tests/scan-sept-batch9.test.js (27). Real-PG migrations ×2 + constraint/reset checks; e2e 8/8; live booted-shell HTTP checks.
+  - **Decisions:** PIN lockout refuses even the right PIN (biometric/API key unaffected); SSRF fails closed on DNS error; processed CSVs deleted rather than archived; NODE_ENV not set in render.yaml.
+  - **Open follow-ons:** see `.cycle/blocks/6-batch9-broad-implement.md` (notably per-boot ADD COLUMN locks remain — PSC-13 residual).
+  - **Operator:** SHELL_SECRET must be set (already is on Render); optionally lengthen a <6-digit SHELL_PIN.
+  - **/sync-docs DONE (Batch 9):** CLAUDE.md — shell architecture (auth.js exports, new error-handler.js, also in the Platform subsystem list), reset-fresh lists, deploy configs + NODE_ENV rationale, csv-import workflow, UI auth bullet (global PIN ceiling, return_to), Security (logout both modes incl. Per-sistant, Secure cookies/no stack traces, SHELL_SECRET fail-fast, self-authenticating webhook route, 1mb body limit, rate-limit skips), env vars (SHELL_PIN length, SHELL_SECRET required), chk_account_source guard, INV-59/INV-60 extended, NEW INV-79 (PIN ceiling + SHELL_SECRET), INV-80 (resolving SSRF), INV-81 (reset-fresh classification), test counts 1490/60. apps/per-sistant/CLAUDE.md — SSRF CIDR/DNS/redirect, webhook auth exemption, embedded Log Out, 545 tests. README — counts, SHELL_PIN/SHELL_SECRET, error-handler. Subsystem paths 80/80. Operator state: SHELL_SECRET now required (documented).
+  - **Where I left off:** Batch 9 and its docs are committed and pushed (no PR). NEXT: Batch 10 (Sheets & exports).
 
 ## Current Cycle (prior — broad-scan F1-F12 + T1-T4, cycle 5 reflected)
 

@@ -361,7 +361,11 @@ describe("health integration pins", () => {
     // line is built from payee_obligations + housing_config and degrades silently
     // (no perfinPool standalone, or any error). No HTTP self-fetch.
     assert.match(src, /req\.app\.get\("perfinPool"\)/);
-    assert.match(src, /payee_obligations WHERE status='unpaid'/);
+    // The balance/due math lives in ONE shared helper used by both the
+    // briefing and the notification check (PB-2).
+    assert.match(src, /require\("\.\/housing-due"\)/);
+    assert.match(src, /await housingDue\(perfinPool\)/);
+    assert.match(read("routes", "housing-due.js"), /payee_obligations WHERE status='unpaid' AND payee = \$1/);
     assert.match(src, /Rent & utilities/);
     // The block is guarded so a cross-pool failure can't 500 the briefing.
     const idx = src.indexOf('req.app.get("perfinPool")');

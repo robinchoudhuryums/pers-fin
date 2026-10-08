@@ -14,6 +14,9 @@
 function renderWeeklyDigestEmail(summary, freshness) {
   const arrow = (d) => d === "up" ? "↑" : d === "down" ? "↓" : "→";
   const sev = (s) => s === "high" ? "#eb6b6b" : s === "medium" ? "#f0c36d" : "#9fd4c9";
+  // AIN-14: alerts use critical/warning/info (not the actions' high/medium/
+  // low), so they need their own map — every alert rendered calm teal.
+  const alertSev = (s) => s === "critical" ? "#eb6b6b" : s === "warning" ? "#f0c36d" : "#9fd4c9";
   const trendsHtml = (summary.trends || []).slice(0, 8).map(t =>
     `<li style="margin:6px 0;color:#cccccc;">
        <span style="color:#d4a574;">${arrow(t.direction)}</span>
@@ -30,7 +33,7 @@ function renderWeeklyDigestEmail(summary, freshness) {
   ).join("");
   const alertsHtml = (summary.alerts || []).slice(0, 10).map(a =>
     `<li style="margin:6px 0;color:#cccccc;">
-       <strong style="color:${sev(a.severity)};">${escapeHtml(a.message || "")}</strong>
+       <strong style="color:${alertSev(a.severity)};">${escapeHtml(a.message || "")}</strong>
        ${a.severity ? `<span style="color:#888;font-size:11px;"> [${escapeHtml(a.severity)}]</span>` : ""}
      </li>`
   ).join("");
@@ -109,13 +112,13 @@ function escapeHtml(s) {
 }
 
 // #19 — Daily "what changed since yesterday" digest. Mirrors runWeeklyDigest's
-// shape: gated by daily_digest_enabled, dedupes via last_daily_digest_at (20h
-// window so the once-per-day scheduler tick stays idempotent even if the
-// process restarts), renders directly from gatherWhatsNew(now - 24h) — no AI
-// call. Pre-formats both HTML and plain-text bodies. Skips entirely if there's
+// shape: gated by daily_digest_enabled, sends once per LOCAL (APP_TIMEZONE)
+// date from 07:00 via last_daily_digest_at (AIN-15), renders directly from
+// gatherWhatsNew(since the previous digest) — no AI call. Pre-formats both HTML and plain-text bodies. Skips entirely if there's
 // nothing new (empty digest is noise, not signal).
 function renderDailyDigestEmail(data) {
-  const fmtUsd = (n) => "$" + (n >= 0 ? "" : "-") + Math.abs(n).toFixed(2);
+  // Sign BEFORE the currency symbol: income/credits printed as "$-3000.00" (DD-6).
+  const fmtUsd = (n) => (n < 0 ? "-" : "") + "$" + Math.abs(n).toFixed(2);
   const fmtDate = (d) => d ? new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "";
 
   const txnsHtml = (data.transactions || []).slice(0, 15).map(t =>
@@ -127,11 +130,14 @@ function renderDailyDigestEmail(data) {
      </li>`
   ).join("");
   const balanceHtml = (data.balance_changes || []).slice(0, 10).map(b => {
-    const col = b.delta >= 0 ? "#9fd4c9" : "#eb6b6b";
+    // Colour by whether the move is good for the user: on a credit card or
+    // loan the balance is an amount OWED, so an increase is red (DD-6).
+    const good = typeof b.favorable === "boolean" ? b.favorable : b.delta >= 0;
+    const col = good ? "#9fd4c9" : "#eb6b6b";
     const sgn = b.delta >= 0 ? "+" : "";
     return `<li style="margin:4px 0;color:#cccccc;">
        <strong style="color:#ffffff;">${escapeHtml(b.account_name || "Account #" + b.source_id)}</strong>
-       <span style="color:${col};">${sgn}${fmtUsd(b.delta).replace("$-", "-$").replace("$", "$")}</span>
+       <span style="color:${col};">${sgn}${fmtUsd(b.delta)}</span>${b.is_debt ? `<span style="color:#888;font-size:11px;"> owed</span>` : ""}
        <span style="color:#888;font-size:11px;"> (${fmtUsd(b.baseline_balance)} → ${fmtUsd(b.current_balance)})</span>
      </li>`;
   }).join("");
@@ -177,15 +183,16 @@ function renderDailyDigestText(data) {
   if ((data.balance_changes || []).length) {
     lines.push("BALANCE CHANGES");
     for (const b of data.balance_changes.slice(0, 10)) {
-      const sgn = b.delta >= 0 ? "+" : "";
-      lines.push(`  ${b.account_name || "Account #" + b.source_id}: ${sgn}$${Math.abs(b.delta).toFixed(2)}`);
+      const sgn = b.delta >= 0 ? "+" : "-";
+      lines.push(`  ${b.account_name || "Account #" + b.source_id}: ${sgn}$${Math.abs(b.delta).toFixed(2)}${b.is_debt ? " owed" : ""}`);
     }
     lines.push("");
   }
   if ((data.transactions || []).length) {
     lines.push("NEW TRANSACTIONS");
     for (const t of data.transactions.slice(0, 15)) {
-      lines.push(`  ${t.merchant || "(no merchant)"} — $${parseFloat(t.amount).toFixed(2)}`);
+      const amt = parseFloat(t.amount);
+      lines.push(`  ${t.merchant || "(no merchant)"} — ${amt < 0 ? "-" : ""}$${Math.abs(amt).toFixed(2)}`);
     }
     lines.push("");
   }

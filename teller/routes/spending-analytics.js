@@ -11,19 +11,15 @@
 const express = require("express");
 const router = express.Router();
 const { pool } = require("../services/database");
-const { INCOME_PREDICATE, NOT_TRANSFER, SPLIT_AMOUNT, getMonthlySpending, getMonthlyIncome, getCategorySpendingForMonth, currentMonth } = require("../services/financial-queries");
+const { seriesOccurrences } = require("../services/cadence");
+const { INCOME_PREDICATE, incomePredicate, NOT_TRANSFER, SPLIT_AMOUNT, INVESTMENT_ACCOUNT_TYPES, getMonthlySpending, getMonthlyIncome, getCategorySpendingForMonth, currentMonth, todayStr } = require("../services/financial-queries");
 
-// INCOME_PREDICATE writes its outer column references UNQUALIFIED (so it works
-// however the caller aliases `transactions`) — which breaks the one query here
-// that JOINs linked_accounts: `name` exists on both tables and Postgres
-// rejects the ambiguity (this 500'd /api/income-summary in production; found
-// by the e2e harness's live boot). Derive a t.-qualified variant in place —
-// same convention as insights' NOT_TRANSFER.replace(/\bt\./, "t2.") — leaving
-// the predicate's internal __t2.* subquery references untouched.
-const INCOME_PREDICATE_T = INCOME_PREDICATE.replace(
-  /(?<!__t2\.)\b(merchant_name|name|account_id|amount|date|user_category|category)\b/g,
-  "t.$1"
-);
+// The one query here that JOINs linked_accounts must qualify its column refs
+// (`name` exists on both tables — the unqualified form 500'd /api/income-summary
+// in production; found by the e2e harness's live boot). incomePredicate(alias)
+// qualifies every outer reference with the caller's alias (FAN-2), so this is
+// the "t" build of the same canonical predicate, not a regex-derived copy.
+const INCOME_PREDICATE_T = incomePredicate("t");
 
 // GET /api/spending-categories?month=YYYY-MM — per-month category breakdown
 // for the dashboard's "Spending by Category" month selector. Uses the shared
@@ -48,6 +44,10 @@ router.get("/api/spending-categories", async (req, res) => {
 router.get("/api/spending-summary", async (req, res) => {
   const months = parseInt(req.query.months) || 6;
   try {
+    // Whole-month window (FAN-6 — the FA-4 fix, which this path had missed):
+    // floor to the 1st so `months=6` returns 6 buckets (5 complete + the
+    // current month-to-date), not 7 with a partial OLDEST month that dragged
+    // the dashboard's "Avg Monthly" down. tz-aware anchor (F11).
     const monthlyTrend = await pool.query(
       `SELECT TO_CHAR(t.date, 'YYYY-MM') AS month,
               ROUND(SUM(${SPLIT_AMOUNT}), 2) AS total_spend,
@@ -57,11 +57,26 @@ router.get("/api/spending-summary", async (req, res) => {
        LEFT JOIN linked_accounts la ON la.account_id = t.account_id
        WHERE t.amount > 0 AND t.pending = false AND COALESCE(t.is_reimbursed, false) = false
          AND ${NOT_TRANSFER}
-         AND t.date >= CURRENT_DATE - ($1 || ' months')::INTERVAL
+         AND t.date >= date_trunc('month', $2::date) - make_interval(months => $1 - 1)
        GROUP BY TO_CHAR(t.date, 'YYYY-MM')
        ORDER BY month DESC`,
-      [months]
+      [months, currentMonth() + "-01"]
     );
+    // Averages over COMPLETED months only (FAN-6, as savings-rate does): the
+    // current month is month-to-date, so including it understated the average.
+    // Daily average uses the real day count of those months, not length × 30.
+    const curMonth = currentMonth();
+    const completeMonths = monthlyTrend.rows.filter(m => m.month !== curMonth);
+    const completeTotal = completeMonths.reduce((sum, m) => sum + parseFloat(m.total_spend || 0), 0);
+    const completeDays = completeMonths.reduce((sum, m) => {
+      const [y, mo] = m.month.split("-").map(Number);
+      return sum + new Date(Date.UTC(y, mo, 0)).getUTCDate();
+    }, 0);
+    const averages = {
+      avg_monthly_spend: completeMonths.length ? Math.round((completeTotal / completeMonths.length) * 100) / 100 : null,
+      avg_daily_spend: completeDays ? Math.round((completeTotal / completeDays) * 100) / 100 : null,
+      avg_months: completeMonths.length,
+    };
 
     // Category breakdown honors transaction_splits (Phase B3): when a
     // transaction has splits, each split contributes to its own category
@@ -144,6 +159,7 @@ router.get("/api/spending-summary", async (req, res) => {
 
     res.json({
       monthly_trend: monthlyTrend.rows,
+      ...averages,
       by_category: byCategory.rows,
       top_merchants: topMerchants.rows,
       upcoming_subscriptions: upcoming.rows,
@@ -214,45 +230,64 @@ router.get("/api/cash-flow", async (req, res) => {
     // Get upcoming bills from subscriptions + recurring transfers
     const [subsResult, transfersResult] = await Promise.all([
       pool.query(`
-        SELECT display_name, amount, cadence_days, next_expected
+        SELECT display_name, amount, cadence_days, next_expected, last_charged AS last_date
         FROM detected_subscriptions
         WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL
           AND next_expected IS NOT NULL
       `),
       pool.query(`
-        SELECT display_name, amount, cadence_days, next_expected, transfer_type, direction
+        SELECT display_name, amount, cadence_days, next_expected, last_transferred AS last_date, transfer_type, direction
         FROM recurring_transfers
         WHERE is_active = true AND is_dismissed = false
           AND next_expected IS NOT NULL AND direction = 'outgoing'
       `),
     ]);
 
-    // Combine subscriptions and outgoing recurring transfers into bill schedule
-    const allBills = [...subsResult.rows, ...transfersResult.rows];
+    // Combine subscriptions and outgoing recurring transfers into bill schedule.
+    // DD-4: card AUTOPAYS (bill_payment transfers that aren't a loan/mortgage)
+    // are skipped — the card purchases they pay off are already in the daily
+    // spending average below, so billing the autopay too double-counted card
+    // spending ($2k of card purchases + a $2k autopay projected $4k/month).
+    // Loan / mortgage payments stay: their outflow isn't in the average
+    // (NOT_TRANSFER excludes it).
+    const isCardAutopay = (tr) => tr.transfer_type === "bill_payment"
+      && !/\b(loan|mortgage)\b/i.test(tr.display_name || "");
+    const allBills = [...subsResult.rows, ...transfersResult.rows.filter(tr => !isCardAutopay(tr))];
 
     // Pre-compute next occurrence for each bill (once, not per-day)
+    // Occurrences step by CALENDAR MONTH for month-scale cadences (DC-9) — a
+    // fixed 30-day step drifted and could double-bill a month.
     const now = new Date();
+    const todayUtc = now.toISOString().slice(0, 10);
+    const endUtc = new Date(now.getTime() + (days + 1) * 86400000).toISOString().slice(0, 10);
     const billSchedule = allBills.map(sub => {
-      let nextDate = new Date(sub.next_expected);
-      const cadence = parseInt(sub.cadence_days);
-      while (nextDate < now) nextDate = new Date(nextDate.getTime() + cadence * 86400000);
-      const occurrences = [];
-      const endDate = new Date(now.getTime() + (days + 1) * 86400000);
-      while (nextDate <= endDate) {
-        occurrences.push(nextDate.toISOString().split("T")[0]);
-        nextDate = new Date(nextDate.getTime() + cadence * 86400000);
-      }
+      const occurrences = seriesOccurrences(sub.last_date, sub.next_expected, sub.cadence_days, todayUtc, endUtc);
       return { name: sub.display_name, amount: parseFloat(sub.amount), dates: new Set(occurrences) };
     });
 
     // Get current balances
+    // Spendable cash = DEPOSITORY accounts only (FAN-5). `type != 'credit'`
+    // counted loans (+$18k for an $18k auto loan) and Teller-linked brokerage /
+    // IRA balances as cash, inflating every projected balance.
     const balResult = await pool.query(`
-      SELECT SUM(CASE WHEN type != 'credit' THEN COALESCE(available_balance, current_balance, 0) ELSE 0 END) AS cash,
-             SUM(CASE WHEN type = 'credit' THEN COALESCE(current_balance, 0) ELSE 0 END) AS debt
-      FROM linked_accounts
-      WHERE available_balance IS NOT NULL OR current_balance IS NOT NULL
+      SELECT SUM(CASE WHEN la.type = 'depository' AND NOT ${INVESTMENT_ACCOUNT_TYPES}
+                      THEN COALESCE(la.available_balance, la.current_balance, 0) ELSE 0 END) AS cash,
+             SUM(CASE WHEN la.type = 'credit' THEN COALESCE(la.current_balance, 0) ELSE 0 END) AS debt
+      FROM linked_accounts la
+      WHERE la.available_balance IS NOT NULL OR la.current_balance IS NOT NULL
     `);
     let runningBalance = parseFloat(balResult.rows[0]?.cash || 0);
+
+    // Detected subscriptions are projected as scheduled bills above, so their
+    // charges must NOT also sit in the daily average (DD-4 — the comment below
+    // always claimed this; the queries never did it). Same key expression and
+    // same filter as detection's merchant_key / the bill-schedule query.
+    const NOT_SUBSCRIPTION = `NOT EXISTS (
+          SELECT 1 FROM detected_subscriptions ds
+          WHERE ds.is_active = true AND ds.is_dismissed = false AND ds.cancelled_at IS NULL
+            AND ds.next_expected IS NOT NULL
+            AND ds.merchant_key = COALESCE(t.user_merchant_name, t.merchant_name, LOWER(REGEXP_REPLACE(t.name, '[^a-zA-Z0-9 ]', '', 'g')))
+        )`;
 
     // Get average daily discretionary spending (last 60 days, excluding subscription bills)
     // Also apply spending split for shared accounts
@@ -265,6 +300,7 @@ router.get("/api/cash-flow", async (req, res) => {
         WHERE t.amount > 0 AND t.pending = false
           AND COALESCE(t.is_reimbursed, false) = false
           AND ${NOT_TRANSFER}
+          AND ${NOT_SUBSCRIPTION}
           AND t.date >= CURRENT_DATE - INTERVAL '60 days'
         GROUP BY t.date
       ) daily
@@ -288,6 +324,7 @@ router.get("/api/cash-flow", async (req, res) => {
         WHERE t.amount > 0 AND t.pending = false
           AND COALESCE(t.is_reimbursed, false) = false
           AND ${NOT_TRANSFER}
+          AND ${NOT_SUBSCRIPTION}
           AND t.date >= CURRENT_DATE - INTERVAL '60 days'
         GROUP BY t.date
       )
@@ -389,8 +426,16 @@ router.get("/api/cash-flow", async (req, res) => {
 
 // GET /api/spending-yoy — Year-over-year spending comparison
 router.get("/api/spending-yoy", async (req, res) => {
-  const month = parseInt(req.query.month) || new Date().getMonth() + 1;
-  const year = parseInt(req.query.year) || new Date().getFullYear();
+  // Defaults from the APP_TIMEZONE date (FAN-13).
+  const today = todayStr();
+  const month = parseInt(req.query.month) || parseInt(today.slice(5, 7), 10);
+  const year = parseInt(req.query.year) || parseInt(today.slice(0, 4), 10);
+  // DD-11: when the month being compared is the CURRENT (in-progress) month,
+  // cap every year at today's day-of-month so month-to-date is compared with
+  // the same days of prior years — not with a whole prior month (on the 3rd the
+  // widget used to show "↓ ~90%"). 31 = no cap.
+  const isCurrentMonth = year === parseInt(today.slice(0, 4), 10) && month === parseInt(today.slice(5, 7), 10);
+  const throughDay = isCurrentMonth ? parseInt(today.slice(8, 10), 10) : 31;
   try {
     // Phase B3: honor transaction_splits for per-category breakdowns.
     const result = await pool.query(`
@@ -403,7 +448,8 @@ router.get("/api/spending-yoy", async (req, res) => {
           AND COALESCE(t.is_reimbursed, false) = false
           AND ${NOT_TRANSFER}
           AND EXTRACT(MONTH FROM t.date) = $1
-          AND EXTRACT(YEAR FROM t.date) >= $2 - 2
+          AND EXTRACT(YEAR FROM t.date) BETWEEN $2 - 2 AND $2
+          AND EXTRACT(DAY FROM t.date) <= $3
           AND NOT EXISTS (SELECT 1 FROM transaction_splits s WHERE s.parent_transaction_id = t.transaction_id)
       ),
       from_splits AS (
@@ -416,7 +462,8 @@ router.get("/api/spending-yoy", async (req, res) => {
           AND COALESCE(t.is_reimbursed, false) = false
           AND ${NOT_TRANSFER}
           AND EXTRACT(MONTH FROM t.date) = $1
-          AND EXTRACT(YEAR FROM t.date) >= $2 - 2
+          AND EXTRACT(YEAR FROM t.date) BETWEEN $2 - 2 AND $2
+          AND EXTRACT(DAY FROM t.date) <= $3
       ),
       all_lines AS (SELECT * FROM parent_no_splits UNION ALL SELECT * FROM from_splits)
       SELECT TO_CHAR(date, 'YYYY') AS year,
@@ -427,7 +474,7 @@ router.get("/api/spending-yoy", async (req, res) => {
       FROM all_lines
       GROUP BY TO_CHAR(date, 'YYYY'), TO_CHAR(date, 'MM'), category
       ORDER BY year DESC, total DESC
-    `, [month, year]);
+    `, [month, year, throughDay]);
 
     // Group by year
     const byYear = {};
@@ -439,14 +486,18 @@ router.get("/api/spending-yoy", async (req, res) => {
     }
 
     // Calculate changes
+    // Compare only CONSECUTIVE years (DD-11): a missing year used to be
+    // silently skipped, so "2026 vs 2024" was presented as year-over-year.
     const years = Object.keys(byYear).sort().reverse();
     const comparisons = [];
-    for (let i = 0; i < years.length - 1; i++) {
+    for (let i = 0; i < years.length; i++) {
+      const prevKey = String(parseInt(years[i], 10) - 1);
+      if (!byYear[prevKey]) continue;
       const curr = byYear[years[i]];
-      const prev = byYear[years[i + 1]];
+      const prev = byYear[prevKey];
       comparisons.push({
         current_year: years[i],
-        previous_year: years[i + 1],
+        previous_year: prevKey,
         current_total: Math.round(curr.total * 100) / 100,
         previous_total: Math.round(prev.total * 100) / 100,
         change_amount: Math.round((curr.total - prev.total) * 100) / 100,
@@ -464,6 +515,8 @@ router.get("/api/spending-yoy", async (req, res) => {
     res.json({
       month: month,
       month_name: monthNames[month - 1],
+      // Day-of-month every year is capped at (null = whole month) — DD-11.
+      through_day: throughDay < 31 ? throughDay : null,
       by_year: byYear,
       comparisons,
     });
@@ -545,6 +598,10 @@ router.get("/api/savings-rate", async (req, res) => {
 router.get("/api/income-summary", async (req, res) => {
   const months = Math.max(1, Math.min(parseInt(req.query.months) || 6, 24));
   try {
+    // Window anchored on the APP_TIMEZONE month (FAN-13) — date_trunc('month',
+    // CURRENT_DATE) is the UTC month, which flips early west of UTC.
+    const cm = currentMonth();
+    const monthStart = cm + "-01";
     const [monthlyTrend, bySource, byAccount] = await Promise.all([
       pool.query(
         `SELECT TO_CHAR(date, 'YYYY-MM') AS month,
@@ -555,11 +612,11 @@ router.get("/api/income-summary", async (req, res) => {
            -- Whole-month window (FA-4): floor to the 1st so the oldest bucket is
            -- a FULL month, matching getMonthlyIncome — otherwise avg_monthly_income
            -- divides a rolling-window total by a count that includes a partial month.
-           AND date >= date_trunc('month', CURRENT_DATE) - make_interval(months => $1 - 1)
+           AND date >= $2::date - make_interval(months => $1 - 1)
            AND ${INCOME_PREDICATE}
          GROUP BY TO_CHAR(date, 'YYYY-MM')
          ORDER BY month`,
-        [months]
+        [months, monthStart]
       ),
       pool.query(
         `SELECT COALESCE(merchant_name, name) AS source,
@@ -571,12 +628,12 @@ router.get("/api/income-summary", async (req, res) => {
            -- Whole-month window (FA-4): floor to the 1st so the oldest bucket is
            -- a FULL month, matching getMonthlyIncome — otherwise avg_monthly_income
            -- divides a rolling-window total by a count that includes a partial month.
-           AND date >= date_trunc('month', CURRENT_DATE) - make_interval(months => $1 - 1)
+           AND date >= $2::date - make_interval(months => $1 - 1)
            AND ${INCOME_PREDICATE}
          GROUP BY COALESCE(merchant_name, name)
          ORDER BY total_income DESC
          LIMIT 10`,
-        [months]
+        [months, monthStart]
       ),
       pool.query(
         `SELECT la.name AS account_name,
@@ -588,16 +645,22 @@ router.get("/api/income-summary", async (req, res) => {
          LEFT JOIN teller_enrollments te ON te.id = la.teller_enrollment_id
          LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
          WHERE t.amount < 0 AND t.pending = false
-           AND t.date >= date_trunc('month', CURRENT_DATE) - make_interval(months => $1 - 1)
+           AND t.date >= $2::date - make_interval(months => $1 - 1)
            AND ${INCOME_PREDICATE_T}
          GROUP BY la.id, la.name, te.institution_name, pi.institution_name, la.institution_name_manual
          ORDER BY total_income DESC`,
-        [months]
+        [months, monthStart]
       ),
     ]);
 
     const totalIncome = monthlyTrend.rows.reduce((s, r) => s + parseFloat(r.total_income), 0);
-    const avgMonthly = monthlyTrend.rows.length > 0 ? totalIncome / monthlyTrend.rows.length : 0;
+    // Average over COMPLETED months only (FAN-13): the partial current month
+    // dragged avg_monthly_income down early in every month. Falls back to all
+    // months when only the current month has data.
+    const completed = monthlyTrend.rows.filter((r) => r.month !== cm);
+    const avgBase = completed.length ? completed : monthlyTrend.rows;
+    const avgMonthly = avgBase.length > 0
+      ? avgBase.reduce((s, r) => s + parseFloat(r.total_income), 0) / avgBase.length : 0;
 
     res.json({
       months,

@@ -299,8 +299,12 @@ describe("F3 / DC-2 / AI-7 — source-pinned", () => {
     assert.ok(usageIdx > 0, "usage-row text present");
     assert.ok(applyIdx > usageIdx, "usage INSERT must precede the apply loop");
   });
-  it("AI-7: tax-deduction query groups by COALESCE(user_merchant_name, merchant_name, name)", () => {
-    assert.match(ins, /GROUP BY COALESCE\(user_merchant_name, merchant_name, name\)/);
+  it("AI-7: tax-deduction rows are keyed on COALESCE(user_merchant_name, merchant_name, name)", () => {
+    // SXE-7 moved the query into the shared getTaxDeductionTransactions helper
+    // (insights groups its rows by that display merchant in JS).
+    const fqSrc = fs.readFileSync(path.join(__dirname, "..", "teller", "services", "financial-queries.js"), "utf8");
+    assert.match(fqSrc, /COALESCE\(t\.user_merchant_name, t\.merchant_name, t\.name\) AS merchant/);
+    assert.match(ins, /getTaxDeductionTransactions\(pool, taxYear\)/);
   });
 });
 

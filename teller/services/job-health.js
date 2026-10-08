@@ -39,7 +39,7 @@ const JOB_INTERVALS_MS = {
   "self-healing-reconcile": 1 * HOUR,
   "weekly-digest": 1 * HOUR,
   "daily-digest": 1 * HOUR,
-  "csv-reminder": 24 * HOUR,
+  "csv-reminder": 1 * HOUR, // hourly tick, watermark-gated (PSC-3)
 };
 const MISSED_FACTOR = 4;
 const MIN_THRESHOLD_MS = 36 * HOUR;

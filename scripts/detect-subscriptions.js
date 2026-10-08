@@ -20,6 +20,36 @@
 // ============================================================================
 
 const { Pool } = require("pg");
+const { nextOccurrence, parseYmd } = require("../teller/services/cadence");
+
+// Stale gate (DC-2): a series whose last charge is older than
+// max(120 days, 1.5 × cadence) has stopped. Detection reads 36 months of
+// history, so without this a subscription cancelled at the merchant two years
+// ago was re-detected — and upserted ACTIVE — on every run, feeding the
+// calendar, ICS, forecasts, cash flow and the AI audit. Same threshold as the
+// stale sweep below.
+function isStale(lastDate, cadenceDays, today = new Date()) {
+  const p = parseYmd(lastDate);
+  if (!p) return false;
+  const last = new Date(Date.UTC(p.y, p.m, p.d));
+  const t0 = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
+  const staleDays = Math.max(120, cadenceDays * 1.5);
+  return (t0 - last.getTime()) / 86400000 > staleDays;
+}
+
+// Anchor amount (DC-7): prefer the MOST RECENT amount cluster when it has
+// enough charges to stand on its own, so a price increase (18 × $15.49 then
+// 6 × $17.99) is reported at the new price instead of the old mode — the
+// global mode hid exactly the price-creep signal this feature exists for.
+// Falls back to the global mode when the latest charge is a one-off.
+function findAnchorAmount(sortedTxns, tolerance, minCluster) {
+  if (!sortedTxns.length) return null;
+  const amounts = sortedTxns.map(t => parseFloat(t.amount));
+  const latest = amounts[amounts.length - 1];
+  const recentCluster = amounts.filter(a => Math.abs(a - latest) / Math.max(latest, 0.01) <= tolerance).length;
+  if (recentCluster >= minCluster) return latest;
+  return findModeAmount(amounts, tolerance);
+}
 
 async function detectSubscriptions(externalPool) {
   const ownPool = !externalPool;
@@ -94,9 +124,8 @@ async function detectSubscriptions(externalPool) {
         const minGap = targetCadence * (1 - TOLERANCE);
         const maxGap = targetCadence * (1 + TOLERANCE);
 
-        // Find the dominant amount (mode by ~10% buckets)
-        const amounts = merchantTxns.map((t) => parseFloat(t.amount));
-        const modeAmount = findModeAmount(amounts, AMOUNT_TOLERANCE);
+        // Anchor on the most recent amount cluster, else the mode (DC-7).
+        const modeAmount = findAnchorAmount(merchantTxns, AMOUNT_TOLERANCE, minOcc);
         if (modeAmount === null) continue;
 
         // Filter to transactions with similar amounts
@@ -106,6 +135,13 @@ async function detectSubscriptions(externalPool) {
         });
 
         if (filtered.length < minOcc) continue;
+        // Two-charge detection (≥60-day cadences) needs a near-EXACT repeat
+        // amount (±2%, DC-8): two restaurant meals of $45.00 and $48.10 55 days
+        // apart are not a subscription.
+        if (filtered.length === 2) {
+          const a0 = parseFloat(filtered[0].amount), a1 = parseFloat(filtered[1].amount);
+          if (Math.abs(a0 - a1) / Math.max(a0, a1, 0.01) > 0.02) continue;
+        }
 
         // Compute inter-charge gaps
         const gaps = [];
@@ -119,16 +155,26 @@ async function detectSubscriptions(externalPool) {
         // Count how many gaps fall within our cadence tolerance
         const matchingGaps = gaps.filter((g) => g >= minGap && g <= maxGap);
 
-        // If >50% of gaps match this cadence, it's recurring
-        // For yearly cadence, a single matching gap (2 charges ~365 days apart) is sufficient
+        // A true majority of gaps must match (ceil, DC-8 — floor let 1 of 2 or
+        // 1 of 3 through) AND the LATEST gap must match, so an old coincidence
+        // followed by irregular purchases isn't a live subscription. For
+        // ≥60-day cadences a single matching gap (2 charges) is still enough.
         const minMatchingGaps = targetCadence >= 60 ? 1 : 2;
-        if (matchingGaps.length >= Math.floor(gaps.length * 0.5) && matchingGaps.length >= minMatchingGaps) {
+        const latestGap = gaps[gaps.length - 1];
+        const latestGapMatches = latestGap >= minGap && latestGap <= maxGap;
+        if (latestGapMatches && matchingGaps.length >= Math.ceil(gaps.length * 0.5) && matchingGaps.length >= minMatchingGaps) {
           const lastTxn = filtered[filtered.length - 1];
           const firstTxn = filtered[0];
+          // DC-2: a series that stopped is not re-detected (and so never
+          // re-activated by the upsert); the stale sweep below retires it.
+          if (isStale(lastTxn.date, targetCadence)) break;
           const latestAmount = parseFloat(lastTxn.amount);
+          // Prior amount = the merchant's previous charge overall, so a new
+          // price cluster (DC-7) reports amount_changed against the old price.
+          const lastIdx = merchantTxns.indexOf(lastTxn);
           const priorAmount =
-            filtered.length >= 2
-              ? parseFloat(filtered[filtered.length - 2].amount)
+            lastIdx > 0
+              ? parseFloat(merchantTxns[lastIdx - 1].amount)
               : null;
 
           detected.push({
@@ -139,9 +185,9 @@ async function detectSubscriptions(externalPool) {
             cadence_days: targetCadence,
             first_seen: firstTxn.date,
             last_charged: lastTxn.date,
-            next_expected: addDays(new Date(lastTxn.date), targetCadence)
-              .toISOString()
-              .split("T")[0],
+            // Calendar-month stepping for month-scale cadences (DC-9) — a
+            // fixed +30 days drifted and could double-book a month.
+            next_expected: nextOccurrence(lastTxn.date, targetCadence),
             is_active: true,
             amount_changed:
               priorAmount !== null &&
@@ -307,4 +353,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { detectSubscriptions, findModeAmount, addDays, isExcludedMerchant, EXCLUSION_PATTERNS };
+module.exports = { detectSubscriptions, findModeAmount, findAnchorAmount, isStale, addDays, isExcludedMerchant, EXCLUSION_PATTERNS };

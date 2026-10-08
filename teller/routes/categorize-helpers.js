@@ -62,7 +62,10 @@ const TELLER_CATEGORY_MAP = {
   sport: "Health & Fitness",
   health: "Healthcare",
   home: "Housing",
-  accommodation: "Housing",
+  // Teller's "accommodation" is LODGING (hotels) — a $600 Marriott stay was
+  // auto-filed under Housing, inflating Housing budgets and the AI's housing
+  // benchmark (DC-12).
+  accommodation: "Travel",
   utilities: "Utilities",
   phone: "Utilities",
   insurance: "Insurance",
@@ -71,10 +74,58 @@ const TELLER_CATEGORY_MAP = {
   charity: "Gifts & Donations",
   income: "Income",
   investment: "Investment",
-  loan: "Fees & Charges",
+  // Loan payments move money to a lender — a Transfer, not a fee (DC-12).
+  loan: "Transfer",
   tax: "Fees & Charges",
   software: "Subscription",
 };
+
+// Plaid's personal_finance_category (PFC) → our scheme (DD-3). Plaid stores the
+// current taxonomy in transactions.personal_finance_category ({primary,
+// detailed}); the legacy `category` array is deprecated and has no top-level
+// Income. Mapping it is free, so it runs before paid AI. DETAILED codes win
+// over the PRIMARY code (e.g. FOOD_AND_DRINK_GROCERIES → Groceries while the
+// rest of FOOD_AND_DRINK → Food & Drink). Ambiguous primaries
+// (GENERAL_SERVICES, GOVERNMENT_AND_NON_PROFIT) are left to rules/AI except for
+// their unambiguous detailed codes.
+const PLAID_PFC_DETAILED_MAP = {
+  FOOD_AND_DRINK_GROCERIES: "Groceries",
+  TRANSPORTATION_GAS: "Gas & Fuel",
+  RENT_AND_UTILITIES_RENT: "Housing",
+  PERSONAL_CARE_GYMS_AND_FITNESS_CENTERS: "Health & Fitness",
+  GENERAL_SERVICES_INSURANCE: "Insurance",
+  GENERAL_SERVICES_EDUCATION: "Education",
+  GOVERNMENT_AND_NON_PROFIT_DONATIONS: "Gifts & Donations",
+  GOVERNMENT_AND_NON_PROFIT_TAX_PAYMENT: "Fees & Charges",
+};
+const PLAID_PFC_PRIMARY_MAP = {
+  INCOME: "Income",
+  TRANSFER_IN: "Transfer",
+  TRANSFER_OUT: "Transfer",
+  LOAN_PAYMENTS: "Transfer",
+  BANK_FEES: "Fees & Charges",
+  ENTERTAINMENT: "Entertainment",
+  FOOD_AND_DRINK: "Food & Drink",
+  GENERAL_MERCHANDISE: "Shopping",
+  HOME_IMPROVEMENT: "Housing",
+  MEDICAL: "Healthcare",
+  PERSONAL_CARE: "Personal Care",
+  TRANSPORTATION: "Transportation",
+  TRAVEL: "Travel",
+  RENT_AND_UTILITIES: "Utilities",
+};
+
+// Suggested category for one row from the deterministic maps (Teller category
+// first, then Plaid PFC detailed → primary). Used by the review queue.
+function mapCategoryFor(row) {
+  const tellerCat = Array.isArray(row.category) && row.category[0] ? String(row.category[0]).toLowerCase() : null;
+  if (tellerCat && TELLER_CATEGORY_MAP[tellerCat]) return TELLER_CATEGORY_MAP[tellerCat];
+  let pfc = row.personal_finance_category;
+  if (typeof pfc === "string") { try { pfc = JSON.parse(pfc); } catch { pfc = null; } }
+  if (pfc && pfc.detailed && PLAID_PFC_DETAILED_MAP[pfc.detailed]) return PLAID_PFC_DETAILED_MAP[pfc.detailed];
+  if (pfc && pfc.primary && PLAID_PFC_PRIMARY_MAP[pfc.primary]) return PLAID_PFC_PRIMARY_MAP[pfc.primary];
+  return null;
+}
 
 // Postgres text-array literal of our scheme. Used in the
 // "not in our scheme" predicate so rows Teller has tagged with its own
@@ -85,5 +136,8 @@ module.exports = {
   CATEGORIES,
   CATEGORY_DESCRIPTIONS,
   TELLER_CATEGORY_MAP,
+  PLAID_PFC_DETAILED_MAP,
+  PLAID_PFC_PRIMARY_MAP,
+  mapCategoryFor,
   OUR_CATEGORIES_PG,
 };

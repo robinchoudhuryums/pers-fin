@@ -6,7 +6,9 @@ const express = require("express");
 const router = express.Router();
 const { pool } = require("../services/database");
 const { zipToState } = require("../data/reference-data");
-const { INVESTMENT_ACCOUNT_TYPES, getMonthlySpending, currentMonth } = require("../services/financial-queries");
+const { INVESTMENT_ACCOUNT_TYPES, getMonthlySpending, currentMonth, todayStr } = require("../services/financial-queries");
+const { addMonthsYm, addMonthsYmd } = require("../services/projections");
+const { isoDate } = require("../services/csv-export");
 
 // Derive a goal's effective current_amount + funding status from a row that has
 // been LEFT JOINed to its funding account/investment (columns:
@@ -119,9 +121,8 @@ router.get("/api/goals", async (_req, res) => {
       // Calculate estimated date using proper month addition
       let estimated_date = null;
       if (months_to_goal) {
-        const d = new Date();
-        d.setMonth(d.getMonth() + months_to_goal);
-        estimated_date = d.toISOString().split("T")[0];
+        // Month-end safe (FAN-15): setMonth on the 29th-31st skipped a month.
+        estimated_date = addMonthsYmd(todayStr(), months_to_goal);
       }
       // Suggested transfers — recurring outgoing transfers whose type aligns
       // with this goal's funding source and whose monthly_equivalent is in
@@ -517,8 +518,15 @@ router.delete("/api/investment-accounts/:id", async (req, res) => {
 router.get("/api/context-export", async (req, res) => {
   const format = req.query.format || "markdown";
   try {
-    const [accounts, monthlySpend, subs, goals, creditCards, netWorth, recentInsight, settings] = await Promise.all([
-      pool.query("SELECT name, type, subtype, mask, available_balance, current_balance, apr FROM linked_accounts ORDER BY type, name"),
+    const [accounts, monthlySpend, subs, goals, creditCards, netWorth, recentInsight, settings, investmentAccts] = await Promise.all([
+      // SXE-9: drop the Plaid brokerage phantom (the same account also lives in
+      // investment_accounts with the real holdings value — getNetWorth's
+      // dedupe direction); the investments themselves come from the query below.
+      pool.query(`SELECT la.name, la.type, la.subtype, la.mask, la.available_balance, la.current_balance, la.apr
+                  FROM linked_accounts la
+                  WHERE NOT EXISTS (SELECT 1 FROM investment_accounts ia
+                                    WHERE ia.plaid_account_id = la.account_id AND ia.is_active = true)
+                  ORDER BY la.type, la.name`),
       // Split-adjusted, transfer-filtered, reimbursed-excluded monthly spend via
       // the shared helper, so the AI deep-dive export shows the same numbers as
       // the dashboard rather than a raw SUM(amount) that includes transfers (F12).
@@ -542,8 +550,13 @@ router.get("/api/context-export", async (req, res) => {
       ).catch(() => ({ rows: [] })),
       pool.query("SELECT name, mask, current_balance, available_balance, credit_limit, apr FROM linked_accounts WHERE type = 'credit' AND current_balance IS NOT NULL").catch(() => ({ rows: [] })),
       pool.query("SELECT * FROM net_worth_snapshots ORDER BY snapshot_date DESC LIMIT 6").catch(() => ({ rows: [] })),
-      pool.query("SELECT insight_text, created_at FROM financial_insights ORDER BY created_at DESC LIMIT 1").catch(() => ({ rows: [] })),
+      // SXE-9: only real insights — categorize / rebuild / ask / scan usage rows
+      // share this table, and auto-sync's categorize run made "[ML
+      // Categorization] AI returned 12 categorization(s)" the "latest analysis".
+      pool.query("SELECT insight_text, created_at FROM financial_insights WHERE entry_type = 'insight' ORDER BY created_at DESC LIMIT 1").catch(() => ({ rows: [] })),
       pool.query("SELECT zip_code FROM user_settings WHERE id = 1").catch(() => ({ rows: [{}] })),
+      // SXE-9: Plaid + manual brokerages were missing from the Accounts section.
+      pool.query("SELECT name, account_type, institution, balance FROM investment_accounts WHERE is_active = true ORDER BY balance DESC NULLS LAST").catch(() => ({ rows: [] })),
     ]);
 
     const zipCode = settings.rows[0]?.zip_code;
@@ -552,7 +565,9 @@ router.get("/api/context-export", async (req, res) => {
     if (format === "json") {
       return res.json({
         generated_at: new Date().toISOString(),
-        accounts: accounts.rows,
+        // SXE-9: liabilities flagged (credit + loan — F1); investments listed.
+        accounts: accounts.rows.map(a => ({ ...a, is_liability: a.type === "credit" || a.type === "loan" })),
+        investment_accounts: investmentAccts.rows,
         monthly_spending_12mo: monthlySpend.rows,
         subscriptions: subs.rows,
         goals: goals.rows.map(g => {
@@ -578,10 +593,17 @@ router.get("/api/context-export", async (req, res) => {
 
     md += "## Accounts\n";
     for (const a of accounts.rows) {
-      const bal = a.type === "credit" ? parseFloat(a.current_balance || 0) : parseFloat(a.available_balance || a.current_balance || 0);
-      md += "- **" + a.name + "** (" + (a.subtype || a.type) + (a.mask ? ", ****" + a.mask : "") + "): $" + bal.toFixed(2);
-      if (a.type === "credit" && a.apr) md += " @ " + a.apr + "% APR";
+      // Credit cards AND loans are debts (F1 / SXE-9): shown as negative
+      // amounts owed — an $18k auto loan read as +$18,000.
+      const isDebt = a.type === "credit" || a.type === "loan";
+      const bal = isDebt ? parseFloat(a.current_balance || 0) : parseFloat(a.available_balance || a.current_balance || 0);
+      md += "- **" + a.name + "** (" + (a.subtype || a.type) + (a.mask ? ", ****" + a.mask : "") + "): "
+        + (isDebt ? "-$" + Math.abs(bal).toFixed(2) + " owed" : "$" + bal.toFixed(2));
+      if (isDebt && a.apr) md += " @ " + a.apr + "% APR";
       md += "\n";
+    }
+    for (const ia of investmentAccts.rows) {
+      md += "- **" + ia.name + "** (" + (ia.account_type || "investment") + (ia.institution ? ", " + ia.institution : "") + "): $" + parseFloat(ia.balance || 0).toFixed(2) + "\n";
     }
 
     md += "\n## Monthly Spending (12 months)\n";
@@ -599,7 +621,7 @@ router.get("/api/context-export", async (req, res) => {
     for (const [cat, items] of Object.entries(subsByCategory)) {
       md += "### " + cat.charAt(0).toUpperCase() + cat.slice(1) + "s\n";
       for (const s of items) {
-        md += "- " + s.display_name + ": $" + parseFloat(s.amount).toFixed(2) + " every " + s.cadence_days + " days (next: " + s.next_expected + ")\n";
+        md += "- " + s.display_name + ": $" + parseFloat(s.amount).toFixed(2) + " every " + s.cadence_days + " days (next: " + (isoDate(s.next_expected) || "—") + ")\n";
       }
     }
 
@@ -610,7 +632,7 @@ router.get("/api/context-export", async (req, res) => {
         const pct = parseFloat(g.target_amount) > 0 ? Math.round(cur / parseFloat(g.target_amount) * 100) : 0;
         md += "- **" + g.name + "** (" + g.type + "): $" + cur.toFixed(2) + " / $" + parseFloat(g.target_amount).toFixed(2) + " (" + pct + "%)";
         if (g.monthly_contribution > 0) md += ", contributing $" + parseFloat(g.monthly_contribution).toFixed(2) + "/mo";
-        if (g.target_date) md += ", target: " + g.target_date;
+        if (g.target_date) md += ", target: " + isoDate(g.target_date);
         md += "\n";
       }
     }
@@ -631,7 +653,7 @@ router.get("/api/context-export", async (req, res) => {
     if (netWorth.rows.length > 0) {
       md += "\n## Net Worth History\n";
       for (const nw of netWorth.rows) {
-        md += "- " + nw.snapshot_date + ": $" + parseFloat(nw.net_worth).toFixed(2) + " (assets: $" + parseFloat(nw.total_assets).toFixed(2) + ", liabilities: $" + parseFloat(nw.total_liabilities).toFixed(2) + ")\n";
+        md += "- " + isoDate(nw.snapshot_date) + ": $" + parseFloat(nw.net_worth).toFixed(2) + " (assets: $" + parseFloat(nw.total_assets).toFixed(2) + ", liabilities: $" + parseFloat(nw.total_liabilities).toFixed(2) + ")\n";
       }
     }
 
@@ -696,9 +718,7 @@ router.get("/api/fire-projection", async (req, res) => {
 
     let fireDate = null;
     if (proj.months_to_fire !== null) {
-      const d = new Date();
-      d.setMonth(d.getMonth() + proj.months_to_fire);
-      fireDate = d.toISOString().slice(0, 7);
+      fireDate = addMonthsYm(todayStr(), proj.months_to_fire); // month-end safe (FAN-15)
     }
 
     res.json({

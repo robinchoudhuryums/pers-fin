@@ -151,7 +151,9 @@ describe("post-login default + icon particle transition", () => {
     const auth = read("shell", "middleware", "auth.js");
     assert.match(auth, /DEFAULT_POST_LOGIN = "\/per-sistant"/);
     const login = read("shell", "views", "login.ejs");
-    assert.match(login, /window\.location\.href = '\/per-sistant';/,
+    // PSC-9: the biometric path honors a carried return_to, defaulting to
+    // the same destination as the PIN path.
+    assert.match(login, /window\.location\.href = \(rtEl && rtEl\.value\) \|\| '\/per-sistant';/,
       "biometric path must match the PIN path's default destination");
   });
 

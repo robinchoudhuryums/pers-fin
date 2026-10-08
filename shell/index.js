@@ -14,7 +14,8 @@
 //                  NEON_DATABASE_URL        — Perfin's Neon DB
 //                  PERSISTENT_DATABASE_URL  — Per-sistant's Neon DB
 // Optional env:    SHELL_PORT               — defaults to PORT or 3000
-//                  NODE_ENV=production      — enables Secure cookie flag
+//                  NODE_ENV=production      — always-Secure cookies (otherwise
+//                                             Secure follows req.secure)
 //                  + every env var the two sub-apps already consume.
 
 require("dotenv").config();
@@ -28,6 +29,7 @@ const helmet = require("helmet");
 const path = require("path");
 const auth = require("./middleware/auth");
 const webauthn = require("./middleware/webauthn");
+const errorHandler = require("./middleware/error-handler");
 const { startKeepAlive } = require("../teller/services/keep-alive");
 
 const app = express();
@@ -43,8 +45,12 @@ app.use(cookieParser());
 // never be populated under the unified shell and the receiver would fall back
 // to re-stringifying req.body — not guaranteed byte-identical to the signed
 // payload. Mirrors the verify hook in apps/per-sistant/server.js.
-app.use(express.json({ limit: "64kb", verify: (req, _res, buf) => { req.rawBody = buf; } }));
-app.use(express.urlencoded({ extended: false, limit: "64kb" }));
+//
+// Limit 1mb (PSC-7): the shell parses first, so its limit is the effective one
+// for both sub-apps. 64kb silently overrode Per-sistant's documented 1mb /
+// 100k-character note limit — a long note or multibyte email got a raw 413.
+app.use(express.json({ limit: "1mb", verify: (req, _res, buf) => { req.rawBody = buf; } }));
+app.use(express.urlencoded({ extended: false, limit: "1mb" }));
 
 // --- Security headers (W1) -------------------------------------------------
 // The shell previously sent NO CSP / X-Frame-Options on its own routes (login,
@@ -186,8 +192,9 @@ app.get("/calendar.ics", async (req, res) => {
 });
 
 app.get("/login", (req, res) => {
-  if (auth.isValidSession(req.cookies[auth.COOKIE_NAME])) return res.redirect("/");
-  res.render("login", { error: null });
+  const returnTo = auth.loginReturnTo(req.query.return_to);
+  if (auth.isValidSession(req.cookies[auth.COOKIE_NAME])) return res.redirect(returnTo || "/");
+  res.render("login", { error: null, returnTo });
 });
 app.post("/login", authLimiter, auth.handleLogin);
 app.post("/logout", auth.handleLogout);
@@ -211,7 +218,20 @@ webauthn.attach(app, perfin.pool);
 // shell_idle_timeout_minutes setting from user_settings. Without this, auth
 // falls back to a fixed default. Must run before requireAuth is mounted so
 // the very first request after boot can hit the cached/initialized value.
-auth.init({ pool: perfin.pool });
+// onLockout (PSC-14): the global PIN-failure ceiling tells the operator through
+// Perfin's notification channel (push + the in-app bell log).
+auth.init({
+  pool: perfin.pool,
+  onLockout: async ({ failures, lockedUntil }) => {
+    const { sendToAll } = require("../teller/routes/notifications");
+    await sendToAll({
+      title: "PIN login locked",
+      body: `${failures} failed PIN attempts within an hour. PIN login is locked until ${lockedUntil.toISOString().slice(11, 16)} UTC. If this wasn't you, rotate SHELL_PIN.`,
+      tag: "pin-lockout",
+      data: { url: "/" },
+    });
+  },
+});
 // Expose the cache invalidator on Perfin's app so /api/settings can drop
 // the 60s read-cache on the idle-timeout column the moment the user
 // changes it — otherwise their new value wouldn't apply to the next
@@ -267,10 +287,27 @@ app.use("/per-sistant", persistent.app);
 // 404 fallback for authenticated users hitting an unknown path
 app.use((_req, res) => res.status(404).send("Not found"));
 
+// Error handler (PSC-4) — see middleware/error-handler.js. Last, so errors
+// from the body parsers, the auth gate and both mounted sub-apps land here.
+app.use(errorHandler);
+
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
 async function start() {
+  // Fail fast (PSC-11): with SHELL_SECRET unset, every request is
+  // unauthenticated and a correct PIN used to throw inside the async login
+  // handler — an unhandled rejection that crash-looped the process. Same
+  // posture as a missing TOKEN_ENCRYPTION_PASSPHRASE.
+  if (!process.env.SHELL_SECRET) {
+    throw new Error("SHELL_SECRET is not set — refusing to start (it signs the shell session cookie; generate one with `openssl rand -hex 32`).");
+  }
+  if (!process.env.SHELL_PIN) {
+    console.warn("WARNING: SHELL_PIN is not set — PIN login is disabled (biometric and x-api-key access still work).");
+  } else if (process.env.SHELL_PIN.length < 6) {
+    // PSC-14: the PIN is the single auth gate; 4 digits is only 10k guesses.
+    console.warn("WARNING: SHELL_PIN is shorter than 6 characters — use at least 6 digits.");
+  }
   // Sub-app startup tasks (migrations + cron) run before we begin accepting
   // requests so a hot-restart doesn't briefly serve traffic against an
   // un-migrated DB. Each sub-app exports start() — see teller/startup.js
@@ -283,9 +320,6 @@ async function start() {
   const PORT = parseInt(process.env.SHELL_PORT || process.env.PORT || "3000", 10);
   const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`Shell listening on http://localhost:${PORT}`);
-    if (!process.env.SHELL_PIN || !process.env.SHELL_SECRET) {
-      console.warn("WARNING: SHELL_PIN and SHELL_SECRET must both be set for login to work.");
-    }
     // Start keep-alive at the shell layer. Sub-apps in embedded mode no longer
     // own the listener, so their startup.js skips startKeepAlive — without this
     // the keep_alive_enabled setting was wired to nothing and scheduled jobs

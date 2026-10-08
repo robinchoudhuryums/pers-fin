@@ -192,7 +192,7 @@ cron + a GitHub Actions backstop. Off by default — enable on the page. Optiona
 monthly AI cost cap (`PERSISTENT_AI_BUDGET_CENTS`, default $1.00).
 
 ### AI Features (11 total)
-All AI features are optional and independently configurable. Choose **Haiku** (fast, ~$0.0003/call), **Sonnet** (smarter, ~$0.002/call), or **Off** for each feature in Settings. The Job Fit + legitimacy passes are additionally bounded by a monthly AI cost cap.
+All AI features are optional and independently configurable. Choose **Haiku** (Claude Haiku 5.5 — fast, the cheapest at $0.10 / $0.50 per million tokens), **Sonnet** (Claude Sonnet 5.5 — smarter, roughly 20× the price), or **Off** for each feature in Settings. The Job Fit + legitimacy passes are additionally bounded by a monthly AI cost cap.
 
 | Feature | Description | Default |
 |---------|-------------|---------|

@@ -17,7 +17,8 @@
 // ============================================================================
 
 const { Pool } = require("pg");
-const { findModeAmount, addDays } = require("./detect-subscriptions");
+const { findModeAmount, isStale } = require("./detect-subscriptions");
+const { nextOccurrence } = require("../teller/services/cadence");
 
 // Transfer keyword patterns — inverse of subscription exclusion
 const TRANSFER_PATTERNS = {
@@ -160,6 +161,12 @@ async function detectRecurringTransfers(externalPool) {
 
           if (matchingGaps.length >= Math.floor(gaps.length * 0.5) && matchingGaps.length >= minMatchingGaps) {
             const lastTxn = filtered[filtered.length - 1];
+            // DC-2: a pattern whose last transfer is past the stale window
+            // is history, not a live recurring transfer. Skip it so the upsert
+            // can't re-activate the row the stale sweep below just retired
+            // (36 months of history would otherwise keep a long-cancelled
+            // transfer "active" forever).
+            if (isStale(lastTxn.date, targetCadence)) break;
             const firstTxn = filtered[0];
             const latestAmount = Math.abs(parseFloat(lastTxn.amount));
             const priorAmount = filtered.length >= 2
@@ -174,7 +181,7 @@ async function detectRecurringTransfers(externalPool) {
               cadence_days: targetCadence,
               first_seen: firstTxn.date,
               last_transferred: lastTxn.date,
-              next_expected: addDays(new Date(lastTxn.date), targetCadence).toISOString().split("T")[0],
+              next_expected: nextOccurrence(lastTxn.date, targetCadence), // DC-9 calendar-month stepping
               is_active: true,
               transfer_type: classifyTransfer(merchantKey) || "other",
               direction,
@@ -215,7 +222,12 @@ async function detectRecurringTransfers(externalPool) {
                           WHEN recurring_transfers.is_dismissed = true THEN false
                           ELSE true
                         END,
-           transfer_type = EXCLUDED.transfer_type,
+           -- DC-4: a type the user set via PATCH /api/recurring-transfers/:id/type
+           -- sticks; only auto-classified rows follow the keyword classifier.
+           transfer_type = CASE
+                             WHEN recurring_transfers.transfer_type_user_set THEN recurring_transfers.transfer_type
+                             ELSE EXCLUDED.transfer_type
+                           END,
            amount_changed = (EXCLUDED.amount != recurring_transfers.amount),
            updated_at = now()`,
         [

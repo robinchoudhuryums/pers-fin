@@ -37,7 +37,7 @@ const morgan = require("morgan");
 // --- Services ---
 const { pool, runMigrations } = require("./services/database");
 const { TELLER_APP_ID, TELLER_ENV } = require("./services/teller-api");
-const { startKeepAlive, loadKeepAliveConfig } = require("./services/keep-alive");
+const { startKeepAlive, getKeepAliveConfigCached } = require("./services/keep-alive");
 
 // --- Auth config ---
 const SESSION_PASSWORD = process.env.SESSION_PASSWORD;
@@ -74,10 +74,13 @@ app.use((req, res, next) => {
   res.locals.basePath = req.baseUrl || "";
   res.locals.embedded = !!req.app.get("embedded");
   // Touch the idle-gate so background jobs know a user is active.
-  // Static assets and health checks don't count — only real API /
-  // page requests keep the gate open.
+  // Static assets, health checks and the keep-alive.yml schedule probe don't
+  // count — only real API / page requests keep the gate open. (The probe runs
+  // every 14 min, 24/7 — counting it made the idle-gate permanently "active",
+  // so Neon never suspended and every gated job ran around the clock, PSC-2.)
   if (!req.path.endsWith(".css") && !req.path.endsWith(".js") &&
-      !req.path.endsWith(".svg") && req.path !== "/health") {
+      !req.path.endsWith(".svg") && req.path !== "/health" &&
+      req.path !== "/api/keep-alive-schedule") {
     const { touchActivity } = require("./startup");
     touchActivity();
   }
@@ -113,7 +116,10 @@ const sessionConfig = {
   saveUninitialized: false,
   cookie: {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    // PSC-4: NODE_ENV isn't set by the deploy configs, so also follow the
+    // request ("auto" = req.secure, honoring trust proxy) instead of sending
+    // the session cookie without Secure over HTTPS.
+    secure: process.env.NODE_ENV === "production" ? true : "auto",
     sameSite: "lax",
     maxAge: 24 * 60 * 60 * 1000, // 24 hours
   },
@@ -233,14 +239,25 @@ app.use((req, res, next) => {
 });
 
 // Rate limiting
+// PSC-8: under the unified shell every request has already passed the shell's
+// PIN/api-key gate (whose own limiters throttle credential guessing), and the
+// dashboard alone makes ~35-40 /api calls per load — 100 per 15 min per IP
+// 429'd the operator after a few reloads. Skip the general limiter when
+// embedded; it still protects a standalone deployment.
 const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
+  skip: (req) => !!req.app.get("embedded"),
   message: { error: "Too many requests, please try again later." },
 });
 const tightLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 5,
+  // The /api/sync prefix also matches GET /api/sync/reconcile/status, which the
+  // Settings page polls every 4 s during a reconcile — 10 of every 15 polls
+  // were 429s (PSC-8). Reads are cheap; only the sync/reconcile triggers are
+  // throttled.
+  skip: (req) => req.method === "GET",
   message: { error: "Too many requests, please try again later." },
 });
 const loginLimiter = rateLimit({
@@ -341,7 +358,8 @@ app.get("/health", (_req, res) => {
 // Keep-alive schedule (public, no auth — used by external cron to check hours)
 app.get("/api/keep-alive-schedule", async (_req, res) => {
   try {
-    const config = await loadKeepAliveConfig();
+    // Cached (PSC-2) — the 14-minute probe must not query Neon each time.
+    const config = await getKeepAliveConfigCached();
     res.json({
       enabled: config.keep_alive_enabled,
       start: config.keep_alive_start,

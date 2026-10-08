@@ -162,8 +162,32 @@
   // overflow narrow mobile stat cards ($22,199.52 vs $22199.52). Negatives keep
   // the prior "$-12.34" shape (toLocaleString renders the minus before digits).
   function fmt(n) { return '$' + parseFloat(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  // Calendar dates (DATE columns) arrive as 'YYYY-MM-DD' or as node-pg's UTC
+  // midnight 'YYYY-MM-DDT00:00:00.000Z'. Parsing either with `new Date()` and
+  // formatting in the browser's zone showed every date ONE DAY EARLY west of
+  // UTC (WUI-2: a Sep 27 purchase read "Sep 26"). parseCalDate turns a calendar
+  // date into a LOCAL-midnight Date for that same day; a real timestamp (non-
+  // midnight time) is left as an instant.
+  var DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})(?:T00:00:00(?:\.000)?Z)?$/;
+  function parseCalDate(d) {
+    if (d instanceof Date) return d;
+    var m = DATE_ONLY_RE.exec(String(d || ''));
+    if (m) return new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+    return new Date(d);
+  }
   function fmtDate(d) {
-    return d ? new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—';
+    return d ? parseCalDate(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—';
+  }
+  // TODAY as 'YYYY-MM-DD' in the browser's local zone — for date-input
+  // defaults and "is today" checks (toISOString() is the UTC date, which is
+  // already tomorrow on a US evening — WUI-2).
+  function localTodayStr(offsetDays) {
+    var d = new Date();
+    if (offsetDays) d.setDate(d.getDate() + offsetDays);
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+  function localDateStr(d) {
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
   }
   function fmtMonth(m) {
     var parts = m.split('-');
@@ -236,6 +260,9 @@
   win.btnLoading = btnLoading;
   win.fmt = fmt;
   win.fmtDate = fmtDate;
+  win.parseCalDate = parseCalDate;
+  win.localTodayStr = localTodayStr;
+  win.localDateStr = localDateStr;
   win.fmtMonth = fmtMonth;
   win.asyncAction = asyncAction;
   win.registerSW = registerSW;

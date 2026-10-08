@@ -333,8 +333,8 @@
         const resp = await apiFetch('/api/import-csv', { method: 'POST', body: formData });
         const data = await resp.json();
         if (resp.ok) {
-          showCsvStatus('Imported ' + data.rows_imported + ' transactions (' + data.rows_skipped +
-            ' skipped) \u2014 Format: ' + data.format_detected, true);
+          showCsvStatus('Imported ' + data.rows_imported + ' transactions (' + (data.rows_duplicate || 0) +
+            ' already imported, ' + data.rows_skipped + ' skipped) \u2014 Format: ' + data.format_detected, true);
           loadCsvImports(); loadItems();
         } else showCsvStatus('Import failed: ' + (data.error || 'HTTP ' + resp.status), false);
       } catch (e) { showCsvStatus('Import failed: Could not reach server. ' + e.message, false); }

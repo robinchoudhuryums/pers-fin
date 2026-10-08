@@ -46,6 +46,10 @@
         class="pin-input"
         id="pin-input"
       >
+      <% if (typeof returnTo !== 'undefined' && returnTo) { %>
+        <%# PSC-9: the page the user was sent here from; safeReturnTo-validated server-side %>
+        <input type="hidden" name="return_to" id="return-to" value="<%= returnTo %>">
+      <% } %>
       <button type="submit" class="btn primary" id="continue-btn">Continue</button>
       <div class="pin-pad-wrap" id="pin-pad-wrap" hidden>
         <div class="pin-dots" id="pin-dots"></div>
@@ -134,7 +138,8 @@
           throw new Error(verr.error || 'Verification failed');
         }
         status.textContent = 'Verified. Redirecting…';
-        window.location.href = '/per-sistant';
+        var rtEl = document.getElementById('return-to');
+        window.location.href = (rtEl && rtEl.value) || '/per-sistant';
       } catch (e) {
         status.textContent = 'Biometric login failed: ' + (e.message || e);
         btn.disabled = false;

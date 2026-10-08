@@ -42,6 +42,197 @@ function isUserActive() {
   return (Date.now() - _lastRequestAt) < 15 * 60 * 1000;
 }
 
+// ---- "Away" channels (PSC-3) ----
+// The digests, budget alerts and CSV reminder exist for when the user is NOT
+// in Perfin, so they must not be activity-gated (they only fired if someone
+// had loaded /perfin within 15 minutes of the tick — Per-sistant traffic and
+// email-only users never counted). They are gated on their own watermarks
+// instead. To keep Neon idle-friendly, a job that has settled for the local
+// (APP_TIMEZONE) day skips its DB read for the rest of that day.
+const _awaySettled = {};
+function localDay() { return require("./services/financial-queries").todayStr(); }
+function awaySettledToday(job) { return _awaySettled[job] === localDay(); }
+function markAwaySettled(job) { _awaySettled[job] = localDay(); }
+function localHourNow() {
+  const { APP_TIMEZONE } = require("./services/financial-queries");
+  try {
+    return parseInt(new Intl.DateTimeFormat("en-US", { timeZone: APP_TIMEZONE, hour: "numeric", hourCycle: "h23" }).format(new Date()), 10);
+  } catch { return new Date().getUTCHours(); }
+}
+
+async function runBudgetAlertTick() {
+  jobHealth.tick("budget-alerts");
+  try {
+    const { getCategorySpendingThisMonth, currentMonth, previousMonthKey } = require("./services/financial-queries");
+    // tz-aware month keys (FAN-13) — the spending side (getCategorySpending-
+    // ThisMonth) is already APP_TIMEZONE-anchored, so the budget/rollover keys
+    // must be too. Rollover applied to this month is the PRIOR month's unused
+    // budget (FA-1) — the snapshot job stores it keyed by prevMonth.
+    const month = currentMonth();
+    const prevMonth = previousMonthKey(month);
+    const [budgets, spending, snapshots] = await Promise.all([
+      pool.query("SELECT id, category, monthly_limit, rollover_enabled, budget_type, effective_month FROM budgets"),
+      getCategorySpendingThisMonth(pool),
+      pool.query("SELECT budget_id, rollover_amount FROM budget_snapshots WHERE month = $1", [prevMonth]),
+    ]);
+    if (budgets.rows.length === 0) return;
+    const spendMap = {};
+    for (const r of spending) spendMap[r.category] = parseFloat(r.spent);
+    const snapMap = {};
+    for (const s of snapshots.rows) snapMap[s.budget_id] = s;
+
+    const { sendToAll, sentRecently } = require("./routes/notifications");
+    for (const b of budgets.rows) {
+      // Skip one-time budgets outside their effective month, and compare
+      // against the effective limit (base + rollover) — same as the in-app
+      // alerts endpoint and GET /api/budgets (F18).
+      if (b.budget_type === "one_time" && b.effective_month && b.effective_month !== month) continue;
+      const spent = spendMap[b.category] || 0;
+      const snap = snapMap[b.id];
+      const rollover = (b.rollover_enabled && snap) ? parseFloat(snap.rollover_amount || 0) : 0;
+      const limit = parseFloat(b.monthly_limit) + rollover;
+      if (limit <= 0) continue;
+      const pct = Math.round((spent / limit) * 100);
+      // At most one alert per category+severity per 24h: without this, a
+      // category that stays over budget re-logged a notification_log row on
+      // every 3-hour tick for the rest of the month — web-push collapsed the
+      // OS notifications via `tag`, but the in-app bell badge/log spammed.
+      // Escalation (warn → over) uses a different tag, so it still fires
+      // immediately.
+      if (pct >= 100) {
+        const tag = "budget-over-" + b.category.toLowerCase().replace(/\s+/g, "-");
+        if (await sentRecently(tag, 24)) continue;
+        const r = await sendToAll({
+          title: "Budget exceeded: " + b.category,
+          body: "$" + spent.toFixed(2) + " spent of $" + limit.toFixed(2) + " budget (" + pct + "%)",
+          tag,
+          data: { url: "/budgets" },
+        });
+        // Opt-in critical-alert email — shares the 24h sentRecently dedup
+        // above. Only email when the dedup marker (notification_log row) actually
+        // persisted: if it didn't, sentRecently can't see it and the next tick
+        // would re-email, so skip rather than risk daily-cap-breaking spam (F24).
+        if (r && r.logged) {
+          try {
+            const { sendCriticalAlertEmail } = require("./routes/persistent");
+            await sendCriticalAlertEmail(
+              "Budget exceeded: " + b.category,
+              "$" + spent.toFixed(2) + " spent of $" + limit.toFixed(2) + " budget (" + pct + "%) this month."
+            );
+          } catch (e) { console.error("Budget alert email error:", e.message); }
+        } else {
+          console.error("Budget alert: dedup marker not persisted for", tag, "— skipping email to avoid re-send spam.");
+        }
+      } else if (pct >= 80) {
+        const tag = "budget-warn-" + b.category.toLowerCase().replace(/\s+/g, "-");
+        if (await sentRecently(tag, 24)) continue;
+        await sendToAll({
+          title: "Budget warning: " + b.category,
+          body: "$" + spent.toFixed(2) + " of $" + limit.toFixed(2) + " (" + pct + "% — approaching limit)",
+          tag,
+          data: { url: "/budgets" },
+        });
+      }
+    }
+  } catch (err) {
+    console.error("Budget alert notification error:", err.message);
+  }
+}
+
+async function runWeeklyDigestTick() {
+  jobHealth.tick("weekly-digest");
+  if (awaySettledToday("weekly-digest")) return;
+  try {
+    const settings = await pool.query(
+      "SELECT weekly_digest_enabled, weekly_digest_day FROM user_settings WHERE id = 1"
+    );
+    const s = settings.rows[0];
+    if (!s || !s.weekly_digest_enabled) { markAwaySettled("weekly-digest"); return; }
+    // 0=Sun, 1=Mon, etc. Default 1 (Monday). The weekday is the LOCAL
+    // (APP_TIMEZONE) day, not the server's UTC day (AIN-15).
+    const localWeekday = new Date(localDay() + "T00:00:00Z").getUTCDay();
+    if (localWeekday !== (s.weekly_digest_day ?? 1)) { markAwaySettled("weekly-digest"); return; }
+    const { runWeeklyDigest } = require("./routes/insights");
+    const result = await runWeeklyDigest();
+    if (result.sent || ["already_sent_this_week", "disabled", "no_summary", "empty_summary"].includes(result.reason)) {
+      markAwaySettled("weekly-digest");
+    }
+    if (result.sent) console.log("Weekly digest sent.");
+    else if (result.reason && result.reason !== "already_sent_this_week" && result.reason !== "disabled") {
+      console.log("Weekly digest skipped:", result.reason);
+    }
+  } catch (err) {
+    console.error("Weekly digest scheduler error:", err.message);
+  }
+}
+
+async function runDailyDigestTick() {
+  jobHealth.tick("daily-digest");
+  if (awaySettledToday("daily-digest")) return;
+  try {
+    const { runDailyDigest, DAILY_DIGEST_HOUR } = require("./routes/insights");
+    if (localHourNow() < DAILY_DIGEST_HOUR) return;
+    const result = await runDailyDigest();
+    if (result.sent || ["already_sent_today", "disabled", "nothing_new"].includes(result.reason)) {
+      markAwaySettled("daily-digest");
+    }
+    if (result.sent) console.log("Daily digest sent.");
+    else if (result.reason && result.reason !== "already_sent_today" && result.reason !== "disabled" && result.reason !== "nothing_new") {
+      console.log("Daily digest skipped:", result.reason);
+    }
+  } catch (err) {
+    console.error("Daily digest scheduler error:", err.message);
+  }
+}
+
+async function runCsvReminderTick() {
+  jobHealth.tick("csv-reminder");
+  if (awaySettledToday("csv-reminder")) return;
+  try {
+    const settings = await pool.query(
+      "SELECT csv_reminder_enabled, csv_reminder_days, last_csv_reminder_at FROM user_settings WHERE id = 1"
+    );
+    const s = settings.rows[0];
+    if (!s || !s.csv_reminder_enabled) { markAwaySettled("csv-reminder"); return; }
+    if (s.last_csv_reminder_at && Date.now() - new Date(s.last_csv_reminder_at).getTime() < 24 * 60 * 60 * 1000) {
+      markAwaySettled("csv-reminder");
+      return;
+    }
+    const days = parseInt(s.csv_reminder_days) || 14;
+    // Match the LATERAL JOIN logic in GET /api/csv-reminder so the push
+    // notification reflects the same stale-account list the UI shows. The
+    // previous join used a single COALESCE(institution_name_manual, name)
+    // path and missed accounts where csv_imports.account_label matches.
+    const staleAccounts = await pool.query(`
+      SELECT la.name, la.institution_name_manual AS institution, ci.imported_at AS last_import
+      FROM linked_accounts la
+      LEFT JOIN LATERAL (
+        SELECT imported_at FROM csv_imports
+        WHERE LOWER(institution) = LOWER(COALESCE(la.institution_name_manual, ''))
+           OR LOWER(account_label) = LOWER(la.name)
+        ORDER BY imported_at DESC LIMIT 1
+      ) ci ON true
+      WHERE la.is_manual = true
+        AND (ci.imported_at IS NULL OR ci.imported_at < now() - make_interval(days => $1))
+    `, [days]);
+    if (staleAccounts.rows.length > 0) {
+      const { sendToAll } = require("./routes/notifications");
+      const names = staleAccounts.rows.map(r => r.institution || r.name).join(", ");
+      await sendToAll({
+        title: "CSV import reminder",
+        body: `${staleAccounts.rows.length} account(s) need a fresh CSV upload: ${names}`,
+        tag: "csv-reminder",
+        data: { url: "/" },
+      });
+    }
+    // Stamp the evaluation (sent or nothing stale) so the next check is ≥24h out.
+    await pool.query("UPDATE user_settings SET last_csv_reminder_at = now() WHERE id = 1");
+    markAwaySettled("csv-reminder");
+  } catch (err) {
+    console.error("CSV reminder scheduler error:", err.message);
+  }
+}
+
 function startBackgroundJobs() {
   // Sheets auto-sync check (every hour). Gated: skips when no user has
   // been active for 15+ minutes so Neon can auto-suspend.
@@ -60,9 +251,20 @@ function startBackgroundJobs() {
         let sheetsSync;
         try { sheetsSync = require("../scripts/sheets-sync"); } catch { return; }
         if (!process.env.GOOGLE_SHEETS_ID || !process.env.GOOGLE_SERVICE_ACCOUNT_KEY) return;
-        await sheetsSync.syncAll();
+        // SXE-1: record the outcome (persisted + one notification when the set
+        // of failing tabs changes) instead of dropping errors[]. A wholesale
+        // throw is recorded too; the attempt is stamped either way so a broken
+        // spreadsheet isn't retried (~100 API calls) every hour.
+        const { recordSheetsSyncResult } = require("./routes/settings");
+        let result;
+        try {
+          result = await sheetsSync.syncAll();
+        } catch (e) {
+          result = { errors: [{ step: "sync", error: e.message }] };
+        }
+        const record = await recordSheetsSyncResult(result);
         await pool.query("UPDATE user_settings SET sheets_last_auto_sync = now() WHERE id = 1");
-        console.log("Auto-sync to Google Sheets complete.");
+        console.log(record.ok ? "Auto-sync to Google Sheets complete." : `Auto-sync to Google Sheets: ${record.tabs_failed} tab(s) failed.`);
       }
     } catch (err) {
       console.error("Sheets auto-sync error:", err.message);
@@ -203,87 +405,10 @@ function startBackgroundJobs() {
     }
   }, 6 * 60 * 60 * 1000));
 
-  // Budget alert push notifications (every 3 hours). Gated on user activity.
-  intervalHandles.push(setInterval(async () => {
-    jobHealth.tick("budget-alerts");
-    if (!isUserActive()) return;
-    try {
-      const { getCategorySpendingThisMonth } = require("./services/financial-queries");
-      const now = new Date();
-      const month = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
-      // Rollover applied to this month is the PRIOR month's unused budget (FA-1)
-      // — the snapshot job stores it keyed by prevMonth, so read that row, not
-      // the current month's (which mirrors GET /api/budgets + /alerts).
-      const prevD = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-      const prevMonth = prevD.getFullYear() + "-" + String(prevD.getMonth() + 1).padStart(2, "0");
-      const [budgets, spending, snapshots] = await Promise.all([
-        pool.query("SELECT id, category, monthly_limit, rollover_enabled, budget_type, effective_month FROM budgets"),
-        getCategorySpendingThisMonth(pool),
-        pool.query("SELECT budget_id, rollover_amount FROM budget_snapshots WHERE month = $1", [prevMonth]),
-      ]);
-      if (budgets.rows.length === 0) return;
-      const spendMap = {};
-      for (const r of spending) spendMap[r.category] = parseFloat(r.spent);
-      const snapMap = {};
-      for (const s of snapshots.rows) snapMap[s.budget_id] = s;
-
-      const { sendToAll, sentRecently } = require("./routes/notifications");
-      for (const b of budgets.rows) {
-        // Skip one-time budgets outside their effective month, and compare
-        // against the effective limit (base + rollover) — same as the in-app
-        // alerts endpoint and GET /api/budgets (F18).
-        if (b.budget_type === "one_time" && b.effective_month && b.effective_month !== month) continue;
-        const spent = spendMap[b.category] || 0;
-        const snap = snapMap[b.id];
-        const rollover = (b.rollover_enabled && snap) ? parseFloat(snap.rollover_amount || 0) : 0;
-        const limit = parseFloat(b.monthly_limit) + rollover;
-        if (limit <= 0) continue;
-        const pct = Math.round((spent / limit) * 100);
-        // At most one alert per category+severity per 24h: without this, a
-        // category that stays over budget re-logged a notification_log row on
-        // every 3-hour tick for the rest of the month — web-push collapsed the
-        // OS notifications via `tag`, but the in-app bell badge/log spammed.
-        // Escalation (warn → over) uses a different tag, so it still fires
-        // immediately.
-        if (pct >= 100) {
-          const tag = "budget-over-" + b.category.toLowerCase().replace(/\s+/g, "-");
-          if (await sentRecently(tag, 24)) continue;
-          const r = await sendToAll({
-            title: "Budget exceeded: " + b.category,
-            body: "$" + spent.toFixed(2) + " spent of $" + limit.toFixed(2) + " budget (" + pct + "%)",
-            tag,
-            data: { url: "/budgets" },
-          });
-          // Opt-in critical-alert email — shares the 24h sentRecently dedup
-          // above. Only email when the dedup marker (notification_log row) actually
-          // persisted: if it didn't, sentRecently can't see it and the next tick
-          // would re-email, so skip rather than risk daily-cap-breaking spam (F24).
-          if (r && r.logged) {
-            try {
-              const { sendCriticalAlertEmail } = require("./routes/persistent");
-              await sendCriticalAlertEmail(
-                "Budget exceeded: " + b.category,
-                "$" + spent.toFixed(2) + " spent of $" + limit.toFixed(2) + " budget (" + pct + "%) this month."
-              );
-            } catch (e) { console.error("Budget alert email error:", e.message); }
-          } else {
-            console.error("Budget alert: dedup marker not persisted for", tag, "— skipping email to avoid re-send spam.");
-          }
-        } else if (pct >= 80) {
-          const tag = "budget-warn-" + b.category.toLowerCase().replace(/\s+/g, "-");
-          if (await sentRecently(tag, 24)) continue;
-          await sendToAll({
-            title: "Budget warning: " + b.category,
-            body: "$" + spent.toFixed(2) + " of $" + limit.toFixed(2) + " (" + pct + "% — approaching limit)",
-            tag,
-            data: { url: "/budgets" },
-          });
-        }
-      }
-    } catch (err) {
-      console.error("Budget alert notification error:", err.message);
-    }
-  }, 3 * 60 * 60 * 1000));
+  // Budget alert push notifications (every 3 hours). NOT activity-gated
+  // (PSC-3): the push + opt-in critical-alert email are "away" channels;
+  // repeats are bounded by the per-category+severity 24h sentRecently dedup.
+  intervalHandles.push(setInterval(() => runBudgetAlertTick(), 3 * 60 * 60 * 1000));
 
   // Rent & Utilities ledger (every 6 hours): generate the current/missing
   // months' obligations from housing_config (idempotent), then fire the two
@@ -309,44 +434,23 @@ function startBackgroundJobs() {
   // the user-activity gate and Render free-tier sleep — meant a snapshot could
   // be permanently missed if nobody woke the process on the 1st, and from the
   // 2nd onward the date gate never let it catch up, so rollover silently never
-  // applied that month. Now it runs on EVERY tick and is made idempotent by the
-  // existing-snapshot short-circuit below, so any tick after the month rolls
-  // over creates the missing prior-month snapshot (catch-up) and subsequent
-  // ticks no-op. Still gated on user activity (the prior month is complete
-  // regardless of which day we run, so timing within the month doesn't matter).
+  // applied that month. Now it runs on EVERY tick (runBudgetSnapshot in
+  // routes/budgets.js): during days 1-5 it RE-takes the prior month's snapshot
+  // so charges that post a few days late are included (FAN-7 — "the prior month
+  // is complete regardless of which day we run" didn't hold for bank posting
+  // lag); after that it only creates a missing snapshot (catch-up) and
+  // otherwise no-ops. Still gated on user activity.
   intervalHandles.push(setInterval(async () => {
     jobHealth.tick("budget-snapshot");
     if (!isUserActive()) return;
     try {
-      const today = new Date();
-      const prev = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-      const prevMonth = prev.getFullYear() + "-" + String(prev.getMonth() + 1).padStart(2, "0");
-      const existing = await pool.query(
-        "SELECT 1 FROM budget_snapshots WHERE month = $1 LIMIT 1", [prevMonth]
-      );
-      if (existing.rows.length > 0) return;
-      const { getCategorySpendingForMonth } = require("./services/financial-queries");
-      // Pull spending FOR last month, not this (new) month — getCategorySpendingThisMonth
-      // would query the just-rolled-over current month and snapshot near-zero spending,
-      // which made every rollover-enabled budget carry forward its full limit.
-      const [budgets, spending] = await Promise.all([
-        pool.query("SELECT * FROM budgets"),
-        getCategorySpendingForMonth(pool, prevMonth),
-      ]);
-      const spendMap = {};
-      for (const r of spending) spendMap[r.category] = parseFloat(r.spent);
-      for (const b of budgets.rows) {
-        const spent = spendMap[b.category] || 0;
-        const limit = parseFloat(b.monthly_limit);
-        const rollover = b.rollover_enabled ? Math.max(0, limit - spent) : 0;
-        await pool.query(
-          `INSERT INTO budget_snapshots (budget_id, month, monthly_limit, spent, rollover_amount)
-           VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT (budget_id, month) DO NOTHING`,
-          [b.id, prevMonth, limit, spent, rollover]
-        );
-      }
-      console.log("Auto budget snapshot created for", prevMonth);
+      // Refreshes the prior month during days 1-5 (late-posting charges, FAN-7),
+      // creates it if missing afterwards (M5 catch-up); tz-anchored (FAN-13).
+      const { runBudgetSnapshot } = require("./routes/budgets");
+      const r = await runBudgetSnapshot(pool);
+      if (r.mode === "exists") return;
+      const prevMonth = r.month + " (" + r.mode + ", " + r.written + " row(s))";
+      console.log("Auto budget snapshot for", prevMonth);
     } catch (err) {
       console.error("Budget snapshot auto-trigger error:", err.message);
     }
@@ -357,7 +461,9 @@ function startBackgroundJobs() {
     jobHealth.tick("bank-auto-sync");
     try {
       const settings = await pool.query(
-        "SELECT auto_sync_enabled, auto_sync_interval_hours, last_auto_sync_at, last_sync_result FROM user_settings WHERE id = 1"
+        // sync_notifications_enabled MUST be selected — the toggle checks below
+        // read it, and without it they were always "on" (PSC-1).
+        "SELECT auto_sync_enabled, auto_sync_interval_hours, last_auto_sync_at, last_sync_result, sync_notifications_enabled FROM user_settings WHERE id = 1"
       );
       const s = settings.rows[0];
       if (!s || !s.auto_sync_enabled) return;
@@ -442,9 +548,11 @@ function startBackgroundJobs() {
         ", " + (balResult ? `${balResult.accounts_updated} balances` : "balance sync failed");
       console.log("Auto-sync complete: " + syncMsg);
       const txnsAdded = tellerTxns + plaidTxns;
-      const balancesUpdated = balResult ? balResult.accounts_updated : 0;
+      // A balance that was re-fetched but didn't move is not news (PSC-1):
+      // accounts_changed, not accounts_updated, gates the notification.
+      const balancesChanged = balResult ? (balResult.accounts_changed || 0) : 0;
       const anyFailed = !txnResult || txnResult.failed === true || !balResult;
-      const anyChanged = txnsAdded > 0 || balancesUpdated > 0;
+      const anyChanged = txnsAdded > 0 || balancesChanged > 0;
       if (s.sync_notifications_enabled !== false && (anyChanged || anyFailed)) {
         try {
           const { sendToAll } = require("./routes/notifications");
@@ -487,90 +595,27 @@ function startBackgroundJobs() {
     }
   }, 60 * 60 * 1000));
 
-  // Weekly digest email. Gated on user activity (no point burning compute
-  // to check if nobody's here). Fires on the configured weekly_digest_day
-  // when weekly_digest_enabled is true. Bails silently otherwise.
-  intervalHandles.push(setInterval(async () => {
-    jobHealth.tick("weekly-digest");
-    if (!isUserActive()) return;
-    try {
-      const settings = await pool.query(
-        "SELECT weekly_digest_enabled, weekly_digest_day FROM user_settings WHERE id = 1"
-      );
-      const s = settings.rows[0];
-      if (!s || !s.weekly_digest_enabled) return;
-      const today = new Date();
-      // 0=Sun, 1=Mon, etc. Default 1 (Monday). The 6-day gate inside
-      // runWeeklyDigest handles dedup across multiple ticks per day.
-      if (today.getDay() !== (s.weekly_digest_day ?? 1)) return;
-      const { runWeeklyDigest } = require("./routes/insights");
-      const result = await runWeeklyDigest();
-      if (result.sent) console.log("Weekly digest sent.");
-      else if (result.reason && result.reason !== "already_sent_this_week" && result.reason !== "disabled") {
-        console.log("Weekly digest skipped:", result.reason);
-      }
-    } catch (err) {
-      console.error("Weekly digest scheduler error:", err.message);
-    }
-  }, 60 * 60 * 1000));
+  // Weekly digest email. NOT activity-gated (PSC-3) — it exists for when the
+  // user is away. Fires on the configured weekly_digest_day when
+  // weekly_digest_enabled is true; the 6-day last_weekly_digest_at watermark
+  // inside runWeeklyDigest is the dedup. Once the day's outcome is settled
+  // (sent / already sent / disabled / not the day / nothing to send) the job
+  // skips its DB read until the next local day. A failed send stays unsettled
+  // and retries on the next hourly tick.
+  intervalHandles.push(setInterval(() => runWeeklyDigestTick(), 60 * 60 * 1000));
 
-  // Daily digest email (#19). Gated on user activity.
-  intervalHandles.push(setInterval(async () => {
-    jobHealth.tick("daily-digest");
-    if (!isUserActive()) return;
-    try {
-      const { runDailyDigest } = require("./routes/insights");
-      const result = await runDailyDigest();
-      if (result.sent) console.log("Daily digest sent.");
-      else if (result.reason && result.reason !== "already_sent_today" && result.reason !== "disabled" && result.reason !== "nothing_new") {
-        console.log("Daily digest skipped:", result.reason);
-      }
-    } catch (err) {
-      console.error("Daily digest scheduler error:", err.message);
-    }
-  }, 60 * 60 * 1000));
+  // Daily digest email (#19). NOT activity-gated (PSC-3); runDailyDigest's own
+  // last_daily_digest_at watermark (once per local date, ≥ 07:00 local, covers
+  // everything since the previous send) is the gate. Before the send hour the
+  // tick skips without touching the DB; once the day is settled it skips too.
+  intervalHandles.push(setInterval(() => runDailyDigestTick(), 60 * 60 * 1000));
 
-  // CSV import reminder (every 24 hours). Gated on user activity.
-  intervalHandles.push(setInterval(async () => {
-    jobHealth.tick("csv-reminder");
-    if (!isUserActive()) return;
-    try {
-      const settings = await pool.query(
-        "SELECT csv_reminder_enabled, csv_reminder_days, sync_notifications_enabled FROM user_settings WHERE id = 1"
-      );
-      const s = settings.rows[0];
-      if (!s || !s.csv_reminder_enabled) return;
-      const days = parseInt(s.csv_reminder_days) || 14;
-      // Match the LATERAL JOIN logic in GET /api/csv-reminder so the push
-      // notification reflects the same stale-account list the UI shows. The
-      // previous join used a single COALESCE(institution_name_manual, name)
-      // path and missed accounts where csv_imports.account_label matches.
-      const staleAccounts = await pool.query(`
-        SELECT la.name, la.institution_name_manual AS institution, ci.imported_at AS last_import
-        FROM linked_accounts la
-        LEFT JOIN LATERAL (
-          SELECT imported_at FROM csv_imports
-          WHERE LOWER(institution) = LOWER(COALESCE(la.institution_name_manual, ''))
-             OR LOWER(account_label) = LOWER(la.name)
-          ORDER BY imported_at DESC LIMIT 1
-        ) ci ON true
-        WHERE la.is_manual = true
-          AND (ci.imported_at IS NULL OR ci.imported_at < now() - make_interval(days => $1))
-      `, [days]);
-      if (staleAccounts.rows.length > 0) {
-        const { sendToAll } = require("./routes/notifications");
-        const names = staleAccounts.rows.map(r => r.institution || r.name).join(", ");
-        await sendToAll({
-          title: "CSV import reminder",
-          body: `${staleAccounts.rows.length} account(s) need a fresh CSV upload: ${names}`,
-          tag: "csv-reminder",
-          data: { url: "/" },
-        });
-      }
-    } catch (err) {
-      console.error("CSV reminder scheduler error:", err.message);
-    }
-  }, 24 * 60 * 60 * 1000));
+  // CSV import reminder. Hourly tick, NOT activity-gated (PSC-3): the old
+  // 24-hour setInterval needed 24h of continuous uptime AND activity at that
+  // exact tick, so under free-tier sleep/deploys it essentially never fired.
+  // The last_csv_reminder_at watermark limits it to one reminder per 24h
+  // (surviving restarts); the in-memory day memo keeps it to ~one DB read a day.
+  intervalHandles.push(setInterval(() => runCsvReminderTick(), 60 * 60 * 1000));
 
   // Missed-job watchdog (F4). Flushes the in-memory job heartbeats to the
   // job_runs table and alerts (once per outage, signature-deduped) when any
@@ -638,4 +683,9 @@ async function start(app, opts = {}) {
   return { app, server, intervalHandles };
 }
 
-module.exports = { start, startBackgroundJobs, stopBackgroundJobs, touchActivity };
+module.exports = { start, startBackgroundJobs, stopBackgroundJobs, touchActivity, isUserActive };
+// Exposed for tests (PSC-3): the "away" job ticks and the per-day memo reset.
+module.exports._awayJobs = {
+  runBudgetAlertTick, runWeeklyDigestTick, runDailyDigestTick, runCsvReminderTick,
+  reset() { for (const k of Object.keys(_awaySettled)) delete _awaySettled[k]; },
+};

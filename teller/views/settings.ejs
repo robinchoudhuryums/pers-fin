@@ -510,6 +510,13 @@
         if (s.sheets_last_auto_sync) {
           document.getElementById('sheets-last-sync').textContent = new Date(s.sheets_last_auto_sync).toLocaleString();
         }
+        // SXE-1: the last Sheets sync's outcome (auto or manual).
+        var ssr = s.last_sheets_sync_result;
+        if (ssr && Array.isArray(ssr.errors) && ssr.errors.length) {
+          var ssDesc = document.getElementById('sheets-last-sync-desc');
+          ssDesc.textContent = 'Partial: ' + ssr.errors.length + ' tab(s) failed — ' + ssr.errors.map(function(e) { return e.step; }).join(', ') + ' (' + new Date(ssr.at).toLocaleString() + ')';
+          ssDesc.style.color = 'var(--red)';
+        }
         // Bank auto-sync
         document.getElementById('auto-sync-toggle').checked = !!s.auto_sync_enabled;
         document.getElementById('auto-sync-interval-select').value = String(s.auto_sync_interval_hours || 6);
@@ -660,13 +667,13 @@
       } catch (e) { showMsg(e.message, false); }
     }
     async function logout() {
-      // W2: logout is owned by the shell when embedded (POST /logout clears the
-      // shell_session cookie) and by Perfin standalone — BOTH at the ROOT
-      // /logout, never basePath-prefixed. The old '/api/logout' + basePath'd
-      // redirect 404'd and left the shell session intact under the unified shell,
-      // so "Sign Out" didn't actually sign you out. X-Requested-With satisfies
-      // the CSRF header check.
-      try { await fetch('/logout', { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' } }); } catch (e) {}
+      // W2: under the unified shell (BASE_PATH set) logout is owned by the shell:
+      // POST the ROOT /logout (clears the shell_session cookie), never
+      // basePath-prefixed. Standalone Perfin (no BASE_PATH) only serves
+      // POST /api/logout — the root /logout was a no-op there and the session
+      // survived (WD-16). X-Requested-With satisfies the CSRF header check.
+      var logoutUrl = window.BASE_PATH ? '/logout' : '/api/logout';
+      try { await fetch(logoutUrl, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' } }); } catch (e) {}
       window.location.href = '/login';
     }
     async function generateInsights() {

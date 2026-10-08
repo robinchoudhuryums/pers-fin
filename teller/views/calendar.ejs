@@ -78,7 +78,7 @@
   <script nonce="<%= nonce %>">
     var calYear = new Date().getFullYear();
     var calMonth = new Date().getMonth() + 1;
-    var todayStr = new Date().toISOString().split('T')[0];
+    var todayStr = localTodayStr(); // local date, not UTC (WUI-2)
 
     async function loadCalendar() {
       document.getElementById('month-title').textContent = 'Loading...';

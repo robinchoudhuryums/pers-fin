@@ -17,6 +17,7 @@ primary_region = "ewr"
 
 [env]
   PORT = "3000"
+  NODE_ENV = "production"  # PSC-4: Secure cookies, no stack traces, view cache
   TELLER_CERT_PATH = "/app/certificate.pem"
   TELLER_KEY_PATH = "/app/private_key.pem"
 

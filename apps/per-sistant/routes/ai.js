@@ -7,7 +7,8 @@ const { callAI, getAIModelForFeature, getCached, setCache, isAIAvailable } = req
 const { VALID_AI_FEATURES } = require("../config");
 
 const { serverError } = require("../errors");
-const { gatherHealthSummary } = require("./health");
+const { gatherHealthSummary, todayStr } = require("./health");
+const { housingDue, housingDueSuffix } = require("./housing-due");
 
 module.exports = function ({ pool }) {
   const router = express.Router();
@@ -124,7 +125,7 @@ module.exports = function ({ pool }) {
     try {
       const model = await getAIModelForFeature("daily_briefing");
       if (model === "off") return res.status(400).json({ error: "AI daily briefing is disabled." });
-      const today = new Date().toISOString().split("T")[0];
+      const today = todayStr(); // APP_TIMEZONE, matching the habit/rent lines (PB-13)
       const [pending, overdue, scheduled, upcoming, health] = await Promise.all([
         pool.query("SELECT title, priority, category, due_date FROM todos WHERE deleted_at IS NULL AND NOT completed ORDER BY CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END LIMIT 15"),
         pool.query("SELECT title, due_date FROM todos WHERE deleted_at IS NULL AND NOT completed AND due_date < $1", [today]),
@@ -153,27 +154,10 @@ module.exports = function ({ pool }) {
       try {
         const perfinPool = req.app.get("perfinPool");
         if (perfinPool) {
-          const [bal, cfgR] = await Promise.all([
-            perfinPool.query("SELECT COALESCE(SUM(amount),0) AS balance, COUNT(*) AS n FROM payee_obligations WHERE status='unpaid'"),
-            perfinPool.query("SELECT housing_config FROM user_settings WHERE id = 1"),
-          ]);
-          let cfg = cfgR.rows[0] && cfgR.rows[0].housing_config;
-          if (typeof cfg === "string") { try { cfg = JSON.parse(cfg); } catch { cfg = {}; } }
-          cfg = cfg || {};
-          const balance = parseFloat(bal.rows[0].balance);
-          const n = parseInt(bal.rows[0].n);
-          if (cfg.enabled && cfg.payee_name && balance > 0) {
-            let dueStr = "";
-            const dueDay = parseInt(cfg.rent_due_day, 10);
-            if (dueDay >= 1 && dueDay <= 31) {
-              const now = new Date();
-              let due = new Date(now.getFullYear(), now.getMonth(), Math.min(dueDay, 28));
-              if (due < now) due = new Date(now.getFullYear(), now.getMonth() + 1, Math.min(dueDay, 28));
-              const days = Math.round((due - now) / 86400000);
-              dueStr = days <= 0 ? " (due now)" : ` (due in ${days} day${days === 1 ? "" : "s"})`;
-            }
-            housingLine = `\nRent & utilities: $${balance.toFixed(2)} owed to ${cfg.payee_name} across ${n} item(s)${dueStr}`;
-          }
+          // Shared day-granular helper (PB-2) — the same due/overdue state the
+          // notification check reports, in APP_TIMEZONE.
+          const h = await housingDue(perfinPool);
+          if (h) housingLine = `\nRent & utilities: $${h.balance.toFixed(2)} owed to ${h.payee} across ${h.n} item(s)${housingDueSuffix(h)}`;
         }
       } catch { /* cross-app read is best-effort — drop the line on any error */ }
 

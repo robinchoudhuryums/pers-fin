@@ -91,7 +91,7 @@ function attach(app, perfinPool) {
       _challenges.set(challengeKey, { challenge: options.challenge, ts: Date.now() });
       res.cookie(CHALLENGE_COOKIE, challengeKey, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
+        secure: process.env.NODE_ENV === "production" || !!req.secure, // PSC-4
         sameSite: "lax",
         maxAge: CHALLENGE_TTL_MS,
         path: "/",

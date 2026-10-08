@@ -6,6 +6,7 @@ const express = require("express");
 const router = express.Router();
 const { pool } = require("../services/database");
 const { MODEL_MAP, estimateCostUsd, estimateCostGranular } = require("../data/reference-data");
+const { createToolCall, effortParams } = require("../services/claude");
 
 let Anthropic;
 try {
@@ -18,6 +19,9 @@ const {
   CATEGORIES,
   CATEGORY_DESCRIPTIONS,
   TELLER_CATEGORY_MAP,
+  PLAID_PFC_DETAILED_MAP,
+  PLAID_PFC_PRIMARY_MAP,
+  mapCategoryFor,
   OUR_CATEGORIES_PG,
 } = require("./categorize-helpers");
 
@@ -71,7 +75,18 @@ let catProgress = { running: false, phase: null, by_rules: 0, by_teller_map: 0, 
 //   { ok: false, status: 501|429|500, error }            — early bail
 //   { ok: true, categorized, categorized_by_rules, ... } — normal result
 // The route handler maps this to an HTTP response.
-async function runCategorize() {
+// Single-flight (PSC-12): concurrent callers share ONE in-flight run instead of
+// selecting the same user_category IS NULL rows twice and sending the same batch
+// to Claude twice under the check-then-charge cap (the insights chain and the
+// bank auto-sync both call it on the same tick; a manual click can overlap).
+let _runCategorizeInFlight = null;
+function runCategorize() {
+  if (!_runCategorizeInFlight) {
+    _runCategorizeInFlight = runCategorizeOnce().finally(() => { _runCategorizeInFlight = null; });
+  }
+  return _runCategorizeInFlight;
+}
+async function runCategorizeOnce() {
   if (!Anthropic || !process.env.ANTHROPIC_API_KEY) {
     return { ok: false, status: 501, error: "Set ANTHROPIC_API_KEY to enable ML categorization." };
   }
@@ -150,6 +165,41 @@ async function runCategorize() {
       tellerMapped += r.rowCount;
     }
 
+    // FREE PATH 3 — Plaid personal_finance_category map (DD-3). Detailed codes
+    // first (more specific), then primaries. Counted with the Teller map in
+    // by_teller_map ("deterministic map") so the progress UI is unchanged.
+    const pfcPasses = [
+      ["detailed", PLAID_PFC_DETAILED_MAP],
+      ["primary", PLAID_PFC_PRIMARY_MAP],
+    ];
+    for (const [field, map] of pfcPasses) {
+      for (const [code, ourCat] of Object.entries(map)) {
+        if (!CATEGORIES.includes(ourCat)) continue;
+        const r = await pool.query(
+          `UPDATE transactions SET user_category = $3, user_category_source = 'plaid_map',
+             category_verified_at = NULL, category_was_correct = NULL
+           WHERE ${uncatPredicate} AND personal_finance_category->>'${field}' = $2
+           RETURNING transaction_id`,
+          [OUR_CATEGORIES_PG, code, ourCat]
+        );
+        tellerMapped += r.rowCount;
+      }
+    }
+
+    // FREE PATH 4 — credits whose provider category says Income (DD-3). Every
+    // path above is limited to debits (amount > 0), so Teller's `income` and
+    // Plaid's INCOME never reached the credits they describe, and income
+    // branch (c) only ever matched rows the user hand-set. Only the Income
+    // target is applied to credits (refunds etc. stay uncategorized).
+    const creditIncome = await pool.query(
+      `UPDATE transactions SET user_category = 'Income', user_category_source = 'plaid_map',
+         category_verified_at = NULL, category_was_correct = NULL
+       WHERE user_category IS NULL AND pending = false AND amount < 0
+         AND (LOWER(category[1]) = 'income' OR personal_finance_category->>'primary' = 'INCOME')
+       RETURNING transaction_id`
+    ).catch(e => { console.error("credit income map error:", e.message); return { rowCount: 0 }; });
+    tellerMapped += creditIncome.rowCount || 0;
+
     // -----------------------------------------------------------------
     // PAID AI path — LOOP bounded batches until the backlog is cleared, the
     // per-run cap (AI_MAX_PER_RUN) is hit, or the monthly budget is exhausted.
@@ -178,21 +228,9 @@ async function runCategorize() {
     // Shared monthly-spend computation (cap is shared with /api/insights).
     // Shared cap resolver (Settings-tunable, env fallback) — lazy require to
     // avoid a static insights<->categorize cycle (INV-14: one cap, one reader).
-    const { getAiBudgetCents } = require("./insights");
+    const { getAiBudgetCents, monthAiSpendCents } = require("./insights");
     const budgetCents = await getAiBudgetCents();
-    const monthSpendCents = async () => {
-      const u = await pool.query(
-        "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights WHERE created_at >= date_trunc('month', CURRENT_DATE)"
-      );
-      let cents = 0;
-      u.rows.forEach(r => {
-        const cost = r.input_tokens
-          ? estimateCostGranular({ input_tokens: r.input_tokens, output_tokens: r.output_tokens, cache_read_input_tokens: r.cache_read_tokens || 0, cache_creation_input_tokens: r.cache_creation_tokens || 0 }, r.model_used)
-          : estimateCostUsd(r.tokens_used || 0, r.model_used);
-        cents += cost * 100;
-      });
-      return cents;
-    };
+    const monthSpendCents = () => monthAiSpendCents(pool);
 
     // Already over the cap before any AI work → explicit 429 with the
     // raise-the-cap message (free paths still applied above).
@@ -217,13 +255,16 @@ async function runCategorize() {
     const categorizeTool = {
       name: "categorize_transactions",
       description: "Assign a category to each transaction",
+      strict: true, // schema-valid input (tool_choice is "auto" on the 5.5 models)
       input_schema: {
         type: "object",
+        additionalProperties: false,
         properties: {
           categories: {
             type: "array",
             items: {
               type: "object",
+              additionalProperties: false,
               properties: {
                 index: { type: "number", description: "1-based transaction index" },
                 category: { type: "string", enum: CATEGORIES },
@@ -259,7 +300,7 @@ async function runCategorize() {
       if ((await monthSpendCents()) >= budgetCents) { budgetHit = true; break; }
 
       const batchRes = await pool.query(
-        `SELECT transaction_id, COALESCE(merchant_name, name) AS merchant, amount, date, category
+        `SELECT transaction_id, COALESCE(user_merchant_name, merchant_name, name) AS merchant, amount, date, category
          FROM transactions
          WHERE ${uncatPredicate}
          ORDER BY date DESC
@@ -274,13 +315,16 @@ async function runCategorize() {
         return (i + 1) + ". " + t.merchant + " — $" + parseFloat(t.amount).toFixed(2) + " on " + t.date + hint;
       }).join("\n");
 
-      const message = await client.messages.create({
-        model: modelId, max_tokens: 2000,
+      // tool_choice "auto" + strict tool + one re-ask (services/claude.js) —
+      // Opus/Sonnet 5.5 reject a forced tool_choice. Low effort: this is
+      // classification; max_tokens leaves room for adaptive thinking.
+      const message = await createToolCall(client, {
+        model: modelId, max_tokens: 8000,
+        ...effortParams("extract"),
         system: [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }],
         tools: [categorizeTool],
-        tool_choice: { type: "tool", name: "categorize_transactions" },
         messages: [{ role: "user", content: "Transactions:\n" + txnList }],
-      });
+      }, "categorize_transactions");
 
       // Record token usage BEFORE applying categories (DC-2) so the spend counts
       // against the cap even if the apply loop throws partway.
@@ -412,7 +456,8 @@ router.get("/api/categorize/review-queue", async (req, res) => {
       const tellerCat = Array.isArray(t.category) && t.category[0]
         ? String(t.category[0]).toLowerCase()
         : null;
-      const mapped = tellerCat ? TELLER_CATEGORY_MAP[tellerCat] : null;
+      // Teller map, then Plaid PFC (DD-3).
+      const mapped = mapCategoryFor(t);
       return {
         transaction_id: t.transaction_id,
         merchant: t.merchant,
@@ -444,7 +489,10 @@ router.post("/api/categorize/review", async (req, res) => {
     return res.status(400).json({ error: `Invalid category. Must be one of: ${CATEGORIES.join(", ")}` });
   }
   const validTypes = ["contains", "exact", "starts_with"];
-  const ruleType = validTypes.includes(match_type) ? match_type : "contains";
+  // Implicit "remember" rules default to EXACT (DC-13): a `contains` rule built
+  // from a short merchant ("ARCO") also swept up "Marco's Pizza". An explicit
+  // match_type is still honored.
+  const ruleType = validTypes.includes(match_type) ? match_type : "exact";
   try {
     // Set user_category — the same path PATCH /api/transactions/:id/category uses.
     const upd = await pool.query(
@@ -648,8 +696,9 @@ router.post("/api/categorize/accuracy-review", async (req, res) => {
       await pool.query(
         // DC3: implicit accuracy-review "remember" path — reactivate on conflict
         // but keep the existing rule's match_type (don't silently widen scope).
+        // DC-13: implicit rule → exact match (see /api/categorize/review).
         `INSERT INTO categorization_rules (merchant_pattern, category, match_type)
-         VALUES ($1, $2, 'contains')
+         VALUES ($1, $2, 'exact')
          ON CONFLICT (merchant_pattern, category) DO UPDATE SET
            is_active = true, updated_at = now()`,
         [merchant.trim(), corrected_category]
@@ -792,7 +841,8 @@ router.post("/api/categorization-rules/from-transaction", async (req, res) => {
     if (!merchant) return res.status(400).json({ error: "Transaction has no merchant name" });
 
     const validTypes = ["contains", "exact", "starts_with"];
-    const type = validTypes.includes(match_type) ? match_type : "contains";
+    // Implicit "remember this" rule → exact by default (DC-13).
+    const type = validTypes.includes(match_type) ? match_type : "exact";
 
     const result = await pool.query(
       // DC3: from-transaction is an implicit "create rule from this manual

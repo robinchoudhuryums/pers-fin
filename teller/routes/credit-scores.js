@@ -9,6 +9,7 @@
 const express = require("express");
 const router = express.Router();
 const { pool } = require("../services/database");
+const { todayStr } = require("../services/financial-queries");
 
 const VALID_SCORE_TYPES = new Set(["fico", "vantagescore", "other"]);
 
@@ -75,7 +76,8 @@ router.post("/api/credit-scores", async (req, res) => {
     return res.status(400).json({ error: "score must be an integer 300-850" });
   }
   const type = VALID_SCORE_TYPES.has(score_type) ? score_type : "vantagescore";
-  const date = checked_at || new Date().toISOString().split("T")[0];
+  // Default to TODAY in APP_TIMEZONE (FAN-13), not the UTC date.
+  const date = checked_at || todayStr();
   try {
     const result = await pool.query(
       `INSERT INTO credit_scores (score, score_type, source, notes, checked_at)
