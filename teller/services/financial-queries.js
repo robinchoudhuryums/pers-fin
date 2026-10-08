@@ -393,6 +393,53 @@ async function getNetWorth(pool) {
   };
 }
 
+// 'YYYY-MM' → the previous month's 'YYYY-MM' (pure string math, no Date).
+function previousMonthKey(monthKey) {
+  const [y, m] = monthKey.split("-").map(Number);
+  return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`;
+}
+
+// Budget status for a month — the ONE definition of "how is each budget
+// doing" (AIN-6 / WUI-5). Used by GET /api/budgets, /api/budgets/alerts, the
+// AI-insights prompt and the Ask tool, so all four agree:
+//   - spending via getCategorySpendingForMonth (splits, reimbursed, shared
+//     split, NOT_TRANSFER);
+//   - effective_limit = monthly_limit + the PRIOR month's snapshot
+//     rollover_amount when rollover is enabled (FA-1);
+//   - one-time budgets only appear in their effective_month.
+// The prompt/Ask used to read the bare monthly_limit for every budget, so a
+// rolled-over budget read as overspent and a June one-time budget showed in
+// September. Rows: { ...budget, spent, rollover_amount, effective_limit,
+// remaining, percent_used }.
+async function getBudgetStatus(pool, month = currentMonth()) {
+  const [budgets, spending, snapshots] = await Promise.all([
+    pool.query("SELECT * FROM budgets ORDER BY monthly_limit DESC"),
+    getCategorySpendingForMonth(pool, month),
+    pool.query("SELECT budget_id, rollover_amount FROM budget_snapshots WHERE month = $1", [previousMonthKey(month)]),
+  ]);
+  const spendMap = {};
+  for (const r of spending) spendMap[r.category] = parseFloat(r.spent);
+  const snapMap = {};
+  for (const s of snapshots.rows) snapMap[s.budget_id] = s;
+  return budgets.rows
+    .filter((b) => !(b.budget_type === "one_time" && b.effective_month && b.effective_month !== month))
+    .map((b) => {
+      const spent = spendMap[b.category] || 0;
+      const limit = parseFloat(b.monthly_limit) || 0;
+      const snap = snapMap[b.id];
+      const rollover = b.rollover_enabled && snap ? parseFloat(snap.rollover_amount || 0) : 0;
+      const effectiveLimit = limit + rollover;
+      return {
+        ...b,
+        spent,
+        rollover_amount: rollover,
+        effective_limit: effectiveLimit,
+        remaining: effectiveLimit - spent,
+        percent_used: effectiveLimit > 0 ? Math.round((spent / effectiveLimit) * 100) : 0,
+      };
+    });
+}
+
 module.exports = {
   INCOME_PREDICATE,
   incomePredicate,
@@ -406,6 +453,8 @@ module.exports = {
   getMonthlyIncomeAndSpending,
   getCategorySpendingThisMonth,
   getCategorySpendingForMonth,
+  getBudgetStatus,
+  previousMonthKey,
   getNetWorth,
   currentMonth,
   todayStr,

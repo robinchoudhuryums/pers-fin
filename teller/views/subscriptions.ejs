@@ -119,7 +119,13 @@
       return days + 'd';
     }
 
-    function isOverdue(dateStr) { return new Date(dateStr) < new Date(); }
+    // Calendar-date compare (WUI-2): next_expected is a DATE — parsed as UTC
+    // midnight it read as "yesterday evening" in the US, so a bill due TODAY
+    // showed overdue all day. Overdue = strictly before today's local date.
+    function isOverdue(dateStr) {
+      var d = parseCalDate(dateStr);
+      return localDateStr(d) < localTodayStr();
+    }
 
     async function loadSubscriptions() {
       const filter = document.getElementById('filter-select').value;
@@ -148,7 +154,7 @@
           if (s.cancelled_at) badges.push('<span class="badge badge-cancelled">CANCELLED</span>');
           const overdue = !s.cancelled_at && isOverdue(s.next_expected);
           const nextClass = overdue ? 'next-date overdue' : 'next-date';
-          const nextLabel = s.cancelled_at ? 'Cancelled ' + new Date(s.cancelled_at).toLocaleDateString() : new Date(s.next_expected).toLocaleDateString();
+          const nextLabel = s.cancelled_at ? 'Cancelled ' + new Date(s.cancelled_at).toLocaleDateString() : parseCalDate(s.next_expected).toLocaleDateString();
           let actions = '';
           if (s.cancelled_at) {
             actions = '<button class="btn-sm restore" data-action="uncancel" data-id="' + s.id + '">Restore</button>';

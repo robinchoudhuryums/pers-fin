@@ -1195,8 +1195,9 @@ function icsDate(d) {
 }
 async function buildBillCalendarIcs(days) {
   const horizon = Math.min(365, Math.max(7, parseInt(days) || 90));
-  const today = new Date();
-  today.setUTCHours(0, 0, 0, 0);
+  // "Today" in APP_TIMEZONE (SXE-12) — a UTC today dropped the evening's bills
+  // west of UTC (after ~7-8pm ET today's charges had "already passed").
+  const today = new Date(todayStr() + "T00:00:00Z");
   const end = new Date(today.getTime() + horizon * 86400000);
   const events = [];
 
@@ -1253,11 +1254,15 @@ async function buildBillCalendarIcs(days) {
       if (!y || !m) continue;
       const dueDay = Math.min(28, Math.max(1, parseInt(o.due_day) || 1));
       const d = new Date(Date.UTC(y, m - 1, dueDay));
-      if (d >= today && d <= end) {
+      if (d <= end) {
+        // An unpaid obligation whose due date has passed stays visible on TODAY,
+        // flagged overdue (SXE-12) — it used to vanish from the feed exactly
+        // when it most needed attention. Stable UID → the event moves in place.
+        const overdue = d < today;
         events.push({
           uid: "housing-" + o.id + "@perfin",
-          date: d,
-          summary: o.label + " — $" + parseFloat(o.amount).toFixed(2) + " (rent/utilities)",
+          date: overdue ? new Date(today) : d,
+          summary: o.label + " — $" + parseFloat(o.amount).toFixed(2) + (overdue ? " (rent/utilities, OVERDUE)" : " (rent/utilities)"),
         });
       }
     }

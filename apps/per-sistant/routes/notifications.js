@@ -6,7 +6,7 @@ const express = require("express");
 
 const { serverError } = require("../errors");
 const { upcomingFacts } = require("./rag");
-const { gatherHealthSummary } = require("./health");
+const { gatherHealthSummary, todayStr } = require("./health");
 const { gatherJobRadarSummary } = require("./jobs");
 const { housingDue, housingDueSuffix } = require("./housing-due");
 
@@ -30,7 +30,10 @@ module.exports = function ({ pool }) {
 
   router.get("/api/notifications/check", async (req, res) => {
     try {
-      const today = new Date().toISOString().split("T")[0];
+      // Todo "due today"/"overdue" in APP_TIMEZONE (PB-13) — the same day the
+      // habit + housing items on this surface use (it was the UTC date, so in
+      // the evening tomorrow's tasks read "due today").
+      const today = todayStr();
       const perfinPool = req.app.get("perfinPool");
       const [dueSoon, overdue, streaksAtRisk, reminders, facts, health, housing, jobRadar] = await Promise.all([
         pool.query("SELECT id, title, due_date FROM todos WHERE deleted_at IS NULL AND completed = false AND due_date = $1", [today]),

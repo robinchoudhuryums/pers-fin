@@ -231,7 +231,24 @@ async function runWeeklyDigest() {
   }
 }
 
-async function runDailyDigest() {
+// Local wall-clock hour + date in APP_TIMEZONE for an instant (AIN-15).
+function localParts(instant, tz) {
+  try {
+    const f = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hourCycle: "h23" });
+    const p = Object.fromEntries(f.formatToParts(instant).map((x) => [x.type, x.value]));
+    return { date: `${p.year}-${p.month}-${p.day}`, hour: parseInt(p.hour, 10) };
+  } catch {
+    const iso = instant.toISOString();
+    return { date: iso.slice(0, 10), hour: instant.getUTCHours() };
+  }
+}
+
+// The daily digest lands once per LOCAL date, at/after this local hour (AIN-15).
+const DAILY_DIGEST_HOUR = 7;
+// Longest window a digest covers when the last send is older (feature was off).
+const DAILY_DIGEST_MAX_LOOKBACK_MS = 72 * 60 * 60 * 1000;
+
+async function runDailyDigest(now = new Date()) {
   try {
     const r = await pool.query(
       "SELECT daily_digest_enabled, last_daily_digest_at FROM user_settings WHERE id = 1"
@@ -239,15 +256,24 @@ async function runDailyDigest() {
     const s = r.rows[0];
     if (!s || !s.daily_digest_enabled) return { sent: false, reason: "disabled" };
 
-    // 20-hour dedup: scheduler ticks hourly, this lets one digest per
-    // "day" land without needing wall-clock alignment.
-    if (s.last_daily_digest_at) {
-      const ageHours = (Date.now() - new Date(s.last_daily_digest_at).getTime()) / 3600000;
-      if (ageHours < 20) return { sent: false, reason: "already_sent_today" };
+    // Wall-clock anchored (AIN-15): one digest per LOCAL date (APP_TIMEZONE),
+    // not before DAILY_DIGEST_HOUR. The old 20-hour gate let each send become
+    // eligible ~20h after the last, so it crept 3-4h earlier every day
+    // (7am, 4am, 1am…), and the fixed now−24h window overlapped the previous
+    // digest by ~4h and repeated transactions.
+    const { APP_TIMEZONE } = require("../services/financial-queries");
+    const nowLocal = localParts(now, APP_TIMEZONE);
+    if (nowLocal.hour < DAILY_DIGEST_HOUR) return { sent: false, reason: "too_early" };
+    const last = s.last_daily_digest_at ? new Date(s.last_daily_digest_at) : null;
+    if (last && localParts(last, APP_TIMEZONE).date === nowLocal.date) {
+      return { sent: false, reason: "already_sent_today" };
     }
 
     const { gatherWhatsNew } = require("./whats-new");
-    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    // Everything since the previous digest (no overlap, no gap), bounded to
+    // 72h when the feature was off for a while; first send → last 24h.
+    const floor = new Date(now.getTime() - DAILY_DIGEST_MAX_LOOKBACK_MS);
+    const since = last ? (last > floor ? last : floor) : new Date(now.getTime() - 24 * 60 * 60 * 1000);
     const data = await gatherWhatsNew(since);
     const total = data.counts.transactions + data.counts.balance_changes +
                   data.counts.subscriptions + data.counts.notifications;
@@ -264,7 +290,7 @@ async function runDailyDigest() {
       subject, html_body: html, plain_text: plain,
     });
     if (result.sent) {
-      await pool.query("UPDATE user_settings SET last_daily_digest_at = now() WHERE id = 1");
+      await pool.query("UPDATE user_settings SET last_daily_digest_at = $1 WHERE id = 1", [now]);
     }
     return result;
   } catch (err) {
@@ -774,7 +800,7 @@ async function generateInsights() {
                 (l.apr ? ", APR " + l.apr + "%" : ", APR unknown") +
                 (l.monthly_payment ? ", Payment $" + parseFloat(l.monthly_payment).toFixed(2) + "/mo" : ", payment unknown");
               if (l.apr && l.monthly_payment) {
-                const p = computeLoanPayoff({ balance: owed, aprPct: parseFloat(l.apr), monthlyPayment: parseFloat(l.monthly_payment) });
+                const p = computeLoanPayoff({ balance: owed, aprPct: parseFloat(l.apr), monthlyPayment: parseFloat(l.monthly_payment), today: require("../services/financial-queries").todayStr() });
                 if (p.months_to_payoff) line += ", ~" + p.months_to_payoff + " months to payoff ($" + p.total_interest.toFixed(2) + " interest remaining)";
               }
               return line;
@@ -949,29 +975,19 @@ async function generateInsights() {
       }
     } catch (err) { console.error("Trend delta error:", err.message); }
 
-    // --- Enrichment: Current budget status (honors splits via shared helper) ---
+    // --- Enrichment: Current budget status (shared getBudgetStatus, AIN-6) ---
+    // Same numbers as the Budgets page: effective limit = base + the prior
+    // month's rollover, one-time budgets only in their month, split-aware
+    // spending. (The bare monthly_limit made a rolled-over budget read as
+    // overspent and showed an expired one-time budget every month.)
     try {
-      const { getCategorySpendingThisMonth } = require("../services/financial-queries");
-      const [budgetRows, catSpending] = await Promise.all([
-        pool.query("SELECT category, monthly_limit FROM budgets ORDER BY monthly_limit DESC"),
-        getCategorySpendingThisMonth(pool),
-      ]);
-      const catMap = {};
-      for (const r of catSpending) catMap[r.category] = parseFloat(r.spent);
-      const budgetStatus = {
-        rows: budgetRows.rows.map(b => ({
-          category: b.category,
-          monthly_limit: b.monthly_limit,
-          spent: catMap[b.category] || 0,
-        })),
-      };
-      if (budgetStatus.rows.length > 0) {
+      const { getBudgetStatus } = require("../services/financial-queries");
+      const budgetStatus = await getBudgetStatus(pool);
+      if (budgetStatus.length > 0) {
         userMsg += "\n\n=== BUDGET STATUS (current month) ===\n" +
-          budgetStatus.rows.map(b => {
-            const spent = parseFloat(b.spent);
-            const limit = parseFloat(b.monthly_limit);
-            const pct = limit > 0 ? Math.round((spent / limit) * 100) : 0;
-            return b.category + ": $" + spent.toFixed(2) + " / $" + limit.toFixed(2) + " (" + pct + "% used)";
+          budgetStatus.map(b => {
+            const roll = b.rollover_amount > 0 ? " incl. $" + b.rollover_amount.toFixed(2) + " rolled over" : "";
+            return b.category + ": $" + b.spent.toFixed(2) + " / $" + b.effective_limit.toFixed(2) + roll + " (" + b.percent_used + "% used)";
           }).join("\n");
       }
     } catch (err) { console.error("Budget status query error:", err.message); }

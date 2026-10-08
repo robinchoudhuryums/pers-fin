@@ -108,9 +108,12 @@ describe("PS-7 — email PATCH validates status", () => {
 });
 
 describe("PS-11 — recurring-task cron atomic claim", () => {
-  const src = fs.readFileSync(path.join(__dirname, "../server.js"), "utf8");
+  // The roll moved into helpers.rollMissedRecurring (PB-10); server.js's cron
+  // just calls it in APP_TIMEZONE.
+  const src = fs.readFileSync(path.join(__dirname, "../helpers.js"), "utf8");
   it("claims the row with WHERE completed = false RETURNING before generating the next", () => {
     assert.match(src, /UPDATE todos SET completed = true[\s\S]*WHERE id = \$1 AND completed = false RETURNING id/);
+    assert.match(fs.readFileSync(path.join(__dirname, "../server.js"), "utf8"), /rollMissedRecurring\(pool, todayStr\(\)\)/);
   });
 });
 

@@ -9,7 +9,35 @@ to the "none in progress" state.
 
 ## Current Cycle
 
-- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 5 DONE** on branch
+- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 6 DONE** on branch
+  `claude/lucid-darwin-7r8e59` (2026-10-08). Batch 6 (dates, months &
+  budgets) implemented, tested, pushed (no PR opened).
+  - **Completed:**
+    - FAN-7: prior-month snapshot refreshed on days 1–5 via runBudgetSnapshot, then create-if-missing.
+    - AIN-6/SXE-4/WUI-5: one getBudgetStatus helper, effective limit everywhere incl. Ask, prompt, Budgets page and Sheets.
+    - FAN-8: suggestions use the 3 complete months.
+    - FAN-14: PATCH validation.
+    - FAN-13/SXE-12/PB-13/AIN-15: remaining UTC anchors moved to todayStr/currentMonth. Sheets is tz/whole-month. ICS keeps overdue rent on today. The daily digest sends once per local date at/after 07:00 and covers the time since the last send.
+    - WUI-2: parseCalDate / localTodayStr.
+    - FAN-15/PD-2: addMonthsYm/Ymd; Per-sistant recurrence_anchor_day (migration 022).
+    - PD-4/PB-10: tz on-time check; rollMissedRecurring in APP_TIMEZONE marks `missed`; analytics exclude it.
+    - KR-5: date-prefixed corpus version, $N::date facts filter, conditional doc upsert, unchanged-fact skip.
+    - DD-11: YoY through_day + consecutive years.
+  - **Not finished (selected):** none.
+  - **Tests:** 1317/1317 (Perfin 819 + Per-sistant 498; 53 files).
+    - New files: tests/scan-sept-batch6.test.js (41), tests/scan-sept-batch6-tz.test.js (6, forced APP_TIMEZONE), apps/per-sistant/tests/scan-sept-batch6.test.js (21). Old-code worktree run: 62 of 65 fail.
+    - Real-PG 16 checks of every changed query, plus both migrations run twice. e2e 8/8.
+  - **Decisions:**
+    - Refresh window = 5 days.
+    - Daily digest hour = 07:00 local, lookback cap 72h.
+    - The corpus version rolls at tz midnight (daily cache invalidation accepted).
+    - Missed recurring instances stay completed=true (they leave the active list) with missed=true and completed_at NULL.
+    - /api/stats "done" also excludes missed (same PB-10 counting fix).
+  - **Open follow-ons:** see `.cycle/blocks/6-batch6-broad-implement.md`. Notably, a PRE-EXISTING Sheets Utilities-tab SQL error ("invalid UNION … ORDER BY clause") fails that tab on every sync.
+  - **Operator:** none required. Migration 022 auto-runs. Setting APP_TIMEZONE is recommended.
+  - **Where I left off:** Batch 6 committed + pushed (no PR). NEXT: `/sync-docs` for Batch 6 (DOCUMENTATION UPDATES NEEDED in the block), then the next batch.
+
+- **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 5 DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-10-08). Batch 5 (Rent, Utilities &
   Settle Up) implemented, tested, pushed (no PR opened).
   - **Completed:** FAN-3 (trailing-24-month generation), FAN-4 (payee/label

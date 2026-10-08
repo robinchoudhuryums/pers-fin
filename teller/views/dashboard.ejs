@@ -1300,12 +1300,11 @@
         interest += i;
         b = b + i - payment;
         if (b <= 0) {
-          const d = new Date();
-          d.setMonth(d.getMonth() + m);
-          // F12: format in UTC so the displayed month matches the API's
-          // payoff_date (computeLoanPayoff uses toISOString → UTC 'YYYY-MM');
-          // otherwise near a month boundary the label could show a different
-          // month than the API in a non-UTC timezone.
+          // FAN-15: add months on the month INDEX, anchored on the 1st — the
+          // old setMonth(+m) on the 29th-31st overflowed and skipped a month.
+          // Formatted in UTC so the label matches the API's payoff_date (F12).
+          var now0 = new Date();
+          var d = new Date(Date.UTC(now0.getFullYear(), now0.getMonth() + m, 1));
           return { months: m, interest: interest, label: d.toLocaleDateString(undefined, { timeZone: 'UTC', month: 'short', year: 'numeric' }) };
         }
       }
@@ -2095,7 +2094,7 @@
         var form = document.getElementById('invflow-form');
         var acctSel = document.getElementById('invflow-account');
         if (!det || !form || !acctSel) return;
-        document.getElementById('invflow-date').value = new Date().toISOString().slice(0, 10);
+        document.getElementById('invflow-date').value = localTodayStr(); // local date (WUI-2)
         var loaded = false;
         det.addEventListener('toggle', async function() {
           if (!det.open || loaded) return;
@@ -2812,6 +2811,7 @@
         var arrow = comp.change_amount <= 0 ? '↓' : '↑';
         var html = '<div style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">' +
           data.month_name + ' ' + comp.current_year + ' vs ' + comp.previous_year +
+          (data.through_day ? ' <span style="font-size:11px;">(days 1–' + data.through_day + ' of each)</span>' : '') +
           ': <strong style="color:' + changeColor + ';">' + arrow + ' ' +
           (comp.change_percent !== null ? Math.abs(comp.change_percent) + '%' : 'N/A') +
           ' (' + (comp.change_amount > 0 ? '+' : '') + fmt(comp.change_amount) + ')</strong></div>';

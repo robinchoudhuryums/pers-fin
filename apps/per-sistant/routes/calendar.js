@@ -16,7 +16,7 @@ module.exports = function ({ pool, advanceRecurrence }) {
         pool.query("SELECT id, title, due_date as event_date, priority, 'todo' as type FROM todos WHERE deleted_at IS NULL AND due_date >= $1 AND due_date < $2 AND NOT completed", [startDate, endDate]),
         pool.query("SELECT id, subject as title, scheduled_at as event_date, status as priority, 'email' as type FROM emails WHERE deleted_at IS NULL AND scheduled_at >= $1 AND scheduled_at < $2", [startDate, endDate]),
         pool.query("SELECT id, COALESCE(title, LEFT(content,30)) as title, reminder_at as event_date, 'note' as type FROM notes WHERE deleted_at IS NULL AND reminder_at >= $1 AND reminder_at < $2", [startDate, endDate]),
-        pool.query("SELECT id, title, due_date, recurrence_rule, recurrence_interval, priority FROM todos WHERE deleted_at IS NULL AND recurring = true AND completed = false AND due_date IS NOT NULL"),
+        pool.query("SELECT id, title, due_date, recurrence_rule, recurrence_interval, recurrence_anchor_day, priority FROM todos WHERE deleted_at IS NULL AND recurring = true AND completed = false AND due_date IS NOT NULL"),
       ]);
       // Project future recurring instances into this month
       const projected = [];
@@ -33,7 +33,8 @@ module.exports = function ({ pool, advanceRecurrence }) {
               projected.push({ id: t.id, title: t.title, event_date: dateStr, priority: t.priority, type: "todo", recurring_projection: true });
             }
           }
-          nextDate = advanceRecurrence(nextDate, t.recurrence_rule, t.recurrence_interval || 1);
+          // Chain anchor day keeps month-end projections on month-end (PD-2).
+          nextDate = advanceRecurrence(nextDate, t.recurrence_rule, t.recurrence_interval || 1, t.recurrence_anchor_day || new Date(t.due_date).getDate());
         }
       }
       res.json([...todos.rows, ...emails.rows, ...notes.rows, ...projected]);

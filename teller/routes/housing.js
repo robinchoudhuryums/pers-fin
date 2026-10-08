@@ -15,7 +15,7 @@ const express = require("express");
 const router = express.Router();
 const multer = require("multer");
 const { pool } = require("../services/database");
-const { currentMonth } = require("../services/financial-queries");
+const { currentMonth, todayStr } = require("../services/financial-queries");
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -306,8 +306,8 @@ async function runHousingReminders(pool_) {
   try { ({ sendToAll, sentRecently } = require("./notifications")); }
   catch { return { sent: 0 }; }
 
-  const today = new Date();
-  const dom = today.getDate();
+  // Day-of-month in APP_TIMEZONE (FAN-13), matching thisMonth().
+  const dom = parseInt(todayStr().slice(8, 10), 10);
 
   // (1) Payment due — unpaid balance owed, and we're within the lead window of
   // the rent due day (or past it). One reminder per ~3 days while it stands.
@@ -479,7 +479,7 @@ router.post("/api/housing/generate", async (_req, res) => {
 // of payments to the payee for a year, with memos + covered months. Mirrors the
 // tax-report exporter (pdfkit for PDF).
 router.get("/api/housing/export", async (req, res) => {
-  const year = parseInt(req.query.year, 10) || new Date().getFullYear();
+  const year = parseInt(req.query.year, 10) || parseInt(todayStr().slice(0, 4), 10);
   const format = String(req.query.format || "csv").toLowerCase();
   try {
     const cfg = await getConfig().catch(() => ({ payee_name: "" }));
@@ -811,7 +811,9 @@ router.delete("/api/housing/obligations/:id", async (req, res) => {
 router.post("/api/housing/payments", async (req, res) => {
   const ids = Array.isArray(req.body && req.body.obligation_ids) ? req.body.obligation_ids.map((x) => parseInt(x, 10)).filter(Number.isInteger) : [];
   if (!ids.length) return res.status(400).json({ error: "obligation_ids is required" });
-  const paidDate = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.paid_date || "")) ? req.body.paid_date : new Date().toISOString().slice(0, 10);
+  // Default paid_date = TODAY in APP_TIMEZONE (FAN-13): a Dec 31 evening
+  // payment defaulted to the UTC date and landed in next year's landlord export.
+  const paidDate = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.paid_date || "")) ? req.body.paid_date : todayStr();
   const client = await pool.connect();
   try {
     await client.query("BEGIN");

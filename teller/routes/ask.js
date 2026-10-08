@@ -141,19 +141,21 @@ async function toolSubscriptions() {
 }
 
 async function toolBudgetStatus() {
-  const { getCategorySpendingThisMonth } = require("../services/financial-queries");
-  const [budgets, spending] = await Promise.all([
-    pool.query("SELECT category, monthly_limit, rollover_enabled FROM budgets"),
-    getCategorySpendingThisMonth(pool),
-  ]);
-  const spendMap = {};
-  for (const s of spending) spendMap[s.category] = parseFloat(s.spent);
+  // Shared getBudgetStatus (AIN-6): effective limit incl. the prior month's
+  // rollover, one-time budgets only in their month — the Budgets page's numbers.
+  const { getBudgetStatus } = require("../services/financial-queries");
+  const month = currentMonth();
+  const rows = await getBudgetStatus(pool, month);
   return {
-    month: currentMonth(),
-    budgets: budgets.rows.map(b => ({
+    month,
+    budgets: rows.map(b => ({
       category: b.category,
       monthly_limit: parseFloat(b.monthly_limit),
-      spent_this_month: spendMap[b.category] || 0,
+      rollover_amount: b.rollover_amount,
+      effective_limit: b.effective_limit,
+      spent_this_month: b.spent,
+      remaining: Math.round(b.remaining * 100) / 100,
+      percent_used: b.percent_used,
     })),
   };
 }
@@ -205,7 +207,7 @@ const TOOLS = [
   { name: "search_transactions", description: "Search transactions by merchant substring, category, date range, or minimum amount. Returns matching rows plus a dashboard-consistent adjusted spending total over ALL matches.", input_schema: { type: "object", properties: { merchant: { type: "string" }, category: { type: "string" }, start_date: { type: "string", description: "YYYY-MM-DD" }, end_date: { type: "string", description: "YYYY-MM-DD" }, min_amount: { type: "number" }, limit: { type: "integer", description: "max 50" } } } },
   { name: "get_net_worth", description: "Current net worth: assets, liabilities, total.", input_schema: { type: "object", properties: {} } },
   { name: "get_subscriptions", description: "Active detected subscriptions with monthly costs.", input_schema: { type: "object", properties: {} } },
-  { name: "get_budget_status", description: "This month's budgets and spending against them.", input_schema: { type: "object", properties: {} } },
+  { name: "get_budget_status", description: "This month's budgets: effective limit (base + rolled-over amount), spent, remaining and percent used — the Budgets page's numbers.", input_schema: { type: "object", properties: {} } },
   { name: "get_fire_projection", description: "FIRE number, progress, time to FIRE, and spending runway under the user's saved assumptions.", input_schema: { type: "object", properties: {} } },
 ];
 

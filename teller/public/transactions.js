@@ -467,8 +467,9 @@
     // Set default date range to last 6 months
     var now = new Date();
     var sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 6, now.getDate());
-    document.getElementById('filter-start').value = sixMonthsAgo.toISOString().split('T')[0];
-    document.getElementById('filter-end').value = now.toISOString().split('T')[0];
+    // Local calendar dates, not the UTC date (WUI-2).
+    document.getElementById('filter-start').value = localDateStr(sixMonthsAgo);
+    document.getElementById('filter-end').value = localDateStr(now);
 
     // Pre-fill filters from the query string (WUI-3) so deep links — e.g. the
     // dashboard Settle Up "Review →" (?account_id=…&month=YYYY-MM) — open the
@@ -542,7 +543,8 @@
       catSel.innerHTML = CATEGORIES.map(function(c) { return '<option value="' + esc(c) + '">' + esc(c) + '</option>'; }).join('');
       function close() { modal.style.display = 'none'; }
       async function open() {
-        document.getElementById('cash-date').value = new Date().toISOString().split('T')[0];
+        // Local today (WUI-2) — the UTC date logged a 6pm-Pacific coffee as tomorrow.
+        document.getElementById('cash-date').value = localTodayStr();
         document.getElementById('cash-amount').value = '';
         document.getElementById('cash-merchant').value = '';
         document.getElementById('cash-notes').value = '';

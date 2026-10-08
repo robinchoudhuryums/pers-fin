@@ -17,7 +17,7 @@ describe("Cache — normalizeQuery", () => {
 describe("Cache — corpusVersion", () => {
   it("combines max(updated_at) and active row count", async () => {
     const pool = { query: async () => ({ rows: [{ v: "20260101120000", n: "7" }] }) };
-    assert.equal(await corpusVersion(pool), "20260101120000:7");
+    assert.equal(await corpusVersion(pool, "2026-10-08"), "2026-10-08|20260101120000:7");
   });
   it("returns '0' on error", async () => {
     const pool = { query: async () => { throw new Error("boom"); } };

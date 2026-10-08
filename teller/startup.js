@@ -208,14 +208,13 @@ function startBackgroundJobs() {
     jobHealth.tick("budget-alerts");
     if (!isUserActive()) return;
     try {
-      const { getCategorySpendingThisMonth } = require("./services/financial-queries");
-      const now = new Date();
-      const month = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
-      // Rollover applied to this month is the PRIOR month's unused budget (FA-1)
-      // — the snapshot job stores it keyed by prevMonth, so read that row, not
-      // the current month's (which mirrors GET /api/budgets + /alerts).
-      const prevD = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-      const prevMonth = prevD.getFullYear() + "-" + String(prevD.getMonth() + 1).padStart(2, "0");
+      const { getCategorySpendingThisMonth, currentMonth, previousMonthKey } = require("./services/financial-queries");
+      // tz-aware month keys (FAN-13) — the spending side (getCategorySpending-
+      // ThisMonth) is already APP_TIMEZONE-anchored, so the budget/rollover keys
+      // must be too. Rollover applied to this month is the PRIOR month's unused
+      // budget (FA-1) — the snapshot job stores it keyed by prevMonth.
+      const month = currentMonth();
+      const prevMonth = previousMonthKey(month);
       const [budgets, spending, snapshots] = await Promise.all([
         pool.query("SELECT id, category, monthly_limit, rollover_enabled, budget_type, effective_month FROM budgets"),
         getCategorySpendingThisMonth(pool),
@@ -309,44 +308,23 @@ function startBackgroundJobs() {
   // the user-activity gate and Render free-tier sleep — meant a snapshot could
   // be permanently missed if nobody woke the process on the 1st, and from the
   // 2nd onward the date gate never let it catch up, so rollover silently never
-  // applied that month. Now it runs on EVERY tick and is made idempotent by the
-  // existing-snapshot short-circuit below, so any tick after the month rolls
-  // over creates the missing prior-month snapshot (catch-up) and subsequent
-  // ticks no-op. Still gated on user activity (the prior month is complete
-  // regardless of which day we run, so timing within the month doesn't matter).
+  // applied that month. Now it runs on EVERY tick (runBudgetSnapshot in
+  // routes/budgets.js): during days 1-5 it RE-takes the prior month's snapshot
+  // so charges that post a few days late are included (FAN-7 — "the prior month
+  // is complete regardless of which day we run" didn't hold for bank posting
+  // lag); after that it only creates a missing snapshot (catch-up) and
+  // otherwise no-ops. Still gated on user activity.
   intervalHandles.push(setInterval(async () => {
     jobHealth.tick("budget-snapshot");
     if (!isUserActive()) return;
     try {
-      const today = new Date();
-      const prev = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-      const prevMonth = prev.getFullYear() + "-" + String(prev.getMonth() + 1).padStart(2, "0");
-      const existing = await pool.query(
-        "SELECT 1 FROM budget_snapshots WHERE month = $1 LIMIT 1", [prevMonth]
-      );
-      if (existing.rows.length > 0) return;
-      const { getCategorySpendingForMonth } = require("./services/financial-queries");
-      // Pull spending FOR last month, not this (new) month — getCategorySpendingThisMonth
-      // would query the just-rolled-over current month and snapshot near-zero spending,
-      // which made every rollover-enabled budget carry forward its full limit.
-      const [budgets, spending] = await Promise.all([
-        pool.query("SELECT * FROM budgets"),
-        getCategorySpendingForMonth(pool, prevMonth),
-      ]);
-      const spendMap = {};
-      for (const r of spending) spendMap[r.category] = parseFloat(r.spent);
-      for (const b of budgets.rows) {
-        const spent = spendMap[b.category] || 0;
-        const limit = parseFloat(b.monthly_limit);
-        const rollover = b.rollover_enabled ? Math.max(0, limit - spent) : 0;
-        await pool.query(
-          `INSERT INTO budget_snapshots (budget_id, month, monthly_limit, spent, rollover_amount)
-           VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT (budget_id, month) DO NOTHING`,
-          [b.id, prevMonth, limit, spent, rollover]
-        );
-      }
-      console.log("Auto budget snapshot created for", prevMonth);
+      // Refreshes the prior month during days 1-5 (late-posting charges, FAN-7),
+      // creates it if missing afterwards (M5 catch-up); tz-anchored (FAN-13).
+      const { runBudgetSnapshot } = require("./routes/budgets");
+      const r = await runBudgetSnapshot(pool);
+      if (r.mode === "exists") return;
+      const prevMonth = r.month + " (" + r.mode + ", " + r.written + " row(s))";
+      console.log("Auto budget snapshot for", prevMonth);
     } catch (err) {
       console.error("Budget snapshot auto-trigger error:", err.message);
     }
@@ -499,10 +477,12 @@ function startBackgroundJobs() {
       );
       const s = settings.rows[0];
       if (!s || !s.weekly_digest_enabled) return;
-      const today = new Date();
-      // 0=Sun, 1=Mon, etc. Default 1 (Monday). The 6-day gate inside
-      // runWeeklyDigest handles dedup across multiple ticks per day.
-      if (today.getDay() !== (s.weekly_digest_day ?? 1)) return;
+      // 0=Sun, 1=Mon, etc. Default 1 (Monday). The weekday is the LOCAL
+      // (APP_TIMEZONE) day, not the server's UTC day (AIN-15). The 6-day gate
+      // inside runWeeklyDigest handles dedup across multiple ticks per day.
+      const { todayStr } = require("./services/financial-queries");
+      const localWeekday = new Date(todayStr() + "T00:00:00Z").getUTCDay();
+      if (localWeekday !== (s.weekly_digest_day ?? 1)) return;
       const { runWeeklyDigest } = require("./routes/insights");
       const result = await runWeeklyDigest();
       if (result.sent) console.log("Weekly digest sent.");

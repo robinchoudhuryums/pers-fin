@@ -74,11 +74,18 @@
         el.innerHTML = budgets.map(function(b) {
           var pct = b.percent_used;
           var color = pct >= 100 ? 'var(--red)' : pct >= 75 ? 'var(--warm)' : pct >= 50 ? 'var(--teal)' : 'var(--green)';
-          var remaining = parseFloat(b.monthly_limit) - b.spent;
+          // Effective limit = base + the rollover carried from last month (WUI-5):
+          // the server's percent_used is computed against it, so the dollar
+          // figures must be too (a $400 budget with $100 rolled over and $450
+          // spent showed "90%" next to "$50 over budget").
+          var limit = (b.effective_limit != null) ? parseFloat(b.effective_limit) : parseFloat(b.monthly_limit);
+          var rollover = parseFloat(b.rollover_amount || 0);
+          var remaining = limit - b.spent;
           return '<div class="budget-card">' +
             '<div class="budget-header"><span class="budget-category">' + esc(b.category) + '</span>' +
             (b.is_ai_suggested ? '<span class="ai-badge">AI suggested</span>' : '') + '</div>' +
-            '<div class="budget-meta"><span>$' + b.spent.toFixed(2) + ' of $' + parseFloat(b.monthly_limit).toFixed(2) + '</span>' +
+            '<div class="budget-meta"><span>$' + b.spent.toFixed(2) + ' of $' + limit.toFixed(2) +
+              (rollover > 0 ? ' <span style="color:var(--text-muted);font-size:11px;">($' + parseFloat(b.monthly_limit).toFixed(2) + ' + $' + rollover.toFixed(2) + ' rolled over)</span>' : '') + '</span>' +
             '<span style="color:' + color + ';font-weight:500;">' + pct + '%</span></div>' +
             '<div class="budget-bar"><div class="budget-fill" style="width:' + Math.min(100, pct) + '%;background:' + color + ';"></div></div>' +
             '<div class="budget-meta"><span>' + (remaining >= 0 ? '$' + remaining.toFixed(2) + ' remaining' : '<span style="color:var(--red);">$' + Math.abs(remaining).toFixed(2) + ' over budget</span>') + '</span>' +
@@ -93,7 +100,7 @@
 
     function renderSummary(budgets) {
       var totalBudget = 0, totalSpent = 0, overCount = 0;
-      budgets.forEach(function(b) { totalBudget += parseFloat(b.monthly_limit); totalSpent += b.spent; if (b.percent_used >= 100) overCount++; });
+      budgets.forEach(function(b) { totalBudget += parseFloat(b.effective_limit != null ? b.effective_limit : b.monthly_limit); totalSpent += b.spent; if (b.percent_used >= 100) overCount++; });
       var el = document.getElementById('summary-bar');
       if (!budgets.length) { el.innerHTML = ''; return; }
       var pct = totalBudget > 0 ? Math.round((totalSpent / totalBudget) * 100) : 0;

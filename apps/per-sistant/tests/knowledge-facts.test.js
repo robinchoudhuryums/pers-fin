@@ -55,12 +55,13 @@ describe("Facts — vault helpers", () => {
 
 describe("Facts — buildFactsQuery", () => {
   it("filters to current, normal-sensitivity facts and parameterizes terms", () => {
-    const { sql, params } = buildFactsQuery("car deductible", 12);
+    const { sql, params } = buildFactsQuery("car deductible", 12, "2026-10-08");
     assert.match(sql, /FROM facts/);
     assert.match(sql, /sensitivity = 'normal'/);
-    assert.match(sql, /valid_to IS NULL OR valid_to >= CURRENT_DATE/);
-    assert.match(sql, /valid_from IS NULL OR valid_from <= CURRENT_DATE/);
-    assert.deepEqual(params, ["%car%", "%deductible%", 12]);
+    assert.match(sql, /valid_to IS NULL OR valid_to >= \$4::date/);
+    assert.match(sql, /valid_from IS NULL OR valid_from <= \$4::date/);
+    assert.match(sql, /LIMIT \$3/);
+    assert.deepEqual(params, ["%car%", "%deductible%", 12, "2026-10-08"]);
   });
 });
 
@@ -99,14 +100,14 @@ describe("Facts — GET /api/rag/facts", () => {
     };
     const res = await supertest(makeApp(mockPool)).get("/api/rag/facts").expect(200);
     assert.equal(res.body.facts.length, 1);
-    assert.match(captured.sql, /valid_to >= CURRENT_DATE/); // current-only by default
+    assert.match(captured.sql, /valid_to >= \$\d+::date/); // current-only by default
   });
 
   it("?all=1 includes expired (no validity filter)", async () => {
     let captured;
     const mockPool = { query: async (sql) => { captured = sql; return { rows: [] }; } };
     await supertest(makeApp(mockPool)).get("/api/rag/facts?all=1").expect(200);
-    assert.ok(!/CURRENT_DATE/.test(captured), "all=1 should drop the validity filter");
+    assert.ok(!/valid_to >=/.test(captured), "all=1 should drop the validity filter");
   });
 
   it("degrades to empty when the facts table is missing", async () => {

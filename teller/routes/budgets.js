@@ -5,7 +5,7 @@
 const express = require("express");
 const router = express.Router();
 const { pool } = require("../services/database");
-const { getCategorySpendingThisMonth, getCategorySpendingForMonth, currentMonth } = require("../services/financial-queries");
+const { getCategorySpendingForMonth, getBudgetStatus, previousMonthKey, currentMonth, todayStr } = require("../services/financial-queries");
 const { MODEL_MAP } = require("../data/reference-data");
 
 let Anthropic;
@@ -21,18 +21,12 @@ function currentMonthKey() {
   return currentMonth();
 }
 
-// Previous-month key for a given 'YYYY-MM'. The rollover that applies to
-// month M is the unused budget from month M-1, which the snapshot job stores
-// in the budget_snapshots row keyed by M-1 (prevMonth). Readers must look up
-// the PRIOR month's snapshot, not the current month's (FA-1) — the current
-// month's row either doesn't exist yet or holds this month's own (circular)
-// underspend, so the carried-over amount was previously never applied.
-function previousMonthKey(monthKey) {
-  const [y, m] = monthKey.split("-").map(Number);
-  const d = new Date(y, m - 1, 1); // first day of monthKey
-  d.setMonth(d.getMonth() - 1);
-  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
-}
+// previousMonthKey (services/financial-queries.js): the rollover that applies
+// to month M is the unused budget from month M-1, stored in the budget_snapshots
+// row keyed by M-1. Readers look up the PRIOR month's snapshot (FA-1) — via the
+// shared getBudgetStatus, which every budget-status reader now uses (AIN-6).
+
+const MONTH_KEY_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 
 // GET /api/budgets — list all budgets with current month spending
 router.get("/api/budgets", async (req, res) => {
@@ -43,41 +37,9 @@ router.get("/api/budgets", async (req, res) => {
     return res.status(400).json({ error: "month must be 'YYYY-MM' with month 01-12" });
   }
   try {
-    const [budgets, spending, snapshots] = await Promise.all([
-      pool.query("SELECT * FROM budgets ORDER BY monthly_limit DESC"),
-      // Pull spending FOR the queried month so ?month=YYYY-MM compares the right
-      // numbers — the previous helper always returned the current month, which
-      // gave nonsense data when callers asked for a historical month.
-      getCategorySpendingForMonth(pool, queryMonth),
-      // Rollover for queryMonth comes from the PRIOR month's snapshot (FA-1).
-      pool.query("SELECT * FROM budget_snapshots WHERE month = $1", [previousMonthKey(queryMonth)]),
-    ]);
-    const spendMap = {};
-    for (const r of spending) spendMap[r.category] = parseFloat(r.spent);
-    const snapMap = {};
-    for (const s of snapshots.rows) snapMap[s.budget_id] = s;
-
-    const result = budgets.rows.map(b => {
-      const spent = spendMap[b.category] || 0;
-      const limit = parseFloat(b.monthly_limit);
-      // If rollover is enabled and there's a snapshot, add rollover to effective limit
-      const snap = snapMap[b.id];
-      const rollover = (b.rollover_enabled && snap) ? parseFloat(snap.rollover_amount || 0) : 0;
-      const effectiveLimit = limit + rollover;
-      // One-time budgets only apply to their effective_month
-      if (b.budget_type === "one_time" && b.effective_month && b.effective_month !== queryMonth) {
-        return null; // Don't show one-time budgets for other months
-      }
-      return {
-        ...b,
-        spent,
-        remaining: effectiveLimit - spent,
-        percent_used: effectiveLimit > 0
-          ? Math.round((spent / effectiveLimit) * 100) : 0,
-        rollover_amount: rollover,
-        effective_limit: effectiveLimit,
-      };
-    }).filter(Boolean);
+    // Shared helper: spending FOR the queried month, rollover from the PRIOR
+    // month's snapshot (FA-1), one-time budgets only in their effective_month.
+    const result = await getBudgetStatus(pool, queryMonth);
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: "An internal error occurred." });
@@ -111,7 +73,20 @@ router.post("/api/budgets", async (req, res) => {
 router.patch("/api/budgets/:id", async (req, res) => {
   const { monthly_limit, notes, rollover_enabled, budget_type, effective_month } = req.body;
   const updates = []; const values = []; let idx = 1;
-  if (monthly_limit !== undefined) { updates.push("monthly_limit = $" + idx++); values.push(parseFloat(monthly_limit)); }
+  // Same validation as POST (FAN-14): a non-numeric limit used to be stored as
+  // NaN (NUMERIC accepts 'NaN'), negatives were accepted, and a malformed
+  // effective_month ("2026-9") meant a one-time budget never matched any month.
+  if (monthly_limit !== undefined) {
+    const n = parseFloat(monthly_limit);
+    if (!Number.isFinite(n) || n < 0) return res.status(400).json({ error: "monthly_limit must be a non-negative number" });
+    updates.push("monthly_limit = $" + idx++); values.push(n);
+  }
+  if (budget_type !== undefined && !["recurring", "one_time"].includes(budget_type)) {
+    return res.status(400).json({ error: "budget_type must be 'recurring' or 'one_time'" });
+  }
+  if (effective_month !== undefined && effective_month !== null && effective_month !== "" && !MONTH_KEY_RE.test(String(effective_month))) {
+    return res.status(400).json({ error: "effective_month must be 'YYYY-MM' with month 01-12" });
+  }
   if (notes !== undefined) { updates.push("notes = $" + idx++); values.push(notes); }
   if (rollover_enabled !== undefined) { updates.push("rollover_enabled = $" + idx++); values.push(!!rollover_enabled); }
   if (budget_type !== undefined && ["recurring", "one_time"].includes(budget_type)) {
@@ -154,14 +129,13 @@ router.post("/api/budgets/suggest", async (_req, res) => {
     // adjusted, reimbursed-excluded, transfer-filtered, spending_split_pct-aware
     // numbers the user later sees as "spent" — not a raw SUM(amount) that
     // includes transfers/credit-card payments and over-counts shared cards (F11).
-    // Anchor each month to the 1st before subtracting, so running this on the
-    // 29th-31st doesn't overflow (e.g. May 31 → setMonth(-1) lands on Mar 3,
-    // dropping April and duplicating May). new Date(y, m-1-i, 1) is exact (F3).
-    const now = new Date();
-    const monthKeys = [0, 1, 2].map(i => {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
-    });
+    // The three most recent COMPLETE months (FAN-8): the partial current
+    // month dragged the average down (on the 3rd, $20 of dining averaged in
+    // with two $600 months → a ~$350 suggestion). String month math anchored
+    // on the tz-aware currentMonth() — no Date overflow on the 29th-31st (F3).
+    const monthKeys = [];
+    let mk = currentMonthKey();
+    for (let i = 0; i < 3; i++) { mk = previousMonthKey(mk); monthKeys.push(mk); }
     const [perMonthSpending, settingsRow, existingBudgets] = await Promise.all([
       Promise.all(monthKeys.map(m => getCategorySpendingForMonth(pool, m))),
       pool.query("SELECT insights_model FROM user_settings WHERE id = 1").catch(() => ({ rows: [{ insights_model: "haiku" }] })),
@@ -234,7 +208,7 @@ router.post("/api/budgets/suggest", async (_req, res) => {
       }],
       tools: [suggestTool],
       tool_choice: { type: "tool", name: "suggest_budgets" },
-      messages: [{ role: "user", content: "Spending history (last 3 months):\n" + catSummary }],
+      messages: [{ role: "user", content: "Spending history (last 3 complete months):\n" + catSummary }],
     });
 
     // Extract structured output from tool_use block
@@ -298,35 +272,25 @@ router.post("/api/budgets/accept", async (req, res) => {
 router.get("/api/budgets/alerts", async (_req, res) => {
   try {
     const month = currentMonthKey();
-    const [budgets, spending, snapshots] = await Promise.all([
-      pool.query("SELECT * FROM budgets ORDER BY monthly_limit DESC"),
-      getCategorySpendingThisMonth(pool), // Phase B3: honors splits
-      // Rollover applied to this month is the prior month's unused budget (FA-1).
-      pool.query("SELECT budget_id, rollover_amount FROM budget_snapshots WHERE month = $1", [previousMonthKey(month)]),
-    ]);
+    const budgets = await getBudgetStatus(pool, month);
 
-    const today = new Date();
-    const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
-    const dayOfMonth = today.getDate();
+    // Day math in APP_TIMEZONE (FAN-13): the month comes from currentMonth(),
+    // so the day-of-month must too — server `new Date()` (UTC) on the evening
+    // of the 30th in Los Angeles read "day 1 of next month" against this
+    // month's spending ("30 days left", pacing disabled).
+    const today = todayStr();
+    const [ty, tm] = month.split("-").map(Number);
+    const daysInMonth = new Date(Date.UTC(ty, tm, 0)).getUTCDate();
+    const dayOfMonth = parseInt(today.slice(8, 10), 10);
     const daysRemaining = daysInMonth - dayOfMonth;
     const monthProgress = dayOfMonth / daysInMonth;
 
-    const spendMap = {};
-    for (const r of spending) spendMap[r.category] = parseFloat(r.spent);
-    const snapMap = {};
-    for (const s of snapshots.rows) snapMap[s.budget_id] = s;
-
     const alerts = [];
-    for (const b of budgets.rows) {
-      // One-time budgets only apply to their effective month — don't alert on a
-      // past vacation budget every month (mirrors GET /api/budgets) (F18).
-      if (b.budget_type === "one_time" && b.effective_month && b.effective_month !== month) continue;
-      const spent = spendMap[b.category] || 0;
-      // Compare against the effective limit (base + this month's rollover), the
-      // same number GET /api/budgets shows — not the bare monthly_limit (F18).
-      const snap = snapMap[b.id];
-      const rollover = (b.rollover_enabled && snap) ? parseFloat(snap.rollover_amount || 0) : 0;
-      const limit = parseFloat(b.monthly_limit) + rollover;
+    // getBudgetStatus already drops one-time budgets outside this month (F18)
+    // and compares against the effective limit (base + prior-month rollover).
+    for (const b of budgets) {
+      const spent = b.spent;
+      const limit = b.effective_limit;
       const pctUsed = limit > 0 ? (spent / limit) * 100 : 0;
       // Don't calculate pace for the first few days — too unreliable with little data
       const pace = monthProgress >= 0.1 ? pctUsed / (monthProgress * 100) : 0;
@@ -397,35 +361,61 @@ router.post("/api/budgets/snapshot", async (req, res) => {
     return res.status(400).json({ error: "month must be 'YYYY-MM' with month 01-12" });
   }
   try {
-    const [budgets, spending] = await Promise.all([
-      pool.query("SELECT * FROM budgets"),
-      // Snapshot the spending IN the requested month, not always-this-month.
-      getCategorySpendingForMonth(pool, month),
-    ]);
-    const spendMap = {};
-    for (const r of spending) spendMap[r.category] = parseFloat(r.spent);
-
-    let created = 0;
-    for (const b of budgets.rows) {
-      const spent = spendMap[b.category] || 0;
-      const limit = parseFloat(b.monthly_limit);
-      const rollover = b.rollover_enabled ? Math.max(0, limit - spent) : 0;
-
-      await pool.query(
-        `INSERT INTO budget_snapshots (budget_id, month, monthly_limit, spent, rollover_amount)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (budget_id, month) DO UPDATE SET
-           monthly_limit = $3, spent = $4, rollover_amount = $5`,
-        [b.id, month, limit, spent, rollover]
-      );
-      created++;
-    }
+    const created = await writeBudgetSnapshot(pool, month, { overwrite: true });
     res.json({ snapshots_created: created, month });
   } catch (err) {
     console.error("budget snapshot error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
   }
 });
+
+// Snapshot a month's spending + rollover for every budget. `overwrite` = DO
+// UPDATE (refresh) vs DO NOTHING (create-if-missing). Returns rows written.
+async function writeBudgetSnapshot(db, month, { overwrite }) {
+  const [budgets, spending] = await Promise.all([
+    db.query("SELECT * FROM budgets"),
+    // Snapshot the spending IN the requested month, not always-this-month.
+    getCategorySpendingForMonth(db, month),
+  ]);
+  const spendMap = {};
+  for (const r of spending) spendMap[r.category] = parseFloat(r.spent);
+  let written = 0;
+  for (const b of budgets.rows) {
+    const spent = spendMap[b.category] || 0;
+    const limit = parseFloat(b.monthly_limit);
+    const rollover = b.rollover_enabled ? Math.max(0, limit - spent) : 0;
+    const r = await db.query(
+      `INSERT INTO budget_snapshots (budget_id, month, monthly_limit, spent, rollover_amount)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (budget_id, month) ${overwrite ? "DO UPDATE SET monthly_limit = $3, spent = $4, rollover_amount = $5" : "DO NOTHING"}`,
+      [b.id, month, limit, spent, rollover]
+    );
+    written += r.rowCount || 0;
+  }
+  return written;
+}
+
+// Days into a month during which the scheduled snapshot of the PRIOR month is
+// re-taken (FAN-7): charges dated the 29th–31st commonly post/sync on the 1st–
+// 3rd, so a snapshot frozen on the first tick after midnight lost them forever
+// (a $500 budget with $480 real spend snapshotted $420 and carried $80, not $20).
+const SNAPSHOT_REFRESH_DAYS = 5;
+
+// Scheduled prior-month snapshot (startup.js, every 6h). Months and days are
+// APP_TIMEZONE-anchored (FAN-13 — the job used UTC month keys while spending
+// used the tz month). Days 1..SNAPSHOT_REFRESH_DAYS: refresh (DO UPDATE) so
+// late-posting charges land; afterwards: create-if-missing only (the M5
+// catch-up for a month whose snapshot was never taken).
+async function runBudgetSnapshot(db = pool, today = todayStr()) {
+  const prevMonth = previousMonthKey(today.slice(0, 7));
+  const refresh = parseInt(today.slice(8, 10), 10) <= SNAPSHOT_REFRESH_DAYS;
+  if (!refresh) {
+    const existing = await db.query("SELECT 1 FROM budget_snapshots WHERE month = $1 LIMIT 1", [prevMonth]);
+    if (existing.rows.length > 0) return { month: prevMonth, mode: "exists", written: 0 };
+  }
+  const written = await writeBudgetSnapshot(db, prevMonth, { overwrite: refresh });
+  return { month: prevMonth, mode: refresh ? "refresh" : "catch_up", written };
+}
 
 // GET /api/budgets/history — get budget snapshots for trend analysis
 router.get("/api/budgets/history", async (req, res) => {
@@ -448,3 +438,5 @@ module.exports = router;
 // Exported for unit testing the rollover month-keying (FA-1). Attached AFTER
 // `module.exports = router` so the router assignment doesn't drop it (INV-19).
 module.exports.previousMonthKey = previousMonthKey;
+module.exports.runBudgetSnapshot = runBudgetSnapshot;
+module.exports.SNAPSHOT_REFRESH_DAYS = SNAPSHOT_REFRESH_DAYS;

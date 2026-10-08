@@ -7,7 +7,7 @@ const { callAI, getAIModelForFeature, getCached, setCache, isAIAvailable } = req
 const { VALID_AI_FEATURES } = require("../config");
 
 const { serverError } = require("../errors");
-const { gatherHealthSummary } = require("./health");
+const { gatherHealthSummary, todayStr } = require("./health");
 const { housingDue, housingDueSuffix } = require("./housing-due");
 
 module.exports = function ({ pool }) {
@@ -125,7 +125,7 @@ module.exports = function ({ pool }) {
     try {
       const model = await getAIModelForFeature("daily_briefing");
       if (model === "off") return res.status(400).json({ error: "AI daily briefing is disabled." });
-      const today = new Date().toISOString().split("T")[0];
+      const today = todayStr(); // APP_TIMEZONE, matching the habit/rent lines (PB-13)
       const [pending, overdue, scheduled, upcoming, health] = await Promise.all([
         pool.query("SELECT title, priority, category, due_date FROM todos WHERE deleted_at IS NULL AND NOT completed ORDER BY CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END LIMIT 15"),
         pool.query("SELECT title, due_date FROM todos WHERE deleted_at IS NULL AND NOT completed AND due_date < $1", [today]),

@@ -14,7 +14,8 @@ const express = require("express");
 
 const config = require("./config");
 const { pool, runMigrations } = require("./db");
-const { advanceRecurrence } = require("./helpers");
+const { advanceRecurrence, rollMissedRecurring } = require("./helpers");
+const { todayStr } = require("./routes/health");
 const middleware = require("./middleware");
 const views = require("./views");
 const { startKeepAlive } = require("./services/keep-alive");
@@ -192,32 +193,15 @@ async function start(opts = {}) {
 
   // Recurring task processor — auto-generate next instance for overdue recurring
   if (cron) {
+    // Local midnight in APP_TIMEZONE (PB-10); the roll itself (claim → mark
+    // MISSED → next instance on/after today with the chain's anchor day) is
+    // helpers.rollMissedRecurring.
     cron.schedule("0 0 * * *", async () => {
       try {
-        const r = await pool.query("SELECT * FROM todos WHERE deleted_at IS NULL AND recurring = true AND completed = false AND due_date < CURRENT_DATE");
-        for (const todo of r.rows) {
-          // Atomically CLAIM the row (PS-11): the guard `AND completed = false`
-          // means if the manual complete-recurring path already handled this
-          // todo between our SELECT and now, this matches 0 rows and we skip —
-          // avoiding a double-generated next instance from the race.
-          const claim = await pool.query("UPDATE todos SET completed = true, completed_at = now(), streak_count = 0 WHERE id = $1 AND completed = false RETURNING id", [todo.id]);
-          if (!claim.rows.length) continue;
-          const rule = todo.recurrence_rule;
-          const interval = todo.recurrence_interval || 1;
-          let nextDue = new Date(todo.due_date);
-          nextDue = advanceRecurrence(nextDue, rule, interval);
-          let catchupLimit = 365;
-          while (nextDue <= new Date() && catchupLimit-- > 0) {
-            nextDue = advanceRecurrence(nextDue, rule, interval);
-          }
-          await pool.query(
-            "INSERT INTO todos (title, description, priority, horizon, category, due_date, recurring, recurrence_rule, recurrence_interval, recurrence_parent_id, streak_count, best_streak) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,0,$11)",
-            [todo.title, todo.description, todo.priority, todo.horizon, todo.category, nextDue.toISOString().split("T")[0], true, rule, interval, todo.recurrence_parent_id || todo.id, todo.best_streak || 0]
-          );
-        }
-        if (r.rows.length) console.log(`Processed ${r.rows.length} recurring tasks`);
+        const { rolled } = await rollMissedRecurring(pool, todayStr());
+        if (rolled) console.log(`Processed ${rolled} recurring tasks`);
       } catch (err) { console.error("Recurring task error:", err.message); }
-    });
+    }, { timezone: process.env.APP_TIMEZONE || "UTC" });
     console.log("Recurring task processor started (daily at midnight)");
   }
 

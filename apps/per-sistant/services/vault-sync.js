@@ -395,10 +395,21 @@ async function upsertVaultDocument(pool, path, title, content, sensitivity, tags
      ON CONFLICT (source, source_ref) WHERE source_ref IS NOT NULL
      DO UPDATE SET title = EXCLUDED.title, content = EXCLUDED.content, tags = EXCLUDED.tags,
        sensitivity = EXCLUDED.sensitivity, deleted_at = NULL, updated_at = now()
+     -- KR-5: only rewrite a row whose content actually changed. Every full
+     -- reindex used to bump updated_at on EVERY document, which changed the
+     -- answer-cache corpus version and wiped the cache twice a day for nothing.
+     WHERE (documents.title, documents.content, documents.tags, documents.sensitivity, documents.deleted_at)
+           IS DISTINCT FROM (EXCLUDED.title, EXCLUDED.content, EXCLUDED.tags, EXCLUDED.sensitivity, NULL::timestamptz)
      RETURNING id`,
     [path, title, content, tags && tags.length ? tags : null, sensitivity]
   );
-  return r.rows[0].id;
+  if (r.rows[0]) return r.rows[0].id;
+  // Unchanged → the conditional DO UPDATE returned no row; look the id up.
+  const existing = await pool.query(
+    "SELECT id FROM documents WHERE source = 'vault' AND source_ref = $1",
+    [path]
+  );
+  return existing.rows[0].id;
 }
 
 async function removeVaultDocument(pool, path) {
@@ -409,8 +420,32 @@ async function removeVaultDocument(pool, path) {
   if (r.rows[0]) await clearSource(pool, "document", r.rows[0].id);
 }
 
-// Replace all facts for a vault file (one file = many fact rows).
+// Order-independent signature of a fact set (KR-5 change detection).
+function factSetSignature(rows) {
+  const day = (v) => (v == null || v === "" ? null : (v instanceof Date
+    ? `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, "0")}-${String(v.getDate()).padStart(2, "0")}`
+    : String(v).slice(0, 10)));
+  return JSON.stringify(rows.map((f) => [
+    String(f.entity), String(f.attribute), String(f.value), day(f.valid_from), day(f.valid_to),
+    String(f.sensitivity || "normal"), (f.tags && f.tags.length ? [...f.tags].map(String).sort() : []),
+  ]).map((x) => JSON.stringify(x)).sort());
+}
+
+// Replace all facts for a vault file (one file = many fact rows). Skipped when
+// the file's fact set is unchanged (KR-5): delete + re-insert on every sync
+// bumped the facts' updated_at → a new corpus version → the answer cache was
+// flushed even though nothing changed.
 async function upsertFacts(pool, sourceRef, facts) {
+  try {
+    const cur = await pool.query(
+      `SELECT entity, attribute, value, valid_from, valid_to, sensitivity, tags
+       FROM facts WHERE source = 'vault' AND source_ref = $1 AND deleted_at IS NULL`,
+      [sourceRef]
+    );
+    if (cur.rows.length === facts.length && factSetSignature(cur.rows) === factSetSignature(facts)) {
+      return { unchanged: true };
+    }
+  } catch { /* fall through to the full replace */ }
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -706,4 +741,7 @@ module.exports = {
   slugify,
   buildCaptureMarkdown,
   commitVaultFile,
+  upsertVaultDocument,
+  upsertFacts,
+  factSetSignature,
 };

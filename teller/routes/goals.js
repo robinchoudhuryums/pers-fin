@@ -6,7 +6,8 @@ const express = require("express");
 const router = express.Router();
 const { pool } = require("../services/database");
 const { zipToState } = require("../data/reference-data");
-const { INVESTMENT_ACCOUNT_TYPES, getMonthlySpending, currentMonth } = require("../services/financial-queries");
+const { INVESTMENT_ACCOUNT_TYPES, getMonthlySpending, currentMonth, todayStr } = require("../services/financial-queries");
+const { addMonthsYm, addMonthsYmd } = require("../services/projections");
 
 // Derive a goal's effective current_amount + funding status from a row that has
 // been LEFT JOINed to its funding account/investment (columns:
@@ -119,9 +120,8 @@ router.get("/api/goals", async (_req, res) => {
       // Calculate estimated date using proper month addition
       let estimated_date = null;
       if (months_to_goal) {
-        const d = new Date();
-        d.setMonth(d.getMonth() + months_to_goal);
-        estimated_date = d.toISOString().split("T")[0];
+        // Month-end safe (FAN-15): setMonth on the 29th-31st skipped a month.
+        estimated_date = addMonthsYmd(todayStr(), months_to_goal);
       }
       // Suggested transfers — recurring outgoing transfers whose type aligns
       // with this goal's funding source and whose monthly_equivalent is in
@@ -696,9 +696,7 @@ router.get("/api/fire-projection", async (req, res) => {
 
     let fireDate = null;
     if (proj.months_to_fire !== null) {
-      const d = new Date();
-      d.setMonth(d.getMonth() + proj.months_to_fire);
-      fireDate = d.toISOString().slice(0, 7);
+      fireDate = addMonthsYm(todayStr(), proj.months_to_fire); // month-end safe (FAN-15)
     }
 
     res.json({

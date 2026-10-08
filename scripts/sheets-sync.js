@@ -22,6 +22,35 @@ const path = require("path");
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
+// APP_TIMEZONE anchors (SXE-12). This script is standalone (it can't require
+// teller/services/financial-queries.js), so it carries its own copy of the
+// currentMonth()/todayStr() rule: "today" and "this month" are the operator's
+// wall-clock day/month (default UTC), never Postgres CURRENT_DATE / the
+// server's UTC Date — otherwise Budget Status rolled to next month early west
+// of UTC and the dashboard timestamp was hard-wired to New York.
+const SHEETS_TZ = process.env.APP_TIMEZONE || "UTC";
+function sheetsTodayStr() {
+  try {
+    return new Intl.DateTimeFormat("en-CA", { timeZone: SHEETS_TZ, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+  } catch { return new Date().toISOString().slice(0, 10); }
+}
+// 'YYYY-MM' of the current tz month shifted by `offset` months.
+function sheetsMonth(offset = 0) {
+  const [y, m] = sheetsTodayStr().split("-").map(Number);
+  const t = y * 12 + (m - 1) + offset;
+  return `${Math.floor(t / 12)}-${String((t % 12) + 1).padStart(2, "0")}`;
+}
+// A validated SQL date literal (digits + hyphens only — safe to interpolate
+// into the shared window fragments, which are spliced into many queries).
+function sqlDate(ymd) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) throw new Error("bad date literal: " + ymd);
+  return `DATE '${ymd}'`;
+}
+function sqlMonth(ym) {
+  if (!/^\d{4}-\d{2}$/.test(ym)) throw new Error("bad month literal: " + ym);
+  return `'${ym}'`;
+}
+
 const SPREADSHEET_ID = process.env.GOOGLE_SHEETS_ID;
 const SERVICE_ACCOUNT_KEY_PATH = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
 
@@ -596,8 +625,13 @@ async function buildDashboard(sheets, pool) {
       UNION ALL
       SELECT category, month, amount FROM from_splits
     )`;
-  const WINDOW_6MO = "t.date >= CURRENT_DATE - INTERVAL '6 months'";
-  const WINDOW_THIS_MONTH = "t.date >= date_trunc('month', CURRENT_DATE) AND t.date < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'";
+  // WHOLE-month windows in APP_TIMEZONE (SXE-12, parity with the app's FA-4
+  // whole-month windows): "6 months" = this month + the 5 before it, starting
+  // on the 1st — a rolling CURRENT_DATE − 6 months left a partial oldest month
+  // in the trend, the per-month columns and the sparklines.
+  const WINDOW_6MO_START = sheetsMonth(-5) + "-01";
+  const WINDOW_6MO = `t.date >= ${sqlDate(WINDOW_6MO_START)}`;
+  const WINDOW_THIS_MONTH = `t.date >= ${sqlDate(sheetsMonth(0) + "-01")} AND t.date < ${sqlDate(sheetsMonth(1) + "-01")}`;
 
   // Fetch summary data from DB
   const { rows: monthlySummary } = await pool.query(`
@@ -609,7 +643,7 @@ async function buildDashboard(sheets, pool) {
     FROM transactions t
     LEFT JOIN linked_accounts la ON la.account_id = t.account_id
     WHERE t.pending = false AND t.amount > 0 AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER}
-      AND t.date >= CURRENT_DATE - INTERVAL '6 months'
+      AND ${WINDOW_6MO}
     GROUP BY TO_CHAR(t.date, 'YYYY-MM')
     ORDER BY month DESC
   `);
@@ -652,7 +686,7 @@ async function buildDashboard(sheets, pool) {
     FROM transactions t
     LEFT JOIN linked_accounts la ON la.account_id = t.account_id
     WHERE t.pending = false AND t.amount > 0 AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER}
-      AND t.date >= CURRENT_DATE - INTERVAL '6 months'
+      AND ${WINDOW_6MO}
     GROUP BY merchant
     ORDER BY total DESC
     LIMIT 10
@@ -677,7 +711,7 @@ async function buildDashboard(sheets, pool) {
     FROM transactions t
     LEFT JOIN linked_accounts la ON la.account_id = t.account_id
     WHERE t.pending = false AND t.amount > 0 AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER}
-      AND t.date >= CURRENT_DATE - INTERVAL '6 months'
+      AND ${WINDOW_6MO}
   `);
 
   // Net worth history
@@ -701,9 +735,16 @@ async function buildDashboard(sheets, pool) {
     cat_spend AS (
       SELECT category, SUM(amount) AS spent FROM cat_lines GROUP BY category
     )
-    SELECT b.category, b.monthly_limit, COALESCE(cs.spent, 0) AS spent
+    SELECT b.category, b.monthly_limit,
+           b.monthly_limit + CASE WHEN b.rollover_enabled THEN COALESCE(bs.rollover_amount, 0) ELSE 0 END AS effective_limit,
+           COALESCE(cs.spent, 0) AS spent
     FROM budgets b
     LEFT JOIN cat_spend cs ON cs.category = b.category
+    -- SXE-4 (parity with the app's getBudgetStatus): the effective limit adds
+    -- the PRIOR month's snapshot rollover (FA-1), and a one-time budget only
+    -- shows in its own month.
+    LEFT JOIN budget_snapshots bs ON bs.budget_id = b.id AND bs.month = ${sqlMonth(sheetsMonth(-1))}
+    WHERE NOT (b.budget_type = 'one_time' AND b.effective_month IS NOT NULL AND b.effective_month <> ${sqlMonth(sheetsMonth(0))})
     ORDER BY b.monthly_limit DESC
   `);
 
@@ -733,20 +774,23 @@ async function buildDashboard(sheets, pool) {
   const totalYearly = totalMonthly * 12;
   const total6mo = parseFloat(totals[0]?.total_6mo || 0);
   const avgMonthlySpend = total6mo / 6;
-  const avgDailySpend = total6mo / 180;
+  // Days actually covered by the whole-month window (1st of the oldest month →
+  // today), not a fixed 180.
+  const windowDays = Math.max(1, Math.round((Date.parse(sheetsTodayStr() + "T00:00:00Z") - Date.parse(WINDOW_6MO_START + "T00:00:00Z")) / 86400000) + 1);
+  const avgDailySpend = total6mo / windowDays;
 
   await ensureSheet(sheets, SHEET_DASHBOARD);
 
   // Build dashboard rows
   const now = new Date();
-  const nowStr = now.toLocaleString("en-US", { timeZone: "America/New_York" });
+  const nowStr = now.toLocaleString("en-US", { timeZone: SHEETS_TZ });
   // Day-of-week + relative phrasing make the freshness immediately
   // glanceable ("Synced Mon, May 17 at 8:42 AM"). Sheets users open the
   // dashboard sometimes hours/days after the last sync, so the absolute
   // timestamp is the most useful signal — a relative-time string would
   // drift the moment they open it.
   const friendlyTime = now.toLocaleString("en-US", {
-    timeZone: "America/New_York",
+    timeZone: SHEETS_TZ,
     weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
   });
   const rows = [];
@@ -864,7 +908,7 @@ async function buildDashboard(sheets, pool) {
     budgetStartRow = rows.length; // first data row (after header)
     for (const b of budgetData) {
       const spent = parseFloat(b.spent);
-      const limit = parseFloat(b.monthly_limit);
+      const limit = parseFloat(b.effective_limit != null ? b.effective_limit : b.monthly_limit);
       const pct = limit > 0 ? Math.round((spent / limit) * 100) : 0;
       rows.push([b.category, spent, limit, pct + "%"]);
     }
@@ -1651,7 +1695,7 @@ async function syncRecurringTransfers(sheets, pool) {
 async function syncTaxDeductions(sheets, pool) {
   console.log("Syncing tax deductions to Google Sheets...");
 
-  const year = new Date().getFullYear();
+  const year = parseInt(sheetsTodayStr().slice(0, 4), 10); // tz-aware (SXE-12)
   const { rows } = await pool.query(
     `SELECT merchant, amount, category, deduction_type, is_confirmed, notes, flagged_at
      FROM tax_deductions
@@ -2058,7 +2102,7 @@ async function syncIncome(sheets, pool) {
            COUNT(*) AS deposits
     FROM transactions
     WHERE pending = false
-      AND date >= CURRENT_DATE - INTERVAL '24 months'
+      AND date >= ${sqlDate(sheetsMonth(-23) + "-01")}  -- 24 whole months (SXE-12)
       AND amount < 0
       AND ${INCOME_PREDICATE}
     GROUP BY TO_CHAR(date, 'YYYY-MM')
@@ -2073,7 +2117,7 @@ async function syncIncome(sheets, pool) {
            MAX(date) AS most_recent
     FROM transactions
     WHERE pending = false
-      AND date >= CURRENT_DATE - INTERVAL '12 months'
+      AND date >= ${sqlDate(sheetsMonth(-11) + "-01")}  -- 12 whole months (SXE-12)
       AND amount < 0
       AND ${INCOME_PREDICATE}
     GROUP BY COALESCE(merchant_name, name)
@@ -2978,7 +3022,7 @@ async function syncMonthArchives(sheets, pool) {
     SELECT DISTINCT TO_CHAR(date, 'YYYY-MM') AS month
     FROM transactions
     WHERE pending = false
-      AND TO_CHAR(date, 'YYYY-MM') < TO_CHAR(CURRENT_DATE, 'YYYY-MM')
+      AND TO_CHAR(date, 'YYYY-MM') < ${sqlMonth(sheetsMonth(0))}  -- tz current month (SXE-12)
     ORDER BY month ASC
   `);
 

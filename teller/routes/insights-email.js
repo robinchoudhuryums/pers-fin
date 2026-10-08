@@ -109,10 +109,9 @@ function escapeHtml(s) {
 }
 
 // #19 — Daily "what changed since yesterday" digest. Mirrors runWeeklyDigest's
-// shape: gated by daily_digest_enabled, dedupes via last_daily_digest_at (20h
-// window so the once-per-day scheduler tick stays idempotent even if the
-// process restarts), renders directly from gatherWhatsNew(now - 24h) — no AI
-// call. Pre-formats both HTML and plain-text bodies. Skips entirely if there's
+// shape: gated by daily_digest_enabled, sends once per LOCAL (APP_TIMEZONE)
+// date from 07:00 via last_daily_digest_at (AIN-15), renders directly from
+// gatherWhatsNew(since the previous digest) — no AI call. Pre-formats both HTML and plain-text bodies. Skips entirely if there's
 // nothing new (empty digest is noise, not signal).
 function renderDailyDigestEmail(data) {
   const fmtUsd = (n) => "$" + (n >= 0 ? "" : "-") + Math.abs(n).toFixed(2);

@@ -87,7 +87,24 @@ function computeRunwayMonths({ netWorth = 0, monthlySpending = 0, annualReturnPc
 // UI can say so instead of showing a bogus horizon).
 const LOAN_CAP_MONTHS = 1200;
 
-function computeLoanPayoff({ balance = 0, aprPct = 0, monthlyPayment = 0 }) {
+// Month-end-safe date arithmetic (FAN-15). `setMonth(+m)` overflows on the
+// 29th–31st (Oct 31 + 1 month → "Nov 31" → Dec 1), so a 1-month payoff/goal/
+// FIRE date computed at month-end skipped a month. These do the math on the
+// month index and clamp the day to the target month's length.
+function addMonthsYm(ymd, n) {
+  const [y, m] = String(ymd).slice(0, 7).split("-").map(Number);
+  const t = y * 12 + (m - 1) + n;
+  return `${Math.floor(t / 12)}-${String((t % 12) + 1).padStart(2, "0")}`;
+}
+function addMonthsYmd(ymd, n) {
+  const ym = addMonthsYm(ymd, n);
+  const [ty, tm] = ym.split("-").map(Number);
+  const lastDay = new Date(Date.UTC(ty, tm, 0)).getUTCDate();
+  const d = Math.min(parseInt(String(ymd).slice(8, 10), 10) || 1, lastDay);
+  return `${ym}-${String(d).padStart(2, "0")}`;
+}
+
+function computeLoanPayoff({ balance = 0, aprPct = 0, monthlyPayment = 0, today = new Date().toISOString().slice(0, 10) }) {
   const out = { months_to_payoff: null, total_interest: null, payoff_date: null, insufficient_payment: false };
   if (!(balance > 0) || !(monthlyPayment > 0)) return out;
   const r = (aprPct || 0) / 100 / 12;
@@ -104,13 +121,11 @@ function computeLoanPayoff({ balance = 0, aprPct = 0, monthlyPayment = 0 }) {
     if (b <= 0) {
       out.months_to_payoff = m;
       out.total_interest = Math.round(interest * 100) / 100;
-      const d = new Date();
-      d.setMonth(d.getMonth() + m);
-      out.payoff_date = d.toISOString().slice(0, 7);
+      out.payoff_date = addMonthsYm(today, m); // month-end safe (FAN-15)
       return out;
     }
   }
   return out; // > 100 years — treat as never (months_to_payoff null)
 }
 
-module.exports = { computeFireProjection, computeRunwayMonths, computeLoanPayoff, monthlyRate };
+module.exports = { computeFireProjection, computeRunwayMonths, computeLoanPayoff, monthlyRate, addMonthsYm, addMonthsYmd };

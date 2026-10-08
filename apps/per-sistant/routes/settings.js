@@ -106,7 +106,7 @@ module.exports = function ({ pool, config }) {
   router.get("/api/stats", async (req, res) => {
     try {
       const [todos, emails, notes] = await Promise.all([
-        pool.query("SELECT count(*) FILTER (WHERE NOT completed) as pending, count(*) FILTER (WHERE completed) as done, count(*) FILTER (WHERE NOT completed AND priority = 'urgent') as urgent, count(*) FILTER (WHERE NOT completed AND due_date <= CURRENT_DATE) as overdue FROM todos WHERE deleted_at IS NULL"),
+        pool.query("SELECT count(*) FILTER (WHERE NOT completed) as pending, count(*) FILTER (WHERE completed AND NOT COALESCE(missed, false)) as done, count(*) FILTER (WHERE NOT completed AND priority = 'urgent') as urgent, count(*) FILTER (WHERE NOT completed AND due_date <= CURRENT_DATE) as overdue FROM todos WHERE deleted_at IS NULL"),
         pool.query("SELECT count(*) FILTER (WHERE status = 'draft') as drafts, count(*) FILTER (WHERE status = 'scheduled') as scheduled, count(*) FILTER (WHERE status = 'sent') as sent, count(*) FILTER (WHERE status = 'failed') as failed FROM emails WHERE deleted_at IS NULL"),
         pool.query("SELECT count(*) as total FROM notes WHERE deleted_at IS NULL"),
       ]);
