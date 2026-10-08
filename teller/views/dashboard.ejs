@@ -1710,18 +1710,24 @@
         try {
           var res = await apiFetch('/api/sheets/sync', { method: 'POST' });
           var data = await res.json().catch(function() { return {}; });
-          if (res.ok) {
+          // WD-6: a 200 can carry per-tab errors (INV-24) — say so instead of
+          // "Synced ✓". showMsg is the page-global toast (the old showStatus
+          // was local to the Quick-Add-Bill IIFE, so no error ever showed).
+          var failedTabs = (data.errors && data.errors.length) || 0;
+          if (res.ok && !failedTabs) {
             syncBtn.textContent = 'Synced ✓';
             setTimeout(function() { syncBtn.textContent = orig; syncBtn.disabled = false; }, 2000);
+          } else if (res.ok) {
+            syncBtn.textContent = 'Partial: ' + failedTabs + ' tab' + (failedTabs === 1 ? '' : 's') + ' failed';
+            showMsg('Sheets sync partial — failed: ' + data.errors.map(function(e) { return e.step; }).join(', ') + '. ' + data.errors[0].error, false);
+            setTimeout(function() { syncBtn.textContent = orig; syncBtn.disabled = false; }, 4000);
           } else {
             syncBtn.textContent = data.error ? 'Failed' : ('HTTP ' + res.status);
-            // Use a status-msg toast if available so the error is readable.
-            if (typeof showStatus === 'function') {
-              showStatus(data.error || 'Sheets sync failed', false);
-            }
+            showMsg(data.error || ('Sheets sync failed (HTTP ' + res.status + ')'), false);
             setTimeout(function() { syncBtn.textContent = orig; syncBtn.disabled = false; }, 3000);
           }
         } catch (err) {
+          showMsg('Sheets sync failed: ' + err.message, false);
           syncBtn.textContent = 'Failed';
           setTimeout(function() { syncBtn.textContent = orig; syncBtn.disabled = false; }, 3000);
         }

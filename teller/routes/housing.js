@@ -532,10 +532,11 @@ router.get("/api/housing/export", async (req, res) => {
       }
     }
     // CSV (default)
-    const q = (v) => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`;
+    // SXE-13: formula-guarded text fields; ISO date whatever the driver returns.
+    const { csvText: q, csvDate } = require("../services/csv-export");
     let csv = "Date,Amount,Memo,Covers,Payee\n";
     for (const p of rows) {
-      csv += [p.paid_date, parseFloat(p.amount).toFixed(2), q(p.memo || ""), q(coversText(p)), q(p.payee)].join(",") + "\n";
+      csv += [csvDate(p.paid_date), parseFloat(p.amount).toFixed(2), q(p.memo || ""), q(coversText(p)), q(p.payee)].join(",") + "\n";
     }
     csv += `,${total.toFixed(2)},${q("Total " + year)},,\n`;
     res.setHeader("Content-Type", "text/csv");

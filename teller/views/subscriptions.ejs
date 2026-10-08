@@ -287,7 +287,9 @@
       try {
         const res = await apiFetch('/api/sheets/sync', { method: 'POST' });
         const data = await res.json();
-        if (res.ok) showMsg('Synced to Sheets: ' + data.transactions_synced + ' txns, ' + data.subscriptions_synced + ' subs.', true);
+        // WD-6/SXE-1: a 200 can still carry per-tab errors.
+        if (res.ok && data.errors && data.errors.length) showMsg('Sheets sync partial: ' + data.errors.length + ' tab(s) failed (' + data.errors.map(function(e) { return e.step; }).join(', ') + ').', false);
+        else if (res.ok) showMsg('Synced to Sheets: ' + data.transactions_synced + ' txns, ' + data.subscriptions_synced + ' subs.', true);
         else showMsg('Sheets sync failed: ' + (data.error || 'HTTP ' + res.status), false);
       } catch (e) { showMsg('Sheets sync failed: ' + e.message, false); }
       btnLoading(btn, false, 'Sync to Sheets');

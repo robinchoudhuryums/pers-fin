@@ -9,7 +9,26 @@ to the "none in progress" state.
 
 ## Current Cycle
 
-- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 9 DONE** on branch
+- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 10 DONE** on branch
+  `claude/lucid-darwin-7r8e59` (2026-10-08). Batch 10 (Sheets & exports) implemented, tested, pushed (no PR opened).
+  - **Completed:**
+    - SXE-1 / WD-6: Sheets sync outcome persisted (user_settings.last_sheets_sync_result), signature-deduped notification, data-health issue, "Partial: N tabs failed" in dashboard / Subscriptions / Settings.
+    - SXE-2: formatSheet() deletes banding + conditional rules before re-adding (Dashboard also resets formats).
+    - SXE-14: per-run sheet-id cache with fields mask; 429-aware retry (POST only on 429); 6 archives/run.
+    - SXE-3: archives 10 days after month-end + completion marker + rebuild of incomplete/legacy tabs.
+    - SXE-5 / SXE-6 / SXE-10: derived goals; app category expression (SX3-pinned); KPI count not currency.
+    - SXE-13: formula guard for Sheets writes (sheetFormula for our 3 formulas) + csvText for CSVs (new teller/services/csv-export.js).
+    - SXE-8 / PSC-10: ISO dates + user merchant names in /api/export.
+    - SXE-9: context-export — real insights, investment accounts, no Plaid phantom, debts negative, ISO dates.
+    - SXE-15: Code.gs category precedence + layout check. SXE-16: comment + CLAUDE.md drift.
+  - **Not finished (selected):** none.
+  - **Tests:** 1519/1519 (Perfin 974 + Per-sistant 545; 61 files). New tests/scan-sept-batch10.test.js (26) + 3 SX3 pins. Two full syncAll runs on real PG against a stateful fake Sheets API (2nd run clean; the pre-fix script fails it on banding); real-PG export/context-export/data-health checks; migrations ×2; e2e 8/8.
+  - **Decisions:** guard (apostrophe) rather than RAW writes; legacy archives rebuilt once (6/run); POSTs retried only on 429; "Partial" result shown under Settings → Last Auto-Sync for manual runs too.
+  - **Open follow-ons:** see `.cycle/blocks/6-batch10-broad-implement.md`.
+  - **Operator:** none required; legacy Apps Script users: clasp push + separate spreadsheet.
+  - **Where I left off:** Batch 10 committed and pushed (no PR). NEXT: /sync-docs for Batch 10, then Batch 11 (Knowledge lifecycle & retrieval).
+
+- **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 9 DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-10-08). Batch 9 (platform hardening) implemented, tested, pushed (no PR opened).
   - **Completed:**
     - PSC-4: Secure cookies follow req.secure; shell error handler (no stack traces); NODE_ENV=production at runtime in Dockerfile/fly.toml (render.yaml deliberately not — build impact).
@@ -29,26 +48,6 @@ to the "none in progress" state.
   - **Operator:** SHELL_SECRET must be set (already is on Render); optionally lengthen a <6-digit SHELL_PIN.
   - **/sync-docs DONE (Batch 9):** CLAUDE.md — shell architecture (auth.js exports, new error-handler.js, also in the Platform subsystem list), reset-fresh lists, deploy configs + NODE_ENV rationale, csv-import workflow, UI auth bullet (global PIN ceiling, return_to), Security (logout both modes incl. Per-sistant, Secure cookies/no stack traces, SHELL_SECRET fail-fast, self-authenticating webhook route, 1mb body limit, rate-limit skips), env vars (SHELL_PIN length, SHELL_SECRET required), chk_account_source guard, INV-59/INV-60 extended, NEW INV-79 (PIN ceiling + SHELL_SECRET), INV-80 (resolving SSRF), INV-81 (reset-fresh classification), test counts 1490/60. apps/per-sistant/CLAUDE.md — SSRF CIDR/DNS/redirect, webhook auth exemption, embedded Log Out, 545 tests. README — counts, SHELL_PIN/SHELL_SECRET, error-handler. Subsystem paths 80/80. Operator state: SHELL_SECRET now required (documented).
   - **Where I left off:** Batch 9 and its docs are committed and pushed (no PR). NEXT: Batch 10 (Sheets & exports).
-
-- **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 8 DONE** on branch
-  `claude/lucid-darwin-7r8e59` (2026-10-08). Batch 8 (schedulers & notifications) implemented, tested, pushed (no PR opened).
-  - **Completed:**
-    - PSC-1 (+DD-7): auto-sync reads sync_notifications_enabled; syncAllBalances returns accounts_changed (IS DISTINCT FROM CTE), so the "Auto-sync complete" gate fires only on real changes.
-    - PSC-3: budget alerts, weekly/daily digest, CSV reminder no longer activity-gated — watermarks + per-local-day settled memo; CSV reminder hourly with new last_csv_reminder_at.
-    - PSC-2: /api/keep-alive-schedule not counted as activity; keep-alive config cached 6h (invalidated by PATCH /api/settings).
-    - PSC-12: single-flight syncAllTransactions / syncAllBalances / runCategorize.
-    - DD-5/DD-6: whats-new baseline before the watermark's day + same-day current; account_type / is_debt / favorable; digest sign/colour fixes.
-    - PB-1: all notification-check types notify (filtered) + new in-page Reminders widget.
-    - PB-3: jobs refresh honors job_radar_enabled (?force=1 from the page).
-    - PB-11/PB-12/PD-3: shared locked completeRecurringTodo / skipRecurringTodo, nextDueAfter catch-up; bulk complete routes recurring ids through it.
-    - PD-8: one-row email claim per iteration.
-  - **Not finished (selected):** none.
-  - **Tests:** 1426/1426 (Perfin 908 + Per-sistant 518; 58 files). New tests/scan-sept-batch8.test.js (17) + apps/per-sistant/tests/scan-sept-batch8.test.js (13); none pass on old source. Real-PG checks of every changed query; migrations ×2; e2e 8/8.
-  - **Decisions:** budget alerts run 3-hourly while awake (Neon cost accepted); a concurrent manual sync/categorize shares the running result; daily digest settles on nothing_new; complete-recurring refuses trashed rows.
-  - **Open follow-ons:** see `.cycle/blocks/6-batch8-broad-implement.md` (notably keep-alive.yml still wakes Render 24/7).
-  - **Operator:** none required (column auto-migrates).
-  - **/sync-docs DONE (Batch 8):** CLAUDE.md — Scheduled Tasks (activity gate vs away channels, single-flight, keep-alive cache + /api/keep-alive-schedule not activity, budget alerts / weekly / daily digest not activity-gated, CSV reminder hourly + last_csv_reminder_at, auto-sync notify gate on accounts_changed + sync_notifications_enabled), Since-you-last-looked baseline + account_type/is_debt/favorable, /api/sync-balances accounts_changed, DB column last_csv_reminder_at, NEW INV-77 (away channels) + INV-78 (auto-sync notify gate), test counts 1426/58 (Perfin 908 + Per-sistant 518) + batch8 test files. apps/per-sistant/CLAUDE.md — one-row email claim, shared locked complete/skip + nextDueAfter + bulk, notification types + Reminders widget, jobs refresh flag/?force=1, 518 tests. README counts. Subsystem paths 80/80 resolve. No new operator state.
-  - **Where I left off:** Batch 8 and its docs are committed and pushed (no PR). NEXT: the next broad-scan batch.
 
 ## Current Cycle (prior — broad-scan F1-F12 + T1-T4, cycle 5 reflected)
 

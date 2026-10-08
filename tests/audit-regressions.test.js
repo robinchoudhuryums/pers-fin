@@ -449,6 +449,14 @@ describe("SX3 — sheets-sync inlined SQL fragments match financial-queries cano
   pin("NOT_TRANSFER structure", /const NOT_TRANSFER = `\( COALESCE\(t\.user_merchant_name, CONCAT_WS[\s\S]*?'Transfer'\) = 'Transfer' \) \)`;/, true);
   // SPLIT_AMOUNT CASE — multi-line in sheets-sync, single-line in canonical, so
   // compare whitespace-normalized.
+  // SXE-6: the per-category expression (parent row and split row).
+  pin("category expression (parent)", /COALESCE\(t\.user_category, t\.category\[1\], 'Uncategorized'\)/);
+  pin("category expression (split)", /COALESCE\(s\.category, t\.user_category, t\.category\[1\], 'Uncategorized'\)/);
+  it("sheets-sync category totals don't fall back to the Plaid PFC primary", () => {
+    const m = ssSrc.match(/const CAT_EXPR_PARENT = "([^"]+)";\s*const CAT_EXPR_SPLIT = "([^"]+)";/);
+    assert.ok(m, "CAT_EXPR_* not found");
+    assert.doesNotMatch(m[1] + m[2], /personal_finance_category/);
+  });
   pin("SPLIT_AMOUNT CASE",
     /personal_for = 'self' THEN t\.amount WHEN la\.is_shared AND t\.personal_for = 'partner' THEN 0 ELSE t\.amount \* COALESCE\(la\.spending_split_pct, 100\) \/ 100\.0/,
     true);

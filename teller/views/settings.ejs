@@ -510,6 +510,13 @@
         if (s.sheets_last_auto_sync) {
           document.getElementById('sheets-last-sync').textContent = new Date(s.sheets_last_auto_sync).toLocaleString();
         }
+        // SXE-1: the last Sheets sync's outcome (auto or manual).
+        var ssr = s.last_sheets_sync_result;
+        if (ssr && Array.isArray(ssr.errors) && ssr.errors.length) {
+          var ssDesc = document.getElementById('sheets-last-sync-desc');
+          ssDesc.textContent = 'Partial: ' + ssr.errors.length + ' tab(s) failed — ' + ssr.errors.map(function(e) { return e.step; }).join(', ') + ' (' + new Date(ssr.at).toLocaleString() + ')';
+          ssDesc.style.color = 'var(--red)';
+        }
         // Bank auto-sync
         document.getElementById('auto-sync-toggle').checked = !!s.auto_sync_enabled;
         document.getElementById('auto-sync-interval-select').value = String(s.auto_sync_interval_hours || 6);

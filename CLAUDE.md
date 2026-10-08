@@ -431,7 +431,7 @@ shell/
   Core 7: Transactions (with splits inline + Source/Reimbursed columns),
   Subscriptions (with Days Until countdown), Utilities, AI Insights
   (with structured running summary + user feedback), Recurring Transfers,
-  Tax Deductions, Dashboard (with category sparklines + heatmap).
+  Tax Deductions YYYY (one tab per year), Dashboard (with category sparklines + heatmap).
   Strategic adds: Investments, Net Worth History (monthly), Income,
   AI Trust, Categorization Rules, Manual Bills (all categories),
   Bill Payments Log, Important Dates (90-day upcoming), Watchlist
@@ -1549,7 +1549,7 @@ shell/
   - **Income** (new): monthly totals (24mo) + top sources (12mo) using
     the canonical income predicate (inlined `incomePredicate` to keep the
     script standalone; its full structure is SX3-pinned to the canonical).
-  - **AI Trust** (new): 50 most-recent `ai_audit_log` findings
+  - **AI Trust** (new): 100 most-recent `ai_audit_log` findings
     (severity-colored) + 50 most-recent user feedback ratings on
     insights (feedback-colored).
   - **Categorization Rules** (new): user merchant→category map sorted

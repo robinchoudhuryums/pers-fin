@@ -251,9 +251,20 @@ function startBackgroundJobs() {
         let sheetsSync;
         try { sheetsSync = require("../scripts/sheets-sync"); } catch { return; }
         if (!process.env.GOOGLE_SHEETS_ID || !process.env.GOOGLE_SERVICE_ACCOUNT_KEY) return;
-        await sheetsSync.syncAll();
+        // SXE-1: record the outcome (persisted + one notification when the set
+        // of failing tabs changes) instead of dropping errors[]. A wholesale
+        // throw is recorded too; the attempt is stamped either way so a broken
+        // spreadsheet isn't retried (~100 API calls) every hour.
+        const { recordSheetsSyncResult } = require("./routes/settings");
+        let result;
+        try {
+          result = await sheetsSync.syncAll();
+        } catch (e) {
+          result = { errors: [{ step: "sync", error: e.message }] };
+        }
+        const record = await recordSheetsSyncResult(result);
         await pool.query("UPDATE user_settings SET sheets_last_auto_sync = now() WHERE id = 1");
-        console.log("Auto-sync to Google Sheets complete.");
+        console.log(record.ok ? "Auto-sync to Google Sheets complete." : `Auto-sync to Google Sheets: ${record.tabs_failed} tab(s) failed.`);
       }
     } catch (err) {
       console.error("Sheets auto-sync error:", err.message);

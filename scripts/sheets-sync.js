@@ -68,8 +68,77 @@ async function getSheetsClient() {
     scopes: ["https://www.googleapis.com/auth/spreadsheets"],
   });
   const client = await auth.getClient();
-  return google.sheets({ version: "v4", auth: client });
+  return guardSheetsWrites(google.sheets({ version: "v4", auth: client, retryConfig: SHEETS_RETRY_CONFIG }));
 }
+
+// ---------------------------------------------------------------------------
+// Formula-injection guard (SXE-13). Every write uses USER_ENTERED (so our
+// dates/numbers parse), which also made Sheets EVALUATE any user text starting
+// with = + - @ — a merchant / note / goal / feedback "=…" became a formula,
+// "- bullet" insight text became #ERROR!, and "7-11" / "3/4" were coerced to
+// dates. All text written through values.update/append is passed through
+// guardCell, which prefixes an apostrophe (Sheets' "literal text" marker, not
+// displayed) to such strings. The script's OWN formulas are wrapped in
+// sheetFormula() and are the only strings written verbatim.
+// ---------------------------------------------------------------------------
+class SheetFormula { constructor(f) { this.f = f; } }
+function sheetFormula(f) { return new SheetFormula(f); }
+function guardCell(v) {
+  if (v instanceof SheetFormula) return v.f;
+  if (typeof v !== "string") return v;
+  if (/^[=+\-@\t\r]/.test(v) || /^\d{1,2}[-/]\d{1,2}$/.test(v.trim())) return "'" + v;
+  return v;
+}
+function guardValues(values) {
+  return Array.isArray(values) ? values.map((row) => (Array.isArray(row) ? row.map(guardCell) : row)) : values;
+}
+function guardSheetsWrites(api) {
+  const vals = api && api.spreadsheets && api.spreadsheets.values;
+  if (!vals) return api;
+  for (const m of ["update", "append"]) {
+    if (typeof vals[m] !== "function") continue;
+    const orig = vals[m].bind(vals);
+    vals[m] = (params, ...rest) => {
+      if (params && params.requestBody && Array.isArray(params.requestBody.values)) {
+        params = { ...params, requestBody: { ...params.requestBody, values: guardValues(params.requestBody.values) } };
+      }
+      return orig(params, ...rest);
+    };
+  }
+  return api;
+}
+
+// Quota-aware retries (SXE-14). gaxios' default retry list excludes POST, so a
+// 429 on clear/batchUpdate (the 60 writes/min quota — easy to hit on the first
+// month-archive backfill) failed the tab immediately. A 429 means the request
+// was NOT applied, so retrying ANY method is safe; a 5xx / dropped POST might
+// have been applied, so only idempotent methods retry those. The backoff waits
+// (Retry-After, else 15s × attempt, max 60s) long enough for the per-minute
+// quota window to move.
+const SHEETS_MAX_RETRIES = 4;
+function sheetsShouldRetry(err) {
+  const cfg = err && err.config && err.config.retryConfig;
+  if (!cfg) return false;
+  if ((cfg.currentRetryAttempt || 0) >= SHEETS_MAX_RETRIES) return false;
+  const status = err.response && err.response.status;
+  const method = String((err.config && err.config.method) || "GET").toUpperCase();
+  if (status === 429) return true;
+  if (method === "POST") return false;
+  if (!status) return (cfg.currentRetryAttempt || 0) < 2; // network blip
+  return status >= 500 && status <= 599;
+}
+function sheetsRetryDelayMs(err, attempt) {
+  const ra = err && err.response && err.response.headers && (err.response.headers["retry-after"] || err.response.headers["Retry-After"]);
+  const raSec = ra != null ? Number(ra) : NaN;
+  if (Number.isFinite(raSec) && raSec >= 0) return Math.min(raSec * 1000, 60000);
+  const status = err && err.response && err.response.status;
+  return status === 429 ? Math.min(15000 * Math.max(1, attempt), 60000) : Math.min(1000 * 2 ** Math.max(0, attempt - 1), 8000);
+}
+const SHEETS_RETRY_CONFIG = {
+  retry: SHEETS_MAX_RETRIES,
+  shouldRetry: sheetsShouldRetry,
+  retryBackoff: (err) => new Promise((resolve) => setTimeout(resolve, sheetsRetryDelayMs(err, (err.config.retryConfig.currentRetryAttempt || 1)))),
+};
 
 // ---------------------------------------------------------------------------
 // DB connection
@@ -86,25 +155,75 @@ function getPool() {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-async function ensureSheet(sheets, title) {
-  const meta = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
-  const exists = meta.data.sheets.some(
-    (s) => s.properties.title === title
-  );
-  if (!exists) {
-    await sheets.spreadsheets.batchUpdate({
+// Sheet title → sheetId, fetched ONCE per client (= once per sync run) with a
+// fields mask (SXE-14). ensureSheet + getSheetId each used to download the
+// whole spreadsheet metadata, twice per tab, ~40 reads a run.
+const _sheetIdCache = new WeakMap();
+async function sheetIdMap(sheets, { refresh = false } = {}) {
+  let m = _sheetIdCache.get(sheets);
+  if (!m || refresh) {
+    const meta = await sheets.spreadsheets.get({
       spreadsheetId: SPREADSHEET_ID,
-      requestBody: {
-        requests: [{ addSheet: { properties: { title } } }],
-      },
+      fields: "sheets(properties(sheetId,title))",
     });
+    m = new Map((meta.data.sheets || []).map((sh) => [sh.properties.title, sh.properties.sheetId]));
+    _sheetIdCache.set(sheets, m);
   }
+  return m;
+}
+
+async function ensureSheet(sheets, title) {
+  const m = await sheetIdMap(sheets);
+  if (m.has(title)) return false;
+  const r = await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: SPREADSHEET_ID,
+    requestBody: {
+      requests: [{ addSheet: { properties: { title } } }],
+    },
+  });
+  const added = r && r.data && r.data.replies && r.data.replies[0] && r.data.replies[0].addSheet;
+  if (added && added.properties) m.set(title, added.properties.sheetId);
+  else await sheetIdMap(sheets, { refresh: true });
+  return true;
 }
 
 async function getSheetId(sheets, title) {
-  const meta = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
-  const sheet = meta.data.sheets.find((s) => s.properties.title === title);
-  return sheet ? sheet.properties.sheetId : null;
+  let m = await sheetIdMap(sheets);
+  if (!m.has(title)) m = await sheetIdMap(sheets, { refresh: true });
+  return m.has(title) ? m.get(title) : null;
+}
+
+// Re-runnable formatting (SXE-2). values.clear() does not clear formats, and
+// nothing deleted the banding / conditional-format rules a tab's format pass
+// adds — so addBanding failed from the 2nd sync on ("already has alternating
+// background colors", rejecting the whole atomic batch), and conditional rules
+// piled up every run (on the Dashboard, rows shift, so an old "over budget"
+// rule painted Net Worth rows red). formatSheet() prepends a delete for every
+// existing banded range and conditional rule on THIS sheet (rules highest index
+// first) to the tab's own requests, in the same atomic batchUpdate.
+// resetFormats additionally wipes all cell formatting first (the Dashboard,
+// whose section rows move as data changes).
+async function formatSheet(sheets, sheetId, requests, { resetFormats = false } = {}) {
+  if (sheetId === null || sheetId === undefined) return;
+  const adds = requests.some((r) => r.addBanding || r.addConditionalFormatRule);
+  const prefix = [];
+  if (adds || resetFormats) {
+    const meta = await sheets.spreadsheets.get({
+      spreadsheetId: SPREADSHEET_ID,
+      fields: "sheets(properties(sheetId),bandedRanges(bandedRangeId),conditionalFormats(ranges(sheetId)))",
+    });
+    const sh = (meta.data.sheets || []).find((x) => x.properties && x.properties.sheetId === sheetId) || {};
+    for (const b of sh.bandedRanges || []) prefix.push({ deleteBanding: { bandedRangeId: b.bandedRangeId } });
+    const n = (sh.conditionalFormats || []).length;
+    for (let i = n - 1; i >= 0; i--) prefix.push({ deleteConditionalFormatRule: { sheetId, index: i } });
+  }
+  if (resetFormats) {
+    prefix.push({ repeatCell: { range: { sheetId }, cell: { userEnteredFormat: {} }, fields: "userEnteredFormat" } });
+  }
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: SPREADSHEET_ID,
+    requestBody: { requests: [...prefix, ...requests] },
+  });
 }
 
 // #9: sheet protection. Adds a warning-only protection over the entire
@@ -113,7 +232,10 @@ async function getSheetId(sheets, title) {
 // the same marker description before adding fresh, so repeated syncs
 // don't stack up duplicates.
 const PROTECTION_DESCRIPTION = "Perfin sync — edits overwritten on next sync";
-async function applyProtection(sheets, sheetId) {
+// SXE-3: the month-archive completion marker — written as the archive tab's
+// protection description only AFTER its data + formatting succeeded.
+const ARCHIVE_COMPLETE_PREFIX = "Perfin archive complete";
+async function applyProtection(sheets, sheetId, description = PROTECTION_DESCRIPTION) {
   if (sheetId === null) return;
   // Find existing protections matching our description
   const meta = await sheets.spreadsheets.get({
@@ -122,7 +244,8 @@ async function applyProtection(sheets, sheetId) {
   });
   const targetSheet = meta.data.sheets.find(s => s.properties.sheetId === sheetId);
   const existing = (targetSheet?.protectedRanges || [])
-    .filter(p => p.description === PROTECTION_DESCRIPTION);
+    .filter(p => p.description === PROTECTION_DESCRIPTION || p.description === description
+      || String(p.description || "").startsWith(ARCHIVE_COMPLETE_PREFIX));
   const requests = [];
   for (const p of existing) {
     requests.push({ deleteProtectedRange: { protectedRangeId: p.protectedRangeId } });
@@ -131,7 +254,7 @@ async function applyProtection(sheets, sheetId) {
     addProtectedRange: {
       protectedRange: {
         range: { sheetId },
-        description: PROTECTION_DESCRIPTION,
+        description,
         warningOnly: true,
       },
     },
@@ -342,10 +465,7 @@ async function syncTransactions(sheets, pool) {
       });
     }
 
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: SPREADSHEET_ID,
-      requestBody: { requests },
-    });
+    await formatSheet(sheets, sheetId, requests);
   }
 
   console.log(`  ${rows.length} transaction rows (incl. splits) written.`);
@@ -411,7 +531,7 @@ async function syncSubscriptions(sheets, pool) {
     // need +2 (1 for the header row, 1 for 1-based indexing).
     const sheetRow = idx + 2;
     // Empty when Next Charge is blank (e.g. cancelled subs).
-    const daysFormula = `=IF(H${sheetRow}="","", IFERROR(DATEVALUE(H${sheetRow}) - TODAY(),""))`;
+    const daysFormula = sheetFormula(`=IF(H${sheetRow}="","", IFERROR(DATEVALUE(H${sheetRow}) - TODAY(),""))`);
 
     return [
       r.display_name,
@@ -541,10 +661,7 @@ async function syncSubscriptions(sheets, pool) {
       );
     }
 
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: SPREADSHEET_ID,
-      requestBody: { requests },
-    });
+    await formatSheet(sheets, sheetId, requests);
     // #9: warn-only protection on this sheet so accidental edits prompt
     // a confirmation. Sync still overwrites on next run.
     await applyProtection(sheets, sheetId);
@@ -566,9 +683,9 @@ async function buildDashboard(sheets, pool) {
   // services/financial-queries.js: NOT_TRANSFER excludes inter-account
   // transfers / card payments, the reimbursed exclusion drops repaid charges,
   // and SPLIT_AMT applies the shared-account spending_split_pct + per-txn
-  // personal_for override. (Splits-REPLACEMENT — substituting transaction_splits
-  // rows for their parent in category totals — is not mirrored here; see the
-  // sheets-sync note in CLAUDE.md.)
+  // personal_for override. Splits-REPLACEMENT (transaction_splits rows standing
+  // in for their parent in per-CATEGORY totals) IS mirrored — see the M4
+  // cat_lines CTE below; total aggregations stay parent-keyed by design.
   const NOT_TRANSFER = `(
     COALESCE(t.user_merchant_name, CONCAT_WS(' ', t.merchant_name, t.name)) !~*
       '\\y(payment thank|pymt|autopay|auto pay|minimum payment|directpay|automatic payment|interest|int charge|finance charge|funds tran|funds transfer|transfer to|transfer from|ach transfer|wire transfer|internal transfer|zelle|venmo|paypal|cash app|cashapp|square cash|bank of america|wells fargo|chase|citi|citibank|capital one|discover|amex|american express|us bank|pnc bank|td bank|ally bank|truist|boa transfer|online transfer|mobile transfer|bill pay|epay|credit card payment|card payment|cc payment|loan payment|mortgage payment|deposit|direct dep|atm|withdrawal)\\y'
@@ -592,8 +709,12 @@ async function buildDashboard(sheets, pool) {
   // routed through this — splits sum to the parent, so totals are unchanged — and
   // topMerchants stays parent-keyed (splits-replacement is per-CATEGORY, matching
   // the app). `whereClause` is the date-window predicate on `t`.
-  const CAT_EXPR_PARENT = "COALESCE(t.user_category, t.personal_finance_category->>'primary', t.category[1], 'Uncategorized')";
-  const CAT_EXPR_SPLIT = "COALESCE(s.category, t.user_category, t.personal_finance_category->>'primary', t.category[1], 'Uncategorized')";
+  // SXE-6: the SAME category expression as getCategorySpendingForMonth (and this
+  // script's own Transactions tab). A personal_finance_category->>'primary' term
+  // here bucketed an uncategorized Plaid charge as "FOOD_AND_DRINK" in the Sheets
+  // totals / budget "Spent" while the app showed it elsewhere. Pinned by SX3.
+  const CAT_EXPR_PARENT = "COALESCE(t.user_category, t.category[1], 'Uncategorized')";
+  const CAT_EXPR_SPLIT = "COALESCE(s.category, t.user_category, t.category[1], 'Uncategorized')";
   const SPLIT_AMT_S = `(CASE
       WHEN la.is_shared AND t.personal_for = 'self' THEN s.amount
       WHEN la.is_shared AND t.personal_for = 'partner' THEN 0
@@ -724,7 +845,7 @@ async function buildDashboard(sheets, pool) {
 
   // Budget status
   // M3: derive the spend category with the SAME expression as the SPENDING BY
-  // CATEGORY query above (includes personal_finance_category->>'primary').
+  // CATEGORY query above (CAT_EXPR_* — the app's expression, SXE-6).
   // M4: route current-month spend through the splits-aware cat_lines CTE so a
   // budget's "Spent" matches the app's /api/budgets (which uses
   // getCategorySpendingForMonth — splits-replaced) and the category breakdown
@@ -748,12 +869,27 @@ async function buildDashboard(sheets, pool) {
     ORDER BY b.monthly_limit DESC
   `);
 
-  // Financial goals
+  // Financial goals. A funding-linked goal's progress is DERIVED (INV-11,
+  // SXE-5): max(0, account balance − baseline), exactly as the app's
+  // deriveGoalProgress (routes/goals.js) — the stored current_amount is the
+  // stale pre-link manual value. An orphaned link (account gone / no balance)
+  // falls back to the manual value, same as the app.
   const { rows: goalsData } = await pool.query(`
-    SELECT name, type, target_amount, current_amount, monthly_contribution, target_date
-    FROM financial_goals
-    WHERE is_active = true
-    ORDER BY target_amount DESC
+    SELECT g.name, g.type, g.target_amount, g.monthly_contribution, g.target_date,
+           CASE
+             WHEN g.funding_account_id IS NOT NULL
+                  AND COALESCE(la.available_balance, la.current_balance) IS NOT NULL
+               THEN GREATEST(0, COALESCE(la.available_balance, la.current_balance) - COALESCE(g.goal_baseline_amount, 0))
+             WHEN g.funding_account_id IS NULL AND g.funding_investment_id IS NOT NULL
+                  AND ia.balance IS NOT NULL
+               THEN GREATEST(0, ia.balance - COALESCE(g.goal_baseline_amount, 0))
+             ELSE g.current_amount
+           END AS current_amount
+    FROM financial_goals g
+    LEFT JOIN linked_accounts     la ON la.id = g.funding_account_id
+    LEFT JOIN investment_accounts ia ON ia.id = g.funding_investment_id
+    WHERE g.is_active = true
+    ORDER BY g.target_amount DESC
   `);
 
   // Recurring transfers summary
@@ -802,6 +938,7 @@ async function buildDashboard(sheets, pool) {
 
   // Summary cards row
   rows.push(["Avg Monthly Spend", "Subscriptions /mo", "Subscriptions /yr", "Active Subscriptions", "Avg Daily Spend", "6-Month Total"]);
+  const kpiValuesRow = rows.length; // SXE-10: its col D is a COUNT
   rows.push([
     avgMonthlySpend,
     totalMonthly,
@@ -847,7 +984,7 @@ async function buildDashboard(sheets, pool) {
     // the column-letter range from indexes (firstMonthCol..lastMonthCol).
     const colLetter = (n) => String.fromCharCode(65 + n);  // 0->A, 3->D, etc.
     const sparkRange = `${colLetter(firstMonthCol)}${sheetRow}:${colLetter(lastMonthCol)}${sheetRow}`;
-    const sparkline = `=SPARKLINE(${sparkRange}, {"charttype","line"; "linewidth",2; "color","#5a8f8f"})`;
+    const sparkline = sheetFormula(`=SPARKLINE(${sparkRange}, {"charttype","line"; "linewidth",2; "color","#5a8f8f"})`);
     rows.push([
       c.category,
       fmtCurrency(c.total),
@@ -1107,6 +1244,10 @@ async function buildDashboard(sheets, pool) {
     // Currency formatting for all numerical data columns
     // Find rows with currency data and format column B
     for (let r = 0; r < rows.length; r++) {
+      // The KPI values row is formatted above (currency, with the Active
+      // Subscriptions count in col D set to a plain number) — re-applying
+      // CURRENCY here rendered a count of 12 as "$12.00" (SXE-10).
+      if (r === kpiValuesRow) continue;
       if (typeof rows[r][1] === "number") {
         requests.push({
           repeatCell: {
@@ -1213,10 +1354,7 @@ async function buildDashboard(sheets, pool) {
       },
     });
 
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: SPREADSHEET_ID,
-      requestBody: { requests },
-    });
+    await formatSheet(sheets, sheetId, requests, { resetFormats: true });
   }
 
   console.log("  Dashboard built.");
@@ -1383,10 +1521,7 @@ async function syncInsights(sheets, pool) {
       }
     }
 
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: SPREADSHEET_ID,
-      requestBody: { requests },
-    });
+    await formatSheet(sheets, sheetId, requests);
   }
 
   console.log(`  ${rows.length} insights + structured running summary written.`);
@@ -1861,10 +1996,7 @@ async function syncTaxDeductionsYear(sheets, pool, year) {
       });
     }
 
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: SPREADSHEET_ID,
-      requestBody: { requests },
-    });
+    await formatSheet(sheets, sheetId, requests);
     // #9: warn-only protection
     await applyProtection(sheets, sheetId);
   }
@@ -2009,10 +2141,7 @@ async function syncInvestments(sheets, pool) {
         },
       });
     }
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: SPREADSHEET_ID,
-      requestBody: { requests },
-    });
+    await formatSheet(sheets, sheetId, requests);
   }
 
   console.log(`  ${rows.length} holdings written.`);
@@ -2122,10 +2251,7 @@ async function syncNetWorthHistory(sheets, pool) {
         },
       },
     ];
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: SPREADSHEET_ID,
-      requestBody: { requests },
-    });
+    await formatSheet(sheets, sheetId, requests);
   }
 
   console.log(`  ${rows.length} months of net worth history written.`);
@@ -2296,10 +2422,7 @@ async function syncIncome(sheets, pool) {
         },
       },
     ];
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: SPREADSHEET_ID,
-      requestBody: { requests },
-    });
+    await formatSheet(sheets, sheetId, requests);
   }
 
   console.log(`  ${monthly.rows.length} months + ${sources.rows.length} sources written.`);
@@ -2471,10 +2594,7 @@ async function syncAiTrust(sheets, pool) {
       }
     }
 
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: SPREADSHEET_ID,
-      requestBody: { requests },
-    });
+    await formatSheet(sheets, sheetId, requests);
   }
 
   console.log(`  ${findings.rows.length} findings + ${ratings.rows.length} ratings written.`);
@@ -2559,10 +2679,7 @@ async function syncCategorizationRules(sheets, pool) {
         },
       });
     }
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: SPREADSHEET_ID,
-      requestBody: { requests },
-    });
+    await formatSheet(sheets, sheetId, requests);
   }
 
   console.log(`  ${rows.length} categorization rules written.`);
@@ -2667,10 +2784,7 @@ async function syncManualBills(sheets, pool) {
         },
       });
     }
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: SPREADSHEET_ID,
-      requestBody: { requests },
-    });
+    await formatSheet(sheets, sheetId, requests);
   }
 
   console.log(`  ${rows.length} manual bills written.`);
@@ -2785,10 +2899,7 @@ async function syncBillPayments(sheets, pool) {
         },
       });
     }
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: SPREADSHEET_ID,
-      requestBody: { requests },
-    });
+    await formatSheet(sheets, sheetId, requests);
   }
 
   console.log(`  ${rows.length} bill payments written.`);
@@ -2902,10 +3013,7 @@ async function syncCreditScores(sheets, pool) {
         },
       });
     }
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: SPREADSHEET_ID,
-      requestBody: { requests },
-    });
+    await formatSheet(sheets, sheetId, requests);
   }
 
   console.log(`  ${rows.length} credit score entries written.`);
@@ -2985,7 +3093,7 @@ async function syncImportantDates(sheets, pool) {
     const sheetRow = i + 2;
     // Days Away = formula so the countdown stays current when the user
     // opens the sheet on a later date.
-    const daysFormula = `=IF(A${sheetRow}="","", IFERROR(DATEVALUE(A${sheetRow}) - TODAY(),""))`;
+    const daysFormula = sheetFormula(`=IF(A${sheetRow}="","", IFERROR(DATEVALUE(A${sheetRow}) - TODAY(),""))`);
     return [
       fmtDate(r.event_date),
       daysFormula,
@@ -3069,10 +3177,7 @@ async function syncImportantDates(sheets, pool) {
         },
       });
     }
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: SPREADSHEET_ID,
-      requestBody: { requests },
-    });
+    await formatSheet(sheets, sheetId, requests);
   }
 
   console.log(`  ${rows.length} important dates written.`);
@@ -3087,6 +3192,29 @@ async function syncImportantDates(sheets, pool) {
 // never touch. Provides a permanent audit trail per month: useful for
 // disputes, taxes, or "what was this charge in March 2024?" lookups.
 // Idempotent: checks for existing tab before creating.
+//
+// SXE-3:
+//  (a) a month is archived only ARCHIVE_DELAY_DAYS after it ends (APP_TIMEZONE)
+//      — charges dated the 30th/31st post 1–3 days later, and an archive taken
+//      on the 1st missed them forever;
+//  (b) a tab counts as archived only when it carries the completion marker
+//      (its protection description, written AFTER the data + format). A tab
+//      created but never filled (a 429 / network error mid-write) used to be
+//      skipped forever as "already archived"; now it is cleared and rebuilt.
+//      Legacy archives (no marker) are rebuilt once too.
+//  SXE-14: at most MAX_ARCHIVES_PER_RUN tabs are (re)built per run so the first
+//      backfill after a long Plaid link doesn't blow the 60 writes/min quota;
+//      the rest follow on later runs.
+const ARCHIVE_DELAY_DAYS = 10;
+const MAX_ARCHIVES_PER_RUN = 6;
+function archiveReadyOn(month) {
+  const [y, m] = month.split("-").map(Number);
+  const lastDay = new Date(Date.UTC(y, m, 0)); // day 0 of next month = last day of this month
+  lastDay.setUTCDate(lastDay.getUTCDate() + ARCHIVE_DELAY_DAYS);
+  return lastDay.toISOString().slice(0, 10);
+}
+function archiveMarker(month) { return `${ARCHIVE_COMPLETE_PREFIX} — ${month}`; }
+
 async function syncMonthArchives(sheets, pool) {
   console.log("Checking month archives...");
 
@@ -3101,22 +3229,30 @@ async function syncMonthArchives(sheets, pool) {
     ORDER BY month ASC
   `);
 
-  if (months.length === 0) {
+  const today = sheetsTodayStr();
+  const ready = months.filter(({ month }) => archiveReadyOn(month) <= today);
+  if (ready.length === 0) {
     console.log("  no archivable months yet.");
     return 0;
   }
 
-  // Read existing tab names once so we don't `spreadsheets.get` per month.
+  // Read existing tabs + their protection descriptions once (not per month).
   const meta = await sheets.spreadsheets.get({
     spreadsheetId: SPREADSHEET_ID,
-    fields: "sheets(properties(title))",
+    fields: "sheets(properties(title),protectedRanges(description))",
   });
-  const existingTitles = new Set(meta.data.sheets.map(s => s.properties.title));
+  const tabs = new Map(meta.data.sheets.map(sh => [sh.properties.title, sh.protectedRanges || []]));
 
   let archivesCreated = 0;
-  for (const { month } of months) {
+  for (const { month } of ready) {
     const title = `${month} Transactions`;
-    if (existingTitles.has(title)) continue;
+    const existing = tabs.get(title);
+    const complete = existing && existing.some(pr => pr.description === archiveMarker(month));
+    if (complete) continue;
+    if (archivesCreated >= MAX_ARCHIVES_PER_RUN) {
+      console.log(`  archive cap (${MAX_ARCHIVES_PER_RUN}/run) reached — remaining months follow next sync.`);
+      break;
+    }
 
     const { rows } = await pool.query(`
       SELECT
@@ -3141,6 +3277,10 @@ async function syncMonthArchives(sheets, pool) {
 
     await ensureSheet(sheets, title);
     const sheetId = await getSheetId(sheets, title);
+    // An incomplete / legacy tab may hold a partial write — start clean.
+    if (existing) {
+      await sheets.spreadsheets.values.clear({ spreadsheetId: SPREADSHEET_ID, range: `${title}!A:Z` });
+    }
 
     const headers = ["Date", "Merchant", "Amount", "Account", "Institution", "Category", "Reimbursed", "Notes", "Transaction ID"];
     const data = rows.map(r => [
@@ -3203,13 +3343,13 @@ async function syncMonthArchives(sheets, pool) {
           ],
         },
       });
-      // Archive tabs are immutable — protect them with the marker
-      // description so a subsequent month doesn't accidentally pick the
-      // wrong tab to overwrite.
-      await applyProtection(sheets, sheetId);
+      // Archive tabs are immutable — protect them with the per-month
+      // COMPLETION marker (SXE-3), written last: its presence is what marks
+      // the archive done on later runs.
+      await applyProtection(sheets, sheetId, archiveMarker(month));
     }
 
-    console.log(`  created archive '${title}' with ${rows.length} transactions.`);
+    console.log(`  ${existing ? "rebuilt" : "created"} archive '${title}' with ${rows.length} transactions.`);
     archivesCreated++;
   }
 
@@ -3361,10 +3501,7 @@ async function syncWatchlist(sheets, pool) {
         },
       },
     ];
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: SPREADSHEET_ID,
-      requestBody: { requests },
-    });
+    await formatSheet(sheets, sheetId, requests);
     await applyProtection(sheets, sheetId);
   }
 
@@ -3497,3 +3634,5 @@ if (require.main === module) {
 }
 
 module.exports = { syncAll, syncDashboardOnly, syncTransactionsOnly };
+// Test seams (SXE-2/SXE-14).
+module.exports._internals = { guardCell, guardValues, guardSheetsWrites, sheetFormula, archiveReadyOn, archiveMarker, syncMonthArchives, MAX_ARCHIVES_PER_RUN, formatSheet, ensureSheet, getSheetId, sheetsShouldRetry, sheetsRetryDelayMs, SHEETS_RETRY_CONFIG };

@@ -366,6 +366,9 @@ async function runMigrations() {
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sheets_auto_sync_enabled BOOLEAN NOT NULL DEFAULT false");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sheets_auto_sync_interval TEXT NOT NULL DEFAULT 'weekly'");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sheets_last_auto_sync TIMESTAMPTZ DEFAULT NULL");
+    // SXE-1: outcome of the most recent Sheets sync ({ at, ok, tabs_failed,
+    // errors: [{ step, error }] }) — surfaced by /api/data-health + Settings.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_sheets_sync_result JSONB");
     // Bank transaction auto-sync (Phase A) — scheduler calls syncAllEnrollments
     // in-process every auto_sync_interval_hours when enabled.
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS auto_sync_enabled BOOLEAN NOT NULL DEFAULT false");
