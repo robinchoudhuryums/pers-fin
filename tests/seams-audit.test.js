@@ -50,7 +50,7 @@ describe("SPLIT_AMOUNT is never re-inlined (INV-07 corollary)", () => {
 
   it("insights.js consumes the canonical + a derived t2/la2 variant", () => {
     const src = read("teller", "routes", "insights.js");
-    assert.match(src, /SPLIT_AMOUNT\s*\}?\s*=\s*require\("\.\.\/services\/financial-queries"\)|,\s*SPLIT_AMOUNT\s*\}/);
+    assert.match(src, /const \{[^}]*\bSPLIT_AMOUNT\b[^}]*\} = require\("\.\.\/services\/financial-queries"\)/);
     assert.match(src, /SPLIT_AMOUNT_2 = SPLIT_AMOUNT\.replace\(\/\\bla\\\.\/g, "la2\."\)\.replace\(\/\\bt\\\.\/g, "t2\."\)/,
       "anomaly baseline derives its aliased variant in place — never an independent copy");
   });

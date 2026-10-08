@@ -440,6 +440,64 @@ async function getBudgetStatus(pool, month = currentMonth()) {
     });
 }
 
+// ---------------------------------------------------------------------------
+// Tax-deduction candidates (SXE-7 / AIN-12) — ONE keyword list + ONE query
+// shared by the insights tax module, the year-end export
+// (/api/export/tax-report) and (byte-mirrored, pinned) the Sheets tab.
+//
+// Word-boundary matching (Postgres `\y`) so short tokens can't substring-match
+// unrelated merchants, and multi-word phrases instead of bare ambiguous words
+// ("office" → "Box Office", "interest" → a card's finance charge, "supplies" →
+// "Pet Supplies", "business" → "Business Casual"). Grouped so the report can
+// show a meaningful category per row; the LONGEST matching phrase wins
+// ("student loan interest" is tax, not education).
+const TAX_KEYWORD_GROUPS = {
+  medical: ["doctor", "medical", "pharmacy", "hospital", "dental"],
+  charity: ["charity", "donation", "goodwill", "salvation army", "red cross"],
+  education: ["tuition", "university", "college", "student loan"],
+  business: ["home office", "office supplies", "office depot", "business expense"],
+  tax: ["mortgage interest", "student loan interest", "property tax", "state tax"],
+};
+const TAX_KEYWORDS = Object.values(TAX_KEYWORD_GROUPS).flat();
+const TAX_REGEX = "\\y(" + TAX_KEYWORDS.join("|") + ")\\y";
+
+function taxCategoryFor(merchant) {
+  const m = String(merchant || "").toLowerCase();
+  let best = null;
+  for (const [group, words] of Object.entries(TAX_KEYWORD_GROUPS)) {
+    for (const w of words) {
+      const re = new RegExp("\\b" + w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b");
+      if (re.test(m) && (!best || w.length > best.len)) best = { group, len: w.length };
+    }
+  }
+  return best ? best.group : "other";
+}
+
+// Every matching transaction in calendar `year`, computed from the LEDGER at
+// call time (not from the per-merchant tax_deductions snapshot an insights run
+// last upserted — that froze the year at the last run, capped it at 15
+// merchants, double-counted renamed merchants and had no dates). Amounts are
+// the user's share (SPLIT_AMOUNT — a partner-owned shared-card charge isn't
+// your deduction); reimbursed and pending rows are excluded. Matched on the
+// DISPLAY merchant name (user rename wins, AI-7).
+async function getTaxDeductionTransactions(pool, year) {
+  const r = await pool.query(
+    `SELECT t.transaction_id, TO_CHAR(t.date, 'YYYY-MM-DD') AS date,
+            COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS merchant,
+            ROUND(${SPLIT_AMOUNT}, 2) AS amount
+     FROM transactions t
+     LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+     WHERE t.pending = false AND t.amount > 0
+       AND ${NOT_REIMBURSED}
+       AND t.date >= make_date($1, 1, 1) AND t.date < make_date($1 + 1, 1, 1)
+       AND COALESCE(t.user_merchant_name, t.merchant_name, t.name) ~* $2
+       AND ${SPLIT_AMOUNT} > 0
+     ORDER BY t.date, 3`,
+    [year, TAX_REGEX]
+  );
+  return r.rows.map(row => ({ ...row, category: taxCategoryFor(row.merchant) }));
+}
+
 module.exports = {
   INCOME_PREDICATE,
   incomePredicate,
@@ -459,4 +517,9 @@ module.exports = {
   currentMonth,
   todayStr,
   APP_TIMEZONE,
+  TAX_KEYWORD_GROUPS,
+  TAX_KEYWORDS,
+  TAX_REGEX,
+  taxCategoryFor,
+  getTaxDeductionTransactions,
 };

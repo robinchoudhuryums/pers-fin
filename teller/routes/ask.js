@@ -249,19 +249,9 @@ router.post("/api/ask", async (req, res) => {
   try {
     // Shared monthly cap (INV-14): same resolver + month-spend computation
     // family as insights/categorize; this endpoint both checks AND charges.
-    const { getAiBudgetCents } = require("./insights");
+    const { getAiBudgetCents, monthAiSpendCents } = require("./insights");
     const budgetCents = await getAiBudgetCents();
-    const u = await pool.query(
-      "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights WHERE created_at >= date_trunc('month', CURRENT_DATE)"
-    );
-    let spendCents = 0;
-    u.rows.forEach(r => {
-      const { estimateCostUsd } = require("../data/reference-data");
-      const cost = r.input_tokens
-        ? estimateCostGranular({ input_tokens: r.input_tokens, output_tokens: r.output_tokens, cache_read_input_tokens: r.cache_read_tokens || 0, cache_creation_input_tokens: r.cache_creation_tokens || 0 }, r.model_used)
-        : estimateCostUsd(r.tokens_used || 0, r.model_used);
-      spendCents += cost * 100;
-    });
+    const spendCents = await monthAiSpendCents(pool);
     if (spendCents >= budgetCents) {
       return res.status(429).json({ error: `Monthly AI budget reached ($${(budgetCents / 100).toFixed(2)} cap). Raise it under Settings → AI Insights.` });
     }

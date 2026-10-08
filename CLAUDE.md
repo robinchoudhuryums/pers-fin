@@ -978,9 +978,11 @@ shell/
   textarea. The last 5 rated insights are pulled into the next
   `generateInsights()` call as a `=== USER FEEDBACK ON RECENT INSIGHTS ===`
   section so Claude can adjust tone or double-check claims the user
-  flagged. The feedback is NOT written into `insights_running_summary_json`
+  flagged. The feedback itself is NOT stored in `insights_running_summary_json`
   — Claude sees the raw user signals each run and decides whether to act
-  on them. Endpoints: `PATCH /api/insights/:id/feedback` (set
+  on them; the prompt does let it OMIT a pending_action/alert the feedback
+  shows was wrong (the emitted summary replaces the prior one wholesale, so
+  omission is the retraction path — AIN-16). Endpoints: `PATCH /api/insights/:id/feedback` (set
   positive/negative/mixed + optional text), `GET /api/insights/feedback-summary`
   (counts over a configurable day window, default 90).
 - **AI Memory widget**: Renders the structured running summary's actual
@@ -1151,7 +1153,8 @@ shell/
   threw are reported separately as `incomplete_runs` and excluded — so a
   swallowed-tier failure or an un-audited insert no longer masquerades as a
   "clean" run and inflates the accuracy % (AI-5/AI-6).
-- **Insight email via Per-sistant**: After each scheduled insight generation, Perfin sends
+- **Insight email via Per-sistant**: After each insight generation (scheduled OR a manual
+  `POST /api/insights` run — AIN-16; a run that produced no insight text sends nothing), Perfin sends
   an `insights_generated` webhook to Per-sistant with `{ subject, html_body, plain_text }`.
   HTML email is pre-rendered in Perfin with app-matching dark theme (gold/amber accents,
   Arc Reactor branding). Includes audit findings section if critical issues detected.
@@ -3151,12 +3154,14 @@ SX3-pinned — the Sheets Income tab.
   the rating + optional note are stored on the `financial_insights` row.
   `generateInsights()` pulls the last 5 rated rows and renders a
   `=== USER FEEDBACK ON RECENT INSIGHTS ===` section into the prompt for
-  the next run; the structured `insights_running_summary_json` is **not**
-  rewritten. Rationale: the summary is Claude's representation of the
-  state of the user's finances; user feedback is a meta-signal about
-  Claude's outputs. Mixing the two would let one bad insight permanently
-  pollute long-term memory. If feedback should ever start retracting
-  alerts or pending_actions, that's a separate tool-use schema change.
+  the next run; the feedback is **never written into**
+  `insights_running_summary_json`. Rationale: the summary is Claude's
+  representation of the state of the user's finances; user feedback is a
+  meta-signal about Claude's outputs, and storing it there would let one bad
+  rating permanently pollute long-term memory. Retraction needs no schema
+  change: the prompt tells Claude it may DROP a pending_action/alert that the
+  feedback shows was wrong, since the summary it emits replaces the prior one
+  wholesale (AIN-16 — the docs used to say the summary was never affected).
 - **Dashboard widget and email digest share one aggregator.**
   `gatherWhatsNew(since)` in `routes/whats-new.js` is the single source
   of "what changed since X". The HTTP `GET /api/whats-new` route calls

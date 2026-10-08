@@ -1697,22 +1697,92 @@ async function syncRecurringTransfers(sheets, pool) {
 // ---------------------------------------------------------------------------
 // Sync Tax Deductions
 // ---------------------------------------------------------------------------
-async function syncTaxDeductions(sheets, pool) {
-  console.log("Syncing tax deductions to Google Sheets...");
+// SXE-7: rows are computed from the TRANSACTIONS ledger at sync time (one row
+// per matching transaction, whole calendar year, no LIMIT) — the same keyword
+// list + query as services/financial-queries.js getTaxDeductionTransactions
+// (inlined: this script is standalone; the keyword groups are pinned against
+// the canonical by tests/scan-sept-batch7.test.js). tax_deductions is only the
+// annotation layer (confirmed / notes / category per merchant). The prior
+// year's tab is refreshed through April (tax season) so December charges that
+// post in January — and later confirmations — reach it.
+const TAX_KEYWORD_GROUPS = {
+  medical: ["doctor", "medical", "pharmacy", "hospital", "dental"],
+  charity: ["charity", "donation", "goodwill", "salvation army", "red cross"],
+  education: ["tuition", "university", "college", "student loan"],
+  business: ["home office", "office supplies", "office depot", "business expense"],
+  tax: ["mortgage interest", "student loan interest", "property tax", "state tax"],
+};
+const TAX_REGEX = "\\y(" + Object.values(TAX_KEYWORD_GROUPS).flat().join("|") + ")\\y";
+function taxCategoryFor(merchant) {
+  const m = String(merchant || "").toLowerCase();
+  let best = null;
+  for (const [group, words] of Object.entries(TAX_KEYWORD_GROUPS)) {
+    for (const w of words) {
+      const re = new RegExp("\\b" + w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b");
+      if (re.test(m) && (!best || w.length > best.len)) best = { group, len: w.length };
+    }
+  }
+  return best ? best.group : "other";
+}
 
-  const year = parseInt(sheetsTodayStr().slice(0, 4), 10); // tz-aware (SXE-12)
-  const { rows } = await pool.query(
-    `SELECT merchant, amount, category, deduction_type, is_confirmed, notes, flagged_at
-     FROM tax_deductions
-     WHERE tax_year = $1
-     ORDER BY amount DESC`,
-    [year]
-  );
+async function syncTaxDeductions(sheets, pool) {
+  const today = sheetsTodayStr(); // tz-aware (SXE-12)
+  const year = parseInt(today.slice(0, 4), 10);
+  const years = parseInt(today.slice(5, 7), 10) <= 4 ? [year, year - 1] : [year];
+  let count = 0;
+  for (const y of years) count += await syncTaxDeductionsYear(sheets, pool, y);
+  return count;
+}
+
+async function syncTaxDeductionsYear(sheets, pool, year) {
+  console.log(`Syncing tax deductions ${year} to Google Sheets...`);
+
+  const SPLIT_AMT = `(CASE
+      WHEN la.is_shared AND t.personal_for = 'self' THEN t.amount
+      WHEN la.is_shared AND t.personal_for = 'partner' THEN 0
+      ELSE t.amount * COALESCE(la.spending_split_pct, 100) / 100.0
+    END)`;
+  const [txnRes, noteRes] = await Promise.all([
+    pool.query(
+      `SELECT t.transaction_id, TO_CHAR(t.date, 'YYYY-MM-DD') AS date,
+              COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS merchant,
+              ROUND(${SPLIT_AMT}, 2) AS amount
+       FROM transactions t
+       LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+       WHERE t.pending = false AND t.amount > 0
+         AND COALESCE(t.is_reimbursed, false) = false
+         AND t.date >= make_date($1, 1, 1) AND t.date < make_date($1 + 1, 1, 1)
+         AND COALESCE(t.user_merchant_name, t.merchant_name, t.name) ~* $2
+         AND ${SPLIT_AMT} > 0
+       ORDER BY t.date, 3`,
+      [year, TAX_REGEX]
+    ),
+    pool.query(
+      `SELECT merchant, category, is_confirmed, notes
+       FROM tax_deductions WHERE tax_year = $1 AND transaction_id IS NULL`,
+      [year]
+    ).catch(() => ({ rows: [] })),
+  ]);
+  const noteByMerchant = new Map();
+  for (const n of noteRes.rows) if (n.merchant) noteByMerchant.set(String(n.merchant).toLowerCase(), n);
+  const rows = txnRes.rows.map(t => {
+    const n = noteByMerchant.get(String(t.merchant || "").toLowerCase());
+    const userCat = n && n.category && !["flagged", "uncategorized"].includes(n.category) ? n.category : null;
+    return {
+      merchant: t.merchant, amount: t.amount, date: t.date,
+      category: userCat || taxCategoryFor(t.merchant),
+      deduction_type: "keyword_match",
+      is_confirmed: !!(n && n.is_confirmed), notes: n ? n.notes : null,
+    };
+  });
+  // A past year with nothing to report gets no tab (don't create empty
+  // prior-year tabs every spring).
+  if (rows.length === 0 && year < parseInt(sheetsTodayStr().slice(0, 4), 10)) return 0;
 
   const SHEET_TAX = "Tax Deductions " + year;
   await ensureSheet(sheets, SHEET_TAX);
 
-  const headers = ["Merchant", "Amount", "Category", "Type", "Confirmed", "Notes", "Flagged"];
+  const headers = ["Merchant", "Amount", "Category", "Type", "Confirmed", "Notes", "Date"];
   const total = rows.reduce((s, r) => s + parseFloat(r.amount), 0);
   const confirmed = rows.filter(r => r.is_confirmed);
   const confirmedTotal = confirmed.reduce((s, r) => s + parseFloat(r.amount), 0);
@@ -1720,7 +1790,7 @@ async function syncTaxDeductions(sheets, pool) {
   const data = rows.map(r => [
     r.merchant, fmtCurrency(r.amount), r.category || "",
     r.deduction_type || "", r.is_confirmed ? "Yes" : "No",
-    r.notes || "", fmtDate(r.flagged_at),
+    r.notes || "", r.date || "",
   ]);
 
   // Add summary row

@@ -216,21 +216,9 @@ async function runCategorize() {
     // Shared monthly-spend computation (cap is shared with /api/insights).
     // Shared cap resolver (Settings-tunable, env fallback) — lazy require to
     // avoid a static insights<->categorize cycle (INV-14: one cap, one reader).
-    const { getAiBudgetCents } = require("./insights");
+    const { getAiBudgetCents, monthAiSpendCents } = require("./insights");
     const budgetCents = await getAiBudgetCents();
-    const monthSpendCents = async () => {
-      const u = await pool.query(
-        "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights WHERE created_at >= date_trunc('month', CURRENT_DATE)"
-      );
-      let cents = 0;
-      u.rows.forEach(r => {
-        const cost = r.input_tokens
-          ? estimateCostGranular({ input_tokens: r.input_tokens, output_tokens: r.output_tokens, cache_read_input_tokens: r.cache_read_tokens || 0, cache_creation_input_tokens: r.cache_creation_tokens || 0 }, r.model_used)
-          : estimateCostUsd(r.tokens_used || 0, r.model_used);
-        cents += cost * 100;
-      });
-      return cents;
-    };
+    const monthSpendCents = () => monthAiSpendCents(pool);
 
     // Already over the cap before any AI work → explicit 429 with the
     // raise-the-cap message (free paths still applied above).

@@ -14,6 +14,9 @@
 function renderWeeklyDigestEmail(summary, freshness) {
   const arrow = (d) => d === "up" ? "↑" : d === "down" ? "↓" : "→";
   const sev = (s) => s === "high" ? "#eb6b6b" : s === "medium" ? "#f0c36d" : "#9fd4c9";
+  // AIN-14: alerts use critical/warning/info (not the actions' high/medium/
+  // low), so they need their own map — every alert rendered calm teal.
+  const alertSev = (s) => s === "critical" ? "#eb6b6b" : s === "warning" ? "#f0c36d" : "#9fd4c9";
   const trendsHtml = (summary.trends || []).slice(0, 8).map(t =>
     `<li style="margin:6px 0;color:#cccccc;">
        <span style="color:#d4a574;">${arrow(t.direction)}</span>
@@ -30,7 +33,7 @@ function renderWeeklyDigestEmail(summary, freshness) {
   ).join("");
   const alertsHtml = (summary.alerts || []).slice(0, 10).map(a =>
     `<li style="margin:6px 0;color:#cccccc;">
-       <strong style="color:${sev(a.severity)};">${escapeHtml(a.message || "")}</strong>
+       <strong style="color:${alertSev(a.severity)};">${escapeHtml(a.message || "")}</strong>
        ${a.severity ? `<span style="color:#888;font-size:11px;"> [${escapeHtml(a.severity)}]</span>` : ""}
      </li>`
   ).join("");

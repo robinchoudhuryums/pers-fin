@@ -9,7 +9,7 @@ const { pool } = require("../services/database");
 // module keeps using and RE-EXPORTING them, so import paths are unchanged.
 const { renderInsightEmail, renderWeeklyDigestEmail, renderWeeklyDigestText,
         renderDailyDigestEmail, renderDailyDigestText, escapeHtml } = require("./insights-email");
-const { getMonthlySpending, getMonthlyIncomeAndSpending, NOT_TRANSFER, SPLIT_AMOUNT } = require("../services/financial-queries");
+const { getMonthlySpending, getMonthlyIncomeAndSpending, NOT_TRANSFER, SPLIT_AMOUNT, currentMonth, todayStr, getTaxDeductionTransactions } = require("../services/financial-queries");
 
 // t2/la2-aliased variant of the canonical split expression, for the anomaly
 // baseline subquery (same in-place derivation convention as the NOT_TRANSFER
@@ -49,8 +49,14 @@ try {
 const INSIGHT_TOOL = {
   name: "generate_financial_insight",
   description: "Generate user-facing insight text and an updated structured running summary for long-term memory.",
+  // AIN-8: strict tool use — the API guarantees the input matches the schema
+  // (all four summary arrays present), so an empty / partial `summary` can't
+  // reach long-term memory. Strict requires additionalProperties:false on
+  // every object.
+  strict: true,
   input_schema: {
     type: "object",
+      additionalProperties: false,
     properties: {
       insights_text: {
         type: "string",
@@ -58,6 +64,7 @@ const INSIGHT_TOOL = {
       },
       summary: {
         type: "object",
+      additionalProperties: false,
         description: "Updated structured cumulative summary. Carry forward existing items and update / add / remove based on current data.",
         properties: {
           trends: {
@@ -65,6 +72,7 @@ const INSIGHT_TOOL = {
             description: "Long-term direction observations (max 8).",
             items: {
               type: "object",
+      additionalProperties: false,
               properties: {
                 category: { type: "string" },
                 direction: { type: "string", enum: ["up", "down", "stable"] },
@@ -79,6 +87,7 @@ const INSIGHT_TOOL = {
             description: "Goals the user has completed (max 10).",
             items: {
               type: "object",
+      additionalProperties: false,
               properties: {
                 goal_name: { type: "string" },
                 completed_date: { type: "string" },
@@ -91,6 +100,7 @@ const INSIGHT_TOOL = {
             description: "Concrete actions previously recommended that are NOT yet completed (max 10).",
             items: {
               type: "object",
+      additionalProperties: false,
               properties: {
                 description: { type: "string" },
                 urgency: { type: "string", enum: ["high", "medium", "low"] },
@@ -104,6 +114,7 @@ const INSIGHT_TOOL = {
             description: "Active concerns the user should be aware of (max 5).",
             items: {
               type: "object",
+      additionalProperties: false,
               properties: {
                 type: { type: "string" },
                 message: { type: "string" },
@@ -123,9 +134,14 @@ const INSIGHT_TOOL = {
 // Coerce + cap arrays + drop unknown keys so a pathological tool response
 // can't leak unbounded data into long-term memory or break renderers. Returns
 // null when the shape is unrecoverable, so the caller can preserve the prior
-// summary instead of overwriting with garbage.
+// summary instead of overwriting with garbage. AIN-8: all four keys must be
+// ARRAYS in the raw input — a `summary: {}` or a key the model dropped used to
+// sanitize to empty arrays and silently wipe every trend/action/alert while
+// reporting summary_status "updated".
+const SUMMARY_KEYS = ["trends", "completed_goals", "pending_actions", "alerts"];
 function sanitizeStructuredSummary(s) {
-  if (!s || typeof s !== "object") return null;
+  if (!s || typeof s !== "object" || Array.isArray(s)) return null;
+  if (!SUMMARY_KEYS.every(k => Array.isArray(s[k]))) return null;
   function arr(v, max) { return Array.isArray(v) ? v.slice(0, max) : []; }
   function str(v, max) { return typeof v === "string" ? v.slice(0, max || 200) : ""; }
   const safeEnum = (v, allowed) => allowed.includes(v) ? v : null;
@@ -211,6 +227,11 @@ async function runWeeklyDigest() {
       try { summary = JSON.parse(summary); } catch { summary = null; }
     }
     if (!summary) return { sent: false, reason: "no_summary" };
+    // AIN-16: an all-empty summary (fresh install, after a reset) used to send
+    // a contentless digest every week.
+    const hasContent = ["trends", "completed_goals", "pending_actions", "alerts"]
+      .some(k => Array.isArray(summary[k]) && summary[k].length > 0);
+    if (!hasContent) return { sent: false, reason: "empty_summary" };
 
     const freshness = { last_txn_sync_at: s.last_txn_sync_at };
     const html = renderWeeklyDigestEmail(summary, freshness);
@@ -316,21 +337,31 @@ async function getAiBudgetCents() {
   return parseInt(process.env.INSIGHTS_MONTHLY_BUDGET_CENTS) || 50;
 }
 
+// This month's AI spend in cents across EVERY usage row (insight, categorize,
+// rebuild, ask, scan, suggest), priced per row by its own model ID (AIN-9).
+// The ONE spend tally the cap is checked against (AIN-10 — it used to be
+// copy-pasted into six call sites). Throws on a DB error; callers decide.
+async function monthAiSpendCents(db = pool) {
+  const r = await db.query(
+    "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights WHERE created_at >= date_trunc('month', CURRENT_DATE)"
+  );
+  let cents = 0;
+  for (const row of r.rows) {
+    const cost = row.input_tokens
+      ? estimateCostGranular({ input_tokens: row.input_tokens, output_tokens: row.output_tokens, cache_read_input_tokens: row.cache_read_tokens || 0, cache_creation_input_tokens: row.cache_creation_tokens || 0 }, row.model_used)
+      : estimateCostUsd(row.tokens_used || 0, row.model_used);
+    cents += cost * 100;
+  }
+  return cents;
+}
+
 // GET /api/insights/status
 router.get("/api/insights/status", async (_req, res) => {
   const configured = !!(Anthropic && process.env.ANTHROPIC_API_KEY);
   let estimatedCostCents = 0;
   let budgetCents = await getAiBudgetCents();
   try {
-    const usageRows = await pool.query(
-      "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights WHERE created_at >= date_trunc('month', CURRENT_DATE)"
-    );
-    usageRows.rows.forEach(r => {
-      const cost = r.input_tokens
-        ? estimateCostGranular({ input_tokens: r.input_tokens, output_tokens: r.output_tokens, cache_read_input_tokens: r.cache_read_tokens || 0, cache_creation_input_tokens: r.cache_creation_tokens || 0 }, r.model_used)
-        : estimateCostUsd(r.tokens_used || 0, r.model_used);
-      estimatedCostCents += cost * 100;
-    });
+    estimatedCostCents = await monthAiSpendCents();
   } catch (err) { console.error("Insights status query error:", err.message); }
   // Audit accuracy + structured running summary: both surfaced so the
   // Settings/dashboard UI can show "AI accuracy 87%" plus "tracking 3 trends,
@@ -441,17 +472,7 @@ async function generateInsights() {
     // manual trigger), so that race is accepted rather than guarded with a
     // provisional-row reservation. Revisit if multi-user lands.
     const budgetCents = await getAiBudgetCents();
-    const usageResult = await pool.query(
-      "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights " +
-      "WHERE created_at >= date_trunc('month', CURRENT_DATE)"
-    );
-    let estimatedCostCents = 0;
-    usageResult.rows.forEach(r => {
-      const cost = r.input_tokens
-        ? estimateCostGranular({ input_tokens: r.input_tokens, output_tokens: r.output_tokens, cache_read_input_tokens: r.cache_read_tokens || 0, cache_creation_input_tokens: r.cache_creation_tokens || 0 }, r.model_used)
-        : estimateCostUsd(r.tokens_used || 0, r.model_used);
-      estimatedCostCents += cost * 100;
-    });
+    const estimatedCostCents = await monthAiSpendCents();
     if (estimatedCostCents >= budgetCents) {
       return {
         ok: false,
@@ -464,6 +485,12 @@ async function generateInsights() {
     // Use the shared split-adjusted spending query so the AI sees the same
     // monthly numbers as /api/spending-summary and the dashboard.
     const monthlySpendRows = await getMonthlySpending(pool, 6);
+    // AIN-4: the current month is month-to-date. Label it in every block
+    // that lists months, and keep it out of month-over-month deltas and the
+    // seasonal history — a run on the 5th used to report a "-78%" drop.
+    const thisMonthKey = currentMonth();
+    const partialLabel = " (partial, through day " + todayStr().slice(8, 10) + ")";
+    const monthLabel = (m) => m + (m === thisMonthKey ? partialLabel : "");
     const monthlyData = {
       rows: monthlySpendRows.map(r => ({
         month: r.month,
@@ -631,7 +658,7 @@ async function generateInsights() {
 
     // ---- Build DYNAMIC user message (changes each request) ----
     let userMsg = "=== CURRENT DATA ===\n" +
-      "Monthly Spending (6mo):\n" + monthlyData.rows.map(r => r.month + ": $" + parseFloat(r.total).toFixed(2) + " (" + r.txns + " txns)").join("\n") +
+      "Monthly Spending (6mo):\n" + monthlyData.rows.map(r => monthLabel(r.month) + ": $" + parseFloat(r.total).toFixed(2) + " (" + r.txns + " txns)").join("\n") +
       "\n\nActive Subscriptions (" + subs.length + " total, $" + subTotal.toFixed(2) + "/mo):\n" +
       subs.map(r => sanitizeForPrompt(r.display_name) + ": $" + parseFloat(r.amount).toFixed(2) + " every " + r.cadence_days + " days").join("\n") +
       "\n\nUtility Bills (" + utils.length + " total, $" + utilTotal.toFixed(2) + "/mo):\n" +
@@ -668,6 +695,12 @@ async function generateInsights() {
         //     the user later split it across categories, so the parent amount is the
         //     correct signal here. (Split-replacement is for per-category spend totals,
         //     a different question.)
+        //   - AIN-5: the baseline EXCLUDES the candidate's own row (LATERAL,
+        //     t2.transaction_id <> t.transaction_id). Candidates reach back 2
+        //     months but the baseline only stops 7 days ago, so a candidate
+        //     8-60 days old sat inside its own AVG/STDDEV — and by Samuelson's
+        //     inequality one point can't exceed mean + 2σ of a sample of ≤5,
+        //     so low-frequency merchants could never be flagged.
         const anomalyData = await pool.query(
           `SELECT t.merchant_name, t.name, t.user_merchant_name,
                   ROUND(${SPLIT_AMOUNT}, 2) AS amount,
@@ -675,24 +708,25 @@ async function generateInsights() {
                   avg_tbl.avg_amount, avg_tbl.txn_count
            FROM transactions t
            LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-           JOIN (
-             SELECT LOWER(COALESCE(t2.user_merchant_name, t2.merchant_name, t2.name)) AS merchant,
-                    AVG(${SPLIT_AMOUNT_2}) AS avg_amount,
+           CROSS JOIN LATERAL (
+             SELECT AVG(${SPLIT_AMOUNT_2}) AS avg_amount,
                     STDDEV(${SPLIT_AMOUNT_2}) AS std_amount,
                     COUNT(*) AS txn_count
              FROM transactions t2
              LEFT JOIN linked_accounts la2 ON la2.account_id = t2.account_id
-             WHERE t2.amount > 0 AND t2.pending = false
+             WHERE LOWER(COALESCE(t2.user_merchant_name, t2.merchant_name, t2.name))
+                   = LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name))
+               AND t2.transaction_id <> t.transaction_id
+               AND t2.amount > 0 AND t2.pending = false
                AND t2.date >= CURRENT_DATE - INTERVAL '12 months'
                AND t2.date <  CURRENT_DATE - INTERVAL '7 days'
                AND ${NOT_TRANSFER.replace(/\bt\./g, "t2.")}
-             GROUP BY LOWER(COALESCE(t2.user_merchant_name, t2.merchant_name, t2.name))
-             HAVING COUNT(*) >= 3
-           ) avg_tbl ON LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name)) = avg_tbl.merchant
+           ) avg_tbl
            WHERE t.amount > 0 AND t.pending = false
              AND COALESCE(t.is_reimbursed, false) = false
              AND t.date >= CURRENT_DATE - INTERVAL '2 months'
              AND ${NOT_TRANSFER}
+             AND avg_tbl.txn_count >= 3
              AND ${SPLIT_AMOUNT} > avg_tbl.avg_amount * 2
              AND (
                avg_tbl.std_amount IS NULL OR avg_tbl.std_amount = 0
@@ -733,8 +767,12 @@ async function generateInsights() {
              AND COALESCE(t.is_reimbursed, false) = false
              AND ${NOT_TRANSFER}
              AND t.date >= CURRENT_DATE - INTERVAL '24 months'
+             -- AIN-4: complete months only (the month-to-date total is not a
+             -- seasonal data point).
+             AND t.date < $1::date
            GROUP BY EXTRACT(MONTH FROM t.date), TO_CHAR(t.date, 'Mon'), EXTRACT(YEAR FROM t.date)
-           ORDER BY year, month_num`
+           ORDER BY year, month_num`,
+          [thisMonthKey + "-01"]
         );
         if (seasonalData.rows.length >= 6) {
           userMsg += "\n\n=== SEASONAL SPENDING HISTORY (24 months) ===\n" +
@@ -767,29 +805,48 @@ async function generateInsights() {
         );
         const cards = creditAccounts.rows.filter(r => parseFloat(r.current_balance || 0) > 0);
         if (cards.length > 0 || loanAccounts.rows.length > 0) {
+          // AIN-7: a card's limit is the manual/Plaid credit_limit, else
+          // owed + available when an available figure exists — and otherwise
+          // UNKNOWN (the dashboard shows "—"). Falling back to owed+0 told the
+          // model a Discover card was 100% utilized ("you're maxed out").
+          const cardLimit = (c) => {
+            const cl = parseFloat(c.credit_limit);
+            if (Number.isFinite(cl) && cl > 0) return cl;
+            if (c.available_balance == null) return null;
+            const derived = parseFloat(c.current_balance || 0) + parseFloat(c.available_balance || 0);
+            return derived > 0 ? derived : null;
+          };
           let cardLines = cards.map(c => {
             const owed = parseFloat(c.current_balance || 0);
-            const avail = parseFloat(c.available_balance || 0);
-            const limit = c.credit_limit ? parseFloat(c.credit_limit) : (owed + avail);
-            const util = limit > 0 ? Math.round((owed / limit) * 100) : 0;
+            const limit = cardLimit(c);
             let line = c.name + (c.mask ? " (****" + c.mask + ")" : "") +
               ": Balance $" + owed.toFixed(2) +
-              ", Limit $" + limit.toFixed(2) +
-              ", Utilization " + util + "%" +
+              (limit != null
+                ? ", Limit $" + limit.toFixed(2) + ", Utilization " + Math.round((owed / limit) * 100) + "%"
+                : ", Limit unknown, Utilization unknown") +
               (c.apr ? ", APR " + c.apr + "%" : ", APR unknown");
             if (c.minimum_payment) line += ", Min Payment $" + parseFloat(c.minimum_payment).toFixed(2);
             if (c.next_payment_due_date) line += ", Due " + c.next_payment_due_date;
             return line;
           }).join("\n");
           const totalDebt = cards.reduce((s, c) => s + parseFloat(c.current_balance || 0), 0);
-          const totalLimit = cards.reduce((s, c) => s + parseFloat(c.current_balance || 0) + parseFloat(c.available_balance || 0), 0);
-          const overallUtil = totalLimit > 0 ? Math.round((totalDebt / totalLimit) * 100) : 0;
+          // Overall utilization over the cards whose limit is KNOWN (AIN-7 —
+          // this used to ignore a manual credit_limit entirely).
+          const knownCards = cards.filter(c => cardLimit(c) != null);
+          const unknownCount = cards.length - knownCards.length;
+          const totalLimit = knownCards.reduce((s, c) => s + cardLimit(c), 0);
+          const knownDebt = knownCards.reduce((s, c) => s + parseFloat(c.current_balance || 0), 0);
           userMsg += "\n\n=== DEBT PAYOFF DATA ===";
           if (cards.length > 0) {
             userMsg += "\nCredit Card Accounts:\n" + cardLines +
-              "\nTotal credit card debt: $" + totalDebt.toFixed(2) +
-              "\nTotal credit limit: $" + totalLimit.toFixed(2) +
-              "\nOverall utilization: " + overallUtil + "%";
+              "\nTotal credit card debt: $" + totalDebt.toFixed(2);
+            if (totalLimit > 0) {
+              userMsg += "\nTotal credit limit" + (unknownCount ? " (cards with a known limit)" : "") + ": $" + totalLimit.toFixed(2) +
+                "\nOverall utilization" + (unknownCount ? " (cards with a known limit)" : "") + ": " + Math.round((knownDebt / totalLimit) * 100) + "%";
+            } else {
+              userMsg += "\nOverall utilization: unknown (no credit limits known)";
+            }
+            if (unknownCount) userMsg += "\n" + unknownCount + " card(s) have an unknown credit limit — do not assume they are maxed out.";
           }
           if (loanAccounts.rows.length > 0) {
             const { computeLoanPayoff } = require("../services/projections");
@@ -825,7 +882,7 @@ async function generateInsights() {
           userMsg += "\n\n=== INCOME & SAVINGS RATE DATA ===\n" +
             incomeRows.map(r => {
               const rate = r.income > 0 ? Math.round((1 - r.spending / r.income) * 100) : 0;
-              return r.month + ": Income $" + r.income.toFixed(2) + ", Spending $" + r.spending.toFixed(2) + ", Savings rate " + rate + "%";
+              return monthLabel(r.month) + ": Income $" + r.income.toFixed(2) + ", Spending $" + r.spending.toFixed(2) + ", Savings rate " + rate + "%";
             }).join("\n");
         }
       } catch (err) { console.error("Income/savings query error:", err.message); failedModules.add("income_savings"); }
@@ -834,65 +891,56 @@ async function generateInsights() {
     // --- Module: Tax deduction flags (dynamic data) ---
     if (modules.tax_deductions !== false) {
       try {
-        // Word-boundary matching anchors at word edges (Postgres `\y`), so short
-        // tokens can't substring-match unrelated merchants. We also avoid bare
-        // ambiguous words ("office" → "Box Office", "interest" → "interest charge"
-        // on a credit card statement, "supplies" → "Pet Supplies", "business" →
-        // "Business Casual" retailer) by preferring multi-word phrases:
-        //   - medical:    specific medical-context words only
-        //   - charity:    named charities are self-evident
-        //   - education:  "student loan" rather than bare "student"
-        //   - business:   only multi-word "home office" / "office supplies" /
-        //                 "business expense" — drops bare "office"/"supplies"/"business"
-        //   - tax:        "mortgage interest" / "student loan interest" rather
-        //                 than bare "mortgage" / "interest" (which match payments
-        //                 and credit-card finance charges that aren't deductible)
-        const taxKeywords = ["doctor", "medical", "pharmacy", "hospital", "dental",
-          "charity", "donation", "goodwill", "salvation army", "red cross",
-          "tuition", "university", "college", "student loan",
-          "home office", "office supplies", "office depot", "business expense",
-          "mortgage interest", "student loan interest", "property tax", "state tax"];
-        const taxRegex = "\\y(" + taxKeywords.join("|") + ")\\y";
-        const taxData = await pool.query(
-          // Honor the user's merchant override (AI-7) — COALESCE(user_merchant_name,
-          // merchant_name, name) matches every other display/aggregation path so a
-          // renamed merchant is flagged/persisted under the name the dashboard shows.
-          `SELECT COALESCE(user_merchant_name, merchant_name, name) AS merchant, SUM(amount) AS total, COUNT(*) AS txn_count
-           FROM transactions
-           WHERE pending = false AND amount > 0
-             AND COALESCE(is_reimbursed, false) = false
-             AND date >= date_trunc('year', CURRENT_DATE)
-             AND COALESCE(user_merchant_name, merchant_name, name) ~* $1
-           GROUP BY COALESCE(user_merchant_name, merchant_name, name)
-           ORDER BY total DESC LIMIT 15`,
-          [taxRegex]
-        );
-        if (taxData.rows.length > 0) {
-          userMsg += "\n\n=== POTENTIAL TAX-DEDUCTIBLE TRANSACTIONS (YTD) ===\n" +
-            taxData.rows.map(r => sanitizeForPrompt(r.merchant) + ": $" + parseFloat(r.total).toFixed(2) + " (" + r.txn_count + " transactions)").join("\n");
-
-          // Persist flagged deductions to tax_deductions table for year-round accumulation.
-          // This is INTENTIONALLY independent of AI success (AI-8): the rows are a
-          // deterministic, keyword-matched view of real YTD transactions — not AI
-          // output — so they should accumulate even on a run that later hits the
-          // token cap or errors. The UPSERT is idempotent (ON CONFLICT), so a
-          // subsequent run re-affirms them harmlessly. ('ai_detected' labels the
-          // detection *channel*, not a dependency on the model's reply.)
-          let taxPersistFailed = false;
-          for (const row of taxData.rows) {
-            await pool.query(
-              `INSERT INTO tax_deductions (tax_year, merchant, amount, category, deduction_type)
-               VALUES (EXTRACT(YEAR FROM CURRENT_DATE), $1, $2, 'flagged', 'ai_detected')
-               ON CONFLICT (merchant, tax_year) WHERE transaction_id IS NULL
-               DO UPDATE SET amount = EXCLUDED.amount, flagged_at = now()`,
-              [row.merchant, parseFloat(row.total)]
-            ).catch(err => { taxPersistFailed = true; console.error("tax_deductions upsert error for", row.merchant, ":", err.message); });
-          }
-          // The deterministic YTD persistence (AI-8) is the module's real output;
-          // if those upserts silently failed (e.g. a broken tax_deductions table),
-          // surface it via modules_failed rather than reporting clean success (F9).
-          if (taxPersistFailed) failedModules.add("tax_deductions");
+        // ONE keyword list + query shared with the year-end export and the
+        // Sheets tab (financial-queries getTaxDeductionTransactions, SXE-7):
+        // word-boundary phrases, display merchant name (AI-7), the user's
+        // share of a shared-card charge (SPLIT_AMOUNT), reimbursed excluded.
+        const taxYear = parseInt(todayStr().slice(0, 4), 10);
+        const taxTxns = await getTaxDeductionTransactions(pool, taxYear);
+        const byMerchant = new Map();
+        for (const t of taxTxns) {
+          const e = byMerchant.get(t.merchant) || { merchant: t.merchant, total: 0, txn_count: 0 };
+          e.total += parseFloat(t.amount); e.txn_count++;
+          byMerchant.set(t.merchant, e);
         }
+        const merchants = [...byMerchant.values()].sort((x, y) => y.total - x.total);
+        if (merchants.length > 0) {
+          // The PROMPT gets the top 15 (a summary); persistence below covers all.
+          userMsg += "\n\n=== POTENTIAL TAX-DEDUCTIBLE TRANSACTIONS (YTD) ===\n" +
+            merchants.slice(0, 15).map(r => sanitizeForPrompt(r.merchant) + ": $" + r.total.toFixed(2) + " (" + r.txn_count + " transactions)").join("\n");
+        }
+        // Persist flagged deductions to tax_deductions — now the ANNOTATION
+        // layer (confirm / notes / category via PATCH /api/tax-deductions/:id);
+        // the year-end export recomputes amounts from transactions (SXE-7).
+        // This is INTENTIONALLY independent of AI success (AI-8): the rows are a
+        // deterministic, keyword-matched view of real YTD transactions — not AI
+        // output. The UPSERT is idempotent (ON CONFLICT). ('ai_detected' labels
+        // the detection *channel*, not a dependency on the model's reply.)
+        let taxPersistFailed = false;
+        for (const row of merchants) {
+          await pool.query(
+            `INSERT INTO tax_deductions (tax_year, merchant, amount, category, deduction_type)
+             VALUES ($3, $1, $2, 'flagged', 'ai_detected')
+             ON CONFLICT (merchant, tax_year) WHERE transaction_id IS NULL
+             DO UPDATE SET amount = EXCLUDED.amount, flagged_at = now()`,
+            [row.merchant, Math.round(row.total * 100) / 100, taxYear]
+          ).catch(err => { taxPersistFailed = true; console.error("tax_deductions upsert error for", row.merchant, ":", err.message); });
+        }
+        // AIN-12: prune this year's auto-flagged rows whose merchant no longer
+        // matches (renamed merchant → the old-name row; now-reimbursed; an old
+        // keyword list) unless the user annotated them (confirmed / notes).
+        await pool.query(
+          `DELETE FROM tax_deductions
+           WHERE tax_year = $1 AND transaction_id IS NULL
+             AND deduction_type = 'ai_detected' AND is_confirmed = false
+             AND COALESCE(notes, '') = ''
+             AND NOT (merchant = ANY($2::text[]))`,
+          [taxYear, merchants.map(m => m.merchant)]
+        ).catch(err => { taxPersistFailed = true; console.error("tax_deductions prune error:", err.message); });
+        // The deterministic YTD persistence (AI-8) is the module's real output;
+        // if those writes silently failed (e.g. a broken tax_deductions table),
+        // surface it via modules_failed rather than reporting clean success (F9).
+        if (taxPersistFailed) failedModules.add("tax_deductions");
       } catch (err) { console.error("Tax deductions query error:", err.message); failedModules.add("tax_deductions"); }
     }
 
@@ -917,26 +965,30 @@ async function generateInsights() {
     }
 
     // --- Module: Recurring transfer analysis (dynamic data) ---
-    try {
-      const transferData = await pool.query(
-        `SELECT display_name, amount, cadence_days, transfer_type, direction, last_transferred
-         FROM recurring_transfers
-         WHERE is_active = true AND is_dismissed = false
-         ORDER BY amount DESC`
-      );
-      if (transferData.rows.length > 0) {
-        activeModules.push("recurring_transfers");
-        const outgoing = transferData.rows.filter(r => r.direction === "outgoing");
-        const incoming = transferData.rows.filter(r => r.direction === "incoming");
-        const outTotal = outgoing.reduce((s, r) => s + parseFloat(r.amount) * 30 / r.cadence_days, 0);
-        const inTotal = incoming.reduce((s, r) => s + Math.abs(parseFloat(r.amount)) * 30 / r.cadence_days, 0);
-        userMsg += "\n\n=== RECURRING TRANSFERS ===\n" +
-          "Outgoing (" + outgoing.length + " transfers, $" + outTotal.toFixed(2) + "/mo):\n" +
-          (outgoing.length > 0 ? outgoing.map(r => sanitizeForPrompt(r.display_name) + ": $" + parseFloat(r.amount).toFixed(2) + " every " + r.cadence_days + " days (" + r.transfer_type + ")").join("\n") : "(none)") +
-          "\n\nIncoming (" + incoming.length + " transfers, $" + inTotal.toFixed(2) + "/mo):\n" +
-          (incoming.length > 0 ? incoming.map(r => sanitizeForPrompt(r.display_name) + ": $" + Math.abs(parseFloat(r.amount)).toFixed(2) + " every " + r.cadence_days + " days (" + r.transfer_type + ")").join("\n") : "(none)");
-      }
-    } catch (err) { console.error("Recurring transfers query error:", err.message); failedModules.add("recurring_transfers"); }
+    // AIN-11: honor the Settings toggle — the block used to run (and report
+    // the module as used) even when the user had switched it off.
+    if (modules.recurring_transfers !== false) {
+      try {
+        const transferData = await pool.query(
+          `SELECT display_name, amount, cadence_days, transfer_type, direction, last_transferred
+           FROM recurring_transfers
+           WHERE is_active = true AND is_dismissed = false
+           ORDER BY amount DESC`
+        );
+        if (transferData.rows.length > 0) {
+          activeModules.push("recurring_transfers");
+          const outgoing = transferData.rows.filter(r => r.direction === "outgoing");
+          const incoming = transferData.rows.filter(r => r.direction === "incoming");
+          const outTotal = outgoing.reduce((s, r) => s + parseFloat(r.amount) * 30 / r.cadence_days, 0);
+          const inTotal = incoming.reduce((s, r) => s + Math.abs(parseFloat(r.amount)) * 30 / r.cadence_days, 0);
+          userMsg += "\n\n=== RECURRING TRANSFERS ===\n" +
+            "Outgoing (" + outgoing.length + " transfers, $" + outTotal.toFixed(2) + "/mo):\n" +
+            (outgoing.length > 0 ? outgoing.map(r => sanitizeForPrompt(r.display_name) + ": $" + parseFloat(r.amount).toFixed(2) + " every " + r.cadence_days + " days (" + r.transfer_type + ")").join("\n") : "(none)") +
+            "\n\nIncoming (" + incoming.length + " transfers, $" + inTotal.toFixed(2) + "/mo):\n" +
+            (incoming.length > 0 ? incoming.map(r => sanitizeForPrompt(r.display_name) + ": $" + Math.abs(parseFloat(r.amount)).toFixed(2) + " every " + r.cadence_days + " days (" + r.transfer_type + ")").join("\n") : "(none)");
+        }
+      } catch (err) { console.error("Recurring transfers query error:", err.message); failedModules.add("recurring_transfers"); }
+    }
 
     // --- Enrichment: Credit score trajectory (if logged) ---
     // Feed the last 6 entries + trend into the prompt so Claude can
@@ -962,16 +1014,18 @@ async function generateInsights() {
 
     // --- Enrichment: Month-over-month spending trends with deltas ---
     try {
-      if (monthlyData.rows.length >= 2) {
+      // AIN-4: deltas between COMPLETE months only.
+      const completeRows = monthlyData.rows.filter(r => r.month < thisMonthKey);
+      if (completeRows.length >= 2) {
         const trends = [];
-        for (let i = 1; i < monthlyData.rows.length; i++) {
-          const curr = parseFloat(monthlyData.rows[i].total);
-          const prev = parseFloat(monthlyData.rows[i - 1].total);
+        for (let i = 1; i < completeRows.length; i++) {
+          const curr = parseFloat(completeRows[i].total);
+          const prev = parseFloat(completeRows[i - 1].total);
           const delta = curr - prev;
           const pctChange = prev > 0 ? Math.round((delta / prev) * 100) : 0;
-          trends.push(monthlyData.rows[i].month + ": " + (delta >= 0 ? "+" : "") + "$" + delta.toFixed(2) + " (" + (pctChange >= 0 ? "+" : "") + pctChange + "%)");
+          trends.push(completeRows[i].month + ": " + (delta >= 0 ? "+" : "") + "$" + delta.toFixed(2) + " (" + (pctChange >= 0 ? "+" : "") + pctChange + "%)");
         }
-        userMsg += "\n\n=== SPENDING TREND DELTAS (month-over-month) ===\n" + trends.join("\n");
+        userMsg += "\n\n=== SPENDING TREND DELTAS (month-over-month, complete months; the current month is partial and excluded) ===\n" + trends.join("\n");
       }
     } catch (err) { console.error("Trend delta error:", err.message); }
 
@@ -1055,7 +1109,13 @@ async function generateInsights() {
     if (toolBlock && toolBlock.input && typeof toolBlock.input.insights_text === "string" && toolBlock.input.summary) {
       insightText = String(toolBlock.input.insights_text).trim();
       newSummaryJson = sanitizeStructuredSummary(toolBlock.input.summary);
-      if (!newSummaryJson) {
+      if (hitTokenCap) {
+        // AIN-8: a max_tokens stop can leave a PARTIALLY parsed tool input
+        // (arrays cut short) — never let that replace long-term memory.
+        newSummaryJson = runningSummaryJson;
+        summaryStatus = "preserved_due_to_truncation";
+        console.warn("Insights: stop_reason=max_tokens inside the tool block; keeping prior summary.");
+      } else if (!newSummaryJson) {
         // Validation rejected the model's summary shape — preserve prior.
         newSummaryJson = runningSummaryJson;
         summaryStatus = "preserved_validation_failed";
@@ -1079,6 +1139,27 @@ async function generateInsights() {
     // read JSON still sees a meaningful long-term memory string.
     const newSummaryText = newSummaryJson ? renderStructuredSummaryForPrompt(newSummaryJson) : null;
     const actualModel = message.model || modelId;
+    if (!insightText) {
+      // AIN-8: no insight text at all. Charge the cap (the tokens were spent)
+      // under a non-'insight' entry_type so it never appears in the feed, is
+      // never audited as a "clean" run and is never emailed; keep the prior
+      // summary.
+      await pool.query(
+        "INSERT INTO financial_insights (insight_text, period_start, period_end, model_used, tokens_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, entry_type) VALUES ($1, CURRENT_DATE - INTERVAL '6 months', CURRENT_DATE, $2, $3, $4, $5, $6, $7, 'insight_empty')",
+        ["[Empty insight] stop_reason=" + (message.stop_reason || "unknown"), actualModel, tokensUsed, usage.input_tokens || 0, usage.output_tokens || 0, usage.cache_read_input_tokens || 0, usage.cache_creation_input_tokens || 0]
+      ).catch(err => console.error("empty-insight usage row failed — monthly AI cap may under-count:", err.message));
+      await pool.query("UPDATE user_settings SET insights_last_run = now() WHERE id = 1")
+        .catch(err => console.error("insights_last_run update failed:", err.message));
+      return {
+        ok: false,
+        status: 502,
+        error: hitTokenCap
+          ? "The analysis was cut off before any insight text was produced. Try again with fewer modules enabled."
+          : "The model returned no insight text. Long-term memory was left unchanged.",
+        stop_reason: message.stop_reason,
+        summary_status: summaryStatus === "updated" ? "preserved_no_tool_block" : summaryStatus,
+      };
+    }
     const insightRow = await pool.query(
       "INSERT INTO financial_insights (insight_text, period_start, period_end, model_used, tokens_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens) VALUES ($1, CURRENT_DATE - INTERVAL '6 months', CURRENT_DATE, $2, $3, $4, $5, $6, $7) RETURNING id",
       [insightText, actualModel, tokensUsed, usage.input_tokens || 0, usage.output_tokens || 0, usage.cache_read_input_tokens || 0, usage.cache_creation_input_tokens || 0]
@@ -1194,16 +1275,7 @@ router.post("/api/insights/rebuild", async (_req, res) => {
   try {
     // Check monthly budget before calling Claude (using granular cost if available)
     const budgetCents = await getAiBudgetCents();
-    const usageResult = await pool.query(
-      "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights WHERE created_at >= date_trunc('month', CURRENT_DATE)"
-    );
-    let estimatedCostCents = 0;
-    usageResult.rows.forEach(r => {
-      const cost = r.input_tokens
-        ? estimateCostGranular({ input_tokens: r.input_tokens, output_tokens: r.output_tokens, cache_read_input_tokens: r.cache_read_tokens || 0, cache_creation_input_tokens: r.cache_creation_tokens || 0 }, r.model_used)
-        : estimateCostUsd(r.tokens_used || 0, r.model_used);
-      estimatedCostCents += cost * 100;
-    });
+    const estimatedCostCents = await monthAiSpendCents();
     if (estimatedCostCents >= budgetCents) {
       return res.status(429).json({
         error: `Monthly AI budget reached ($${(estimatedCostCents / 100).toFixed(2)} of $${(budgetCents / 100).toFixed(2)} cap). Resets next month.`,
@@ -1230,7 +1302,8 @@ router.post("/api/insights/rebuild", async (_req, res) => {
     // would overwrite JSON with text and the next /api/insights call would
     // see no structured context.
     const message = await client.messages.create({
-      model: modelId, max_tokens: 1500,
+      // Up to 33 summary items: 1500 tokens truncated realistic rebuilds (AIN-8).
+      model: modelId, max_tokens: 4000,
       system: [{ type: "text", text:
         "You are a personal finance advisor. Synthesize a chronological timeline of past financial analyses into a structured cumulative summary that future analyses will use as persistent memory. Use the `generate_financial_insight` tool to return:\n" +
         "  - insights_text: a brief 1-2 sentence acknowledgement that the rebuild is complete (this won't be displayed prominently).\n" +
@@ -1266,6 +1339,11 @@ router.post("/api/insights/rebuild", async (_req, res) => {
         usage.cache_creation_input_tokens || 0,
       ]
     ).catch(err => console.error("rebuild usage tracking insert failed — monthly AI cap may under-count this rebuild:", err.message));
+    // AIN-8: a truncated rebuild (max_tokens) may carry a partially parsed
+    // summary — never write it over long-term memory.
+    if (message.stop_reason === "max_tokens") {
+      return res.status(500).json({ error: "Rebuild was cut off before the summary was complete; long-term memory was left unchanged." });
+    }
     const toolBlock = message.content.find(b => b.type === "tool_use");
     if (!toolBlock || !toolBlock.input || !toolBlock.input.summary) {
       return res.status(500).json({ error: "Rebuild did not return expected structured summary." });
@@ -1451,6 +1529,7 @@ router.get("/api/insights/audit", async (_req, res) => {
 
 module.exports = router;
 module.exports.getAiBudgetCents = getAiBudgetCents;
+module.exports.monthAiSpendCents = monthAiSpendCents;
 module.exports.renderInsightEmail = renderInsightEmail;
 module.exports.renderWeeklyDigestEmail = renderWeeklyDigestEmail;
 module.exports.renderDailyDigestEmail = renderDailyDigestEmail;
@@ -1458,3 +1537,5 @@ module.exports.generateInsights = generateInsights;
 module.exports.runWeeklyDigest = runWeeklyDigest;
 module.exports.runDailyDigest = runDailyDigest;
 module.exports.sanitizeForPrompt = sanitizeForPrompt; // exported for testing (T2)
+module.exports.sanitizeStructuredSummary = sanitizeStructuredSummary; // exported for testing (AIN-8)
+module.exports.INSIGHT_TOOL = INSIGHT_TOOL;

@@ -499,17 +499,45 @@ router.get("/api/export", async (req, res) => {
 
 // GET /api/export/tax-report — Year-end tax deduction summary
 router.get("/api/export/tax-report", async (req, res) => {
-  const year = parseInt(req.query.year) || new Date().getFullYear();
+  const { todayStr, getTaxDeductionTransactions } = require("../services/financial-queries");
+  const year = parseInt(req.query.year) || parseInt(todayStr().slice(0, 4), 10);
   const format = req.query.format || "csv";
   try {
-    const deductions = await pool.query(
-      `SELECT td.*, t.date AS txn_date
-       FROM tax_deductions td
-       LEFT JOIN transactions t ON t.transaction_id = td.transaction_id
-       WHERE td.tax_year = $1
-       ORDER BY td.category, COALESCE(t.date, td.flagged_at) DESC`,
-      [year]
-    );
+    // SXE-7: computed at EXPORT time from the transactions ledger — one row
+    // per matching transaction (with its date), no LIMIT, the whole calendar
+    // year. The tax_deductions table (written by insights runs) is only the
+    // ANNOTATION layer here: a merchant's confirm flag / notes / category
+    // apply to that merchant's rows. (The export used to list those per-
+    // merchant snapshot rows directly: frozen at the last insights run, top
+    // 15 merchants only, double-counted renames, blank Date column.)
+    const [txns, notes] = await Promise.all([
+      getTaxDeductionTransactions(pool, year),
+      pool.query(
+        `SELECT merchant, category, is_confirmed, notes
+         FROM tax_deductions WHERE tax_year = $1 AND transaction_id IS NULL`,
+        [year]
+      ).catch(() => ({ rows: [] })),
+    ]);
+    const noteByMerchant = new Map();
+    for (const n of notes.rows) if (n.merchant) noteByMerchant.set(String(n.merchant).toLowerCase(), n);
+    const deductions = {
+      rows: txns.map(t => {
+        const n = noteByMerchant.get(String(t.merchant || "").toLowerCase());
+        const userCat = n && n.category && !["flagged", "uncategorized"].includes(n.category) ? n.category : null;
+        const d = t.date ? String(t.date).slice(0, 10) : ""; // 'YYYY-MM-DD' text from SQL
+        return {
+          tax_year: year,
+          txn_date: d,
+          transaction_id: t.transaction_id,
+          merchant: t.merchant,
+          amount: parseFloat(t.amount).toFixed(2),
+          category: userCat || t.category,
+          deduction_type: "keyword_match",
+          notes: n ? n.notes : null,
+          is_confirmed: !!(n && n.is_confirmed),
+        };
+      }).sort((a, b) => (a.category < b.category ? -1 : a.category > b.category ? 1 : (a.txn_date < b.txn_date ? -1 : a.txn_date > b.txn_date ? 1 : 0))),
+    };
 
     if (format === "json") {
       // Group by category
@@ -556,7 +584,7 @@ router.get("/api/export/tax-report", async (req, res) => {
           doc.fontSize(14).fillColor("#d4a574").text(cat, { underline: true });
           doc.moveDown(0.3);
           for (const d of data.items) {
-            const date = d.txn_date ? new Date(d.txn_date).toLocaleDateString() : "";
+            const date = d.txn_date || ""; // 'YYYY-MM-DD' — no Date() tz shift
             const confirmed = d.is_confirmed ? " [Confirmed]" : "";
             doc.fontSize(10).fillColor("#cccccc")
               .text(`  ${date}  ${d.merchant}  $${parseFloat(d.amount).toFixed(2)}${confirmed}`);

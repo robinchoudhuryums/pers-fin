@@ -582,19 +582,10 @@ router.post("/api/housing/scan-bill", upload.single("file"), async (req, res) =>
 
   try {
     // Shared monthly AI cap (parity with /api/ask, INV-14): check then charge.
-    const { getAiBudgetCents } = require("./insights");
-    const { MODEL_MAP, estimateCostGranular, estimateCostUsd } = require("../data/reference-data");
+    const { getAiBudgetCents, monthAiSpendCents } = require("./insights");
+    const { MODEL_MAP, estimateCostGranular } = require("../data/reference-data");
     const budgetCents = await getAiBudgetCents();
-    const u = await pool.query(
-      "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights WHERE created_at >= date_trunc('month', CURRENT_DATE)"
-    );
-    let spendCents = 0;
-    u.rows.forEach((r) => {
-      const cost = r.input_tokens
-        ? estimateCostGranular({ input_tokens: r.input_tokens, output_tokens: r.output_tokens, cache_read_input_tokens: r.cache_read_tokens || 0, cache_creation_input_tokens: r.cache_creation_tokens || 0 }, r.model_used)
-        : estimateCostUsd(r.tokens_used || 0, r.model_used);
-      spendCents += cost * 100;
-    });
+    const spendCents = await monthAiSpendCents(pool);
     if (spendCents >= budgetCents) {
       return res.status(429).json({ error: `Monthly AI budget reached ($${(budgetCents / 100).toFixed(2)} cap). Raise it under Settings → AI Insights.` });
     }

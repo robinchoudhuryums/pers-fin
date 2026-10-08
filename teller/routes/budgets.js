@@ -124,6 +124,15 @@ router.post("/api/budgets/suggest", async (_req, res) => {
     return res.status(501).json({ error: "Set ANTHROPIC_API_KEY to enable AI budget suggestions." });
   }
   try {
+    // Shared monthly AI cap (INV-14, AIN-10): this call used to be uncapped
+    // and uncharged — past the cap every "Suggest budgets" click still spent
+    // (on the user's model, possibly Opus) and never showed up in usage.
+    const { getAiBudgetCents, monthAiSpendCents } = require("./insights");
+    const budgetCents = await getAiBudgetCents();
+    if ((await monthAiSpendCents(pool)) >= budgetCents) {
+      return res.status(429).json({ error: `Monthly AI budget reached ($${(budgetCents / 100).toFixed(2)} cap). Raise it under Settings → AI Insights.` });
+    }
+
     // Pull the trailing 3 months of per-category spend through the SAME helper
     // GET /api/budgets uses, so suggestions are measured against the split-
     // adjusted, reimbursed-excluded, transfer-filtered, spending_split_pct-aware
@@ -210,6 +219,19 @@ router.post("/api/budgets/suggest", async (_req, res) => {
       tool_choice: { type: "tool", name: "suggest_budgets" },
       messages: [{ role: "user", content: "Spending history (last 3 complete months):\n" + catSummary }],
     });
+
+    // Charge the cap BEFORE any validation early-return, so a malformed reply
+    // still counts the tokens it consumed (parity with rebuild, AIA2).
+    const usage = message.usage || {};
+    await pool.query(
+      `INSERT INTO financial_insights
+         (insight_text, model_used, tokens_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, entry_type)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'suggest')`,
+      ["[Suggest] budget suggestions", modelId,
+        (usage.input_tokens || 0) + (usage.output_tokens || 0),
+        usage.input_tokens || 0, usage.output_tokens || 0,
+        usage.cache_read_input_tokens || 0, usage.cache_creation_input_tokens || 0]
+    ).catch((e) => console.error("Budget suggest usage-row write failed:", e.message));
 
     // Extract structured output from tool_use block
     const toolBlock = message.content.find(b => b.type === "tool_use");
