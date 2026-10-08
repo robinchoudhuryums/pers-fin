@@ -29,7 +29,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   at-most-once delivery). The manual `POST /api/emails/:id/send` claims the row
   the same way (`UPDATE … WHERE id = $1 AND status <> 'sent' RETURNING`) so a
   double-click / retry returns 409 instead of re-sending (PB-4).
-- **Tests**: `tests/` (node:test runner, `npm test`, 477 tests (api + integration + cycle-fixes + knowledge + health + jobs + scan-sept-fixes))
+- **Tests**: `tests/` (node:test runner, `npm test`, 498 tests (api + integration + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of June 2026)
@@ -39,7 +39,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **To-Do Lists**: Short/medium/long-term horizons, 4 priority levels, categories, due dates
 - **Todo Categories**: Preset categories (work, personal, health, finance, errands, home, learning) + custom; filterable on todos page and dashboard
 - **Dashboard Task Views**: All / By Category / By Urgency / Due Soon tabs
-- **Recurring Tasks**: Daily, weekly, monthly, yearly, weekdays + custom intervals (every N days/weeks/months) with auto-generation, streak/habit tracking, skip, and snooze. The midnight auto-roll cron atomically CLAIMS each overdue recurring row (`UPDATE … WHERE id = $1 AND completed = false RETURNING`) before generating the next instance, so it can't race the manual complete-recurring path into a double-generated instance (PS-11).
+- **Recurring Tasks**: Daily, weekly, monthly, yearly, weekdays + custom intervals (every N days/weeks/months) with auto-generation, streak/habit tracking, skip, and snooze. The midnight auto-roll cron atomically CLAIMS each overdue recurring row (`UPDATE … WHERE id = $1 AND completed = false RETURNING`) before generating the next instance, so it can't race the manual complete-recurring path into a double-generated instance (PS-11). The roll lives in `helpers.rollMissedRecurring(db, today)` and the cron runs at LOCAL midnight (`{ timezone: APP_TIMEZONE }`, today = `todayStr()` — it used to fire at UTC midnight, i.e. 5pm in Los Angeles). A rolled instance is marked **missed** (`completed = true` so it leaves the active list, but `missed = true` + `completed_at = NULL`), so analytics completion rate / category breakdown and `/api/stats` "done" no longer count it as finished (PB-10); the next instance is the first occurrence on/after today. Monthly/yearly chains keep their ORIGINAL day-of-month (`todos.recurrence_anchor_day`, db/022): `advanceRecurrence(date, rule, interval, anchorDay)` steps on the month index and clamps the day — Jan 31 → Feb 28 → Mar 31, Feb 29 yearly → Feb 28 … → Feb 29 (PD-2; setMonth used to drift Jan 31 → Mar 3 → Apr 3 forever). complete-recurring / skip-recurring / the roll carry the anchor to the new instance; a manual due-date edit resets it.
 - **Subtasks**: Checklists within tasks with progress tracking — a progress bar with a `%` label on the To-Dos page, and a compact `done/total` progress bar on the dashboard task cards (counts come from `subtask_total`/`subtask_done` on `GET /api/todos`, so no per-card N+1 fetch)
 - **Natural Language Quick Add**: Create todos from natural language with auto-detected priority/horizon/due date (AI-enhanced when enabled)
 - **Email Drafting**: Compose, schedule, send; natural language "Quick Send" parser. "Save Draft" always stores a DRAFT (the client sends `status:'draft'`; `POST /api/emails` honors an explicit `draft|scheduled` status and only infers `scheduled` from `scheduled_at` when none is sent) — a filled-in schedule time no longer turns a saved draft into a cron-sent email (PD-1). "Send now" saves the form first, so edits aren't dropped (PUI-2). Schedule/reminder `datetime-local` fields are filled via the shared `toLocalDatetimeInput(iso)` (views/js.js) in browser-local time, so open+save never shifts the time by the UTC offset (PUI-1).
@@ -53,7 +53,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **Email Templates**: Save and reuse common email formats
 - **Notes**: Color-coded, pinnable, with optional reminders, tags, and Markdown support (bold, italic, lists, checkboxes, links, quotes, headings). The client-side `renderMd` link rule scheme-validates hrefs (`http(s):`/`mailto:` only, else neutralized to `#`) and quote-escapes the URL, so a `[x](javascript:…)` note can't render a clickable script URL (PS-4).
 - **Task Dependencies**: Blocking/blocked-by relationships between tasks with circular dependency prevention
-- **Streak Tracking**: Recurring tasks track completion streaks (current + best) with on-time detection
+- **Streak Tracking**: Recurring tasks track completion streaks (current + best) with on-time detection — "on time" compares the APP_TIMEZONE date (`todayStr()`) with the due date read via local getters (`ymdLocal`), so a completion on the due date's local evening west of UTC no longer resets the streak (PD-4)
 - **Contacts**: Name→email lookup for quick email addressing
 - **Dashboard**: Customizable widget layout (drag-to-reorder, show/hide widgets), overview cards, task views (with subtask progress bars), AI briefing, smart suggestions, scheduled emails, Perfin widget, global search, a "Snooze reminders" button. (The "Ask your assistant" card was retired — it's now the top-bar **Ask** button, available on every page; saved layouts still listing `ai_query` are pruned in `loadLayout()`.)
 - **AI Smart Suggestions**: AI-powered productivity coaching based on task priorities, due dates, and streaks
@@ -164,7 +164,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `db.js` — database pool and migration runner
 - `ai.js` — Anthropic client, callAI, answerWithCitations, model helpers, response caching
 - `middleware.js` — session, auth, CSRF, helmet, rate limiting
-- `helpers.js` — advanceRecurrence, webhooks, Slack, automations
+- `helpers.js` — advanceRecurrence (anchor-day aware), recurrenceAnchorDay, ymdLocal, rollMissedRecurring (the midnight missed-instance roll), webhooks, Slack, automations
 - `routes/rag.js` — Knowledge / RAG API (search, query, diagram, capture, facts,
   facts/verify, secret-lookup, status, reindex) + retrieval/cache/facts/finance helpers
 - `services/embeddings.js` — Voyage embeddings (one swappable `embed()`)
@@ -196,6 +196,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   lists, profile + companies modals)
 - `db/021_jobs.sql` — job_sources, job_target_companies, job_listings,
   job_profile + the `ai_usage` AI-cost-cap ledger
+- `db/022_recurrence_anchor_missed.sql` — `todos.recurrence_anchor_day` (CHECK 1–31) + `todos.missed` (PD-2 / PB-10; additive, idempotent)
 - `errors.js` — `serverError(res, err)` shared 500 responder (logs real error, returns generic message; PB-2)
 - `views.js` — pageHead, navBar, themeScript (imports from `views/`)
 - `routes/` — 21 API route modules (auth, todos, emails, notes, contacts, etc.)
@@ -209,7 +210,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `db/007_enhancements.sql` — custom recurrence, entity links, webhooks, notification preferences
 - `db/008_templates_performance.sql` — todo templates table, performance indexes
 - `uploads/` — local file attachment storage
-- `tests/api.test.js` — unit test suite (the bulk of the 477 per-sistant tests; NOTE: it tests inline copies of the logic and imports no production module — see TQ-1 in the Sept 2026 broad scan)
+- `tests/api.test.js` — unit test suite (the bulk of the 498 per-sistant tests; NOTE: it tests inline copies of the logic and imports no production module — see TQ-1 in the Sept 2026 broad scan)
 - `tests/scan-sept-fixes.test.js` — Sept 2026 broad-scan Batch 1 pins (Save Draft status, Send-now save, local datetime fill, fail-closed vault sensitivity, vault mark-and-sweep, trash chunk purge)
 - `tests/integration.test.js` — integration tests (requires DB, auto-skips without)
 - `Dockerfile` / `docker-compose.yml` — container deployment
@@ -221,7 +222,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (477 tests)
+# Run tests (498 tests)
 npm test
 
 # Pages
@@ -431,7 +432,10 @@ GET    /sw.js               # Service worker
   `todayLocal()` both resolve "today" in this zone so streaks, due-today, the
   7-day grid, and the future-log guard match the user's LOCAL calendar day
   (F11). Default `UTC` (reproduces the prior behavior exactly). Set it to your
-  zone or an evening log west of UTC lands on the wrong day. (Residual: the
+  zone or an evening log west of UTC lands on the wrong day. The same zone
+  also drives the recurring-task midnight roll (cron `timezone`), the
+  complete-recurring on-time check, the notification check's / AI briefing's
+  "today" (PB-13) and the Knowledge answer-cache date stamp. (Residual: the
   90-day heatmap grid + the SQL `CURRENT_DATE` range windows are still UTC —
   cosmetic 1-day edge only.)
 - `VOYAGE_API_KEY` — Voyage AI key for Knowledge embeddings (optional). Without
@@ -558,8 +562,17 @@ hoisted version.
     citations call throws. Citations are incompatible with structured outputs
     (unused here).
   - **Answer cache (Phase 2):** `rag_answer_cache` — exact-match, keyed by
-    normalized query + model + a corpus-version stamp (`max(updated_at)` + active
-    row count over notes+documents+facts), 24h freshness. Auto-invalidates when
+    normalized query + model + a corpus-version stamp (`"<APP_TIMEZONE date>|"` +
+    `max(updated_at)` + active row count over notes+documents+facts+fact
+    verifications), 24h freshness. The date prefix (KR-5) expires cached answers
+    at local midnight so a fact whose `valid_from`/`valid_to` boundary passed
+    isn't served from a stale answer; the facts validity filter itself compares
+    against that tz date as a `$N::date` parameter (not `CURRENT_DATE`). Vault
+    re-syncs no longer churn the version: `upsertVaultDocument` only rewrites a
+    row whose title/content/tags/sensitivity/deleted_at changed (`IS DISTINCT
+    FROM`), and `upsertFacts` skips the delete + re-insert when a file's fact set
+    is unchanged (order-independent `factSetSignature`) — every full reindex used
+    to bump `updated_at` on everything and flush the cache twice a day. Auto-invalidates when
     the corpus changes; survives restarts (unlike the in-memory ai.js cache).
     Helpers in `routes/rag.js` swallow errors so a pre-migration/missing table
     degrades to "no cache". Semantic (paraphrase) caching shipped (RAG v2, db/019): rag_answer_cache

@@ -76,7 +76,11 @@ teller/
                            computeRunwayMonths (no-income depletion with
                            growth) + computeLoanPayoff (iterative amortization
                            — months/interest/payoff-date, insufficient-payment
-                           flag). Consumed by GET /api/fire-projection
+                           flag; payoff month anchored on a `today` arg) +
+                           month-end-safe addMonthsYm / addMonthsYmd (month-
+                           index math, day clamped — FAN-15: setMonth(+n) on
+                           the 29th–31st skipped a month; used for the payoff,
+                           goal estimated_date and FIRE dates). Consumed by GET /api/fire-projection
                            (goals.js), the ask.js get_fire_projection tool,
                            and the insights debt-optimizer loan block; the
                            dashboard loan card inlines a pinned mirror.
@@ -296,7 +300,13 @@ teller/
                            40/44px touch-target minimums on buttons)
     perfin-shared.js     — Shared JavaScript (apiFetch, theme, nav helpers, asyncAction,
                            btnLoading, beforeinstallprompt capture + perfinPromptInstall /
-                           perfinIsInstalled exports)
+                           perfinIsInstalled exports). Calendar-date helpers (WUI-2):
+                           parseCalDate turns a DATE value ('YYYY-MM-DD' or node-pg's
+                           UTC-midnight 'YYYY-MM-DDT00:00:00.000Z') into a LOCAL-midnight
+                           Date for that day (fmtDate uses it — dates used to render one
+                           day early west of UTC); localTodayStr(offsetDays) /
+                           localDateStr(d) give browser-local 'YYYY-MM-DD' for date-input
+                           defaults and "is today" checks (never toISOString()).
   views/
     dashboard.ejs        — Dashboard template with 3D financial wellness pyramid
     transactions.ejs     — Transaction search/filter template, per-row Split modal
@@ -453,9 +463,20 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1249 tests as of latest); use
+  Perfin and Per-sistant test files (1317 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1249 tests across 50 test files (incl.
+  Current count: 1317 tests across 53 test files (incl.
+  `tests/scan-sept-batch6.test.js` + `tests/scan-sept-batch6-tz.test.js` +
+  `apps/per-sistant/tests/scan-sept-batch6.test.js` — the Sept 2026 broad-scan
+  Batch 6 date/month/budget pins: prior-month snapshot refresh window (FAN-7),
+  the shared getBudgetStatus helper (AIN-6/SXE-4/WUI-5), complete-month budget
+  suggestions + PATCH validation (FAN-8/FAN-14), wall-clock daily digest
+  (AIN-15), Sheets tz windows + ICS overdue rent (SXE-12), income-summary
+  completed-month average + YoY same-day cap (FAN-13/DD-11), local calendar-date
+  parsing (WUI-2), month-end-safe month addition (FAN-15), Per-sistant recurrence
+  anchor day / missed instances / tz streak check (PD-2/PB-10/PD-4) and the
+  knowledge-cache corpus version + unchanged-row skip (KR-5); the `-tz` file
+  forces an APP_TIMEZONE whose date differs from UTC's so UTC anchors fail;
   `tests/scan-sept-batch5.test.js` + `apps/per-sistant/tests/scan-sept-batch5.test.js`
   — the Sept 2026 broad-scan Batch 5 Rent/Utilities/Settle Up pins: trailing
   24-month generation (FAN-3), rename carry-over + payee scoping (FAN-4),
@@ -791,7 +812,19 @@ shell/
   (applies only to `effective_month`). Monthly snapshots via `POST /api/budgets/snapshot`
   capture spending + rollover amounts. History via `GET /api/budgets/history`.
   `GET /api/budgets` returns `effective_limit` (base + rollover) and accepts
-  `?month=YYYY-MM` query parameter.
+  `?month=YYYY-MM` query parameter. Budget status has ONE definition,
+  `getBudgetStatus(pool, month)` in `services/financial-queries.js` (AIN-6/SXE-4/WUI-5):
+  spending via `getCategorySpendingForMonth`, `effective_limit = monthly_limit +` the
+  PRIOR month's snapshot `rollover_amount` (when `rollover_enabled`), one-time budgets
+  only in their `effective_month`. `GET /api/budgets`, `/api/budgets/alerts`, the AI
+  insights prompt, the Ask `get_budget_status` tool and the Budgets page all read it
+  (the prompt/Ask/page used the bare `monthly_limit`, so a rolled-over budget read as
+  overspent and a June one-time budget showed in September); the Sheets Budget Status
+  query mirrors it in SQL. The scheduled prior-month snapshot (`runBudgetSnapshot`) is
+  RE-TAKEN on days 1–5 of the month (`SNAPSHOT_REFRESH_DAYS`, DO UPDATE) so month-end
+  charges that post on the 1st–3rd reach the rollover (FAN-7), then create-if-missing.
+  `PATCH /api/budgets/:id` 400s a non-finite/negative limit, an unknown `budget_type`
+  or a malformed `effective_month` (FAN-14).
 
 ### Dashboard & Views
 - **Dashboard**: Monthly spending trend (line chart), category breakdown (doughnut), account balances,
@@ -1003,8 +1036,12 @@ shell/
   the average. Loan/mortgage payments are still billed. Bill dates step by
   calendar month from each bill's last real charge (`seriesOccurrences`, DC-9).
 - **Savings rate**: Income vs spending analysis with configurable lookback (default 3 months)
-- **Year-over-year comparisons**: Month-by-month spending comparison vs prior year
-- **Budget alerts** (`GET /api/budgets/alerts`): Spending velocity/pacing warnings with severity levels — `critical` ≥100% (over budget), `warning` ≥80% (approaching limit), `info` when pace > 1.2× and ≥50% (spending faster than the month's progress). Alerts compare spending against the **effective limit** (base `monthly_limit` + this month's `rollover_amount` from `budget_snapshots`) and skip one-time budgets outside their `effective_month` — matching `GET /api/budgets`. The 3-hour scheduled push-notification path uses the same effective-limit logic and 80% / 100% thresholds; the in-app `info`/pace heuristic is intentionally not pushed (too noisy as a notification).
+- **Year-over-year comparisons**: Month-by-month spending comparison vs prior year.
+  For the CURRENT (in-progress) month every year is capped at today's day-of-month,
+  so month-to-date is compared with the same days of prior years (response
+  `through_day`; the widget labels "days 1–N of each"); only CONSECUTIVE years are
+  compared — a missing year is no longer bridged as "year-over-year" (DD-11).
+- **Budget alerts** (`GET /api/budgets/alerts`): Spending velocity/pacing warnings with severity levels — `critical` ≥100% (over budget), `warning` ≥80% (approaching limit), `info` when pace > 1.2× and ≥50% (spending faster than the month's progress). Alerts compare spending against the **effective limit** (base `monthly_limit` + the PRIOR month's `rollover_amount` from `budget_snapshots`) and skip one-time budgets outside their `effective_month` — via the same `getBudgetStatus` as `GET /api/budgets`. Day-of-month / days-in-month come from the APP_TIMEZONE date (FAN-13). The 3-hour scheduled push-notification path uses the same effective-limit logic and 80% / 100% thresholds; the in-app `info`/pace heuristic is intentionally not pushed (too noisy as a notification).
 
 ### AI & Intelligence
 - **ML categorization**: Claude-powered smart transaction categorization via tool_use structured
@@ -1016,7 +1053,7 @@ shell/
   sonnet → `claude-sonnet-4-6`, opus → `claude-opus-4-6`.
   Shares the `INSIGHTS_MONTHLY_BUDGET_CENTS` cap with `/api/insights` — returns 429
   when the monthly AI budget is exhausted (rules still apply for free).
-- **AI budget suggestions**: Claude suggests budgets based on 3-month spending history via tool_use.
+- **AI budget suggestions**: Claude suggests budgets based on the last 3 COMPLETE months of spending via tool_use (the partial current month is excluded — FAN-8).
 - **AI Insights** (12 toggleable modules, auto-triggered based on cadence setting):
   - Utility rate comparison (vs state/national averages, requires ZIP)
   - Spending benchmarks (vs BLS Consumer Expenditure Survey)
@@ -1152,12 +1189,16 @@ shell/
   new transactions, balance deltas, new subscriptions, and notifications.
   Fires the `daily_summary` webhook event with `{ subject, html_body,
   plain_text }`, rendered by `renderDailyDigestEmail()` from
-  `gatherWhatsNew(now - 24h)` — same aggregator the dashboard's "Since
+  `gatherWhatsNew(since)` — same aggregator the dashboard's "Since
   you last looked" widget uses, so both surfaces see the same data shape.
   No AI call. Opt-in: Settings → AI Insights → "Daily Activity Digest"
-  toggle (default off). Hourly scheduler; `runDailyDigest` dedupes via
-  a 20-hour gate from `last_daily_digest_at` and skips silently when
-  `gatherWhatsNew` returns zero counts.
+  toggle (default off). Hourly scheduler; `runDailyDigest(now)` is
+  wall-clock anchored (AIN-15): at most once per LOCAL date
+  (APP_TIMEZONE), never before 07:00 local (`DAILY_DIGEST_HOUR`), covering
+  everything since the previous send (floored at 72h; a first send covers
+  24h) and stamping `last_daily_digest_at = now`. (The old 20-hour gate
+  crept 3–4h earlier every day and its fixed now−24h window repeated
+  transactions.) Skips silently when `gatherWhatsNew` returns zero counts.
 - **Critical-alert emails** (opt-in, Settings → AI Insights/Notifications →
   "Critical Alert Emails", `user_settings.critical_alert_emails_enabled`,
   default off): budget-exceeded (100%+, shares the push path's 24h
@@ -1333,6 +1374,11 @@ shell/
     highlight; warning-only sheet protection.
   - **Utilities**: auto-detected utility subscriptions + `manual_bills`
     with `category='utility'`, TOTAL roll-up combining monthly + yearly.
+    **Known issue (pre-existing, found in Sept 2026 Batch 6):** the tab's
+    UNION query ends with `ORDER BY CASE WHEN status = 'Active' …`, which
+    Postgres rejects on a UNION ("invalid UNION/INTERSECT/EXCEPT ORDER BY
+    clause"), so this tab fails on EVERY sync — isolated into `errors[]`
+    (INV-24); the other tabs still update. Fix pending.
   - **AI Insights**: main grid (date / model / tokens / feedback /
     feedback note / insight) + four sub-tables below from the structured
     `insights_running_summary_json` (Trends, Pending Actions, Active
@@ -1342,7 +1388,13 @@ shell/
   - **Dashboard**: net worth, budgets, goals, over-budget conditional
     formatting; SPENDING BY CATEGORY section gained 6 per-month columns
     + SPARKLINE Trend column + gradient heatmap conditional formatting
-    over the month cells; "Synced [day, time]" banner restyled.
+    over the month cells; "Synced [day, time]" banner restyled. Budget Status
+    compares against the EFFECTIVE limit (base + prior-month rollover, one-time
+    budgets only in their month — SXE-4, parity with `getBudgetStatus`). All
+    month windows are whole APP_TIMEZONE months and the banner timestamp is in
+    APP_TIMEZONE (SXE-12 — it was hard-wired to America/New_York); the script's
+    `SHEETS_TZ` / `sheetsTodayStr()` / `sheetsMonth(offset)` also anchor the
+    Income windows, the tax year and the month-archive "current month".
   - **Investments** (new): Plaid holdings with cost basis, current
     value, return $, return % (green positive / red negative), grand
     total. Teller-linked accounts excluded (no Teller cost-basis API).
@@ -1608,7 +1660,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1249 tests passing across 50 test files (Perfin 772 + Per-sistant 477), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1317 tests passing across 53 test files (Perfin 819 + Per-sistant 498), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 
 ## Commands
 ```bash
@@ -1793,8 +1845,13 @@ GET  /api/spending-categories # per-month category breakdown (query: month=YYYY-
                            # splits/reimbursed/share-adjusted via getCategorySpendingForMonth)
 GET  /api/cash-flow        # rolling cash flow projection (query: days, default 90)
 GET  /api/savings-rate     # income vs spending analysis (query: months, default 3)
-GET  /api/income-summary   # income trend + top sources + by_account (query: months, default 6)
-GET  /api/spending-yoy     # year-over-year comparison (query: month, year)
+GET  /api/income-summary   # income trend + top sources + by_account (query: months, default 6).
+                           # Window anchored on the APP_TIMEZONE month; avg_monthly_income
+                           # averages COMPLETED months only (FAN-13)
+GET  /api/spending-yoy     # year-over-year comparison (query: month, year; defaults =
+                           # the APP_TIMEZONE date). The current month is capped at
+                           # today's day for every year (through_day; null = whole
+                           # month); comparisons only between consecutive years (DD-11)
 GET  /api/accounts/:id/balance-history # daily balance series for an account (query: source=linked|investment, months)
 GET  /api/goals            # list financial goals with projections; each goal includes
                            # `suggested_transfers[]` matching active recurring transfers
@@ -1851,9 +1908,10 @@ GET  /api/data-health      # operator health surface — per-source freshness,
                            # last_sync_result.errors (decryption_failed) instead (D).
 GET  /api/budgets          # list budgets with current spending (query: month=YYYY-MM)
 POST /api/budgets          # create budget (body: rollover_enabled, budget_type, effective_month)
-PATCH /api/budgets/:id     # update budget
+PATCH /api/budgets/:id     # update budget (400 on a non-finite/negative monthly_limit,
+                           # unknown budget_type or malformed effective_month — FAN-14)
 DELETE /api/budgets/:id    # delete budget
-POST /api/budgets/suggest  # AI budget suggestions
+POST /api/budgets/suggest  # AI budget suggestions (from the last 3 COMPLETE months)
 POST /api/budgets/accept   # accept AI-suggested budget
 GET  /api/budgets/alerts   # spending velocity warnings (critical/warning/info)
 POST /api/budgets/snapshot # create monthly snapshot + compute rollovers (body: month=YYYY-MM, 01-12)
@@ -2053,7 +2111,11 @@ GET  /calendar.ics                        # bill-calendar iCalendar feed (subscr
                                           # calendar, DC-15; it used to cap at day 28 and
                                           # anchor quarterly/yearly on "this month") +
                                           # unpaid Rent & Utilities obligations (known
-                                          # amount, on their period's due day),
+                                          # amount, on their period's due day; one
+                                          # whose due day has passed is placed on
+                                          # TODAY flagged "OVERDUE", same stable UID —
+                                          # SXE-12),
+                                          # "today" = the APP_TIMEZONE date,
                                           # 90 days default (?days=7-365). Builder:
                                           # subscriptions.buildBillCalendarIcs.
 ```
@@ -2133,7 +2195,12 @@ validation (SN-5).
     user-facing month-bucketed surfaces resolve the month boundary in this zone:
     `getCategorySpendingThisMonth` (budgets/insights/ask), `getMonthlySpending` /
     `getMonthlyIncome` window anchors (savings-rate/trends/FIRE), budgets'
-    `currentMonthKey`, the settlement/housing month defaults. Rolling-window
+    `currentMonthKey`, the settlement/housing month defaults, and (Batch 6 —
+    FAN-13/SXE-12/AIN-15) the budget-alert day math, budget push + scheduled
+    snapshot month keys, weekly-digest weekday, daily-digest local date/hour,
+    income-summary window, YoY defaults, housing reminder day / export year /
+    payment date, credit-score date, goal + FIRE dates, the ICS feed's "today",
+    and the Sheets windows/timestamp/tax year/archive month. Rolling-window
     `CURRENT_DATE` lookbacks (90-day cash-flow, retention) are intentionally left
     UTC — tz-insensitive.
   - Default `UTC` (byte-identical to the prior UTC-anchored behavior); set it to
@@ -2272,9 +2339,10 @@ standalone-mode fallback if either app is run on its own Render service.
 - `user_settings.daily_digest_enabled BOOLEAN NOT NULL DEFAULT false`,
   `last_daily_digest_at TIMESTAMPTZ`: opt-in once-per-day "yesterday's
   activity" email channel (#19). Toggle in Settings → AI Insights. The
-  hourly scheduler calls `runDailyDigest()`; the helper dedupes with a
-  20-hour gate from `last_daily_digest_at` and skips silently when
-  `gatherWhatsNew(now - 24h)` returns zero counts.
+  hourly scheduler calls `runDailyDigest()`; the helper sends at most once
+  per APP_TIMEZONE date, not before 07:00 local, covering the time since
+  `last_daily_digest_at` (≤72h), and skips silently when `gatherWhatsNew`
+  returns zero counts (AIN-15).
 - `user_settings.target_allocation_pct JSONB NOT NULL DEFAULT '{}'::jsonb`:
   per-asset-class target weights for the Investments performance card.
   Keys are lowercase `security_type` (etf, equity, bond, etc.); values
@@ -2636,14 +2704,17 @@ embedded mode).
   check) → syncAllPlaidHoldings → syncAllBalances → detect subscriptions →
   detect transfers → categorize → generate insights → audit → email webhook.
   Ensures AI analyzes freshest data. Auto-categorization runs as part of this pipeline.
-- **Budget alerts**: every 3 hours (push notifications at 80% and 100%+ thresholds, aligned with the in-app `/api/budgets/alerts` `warning`/`critical` levels). Like the endpoint, the push compares against the effective limit (base + current-month rollover) and skips one-time budgets outside their `effective_month`. The in-app `info`/pace heuristic is intentionally not pushed (too noisy as a notification). **Deduped to at most one notification per category+severity per 24h** via `sentRecently(tag, 24)` (`routes/notifications.js`, backed by `notification_log`) — previously a category that stayed over budget re-logged a notification on every 3-hour tick for the rest of the month. Escalation (warn → over) still fires immediately because the two severities use distinct tags.
-- **Budget snapshot auto-trigger**: every 6 hours, creates a snapshot for the
-  previous (now-complete) month (spending + rollover amounts) so budget rollover
-  advances automatically. Idempotent — skips if a snapshot for that month already
-  exists. Runs on EVERY tick (not only the 1st) so a snapshot missed because the
-  process was asleep/inactive on the 1st is caught up on any later tick that
-  month (M5) — the prior month is complete regardless of which day it runs, so
-  timing within the month doesn't matter. Gated on user activity.
+- **Budget alerts**: every 3 hours (push notifications at 80% and 100%+ thresholds, aligned with the in-app `/api/budgets/alerts` `warning`/`critical` levels). Like the endpoint, the push compares against the effective limit (base + PRIOR-month rollover, via `getBudgetStatus`) and skips one-time budgets outside their `effective_month`. The in-app `info`/pace heuristic is intentionally not pushed (too noisy as a notification). **Deduped to at most one notification per category+severity per 24h** via `sentRecently(tag, 24)` (`routes/notifications.js`, backed by `notification_log`) — previously a category that stayed over budget re-logged a notification on every 3-hour tick for the rest of the month. Escalation (warn → over) still fires immediately because the two severities use distinct tags.
+- **Budget snapshot auto-trigger**: every 6 hours, `runBudgetSnapshot()`
+  (`routes/budgets.js`) snapshots the previous month (spending + rollover
+  amounts) so budget rollover advances automatically. Days 1–5 of a month
+  (`SNAPSHOT_REFRESH_DAYS`, APP_TIMEZONE) it RE-TAKES the prior month (DO
+  UPDATE) so charges dated the 29th–31st that post/sync on the 1st–3rd land in
+  its spend + rollover (FAN-7 — the snapshot used to freeze on the first tick
+  after midnight); after day 5 it only creates a missing snapshot (DO NOTHING),
+  the M5 catch-up for a month missed while the process slept. Gated on user
+  activity. Trade-off: a limit edited on days 1–5 also rewrites the prior
+  month's recorded limit/rollover.
 - **Bank auto-sync** (Phase A): every 1 hour, checks `auto_sync_enabled` and whether
   `auto_sync_interval_hours` has elapsed since `last_auto_sync_at`. When due, calls
   `syncAllTransactions()` (Teller then Plaid, one combined anomaly check) then
@@ -2689,10 +2760,12 @@ embedded mode).
   AI call — body is rendered from `insights_running_summary_json`.
 - **Daily digest**: every 1 hour, invokes `runDailyDigest()` in
   `routes/insights.js`. The helper bails if `daily_digest_enabled` is
-  false, dedupes via a 20-hour window from `last_daily_digest_at` (so
-  one digest per "day" lands regardless of clock-edge ticks), and skips
-  silently when `gatherWhatsNew(now - 24h)` returns zero counts (no
-  point mailing an empty "yesterday" digest). On send, fires the
+  false, returns `too_early` before 07:00 APP_TIMEZONE and
+  `already_sent_today` once the local date already has a send (AIN-15),
+  covers everything since the previous send (≤72h; first send 24h), and
+  skips silently when `gatherWhatsNew` returns zero counts. If the process
+  is only awake before 07:00 local that day, the digest is skipped and the
+  next one covers the gap. On send, fires the
   `daily_summary` webhook to Per-sistant. No AI call.
 - **Missed-job watchdog**: ~2 minutes after boot, then every 6 hours
   (activity-gated). Every scheduled interval above calls
@@ -2879,10 +2952,13 @@ SX3-pinned — the Sheets Income tab.
     Key Design Decision below. Always includes investments.
   Constants: `INCOME_PREDICATE`, `NOT_TRANSFER`, `SPLIT_AMOUNT`, `NOT_REIMBURSED`.
   `/api/savings-rate` calls `getMonthlyIncome` + `getMonthlySpending`;
-  `/api/cash-flow` uses `INCOME_PREDICATE`; `/api/budgets/alerts` and the
-  scheduled budget-alert push use `getCategorySpendingThisMonth`;
-  `/api/budgets/suggest` uses `getCategorySpendingForMonth` over the trailing 3
-  months; `/api/context-export` uses `getMonthlySpending` — so AI suggestions
+  `/api/cash-flow` uses `INCOME_PREDICATE`; `GET /api/budgets`,
+  `/api/budgets/alerts`, the AI insights prompt and the Ask budget tool use
+  `getBudgetStatus` (and the scheduled budget-alert push the same
+  prior-month-rollover rule over `getCategorySpendingThisMonth`, which is
+  the tz `currentMonth()`);
+  `/api/budgets/suggest` uses `getCategorySpendingForMonth` over the 3 previous
+  COMPLETE months (FAN-8); `/api/context-export` uses `getMonthlySpending` — so AI suggestions
   and the Claude-chat export see the same split-adjusted numbers as the
   dashboard. The spending-summary monthly-trend path still inlines equivalent
   SQL — any new financial endpoint should use this module instead of re-inlining.
@@ -3018,10 +3094,11 @@ SX3-pinned — the Sheets Income tab.
   amount is computed by `POST /api/budgets/snapshot` as `MAX(0, limit - spent)`
   and stored in `budget_snapshots` keyed by the month that just ended. The
   rollover that applies to month M is the unused budget from month M-1, so the
-  readers (`GET /api/budgets`, `GET /api/budgets/alerts`, and the scheduled
+  readers (`GET /api/budgets`, `GET /api/budgets/alerts`, the AI insights
+  prompt, the Ask budget tool — all via `getBudgetStatus` — and the scheduled
   budget-alert push) add the **prior** month's snapshot `rollover_amount` to the
   base `monthly_limit` to produce `effective_limit` — via `previousMonthKey()`
-  (FA-1). (They previously read the *current* month's snapshot, which doesn't
+  (FA-1; now in `financial-queries.js`, re-exported by budgets.js). (They previously read the *current* month's snapshot, which doesn't
   exist yet or holds this month's own circular underspend, so the carried-over
   amount was silently never applied.) One-time budgets (`budget_type = 'one_time'`) share the
   `UNIQUE(category)` constraint with recurring budgets — you can't have both
@@ -3085,8 +3162,9 @@ SX3-pinned — the Sheets Income tab.
   `gatherWhatsNew(since)` in `routes/whats-new.js` is the single source
   of "what changed since X". The HTTP `GET /api/whats-new` route calls
   it with the `last_dashboard_view_at` watermark for the dashboard
-  widget; `runDailyDigest()` in `routes/insights.js` calls it with
-  `now - 24h` for the daily email digest. Both surfaces always agree
+  widget; `runDailyDigest()` in `routes/insights.js` calls it with the
+  previous send time (≤72h back; 24h on a first send) for the daily email
+  digest. Both surfaces always agree
   on what counts as "new" because there's only one query. Any change
   to scope (e.g. capping txn count) lands in one place.
 - **Sliding-window shell session, idle window read from DB.** The shell
@@ -3516,7 +3594,7 @@ INV-28 | pgvector objects are created defensively (only if the `vector` extensio
 INV-29 | Retrieval is HYBRID (vector + keyword legs fused via Reciprocal Rank Fusion, dedupe on kind:id) — either leg failing degrades to the other alone; /query & /diagram degrade to sources-only / null when AI is off or unavailable | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js, apps/per-sistant/tests/rag-v2.test.js
 INV-30 | Embedding dimension (1024) matches chunks.embedding vector(1024); a provider/dimension change is a re-embed migration, not a config flip | Subsystem: Knowledge / RAG | Verify: code read services/embeddings.js EMBED_DIM
 INV-31 | embed_state content-hash skip prevents re-embedding unchanged sources | Subsystem: Knowledge / RAG | Verify: code read vault-sync.embedSource
-INV-32 | Answer cache keyed on query+model+corpus_version (notes+documents+facts+fact_verifications max(updated_at)+count — F14 folds in fact_verifications so verify/unverify invalidates), with a SEMANTIC fallback layer (query-embedding cosine >= 0.97, same model+corpus_version+TTL — RAG v2, db/019); a SEMANTIC hit returns sources_from_similar_query=true (the cached sources reflect the original query's retrieval and the answer's [n] links are tied to that ordering, so they're kept, not re-retrieved — the Knowledge page caveats it; F12); finance-grounded answers bypass both layers | Subsystem: Knowledge / RAG | Verify: tests/knowledge-cache.test.js + apps/per-sistant/tests/rag-v2.test.js + routes/rag.js useCache gate
+INV-32 | Answer cache keyed on query+model+corpus_version ("<APP_TIMEZONE date>|" + notes+documents+facts+fact_verifications max(updated_at)+count — F14 folds in fact_verifications so verify/unverify invalidates; the date prefix (KR-5) expires cached answers when a fact's valid_from/valid_to boundary passes, and vault re-syncs no longer bump updated_at on unchanged documents/facts), with a SEMANTIC fallback layer (query-embedding cosine >= 0.97, same model+corpus_version+TTL — RAG v2, db/019); a SEMANTIC hit returns sources_from_similar_query=true (the cached sources reflect the original query's retrieval and the answer's [n] links are tied to that ordering, so they're kept, not re-retrieved — the Knowledge page caveats it; F12); finance-grounded answers bypass both layers | Subsystem: Knowledge / RAG | Verify: tests/knowledge-cache.test.js + apps/per-sistant/tests/rag-v2.test.js + routes/rag.js useCache gate
 INV-33 | Vault sync is read-only (VAULT_GITHUB_TOKEN); capture writes only with the separate write-scoped VAULT_GITHUB_WRITE_TOKEN (400 until set) | Subsystem: Knowledge / RAG | Verify: tests/knowledge-capture.test.js
 INV-34 | Citations enabled all-or-none per request; incompatible with structured outputs (unused here) | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js (answerWithCitations)
 INV-35 | Cross-app finance grounding reads perfinPool read-only, only on finance queries, never an HTTP self-fetch (parallels INV-25) | Subsystem: Knowledge / RAG | Verify: tests/knowledge-crossapp.test.js
@@ -3547,6 +3625,8 @@ INV-69 | incomePredicate(alias) qualifies EVERY outer column reference with the 
 INV-70 | Recurring projections (detection next_expected, /api/forecast, /api/bill-calendar, /calendar.ics, the /api/cash-flow bill schedule, POST /api/subscriptions) step month-scale cadences (30/60/90/365) by CALENDAR MONTH via services/cadence.js, anchored on the last real charge with next_expected as the lower bound — never a fixed N×86400000 step; manual bills use ONE placement rule (manualBillOccurrences) on both the calendar and the ICS feed | Subsystem: Detection & Categorization | Verify: tests/scan-sept-batch4.test.js (DC-9 / DC-15 blocks)
 INV-71 | Detection never re-activates a series whose last charge is past the stale window (isStale, same window as the stale sweep), and never overwrites a user-set transfer_type (transfer_type_user_set) | Subsystem: Detection & Categorization | Verify: tests/scan-sept-batch4.test.js (DC-2 / DC-4 blocks)
 INV-72 | The Rent & Utilities ledger is single-payee: generation covers the trailing 24 months and never regenerates a period that already has a rent row (any payee) or a same-label utility row; a payee/label rename carries the stored rows over (planConfigUpdate) instead of creating new ones; ledger + split are scoped to the configured payee | Subsystem: Financial Analytics | Verify: tests/scan-sept-batch5.test.js (FAN-3 / FAN-4 blocks)
+INV-73 | Budget status has ONE definition — getBudgetStatus(pool, month) in financial-queries.js (spend via getCategorySpendingForMonth; effective_limit = monthly_limit + the PRIOR month's snapshot rollover when rollover_enabled; one-time budgets only in their effective_month). GET /api/budgets, /api/budgets/alerts, the insights prompt and the Ask budget tool call it; the Sheets Budget Status SQL mirrors it; no surface reads the bare monthly_limit as the limit | Subsystem: Financial Analytics | Verify: tests/scan-sept-batch6.test.js (AIN-6 block)
+INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
 ### Policy Configuration
 Policy threshold: 5/10

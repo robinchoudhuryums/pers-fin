@@ -35,7 +35,18 @@ to the "none in progress" state.
     - /api/stats "done" also excludes missed (same PB-10 counting fix).
   - **Open follow-ons:** see `.cycle/blocks/6-batch6-broad-implement.md`. Notably, a PRE-EXISTING Sheets Utilities-tab SQL error ("invalid UNION … ORDER BY clause") fails that tab on every sync.
   - **Operator:** none required. Migration 022 auto-runs. Setting APP_TIMEZONE is recommended.
-  - **Where I left off:** Batch 6 committed + pushed (no PR). NEXT: `/sync-docs` for Batch 6 (DOCUMENTATION UPDATES NEEDED in the block), then the next batch.
+  - **/sync-docs DONE (Batch 6):** CLAUDE.md:
+    - Budgets: the getBudgetStatus single helper (feature, alerts, rollover design, financial-queries list); runBudgetSnapshot refresh window (Scheduled Tasks); PATCH validation and complete-month suggestions (features + endpoints).
+    - Daily digest wall-clock gating (feature, DB note, Scheduled Tasks, aggregator design note).
+    - YoY through_day / consecutive years and the income-summary completed-month average.
+    - Sheets SHEETS_TZ windows/timestamp/effective-limit Budget Status, plus a known-issue note on the pre-existing Utilities-tab UNION ORDER BY failure.
+    - ICS overdue obligations on today.
+    - The APP_TIMEZONE surface list.
+    - projections.js addMonthsYm/Ymd and perfin-shared.js parseCalDate/localTodayStr.
+    - INV-32 date-prefixed corpus version; new INV-73 (getBudgetStatus) and INV-74 (Per-sistant recurrence anchor + missed).
+    - Test counts 1317/53.
+    apps/per-sistant/CLAUDE.md: rollMissedRecurring + local-midnight cron + missed semantics, anchor day + db/022, PD-4 on-time check, the APP_TIMEZONE consumers, KR-5 cache stamp + unchanged-row skip, 498 tests. README test counts + summary.
+  - **Where I left off:** Batch 6 + its docs committed and pushed (no PR). NEXT: the next broad-scan batch (or a fix for the Sheets Utilities-tab ORDER BY bug).
 
 - **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 5 DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-10-08). Batch 5 (Rent, Utilities &
