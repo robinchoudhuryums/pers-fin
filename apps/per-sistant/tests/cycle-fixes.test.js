@@ -236,7 +236,8 @@ describe("PB-7 — complete-recurring streak + next instance", () => {
     const client = {
       query: async (sql, params) => {
         if (/BEGIN|COMMIT|ROLLBACK/.test(sql)) return {};
-        if (/SELECT \* FROM todos WHERE id = \$1 FOR UPDATE/.test(sql)) return { rows: [todoRow] };
+        // PB-11 shares the lock with skip-recurring and skips trashed rows.
+        if (/SELECT \* FROM todos WHERE id = \$1 AND deleted_at IS NULL FOR UPDATE/.test(sql)) return { rows: [todoRow] };
         if (/UPDATE todos SET completed/.test(sql)) { captured.update = params; return {}; }
         if (/INSERT INTO todos/.test(sql)) { captured.insert = params; return { rows: [{ id: 99 }] }; }
         return { rows: [] };

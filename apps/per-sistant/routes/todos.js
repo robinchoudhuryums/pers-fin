@@ -3,7 +3,7 @@
 // ============================================================================
 
 const express = require("express");
-const { advanceRecurrence, recurrenceAnchorDay, ymdLocal, fireWebhooks, sendSlackNotification, runAutomations } = require("../helpers");
+const { recurrenceAnchorDay, ymdLocal, nextDueAfter, fireWebhooks, sendSlackNotification, runAutomations } = require("../helpers");
 const { todayStr } = require("./health");
 
 const { serverError } = require("../errors");
@@ -181,72 +181,19 @@ module.exports = function ({ pool, config }) {
   // ============================================================================
 
   router.post("/api/todos/:id/complete-recurring", async (req, res) => {
-    const client = await pool.connect();
     try {
-      await client.query("BEGIN");
-      const r = await client.query("SELECT * FROM todos WHERE id = $1 FOR UPDATE", [req.params.id]);
-      if (!r.rows.length) { await client.query("ROLLBACK"); return res.status(404).json({ error: "Not found." }); }
-      const todo = r.rows[0];
-      if (!todo.recurring || !todo.recurrence_rule) {
-        await client.query("ROLLBACK");
-        return res.status(400).json({ error: "Not a recurring task." });
-      }
-      if (todo.completed) { await client.query("ROLLBACK"); return res.status(400).json({ error: "Task already completed." }); }
-      // Calculate streak: check if completed on time (before or on due date).
-      // "Today" in APP_TIMEZONE (PD-4): the UTC date made a 6pm-Pacific
-      // completion on the due date count as the NEXT day and reset the streak.
-      // due_date read with local getters (node-pg DATE = local midnight).
-      const today = todayStr();
-      const isOnTime = !todo.due_date || today <= ymdLocal(new Date(todo.due_date));
-      let newStreak = isOnTime ? (todo.streak_count || 0) + 1 : 1;
-      let newBest = Math.max(newStreak, todo.best_streak || 0);
-      // Mark current as completed with streak info
-      await client.query("UPDATE todos SET completed = true, completed_at = now(), streak_count = $2, best_streak = $3, last_streak_date = $4 WHERE id = $1",
-        [todo.id, newStreak, newBest, today]);
-      // Calculate next due date using interval
-      const rule = todo.recurrence_rule;
-      const interval = todo.recurrence_interval || 1;
-      // The chain keeps its ORIGINAL day-of-month (PD-2 month-end safety).
-      const anchor = recurrenceAnchorDay(todo);
-      let nextDue = todo.due_date ? new Date(todo.due_date) : new Date();
-      nextDue = advanceRecurrence(nextDue, rule, interval, anchor);
-      // Create next instance with streak carried forward
-      const n = await client.query(
-        `INSERT INTO todos (title, description, priority, horizon, category, due_date, recurring, recurrence_rule, recurrence_interval, recurrence_parent_id, streak_count, best_streak, last_streak_date, recurrence_anchor_day)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
-        [todo.title, todo.description, todo.priority, todo.horizon, todo.category,
-         ymdLocal(nextDue), true, rule, interval, todo.recurrence_parent_id || todo.id,
-         newStreak, newBest, today, anchor]
-      );
-      await client.query("COMMIT");
-      fireWebhooks('todo_completed', todo).catch(() => {});
-      res.json({ completed: todo, next: n.rows[0], streak: newStreak, best_streak: newBest });
-    } catch (err) { await client.query("ROLLBACK").catch(() => {}); serverError(res, err); }
-    finally { client.release(); }
+      const out = await completeRecurringTodo(pool, req.params.id);
+      if (out.error) return res.status(out.status).json({ error: out.error });
+      res.json({ completed: out.completed, next: out.next, streak: out.streak, best_streak: out.best_streak });
+    } catch (err) { serverError(res, err); }
   });
 
   // Skip recurring task (mark skipped, create next without breaking streak)
   router.post("/api/todos/:id/skip-recurring", async (req, res) => {
     try {
-      const r = await pool.query("SELECT * FROM todos WHERE id = $1", [req.params.id]);
-      if (!r.rows.length) return res.status(404).json({ error: "Not found." });
-      const todo = r.rows[0];
-      if (!todo.recurring || !todo.recurrence_rule) return res.status(400).json({ error: "Not a recurring task." });
-      // Mark as completed but increment skip counter (streak preserved but not incremented)
-      await pool.query("UPDATE todos SET completed = true, completed_at = now(), skipped_count = COALESCE(skipped_count,0) + 1 WHERE id = $1", [todo.id]);
-      const rule = todo.recurrence_rule;
-      const interval = todo.recurrence_interval || 1;
-      const anchor = recurrenceAnchorDay(todo); // PD-2
-      let nextDue = todo.due_date ? new Date(todo.due_date) : new Date();
-      nextDue = advanceRecurrence(nextDue, rule, interval, anchor);
-      const n = await pool.query(
-        `INSERT INTO todos (title, description, priority, horizon, category, due_date, recurring, recurrence_rule, recurrence_interval, recurrence_parent_id, streak_count, best_streak, last_streak_date, skipped_count, recurrence_anchor_day)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
-        [todo.title, todo.description, todo.priority, todo.horizon, todo.category,
-         ymdLocal(nextDue), true, rule, interval, todo.recurrence_parent_id || todo.id,
-         todo.streak_count || 0, todo.best_streak || 0, todo.last_streak_date, (todo.skipped_count || 0) + 1, anchor]
-      );
-      res.json({ skipped: todo, next: n.rows[0] });
+      const out = await skipRecurringTodo(pool, req.params.id);
+      if (out.error) return res.status(out.status).json({ error: out.error });
+      res.json({ skipped: out.skipped, next: out.next });
     } catch (err) { serverError(res, err); }
   });
 
@@ -363,3 +310,83 @@ module.exports = function ({ pool, config }) {
 
   return router;
 };
+
+// ============================================================================
+// Recurring completion / skip — shared by the routes above and bulk complete
+// ============================================================================
+// Both run in one transaction with the row locked (FOR UPDATE) and refuse an
+// already-completed row, so a double-tap, a race with the midnight roll, or a
+// bulk + single click can't create two next instances (PS-11 / PB-11). The next
+// due date is caught up past today (nextDueAfter, PD-3).
+
+const INSERT_NEXT = `INSERT INTO todos (title, description, priority, horizon, category, due_date, recurring, recurrence_rule, recurrence_interval, recurrence_parent_id, streak_count, best_streak, last_streak_date, skipped_count, recurrence_anchor_day)
+  VALUES ($1,$2,$3,$4,$5,$6,true,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`;
+
+async function lockRecurring(client, id) {
+  const r = await client.query("SELECT * FROM todos WHERE id = $1 AND deleted_at IS NULL FOR UPDATE", [id]);
+  if (!r.rows.length) return { status: 404, error: "Not found." };
+  const todo = r.rows[0];
+  if (!todo.recurring || !todo.recurrence_rule) return { status: 400, error: "Not a recurring task." };
+  if (todo.completed) return { status: 400, error: "Task already completed." };
+  return { todo };
+}
+
+async function completeRecurringTodo(pool, id) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const lock = await lockRecurring(client, id);
+    if (lock.error) { await client.query("ROLLBACK"); return lock; }
+    const todo = lock.todo;
+    // Calculate streak: check if completed on time (before or on due date).
+    // "Today" in APP_TIMEZONE (PD-4): the UTC date made a 6pm-Pacific
+    // completion on the due date count as the NEXT day and reset the streak.
+    // due_date read with local getters (node-pg DATE = local midnight).
+    const today = todayStr();
+    const isOnTime = !todo.due_date || today <= ymdLocal(new Date(todo.due_date));
+    const newStreak = isOnTime ? (todo.streak_count || 0) + 1 : 1;
+    const newBest = Math.max(newStreak, todo.best_streak || 0);
+    await client.query("UPDATE todos SET completed = true, completed_at = now(), streak_count = $2, best_streak = $3, last_streak_date = $4 WHERE id = $1",
+      [todo.id, newStreak, newBest, today]);
+    // The chain keeps its ORIGINAL day-of-month (PD-2) and the next instance
+    // is due after today (PD-3).
+    const anchor = recurrenceAnchorDay(todo);
+    const nextDue = nextDueAfter(todo, today);
+    const n = await client.query(INSERT_NEXT,
+      [todo.title, todo.description, todo.priority, todo.horizon, todo.category,
+       ymdLocal(nextDue), todo.recurrence_rule, todo.recurrence_interval || 1, todo.recurrence_parent_id || todo.id,
+       newStreak, newBest, today, 0, anchor]); // skipped_count starts at 0 (the column default) as before
+    await client.query("COMMIT");
+    fireWebhooks('todo_completed', todo).catch(() => {});
+    return { completed: todo, next: n.rows[0], streak: newStreak, best_streak: newBest };
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally { client.release(); }
+}
+
+async function skipRecurringTodo(pool, id) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const lock = await lockRecurring(client, id);
+    if (lock.error) { await client.query("ROLLBACK"); return lock; }
+    const todo = lock.todo;
+    // Mark as completed but increment skip counter (streak preserved but not incremented)
+    await client.query("UPDATE todos SET completed = true, completed_at = now(), skipped_count = COALESCE(skipped_count,0) + 1 WHERE id = $1", [todo.id]);
+    const anchor = recurrenceAnchorDay(todo); // PD-2
+    const nextDue = nextDueAfter(todo, todayStr()); // PD-3
+    const n = await client.query(INSERT_NEXT,
+      [todo.title, todo.description, todo.priority, todo.horizon, todo.category,
+       ymdLocal(nextDue), todo.recurrence_rule, todo.recurrence_interval || 1, todo.recurrence_parent_id || todo.id,
+       todo.streak_count || 0, todo.best_streak || 0, todo.last_streak_date, (todo.skipped_count || 0) + 1, anchor]);
+    await client.query("COMMIT");
+    return { skipped: todo, next: n.rows[0] };
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally { client.release(); }
+}
+
+module.exports.completeRecurringTodo = completeRecurringTodo;
+module.exports.skipRecurringTodo = skipRecurringTodo;

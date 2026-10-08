@@ -9,7 +9,26 @@ to the "none in progress" state.
 
 ## Current Cycle
 
-- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 7 DONE** on branch
+- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 8 DONE** on branch
+  `claude/lucid-darwin-7r8e59` (2026-10-08). Batch 8 (schedulers & notifications) implemented, tested, pushed (no PR opened).
+  - **Completed:**
+    - PSC-1 (+DD-7): auto-sync reads sync_notifications_enabled; syncAllBalances returns accounts_changed (IS DISTINCT FROM CTE), so the "Auto-sync complete" gate fires only on real changes.
+    - PSC-3: budget alerts, weekly/daily digest, CSV reminder no longer activity-gated — watermarks + per-local-day settled memo; CSV reminder hourly with new last_csv_reminder_at.
+    - PSC-2: /api/keep-alive-schedule not counted as activity; keep-alive config cached 6h (invalidated by PATCH /api/settings).
+    - PSC-12: single-flight syncAllTransactions / syncAllBalances / runCategorize.
+    - DD-5/DD-6: whats-new baseline before the watermark's day + same-day current; account_type / is_debt / favorable; digest sign/colour fixes.
+    - PB-1: all notification-check types notify (filtered) + new in-page Reminders widget.
+    - PB-3: jobs refresh honors job_radar_enabled (?force=1 from the page).
+    - PB-11/PB-12/PD-3: shared locked completeRecurringTodo / skipRecurringTodo, nextDueAfter catch-up; bulk complete routes recurring ids through it.
+    - PD-8: one-row email claim per iteration.
+  - **Not finished (selected):** none.
+  - **Tests:** 1426/1426 (Perfin 908 + Per-sistant 518; 58 files). New tests/scan-sept-batch8.test.js (17) + apps/per-sistant/tests/scan-sept-batch8.test.js (13); none pass on old source. Real-PG checks of every changed query; migrations ×2; e2e 8/8.
+  - **Decisions:** budget alerts run 3-hourly while awake (Neon cost accepted); a concurrent manual sync/categorize shares the running result; daily digest settles on nothing_new; complete-recurring refuses trashed rows.
+  - **Open follow-ons:** see `.cycle/blocks/6-batch8-broad-implement.md` (notably keep-alive.yml still wakes Render 24/7).
+  - **Operator:** none required (column auto-migrates).
+  - **Where I left off:** Batch 8 committed and pushed (no PR). NEXT: /sync-docs for Batch 8, then the next broad-scan batch.
+
+- **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 7 DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-10-08). Batch 7 (AI insights & audit) implemented, tested, pushed (no PR opened).
   - **Completed:**
     - AIN-9: ID-keyed model prices (Haiku 4.5 $1/$5, Opus 4.6 $5/$25).
@@ -27,50 +46,6 @@ to the "none in progress" state.
   - **Model upgrade DONE** (commit 43cb82a, user request): Perfin haiku/sonnet/opus → claude-haiku-5-5 / claude-sonnet-5-5 / claude-opus-5-5; Per-sistant haiku/sonnet → the 5.5 models. New teller/services/claude.js (createToolCall: tool_choice auto + strict tool + one re-ask, usage summed; effortParams low/medium) because Opus/Sonnet 5.5 reject forced tool_choice; explicit effort + thinking headroom on every call; text read by block type; refusal handling; 5.5 pricing (Haiku long-prompt card). Tests 1396/1396 (56 files; +tests/model-upgrade.test.js, apps/per-sistant/tests/model-upgrade.test.js). Not exercised against the live API (no key in this environment); request bodies verified through the real SDK with a stubbed fetch.
   - **/sync-docs DONE (Batch 7 + model upgrade):** CLAUDE.md — architecture (reference-data model tiers/prices, new services/claude.js), test counts 1396/56 (Perfin 891 + Per-sistant 505) + new test files, tax report computed from transactions (feature, tax module, Sheets tab, export endpoint), MODEL_MAP, capped suggestions, anomaly LATERAL baseline, partial-month labels, unknown-limit utilization, model-call effort/max_tokens, cost tracking (ID-keyed rates, one spend reader, suggest/insight_empty), structured-summary preservation rules, audit attribution / generic names / complete-month baselines, weekly digest empty_summary + alert colours, POST /api/insights 502, env cap list, Current Status, AI Insights subsystem gains claude.js, INV-14/15/16 updated, NEW INV-75 (tax report from transactions) + INV-76 (no forced tool_choice; explicit effort). apps/per-sistant/CLAUDE.md — 5.5 models, thinking/effort/refusal handling, 5.5 cap pricing, 505 tests. READMEs — counts, model pricing. Subsystem paths 80/80 resolve. No new operator state.
   - **Where I left off:** Batch 7, the model upgrade and their docs are committed and pushed (no PR). NEXT: the next broad-scan batch.
-
-- **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 6 DONE** on branch
-  `claude/lucid-darwin-7r8e59` (2026-10-08). Batch 6 (dates, months &
-  budgets) implemented, tested, pushed (no PR opened).
-  - **Completed:**
-    - FAN-7: prior-month snapshot refreshed on days 1–5 via runBudgetSnapshot, then create-if-missing.
-    - AIN-6/SXE-4/WUI-5: one getBudgetStatus helper, effective limit everywhere incl. Ask, prompt, Budgets page and Sheets.
-    - FAN-8: suggestions use the 3 complete months.
-    - FAN-14: PATCH validation.
-    - FAN-13/SXE-12/PB-13/AIN-15: remaining UTC anchors moved to todayStr/currentMonth. Sheets is tz/whole-month. ICS keeps overdue rent on today. The daily digest sends once per local date at/after 07:00 and covers the time since the last send.
-    - WUI-2: parseCalDate / localTodayStr.
-    - FAN-15/PD-2: addMonthsYm/Ymd; Per-sistant recurrence_anchor_day (migration 022).
-    - PD-4/PB-10: tz on-time check; rollMissedRecurring in APP_TIMEZONE marks `missed`; analytics exclude it.
-    - KR-5: date-prefixed corpus version, $N::date facts filter, conditional doc upsert, unchanged-fact skip.
-    - DD-11: YoY through_day + consecutive years.
-  - **Not finished (selected):** none.
-  - **Tests:** 1317/1317 (Perfin 819 + Per-sistant 498; 53 files).
-    - New files: tests/scan-sept-batch6.test.js (41), tests/scan-sept-batch6-tz.test.js (6, forced APP_TIMEZONE), apps/per-sistant/tests/scan-sept-batch6.test.js (21). Old-code worktree run: 62 of 65 fail.
-    - Real-PG 16 checks of every changed query, plus both migrations run twice. e2e 8/8.
-  - **Decisions:**
-    - Refresh window = 5 days.
-    - Daily digest hour = 07:00 local, lookback cap 72h.
-    - The corpus version rolls at tz midnight (daily cache invalidation accepted).
-    - Missed recurring instances stay completed=true (they leave the active list) with missed=true and completed_at NULL.
-    - /api/stats "done" also excludes missed (same PB-10 counting fix).
-  - **Open follow-ons:** see `.cycle/blocks/6-batch6-broad-implement.md`. Notably, a PRE-EXISTING Sheets Utilities-tab SQL error ("invalid UNION … ORDER BY clause") fails that tab on every sync.
-  - **Operator:** none required. Migration 022 auto-runs. Setting APP_TIMEZONE is recommended.
-  - **/sync-docs DONE (Batch 6):** CLAUDE.md:
-    - Budgets: the getBudgetStatus single helper (feature, alerts, rollover design, financial-queries list); runBudgetSnapshot refresh window (Scheduled Tasks); PATCH validation and complete-month suggestions (features + endpoints).
-    - Daily digest wall-clock gating (feature, DB note, Scheduled Tasks, aggregator design note).
-    - YoY through_day / consecutive years and the income-summary completed-month average.
-    - Sheets SHEETS_TZ windows/timestamp/effective-limit Budget Status, plus a known-issue note on the pre-existing Utilities-tab UNION ORDER BY failure.
-    - ICS overdue obligations on today.
-    - The APP_TIMEZONE surface list.
-    - projections.js addMonthsYm/Ymd and perfin-shared.js parseCalDate/localTodayStr.
-    - INV-32 date-prefixed corpus version; new INV-73 (getBudgetStatus) and INV-74 (Per-sistant recurrence anchor + missed).
-    - Test counts 1317/53.
-    apps/per-sistant/CLAUDE.md: rollMissedRecurring + local-midnight cron + missed semantics, anchor day + db/022, PD-4 on-time check, the APP_TIMEZONE consumers, KR-5 cache stamp + unchanged-row skip, 498 tests. README test counts + summary.
-  - **Follow-on DONE:** fixed the Sheets Utilities-tab bug. `syncUtilities` wraps its UNION in a subquery before the expression ORDER BY. Postgres rejected `ORDER BY CASE …` directly on a UNION, so the tab failed on every sync.
-    - Verified on real PG 16: a full `syncAll` with a faked Google client fails with that error on the old source, and returns `errors: []` on the new one.
-    - The ordering is right: Active rows first, then by next_due, across both the detected and the manual branch.
-    - Pinned by a new test in tests/scan-sept-batch6.test.js. The CLAUDE.md known-issue note was replaced. Tests now 1318.
-  - **Where I left off:** Batch 6, its docs and the Utilities fix are committed and pushed (no PR). NEXT: the next broad-scan batch.
-
 
 ## Current Cycle (prior — broad-scan F1-F12 + T1-T4, cycle 5 reflected)
 

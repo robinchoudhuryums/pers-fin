@@ -5,6 +5,7 @@
 const express = require("express");
 
 const { serverError } = require("../errors");
+const { completeRecurringTodo } = require("./todos");
 
 module.exports = function ({ pool, config }) {
   const router = express.Router();
@@ -17,7 +18,22 @@ module.exports = function ({ pool, config }) {
       if (ids.length > MAX_BULK_IDS) return res.status(400).json({ error: `Too many IDs. Maximum ${MAX_BULK_IDS} allowed.` });
       if (!action) return res.status(400).json({ error: "action is required." });
       if (action === "complete") {
-        await pool.query("UPDATE todos SET completed = true, completed_at = now() WHERE id = ANY($1) AND deleted_at IS NULL", [ids]);
+        // Recurring todos go through the SAME path as the single "complete"
+        // button (PB-12) — a plain UPDATE ended the series (no next instance,
+        // no streak, no webhook), so a bulk-completed daily habit never came back.
+        const rec = await pool.query(
+          "SELECT id FROM todos WHERE id = ANY($1) AND deleted_at IS NULL AND completed = false AND recurring = true AND recurrence_rule IS NOT NULL",
+          [ids]
+        );
+        const recurringIds = rec.rows.map((r) => r.id);
+        for (const id of recurringIds) {
+          // A row another request just completed returns { error } — skip it.
+          await completeRecurringTodo(pool, id);
+        }
+        await pool.query(
+          "UPDATE todos SET completed = true, completed_at = now() WHERE id = ANY($1) AND deleted_at IS NULL AND NOT (id = ANY($2::int[]))",
+          [ids, recurringIds]
+        );
       } else if (action === "delete") {
         await pool.query("UPDATE todos SET deleted_at = now() WHERE id = ANY($1) AND deleted_at IS NULL", [ids]);
       } else if (action === "set_priority" && data?.priority && VALID_PRIORITIES.includes(data.priority)) {

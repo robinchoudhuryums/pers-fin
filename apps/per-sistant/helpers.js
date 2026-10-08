@@ -58,6 +58,23 @@ function advanceRecurrence(date, rule, interval, anchorDay) {
 // longer count it as done. The next instance is the first occurrence ON OR
 // AFTER today, carrying the chain's anchor day (PD-2). Claims each row
 // atomically (PS-11) so it can't race complete-recurring.
+// The next instance's due date when a recurring task is completed or skipped
+// on `today` ('YYYY-MM-DD', APP_TIMEZONE): one step from its due date, then
+// caught up past today (PD-3). Completing a daily task due Sep 20 on Sep 27
+// used to create an instance due Sep 21 — overdue on arrival, so the midnight
+// roll marked it missed and wiped the streak just earned. Returns a Date.
+function nextDueAfter(todo, today) {
+  const rule = todo.recurrence_rule;
+  const interval = todo.recurrence_interval || 1;
+  const anchor = recurrenceAnchorDay(todo);
+  let nextDue = advanceRecurrence(todo.due_date ? new Date(todo.due_date) : new Date(today + "T00:00:00"), rule, interval, anchor);
+  let catchupLimit = 366;
+  while (ymdLocal(nextDue) <= today && catchupLimit-- > 0) {
+    nextDue = advanceRecurrence(nextDue, rule, interval, anchor);
+  }
+  return nextDue;
+}
+
 async function rollMissedRecurring(db, today) {
   const r = await db.query(
     "SELECT * FROM todos WHERE deleted_at IS NULL AND recurring = true AND completed = false AND due_date < $1",
@@ -170,4 +187,4 @@ async function runAutomations(triggerType, entity, entityType) {
   } catch (err) { console.error("Automation error:", err.message); }
 }
 
-module.exports = { advanceRecurrence, recurrenceAnchorDay, ymdLocal, rollMissedRecurring, sendWebhook, fireWebhooks, sendSlackNotification, runAutomations };
+module.exports = { advanceRecurrence, recurrenceAnchorDay, ymdLocal, nextDueAfter, rollMissedRecurring, sendWebhook, fireWebhooks, sendSlackNotification, runAutomations };

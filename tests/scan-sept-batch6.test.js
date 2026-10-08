@@ -482,7 +482,11 @@ describe("FAN-13 — server defaults route through todayStr()", () => {
     assert.match(read("teller/routes/credit-scores.js"), /todayStr\(\)/);
     const housing = read("teller/routes/housing.js");
     assert.ok((housing.match(/todayStr\(\)/g) || []).length >= 3);
-    assert.match(read("teller/startup.js"), /new Date\(todayStr\(\) \+ "T00:00:00Z"\)\.getUTCDay\(\)/);
+    // The weekday is computed from the APP_TIMEZONE date via localDay() (PSC-3
+    // moved the tick into runWeeklyDigestTick; localDay() returns todayStr()).
+    const st = read("teller/startup.js");
+    assert.match(st, /new Date\(localDay\(\) \+ "T00:00:00Z"\)\.getUTCDay\(\)/);
+    assert.match(st, /function localDay\(\) \{ return require\("\.\/services\/financial-queries"\)\.todayStr\(\); \}/);
   });
 });
 

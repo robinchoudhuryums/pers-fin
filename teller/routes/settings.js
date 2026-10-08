@@ -265,6 +265,11 @@ router.patch("/api/settings", async (req, res) => {
     if (invalidateShellIdleCache) {
       try { const inv = req.app.get("shellAuthInvalidator"); if (inv) inv(); } catch {}
     }
+    // The keep-alive schedule is served from a cache (PSC-2); drop it when a
+    // keep_alive_* field changed so the next probe sees the new schedule.
+    if (Object.keys(req.body || {}).some(k => k.startsWith("keep_alive_"))) {
+      try { require("../services/keep-alive").invalidateKeepAliveCache(); } catch {}
+    }
     res.json(result.rows[0]);
   } catch (err) {
     console.error("settings error:", err.message);

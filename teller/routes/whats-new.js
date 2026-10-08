@@ -70,15 +70,20 @@ async function gatherWhatsNew(since) {
        LIMIT $2`,
       [since, NEW_NOTIF_LIMIT]
     ),
-    // For each account that has a snapshot before AND on/after the
-    // watermark, compute the delta. CTE picks the latest snapshot at or
-    // before `since` (the baseline) and the latest overall (the current).
+    // For each account that has a snapshot before the watermark's day AND one
+    // on/after it, compute the delta. The baseline is the latest snapshot dated
+    // BEFORE the watermark's day and the current may be from that same day
+    // (DD-5): snapshots are one row per account per day, overwritten by every
+    // later sync that day, so a "baseline ≤ watermark day / current > watermark
+    // day" pair silently dropped a same-day change (a 2pm paycheck after an 8am
+    // view) — and by the next day it was already in the baseline, so it never
+    // showed. Trade-off: a change earlier on the watermark's own day can repeat.
     pool.query(
       `WITH baselines AS (
          SELECT DISTINCT ON (source, source_id)
                 source, source_id, balance AS baseline_balance
          FROM account_balance_snapshots
-         WHERE snapshot_date <= $1::date
+         WHERE snapshot_date < $1::date
          ORDER BY source, source_id, snapshot_date DESC
        ),
        currents AS (
@@ -91,12 +96,15 @@ async function gatherWhatsNew(since) {
        SELECT c.source, c.source_id, c.current_date,
               b.baseline_balance, c.current_balance,
               COALESCE(la.name, ia.name) AS account_name,
+              -- DD-6: the account type decides whether an increase is good
+              -- (assets) or bad (credit / loan balances are amounts owed).
+              CASE WHEN c.source = 'investment' THEN 'investment' ELSE la.type END AS account_type,
               (c.current_balance - b.baseline_balance) AS delta
        FROM currents c
        JOIN baselines b ON b.source = c.source AND b.source_id = c.source_id
        LEFT JOIN linked_accounts     la ON c.source = 'linked'     AND la.id = c.source_id
        LEFT JOIN investment_accounts ia ON c.source = 'investment' AND ia.id = c.source_id
-       WHERE c.current_date > $1::date
+       WHERE c.current_date >= $1::date
          AND ABS(c.current_balance - b.baseline_balance) >= 0.01
          -- Drop the Plaid brokerage phantom: a brokerage linked via the combined
          -- flow lives in BOTH linked_accounts and investment_accounts, so without
@@ -122,13 +130,21 @@ async function gatherWhatsNew(since) {
     transactions: newTxns.rows,
     subscriptions: newSubs.rows,
     notifications: newNotifs.rows,
-    balance_changes: balanceWindow.rows.map(r => ({
-      account_name: r.account_name,
-      source: r.source,
-      baseline_balance: parseFloat(r.baseline_balance),
-      current_balance: parseFloat(r.current_balance),
-      delta: parseFloat(r.delta),
-    })),
+    balance_changes: balanceWindow.rows.map(r => {
+      const delta = parseFloat(r.delta);
+      const isDebt = r.account_type === "credit" || r.account_type === "loan";
+      return {
+        account_name: r.account_name,
+        source: r.source,
+        account_type: r.account_type || null,
+        is_debt: isDebt,
+        // Paying a card/loan down (balance owed ↓) is the GOOD direction (DD-6).
+        favorable: isDebt ? delta <= 0 : delta >= 0,
+        baseline_balance: parseFloat(r.baseline_balance),
+        current_balance: parseFloat(r.current_balance),
+        delta,
+      };
+    }),
   };
 }
 

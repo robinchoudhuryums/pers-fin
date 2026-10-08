@@ -6,6 +6,20 @@ const { pool } = require("./database");
 
 let keepAliveInterval = null;
 
+// PSC-2: the keep-alive schedule is read by keep-alive.yml every 14 minutes and
+// by the self-ping below. Serving it from an in-memory cache keeps those probes
+// from querying (and so waking) Neon around the clock. PATCH /api/settings
+// invalidates it, so a schedule change still applies on the next probe.
+const KEEP_ALIVE_CACHE_MS = 6 * 60 * 60 * 1000;
+let _keepAliveCache = null; // { config, at }
+async function getKeepAliveConfigCached() {
+  if (_keepAliveCache && Date.now() - _keepAliveCache.at < KEEP_ALIVE_CACHE_MS) return _keepAliveCache.config;
+  const config = await loadKeepAliveConfig();
+  _keepAliveCache = { config, at: Date.now() };
+  return config;
+}
+function invalidateKeepAliveCache() { _keepAliveCache = null; }
+
 async function loadKeepAliveConfig() {
   try {
     const result = await pool.query(
@@ -40,7 +54,7 @@ function startKeepAlive(port) {
     : `http://localhost:${port}/health`;
   const INTERVAL = 14 * 60 * 1000; // 14 minutes
   keepAliveInterval = setInterval(async () => {
-    const config = await loadKeepAliveConfig();
+    const config = await getKeepAliveConfigCached();
     if (!config.keep_alive_enabled) return;
     if (!isWithinActiveHours(config.keep_alive_start, config.keep_alive_end, config.keep_alive_timezone)) {
       return;
@@ -54,4 +68,4 @@ function startKeepAlive(port) {
   keepAliveInterval.unref(); // Don't prevent process exit
 }
 
-module.exports = { loadKeepAliveConfig, isWithinActiveHours, startKeepAlive };
+module.exports = { loadKeepAliveConfig, getKeepAliveConfigCached, invalidateKeepAliveCache, isWithinActiveHours, startKeepAlive };

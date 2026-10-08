@@ -37,7 +37,7 @@ const morgan = require("morgan");
 // --- Services ---
 const { pool, runMigrations } = require("./services/database");
 const { TELLER_APP_ID, TELLER_ENV } = require("./services/teller-api");
-const { startKeepAlive, loadKeepAliveConfig } = require("./services/keep-alive");
+const { startKeepAlive, getKeepAliveConfigCached } = require("./services/keep-alive");
 
 // --- Auth config ---
 const SESSION_PASSWORD = process.env.SESSION_PASSWORD;
@@ -74,10 +74,13 @@ app.use((req, res, next) => {
   res.locals.basePath = req.baseUrl || "";
   res.locals.embedded = !!req.app.get("embedded");
   // Touch the idle-gate so background jobs know a user is active.
-  // Static assets and health checks don't count — only real API /
-  // page requests keep the gate open.
+  // Static assets, health checks and the keep-alive.yml schedule probe don't
+  // count — only real API / page requests keep the gate open. (The probe runs
+  // every 14 min, 24/7 — counting it made the idle-gate permanently "active",
+  // so Neon never suspended and every gated job ran around the clock, PSC-2.)
   if (!req.path.endsWith(".css") && !req.path.endsWith(".js") &&
-      !req.path.endsWith(".svg") && req.path !== "/health") {
+      !req.path.endsWith(".svg") && req.path !== "/health" &&
+      req.path !== "/api/keep-alive-schedule") {
     const { touchActivity } = require("./startup");
     touchActivity();
   }
@@ -341,7 +344,8 @@ app.get("/health", (_req, res) => {
 // Keep-alive schedule (public, no auth — used by external cron to check hours)
 app.get("/api/keep-alive-schedule", async (_req, res) => {
   try {
-    const config = await loadKeepAliveConfig();
+    // Cached (PSC-2) — the 14-minute probe must not query Neon each time.
+    const config = await getKeepAliveConfigCached();
     res.json({
       enabled: config.keep_alive_enabled,
       start: config.keep_alive_start,

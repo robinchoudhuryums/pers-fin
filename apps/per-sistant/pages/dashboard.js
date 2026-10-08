@@ -45,6 +45,17 @@ ${navBar("/")}
       <div class="top-cards" id="cards"></div>
     </div>
 
+    <!-- Reminders (PB-1): every notification-check result, in-page — for users
+         who never granted browser Notification permission. -->
+    <div class="dash-widget" data-widget="reminders" draggable="true">
+      <div id="reminders-section" style="display:none;margin-bottom:20px;">
+        <div class="section">
+          <h2>Reminders</h2>
+          <div id="reminders-content"></div>
+        </div>
+      </div>
+    </div>
+
     <!-- AI Daily Briefing -->
     <div class="dash-widget" data-widget="briefing" draggable="true">
       <div id="briefing-section" style="display:none;margin-bottom:20px;">

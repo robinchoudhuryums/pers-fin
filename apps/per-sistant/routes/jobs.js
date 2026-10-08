@@ -610,8 +610,19 @@ module.exports = function ({ pool }) {
   const router = express.Router();
 
   // Manual refresh trigger (also hit by the weekly cron + the Actions backstop).
-  router.post("/api/jobs/refresh", async (_req, res) => {
+  // Honors job_radar_enabled like the in-process cron (PB-3): the job-radar.yml
+  // backstop called this every Monday even with the feature OFF, ingesting and
+  // Voyage-embedding listings and running cap-charged legitimacy passes. The
+  // page's own "Refresh" button sends ?force=1 (an explicit user action).
+  router.post("/api/jobs/refresh", async (req, res) => {
     try {
+      const force = req.query.force === "1" || req.query.force === "true";
+      if (!force) {
+        const s = await pool.query("SELECT job_radar_enabled FROM user_settings WHERE id = 1");
+        if (!s.rows.length || !s.rows[0].job_radar_enabled) {
+          return res.json({ ok: true, skipped: "disabled" });
+        }
+      }
       const result = await runRefresh(pool, {});
       res.json({ ok: true, ...result });
     } catch (err) { serverError(res, err); }

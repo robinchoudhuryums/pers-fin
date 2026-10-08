@@ -662,6 +662,10 @@ async function runMigrations() {
     // 20-hour gate from last_daily_digest_at.
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS daily_digest_enabled BOOLEAN NOT NULL DEFAULT false");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_daily_digest_at TIMESTAMPTZ");
+    // PSC-3: watermark for the CSV-import reminder (hourly tick, ≤ 1 per 24h,
+    // survives restarts — it used to be a 24-hour setInterval that needed 24h
+    // of continuous uptime and essentially never fired).
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_csv_reminder_at TIMESTAMPTZ");
 
     // ---- Self-healing reconcile watermark ----
     // Tracks the last time the trailing-window backfill (POST /api/sync/reconcile

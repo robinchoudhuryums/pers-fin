@@ -75,7 +75,18 @@ let catProgress = { running: false, phase: null, by_rules: 0, by_teller_map: 0, 
 //   { ok: false, status: 501|429|500, error }            — early bail
 //   { ok: true, categorized, categorized_by_rules, ... } — normal result
 // The route handler maps this to an HTTP response.
-async function runCategorize() {
+// Single-flight (PSC-12): concurrent callers share ONE in-flight run instead of
+// selecting the same user_category IS NULL rows twice and sending the same batch
+// to Claude twice under the check-then-charge cap (the insights chain and the
+// bank auto-sync both call it on the same tick; a manual click can overlap).
+let _runCategorizeInFlight = null;
+function runCategorize() {
+  if (!_runCategorizeInFlight) {
+    _runCategorizeInFlight = runCategorizeOnce().finally(() => { _runCategorizeInFlight = null; });
+  }
+  return _runCategorizeInFlight;
+}
+async function runCategorizeOnce() {
   if (!Anthropic || !process.env.ANTHROPIC_API_KEY) {
     return { ok: false, status: 501, error: "Set ANTHROPIC_API_KEY to enable ML categorization." };
   }

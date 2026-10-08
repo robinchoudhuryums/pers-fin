@@ -2188,11 +2188,13 @@
           html.push('<div><strong style="font-size:12px;color:var(--text-secondary);">Balance changes</strong>');
           for (var i = 0; i < Math.min(5, data.balance_changes.length); i++) {
             var bc = data.balance_changes[i];
-            var sgn = bc.delta >= 0 ? '+' : '';
-            var col = bc.delta >= 0 ? 'var(--green)' : 'var(--red)';
+            var sgn = bc.delta >= 0 ? '+' : '-';
+            // Card/loan balances are amounts OWED — an increase is bad (DD-6).
+            var good = (typeof bc.favorable === 'boolean') ? bc.favorable : bc.delta >= 0;
+            var col = good ? 'var(--green)' : 'var(--red)';
             html.push('<div style="font-size:12px;color:var(--text-muted);">' +
               esc(bc.account_name || ('Account #' + bc.source_id)) +
-              ' <span style="color:' + col + ';">' + sgn + '$' + Math.abs(bc.delta).toFixed(2) + '</span>' +
+              ' <span style="color:' + col + ';">' + sgn + '$' + Math.abs(bc.delta).toFixed(2) + (bc.is_debt ? ' owed' : '') + '</span>' +
               ' <span style="color:var(--text-muted);">($' + bc.baseline_balance.toFixed(2) + ' → $' + bc.current_balance.toFixed(2) + ')</span>' +
             '</div>');
           }

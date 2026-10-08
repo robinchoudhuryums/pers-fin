@@ -1542,6 +1542,7 @@ module.exports.renderDailyDigestEmail = renderDailyDigestEmail;
 module.exports.generateInsights = generateInsights;
 module.exports.runWeeklyDigest = runWeeklyDigest;
 module.exports.runDailyDigest = runDailyDigest;
+module.exports.DAILY_DIGEST_HOUR = DAILY_DIGEST_HOUR; // startup.js skips pre-send-hour ticks without a DB read (PSC-3)
 module.exports.sanitizeForPrompt = sanitizeForPrompt; // exported for testing (T2)
 module.exports.sanitizeStructuredSummary = sanitizeStructuredSummary; // exported for testing (AIN-8)
 module.exports.INSIGHT_TOOL = INSIGHT_TOOL;

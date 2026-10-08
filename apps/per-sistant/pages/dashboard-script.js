@@ -238,21 +238,24 @@ async function load() {
   } catch {}
 
   fetch('/api/notifications/check').then(r=>r.json()).then(d => {
-    if (d.notifications && d.notifications.length && 'Notification' in window && Notification.permission === 'granted') {
-      var important = d.notifications.filter(n =>
-        n.type === 'overdue' ||
-        n.type === 'streak_at_risk' ||
-        (n.type === 'fact_upcoming' && n.days_away != null && n.days_away <= 7)
-      );
+    var list = (d && d.notifications) || [];
+    // In-page list (PB-1): every type the check computes, so note reminders,
+    // habit streaks, rent/utilities and Job Radar reach users who never
+    // granted browser Notification permission.
+    renderReminders(list);
+    if (list.length && 'Notification' in window && Notification.permission === 'granted') {
+      // Browser notifications: the time-sensitive types. Before PB-1 only
+      // overdue / streak_at_risk / near facts fired; note reminders, habit
+      // streaks, rent due, Job Radar and due-today were computed and dropped.
+      var important = list.filter(isImportantReminder);
       // Per-notification dedup ledger + global snooze (see helpers above) so the
-      // same overdue/streak item doesn't re-fire a browser notification on every
-      // dashboard load. Cap at 3 actual fires per load.
+      // same item doesn't re-fire a browser notification on every dashboard
+      // load. Cap at 3 actual fires per load.
       var fired = 0;
       important.forEach(n => {
         if (fired >= 3) return;
         if (!shouldNotifyReminder(n)) return;
-        var prefix = n.type==='overdue' ? 'Overdue: ' : n.type==='streak_at_risk' ? 'Streak at risk: ' : 'Upcoming: ';
-        new Notification('Per-sistant', { body: prefix+n.title, icon: BP+'/android-chrome-192x192.png' });
+        new Notification('Per-sistant', { body: reminderPrefix(n)+n.title, icon: BP+'/android-chrome-192x192.png' });
         markReminderNotified(n);
         fired++;
       });
@@ -281,8 +284,50 @@ async function load() {
 // "Ask" button in the top bar (global popover, available on every page).
 
 // Widget customization
-var widgetNames = {search:'Search',cards:'Stats Cards',briefing:'AI Briefing',suggestions:'Smart Suggestions',tasks:'Task Overview',upcoming_emails:'Upcoming & Emails',mini_cal:'Mini Calendar',perfin:'Perfin',shortcuts:'Shortcuts'};
-var dashLayout = {widgets:['search','cards','briefing','suggestions','tasks','upcoming_emails','mini_cal','perfin','shortcuts'],hidden:[]};
+// ---------------------------------------------------------------------------
+// Notification-check surfaces (PB-1)
+// ---------------------------------------------------------------------------
+var REMINDER_PREFIX = {
+  overdue: 'Overdue: ', due_today: 'Due today: ', streak_at_risk: 'Streak at risk: ',
+  habit_streak_at_risk: 'Habit streak at risk: ', reminder: 'Reminder: ',
+  fact_upcoming: 'Upcoming: ', housing_due: '', job_radar: ''
+};
+function reminderPrefix(n) { return REMINDER_PREFIX[n.type] != null ? REMINDER_PREFIX[n.type] : ''; }
+function isImportantReminder(n) {
+  if (n.type === 'overdue' || n.type === 'due_today' || n.type === 'streak_at_risk' ||
+      n.type === 'habit_streak_at_risk' || n.type === 'reminder' || n.type === 'job_radar') return true;
+  if (n.type === 'fact_upcoming') return n.days_away != null && n.days_away <= 7;
+  // Rent: only once it is due, overdue or within 3 days (an upcoming balance
+  // weeks out is shown in the in-page list, not pushed).
+  if (n.type === 'housing_due') return n.status === 'due_today' || n.status === 'overdue' || (n.days_away != null && n.days_away <= 3);
+  return false;
+}
+function reminderHref(n) {
+  if (n.entity === 'todo') return BP + '/todos';
+  if (n.entity === 'note') return BP + '/notes';
+  if (n.entity === 'habit') return BP + '/health';
+  if (n.entity === 'fact') return BP + '/knowledge';
+  if (n.entity === 'job') return BP + '/jobs';
+  if (n.entity === 'housing') return (window.PERFIN_URL || '/perfin') + '/housing';
+  return null;
+}
+function renderReminders(list) {
+  var section = document.getElementById('reminders-section');
+  var box = document.getElementById('reminders-content');
+  if (!section || !box) return;
+  if (!list.length) { section.style.display = 'none'; return; }
+  box.innerHTML = list.slice(0, 12).map(function(n) {
+    var href = reminderHref(n);
+    var label = esc(reminderPrefix(n) + n.title);
+    return '<div class="todo-item"><div class="todo-content"><div class="todo-title">' +
+      (href ? '<a href="' + escAttr(href) + '">' + label + '</a>' : label) +
+      '</div></div></div>';
+  }).join('') + (list.length > 12 ? '<div class="empty-msg">+' + (list.length - 12) + ' more</div>' : '');
+  section.style.display = 'block';
+}
+
+var widgetNames = {search:'Search',cards:'Stats Cards',reminders:'Reminders',briefing:'AI Briefing',suggestions:'Smart Suggestions',tasks:'Task Overview',upcoming_emails:'Upcoming & Emails',mini_cal:'Mini Calendar',perfin:'Perfin',shortcuts:'Shortcuts'};
+var dashLayout = {widgets:['search','cards','reminders','briefing','suggestions','tasks','upcoming_emails','mini_cal','perfin','shortcuts'],hidden:[]};
 var wdragSrcWidget = null;
 
 async function loadLayout() {
@@ -339,7 +384,7 @@ function toggleCustomize() {
 }
 
 function resetLayout() {
-  dashLayout = {widgets:['search','cards','briefing','suggestions','tasks','upcoming_emails','mini_cal','perfin','shortcuts'],hidden:[]};
+  dashLayout = {widgets:['search','cards','reminders','briefing','suggestions','tasks','upcoming_emails','mini_cal','perfin','shortcuts'],hidden:[]};
   applyLayout();
   saveLayout();
 }

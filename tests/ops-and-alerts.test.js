@@ -201,7 +201,12 @@ describe("small fry", () => {
     const jobHealth = require("../teller/services/job-health");
     const H = 60 * 60 * 1000;
     assert.equal(jobHealth.thresholdMs("bank-auto-sync"), 36 * H, "hourly job → 36h floor");
-    assert.equal(jobHealth.thresholdMs("csv-reminder"), 96 * H, "24h job → 4× interval");
+    // csv-reminder moved to an hourly watermark-gated tick (PSC-3), so scale
+    // is checked on a synthetic 24h job.
+    assert.equal(jobHealth.thresholdMs("csv-reminder"), 36 * H, "hourly tick → 36h floor");
+    jobHealth.JOB_INTERVALS_MS["__daily_test_job"] = 24 * H;
+    try { assert.equal(jobHealth.thresholdMs("__daily_test_job"), 96 * H, "24h job → 4× interval"); }
+    finally { delete jobHealth.JOB_INTERVALS_MS["__daily_test_job"]; }
   });
 });
 

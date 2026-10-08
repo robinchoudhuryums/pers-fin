@@ -544,7 +544,17 @@ async function recordSyncResult(parts) {
 // Returns { enrollments_synced, transactions_added (combined), errors?,
 //           teller, plaid } — the top-level fields keep the legacy Teller-only
 // response keys the UI reads.
-async function syncAllTransactions() {
+// Single-flight (PSC-12): concurrent callers share ONE in-flight run instead of
+// running Teller + Plaid syncs twice at once (insights chain, bank auto-sync,
+// POST /api/sync and daily-sync.yml can overlap).
+let _syncAllTransactionsInFlight = null;
+function syncAllTransactions() {
+  if (!_syncAllTransactionsInFlight) {
+    _syncAllTransactionsInFlight = syncAllTransactionsOnce().finally(() => { _syncAllTransactionsInFlight = null; });
+  }
+  return _syncAllTransactionsInFlight;
+}
+async function syncAllTransactionsOnce() {
   let teller;
   try {
     teller = await syncAllEnrollments({ skipAnomaly: true });
@@ -1034,7 +1044,17 @@ router.patch("/api/accounts/:id", async (req, res) => {
 // syncAllBalances — in-process balance refresh for all connected Teller
 // enrollments. Used by both POST /api/sync-balances and the scheduled
 // auto-sync task in server.js.
-async function syncAllBalances() {
+// Single-flight (PSC-12): concurrent callers share ONE in-flight run instead of
+// double-fetching every Teller balance when the auto-sync and a manual
+// "Sync Balances" / daily-sync.yml call overlap.
+let _syncAllBalancesInFlight = null;
+function syncAllBalances() {
+  if (!_syncAllBalancesInFlight) {
+    _syncAllBalancesInFlight = syncAllBalancesOnce().finally(() => { _syncAllBalancesInFlight = null; });
+  }
+  return _syncAllBalancesInFlight;
+}
+async function syncAllBalancesOnce() {
   const enrollments = await pool.query(
     `SELECT id, enrollment_id, institution_name,
             pgp_sym_decrypt(access_token_enc, $1) AS access_token
@@ -1042,7 +1062,7 @@ async function syncAllBalances() {
     [ENCRYPTION_PASSPHRASE]
   );
 
-  let updated = 0;
+  let updated = 0, changed = 0;
   let registered = 0;
   const errors = [];
 
@@ -1101,16 +1121,28 @@ async function syncAllBalances() {
           // RETURNING gets the linked_accounts.id we need for the snapshot
           // FK without a second SELECT round-trip. The snapshot UPSERT keeps
           // intra-day re-syncs to one row per account per day.
+          // `changed` compares against the PRE-update values (the CTE reads the
+          // statement's snapshot) at the column's 2-decimal precision, so a
+          // re-fetch of an unchanged balance isn't reported as activity
+          // (PSC-1 / DD-7: every Teller fetch counted, so "Auto-sync complete"
+          // was pushed on every run).
           const updateResult = await pool.query(
-            `UPDATE linked_accounts
+            `WITH prev AS (
+               SELECT id, available_balance, current_balance FROM linked_accounts WHERE account_id = $3
+             )
+             UPDATE linked_accounts la
              SET available_balance = $1, current_balance = $2, balance_updated_at = now()
-             WHERE account_id = $3
-             RETURNING id`,
+             FROM prev
+             WHERE la.id = prev.id
+             RETURNING la.id,
+               (prev.available_balance IS DISTINCT FROM ROUND($1::numeric, 2)
+                OR prev.current_balance IS DISTINCT FROM ROUND($2::numeric, 2)) AS changed`,
             [availNum, ledgerNum, acct.id]
           );
           // Count only rows that actually matched (DD-9: an unknown account
           // matched 0 rows but was still counted).
           if (updateResult.rows.length) updated++;
+          if (updateResult.rows[0] && updateResult.rows[0].changed) changed++;
           const linkedAcctId = updateResult.rows[0]?.id;
           if (linkedAcctId) {
             const dailyBalance = ledgerNum !== null ? ledgerNum : availNum;
@@ -1155,6 +1187,9 @@ async function syncAllBalances() {
   }
   return {
     accounts_updated: updated,
+    // Accounts whose balance actually moved — the auto-sync "anything changed?"
+    // notification gate reads this, not accounts_updated (PSC-1).
+    accounts_changed: changed,
     accounts_registered: registered || undefined,
     errors: errors.length > 0 ? errors : undefined,
   };

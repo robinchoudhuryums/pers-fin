@@ -123,16 +123,25 @@ async function processScheduledEmails() {
     // LOCKED claims each row so no other tick can pick it up; we revert to
     // 'failed' if the actual send throws. ('sending' isn't in the status CHECK
     // constraint, so we claim straight to 'sent' — at-most-once delivery.)
-    const r = await pool.query(
-      `UPDATE emails SET status = 'sent', sent_at = now()
-       WHERE id IN (
-         SELECT id FROM emails
-         WHERE deleted_at IS NULL AND status = 'scheduled' AND scheduled_at <= now()
-         FOR UPDATE SKIP LOCKED
-       )
-       RETURNING *`
-    );
-    for (const email of r.rows) {
+    // ONE row per claim (PD-8): claiming the whole due batch at once meant a
+    // sleep / redeploy (SIGTERM) partway through left every not-yet-sent row
+    // marked 'sent' — reported delivered, never sent. Claiming per iteration
+    // shrinks the loss window to the single in-flight send.
+    const MAX_PER_RUN = 100;
+    for (let n = 0; n < MAX_PER_RUN; n++) {
+      const r = await pool.query(
+        `UPDATE emails SET status = 'sent', sent_at = now()
+         WHERE id = (
+           SELECT id FROM emails
+           WHERE deleted_at IS NULL AND status = 'scheduled' AND scheduled_at <= now()
+           ORDER BY scheduled_at, id
+           LIMIT 1
+           FOR UPDATE SKIP LOCKED
+         )
+         RETURNING *`
+      );
+      if (!r.rows.length) break;
+      const email = r.rows[0];
       try {
         const transporter = getSmtpTransporter();
         const mail = {
