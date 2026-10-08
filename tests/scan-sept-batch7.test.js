@@ -68,8 +68,7 @@ describe("AIN-9 — model prices keyed by model ID", () => {
     assert.ok(Math.abs(c - 6) < 1e-9, String(c));
   });
   it("the family table resolves to the MODEL_MAP model's rates", () => {
-    assert.equal(ref.MODEL_COST_PER_M.opus.input, 5);
-    assert.equal(ref.MODEL_COST_PER_M.haiku.output, 5);
+    for (const fam of ["haiku", "sonnet", "opus"]) assert.equal(ref.MODEL_COST_PER_M[fam], ref.MODEL_RATES_BY_ID[ref.MODEL_MAP[fam]]);
   });
 });
 

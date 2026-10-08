@@ -57,7 +57,7 @@ ${navBar("/settings")}
     <h2>AI Features</h2>
     <p style="font-size:12px;color:var(--muted);margin-bottom:16px;" id="ai-status"></p>
     <div id="ai-models-section" style="display:none;">
-      <p style="font-size:11px;color:var(--muted);margin-bottom:16px;">Choose a model for each AI feature. Sonnet is smarter but ~5× more expensive than Haiku. Set to Off to disable.</p>
+      <p style="font-size:11px;color:var(--muted);margin-bottom:16px;">Choose a model for each AI feature. Sonnet is smarter but ~20× more expensive than Haiku. Set to Off to disable.</p>
       <div style="display:grid;gap:12px;">
         <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--line);">
           <div><div style="font-size:13px;">Email Drafting</div><div style="font-size:10px;color:var(--muted);">AI-compose emails from a prompt</div></div>

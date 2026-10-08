@@ -274,7 +274,10 @@ router.post("/api/ask", async (req, res) => {
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
       const msg = await client.messages.create({
         model: modelId,
-        max_tokens: 1024,
+        // Room for adaptive thinking (5.5 models think by default; billed as
+        // output) at the "analyze" effort level.
+        max_tokens: 4096,
+        ...require("../services/claude").effortParams("analyze"),
         system,
         tools: TOOLS,
         messages,

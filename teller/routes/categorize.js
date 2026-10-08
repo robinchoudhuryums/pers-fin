@@ -6,6 +6,7 @@ const express = require("express");
 const router = express.Router();
 const { pool } = require("../services/database");
 const { MODEL_MAP, estimateCostUsd, estimateCostGranular } = require("../data/reference-data");
+const { createToolCall, effortParams } = require("../services/claude");
 
 let Anthropic;
 try {
@@ -243,13 +244,16 @@ async function runCategorize() {
     const categorizeTool = {
       name: "categorize_transactions",
       description: "Assign a category to each transaction",
+      strict: true, // schema-valid input (tool_choice is "auto" on the 5.5 models)
       input_schema: {
         type: "object",
+        additionalProperties: false,
         properties: {
           categories: {
             type: "array",
             items: {
               type: "object",
+              additionalProperties: false,
               properties: {
                 index: { type: "number", description: "1-based transaction index" },
                 category: { type: "string", enum: CATEGORIES },
@@ -300,13 +304,16 @@ async function runCategorize() {
         return (i + 1) + ". " + t.merchant + " — $" + parseFloat(t.amount).toFixed(2) + " on " + t.date + hint;
       }).join("\n");
 
-      const message = await client.messages.create({
-        model: modelId, max_tokens: 2000,
+      // tool_choice "auto" + strict tool + one re-ask (services/claude.js) —
+      // Opus/Sonnet 5.5 reject a forced tool_choice. Low effort: this is
+      // classification; max_tokens leaves room for adaptive thinking.
+      const message = await createToolCall(client, {
+        model: modelId, max_tokens: 8000,
+        ...effortParams("extract"),
         system: [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }],
         tools: [categorizeTool],
-        tool_choice: { type: "tool", name: "categorize_transactions" },
         messages: [{ role: "user", content: "Transactions:\n" + txnList }],
-      });
+      }, "categorize_transactions");
 
       // Record token usage BEFORE applying categories (DC-2) so the spend counts
       // against the cap even if the apply loop throws partway.

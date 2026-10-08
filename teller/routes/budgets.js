@@ -182,13 +182,16 @@ router.post("/api/budgets/suggest", async (_req, res) => {
     const suggestTool = {
       name: "suggest_budgets",
       description: "Suggest monthly budgets for spending categories",
+      strict: true, // schema-valid input (tool_choice is "auto" on the 5.5 models)
       input_schema: {
         type: "object",
+        additionalProperties: false,
         properties: {
           suggestions: {
             type: "array",
             items: {
               type: "object",
+              additionalProperties: false,
               properties: {
                 category: { type: "string" },
                 monthly_limit: { type: "number" },
@@ -202,8 +205,10 @@ router.post("/api/budgets/suggest", async (_req, res) => {
       },
     };
 
-    const message = await client.messages.create({
-      model: modelId, max_tokens: 1000,
+    const { createToolCall, effortParams } = require("../services/claude");
+    const message = await createToolCall(client, {
+      model: modelId, max_tokens: 4000,
+      ...effortParams("extract"),
       system: [{ type: "text", text:
         "You are a personal finance advisor. Based on the user's spending history by category, " +
         "suggest reasonable monthly budgets for each category.\n\n" +
@@ -216,9 +221,8 @@ router.post("/api/budgets/suggest", async (_req, res) => {
         cache_control: { type: "ephemeral" },
       }],
       tools: [suggestTool],
-      tool_choice: { type: "tool", name: "suggest_budgets" },
       messages: [{ role: "user", content: "Spending history (last 3 complete months):\n" + catSummary }],
-    });
+    }, "suggest_budgets");
 
     // Charge the cap BEFORE any validation early-return, so a malformed reply
     // still counts the tokens it consumed (parity with rebuild, AIA2).

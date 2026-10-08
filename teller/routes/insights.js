@@ -28,6 +28,7 @@ function sanitizeForPrompt(s) {
   return String(s).replace(/---+RUNNING_SUMMARY---+/gi, "[redacted]").replace(/---+/g, "--");
 }
 const { auditInsight, getAuditStats, getAuditAccuracy } = require("../services/ai-audit");
+const { createToolCall, effortParams } = require("../services/claude");
 const {
   MODEL_COST_PER_M, modelFamily, estimateCostUsd, estimateCostGranular,
   STATE_ELECTRICITY_RATES, US_AVG_ELECTRICITY_RATE,
@@ -1088,17 +1089,20 @@ async function generateInsights() {
 
     const client = new Anthropic();
     // Tool-use replaces the previous `---RUNNING_SUMMARY---` delimiter
-    // pattern. The model is forced (via tool_choice) to produce a structured
-    // response with both insights_text and a typed summary, so we never have
-    // to text-parse a delimiter and the long-term memory is auditable JSON.
-    const maxTokens = Math.min(8192, 2000 + activeModules.length * 250);
-    const message = await client.messages.create({
+    // pattern: the strict generate_financial_insight tool returns both
+    // insights_text and a typed summary, so long-term memory is auditable
+    // JSON. Opus/Sonnet 5.5 reject a forced tool_choice, so createToolCall
+    // uses "auto" + the system-prompt instruction and re-asks once if the
+    // model answered in prose. max_tokens leaves room for adaptive thinking
+    // (billed as output) at the "analyze" effort level.
+    const maxTokens = Math.min(16000, 6000 + activeModules.length * 400);
+    const message = await createToolCall(client, {
       model: modelId, max_tokens: maxTokens,
+      ...effortParams("analyze"),
       system: [{ type: "text", text: systemText, cache_control: { type: "ephemeral" } }],
       tools: [INSIGHT_TOOL],
-      tool_choice: { type: "tool", name: "generate_financial_insight" },
       messages: [{ role: "user", content: userMsg }],
-    });
+    }, "generate_financial_insight");
     const usage = message.usage || {};
     const tokensUsed = (usage.input_tokens || 0) + (usage.output_tokens || 0);
     const hitTokenCap = message.stop_reason === "max_tokens";
@@ -1122,7 +1126,8 @@ async function generateInsights() {
         console.warn("Insights: structured summary failed validation; keeping prior summary.");
       }
     } else {
-      // No tool block at all (rare with tool_choice forced) — fall back to
+      // No tool block at all (the model declined / refused / was cut off even
+      // after createToolCall's follow-up) — fall back to
       // any text content the model returned, keep prior summary.
       const textBlock = message.content.find(b => b.type === "text");
       insightText = (textBlock && textBlock.text ? textBlock.text : "").trim();
@@ -1301,9 +1306,11 @@ router.post("/api/insights/rebuild", async (_req, res) => {
     // matches the same shape new runs produce — without this, a /rebuild
     // would overwrite JSON with text and the next /api/insights call would
     // see no structured context.
-    const message = await client.messages.create({
-      // Up to 33 summary items: 1500 tokens truncated realistic rebuilds (AIN-8).
-      model: modelId, max_tokens: 4000,
+    const message = await createToolCall(client, {
+      // Up to 33 summary items: 1500 tokens truncated realistic rebuilds (AIN-8);
+      // 8000 also leaves room for adaptive thinking on the 5.5 models.
+      model: modelId, max_tokens: 8000,
+      ...effortParams("analyze"),
       system: [{ type: "text", text:
         "You are a personal finance advisor. Synthesize a chronological timeline of past financial analyses into a structured cumulative summary that future analyses will use as persistent memory. Use the `generate_financial_insight` tool to return:\n" +
         "  - insights_text: a brief 1-2 sentence acknowledgement that the rebuild is complete (this won't be displayed prominently).\n" +
@@ -1311,9 +1318,8 @@ router.post("/api/insights/rebuild", async (_req, res) => {
         cache_control: { type: "ephemeral" },
       }],
       tools: [INSIGHT_TOOL],
-      tool_choice: { type: "tool", name: "generate_financial_insight" },
       messages: [{ role: "user", content: "=== ALL PAST ANALYSES ===\n" + timeline }],
-    });
+    }, "generate_financial_insight");
     const usage = message.usage || {};
     const tokensUsed = (usage.input_tokens || 0) + (usage.output_tokens || 0);
     // AIA2: record the rebuild's token spend FIRST — before the tool-block

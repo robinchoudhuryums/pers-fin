@@ -166,6 +166,15 @@ function findCancelUrl(merchantName) {
 // input rate and 5-minute cache writes at 1.25×. Usage rows are re-priced at
 // read time, so legacy IDs keep their historical rates here.
 const MODEL_RATES_BY_ID = {
+  // Current models (Claude 5.5 family). Haiku 5.5 has two rate cards chosen by
+  // PROMPT length (input + cache read + cache write): ≤100K tokens uses the
+  // base rates, longer prompts the `long` card. Cache reads 0.1x input on
+  // Haiku/Sonnet (0.05x on Opus 5.5), 5-minute cache writes 1.25x.
+  "claude-haiku-5-5":  { input: 0.10, output: 0.50,  cache_read: 0.01, cache_write: 0.125, blended: 0.25,
+                         long: { above: 100000, input: 0.50, output: 2.50, cache_read: 0.05, cache_write: 0.625 } },
+  "claude-sonnet-5-5": { input: 2.00, output: 10.00, cache_read: 0.20, cache_write: 2.50,  blended: 5.00 },
+  "claude-opus-5-5":   { input: 4.00, output: 20.00, cache_read: 0.20, cache_write: 5.00,  blended: 10.00 },
+  // Previous models — still priced so stored usage rows re-price correctly.
   "claude-haiku-4-5":  { input: 1.00, output: 5.00,  cache_read: 0.10, cache_write: 1.25,  blended: 2.50 },
   "claude-sonnet-4-6": { input: 3.00, output: 15.00, cache_read: 0.30, cache_write: 3.75,  blended: 8.00 },
   "claude-opus-4-6":   { input: 5.00, output: 25.00, cache_read: 0.50, cache_write: 6.25,  blended: 13.00 },
@@ -180,7 +189,11 @@ const MODEL_RATES_BY_ID = {
 // Rates by family = the rates of the model each family maps to (MODEL_MAP).
 // Exposed as `cost_rates` by the usage endpoints and used as the fallback for
 // an unknown model string.
-const MODEL_MAP = { haiku: "claude-haiku-4-5", sonnet: "claude-sonnet-4-6", opus: "claude-opus-4-6" };
+// The app's three model tiers → the CURRENT model of each line. Opus 5.5 and
+// Sonnet 5.5 reject a forced tool_choice and all three think by default — call
+// them through services/claude.js (createToolCall / effortParams), never with
+// a forced (named-tool / "any") tool_choice.
+const MODEL_MAP = { haiku: "claude-haiku-5-5", sonnet: "claude-sonnet-5-5", opus: "claude-opus-5-5" };
 const MODEL_COST_PER_M = {
   haiku: MODEL_RATES_BY_ID[MODEL_MAP.haiku],
   sonnet: MODEL_RATES_BY_ID[MODEL_MAP.sonnet],
@@ -217,11 +230,15 @@ function estimateCostUsd(tokens, modelStr) {
 // regular-input portion to ~0 on cached requests and silently understated cost
 // (and therefore failed to enforce INSIGHTS_MONTHLY_BUDGET_CENTS).
 function estimateCostGranular(usage, modelStr) {
-  const rates = modelRates(modelStr);
+  const base = modelRates(modelStr);
   const inputTokens = usage.input_tokens || 0;
   const outputTokens = usage.output_tokens || 0;
   const cacheRead = usage.cache_read_input_tokens || 0;
   const cacheCreation = usage.cache_creation_input_tokens || 0;
+  // Haiku 5.5's long-prompt rate card (prompt = all input incl. cache tokens).
+  // A usage row that sums several calls is tiered on the summed prompt — an
+  // over-estimate at worst, which errs toward enforcing the cap.
+  const rates = base.long && (inputTokens + cacheRead + cacheCreation) > base.long.above ? base.long : base;
   return (inputTokens / 1_000_000) * rates.input +
     (outputTokens / 1_000_000) * rates.output +
     (cacheRead / 1_000_000) * rates.cache_read +

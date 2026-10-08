@@ -555,8 +555,10 @@ router.get("/api/housing/export", async (req, res) => {
 const SCAN_TOOL = {
   name: "report_bill",
   description: "Report the fields extracted from a utility/rent bill image.",
+  strict: true, // schema-valid input (tool_choice is "auto" on the 5.5 models)
   input_schema: {
     type: "object",
+    additionalProperties: false,
     properties: {
       amount: { type: "number", description: "the total amount due, as a number (no currency symbol)" },
       period: { type: "string", description: "the billing month this bill is for, as YYYY-MM" },
@@ -593,19 +595,20 @@ router.post("/api/housing/scan-bill", upload.single("file"), async (req, res) =>
     const sRow = await pool.query("SELECT insights_model FROM user_settings WHERE id = 1");
     const modelId = MODEL_MAP[sRow.rows[0]?.insights_model] || MODEL_MAP.haiku;
     const client = new Anthropic();
-    const msg = await client.messages.create({
+    const { createToolCall, effortParams } = require("../services/claude");
+    const msg = await createToolCall(client, {
       model: modelId,
-      max_tokens: 300,
+      max_tokens: 2000, // room for adaptive thinking at low effort
+      ...effortParams("extract"),
       tools: [SCAN_TOOL],
-      tool_choice: { type: "tool", name: "report_bill" },
       messages: [{
         role: "user",
         content: [
           block,
-          { type: "text", text: "This is a utility or rent bill. Extract the total amount due, the billing month it is for (as YYYY-MM), and the biller/utility name. If any field isn't clearly present, omit it." },
+          { type: "text", text: "This is a utility or rent bill. Extract the total amount due, the billing month it is for (as YYYY-MM), and the biller/utility name. If any field isn't clearly present, omit it. Report the fields with the report_bill tool." },
         ],
       }],
-    });
+    }, "report_bill");
 
     // Charge the cap (entry_type='scan' — counted by the cap queries, filtered
     // out of the user-facing insights feed which selects entry_type='insight').
