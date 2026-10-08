@@ -31,7 +31,7 @@ describe("Cross-app — perfinFinanceSnapshot", () => {
     const perfinPool = {
       query: async (sql) => {
         if (/FROM linked_accounts/.test(sql)) {
-          return { rows: [{ name: "Checking", type: "depository", current_balance: 2345.1, credit_limit: null }, { name: "Visa", type: "credit", current_balance: -540, credit_limit: 5000 }] };
+          return { rows: [{ name: "Checking", type: "depository", current_balance: 2345.1, credit_limit: null }, { name: "Visa", type: "credit", current_balance: 540, credit_limit: 5000 }] };
         }
         if (/FROM detected_subscriptions/.test(sql)) {
           return { rows: [{ display_name: "Netflix", amount: 15.99, cadence_days: 30, next_expected: new Date(Date.now() + 3 * 86400000) }] };
@@ -42,7 +42,10 @@ describe("Cross-app — perfinFinanceSnapshot", () => {
     const doc = await perfinFinanceSnapshot(perfinPool);
     assert.equal(doc.title, "Finances (from Perfin)");
     assert.match(doc.content, /Checking \(depository\): \$2,345.10/);
-    assert.match(doc.content, /Visa \(credit\): -\$540.00, credit limit \$5,000.00/);
+    // KR-9: Perfin's convention — a card's current_balance is the amount owed,
+    // shown negative (it reduces net worth), via the canonical getNetWorth.
+    assert.match(doc.content, /Visa \(credit\): -\$540.00 owed, credit limit \$5,000.00/);
+    assert.match(doc.content, /Net worth: \$1,805.10/);
     assert.match(doc.content, /Active subscriptions: 1/);
     assert.match(doc.content, /Upcoming charges/);
   });

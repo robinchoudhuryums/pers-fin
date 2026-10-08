@@ -9,7 +9,32 @@ to the "none in progress" state.
 
 ## Current Cycle
 
-- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 10 DONE** on branch
+- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 11 DONE** on branch
+  `claude/lucid-darwin-7r8e59` (2026-10-08). Batches 3–10 were merged to `main` via
+  robinchoudhuryums/pers-fin#129; the branch was then restarted from the new `main` and
+  Batch 11 (Knowledge lifecycle & retrieval) implemented, tested, pushed (no PR opened).
+  - **Completed:** KR-3 (vault ingested without Voyage/pgvector + embedding backfill),
+    KR-4 (stopwords, per-source vector ranking with 4× over-fetch, matching-passage window),
+    KR-7 (Voyage retry/backoff, per-file/per-note isolation, removals first, sha held on failure),
+    KR-8 (lock claimed before the first await), KR-9 (finance snapshot via Perfin's getNetWorth +
+    monthly-equivalent subscriptions), KR-10 (capture reserved keys + sensitivity, no AI for
+    private/secret), KR-11 (success-only last_synced_at, db/023 vault_last_attempt_at, reindex ok,
+    Action polls + fails, vault_sync_error notification), KR-12 (inline-citation parse),
+    KR-13 (cache prune), KR-14 (word-segment attribute match, vault_repo validation, headers).
+  - **Not finished (selected):** none.
+  - **Tests:** 1551/1551 (Perfin 974 + Per-sistant 577; 62 files). New
+    apps/per-sistant/tests/scan-sept-batch11.test.js (32; 31 fail pre-fix). Real PG without
+    pgvector: migrations ×2, vault sync ingest/partial-failure/recovery, upcomingFacts, search
+    window, cache prune, finance snapshot = getNetWorth. Rendered pages' scripts parse; e2e 8/8.
+  - **Decisions:** keep an embedding whose text is unchanged when Voyage is off (no forced
+    re-embed); stopwords are function words only; finance snapshot imports Perfin's helper
+    (lazy, fail-soft) instead of mirroring it; the Action polls status rather than a long request.
+  - **Open follow-ons:** see `.cycle/blocks/6-batch11-broad-implement.md`.
+  - **Operator:** none required (db/023 auto-migrates); the reindex Action can now go red.
+  - **Where I left off:** Batch 11 committed and pushed (no PR). NEXT: /sync-docs for Batch 11,
+    then Batch 12 (Investments).
+
+- **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 10 DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-10-08). Batch 10 (Sheets & exports) implemented, tested, pushed (no PR opened).
   - **Completed:**
     - SXE-1 / WD-6: Sheets sync outcome persisted (user_settings.last_sheets_sync_result), signature-deduped notification, data-health issue, "Partial: N tabs failed" in dashboard / Subscriptions / Settings.

@@ -27,13 +27,32 @@ jobs:
         run: |
           # Knowledge runs under the Per-sistant sub-app behind the unified
           # shell; the shell's requireAuth honors x-api-key. Returns 202 (queued)
-          # or 409 (a sync is already running) — both are fine.
+          # or 409 (a sync is already running — nothing to check, exit green).
           STATUS=$(curl -s -o /tmp/reindex.json -w "%{http_code}" \
             -X POST "${{ secrets.SERVER_URL }}/per-sistant/api/rag/reindex" \
             -H "x-api-key: ${{ secrets.API_KEY }}" \
             -H "Content-Type: application/json")
           echo "Reindex trigger status: $STATUS"
           cat /tmp/reindex.json || true
-          if [ "$STATUS" != "202" ] && [ "$STATUS" != "409" ]; then
-            echo "Reindex trigger failed"; exit 1
-          fi
+          if [ "$STATUS" = "409" ]; then echo "already running"; exit 0; fi
+          if [ "$STATUS" != "202" ]; then echo "Reindex trigger failed"; exit 1; fi
+
+      - name: Wait for the reindex result
+        run: |
+          # The 202 comes back before any work happens (KR-11), so poll the
+          # status endpoint and fail the job when the reindex itself failed —
+          # otherwise this Action stayed green while every sync errored.
+          for i in $(seq 1 80); do
+            sleep 15
+            curl -s -o /tmp/status.json \
+              "${{ secrets.SERVER_URL }}/per-sistant/api/rag/status" \
+              -H "x-api-key: ${{ secrets.API_KEY }}" || continue
+            STATE=$(node -e 'const s=require("/tmp/status.json").reindex||{};console.log(s.running?"running":(s.ok===true?"ok":(s.ok===false?"failed":"unknown")))' 2>/dev/null || echo unknown)
+            echo "poll $i: $STATE"
+            if [ "$STATE" = "ok" ]; then exit 0; fi
+            if [ "$STATE" = "failed" ]; then
+              node -e 'const s=require("/tmp/status.json");console.log(JSON.stringify({reindex:s.reindex,vault:s.vault},null,2))'
+              exit 1
+            fi
+          done
+          echo "Timed out waiting for the reindex to finish"; exit 1

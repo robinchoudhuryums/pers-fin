@@ -22,6 +22,20 @@ async function jobRadarLeads(pool) {
   } catch { return { count: 0, top: null }; }
 }
 
+// Knowledge vault sync failing (KR-11): one reminder while the last vault sync
+// left an error, so a broken sync is noticed instead of the corpus silently
+// going stale. Fail-soft.
+async function vaultSyncError(pool) {
+  try {
+    const r = await pool.query(
+      "SELECT vault_enabled, vault_last_error, vault_last_synced_at FROM user_settings WHERE id = 1"
+    );
+    const s = r.rows[0];
+    if (!s || !s.vault_enabled || !s.vault_last_error) return null;
+    return { error: String(s.vault_last_error), last_ok: s.vault_last_synced_at || null };
+  } catch { return null; }
+}
+
 // How far ahead to surface a fact's renewal/expiration (days).
 const FACT_LOOKAHEAD_DAYS = 30;
 
@@ -35,7 +49,7 @@ module.exports = function ({ pool }) {
       // the evening tomorrow's tasks read "due today").
       const today = todayStr();
       const perfinPool = req.app.get("perfinPool");
-      const [dueSoon, overdue, streaksAtRisk, reminders, facts, health, housing, jobRadar] = await Promise.all([
+      const [dueSoon, overdue, streaksAtRisk, reminders, facts, health, housing, jobRadar, vaultErr] = await Promise.all([
         pool.query("SELECT id, title, due_date FROM todos WHERE deleted_at IS NULL AND completed = false AND due_date = $1", [today]),
         pool.query("SELECT id, title, due_date FROM todos WHERE deleted_at IS NULL AND completed = false AND due_date < $1", [today]),
         pool.query("SELECT id, title, streak_count, due_date FROM todos WHERE deleted_at IS NULL AND completed = false AND recurring = true AND streak_count >= 3 AND due_date = $1", [today]),
@@ -48,6 +62,7 @@ module.exports = function ({ pool }) {
         housingDue(perfinPool),
         // Job Radar high-fit leads (fail-soft; no-op when disabled).
         jobRadarLeads(pool),
+        vaultSyncError(pool),
       ]);
       const notifications = [];
       dueSoon.rows.forEach(t => notifications.push({ type: "due_today", title: t.title, id: t.id, entity: "todo" }));
@@ -99,6 +114,15 @@ module.exports = function ({ pool }) {
           entity: "job",
         });
       }
+      if (vaultErr) {
+        const since = vaultErr.last_ok ? ` (last good sync ${new Date(vaultErr.last_ok).toISOString().slice(0, 10)})` : "";
+        notifications.push({
+          type: "vault_sync_error",
+          title: `Knowledge vault sync failing${since}: ${vaultErr.error.slice(0, 120)}`,
+          id: null,
+          entity: "knowledge",
+        });
+      }
       res.json({
         notifications,
         counts: {
@@ -111,6 +135,7 @@ module.exports = function ({ pool }) {
           habit_streaks_at_risk: health.streaks_at_risk.length,
           housing_due: housing ? 1 : 0,
           job_radar: jobRadar ? jobRadar.count : 0,
+          vault_sync_error: vaultErr ? 1 : 0,
         },
       });
     } catch (err) { serverError(res, err); }

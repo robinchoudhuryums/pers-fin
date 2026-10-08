@@ -290,12 +290,13 @@ async function load() {
 var REMINDER_PREFIX = {
   overdue: 'Overdue: ', due_today: 'Due today: ', streak_at_risk: 'Streak at risk: ',
   habit_streak_at_risk: 'Habit streak at risk: ', reminder: 'Reminder: ',
-  fact_upcoming: 'Upcoming: ', housing_due: '', job_radar: ''
+  fact_upcoming: 'Upcoming: ', housing_due: '', job_radar: '', vault_sync_error: ''
 };
 function reminderPrefix(n) { return REMINDER_PREFIX[n.type] != null ? REMINDER_PREFIX[n.type] : ''; }
 function isImportantReminder(n) {
   if (n.type === 'overdue' || n.type === 'due_today' || n.type === 'streak_at_risk' ||
-      n.type === 'habit_streak_at_risk' || n.type === 'reminder' || n.type === 'job_radar') return true;
+      n.type === 'habit_streak_at_risk' || n.type === 'reminder' || n.type === 'job_radar' ||
+      n.type === 'vault_sync_error') return true;
   if (n.type === 'fact_upcoming') return n.days_away != null && n.days_away <= 7;
   // Rent: only once it is due, overdue or within 3 days (an upcoming balance
   // weeks out is shown in the in-page list, not pushed).
@@ -306,7 +307,7 @@ function reminderHref(n) {
   if (n.entity === 'todo') return BP + '/todos';
   if (n.entity === 'note') return BP + '/notes';
   if (n.entity === 'habit') return BP + '/health';
-  if (n.entity === 'fact') return BP + '/knowledge';
+  if (n.entity === 'fact' || n.entity === 'knowledge') return BP + '/knowledge';
   if (n.entity === 'job') return BP + '/jobs';
   if (n.entity === 'housing') return (window.PERFIN_URL || '/perfin') + '/housing';
   return null;

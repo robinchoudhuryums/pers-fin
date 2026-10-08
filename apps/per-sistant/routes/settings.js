@@ -80,7 +80,12 @@ module.exports = function ({ pool, config }) {
       const shaResetConds = [];
       if (vault_repo !== undefined) {
         const repo = vault_repo ? String(vault_repo).trim() : null;
-        if (repo && !/^[\w.-]+\/[\w.-]+$/.test(repo)) {
+        // KR-14: the old /^[\w.-]+\/[\w.-]+$/ accepted "../.." — a path
+        // segment that walks out of /repos/ in the GitHub API URL. An owner
+        // starts with a letter/digit; a repo name may start with "." (".github")
+        // but is never "." or "..".
+        const [owner, name] = repo ? repo.split("/") : [];
+        if (repo && (!/^[A-Za-z0-9][A-Za-z0-9-]*\/[\w.-]+$/.test(repo) || name === "." || name === ".." || !owner)) {
           return res.status(400).json({ error: "vault_repo must be in 'owner/name' form." });
         }
         shaResetConds.push(`vault_repo IS DISTINCT FROM $${idx}::text`);
