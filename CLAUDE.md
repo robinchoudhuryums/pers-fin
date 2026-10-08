@@ -475,9 +475,19 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1396 tests as of latest); use
+  Perfin and Per-sistant test files (1426 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1396 tests across 56 test files (incl.
+  Current count: 1426 tests across 58 test files (incl.
+  `tests/scan-sept-batch8.test.js` + `apps/per-sistant/tests/scan-sept-batch8.test.js`
+  — the Sept 2026 broad-scan Batch 8 scheduler/notification pins: auto-sync
+  notification gate on real balance changes + the sync-notifications toggle
+  (PSC-1/DD-7), away-from-app channels driven by watermarks rather than recent
+  activity (PSC-3), the keep-alive config cache (PSC-2), single-flight sync /
+  categorize (PSC-12), same-day "since you last looked" balance changes +
+  debt-aware colours (DD-5/DD-6), and the Per-sistant notification types +
+  Reminders widget (PB-1), Job Radar refresh flag (PB-3), locked complete/skip +
+  catch-up due date + bulk complete (PB-11/PB-12/PD-3) and one-row email
+  claims (PD-8);
   `tests/model-upgrade.test.js` + `apps/per-sistant/tests/model-upgrade.test.js`
   — the Claude 5.5 upgrade pins: MODEL_MAP / AI_MODELS IDs, 5.5 prices incl.
   Haiku's long-prompt card, a repo-wide scan for forced tool_choice, an explicit
@@ -979,7 +989,15 @@ shell/
   "✓ Settled on <date>" with an Undo (`DELETE /api/settlement/:period`). This is
   display-only bookkeeping — it never alters the shared-card or housing math.
 - **Since-you-last-looked widget**: aggregates new transactions, balance
-  deltas (oldest snapshot ≤ watermark vs latest, dropped if |Δ| < $0.01),
+  deltas (baseline = the newest snapshot dated BEFORE the watermark's day, vs
+  the latest snapshot, which may be from that same day — DD-5: snapshots are one
+  row per account per day, overwritten by later syncs, so the old "≤ watermark
+  day vs later day" pair silently dropped a same-day change; trade-off: a change
+  made earlier on the watermark's own day can show again; dropped if
+  |Δ| < $0.01). Each balance row carries `account_type`, `is_debt` (credit /
+  loan) and `favorable` (for debt a DECREASE is good — DD-6), which the widget
+  and both digest renderers use for colour, sign and an " owed" suffix
+  (negatives print as `-$X`, not `$-X`),
   new subscriptions, and recent notifications since `last_dashboard_view_at`.
   Backed by `GET /api/whats-new`; advances the watermark 4 s after first
   render via `POST /api/whats-new/seen` so a quick nav-away doesn't lose
@@ -1750,7 +1768,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1396 tests passing across 56 test files (Perfin 891 + Per-sistant 505), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1426 tests passing across 58 test files (Perfin 908 + Per-sistant 518), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -1787,8 +1805,8 @@ POST /api/sync-balances    # fetch latest account balances. Refreshes Teller
                            # + liabilities/APR (`syncAllPlaidBalances`), AND
                            # Plaid investment holdings (`syncAllPlaidHoldings`)
                            # in one call — no transactionsSync rerun.
-                           # Response: { accounts_updated, errors?,
-                           # plaid_accounts_updated, plaid_errors?,
+                           # Response: { accounts_updated, accounts_changed,
+                           # errors?, plaid_accounts_updated, plaid_errors?,
                            # holdings_updated, holdings_accounts_updated,
                            # holdings_errors?, flows_added, flows_errors? }.
                            # Also re-pulls investment cash flows
@@ -2443,6 +2461,10 @@ standalone-mode fallback if either app is run on its own Render service.
   per APP_TIMEZONE date, not before 07:00 local, covering the time since
   `last_daily_digest_at` (≤72h), and skips silently when `gatherWhatsNew`
   returns zero counts (AIN-15).
+- `user_settings.last_csv_reminder_at TIMESTAMPTZ` (PSC-3): watermark for the
+  hourly CSV-reminder tick — the reminder is evaluated at most once per 24h
+  (stamped whether or not any account was stale). Auto-migrated
+  (`ADD COLUMN IF NOT EXISTS`).
 - `user_settings.target_allocation_pct JSONB NOT NULL DEFAULT '{}'::jsonb`:
   per-asset-class target weights for the Investments performance card.
   Keys are lowercase `security_type` (etf, equity, bond, etc.); values
@@ -2795,7 +2817,25 @@ in-process jobs is harmless. Per-app jobs live in
 under the unified shell so the timezone-aware self-ping fires regardless of
 which sub-app owns its own listener (sub-app `startKeepAlive` is no-op in
 embedded mode).
-- **Keep-alive ping** (shell layer): every 14 min (timezone-aware active hours, 10s timeout); reads `keep_alive_enabled` and active-hours from Perfin's `user_settings` each tick
+**Activity gate vs. away channels (PSC-3).** The heavy DB jobs are gated on
+recent Perfin activity (`isUserActive()`, 15 min) so Neon can auto-suspend
+while the user is away. The channels whose whole point is to reach the user
+WHILE away — budget alerts (+ critical-alert email), the weekly digest, the
+daily digest and the CSV reminder — are NOT activity-gated (before, they fired
+only if the user had touched Perfin in the last 15 min, so an email-only user
+got no digest; Per-sistant traffic never counted). They are driven by their
+own watermarks plus a per-local-day (APP_TIMEZONE) in-memory "settled" memo,
+so once a job has sent or decided there is nothing to do, it makes no DB call
+again until the next local day. Budget alerts run their short query every
+3h while the process is awake (an accepted Neon cost). Exported for tests as
+`startup._awayJobs`.
+**Single-flight (PSC-12).** `syncAllTransactions`, `syncAllBalances` and
+`runCategorize` keep a module-level in-flight promise: a caller that arrives
+while a run is in progress (the 6-hourly insights chain and the bank auto-sync
+fire at the same instant; a manual POST /api/sync or /api/categorize can
+overlap either) shares that run's promise and result instead of starting a
+second one (which re-sent the same uncategorized rows to Claude).
+- **Keep-alive ping** (shell layer): every 14 min (timezone-aware active hours, 10s timeout); reads `keep_alive_enabled` and active-hours through `getKeepAliveConfigCached()` (`services/keep-alive.js`, 6h TTL; `PATCH /api/settings` invalidates it when any `keep_alive_*` key changes — PSC-2). `GET /api/keep-alive-schedule` (polled by `keep-alive.yml` every 14 min with x-api-key) reads the same cache and is EXCLUDED from `touchActivity`, so the GitHub pinger no longer keeps `isUserActive()` permanently true (which ran every activity-gated job 24/7 and stopped Neon suspending). Known gap: the workflow itself still wakes Render every 14 min around the clock.
 - **Sheets auto-sync**: every 1 hour (daily/weekly/monthly cadence from settings)
 - **Net worth snapshot**: every 1 hour (`ON CONFLICT (snapshot_date) DO UPDATE` so a same-day re-run rewrites the row with the latest balances — late-arriving syncs are reflected immediately). Computes the figure via the shared `getNetWorth()` helper, so this job, `syncAllBalances`, and `POST /api/net-worth/snapshot` all write the same investment-deduped value (F1)
 - **Goal milestones**: every 6 hours (push notifications at 25/50/75/100%)
@@ -2804,7 +2844,7 @@ embedded mode).
   check) → syncAllPlaidHoldings → syncAllBalances → detect subscriptions →
   detect transfers → categorize → generate insights → audit → email webhook.
   Ensures AI analyzes freshest data. Auto-categorization runs as part of this pipeline.
-- **Budget alerts**: every 3 hours (push notifications at 80% and 100%+ thresholds, aligned with the in-app `/api/budgets/alerts` `warning`/`critical` levels). Like the endpoint, the push compares against the effective limit (base + PRIOR-month rollover, via `getBudgetStatus`) and skips one-time budgets outside their `effective_month`. The in-app `info`/pace heuristic is intentionally not pushed (too noisy as a notification). **Deduped to at most one notification per category+severity per 24h** via `sentRecently(tag, 24)` (`routes/notifications.js`, backed by `notification_log`) — previously a category that stayed over budget re-logged a notification on every 3-hour tick for the rest of the month. Escalation (warn → over) still fires immediately because the two severities use distinct tags.
+- **Budget alerts**: every 3 hours, NOT activity-gated (push notifications at 80% and 100%+ thresholds, aligned with the in-app `/api/budgets/alerts` `warning`/`critical` levels). Like the endpoint, the push compares against the effective limit (base + PRIOR-month rollover, via `getBudgetStatus`) and skips one-time budgets outside their `effective_month`. The in-app `info`/pace heuristic is intentionally not pushed (too noisy as a notification). **Deduped to at most one notification per category+severity per 24h** via `sentRecently(tag, 24)` (`routes/notifications.js`, backed by `notification_log`) — previously a category that stayed over budget re-logged a notification on every 3-hour tick for the rest of the month. Escalation (warn → over) still fires immediately because the two severities use distinct tags.
 - **Budget snapshot auto-trigger**: every 6 hours, `runBudgetSnapshot()`
   (`routes/budgets.js`) snapshots the previous month (spending + rollover
   amounts) so budget rollover advances automatically. Days 1–5 of a month
@@ -2828,12 +2868,20 @@ embedded mode).
   insights cadence runs. Updates `last_auto_sync_at` on every
   check (success or partial failure).
   Push notification only fires when at least one transaction was added, at
-  least one balance was updated, or a sync failed — silent successful syncs
-  no longer produce hourly notification noise. Failed syncs still notify
+  least one balance actually CHANGED (`syncAllBalances` `accounts_changed`,
+  computed in the balance UPDATE via a `WITH prev AS (…)` CTE and
+  `IS DISTINCT FROM ROUND(…, 2)` — `accounts_updated` still counts every
+  account fetched), or a sync failed, and only while
+  `sync_notifications_enabled` is on (PSC-1/DD-7: the SELECT never read that
+  column, so the toggle did nothing, and every Teller fetch counted as an
+  update, so "Auto-sync complete" was pushed on every run). Failed syncs still notify
   under "Auto-sync issue" so the user knows the data isn't fresh.
   Note: on Render free tier, scheduled syncs only fire while the process is awake;
   enable `keep_alive_enabled` if you need guaranteed cadence.
-- **CSV import reminders**: every 24 hours, checks manual (CSV-only) accounts
+- **CSV import reminders**: every 1 hour, NOT activity-gated, evaluated at most
+  once per 24h via `user_settings.last_csv_reminder_at` (PSC-3 — the old 24h
+  `setInterval` needed a full day of uptime AND activity at that exact tick, so
+  it essentially never fired on the free tier). Checks manual (CSV-only) accounts
   whose most recent CSV import is older than `csv_reminder_days` setting.
   Sends notification listing specific account names needing a fresh upload.
 - **Rent & Utilities ledger**: every 6 hours (activity-gated). Calls
@@ -2851,14 +2899,16 @@ embedded mode).
   stays a manual `POST /api/sync/reconcile` action. Not gated on user
   activity — a weekly background heal should run even while the user is away.
   Records its outcome as `teller_reconcile` in `last_sync_result` (BSI-11).
-- **Weekly digest**: every 1 hour, checks `weekly_digest_enabled` and that
-  today matches `weekly_digest_day` (0=Sun..6=Sat). When both match,
+- **Weekly digest**: every 1 hour, NOT activity-gated, checks
+  `weekly_digest_enabled` and that the APP_TIMEZONE weekday matches
+  `weekly_digest_day` (0=Sun..6=Sat). When both match,
   invokes `runWeeklyDigest()` in `routes/insights.js`, which itself gates
   on a 6-day window from `last_weekly_digest_at` (so multiple hourly
   ticks on the configured day are idempotent). On success, fires the
   `weekly_summary` webhook to Per-sistant and bumps the watermark. No
   AI call — body is rendered from `insights_running_summary_json`.
-- **Daily digest**: every 1 hour, invokes `runDailyDigest()` in
+- **Daily digest**: every 1 hour, NOT activity-gated (no DB call before
+  `DAILY_DIGEST_HOUR` local), invokes `runDailyDigest()` in
   `routes/insights.js`. The helper bails if `daily_digest_enabled` is
   false, returns `too_early` before 07:00 APP_TIMEZONE and
   `already_sent_today` once the local date already has a send (AIN-15),
@@ -3732,6 +3782,8 @@ INV-72 | The Rent & Utilities ledger is single-payee: generation covers the trai
 INV-73 | Budget status has ONE definition — getBudgetStatus(pool, month) in financial-queries.js (spend via getCategorySpendingForMonth; effective_limit = monthly_limit + the PRIOR month's snapshot rollover when rollover_enabled; one-time budgets only in their effective_month). GET /api/budgets, /api/budgets/alerts, the insights prompt and the Ask budget tool call it; the Sheets Budget Status SQL mirrors it; no surface reads the bare monthly_limit as the limit | Subsystem: Financial Analytics | Verify: tests/scan-sept-batch6.test.js (AIN-6 block)
 INV-75 | The tax report (export + Sheets tab) is computed from transactions via getTaxDeductionTransactions (one shared keyword list); the tax_deductions table only annotates merchants and never supplies amounts | Subsystem: Financial Analytics / Sheets & External Export | Verify: tests/scan-sept-batch7.test.js (SXE-7)
 INV-76 | No model call uses a forced tool_choice (Opus/Sonnet 5.5 400 on it): structured calls go through createToolCall (auto + strict tool + one re-ask, usage summed for the cap); every call sets an explicit effort and reads content blocks by type | Subsystem: AI Insights & Audit (seam: categorize / budgets / housing / Per-sistant ai.js) | Verify: tests/model-upgrade.test.js + apps/per-sistant/tests/model-upgrade.test.js
+INV-77 | Away-from-app channels (budget alerts + critical-alert email, weekly digest, daily digest, CSV reminder) are never gated on isUserActive(); each is bounded by its own watermark (last_weekly_digest_at / last_daily_digest_at / last_csv_reminder_at / sentRecently) plus a per-local-day settled memo, so it neither misses an away user nor re-queries the DB all day | Subsystem: Platform, Shell & Auth / Notification Correctness | Verify: tests/scan-sept-batch8.test.js (PSC-3 block)
+INV-78 | The auto-sync "complete" notification fires only on genuinely new transactions or a balance that actually changed (accounts_changed), and never while sync_notifications_enabled is false | Subsystem: Bank Sync & Ingestion / Notification Correctness | Verify: tests/scan-sept-batch8.test.js (PSC-1 block)
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
 ### Policy Configuration

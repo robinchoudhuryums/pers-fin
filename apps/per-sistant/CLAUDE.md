@@ -22,14 +22,18 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   and cross-app finance grounding from Perfin (read-only `perfinPool`). Migrations
   `db/013`–`db/019`. Full detail in the Knowledge block under **Database** below.
 - **Email**: nodemailer (SMTP) with scheduled sending via node-cron. The
-  scheduler atomically CLAIMS due emails before sending — `UPDATE emails SET
-  status='sent' WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED) RETURNING *`,
-  reverting to `'failed'` if the send throws — so a slow SMTP send overlapping
+  scheduler atomically CLAIMS due emails before sending, ONE row per loop
+  iteration (≤`MAX_PER_RUN` = 100 per tick) — `UPDATE emails SET status='sent'
+  WHERE id = (SELECT id … ORDER BY scheduled_at, id LIMIT 1 FOR UPDATE SKIP
+  LOCKED) RETURNING *` (PD-8: claiming the whole due batch at once meant a
+  sleep/redeploy mid-run left every not-yet-sent row marked 'sent' — reported
+  delivered, never sent; per-row claims shrink that window to the one in-flight
+  send), reverting to `'failed'` if the send throws — so a slow SMTP send overlapping
   the next tick (or a second runner) can't double-send the same row (PS-2,
   at-most-once delivery). The manual `POST /api/emails/:id/send` claims the row
   the same way (`UPDATE … WHERE id = $1 AND status <> 'sent' RETURNING`) so a
   double-click / retry returns 409 instead of re-sending (PB-4).
-- **Tests**: `tests/` (node:test runner, `npm test`, 505 tests (api + integration + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6 + model-upgrade))
+- **Tests**: `tests/` (node:test runner, `npm test`, 518 tests (api + integration + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8 + model-upgrade))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of June 2026)
@@ -39,7 +43,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **To-Do Lists**: Short/medium/long-term horizons, 4 priority levels, categories, due dates
 - **Todo Categories**: Preset categories (work, personal, health, finance, errands, home, learning) + custom; filterable on todos page and dashboard
 - **Dashboard Task Views**: All / By Category / By Urgency / Due Soon tabs
-- **Recurring Tasks**: Daily, weekly, monthly, yearly, weekdays + custom intervals (every N days/weeks/months) with auto-generation, streak/habit tracking, skip, and snooze. The midnight auto-roll cron atomically CLAIMS each overdue recurring row (`UPDATE … WHERE id = $1 AND completed = false RETURNING`) before generating the next instance, so it can't race the manual complete-recurring path into a double-generated instance (PS-11). The roll lives in `helpers.rollMissedRecurring(db, today)` and the cron runs at LOCAL midnight (`{ timezone: APP_TIMEZONE }`, today = `todayStr()` — it used to fire at UTC midnight, i.e. 5pm in Los Angeles). A rolled instance is marked **missed** (`completed = true` so it leaves the active list, but `missed = true` + `completed_at = NULL`), so analytics completion rate / category breakdown and `/api/stats` "done" no longer count it as finished (PB-10); the next instance is the first occurrence on/after today. Monthly/yearly chains keep their ORIGINAL day-of-month (`todos.recurrence_anchor_day`, db/022): `advanceRecurrence(date, rule, interval, anchorDay)` steps on the month index and clamps the day — Jan 31 → Feb 28 → Mar 31, Feb 29 yearly → Feb 28 … → Feb 29 (PD-2; setMonth used to drift Jan 31 → Mar 3 → Apr 3 forever). complete-recurring / skip-recurring / the roll carry the anchor to the new instance; a manual due-date edit resets it.
+- **Recurring Tasks**: Daily, weekly, monthly, yearly, weekdays + custom intervals (every N days/weeks/months) with auto-generation, streak/habit tracking, skip, and snooze. The midnight auto-roll cron atomically CLAIMS each overdue recurring row (`UPDATE … WHERE id = $1 AND completed = false RETURNING`) before generating the next instance, so it can't race the manual complete-recurring path into a double-generated instance (PS-11). The roll lives in `helpers.rollMissedRecurring(db, today)` and the cron runs at LOCAL midnight (`{ timezone: APP_TIMEZONE }`, today = `todayStr()` — it used to fire at UTC midnight, i.e. 5pm in Los Angeles). A rolled instance is marked **missed** (`completed = true` so it leaves the active list, but `missed = true` + `completed_at = NULL`), so analytics completion rate / category breakdown and `/api/stats` "done" no longer count it as finished (PB-10); the next instance is the first occurrence on/after today. Monthly/yearly chains keep their ORIGINAL day-of-month (`todos.recurrence_anchor_day`, db/022): `advanceRecurrence(date, rule, interval, anchorDay)` steps on the month index and clamps the day — Jan 31 → Feb 28 → Mar 31, Feb 29 yearly → Feb 28 … → Feb 29 (PD-2; setMonth used to drift Jan 31 → Mar 3 → Apr 3 forever). complete-recurring / skip-recurring / the roll carry the anchor to the new instance; a manual due-date edit resets it. **complete-recurring and skip-recurring share one implementation** (`completeRecurringTodo` / `skipRecurringTodo`, exported from `routes/todos.js`): one transaction that locks the row (`SELECT … WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`) and refuses a non-recurring (400), already-completed (400 — so a double-tapped Skip or a Skip racing the midnight roll can't create two next instances, PB-11) or trashed (404) row. The next due date is `helpers.nextDueAfter(todo, today)` — step from the due date, then keep stepping until it is AFTER today, anchor day kept (PD-3: finishing a task a week late used to create a next instance that was already overdue, which the next midnight roll then marked missed and reset the streak). Bulk "complete" (`POST /api/bulk/todos`) routes recurring ids through `completeRecurringTodo` (next instance + streak + webhook) and plain-completes only the rest (PB-12 — it used to end the series).
 - **Subtasks**: Checklists within tasks with progress tracking — a progress bar with a `%` label on the To-Dos page, and a compact `done/total` progress bar on the dashboard task cards (counts come from `subtask_total`/`subtask_done` on `GET /api/todos`, so no per-card N+1 fetch)
 - **Natural Language Quick Add**: Create todos from natural language with auto-detected priority/horizon/due date (AI-enhanced when enabled)
 - **Email Drafting**: Compose, schedule, send; natural language "Quick Send" parser. "Save Draft" always stores a DRAFT (the client sends `status:'draft'`; `POST /api/emails` honors an explicit `draft|scheduled` status and only infers `scheduled` from `scheduled_at` when none is sent) — a filled-in schedule time no longer turns a saved draft into a cron-sent email (PD-1). "Send now" saves the form first, so edits aren't dropped (PUI-2). Schedule/reminder `datetime-local` fields are filled via the shared `toLocalDatetimeInput(iso)` (views/js.js) in browser-local time, so open+save never shifts the time by the UTC offset (PUI-1).
@@ -108,6 +112,10 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   feedback). Weekly refresh via in-process node-cron (Mon 07:23 UTC, no
   heartbeat — D2: Per-sistant crons don't tick; gated on `job_radar_enabled`) +
   `POST /api/jobs/refresh` + the `.github/workflows/job-radar.yml` backstop.
+  The endpoint ALSO honors `job_radar_enabled` — returns `{ ok: true, skipped:
+  "disabled" }` while the feature is off, so the Monday Actions backstop no
+  longer ingests/embeds/charges the AI cap for a disabled feature (PB-3); the
+  `/jobs` page's Refresh button sends `?force=1` (an explicit user action).
   Retention strips old `description`s from unsaved/dismissed rows while keeping
   the hash+status tombstone. Default OFF — enable on the `/jobs` page. New env:
   `ADZUNA_APP_ID` / `ADZUNA_APP_KEY` (free tier; ATS-only without them); reuses
@@ -134,7 +142,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **System Theme Auto-Detection**: Auto option follows OS dark/light preference via prefers-color-scheme
 - **Backend Validation**: Server-side enum validation for priority, horizon, recurrence rules, note colors, email format. The email `PATCH` validates `status` against `VALID_EMAIL_STATUSES` too (not just `POST`), so a client can't force `status='scheduled'` with a past `scheduled_at` to inject a cron-pickable row (PS-7).
 - **Cross-Entity Links**: Link todos, emails, and notes to each other; create todos from notes or emails with auto-linking
-- **Notification System**: Centralized notification check for due tasks, overdue items, streaks at risk, and note reminders; browser push notifications on dashboard load. A client-side **dedup ledger** (`localStorage['ps-notify-ledger']`, keyed by `type|id|title`) suppresses re-firing the same reminder within a 12h window (`NOTIFY_WINDOW_MS`), and a **snooze** affordance (`ps-notify-snooze-until`, 8h via the dashboard "Snooze reminders" button) mutes all reminder notifications for a while.
+- **Notification System**: Centralized notification check for due tasks, overdue items, streaks at risk, and note reminders; browser push notifications on dashboard load. Every check type reaches the user (PB-1 — the client used to drop all but overdue / streak_at_risk / near facts): browser notifications fire for `overdue`, `due_today`, `streak_at_risk`, `habit_streak_at_risk`, `reminder`, `job_radar`, `fact_upcoming` within 7 days and `housing_due` when due today / overdue / within 3 days, each with a per-type title prefix (`REMINDER_PREFIX` / `isImportantReminder` in `pages/dashboard-script.js`); and a **Reminders** dashboard widget (`data-widget="reminders"`, in the default layouts) renders the FULL check list (≤12, linked) whether or not Notification permission was granted. A client-side **dedup ledger** (`localStorage['ps-notify-ledger']`, keyed by `type|id|title`) suppresses re-firing the same reminder within a 12h window (`NOTIFY_WINDOW_MS`), and a **snooze** affordance (`ps-notify-snooze-until`, 8h via the dashboard "Snooze reminders" button) mutes all reminder notifications for a while.
 - **Analytics Dashboard**: Productivity insights with completion trends, day-of-week analysis, priority/category breakdowns, average completion time, streak leaderboard, productivity score, activity heatmap (90 days), emails sent/notes created counts; filterable by week/month/quarter/year
 - **Todo Templates**: Save task structures (with subtasks) as reusable templates; apply from templates list; "Save as Template" from edit modal
 - **Batch Contact Import**: CSV upload for bulk contact import with validation and error reporting
@@ -210,7 +218,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `db/007_enhancements.sql` — custom recurrence, entity links, webhooks, notification preferences
 - `db/008_templates_performance.sql` — todo templates table, performance indexes
 - `uploads/` — local file attachment storage
-- `tests/api.test.js` — unit test suite (the bulk of the 505 per-sistant tests; NOTE: it tests inline copies of the logic and imports no production module — see TQ-1 in the Sept 2026 broad scan)
+- `tests/api.test.js` — unit test suite (the bulk of the 518 per-sistant tests; NOTE: it tests inline copies of the logic and imports no production module — see TQ-1 in the Sept 2026 broad scan)
 - `tests/scan-sept-fixes.test.js` — Sept 2026 broad-scan Batch 1 pins (Save Draft status, Send-now save, local datetime fill, fail-closed vault sensitivity, vault mark-and-sweep, trash chunk purge)
 - `tests/integration.test.js` — integration tests (requires DB, auto-skips without)
 - `Dockerfile` / `docker-compose.yml` — container deployment
@@ -222,7 +230,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (505 tests)
+# Run tests (518 tests)
 npm test
 
 # Pages
@@ -243,8 +251,10 @@ POST   /api/todos           # Create todo
 PATCH  /api/todos/:id       # Update todo
 DELETE /api/todos/:id       # Delete todo
 POST   /api/todos/reorder   # Reorder todos (drag-and-drop)
-POST   /api/todos/:id/complete-recurring  # Complete recurring task & generate next (with streak tracking)
-POST   /api/todos/:id/skip-recurring     # Skip recurring task (preserves streak)
+POST   /api/todos/:id/complete-recurring  # Complete recurring task & generate next (with streak tracking;
+                                          # locked, next due after today — PD-3)
+POST   /api/todos/:id/skip-recurring     # Skip recurring task (preserves streak; locked + idempotent —
+                                          # 400 on an already-completed row, PB-11)
 POST   /api/todos/:id/snooze             # Snooze task (postpone due date)
 GET    /api/todo-categories  # List all categories (defaults + custom)
 GET    /api/todos/:id/dependencies  # Get task dependencies (blocked_by + blocking)
@@ -268,7 +278,8 @@ POST   /api/trash/:type/:id/restore  # Restore item from trash
 DELETE /api/trash/:type/:id  # Permanently delete trashed item
 POST   /api/trash/empty      # Empty all trash
 
-POST   /api/bulk/todos       # Bulk action on todos (complete, delete, set_priority, set_horizon)
+POST   /api/bulk/todos       # Bulk action on todos (complete, delete, set_priority, set_horizon);
+                             # complete routes recurring ids through complete-recurring (PB-12)
 POST   /api/bulk/emails      # Bulk action on emails (delete)
 POST   /api/bulk/notes       # Bulk action on notes (delete)
 
@@ -321,7 +332,9 @@ GET    /api/notifications/check    # Check for due tasks, overdue, streaks at ri
 GET    /jobs                       # Job Radar page (enable toggle, top matches + verify-first)
 GET    /api/jobs                   # gatherJobRadarSummary — main + verify_first buckets + top_pick
 POST   /api/jobs/refresh           # run the pipeline (ingest → dedup → trust → fit → legitimacy →
-                                   #   retention); also hit by the weekly cron + job-radar.yml backstop
+                                   #   retention); also hit by the weekly cron + job-radar.yml backstop.
+                                   #   { ok, skipped:"disabled" } while job_radar_enabled is off unless
+                                   #   ?force=1 (the page button) — PB-3
 PATCH  /api/jobs/:id               # set status new|saved|applied|dismissed (ARCHIVE — never deletes;
                                    #   nudges the source's trust). Invalid status/id → 400
 GET    /api/job-profile            # single-row resume/preferences/min_salary/locations/remote_pref

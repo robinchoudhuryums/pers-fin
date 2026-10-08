@@ -26,7 +26,8 @@ to the "none in progress" state.
   - **Decisions:** budget alerts run 3-hourly while awake (Neon cost accepted); a concurrent manual sync/categorize shares the running result; daily digest settles on nothing_new; complete-recurring refuses trashed rows.
   - **Open follow-ons:** see `.cycle/blocks/6-batch8-broad-implement.md` (notably keep-alive.yml still wakes Render 24/7).
   - **Operator:** none required (column auto-migrates).
-  - **Where I left off:** Batch 8 committed and pushed (no PR). NEXT: /sync-docs for Batch 8, then the next broad-scan batch.
+  - **/sync-docs DONE (Batch 8):** CLAUDE.md — Scheduled Tasks (activity gate vs away channels, single-flight, keep-alive cache + /api/keep-alive-schedule not activity, budget alerts / weekly / daily digest not activity-gated, CSV reminder hourly + last_csv_reminder_at, auto-sync notify gate on accounts_changed + sync_notifications_enabled), Since-you-last-looked baseline + account_type/is_debt/favorable, /api/sync-balances accounts_changed, DB column last_csv_reminder_at, NEW INV-77 (away channels) + INV-78 (auto-sync notify gate), test counts 1426/58 (Perfin 908 + Per-sistant 518) + batch8 test files. apps/per-sistant/CLAUDE.md — one-row email claim, shared locked complete/skip + nextDueAfter + bulk, notification types + Reminders widget, jobs refresh flag/?force=1, 518 tests. README counts. Subsystem paths 80/80 resolve. No new operator state.
+  - **Where I left off:** Batch 8 and its docs are committed and pushed (no PR). NEXT: the next broad-scan batch.
 
 - **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 7 DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-10-08). Batch 7 (AI insights & audit) implemented, tested, pushed (no PR opened).
