@@ -39,7 +39,11 @@ teller/
                            goal milestones, Sheets auto-sync)
   data/
     reference-data.js    — Static lookup tables: electricity rates, ZIP→state, spending
-                           benchmarks, cancel URLs, category rules, AI model costs,
+                           benchmarks, cancel URLs, category rules, AI model
+                           tiers (MODEL_MAP → the 5.5 models) + per-model-ID
+                           prices (MODEL_RATES_BY_ID / modelRates — previous
+                           models kept so stored usage rows re-price; Haiku 5.5
+                           long-prompt card above 100K),
                            insight module definitions
     csv-formats.js       — CSV format detection (Chase, CapOne, Discover, WF, Schwab, generic)
                            + parseMoney() money normalization (strips $ / thousands
@@ -112,6 +116,14 @@ teller/
     ai-audit.js        — Post-generation insight auditing (4 tiers: arithmetic
                            validation, entity existence, trend direction, consistency).
                            Stores results in ai_audit_log table.
+    claude.js          — Claude 5.5 call helpers: createToolCall (tool_choice
+                           "auto" + strict tool + ONE append-only re-ask when the
+                           model answered in prose; usage summed so the cap
+                           charges both calls — Opus/Sonnet 5.5 reject a forced
+                           tool_choice), effortParams ("extract" = low effort,
+                           "analyze" = medium — the 5.5 models think by
+                           default), textOf / toolUseOf (read blocks by type).
+                           Used by every Perfin model call.
   routes/
     enrollments.js       — POST /api/enroll, POST /api/sync, GET /api/items,
                            DELETE /api/enrollments/:id, DELETE /api/items/:id,
@@ -463,9 +475,22 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1318 tests as of latest); use
+  Perfin and Per-sistant test files (1396 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1318 tests across 53 test files (incl.
+  Current count: 1396 tests across 56 test files (incl.
+  `tests/model-upgrade.test.js` + `apps/per-sistant/tests/model-upgrade.test.js`
+  — the Claude 5.5 upgrade pins: MODEL_MAP / AI_MODELS IDs, 5.5 prices incl.
+  Haiku's long-prompt card, a repo-wide scan for forced tool_choice, an explicit
+  effort on every model call, closed strict-tool schemas, createToolCall's
+  re-ask/usage-sum/no-retry-on-refusal rules, and Per-sistant text-by-type +
+  refusal handling; `tests/scan-sept-batch7.test.js` — the Sept 2026 broad-scan
+  Batch 7 AI pins: ID-keyed prices (AIN-9), capped+charged budget suggestions and
+  the shared monthAiSpendCents (AIN-10), an 18-statement audit false-positive set
+  plus true-positive checks (AIN-1/2/3), partial-month prompt labels (AIN-4),
+  anomaly self-exclusion (AIN-5), unknown-limit utilization (AIN-7), summary
+  preservation / strict tool / empty insight (AIN-8), module toggle + digest
+  colours + empty digest (AIN-11/14/16), and the tax report computed from
+  transactions (SXE-7/AIN-12);
   `tests/scan-sept-batch6.test.js` + `tests/scan-sept-batch6-tz.test.js` +
   `apps/per-sistant/tests/scan-sept-batch6.test.js` — the Sept 2026 broad-scan
   Batch 6 date/month/budget pins: prior-month snapshot refresh window (FAN-7),
@@ -715,7 +740,19 @@ shell/
   column. The last 6 score entries + trajectory are injected into the
   AI insights prompt so Claude can correlate score changes with spending
   behavior (e.g. reduced utilization → score improvement).
-- **Tax deduction persistence**: Flagged deductions stored in `tax_deductions` table, accumulated year-round
+- **Tax deduction report**: computed at EXPORT time from the transactions ledger
+  (SXE-7) by `getTaxDeductionTransactions(pool, year)` in
+  `services/financial-queries.js` — one row per matching transaction with its
+  date, the whole calendar year, no LIMIT, the user's share of a shared-card
+  charge (`SPLIT_AMOUNT > 0`), reimbursed + pending excluded, matched on the
+  display merchant against `TAX_REGEX` (word-boundary `TAX_KEYWORD_GROUPS`;
+  `taxCategoryFor` picks the group of the LONGEST matching phrase — medical /
+  charity / education / business / tax). The `tax_deductions` table is the
+  ANNOTATION layer: per-merchant confirm / notes / category (via
+  `PATCH /api/tax-deductions/:id`) apply to that merchant's rows; it never
+  supplies amounts. (The export used to list those per-merchant rows directly —
+  frozen at the last insights run, top 15 merchants only, renamed merchants
+  double-counted, Date column blank.)
 - **Manual bills**: User-created expected charges for the bill calendar (name, amount,
   due_day 1-31, cadence monthly/quarterly/yearly, category). CRUD via
   `/api/manual-bills`. Integrated into `/api/bill-calendar` alongside detected
@@ -1051,11 +1088,13 @@ shell/
   (free, instant) before sending remaining uncategorized transactions to Claude (paid).
   Response includes `categorized_by_rules` and `categorized_by_ai` counts.
   Respects user's model preference from settings.
-  Model ID mapping (`data/reference-data.js`): haiku → `claude-haiku-4-5`,
-  sonnet → `claude-sonnet-4-6`, opus → `claude-opus-4-6`.
+  Model ID mapping (`data/reference-data.js` MODEL_MAP): haiku → `claude-haiku-5-5`,
+  sonnet → `claude-sonnet-5-5`, opus → `claude-opus-5-5` (the current model of
+  each line). Called through `services/claude.js` `createToolCall` (strict tool,
+  `tool_choice` auto — the 5.5 Opus/Sonnet reject a forced one) at low effort.
   Shares the `INSIGHTS_MONTHLY_BUDGET_CENTS` cap with `/api/insights` — returns 429
   when the monthly AI budget is exhausted (rules still apply for free).
-- **AI budget suggestions**: Claude suggests budgets based on the last 3 COMPLETE months of spending via tool_use (the partial current month is excluded — FAN-8).
+- **AI budget suggestions**: Claude suggests budgets based on the last 3 COMPLETE months of spending via tool_use (the partial current month is excluded — FAN-8). Shares the monthly AI cap: 429 past it, and an `entry_type='suggest'` usage row is written right after the call, before tool validation (AIN-10 — it used to be uncapped and uncharged).
 - **AI Insights** (12 toggleable modules, auto-triggered based on cadence setting):
   - Utility rate comparison (vs state/national averages, requires ZIP)
   - Spending benchmarks (vs BLS Consumer Expenditure Survey)
@@ -1064,11 +1103,15 @@ shell/
   - Anomaly detection (for AI analysis a candidate must be both 2x+ above the
     merchant average AND above mean + 2·stddev — the stddev gate suppresses
     false positives on naturally high-variance merchants; 3x+ threshold for
-    real-time push alerts during sync. Baseline excludes the
-    trailing 7 days so the candidate doesn't inflate its own baseline; the
-    candidate window matches that 7-day exclusion (F7) so a charge dated up to
-    a week ago but only just synced — caught via `created_at > watermark` — is
-    still eligible. Deliberately evaluates the PARENT transaction amount, not
+    real-time push alerts during sync. The AI-insights baseline is a per-
+    candidate `CROSS JOIN LATERAL` that EXCLUDES the candidate's own row
+    (`t2.transaction_id <> t.transaction_id`, ≥3 other rows, 12 months back to
+    7 days ago — AIN-5: candidates reach back 2 months, so a charge 8–60 days
+    old used to sit inside its own AVG/STDDEV and, by Samuelson's inequality,
+    a merchant with ≤5 rows could never pass the 2σ gate). The post-sync push
+    baseline still excludes the trailing 7 days, and its candidate window
+    matches that 7-day exclusion (F7) so a charge dated up to a week ago but
+    only just synced — caught via `created_at > watermark` — is still eligible. Deliberately evaluates the PARENT transaction amount, not
     `transaction_splits` shares (AI-13): anomaly asks "was this CHARGE unusually
     large?", and the merchant billed the full amount regardless of how the user
     later split it across categories.
@@ -1081,8 +1124,13 @@ shell/
     `spending_split_pct` on both the baseline AVG and the candidate amount,
     and excludes reimbursed candidates — so the dollar figures shown to Claude
     match the dashboard.)
-  - Seasonal forecasting (24-month pattern analysis)
-  - Debt payoff optimizer (avalanche vs snowball, credit score projections)
+  - Seasonal forecasting (24-month pattern analysis — COMPLETE months only;
+    the month to date is excluded, AIN-4)
+  - Debt payoff optimizer (avalanche vs snowball, credit score projections).
+    A card's limit is `credit_limit` (Plaid or manual), else owed + available
+    when an available figure exists, else UNKNOWN — the prompt then says
+    "Limit unknown, Utilization unknown" (never 100%), and the total limit /
+    overall utilization cover only cards with a known limit (AIN-7)
   - Bill negotiation tips
   - Income & savings rate analysis
   - Tax deduction flags — word-boundary keyword matching with a multi-word-phrase
@@ -1094,13 +1142,28 @@ shell/
     deductions and Box-Office tickets flagged as `office` deductions.
     Matches/groups on `COALESCE(user_merchant_name, merchant_name, name)` so a
     user-renamed merchant is flagged under the name the dashboard shows (AI-7).
-    Persistent year-round accumulation in `tax_deductions` for tax filing —
-    this persistence is INTENTIONALLY independent of AI success (AI-8): the rows
-    are a deterministic keyword-matched view of real YTD transactions (not model
-    output), idempotently UPSERTed, so they accumulate even on a run that later
-    hits the token cap or errors.
+    Uses the shared `getTaxDeductionTransactions` (same list + query as the
+    export and Sheets — SXE-7); the PROMPT gets the top 15 merchants, while
+    EVERY matching merchant is UPSERTed into `tax_deductions` (the annotation
+    layer) and this year's `ai_detected` rows that are unconfirmed, have no
+    notes and no longer match (renamed merchant's old name, now reimbursed, an
+    old keyword list) are PRUNED (AIN-12). This persistence is INTENTIONALLY
+    independent of AI success (AI-8): the rows are a deterministic keyword-matched
+    view of real YTD transactions (not model output), so they accumulate even on
+    a run that later hits the token cap or errors.
   - Goal tracking (with real-world economic context)
-  - Recurring transfers (Zelle, bill payments, savings, investment patterns)
+  - Recurring transfers (Zelle, bill payments, savings, investment patterns) —
+    honors its Settings toggle (AIN-11; it used to run regardless)
+- **Partial current month (AIN-4)**: the prompt labels the month to date
+  "YYYY-MM (partial, through day DD)" in the Monthly Spending and income/savings
+  blocks, and month-over-month trend deltas use COMPLETE months only (a run on
+  the 5th used to report a "-78%" drop).
+- **Model calls (5.5 models)**: generate + rebuild run through `createToolCall`
+  at "analyze" (medium) effort with thinking headroom in `max_tokens`
+  (generate `min(16000, 6000 + 400 × modules)`, rebuild 8000); Ask runs at
+  medium effort with `max_tokens` 4096; categorize / budget suggestions / bill
+  OCR at low effort. A `stop_reason: "refusal"` reply has no tool call / text and
+  takes each caller's existing no-result path (charged, nothing written).
 - **AI context enrichment**: Insights prompt includes month-over-month trend deltas,
   current budget status (spent vs limits), and recurring transfer data.
   Module tracking: all enabled modules are registered in `activeModules` when their
@@ -1111,9 +1174,9 @@ shell/
   `modules_failed` array — so a swallowed query error no longer reports a module as
   analyzed when Claude actually received no data for it.
 - **Auto-trigger**: Insights auto-generate based on `insights_cadence_days` setting (checked every 6 hours)
-- **Cost tracking**: Granular token-level pricing — `input_tokens` from Anthropic's API (already excludes cache tokens) is multiplied by the input rate; `cache_read_input_tokens` and `cache_creation_input_tokens` are billed separately at their own rates. This restores accurate `INSIGHTS_MONTHLY_BUDGET_CENTS` enforcement when prompt caching is active. The monthly budget is shared between `/api/insights`, `/api/categorize`, and `/api/insights/rebuild` — all check the same cap before calling Claude AND each writes a `financial_insights` usage row after its AI call (`entry_type='categorize'` / `'rebuild'` / `'ask'` / `'scan'` for the housing bill-OCR) so its spend counts toward the cap (not just the read side). `/api/insights/rebuild` records that usage row IMMEDIATELY after the Claude call — before its tool-block validation early-returns and the summary UPDATE — so a rebuild that truncated or failed validation (which 500s) still charges the cap for the spend it already incurred (AIA2); `/api/categorize` likewise stops its AI loop if a usage-row write fails rather than spending uncapped (M2). Display queries that surface "AI Insights" filter `entry_type='insight'` to keep categorize/rebuild tracking rows out of the user-facing feed. The cap is checked-then-charged; for the insight path the insight row IS the usage row (atomic — a failed write loses the insight and its charge together), and the only gap (two concurrent generate calls both passing the pre-check) is accepted for a single-operator app rather than guarded with a provisional reservation (AI-11). `/api/insights/status` rounds the accumulated cost once and derives `budget_remaining_cents` from it so estimated + remaining == budget (AI-10).
+- **Cost tracking**: Granular token-level pricing — `input_tokens` from Anthropic's API (already excludes cache tokens) is multiplied by the input rate; `cache_read_input_tokens` and `cache_creation_input_tokens` are billed separately at their own rates (thinking tokens arrive inside `output_tokens`). Rates are keyed by MODEL ID (`MODEL_RATES_BY_ID` / `modelRates` in `data/reference-data.js`, AIN-9): Haiku 5.5 $0.10/$0.50 per MTok (cache read $0.01, write $0.125; a prompt over 100K tokens uses the $0.50/$2.50 card), Sonnet 5.5 $2/$10 (read $0.20), Opus 5.5 $4/$20 (read $0.20); the previous models (Haiku 4.5 $1/$5, Sonnet 4.6 $3/$15, Opus 4.6 $5/$25, older IDs) keep their own rates because usage rows are re-priced at READ time from their stored tokens + `model_used`. This restores accurate `INSIGHTS_MONTHLY_BUDGET_CENTS` enforcement when prompt caching is active. The monthly budget is shared between `/api/insights`, `/api/categorize`, `/api/insights/rebuild`, `/api/ask`, `/api/housing/scan-bill` and `/api/budgets/suggest` — all check the same cap before calling Claude, via ONE spend reader (`monthAiSpendCents()` in routes/insights.js, AIN-10 — it used to be copy-pasted in six places), AND each writes a `financial_insights` usage row after its AI call (`entry_type='categorize'` / `'rebuild'` / `'ask'` / `'scan'` for the housing bill-OCR / `'suggest'` / `'insight_empty'` for an insight run that produced no text) so its spend counts toward the cap (not just the read side). `/api/insights/rebuild` records that usage row IMMEDIATELY after the Claude call — before its tool-block validation early-returns and the summary UPDATE — so a rebuild that truncated or failed validation (which 500s) still charges the cap for the spend it already incurred (AIA2); `/api/categorize` likewise stops its AI loop if a usage-row write fails rather than spending uncapped (M2). Display queries that surface "AI Insights" filter `entry_type='insight'` to keep categorize/rebuild tracking rows out of the user-facing feed. The cap is checked-then-charged; for the insight path the insight row IS the usage row (atomic — a failed write loses the insight and its charge together), and the only gap (two concurrent generate calls both passing the pre-check) is accepted for a single-operator app rather than guarded with a provisional reservation (AI-11). `/api/insights/status` rounds the accumulated cost once and derives `budget_remaining_cents` from it so estimated + remaining == budget (AI-10).
 - **Insight inputs are split-adjusted**: AI insights see the same `spending_split_pct`-adjusted monthly spend totals and the same keyword-filtered income that the dashboard and `/api/savings-rate` show, via `services/financial-queries.js`.
-- **Structured running summary**: AI long-term memory is structured JSON, not plain text. `POST /api/insights` uses Anthropic tool_use (`generate_financial_insight` tool, forced via `tool_choice`) to return BOTH the user-facing `insights_text` AND a typed `summary` object with four arrays: `trends`, `completed_goals`, `pending_actions`, `alerts`. The summary is saved to `user_settings.insights_running_summary_json` (JSONB); the legacy `insights_running_summary` TEXT column gets a human-readable rendering for backward-compat callers. `sanitizeStructuredSummary` enforces shape/length bounds (max items per array, string lengths, enum values) so a pathological tool response can't pollute long-term memory. The response includes `summary_status` — `"updated"` (normal), `"preserved_due_to_truncation"` (tool block missing because hit max_tokens), `"preserved_no_tool_block"` (model didn't comply with tool_choice — rare), or `"preserved_validation_failed"` (sanitizer rejected the shape) — so callers can surface when long-term memory didn't advance. `GET /api/insights/status` returns the full `running_summary` object plus a `running_summary_counts` block (`{trends, completed_goals, pending_actions, alerts}`) so dashboards can show "tracking 3 trends · 2 goals · 5 actions · 1 alert" without a second fetch.
+- **Structured running summary**: AI long-term memory is structured JSON, not plain text. `POST /api/insights` uses Anthropic tool_use (the `generate_financial_insight` tool — `strict: true` with `additionalProperties: false` on every object, requested with `tool_choice` auto via `createToolCall`) to return BOTH the user-facing `insights_text` AND a typed `summary` object with four arrays: `trends`, `completed_goals`, `pending_actions`, `alerts`. The summary is saved to `user_settings.insights_running_summary_json` (JSONB); the legacy `insights_running_summary` TEXT column gets a human-readable rendering for backward-compat callers. `sanitizeStructuredSummary` (exported) enforces shape/length bounds (max items per array, string lengths, enum values) AND returns null unless all four keys are ARRAYS in the raw input, so a pathological, empty (`summary: {}`) or partial tool response can't wipe long-term memory (AIN-8). The response includes `summary_status` — `"updated"` (normal), `"preserved_due_to_truncation"` (`stop_reason` was `max_tokens` — with or without a tool block, since a cut-off tool input may be partially parsed), `"preserved_no_tool_block"` (no tool call even after the re-ask, or a refusal), or `"preserved_validation_failed"` (sanitizer rejected the shape) — so callers can surface when long-term memory didn't advance. A run with NO insight text is charged as an `'insight_empty'` usage row but not stored as an insight, audited or emailed; it returns 502. `/api/insights/rebuild` returns 500 without writing on a `max_tokens` stop (after charging the cap). `GET /api/insights/status` returns the full `running_summary` object plus a `running_summary_counts` block (`{trends, completed_goals, pending_actions, alerts}`) so dashboards can show "tracking 3 trends · 2 goals · 5 actions · 1 alert" without a second fetch.
 - **AI insight auditing**: Post-generation validation via `services/ai-audit.js`. Four tiers:
   (1) arithmetic — dollar amounts/percentages compared to actual DB data; a claim is matched to a
   category name by **word boundary** (not substring, so `car` ≠ `Carmax`) and emits at most ONE
@@ -1133,10 +1196,26 @@ shell/
   inflating `audit_accuracy` in the false-negative direction (F7). It deliberately does NOT skip
   bare/unqualified or `per month` claims, which AIA1 still checks against this-month. this-month +
   unqualified claims (which refer to the data the model was given) are still checked.
+  **Attribution (AIN-1)**: each dollar figure is judged on its OWN clause (`claimSegments` — from the
+  previous figure / sentence break to the figure, plus the trailing span to the next clause break) and
+  compared only with the category it is the NEAREST amount of (`attributeCategory`: the name ≤30 chars
+  before it with no open parenthetical, or "$X on|for|in <category>"). A figure in a budget / limit /
+  target / goal / average / benchmark / national / typical / save / cut / reduce / cancel / switch /
+  "could|would|instead" clause (`SKIP_WINDOW_RE`), or followed by a comparator ("$120 over …",
+  `DELTA_AFTER_RE`), is skipped — per-item prices ("cancel Hulu ($17.99)"), benchmark figures and
+  budget limits used to be compared with the category / subscription TOTAL and flagged CRITICAL on
+  correct insights. The subscription TOTAL is checked only when the clause names subscriptions AND
+  phrases the figure as a total (`SUB_TOTAL_RE`: total / all / combined / "N subscriptions").
+  **Savings rate (AIN-3)**: checked against COMPLETE months — the closer of the last complete month
+  and the complete-month average; only an explicit "this month" claim uses the month to date.
   (2) entity existence — merchant/goal/subscription names verified against DB via
   whole-word match with a ≥4-char min, so a tiny known entity (a "Car" goal) can't wildcard-match
-  every claimed name and let hallucinations pass (AI-4); (3) trend direction — only **total/overall**
-  spending claims are checked against the monthly total; category-specific claims are skipped rather
+  every claimed name and let hallucinations pass (AI-4). Category names are part of the known set;
+  months, weekdays and generic finance nouns (`isGenericName` — "Spending trend", "Emergency fund",
+  "March was") are not entity claims, and a "- **Heading**:" bullet is captured only when a `$`
+  amount follows (AIN-2); (3) trend direction — only **total/overall**
+  spending claims are checked, against the last two COMPLETE months (AIN-3 — the month to date
+  always read "down"); category-specific claims are skipped rather
   than mis-flagged against the total baseline (AI-1); (4) consistency — detects self-contradictions
   within the same report. Results stored in `ai_audit_log` table. Critical findings trigger an in-app
   notification, deduped to at most one per 24h via `sentRecently('audit-alert', 24)` (F5) so a
@@ -1184,7 +1263,9 @@ shell/
   Digest Email" toggle (default off); day-of-week configurable
   (`weekly_digest_day`, default Monday). The scheduler ticks hourly but
   `runWeeklyDigest` itself gates with a 6-day window from
-  `last_weekly_digest_at` so the daily-aligned check is idempotent.
+  `last_weekly_digest_at` so the daily-aligned check is idempotent, and
+  skips (`empty_summary`) when all four summary arrays are empty (AIN-16).
+  Alerts are coloured by their own critical/warning/info map (AIN-14).
   Requires Per-sistant webhook configured (same path as
   `insights_generated`); without it `sendPerSistantWebhook` short-circuits
   and the digest is a no-op.
@@ -1386,7 +1467,14 @@ shell/
     `insights_running_summary_json` (Trends, Pending Actions, Active
     Alerts, Completed Goals); per-feedback row coloring.
   - **Recurring Transfers**: warning-only protection.
-  - **Tax Deductions**: warning-only protection.
+  - **Tax Deductions YYYY**: computed from TRANSACTIONS at sync time (SXE-7)
+    — one row per matching transaction (Merchant, Amount, Category, Type,
+    Confirmed, Notes, Date), the inlined copy of `TAX_KEYWORD_GROUPS` + the
+    `getTaxDeductionTransactions` query (pinned to the canonical by
+    tests/scan-sept-batch7.test.js), merchant annotations from
+    `tax_deductions`. Through April the PRIOR year's tab is refreshed too
+    (December charges posting in January, late confirmations); a past year
+    with no rows gets no tab. Warning-only protection.
   - **Dashboard**: net worth, budgets, goals, over-budget conditional
     formatting; SPENDING BY CATEGORY section gained 6 per-month columns
     + SPARKLINE Trend column + gradient heatmap conditional formatting
@@ -1662,7 +1750,8 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1318 tests passing across 53 test files (Perfin 820 + Per-sistant 498), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1396 tests passing across 56 test files (Perfin 891 + Per-sistant 505), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
 ```bash
@@ -1913,7 +2002,8 @@ POST /api/budgets          # create budget (body: rollover_enabled, budget_type,
 PATCH /api/budgets/:id     # update budget (400 on a non-finite/negative monthly_limit,
                            # unknown budget_type or malformed effective_month — FAN-14)
 DELETE /api/budgets/:id    # delete budget
-POST /api/budgets/suggest  # AI budget suggestions (from the last 3 COMPLETE months)
+POST /api/budgets/suggest  # AI budget suggestions (from the last 3 COMPLETE months);
+                           # 429 past the shared AI cap, charged as an entry_type='suggest' usage row
 POST /api/budgets/accept   # accept AI-suggested budget
 GET  /api/budgets/alerts   # spending velocity warnings (critical/warning/info)
 POST /api/budgets/snapshot # create monthly snapshot + compute rollovers (body: month=YYYY-MM, 01-12)
@@ -1921,6 +2011,9 @@ GET  /api/budgets/history  # budget snapshots for trend analysis (query: months)
 POST /api/insights         # generate new AI insights. Response includes
                            # modules_used and modules_failed (dynamic modules
                            # whose data query threw — dropped from modules_used)
+                           # + summary_status. 502 when the model returned no
+                           # insight text (charged as 'insight_empty'; nothing
+                           # stored, audited or emailed — AIN-8)
 GET  /api/insights/status  # AI API config + usage stats + audit_accuracy (90d clean-run %)
                            # + running_summary (structured JSON) + running_summary_counts
 GET  /api/insights/usage   # AI usage history
@@ -2041,9 +2134,14 @@ PATCH /api/notifications/:id/read # mark notification as read
 POST /api/notifications/read-all  # mark all notifications as read
 
 # Tax export
-GET  /api/export/tax-report # year-end deduction summary (query: year, format=csv|json|pdf)
-                            # PDF format renders via pdfkit with per-category breakdown
-                            # and grand-total summary
+GET  /api/export/tax-report # year-end deduction summary (query: year — default the
+                            # APP_TIMEZONE year, format=csv|json|pdf). Computed from
+                            # transactions at export time (SXE-7): one row per matching
+                            # transaction with its date, whole year, split-adjusted;
+                            # merchant annotations (confirm/notes/category) from
+                            # tax_deductions; Type "keyword_match". JSON groups by
+                            # category; PDF renders via pdfkit with per-category
+                            # breakdown and grand-total summary
 
 # WebAuthn / biometric login — Perfin sub-app endpoints (registration always
 # happens here; standalone deployments also use these for the auth flow).
@@ -2167,7 +2265,7 @@ validation (SN-5).
 
 ### AI / Insights (Perfin)
 - `ANTHROPIC_API_KEY` — enables AI features in both apps
-- `INSIGHTS_MONTHLY_BUDGET_CENTS` — monthly API spending cap fallback (default 50 = $0.50); shared between `/api/insights`, `/api/categorize`, `/api/insights/rebuild`, and `/api/ask`. Overridable at runtime from Settings → AI Insights → Monthly Budget Cap (`user_settings.ai_monthly_budget_cents`, resolved by `getAiBudgetCents()` in routes/insights.js — the single cap reader)
+- `INSIGHTS_MONTHLY_BUDGET_CENTS` — monthly API spending cap fallback (default 50 = $0.50); shared between `/api/insights`, `/api/categorize`, `/api/insights/rebuild`, `/api/ask`, `/api/housing/scan-bill` and `/api/budgets/suggest` (spend read by the one `monthAiSpendCents()`). Overridable at runtime from Settings → AI Insights → Monthly Budget Cap (`user_settings.ai_monthly_budget_cents`, resolved by `getAiBudgetCents()` in routes/insights.js — the single cap reader)
 
 ### Push notifications (Perfin)
 - `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` — Web Push keypair (`npx web-push generate-vapid-keys`); without these `/api/notifications/*` returns 501
@@ -3511,7 +3609,9 @@ Financial Analytics:
    covered by the Web UI globs.)
 AI Insights & Audit:
   teller/routes/insights.js, teller/routes/insights-email.js,
-  teller/routes/ask.js, teller/services/ai-audit.js
+  teller/routes/ask.js, teller/services/ai-audit.js, teller/services/claude.js
+  (claude.js = the shared Claude 5.5 call helpers used by every Perfin model
+   call, incl. categorize.js / budgets.js / housing.js in other subsystems)
 Settings, Notifications & Cross-app:
   teller/routes/settings.js, teller/routes/notifications.js,
   teller/routes/persistent.js
@@ -3580,9 +3680,9 @@ INV-10 | Keyword filters use word-boundary regex, never LIKE '%kw%' (a user-supp
 INV-11 | Goal current_amount derived (balance − baseline) when funding-linked | Subsystem: Financial Analytics
 INV-12 | Categorization writes user_category, never category | Subsystem: Detection & Categorization
 INV-13 | Categorization rules applied before AI; only unmatched rows sent to Claude | Subsystem: Detection & Categorization
-INV-14 | INSIGHTS_MONTHLY_BUDGET_CENTS enforced across insight+categorize+rebuild+ask | Subsystem: AI Insights & Audit
-INV-15 | Insight cost uses granular token pricing (input + cache_read + cache_creation) | Subsystem: AI Insights & Audit
-INV-16 | sanitizeStructuredSummary bounds the summary; failure preserves prior | Subsystem: AI Insights & Audit
+INV-14 | INSIGHTS_MONTHLY_BUDGET_CENTS enforced across insight+categorize+rebuild+ask+scan+suggest, every check reading the ONE monthAiSpendCents() | Subsystem: AI Insights & Audit | Verify: tests/ai-cap-charge.test.js + tests/scan-sept-batch7.test.js (AIN-10)
+INV-15 | Insight cost uses granular token pricing (input + cache_read + cache_creation), keyed by MODEL ID (modelRates — previous models keep their own rates; Haiku 5.5 long-prompt card) | Subsystem: AI Insights & Audit | Verify: tests/model-upgrade.test.js
+INV-16 | sanitizeStructuredSummary bounds the summary and requires all four arrays; failure, a max_tokens stop, or no tool call preserves the prior summary | Subsystem: AI Insights & Audit | Verify: tests/scan-sept-batch7.test.js (AIN-8)
 INV-17 | Migrations run in one transaction; failure is fatal | Subsystem: Platform, Shell & Auth
 INV-18 | Scheduler invokes route logic via in-process helpers, never HTTP self-fetch | Subsystem: Platform, Shell & Auth
 INV-19 | Named helper exports attached AFTER module.exports = router | Subsystem: Platform, Shell & Auth
@@ -3630,6 +3730,8 @@ INV-70 | Recurring projections (detection next_expected, /api/forecast, /api/bil
 INV-71 | Detection never re-activates a series whose last charge is past the stale window (isStale, same window as the stale sweep), and never overwrites a user-set transfer_type (transfer_type_user_set) | Subsystem: Detection & Categorization | Verify: tests/scan-sept-batch4.test.js (DC-2 / DC-4 blocks)
 INV-72 | The Rent & Utilities ledger is single-payee: generation covers the trailing 24 months and never regenerates a period that already has a rent row (any payee) or a same-label utility row; a payee/label rename carries the stored rows over (planConfigUpdate) instead of creating new ones; ledger + split are scoped to the configured payee | Subsystem: Financial Analytics | Verify: tests/scan-sept-batch5.test.js (FAN-3 / FAN-4 blocks)
 INV-73 | Budget status has ONE definition — getBudgetStatus(pool, month) in financial-queries.js (spend via getCategorySpendingForMonth; effective_limit = monthly_limit + the PRIOR month's snapshot rollover when rollover_enabled; one-time budgets only in their effective_month). GET /api/budgets, /api/budgets/alerts, the insights prompt and the Ask budget tool call it; the Sheets Budget Status SQL mirrors it; no surface reads the bare monthly_limit as the limit | Subsystem: Financial Analytics | Verify: tests/scan-sept-batch6.test.js (AIN-6 block)
+INV-75 | The tax report (export + Sheets tab) is computed from transactions via getTaxDeductionTransactions (one shared keyword list); the tax_deductions table only annotates merchants and never supplies amounts | Subsystem: Financial Analytics / Sheets & External Export | Verify: tests/scan-sept-batch7.test.js (SXE-7)
+INV-76 | No model call uses a forced tool_choice (Opus/Sonnet 5.5 400 on it): structured calls go through createToolCall (auto + strict tool + one re-ask, usage summed for the cap); every call sets an explicit effort and reads content blocks by type | Subsystem: AI Insights & Audit (seam: categorize / budgets / housing / Per-sistant ai.js) | Verify: tests/model-upgrade.test.js + apps/per-sistant/tests/model-upgrade.test.js
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
 ### Policy Configuration
