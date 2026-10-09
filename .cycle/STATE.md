@@ -9,7 +9,30 @@ to the "none in progress" state.
 
 ## Current Cycle
 
-- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 14 DONE** on branch
+- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 15 DONE** on branch
+  `claude/lucid-darwin-7r8e59` (2026-10-09). Batch 15 (test-quality guards) implemented on top of
+  Batches 11–14 (all unmerged, no PR), tested, pushed. Test/CI changes only — no production code.
+  - **Completed:** TQ-2 (tests/contract/ real-Postgres route contract suite — financial queries,
+    housing + settle-up, calendar + exports, transaction writes + CSV import, Per-sistant routes;
+    `npm run test:contract`; CI `migrations` job step), TQ-1 (tests/teller.test.js + Per-sistant
+    api.test.js rewritten against the real code; replicas/tautologies deleted), source guards
+    (tests/scan-sept-batch15.test.js: style nonce, root-relative navigation, undefined CSS vars,
+    contract wiring).
+  - **Not finished (selected):** none.
+  - **Tests:** npm test 1475/1475 + 2 todo (Perfin 1033 + Per-sistant 442; 66 files). Contract
+    suite 27 pass + 1 todo on local PG16; mutation check (FAN-1 cast, DC-1 mount order, SXE-8
+    dates) turns it red.
+  - **Decisions:** one scratch DB per contract file; full real mount order in the contract app;
+    pre-existing bugs found by the new tests are recorded as node:test `todo`s / guard KNOWN_GAPS
+    (reported, not CI-red) rather than fixed in a test batch.
+  - **Open follow-ons:** see `.cycle/blocks/6-batch15-broad-implement.md` — /api/calendar 500
+    (advanceRecurrence), quick-add regexes lose `\b`, settings-patch pathname, Per-sistant legacy
+    CSS vars, unvalidated perfin_url/theme.
+  - **Operator:** none required.
+  - **Where I left off:** Batch 15 committed and pushed (no PR). This was the last planned batch of
+    the Sept 2026 broad scan. NEXT: /sync-docs for Batch 15; then the follow-ons above.
+
+- **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 14 DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-10-09). Batch 14 (Per-sistant correctness & UI)
   implemented on top of Batches 11–13 (all unmerged, no PR), tested, pushed.
   - **Completed:** PB-4, PB-5, PB-6, PB-9 (Job Radar: profile edit clears embedding + fits; live
@@ -44,8 +67,7 @@ to the "none in progress" state.
     deactivate), NEW INV-91 (Job Radar buckets), INV-92 (service worker), INV-93 (automations).
     README — counts + Batch 14 coverage. Subsystem paths resolve (globs). Operator state: none new
     (db/024 auto-migrates; Ask defaults to Haiku — noted in the Per-sistant docs).
-  - **Where I left off:** Batch 14 and its docs committed and pushed (no PR). NEXT: Batch 15
-    (test-quality guards); the pre-existing /api/calendar advanceRecurrence 500 is an open follow-on.
+  - **Where I left off (then):** Batch 14 and its docs committed and pushed.
 
 - **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 13 DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-10-09). Batch 13 (Perfin UI correctness & accessibility)
