@@ -525,9 +525,20 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1602 tests as of latest); use
+  Perfin and Per-sistant test files (1647 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1602 tests across 64 test files (incl.
+  Current count: 1647 tests across 65 test files (incl.
+  `apps/per-sistant/tests/scan-sept-batch14.test.js` — the Sept 2026 broad-scan
+  Batch 14 Per-sistant pins: Job Radar profile-edit reset (PB-4), live re-score /
+  fit backfill / stale + scam + unscored buckets / batched embeds (PB-5/PB-6),
+  company deactivate (PB-7), dismiss nudge (PB-9), fetch timeouts (PB-19), the
+  service worker run in a vm against fake caches — 503, no secret caching,
+  replay rules (PB-17), task location (PD-5), automation validation / wiring /
+  isolation (PD-6), Ask model column + db/024 (PD-7), one-recipient validation
+  (PD-9), iCal escaping (PD-11), dependency cycles (PD-12), template apply
+  transaction (PD-13), review overdue (PD-14), recurring undo (PUI-3), Jobs views
+  (PUI-4), keyboard/dialog wiring (PUI-5), webhook events (PUI-6), http(s) apply
+  links (PUI-7) and embedded keep-alive (PUI-8);
   `tests/scan-sept-batch13.test.js` — the Sept 2026 broad-scan Batch 13 Perfin UI
   pins: the real PYRAMID_MODES block run against canned responses (WD-4/WD-5),
   writeOk / parseAmountInput + the 0%-share route + each named write (WUI-6/WD-12),
@@ -1980,7 +1991,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1602 tests passing across 64 test files (Perfin 1025 + Per-sistant 577), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1647 tests passing across 65 test files (Perfin 1025 + Per-sistant 622), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -4053,7 +4064,7 @@ INV-62 | The shell sets a nonce CSP + frame-ancestors 'none' + X-Frame-Options o
 INV-63 | Per-sistant's shared fetch wrapper (apps/per-sistant/views/js.js) redirects once to the root /login on a 401 or a followed 302→/login (session expiry), loop-guarded, returning the Response unchanged to callers — parity with Perfin INV-61, so an idle-timeout never leaves a blank/error page. The check uses indexOf('/login'), NOT a regex, because the module is one backtick template literal that eats regex backslashes (see Per-sistant CLAUDE.md gotcha) | Subsystem: Per-sistant Web UI | Verify: code read views/js.js fetch wrapper
 INV-64 | Job Radar's AI passes (job_fit + legitimacy) are cap-charged: cappedCall reads getAiBudgetCents()+monthlyAiSpendCents() and throws { code:'CAP' } BEFORE calling the model when over budget; on a successful call it charges an ai_usage row via recordAiUsage in a `finally` (idempotent, only when tokens were consumed). The 10 pre-existing Per-sistant AI features still use the uncapped callAI (unchanged) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (cappedCall charge-on-success + throw-CAP-before-model-call)
 INV-65 | Job Radar ingest is content_hash-idempotent: dedupPersist upserts ON CONFLICT (content_hash) and counts genuine inserts via (xmax = 0), so a re-run over identical listings adds 0, no duplicate rows. Retention strips old new/dismissed descriptions but KEEPS the hash+status tombstone so a dismissed job re-ingested stays dismissed | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (dedup idempotency, retention)
-INV-66 | gatherJobRadarSummary is the SINGLE fail-soft aggregator feeding the /jobs page, the notification check, and the AI daily-briefing line (the gatherHealthSummary pattern) — a query error returns the safe empty shape, never 500s those surfaces; the notif-check + briefing call it gated on job_radar_enabled. Listing status changes ARCHIVE (saved/applied/dismissed), never hard-delete | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (aggregator fail-soft + archive-not-delete)
+INV-66 | gatherJobRadarSummary is the SINGLE fail-soft aggregator feeding the /jobs page, the notification check, and the AI daily-briefing line (the gatherHealthSummary pattern) — a query error returns the safe empty shape, never 500s those surfaces; the notif-check + briefing call it gated on job_radar_enabled. Listing status changes ARCHIVE (saved/applied/dismissed), never hard-delete, and removing a target company deactivates it (active=false — the db/021 seed would re-insert a deleted row) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (aggregator fail-soft + archive-not-delete)
 INV-67 | Every transaction-sync trigger (POST /api/sync + daily-sync.yml, bank auto-sync, pre-insights chain) goes through syncAllTransactions — Teller then Plaid, each failure-isolated — and runAnomalyCheck runs ONCE over the combined added count; reconcile/backfill never runs it | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-sept-batch2.test.js (BSI-2 / DD-1 block)
 INV-68 | last_sync_result is merged PER PROVIDER (a write replaces only the providers it ran; null result = untouched), never last-writer-wins; errors[] is the flat union | Subsystem: Bank Sync & Ingestion / Data Freshness | Verify: tests/scan-sept-batch2.test.js (BSI-11 block)
 INV-69 | incomePredicate(alias) qualifies EVERY outer column reference with the caller's alias, including inside the __t2 double-count guard (an unqualified ref inside a subquery resolves to the subquery's own table) | Subsystem: Financial Analytics | Verify: tests/scan-sept-batch3.test.js (FAN-2) + tests/ops-and-alerts.test.js
@@ -4077,6 +4088,9 @@ INV-87 | Plaid holdings mirror Plaid's response per returned account: every hold
 INV-88 | TWR/XIRR treat an account that first appears mid-window as an opening inflow on its first snapshot date (its own flows on/before that date are part of the balance), never as investment return | Subsystem: Bank Sync & Ingestion (investment-performance.js) | Verify: tests/scan-sept-batch12.test.js (BSI-6 block)
 INV-89 | Every Perfin page write reports its outcome: the response goes through writeOk (2xx → continue, else a toast with the server's error), never `await apiFetch(...)` then assume success; prompt amounts go through parseAmountInput and a non-number is refused | Subsystem: Web UI | Verify: tests/scan-sept-batch13.test.js (WUI-6 / WD-12 blocks)
 INV-90 | Every Perfin modal (and the bell panel) is a dialog via openDialog / watchDialog — role="dialog" aria-modal, focus moved in, Tab trapped, Esc closes, focus restored; and every var(--x) used without a fallback is defined in perfin-shared.css | Subsystem: Web UI | Verify: tests/scan-sept-batch13.test.js (IF-1 / IF-4 blocks)
+INV-91 | The Job Radar main bucket (and so top_pick, the job_radar notification and the briefing line) holds only listings with trust ≥ 60, a NON-NULL fit_score ≥ 65 and no 'suspect' verdict; an unscored or suspect listing is "verify first", a 'scam' verdict is never shown, and a 'new' listing ≥ STALE_DAYS behind the latest refresh's last_seen is dropped; each refresh re-scores trust for every live listing (keeping a Claude verdict) and a profile text edit clears the fit scores | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch14.test.js (PB-4 / PB-5 / PB-6 blocks)
+INV-92 | The Per-sistant service worker never reports a queued write as success (offline → 503 ok:false), never queues send / refresh / AI / RAG / auth writes, never caches /api/rag/secret* or auth responses, and removes a queued entry only on a definitive answer (2xx or a non-retryable 4xx) or after 24h | Subsystem: Per-sistant Web UI | Verify: apps/per-sistant/tests/scan-sept-batch14.test.js (PB-17 block — the emitted sw.js run in a vm)
+INV-93 | Every stored automation is validated by helpers.validateAutomationRule (runnable trigger/action pair for the trigger's entity, required value, priority/horizon enums) on POST and merged PATCH, runAutomations skips an invalid stored rule and isolates each rule in its own try/catch, and a set_* action only ever touches the todo that fired it | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch14.test.js (PD-6 block)
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
 ### Policy Configuration

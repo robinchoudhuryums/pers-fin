@@ -33,7 +33,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   at-most-once delivery). The manual `POST /api/emails/:id/send` claims the row
   the same way (`UPDATE … WHERE id = $1 AND status <> 'sent' RETURNING`) so a
   double-click / retry returns 409 instead of re-sending (PB-4).
-- **Tests**: `tests/` (node:test runner, `npm test`, 577 tests (api + integration + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11 + model-upgrade))
+- **Tests**: `tests/` (node:test runner, `npm test`, 622 tests (api + integration + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + model-upgrade))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of June 2026)
@@ -56,12 +56,12 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **AI Model Selection**: Per-feature choice of Haiku (fast/cheap), Sonnet (smarter), or Off — configurable in Settings
 - **Email Templates**: Save and reuse common email formats
 - **Notes**: Color-coded, pinnable, with optional reminders, tags, and Markdown support (bold, italic, lists, checkboxes, links, quotes, headings). The client-side `renderMd` link rule scheme-validates hrefs (`http(s):`/`mailto:` only, else neutralized to `#`) and quote-escapes the URL, so a `[x](javascript:…)` note can't render a clickable script URL (PS-4).
-- **Task Dependencies**: Blocking/blocked-by relationships between tasks with circular dependency prevention
+- **Task Dependencies**: Blocking/blocked-by relationships between tasks with circular dependency prevention — a cycle of ANY length is refused (`WITH RECURSIVE` reachability over `task_dependencies`; only a direct A↔B pair used to be caught) and a trashed task neither blocks nor is blocked (both dependency lists filter `t.deleted_at IS NULL`) (PD-12)
 - **Streak Tracking**: Recurring tasks track completion streaks (current + best) with on-time detection — "on time" compares the APP_TIMEZONE date (`todayStr()`) with the due date read via local getters (`ymdLocal`), so a completion on the due date's local evening west of UTC no longer resets the streak (PD-4)
-- **Contacts**: Name→email lookup for quick email addressing
+- **Contacts**: Name→email lookup for quick email addressing (POST/PATCH validate the address — PD-9)
 - **Dashboard**: Customizable widget layout (drag-to-reorder, show/hide widgets), overview cards, task views (with subtask progress bars), AI briefing, smart suggestions, scheduled emails, Perfin widget, global search, a "Snooze reminders" button. (The "Ask your assistant" card was retired — it's now the top-bar **Ask** button, available on every page; saved layouts still listing `ai_query` are pruned in `loadLayout()`.)
-- **AI Smart Suggestions**: AI-powered productivity coaching based on task priorities, due dates, and streaks
-- **AI Natural Language Query**: Ask questions about your data ("what did I do last week?", "how many tasks are overdue?"). Surfaced as the **Ask** button in the top bar (appbar `ui-controls` slot, next to the Perfin cross-app link) — a global popover wired in `views/js.js`, reachable from every page, posting to `POST /api/ai/query`.
+- **AI Smart Suggestions**: AI-powered productivity coaching based on task priorities, due dates, and streaks. Its own model setting (`ai_model_smart_suggestions`, db/024 — PD-7; it used to follow the Daily Briefing model)
+- **AI Natural Language Query**: Ask questions about your data ("what did I do last week?", "how many tasks are overdue?"). Surfaced as the **Ask** button in the top bar (appbar `ui-controls` slot, next to the Perfin cross-app link) — a global popover wired in `views/js.js`, reachable from every page, posting to `POST /api/ai/query`. Its own model setting `ai_model_natural_language_query` (default haiku, db/024 — PD-7): it used to be gated on the Daily Briefing model, which defaults to off, so Ask answered "AI is not enabled" on a fresh install; without `ANTHROPIC_API_KEY` it now says so.
 - **Knowledge base (RAG)**: a personal master knowledge store on the Knowledge page.
   Indexes an Obsidian vault (private GitHub repo) + your notes into pgvector for
   source-cited semantic Q&A (keyword fallback when embeddings are off); structured
@@ -102,14 +102,39 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   (see the AI cost cap below; charge in a `finally`, 429-when-capped) and
   fully fail-soft (no Voyage / no pgvector / AI off → degrade, never throw).
   A single fail-soft `gatherJobRadarSummary(pool)` aggregator (the
-  `gatherHealthSummary` mirror) splits a **main** bucket (trust ≥ 60, fit ≥ 65)
-  from a **"verify first"** bucket (trust 40-59) and feeds three surfaces: the
+  `gatherHealthSummary` mirror) splits a **main** bucket (trust ≥ 60 AND a real
+  fit score ≥ 65 AND not 'suspect') from a **"verify first"** bucket (trust
+  40-59, OR not fit-scored yet, OR a 'suspect' verdict — PB-5/PB-6: a NULL fit
+  used to count as passing, so "N new high-fit roles" fired with no profile at
+  all). A `legitimacy='scam'` listing is hidden, and a 'new' listing whose
+  `last_seen` is more than `STALE_DAYS` (14) behind the NEWEST `last_seen` (the
+  latest refresh — not wall-clock, so skipped runs don't blank the page) is
+  dropped as a ghost; saved listings stay. It feeds three surfaces: the
   `/jobs` page, the **notification check** (`job_radar` entry, weekly cadence
   from the refresh, gated on `job_radar_enabled`), and **one AI daily-briefing
   line** — there is NO email digest (D3: Per-sistant's proactive surface is the
   notification check). Saving/applying/dismissing a listing **archives** it
-  (status change, never a row delete) and nudges its source's trust (B7
-  feedback). Weekly refresh via in-process node-cron (Mon 07:23 UTC, no
+  (status change, never a row delete); saving/applying nudges its source's
+  trust once per genuine status change — dismiss means "not interested", so it
+  no longer lowers the trust of the whole source (PB-9). Each refresh
+  (`runRefresh`) re-scores trust for EVERY live (new/saved, not stale) listing so
+  the first_seen ghost decay actually applies, keeping a Claude legitimacy
+  verdict (`legitimacy_reasons` set), and backfills fit for live listings with
+  no `fit_score` (`liveListingIds`); the fit pass embeds only rows with no
+  embedding, in groups of 64 with per-group try/catch, and Claude-scores only
+  unscored candidates (still ≤ `maxFit` = 12 per run) (PB-5). Editing the
+  profile's resume/preferences text clears `job_profile.profile_embedding` and
+  the new/saved listings' fit scores (separate fail-soft statements — the column
+  only exists with pgvector) and returns `rescore_needed`, so the next refresh
+  re-ranks against the NEW profile (PB-4). Removing a target company sets
+  `active = false` instead of deleting it — db/021 re-runs its seed every boot
+  with `ON CONFLICT DO NOTHING`, so a deleted seed row used to come straight
+  back (PB-7). Only `http(s)` apply links are ingested (`isHttpUrl`) or rendered
+  (`safeUrl`, PUI-7); board fetches time out after 15 s (PB-19). The page has
+  Radar / Saved / Applied / Dismissed views (`GET /api/jobs/list?status=`) with
+  per-status actions (Unsave, Move back to radar), error states for failed loads
+  and writes, a Refresh button disabled while running, and an Enabled toggle
+  that reverts when its save fails (PUI-4). Weekly refresh via in-process node-cron (Mon 07:23 UTC, no
   heartbeat — D2: Per-sistant crons don't tick; gated on `job_radar_enabled`) +
   `POST /api/jobs/refresh` + the `.github/workflows/job-radar.yml` backstop.
   The endpoint ALSO honors `job_radar_enabled` — returns `{ ok: true, skipped:
@@ -120,17 +145,18 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   the hash+status tombstone. Default OFF — enable on the `/jobs` page. New env:
   `ADZUNA_APP_ID` / `ADZUNA_APP_KEY` (free tier; ATS-only without them); reuses
   `VOYAGE_API_KEY` + `ANTHROPIC_API_KEY`.
-- **Automations/Rules Engine**: Create trigger→action rules (e.g., "when task created with category=work, set priority=high"), configurable in Settings
+- **Automations/Rules Engine**: Create trigger→action rules (e.g., "when task created with category=work, set priority=high"), configurable in Settings. Triggers: `todo_created`, `todo_completed` (incl. completing a recurring task), `note_created`, `email_created` — all four fire now (notes/emails never called `runAutomations`). Actions: `set_priority` / `set_category` / `set_horizon` (todo triggers only — on a note/email trigger they would have rewritten the todo sharing that id), `add_tag` (notes), `create_todo` (any). `schedule` and `send_notification` were removed from `VALID_TRIGGERS`/`VALID_ACTIONS` (nothing ever ran them). `helpers.validateAutomationRule` checks the trigger/action pair, the required value and the priority/horizon enums on POST and on the merged PATCH (400), and `runAutomations` skips (logs) a stored rule that fails it and runs each rule in its own try/catch, so one bad rule no longer aborts the rest (PD-6).
 - **File Attachments**: Upload files (up to 10MB) to tasks, emails, and notes via local storage. The download route sanitizes the stored `original_name` in the `Content-Disposition` header (strips quotes/backslashes/control chars) and emits RFC 5987 `filename*=UTF-8''…`, so a crafted filename can't inject/spoof a header (PS-5).
-- **iCal Export**: Export tasks and scheduled emails as .ics file for Google Calendar, Outlook, etc.
+- **iCal Export**: Export tasks and scheduled emails as .ics file for Google Calendar, Outlook, etc. RFC 5545 output (PD-11): text is escaped by `icsEscape` (backslash, `;`, `,`, newline → `\n`, CR dropped — it used to print "Line1 nLine2" and a newline in a title broke the file), every VEVENT has a `DTSTAMP`, all-day tasks end the NEXT day (`DTEND == DTSTART` is a zero-length event Outlook rejects), DATE values use local getters, and lines are folded at 75 octets (`icsFold`).
 - **Voice Input**: Web Speech API microphone button on Quick Add and notes (Chrome/Edge)
-- **Location-Based Reminders**: Set location (name + coordinates + radius) on tasks, periodic geofence checking with browser notifications
+- **Location-Based Reminders**: Set location (name + coordinates + radius) on tasks, periodic geofence checking with browser notifications. `POST /api/todos` stores `location_*` (it used to drop them) and every next recurring instance (complete, skip, midnight roll) carries them; lat/lng/radius are range-checked (`parseLocationFields`, 400 instead of a CHECK-constraint 500) (PD-5).
 - **Mobile-Optimized**: Bottom navigation bar, hamburger menu, swipe between pages, floating action button, horizontal-scroll filters, responsive layouts, pull-to-refresh in standalone PWA mode (views/js.js `initPullToRefresh` — passive listeners, overlay exclusions; the shared-JS module is one exported template literal, so the PTR block must stay backtick-free). **GOTCHA — `views/js.js` is one backtick template literal**, so beyond backticks, any `\` inside it is consumed by the template string: a regex literal like `/\/login(\?|#)/` emits `//login(?|#)/` (a `//` line comment) and silently breaks the whole client bundle. Use `indexOf`/`String` methods, or DOUBLE-escape (`\\/`, `\\?`), for any regex in this module — and `node --check` the EMITTED bundle (`require('./views/js.js')` → write to a file → `node --check`) after editing it, since the source file parses fine while the emitted string does not.
-- **Offline Support**: Service worker caches pages and API responses, queues mutations for sync when back online, offline banner indicator
+- **Offline Support**: Service worker caches pages and API responses, queues mutations for sync when back online, offline banner indicator. A write made offline returns **503** `{ ok:false, offline:true, queued, error }` — never `ok:true`, so "Email sent!"-style UI can't claim success. Writes whose late replay would surprise (`/send`, `/refresh`, `/api/ai/`, `/api/rag/`, auth, `/reindex`, `/sync`) are never queued, `/api/rag/secret*` and auth responses are never cached (Cache Storage persists them), and only `r.ok` GETs are cached. Replay keeps an entry on a network error / 401 / 408 / 429 / 5xx, drops it on success or a permanent 4xx, and drops entries older than 24 h (PB-17). The path lists use string matching (`routes/pwa.js` is a template literal). Cache `per-sistant-v8`.
 - **Global Search**: Search across todos, emails, and notes
 - **Calendar View**: Monthly calendar with iCal export, showing tasks, emails, and notes by date
-- **Weekly Review**: Stats summary + AI narrative of completed tasks, emails sent, notes created
+- **Weekly Review**: Stats summary + AI narrative of completed tasks, emails sent, notes created. "Overdue" = open tasks due before TODAY (APP_TIMEZONE `todayStr()`), not before the week's start — a task due Monday and still open on Wednesday used to be in neither list nor the AI summary's count (PD-14).
 - **Keyboard Shortcuts**: Global shortcuts (n=new todo, e=new email, /=search, etc.)
+- **Keyboard access + dialogs** (PUI-5): custom controls rendered as divs — the task and subtask complete checks (`role="checkbox"` + `aria-checked`), note cards, metric cards and email-template rows (`role="button"`) — carry `tabindex="0"` and an `aria-label`; a global keydown in `views/js.js` turns Enter/Space on such an element into a click (so the existing delegation handles it) and Esc closes the top-most `.modal-overlay.active` (same as a backdrop click). A MutationObserver gives every `.modal` `role="dialog"` + `aria-modal` + an `aria-label` from its heading, moves focus inside when its overlay gains `active`, and restores focus when it closes or is removed — pages keep toggling `active` themselves. Habit day toggles carry `aria-pressed`.
 - **Drag-and-Drop**: Reorder todos by dragging
 - **Browser Notifications**: Optional notification permission for reminders
 - **PWA**: Installable as home screen app
@@ -140,14 +166,14 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **Dashboard Inline Actions**: Complete tasks and send emails directly from dashboard
 - **Bulk Actions**: Multi-select mode on todos, emails, and notes for batch operations
 - **System Theme Auto-Detection**: Auto option follows OS dark/light preference via prefers-color-scheme
-- **Backend Validation**: Server-side enum validation for priority, horizon, recurrence rules, note colors, email format. The email `PATCH` validates `status` against `VALID_EMAIL_STATUSES` too (not just `POST`), so a client can't force `status='scheduled'` with a past `scheduled_at` to inject a cron-pickable row (PS-7).
+- **Backend Validation**: Server-side enum validation for priority, horizon, recurrence rules, note colors, email format. The email `PATCH` validates `status` against `VALID_EMAIL_STATUSES` too (not just `POST`), so a client can't force `status='scheduled'` with a past `scheduled_at` to inject a cron-pickable row (PS-7). A recipient must be exactly ONE address (PD-9): `EMAIL_REGEX` also rejects `, ; < > " ' ( )` (nodemailer reads "a@x.com,b.com" or "Name <a@x.com>" as a list/display form), it is checked on the email `PATCH` and contacts POST/PATCH too, and the scheduled-send cron marks a row with an invalid recipient `failed` instead of sending. Webhook `events` are validated on PATCH as on POST and escaped in the Settings list (PUI-6).
 - **Cross-Entity Links**: Link todos, emails, and notes to each other; create todos from notes or emails with auto-linking
 - **Notification System**: Centralized notification check for due tasks, overdue items, streaks at risk, and note reminders; browser push notifications on dashboard load. Every check type reaches the user (PB-1 — the client used to drop all but overdue / streak_at_risk / near facts): browser notifications fire for `overdue`, `due_today`, `streak_at_risk`, `habit_streak_at_risk`, `reminder`, `job_radar`, `vault_sync_error` (the Knowledge vault sync's last run left an error — KR-11; links to /knowledge), `fact_upcoming` within 7 days and `housing_due` when due today / overdue / within 3 days, each with a per-type title prefix (`REMINDER_PREFIX` / `isImportantReminder` in `pages/dashboard-script.js`); and a **Reminders** dashboard widget (`data-widget="reminders"`, in the default layouts) renders the FULL check list (≤12, linked) whether or not Notification permission was granted. A client-side **dedup ledger** (`localStorage['ps-notify-ledger']`, keyed by `type|id|title`) suppresses re-firing the same reminder within a 12h window (`NOTIFY_WINDOW_MS`), and a **snooze** affordance (`ps-notify-snooze-until`, 8h via the dashboard "Snooze reminders" button) mutes all reminder notifications for a while.
 - **Analytics Dashboard**: Productivity insights with completion trends, day-of-week analysis, priority/category breakdowns, average completion time, streak leaderboard, productivity score, activity heatmap (90 days), emails sent/notes created counts; filterable by week/month/quarter/year
-- **Todo Templates**: Save task structures (with subtasks) as reusable templates; apply from templates list; "Save as Template" from edit modal
+- **Todo Templates**: Save task structures (with subtasks) as reusable templates; apply from templates list; "Save as Template" from edit modal. Validated like todos (`validateTemplateFields`: recurrence rule, interval 1–365, priority, horizon, a title on every subtask) on POST/PATCH, and re-checked on apply so a legacy bad row 400s with the reason; apply runs in ONE transaction, so a failing subtask no longer leaves the todo half-created (PD-13).
 - **Batch Contact Import**: CSV upload for bulk contact import with validation and error reporting
 - **Quick Actions from Search**: Complete tasks, send emails, pin/unpin notes directly from search results
-- **Undo for More Actions**: Undo task completion, email send, and delete (not just delete)
+- **Undo for More Actions**: Undo task completion and delete (not just delete). Sending an email shows a plain toast with NO Undo (`showUndo(…, 'info')`) — the old "undo send" set a delivered email back to draft, so the next Send mailed it twice. Undo on a RECURRING completion calls `POST /api/todos/:id/undo-complete-recurring { next_id }`: it re-opens the task, deletes the next instance that completion generated (only while it is untouched — same chain, open, created < 1 day ago; 409 otherwise) and steps the streak back by one (best_streak / last_streak_date are not rolled back) (PUI-3).
 - **Recurring Task Calendar Projections**: Calendar shows future recurring task instances as dashed entries
 - **Health Check Endpoint**: `/api/health` returns server status, uptime, memory, DB connectivity (no auth required)
 - **API Pagination**: `limit` and `offset` query params on todos, emails, and notes list endpoints
@@ -162,7 +188,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **Internal error handling**: route 500s go through `errors.serverError(res, err)`, which logs the real error server-side and returns a generic `"An internal error occurred."` — raw DB/constraint/internal text is never echoed to the client (PB-2, matching Perfin's convention).
 - **Event Delegation**: All pages use `bindEvents()` for static elements and `onDelegate()` for dynamic content — zero inline `onclick`/`onchange` attributes; enables `script-src-attr: 'none'` CSP
 - **Constant-Time Auth**: `crypto.timingSafeEqual` for password/PIN comparison; PIN pad shows fixed 8-dot display regardless of actual PIN length
-- **Keep-Alive**: Self-ping system to prevent Render free tier from sleeping (14-minute interval)
+- **Keep-Alive**: Self-ping system to prevent Render free tier from sleeping (14-minute interval, 10 s fetch timeout — PB-19). Embedded under the shell the ping is the shell's and reads PERFIN's keep-alive settings, so the Settings section hides its controls (kept in the DOM for the script) and points to Perfin → Settings → Keep-Alive (PUI-8).
 
 ## Key Files
 - `.env` — all secrets (never commit)
@@ -206,6 +232,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   job_profile + the `ai_usage` AI-cost-cap ledger
 - `db/022_recurrence_anchor_missed.sql` — `todos.recurrence_anchor_day` (CHECK 1–31) + `todos.missed` (PD-2 / PB-10; additive, idempotent)
 - `db/023_vault_sync_attempt.sql` — `user_settings.vault_last_attempt_at` (KR-11: `vault_last_synced_at` now means last SUCCESSFUL sync; additive, idempotent)
+- `db/024_ask_suggestion_models.sql` — `user_settings.ai_model_natural_language_query` (default haiku) + `ai_model_smart_suggestions` (default off); existing rows inherit once from `ai_model_daily_briefing` (Ask → haiku when the briefing was off). Only NULLs are updated, so re-runs change nothing (PD-7)
 - `errors.js` — `serverError(res, err)` shared 500 responder (logs real error, returns generic message; PB-2)
 - `views.js` — pageHead, navBar, themeScript (imports from `views/`)
 - `routes/` — 21 API route modules (auth, todos, emails, notes, contacts, etc.)
@@ -219,9 +246,10 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `db/007_enhancements.sql` — custom recurrence, entity links, webhooks, notification preferences
 - `db/008_templates_performance.sql` — todo templates table, performance indexes
 - `uploads/` — local file attachment storage
-- `tests/api.test.js` — unit test suite (the bulk of the 577 per-sistant tests; NOTE: it tests inline copies of the logic and imports no production module — see TQ-1 in the Sept 2026 broad scan)
+- `tests/api.test.js` — unit test suite (the bulk of the 622 per-sistant tests; NOTE: it tests inline copies of the logic and imports no production module — see TQ-1 in the Sept 2026 broad scan)
 - `tests/scan-sept-fixes.test.js` — Sept 2026 broad-scan Batch 1 pins (Save Draft status, Send-now save, local datetime fill, fail-closed vault sensitivity, vault mark-and-sweep, trash chunk purge)
 - `tests/scan-sept-batch11.test.js` — Batch 11 Knowledge pins (ingest without embeddings + backfill, Voyage retry, per-file isolation, lock, ranking, finance snapshot vs getNetWorth, capture sensitivity, sync-failure visibility, citation fallback, cache prune, attribute word segments, vault_repo validation)
+- `tests/scan-sept-batch14.test.js` — Batch 14 pins: Job Radar profile-edit reset, live re-score / fit backfill / stale + scam buckets / batched embeds, company deactivate, dismiss nudge, fetch timeouts, http(s) apply links, Jobs views; the service worker run in a vm against fake caches (503, no secret caching, replay rules); task location on create + recurrence; automation validation / wiring / isolation; Ask model column + db/024; single-recipient validation; iCal escaping/DTSTAMP/DTEND/folding; dependency cycles + trashed blockers; template validation + transactional apply; review overdue; recurring undo; keyboard/dialog wiring; webhook events; embedded keep-alive
 - `tests/integration.test.js` — integration tests (requires DB, auto-skips without)
 - `Dockerfile` / `docker-compose.yml` — container deployment
 - `fly.toml` — Fly.io config
@@ -232,7 +260,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (577 tests)
+# Run tests (622 tests)
 npm test
 
 # Pages
@@ -255,6 +283,8 @@ DELETE /api/todos/:id       # Delete todo
 POST   /api/todos/reorder   # Reorder todos (drag-and-drop)
 POST   /api/todos/:id/complete-recurring  # Complete recurring task & generate next (with streak tracking;
                                           # locked, next due after today — PD-3)
+POST   /api/todos/:id/undo-complete-recurring  # Undo a recurring completion (body: next_id): re-open it and
+                                          # delete the untouched generated instance; 409 if it changed (PUI-3)
 POST   /api/todos/:id/skip-recurring     # Skip recurring task (preserves streak; locked + idempotent —
                                           # 400 on an already-completed row, PB-11)
 POST   /api/todos/:id/snooze             # Snooze task (postpone due date)
@@ -297,8 +327,8 @@ GET    /api/stats           # Dashboard statistics
 
 # Automations API
 GET    /api/automations            # List automation rules
-POST   /api/automations            # Create automation rule
-PATCH  /api/automations/:id        # Update automation rule
+POST   /api/automations            # Create automation rule (validated — 400 on an unrunnable rule, PD-6)
+PATCH  /api/automations/:id        # Update automation rule (validated against the merged row)
 DELETE /api/automations/:id        # Delete automation rule
 
 # Attachments API
@@ -334,18 +364,23 @@ GET    /api/notifications/check    # Check for due tasks, overdue, streaks at ri
 # Job Radar API
 GET    /jobs                       # Job Radar page (enable toggle, top matches + verify-first)
 GET    /api/jobs                   # gatherJobRadarSummary — main + verify_first buckets + top_pick
+GET    /api/jobs/list              # one status view (query: status=new|saved|applied|dismissed; ≤200 rows) — PUI-4
 POST   /api/jobs/refresh           # run the pipeline (ingest → dedup → trust → fit → legitimacy →
                                    #   retention); also hit by the weekly cron + job-radar.yml backstop.
                                    #   { ok, skipped:"disabled" } while job_radar_enabled is off unless
                                    #   ?force=1 (the page button) — PB-3
 PATCH  /api/jobs/:id               # set status new|saved|applied|dismissed (ARCHIVE — never deletes;
-                                   #   nudges the source's trust). Invalid status/id → 400
+                                   #   save/apply nudges the source's trust once per change; dismiss
+                                   #   never does — PB-9; returns prev_status). Invalid status/id → 400
 GET    /api/job-profile            # single-row resume/preferences/min_salary/locations/remote_pref
-PATCH  /api/job-profile            # update the profile (validated; bad min_salary/remote_pref → 400)
+PATCH  /api/job-profile            # update the profile (validated; bad min_salary/remote_pref → 400). A resume/
+                                   #   preferences change clears the profile embedding + fit scores and
+                                   #   returns rescore_needed:true (PB-4)
 GET    /api/job-companies          # list the curated ATS allowlist
 POST   /api/job-companies          # add/re-activate a company (body: slug, ats greenhouse|lever|
                                    #   ashby|workable, display_name?; bad ats/slug → 400)
-DELETE /api/job-companies/:id      # remove a company from the allowlist
+DELETE /api/job-companies/:id      # stop polling a company — sets active=false (PB-7; GET lists active ones,
+                                   #   POST re-activates)
 
 # Health & Habits API
 GET    /api/habits                 # Active habits + streaks + 7-day grid (?all=1 adds archived)
@@ -370,7 +405,7 @@ DELETE /api/health/metrics/:id     # Remove a measurement
 GET    /api/analytics              # Productivity analytics (query: period=week|month|quarter|year)
 
 # Calendar Export
-GET    /api/calendar.ics           # iCal export of tasks and scheduled emails
+GET    /api/calendar.ics           # iCal export of tasks and scheduled emails (RFC 5545 escaping, DTSTAMP — PD-11)
 
 # Enhancement API
 GET    /api/subtasks/:todoId       # List subtasks for a todo
@@ -387,7 +422,7 @@ GET    /api/todo-templates          # List todo templates
 POST   /api/todo-templates          # Create todo template
 PATCH  /api/todo-templates/:id      # Update todo template
 DELETE /api/todo-templates/:id      # Delete todo template
-POST   /api/todo-templates/:id/apply  # Create todo from template
+POST   /api/todo-templates/:id/apply  # Create todo from template (one transaction; 400 on an invalid legacy template)
 
 POST   /api/contacts/import         # Batch import contacts (JSON array)
 
@@ -739,7 +774,7 @@ Migrations and cron jobs run in both modes; only the listener, keep-alive,
 and signal handlers are owned by the shell when embedded.
 
 ## AI Features & Models
-- 11 AI features, each independently configurable: Haiku (fast/cheap), Sonnet (smarter), or Off
+- 11 AI features (Ask and Smart Suggestions each have their own model setting since db/024), each independently configurable: Haiku (fast/cheap), Sonnet (smarter), or Off
 - Models: `claude-haiku-5-5`, `claude-sonnet-5-5` (`AI_MODELS` in ai.js — the current model of each line, no date suffix)
 - Both models think by default (adaptive thinking; thinking tokens are billed as output and count against `max_tokens`). Every call goes through `sizedParams(maxTokens, effort)`: an explicit `output_config.effort` (`low` for the short assistant features; `medium` for Knowledge Q&A in `answerWithCitations`) and `max_tokens = maxTokens + 2048` thinking headroom (capped 16000; `maxTokens` sizes the REPLY). Text is read by block TYPE (`responseText` — `content[0]` can be a thinking block). A safety decline (`stop_reason: "refusal"`) makes `callAI` / `answerWithCitations` throw a `REFUSAL` error (callers' catch paths report AI unavailable); `callAIWithUsage` returns empty text instead so the spend is still charged.
 - Never send `temperature` / `top_p` / `top_k`, an assistant prefill, or a forced `tool_choice` — the 5.5 models reject them (400).

@@ -33,8 +33,19 @@ to the "none in progress" state.
   - **Open follow-ons:** see `.cycle/blocks/6-batch14-broad-implement.md` — notably the
     PRE-EXISTING `/api/calendar` 500 (calendar router never receives advanceRecurrence).
   - **Operator:** none required.
-  - **Where I left off:** Batch 14 committed and pushed (no PR). NEXT: /sync-docs for Batch 14,
-    then Batch 15 (test-quality guards).
+  - **/sync-docs DONE (Batch 14):** apps/per-sistant/CLAUDE.md — Job Radar (main needs a scored
+    fit, verify-first semantics, stale/scam handling, live re-score + fit backfill, profile-edit
+    reset, company deactivate, dismiss nudge, page views/errors, http(s) links, timeouts),
+    Offline Support (503 + exclusions + replay rules), Automations (triggers/actions, validation,
+    wiring, isolation), Ask/Smart Suggestions models (db/024), recipient + webhook-events validation,
+    iCal, dependencies, templates, weekly review, Undo (no send undo; recurring undo endpoint),
+    keyboard + dialogs, location, keep-alive, key files, API list, counts 622. Root CLAUDE.md —
+    counts 1647/65 (Per-sistant 622), batch14 test description, INV-66 extended (company
+    deactivate), NEW INV-91 (Job Radar buckets), INV-92 (service worker), INV-93 (automations).
+    README — counts + Batch 14 coverage. Subsystem paths resolve (globs). Operator state: none new
+    (db/024 auto-migrates; Ask defaults to Haiku — noted in the Per-sistant docs).
+  - **Where I left off:** Batch 14 and its docs committed and pushed (no PR). NEXT: Batch 15
+    (test-quality guards); the pre-existing /api/calendar advanceRecurrence 500 is an open follow-on.
 
 - **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 13 DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-10-09). Batch 13 (Perfin UI correctness & accessibility)
