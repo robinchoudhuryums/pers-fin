@@ -24,6 +24,13 @@ const embeddings = require("../services/embeddings");
 const TRUST_MAIN = 60;     // main list floor
 const FIT_MAIN = 65;       // main list fit floor (Batch 2; NULL fit doesn't block in Batch 1)
 const TRUST_VERIFY = 40;   // "verify first" bucket floor (below this, hidden unless saved)
+// PB-5: a listing the source stopped returning is a ghost — once its last_seen
+// is this far behind the NEWEST last_seen (i.e. the latest refresh), it leaves
+// the new/saved buckets. Relative to the latest refresh, not wall-clock, so a
+// few skipped weekly runs don't blank the page.
+const STALE_DAYS = 14;
+const EMBED_GROUP = 64;    // listings per embed() call (embed() sub-batches to Voyage's limit)
+const FETCH_TIMEOUT_MS = 15000; // PB-19: one hung board must not stall the refresh
 const NEARDUP_THRESHOLD = 0.92;
 const MAX_TEXT = 20000;    // description cap stored
 
@@ -36,6 +43,13 @@ function computeContentHash(listing) {
   const parts = [listing.company, listing.title, listing.location, listing.apply_url]
     .map((x) => String(x == null ? "" : x).trim().toLowerCase());
   return crypto.createHash("sha256").update(parts.join("|")).digest("hex");
+}
+
+function isHttpUrl(url) {
+  try {
+    const u = new URL(String(url || ""));
+    return u.protocol === "https:" || u.protocol === "http:";
+  } catch { return false; }
 }
 
 function hostnameOf(url) {
@@ -218,7 +232,7 @@ function normalizeWorkable(raw, company) {
 // ---------------------------------------------------------------------------
 async function httpJson(url, opts = {}) {
   const f = opts.fetchImpl || globalThis.fetch;
-  const res = await f(url, { headers: { Accept: "application/json" } });
+  const res = await f(url, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(opts.timeoutMs || FETCH_TIMEOUT_MS) });
   if (!res.ok) throw new Error(`${res.status} ${url}`);
   return res.json();
 }
@@ -277,7 +291,9 @@ async function runIngest(pool, opts = {}) {
       catch (e) { console.error(`job-radar ats ${c.ats}/${c.slug}:`, e.message); }
     }
   }
-  return out.filter((n) => n && n.apply_url && (n.title || n.company));
+  // PUI-7: only http(s) apply links are stored (a javascript:/data: URL from a
+  // source would otherwise reach the page's Open link).
+  return out.filter((n) => n && isHttpUrl(n.apply_url) && (n.title || n.company));
 }
 
 // ---------------------------------------------------------------------------
@@ -341,8 +357,13 @@ async function runTrustPass(pool, ids) {
     const { trust_score, legitimacy } = computeTrustScore({
       sourceWeight: row.trust_weight, firstSeenDaysAgo, corroborationCount, domainScore, scamHits,
     });
+    // A Claude legitimacy verdict (legitimacy_reasons set) outranks the coarse
+    // heuristic, so a re-score (PB-5) refreshes trust_score but keeps it.
     await pool.query(
-      "UPDATE job_listings SET trust_score = $1, legitimacy = $2, corroboration_count = $3 WHERE id = $4",
+      `UPDATE job_listings SET trust_score = $1,
+              legitimacy = CASE WHEN legitimacy_reasons IS NOT NULL THEN legitimacy ELSE $2 END,
+              corroboration_count = $3
+       WHERE id = $4`,
       [trust_score, legitimacy, corroborationCount, row.id]);
   }
   return { scored: rows.length };
@@ -399,16 +420,29 @@ async function runFitPass(pool, ids, opts = {}) {
   const model = await ai.getAIModelForFeature("job_fit"); // haiku | sonnet | off
   let embedded = 0, scored = 0, capped = false;
   try {
-    // 1) Embed new above-trust listings as documents.
+    // 1) Embed above-trust listings that have no embedding yet, as documents —
+    //    in groups (PB-5: one Voyage call per listing was slow and rate-limited),
+    //    each group fail-soft so one bad batch doesn't abort the pass.
     const rows = (await pool.query(
       `SELECT id, title, company, location, description FROM job_listings
-       WHERE id = ANY($1) AND COALESCE(trust_score, 0) >= $2`, [ids, TRUST_VERIFY])).rows;
-    for (const row of rows) {
-      const text = [row.title, row.company, row.location, row.description].filter(Boolean).join("\n").slice(0, 8000);
-      if (!text) continue;
-      const [vec] = await embeddings.embed([text], { inputType: "document", fetchImpl: opts.fetchImpl });
-      await pool.query("UPDATE job_listings SET embedding = $1::vector WHERE id = $2", [embeddings.toVectorLiteral(vec), row.id]);
-      embedded++;
+       WHERE id = ANY($1) AND COALESCE(trust_score, 0) >= $2 AND embedding IS NULL`, [ids, TRUST_VERIFY])).rows;
+    const toEmbed = rows
+      .map((row) => ({ id: row.id, text: [row.title, row.company, row.location, row.description].filter(Boolean).join("\n").slice(0, 8000) }))
+      .filter((x) => x.text);
+    for (let i = 0; i < toEmbed.length; i += EMBED_GROUP) {
+      const group = toEmbed.slice(i, i + EMBED_GROUP);
+      let vecs;
+      try {
+        vecs = await embeddings.embed(group.map((g) => g.text), { inputType: "document", fetchImpl: opts.fetchImpl });
+      } catch (e) {
+        console.error("job-radar embed batch:", e.message);
+        continue;
+      }
+      for (let j = 0; j < group.length; j++) {
+        if (!vecs[j]) continue;
+        await pool.query("UPDATE job_listings SET embedding = $1::vector WHERE id = $2", [embeddings.toVectorLiteral(vecs[j]), group[j].id]);
+        embedded++;
+      }
     }
     // 2) Rank by cosine vs the profile, Claude-score the top candidates.
     const profileEmb = await ensureProfileEmbedding(pool, opts);
@@ -417,7 +451,7 @@ async function runFitPass(pool, ids, opts = {}) {
     const cands = (await pool.query(
       `SELECT id, title, company, location, description, 1 - (embedding <=> $1::vector) AS cosine
        FROM job_listings
-       WHERE id = ANY($2) AND embedding IS NOT NULL
+       WHERE id = ANY($2) AND embedding IS NOT NULL AND fit_score IS NULL
        ORDER BY embedding <=> $1::vector ASC
        LIMIT $3`, [profileEmb, ids, opts.maxFit || 12])).rows;
     const profileRow = (await pool.query("SELECT preferences_text, resume_text FROM job_profile WHERE id = 1")).rows[0] || {};
@@ -507,12 +541,15 @@ function parseLegitimacyJson(text) {
 }
 
 // ---------------------------------------------------------------------------
-// Feedback — B7. Saving/applying a listing nudges its source's trust_weight up;
-// dismissing nudges it down (bounded 0-100). Cheap reinforcement; the v1.1
-// profile-embedding refinement is deferred.
+// Feedback — B7. Saving/applying a listing nudges its source's trust_weight up
+// (bounded 0-100), once per genuine status change. Dismiss means "not
+// interested", not "untrustworthy", so it no longer lowers the trust of the
+// whole source (PB-9: ~40 dismissals pushed every Greenhouse listing to
+// "verify first"), and re-toggling the same status doesn't nudge again.
 // ---------------------------------------------------------------------------
-async function applyFeedbackToSource(pool, listingId, status) {
-  const delta = status === "applied" ? 2 : status === "saved" ? 1 : status === "dismissed" ? -1 : 0;
+async function applyFeedbackToSource(pool, listingId, status, prevStatus) {
+  if (prevStatus !== undefined && prevStatus === status) return;
+  const delta = status === "applied" ? 2 : status === "saved" ? 1 : 0;
   if (!delta) return;
   await pool.query(
     `UPDATE job_sources SET trust_weight = GREATEST(0, LEAST(100, trust_weight + $1))
@@ -536,17 +573,37 @@ async function purgeRetention(pool, days = 90) {
 }
 
 // ---------------------------------------------------------------------------
-// Orchestration — the full weekly refresh (no AI in Batch 1).
+// Orchestration — the full weekly refresh.
+// PB-5: trust is re-scored for EVERY live (new/saved, not stale) listing each
+// run so the first_seen ghost-job decay actually applies, and the fit pass
+// backfills live listings that have no fit_score yet (first refresh ran before
+// a profile existed, hit the cap, Voyage blipped, or the profile changed —
+// PB-4 clears fit on a profile edit).
 // ---------------------------------------------------------------------------
+const NOT_STALE_SQL = `last_seen >= (SELECT MAX(last_seen) FROM job_listings) - make_interval(days => ${STALE_DAYS})`;
+
+async function liveListingIds(pool, { needFit = false } = {}) {
+  const r = await pool.query(
+    `SELECT id FROM job_listings
+     WHERE status IN ('new','saved') AND ${NOT_STALE_SQL}${needFit ? " AND fit_score IS NULL" : ""}`);
+  return r.rows.map((x) => x.id);
+}
+
+function unionIds(a, b) {
+  return Array.from(new Set([...(a || []), ...(b || [])]));
+}
+
 async function runRefresh(pool, opts = {}) {
   const normalized = await runIngest(pool, opts);
   const { newIds, seen } = await dedupPersist(pool, normalized);
-  const trust = await runTrustPass(pool, newIds);
+  const liveIds = await liveListingIds(pool).catch((e) => { console.error("job-radar live ids:", e.message); return []; });
+  const trust = await runTrustPass(pool, unionIds(newIds, liveIds));
   // AI passes (B2/B3) — fail-soft + cap-guarded; no-op without Voyage/Anthropic.
   // Skipped entirely when opts.skipAi (the weekly cron may run lean).
   let fit = { embedded: 0, scored: 0 }, legit = { reviewed: 0 };
   if (!opts.skipAi) {
-    fit = await runFitPass(pool, newIds, opts).catch((e) => { console.error("fit pass:", e.message); return { embedded: 0, scored: 0 }; });
+    const fitIds = unionIds(newIds, await liveListingIds(pool, { needFit: true }).catch(() => []));
+    fit = await runFitPass(pool, fitIds, opts).catch((e) => { console.error("fit pass:", e.message); return { embedded: 0, scored: 0 }; });
     legit = await runLegitimacyPass(pool, newIds, opts).catch((e) => { console.error("legitimacy pass:", e.message); return { reviewed: 0 }; });
   }
   const purge = await purgeRetention(pool, opts.retentionDays || 90);
@@ -562,6 +619,11 @@ async function runRefresh(pool, opts = {}) {
 // notification check, and the AI daily briefing (the gatherHealthSummary
 // mirror). main = high-trust/high-fit; verify_first = borderline-trust so a
 // strict filter never silently eats a real lead.
+// PB-5/PB-6: main requires a REAL fit score (an unscored listing — no profile,
+// no Voyage, AI off — is "verify first", never announced as high-fit), a
+// 'suspect' verdict goes to verify_first, a 'scam' verdict is hidden, and a
+// stale ('new') listing the sources stopped returning is dropped (saved ones
+// stay — the user asked to keep them).
 // ---------------------------------------------------------------------------
 async function gatherJobRadarSummary(pool, limit = 20) {
   try {
@@ -570,13 +632,16 @@ async function gatherJobRadarSummary(pool, limit = 20) {
               fit_score, fit_rationale, trust_score, legitimacy, corroboration_count, status, first_seen
        FROM job_listings
        WHERE status IN ('new','saved')
+         AND (legitimacy IS NULL OR legitimacy <> 'scam')
+         AND (status = 'saved' OR ${NOT_STALE_SQL})
        ORDER BY fit_score DESC NULLS LAST, trust_score DESC NULLS LAST, first_seen DESC
        LIMIT $1`, [Math.max(1, limit) * 3])).rows;
     const main = [], verify = [];
     for (const r of rows) {
       const trust = r.trust_score == null ? 0 : r.trust_score;
-      const fitOk = r.fit_score == null || r.fit_score >= FIT_MAIN; // Batch 1: fit not yet computed ⇒ not a blocker
-      if (trust >= TRUST_MAIN && fitOk) main.push(r);
+      if (r.legitimacy === "scam") continue;
+      const fitOk = r.fit_score != null && r.fit_score >= FIT_MAIN;
+      if (trust >= TRUST_MAIN && fitOk && r.legitimacy !== "suspect") main.push(r);
       else if (trust >= TRUST_VERIFY) verify.push(r);
     }
     return {
@@ -634,6 +699,21 @@ module.exports = function ({ pool }) {
     catch (err) { serverError(res, err); }
   });
 
+  // PUI-4: the saved / applied / dismissed views (the radar view above only
+  // shows new + saved, so applied and dismissed listings had no way back).
+  router.get("/api/jobs/list", async (req, res) => {
+    const status = req.query.status;
+    if (!VALID_STATUS.includes(status)) return res.status(400).json({ error: "status must be one of: " + VALID_STATUS.join(", ") });
+    try {
+      const r = await pool.query(
+        `SELECT id, title, company, location, remote, salary_min, salary_max, apply_url, apply_domain,
+                fit_score, fit_rationale, trust_score, legitimacy, corroboration_count, status, first_seen, last_seen
+         FROM job_listings WHERE status = $1
+         ORDER BY last_seen DESC, id DESC LIMIT 200`, [status]);
+      res.json({ status, listings: r.rows });
+    } catch (err) { serverError(res, err); }
+  });
+
   // Single-row profile.
   router.get("/api/job-profile", async (_req, res) => {
     try {
@@ -675,7 +755,18 @@ module.exports = function ({ pool }) {
       const r = await pool.query(
         `UPDATE job_profile SET ${sets.join(", ")}, updated_at = now() WHERE id = 1
          RETURNING id, resume_text, preferences_text, min_salary, locations, remote_pref, updated_at`, vals);
-      res.json(r.rows[0]);
+      // PB-4: the cached profile embedding (and the fit scores ranked against it)
+      // describe the OLD profile — clear them so the next refresh re-embeds and
+      // re-scores. Separate, fail-soft statements: profile_embedding only exists
+      // with pgvector (db/021's defensive block).
+      let rescore = false;
+      if (b.resume_text !== undefined || b.preferences_text !== undefined) {
+        await pool.query("UPDATE job_profile SET profile_embedding = NULL WHERE id = 1").catch(() => {});
+        await pool.query("UPDATE job_listings SET fit_score = NULL, fit_rationale = NULL WHERE status IN ('new','saved') AND fit_score IS NOT NULL")
+          .catch((e) => console.error("job-profile fit reset:", e.message));
+        rescore = true;
+      }
+      res.json({ ...r.rows[0], rescore_needed: rescore });
     } catch (err) { serverError(res, err); }
   });
 
@@ -686,18 +777,23 @@ module.exports = function ({ pool }) {
     const status = req.body && req.body.status;
     if (!VALID_STATUS.includes(status)) return res.status(400).json({ error: "status must be one of: " + VALID_STATUS.join(", ") });
     try {
-      const r = await pool.query("UPDATE job_listings SET status = $1 WHERE id = $2 RETURNING id, status", [status, id]);
+      const r = await pool.query(
+        `UPDATE job_listings SET status = $1
+         FROM (SELECT status AS prev_status FROM job_listings WHERE id = $2) p
+         WHERE job_listings.id = $2
+         RETURNING job_listings.id, job_listings.status, p.prev_status`, [status, id]);
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
-      // B7: nudge the source's trust from the user's signal (fail-soft).
-      await applyFeedbackToSource(pool, id, status);
-      res.json(r.rows[0]);
+      // B7: nudge the source's trust from the user's signal (fail-soft) — only
+      // on a genuine change, never on dismiss (PB-9).
+      await applyFeedbackToSource(pool, id, status, r.rows[0].prev_status);
+      res.json({ id: r.rows[0].id, status: r.rows[0].status, prev_status: r.rows[0].prev_status });
     } catch (err) { serverError(res, err); }
   });
 
   // Curated ATS allowlist CRUD (D4 — UI-editable alongside the db/021 seed).
   router.get("/api/job-companies", async (_req, res) => {
     try {
-      const r = await pool.query("SELECT id, slug, ats, display_name, active, created_at FROM job_target_companies ORDER BY ats, slug");
+      const r = await pool.query("SELECT id, slug, ats, display_name, active, created_at FROM job_target_companies WHERE active = true ORDER BY ats, slug");
       res.json({ companies: r.rows });
     } catch (err) { serverError(res, err); }
   });
@@ -722,7 +818,10 @@ module.exports = function ({ pool }) {
     const id = parseInt(req.params.id, 10);
     if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid id." });
     try {
-      const r = await pool.query("DELETE FROM job_target_companies WHERE id = $1 RETURNING id", [id]);
+      // PB-7: deactivate rather than delete — db/021 re-runs its seed on every
+      // boot (ON CONFLICT DO NOTHING), so a deleted seed row came straight back
+      // active; a kept inactive row blocks that. POST re-activates it.
+      const r = await pool.query("UPDATE job_target_companies SET active = false WHERE id = $1 RETURNING id", [id]);
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       res.json({ ok: true });
     } catch (err) { serverError(res, err); }
@@ -735,6 +834,7 @@ module.exports = function ({ pool }) {
 // module.exports above would otherwise drop these).
 module.exports.computeContentHash = computeContentHash;
 module.exports.hostnameOf = hostnameOf;
+module.exports.isHttpUrl = isHttpUrl;
 module.exports.scamHeuristics = scamHeuristics;
 module.exports.applyDomainScore = applyDomainScore;
 module.exports.computeTrustScore = computeTrustScore;
@@ -757,3 +857,5 @@ module.exports.runLegitimacyPass = runLegitimacyPass;
 module.exports.parseFitJson = parseFitJson;
 module.exports.parseLegitimacyJson = parseLegitimacyJson;
 module.exports.applyFeedbackToSource = applyFeedbackToSource;
+module.exports.liveListingIds = liveListingIds;
+module.exports.STALE_DAYS = STALE_DAYS;

@@ -60,6 +60,7 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
         `INSERT INTO emails (recipient_name, recipient_email, subject, body, body_html, status, scheduled_at) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
         [recipient_name || null, recipient_email, subject, body, body_html || null, status, scheduled_at || null]
       );
+      runAutomations('email_created', r.rows[0], 'email').catch(() => {}); // PD-6
       res.json(r.rows[0]);
     } catch (err) {
       serverError(res, err);
@@ -74,6 +75,10 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
       // with a past scheduled_at to inject a row the cron picks up.
       if (status !== undefined && !VALID_EMAIL_STATUSES.includes(status)) {
         return res.status(400).json({ error: "Invalid status." });
+      }
+      // PD-9: the recipient is validated on PATCH too (POST and manual send did).
+      if (recipient_email !== undefined && (typeof recipient_email !== "string" || !EMAIL_REGEX.test(recipient_email))) {
+        return res.status(400).json({ error: "Invalid email address format." });
       }
       const fields = [];
       const params = [];

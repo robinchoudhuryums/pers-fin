@@ -148,25 +148,36 @@ function startVoiceInput(targetId, onDone) {
 function bindEvents(bindings){bindings.forEach(function(b){var el=document.getElementById(b[0]);if(el)el.addEventListener(b[1],b[2]);});}
 function onDelegate(parentId,event,selector,handler){var p=document.getElementById(parentId);if(!p)return;p.addEventListener(event,function(e){var t=e.target.closest(selector);if(t&&p.contains(t))handler.call(t,e);});}
 var _undoTimer=null;
-function showUndo(msg,type,id,action){
+// showUndo(msg, type, id, action, extra) — action 'delete' (default) restores
+// from trash; 'complete' re-opens a task; 'complete-recurring' re-opens a
+// recurring task AND removes the next instance its completion generated
+// (extra = that instance's id). 'info' shows the message with no Undo — used
+// after sending an email, which can't be unsent (PUI-3: "Undo" used to flip a
+// delivered email back to draft, so the next Send mailed it twice).
+function showUndo(msg,type,id,action,extra){
   clearTimeout(_undoTimer);
   var el=document.getElementById('undo-toast');
-  if(!el){el=document.createElement('div');el.id='undo-toast';el.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--surface-2);border:1px solid var(--border);padding:12px 20px;border-radius:12px;display:flex;align-items:center;gap:12px;z-index:9999;backdrop-filter:blur(20px);font-size:14px;color:var(--text);box-shadow:0 8px 32px rgba(0,0,0,0.3);';document.body.appendChild(el);}
+  if(!el){el=document.createElement('div');el.id='undo-toast';el.setAttribute('role','status');el.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--surface-2);border:1px solid var(--border);padding:12px 20px;border-radius:12px;display:flex;align-items:center;gap:12px;z-index:9999;backdrop-filter:blur(20px);font-size:14px;color:var(--text);box-shadow:0 8px 32px rgba(0,0,0,0.3);';document.body.appendChild(el);}
   var undoAction = action || 'delete';
-  el.innerHTML=esc(msg)+' <button data-undo-type="'+type+'" data-undo-id="'+id+'" data-undo-action="'+undoAction+'" style="background:var(--warm);color:#fff;border:none;padding:4px 14px;border-radius:6px;cursor:pointer;font-size:13px;font-family:inherit;">Undo</button>';
+  if(undoAction==='info'||(undoAction==='complete-recurring'&&!extra)){
+    el.innerHTML=esc(msg);
+  } else {
+    el.innerHTML=esc(msg)+' <button data-undo-type="'+escAttr(type)+'" data-undo-id="'+escAttr(id)+'" data-undo-action="'+escAttr(undoAction)+'" data-undo-extra="'+escAttr(extra==null?'':extra)+'" style="background:var(--warm);color:#fff;border:none;padding:4px 14px;border-radius:6px;cursor:pointer;font-size:13px;font-family:inherit;">Undo</button>';
+  }
   el.style.display='flex';
   _undoTimer=setTimeout(function(){el.style.display='none';},6000);
 }
-async function undoAction(type,id,action){
+async function undoAction(type,id,action,extra){
+  var r=null;
   if(action==='delete'){
-    await fetch('/api/trash/'+type+'/'+id+'/restore',{method:'POST'});
+    r=await fetch('/api/trash/'+type+'/'+id+'/restore',{method:'POST'});
   } else if(action==='complete'){
-    await fetch('/api/todos/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({completed:false})});
-  } else if(action==='send'){
-    // Can't unsend, but mark as draft
-    await fetch('/api/emails/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'draft'})});
+    r=await fetch('/api/todos/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({completed:false})});
+  } else if(action==='complete-recurring'){
+    r=await fetch('/api/todos/'+id+'/undo-complete-recurring',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({next_id:Number(extra)})});
   }
   var el=document.getElementById('undo-toast');if(el)el.style.display='none';
+  if(r&&!r.ok){var j=await r.json().catch(function(){return {};});alert(j.error||'Undo failed.');}
   if(typeof load==='function')load();
 }
 // Backward compat
@@ -174,7 +185,7 @@ function undoDelete(type,id){undoAction(type,id,'delete');}
 // Global event delegation
 document.addEventListener('click',function(e){
   var ub=e.target.closest('[data-undo-type]');
-  if(ub){e.stopPropagation();undoAction(ub.dataset.undoType,ub.dataset.undoId,ub.dataset.undoAction);}
+  if(ub){e.stopPropagation();undoAction(ub.dataset.undoType,ub.dataset.undoId,ub.dataset.undoAction,ub.dataset.undoExtra);}
   var nt=e.target.closest('#nav-toggle-btn');
   if(nt){document.querySelector('.nav-links').classList.toggle('mobile-open');}
   // Close modal on overlay click (click on .modal-overlay but not .modal content)
@@ -182,6 +193,86 @@ document.addEventListener('click',function(e){
     e.target.classList.remove('active');
   }
 });
+
+// ---------------------------------------------------------------------------
+// Keyboard access (PUI-5). Custom controls rendered as divs (the task
+// complete check, subtask checks, note cards, metric cards, template rows)
+// carry role="button"/"checkbox" + tabindex="0"; Enter or Space on one fires
+// its click, so the existing click delegation handles it. Esc closes the
+// top-most open modal, the same as clicking its backdrop.
+// ---------------------------------------------------------------------------
+document.addEventListener('keydown',function(e){
+  var key=e.key;
+  if(key==='Escape'||key==='Esc'){
+    var open=document.querySelectorAll('.modal-overlay.active');
+    if(open.length){var top=open[open.length-1];if(top.id==='tpl-modal'){top.remove();}else{top.classList.remove('active');}e.preventDefault();}
+    return;
+  }
+  if(key!=='Enter'&&key!==' '&&key!=='Spacebar')return;
+  var t=e.target;
+  if(!t||!t.getAttribute)return;
+  var role=t.getAttribute('role');
+  if((role==='button'||role==='checkbox')&&t.tabIndex>=0&&t.tagName!=='BUTTON'&&t.tagName!=='INPUT'&&t.tagName!=='A'){
+    e.preventDefault();
+    t.click();
+  }
+});
+
+// Modal dialogs (PUI-5): every .modal inside a .modal-overlay gets
+// role="dialog" + aria-modal and a label from its heading; opening one moves
+// focus inside, closing it returns focus to whatever opened it. Pages keep
+// opening/closing modals by toggling the overlay's "active" class.
+(function(){
+  var lastFocus=new WeakMap();
+  function prep(overlay){
+    var box=overlay.querySelector('.modal');
+    if(!box)return null;
+    if(!box.getAttribute('role')){
+      box.setAttribute('role','dialog');
+      box.setAttribute('aria-modal','true');
+      var h=box.querySelector('h2,h3');
+      if(h&&!box.getAttribute('aria-label'))box.setAttribute('aria-label',h.textContent.trim());
+    }
+    return box;
+  }
+  function opened(overlay){
+    var box=prep(overlay);if(!box)return;
+    lastFocus.set(overlay,document.activeElement);
+    setTimeout(function(){
+      var f=box.querySelector('input:not([type=hidden]):not([disabled]),textarea,select,button:not([disabled]),[tabindex]:not([tabindex="-1"])');
+      if(f&&!box.contains(document.activeElement)){try{f.focus();}catch(_){}}
+    },0);
+  }
+  function closed(overlay){
+    var prev=lastFocus.get(overlay);
+    lastFocus.delete(overlay);
+    if(prev&&prev.focus&&document.contains(prev)){try{prev.focus();}catch(_){}}
+  }
+  function scan(){
+    Array.prototype.forEach.call(document.querySelectorAll('.modal-overlay'),function(o){
+      var isOpen=o.classList.contains('active');
+      var was=o.getAttribute('data-dlg-open')==='1';
+      if(isOpen&&!was){o.setAttribute('data-dlg-open','1');opened(o);}
+      else if(!isOpen&&was){o.removeAttribute('data-dlg-open');closed(o);}
+      else prep(o);
+    });
+  }
+  function start(){
+    scan();
+    if(window.MutationObserver){
+      new MutationObserver(function(muts){
+        for(var i=0;i<muts.length;i++){
+          var m=muts[i];
+          if(m.type==='childList'){
+            for(var j=0;j<m.removedNodes.length;j++){var r=m.removedNodes[j];if(r.nodeType===1&&r.classList&&r.classList.contains('modal-overlay')&&r.getAttribute('data-dlg-open')==='1'){closed(r);}}
+          }
+        }
+        scan();
+      }).observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['class']});
+    }
+  }
+  if(document.body)start();else document.addEventListener('DOMContentLoaded',start);
+})();
 
 // ---------------------------------------------------------------------------
 // Pull-to-refresh (standalone PWA mode only). iOS home-screen PWAs don't get

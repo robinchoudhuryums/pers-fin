@@ -33,7 +33,7 @@ async function load() {
     document.getElementById('ai-models-section').style.display = 'block';
     try {
       var models = await fetch('/api/ai/models').then(r=>r.json());
-      var features = ['email_draft','task_breakdown','quick_add','review_summary','email_tone','daily_briefing','note_tagging','rag','job_fit'];
+      var features = ['email_draft','task_breakdown','quick_add','review_summary','email_tone','daily_briefing','note_tagging','rag','job_fit','natural_language_query','smart_suggestions'];
       features.forEach(f => {
         var el = document.getElementById('aim-'+f);
         if (el) el.value = models['ai_model_'+f] || 'off';
@@ -93,7 +93,7 @@ async function exportData(type) {
 
 async function saveAIModels() {
   var data = {};
-  var features = ['email_draft','task_breakdown','quick_add','review_summary','email_tone','daily_briefing','note_tagging','rag','job_fit'];
+  var features = ['email_draft','task_breakdown','quick_add','review_summary','email_tone','daily_briefing','note_tagging','rag','job_fit','natural_language_query','smart_suggestions'];
   features.forEach(f => { data['ai_model_'+f] = document.getElementById('aim-'+f).value; });
   var r = await fetch('/api/ai/models', {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
   var el = document.getElementById('status');
@@ -164,7 +164,7 @@ async function loadAutomations() {
     var onClass = a.enabled ? 'class="btn" style="color:var(--good);border-color:var(--good);"' : 'class="btn"';
     return '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--line);font-size:13px;">'
       +'<div style="flex:1;"><div>'+esc(a.name)+'</div>'
-      +'<div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:2px;letter-spacing:0.04em;">'+a.trigger_type+condText+' &rarr; '+a.action_type+'</div></div>'
+      +'<div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:2px;letter-spacing:0.04em;">'+esc(a.trigger_type)+condText+' &rarr; '+esc(a.action_type)+'</div></div>'
       +'<div style="display:flex;gap:6px;align-items:center;">'
       +'<button '+onClass+' data-action="toggle-auto" data-id="'+a.id+'" data-enabled="'+a.enabled+'">'+(a.enabled?'On':'Off')+'</button>'
       +'<button class="btn" data-action="edit-auto" data-id="'+a.id+'">Edit</button>'
@@ -218,8 +218,14 @@ async function saveAutomation() {
     action_data: action_data,
   };
   if (!data.name) return alert('Name is required');
-  if (id) await fetch('/api/automations/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
-  else await fetch('/api/automations', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+  var r = id
+    ? await fetch('/api/automations/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)})
+    : await fetch('/api/automations', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+  if (!r.ok) {
+    // PD-6: the server now rejects a rule that could never run — say why.
+    var err = await r.json().catch(function(){ return {}; });
+    return alert(err.error || 'Could not save the automation.');
+  }
   closeAutoModal(); loadAutomations();
 }
 async function deleteAutomation() {
@@ -242,7 +248,7 @@ async function loadWebhooks() {
     '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--line);font-size:13px;">'
     +'<div style="flex:1;"><div>'+esc(w.name)+'</div>'
     +'<div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:2px;letter-spacing:0.04em;">'+esc(w.url.substring(0,50))+(w.url.length>50?'...':'')+'</div>'
-    +'<div style="font-family:var(--mono);font-size:9px;color:var(--muted);margin-top:2px;letter-spacing:0.08em;">Events: '+(w.events||[]).join(', ')+(w.last_status?' &middot; Last: '+w.last_status:'')+'</div></div>'
+    +'<div style="font-family:var(--mono);font-size:9px;color:var(--muted);margin-top:2px;letter-spacing:0.08em;">Events: '+esc((w.events||[]).join(', '))+(w.last_status?' &middot; Last: '+esc(w.last_status):'')+'</div></div>'
     +'<div style="display:flex;gap:6px;align-items:center;">'
     +'<button class="btn" data-action="test-wh" data-id="'+w.id+'" style="color:var(--accent);border-color:var(--accent);">Test</button>'
     +'<button class="btn" data-action="toggle-wh" data-id="'+w.id+'" data-enabled="'+w.enabled+'"'+(w.enabled?' style="color:var(--good);border-color:var(--good);"':'')+'>'+(w.enabled?'On':'Off')+'</button>'

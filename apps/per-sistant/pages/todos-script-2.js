@@ -1,12 +1,18 @@
 module.exports = `
 
 async function toggleTodo(id, completed, isRecurring) {
+  var r;
   if (completed && isRecurring) {
-    await fetch('/api/todos/'+id+'/complete-recurring', {method:'POST'});
+    r = await fetch('/api/todos/'+id+'/complete-recurring', {method:'POST'});
   } else {
-    await fetch('/api/todos/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({completed})});
+    r = await fetch('/api/todos/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({completed})});
   }
-  if (completed) showUndo('Task completed','todo',id,'complete');
+  var out = await r.json().catch(function(){ return {}; });
+  if (!r.ok) { alert(out.error || 'Could not update the task.'); load(); return; }
+  // Undo on a recurring completion also removes the next instance it created
+  // (PUI-3: it used to leave both open).
+  if (completed && isRecurring) showUndo('Task completed','todo',id,'complete-recurring', out.next && out.next.id);
+  else if (completed) showUndo('Task completed','todo',id,'complete');
   load();
 }
 

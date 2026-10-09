@@ -19,9 +19,10 @@ module.exports = function ({ pool, config }) {
     try {
       const { name, email } = req.body;
       if (!name || !email) return res.status(400).json({ error: "Name and email are required." });
+      if (typeof email !== "string" || !EMAIL_REGEX.test(email.trim())) return res.status(400).json({ error: "Invalid email address format." }); // PD-9
       const r = await pool.query(
         `INSERT INTO contacts (name, email) VALUES ($1, $2) RETURNING *`,
-        [name, email]
+        [name, email.trim()]
       );
       res.json(r.rows[0]);
     } catch (err) {
@@ -33,11 +34,12 @@ module.exports = function ({ pool, config }) {
   router.patch("/api/contacts/:id", async (req, res) => {
     try {
       const { name, email } = req.body;
+      if (email !== undefined && (typeof email !== "string" || !EMAIL_REGEX.test(email.trim()))) return res.status(400).json({ error: "Invalid email address format." }); // PD-9
       const fields = [];
       const params = [];
       let idx = 1;
       if (name !== undefined) { fields.push(`name = $${idx++}`); params.push(name); }
-      if (email !== undefined) { fields.push(`email = $${idx++}`); params.push(email); }
+      if (email !== undefined) { fields.push(`email = $${idx++}`); params.push(email.trim()); }
       if (!fields.length) return res.status(400).json({ error: "No fields to update." });
       params.push(req.params.id);
       const r = await pool.query(`UPDATE contacts SET ${fields.join(", ")} WHERE id = $${idx} RETURNING *`, params);

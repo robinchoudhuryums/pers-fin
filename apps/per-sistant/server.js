@@ -142,6 +142,15 @@ async function processScheduledEmails() {
       );
       if (!r.rows.length) break;
       const email = r.rows[0];
+      // PD-9: a recipient that isn't exactly one valid address (a row written
+      // before PATCH validated it) is marked failed, never handed to nodemailer
+      // — which would read "a@x.com,b@y.com" as a list and mail both.
+      if (!config.EMAIL_REGEX.test(String(email.recipient_email || ""))) {
+        await pool.query("UPDATE emails SET status = 'failed', error_message = $1, sent_at = NULL WHERE id = $2",
+          ["Invalid recipient address", email.id]);
+        console.error(`Scheduled email ${email.id} not sent: invalid recipient`);
+        continue;
+      }
       try {
         const transporter = getSmtpTransporter();
         const mail = {

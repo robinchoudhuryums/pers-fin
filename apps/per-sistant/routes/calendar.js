@@ -47,18 +47,29 @@ module.exports = function ({ pool, advanceRecurrence }) {
         pool.query("SELECT id, title, description, due_date, priority FROM todos WHERE deleted_at IS NULL AND due_date IS NOT NULL AND completed = false ORDER BY due_date"),
         pool.query("SELECT id, subject, recipient_email, scheduled_at FROM emails WHERE deleted_at IS NULL AND scheduled_at IS NOT NULL AND status = 'scheduled' ORDER BY scheduled_at"),
       ]);
-      let ical = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Per-sistant//EN\r\nCALSCALE:GREGORIAN\r\nMETHOD:PUBLISH\r\nX-WR-CALNAME:Per-sistant Tasks\r\n";
+      // PD-11: RFC 5545 text escaping (backslash, comma, semicolon, newline —
+      // the old replace turned "\n" into "\\n" then into " n"), a DTSTAMP on
+      // every VEVENT, all-day events ending the NEXT day (DTEND == DTSTART is
+      // a zero-length event strict clients reject), and folded long lines.
+      const stamp = icsUtc(new Date());
+      const lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Per-sistant//EN", "CALSCALE:GREGORIAN", "METHOD:PUBLISH", "X-WR-CALNAME:Per-sistant Tasks"];
       for (const t of todos.rows) {
-        const d = new Date(t.due_date);
-        const dateStr = d.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
-        const dateOnly = dateStr.substring(0, 8);
-        ical += `BEGIN:VEVENT\r\nUID:todo-${t.id}@per-sistant\r\nDTSTART;VALUE=DATE:${dateOnly}\r\nDTEND;VALUE=DATE:${dateOnly}\r\nSUMMARY:[${t.priority.toUpperCase()}] ${t.title.replace(/[\\,;]/g, " ")}\r\n${t.description ? "DESCRIPTION:" + t.description.replace(/\n/g, "\\n").replace(/[\\,;]/g, " ") + "\r\n" : ""}END:VEVENT\r\n`;
+        const d = new Date(t.due_date); // node-pg DATE = local midnight → local getters
+        const next = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
+        lines.push("BEGIN:VEVENT", `UID:todo-${t.id}@per-sistant`, `DTSTAMP:${stamp}`,
+          `DTSTART;VALUE=DATE:${icsDate(d)}`, `DTEND;VALUE=DATE:${icsDate(next)}`,
+          `SUMMARY:${icsEscape(`[${String(t.priority || "").toUpperCase()}] ${t.title || ""}`)}`);
+        if (t.description) lines.push(`DESCRIPTION:${icsEscape(t.description)}`);
+        lines.push("END:VEVENT");
       }
       for (const e of emails.rows) {
-        const d = new Date(e.scheduled_at);
-        const dateStr = d.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
-        ical += `BEGIN:VEVENT\r\nUID:email-${e.id}@per-sistant\r\nDTSTART:${dateStr}\r\nDTEND:${dateStr}\r\nSUMMARY:Email: ${e.subject.replace(/[\\,;]/g, " ")}\r\nDESCRIPTION:To: ${e.recipient_email}\r\nEND:VEVENT\r\n`;
+        const at = icsUtc(new Date(e.scheduled_at));
+        lines.push("BEGIN:VEVENT", `UID:email-${e.id}@per-sistant`, `DTSTAMP:${stamp}`,
+          `DTSTART:${at}`, `DTEND:${at}`,
+          `SUMMARY:${icsEscape("Email: " + (e.subject || ""))}`,
+          `DESCRIPTION:${icsEscape("To: " + (e.recipient_email || ""))}`, "END:VEVENT");
       }
+      let ical = lines.map(icsFold).join("\r\n") + "\r\n";
       ical += "END:VCALENDAR\r\n";
       res.setHeader("Content-Type", "text/calendar; charset=utf-8");
       res.setHeader("Content-Disposition", 'attachment; filename="per-sistant.ics"');
@@ -68,3 +79,36 @@ module.exports = function ({ pool, advanceRecurrence }) {
 
   return router;
 };
+
+// RFC 5545 §3.3.11 TEXT escaping (PD-11). CR is dropped, CRLF/LF → "\n".
+function icsEscape(v) {
+  return String(v == null ? "" : v)
+    .replace(/\\/g, "\\\\")
+    .replace(/;/g, "\\;")
+    .replace(/,/g, "\\,")
+    .replace(/\r\n|\n/g, "\\n")
+    .replace(/\r/g, "");
+}
+// Fold a content line at 75 octets (§3.1): continuation lines start with a space.
+function icsFold(line) {
+  const buf = Buffer.from(line, "utf8");
+  if (buf.length <= 75) return line;
+  const parts = [];
+  let cur = "", curLen = 0, limit = 75;
+  for (const ch of line) {
+    const n = Buffer.byteLength(ch, "utf8");
+    if (curLen + n > limit) { parts.push(cur); cur = ""; curLen = 0; limit = 74; }
+    cur += ch; curLen += n;
+  }
+  parts.push(cur);
+  return parts.join("\r\n ");
+}
+function icsDate(d) {
+  return d.getFullYear() + String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0");
+}
+function icsUtc(d) {
+  return d.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
+}
+
+module.exports.icsEscape = icsEscape;
+module.exports.icsFold = icsFold;

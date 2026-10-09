@@ -267,7 +267,7 @@ async function openTemplates() {
   var templates = await fetch('/api/email-templates').then(r=>r.json());
   var html = '<h2>Email Templates</h2>';
   if (templates.length) {
-    html += templates.map(t => '<div class="todo-item" style="cursor:pointer" data-action="use-tpl" data-id="'+t.id+'"><div class="todo-content"><div class="todo-title">'+esc(t.name)+'</div><div class="todo-meta"><span>'+esc(t.subject)+'</span></div></div><div class="todo-actions"><button data-action="delete-tpl" data-id="'+t.id+'">&#10005;</button></div></div>').join('');
+    html += templates.map(t => '<div class="todo-item" style="cursor:pointer" role="button" tabindex="0" aria-label="'+escAttr('Use template: '+t.name)+'" data-action="use-tpl" data-id="'+t.id+'"><div class="todo-content"><div class="todo-title">'+esc(t.name)+'</div><div class="todo-meta"><span>'+esc(t.subject)+'</span></div></div><div class="todo-actions"><button data-action="delete-tpl" data-id="'+t.id+'" aria-label="'+escAttr('Delete template: '+t.name)+'">&#10005;</button></div></div>').join('');
   } else { html += '<div class="empty-msg">No templates yet</div>'; }
   html += '<div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--line);"><h2>Save Current as Template</h2><input type="text" id="tpl-name" placeholder="Template name" style="width:100%;margin-bottom:8px;"><button class="btn primary" data-action="save-tpl">Save Template</button></div>';
   var overlay = document.createElement('div'); overlay.className = 'modal-overlay active'; overlay.id = 'tpl-modal';

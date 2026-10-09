@@ -58,9 +58,19 @@ module.exports = function ({}) {
     // the empty-string standalone case or the "/per-sistant" mounted case.
     res.type("application/javascript").send(`
     const BASE = ${JSON.stringify(bp)};
-    const CACHE = 'per-sistant-v7';
+    const CACHE = 'per-sistant-v8';
     const PAGES = [BASE+'/', BASE+'/todos', BASE+'/emails', BASE+'/notes', BASE+'/calendar', BASE+'/contacts', BASE+'/review', BASE+'/analytics', BASE+'/settings'];
     const OFFLINE_KEY = 'per-sistant-offline-queue';
+    // PB-17: never cache secret-tier answers (Cache Storage persists them on
+    // disk), and never queue a write whose late replay would surprise the user
+    // (sending mail, refreshes, AI calls, auth). A queued entry older than
+    // QUEUE_MAX_AGE_MS is dropped instead of replayed days later.
+    // (String matching only — this file is a template literal, so a regex
+    // backslash would be eaten.)
+    const NO_CACHE = ['/api/rag/secret', '/api/auth', '/api/logout'];
+    const NO_QUEUE = ['/send', '/refresh', '/api/ai/', '/api/rag/', '/api/auth', '/api/logout', '/login', '/logout', '/reindex', '/sync'];
+    const QUEUE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+    function pathHas(path, list) { return list.some(function (p) { return path.indexOf(p) !== -1; }); }
 
     self.addEventListener('install', e => {
       e.waitUntil(caches.open(CACHE).then(cache => cache.addAll(PAGES)).then(() => self.skipWaiting()));
@@ -70,29 +80,42 @@ module.exports = function ({}) {
       e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim()));
     });
 
+    function offlineResponse(queued) {
+      // 503, never ok:true — a queued write has NOT happened yet, so callers
+      // that check r.ok must not report success (PB-17).
+      const msg = queued
+        ? "You're offline — this change is saved and will be retried when you're back online."
+        : "You're offline — this action needs a connection.";
+      return new Response(JSON.stringify({ ok: false, offline: true, queued: !!queued, error: msg }),
+        { status: 503, headers: { 'Content-Type': 'application/json' } });
+    }
+
     self.addEventListener('fetch', e => {
       const url = new URL(e.request.url);
       // API requests: network-first, cache fallback for GET
       if (url.pathname.startsWith(BASE + '/api/')) {
         if (e.request.method === 'GET') {
+          if (pathHas(url.pathname, NO_CACHE)) return; // straight to network, never stored
           e.respondWith(
             fetch(e.request).then(r => {
-              const rc = r.clone();
-              caches.open(CACHE).then(cache => cache.put(e.request, rc));
+              if (r.ok) {
+                const rc = r.clone();
+                caches.open(CACHE).then(cache => cache.put(e.request, rc));
+              }
               return r;
             }).catch(() => caches.match(e.request))
           );
         } else {
-          // POST/PATCH/DELETE: try network, queue if offline
+          // POST/PATCH/DELETE: try network, queue if offline (unless excluded)
           e.respondWith(
             fetch(e.request.clone()).catch(async () => {
-              // Store in offline queue for sync later
+              if (pathHas(url.pathname, NO_QUEUE)) return offlineResponse(false);
               const body = await e.request.clone().text();
               const queue = JSON.parse(await (await caches.match(OFFLINE_KEY))?.text() || '[]');
-              queue.push({ url: e.request.url, method: e.request.method, body, headers: Object.fromEntries(e.request.headers) });
+              queue.push({ url: e.request.url, method: e.request.method, body, headers: Object.fromEntries(e.request.headers), queued_at: Date.now() });
               const queueResponse = new Response(JSON.stringify(queue));
               await caches.open(CACHE).then(c => c.put(OFFLINE_KEY, queueResponse));
-              return new Response(JSON.stringify({ ok: true, offline: true }), { headers: { 'Content-Type': 'application/json' } });
+              return offlineResponse(true);
             })
           );
         }
@@ -108,20 +131,29 @@ module.exports = function ({}) {
       );
     });
 
-    // Sync offline queue when back online
+    // Sync offline queue when back online. An entry is removed only once it
+    // got a definitive answer (2xx, or a 4xx other than 401/408/429 that a
+    // retry can't fix); a network error, 401 (signed out), 408/429 or 5xx
+    // keeps it for the next sync. Entries past QUEUE_MAX_AGE_MS are dropped.
     self.addEventListener('message', e => {
       if (e.data === 'sync') {
         caches.open(CACHE).then(async cache => {
           const resp = await cache.match(OFFLINE_KEY);
           if (!resp) return;
           const queue = JSON.parse(await resp.text());
+          const keep = [];
+          let replayed = 0;
           for (const req of queue) {
+            if (req.queued_at && Date.now() - req.queued_at > QUEUE_MAX_AGE_MS) continue;
             try {
-              await fetch(req.url, { method: req.method, body: req.body, headers: req.headers });
-            } catch {}
+              const r = await fetch(req.url, { method: req.method, body: req.body, headers: req.headers });
+              if (r.ok) { replayed++; continue; }
+              if (r.status === 401 || r.status === 408 || r.status === 429 || r.status >= 500) keep.push(req);
+            } catch { keep.push(req); }
           }
-          await cache.delete(OFFLINE_KEY);
-          self.clients.matchAll().then(clients => clients.forEach(c => c.postMessage('synced')));
+          if (keep.length) await cache.put(OFFLINE_KEY, new Response(JSON.stringify(keep)));
+          else await cache.delete(OFFLINE_KEY);
+          if (replayed) self.clients.matchAll().then(clients => clients.forEach(c => c.postMessage('synced')));
         });
       }
     });

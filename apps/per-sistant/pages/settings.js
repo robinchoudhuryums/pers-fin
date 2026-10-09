@@ -91,6 +91,14 @@ ${navBar("/settings")}
           <div><div style="font-size:13px;">Knowledge Q&amp;A</div><div style="font-size:10px;color:var(--muted);">Ask questions across your notes &amp; documents (Knowledge page)</div></div>
           <select id="aim-rag" class="aim-select" style="width:120px;"><option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="off">Off</option></select>
         </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--line);">
+          <div><div style="font-size:13px;">Ask</div><div style="font-size:10px;color:var(--muted);">The Ask box in the top bar &mdash; questions about your tasks, emails &amp; notes</div></div>
+          <select id="aim-natural_language_query" class="aim-select" aria-label="Ask model" style="width:120px;"><option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="off">Off</option></select>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--line);">
+          <div><div style="font-size:13px;">Smart Suggestions</div><div style="font-size:10px;color:var(--muted);">What to tackle now, on the dashboard</div></div>
+          <select id="aim-smart_suggestions" class="aim-select" aria-label="Smart Suggestions model" style="width:120px;"><option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="off">Off</option></select>
+        </div>
         <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;">
           <div><div style="font-size:13px;">Job Fit</div><div style="font-size:10px;color:var(--muted);">Score &amp; vet job listings on the Job Radar page</div></div>
           <select id="aim-job_fit" class="aim-select" style="width:120px;"><option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="off">Off</option></select>
@@ -189,8 +197,13 @@ ${navBar("/settings")}
 
   <div class="section">
     <h2>Keep-Alive (Render)</h2>
-    <p style="font-size:12px;color:var(--muted);margin-bottom:12px;">Prevent Render free tier from sleeping by pinging the server every 14 minutes during active hours.</p>
-    <div style="display:flex;flex-direction:column;gap:12px;">
+    ${req.app.get("embedded")
+      // PUI-8: under the unified shell the keep-alive ping is the shell's and it
+      // reads PERFIN's keep-alive settings, so these controls did nothing. They
+      // stay in the DOM (hidden) because the settings script binds to them.
+      ? '<p style="font-size:12px;color:var(--muted);margin-bottom:0;">Keep-alive is shared by both apps here and is set in Perfin &rarr; Settings &rarr; Keep-Alive.</p>'
+      : '<p style="font-size:12px;color:var(--muted);margin-bottom:12px;">Prevent Render free tier from sleeping by pinging the server every 14 minutes during active hours.</p>'}
+    <div style="display:${req.app.get("embedded") ? "none" : "flex"};flex-direction:column;gap:12px;" id="ka-controls">
       <div style="display:flex;align-items:center;gap:12px;">
         <label style="margin:0;white-space:nowrap;">Enable</label>
         <input type="checkbox" id="ka-enabled" style="width:auto;">

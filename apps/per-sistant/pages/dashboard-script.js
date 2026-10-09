@@ -164,20 +164,24 @@ async function dashCompleteRecurring(id) {
 
 async function dashSendEmail(id) {
   var r = await fetch('/api/emails/'+id+'/send', {method:'POST'}).then(r=>r.json());
-  if (r.ok) { showUndo('Email sent','email',id,'send'); load(); } else { alert('Failed: '+(r.error||'Unknown error')); }
+  if (r.ok) { showUndo('Email sent','email',id,'info'); load(); } else { alert('Failed: '+(r.error||'Unknown error')); }
 }
 
 async function searchComplete(id, isRecurring) {
-  if (isRecurring) await fetch('/api/todos/'+id+'/complete-recurring', {method:'POST'});
-  else await fetch('/api/todos/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({completed:true})});
-  showUndo('Task completed','todo',id,'complete');
+  var r = isRecurring
+    ? await fetch('/api/todos/'+id+'/complete-recurring', {method:'POST'})
+    : await fetch('/api/todos/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({completed:true})});
+  var out = await r.json().catch(function(){ return {}; });
+  if (!r.ok) alert(out.error || 'Could not complete the task.');
+  else if (isRecurring) showUndo('Task completed','todo',id,'complete-recurring', out.next && out.next.id);
+  else showUndo('Task completed','todo',id,'complete');
   document.getElementById('search-results').style.display='none';
   document.getElementById('global-search').value='';
   load();
 }
 async function searchSendEmail(id) {
   var r = await fetch('/api/emails/'+id+'/send', {method:'POST'}).then(r=>r.json());
-  if (r.ok) { showUndo('Email sent','email',id,'send'); }
+  if (r.ok) { showUndo('Email sent','email',id,'info'); }
   document.getElementById('search-results').style.display='none';
   document.getElementById('global-search').value='';
   load();

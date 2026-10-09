@@ -29,7 +29,7 @@ function emailsApp(onInsert) {
   };
   const app = express();
   app.use(express.json());
-  app.use(require("../routes/emails")({ pool: mockPool, config: require("../config"), helpers: {} }));
+  app.use(require("../routes/emails")({ pool: mockPool, config: require("../config"), helpers: { runAutomations: async () => {} } })); // PD-6: POST runs email_created automations
   return app;
 }
 const baseEmail = { recipient_email: "a@b.com", subject: "s", body: "b", scheduled_at: "2026-10-01T13:00:00.000Z" };

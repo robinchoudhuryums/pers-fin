@@ -9,7 +9,34 @@ to the "none in progress" state.
 
 ## Current Cycle
 
-- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 13 DONE** on branch
+- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 14 DONE** on branch
+  `claude/lucid-darwin-7r8e59` (2026-10-09). Batch 14 (Per-sistant correctness & UI)
+  implemented on top of Batches 11–13 (all unmerged, no PR), tested, pushed.
+  - **Completed:** PB-4, PB-5, PB-6, PB-9 (Job Radar: profile edit clears embedding + fits; live
+    re-score, fit backfill, stale exclusion, unscored = verify-first, batched embeds; scam hidden /
+    suspect verify-first; dismiss no longer penalizes the source), PB-7 (+PD-10, company remove =
+    deactivate), PB-17 (SW 503 + exclusions + safe replay), PB-19 (timeouts), PD-5 (location on
+    create + recurrence), PD-6 (automation validation + wiring + per-rule isolation), PD-7 (Ask /
+    Smart Suggestions models, db/024), PD-9 (single-recipient validation), PD-11 (iCal), PD-12
+    (dependencies), PD-13 (templates), PD-14 (review overdue), PUI-3..PUI-8 (undo semantics, Jobs
+    views + errors, keyboard + dialogs, webhook events, http(s) apply links, keep-alive embedded).
+  - **Not finished (selected):** none. PB-8, PB-16, PB-18, PB-20 deferred per the plan.
+  - **Tests:** 1647/1647 (Perfin 1025 + Per-sistant 622; 65 files). New
+    apps/per-sistant/tests/scan-sept-batch14.test.js (45; 42 fail pre-fix). Real PG: migrations ×2
+    incl. db/024 + every new SQL path. Browser: keyboard task toggle + recurring undo, dialog
+    Esc/focus, Jobs views, embedded keep-alive; 156 inline page scripts node --check clean.
+  - **Decisions:** PB-9 resolved by dropping the dismiss penalty + nudging only on a status change
+    (no company-trust table); stale = 14 days behind the latest refresh (not wall-clock); Ask
+    defaults to Haiku (user-initiated), Smart Suggestions inherits the briefing model; SW replays
+    keep 401/408/429/5xx and drop >24h entries; recurring undo deletes only an untouched next
+    instance (<1 day old) and steps the streak back by one.
+  - **Open follow-ons:** see `.cycle/blocks/6-batch14-broad-implement.md` — notably the
+    PRE-EXISTING `/api/calendar` 500 (calendar router never receives advanceRecurrence).
+  - **Operator:** none required.
+  - **Where I left off:** Batch 14 committed and pushed (no PR). NEXT: /sync-docs for Batch 14,
+    then Batch 15 (test-quality guards).
+
+- **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 13 DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-10-09). Batch 13 (Perfin UI correctness & accessibility)
   implemented on top of Batches 11–12 (all unmerged, no PR), tested, pushed.
   - **Completed:** WD-4, WD-5 (pyramid shapes; server net worth; loans in debt), WUI-6, WD-12
@@ -34,8 +61,7 @@ to the "none in progress" state.
     validation, WebAuthn transports now stored, NEW INV-89 (writes report outcome) + INV-90
     (dialogs + defined CSS vars), test counts 1602/64 (Perfin 1025) + batch13 description.
     README — counts + Batch 13 coverage. Subsystem paths resolve. Operator state: none new.
-  - **Where I left off:** Batch 13 and its docs are committed and pushed (no PR). NEXT: Batch 14
-    (Per-sistant correctness & UI).
+  - **Where I left off (then):** Batch 13 and its docs committed and pushed.
 
 - **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 12 DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-10-09). Batch 12 (Investments) implemented on top of
