@@ -30,7 +30,7 @@ to the "none in progress" state.
     CSS vars, unvalidated perfin_url/theme.
   - **Operator:** none required.
   - **Where I left off:** Batch 15 committed and pushed (no PR). This was the last planned batch of
-    the Sept 2026 broad scan. NEXT: /sync-docs for Batch 15; then the follow-ons above.
+    the Sept 2026 broad scan. /sync-docs DONE (Batch 15): root CLAUDE.md (counts 1475/66, batch15 + tests/contract entries, ci.yml contract step, `npm run test:contract`, a real-code/contract Key Design Decision, INV-94/95, a Known Open Issues section), apps/per-sistant/CLAUDE.md (442, api.test.js real-code, Known Open Issues), README. NEXT: the follow-ons above (open a PR for Batches 11–15 when the operator asks).
 
 - **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 14 DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-10-09). Batch 14 (Per-sistant correctness & UI)

@@ -33,7 +33,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   at-most-once delivery). The manual `POST /api/emails/:id/send` claims the row
   the same way (`UPDATE … WHERE id = $1 AND status <> 'sent' RETURNING`) so a
   double-click / retry returns 409 instead of re-sending (PB-4).
-- **Tests**: `tests/` (node:test runner, `npm test`, 622 tests (api + integration + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + model-upgrade))
+- **Tests**: `tests/` (node:test runner, `npm test`, 442 tests (api + integration + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + model-upgrade))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of June 2026)
@@ -190,6 +190,19 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **Constant-Time Auth**: `crypto.timingSafeEqual` for password/PIN comparison; PIN pad shows fixed 8-dot display regardless of actual PIN length
 - **Keep-Alive**: Self-ping system to prevent Render free tier from sleeping (14-minute interval, 10 s fetch timeout — PB-19). Embedded under the shell the ping is the shell's and reads PERFIN's keep-alive settings, so the Settings section hides its controls (kept in the DOM for the script) and points to Perfin → Settings → Keep-Alive (PUI-8).
 
+## Known Open Issues (Sept 2026 Batch 15 — exposed by real-code tests, not yet fixed)
+- `GET /api/calendar` 500s whenever an open recurring todo exists: `routes/calendar.js`
+  destructures `advanceRecurrence` from deps, but `server.js` doesn't pass it
+  (contract-test `todo`).
+- Quick Add never detects priority or a date: `pages/todos-script-2.js` is a template
+  literal, so its `\b` regexes are emitted as backspace characters (api.test.js `todo`s) —
+  double-escape them.
+- `views/settings-patch.js` checks `location.pathname !== '/settings'`, so the palette
+  picker never appears under the shell (`/per-sistant/settings`).
+- `views/js.js` uses CSS vars the current theme doesn't define (`--border`, `--green`,
+  `--surface-2`, `--teal`, `--text`, `--text-muted`, `--warm`, `--yellow`).
+- `PATCH /api/settings` stores `perfin_url` and `theme` unvalidated.
+
 ## Key Files
 - `.env` — all secrets (never commit)
 - `.env.example` — template with setup instructions
@@ -246,7 +259,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `db/007_enhancements.sql` — custom recurrence, entity links, webhooks, notification preferences
 - `db/008_templates_performance.sql` — todo templates table, performance indexes
 - `uploads/` — local file attachment storage
-- `tests/api.test.js` — unit test suite (the bulk of the 622 per-sistant tests; NOTE: it tests inline copies of the logic and imports no production module — see TQ-1 in the Sept 2026 broad scan)
+- `tests/api.test.js` — 51 tests against the REAL code (TQ-1, Sept 2026 Batch 15 — it used to hold 231 tests of inline copies that imported no production module): client parsers (parseTimeExpr / parseQuickTodo / haversine / escAttr / renderMd) extracted from the EMITTED page source and run in a vm, route validation via supertest over a mock pool, recurrence + streak math, webhooks, automations, AI model settings, middleware (CSRF, health, requireAuth, AI limiter). 2 `todo`s pin the Quick Add bug below. Route behaviour against a real database lives in the root `tests/contract/persistent.contract.test.js`
 - `tests/scan-sept-fixes.test.js` — Sept 2026 broad-scan Batch 1 pins (Save Draft status, Send-now save, local datetime fill, fail-closed vault sensitivity, vault mark-and-sweep, trash chunk purge)
 - `tests/scan-sept-batch11.test.js` — Batch 11 Knowledge pins (ingest without embeddings + backfill, Voyage retry, per-file isolation, lock, ranking, finance snapshot vs getNetWorth, capture sensitivity, sync-failure visibility, citation fallback, cache prune, attribute word segments, vault_repo validation)
 - `tests/scan-sept-batch14.test.js` — Batch 14 pins: Job Radar profile-edit reset, live re-score / fit backfill / stale + scam buckets / batched embeds, company deactivate, dismiss nudge, fetch timeouts, http(s) apply links, Jobs views; the service worker run in a vm against fake caches (503, no secret caching, replay rules); task location on create + recurrence; automation validation / wiring / isolation; Ask model column + db/024; single-recipient validation; iCal escaping/DTSTAMP/DTEND/folding; dependency cycles + trashed blockers; template validation + transactional apply; review overdue; recurring undo; keyboard/dialog wiring; webhook events; embedded keep-alive
@@ -260,7 +273,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (622 tests)
+# Run tests (442 tests)
 npm test
 
 # Pages
