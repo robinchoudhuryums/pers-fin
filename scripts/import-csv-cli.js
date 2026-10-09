@@ -10,11 +10,9 @@
 //   node scripts/import-csv-cli.js path/to/dir         # process custom dir
 //   node scripts/import-csv-cli.js path/to/file.csv    # process single file
 //
-// Bank is auto-detected from filename prefix or CSV content:
-//   chase_march2025.csv       → Chase format
-//   capitalone_checking.csv   → Capital One format
-//   wellsfargo_2025.csv       → Wells Fargo format
-//   anything_else.csv         → auto-detect from headers
+// Bank is auto-detected from the CSV content (headers / row shape — the
+// filename is not used): Chase card, Chase checking, Capital One, Discover,
+// Wells Fargo (headerless), Schwab, else a generic Date/Description/Amount read.
 //
 // Environment variables (loaded from .env automatically):
 //   NEON_DATABASE_URL, TOKEN_ENCRYPTION_PASSPHRASE
@@ -58,7 +56,10 @@ async function importCsvFile(filePath) {
   // detector below infer the format from row count + absence of expected names).
   let records;
   try {
-    records = parse(content, { columns: true, skip_empty_lines: true, trim: true, bom: true });
+    // relax_column_count: Chase checking exports end every data row with a
+    // trailing comma (one more field than the header), which threw
+    // "Invalid Record Length" and failed the whole file (BSI-16).
+    records = parse(content, { columns: true, skip_empty_lines: true, trim: true, bom: true, relax_column_count: true });
   } catch (e2) {
     console.error(`  ✗ Could not parse ${filename}: ${e2.message}`);
     return null;

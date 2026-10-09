@@ -54,6 +54,40 @@ function buildPortfolioSeries(rows) {
   return series;
 }
 
+// BSI-6: an account that starts contributing to the series AFTER its first
+// date (a brokerage linked mid-window, or a manual account added later) jumps
+// the total by its whole opening balance with no matching flow — TWR read it as
+// market return (+100% on the day a second $50k brokerage was linked) and XIRR
+// was wildly inflated. Each such account's first in-window balance is treated
+// as an INFLOW on that date. (An account that stops syncing is forward-filled
+// by buildPortfolioSeries, so it never causes a drop and needs no outflow.)
+// Returns { entries: [{ key, date, amount }], firstSeen: { key: date } }.
+// Pure — exported for tests.
+function accountEntryFlows(rows) {
+  const firstSeen = {};
+  const firstBalance = {};
+  let seriesStart = null;
+  for (const r of rows || []) {
+    const d = (r.snapshot_date instanceof Date)
+      ? r.snapshot_date.toISOString().slice(0, 10)
+      : String(r.snapshot_date).slice(0, 10);
+    const key = r.source + ":" + r.source_id;
+    if (!(key in firstSeen) || d < firstSeen[key]) {
+      firstSeen[key] = d;
+      firstBalance[key] = parseFloat(r.balance) || 0;
+    }
+    if (seriesStart === null || d < seriesStart) seriesStart = d;
+  }
+  const entries = [];
+  for (const key of Object.keys(firstSeen)) {
+    if (firstSeen[key] > seriesStart && firstBalance[key] !== 0) {
+      entries.push({ key, date: firstSeen[key], amount: firstBalance[key] });
+    }
+  }
+  entries.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  return { entries, firstSeen };
+}
+
 // -------------------------------------------------------------------------
 // External cash flows (TWR/XIRR) — Plaid investmentsTransactionsGet + manual
 // -------------------------------------------------------------------------
@@ -437,11 +471,22 @@ router.get("/api/investments/performance-history", async (req, res) => {
         const flowsByDate = {};
         const cashflows = [{ date: coveredSeries[0].date, amount: -coveredSeries[0].value }];
         let netFlows = 0, flowsCount = 0;
+        // BSI-6: an account entering the series mid-window brings its opening
+        // balance in as an inflow on its first date …
+        const { entries, firstSeen } = accountEntryFlows(coveredRows);
+        for (const e of entries) {
+          flowsByDate[e.date] = (flowsByDate[e.date] || 0) + e.amount;
+          cashflows.push({ date: e.date, amount: -e.amount });
+        }
         let si = 1;
         for (const f of flowsRes.rows) {
-          if (!covered.has(f.source + ":" + f.source_id)) continue;
+          const fkey = f.source + ":" + f.source_id;
+          if (!covered.has(fkey)) continue;
           const d = f.flow_date.slice(0, 10);
           if (d <= coveredSeries[0].date) continue;
+          // … so that account's own flows on/before that date are already part
+          // of the opening balance (Plaid syncs ~24 months of history at link).
+          if (firstSeen[fkey] && d <= firstSeen[fkey]) continue;
           if (d > coveredSeries[coveredSeries.length - 1].date) continue;
           while (si < coveredSeries.length && coveredSeries[si].date < d) si++;
           if (si >= coveredSeries.length) break;
@@ -468,6 +513,8 @@ router.get("/api/investments/performance-history", async (req, res) => {
           flows_count: flowsCount,
           net_flows: Math.round(netFlows * 100) / 100,
           scope: coveragePct >= 99.5 ? "all" : (coveragePct > 0 ? "partial" : "none"),
+          // BSI-6: accounts that joined mid-window, counted as opening inflows.
+          accounts_added: entries.length,
         };
       }
     } catch (err) {
@@ -497,6 +544,7 @@ router.get("/api/investments/performance-history", async (req, res) => {
 module.exports = router;
 // Helper exports attached AFTER module.exports = router (INV-19).
 module.exports.buildPortfolioSeries = buildPortfolioSeries;
+module.exports.accountEntryFlows = accountEntryFlows;
 module.exports.classifyPlaidFlow = classifyPlaidFlow;
 module.exports.computeTWR = computeTWR;
 module.exports.computeXIRR = computeXIRR;

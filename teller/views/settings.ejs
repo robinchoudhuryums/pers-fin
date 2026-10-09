@@ -1468,7 +1468,17 @@
             }
             clearInterval(reconcilePoll); reconcilePoll = null;
             rb.disabled = false; rb.textContent = prev;
+            // WD-17: per-item errors live in result.teller/plaid.errors — the
+            // server folds them into st.error; also check them directly.
+            var legErrs = 0;
+            ['teller', 'plaid'].forEach(function (k) {
+              var r = st.result && st.result[k];
+              if (!r) return;
+              if (r.error && r.error !== 'Plaid not configured') legErrs++;
+              if (Array.isArray(r.errors)) legErrs += r.errors.length;
+            });
             if (st.error) showMsg('Reconcile finished with errors: ' + st.error, false);
+            else if (legErrs) showMsg('Reconcile finished with ' + legErrs + ' error(s) — see Sync Health.', false);
             else showMsg('Reconcile complete.', true);
             loadDataHealth();
           } catch (e) { /* keep polling */ }

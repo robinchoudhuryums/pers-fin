@@ -9,7 +9,29 @@ to the "none in progress" state.
 
 ## Current Cycle
 
-- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 11 DONE** on branch
+- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 12 DONE** on branch
+  `claude/lucid-darwin-7r8e59` (2026-10-09). Batch 12 (Investments) implemented on top of
+  Batch 11 (both unmerged, no PR), tested, pushed.
+  - **Completed:** BSI-4 (prune holdings Plaid no longer returns), BSI-5 (NULL cost basis +
+    known-basis return + cost_basis_coverage; Sheets + dashboard), BSI-6 (mid-window account entry
+    flows in TWR/XIRR), WD-2 (sparkline history source), WD-10 (funding-options phantom dedupe +
+    orphan warning), WD-17 (winners/losers filtered by sign, stale history chart cleared, reconcile
+    leg errors reported), BSI-16 (parseMoney CR/DR + trailing minus, chase_checking, trailing-comma
+    tolerance).
+  - **Not finished (selected):** none.
+  - **Tests:** 1572/1572 (Perfin 995 + Per-sistant 577; 63 files). New
+    tests/scan-sept-batch12.test.js (21; all fail pre-fix). Real PG: migrations ×2 (cost_basis
+    nullable), prune/NULL basis on the real table, performance figures, funding-options dedupe.
+    Browser: dashboard/goals/settings load with no script/CSP errors; e2e 8/8.
+  - **Decisions:** prune only accounts present in the item's response; unknown basis excluded from
+    the return (coverage shown) rather than estimated; CR → negative / DR → positive in the
+    debit-positive convention; Chase checking Type is not used as a category.
+  - **Open follow-ons:** see `.cycle/blocks/6-batch12-broad-implement.md`.
+  - **Operator:** none required.
+  - **Where I left off:** Batch 12 committed and pushed (no PR). NEXT: /sync-docs for Batch 12,
+    then Batch 13 (Perfin UI correctness & accessibility).
+
+- **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 11 DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-10-08). Batches 3–10 were merged to `main` via
   robinchoudhuryums/pers-fin#129; the branch was then restarted from the new `main` and
   Batch 11 (Knowledge lifecycle & retrieval) implemented, tested, pushed (no PR opened).

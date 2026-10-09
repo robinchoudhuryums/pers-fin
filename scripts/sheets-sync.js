@@ -2033,14 +2033,18 @@ async function syncInvestments(sheets, pool) {
     "Quantity", "Cost Basis", "Current Value", "Return $", "Return %",
   ];
 
-  let totalValue = 0, totalCost = 0;
+  // BSI-5: an unknown cost basis (NULL) leaves Cost Basis / Return blank and is
+  // left out of the TOTAL return — it used to be $0 cost, so the holding's whole
+  // value showed as gain. The total return is over known-basis holdings only.
+  let totalValue = 0, totalCost = 0, valueWithBasis = 0;
   const data = rows.map(r => {
     const value = parseFloat(r.current_value || 0);
-    const cost = parseFloat(r.cost_basis || 0);
-    const ret = value - cost;
-    const retPct = cost > 0 ? (ret / cost) * 100 : null;
+    const known = r.cost_basis != null && Number.isFinite(parseFloat(r.cost_basis));
+    const cost = known ? parseFloat(r.cost_basis) : null;
+    const ret = known ? value - cost : null;
+    const retPct = known && cost > 0 ? (ret / cost) * 100 : null;
     totalValue += value;
-    totalCost += cost;
+    if (known) { totalCost += cost; valueWithBasis += value; }
     return [
       r.ticker || "",
       r.name || "",
@@ -2048,15 +2052,15 @@ async function syncInvestments(sheets, pool) {
       r.account_name || "",
       r.institution || "",
       parseFloat(r.quantity || 0),
-      fmtCurrency(cost),
+      known ? fmtCurrency(cost) : "",
       fmtCurrency(value),
-      fmtCurrency(ret),
+      known ? fmtCurrency(ret) : "",
       retPct === null ? "" : retPct.toFixed(2) + "%",
     ];
   });
 
   // Total row
-  const totalRet = totalValue - totalCost;
+  const totalRet = valueWithBasis - totalCost;
   const totalRetPct = totalCost > 0 ? (totalRet / totalCost) * 100 : null;
   data.push([]);
   data.push([

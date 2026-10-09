@@ -38,6 +38,70 @@ function sumHoldingsByAccount(holdings, secMap) {
   return m;
 }
 
+// Plaid reports cost_basis as null when it isn't known (a position transferred
+// in from another broker, some fund types). It used to be stored as 0, which
+// counted the holding's whole value as gain (BSI-5) — keep it NULL.
+function holdingCostBasis(h) {
+  if (h == null || h.cost_basis == null || h.cost_basis === "") return null;
+  const n = Number(h.cost_basis);
+  return Number.isFinite(n) ? n : null;
+}
+
+// Write one investmentsHoldingsGet response to investment_holdings — the ONE
+// writer for every path (both exchange routes + syncAllPlaidHoldings).
+//   - upserts each returned holding (cost_basis NULL when unknown, BSI-5);
+//   - deletes the holdings of the response's accounts that Plaid no longer
+//     returns (BSI-4: a fully sold position kept its last quantity/value
+//     forever and stayed in performance, allocation and the Sheets tab).
+//     Only accounts present in THIS response are pruned, so another item's or
+//     a manual account's holdings are never touched.
+async function writePlaidHoldings(db, data) {
+  const holdings = (data && data.holdings) || [];
+  const securities = (data && data.securities) || [];
+  const secMap = {};
+  for (const s of securities) secMap[s.security_id] = s;
+  if (holdings.length > 0) {
+    const placeholders = [];
+    const values = [];
+    let idx = 1;
+    for (const h of holdings) {
+      const sec = secMap[h.security_id] || {};
+      placeholders.push(`($${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++})`);
+      values.push(
+        h.account_id, h.security_id,
+        sec.ticker_symbol || null, sec.name || "Unknown",
+        h.quantity, holdingCostBasis(h),
+        h.institution_value || (sec.close_price ? h.quantity * sec.close_price : null),
+        sec.type || "unknown",
+      );
+    }
+    await db.query(
+      `INSERT INTO investment_holdings (plaid_account_id, security_id, ticker, name,
+        quantity, cost_basis, current_value, security_type)
+       VALUES ${placeholders.join(", ")}
+       ON CONFLICT (plaid_account_id, security_id) DO UPDATE SET
+         quantity = EXCLUDED.quantity, cost_basis = EXCLUDED.cost_basis,
+         current_value = EXCLUDED.current_value, ticker = EXCLUDED.ticker,
+         name = EXCLUDED.name, security_type = EXCLUDED.security_type, updated_at = now()`,
+      values
+    );
+  }
+  const accountIds = [...new Set(((data && data.accounts) || []).map((a) => a.account_id).filter(Boolean))];
+  let pruned = 0;
+  if (accountIds.length) {
+    const r = await db.query(
+      `DELETE FROM investment_holdings
+       WHERE plaid_account_id = ANY($1::text[])
+         AND (plaid_account_id, security_id) NOT IN (
+           SELECT * FROM unnest($2::text[], $3::text[])
+         )`,
+      [accountIds, holdings.map((h) => h.account_id), holdings.map((h) => h.security_id)]
+    );
+    pruned = r.rowCount || 0;
+  }
+  return { upserted: holdings.length, pruned };
+}
+
 // GET /api/plaid/status — check if Plaid is configured
 router.get("/api/plaid/status", (_req, res) => {
   const client = getPlaidClient();
@@ -370,33 +434,8 @@ router.post("/api/plaid/exchange-transactions", async (req, res) => {
             [balance, acct.account_id]
           );
         }
-        if (holdings.length > 0) {
-          const placeholders = [];
-          const values = [];
-          let idx = 1;
-          for (const h of holdings) {
-            const sec = secMap[h.security_id] || {};
-            placeholders.push(`($${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++})`);
-            values.push(
-              h.account_id, h.security_id,
-              sec.ticker_symbol || null, sec.name || "Unknown",
-              h.quantity, h.cost_basis || 0,
-              h.institution_value || (sec.close_price ? h.quantity * sec.close_price : null),
-              sec.type || "unknown",
-            );
-          }
-          await pool.query(
-            `INSERT INTO investment_holdings (plaid_account_id, security_id, ticker, name,
-              quantity, cost_basis, current_value, security_type)
-             VALUES ${placeholders.join(", ")}
-             ON CONFLICT (plaid_account_id, security_id) DO UPDATE SET
-               quantity = EXCLUDED.quantity, cost_basis = EXCLUDED.cost_basis,
-               current_value = EXCLUDED.current_value, ticker = EXCLUDED.ticker,
-               name = EXCLUDED.name, updated_at = now()`,
-            values
-          );
-          holdingsSynced = holdings.length;
-        }
+        const written = await writePlaidHoldings(pool, holdingsRes.data);
+        if (written.upserted > 0) holdingsSynced = written.upserted;
       } catch (invErr) {
         console.error("Initial holdings sync error:", invErr.response?.data?.error_message || invErr.message);
       }
@@ -1151,27 +1190,8 @@ router.post("/api/plaid/exchange", async (req, res) => {
       stored++;
     }
 
-    // Store holdings
-    for (const h of holdings) {
-      const sec = secMap[h.security_id] || {};
-      await pool.query(
-        `INSERT INTO investment_holdings (plaid_account_id, security_id, ticker, name,
-          quantity, cost_basis, current_value, security_type)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         ON CONFLICT (plaid_account_id, security_id) DO UPDATE SET
-           quantity = $5, cost_basis = $6, current_value = $7, name = $4, ticker = $3, updated_at = now()`,
-        [
-          h.account_id,
-          h.security_id,
-          sec.ticker_symbol || null,
-          sec.name || "Unknown",
-          h.quantity,
-          h.cost_basis || 0,
-          h.institution_value || (sec.close_price ? h.quantity * sec.close_price : null),
-          sec.type || "unknown",
-        ]
-      );
-    }
+    // Store holdings (shared writer: NULL unknown basis, prune sold — BSI-4/5)
+    await writePlaidHoldings(pool, holdingsRes.data);
 
     res.json({
       item_id: itemId,
@@ -1220,7 +1240,7 @@ async function syncAllPlaidHoldings() {
       [ENCRYPTION_PASSPHRASE]
     );
 
-    let totalAccounts = 0, totalHoldings = 0;
+    let totalAccounts = 0, totalHoldings = 0, totalPruned = 0;
     const errors = [];
     // Buffer per-account snapshot tuples and flush as a single batched INSERT
     // after the loop. Each snapshot used to be its own query with a swallowed
@@ -1295,34 +1315,10 @@ async function syncAllPlaidHoldings() {
           }
         }
 
-        // Batch upsert holdings (instead of one query per holding)
-        if (holdings.length > 0) {
-          const placeholders = [];
-          const values = [];
-          let idx = 1;
-          for (const h of holdings) {
-            const sec = secMap[h.security_id] || {};
-            placeholders.push(`($${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++})`);
-            values.push(
-              h.account_id, h.security_id,
-              sec.ticker_symbol || null, sec.name || "Unknown",
-              h.quantity, h.cost_basis || 0,
-              h.institution_value || (sec.close_price ? h.quantity * sec.close_price : null),
-              sec.type || "unknown",
-            );
-          }
-          await pool.query(
-            `INSERT INTO investment_holdings (plaid_account_id, security_id, ticker, name,
-              quantity, cost_basis, current_value, security_type)
-             VALUES ${placeholders.join(", ")}
-             ON CONFLICT (plaid_account_id, security_id) DO UPDATE SET
-               quantity = EXCLUDED.quantity, cost_basis = EXCLUDED.cost_basis,
-               current_value = EXCLUDED.current_value, ticker = EXCLUDED.ticker,
-               name = EXCLUDED.name, updated_at = now()`,
-            values
-          );
-          totalHoldings += holdings.length;
-        }
+        // Upsert this item's holdings and drop sold positions (BSI-4/5).
+        const written = await writePlaidHoldings(pool, holdingsRes.data);
+        totalHoldings += written.upserted;
+        totalPruned += written.pruned;
       } catch (err) {
         // The items UNION above includes status='GOOD' plaid_items that merely
         // have an investment-TYPE linked account but no usable Investments
@@ -1360,7 +1356,7 @@ async function syncAllPlaidHoldings() {
       }
     }
 
-    return { ok: true, accounts_updated: totalAccounts, holdings_updated: totalHoldings, errors: errors.length > 0 ? errors : undefined };
+    return { ok: true, accounts_updated: totalAccounts, holdings_updated: totalHoldings, holdings_removed: totalPruned, errors: errors.length > 0 ? errors : undefined };
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -1530,22 +1526,37 @@ router.get("/api/investments/performance", async (_req, res) => {
     }
     const hasTargets = Object.keys(targetMap).length > 0;
 
+    // BSI-5: a holding with an UNKNOWN cost basis (NULL) counts toward value
+    // and allocation but not toward any return figure — treating it as $0 cost
+    // reported its whole value as gain. Returns are over the known-basis
+    // holdings only (value_with_basis − cost), and `cost_basis_coverage` says
+    // how much of the portfolio that covers.
     let totalValue = 0;
     let totalCostBasis = 0;
+    let valueWithBasis = 0;
+    let holdingsWithBasis = 0;
     const byClass = {};
     const enrichedHoldings = [];
 
     for (const h of holdings.rows) {
       const value = parseFloat(h.current_value || 0);
-      const cost = parseFloat(h.cost_basis || 0);
-      const ret = value - cost;
-      const retPct = cost > 0 ? (ret / cost) * 100 : null;
+      const known = h.cost_basis != null && Number.isFinite(parseFloat(h.cost_basis));
+      const cost = known ? parseFloat(h.cost_basis) : null;
+      const ret = known ? value - cost : null;
+      const retPct = known && cost > 0 ? (ret / cost) * 100 : null;
       totalValue += value;
-      totalCostBasis += cost;
+      if (known) {
+        totalCostBasis += cost;
+        valueWithBasis += value;
+        holdingsWithBasis++;
+      }
       const cls = (h.security_type || "unknown").toLowerCase();
-      if (!byClass[cls]) byClass[cls] = { security_type: cls, value: 0, cost_basis: 0 };
+      if (!byClass[cls]) byClass[cls] = { security_type: cls, value: 0, cost_basis: 0, value_with_basis: 0 };
       byClass[cls].value += value;
-      byClass[cls].cost_basis += cost;
+      if (known) {
+        byClass[cls].cost_basis += cost;
+        byClass[cls].value_with_basis += value;
+      }
       enrichedHoldings.push({
         name: h.name,
         ticker: h.ticker,
@@ -1557,11 +1568,11 @@ router.get("/api/investments/performance", async (_req, res) => {
       });
     }
 
-    const totalReturn = totalValue - totalCostBasis;
+    const totalReturn = valueWithBasis - totalCostBasis;
     const totalReturnPct = totalCostBasis > 0 ? (totalReturn / totalCostBasis) * 100 : null;
 
     const byAssetClass = Object.values(byClass).map(c => {
-      const ret = c.value - c.cost_basis;
+      const ret = c.value_with_basis - c.cost_basis;
       const retPct = c.cost_basis > 0 ? (ret / c.cost_basis) * 100 : null;
       const pctOfPortfolio = totalValue > 0 ? (c.value / totalValue) * 100 : 0;
       const row = {
@@ -1605,10 +1616,13 @@ router.get("/api/investments/performance", async (_req, res) => {
       }
     }
 
-    // Sort holdings by return_pct, filter to those with valid (non-null) pct
+    // Sort holdings by return_pct, filter to those with valid (non-null) pct.
+    // Winners are gains and losers are losses (WD-17): with fewer than five
+    // losing positions, the ascending sort used to list GAINERS as "losers" —
+    // often the same tickers as under winners.
     const withPct = enrichedHoldings.filter(h => h.return_pct !== null);
-    const topWinners = withPct.slice().sort((a, b) => b.return_pct - a.return_pct).slice(0, 5);
-    const topLosers  = withPct.slice().sort((a, b) => a.return_pct - b.return_pct).slice(0, 5);
+    const topWinners = withPct.filter(h => h.return_pct > 0).sort((a, b) => b.return_pct - a.return_pct).slice(0, 5);
+    const topLosers  = withPct.filter(h => h.return_pct < 0).sort((a, b) => a.return_pct - b.return_pct).slice(0, 5);
 
     // Distinct account count
     const accountIds = new Set();
@@ -1624,6 +1638,13 @@ router.get("/api/investments/performance", async (_req, res) => {
       by_asset_class: byAssetClass,
       top_winners: topWinners,
       top_losers: topLosers,
+      // BSI-5: how much of the portfolio the return figures cover.
+      cost_basis_coverage: {
+        holdings_with_basis: holdingsWithBasis,
+        holdings_total: holdings.rows.length,
+        value_with_basis: valueWithBasis,
+        value_pct: totalValue > 0 ? (valueWithBasis / totalValue) * 100 : null,
+      },
     });
   } catch (err) {
     console.error("Investment performance error:", err.message);
@@ -1798,7 +1819,10 @@ module.exports.reconcilePlaidTransactions = reconcilePlaidTransactions;
 module.exports.syncAllPlaidBalances = syncAllPlaidBalances;
 module.exports.syncAllPlaidHoldings = syncAllPlaidHoldings;
 module.exports.sumHoldingsByAccount = sumHoldingsByAccount; // exported for testing (Schwab $0 fallback)
+module.exports.writePlaidHoldings = writePlaidHoldings;
+module.exports.holdingCostBasis = holdingCostBasis;
 module.exports.buildPortfolioSeries = investmentPerformance.buildPortfolioSeries;
+module.exports.accountEntryFlows = investmentPerformance.accountEntryFlows;
 module.exports.syncAllPlaidInvestmentFlows = investmentPerformance.syncAllPlaidInvestmentFlows;
 module.exports.classifyPlaidFlow = investmentPerformance.classifyPlaidFlow;
 module.exports.computeTWR = investmentPerformance.computeTWR;

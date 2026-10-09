@@ -183,9 +183,14 @@
             '<div class="goal-progress"><div class="goal-amounts"><span>' + fmt(g.current_amount) + '</span><span style="color:' + color + ';font-weight:500;">' + pct + '%</span><span>' + fmt(g.target_amount) + '</span></div>' +
             '<div class="progress-bar"><div class="progress-fill" style="width:' + Math.min(100, pct) + '%;background:' + color + ';"></div></div></div>' +
             '<div class="goal-meta">' + meta.map(m => '<span>' + m + '</span>').join('') + '</div>' +
-            (g.funding_source
-              ? '<div style="font-size:11px;color:var(--teal);margin-top:6px;">🔗 Auto-tracked from ' + esc(g.funding_source.name) + ' (bal: ' + fmt(g.funding_source.balance) + ')</div>'
-              : '') +
+            // WD-10: an ORPHANED link (the account was removed) used to render
+            // "Auto-tracked from  (bal: $0.00)". Say what happened instead —
+            // progress falls back to the manually entered amount.
+            (g.funding_status === 'orphaned'
+              ? '<div style="font-size:11px;color:var(--yellow);margin-top:6px;">⚠ The linked account is no longer available — showing the manually entered amount. Unlink it or link another account.</div>'
+              : g.funding_source
+                ? '<div style="font-size:11px;color:var(--teal);margin-top:6px;">🔗 Auto-tracked from ' + esc(g.funding_source.name) + ' (bal: ' + fmt(g.funding_source.balance) + ')</div>'
+                : '') +
             (g.notes ? '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;">' + esc(g.notes) + '</div>' : '') +
             '<div class="goal-actions">' +
               (g.funding_source

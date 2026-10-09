@@ -192,6 +192,13 @@ router.get("/api/goals/funding-options", async (_req, res) => {
          FROM linked_accounts la
          WHERE ${INVESTMENT_ACCOUNT_TYPES}
            AND (available_balance IS NOT NULL OR current_balance IS NOT NULL)
+           -- WD-10: a Plaid brokerage also lives in investment_accounts (the
+           -- real, holdings-sum balance); its linked_accounts twin is the $0
+           -- phantom. Same dedupe as getNetWorth — only the real row is offered,
+           -- so a goal can't be linked to the phantom and freeze at $0.
+           AND NOT EXISTS (
+             SELECT 1 FROM investment_accounts ia
+             WHERE ia.plaid_account_id = la.account_id AND ia.is_active = true)
          ORDER BY name`
       ),
       pool.query(

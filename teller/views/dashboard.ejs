@@ -1964,8 +1964,14 @@
         var pctTxt = (data.total_return_pct === null || data.total_return_pct === undefined) ? '' :
           ' (' + sign + data.total_return_pct.toFixed(2) + '%)';
         retEl.style.color = color;
+        // BSI-5: holdings with an unknown cost basis are left out of the
+        // return; say how much of the portfolio the figure covers.
+        var cov = data.cost_basis_coverage || null;
+        var partial = cov && cov.holdings_total > 0 && cov.holdings_with_basis < cov.holdings_total;
+        var basisValue = partial ? cov.value_with_basis : data.total_value;
         retEl.textContent = '$' + sign + data.total_return.toFixed(2) + pctTxt +
-          '  ·  $' + data.total_value.toFixed(2) + ' / $' + data.total_cost_basis.toFixed(2) + ' cost';
+          '  ·  $' + basisValue.toFixed(2) + ' / $' + data.total_cost_basis.toFixed(2) + ' cost' +
+          (partial ? '  ·  cost known for ' + cov.holdings_with_basis + ' of ' + cov.holdings_total + ' holdings' : '');
         var allocEl = document.getElementById('invperf-allocation');
         allocEl.innerHTML = (data.by_asset_class || []).slice(0, 6).map(function(c) {
           var w = Math.max(1, c.pct_of_portfolio || 0);
@@ -2041,12 +2047,28 @@
           '</div>';
       }
 
+      // WD-17: a range with < 2 points (or a failed fetch) used to return
+      // early, leaving the PREVIOUS range's chart and figures on screen under
+      // the newly selected button. Once the card is showing, clear it to an
+      // empty state instead. loadSeq drops a slower, superseded response.
+      var loadSeq = 0;
+      function showEmptyRange(months, msg) {
+        if (hist.style.display !== 'block') return; // never shown — stay hidden
+        chartEl.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:18px 0;text-align:center;">' +
+          esc(msg || ('Not enough balance history for the last ' + months + ' months yet.')) + '</div>';
+        if (statsEl) statsEl.innerHTML = '';
+        var twrClear = document.getElementById('invperf-twr-stats');
+        if (twrClear) twrClear.innerHTML = '';
+      }
       async function load(months) {
+        var seq = ++loadSeq;
         try {
           var res = await apiFetch('/api/investments/performance-history?months=' + months);
-          if (!res.ok) return;
+          if (seq !== loadSeq) return;
+          if (!res.ok) { showEmptyRange(months, 'Could not load portfolio history.'); return; }
           var data = await res.json();
-          if (!data.portfolio || data.portfolio.length < 2) return;
+          if (seq !== loadSeq) return;
+          if (!data.portfolio || data.portfolio.length < 2) { showEmptyRange(months); return; }
           box.style.display = 'block';
           hist.style.display = 'block';
           chartEl.innerHTML = renderDualLine(data.portfolio, data.benchmark);
@@ -2089,7 +2111,7 @@
               data.flow_coverage.coverage_pct.toFixed(0) + '% of portfolio — log flows for the rest)</span>');
           }
           if (twrEl) twrEl.innerHTML = twrParts.join(' &nbsp;·&nbsp; ');
-        } catch (e) { /* leave hidden */ }
+        } catch (e) { if (seq === loadSeq) showEmptyRange(months, 'Could not load portfolio history.'); }
       }
 
       // Manual flow logging (Teller-linked / manual accounts). Account list
@@ -2888,6 +2910,13 @@
 
         // Per-account list (initial render — sparklines fetch lazily below)
         var listEl = document.getElementById('investments-list');
+        // The balance-history API takes source=linked|investment. Teller rows
+        // live in linked_accounts; plaid + manual rows in investment_accounts.
+        // ONE mapping for the sparkline AND the "View history" link (WD-2: the
+        // sparkline sent a.source — teller/plaid/manual — which the server
+        // reads as 'linked', so a Plaid/manual card drew another account's
+        // history, e.g. a checking account with the same numeric id).
+        var invHistSource = function(a) { return a.source === 'teller' ? 'linked' : 'investment'; };
         listEl.innerHTML = data.accounts.map(function(a) {
           var sparkId = 'spark-' + a.source + '-' + a.id;
           var holdingsBadge = a.supports_holdings
@@ -2895,7 +2924,7 @@
             : '';
           // History pages exist for both linked and investment sources;
           // 'manual' rows live in investment_accounts, so source=investment.
-          var histSource = a.source === 'teller' ? 'linked' : 'investment';
+          var histSource = invHistSource(a);
           var histHref = (window.BASE_PATH || '') + '/accounts/' + a.id + '/history?source=' + histSource;
           // Remove control only for investment_accounts-backed rows (plaid +
           // manual). Teller rows come from linked_accounts and aren't deletable
@@ -2938,7 +2967,7 @@
         // typically <10 per user so this is fine without a queue.
         for (var i = 0; i < data.accounts.length; i++) {
           (function(a) {
-            var url = '/api/accounts/' + a.id + '/balance-history?source=' + a.source + '&months=6';
+            var url = '/api/accounts/' + a.id + '/balance-history?source=' + invHistSource(a) + '&months=6';
             apiFetch(url).then(function(r) {
               if (!r.ok) return;
               return r.json();

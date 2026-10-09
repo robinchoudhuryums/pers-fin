@@ -671,11 +671,30 @@ async function runReconcile(days, provider) {
 // notification. Single-operator, single-process app → one job at a time.
 let reconcileJob = { running: false, phase: null, started_at: null, finished_at: null, provider: null, days: null, result: null, error: null };
 
+// Flatten every per-item / per-leg error out of a reconcile result (WD-17).
+// A leg that threw carries { error }; a leg that ran but had failing items
+// carries errors[]. "Plaid not configured" is not a failure.
+function reconcileErrors(out) {
+  const list = [];
+  if (!out) return list;
+  if (out.error) list.push({ provider: null, institution: null, error: out.error });
+  for (const provider of ["teller", "plaid"]) {
+    const r = out[provider];
+    if (!r) continue;
+    if (r.error && r.error !== "Plaid not configured") list.push({ provider, institution: null, error: r.error });
+    for (const e of Array.isArray(r.errors) ? r.errors : []) {
+      list.push({ provider, institution: (e && e.institution) || null, error: (e && (e.error || e.message)) || String(e) });
+    }
+  }
+  return list;
+}
+
 function summarizeReconcile(out) {
-  const leg = (r) => r ? (r.error ? "error" : ((r.transactions_added ?? r.added ?? 0) + " recovered")) : null;
+  const errCount = (r) => Array.isArray(r.errors) && r.errors.length ? " (" + r.errors.length + " error" + (r.errors.length === 1 ? "" : "s") + ")" : "";
+  const leg = (r) => r ? (r.error ? "error" : ((r.transactions_added ?? r.added ?? 0) + " recovered" + errCount(r))) : null;
   const parts = [];
   if (out.teller) parts.push("Teller: " + leg(out.teller));
-  if (out.plaid) parts.push("Plaid: " + (out.plaid.error ? "error" : ((out.plaid.transactions_added ?? 0) + " recovered")));
+  if (out.plaid) parts.push("Plaid: " + (out.plaid.error ? "error" : ((out.plaid.transactions_added ?? 0) + " recovered" + errCount(out.plaid))));
   return parts.join(", ") || "Done.";
 }
 
@@ -703,11 +722,18 @@ router.post("/api/sync/reconcile", async (req, res) => {
       reconcileJob.running = false;
       reconcileJob.finished_at = new Date().toISOString();
       reconcileJob.result = out;
-      reconcileJob.error = out.error || null;
+      // WD-17: per-item errors inside a leg (out.teller.errors / out.plaid.errors)
+      // used to be ignored, so a reconcile whose items all failed still read
+      // "Reconcile complete" in Settings and in the push.
+      const errs = reconcileErrors(out);
+      reconcileJob.error = out.error || (errs.length
+        ? errs.length + " error(s): " + errs.slice(0, 3).map(e => (e.institution ? e.institution + ": " : (e.provider ? e.provider + ": " : "")) + e.error).join("; ")
+        : null);
+      reconcileJob.errors = errs;
       try {
         const { sendToAll } = require("./notifications");
         await sendToAll({
-          title: out.error ? "Reconcile finished with errors" : "Reconcile complete",
+          title: reconcileJob.error ? "Reconcile finished with errors" : "Reconcile complete",
           body: summarizeReconcile(out),
           tag: "reconcile",
           data: { url: "/settings" },
@@ -1356,6 +1382,8 @@ module.exports = router;
 module.exports.syncAllEnrollments = syncAllEnrollments;
 module.exports.syncAllBalances = syncAllBalances;
 module.exports.reconcileTeller = reconcileTeller;
+module.exports.reconcileErrors = reconcileErrors;
+module.exports.summarizeReconcile = summarizeReconcile;
 module.exports.recordSyncResult = recordSyncResult;
 module.exports.syncAllTransactions = syncAllTransactions;
 module.exports.runAnomalyCheck = runAnomalyCheck;
