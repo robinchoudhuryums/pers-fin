@@ -19,6 +19,16 @@
      opacity or the content bleeds through and the text is unreadable. */
   --surface-solid: #151a26;
   --radius: 12px;
+  /* IF-4: tokens the views use that were never defined (no fallback, so the
+     Settle Up cards lost their background/border and the feedback textarea
+     was invisible). Aliases of the base palette. */
+  --card: var(--surface-2); --card-border: var(--border);
+  --bg-elevated: var(--surface-solid);
+  --text-primary: var(--text); --text-secondary: var(--text-muted);
+  --accent: var(--teal);
+  /* IF-5: text on a solid --teal button. Black reads on the dark-theme teal
+     (~5.8:1); the darker light-theme teal needs white (black was ~3.1:1). */
+  --on-teal: #000;
 }
 [data-theme="light"] {
   --bg: #f5f2ed; --surface: rgba(0,0,0,0.03); --surface-2: rgba(0,0,0,0.06);
@@ -33,6 +43,7 @@
   --yellow: #c49a2a; --yellow-bg: rgba(196,154,42,0.1);
   --blue: #4a8abf; --blue-bg: rgba(74,138,191,0.1);
   --surface-solid: #fdfbf6;
+  --on-teal: #fff;
 }
 /* Skip-to-content link for keyboard users */
 .skip-link {
@@ -223,7 +234,9 @@ h1 { font-size: 42px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 8
 .actions select { appearance: none; padding-right: 30px;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23d4a574' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat; background-position: right 10px center; background-color: transparent; }
-.actions select option { background: #131620; color: var(--text); }
+.actions select option { background: var(--surface-solid); color: var(--text); }
+/* IF-5: native option lists follow the theme (a near-black list in light theme). */
+select option { background: var(--surface-solid); color: var(--text); }
 
 /* Toast stack — replaces the single-#status-msg pattern so rapid actions
    stack instead of overwriting. Per-page #status-msg divs still exist but

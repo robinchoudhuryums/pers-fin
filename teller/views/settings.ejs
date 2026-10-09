@@ -1163,17 +1163,24 @@
           }).join('');
           rows.querySelectorAll('input[data-toggle-id]').forEach(function(cb) {
             cb.addEventListener('change', async function() {
-              await apiFetch('/api/watchlist/' + this.getAttribute('data-toggle-id'), {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ is_active: this.checked }),
-              });
+              // WD-12: report a failed toggle (load() then shows the real state).
+              try {
+                var r = await apiFetch('/api/watchlist/' + this.getAttribute('data-toggle-id'), {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ is_active: this.checked }),
+                });
+                await writeOk(r, 'Could not update the watchlist item');
+              } catch (e) { showMsg('Could not update the watchlist item: ' + e.message, false); }
               load();
             });
           });
           rows.querySelectorAll('button[data-delete-id]').forEach(function(btn) {
             btn.addEventListener('click', async function() {
-              await apiFetch('/api/watchlist/' + this.getAttribute('data-delete-id'), { method: 'DELETE' });
+              try {
+                var r = await apiFetch('/api/watchlist/' + this.getAttribute('data-delete-id'), { method: 'DELETE' });
+                if (await writeOk(r, 'Could not remove the watchlist item')) showMsg('Removed', true);
+              } catch (e) { showMsg('Could not remove the watchlist item: ' + e.message, false); }
               load();
             });
           });
@@ -1282,6 +1289,10 @@
           response: {
             clientDataJSON: _bufToB64u(attestation.response.clientDataJSON),
             attestationObject: _bufToB64u(attestation.response.attestationObject),
+            // WD-13: the server stores these (webauthn_credentials.transports);
+            // without them every credential was saved with NULL transports.
+            transports: typeof attestation.response.getTransports === 'function'
+              ? attestation.response.getTransports() : [],
           },
           clientExtensionResults: attestation.getClientExtensionResults ? attestation.getClientExtensionResults() : {},
           authenticatorAttachment: attestation.authenticatorAttachment || null,
@@ -1310,8 +1321,9 @@
       if (!confirm('Remove biometric for ' + name + '?')) return;
       try {
         var res = await apiFetch('/api/webauthn/credentials/' + encodeURIComponent(id), { method: 'DELETE' });
-        if (res.ok) loadBiometricCredentials();
-      } catch (e) { /* ignore */ }
+        // WD-12: a failed removal used to do nothing at all.
+        if (await writeOk(res, 'Could not remove the biometric login')) { showMsg('Removed biometric for ' + name, true); loadBiometricCredentials(); }
+      } catch (e) { showMsg('Could not remove the biometric login: ' + e.message, false); }
     }
 
     // --- Bind all event handlers (CSP-safe, no inline attributes) ---

@@ -170,8 +170,11 @@
         list.innerHTML = notifs.map(function(n) {
           var ago = fmtAgo(n.created_at);
           var bg = n.is_read ? '' : 'background:rgba(95,191,191,0.05);';
-          return '<div data-nid="' + n.id + '" tabindex="0" role="button"' +
-            ' aria-label="' + esc(n.title) + (n.is_read ? '' : ', unread, activate to mark read') + '"' +
+          // IF-7: a notification with a link (data.url, e.g. /housing#pending)
+          // opens it. Only same-app paths are followed ("/x", never "//host").
+          var url = n.data && typeof n.data.url === 'string' && /^\/(?!\/)/.test(n.data.url) ? n.data.url : '';
+          return '<div data-nid="' + n.id + '"' + (url ? ' data-url="' + esc(url) + '"' : '') + ' tabindex="0" role="button"' +
+            ' aria-label="' + esc(n.title) + (n.is_read ? '' : ', unread') + (url ? ', activate to open' : (n.is_read ? '' : ', activate to mark read')) + '"' +
             ' style="padding:10px 16px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px;' + bg + '">' +
             '<div style="font-weight:' + (n.is_read ? '400' : '600') + ';">' + esc(n.title) + '</div>' +
             '<div style="color:var(--text-muted);margin-top:2px;">' + esc(n.body) + '</div>' +
@@ -190,14 +193,19 @@
       }
 
       var backdrop = document.getElementById('notif-backdrop');
+      var panelDlg = null;
       function openPanel() {
         panel.hidden = false;
         if (backdrop) backdrop.hidden = false;
         bell.setAttribute('aria-expanded', 'true');
         // Move focus into the dialog so keyboard/screen-reader users land in it.
         panel.focus();
+        // IF-1: keep Tab inside the panel while it is open (shared helper;
+        // focus goes back to the bell in closePanel).
+        if (typeof window.openDialog === 'function') panelDlg = window.openDialog(panel, { onClose: closePanel, restoreFocus: false });
       }
       function closePanel() {
+        if (panelDlg) { panelDlg.close(); panelDlg = null; }
         panel.hidden = true;
         if (backdrop) backdrop.hidden = true;
         bell.setAttribute('aria-expanded', 'false');
@@ -232,13 +240,16 @@
       // surface as a toast instead of silently leaving the row looking read.
       async function markRead(item) {
         var nid = item.getAttribute('data-nid');
+        var url = item.getAttribute('data-url');
         try {
           var r = await apiFetch('/api/notifications/' + nid + '/read', { method: 'PATCH' });
           if (!r.ok) throw new Error('HTTP ' + r.status);
-          loadNotifs();
+          if (!url) loadNotifs();
         } catch (_) {
           if (typeof showMsg === 'function') showMsg('Could not mark notification read', false);
         }
+        // IF-7: follow the notification's link (basePath-prefixed under the shell).
+        if (url) window.location.href = (typeof withBase === 'function') ? withBase(url) : url;
       }
       list.addEventListener('click', function(e) {
         var item = e.target.closest('[data-nid]');

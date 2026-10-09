@@ -334,13 +334,13 @@
     <div class="pyramid-wrapper">
     <div class="pyramid-switcher" id="pyramid-switcher">
       <button class="active" data-mode="wellness" title="Overall financial health">Wellness</button>
-      <button data-mode="debt_payoff" title="Credit card debt payoff progress">Debt</button>
+      <button data-mode="debt_payoff" title="Card and loan debt payoff progress">Debt</button>
       <button data-mode="goal_progress" title="Individual goal progress">Goals</button>
       <button data-mode="spending_categories" title="Spending category balance">Spending</button>
       <button data-mode="net_worth" title="Net worth breakdown">Net Worth</button>
       <div class="pyramid-debt-baseline" id="debt-baseline-ctrl" style="display:none;">
         <span>Baseline $</span>
-        <input type="number" id="debt-baseline-input" placeholder="0" min="0" step="100">
+        <input aria-label="Starting debt" type="number" id="debt-baseline-input" placeholder="0" min="0" step="100">
         <button id="debt-baseline-save">Set</button>
       </div>
     </div>
@@ -527,7 +527,7 @@
       <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;justify-content:space-between;">
         <h2 style="margin:0;display:inline;">Settle Up</h2>
         <span style="display:flex;gap:8px;align-items:center;">
-          <select id="settlement-month-pick" style="font-size:11px;padding:3px 6px;background:var(--bg-elevated);color:var(--text);border:1px solid var(--card-border);border-radius:4px;"></select>
+          <select aria-label="Settlement month" id="settlement-month-pick" style="font-size:11px;padding:3px 6px;background:var(--bg-elevated);color:var(--text);border:1px solid var(--card-border);border-radius:4px;"></select>
         </span>
       </summary>
       <div id="settlement-headline" style="margin-top:12px;"></div>
@@ -579,13 +579,13 @@
             <details id="invflow-log" style="margin-top:8px;">
               <summary style="cursor:pointer;font-size:11px;color:var(--text-muted);">Log contribution / withdrawal</summary>
               <form id="invflow-form" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center;font-size:11px;">
-                <select id="invflow-account" required style="max-width:160px;"><option value="">Account…</option></select>
-                <select id="invflow-type">
+                <select aria-label="Account" id="invflow-account" required style="max-width:160px;"><option value="">Account…</option></select>
+                <select aria-label="Flow type" id="invflow-type">
                   <option value="contribution">Contribution</option>
                   <option value="withdrawal">Withdrawal</option>
                 </select>
-                <input id="invflow-date" type="date" required>
-                <input id="invflow-amount" type="number" step="0.01" min="0.01" placeholder="Amount" inputmode="decimal" required style="width:100px;">
+                <input aria-label="Flow date" id="invflow-date" type="date" required>
+                <input aria-label="Amount" id="invflow-amount" type="number" step="0.01" min="0.01" placeholder="Amount" inputmode="decimal" required style="width:100px;">
                 <button type="submit">Save</button>
               </form>
               <div style="margin-top:4px;font-size:10px;color:var(--text-muted);">
@@ -636,14 +636,14 @@
         <div id="credit-score-history" style="font-size:12px;color:var(--text-muted);margin-bottom:12px;"></div>
         <!-- Quick log form -->
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-          <input id="cs-score-input" type="number" min="300" max="850" inputmode="numeric" placeholder="Score (300-850)"
+          <input aria-label="Credit score" id="cs-score-input" type="number" min="300" max="850" inputmode="numeric" placeholder="Score (300-850)"
                  style="width:120px;padding:8px 10px;font-size:13px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);font-family:inherit;min-height:40px;">
-          <select id="cs-type-input" style="padding:8px 10px;font-size:13px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);font-family:inherit;min-height:40px;">
+          <select aria-label="Score type" id="cs-type-input" style="padding:8px 10px;font-size:13px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);font-family:inherit;min-height:40px;">
             <option value="vantagescore">VantageScore</option>
             <option value="fico">FICO</option>
             <option value="other">Other</option>
           </select>
-          <input id="cs-source-input" placeholder="Source (e.g. Chase)" style="width:120px;padding:8px 10px;font-size:13px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);font-family:inherit;min-height:40px;">
+          <input aria-label="Score source" id="cs-source-input" placeholder="Source (e.g. Chase)" style="width:120px;padding:8px 10px;font-size:13px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);font-family:inherit;min-height:40px;">
           <button class="btn" id="cs-log-btn" style="min-height:40px;cursor:pointer;font-family:inherit;">Log Score</button>
           <span id="cs-status" style="font-size:11px;color:var(--text-muted);"></span>
         </div>
@@ -668,21 +668,21 @@
        optimized: large tap targets, autofocus on first field, full-width
        inputs. -->
   <div id="quick-add-bill-modal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px);">
-    <div style="max-width:420px;margin:60px auto;padding:24px;background:var(--surface, var(--bg));border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+    <div style="max-width:420px;margin:60px auto;padding:24px;background:var(--surface-solid);border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 20px 60px rgba(0,0,0,0.3);">
       <h3 style="margin:0 0 6px;">Add Bill</h3>
       <div style="font-size:11px;color:var(--text-muted);margin-bottom:16px;">For utilities, rent, or anything not auto-detected from transactions.</div>
       <div style="display:flex;flex-direction:column;gap:12px;">
-        <input id="qab-name" placeholder="Bill name (e.g. Electricity)" style="padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;" autocomplete="off">
-        <input id="qab-amount" type="number" step="0.01" min="0" inputmode="decimal" placeholder="Amount ($)" style="padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
+        <input aria-label="Bill name" id="qab-name" placeholder="Bill name (e.g. Electricity)" style="padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;" autocomplete="off">
+        <input aria-label="Amount" id="qab-amount" type="number" step="0.01" min="0" inputmode="decimal" placeholder="Amount ($)" style="padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
         <div style="display:flex;gap:8px;">
-          <input id="qab-day" type="number" min="1" max="31" inputmode="numeric" placeholder="Due day (1-31)" style="flex:1;padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
-          <select id="qab-cadence" style="flex:1;padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
+          <input aria-label="Due day of month" id="qab-day" type="number" min="1" max="31" inputmode="numeric" placeholder="Due day (1-31)" style="flex:1;padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
+          <select aria-label="How often" id="qab-cadence" style="flex:1;padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
             <option value="monthly">Monthly</option>
             <option value="quarterly">Quarterly</option>
             <option value="yearly">Yearly</option>
           </select>
         </div>
-        <select id="qab-category" style="padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
+        <select aria-label="Category" id="qab-category" style="padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
           <option value="utility">Utility</option>
           <option value="bill">Bill</option>
           <option value="subscription">Subscription</option>
@@ -692,7 +692,7 @@
         <div id="qab-status" style="font-size:12px;min-height:18px;"></div>
         <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:4px;">
           <button class="btn-sm" id="qab-cancel" style="font-size:13px;padding:10px 16px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-family:inherit;min-height:40px;">Cancel</button>
-          <button class="btn-sm" id="qab-save" style="font-size:13px;padding:10px 16px;border:1px solid var(--teal);border-radius:6px;background:var(--teal);color:#000;cursor:pointer;font-family:inherit;font-weight:500;min-height:40px;">Save Bill</button>
+          <button class="btn-sm" id="qab-save" style="font-size:13px;padding:10px 16px;border:1px solid var(--teal);border-radius:6px;background:var(--teal);color:var(--on-teal);cursor:pointer;font-family:inherit;font-weight:500;min-height:40px;">Save Bill</button>
         </div>
       </div>
     </div>
@@ -747,7 +747,7 @@
           <span id="insights-feedback-status" style="font-size:11px;color:var(--text-muted);"></span>
         </div>
         <div id="insights-feedback-note-wrap" style="display:none;margin-top:8px;">
-          <textarea id="insights-feedback-note" rows="2"
+          <textarea aria-label="Correction or note about this insight" id="insights-feedback-note" rows="2"
             placeholder="What was wrong? (e.g. 'numbers were off', 'wrong merchant attribution')"
             style="width:100%;font-size:12px;padding:6px 8px;background:var(--bg-elevated);color:var(--text-primary);border:1px solid var(--card-border);border-radius:6px;"></textarea>
           <button class="btn btn-sm" id="insights-feedback-note-save" style="margin-top:6px;">Save note</button>
@@ -768,11 +768,12 @@
        lives on the dashboard so mobile users don't have to navigate.
        POSTs to the same /api/import-csv endpoint. -->
   <div id="dash-csv-modal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px);">
-    <div style="max-width:420px;margin:60px auto;padding:24px;background:var(--surface, var(--bg));border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+    <div style="max-width:420px;margin:60px auto;padding:24px;background:var(--surface-solid);border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 20px 60px rgba(0,0,0,0.3);">
       <h3 style="margin:0 0 6px;">Import Transactions CSV</h3>
       <div style="font-size:11px;color:var(--text-muted);margin-bottom:16px;">Pick a CSV export from your bank's app. Supports Chase, Wells Fargo, Capital One, Discover, Schwab, and generic.</div>
       <div style="display:flex;flex-direction:column;gap:12px;">
-        <select id="dash-csv-institution" style="padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
+        <select id="dash-csv-institution" aria-label="Bank or institution" style="padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
+          <option value="">Auto-detect from the file</option>
           <option value="Chase">Chase</option>
           <option value="Wells Fargo">Wells Fargo</option>
           <option value="Capital One">Capital One</option>
@@ -780,14 +781,14 @@
           <option value="Charles Schwab">Charles Schwab</option>
           <option value="Other">Other</option>
         </select>
-        <input id="dash-csv-custom" placeholder="Institution name" style="display:none;padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
-        <input id="dash-csv-label" placeholder="Account label (e.g. Chase Checking)" style="padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
-        <input id="dash-csv-file" type="file" accept=".csv,text/csv,.CSV" style="padding:8px;font-size:13px;color:var(--text-muted);">
+        <input aria-label="Institution name" id="dash-csv-custom" placeholder="Institution name" style="display:none;padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
+        <input aria-label="Account label (optional)" id="dash-csv-label" placeholder="Account label (e.g. Chase Checking)" style="padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
+        <input aria-label="CSV file" id="dash-csv-file" type="file" accept=".csv,text/csv,.CSV" style="padding:8px;font-size:13px;color:var(--text-muted);">
         <div id="dash-csv-preview" style="display:none;font-size:12px;border:1px solid var(--border);border-radius:8px;padding:10px 12px;max-height:240px;overflow:auto;"></div>
         <div id="dash-csv-status" style="font-size:12px;min-height:18px;"></div>
         <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:4px;">
           <button class="btn-sm" id="dash-csv-cancel" style="font-size:13px;padding:10px 16px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-family:inherit;min-height:40px;">Cancel</button>
-          <button class="btn-sm" id="dash-csv-submit" style="font-size:13px;padding:10px 16px;border:1px solid var(--teal);border-radius:6px;background:var(--teal);color:#000;cursor:pointer;font-family:inherit;font-weight:500;min-height:40px;">Preview</button>
+          <button class="btn-sm" id="dash-csv-submit" style="font-size:13px;padding:10px 16px;border:1px solid var(--teal);border-radius:6px;background:var(--teal);color:var(--on-teal);cursor:pointer;font-family:inherit;font-weight:500;min-height:40px;">Preview</button>
         </div>
       </div>
     </div>
@@ -984,8 +985,8 @@
             // Manual credit-limit entry — some issuers (e.g. Discover via Plaid)
             // never report a limit, so let the user set it to get real
             // utilization. Saved to credit_limit via PATCH /:id/balance.
-            creditExtra += '<div style="font-size:11px;margin-top:4px;display:flex;align-items:center;gap:6px;color:var(--text-muted);">Limit: $<input type="number" step="1" min="0" value="' + (storedLimit > 0 ? storedLimit : '') + '" placeholder="—" data-limit-account="' + a.id + '" style="width:80px;padding:2px 6px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);font-family:inherit;"></div>';
-            creditExtra += '<div style="font-size:11px;margin-top:4px;display:flex;align-items:center;gap:6px;color:var(--text-muted);">APR: <input type="number" step="0.01" min="0" max="99.99" value="' + (a.apr || '') + '" placeholder="\u2014" data-apr-account="' + a.id + '" style="width:60px;padding:2px 6px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);font-family:inherit;">%</div>';
+            creditExtra += '<div style="font-size:11px;margin-top:4px;display:flex;align-items:center;gap:6px;color:var(--text-muted);">Limit: $<input type="number" step="1" min="0" value="' + (storedLimit > 0 ? storedLimit : '') + '" placeholder="—" aria-label="Credit limit" data-limit-account="' + a.id + '" style="width:80px;padding:2px 6px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);font-family:inherit;"></div>';
+            creditExtra += '<div style="font-size:11px;margin-top:4px;display:flex;align-items:center;gap:6px;color:var(--text-muted);">APR: <input type="number" step="0.01" min="0" max="99.99" value="' + (a.apr || '') + '" placeholder="\u2014" aria-label="APR percent" data-apr-account="' + a.id + '" style="width:60px;padding:2px 6px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);font-family:inherit;">%</div>';
           }
           if (isLoan && hasBalances) {
             // Auto-loan terms are MANUAL fields: Plaid's Liabilities product
@@ -995,8 +996,8 @@
             const owed = parseFloat(a.current_balance || 0);
             const aprVal = parseFloat(a.apr);
             const payVal = parseFloat(a.monthly_payment);
-            creditExtra += '<div style="font-size:11px;margin-top:4px;display:flex;align-items:center;gap:6px;color:var(--text-muted);">APR: <input type="number" step="0.01" min="0" max="99.99" value="' + (a.apr || '') + '" placeholder="\u2014" data-apr-account="' + a.id + '" style="width:60px;padding:2px 6px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);font-family:inherit;">%</div>';
-            creditExtra += '<div style="font-size:11px;margin-top:4px;display:flex;align-items:center;gap:6px;color:var(--text-muted);">Payment: $<input type="number" step="1" min="1" value="' + (a.monthly_payment ? parseFloat(a.monthly_payment) : '') + '" placeholder="\u2014" data-payment-account="' + a.id + '" style="width:80px;padding:2px 6px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);font-family:inherit;">/mo</div>';
+            creditExtra += '<div style="font-size:11px;margin-top:4px;display:flex;align-items:center;gap:6px;color:var(--text-muted);">APR: <input type="number" step="0.01" min="0" max="99.99" value="' + (a.apr || '') + '" placeholder="\u2014" aria-label="APR percent" data-apr-account="' + a.id + '" style="width:60px;padding:2px 6px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);font-family:inherit;">%</div>';
+            creditExtra += '<div style="font-size:11px;margin-top:4px;display:flex;align-items:center;gap:6px;color:var(--text-muted);">Payment: $<input type="number" step="1" min="1" value="' + (a.monthly_payment ? parseFloat(a.monthly_payment) : '') + '" placeholder="\u2014" aria-label="Monthly payment" data-payment-account="' + a.id + '" style="width:80px;padding:2px 6px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);font-family:inherit;">/mo</div>';
             if (owed > 0 && payVal > 0) {
               const p = loanPayoff(owed, isNaN(aprVal) ? 0 : aprVal, payVal);
               if (p.insufficient) {
@@ -1086,16 +1087,6 @@
       }
     }
 
-    async function editManualBalance(id) {
-      var val = prompt('Enter current balance:');
-      if (val === null) return;
-      var num = parseFloat(val);
-      if (isNaN(num)) return;
-      try {
-        await apiFetch('/api/accounts/' + id + '/balance', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ current_balance: num, available_balance: num }) });
-        loadAccounts();
-      } catch (e) {}
-    }
 
     async function loadSpendingSummary() {
       try {
@@ -1266,26 +1257,35 @@
       btnLoading(btn, false, 'Run Detection');
     }
 
+    // WUI-6: every write below checks the response and reports the outcome —
+    // they used to swallow failures (and a bad entry silently did nothing).
     async function editManualBalance(id) {
       var val = prompt('Enter current balance:');
       if (val === null) return;
-      var num = parseFloat(val);
-      if (isNaN(num)) return;
+      var num = parseFloat(String(val).replace(/[$,\s]/g, ''));
+      if (!isFinite(num)) { showMsg('Enter a number for the balance', false); return; }
       try {
-        await apiFetch('/api/accounts/' + id + '/balance', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ current_balance: num, available_balance: num }) });
+        var res = await apiFetch('/api/accounts/' + id + '/balance', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ current_balance: num, available_balance: num }) });
+        if (!res.ok) { var e1 = await res.json().catch(function() { return {}; }); showMsg('Could not update balance: ' + (e1.error || 'HTTP ' + res.status), false); return; }
+        showMsg('Balance updated', true);
         loadAccounts();
-      } catch (e) {}
+      } catch (e) { showMsg('Could not update balance: ' + e.message, false); }
     }
 
     async function toggleShared(id) {
       var pct = prompt('What % of spending on this account is yours?\n(e.g. 50 for a 50/50 shared card, 100 for fully yours)', '50');
       if (pct === null) return;
-      var num = Math.max(0, Math.min(100, parseInt(pct) || 100));
+      // 0 is a valid share (the card is entirely the partner's) — it used to
+      // become 100 via `parseInt(pct) || 100`.
+      var num = Number(String(pct).trim().replace(/%$/, ''));
+      if (!Number.isInteger(num) || num < 0 || num > 100) { showMsg('Enter a whole number from 0 to 100', false); return; }
       try {
-        await apiFetch('/api/accounts/' + id + '/shared', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ is_shared: num < 100, spending_split_pct: num }) });
+        var res = await apiFetch('/api/accounts/' + id + '/shared', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ is_shared: num < 100, spending_split_pct: num }) });
+        if (!res.ok) { var e1 = await res.json().catch(function() { return {}; }); showMsg('Could not update the split: ' + (e1.error || 'HTTP ' + res.status), false); return; }
+        showMsg(num < 100 ? 'Shared at ' + num + '% yours' : 'Marked as fully yours', true);
         loadAccounts();
         loadSpendingSummary();
-      } catch (e) {}
+      } catch (e) { showMsg('Could not update the split: ' + e.message, false); }
     }
 
     // Mirrors services/projections.js computeLoanPayoff (the browser can't
@@ -1466,6 +1466,8 @@
 
       openBtn.addEventListener('click', openModal);
       cancelBtn.addEventListener('click', closeModal);
+      // IF-1: dialog semantics, focus trap, Esc and focus restore.
+      watchDialog(modal, { label: 'Add bill', onClose: closeModal });
       // Close when clicking the dim backdrop (not the card itself).
       modal.addEventListener('click', function(e) { if (e.target === modal) closeModal(); });
       // Esc to close.
@@ -1571,7 +1573,7 @@
         if (csvFile) csvFile.value = '';
         if (csvLabel) csvLabel.value = '';
         if (csvCustom) { csvCustom.value = ''; csvCustom.style.display = 'none'; }
-        if (csvInstitution) csvInstitution.value = 'Chase';
+        if (csvInstitution) csvInstitution.value = '';
         if (csvStatus) { csvStatus.textContent = ''; csvStatus.style.color = ''; }
         clearPreview();
       }
@@ -1581,15 +1583,20 @@
         if (el) el.addEventListener('change', clearPreview);
       });
       function csvEsc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+      // WD-7: "Auto-detect" (the default) sends no institution / label, so
+      // the server derives both from the detected format — the same default
+      // the CLI uses, so the two produce the same dedup IDs. The dropdown used
+      // to default to "Chase" and always send it, filing a Discover CSV under
+      // "Chase Account" and duplicating every row a CLI import had added.
       function csvFormData() {
         var institution = csvInstitution.value === 'Other'
           ? (csvCustom.value.trim() || 'Unknown')
           : csvInstitution.value;
-        var label = (csvLabel.value || '').trim() || (institution + ' Account');
+        var label = (csvLabel.value || '').trim() || (institution ? institution + ' Account' : '');
         var fd = new FormData();
         fd.append('file', csvFile.files[0]);
-        fd.append('institution', institution);
-        fd.append('account_label', label);
+        if (institution) fd.append('institution', institution);
+        if (label) fd.append('account_label', label);
         return fd;
       }
       function renderPreview(d) {
@@ -1622,6 +1629,8 @@
         });
       }
       if (csvCancelBtn) csvCancelBtn.addEventListener('click', closeCsvModal);
+      // IF-1: dialog semantics, focus trap, Esc and focus restore.
+      if (csvModal) watchDialog(csvModal, { label: 'Import transactions CSV', onClose: closeCsvModal });
       if (csvModal) csvModal.addEventListener('click', function(e) {
         if (e.target === csvModal) closeCsvModal();
       });
@@ -2293,10 +2302,14 @@
             } catch (e) {}
             try {
               var subRes = await apiFetch('/api/subscriptions?filter=all');
-              var subs = subRes.ok ? await subRes.json() : [];
+              // WD-4: the endpoint returns { subscriptions, summary }, not an
+              // array, and the cancelled marker is cancelled_at — this tier
+              // used to be 0 for everyone.
+              var subBody = subRes.ok ? await subRes.json() : {};
+              var subs = Array.isArray(subBody) ? subBody : (subBody.subscriptions || []);
               if (subs.length > 0) {
                 score += 15; tierScores[2] = 60;
-                var managed = subs.filter(function(s) { return s.is_dismissed || s.is_canceled; }).length;
+                var managed = subs.filter(function(s) { return s.is_dismissed || s.cancelled_at; }).length;
                 if (managed > 0) { var bonus = Math.min(10, Math.round(10 * (managed / subs.length))); score += bonus; tierScores[2] = 60 + Math.round(bonus * 4); }
               }
             } catch (e) {}
@@ -2327,7 +2340,9 @@
           try {
             var acctRes = await apiFetch('/api/accounts');
             var accounts = acctRes.ok ? await acctRes.json() : [];
-            var creditAccts = accounts.filter(function(a) { return a.type === 'credit' || a.subtype === 'credit_card'; });
+            // WD-5: loans are debt too (getNetWorth counts them as liabilities);
+            // an auto loan used to leave this mode at "Debt-free!".
+            var creditAccts = accounts.filter(function(a) { return a.type === 'credit' || a.subtype === 'credit_card' || a.type === 'loan'; });
             var totalDebt = 0;
             creditAccts.forEach(function(a) {
               totalDebt += Math.abs(parseFloat(a.current_balance || a.available_balance || 0));
@@ -2337,6 +2352,13 @@
             var setRes = await apiFetch('/api/settings');
             var settings = setRes.ok ? await setRes.json() : {};
             var baseline = parseFloat(settings.debt_baseline_amount);
+            // The baseline is the debt high-water mark: when current debt is
+            // above it (new borrowing, or a loan now counted — WD-5), progress
+            // restarts from the current figure instead of sitting at 0%.
+            if (baseline > 0 && totalDebt > baseline) {
+              baseline = totalDebt;
+              apiFetch('/api/settings', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ debt_baseline_amount: totalDebt }) }).catch(function(){});
+            }
             if (!baseline || isNaN(baseline) || baseline <= 0) {
               // Auto-initialize baseline to current debt if not set
               if (totalDebt > 0) {
@@ -2423,12 +2445,24 @@
           try {
             var sumRes = await apiFetch('/api/spending-summary');
             var summary = sumRes.ok ? await sumRes.json() : {};
-            var cats = summary.categories || {};
+            // WD-4: the endpoint returns by_category: [{ category, total }] —
+            // there is no `categories` map, so every tier used to compute from
+            // zeros and the mode always read 75 / "Good spending habits".
+            // Keys are lower-cased so app categories ("Food & Drink") and raw
+            // provider ones ("dining") both land in a bucket.
+            var cats = {};
+            (summary.by_category || []).forEach(function(r) {
+              var k = String(r.category || '').toLowerCase();
+              cats[k] = (cats[k] || 0) + (parseFloat(r.total) || 0);
+            });
+            if (!(summary.by_category || []).length) {
+              return { score: 0, tierScores: [0,0,0,0], status: 'No spending data yet' };
+            }
+            var sumOf = function(keys) { return keys.reduce(function(s, k) { return s + (cats[k] || 0); }, 0); };
             var total = Object.values(cats).reduce(function(s, v) { return s + v; }, 0) || 1;
-            // Rough categorization
-            var essentials = (cats['Groceries'] || 0) + (cats['Utilities'] || 0) + (cats['Housing'] || 0) + (cats['Insurance'] || 0);
-            var lifestyle = (cats['Dining'] || 0) + (cats['Entertainment'] || 0) + (cats['Shopping'] || 0) + (cats['Travel'] || 0);
-            var subscriptions = (cats['Subscriptions'] || 0) + (cats['Software'] || 0);
+            var essentials = sumOf(['groceries', 'utilities', 'housing', 'insurance', 'healthcare', 'transportation', 'gas & fuel', 'phone', 'fuel', 'transport']);
+            var lifestyle = sumOf(['food & drink', 'dining', 'entertainment', 'shopping', 'travel', 'personal care', 'health & fitness', 'accommodation', 'clothing', 'sport']);
+            var subscriptions = sumOf(['subscription', 'subscriptions', 'software']);
             // Ideal: essentials ~50%, lifestyle ~30%, subs ~10%, savings ~10%
             var essPct = essentials / total;
             tierScores[0] = Math.round(Math.max(0, 100 - Math.abs(essPct - 0.5) * 200));
@@ -2450,31 +2484,31 @@
         compute: async function() {
           var score = 0; var tierScores = [0,0,0,0]; var statusMsg = '';
           try {
-            var acctRes = await apiFetch('/api/accounts');
-            var accounts = acctRes.ok ? await acctRes.json() : [];
-            var totalAssets = 0; var totalDebt = 0;
-            accounts.forEach(function(a) {
-              var bal = parseFloat(a.current_balance || a.available_balance || 0);
-              if (a.type === 'credit' || a.subtype === 'credit_card') totalDebt += Math.abs(bal);
-              else if (bal > 0) totalAssets += bal;
-            });
-            var netWorth = totalAssets - totalDebt;
+            // WD-5: use the server's figure — the latest net_worth_snapshots row,
+            // written by getNetWorth (loans as debt, investment_accounts included,
+            // the $0 Plaid brokerage twin dropped). Summing /api/accounts here
+            // counted a loan as an asset and left out every brokerage, so this
+            // card contradicted the FIRE card and the snapshot history.
+            var nwRes = await apiFetch('/api/net-worth/history');
+            var nwData = nwRes.ok ? await nwRes.json() : [];
+            if (!nwData.length) {
+              return { score: 0, tierScores: [0,0,0,0], status: 'Net worth appears after the next balance sync' };
+            }
+            var latestRow = nwData[nwData.length - 1];
+            var totalAssets = parseFloat(latestRow.total_assets) || 0;
+            var totalDebt = Math.abs(parseFloat(latestRow.total_liabilities) || 0);
+            var netWorth = parseFloat(latestRow.net_worth) || 0;
             // Tier 0: Cash position (any positive balances)
             tierScores[0] = totalAssets > 0 ? Math.min(100, Math.round(totalAssets / 100)) : 0;
             // Tier 1: Credit utilization (lower debt = higher score)
             tierScores[1] = totalDebt === 0 ? 100 : Math.round(Math.max(0, (1 - totalDebt / Math.max(totalAssets, 1))) * 100);
             // Tier 2: Net worth positive
             tierScores[2] = netWorth > 0 ? Math.min(100, Math.round(netWorth / 50)) : 0;
-            // Tier 3: Growth (check history)
-            try {
-              var nwRes = await apiFetch('/api/net-worth/history');
-              var nwData = nwRes.ok ? await nwRes.json() : [];
-              if (nwData.length >= 2) {
-                var latest = parseFloat(nwData[nwData.length - 1].net_worth || 0);
-                var previous = parseFloat(nwData[0].net_worth || 0);
-                tierScores[3] = latest > previous ? Math.min(100, Math.round(((latest - previous) / Math.max(Math.abs(previous), 1)) * 100)) : 0;
-              }
-            } catch (e) {}
+            // Tier 3: Growth (first vs latest snapshot in the window)
+            if (nwData.length >= 2) {
+              var previous = parseFloat(nwData[0].net_worth || 0);
+              tierScores[3] = netWorth > previous ? Math.min(100, Math.round(((netWorth - previous) / Math.max(Math.abs(previous), 1)) * 100)) : 0;
+            }
             score = Math.round((tierScores[0] + tierScores[1] + tierScores[2] + tierScores[3]) / 4);
             score = Math.min(100, Math.max(0, score));
             var fmtNw = netWorth >= 0 ? '$' + netWorth.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 0}) : '-$' + Math.abs(netWorth).toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 0});
@@ -2574,9 +2608,12 @@
     // Debt baseline save
     document.getElementById('debt-baseline-save').addEventListener('click', function() {
       var val = parseFloat(document.getElementById('debt-baseline-input').value);
-      if (isNaN(val) || val < 0) return;
+      if (isNaN(val) || val < 0) { showMsg('Enter a starting debt of 0 or more', false); return; }
+      // WD-12: report the outcome (it used to save silently or fail silently).
       apiFetch('/api/settings', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ debt_baseline_amount: val }) })
-        .then(function() { computeWellness('debt_payoff'); });
+        .then(function(r) { return writeOk(r, 'Could not save the starting debt'); })
+        .then(function(ok) { if (ok) { showMsg('Starting debt saved', true); computeWellness('debt_payoff'); } })
+        .catch(function(e) { showMsg('Could not save the starting debt: ' + e.message, false); });
     });
 
     var isMobile = window.matchMedia('(max-width: 640px)').matches;
@@ -3024,7 +3061,7 @@
             '<div style="font-weight:500;color:var(--text);">' + esc(t.merchant || '(no merchant)') + hint + '</div>' +
             '<div style="font-size:11px;color:var(--text-muted);">' + esc(t.date) + ' &middot; ' + fmt(t.amount) + '</div>' +
           '</div>' +
-          '<select data-cat-select="' + esc(t.transaction_id) + '" style="padding:4px 6px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);font-family:inherit;">' +
+          '<select aria-label="Category for ' + esc(t.merchant || 'this transaction') + '" data-cat-select="' + esc(t.transaction_id) + '" style="padding:4px 6px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);font-family:inherit;">' +
             optHtml.replace('value="' + esc(defaultCat) + '"', 'value="' + esc(defaultCat) + '" selected') +
           '</select>' +
           '<label style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--text-muted);cursor:pointer;">' +
@@ -3255,18 +3292,24 @@
         if (markBtn) markBtn.addEventListener('click', async function() {
           this.disabled = true;
           var dir = Math.abs(net) < 0.01 ? 'square' : (net > 0 ? 'partner_sends_you' : 'you_send_partner');
+          var btn = this;
           try {
-            await apiFetch('/api/settlement/settle', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ month: theMonth, net_amount: net, direction: dir }) });
+            var r = await apiFetch('/api/settlement/settle', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ month: theMonth, net_amount: net, direction: dir }) });
+            if (!(await writeOk(r, 'Could not mark settled'))) { btn.disabled = false; return; }
+            showMsg('Marked settled', true);
             loadSettlement();
-          } catch (e) { this.disabled = false; }
+          } catch (e) { btn.disabled = false; showMsg('Could not mark settled: ' + e.message, false); }
         });
         var undoBtn = document.getElementById('settle-undo-btn');
         if (undoBtn) undoBtn.addEventListener('click', async function() {
           this.disabled = true;
+          var btn = this;
           try {
-            await apiFetch('/api/settlement/' + encodeURIComponent(theMonth), { method:'DELETE' });
+            var r = await apiFetch('/api/settlement/' + encodeURIComponent(theMonth), { method:'DELETE' });
+            if (!(await writeOk(r, 'Could not undo'))) { btn.disabled = false; return; }
+            showMsg('Settlement undone', true);
             loadSettlement();
-          } catch (e) { this.disabled = false; }
+          } catch (e) { btn.disabled = false; showMsg('Could not undo: ' + e.message, false); }
         });
 
         // Housing even-up detail card (rendered above the per-card breakdown).

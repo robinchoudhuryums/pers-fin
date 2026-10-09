@@ -9,7 +9,27 @@ to the "none in progress" state.
 
 ## Current Cycle
 
-- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 12 DONE** on branch
+- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 13 DONE** on branch
+  `claude/lucid-darwin-7r8e59` (2026-10-09). Batch 13 (Perfin UI correctness & accessibility)
+  implemented on top of Batches 11–12 (all unmerged, no PR), tested, pushed.
+  - **Completed:** WD-4, WD-5 (pyramid shapes; server net worth; loans in debt), WUI-6, WD-12
+    (writeOk on every listed write; 0% share kept client+server; NaN prompts refused), WD-7, WD-8
+    (CSV Auto-detect + Accounts preview; Plaid pre-build removed), WD-9, WD-11, WD-13, WD-15, IF-1
+    (openDialog/watchDialog on all modals + bell panel), IF-2..IF-7 (calendar buttons, labels, CSS
+    tokens, light-theme contrast, PIN pad, notification links).
+  - **Not finished (selected):** none.
+  - **Tests:** 1602/1602 (Perfin 1025 + Per-sistant 577; 64 files). New tests/scan-sept-batch13.test.js
+    (30; 29 fail pre-fix). Browser: 10 pages error-free, dialog trap/Esc/restore, light-theme
+    on-teal, Add Goal, Accounts CSV preview+import, PIN > 8 digits; e2e 8/8.
+  - **Decisions:** debt baseline acts as a high-water mark (raised when debt exceeds it); pyramid net
+    worth reads the latest snapshot rather than a new endpoint; dialogs via a MutationObserver
+    watcher so pages keep their own show/hide code; PIN-pad guard limited to Enter.
+  - **Open follow-ons:** see `.cycle/blocks/6-batch13-broad-implement.md`.
+  - **Operator:** none required.
+  - **Where I left off:** Batch 13 committed and pushed (no PR). NEXT: /sync-docs for Batch 13,
+    then Batch 14 (Per-sistant correctness & UI).
+
+- **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 12 DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-10-09). Batch 12 (Investments) implemented on top of
   Batch 11 (both unmerged, no PR), tested, pushed.
   - **Completed:** BSI-4 (prune holdings Plaid no longer returns), BSI-5 (NULL cost basis +

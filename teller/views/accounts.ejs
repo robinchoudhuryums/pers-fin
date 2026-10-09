@@ -30,7 +30,7 @@
       padding: 10px 14px; font-size: 14px; border: 1px solid var(--border); border-radius: 8px;
       background: transparent; color: var(--text); width: 100%; font-weight: 300; transition: border-color 0.2s; }
     .csv-form select:focus, .csv-form input:focus { outline: none; border-color: var(--warm); }
-    .csv-form select option { background: #131620; color: var(--text); }
+    .csv-form select option { background: var(--surface-solid); color: var(--text); }
     .csv-form input[type="file"] { font-size: 13px; color: var(--text-muted); }
     .csv-form .field { display: flex; flex-direction: column; gap: 8px; }
     .csv-form input::placeholder { color: var(--text-muted); }
@@ -88,6 +88,7 @@
       <div class="field">
         <label for="csv-institution">Bank / Institution</label>
         <select id="csv-institution">
+          <option value="" selected>Auto-detect from the file</option>
           <option value="Chase">Chase</option>
           <option value="Wells Fargo">Wells Fargo</option>
           <option value="Capital One">Capital One</option>
@@ -96,11 +97,11 @@
           <option value="Other">Other</option>
         </select>
       </div>
-      <input type="text" id="csv-custom-institution" placeholder="Institution name" style="display:none">
+      <input type="text" id="csv-custom-institution" placeholder="Institution name" aria-label="Institution name" style="display:none">
 
       <div class="field">
         <label for="csv-account-label">Account Label</label>
-        <input type="text" id="csv-account-label" placeholder="e.g. Chase Checking, WF Visa">
+        <input type="text" id="csv-account-label" placeholder="Optional — e.g. Chase Checking, WF Visa">
       </div>
 
       <div class="field">
@@ -108,7 +109,8 @@
         <input type="file" id="csv-file" accept=".csv">
       </div>
 
-      <button id="csv-upload-btn">Upload & Import</button>
+      <div id="csv-preview" style="display:none;font-size:12px;border:1px solid var(--border);border-radius:8px;padding:10px 12px;max-height:260px;overflow:auto;"></div>
+      <button id="csv-upload-btn">Preview</button>
     </div>
     <div id="csv-status" style="margin-top:12px;padding:14px 18px;border-radius:8px;display:none;font-size:13px;"></div>
     <div class="csv-imports">
@@ -124,26 +126,27 @@
     <p>Add accounts that can't be linked via Teller (e.g., Discover, local banks)</p>
     <div class="csv-form" id="manual-acct-form">
       <div class="field">
-        <label>Account Name</label>
+        <label for="manual-name">Account Name</label>
         <input type="text" id="manual-name" placeholder="e.g. Discover It Card">
       </div>
       <div class="field">
-        <label>Institution</label>
+        <label for="manual-institution">Institution</label>
         <input type="text" id="manual-institution" placeholder="e.g. Discover">
       </div>
       <div class="field">
-        <label>Type</label>
+        <label for="manual-type">Type</label>
         <select id="manual-type">
           <option value="credit">Credit Card</option>
           <option value="depository">Bank Account</option>
+          <option value="loan">Loan (auto, personal, student)</option>
         </select>
       </div>
       <div class="field">
-        <label>Current Balance ($)</label>
+        <label for="manual-balance">Current Balance ($) <span style="text-transform:none;letter-spacing:0;">— for a loan, the amount still owed</span></label>
         <input type="number" id="manual-balance" step="0.01" placeholder="0.00">
       </div>
       <div class="field">
-        <label>Credit Limit (optional)</label>
+        <label for="manual-limit">Credit Limit (optional)</label>
         <input type="number" id="manual-limit" step="0.01" placeholder="e.g. 5000">
       </div>
       <button id="add-manual-acct-btn">Add Account</button>
@@ -161,15 +164,15 @@
     </div>
     <div class="csv-form" id="inv-form">
       <div class="field">
-        <label>Account Name</label>
+        <label for="inv-name">Account Name</label>
         <input type="text" id="inv-name" placeholder="e.g. Fidelity 401(k)">
       </div>
       <div class="field">
-        <label>Institution</label>
+        <label for="inv-institution">Institution</label>
         <input type="text" id="inv-institution" placeholder="e.g. Fidelity">
       </div>
       <div class="field">
-        <label>Type</label>
+        <label for="inv-type">Type</label>
         <select id="inv-type">
           <option value="brokerage">Brokerage</option>
           <option value="401k">401(k)</option>
@@ -183,7 +186,7 @@
         </select>
       </div>
       <div class="field">
-        <label>Current Balance ($)</label>
+        <label for="inv-balance">Current Balance ($)</label>
         <input type="number" id="inv-balance" step="0.01" placeholder="50000">
       </div>
       <button id="add-inv-btn">Add Account</button>
@@ -313,32 +316,78 @@
       if (ok) { csvStatusEl._timer = setTimeout(() => { csvStatusEl.style.display = 'none'; }, 8000); }
     }
 
-    async function uploadCsv() {
-      const fileInput = document.getElementById('csv-file');
-      const file = fileInput.files[0];
-      if (!file) { showCsvStatus('Please select a CSV file.', false); return; }
+    // WD-7: the same two-step flow as the dashboard modal — Preview (a
+    // dry run against /api/import-csv/preview: detected format, account and
+    // new / already-imported / skipped counts) then Import. "Auto-detect"
+    // sends no institution/label so the server derives them from the file
+    // (the CLI's default, so both produce the same dedup IDs). The page used
+    // to commit straight away with "Chase" as the default institution.
+    let csvStage = 'preview';
+    const csvPreviewEl = document.getElementById('csv-preview');
+    function resetCsvPreview() {
+      csvStage = 'preview';
+      csvPreviewEl.style.display = 'none'; csvPreviewEl.innerHTML = '';
+      const b = document.getElementById('csv-upload-btn');
+      b.disabled = false; b.textContent = 'Preview';
+    }
+    ['csv-file', 'csv-account-label', 'csv-custom-institution', 'csv-institution'].forEach(function (id) {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener('change', resetCsvPreview);
+    });
+    function csvFormData(file) {
       const institution = csvInstitution.value === 'Other'
         ? csvCustom.value.trim() || 'Unknown'
         : csvInstitution.value;
       const accountLabel = document.getElementById('csv-account-label').value.trim()
-        || institution + ' Account';
+        || (institution ? institution + ' Account' : '');
       const formData = new FormData();
       formData.append('file', file);
-      formData.append('institution', institution);
-      formData.append('account_label', accountLabel);
+      if (institution) formData.append('institution', institution);
+      if (accountLabel) formData.append('account_label', accountLabel);
+      return formData;
+    }
+    async function uploadCsv() {
+      const fileInput = document.getElementById('csv-file');
+      const file = fileInput.files[0];
+      if (!file) { showCsvStatus('Please select a CSV file.', false); return; }
       const btn = document.getElementById('csv-upload-btn');
+      if (csvStage === 'preview') {
+        btnLoading(btn, true);
+        try {
+          const resp = await apiFetch('/api/import-csv/preview', { method: 'POST', body: csvFormData(file) });
+          const d = await resp.json().catch(() => ({}));
+          btnLoading(btn, false, 'Preview');
+          if (!resp.ok) { showCsvStatus('Preview failed: ' + (d.error || 'HTTP ' + resp.status), false); return; }
+          csvPreviewEl.innerHTML =
+            '<div style="margin-bottom:6px;"><strong>' + esc(d.format_detected) + '</strong> &middot; ' + esc(d.account_label) + '</div>' +
+            '<div><span style="color:var(--green);">' + d.rows_new + ' new</span> &middot; ' +
+            '<span style="color:var(--yellow);">' + d.rows_duplicate + ' already imported</span> &middot; ' +
+            '<span style="color:var(--text-muted);">' + d.rows_skipped + ' skipped</span></div>' +
+            (d.rows_new === 0 ? '<div style="margin-top:6px;color:var(--text-muted);">Nothing new to import.</div>' : '');
+          csvPreviewEl.style.display = 'block';
+          csvStage = 'confirm';
+          btn.textContent = d.rows_new > 0 ? 'Import ' + d.rows_new + ' new' : 'Nothing to import';
+          btn.disabled = d.rows_new === 0;
+        } catch (e) { btnLoading(btn, false, 'Preview'); showCsvStatus('Preview failed: Could not reach server. ' + e.message, false); }
+        return;
+      }
       btnLoading(btn, true);
       showCsvStatus('Importing...', true);
       try {
-        const resp = await apiFetch('/api/import-csv', { method: 'POST', body: formData });
-        const data = await resp.json();
+        const resp = await apiFetch('/api/import-csv', { method: 'POST', body: csvFormData(file) });
+        const data = await resp.json().catch(() => ({}));
         if (resp.ok) {
           showCsvStatus('Imported ' + data.rows_imported + ' transactions (' + (data.rows_duplicate || 0) +
             ' already imported, ' + data.rows_skipped + ' skipped) \u2014 Format: ' + data.format_detected, true);
+          fileInput.value = '';
+          btnLoading(btn, false, 'Preview');
+          resetCsvPreview();
           loadCsvImports(); loadItems();
-        } else showCsvStatus('Import failed: ' + (data.error || 'HTTP ' + resp.status), false);
+          return;
+        }
+        showCsvStatus('Import failed: ' + (data.error || 'HTTP ' + resp.status), false);
       } catch (e) { showCsvStatus('Import failed: Could not reach server. ' + e.message, false); }
-      btnLoading(btn, false, 'Upload & Import');
+      btnLoading(btn, false, 'Import');
     }
 
     async function loadCsvImports() {
@@ -429,7 +478,9 @@
     async function deleteManualAccount(id, name) {
       if (!confirm('Remove ' + name + '?')) return;
       try {
-        await apiFetch('/api/accounts/manual/' + id, { method: 'DELETE' });
+        // WD-12: it toasted "Removed" whatever the server said.
+        const res = await apiFetch('/api/accounts/manual/' + id, { method: 'DELETE' });
+        if (!(await writeOk(res, 'Could not remove ' + name))) return;
         showStatus('Removed ' + name + '.', true); loadManualAccounts();
       } catch (e) { showStatus(e.message, false); }
     }
@@ -483,13 +534,15 @@
     async function updateInvestment(id) {
       const val = prompt('Enter current balance ($):');
       if (val === null) return;
+      // WD-12: parseFloat("abc") is NaN, which JSON-serializes to null.
+      const amount = parseAmountInput(val);
+      if (!isFinite(amount)) { showStatus('Enter a number for the balance.', false); return; }
       try {
         const res = await apiFetch('/api/investment-accounts/' + id, {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ balance: parseFloat(val) }),
+          body: JSON.stringify({ balance: amount }),
         });
-        if (res.ok) { showStatus('Balance updated.', true); loadInvestments(); }
-        else showStatus('Failed to update.', false);
+        if (await writeOk(res, 'Could not update the balance')) { showStatus('Balance updated.', true); loadInvestments(); }
       } catch (e) { showStatus(e.message, false); }
     }
 
@@ -612,79 +665,13 @@
       });
     }
 
-    // Pre-fetched Plaid handler — built on page load so the click handler
-    // can call .open() synchronously. iOS Safari loses the "user gesture"
-    // context across async work, so without this, the modal silently fails
-    // to open on iPhone (works on desktop where popup blocking is laxer).
-    // Plaid docs explicitly recommend this approach.
-    var _plaidHandler = null;
-    var _plaidHandlerError = null;
-
-    async function prebuildPlaidHandler() {
-      if (!window._plaidLoaded || typeof Plaid === 'undefined') {
-        // SDK not yet loaded — wait and retry once more, then give up.
-        setTimeout(prebuildPlaidHandler, 1500);
-        return;
-      }
-      try {
-        var redirectUri = (window.location.origin + window.location.pathname).replace(/\/+$/, '');
-        console.log('[Plaid] Pre-fetching link token, redirect_uri:', redirectUri);
-        var tokenRes = await apiFetch('/api/plaid/link-token-transactions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ redirect_uri: redirectUri }),
-        });
-        if (!tokenRes.ok) {
-          var err = await tokenRes.json().catch(function() { return {}; });
-          // Show the exact redirect_uri we sent so the user can compare
-          // it letter-by-letter against what's registered in Plaid Dashboard.
-          // INVALID_REDIRECT_URI fails on the tiniest mismatch (case, trailing
-          // slash, extra space, www vs no-www, http vs https, etc.).
-          var msg = (err.error || ('Token request failed: HTTP ' + tokenRes.status))
-            + ' | Sent redirect_uri: "' + redirectUri + '" — verify this exact string is in Plaid Dashboard → API → Allowed redirect URIs for the PRODUCTION environment.';
-          _plaidHandlerError = msg;
-          console.error('[Plaid] Pre-fetch token request failed:', err, 'redirect_uri sent:', redirectUri);
-          return;
-        }
-        var tokenData = await tokenRes.json();
-        if (!tokenData.link_token) {
-          _plaidHandlerError = 'No link_token returned by server';
-          return;
-        }
-        sessionStorage.setItem(PLAID_LINK_TOKEN_KEY, tokenData.link_token);
-        _plaidHandler = buildPlaidHandler(tokenData.link_token);
-        console.log('[Plaid] Handler pre-built and ready');
-      } catch (e) {
-        _plaidHandlerError = 'Failed to pre-build Plaid handler: ' + e.message;
-        console.error('[Plaid] Pre-build exception:', e);
-      }
-    }
-
-    function linkPlaidTransactions() {
-      // CRITICAL: do as little as possible before .open() to preserve the
-      // iOS Safari user-gesture window. Any toast/log/DOM work happens
-      // AFTER, deferred via setTimeout so it doesn't consume gesture credit.
-      if (_plaidHandler) {
-        _plaidHandler.open();
-        setTimeout(function() {
-          console.log('[Plaid] Link button clicked; handler.open() returned');
-          showStatus('Opening Plaid...', true);
-        }, 0);
-        return;
-      }
-      if (_plaidHandlerError) {
-        showStatus(_plaidHandlerError, false);
-        return;
-      }
-      // SDK or token still loading. Tell the user and retry the pre-build.
-      showStatus('Plaid is still initializing — try again in a moment.', false);
-      prebuildPlaidHandler();
-    }
-
-    // Kick off the pre-fetch once the page settles. The Plaid SDK loads
-    // dynamically (see head injection above) so we give it a moment to
-    // arrive before requesting the link token.
-    setTimeout(prebuildPlaidHandler, 800);
+    // WD-8: the pre-built in-page Link handler (prebuildPlaidHandler /
+    // linkPlaidTransactions) was removed. No button opened it, yet it fetched
+    // a link token on every visit and wrote the same sessionStorage key the
+    // hosted flow below depends on — racing a click on "Link via Plaid" could
+    // overwrite the hosted token and orphan an Item at Plaid — and it retried
+    // every 1.5s forever when the SDK was blocked. buildPlaidHandler stays for
+    // the OAuth return path (handlePlaidOAuthReturn).
 
     // Mobile-friendly hosted flow: full-page redirect to a Plaid-hosted
     // page instead of an iframe modal. Works around iOS Safari's iframe

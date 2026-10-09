@@ -1007,7 +1007,12 @@ router.patch("/api/accounts/:id/shared", async (req, res) => {
     const updates = []; const values = []; let idx = 1;
     if (is_shared !== undefined) { updates.push("is_shared = $" + idx++); values.push(!!is_shared); }
     if (spending_split_pct !== undefined) {
-      const pct = Math.max(0, Math.min(100, parseInt(spending_split_pct) || 100));
+      // WUI-6: `parseInt(x) || 100` turned a 0% share (the card is entirely the
+      // partner's) into 100%. Validate instead of coercing.
+      const pct = Number(spending_split_pct);
+      if (!Number.isInteger(pct) || pct < 0 || pct > 100) {
+        return res.status(400).json({ error: "spending_split_pct must be an integer 0-100" });
+      }
       updates.push("spending_split_pct = $" + idx++); values.push(pct);
     }
     if (!updates.length) return res.status(400).json({ error: "No fields to update" });

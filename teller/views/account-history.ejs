@@ -25,9 +25,9 @@
 
   <div class="section" style="margin-bottom:18px;">
     <div id="summary-row" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:14px;">
-      <div class="card"><div class="label">Current</div><div id="m-current" class="value">—</div></div>
-      <div class="card"><div class="label">Range Start</div><div id="m-start" class="value">—</div></div>
-      <div class="card"><div class="label">Change ($)</div><div id="m-delta" class="value">—</div></div>
+      <div class="card"><div class="label" id="l-current">Current</div><div id="m-current" class="value">—</div></div>
+      <div class="card"><div class="label" id="l-start">Range Start</div><div id="m-start" class="value">—</div></div>
+      <div class="card"><div class="label" id="l-delta">Change ($)</div><div id="m-delta" class="value">—</div></div>
       <div class="card"><div class="label">Change (%)</div><div id="m-pct" class="value">—</div></div>
       <div class="card"><div class="label">Snapshots</div><div id="m-count" class="value">—</div></div>
     </div>
@@ -37,9 +37,7 @@
     <div style="position:relative;height:340px;">
       <canvas id="balance-chart"></canvas>
     </div>
-    <div id="empty-msg" style="display:none;text-align:center;padding:40px;color:var(--text-muted);font-size:13px;">
-      No balance history yet. Snapshots are written daily on every balance sync — check back after the next <code>POST /api/sync-balances</code>.
-    </div>
+    <div id="empty-msg" role="status" style="display:none;text-align:center;padding:40px;color:var(--text-muted);font-size:13px;"></div>
   </div>
 
   <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:24px;">
@@ -65,6 +63,11 @@
       var source = qs.get('source') === 'investment' ? 'investment' : 'linked';
       var rangeSel = document.getElementById('range-select');
       var chart = null;
+      // WD-15: credit cards and loans are debt — a RISING balance is bad, so
+      // their colours are inverted and the cards say "owed" (the dashboard
+      // shows debt the same way). It used to show rising debt as a green "+".
+      var isDebt = false;
+      var EMPTY_TEXT = 'No balance history for this range yet. Snapshots are written once a day on every balance sync.';
 
       if (!accountId) {
         document.getElementById('account-subtitle').textContent = 'Invalid account id in URL.';
@@ -87,6 +90,12 @@
               var all = await r.json();
               var acct = all.find(function(a) { return a.id === accountId; });
               if (acct) {
+                isDebt = acct.type === 'credit' || acct.type === 'loan' || acct.subtype === 'credit_card';
+                if (isDebt) {
+                  document.getElementById('l-current').textContent = 'Owed now';
+                  document.getElementById('l-start').textContent = 'Owed at range start';
+                  document.getElementById('l-delta').textContent = 'Change in debt ($)';
+                }
                 document.getElementById('account-title').textContent = acct.name;
                 document.getElementById('account-subtitle').textContent =
                   (acct.institution_name || 'Unknown') + ' · ' + (acct.subtype || acct.type || '');
@@ -120,23 +129,28 @@
           var data = await r.json();
           var snaps = data.snapshots || [];
           if (snaps.length < 2) {
-            // Hide chart, show empty-state. Still update summary cards if
-            // there's a single point so the user sees the most recent value.
+            // Hide chart, show empty-state, and RESET every card — switching
+            // to a short range used to leave the previous range's Start /
+            // Change / % on screen (WD-15).
             document.getElementById('balance-chart').parentElement.style.display = 'none';
-            document.getElementById('empty-msg').style.display = 'block';
-            if (snaps.length === 1) {
-              document.getElementById('m-current').textContent = fmt(snaps[0].balance);
-              document.getElementById('m-count').textContent = '1';
-            } else {
-              document.getElementById('m-count').textContent = '0';
-            }
+            var em = document.getElementById('empty-msg');
+            em.textContent = EMPTY_TEXT;
+            em.style.display = 'block';
+            ['m-current', 'm-start', 'm-delta', 'm-pct'].forEach(function(id) {
+              var el = document.getElementById(id); el.textContent = '—'; el.style.color = '';
+            });
+            if (snaps.length === 1) document.getElementById('m-current').textContent = fmt(parseFloat(snaps[0].balance));
+            document.getElementById('m-count').textContent = String(snaps.length);
+            if (chart) { chart.destroy(); chart = null; }
             return;
           }
           document.getElementById('balance-chart').parentElement.style.display = 'block';
           document.getElementById('empty-msg').style.display = 'none';
 
-          var labels = snaps.map(function(s) { return s.snapshot_date; });
-          var values = snaps.map(function(s) { return s.balance; });
+          // snapshot_date arrives as a DATE serialized to an ISO timestamp
+          // ("2026-09-27T00:00:00.000Z") — label the axis with the day only.
+          var labels = snaps.map(function(s) { return String(s.snapshot_date).slice(0, 10); });
+          var values = snaps.map(function(s) { return parseFloat(s.balance); });
           var current = values[values.length - 1];
           var startVal = values[0];
           var delta = current - startVal;
@@ -144,18 +158,20 @@
 
           document.getElementById('m-current').textContent = fmt(current);
           document.getElementById('m-start').textContent = fmt(startVal);
+          // Good = the balance rose for an asset, fell for a debt.
+          var good = isDebt ? delta <= 0 : delta >= 0;
           var deltaEl = document.getElementById('m-delta');
           deltaEl.textContent = (delta >= 0 ? '+' : '') + fmt(delta);
-          deltaEl.style.color = delta >= 0 ? 'var(--green)' : 'var(--red)';
+          deltaEl.style.color = good ? 'var(--green)' : 'var(--red)';
           var pctEl = document.getElementById('m-pct');
           pctEl.textContent = pct === null ? '—' : (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%';
-          pctEl.style.color = pct >= 0 ? 'var(--green)' : 'var(--red)';
+          pctEl.style.color = pct === null ? '' : (good ? 'var(--green)' : 'var(--red)');
           document.getElementById('m-count').textContent = snaps.length;
 
           if (chart) chart.destroy();
           var ctx = document.getElementById('balance-chart').getContext('2d');
-          var lineColor = delta >= 0 ? 'rgba(111, 207, 151, 0.9)' : 'rgba(235, 107, 107, 0.9)';
-          var fillColor = delta >= 0 ? 'rgba(111, 207, 151, 0.12)' : 'rgba(235, 107, 107, 0.12)';
+          var lineColor = good ? 'rgba(111, 207, 151, 0.9)' : 'rgba(235, 107, 107, 0.9)';
+          var fillColor = good ? 'rgba(111, 207, 151, 0.12)' : 'rgba(235, 107, 107, 0.12)';
           chart = new Chart(ctx, {
             type: 'line',
             data: {
@@ -204,8 +220,8 @@
       }
 
       rangeSel.addEventListener('change', loadHistory);
-      loadAccountTitle();
-      loadHistory();
+      // Title first: it decides isDebt, which the colours depend on.
+      loadAccountTitle().then(loadHistory, loadHistory);
     })();
   </script>
 </body>

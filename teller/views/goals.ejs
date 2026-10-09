@@ -43,11 +43,11 @@
     <details style="margin-top:10px;">
       <summary style="cursor:pointer;font-size:11px;color:var(--text-muted);">Assumptions</summary>
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;align-items:end;font-size:12px;">
-        <div><label style="font-size:10px;color:var(--text-muted);display:block;">Real return %/yr</label>
+        <div><label for="fire-return" style="font-size:10px;color:var(--text-muted);display:block;">Real return %/yr</label>
           <input id="fire-return" type="number" step="0.1" min="0" max="20" style="width:80px;"></div>
-        <div><label style="font-size:10px;color:var(--text-muted);display:block;">Withdrawal rate %</label>
+        <div><label for="fire-swr" style="font-size:10px;color:var(--text-muted);display:block;">Withdrawal rate %</label>
           <input id="fire-swr" type="number" step="0.1" min="1" max="10" style="width:80px;"></div>
-        <div><label style="font-size:10px;color:var(--text-muted);display:block;">Monthly spend $ (blank = derived)</label>
+        <div><label for="fire-spend" style="font-size:10px;color:var(--text-muted);display:block;">Monthly spend $ (blank = derived)</label>
           <input id="fire-spend" type="number" step="1" min="0" style="width:110px;"></div>
         <button class="btn btn-sm" id="fire-save" type="button">Save</button>
       </div>
@@ -56,24 +56,24 @@
   </div>
 
   <div style="margin-bottom:16px;">
-    <button class="btn primary" id="toggle-form-btn">+ Add Goal</button>
+    <button class="btn primary" id="toggle-form-btn" aria-expanded="false" aria-controls="add-form">+ Add Goal</button>
   </div>
 
   <div class="add-form" id="add-form">
     <div class="fields">
-      <div><label>Goal Name</label><input id="g-name" placeholder="e.g. House Down Payment"></div>
-      <div><label>Type</label><select id="g-type">
+      <div><label for="g-name">Goal Name</label><input id="g-name" placeholder="e.g. House Down Payment"></div>
+      <div><label for="g-type">Type</label><select id="g-type">
         <option value="savings">Savings</option><option value="home">Home Purchase</option>
         <option value="car">Car Purchase</option><option value="retirement">Retirement</option>
         <option value="emergency">Emergency Fund</option><option value="debt_payoff">Debt Payoff</option>
         <option value="education">Education</option><option value="other">Other</option>
       </select></div>
-      <div><label>Target Amount ($)</label><input id="g-target" type="number" step="0.01" placeholder="400000"></div>
-      <div><label>Current Amount ($)</label><input id="g-current" type="number" step="0.01" placeholder="25000"></div>
-      <div><label>Monthly Contribution ($)</label><input id="g-monthly" type="number" step="0.01" placeholder="500"></div>
-      <div><label>Expected Annual Return (%)</label><input id="g-rate" type="number" step="0.01" placeholder="7"></div>
-      <div><label>Target Date</label><input id="g-date" type="date"></div>
-      <div><label>Notes</label><input id="g-notes" placeholder="20% down payment"></div>
+      <div><label for="g-target">Target Amount ($)</label><input id="g-target" type="number" step="0.01" placeholder="400000"></div>
+      <div><label for="g-current">Current Amount ($)</label><input id="g-current" type="number" step="0.01" placeholder="25000"></div>
+      <div><label for="g-monthly">Monthly Contribution ($)</label><input id="g-monthly" type="number" step="0.01" placeholder="500"></div>
+      <div><label for="g-rate">Expected Annual Return (%)</label><input id="g-rate" type="number" step="0.01" placeholder="7"></div>
+      <div><label for="g-date">Target Date</label><input id="g-date" type="date"></div>
+      <div><label for="g-notes">Notes</label><input id="g-notes" placeholder="20% down payment"></div>
     </div>
     <div style="margin-top:12px;"><button class="btn primary" id="save-goal-btn">Save Goal</button></div>
   </div>
@@ -225,10 +225,12 @@
     async function updateAmount(id) {
       const val = prompt('Enter current amount ($):');
       if (val === null) return;
+      // WD-12: a non-number used to be sent as null.
+      const amount = parseAmountInput(val);
+      if (!isFinite(amount) || amount < 0) { showMsg('Enter an amount of 0 or more.', false); return; }
       try {
-        const res = await apiFetch('/api/goals/' + id, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ current_amount: parseFloat(val) }) });
-        if (res.ok) { showMsg('Updated.', true); loadGoals(); }
-        else showMsg('Failed to update.', false);
+        const res = await apiFetch('/api/goals/' + id, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ current_amount: amount }) });
+        if (await writeOk(res, 'Could not update the goal')) { showMsg('Updated.', true); loadGoals(); }
       } catch (e) { showMsg(e.message, false); }
     }
 
@@ -285,8 +287,7 @@
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ funding_account_id: null, funding_investment_id: null }),
         });
-        if (res.ok) { showMsg('Unlinked.', true); loadGoals(); }
-        else showMsg('Failed to unlink.', false);
+        if (await writeOk(res, 'Could not unlink')) { showMsg('Unlinked.', true); loadGoals(); }
       } catch (e) { showMsg(e.message, false); }
     }
 
@@ -302,8 +303,13 @@
     // --- Bind event handlers (CSP-safe) ---
     bindEvents([
       ['toggle-form-btn', 'click', function() {
+        // WD-9: the form is hidden by the stylesheet, so its inline display
+        // starts as '' — the first click used to set it to 'none' (no-op).
         var f = document.getElementById('add-form');
-        f.style.display = f.style.display === 'none' ? 'block' : 'none';
+        var open = getComputedStyle(f).display !== 'none';
+        f.style.display = open ? 'none' : 'block';
+        this.setAttribute('aria-expanded', open ? 'false' : 'true');
+        if (!open) { var first = f.querySelector('input, select'); if (first) first.focus(); }
       }],
       ['save-goal-btn', 'click', addGoal],
     ]);
