@@ -28,8 +28,17 @@ to the "none in progress" state.
     debit-positive convention; Chase checking Type is not used as a category.
   - **Open follow-ons:** see `.cycle/blocks/6-batch12-broad-implement.md`.
   - **Operator:** none required.
-  - **Where I left off:** Batch 12 committed and pushed (no PR). NEXT: /sync-docs for Batch 12,
-    then Batch 13 (Perfin UI correctness & accessibility).
+  - **/sync-docs DONE (Batch 12):** CLAUDE.md — csv-formats entry + CSV import bullet (Chase
+    checking, CR/DR, trailing minus, trailing-comma tolerance), Plaid holdings (prune, NULL basis),
+    Investments widget (known-basis return + coverage, winners/losers by sign, per-account sparkline
+    source, TWR entry flows, empty-range state), Sheets Investments tab, endpoint notes (reconcile
+    status errors, funding-options dedupe + orphan, performance coverage, performance-history
+    accounts_added), holdings Key Design Decision, NEW INV-87 (holdings mirror Plaid per account /
+    NULL basis) + INV-88 (mid-window entry inflow), test counts 1572/63 (Perfin 995) + batch12
+    description. README — counts + Batch 12 coverage. Subsystem paths resolve. Operator state:
+    none new.
+  - **Where I left off:** Batch 12 and its docs are committed and pushed (no PR). NEXT: Batch 13
+    (Perfin UI correctness & accessibility).
 
 - **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 11 DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-10-08). Batches 3–10 were merged to `main` via

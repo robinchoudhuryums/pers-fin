@@ -45,9 +45,15 @@ teller/
                            models kept so stored usage rows re-price; Haiku 5.5
                            long-prompt card above 100K),
                            insight module definitions
-    csv-formats.js       — CSV format detection (Chase, CapOne, Discover, WF, Schwab, generic)
+    csv-formats.js       — CSV format detection (Chase card, Chase checking, CapOne,
+                           Discover, WF, Schwab, generic)
                            + parseMoney() money normalization (strips $ / thousands
-                           separators, handles parenthesized negatives, NaN on blank).
+                           separators, handles parenthesized negatives, a trailing
+                           minus "45.00-" and CR/DR suffixes — CR → negative, DR →
+                           positive in the debit-positive convention (BSI-16) — NaN
+                           on blank). chase_checking ("Details, Posting Date, …,
+                           Amount, Type, Balance") reads the Posting Date and negates
+                           the signed Amount; Type is not used as a category.
                            Used by EVERY bank-format parser incl. Schwab + generic (F6)
                            so a "(45.00)" row is imported as -45, not silently skipped.
                            Schwab's Amount+Type variant preserves the signed amount
@@ -500,9 +506,17 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1551 tests as of latest); use
+  Perfin and Per-sistant test files (1572 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1551 tests across 62 test files (incl.
+  Current count: 1572 tests across 63 test files (incl.
+  `tests/scan-sept-batch12.test.js` — the Sept 2026 broad-scan Batch 12
+  investment pins: sold-holding prune scoped to the response's accounts (BSI-4),
+  NULL cost basis + known-basis return + coverage + the nullable column (BSI-5),
+  winners/losers by sign (WD-17), mid-window account entry flows in TWR/XIRR
+  (BSI-6), the sparkline history source (WD-2), the funding-options phantom
+  dedupe + orphan warning (WD-10), the empty-range chart + reconcile leg errors
+  (WD-17), and parseMoney CR/DR/trailing minus + chase_checking + the
+  trailing-comma preview (BSI-16);
   `apps/per-sistant/tests/scan-sept-batch11.test.js` — the Sept 2026 broad-scan
   Batch 11 Knowledge pins: vault ingest without Voyage/pgvector + embedding
   backfill + unchanged-embedding retention (KR-3), stopwords / per-source vector
@@ -685,7 +699,13 @@ shell/
     reports `balances.current === 0` and puts the value in holdings) so
     brokerages don't show $0 — the balance pick uses `||`, not `??`, precisely
     so a reported 0 falls through to the holdings-sum. It runs automatically (auto-sync + AI pre-insights
-    chains + `POST /api/sync-balances`), not just at link time.
+    chains + `POST /api/sync-balances`), not just at link time. Every holdings
+    write (the sync and both exchange paths) goes through `writePlaidHoldings`,
+    which upserts the returned holdings and then DELETES that response's
+    accounts' holdings Plaid no longer returns — sold or transferred-out
+    positions used to stay forever (BSI-4; only accounts present in the
+    response are touched). An unknown cost basis is stored NULL
+    (`investment_holdings.cost_basis` is nullable), never $0 (BSI-5).
     Plaid also syncs **transactions** for banks Teller doesn't cover
     (Capital One, Discover, Schwab, Amex, credit unions) via
     `/api/plaid/{link-token-transactions,exchange-transactions,sync-transactions}`.
@@ -698,7 +718,10 @@ shell/
     `/transactions/refresh` but cursor-based sync handles it.
   - **Manual**: user-entered via `POST /api/investment-accounts`. Stored in
     `investment_accounts` with no `plaid_account_id`.
-- **CSV import**: Auto-detect Chase, Capital One, Discover, Wells Fargo, Schwab formats.
+- **CSV import**: Auto-detect Chase (card + checking), Capital One, Discover, Wells Fargo, Schwab formats.
+  The header parse uses `relax_column_count` (route + CLI) because Chase checking
+  exports end every data row with a trailing comma, which used to fail the whole
+  file with "Invalid Record Length" (BSI-16).
   The dashboard CSV modal is **preview-and-confirm**: it first POSTs `POST
   /api/import-csv/preview` (a dry-run that detects the format and classifies every
   row new/duplicate/skipped against existing `transaction_id`s WITHOUT writing,
@@ -972,13 +995,18 @@ shell/
 - **Investments widget**: Total invested across all sources, per-source
   breakdown (Teller / Plaid / Manual), and per-account cards with inline SVG
   sparklines (computed client-side from `/api/accounts/:id/balance-history`,
-  no Chart.js dependency). Each card has a "View history →" link to the
+  no Chart.js dependency) — from the account's own source (`linked` for a
+  Teller-linked account, `investment` otherwise; WD-2). Each card has a "View history →" link to the
   full chart page at `/accounts/:id/history`. Auto-hides when no investment
   accounts exist. Toggleable from Settings (key: `investments`, default on).
   When Plaid holdings exist, a **performance sub-card** renders inside the
   widget showing total return ($ + %), per-asset-class allocation bars
   (security_type → % of portfolio), and top winners/losers by return_pct
-  (collapsible). Backed by `GET /api/investments/performance`. Auto-hides
+  (collapsible; winners are only gains and losers only losses — WD-17). The
+  return covers only holdings with a KNOWN cost basis (value of those minus
+  their basis); the line says "cost known for N of M holdings" when some are
+  missing (`cost_basis_coverage`, BSI-5 — an unknown basis used to count as $0,
+  so a transferred-in lot showed as 100% gain). Backed by `GET /api/investments/performance`. Auto-hides
   for users with no Plaid holdings since Teller-linked accounts don't
   expose cost basis. Toggleable (key: `investmentReturns`, default on).
   When the user has set target weights via Settings → Target Allocation,
@@ -996,7 +1024,12 @@ shell/
   value-based (contributions count as growth); below it the card shows the
   flow-adjusted figures — **TWR** (cumulative for the window) and **XIRR**
   (annualized) — computed over flow-covered accounts, with a "(covers N% of
-  portfolio)" label when coverage is partial. A "Log contribution /
+  portfolio)" label when coverage is partial. An account that first appears
+  partway through the window enters as an opening INFLOW on its first date
+  (its own flows on/before that date are part of that balance), so linking a
+  second account no longer reads as a +100% return (BSI-6). A range with
+  fewer than 2 points clears the chart to an empty state instead of leaving
+  the previous range on screen (WD-17). A "Log contribution /
   withdrawal" form (collapsed) posts manual flows for Teller-linked/manual
   accounts; Plaid-linked accounts get their flows synced automatically and
   are excluded from the dropdown so manual entry can't double-count.
@@ -1584,6 +1617,8 @@ shell/
   - **Investments** (new): Plaid holdings with cost basis, current
     value, return $, return % (green positive / red negative), grand
     total. Teller-linked accounts excluded (no Teller cost-basis API).
+    A holding with an unknown basis has blank Cost Basis / Return cells and
+    the total return covers known-basis holdings only (BSI-5).
   - **Net Worth History** (new): one row per month (last snapshot per
     YYYY-MM via DISTINCT ON), month-over-month delta column.
   - **Income** (new): monthly totals (24mo) + top sources (12mo) using
@@ -1891,7 +1926,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1551 tests passing across 62 test files (Perfin 974 + Per-sistant 577), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1572 tests passing across 63 test files (Perfin 995 + Per-sistant 577), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -1954,7 +1989,9 @@ POST /api/sync/reconcile   # backfill/reconcile to recover dropped transactions
                            # to 2 years of history and can take a minute.
 GET  /api/sync/reconcile/status # poll the background reconcile job
                            # { running, started_at, finished_at, provider, days,
-                           #   result, error }
+                           #   result, error, errors[] } — error also summarizes
+                           # per-item errors inside a leg (reconcileErrors, WD-17), so
+                           # Settings + the push say "finished with errors" for them
 POST /api/detect-transfers # run recurring transfer detection
 GET  /api/recurring-transfers # list recurring transfers (query: filter=active|dismissed|all)
 PATCH /api/recurring-transfers/:id/dismiss   # dismiss a recurring transfer
@@ -2094,7 +2131,11 @@ GET  /api/goals            # list financial goals with projections; each goal in
                            # and `current_amount_manual` — when the FK is set but the
                            # account is gone (orphaned), current_amount falls back to
                            # current_amount_manual so pre-link progress is preserved.
-GET  /api/goals/funding-options # depository + investment accounts a goal can link to (Phase C)
+GET  /api/goals/funding-options # depository + investment accounts a goal can link to (Phase C).
+                           # A linked_accounts brokerage that is also an active
+                           # investment_accounts row (the $0 Plaid phantom) is left out —
+                           # the getNetWorth dedupe (WD-10). The Goals page shows an
+                           # orphaned funding link as a warning, not "Auto-tracked".
 GET  /api/fire-projection  # FIRE number/progress/time-to-FIRE + spending runway.
                            # Inputs: getNetWorth + trailing COMPLETED months'
                            # income/spending averages (partial month excluded) +
@@ -2238,7 +2279,11 @@ POST /api/plaid/sync-transactions       # cursor-based sync for all plaid_items 
                                # `errors: [{ institution, error: "decryption_failed" | ... }]`
 GET  /api/plaid/holdings   # list investment holdings
 GET  /api/investments/performance # portfolio returns + asset-class allocation + top winners/losers
-                                  # (Plaid holdings only; auto-hides on dashboard when empty)
+                                  # (Plaid holdings only; auto-hides on dashboard when empty).
+                                  # total_return / per-class return over KNOWN-basis holdings;
+                                  # cost_basis_coverage { holdings_with_basis, holdings_total,
+                                  # value_with_basis, value_pct }; top_winners return_pct > 0,
+                                  # top_losers < 0 (BSI-5 / WD-17)
 GET  /api/investments/performance-history # portfolio value series vs S&P 500
                                   # (query: months=3-60 default 12). Portfolio = daily
                                   # account_balance_snapshots summed across ALL investment
@@ -2256,8 +2301,10 @@ GET  /api/investments/performance-history # portfolio value series vs S&P 500
                                   # computed over FLOW-COVERED accounts only (Plaid-synced
                                   # + any account with manual flows) with a flow_coverage
                                   # block ({coverage_pct, flows_count, net_flows, scope:
-                                  # all|partial|none}) so partial coverage is explicit
-                                  # rather than silently wrong.
+                                  # all|partial|none, accounts_added}) so partial coverage
+                                  # is explicit rather than silently wrong. An account that
+                                  # joins mid-window is an opening inflow (accountEntryFlows,
+                                  # BSI-6; counted in accounts_added).
 POST /api/plaid/sync-flows # sync external cash flows (deposits/withdrawals/in-kind
                            # transfers) from Plaid investmentsTransactionsGet into
                            # investment_flows. Full ~24-month window every run, idempotent
@@ -3611,6 +3658,11 @@ SX3-pinned — the Sheets Income tab.
   no holdings, so the extra items are cheap. The helper runs in the bank
   auto-sync chain, the AI pre-insights chain, and `POST /api/sync-balances`;
   the `POST /api/plaid/sync-holdings` route is a thin wrapper around it.
+  **Plaid's holdings response is authoritative per account (BSI-4):**
+  `writePlaidHoldings` deletes the holdings of each account IN the response
+  that the response no longer lists, so a sale clears its row; accounts not in
+  the response (other items, manual accounts) are never touched. A missing
+  cost basis is NULL and excluded from returns, never treated as $0 (BSI-5).
 - **Plaid sync advances the cursor only on a fully-successful page.**
   `syncPlaidItemTransactions` processes each `transactionsSync` page, and if
   ANY row in the page fails to upsert it halts WITHOUT advancing the cursor —
@@ -3963,6 +4015,8 @@ INV-83 | No exported text is ever evaluated as a formula: Sheets writes go throu
 INV-84 | A month archive tab is written only once the month is settled (month-end + 10 days) and is final only with its completion marker; an unmarked archive is rebuilt, never trusted | Subsystem: Sheets & External Export | Verify: tests/scan-sept-batch10.test.js (SXE-3 block)
 INV-85 | A failed Knowledge sync is visible: vault_last_synced_at means last SUCCESS (vault_last_attempt_at records attempts), /api/rag/status reports reindex.ok, the knowledge-reindex Action polls it and fails on ok:false, and the notification check raises vault_sync_error while vault_last_error is set | Subsystem: Knowledge / RAG | Verify: apps/per-sistant/tests/scan-sept-batch11.test.js (KR-11 block)
 INV-86 | A capture marked private or secret is never sent to the AI for structuring and is committed with that sensitivity; model-supplied fields never write reserved frontmatter keys (type/sensitivity/embed/private/valid_*…) | Subsystem: Knowledge / RAG | Verify: apps/per-sistant/tests/scan-sept-batch11.test.js (KR-10 block)
+INV-87 | Plaid holdings mirror Plaid's response per returned account: every holdings write goes through writePlaidHoldings, which prunes that account's positions no longer returned (other accounts untouched); an unknown cost basis is stored NULL and never counted as a $0 basis in returns (cost_basis_coverage reports the known share) | Subsystem: Bank Sync & Ingestion / Financial Analytics | Verify: tests/scan-sept-batch12.test.js (BSI-4 / BSI-5 blocks)
+INV-88 | TWR/XIRR treat an account that first appears mid-window as an opening inflow on its first snapshot date (its own flows on/before that date are part of the balance), never as investment return | Subsystem: Bank Sync & Ingestion (investment-performance.js) | Verify: tests/scan-sept-batch12.test.js (BSI-6 block)
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
 ### Policy Configuration
