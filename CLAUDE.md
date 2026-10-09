@@ -322,7 +322,14 @@ teller/
                            clear network error. Push notifications.)
     perfin-shared.css    — Shared styles (variables, nav, cards, animations, responsive,
                            focus-visible, skip-link, WCAG AA contrast text colors,
-                           40/44px touch-target minimums on buttons)
+                           40/44px touch-target minimums on buttons). Defines every
+                           token the views use: --card / --card-border / --bg-elevated /
+                           --text-primary / --text-secondary / --accent are aliases of the
+                           base palette (IF-4 — they were used with no definition), and
+                           --on-teal is the text colour on a solid --teal button (#000
+                           dark, #fff light — black on the light teal was ~3.1:1, IF-5).
+                           `select option` lists and modal boxes use the opaque
+                           --surface-solid.
     perfin-shared.js     — Shared JavaScript (apiFetch, theme, nav helpers, asyncAction,
                            btnLoading, beforeinstallprompt capture + perfinPromptInstall /
                            perfinIsInstalled exports). Calendar-date helpers (WUI-2):
@@ -332,6 +339,18 @@ teller/
                            day early west of UTC); localTodayStr(offsetDays) /
                            localDateStr(d) give browser-local 'YYYY-MM-DD' for date-input
                            defaults and "is today" checks (never toISOString()).
+                           Write + dialog conventions (Batch 13): writeOk(res, what)
+                           — true on 2xx, else toasts "<what>: <server error>" — is how
+                           every page reports a write's outcome (WUI-6: writes used to
+                           await apiFetch and assume success); parseAmountInput(raw)
+                           parses a prompt amount ("$1,234.50") or returns NaN so a typo
+                           is refused instead of sent as null (WD-12). openDialog(box,
+                           {label, onClose}) gives a modal role="dialog" aria-modal,
+                           focus-in, a Tab trap, Esc → onClose and focus restore on
+                           handle.close(); watchDialog(overlay, opts) applies it to an
+                           overlay the page shows/hides itself (MutationObserver on
+                           style/hidden/class). Every Perfin modal and the bell panel
+                           use one of them (IF-1).
   views/
     dashboard.ejs        — Dashboard template with 3D financial wellness pyramid
     transactions.ejs     — Transaction search/filter template, per-row Split modal
@@ -506,9 +525,17 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1572 tests as of latest); use
+  Perfin and Per-sistant test files (1602 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1572 tests across 63 test files (incl.
+  Current count: 1602 tests across 64 test files (incl.
+  `tests/scan-sept-batch13.test.js` — the Sept 2026 broad-scan Batch 13 Perfin UI
+  pins: the real PYRAMID_MODES block run against canned responses (WD-4/WD-5),
+  writeOk / parseAmountInput + the 0%-share route + each named write (WUI-6/WD-12),
+  CSV Auto-detect / Accounts preview / no Plaid pre-build (WD-7/WD-8), Add Goal,
+  loan option, transports, account history (WD-9/11/13/15), dialog wiring (IF-1),
+  calendar buttons (IF-2), a scan for unlabeled controls (IF-3), a scan for
+  undefined `var(--x)` (IF-4), --on-teal / opaque modals (IF-5), the PIN pad (IF-6)
+  and notification links (IF-7);
   `tests/scan-sept-batch12.test.js` — the Sept 2026 broad-scan Batch 12
   investment pins: sold-holding prune scoped to the response's accounts (BSI-4),
   NULL cost basis + known-basis return + coverage + the nullable column (BSI-5),
@@ -729,6 +756,12 @@ shell/
   sample table, then the user confirms to `POST /api/import-csv`. Both routes share
   the `parseCsvUpload()` helper (in `routes/subscriptions.js`) so format detection,
   account-label derivation, and dedup IDs can't drift between preview and commit.
+  The Accounts page uses the same two steps (Preview → "Import N new"), and both forms
+  default the bank dropdown to **"Auto-detect from the file"**, which sends NO
+  `institution` / `account_label` so the route derives them from the detected format —
+  the CLI's default, so the two produce the same dedup IDs (WD-7: the dropdown used to
+  default to "Chase" and always send it, filing a Discover file under "Chase Account"
+  and duplicating every row a CLI import had added).
 - **Transaction deduplication**: SHA256-based duplicate detection across CSV imports and API syncs.
   CSV dedup IDs fold in a deterministic per-file occurrence index, so two genuinely-distinct rows
   sharing (account, date, amount, merchant) on the same day no longer collide and silently drop the
@@ -974,7 +1007,8 @@ shell/
   `GET /api/investments`).
 - **Loan accounts (auto loans etc.)**: `type='loan'` rows (Plaid-linked via the
   combined flow — credit-union auto loans arrive from accountsGet — or created
-  via `POST /api/accounts/manual` with `type:"loan"`, subtype defaults `auto`)
+  via `POST /api/accounts/manual` with `type:"loan"`, subtype defaults `auto` — the
+  Accounts page's manual-account form offers a Loan type, WD-11)
   are first-class DEBT: the dashboard renders the balance negative/red under a
   Loans group header (an $18k loan never shows as +$18k), the grid net total
   subtracts it, and `getNetWorth` counts it as a liability (F1). Plaid's
@@ -1110,7 +1144,10 @@ shell/
   (current, range start, change $, change %, snapshot count). Reads from
   `account_balance_snapshots` via `GET /api/accounts/:id/balance-history`.
   Empty state when fewer than 2 snapshots exist (history accumulates daily
-  on every balance sync).
+  on every balance sync) — every card resets to "—" for that range. Axis labels
+  are the day (`snapshot_date` arrives as an ISO timestamp). For a credit card or
+  loan the cards read "Owed now / Owed at range start / Change in debt" and a
+  RISING balance is red (WD-15 — it showed rising debt as a green "+").
 - **AI audit-accuracy card**: Settings → AI shows the percentage of insight
   runs (last 90 days) with zero critical findings, color-coded green/yellow/red,
   with severity counts. Backed by `/api/insights/status.audit_accuracy`.
@@ -1155,7 +1192,14 @@ shell/
 - **3D Financial Pyramid**: Interactive spinning pyramid with 4 frustum layers, neon wireframe edges,
   holographic effects. Layers computed by JS (`buildPyramidGeometry()`) with proper taper geometry.
   Configurable data sources: wellness, debt payoff, goal progress, etc. Mobile-optimized (reduced
-  filters/shadows on small screens, `prefers-reduced-motion` support).
+  filters/shadows on small screens, `prefers-reduced-motion` support). Mode data (Batch 13):
+  Wellness's Subs tier reads `/api/subscriptions`' `{ subscriptions }` and `cancelled_at`;
+  Spending Health buckets `/api/spending-summary`'s `by_category` (WD-4 — both read shapes
+  the API never returned, so Subs was always 0 and Spending always 75); Net Worth shows
+  the latest `net_worth_snapshots` row (getNetWorth — loans as debt, investments included,
+  WD-5) and says it "appears after the next balance sync" until one exists; Debt Payoff
+  counts credit cards AND loans, and the stored `debt_baseline_amount` acts as a high-water
+  mark — when current debt is above it, it is raised to the current debt.
 - **Transaction search**: Full-text search with filters — category, account, amount range, date range
   (GET /api/transactions/search). The Activity page has an Account filter and
   pre-fills its filters from the query string (`q`, `category`, `account_id`,
@@ -1164,7 +1208,9 @@ shell/
   already filtered (WUI-3).
 - **Bill calendar**: Monthly calendar view of upcoming charges — detected subscriptions
   projected from cadences, user-created manual bills, and detected income. Click events
-  to toggle paid/unpaid status. "Add Bill" modal for creating manual expected charges.
+  to toggle paid/unpaid status — payable events are `<button>`s with `aria-pressed`, so
+  this works by keyboard and screen reader, and "+N more" expands the day (IF-2). "Add
+  Bill" modal for creating manual expected charges.
   Subscriptions step by CALENDAR MONTH from their last real charge (DC-9 — a fixed
   30-day step drifted ~5 days/yr and could place a Sep-1 bill on both Oct 1 and
   Oct 31); manual bills use the same creation-anchored, month-length-clamped rule as
@@ -1440,6 +1486,9 @@ shell/
   work) and pushes one "PIN login locked" notification (tag `pin-lockout`). The
   counter is in memory (a restart clears it). Trade-off: anyone can trigger that
   30-minute PIN lockout. Boot warns when `SHELL_PIN` is shorter than 6 characters.
+  The login keypad's 8 dots are only a mask — a longer PIN can be typed (it used to cap
+  at 8) — and Enter is left to another focused control such as the biometric button
+  (IF-6).
   A page requested while signed out (e.g. a notification deep link after the
   idle timeout) is carried through login (PSC-9): `requireAuth` redirects to
   `/login?return_to=<path>` (validated by `safeReturnTo`), the form keeps it as a
@@ -1544,7 +1593,9 @@ shell/
   list. `sendToAll()` logs every push notification to the table, so
   notifications are preserved even if the user hasn't enabled push or dismissed
   the browser alert. API: `GET /api/notifications`, `PATCH /api/notifications/:id/read`,
-  `POST /api/notifications/read-all`.
+  `POST /api/notifications/read-all`. Activating a notification marks it read and, when
+  its `data.url` is a same-app path (`/x`, never `//host`), opens it via `withBase`
+  (IF-7 — e.g. the missing-utility reminder lands on `/housing#pending`).
 - **Data freshness API**: `GET /api/data-freshness` returns per-source timestamps
   (transactions, balances, auto-sync, insights) with `age_seconds`, a boolean
   `stale` flag (>24h), and an explicit `level` (`"fresh"` <6h / `"aging"` 6-24h /
@@ -1573,7 +1624,10 @@ shell/
 - **Web Push notifications**: VAPID-based push notifications for anomalies, budget alerts,
   goal milestones
 - **Accessibility**: Skip-to-content link, `<main>` landmark, chart aria-labels, :focus-visible
-  styles, WCAG AA contrast-compliant text colors
+  styles, WCAG AA contrast-compliant text colors. Modals and the bell panel go through the
+  shared `openDialog` / `watchDialog` (focus trap, Esc, focus restore — IF-1); form controls
+  carry a `<label for>` or `aria-label` (IF-3, scan-pinned for the Activity, Rent, Accounts,
+  Goals, Budgets and Calendar pages).
 - **CSP nonces**: Per-request cryptographic nonces for all inline scripts (no `'unsafe-inline'` in `scriptSrc`). Style policy is split: `styleSrcElem` is nonce-gated for `<style>` blocks while `styleSrcAttr` keeps `'unsafe-inline'` for inline `style=""` attributes.
 - **Keep-alive**: Timezone-aware self-ping to prevent Render free tier sleep (10s timeout)
 - **Per-model cost tracking**: Usage history with granular pricing (Haiku/Sonnet/Opus)
@@ -1926,7 +1980,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1572 tests passing across 63 test files (Perfin 995 + Per-sistant 577), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1602 tests passing across 64 test files (Perfin 1025 + Per-sistant 577), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -2079,7 +2133,9 @@ GET  /api/subscriptions    # list detected subscriptions
 GET  /api/accounts         # list linked accounts with balances (includes is_shared, spending_split_pct)
 PATCH /api/accounts/:id    # update account details (apr 0-99.99; monthly_payment > 0
                            # or null — the manual loan fields driving the payoff projection)
-PATCH /api/accounts/:id/shared # mark account as shared/joint (body: is_shared, spending_split_pct)
+PATCH /api/accounts/:id/shared # mark account as shared/joint (body: is_shared, spending_split_pct
+                           # — an integer 0-100, 400 otherwise; 0 = all the partner's.
+                           # `parseInt(x) || 100` used to turn 0 into 100 — WUI-6)
 PATCH /api/accounts/:id/balance # update balance fields (current_balance, available_balance, credit_limit)
 POST /api/accounts/manual  # create a manual (non-Teller, non-Plaid) account
                            # (type: depository | credit | loan — loan subtype defaults 'auto')
@@ -2973,7 +3029,9 @@ rows) can dismiss them from the UI or run `POST /api/cleanup`.
   requests) — @simplewebauthn v11 already defaults it true, so this is a
   defense-in-depth pin against a future SDK-default flip (PSA2).
 - **WebAuthn transports**: registration persists the authenticator's
-  `transports` (`webauthn_credentials.transports TEXT[]`), but BOTH
+  `transports` (`webauthn_credentials.transports TEXT[]` — the Settings register
+  flow sends `response.getTransports()`; before WD-13 it sent none, so every row
+  was NULL), but BOTH
   authenticate-options endpoints (shell + standalone) deliberately advertise
   `transports: ['internal']` ONLY in `allowCredentials` at login. Registration
   pins `authenticatorAttachment: 'platform'`, so every credential lives on the
@@ -4017,6 +4075,8 @@ INV-85 | A failed Knowledge sync is visible: vault_last_synced_at means last SUC
 INV-86 | A capture marked private or secret is never sent to the AI for structuring and is committed with that sensitivity; model-supplied fields never write reserved frontmatter keys (type/sensitivity/embed/private/valid_*…) | Subsystem: Knowledge / RAG | Verify: apps/per-sistant/tests/scan-sept-batch11.test.js (KR-10 block)
 INV-87 | Plaid holdings mirror Plaid's response per returned account: every holdings write goes through writePlaidHoldings, which prunes that account's positions no longer returned (other accounts untouched); an unknown cost basis is stored NULL and never counted as a $0 basis in returns (cost_basis_coverage reports the known share) | Subsystem: Bank Sync & Ingestion / Financial Analytics | Verify: tests/scan-sept-batch12.test.js (BSI-4 / BSI-5 blocks)
 INV-88 | TWR/XIRR treat an account that first appears mid-window as an opening inflow on its first snapshot date (its own flows on/before that date are part of the balance), never as investment return | Subsystem: Bank Sync & Ingestion (investment-performance.js) | Verify: tests/scan-sept-batch12.test.js (BSI-6 block)
+INV-89 | Every Perfin page write reports its outcome: the response goes through writeOk (2xx → continue, else a toast with the server's error), never `await apiFetch(...)` then assume success; prompt amounts go through parseAmountInput and a non-number is refused | Subsystem: Web UI | Verify: tests/scan-sept-batch13.test.js (WUI-6 / WD-12 blocks)
+INV-90 | Every Perfin modal (and the bell panel) is a dialog via openDialog / watchDialog — role="dialog" aria-modal, focus moved in, Tab trapped, Esc closes, focus restored; and every var(--x) used without a fallback is defined in perfin-shared.css | Subsystem: Web UI | Verify: tests/scan-sept-batch13.test.js (IF-1 / IF-4 blocks)
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
 ### Policy Configuration

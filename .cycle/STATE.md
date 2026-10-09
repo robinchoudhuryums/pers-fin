@@ -26,8 +26,16 @@ to the "none in progress" state.
     watcher so pages keep their own show/hide code; PIN-pad guard limited to Enter.
   - **Open follow-ons:** see `.cycle/blocks/6-batch13-broad-implement.md`.
   - **Operator:** none required.
-  - **Where I left off:** Batch 13 committed and pushed (no PR). NEXT: /sync-docs for Batch 13,
-    then Batch 14 (Per-sistant correctness & UI).
+  - **/sync-docs DONE (Batch 13):** CLAUDE.md — perfin-shared.js (writeOk / parseAmountInput /
+    openDialog / watchDialog conventions) + perfin-shared.css (defined token aliases, --on-teal,
+    opaque options/modals) architecture entries, CSV import (Auto-detect default + Accounts
+    preview), loan accounts (UI form), account history (debt display, reset), pyramid modes,
+    bill calendar keyboard, notification links, accessibility, PIN pad, shared-split endpoint
+    validation, WebAuthn transports now stored, NEW INV-89 (writes report outcome) + INV-90
+    (dialogs + defined CSS vars), test counts 1602/64 (Perfin 1025) + batch13 description.
+    README — counts + Batch 13 coverage. Subsystem paths resolve. Operator state: none new.
+  - **Where I left off:** Batch 13 and its docs are committed and pushed (no PR). NEXT: Batch 14
+    (Per-sistant correctness & UI).
 
 - **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 12 DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-10-09). Batch 12 (Investments) implemented on top of
