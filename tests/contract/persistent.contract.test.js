@@ -88,12 +88,9 @@ describe("Per-sistant routes on real Postgres", { skip: SKIP }, () => {
     assert.equal((await q("SELECT active FROM job_target_companies WHERE id=$1", [comp])).rows[0].active, false);
   });
 
-  // Pre-existing bug found by these contract tests (not fixed in Batch 15):
-  // routes/calendar.js destructures `advanceRecurrence` from deps, which
-  // server.js never passes, so /api/calendar 500s whenever an open recurring
-  // todo exists. Kept as a TODO so it reports without failing CI; drop the
-  // `todo` flag when the follow-on fix lands.
-  it("GET /api/calendar projects recurring todos", { todo: "calendar router never receives advanceRecurrence (follow-on)" }, async () => {
+  // Found by this suite in Batch 15: the calendar router read advanceRecurrence
+  // off deps, which server.js never passes, so this 500'd.
+  it("GET /api/calendar projects recurring todos", async () => {
     await supertest(app).post("/api/todos").send({ title: "Daily", recurring: true, recurrence_rule: "daily", due_date: tomorrow() }).expect(200);
     const now = new Date();
     const r = await supertest(app).get(`/api/calendar?month=${now.getMonth() + 1}&year=${now.getFullYear()}`);

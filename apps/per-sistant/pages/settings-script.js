@@ -78,7 +78,11 @@ async function saveSettings() {
 
   var el = document.getElementById('status');
   if (r.ok) { el.className = 'status-msg success'; el.textContent = 'Settings saved.'; }
-  else { el.className = 'status-msg error'; el.textContent = 'Could not save settings — please retry.'; }
+  else {
+    // Show the server's reason (e.g. an invalid Perfin URL) instead of a generic retry.
+    var why = ''; try { why = (await r.json()).error || ''; } catch (e) {}
+    el.className = 'status-msg error'; el.textContent = why ? ('Could not save settings: ' + why) : 'Could not save settings — please retry.';
+  }
   setTimeout(()=>{ el.className = 'status-msg'; }, 3000);
 }
 

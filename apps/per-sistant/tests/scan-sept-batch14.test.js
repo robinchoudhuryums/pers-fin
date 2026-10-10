@@ -545,7 +545,7 @@ describe("PD-11 — iCal export", () => {
       if (/FROM todos/.test(sql)) return { rows: [{ id: 1, title: "Pay rent\nnow, today; ok", description: "Line1\nLine2 \\ x", due_date: new Date(2026, 9, 31), priority: "high" }] };
       return { rows: [{ id: 2, subject: "Hi, there", recipient_email: "a@b.co", scheduled_at: new Date("2026-10-09T15:00:00Z") }] };
     } };
-    const app = appWith(require("../routes/calendar")({ pool, advanceRecurrence: helpers.advanceRecurrence }));
+    const app = appWith(require("../routes/calendar")({ pool, helpers }));
     const r = await supertest(app).get("/api/calendar.ics").expect(200);
     const text = r.text;
     assert.ok(text.includes("SUMMARY:[HIGH] Pay rent\\nnow\\, today\\; ok"));

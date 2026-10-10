@@ -9,7 +9,28 @@ to the "none in progress" state.
 
 ## Current Cycle
 
-- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 15 DONE** on branch
+- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 15 follow-ons DONE** on branch
+  `claude/lucid-darwin-7r8e59` (2026-10-10). The bugs Batch 15's real-code tests exposed are
+  fixed and the contract-coverage gap is closed (all unmerged with Batches 11–15, no PR).
+  - **Completed:** FO-1 (/api/calendar 500 — router now reads advanceRecurrence from helpers),
+    FO-2 (Quick Add regexes double-escaped), FO-3 (palette picker under the shell), FO-4
+    (views/js.js on current theme tokens), FO-5 (theme + perfin_url validated), FO-6 (contract tests
+    for the Teller/Plaid sync engines, categorize, generateInsights + audit, and the Knowledge
+    pipeline). Guards added: router deps ⊆ server.js deps; no single-escaped regex in client
+    template literals. Batch 15 KNOWN_GAPS lists are empty.
+  - **Not finished (selected):** none.
+  - **Tests:** npm test 1489/1489, 0 todo (Perfin 1033 + Per-sistant 456; 67 files). Contract 43/43,
+    0 todo (with and without pgvector). Playwright smokes + temporary follow-on specs green.
+  - **Decisions:** calendar router takes `helpers` (no new dep key); perfin_url stored trimmed
+    without a trailing slash; undo button text uses --paper so it reads on the mono-dark accent.
+  - **Open follow-ons:** see `.cycle/blocks/6-batch15-followons-broad-implement.md` — Plaid
+    legacy-category array literal (DC-14 class), Quick Add UTC due date, unvalidated
+    session_timeout_minutes/default_horizon, no contract test of the Plaid item loop / Teller enroll.
+  - **Operator:** none required.
+  - **Where I left off:** committed and pushed (no PR). NEXT: /sync-docs (drop the Known Open
+    Issues sections, update counts); then a PR for Batches 11–15 + follow-ons when the operator asks.
+
+- **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 15 DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-10-09). Batch 15 (test-quality guards) implemented on top of
   Batches 11–14 (all unmerged, no PR), tested, pushed. Test/CI changes only — no production code.
   - **Completed:** TQ-2 (tests/contract/ real-Postgres route contract suite — financial queries,

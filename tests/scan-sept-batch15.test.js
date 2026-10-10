@@ -159,12 +159,10 @@ function rootRelativeOffenders(files, pages) {
 
 describe("Guard — client navigation always carries the mount base", () => {
   const { perfin, ps } = pagePaths();
-  // Pre-existing gaps (not fixed in Batch 15 — follow-ons). Each entry is a
-  // `file:line-substring`; remove it when fixed (a stale entry fails the test).
-  const KNOWN_GAPS = [
-    // Palette picker never appears under the shell: pathname is /per-sistant/settings.
-    "apps/per-sistant/views/settings-patch.js: if (location.pathname !== '/settings') return;",
-  ];
+  // Pre-existing gaps, each a `file:line-substring`; remove an entry when it is
+  // fixed (a stale entry fails the test). Empty since the Batch 15 follow-ons
+  // (the settings-patch palette check now strips the mount base).
+  const KNOWN_GAPS = [];
 
   it("found the page lists to check", () => {
     assert.ok(perfin.has("budgets") && perfin.has("housing") && ps.has("todos") && ps.has("settings"));
@@ -220,13 +218,12 @@ describe("Guard — CSS variables are defined (Per-sistant + shell)", () => {
     assert.deepEqual(undefinedVars(files, ["--burst-dir"]), []);
   });
 
-  it("Per-sistant pages + views (known legacy gaps listed)", () => {
+  it("Per-sistant pages + views", () => {
     const files = [...walk("apps/per-sistant/pages", [".js"]), ...walk("apps/per-sistant/views", [".js"]),
       path.join(ROOT, "apps/per-sistant/views.js"), path.join(ROOT, "apps/per-sistant/routes/auth.js")];
-    // Pre-existing (follow-on): views/js.js (undo toast, offline banner, renderMd)
-    // still uses the pre-redesign variable names, which the current Per-sistant
-    // CSS no longer defines — those elements render with no background/colour.
-    const KNOWN_GAPS = ["--border", "--green", "--surface-2", "--teal", "--text", "--text-muted", "--warm", "--yellow"];
+    // Empty since the Batch 15 follow-ons moved views/js.js (undo toast, offline
+    // banner, renderMd) off the pre-redesign variable names.
+    const KNOWN_GAPS = [];
     const found = undefinedVars(files);
     assert.deepEqual(found.filter((v) => !KNOWN_GAPS.includes(v)), [], "new undefined CSS variables");
     assert.deepEqual(KNOWN_GAPS.filter((v) => !found.includes(v)), [], "a KNOWN_GAPS variable is now defined — remove it");

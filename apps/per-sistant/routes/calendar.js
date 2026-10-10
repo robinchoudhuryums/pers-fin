@@ -2,7 +2,11 @@ const express = require("express");
 
 const { serverError } = require("../errors");
 
-module.exports = function ({ pool, advanceRecurrence }) {
+// advanceRecurrence comes from helpers — server.js passes { pool, config, helpers,
+// views }, so destructuring it straight off deps left it undefined and
+// GET /api/calendar 500'd whenever an open recurring todo existed.
+module.exports = function ({ pool, helpers }) {
+  const { advanceRecurrence } = helpers;
   const router = express.Router();
 
   router.get("/api/calendar", async (req, res) => {

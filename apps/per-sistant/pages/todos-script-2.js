@@ -125,9 +125,9 @@ function parseQuickTodo() {
   var input = document.getElementById('qt-input').value.trim();
   if (!input) return;
   var days = {sunday:0,monday:1,tuesday:2,wednesday:3,thursday:4,friday:5,saturday:6};
-  var dateMatch = input.match(/\b(\d{4}-\d{2}-\d{2})\b/) || input.match(/\b((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{1,2}(?:,?\s*\d{4})?)\b/i);
-  var tomorrowMatch = input.match(/\btomorrow\b/i);
-  var dayMatch = input.match(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i);
+  var dateMatch = input.match(/\\b(\\d{4}-\\d{2}-\\d{2})\\b/) || input.match(/\\b((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\\w*\\s+\\d{1,2}(?:,?\\s*\\d{4})?)\\b/i);
+  var tomorrowMatch = input.match(/\\btomorrow\\b/i);
+  var dayMatch = input.match(/\\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\\b/i);
   var dueDate = null;
   if (dateMatch) { dueDate = new Date(dateMatch[1]); }
   else if (tomorrowMatch) { dueDate = new Date(); dueDate.setDate(dueDate.getDate()+1); }
@@ -140,11 +140,11 @@ function parseQuickTodo() {
   }
   // Extract priority
   var priority = 'medium';
-  if (/\burgent\b/i.test(input)) priority = 'urgent';
-  else if (/\bhigh\b|\bimportant\b/i.test(input)) priority = 'high';
-  else if (/\blow\b/i.test(input)) priority = 'low';
+  if (/\\burgent\\b/i.test(input)) priority = 'urgent';
+  else if (/\\bhigh\\b|\\bimportant\\b/i.test(input)) priority = 'high';
+  else if (/\\blow\\b/i.test(input)) priority = 'low';
   // Clean title
-  var title = input.replace(/\b(tomorrow|today|urgent|high|low|important)\b/gi, '').replace(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi, '').replace(/\b(by|on|at|next|this)\b/gi, '').replace(/\s+/g,' ').trim();
+  var title = input.replace(/\\b(tomorrow|today|urgent|high|low|important)\\b/gi, '').replace(/\\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\\b/gi, '').replace(/\\b(by|on|at|next|this)\\b/gi, '').replace(/\\s+/g,' ').trim();
   parsedTodo = { title: title, priority: priority, due_date: dueDate ? dueDate.toISOString().split('T')[0] : null, horizon: 'short' };
   document.getElementById('qt-preview-content').innerHTML =
     '<div style="font-size:13px;"><strong>Task:</strong> '+esc(parsedTodo.title)+'<br><strong>Priority:</strong> '+parsedTodo.priority+'<br><strong>Due:</strong> '+(parsedTodo.due_date||'None')+'</div>';

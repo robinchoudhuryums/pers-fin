@@ -3,6 +3,24 @@ const { isAIAvailable } = require("../ai");
 const { loadKeepAliveConfig } = require("../services/keep-alive");
 
 const VALID_PALETTES = ["copper", "indigo", "forest", "slate", "plum", "mono"];
+// The Settings page's theme options. theme and perfin_url used to be stored
+// verbatim, so any string landed in the column (and a perfin_url like
+// "javascript:…" or "perfin.example" was saved and only rejected at use time).
+const VALID_THEMES = ["dark", "light", "auto"];
+
+// Returns the normalized URL, null for "clear it", or undefined when invalid.
+function normalizePerfinUrl(v) {
+  if (v === null || v === "") return null;
+  if (typeof v !== "string" || v.length > 500) return undefined;
+  const t = v.trim();
+  if (!t) return null;
+  try {
+    const u = new URL(t);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return undefined;
+    if (u.username || u.password) return undefined;
+  } catch { return undefined; }
+  return t.replace(/\/+$/, "");
+}
 
 const { serverError } = require("../errors");
 
@@ -46,10 +64,17 @@ module.exports = function ({ pool, config }) {
       const fields = [];
       const params = [];
       let idx = 1;
-      if (theme !== undefined) { fields.push(`theme = $${idx++}`); params.push(theme); }
+      if (theme !== undefined) {
+        if (!VALID_THEMES.includes(theme)) return res.status(400).json({ error: `theme must be one of ${VALID_THEMES.join(", ")}` });
+        fields.push(`theme = $${idx++}`); params.push(theme);
+      }
       if (session_timeout_minutes !== undefined) { fields.push(`session_timeout_minutes = $${idx++}`); params.push(session_timeout_minutes); }
       if (default_horizon !== undefined) { fields.push(`default_horizon = $${idx++}`); params.push(default_horizon); }
-      if (perfin_url !== undefined) { fields.push(`perfin_url = $${idx++}`); params.push(perfin_url || null); }
+      if (perfin_url !== undefined) {
+        const url = normalizePerfinUrl(perfin_url);
+        if (url === undefined) return res.status(400).json({ error: "perfin_url must be an http(s) URL (or empty to clear it)." });
+        fields.push(`perfin_url = $${idx++}`); params.push(url);
+      }
       if (perfin_webhook_recipient !== undefined) { fields.push(`perfin_webhook_recipient = $${idx++}`); params.push(perfin_webhook_recipient || null); }
       if (palette !== undefined) {
         if (!VALID_PALETTES.includes(palette)) return res.status(400).json({ error: `palette must be one of ${VALID_PALETTES.join(", ")}` });

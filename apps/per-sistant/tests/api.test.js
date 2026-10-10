@@ -107,13 +107,9 @@ describe("Time expression parsing (emails page parseTimeExpr, as emitted)", () =
 });
 
 // ---------------------------------------------------------------------------
-// KNOWN PRE-EXISTING BUG found by running the real code (Batch 15 follow-on):
-// pages/todos-script-2.js is a template literal, so the quick-add regexes'
-// `\b` reach the browser as a BACKSPACE character — /\burgent\b/ never
-// matches, and no priority or date is ever detected. The old replica test
-// (its own copy of the parser) passed regardless. These stay `todo` (reported,
-// not failing CI) until the regexes are double-escaped; then drop the flag.
-const QUICK_ADD_BUG = "todos-script-2 regexes lose their \\b in the template literal (follow-on)";
+// pages/todos-script-2.js is a template literal: its quick-add regexes must be
+// DOUBLE-escaped, or `\b` reaches the browser as a backspace and no priority
+// or date is ever detected (found by this suite in Batch 15, since fixed).
 describe("Quick-add todo parser (todos page parseQuickTodo, as emitted)", () => {
   function parseWith(input) {
     const el = { value: input, innerHTML: "", style: {} };
@@ -123,7 +119,7 @@ describe("Quick-add todo parser (todos page parseQuickTodo, as emitted)", () => 
     ctx.__fn();
     return ctx.parsedTodo;
   }
-  it("detects priority words and strips them from the title", { todo: QUICK_ADD_BUG }, () => {
+  it("detects priority words and strips them from the title", () => {
     assert.equal(parseWith("urgent pay rent").priority, "urgent");
     assert.equal(parseWith("important call bank").priority, "high");
     assert.equal(parseWith("low water plants").priority, "low");
@@ -131,10 +127,12 @@ describe("Quick-add todo parser (todos page parseQuickTodo, as emitted)", () => 
     assert.equal(p.priority, "medium"); assert.equal(p.horizon, "short"); assert.equal(p.title, "buy milk");
     assert.equal(parseWith("urgent pay rent").title, "pay rent");
   });
-  it("tomorrow and ISO dates become a due date", { todo: QUICK_ADD_BUG }, () => {
+  it("tomorrow, weekdays and ISO / month-name dates become a due date", () => {
     const t = new Date(); t.setDate(t.getDate() + 1);
     assert.equal(parseWith("dentist tomorrow").due_date, t.toISOString().split("T")[0]);
     assert.equal(parseWith("file taxes 2027-04-15").due_date, "2027-04-15");
+    assert.ok(parseWith("gym on friday").due_date);
+    assert.equal(parseWith("gym on friday").title, "gym");
   });
 });
 

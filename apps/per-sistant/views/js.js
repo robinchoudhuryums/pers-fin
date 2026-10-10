@@ -71,14 +71,14 @@ function renderMd(s){
     .replace(/\\*\\*(.+?)\\*\\*/g,'<strong>$1</strong>')
     .replace(/\\*(.+?)\\*/g,'<em>$1</em>')
     .replace(/~~(.+?)~~/g,'<del>$1</del>')
-    .replace(/\`([^\`]+)\`/g,'<code style="background:var(--surface-2);padding:1px 5px;border-radius:3px;font-size:11px;">$1</code>')
-    .replace(/^- \\[x\\] (.+)$/gm,'<div style="margin:2px 0;"><span style="color:var(--green);margin-right:4px;">&#9745;</span><s style="opacity:0.5;">$1</s></div>')
-    .replace(/^- \\[ \\] (.+)$/gm,'<div style="margin:2px 0;"><span style="color:var(--text-muted);margin-right:4px;">&#9744;</span>$1</div>')
+    .replace(/\`([^\`]+)\`/g,'<code style="background:var(--paper-2);padding:1px 5px;border-radius:3px;font-size:11px;">$1</code>')
+    .replace(/^- \\[x\\] (.+)$/gm,'<div style="margin:2px 0;"><span style="color:var(--good);margin-right:4px;">&#9745;</span><s style="opacity:0.5;">$1</s></div>')
+    .replace(/^- \\[ \\] (.+)$/gm,'<div style="margin:2px 0;"><span style="color:var(--muted);margin-right:4px;">&#9744;</span>$1</div>')
     .replace(/^[*-] (.+)$/gm,'<div style="margin:2px 0;padding-left:12px;">&bull; $1</div>')
     .replace(/^\\d+\\. (.+)$/gm,'<div style="margin:2px 0;padding-left:12px;">$1</div>')
-    .replace(/^> (.+)$/gm,'<blockquote style="border-left:2px solid var(--warm);padding-left:10px;margin:4px 0;color:var(--text-muted);font-style:italic;">$1</blockquote>')
-    .replace(/^---$/gm,'<hr style="border:none;border-top:1px solid var(--border);margin:8px 0;">')
-    .replace(/\\[([^\\]]+)\\]\\(([^)]+)\\)/g,function(m,t,u){var url=String(u).trim();var safe=/^(https?:|mailto:)/i.test(url)?url.replace(/"/g,'%22'):'#';return '<a href="'+safe+'" target="_blank" rel="noopener noreferrer" style="color:var(--teal);text-decoration:underline;">'+t+'</a>';})
+    .replace(/^> (.+)$/gm,'<blockquote style="border-left:2px solid var(--accent);padding-left:10px;margin:4px 0;color:var(--muted);font-style:italic;">$1</blockquote>')
+    .replace(/^---$/gm,'<hr style="border:none;border-top:1px solid var(--line);margin:8px 0;">')
+    .replace(/\\[([^\\]]+)\\]\\(([^)]+)\\)/g,function(m,t,u){var url=String(u).trim();var safe=/^(https?:|mailto:)/i.test(url)?url.replace(/"/g,'%22'):'#';return '<a href="'+safe+'" target="_blank" rel="noopener noreferrer" style="color:var(--accent);text-decoration:underline;">'+t+'</a>';})
     .replace(/\\n/g,'<br>');
 }
 // Offline detection and sync
@@ -96,7 +96,7 @@ window.addEventListener('offline', function() {
   if (!offBanner) {
     offBanner = document.createElement('div');
     offBanner.id = 'offline-banner';
-    offBanner.style.cssText = 'position:fixed;top:0;left:0;right:0;background:var(--yellow);color:#000;text-align:center;padding:6px;font-size:12px;font-weight:500;z-index:9999;';
+    offBanner.style.cssText = 'position:fixed;top:0;left:0;right:0;background:var(--accent-soft);color:var(--ink);border-bottom:1px solid var(--line);text-align:center;padding:6px;font-size:12px;font-weight:500;z-index:9999;';
     offBanner.textContent = 'You are offline. Changes will sync when reconnected.';
     document.body.appendChild(offBanner);
   }
@@ -157,12 +157,12 @@ var _undoTimer=null;
 function showUndo(msg,type,id,action,extra){
   clearTimeout(_undoTimer);
   var el=document.getElementById('undo-toast');
-  if(!el){el=document.createElement('div');el.id='undo-toast';el.setAttribute('role','status');el.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--surface-2);border:1px solid var(--border);padding:12px 20px;border-radius:12px;display:flex;align-items:center;gap:12px;z-index:9999;backdrop-filter:blur(20px);font-size:14px;color:var(--text);box-shadow:0 8px 32px rgba(0,0,0,0.3);';document.body.appendChild(el);}
+  if(!el){el=document.createElement('div');el.id='undo-toast';el.setAttribute('role','status');el.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--paper-card);border:1px solid var(--line);padding:12px 20px;border-radius:12px;display:flex;align-items:center;gap:12px;z-index:9999;backdrop-filter:blur(20px);font-size:14px;color:var(--ink);box-shadow:0 8px 32px rgba(0,0,0,0.3);';document.body.appendChild(el);}
   var undoAction = action || 'delete';
   if(undoAction==='info'||(undoAction==='complete-recurring'&&!extra)){
     el.innerHTML=esc(msg);
   } else {
-    el.innerHTML=esc(msg)+' <button data-undo-type="'+escAttr(type)+'" data-undo-id="'+escAttr(id)+'" data-undo-action="'+escAttr(undoAction)+'" data-undo-extra="'+escAttr(extra==null?'':extra)+'" style="background:var(--warm);color:#fff;border:none;padding:4px 14px;border-radius:6px;cursor:pointer;font-size:13px;font-family:inherit;">Undo</button>';
+    el.innerHTML=esc(msg)+' <button data-undo-type="'+escAttr(type)+'" data-undo-id="'+escAttr(id)+'" data-undo-action="'+escAttr(undoAction)+'" data-undo-extra="'+escAttr(extra==null?'':extra)+'" style="background:var(--accent);color:var(--paper);border:none;padding:4px 14px;border-radius:6px;cursor:pointer;font-size:13px;font-family:inherit;">Undo</button>';
   }
   el.style.display='flex';
   _undoTimer=setTimeout(function(){el.style.display='none';},6000);
