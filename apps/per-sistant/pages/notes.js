@@ -124,7 +124,7 @@ async function load() {
   document.getElementById('notes-grid').innerHTML = notes.map(n => {
     var borderStyle = n.pinned ? 'border-left-color:'+(colorMap[n.color]||'var(--accent)') : (n.color!=='default'?'border-left:2px solid '+colorMap[n.color]:'');
     var tagsHtml = n.tags && n.tags.length ? '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:8px;">'+n.tags.map(t=>'<span style="padding:2px 8px;border-radius:2px;font-family:var(--mono);font-size:9px;background:var(--paper-2);border:1px solid var(--line);color:var(--muted);letter-spacing:0.04em;">'+esc(t)+'</span>').join('')+'</div>' : '';
-    return '<div class="note-card'+(n.pinned?' pinned':'')+'" style="position:relative;'+borderStyle+'" data-action="open-note" data-id="'+n.id+'">'+
+    return '<div class="note-card'+(n.pinned?' pinned':'')+'" style="position:relative;'+borderStyle+'" role="button" tabindex="0" aria-label="'+escAttr('Open note: '+(n.title||String(n.content||'').slice(0,40)))+'" data-action="open-note" data-id="'+n.id+'">'+
       '<input type="checkbox" class="note-bulk-check" data-id="'+n.id+'" style="display:'+(noteSelectMode?'block':'none')+';position:absolute;top:10px;right:10px;accent-color:var(--accent);cursor:pointer;z-index:2;">'+
       (n.pinned?'<div style="font-family:var(--mono);font-size:9px;color:var(--accent);text-transform:uppercase;letter-spacing:0.12em;margin-bottom:6px;">&#128204; Pinned</div>':'')+
       (n.title?'<div class="note-title">'+esc(n.title)+(n.format==='markdown'?'<span class="md-badge">MD</span>':'')+'</div>':(!n.title && n.format==='markdown'?'<div style="margin-bottom:4px;"><span class="md-badge">MD</span></div>':''))+

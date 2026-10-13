@@ -213,8 +213,9 @@ module.exports = function ({ pool }) {
   // ============================================================================
   router.get("/api/ai/smart-suggestions", async (req, res) => {
     try {
-      const model = await getAIModelForFeature("daily_briefing");
-      if (model === "off") return res.json({ suggestions: null });
+      // PD-7: its own setting (it used the daily_briefing model, default off).
+      const model = await getAIModelForFeature("smart_suggestions");
+      if (model === "off" || !isAIAvailable()) return res.json({ suggestions: null });
       // Check response cache (suggestions cached for 5 minutes)
       const todayStr = new Date().toISOString().split("T")[0];
       const suggestCacheKey = `suggestions_${todayStr}_${new Date().getHours()}`;
@@ -245,8 +246,12 @@ module.exports = function ({ pool }) {
     try {
       const { query } = req.body;
       if (!query) return res.status(400).json({ error: "Query is required." });
-      const model = await getAIModelForFeature("daily_briefing");
-      if (model === "off") return res.json({ answer: "AI is not enabled. Enable it in Settings.", data: null });
+      // PD-7: Ask has its own setting (default haiku) — it was gated on the
+      // daily_briefing model, which defaults to off, so Ask was dead on a
+      // fresh install and switching the briefing off silently disabled it.
+      const model = await getAIModelForFeature("natural_language_query");
+      if (model === "off") return res.json({ answer: "Ask is turned off. Enable it in Settings → AI Models.", data: null });
+      if (!isAIAvailable()) return res.json({ answer: "AI is not configured on this server (ANTHROPIC_API_KEY is not set).", data: null });
       // Gather context
       const [todos, emails, notes] = await Promise.all([
         pool.query("SELECT id, title, priority, horizon, category, due_date, completed, completed_at, recurring, recurrence_rule, streak_count, created_at FROM todos WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 50"),
@@ -268,7 +273,7 @@ module.exports = function ({ pool }) {
   // ============================================================================
   router.get("/api/ai/models", async (req, res) => {
     try {
-      const r = await pool.query("SELECT ai_model_email_draft, ai_model_task_breakdown, ai_model_quick_add, ai_model_review_summary, ai_model_email_tone, ai_model_daily_briefing, ai_model_note_tagging, ai_model_rag, ai_model_job_fit FROM user_settings WHERE id = 1");
+      const r = await pool.query("SELECT ai_model_email_draft, ai_model_task_breakdown, ai_model_quick_add, ai_model_review_summary, ai_model_email_tone, ai_model_daily_briefing, ai_model_note_tagging, ai_model_rag, ai_model_job_fit, ai_model_natural_language_query, ai_model_smart_suggestions FROM user_settings WHERE id = 1");
       const models = r.rows[0] || {};
       models.available = isAIAvailable();
       res.json(models);
@@ -277,7 +282,7 @@ module.exports = function ({ pool }) {
 
   router.patch("/api/ai/models", async (req, res) => {
     try {
-      const allowed = ["ai_model_email_draft", "ai_model_task_breakdown", "ai_model_quick_add", "ai_model_review_summary", "ai_model_email_tone", "ai_model_daily_briefing", "ai_model_note_tagging", "ai_model_rag", "ai_model_job_fit"];
+      const allowed = ["ai_model_email_draft", "ai_model_task_breakdown", "ai_model_quick_add", "ai_model_review_summary", "ai_model_email_tone", "ai_model_daily_briefing", "ai_model_note_tagging", "ai_model_rag", "ai_model_job_fit", "ai_model_natural_language_query", "ai_model_smart_suggestions"];
       const validValues = ["haiku", "sonnet", "off"];
       const fields = []; const params = []; let idx = 1;
       for (const key of allowed) {

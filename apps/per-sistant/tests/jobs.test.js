@@ -209,10 +209,10 @@ describe("purgeRetention", () => {
 // gatherJobRadarSummary — bucketing + fail-soft
 // ---------------------------------------------------------------------------
 describe("gatherJobRadarSummary", () => {
-  it("splits main (trust>=60) from verify_first (40-59); below 40 excluded", async () => {
+  it("splits main (trust>=60, scored fit>=65) from verify_first (40-59); below 40 excluded", async () => {
     const pool = {
       query: async () => ({ rows: [
-        { id: 1, trust_score: 80, fit_score: null, status: "new" },
+        { id: 1, trust_score: 80, fit_score: 80, status: "new" }, // PB-5: main needs a real fit score
         { id: 2, trust_score: 50, fit_score: null, status: "new" },
         { id: 3, trust_score: 20, fit_score: null, status: "new" },
       ] }),
@@ -330,14 +330,14 @@ describe("cappedCall (AI cost cap, D1)", () => {
 });
 
 describe("applyFeedbackToSource", () => {
-  it("nudges source trust by status (applied +2, dismissed -1, bounded)", async () => {
+  it("nudges source trust by status (applied +2; dismiss no longer penalizes the source — PB-9)", async () => {
     const captured = [];
     const pool = { query: async (sql, params) => { captured.push({ sql, params }); return { rows: [] }; } };
     await jobs.applyFeedbackToSource(pool, 5, "applied");
     assert.equal(captured[0].params[0], 2);
     captured.length = 0;
     await jobs.applyFeedbackToSource(pool, 5, "dismissed");
-    assert.equal(captured[0].params[0], -1);
+    assert.equal(captured.length, 0, "dismiss = not interested, not untrustworthy");
     captured.length = 0;
     await jobs.applyFeedbackToSource(pool, 5, "new"); // no delta → no query
     assert.equal(captured.length, 0);

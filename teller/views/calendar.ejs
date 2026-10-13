@@ -21,7 +21,14 @@
     .cal-event.income { background: rgba(111,207,151,0.15); color: var(--green); }
     .cal-event.utility { background: rgba(127,181,230,0.15); color: var(--blue); }
     .cal-event.paid { opacity: 0.5; text-decoration: line-through; }
+    /* IF-2: payable events and "+N more" are real buttons (keyboard + screen
+       reader); reset the button chrome so they look like the other events. */
+    button.cal-event { display: block; width: 100%; text-align: left; border: 0; font: inherit;
+                       font-size: 10px; cursor: pointer; min-height: 0; min-width: 0; }
+    button.cal-event.more { background: transparent; color: var(--text-muted); }
+    button.cal-event:focus-visible { outline: 2px solid var(--teal); outline-offset: 1px; }
     .modal { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 100; }
+    .modal > .card { background: var(--surface-solid); } /* IF-5: opaque dialog */
     .day-total { font-size: 9px; color: var(--text-muted); margin-top: 4px; font-weight: 500; }
     @media (max-width: 640px) {
       .cal-grid { grid-template-columns: repeat(7, 1fr); gap: 1px; }
@@ -48,15 +55,15 @@
     <div class="card" style="max-width:400px; margin:80px auto; padding:24px;">
       <h3 style="margin-top:0;">Add Manual Bill</h3>
       <div style="display:flex; flex-direction:column; gap:12px;">
-        <input id="bill-name" placeholder="Bill name (e.g. Rent)" />
-        <input id="bill-amount" type="number" step="0.01" min="0" placeholder="Amount" />
-        <label style="font-size:12px;color:var(--text-muted);">Due day of month</label>
+        <input id="bill-name" aria-label="Bill name" placeholder="Bill name (e.g. Rent)" />
+        <input id="bill-amount" aria-label="Amount" type="number" step="0.01" min="0" placeholder="Amount" />
+        <label for="bill-day" style="font-size:12px;color:var(--text-muted);">Due day of month</label>
         <input id="bill-day" type="number" min="1" max="31" placeholder="Day (1-31)" />
-        <select id="bill-cadence"><option value="monthly">Monthly</option><option value="quarterly">Quarterly</option><option value="yearly">Yearly</option></select>
-        <select id="bill-category"><option value="bill">Bill</option><option value="utility">Utility</option><option value="subscription">Subscription</option><option value="insurance">Insurance</option><option value="housing">Housing</option></select>
+        <select id="bill-cadence" aria-label="How often"><option value="monthly">Monthly</option><option value="quarterly">Quarterly</option><option value="yearly">Yearly</option></select>
+        <select id="bill-category" aria-label="Category"><option value="bill">Bill</option><option value="utility">Utility</option><option value="subscription">Subscription</option><option value="insurance">Insurance</option><option value="housing">Housing</option></select>
         <div style="display:flex; gap:8px; justify-content:flex-end;">
           <button class="btn btn-sm" id="bill-cancel">Cancel</button>
-          <button class="btn btn-sm" id="bill-save" style="background:var(--teal);color:#000;">Save</button>
+          <button class="btn btn-sm" id="bill-save" style="background:var(--teal);color:var(--on-teal);">Save</button>
         </div>
       </div>
     </div>
@@ -79,6 +86,8 @@
     var calYear = new Date().getFullYear();
     var calMonth = new Date().getMonth() + 1;
     var todayStr = localTodayStr(); // local date, not UTC (WUI-2)
+    var expandedDays = {};   // IF-2: dates whose "+N more" was opened
+    var lastCalendar = null;
 
     async function loadCalendar() {
       document.getElementById('month-title').textContent = 'Loading...';
@@ -86,6 +95,7 @@
         var res = await apiFetch('/api/bill-calendar?year=' + calYear + '&month=' + calMonth);
         if (!res.ok) throw new Error('HTTP ' + res.status);
         var data = await res.json();
+        lastCalendar = data;
 
         document.getElementById('month-title').textContent = data.month_name + ' ' + data.year;
         document.getElementById('total-bills').textContent = fmt(data.total_bills);
@@ -94,6 +104,14 @@
         netEl.textContent = (data.net >= 0 ? '+' : '') + fmt(data.net);
         netEl.className = 'value ' + (data.net >= 0 ? 'green' : 'red');
 
+        renderGrid(data);
+      } catch (e) {
+        document.getElementById('month-title').textContent = 'Error loading calendar';
+        showMsg(e.message, false);
+      }
+    }
+
+    function renderGrid(data) {
         var grid = document.getElementById('cal-grid');
         // Keep headers
         var html = '<div class="cal-header">Sun</div><div class="cal-header">Mon</div><div class="cal-header">Tue</div>' +
@@ -111,22 +129,30 @@
           html += '<div class="' + cls + '">';
           html += '<div class="day-num' + (isToday ? ' today' : '') + '">' + day.day + '</div>';
 
-          for (var j = 0; j < Math.min(day.events.length, 3); j++) {
+          var shown = expandedDays[day.date] ? day.events.length : Math.min(day.events.length, 3);
+          for (var j = 0; j < shown; j++) {
             var ev = day.events[j];
             var evCls = ev.is_income ? 'income' : (ev.category === 'utility' ? 'utility' : 'bill');
             if (ev.is_paid) evCls += ' paid';
             var prefix = ev.is_income ? '+' : '-';
-            var paidAttr = '';
-            if (ev.bill_source && ev.bill_id && !ev.is_income) {
-              paidAttr = ' data-source="' + esc(ev.bill_source) + '" data-bid="' + ev.bill_id + '" data-date="' + day.date + '" style="cursor:pointer;"';
-            }
-            html += '<div class="cal-event ' + evCls + '"' + paidAttr + ' title="' + esc(ev.name) + ': $' + Math.abs(ev.amount).toFixed(2) + (ev.is_paid ? ' (Paid)' : '') + '">' +
-              (ev.is_paid ? '✓ ' : '') +
+            var full = esc(ev.name) + ': $' + Math.abs(ev.amount).toFixed(2) + (ev.is_paid ? ' (Paid)' : '');
+            var text = (ev.is_paid ? '✓ ' : '') +
               esc(ev.name.length > 12 ? ev.name.substring(0, 11) + '…' : ev.name) +
-              ' ' + prefix + '$' + Math.abs(ev.amount).toFixed(0) + '</div>';
+              ' ' + prefix + '$' + Math.abs(ev.amount).toFixed(0);
+            if (ev.bill_source && ev.bill_id && !ev.is_income) {
+              // IF-2: a button, so a bill can be marked paid by keyboard and is
+              // announced with its state (it was a click-only div).
+              html += '<button type="button" class="cal-event ' + evCls + '" data-source="' + esc(ev.bill_source) +
+                '" data-bid="' + ev.bill_id + '" data-date="' + day.date + '" aria-pressed="' + (ev.is_paid ? 'true' : 'false') +
+                '" aria-label="' + full + ', ' + day.date + ' — ' + (ev.is_paid ? 'paid; activate to mark unpaid' : 'activate to mark paid') +
+                '" title="' + full + '">' + text + '</button>';
+            } else {
+              html += '<div class="cal-event ' + evCls + '" title="' + full + '">' + text + '</div>';
+            }
           }
           if (day.events.length > 3) {
-            html += '<div class="cal-event" style="color:var(--text-muted);">+' + (day.events.length - 3) + ' more</div>';
+            html += '<button type="button" class="cal-event more" data-expand="' + day.date + '" aria-expanded="' + (expandedDays[day.date] ? 'true' : 'false') + '">' +
+              (expandedDays[day.date] ? 'Show less' : '+' + (day.events.length - 3) + ' more') + '</button>';
           }
           if (day.total_bills > 0 || day.total_income > 0) {
             html += '<div class="day-total">';
@@ -137,11 +163,15 @@
           html += '</div>';
         }
         grid.innerHTML = html;
-      } catch (e) {
-        document.getElementById('month-title').textContent = 'Error loading calendar';
-        showMsg(e.message, false);
-      }
     }
+
+    onDelegate('cal-grid', 'click', '[data-expand]', function() {
+      var d = this.getAttribute('data-expand');
+      expandedDays[d] = !expandedDays[d];
+      if (lastCalendar) renderGrid(lastCalendar);
+      var again = document.querySelector('[data-expand="' + d + '"]');
+      if (again) again.focus();
+    });
 
     // Click on a bill event to toggle paid status
     onDelegate('cal-grid', 'click', '.cal-event[data-source]', async function() {
@@ -150,25 +180,37 @@
       var date = this.getAttribute('data-date');
       if (!source || !bid || !date) return;
       var isPaid = this.classList.contains('paid');
+      // WUI-6: every step checks the response — a failed toggle used to
+      // reload the calendar as if it had worked.
       try {
         if (isPaid) {
           // Find and delete the payment
           var pRes = await apiFetch('/api/bill-payments?year=' + calYear + '&month=' + calMonth);
+          if (!(await writeOk(pRes, 'Could not load payments'))) return;
           var payments = await pRes.json();
-          var match = payments.find(function(p) { return p.bill_source === source && p.bill_id == bid && p.paid_date.startsWith(date); });
-          if (match) await apiFetch('/api/bill-payments/' + match.id, { method: 'DELETE' });
+          var match = payments.find(function(p) { return p.bill_source === source && p.bill_id == bid && String(p.paid_date).startsWith(date); });
+          if (!match) { showMsg('That payment was already removed', false); loadCalendar(); return; }
+          var dRes = await apiFetch('/api/bill-payments/' + match.id, { method: 'DELETE' });
+          if (!(await writeOk(dRes, 'Could not mark unpaid'))) return;
+          showMsg('Marked unpaid', true);
         } else {
-          await apiFetch('/api/bill-payments', {
+          var cRes = await apiFetch('/api/bill-payments', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ bill_source: source, bill_id: parseInt(bid), paid_date: date }),
           });
+          if (!(await writeOk(cRes, 'Could not mark paid'))) return;
+          showMsg('Marked paid', true);
         }
         loadCalendar();
       } catch (e) { showMsg(e.message, false); }
     });
 
-    // Add Bill modal
+    // Add Bill modal — IF-1: dialog semantics, focus trap, Esc, focus restore.
+    watchDialog(document.getElementById('add-bill-modal'), {
+      label: 'Add manual bill',
+      onClose: function() { document.getElementById('add-bill-modal').style.display = 'none'; },
+    });
     bindEvents([
       ['prev-month', 'click', function() {
         calMonth--; if (calMonth < 1) { calMonth = 12; calYear--; }

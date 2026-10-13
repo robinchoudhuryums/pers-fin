@@ -1,18 +1,19 @@
 // ============================================================================
 // Per-sistant — Knowledge / RAG Routes (Phase 0)
 // ============================================================================
-// Personal knowledge base Q&A. Phase 0 uses keyword retrieval over `notes` +
-// `documents` (no embeddings); Phase 1 swaps the retrieval step for pgvector
-// cosine search behind the same endpoints.
+// Personal knowledge base Q&A over `notes` + vault `documents` + structured
+// `facts`. Retrieval is HYBRID: a pgvector leg (when VOYAGE_API_KEY and the
+// vector extension are present) fused with a keyword leg via Reciprocal Rank
+// Fusion; either leg alone still works.
 //
 //   GET  /api/rag/search?q=...   retrieval only — zero LLM cost
 //   POST /api/rag/query {query}  retrieve, then a source-grounded Claude answer
 //
-// The query path answers ONLY from retrieved sources and cites them inline by
-// [n]; the source list is returned alongside so the UI can show provenance.
-// Gated by getAIModelForFeature('rag') + isAIAvailable(); search works with no
-// AI configured. Phase 2 will replace callAI here with a dedicated Citations
-// function (multi-block) — callAI's single-text-block return is fine for now.
+// The query path answers ONLY from retrieved sources via the Citations feature
+// (ai.answerWithCitations); if that call fails it falls back to a prompt that
+// asks for inline [n] markers, which are parsed back into cited sources. The
+// source list is returned alongside so the UI can show provenance. Gated by
+// getAIModelForFeature('rag') + isAIAvailable(); search works with no AI.
 // ============================================================================
 
 const express = require("express");
@@ -28,17 +29,49 @@ const MAX_SNIPPET_CHARS = 1500;
 
 // Background reindex status (module-scoped so it survives across requests).
 // The real concurrency lock lives in vault-sync (isSyncing); this is UI state.
-let reindexState = { running: false, started_at: null, finished_at: null, result: null, error: null };
+let reindexState = { running: false, started_at: null, finished_at: null, result: null, error: null, ok: null };
+
+// Did a reindex actually succeed? (KR-11) The endpoint returns 202 before any
+// work happens, so the GitHub Action polls /api/rag/status and fails on
+// ok:false — it used to be green even when every file failed. "Not configured"
+// (vault off) and "not ready" (no embeddings for notes) are not failures.
+function reindexOutcome(result) {
+  if (!result) return false;
+  const v = result.vault || {};
+  const n = result.notes || {};
+  const vaultOk = v.ok === true || v.reason === "not_configured";
+  const notesOk = n.ok === true || n.reason === "not_ready";
+  return vaultOk && notesOk;
+}
+
+// Question words and other filler that match nearly every document (KR-4):
+// "what is the deductible" used to search for %what% and %the% too, so the
+// keyword leg returned noise that pushed real vector hits out of the top 8.
+const STOPWORDS = new Set((
+  // Function words only — content words that can be what a note is about
+  // ("will", "may", "list", "show", "need") are deliberately NOT here.
+  "the and for are but not you your yours with this that these those from have has had was were " +
+  "what when where which who whom whose why how does did doing done can could would should " +
+  "about into onto than then them they their there here its it's our ours any all some too " +
+  "is am be been being do of in on to at by"
+).split(/\s+/));
+
+// Search terms for the keyword legs: word tokens longer than 2 chars that
+// aren't stopwords, at most 8. Falls back to the whole query as one phrase
+// when nothing is left (e.g. "a to be").
+function searchTerms(query) {
+  const terms = (String(query).match(/\w+/g) || [])
+    .filter((t) => t.length > 2 && !STOPWORDS.has(t.toLowerCase()))
+    .slice(0, 8);
+  return terms.length ? terms : [String(query).trim() || ""];
+}
 
 // Build a parameterized keyword query over the notes + documents corpus
 // (the fallback path when embeddings/pgvector aren't available). Returns
 // { sql, params }. Only 'normal'-sensitivity documents are retrievable —
 // 'private'/'secret' rows are never returned and never sent to the model.
 function buildRetrievalQuery(query, limit) {
-  const terms = (String(query).match(/\w+/g) || [])
-    .filter((t) => t.length > 2)
-    .slice(0, 8);
-  const search = terms.length ? terms : [String(query).trim() || ""];
+  const search = searchTerms(query);
   const params = search.map((t) => `%${t}%`);
   const match = search
     .map((_, i) => `(title ILIKE $${i + 1} OR content ILIKE $${i + 1})`)
@@ -72,13 +105,22 @@ function buildRetrievalQuery(query, limit) {
 // multiple chunks of one document collapse to the best-ranked one. K=60 is
 // the standard RRF damping constant.
 const RRF_K = 60;
+// Each leg is ranked PER SOURCE (KR-4): only a source's best-ranked row in a
+// leg scores, at that source's position among distinct sources. Summing every
+// chunk let one long document collect 8 chunk scores and push other matches
+// out.
 function fuseRetrieval(vecRows, kwRows, limit) {
   const byKey = new Map();
   function add(rows) {
-    (rows || []).forEach((r, i) => {
+    const seen = new Set();
+    let rank = 0;
+    (rows || []).forEach((r) => {
       const key = r.kind + ":" + r.id;
+      if (seen.has(key)) return;
+      seen.add(key);
+      rank++;
       const entry = byKey.get(key) || { row: r, score: 0 };
-      entry.score += 1 / (RRF_K + i + 1);
+      entry.score += 1 / (RRF_K + rank);
       byKey.set(key, entry);
     });
   }
@@ -93,6 +135,45 @@ function fuseRetrieval(vecRows, kwRows, limit) {
 function snippet(text) {
   const t = String(text || "");
   return t.length > MAX_SNIPPET_CHARS ? t.slice(0, MAX_SNIPPET_CHARS) + "…" : t;
+}
+
+// The passage of a long document around its first search-term match (KR-4).
+// A keyword-only hit used to send the document's first 1500 characters, which
+// often didn't contain the matching text at all. Short content is unchanged.
+function matchingWindow(text, terms, max = MAX_SNIPPET_CHARS) {
+  const t = String(text || "");
+  if (t.length <= max) return t;
+  const lower = t.toLowerCase();
+  let at = -1;
+  for (const term of terms || []) {
+    const i = term ? lower.indexOf(String(term).toLowerCase()) : -1;
+    if (i >= 0 && (at < 0 || i < at)) at = i;
+  }
+  if (at < 0) return t.slice(0, max) + "…";
+  let start = Math.max(0, at - Math.floor(max / 4));
+  if (start > 0) {
+    const ws = t.lastIndexOf(" ", start);
+    if (ws > start - 40) start = ws + 1;
+  }
+  const end = Math.min(t.length, start + max);
+  return (start > 0 ? "…" : "") + t.slice(start, end) + (end < t.length ? "…" : "");
+}
+
+// Vector chunks are over-fetched and collapsed to one (best) chunk per source,
+// so the vector leg can return `limit` distinct sources instead of 8 chunks of
+// one long document (KR-4).
+const VECTOR_OVERFETCH = 4;
+function bestChunkPerSource(rows, limit) {
+  const seen = new Set();
+  const out = [];
+  for (const r of rows || []) {
+    const key = r.kind + ":" + r.id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(r);
+    if (out.length >= limit) break;
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -149,7 +230,23 @@ async function cacheGet(pool, qn, model, ver) {
   }
 }
 
+// KR-13: rows were never deleted, so the table grew forever. A row can only
+// hit while it is younger than the TTL AND its corpus version is current, so
+// everything else is dead weight — pruned on each write (writes follow a paid
+// model call, so this runs rarely).
+async function pruneAnswerCache(pool, ver) {
+  try {
+    await pool.query(
+      "DELETE FROM rag_answer_cache WHERE corpus_version <> $1 OR created_at < now() - interval '24 hours'",
+      [ver]
+    );
+  } catch {
+    /* best-effort */
+  }
+}
+
 async function cacheSet(pool, qn, model, ver, answer, sources, qvecLiteral) {
+  await pruneAnswerCache(pool, ver);
   try {
     if (qvecLiteral) {
       await pool.query(
@@ -208,8 +305,7 @@ async function semanticCacheGet(pool, qvecLiteral, model, ver) {
 const FACTS_LIMIT = 12;
 
 function buildFactsQuery(query, limit, today = todayStr()) {
-  const terms = (String(query).match(/\w+/g) || []).filter((t) => t.length > 2).slice(0, 8);
-  const search = terms.length ? terms : [String(query).trim() || ""];
+  const search = searchTerms(query);
   const params = search.map((t) => `%${t}%`);
   const match = search
     .map((_, i) => `(entity ILIKE $${i + 1} OR attribute ILIKE $${i + 1} OR value ILIKE $${i + 1})`)
@@ -271,7 +367,9 @@ async function upcomingFacts(pool, days = 30) {
                 CASE WHEN value ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN to_date(value, 'YYYY-MM-DD') END AS on_date
          FROM facts
          WHERE deleted_at IS NULL AND sensitivity = 'normal'
-           AND attribute ~* '(renew|expir|due|deadline|valid.?until|ends?)'
+           -- Whole snake_case/space-separated segments only (KR-14, INV-10):
+           -- the bare substrings also matched "friends", "residue", "vendor".
+           AND attribute ~* '(^|[^a-z0-9])(renew[a-z]*|expir[a-z]*|due|deadline|valid[^a-z0-9]?until|ends?)([^a-z0-9]|$)'
        ) s
        WHERE on_date IS NOT NULL
          AND on_date >= CURRENT_DATE
@@ -327,28 +425,64 @@ function money(v) {
   return n < 0 ? "-" + s : s;
 }
 
+// Perfin's canonical net-worth helper (KR-9). The snapshot used to re-derive
+// balances with its own query: Plaid brokerages showed as their $0
+// linked_accounts phantom, investment_accounts were missing and loans read as
+// positive balances. Using getNetWorth itself keeps the two in agreement by
+// construction. Loaded lazily; null when the Perfin code isn't present.
+let _getNetWorth;
+function perfinGetNetWorth() {
+  if (_getNetWorth === undefined) {
+    try { _getNetWorth = require("../../../teller/services/financial-queries").getNetWorth; }
+    catch { _getNetWorth = null; }
+  }
+  return _getNetWorth;
+}
+
+// Monthly equivalent of a subscription — Perfin's own rule (amount × 30 /
+// cadence_days, routes/subscriptions.js). Only <=31-day subscriptions used to
+// count, so quarterly/annual ones were left out of "~$X/mo" (KR-9).
+function monthlyEquivalent(amount, cadenceDays) {
+  const a = Number(amount || 0);
+  const c = Number(cadenceDays);
+  return c > 0 ? a * (30 / c) : 0;
+}
+
 async function perfinFinanceSnapshot(perfinPool) {
   if (!perfinPool) return null;
+  const getNetWorth = perfinGetNetWorth();
+  if (!getNetWorth) return null;
   try {
-    const [acc, subs] = await Promise.all([
-      perfinPool.query("SELECT name, type, current_balance, credit_limit FROM linked_accounts ORDER BY type, name"),
+    const [nw, limits, subs] = await Promise.all([
+      getNetWorth(perfinPool),
+      perfinPool.query("SELECT name, credit_limit FROM linked_accounts WHERE type = 'credit' AND credit_limit IS NOT NULL"),
       perfinPool.query(
         "SELECT display_name, amount, cadence_days, next_expected FROM detected_subscriptions WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL"
       ),
     ]);
+    const limitByName = new Map(limits.rows.map((r) => [r.name, r.credit_limit]));
     const lines = [];
-    if (acc.rows.length) {
+    const accounts = nw.breakdown.accounts || [];
+    const investments = nw.breakdown.investments || [];
+    if (accounts.length || investments.length) {
+      lines.push(
+        `Net worth: ${money(nw.net_worth)} (assets ${money(nw.total_assets)}, debts ${money(nw.total_liabilities)})`
+      );
+    }
+    if (accounts.length) {
       lines.push("Accounts:");
-      for (const a of acc.rows) {
-        const bal = money(a.current_balance) || "balance unknown";
-        const lim = a.credit_limit != null ? `, credit limit ${money(a.credit_limit)}` : "";
-        lines.push(`  ${a.name} (${a.type || "account"}): ${bal}${lim}`);
+      for (const a of accounts) {
+        const debt = a.type === "credit" || a.type === "loan";
+        const lim = debt && limitByName.get(a.name) != null ? `, credit limit ${money(limitByName.get(a.name))}` : "";
+        lines.push(`  ${a.name} (${a.type || "account"}): ${money(a.amount)}${debt ? " owed" : ""}${lim}`);
       }
     }
+    if (investments.length) {
+      lines.push("Investments:");
+      for (const i of investments) lines.push(`  ${i.name} (${i.type || "investment"}): ${money(i.amount)}`);
+    }
     if (subs.rows.length) {
-      const monthly = subs.rows
-        .filter((s) => Number(s.cadence_days) <= 31)
-        .reduce((sum, s) => sum + Number(s.amount || 0), 0);
+      const monthly = subs.rows.reduce((sum, s) => sum + monthlyEquivalent(s.amount, s.cadence_days), 0);
       lines.push(`Active subscriptions: ${subs.rows.length} (~${money(monthly)}/mo)`);
       const now = Date.now();
       const upcoming = subs.rows
@@ -365,6 +499,21 @@ async function perfinFinanceSnapshot(perfinPool) {
   } catch {
     return null;
   }
+}
+
+// Indexes (0-based) of the sources an answer cites with inline [n] / [2][3] /
+// [1, 4] markers, restricted to 1..count (KR-12).
+function parseInlineCitations(text, count) {
+  const out = new Set();
+  const re = /\[(\d+(?:\s*,\s*\d+)*)\]/g;
+  let m;
+  while ((m = re.exec(String(text || "")))) {
+    for (const part of m[1].split(",")) {
+      const n = parseInt(part, 10);
+      if (n >= 1 && n <= count) out.add(n - 1);
+    }
+  }
+  return [...out].sort((a, b) => a - b);
 }
 
 // Strip ```mermaid fences the model sometimes wraps around the diagram.
@@ -410,8 +559,8 @@ module.exports = function ({ pool }) {
     if (embeddings.isConfigured() && (await vaultSync.vectorReady(pool))) {
       try {
         const v = qvec || (await embeddings.embed([query], { inputType: "query" }))[0];
-        const r = await pool.query(VECTOR_SQL, [embeddings.toVectorLiteral(v), limit]);
-        vecRows = r.rows;
+        const r = await pool.query(VECTOR_SQL, [embeddings.toVectorLiteral(v), limit * VECTOR_OVERFETCH]);
+        vecRows = bestChunkPerSource(r.rows, limit);
       } catch (e) {
         // vector leg unavailable — keyword leg still runs
       }
@@ -419,7 +568,9 @@ module.exports = function ({ pool }) {
     let kwRows = [];
     try {
       const { sql, params } = buildRetrievalQuery(query, limit);
-      kwRows = (await pool.query(sql, params)).rows;
+      const terms = searchTerms(query);
+      // Send the matching passage, not the document's head (KR-4).
+      kwRows = (await pool.query(sql, params)).rows.map((r) => ({ ...r, content: matchingWindow(r.content, terms) }));
     } catch (e) {
       // keyword leg failed — vector leg may still have results
     }
@@ -567,6 +718,10 @@ module.exports = function ({ pool }) {
           1024,
           `${SYSTEM} Cite the sources you use inline with their bracketed numbers, e.g. [1] or [2][3].`
         );
+        // KR-12: this path cites with inline [n] markers, not Citations blocks,
+        // so citedIndexes stayed empty and every fallback answer was flagged
+        // "ungrounded". Read the markers back.
+        citedIndexes = parseInlineCitations(answer, documents.length);
       }
 
       const citedSet = new Set(citedIndexes);
@@ -659,7 +814,10 @@ module.exports = function ({ pool }) {
           enabled: !!cfg.vault_enabled,
           repo: cfg.vault_repo || null,
           branch: cfg.vault_branch || "main",
+          // Last SUCCESSFUL sync vs last attempt (KR-11): a failing sync no
+          // longer looks fresh.
           last_synced_at: cfg.vault_last_synced_at || null,
+          last_attempt_at: cfg.vault_last_attempt_at || null,
           last_error: cfg.vault_last_error || null,
         },
         embeddings_configured: embeddings.isConfigured(),
@@ -680,13 +838,20 @@ module.exports = function ({ pool }) {
     if (reindexState.running || vaultSync.isSyncing()) {
       return res.status(409).json({ error: "A sync/reindex is already running." });
     }
-    reindexState = { running: true, started_at: new Date().toISOString(), finished_at: null, result: null, error: null };
+    reindexState = { running: true, started_at: new Date().toISOString(), finished_at: null, result: null, error: null, ok: null };
     res.status(202).json({ started: true });
     (async () => {
       try {
         reindexState.result = await vaultSync.reindexAll(pool);
+        reindexState.ok = reindexOutcome(reindexState.result);
+        if (!reindexState.ok) {
+          const v = reindexState.result.vault || {};
+          const n = reindexState.result.notes || {};
+          reindexState.error = v.error || v.reason || n.error || n.reason || "reindex failed";
+        }
       } catch (e) {
         reindexState.error = e.message;
+        reindexState.ok = false;
       } finally {
         reindexState.running = false;
         reindexState.finished_at = new Date().toISOString();
@@ -702,6 +867,13 @@ module.exports = function ({ pool }) {
     try {
       const text = (req.body && req.body.text || "").toString().trim();
       if (!text) return res.status(400).json({ error: "text is required." });
+      // KR-10: the user can mark a capture private or secret. Anything but
+      // "normal" is never sent to the AI for structuring (same rule as
+      // retrieval — INV-27); it is committed as a raw note/fact instead.
+      const sensitivity = req.body.sensitivity == null || req.body.sensitivity === "" ? "normal" : String(req.body.sensitivity);
+      if (!["normal", "private", "secret"].includes(sensitivity)) {
+        return res.status(400).json({ error: "sensitivity must be normal, private or secret." });
+      }
 
       const writeToken = process.env.VAULT_GITHUB_WRITE_TOKEN;
       if (!writeToken) {
@@ -718,7 +890,7 @@ module.exports = function ({ pool }) {
       // capture (note vs fact, fields, tags) — falling back to the raw note.
       let entry = { type: req.body.kind === "fact" ? "fact" : "note", title: null, entity: null, fields: {}, tags: [], body: text };
       const model = await getAIModelForFeature("rag");
-      if (model !== "off" && isAIAvailable()) {
+      if (sensitivity === "normal" && model !== "off" && isAIAvailable()) {
         try {
           const raw = await callAI(
             model,
@@ -744,7 +916,7 @@ module.exports = function ({ pool }) {
       }
 
       const title = entry.title || entry.entity || text.slice(0, 40);
-      const md = vaultSync.buildCaptureMarkdown(entry);
+      const md = vaultSync.buildCaptureMarkdown({ ...entry, sensitivity });
       const date = new Date().toISOString().slice(0, 10);
       const rand = Math.random().toString(36).slice(2, 7);
       const path = `captures/${date}-${vaultSync.slugify(title)}-${rand}.md`;
@@ -758,7 +930,7 @@ module.exports = function ({ pool }) {
       );
       // Index it soon (non-blocking; next cron would also pick it up).
       vaultSync.syncVault(pool).catch(() => {});
-      res.json({ ok: true, path, type: entry.type, html_url: (result.content && result.content.html_url) || null });
+      res.json({ ok: true, path, type: entry.type, sensitivity, html_url: (result.content && result.content.html_url) || null });
     } catch (err) {
       serverError(res, err);
     }
@@ -860,6 +1032,9 @@ module.exports = function ({ pool }) {
 // Exported for unit tests.
 module.exports.buildRetrievalQuery = buildRetrievalQuery;
 module.exports.fuseRetrieval = fuseRetrieval;
+module.exports.searchTerms = searchTerms;
+module.exports.matchingWindow = matchingWindow;
+module.exports.bestChunkPerSource = bestChunkPerSource;
 module.exports.semanticCacheGet = semanticCacheGet;
 module.exports.normalizeQuery = normalizeQuery;
 module.exports.corpusVersion = corpusVersion;
@@ -871,4 +1046,8 @@ module.exports.matchFacts = matchFacts;
 module.exports.upcomingFacts = upcomingFacts;
 module.exports.looksFinancial = looksFinancial;
 module.exports.perfinFinanceSnapshot = perfinFinanceSnapshot;
+module.exports.monthlyEquivalent = monthlyEquivalent;
 module.exports.stripMermaidFences = stripMermaidFences;
+module.exports.reindexOutcome = reindexOutcome;
+module.exports.parseInlineCitations = parseInlineCitations;
+module.exports.pruneAnswerCache = pruneAnswerCache;

@@ -1,6 +1,7 @@
 const express = require("express");
 
 const { serverError } = require("../errors");
+const { todayStr } = require("./health");
 
 module.exports = function ({ pool }) {
   const router = express.Router();
@@ -22,7 +23,10 @@ module.exports = function ({ pool }) {
         pool.query("SELECT count(*) as cnt FROM emails WHERE deleted_at IS NULL AND sent_at >= $1 AND sent_at < $2", [ws, we]),
         pool.query("SELECT count(*) as cnt FROM notes WHERE deleted_at IS NULL AND created_at >= $1 AND created_at < $2", [ws, we]),
         pool.query("SELECT * FROM todos WHERE deleted_at IS NULL AND due_date >= $1 AND due_date < $2 AND NOT completed ORDER BY due_date", [we, new Date(weekEnd.getTime() + 7*86400000).toISOString().split("T")[0]]),
-        pool.query("SELECT * FROM todos WHERE deleted_at IS NULL AND due_date < $1 AND NOT completed ORDER BY due_date", [ws]),
+        // Overdue = due before TODAY (APP_TIMEZONE), not before the week's
+        // start (PD-14): a task due Monday and still open on Wednesday was in
+        // neither "overdue" nor "upcoming", nor in the AI summary's count.
+        pool.query("SELECT * FROM todos WHERE deleted_at IS NULL AND due_date < $1 AND NOT completed ORDER BY due_date", [todayStr()]),
       ]);
       res.json({
         week_start: ws, week_end: we,

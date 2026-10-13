@@ -74,7 +74,7 @@
             else if (t.personal_for === 'partner') personalBadge = ' <span style="font-size:10px;color:var(--teal);border:1px solid var(--teal);padding:1px 4px;border-radius:4px;">PARTNER</span>';
           }
           return '<tr>' +
-            '<td class="cell-check" data-label="Select"><input type="checkbox" class="txn-check" data-id="' + esc(t.transaction_id) + '"></td>' +
+            '<td class="cell-check" data-label="Select"><input type="checkbox" class="txn-check" aria-label="Select ' + esc(t.merchant) + ', ' + esc(String(t.date).slice(0, 10)) + '" data-id="' + esc(t.transaction_id) + '"></td>' +
             '<td data-label="Date">' + fmtDate(t.date) + '</td>' +
             '<td class="cell-primary">' + esc(t.merchant) + reimbursedBadge + personalBadge + '</td>' +
             '<td data-label="Category"><span class="txn-cat">' + esc(t.category || 'Uncategorized') + '</span></td>' +
@@ -212,7 +212,7 @@
       'Personal Care','Gifts & Donations','Fees & Charges','Transfer','Income','Investment','Subscription','Other'];
 
     function categorySelect(selected) {
-      return '<select>' + SPLIT_CATEGORIES.map(function(c) {
+      return '<select aria-label="Split category">' + SPLIT_CATEGORIES.map(function(c) {
         return '<option value="' + esc(c) + '"' + (c === selected ? ' selected' : '') + '>' + esc(c) + '</option>';
       }).join('') + '</select>';
     }
@@ -248,9 +248,9 @@
       function renderRows() {
         document.getElementById('split-rows').innerHTML = rows.map(function(r, i) {
           return '<div class="split-row" data-row="' + i + '">' +
-            '<input type="number" step="0.01" min="0" class="row-amt" value="' + esc(String(r.amount)) + '">' +
+            '<input type="number" step="0.01" min="0" class="row-amt" aria-label="Split amount" value="' + esc(String(r.amount)) + '">' +
             categorySelect(r.category) +
-            '<button type="button" class="del" data-action="remove-row">×</button>' +
+            '<button type="button" class="del" data-action="remove-row" aria-label="Remove this split row">×</button>' +
           '</div>';
         }).join('');
         // Reattach select values (innerHTML re-render loses non-attribute state)
@@ -279,7 +279,12 @@
           '</span>';
       }
 
-      function close() { document.body.removeChild(backdrop); }
+      // IF-1: focus trap, Esc to close, focus back to the Split button.
+      var splitDlg = openDialog(backdrop.querySelector('.modal'), { onClose: function() { close(); } });
+      function close() {
+        if (backdrop.parentNode) document.body.removeChild(backdrop);
+        splitDlg.close();
+      }
 
       backdrop.addEventListener('click', function(e) { if (e.target === backdrop) close(); });
       document.getElementById('cancel-split').addEventListener('click', close);
@@ -341,9 +346,9 @@
       backdrop.innerHTML =
         '<div class="modal" role="dialog" aria-label="Edit transaction">' +
           '<h3>Edit Transaction</h3>' +
-          '<div class="edit-field"><label>Merchant Name</label>' +
+          '<div class="edit-field"><label for="edit-merchant">Merchant Name</label>' +
             '<input id="edit-merchant" value="' + esc(currentMerchant) + '" placeholder="Override merchant name"></div>' +
-          '<div class="edit-field"><label>Category' +
+          '<div class="edit-field"><label for="edit-category">Category' +
             (currentCategory ? ' <span style="color:var(--text-muted);font-weight:300;">(current: ' + esc(currentCategory) + ')</span>' : '') +
             '</label>' +
             '<select id="edit-category">' + catOptions + '</select></div>' +
@@ -355,7 +360,7 @@
               '</div>' +
             '</label>' +
           '</div>' +
-          '<div class="edit-field"><label>Notes</label>' +
+          '<div class="edit-field"><label for="edit-notes">Notes</label>' +
             '<input id="edit-notes" value="' + esc(currentNotes) + '" placeholder="Add a note"></div>' +
           '<div class="edit-field" style="display:flex;gap:8px;align-items:center;">' +
             '<label style="margin:0;" for="edit-reimbursed">Reimbursed</label>' +
@@ -363,7 +368,7 @@
             '<span style="font-size:11px;color:var(--text-muted);">Excludes this transaction from spending totals</span>' +
           '</div>' +
           (isSharedAccount
-            ? '<div class="edit-field"><label>Settlement</label>' +
+            ? '<div class="edit-field"><label for="edit-personal">Settlement</label>' +
                 '<select id="edit-personal">' +
                   '<option value=""' + (currentPersonal === '' ? ' selected' : '') + '>Shared (default split)</option>' +
                   '<option value="self"' + (currentPersonal === 'self' ? ' selected' : '') + '>Mine (I pay 100%)</option>' +
@@ -378,9 +383,15 @@
           '</div>' +
         '</div>';
       document.body.appendChild(backdrop);
+      // IF-1: focus trap, Esc to close, focus back to the Edit button.
+      var editDlg = openDialog(backdrop.querySelector('.modal'), { onClose: function() { closeEdit(); } });
+      function closeEdit() {
+        if (backdrop.parentNode) document.body.removeChild(backdrop);
+        editDlg.close();
+      }
 
-      backdrop.addEventListener('click', function(e) { if (e.target === backdrop) { document.body.removeChild(backdrop); } });
-      document.getElementById('edit-cancel').addEventListener('click', function() { document.body.removeChild(backdrop); });
+      backdrop.addEventListener('click', function(e) { if (e.target === backdrop) closeEdit(); });
+      document.getElementById('edit-cancel').addEventListener('click', closeEdit);
       document.getElementById('edit-save').addEventListener('click', async function() {
         var body = {};
         var newMerchant = document.getElementById('edit-merchant').value.trim();
@@ -400,7 +411,7 @@
 
         var categoryChanged = newCategory && newCategory !== currentCategory;
         if (!Object.keys(body).length && !categoryChanged) {
-          document.body.removeChild(backdrop);
+          closeEdit();
           return;
         }
 
@@ -447,7 +458,7 @@
               : 'Transaction updated.',
             true
           );
-          document.body.removeChild(backdrop);
+          closeEdit();
           searchTransactions(currentOffset);
         } catch (e) { showMsg(e.message, false); }
       });
@@ -542,6 +553,8 @@
       // Category dropdown reuses the shared CATEGORIES list.
       catSel.innerHTML = CATEGORIES.map(function(c) { return '<option value="' + esc(c) + '">' + esc(c) + '</option>'; }).join('');
       function close() { modal.style.display = 'none'; }
+      // IF-1: dialog semantics, focus trap, Esc and focus restore.
+      watchDialog(modal, { label: 'Add cash transaction', onClose: close });
       async function open() {
         // Local today (WUI-2) — the UTC date logged a 6pm-Pacific coffee as tomorrow.
         document.getElementById('cash-date').value = localTodayStr();

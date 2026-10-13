@@ -34,6 +34,8 @@ module.exports = function ({ pool, config, helpers }) {
         `INSERT INTO notes (title, content, pinned, color, reminder_at, tags, format) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
         [title || null, content, pinned || false, color || "default", reminder_at || null, tags || null, format || "plain"]
       );
+      // PD-6: "Note Created" automations were importable but never run.
+      await runAutomations('note_created', r.rows[0], 'note').catch(() => {});
       res.json(r.rows[0]);
     } catch (err) {
       serverError(res, err);

@@ -3,7 +3,7 @@
 // ============================================================================
 
 const { pool } = require("./db");
-const { resolveSafeWebhookTarget } = require("./config");
+const { resolveSafeWebhookTarget, VALID_TRIGGERS, VALID_ACTIONS, VALID_PRIORITIES, VALID_HORIZONS } = require("./config");
 
 // 'YYYY-MM-DD' of a Date using LOCAL getters — node-pg returns a DATE column
 // as LOCAL midnight, so local getters give the stored calendar day in any
@@ -96,8 +96,10 @@ async function rollMissedRecurring(db, today) {
       nextDue = advanceRecurrence(nextDue, rule, interval, anchor);
     }
     await db.query(
-      "INSERT INTO todos (title, description, priority, horizon, category, due_date, recurring, recurrence_rule, recurrence_interval, recurrence_parent_id, streak_count, best_streak, recurrence_anchor_day) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,0,$11,$12)",
-      [todo.title, todo.description, todo.priority, todo.horizon, todo.category, ymdLocal(nextDue), true, rule, interval, todo.recurrence_parent_id || todo.id, todo.best_streak || 0, anchor]
+      // location_* carried to the next instance (PD-5).
+      "INSERT INTO todos (title, description, priority, horizon, category, due_date, recurring, recurrence_rule, recurrence_interval, recurrence_parent_id, streak_count, best_streak, recurrence_anchor_day, location_name, location_lat, location_lng, location_radius) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,0,$11,$12,$13,$14,$15,COALESCE($16, 200))",
+      [todo.title, todo.description, todo.priority, todo.horizon, todo.category, ymdLocal(nextDue), true, rule, interval, todo.recurrence_parent_id || todo.id, todo.best_streak || 0, anchor,
+       todo.location_name || null, todo.location_lat == null ? null : todo.location_lat, todo.location_lng == null ? null : todo.location_lng, todo.location_radius == null ? null : todo.location_radius]
     );
     rolled++;
   }
@@ -165,31 +167,72 @@ async function sendSlackNotification(message) {
   } catch {}
 }
 
+// Which entity each trigger fires on, and which actions make sense for it
+// (PD-6): the set_* actions update a TODO by entity.id, so on a note/email
+// trigger they would have rewritten whichever todo happened to share that id.
+const TRIGGER_ENTITY = { todo_created: "todo", todo_completed: "todo", email_created: "email", note_created: "note" };
+const ACTIONS_FOR_ENTITY = {
+  todo: ["set_priority", "set_category", "set_horizon", "create_todo"],
+  note: ["add_tag", "create_todo"],
+  email: ["create_todo"],
+};
+const ACTION_KEY = { set_priority: "priority", set_category: "category", set_horizon: "horizon", add_tag: "tag", create_todo: "title" };
+
+// Returns an error string, or null when the rule is runnable (PD-6). Used by
+// POST/PATCH /api/automations (against the merged row) and by runAutomations
+// to skip a stored rule that could only fail.
+function validateAutomationRule(rule) {
+  const r = rule || {};
+  if (!VALID_TRIGGERS.includes(r.trigger_type)) return "Invalid trigger. Must be: " + VALID_TRIGGERS.join(", ");
+  if (!VALID_ACTIONS.includes(r.action_type)) return "Invalid action. Must be: " + VALID_ACTIONS.join(", ");
+  const entity = TRIGGER_ENTITY[r.trigger_type];
+  if (!ACTIONS_FOR_ENTITY[entity].includes(r.action_type)) return `Action ${r.action_type} can't run on a ${entity} trigger.`;
+  const data = r.action_data && typeof r.action_data === "object" && !Array.isArray(r.action_data) ? r.action_data : {};
+  const v = data[ACTION_KEY[r.action_type]];
+  if (typeof v !== "string" || !v.trim()) return `Action value (${ACTION_KEY[r.action_type]}) is required.`;
+  if (r.action_type === "set_priority" && !VALID_PRIORITIES.includes(v)) return "Priority must be one of: " + VALID_PRIORITIES.join(", ");
+  if (r.action_type === "set_horizon" && !VALID_HORIZONS.includes(v)) return "Horizon must be one of: " + VALID_HORIZONS.join(", ");
+  if (r.action_type === "create_todo") {
+    if (data.priority !== undefined && data.priority !== null && data.priority !== "" && !VALID_PRIORITIES.includes(data.priority)) return "Priority must be one of: " + VALID_PRIORITIES.join(", ");
+    if (data.horizon !== undefined && data.horizon !== null && data.horizon !== "" && !VALID_HORIZONS.includes(data.horizon)) return "Horizon must be one of: " + VALID_HORIZONS.join(", ");
+  }
+  return null;
+}
+
 async function runAutomations(triggerType, entity, entityType) {
+  let rules;
   try {
-    const rules = await pool.query("SELECT * FROM automations WHERE trigger_type = $1 AND enabled = true", [triggerType]);
-    for (const rule of rules.rows) {
+    rules = (await pool.query("SELECT * FROM automations WHERE trigger_type = $1 AND enabled = true", [triggerType])).rows;
+  } catch (err) { console.error("Automation error:", err.message); return; }
+  // Each rule runs on its own (PD-6): one failing rule — e.g. a legacy row with
+  // priority "High", which breaks the todos CHECK — used to abort every later
+  // rule for the event.
+  for (const rule of rules) {
+    try {
+      const invalid = validateAutomationRule(rule);
+      if (invalid) { console.error(`Automation ${rule.id} skipped: ${invalid}`); continue; }
+      if (TRIGGER_ENTITY[rule.trigger_type] !== entityType) continue;
       const cond = rule.conditions || {};
       let match = true;
       if (cond.category && entity.category !== cond.category) match = false;
       if (cond.priority && entity.priority !== cond.priority) match = false;
-      if (cond.title_contains && !(entity.title || '').toLowerCase().includes(cond.title_contains.toLowerCase())) match = false;
+      if (cond.title_contains && !(entity.title || entity.subject || '').toLowerCase().includes(String(cond.title_contains).toLowerCase())) match = false;
       if (cond.horizon && entity.horizon !== cond.horizon) match = false;
       if (!match) continue;
       const data = rule.action_data || {};
-      if (rule.action_type === 'set_priority' && data.priority && entity.id) {
+      if (rule.action_type === 'set_priority' && entity.id) {
         await pool.query("UPDATE todos SET priority = $1 WHERE id = $2", [data.priority, entity.id]);
-      } else if (rule.action_type === 'set_category' && data.category && entity.id) {
+      } else if (rule.action_type === 'set_category' && entity.id) {
         await pool.query("UPDATE todos SET category = $1 WHERE id = $2", [data.category, entity.id]);
-      } else if (rule.action_type === 'set_horizon' && data.horizon && entity.id) {
+      } else if (rule.action_type === 'set_horizon' && entity.id) {
         await pool.query("UPDATE todos SET horizon = $1 WHERE id = $2", [data.horizon, entity.id]);
-      } else if (rule.action_type === 'add_tag' && data.tag && entity.id && entityType === 'note') {
+      } else if (rule.action_type === 'add_tag' && entity.id) {
         await pool.query("UPDATE notes SET tags = array_append(COALESCE(tags, ARRAY[]::TEXT[]), $1) WHERE id = $2 AND NOT ($1 = ANY(COALESCE(tags, ARRAY[]::TEXT[])))", [data.tag, entity.id]);
-      } else if (rule.action_type === 'create_todo' && data.title) {
+      } else if (rule.action_type === 'create_todo') {
         await pool.query("INSERT INTO todos (title, priority, horizon, category) VALUES ($1, $2, $3, $4)", [data.title, data.priority || 'medium', data.horizon || 'short', data.category || null]);
       }
-    }
-  } catch (err) { console.error("Automation error:", err.message); }
+    } catch (err) { console.error(`Automation ${rule.id} error:`, err.message); }
+  }
 }
 
-module.exports = { advanceRecurrence, recurrenceAnchorDay, ymdLocal, nextDueAfter, rollMissedRecurring, sendWebhook, fireWebhooks, sendSlackNotification, runAutomations };
+module.exports = { advanceRecurrence, recurrenceAnchorDay, ymdLocal, nextDueAfter, rollMissedRecurring, sendWebhook, fireWebhooks, sendSlackNotification, runAutomations, validateAutomationRule };

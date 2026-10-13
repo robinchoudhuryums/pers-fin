@@ -59,9 +59,16 @@ module.exports = function ({ pool, config }) {
           (!Number.isInteger(recurrence_interval) || recurrence_interval < 1 || recurrence_interval > 365)) {
         return res.status(400).json({ error: "Invalid recurrence interval. Must be an integer between 1 and 365." });
       }
+      // PD-5: the form sends location_* (geofence reminder) — they used to be
+      // dropped here, so a new task silently saved without its location.
+      const loc = parseLocationFields(req.body);
+      if (loc.error) return res.status(400).json({ error: loc.error });
       const r = await pool.query(
-        `INSERT INTO todos (title, description, priority, horizon, category, due_date, recurring, recurrence_rule, recurrence_interval) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-        [title, description || null, priority || "medium", horizon || "short", category || null, due_date || null, recurring || false, recurrence_rule || null, recurrence_interval || 1]
+        `INSERT INTO todos (title, description, priority, horizon, category, due_date, recurring, recurrence_rule, recurrence_interval,
+                            location_name, location_lat, location_lng, location_radius)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,COALESCE($13, 200)) RETURNING *`,
+        [title, description || null, priority || "medium", horizon || "short", category || null, due_date || null, recurring || false, recurrence_rule || null, recurrence_interval || 1,
+         loc.location_name, loc.location_lat, loc.location_lng, loc.location_radius]
       );
       runAutomations('todo_created', r.rows[0], 'todo').catch(() => {});
       fireWebhooks('todo_created', r.rows[0]).catch(() => {});
@@ -101,10 +108,12 @@ module.exports = function ({ pool, config }) {
       if (recurrence_rule !== undefined) { fields.push(`recurrence_rule = $${idx++}`); params.push(recurrence_rule); }
       if (req.body.recurrence_interval !== undefined) { fields.push(`recurrence_interval = $${idx++}`); params.push(req.body.recurrence_interval); }
       if (req.body.snoozed_until !== undefined) { fields.push(`snoozed_until = $${idx++}`); params.push(req.body.snoozed_until); }
-      if (req.body.location_name !== undefined) { fields.push(`location_name = $${idx++}`); params.push(req.body.location_name); }
-      if (req.body.location_lat !== undefined) { fields.push(`location_lat = $${idx++}`); params.push(req.body.location_lat); }
-      if (req.body.location_lng !== undefined) { fields.push(`location_lng = $${idx++}`); params.push(req.body.location_lng); }
-      if (req.body.location_radius !== undefined) { fields.push(`location_radius = $${idx++}`); params.push(req.body.location_radius); }
+      const loc = parseLocationFields(req.body);
+      if (loc.error) return res.status(400).json({ error: loc.error });
+      if (req.body.location_name !== undefined) { fields.push(`location_name = $${idx++}`); params.push(loc.location_name); }
+      if (req.body.location_lat !== undefined) { fields.push(`location_lat = $${idx++}`); params.push(loc.location_lat); }
+      if (req.body.location_lng !== undefined) { fields.push(`location_lng = $${idx++}`); params.push(loc.location_lng); }
+      if (req.body.location_radius !== undefined) { fields.push(`location_radius = $${idx++}`); params.push(loc.location_radius); }
       if (completed !== undefined) {
         fields.push(`completed = $${idx++}`); params.push(completed);
         fields.push(`completed_at = $${idx++}`); params.push(completed ? new Date().toISOString() : null);
@@ -188,6 +197,17 @@ module.exports = function ({ pool, config }) {
     } catch (err) { serverError(res, err); }
   });
 
+  // Undo a recurring completion (PUI-3): re-open the completed instance and
+  // remove the next instance that completion generated — only while that
+  // instance is still untouched — so Undo doesn't leave two open copies.
+  router.post("/api/todos/:id/undo-complete-recurring", async (req, res) => {
+    try {
+      const out = await undoCompleteRecurringTodo(pool, req.params.id, req.body && req.body.next_id);
+      if (out.error) return res.status(out.status).json({ error: out.error });
+      res.json(out);
+    } catch (err) { serverError(res, err); }
+  });
+
   // Skip recurring task (mark skipped, create next without breaking streak)
   router.post("/api/todos/:id/skip-recurring", async (req, res) => {
     try {
@@ -233,8 +253,10 @@ module.exports = function ({ pool, config }) {
   router.get("/api/todos/:id/dependencies", async (req, res) => {
     try {
       const [blockedBy, blocking] = await Promise.all([
-        pool.query(`SELECT td.id as dep_id, td.depends_on_id, t.title, t.completed FROM task_dependencies td JOIN todos t ON t.id = td.depends_on_id WHERE td.todo_id = $1`, [req.params.id]),
-        pool.query(`SELECT td.id as dep_id, td.todo_id, t.title, t.completed FROM task_dependencies td JOIN todos t ON t.id = td.todo_id WHERE td.depends_on_id = $1`, [req.params.id]),
+        // A trashed task neither blocks nor is blocked (PD-12): a deleted
+        // blocker used to keep its dependent "blocked (1)" forever.
+        pool.query(`SELECT td.id as dep_id, td.depends_on_id, t.title, t.completed FROM task_dependencies td JOIN todos t ON t.id = td.depends_on_id WHERE td.todo_id = $1 AND t.deleted_at IS NULL`, [req.params.id]),
+        pool.query(`SELECT td.id as dep_id, td.todo_id, t.title, t.completed FROM task_dependencies td JOIN todos t ON t.id = td.todo_id WHERE td.depends_on_id = $1 AND t.deleted_at IS NULL`, [req.params.id]),
       ]);
       res.json({ blocked_by: blockedBy.rows, blocking: blocking.rows });
     } catch (err) { serverError(res, err); }
@@ -251,9 +273,17 @@ module.exports = function ({ pool, config }) {
         pool.query("SELECT id FROM todos WHERE id = $1 AND deleted_at IS NULL", [depends_on_id]),
       ]);
       if (!task.rows.length || !dep.rows.length) return res.status(404).json({ error: "Task not found." });
-      // Check for circular dependency
-      const chain = await pool.query("SELECT * FROM task_dependencies WHERE todo_id = $1 AND depends_on_id = $2", [depends_on_id, req.params.id]);
-      if (chain.rows.length) return res.status(400).json({ error: "Circular dependency: that task already depends on this one." });
+      // Circular dependency (PD-12): refuse when this task is already
+      // reachable from the new blocker through ANY chain (A→B→C→A), not just a
+      // direct A↔B pair. UNION (not UNION ALL) ends the walk on an existing loop.
+      const chain = await pool.query(
+        `WITH RECURSIVE reach(id) AS (
+           SELECT depends_on_id FROM task_dependencies WHERE todo_id = $1
+           UNION
+           SELECT td.depends_on_id FROM task_dependencies td JOIN reach ON td.todo_id = reach.id
+         )
+         SELECT 1 FROM reach WHERE id = $2 LIMIT 1`, [depends_on_id, req.params.id]);
+      if (chain.rows.length) return res.status(400).json({ error: "Circular dependency: that task already depends on this one (directly or through other tasks)." });
       const r = await pool.query(
         "INSERT INTO task_dependencies (todo_id, depends_on_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING *",
         [req.params.id, depends_on_id]
@@ -319,8 +349,32 @@ module.exports = function ({ pool, config }) {
 // bulk + single click can't create two next instances (PS-11 / PB-11). The next
 // due date is caught up past today (nextDueAfter, PD-3).
 
-const INSERT_NEXT = `INSERT INTO todos (title, description, priority, horizon, category, due_date, recurring, recurrence_rule, recurrence_interval, recurrence_parent_id, streak_count, best_streak, last_streak_date, skipped_count, recurrence_anchor_day)
-  VALUES ($1,$2,$3,$4,$5,$6,true,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`;
+// The next instance carries the chain's location reminder (PD-5) — appended as
+// $15-$18 so the existing parameter positions are unchanged.
+const INSERT_NEXT = `INSERT INTO todos (title, description, priority, horizon, category, due_date, recurring, recurrence_rule, recurrence_interval, recurrence_parent_id, streak_count, best_streak, last_streak_date, skipped_count, recurrence_anchor_day,
+    location_name, location_lat, location_lng, location_radius)
+  VALUES ($1,$2,$3,$4,$5,$6,true,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,COALESCE($18, 200)) RETURNING *`;
+const locationParams = (t) => [t.location_name || null, t.location_lat == null ? null : t.location_lat, t.location_lng == null ? null : t.location_lng, t.location_radius == null ? null : t.location_radius];
+
+// PD-5: validate location_* the way the DB CHECKs do (chk_location_lat/lng/
+// radius) so a bad value is a 400, not a 500. Absent keys stay undefined.
+function parseLocationFields(b) {
+  const out = {};
+  if (b.location_name !== undefined) {
+    if (b.location_name !== null && typeof b.location_name !== "string") return { error: "location_name must be a string." };
+    out.location_name = b.location_name ? String(b.location_name).slice(0, 200) : null;
+  } else out.location_name = null;
+  const num = (v) => (v === null || v === "" || v === undefined ? null : Number(v));
+  for (const [k, lo, hi] of [["location_lat", -90, 90], ["location_lng", -180, 180]]) {
+    const v = num(b[k]);
+    if (v !== null && (!Number.isFinite(v) || v < lo || v > hi)) return { error: `${k} must be a number between ${lo} and ${hi}.` };
+    out[k] = v;
+  }
+  const rad = num(b.location_radius);
+  if (rad !== null && (!Number.isFinite(rad) || rad <= 0 || rad > 100000)) return { error: "location_radius must be a positive number of meters." };
+  out.location_radius = rad === null ? null : Math.round(rad);
+  return out;
+}
 
 async function lockRecurring(client, id) {
   const r = await client.query("SELECT * FROM todos WHERE id = $1 AND deleted_at IS NULL FOR UPDATE", [id]);
@@ -355,9 +409,11 @@ async function completeRecurringTodo(pool, id) {
     const n = await client.query(INSERT_NEXT,
       [todo.title, todo.description, todo.priority, todo.horizon, todo.category,
        ymdLocal(nextDue), todo.recurrence_rule, todo.recurrence_interval || 1, todo.recurrence_parent_id || todo.id,
-       newStreak, newBest, today, 0, anchor]); // skipped_count starts at 0 (the column default) as before
+       newStreak, newBest, today, 0, anchor, ...locationParams(todo)]); // skipped_count starts at 0 (the column default) as before
     await client.query("COMMIT");
     fireWebhooks('todo_completed', todo).catch(() => {});
+    // PD-6: completing a recurring task is a completion too.
+    runAutomations('todo_completed', { ...todo, completed: true }, 'todo').catch(() => {});
     return { completed: todo, next: n.rows[0], streak: newStreak, best_streak: newBest };
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
@@ -379,7 +435,7 @@ async function skipRecurringTodo(pool, id) {
     const n = await client.query(INSERT_NEXT,
       [todo.title, todo.description, todo.priority, todo.horizon, todo.category,
        ymdLocal(nextDue), todo.recurrence_rule, todo.recurrence_interval || 1, todo.recurrence_parent_id || todo.id,
-       todo.streak_count || 0, todo.best_streak || 0, todo.last_streak_date, (todo.skipped_count || 0) + 1, anchor]);
+       todo.streak_count || 0, todo.best_streak || 0, todo.last_streak_date, (todo.skipped_count || 0) + 1, anchor, ...locationParams(todo)]);
     await client.query("COMMIT");
     return { skipped: todo, next: n.rows[0] };
   } catch (err) {
@@ -388,5 +444,35 @@ async function skipRecurringTodo(pool, id) {
   } finally { client.release(); }
 }
 
+async function undoCompleteRecurringTodo(pool, id, nextId) {
+  const nid = parseInt(nextId, 10);
+  if (!Number.isInteger(nid)) return { status: 400, error: "next_id is required." };
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const cur = await client.query("SELECT * FROM todos WHERE id = $1 AND deleted_at IS NULL FOR UPDATE", [id]);
+    if (!cur.rows.length) { await client.query("ROLLBACK"); return { status: 404, error: "Not found." }; }
+    const todo = cur.rows[0];
+    if (!todo.recurring || !todo.completed || todo.missed) { await client.query("ROLLBACK"); return { status: 400, error: "That task isn't a completed recurring task." }; }
+    const chain = todo.recurrence_parent_id || todo.id;
+    // The generated instance: same chain, still open and unedited-by-completion.
+    const del = await client.query(
+      `DELETE FROM todos WHERE id = $1 AND recurrence_parent_id = $2 AND completed = false AND deleted_at IS NULL
+         AND created_at >= now() - interval '1 day'
+       RETURNING streak_count`, [nid, chain]);
+    if (!del.rows.length) { await client.query("ROLLBACK"); return { status: 409, error: "The next instance has already changed — undo it by hand." }; }
+    // Its streak_count is the value this completion set; step back by one.
+    const prevStreak = Math.max(0, (del.rows[0].streak_count || 0) - 1);
+    await client.query("UPDATE todos SET completed = false, completed_at = NULL, streak_count = $2 WHERE id = $1", [todo.id, prevStreak]);
+    await client.query("COMMIT");
+    return { ok: true, reopened: todo.id, removed_next: nid };
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally { client.release(); }
+}
+
 module.exports.completeRecurringTodo = completeRecurringTodo;
+module.exports.undoCompleteRecurringTodo = undoCompleteRecurringTodo;
+module.exports.parseLocationFields = parseLocationFields;
 module.exports.skipRecurringTodo = skipRecurringTodo;

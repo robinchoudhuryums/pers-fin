@@ -25,11 +25,17 @@ const VALID_HORIZONS = ["short", "medium", "long"];
 const VALID_RECURRENCE_RULES = ["daily", "weekly", "monthly", "yearly", "weekdays", "custom_days", "custom_weeks", "custom_months"];
 const VALID_NOTE_COLORS = ["default", "warm", "teal", "green", "blue"];
 const VALID_EMAIL_STATUSES = ["draft", "scheduled", "sent", "failed"];
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// One address only (PD-9): list separators / display-name syntax are rejected
+// too — nodemailer reads "a@x.com,b.com" or "Name <a@x.com>" as a list/display
+// form, so a value that passed the old pattern could address several people.
+const EMAIL_REGEX = /^[^\s@,;<>"'()]+@[^\s@,;<>"'()]+\.[^\s@,;<>"'()]+$/;
 const VALID_AI_FEATURES = ["email_draft", "task_breakdown", "quick_add", "review_summary", "email_tone", "daily_briefing", "note_tagging", "smart_suggestions", "natural_language_query", "rag", "job_fit"];
 const VALID_WEBHOOK_EVENTS = ["todo_created", "todo_completed", "email_sent", "note_created", "reminder_due", "streak_milestone"];
-const VALID_TRIGGERS = ["todo_created", "todo_completed", "email_created", "note_created", "schedule"];
-const VALID_ACTIONS = ["set_priority", "set_category", "set_horizon", "add_tag", "send_notification", "create_todo"];
+// PD-6: only triggers/actions runAutomations actually executes. "schedule" (no
+// scheduler ever fired it) and "send_notification" (no branch ran it) were
+// accepted with a 200 and silently never ran.
+const VALID_TRIGGERS = ["todo_created", "todo_completed", "email_created", "note_created"];
+const VALID_ACTIONS = ["set_priority", "set_category", "set_horizon", "add_tag", "create_todo"];
 
 // Input length limits
 const MAX_TITLE_LENGTH = 500;

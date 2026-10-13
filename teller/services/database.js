@@ -317,6 +317,10 @@ async function runMigrations() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       UNIQUE(plaid_account_id, security_id)
     )`);
+    // BSI-5: an unknown cost basis is NULL, not 0 (0 counted the whole value
+    // as gain). Idempotent: dropping an absent NOT NULL / default is a no-op.
+    await client.query("ALTER TABLE investment_holdings ALTER COLUMN cost_basis DROP NOT NULL");
+    await client.query("ALTER TABLE investment_holdings ALTER COLUMN cost_basis DROP DEFAULT");
     // Granular token tracking for prompt caching
     await client.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS input_tokens INT");
     await client.query("ALTER TABLE financial_insights ADD COLUMN IF NOT EXISTS output_tokens INT");

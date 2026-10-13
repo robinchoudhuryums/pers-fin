@@ -164,20 +164,24 @@ async function dashCompleteRecurring(id) {
 
 async function dashSendEmail(id) {
   var r = await fetch('/api/emails/'+id+'/send', {method:'POST'}).then(r=>r.json());
-  if (r.ok) { showUndo('Email sent','email',id,'send'); load(); } else { alert('Failed: '+(r.error||'Unknown error')); }
+  if (r.ok) { showUndo('Email sent','email',id,'info'); load(); } else { alert('Failed: '+(r.error||'Unknown error')); }
 }
 
 async function searchComplete(id, isRecurring) {
-  if (isRecurring) await fetch('/api/todos/'+id+'/complete-recurring', {method:'POST'});
-  else await fetch('/api/todos/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({completed:true})});
-  showUndo('Task completed','todo',id,'complete');
+  var r = isRecurring
+    ? await fetch('/api/todos/'+id+'/complete-recurring', {method:'POST'})
+    : await fetch('/api/todos/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({completed:true})});
+  var out = await r.json().catch(function(){ return {}; });
+  if (!r.ok) alert(out.error || 'Could not complete the task.');
+  else if (isRecurring) showUndo('Task completed','todo',id,'complete-recurring', out.next && out.next.id);
+  else showUndo('Task completed','todo',id,'complete');
   document.getElementById('search-results').style.display='none';
   document.getElementById('global-search').value='';
   load();
 }
 async function searchSendEmail(id) {
   var r = await fetch('/api/emails/'+id+'/send', {method:'POST'}).then(r=>r.json());
-  if (r.ok) { showUndo('Email sent','email',id,'send'); }
+  if (r.ok) { showUndo('Email sent','email',id,'info'); }
   document.getElementById('search-results').style.display='none';
   document.getElementById('global-search').value='';
   load();
@@ -290,12 +294,13 @@ async function load() {
 var REMINDER_PREFIX = {
   overdue: 'Overdue: ', due_today: 'Due today: ', streak_at_risk: 'Streak at risk: ',
   habit_streak_at_risk: 'Habit streak at risk: ', reminder: 'Reminder: ',
-  fact_upcoming: 'Upcoming: ', housing_due: '', job_radar: ''
+  fact_upcoming: 'Upcoming: ', housing_due: '', job_radar: '', vault_sync_error: ''
 };
 function reminderPrefix(n) { return REMINDER_PREFIX[n.type] != null ? REMINDER_PREFIX[n.type] : ''; }
 function isImportantReminder(n) {
   if (n.type === 'overdue' || n.type === 'due_today' || n.type === 'streak_at_risk' ||
-      n.type === 'habit_streak_at_risk' || n.type === 'reminder' || n.type === 'job_radar') return true;
+      n.type === 'habit_streak_at_risk' || n.type === 'reminder' || n.type === 'job_radar' ||
+      n.type === 'vault_sync_error') return true;
   if (n.type === 'fact_upcoming') return n.days_away != null && n.days_away <= 7;
   // Rent: only once it is due, overdue or within 3 days (an upcoming balance
   // weeks out is shown in the in-page list, not pushed).
@@ -306,7 +311,7 @@ function reminderHref(n) {
   if (n.entity === 'todo') return BP + '/todos';
   if (n.entity === 'note') return BP + '/notes';
   if (n.entity === 'habit') return BP + '/health';
-  if (n.entity === 'fact') return BP + '/knowledge';
+  if (n.entity === 'fact' || n.entity === 'knowledge') return BP + '/knowledge';
   if (n.entity === 'job') return BP + '/jobs';
   if (n.entity === 'housing') return (window.PERFIN_URL || '/perfin') + '/housing';
   return null;

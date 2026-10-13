@@ -226,8 +226,9 @@ answers across all of it with **source citations**:
   grounding** that reads Perfin data read-only.
 
 Optional env: `VOYAGE_API_KEY`, `VAULT_GITHUB_TOKEN` (read-only), `VAULT_GITHUB_WRITE_TOKEN`
-(capture), plus the `vector` extension on Neon. Without them, Knowledge degrades to keyword
-search over notes. See `CLAUDE.md` (Knowledge block) for full detail.
+(capture), plus the `vector` extension on Neon. Without Voyage/pgvector, Knowledge degrades to
+keyword search (notes, plus vault documents and facts when the vault token is set). See
+`CLAUDE.md` (Knowledge block) for full detail.
 
 ### Health & Habits
 A daily habits and measurements tracker on the **Health** page (no env vars, no AI required):

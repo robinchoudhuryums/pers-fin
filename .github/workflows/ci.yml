@@ -52,6 +52,14 @@ jobs:
         run: node scripts/ci-migration-test.js
         env:
           MIGRATION_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres
+      # Real-Postgres route contract tests (TQ-2): the real routes + helpers
+      # against a real migrated schema, one scratch database per file — the
+      # SQL class mock pools can't see (untyped parameters, ambiguous columns,
+      # DATE-vs-string keys, route shadowing in the real mount order).
+      - name: Route contract tests against real Postgres
+        run: npm run test:contract
+        env:
+          CONTRACT_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres
 
   # Browser smokes (Playwright): real login flow + both apps' core pages in
   # Chromium against a real scratch database — the layer mock-pool unit tests

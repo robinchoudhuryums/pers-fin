@@ -243,7 +243,10 @@ router.post("/api/detect", async (_req, res) => {
 // accountLabel, records, headers }.
 function parseCsvUpload(buffer, body = {}) {
   const content = buffer.toString("utf-8");
-  let records = parse(content, { columns: true, skip_empty_lines: true, trim: true, bom: true });
+  // relax_column_count: Chase checking exports end every data row with a
+  // trailing comma (one more field than the header), which threw
+  // "Invalid Record Length" and failed the whole file (BSI-16).
+  let records = parse(content, { columns: true, skip_empty_lines: true, trim: true, bom: true, relax_column_count: true });
   if (!records.length) return { error: "CSV file is empty or unparseable" };
   const headers = Object.keys(records[0]);
   const formatName = detectCsvFormat(headers);

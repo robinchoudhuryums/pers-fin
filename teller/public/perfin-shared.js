@@ -252,7 +252,109 @@
     });
   }
 
+  // WUI-6: the one way a page reports the outcome of a write. Returns true
+  // when the response is 2xx; otherwise toasts "<what>: <server error>" and
+  // returns false. Writes used to await apiFetch and assume success, so a
+  // 400/500 looked exactly like it had worked.
+  async function writeOk(res, what) {
+    if (res && res.ok) return true;
+    var detail = res ? 'HTTP ' + res.status : 'no response';
+    try {
+      var body = await res.clone().json();
+      if (body && body.error) detail = body.error;
+    } catch (e) { /* not JSON */ }
+    showMsg((what || 'Save failed') + ': ' + detail, false);
+    return false;
+  }
+  // Parse a money/number entered in a prompt() ("$1,234.50" → 1234.5). NaN
+  // when it isn't a number — callers stop instead of sending null (WD-12).
+  function parseAmountInput(raw) {
+    if (raw == null) return NaN;
+    var t = String(raw).trim().replace(/[$,\s]/g, '');
+    if (t === '' || !/^-?(\d+\.?\d*|\.\d+)$/.test(t)) return NaN;
+    return parseFloat(t);
+  }
+
+  // ---------------------------------------------------------------------
+  // IF-1: one dialog behaviour for every modal. openDialog(box, opts) marks
+  // the box role="dialog" aria-modal="true" (+ label), remembers the element
+  // that had focus, moves focus into the box, keeps Tab / Shift+Tab inside
+  // it, runs opts.onClose on Escape, and — when the returned handle is
+  // closed — puts focus back where it was. The modals used to have none of
+  // this, so keyboard users tabbed into the page behind them.
+  // watchDialog(overlay, opts) does the same for an overlay that a page
+  // shows/hides itself (style.display / hidden): it opens when the overlay
+  // becomes visible and closes when it is hidden, with no change to the
+  // page's own open/close code.
+  var dialogStack = [];
+  var FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+  function dialogFocusables(box) {
+    return Array.prototype.filter.call(box.querySelectorAll(FOCUSABLE), function (el) {
+      return el.getClientRects().length > 0;
+    });
+  }
+  function openDialog(box, opts) {
+    opts = opts || {};
+    if (!box) return { close: function () {} };
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-modal', 'true');
+    if (opts.labelledBy) box.setAttribute('aria-labelledby', opts.labelledBy);
+    else if (opts.label && !box.getAttribute('aria-labelledby')) box.setAttribute('aria-label', opts.label);
+    if (!box.hasAttribute('tabindex')) box.setAttribute('tabindex', '-1');
+    var handle = { box: box, opts: opts, restore: document.activeElement, closed: false };
+    handle.close = function () {
+      if (handle.closed) return;
+      handle.closed = true;
+      var i = dialogStack.indexOf(handle);
+      if (i !== -1) dialogStack.splice(i, 1);
+      var r = handle.restore;
+      if (opts.restoreFocus !== false && r && r.isConnected && typeof r.focus === 'function') {
+        try { r.focus(); } catch (e) { /* ignore */ }
+      }
+    };
+    dialogStack.push(handle);
+    if (!box.contains(document.activeElement)) {
+      var first = opts.initialFocus || dialogFocusables(box)[0] || box;
+      try { first.focus(); } catch (e) { /* ignore */ }
+    }
+    return handle;
+  }
+  document.addEventListener('keydown', function (e) {
+    var top = dialogStack[dialogStack.length - 1];
+    if (!top) return;
+    // A dialog removed or hidden without its handle being closed: release it.
+    if (!top.box.isConnected || top.box.getClientRects().length === 0) { top.close(); return; }
+    if (e.key === 'Escape') {
+      if (typeof top.opts.onClose === 'function') { e.preventDefault(); top.opts.onClose(); }
+      return;
+    }
+    if (e.key !== 'Tab') return;
+    var items = dialogFocusables(top.box);
+    if (!items.length) { e.preventDefault(); top.box.focus(); return; }
+    var firstEl = items[0], lastEl = items[items.length - 1];
+    var active = document.activeElement;
+    if (e.shiftKey && (active === firstEl || !top.box.contains(active))) { e.preventDefault(); lastEl.focus(); }
+    else if (!e.shiftKey && (active === lastEl || !top.box.contains(active))) { e.preventDefault(); firstEl.focus(); }
+  }, true);
+  function watchDialog(overlay, opts) {
+    if (!overlay || typeof MutationObserver === 'undefined') return;
+    opts = opts || {};
+    var box = opts.box || overlay.firstElementChild || overlay;
+    var handle = null;
+    function visible() { return !overlay.hidden && getComputedStyle(overlay).display !== 'none'; }
+    function sync() {
+      if (visible()) { if (!handle || handle.closed) handle = openDialog(box, opts); }
+      else if (handle) { handle.close(); handle = null; }
+    }
+    new MutationObserver(sync).observe(overlay, { attributes: true, attributeFilter: ['style', 'hidden', 'class'] });
+    sync();
+  }
+
   // Export to window
+  win.openDialog = openDialog;
+  win.watchDialog = watchDialog;
+  win.writeOk = writeOk;
+  win.parseAmountInput = parseAmountInput;
   win.esc = esc;
   win.apiFetch = apiFetch;
   win.withBase = withBase;

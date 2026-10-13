@@ -18,20 +18,36 @@ ${navBar("/jobs")}
     <button class="primary" id="btn-refresh">Refresh now</button>
     <button id="btn-profile">Edit profile</button>
     <button id="btn-companies">Manage companies</button>
-    <span id="refresh-status" style="align-self:center;color:var(--muted);font-size:13px;"></span>
+    <span id="refresh-status" role="status" aria-live="polite" style="align-self:center;color:var(--muted);font-size:13px;"></span>
   </div>
 
-  <div class="top-cards" id="jr-cards" style="margin-top:14px;"></div>
-
-  <div class="section" style="margin-bottom:24px;">
-    <h2>Top matches</h2>
-    <div id="jr-main"></div>
+  <div id="jr-views" role="group" aria-label="Which listings to show" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:14px;">
+    <button data-view="radar" aria-pressed="true">Radar</button>
+    <button data-view="saved" aria-pressed="false">Saved</button>
+    <button data-view="applied" aria-pressed="false">Applied</button>
+    <button data-view="dismissed" aria-pressed="false">Dismissed</button>
   </div>
 
-  <div class="section" style="margin-bottom:24px;">
-    <h2>Verify first</h2>
-    <p class="subtitle">Borderline trust — confirm legitimacy before applying.</p>
-    <div id="jr-verify"></div>
+  <div id="jr-error" role="alert" style="display:none;margin-top:12px;color:var(--danger, #e5534b);"></div>
+
+  <div id="jr-radar">
+    <div class="top-cards" id="jr-cards" style="margin-top:14px;"></div>
+
+    <div class="section" style="margin-bottom:24px;">
+      <h2>Top matches</h2>
+      <div id="jr-main"></div>
+    </div>
+
+    <div class="section" style="margin-bottom:24px;">
+      <h2>Verify first</h2>
+      <p class="subtitle">Borderline trust, not yet fit-scored, or flagged as suspect — confirm before applying.</p>
+      <div id="jr-verify"></div>
+    </div>
+  </div>
+
+  <div id="jr-list-view" class="section" style="display:none;margin:14px 0 24px;">
+    <h2 id="jr-list-title"></h2>
+    <div id="jr-list"></div>
   </div>
 </div>
 
@@ -87,18 +103,42 @@ ${navBar("/jobs")}
 <script${nonceAttr()}>
 function money(n){ if(n==null) return ''; return '$'+Number(n).toLocaleString(); }
 function fmtSalary(j){ if(j.salary_min||j.salary_max){ return money(j.salary_min)+(j.salary_max?(' - '+money(j.salary_max)):''); } return ''; }
+// PUI-7: only http(s) links become an Open button.
+function safeUrl(u){ var s = String(u||'').trim(); var l = s.toLowerCase(); return (l.indexOf('https://')===0 || l.indexOf('http://')===0) ? s : ''; }
+var currentView = 'radar';
+
+function showError(msg){
+  var el = document.getElementById('jr-error');
+  if(msg){ el.textContent = msg; el.style.display = 'block'; } else { el.textContent = ''; el.style.display = 'none'; }
+}
+async function readJson(r){ try { return await r.json(); } catch(e){ return {}; } }
 
 function badges(j){
   var out = '';
   if(j.fit_score!=null){ out += '<span class="badge teal" title="Fit score">Fit '+j.fit_score+'</span> '; }
+  else { out += '<span class="badge" title="Not fit-scored yet">Fit ?</span> '; }
   if(j.trust_score!=null){ var cls = j.trust_score>=60?'green':(j.trust_score>=40?'warm':'danger'); out += '<span class="badge '+cls+'" title="Trust score">Trust '+j.trust_score+'</span> '; }
   if(j.legitimacy && j.legitimacy!=='real'){ out += '<span class="badge danger">'+esc(j.legitimacy)+'</span> '; }
+  if(j.status==='saved'){ out += '<span class="badge green">saved</span> '; }
   if(j.remote){ out += '<span class="badge">remote</span> '; }
   return out;
 }
 
+// Buttons depend on where the listing is now (PUI-4: saved looked identical
+// to new, and applied/dismissed listings vanished with no way back).
+function actions(j){
+  var b = '';
+  if(j.status==='saved'){ b += '<button data-action="status" data-status="new" data-id="'+j.id+'">Unsave</button>'; }
+  else if(j.status==='new'){ b += '<button data-action="status" data-status="saved" data-id="'+j.id+'">Save</button>'; }
+  if(j.status!=='applied'){ b += '<button data-action="status" data-status="applied" data-id="'+j.id+'">Applied</button>'; }
+  if(j.status==='dismissed' || j.status==='applied'){ b += '<button data-action="status" data-status="new" data-id="'+j.id+'">Move back to radar</button>'; }
+  if(j.status!=='dismissed'){ b += '<button class="danger" data-action="status" data-status="dismissed" data-id="'+j.id+'">Dismiss</button>'; }
+  return b;
+}
+
 function card(j){
   var sal = fmtSalary(j);
+  var url = safeUrl(j.apply_url);
   var rationale = j.fit_rationale ? '<div style="color:var(--muted);font-size:13px;margin-top:4px;">'+esc(j.fit_rationale)+'</div>' : '';
   return '<div class="card" style="margin-bottom:10px;">'
     + '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;">'
@@ -108,16 +148,23 @@ function card(j){
     + '<div style="color:var(--muted);font-size:13px;margin-top:2px;">'+esc(j.location||'')+(sal?(' &middot; '+sal):'')+(j.apply_domain?(' &middot; '+esc(j.apply_domain)):'')+'</div>'
     + rationale
     + '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;">'
-    +   (j.apply_url?('<a class="btn" href="'+escAttr(j.apply_url)+'" target="_blank" rel="noopener noreferrer">Open</a>'):'')
-    +   '<button data-action="save" data-id="'+j.id+'">Save</button>'
-    +   '<button data-action="applied" data-id="'+j.id+'">Applied</button>'
-    +   '<button class="danger" data-action="dismiss" data-id="'+j.id+'">Dismiss</button>'
+    +   (url?('<a class="btn" href="'+escAttr(url)+'" target="_blank" rel="noopener noreferrer">Open</a>'):'')
+    +   actions(j)
     + '</div>'
     + '</div>';
 }
 
-async function load(){
-  var data = await fetch('/api/jobs').then(function(r){return r.json();});
+async function loadRadar(){
+  var r = await fetch('/api/jobs');
+  var data = await readJson(r);
+  if(!r.ok || data.error){
+    showError('Could not load Job Radar'+(data.error && data.error !== true ? (': '+data.error) : ' — the server reported an error. Try again shortly.'));
+    document.getElementById('jr-cards').innerHTML = '';
+    document.getElementById('jr-main').innerHTML = '';
+    document.getElementById('jr-verify').innerHTML = '';
+    return;
+  }
+  showError('');
   var counts = data.counts || {main:0,verify_first:0};
   document.getElementById('jr-cards').innerHTML = [
     {label:'Top matches', value: counts.main, cls:'green'},
@@ -129,24 +176,62 @@ async function load(){
   document.getElementById('jr-verify').innerHTML = verify.length ? verify.map(card).join('') : '<p class="subtitle">Nothing to verify.</p>';
 }
 
+var VIEW_TITLES = { saved: 'Saved', applied: 'Applied', dismissed: 'Dismissed' };
+async function loadList(status){
+  var r = await fetch('/api/jobs/list?status='+encodeURIComponent(status));
+  var data = await readJson(r);
+  document.getElementById('jr-list-title').textContent = VIEW_TITLES[status] || status;
+  if(!r.ok){ showError('Could not load '+(VIEW_TITLES[status]||status).toLowerCase()+' listings'+(data.error?(': '+data.error):'.')); document.getElementById('jr-list').innerHTML=''; return; }
+  showError('');
+  var rows = data.listings || [];
+  document.getElementById('jr-list').innerHTML = rows.length ? rows.map(card).join('') : '<p class="subtitle">Nothing here.</p>';
+}
+
+async function load(){
+  var radar = currentView === 'radar';
+  document.getElementById('jr-radar').style.display = radar ? '' : 'none';
+  document.getElementById('jr-list-view').style.display = radar ? 'none' : '';
+  Array.prototype.forEach.call(document.querySelectorAll('#jr-views [data-view]'), function(b){
+    b.setAttribute('aria-pressed', b.dataset.view === currentView ? 'true' : 'false');
+    b.classList.toggle('primary', b.dataset.view === currentView);
+  });
+  try {
+    if(radar) await loadRadar(); else await loadList(currentView);
+  } catch(e){ showError('Could not reach the server.'); }
+}
+
 async function setStatus(id, status){
-  await fetch('/api/jobs/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:status})});
+  try {
+    var r = await fetch('/api/jobs/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:status})});
+    if(!r.ok){ var d = await readJson(r); alert('Could not update the listing'+(d.error?(': '+d.error):'.')); }
+  } catch(e){ alert('Could not reach the server.'); }
   load();
 }
 
 async function refresh(){
   var s = document.getElementById('refresh-status');
+  var btn = document.getElementById('btn-refresh');
+  if(btn.disabled) return;
+  btn.disabled = true;
   s.textContent = 'Refreshing...';
   try {
-    var r = await fetch('/api/jobs/refresh?force=1', {method:'POST'}).then(function(r){return r.json();});
-    s.textContent = 'Added '+(r.added||0)+' new of '+(r.seen||0)+' seen'+(r.fit_scored?(', '+r.fit_scored+' scored'):'')+(r.capped?' (AI cap reached)':'');
+    var resp = await fetch('/api/jobs/refresh?force=1', {method:'POST'});
+    var r = await readJson(resp);
+    if(!resp.ok || r.ok === false){
+      s.textContent = 'Refresh failed'+(r.error?(': '+r.error):'.');
+    } else {
+      s.textContent = 'Added '+(r.added||0)+' new of '+(r.seen||0)+' seen'+(r.fit_scored?(', '+r.fit_scored+' scored'):'')+(r.capped?' (AI cap reached)':'');
+    }
     load();
-  } catch(e){ s.textContent = 'Refresh failed.'; }
+  } catch(e){ s.textContent = 'Refresh failed — could not reach the server.'; }
+  finally { btn.disabled = false; }
 }
 
 // ----- Profile modal -------------------------------------------------------
 async function openProfile(){
-  var p = await fetch('/api/job-profile').then(function(r){return r.json();});
+  var r = await fetch('/api/job-profile');
+  if(!r.ok){ alert('Could not load your profile.'); return; }
+  var p = await readJson(r);
   document.getElementById('p-prefs').value = p.preferences_text || '';
   document.getElementById('p-resume').value = p.resume_text || '';
   document.getElementById('p-min-salary').value = p.min_salary != null ? p.min_salary : '';
@@ -166,7 +251,12 @@ async function saveProfile(){
     min_salary: minSal === '' ? null : Number(minSal)
   };
   var r = await fetch('/api/job-profile', {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  if(r.ok){ closeProfile(); } else { alert('Could not save profile.'); }
+  var d = await readJson(r);
+  if(r.ok){
+    closeProfile();
+    // PB-4: a profile change clears the fit scores — say so.
+    if(d.rescore_needed){ document.getElementById('refresh-status').textContent = 'Profile saved. Refresh to re-score matches against it.'; load(); }
+  } else { alert('Could not save profile'+(d.error?(': '+d.error):'.')); }
 }
 
 // ----- Companies modal -----------------------------------------------------
@@ -176,11 +266,13 @@ async function openCompanies(){
 }
 function closeCompanies(){ document.getElementById('companies-modal').classList.remove('active'); }
 async function renderCompanies(){
-  var data = await fetch('/api/job-companies').then(function(r){return r.json();});
+  var r = await fetch('/api/job-companies');
+  var data = await readJson(r);
+  if(!r.ok){ document.getElementById('companies-list').innerHTML = '<p class="subtitle">Could not load companies.</p>'; return; }
   var rows = (data.companies||[]).map(function(c){
     return '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:4px 0;">'
       + '<span>'+esc(c.ats)+' / <strong>'+esc(c.slug)+'</strong>'+(c.active?'':' (off)')+'</span>'
-      + '<button class="danger" data-action="delCompany" data-id="'+c.id+'">Remove</button></div>';
+      + '<button class="danger" data-action="delCompany" data-id="'+c.id+'" aria-label="Stop polling '+escAttr(c.ats+' / '+c.slug)+'">Remove</button></div>';
   }).join('');
   document.getElementById('companies-list').innerHTML = rows || '<p class="subtitle">None yet.</p>';
 }
@@ -189,10 +281,12 @@ async function addCompany(){
   if(!slug){ return; }
   var body = { slug: slug, ats: document.getElementById('c-ats').value };
   var r = await fetch('/api/job-companies', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  if(r.ok){ document.getElementById('c-slug').value=''; renderCompanies(); } else { alert('Could not add.'); }
+  if(r.ok){ document.getElementById('c-slug').value=''; renderCompanies(); }
+  else { var d = await readJson(r); alert('Could not add'+(d.error?(': '+d.error):'.')); }
 }
 async function delCompany(id){
-  await fetch('/api/job-companies/'+id, {method:'DELETE'});
+  var r = await fetch('/api/job-companies/'+id, {method:'DELETE'});
+  if(!r.ok){ var d = await readJson(r); alert('Could not remove'+(d.error?(': '+d.error):'.')); }
   renderCompanies();
 }
 
@@ -204,8 +298,15 @@ async function loadEnabled(){
   } catch(e){}
 }
 async function toggleEnabled(){
-  var on = document.getElementById('jr-enabled').checked;
-  await fetch('/api/settings', {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_radar_enabled:on})});
+  var box = document.getElementById('jr-enabled');
+  var on = box.checked;
+  try {
+    var r = await fetch('/api/settings', {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_radar_enabled:on})});
+    if(r.ok) return;
+    var d = await readJson(r);
+    alert('Could not save'+(d.error?(': '+d.error):'.'));
+  } catch(e){ alert('Could not reach the server.'); }
+  box.checked = !on; // the checkbox must not claim a state that wasn't saved
 }
 
 // ----- Wiring --------------------------------------------------------------
@@ -221,12 +322,10 @@ bindEvents([
   ['btn-close-companies','click',closeCompanies],
   ['btn-add-company','click',addCompany]
 ]);
-onDelegate('jr-main','click','[data-action="save"]',function(){setStatus(parseInt(this.dataset.id),'saved');});
-onDelegate('jr-main','click','[data-action="applied"]',function(){setStatus(parseInt(this.dataset.id),'applied');});
-onDelegate('jr-main','click','[data-action="dismiss"]',function(){setStatus(parseInt(this.dataset.id),'dismissed');});
-onDelegate('jr-verify','click','[data-action="save"]',function(){setStatus(parseInt(this.dataset.id),'saved');});
-onDelegate('jr-verify','click','[data-action="applied"]',function(){setStatus(parseInt(this.dataset.id),'applied');});
-onDelegate('jr-verify','click','[data-action="dismiss"]',function(){setStatus(parseInt(this.dataset.id),'dismissed');});
+onDelegate('jr-views','click','[data-view]',function(){ currentView = this.dataset.view; load(); });
+['jr-main','jr-verify','jr-list'].forEach(function(pid){
+  onDelegate(pid,'click','[data-action="status"]',function(){ setStatus(parseInt(this.dataset.id, 10), this.dataset.status); });
+});
 onDelegate('companies-list','click','[data-action="delCompany"]',function(){delCompany(parseInt(this.dataset.id));});
 </script>
 </body></html>`);

@@ -172,21 +172,27 @@ function renderTodo(t) {
 }
 
 async function todayComplete(id, isRecurring) {
+  var r;
   if (isRecurring) {
-    await fetch('/api/todos/' + id + '/complete-recurring', { method: 'POST' });
+    r = await fetch('/api/todos/' + id + '/complete-recurring', { method: 'POST' });
   } else {
-    await fetch('/api/todos/' + id, {
+    r = await fetch('/api/todos/' + id, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ completed: true }),
     });
   }
-  if (typeof showUndo === 'function') showUndo('Task completed', 'todo', id, 'complete');
+  var out = await r.json().catch(function(){ return {}; });
+  if (!r.ok) { alert(out.error || 'Could not complete the task.'); load(); return; }
+  if (typeof showUndo === 'function') {
+    if (isRecurring) showUndo('Task completed', 'todo', id, 'complete-recurring', out.next && out.next.id); // PUI-3
+    else showUndo('Task completed', 'todo', id, 'complete');
+  }
   load();
 }
 
 async function todaySendEmail(id) {
   var r = await fetch('/api/emails/' + id + '/send', { method: 'POST' }).then(function(r){return r.json();});
-  if (r && r.ok) { if (typeof showUndo === 'function') showUndo('Email sent', 'email', id, 'send'); load(); }
+  if (r && r.ok) { if (typeof showUndo === 'function') showUndo('Email sent', 'email', id, 'info'); load(); }
   else alert('Failed: ' + ((r && r.error) || 'Unknown error'));
 }
 

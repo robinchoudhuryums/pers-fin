@@ -49,7 +49,7 @@
     /* Split modal */
     .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100;
       display: flex; align-items: center; justify-content: center; }
-    .modal { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius);
+    .modal { background: var(--surface-solid); /* IF-5: opaque — the translucent surface let the page show through */ border: 1px solid var(--border); border-radius: var(--radius);
       padding: 20px; max-width: 560px; width: calc(100% - 40px); max-height: 85vh; overflow: auto; }
     .modal h3 { margin: 0 0 10px; font-weight: 400; }
     .modal .edit-field { margin-bottom: 12px; }
@@ -88,11 +88,11 @@
   <button type="button" class="btn btn-sm filters-toggle" id="filters-toggle" aria-expanded="false" aria-controls="search-bar">Filters &#9662;</button>
   <div class="search-bar" id="search-bar">
     <div class="field" style="flex:1;min-width:180px;">
-      <label>Search</label>
+      <label for="search-input">Search</label>
       <input type="text" id="search-input" placeholder="Merchant name...">
     </div>
     <div class="field">
-      <label>Category</label>
+      <label for="filter-category">Category</label>
       <select id="filter-category">
         <option value="">All</option>
         <option value="Food & Drink">Food & Drink</option>
@@ -119,25 +119,25 @@
       </select>
     </div>
     <div class="field">
-      <label>Account</label>
+      <label for="filter-account">Account</label>
       <select id="filter-account">
         <option value="">All accounts</option>
       </select>
     </div>
     <div class="field">
-      <label>Amount Range</label>
+      <label for="filter-min">Amount Range</label>
       <div class="amount-range">
-        <input type="number" id="filter-min" placeholder="Min" step="0.01">
+        <input type="number" id="filter-min" placeholder="Min" step="0.01" aria-label="Minimum amount">
         <span style="color:var(--text-muted);">-</span>
-        <input type="number" id="filter-max" placeholder="Max" step="0.01">
+        <input type="number" id="filter-max" placeholder="Max" step="0.01" aria-label="Maximum amount">
       </div>
     </div>
     <div class="field">
-      <label>Date Range</label>
+      <label for="filter-start">Date Range</label>
       <div class="date-range">
-        <input type="date" id="filter-start">
+        <input type="date" id="filter-start" aria-label="Start date">
         <span style="color:var(--text-muted);">to</span>
-        <input type="date" id="filter-end">
+        <input type="date" id="filter-end" aria-label="End date">
       </div>
     </div>
     <div class="field">
@@ -147,9 +147,9 @@
   </div>
 
   <div class="bulk-bar" id="bulk-bar">
-    <input type="checkbox" id="select-all">
+    <input type="checkbox" id="select-all" aria-label="Select all transactions on this page">
     <span id="selected-count">0 selected</span>
-    <select id="bulk-category">
+    <select id="bulk-category" aria-label="Set category for the selected transactions">
       <option value="">Set category...</option>
       <option value="Food & Drink">Food & Drink</option>
       <option value="Groceries">Groceries</option>
@@ -180,7 +180,7 @@
     <table class="txn-table txn-compact">
       <thead>
         <tr>
-          <th style="width:30px;"><input type="checkbox" id="header-check"></th>
+          <th style="width:30px;"><input type="checkbox" id="header-check" aria-label="Select all transactions"></th>
           <th>Date</th>
           <th>Merchant</th>
           <th>Category</th>
@@ -211,19 +211,19 @@
         No manual account yet. Create a "Cash" account on the <a href="<%= basePath %>/accounts" style="color:var(--teal);">Accounts page</a> first.
       </div>
       <div id="cash-form" style="display:flex;flex-direction:column;gap:10px;">
-        <div><label style="font-size:12px;color:var(--text-muted);">Account</label>
+        <div><label for="cash-account" style="font-size:12px;color:var(--text-muted);">Account</label>
           <select id="cash-account" style="width:100%;padding:8px;"></select></div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-          <div><label style="font-size:12px;color:var(--text-muted);">Amount spent ($)</label>
+          <div><label for="cash-amount" style="font-size:12px;color:var(--text-muted);">Amount spent ($)</label>
             <input id="cash-amount" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00" style="width:100%;padding:8px;"></div>
-          <div><label style="font-size:12px;color:var(--text-muted);">Date</label>
+          <div><label for="cash-date" style="font-size:12px;color:var(--text-muted);">Date</label>
             <input id="cash-date" type="date" style="width:100%;padding:8px;"></div>
         </div>
-        <div><label style="font-size:12px;color:var(--text-muted);">Merchant / description</label>
+        <div><label for="cash-merchant" style="font-size:12px;color:var(--text-muted);">Merchant / description</label>
           <input id="cash-merchant" type="text" placeholder="e.g. Coffee" style="width:100%;padding:8px;"></div>
-        <div><label style="font-size:12px;color:var(--text-muted);">Category</label>
+        <div><label for="cash-category" style="font-size:12px;color:var(--text-muted);">Category</label>
           <select id="cash-category" style="width:100%;padding:8px;"></select></div>
-        <div><label style="font-size:12px;color:var(--text-muted);">Notes (optional)</label>
+        <div><label for="cash-notes" style="font-size:12px;color:var(--text-muted);">Notes (optional)</label>
           <input id="cash-notes" type="text" style="width:100%;padding:8px;"></div>
       </div>
       <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px;">

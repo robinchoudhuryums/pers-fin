@@ -48,8 +48,8 @@
 
   <div class="add-form" id="add-form">
     <div class="fields">
-      <div><label>Category</label><input id="b-category" placeholder="e.g. Food & Drink"></div>
-      <div><label>Monthly Limit ($)</label><input id="b-limit" type="number" step="1" placeholder="500"></div>
+      <div><label for="b-category">Category</label><input id="b-category" placeholder="e.g. Food & Drink"></div>
+      <div><label for="b-limit">Monthly Limit ($)</label><input id="b-limit" type="number" step="1" placeholder="500"></div>
     </div>
     <div style="margin-top:12px;"><button class="btn primary" id="save-budget-btn">Save Budget</button></div>
   </div>
@@ -154,7 +154,7 @@
           data.suggestions.map(function(s, i) {
             return '<div class="suggest-item"><div><span style="font-weight:400;">' + esc(s.category) + '</span>' +
               (s.notes ? '<br><span style="font-size:11px;color:var(--text-muted);">' + esc(s.notes) + '</span>' : '') +
-              '</div><input type="number" id="sug-' + i + '" value="' + s.monthly_limit + '"></div>';
+              '</div><input type="number" id="sug-' + i + '" aria-label="Monthly limit for ' + esc(s.category) + '" value="' + s.monthly_limit + '"></div>';
           }).join('') +
           '<div style="margin-top:12px;display:flex;gap:8px;"><button class="btn primary" id="accept-sug-btn">Accept All</button><button class="btn" id="dismiss-sug-btn">Dismiss</button></div></div>';
         window._suggestions = data.suggestions;

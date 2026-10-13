@@ -45,9 +45,15 @@ teller/
                            models kept so stored usage rows re-price; Haiku 5.5
                            long-prompt card above 100K),
                            insight module definitions
-    csv-formats.js       — CSV format detection (Chase, CapOne, Discover, WF, Schwab, generic)
+    csv-formats.js       — CSV format detection (Chase card, Chase checking, CapOne,
+                           Discover, WF, Schwab, generic)
                            + parseMoney() money normalization (strips $ / thousands
-                           separators, handles parenthesized negatives, NaN on blank).
+                           separators, handles parenthesized negatives, a trailing
+                           minus "45.00-" and CR/DR suffixes — CR → negative, DR →
+                           positive in the debit-positive convention (BSI-16) — NaN
+                           on blank). chase_checking ("Details, Posting Date, …,
+                           Amount, Type, Balance") reads the Posting Date and negates
+                           the signed Amount; Type is not used as a category.
                            Used by EVERY bank-format parser incl. Schwab + generic (F6)
                            so a "(45.00)" row is imported as -45, not silently skipped.
                            Schwab's Amount+Type variant preserves the signed amount
@@ -316,7 +322,14 @@ teller/
                            clear network error. Push notifications.)
     perfin-shared.css    — Shared styles (variables, nav, cards, animations, responsive,
                            focus-visible, skip-link, WCAG AA contrast text colors,
-                           40/44px touch-target minimums on buttons)
+                           40/44px touch-target minimums on buttons). Defines every
+                           token the views use: --card / --card-border / --bg-elevated /
+                           --text-primary / --text-secondary / --accent are aliases of the
+                           base palette (IF-4 — they were used with no definition), and
+                           --on-teal is the text colour on a solid --teal button (#000
+                           dark, #fff light — black on the light teal was ~3.1:1, IF-5).
+                           `select option` lists and modal boxes use the opaque
+                           --surface-solid.
     perfin-shared.js     — Shared JavaScript (apiFetch, theme, nav helpers, asyncAction,
                            btnLoading, beforeinstallprompt capture + perfinPromptInstall /
                            perfinIsInstalled exports). Calendar-date helpers (WUI-2):
@@ -326,6 +339,18 @@ teller/
                            day early west of UTC); localTodayStr(offsetDays) /
                            localDateStr(d) give browser-local 'YYYY-MM-DD' for date-input
                            defaults and "is today" checks (never toISOString()).
+                           Write + dialog conventions (Batch 13): writeOk(res, what)
+                           — true on 2xx, else toasts "<what>: <server error>" — is how
+                           every page reports a write's outcome (WUI-6: writes used to
+                           await apiFetch and assume success); parseAmountInput(raw)
+                           parses a prompt amount ("$1,234.50") or returns NaN so a typo
+                           is refused instead of sent as null (WD-12). openDialog(box,
+                           {label, onClose}) gives a modal role="dialog" aria-modal,
+                           focus-in, a Tab trap, Esc → onClose and focus restore on
+                           handle.close(); watchDialog(overlay, opts) applies it to an
+                           overlay the page shows/hides itself (MutationObserver on
+                           style/hidden/class). Every Perfin modal and the bell panel
+                           use one of them (IF-1).
   views/
     dashboard.ejs        — Dashboard template with 3D financial wellness pyramid
     transactions.ejs     — Transaction search/filter template, per-row Split modal
@@ -500,9 +525,99 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1519 tests as of latest); use
+  Perfin and Per-sistant test files (1489 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1519 tests across 61 test files (incl.
+  Current count: 1489 tests across 67 test files (incl.
+  `apps/per-sistant/tests/batch15-followons.test.js` — the fixes for the bugs
+  Batch 15's real-code tests exposed: the calendar router built with server.js's
+  real deps + a guard that every `routes/*.js` factory only destructures keys
+  server.js passes ({pool, config, helpers, views}) (FO-1), a guard that no
+  client template-literal module (`pages/*.js`, `views/*.js` exporting a string)
+  carries a single-escaped regex + the emitted Quick Add `\b` (FO-2), the palette
+  picker run in a vm under /per-sistant/settings (FO-3), current theme tokens in
+  views/js.js (FO-4) and theme / perfin_url validation (FO-5);
+  `tests/scan-sept-batch15.test.js` — the Sept 2026 broad-scan Batch 15
+  test-quality guards: contract-suite wiring (script, CI step, per-file skip +
+  unique scratch DB, the server.js route-order regexes still matching), no
+  un-nonced `<style>` reaching Perfin's nonce-only styleSrcElem, root-relative
+  client navigation always carrying the mount base, and every `var(--x)` defined
+  (shell + Per-sistant). Pre-existing offenders are listed in a `KNOWN_GAPS`
+  array with reasons; the guards fail on a NEW offender AND on a stale entry, so
+  the lists only shrink. `tests/teller.test.js` and
+  `apps/per-sistant/tests/api.test.js` were rewritten (TQ-1) to drive the REAL
+  production code — they used to test inline copies written inside the test, so
+  no production change could fail them (−244 replica/tautology tests, +58 real
+  ones; that is why the count dropped from 1647). Real bugs those tests exposed
+  were recorded as node:test `todo`s and then fixed by the follow-on batch (no
+  `todo`s remain);
+  `tests/contract/` — the real-Postgres ROUTE CONTRACT suite (TQ-2, NOT in
+  `npm test`; `npm run test:contract`, gated on `CONTRACT_DATABASE_URL`, every
+  suite skips without it). `_setup.js` creates one scratch database per file
+  (`contract_perfin_<name>` / `contract_persistent_<name>`, DROP … WITH (FORCE)),
+  runs the app's own migrations, and mounts EVERY router in the order parsed out
+  of `teller/server.js` / `apps/per-sistant/server.js` (with Per-sistant's real
+  `{pool, config, helpers, views}` deps), so route shadowing and missing deps
+  show up. Files: financial-queries (income predicate incl. the FAN-2 guard,
+  splits / reimbursed / shared split, getNetWorth, getBudgetStatus + budgets,
+  the spending-analytics endpoints, tax candidates), housing-settle (config,
+  generation, amount PATCH, payments + memo + undo + export, split guard,
+  shared-settlement, settle/undo), calendar-exports (manual bills, calendar,
+  forecast, ICS, CSV / tax / context exports), transactions (bulk-category via
+  the real mount order, user_* overrides, splits, manual cash, CSV preview →
+  import → re-import) and persistent (todo location, dependency cycles,
+  recurring complete/undo, templates, automations, email validation, review,
+  iCal, Job Radar, GET /api/calendar), sync-ai (the Teller and Plaid SYNC
+  ENGINES — syncAllEnrollments signs / pending skip / watermark / re-sync adds 0,
+  reconcileTeller, syncAllBalances + snapshots + accounts_changed,
+  syncAllTransactions, syncPlaidItemTransactions insert / re-delivery /
+  modified-upsert / removed / cursor — plus POST /api/categorize and
+  generateInsights + audit, with only Teller's HTTP client, a Plaid client
+  object and the Anthropic SDK stubbed; generateInsights must report
+  `modules_failed: []` with ≥8 modules run) and knowledge (syncVault through a
+  fake GitHub API via its `fetchImpl`, syncNotes, keyword search never returning
+  secret text, secret-lookup, facts current vs `all=1` + verify, /api/rag/query
+  without AI, an incremental compare that removes a deleted file). 43 tests, run
+  with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
+  cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
+  upsert as an insert, dropping the sensitivity filter from keyword retrieval)
+  turn it red;
+  `apps/per-sistant/tests/scan-sept-batch14.test.js` — the Sept 2026 broad-scan
+  Batch 14 Per-sistant pins: Job Radar profile-edit reset (PB-4), live re-score /
+  fit backfill / stale + scam + unscored buckets / batched embeds (PB-5/PB-6),
+  company deactivate (PB-7), dismiss nudge (PB-9), fetch timeouts (PB-19), the
+  service worker run in a vm against fake caches — 503, no secret caching,
+  replay rules (PB-17), task location (PD-5), automation validation / wiring /
+  isolation (PD-6), Ask model column + db/024 (PD-7), one-recipient validation
+  (PD-9), iCal escaping (PD-11), dependency cycles (PD-12), template apply
+  transaction (PD-13), review overdue (PD-14), recurring undo (PUI-3), Jobs views
+  (PUI-4), keyboard/dialog wiring (PUI-5), webhook events (PUI-6), http(s) apply
+  links (PUI-7) and embedded keep-alive (PUI-8);
+  `tests/scan-sept-batch13.test.js` — the Sept 2026 broad-scan Batch 13 Perfin UI
+  pins: the real PYRAMID_MODES block run against canned responses (WD-4/WD-5),
+  writeOk / parseAmountInput + the 0%-share route + each named write (WUI-6/WD-12),
+  CSV Auto-detect / Accounts preview / no Plaid pre-build (WD-7/WD-8), Add Goal,
+  loan option, transports, account history (WD-9/11/13/15), dialog wiring (IF-1),
+  calendar buttons (IF-2), a scan for unlabeled controls (IF-3), a scan for
+  undefined `var(--x)` (IF-4), --on-teal / opaque modals (IF-5), the PIN pad (IF-6)
+  and notification links (IF-7);
+  `tests/scan-sept-batch12.test.js` — the Sept 2026 broad-scan Batch 12
+  investment pins: sold-holding prune scoped to the response's accounts (BSI-4),
+  NULL cost basis + known-basis return + coverage + the nullable column (BSI-5),
+  winners/losers by sign (WD-17), mid-window account entry flows in TWR/XIRR
+  (BSI-6), the sparkline history source (WD-2), the funding-options phantom
+  dedupe + orphan warning (WD-10), the empty-range chart + reconcile leg errors
+  (WD-17), and parseMoney CR/DR/trailing minus + chase_checking + the
+  trailing-comma preview (BSI-16);
+  `apps/per-sistant/tests/scan-sept-batch11.test.js` — the Sept 2026 broad-scan
+  Batch 11 Knowledge pins: vault ingest without Voyage/pgvector + embedding
+  backfill + unchanged-embedding retention (KR-3), stopwords / per-source vector
+  ranking / matching-passage window (KR-4), Voyage retry + per-file isolation +
+  removals first + sha hold (KR-7), the lock claimed before the first await
+  (KR-8), the finance snapshot vs getNetWorth (KR-9), capture reserved keys +
+  sensitivity with no AI call for private/secret (KR-10), success-only
+  last_synced_at + attempt stamp + reindex outcome + vault_sync_error reminder +
+  the polling Action (KR-11), inline-citation parsing (KR-12), cache prune
+  (KR-13) and word-segment attribute matching + vault_repo validation (KR-14);
   `tests/scan-sept-batch10.test.js` — the Sept 2026 broad-scan Batch 10
   Sheets/export pins, driven against a stateful fake Sheets API: persisted
   sync outcome + signature-deduped alert + data-health issue + "Partial" UI
@@ -619,7 +734,7 @@ shell/
   fake @anthropic-ai/sdk: /api/ask + runCategorize charge their usage rows,
   429 once the cap is hit, ask charges accumulated tokens AND still charges
   on a mid-loop failure — F1).
-- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js`.
+- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js`. The `migrations` job ALSO runs the route contract suite (`npm run test:contract`, step "Route contract tests against real Postgres", `CONTRACT_DATABASE_URL` = the same service container; the Postgres user must be able to CREATE/DROP DATABASE).
 - `.claude/commands/` — Project slash-command prompts, generated from the
   claude-workflow-tools templates (synced to v1.33.0 via `/sync-commands`):
   the cycle commands (`/broad-scan`, `/broad-implement`, `/targeted-audit`,
@@ -675,7 +790,13 @@ shell/
     reports `balances.current === 0` and puts the value in holdings) so
     brokerages don't show $0 — the balance pick uses `||`, not `??`, precisely
     so a reported 0 falls through to the holdings-sum. It runs automatically (auto-sync + AI pre-insights
-    chains + `POST /api/sync-balances`), not just at link time.
+    chains + `POST /api/sync-balances`), not just at link time. Every holdings
+    write (the sync and both exchange paths) goes through `writePlaidHoldings`,
+    which upserts the returned holdings and then DELETES that response's
+    accounts' holdings Plaid no longer returns — sold or transferred-out
+    positions used to stay forever (BSI-4; only accounts present in the
+    response are touched). An unknown cost basis is stored NULL
+    (`investment_holdings.cost_basis` is nullable), never $0 (BSI-5).
     Plaid also syncs **transactions** for banks Teller doesn't cover
     (Capital One, Discover, Schwab, Amex, credit unions) via
     `/api/plaid/{link-token-transactions,exchange-transactions,sync-transactions}`.
@@ -688,7 +809,10 @@ shell/
     `/transactions/refresh` but cursor-based sync handles it.
   - **Manual**: user-entered via `POST /api/investment-accounts`. Stored in
     `investment_accounts` with no `plaid_account_id`.
-- **CSV import**: Auto-detect Chase, Capital One, Discover, Wells Fargo, Schwab formats.
+- **CSV import**: Auto-detect Chase (card + checking), Capital One, Discover, Wells Fargo, Schwab formats.
+  The header parse uses `relax_column_count` (route + CLI) because Chase checking
+  exports end every data row with a trailing comma, which used to fail the whole
+  file with "Invalid Record Length" (BSI-16).
   The dashboard CSV modal is **preview-and-confirm**: it first POSTs `POST
   /api/import-csv/preview` (a dry-run that detects the format and classifies every
   row new/duplicate/skipped against existing `transaction_id`s WITHOUT writing,
@@ -696,6 +820,12 @@ shell/
   sample table, then the user confirms to `POST /api/import-csv`. Both routes share
   the `parseCsvUpload()` helper (in `routes/subscriptions.js`) so format detection,
   account-label derivation, and dedup IDs can't drift between preview and commit.
+  The Accounts page uses the same two steps (Preview → "Import N new"), and both forms
+  default the bank dropdown to **"Auto-detect from the file"**, which sends NO
+  `institution` / `account_label` so the route derives them from the detected format —
+  the CLI's default, so the two produce the same dedup IDs (WD-7: the dropdown used to
+  default to "Chase" and always send it, filing a Discover file under "Chase Account"
+  and duplicating every row a CLI import had added).
 - **Transaction deduplication**: SHA256-based duplicate detection across CSV imports and API syncs.
   CSV dedup IDs fold in a deterministic per-file occurrence index, so two genuinely-distinct rows
   sharing (account, date, amount, merchant) on the same day no longer collide and silently drop the
@@ -941,7 +1071,8 @@ shell/
   `GET /api/investments`).
 - **Loan accounts (auto loans etc.)**: `type='loan'` rows (Plaid-linked via the
   combined flow — credit-union auto loans arrive from accountsGet — or created
-  via `POST /api/accounts/manual` with `type:"loan"`, subtype defaults `auto`)
+  via `POST /api/accounts/manual` with `type:"loan"`, subtype defaults `auto` — the
+  Accounts page's manual-account form offers a Loan type, WD-11)
   are first-class DEBT: the dashboard renders the balance negative/red under a
   Loans group header (an $18k loan never shows as +$18k), the grid net total
   subtracts it, and `getNetWorth` counts it as a liability (F1). Plaid's
@@ -962,13 +1093,18 @@ shell/
 - **Investments widget**: Total invested across all sources, per-source
   breakdown (Teller / Plaid / Manual), and per-account cards with inline SVG
   sparklines (computed client-side from `/api/accounts/:id/balance-history`,
-  no Chart.js dependency). Each card has a "View history →" link to the
+  no Chart.js dependency) — from the account's own source (`linked` for a
+  Teller-linked account, `investment` otherwise; WD-2). Each card has a "View history →" link to the
   full chart page at `/accounts/:id/history`. Auto-hides when no investment
   accounts exist. Toggleable from Settings (key: `investments`, default on).
   When Plaid holdings exist, a **performance sub-card** renders inside the
   widget showing total return ($ + %), per-asset-class allocation bars
   (security_type → % of portfolio), and top winners/losers by return_pct
-  (collapsible). Backed by `GET /api/investments/performance`. Auto-hides
+  (collapsible; winners are only gains and losers only losses — WD-17). The
+  return covers only holdings with a KNOWN cost basis (value of those minus
+  their basis); the line says "cost known for N of M holdings" when some are
+  missing (`cost_basis_coverage`, BSI-5 — an unknown basis used to count as $0,
+  so a transferred-in lot showed as 100% gain). Backed by `GET /api/investments/performance`. Auto-hides
   for users with no Plaid holdings since Teller-linked accounts don't
   expose cost basis. Toggleable (key: `investmentReturns`, default on).
   When the user has set target weights via Settings → Target Allocation,
@@ -986,7 +1122,12 @@ shell/
   value-based (contributions count as growth); below it the card shows the
   flow-adjusted figures — **TWR** (cumulative for the window) and **XIRR**
   (annualized) — computed over flow-covered accounts, with a "(covers N% of
-  portfolio)" label when coverage is partial. A "Log contribution /
+  portfolio)" label when coverage is partial. An account that first appears
+  partway through the window enters as an opening INFLOW on its first date
+  (its own flows on/before that date are part of that balance), so linking a
+  second account no longer reads as a +100% return (BSI-6). A range with
+  fewer than 2 points clears the chart to an empty state instead of leaving
+  the previous range on screen (WD-17). A "Log contribution /
   withdrawal" form (collapsed) posts manual flows for Teller-linked/manual
   accounts; Plaid-linked accounts get their flows synced automatically and
   are excluded from the dropdown so manual entry can't double-count.
@@ -1067,7 +1208,10 @@ shell/
   (current, range start, change $, change %, snapshot count). Reads from
   `account_balance_snapshots` via `GET /api/accounts/:id/balance-history`.
   Empty state when fewer than 2 snapshots exist (history accumulates daily
-  on every balance sync).
+  on every balance sync) — every card resets to "—" for that range. Axis labels
+  are the day (`snapshot_date` arrives as an ISO timestamp). For a credit card or
+  loan the cards read "Owed now / Owed at range start / Change in debt" and a
+  RISING balance is red (WD-15 — it showed rising debt as a green "+").
 - **AI audit-accuracy card**: Settings → AI shows the percentage of insight
   runs (last 90 days) with zero critical findings, color-coded green/yellow/red,
   with severity counts. Backed by `/api/insights/status.audit_accuracy`.
@@ -1112,7 +1256,14 @@ shell/
 - **3D Financial Pyramid**: Interactive spinning pyramid with 4 frustum layers, neon wireframe edges,
   holographic effects. Layers computed by JS (`buildPyramidGeometry()`) with proper taper geometry.
   Configurable data sources: wellness, debt payoff, goal progress, etc. Mobile-optimized (reduced
-  filters/shadows on small screens, `prefers-reduced-motion` support).
+  filters/shadows on small screens, `prefers-reduced-motion` support). Mode data (Batch 13):
+  Wellness's Subs tier reads `/api/subscriptions`' `{ subscriptions }` and `cancelled_at`;
+  Spending Health buckets `/api/spending-summary`'s `by_category` (WD-4 — both read shapes
+  the API never returned, so Subs was always 0 and Spending always 75); Net Worth shows
+  the latest `net_worth_snapshots` row (getNetWorth — loans as debt, investments included,
+  WD-5) and says it "appears after the next balance sync" until one exists; Debt Payoff
+  counts credit cards AND loans, and the stored `debt_baseline_amount` acts as a high-water
+  mark — when current debt is above it, it is raised to the current debt.
 - **Transaction search**: Full-text search with filters — category, account, amount range, date range
   (GET /api/transactions/search). The Activity page has an Account filter and
   pre-fills its filters from the query string (`q`, `category`, `account_id`,
@@ -1121,7 +1272,9 @@ shell/
   already filtered (WUI-3).
 - **Bill calendar**: Monthly calendar view of upcoming charges — detected subscriptions
   projected from cadences, user-created manual bills, and detected income. Click events
-  to toggle paid/unpaid status. "Add Bill" modal for creating manual expected charges.
+  to toggle paid/unpaid status — payable events are `<button>`s with `aria-pressed`, so
+  this works by keyboard and screen reader, and "+N more" expands the day (IF-2). "Add
+  Bill" modal for creating manual expected charges.
   Subscriptions step by CALENDAR MONTH from their last real charge (DC-9 — a fixed
   30-day step drifted ~5 days/yr and could place a Sep-1 bill on both Oct 1 and
   Oct 31); manual bills use the same creation-anchored, month-length-clamped rule as
@@ -1397,6 +1550,9 @@ shell/
   work) and pushes one "PIN login locked" notification (tag `pin-lockout`). The
   counter is in memory (a restart clears it). Trade-off: anyone can trigger that
   30-minute PIN lockout. Boot warns when `SHELL_PIN` is shorter than 6 characters.
+  The login keypad's 8 dots are only a mask — a longer PIN can be typed (it used to cap
+  at 8) — and Enter is left to another focused control such as the biometric button
+  (IF-6).
   A page requested while signed out (e.g. a notification deep link after the
   idle timeout) is carried through login (PSC-9): `requireAuth` redirects to
   `/login?return_to=<path>` (validated by `safeReturnTo`), the form keeps it as a
@@ -1501,7 +1657,9 @@ shell/
   list. `sendToAll()` logs every push notification to the table, so
   notifications are preserved even if the user hasn't enabled push or dismissed
   the browser alert. API: `GET /api/notifications`, `PATCH /api/notifications/:id/read`,
-  `POST /api/notifications/read-all`.
+  `POST /api/notifications/read-all`. Activating a notification marks it read and, when
+  its `data.url` is a same-app path (`/x`, never `//host`), opens it via `withBase`
+  (IF-7 — e.g. the missing-utility reminder lands on `/housing#pending`).
 - **Data freshness API**: `GET /api/data-freshness` returns per-source timestamps
   (transactions, balances, auto-sync, insights) with `age_seconds`, a boolean
   `stale` flag (>24h), and an explicit `level` (`"fresh"` <6h / `"aging"` 6-24h /
@@ -1530,7 +1688,10 @@ shell/
 - **Web Push notifications**: VAPID-based push notifications for anomalies, budget alerts,
   goal milestones
 - **Accessibility**: Skip-to-content link, `<main>` landmark, chart aria-labels, :focus-visible
-  styles, WCAG AA contrast-compliant text colors
+  styles, WCAG AA contrast-compliant text colors. Modals and the bell panel go through the
+  shared `openDialog` / `watchDialog` (focus trap, Esc, focus restore — IF-1); form controls
+  carry a `<label for>` or `aria-label` (IF-3, scan-pinned for the Activity, Rent, Accounts,
+  Goals, Budgets and Calendar pages).
 - **CSP nonces**: Per-request cryptographic nonces for all inline scripts (no `'unsafe-inline'` in `scriptSrc`). Style policy is split: `styleSrcElem` is nonce-gated for `<style>` blocks while `styleSrcAttr` keeps `'unsafe-inline'` for inline `style=""` attributes.
 - **Keep-alive**: Timezone-aware self-ping to prevent Render free tier sleep (10s timeout)
 - **Per-model cost tracking**: Usage history with granular pricing (Haiku/Sonnet/Opus)
@@ -1574,6 +1735,8 @@ shell/
   - **Investments** (new): Plaid holdings with cost basis, current
     value, return $, return % (green positive / red negative), grand
     total. Teller-linked accounts excluded (no Teller cost-basis API).
+    A holding with an unknown basis has blank Cost Basis / Return cells and
+    the total return covers known-basis holdings only (BSI-5).
   - **Net Worth History** (new): one row per month (last snapshot per
     YYYY-MM via DISTINCT ON), month-over-month delta column.
   - **Income** (new): monthly totals (24mo) + top sources (12mo) using
@@ -1668,8 +1831,12 @@ shared session cookie. Cross-app surface area today:
   layout, only rendered when embedded. Same-origin, in-app navigation.
 - **Knowledge → Perfin finance grounding** (new seam): Per-sistant's Knowledge
   feature (`apps/per-sistant/routes/rag.js`) reads Perfin's pool **read-only**
-  (`linked_accounts`, `detected_subscriptions`) via the wired `perfinPool` to
-  ground finance-flavored questions ("can I afford my renewal?"). Owned by the
+  via the wired `perfinPool` to ground finance-flavored questions ("can I
+  afford my renewal?"): net worth, accounts and investments come from Perfin's
+  own `getNetWorth` (`teller/services/financial-queries.js`, loaded lazily — so
+  the Plaid-phantom dedupe and signed debts match the dashboard, KR-9), plus
+  card limits and active `detected_subscriptions` (monthly equivalent =
+  amount × 30 / cadence_days, Perfin's rule). Owned by the
   Knowledge / RAG subsystem; finance queries only; no Perfin schema changes;
   never an HTTP self-fetch (INV-35). This is why a Perfin-side audit should know
   Per-sistant consumes those tables.
@@ -1748,8 +1915,11 @@ on the operator's machine (or fed via env vars) before the app boots:
    mismatch).
 3. **Per-sistant Knowledge / RAG operator state** (all optional — the feature
    degrades to keyword-only without them; nothing blocks app boot):
-   - `VOYAGE_API_KEY` — Voyage embeddings for semantic retrieval. Without it,
-     Knowledge serves keyword search only. (`VOYAGE_MODEL` optional, default
+   - `VOYAGE_API_KEY` — Voyage embeddings for semantic retrieval. Without it
+     (or without pgvector) the vault is still synced — documents + facts are
+     ingested and keyword-searchable (KR-3); setting it later backfills the
+     embeddings (≤200 documents per sync). Voyage 429/5xx are retried with
+     backoff (KR-7). (`VOYAGE_MODEL` optional, default
      `voyage-3.5`; dimension 1024 is baked into `chunks.embedding vector(1024)`.)
    - `VAULT_GITHUB_TOKEN` — **read-only** fine-grained PAT for the private
      Obsidian-vault repo (sync/ingest). Repo + branch are set in Settings →
@@ -1874,7 +2044,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1519 tests passing across 61 test files (Perfin 974 + Per-sistant 545), plus 8 Playwright browser smokes (CI `e2e` job; not in `npm test`)
+- 1489 tests passing across 67 test files (Perfin 1033 + Per-sistant 456), plus the real-Postgres route contract suite (43 tests; CI `migrations` job, `npm run test:contract`) and 8 Playwright browser smokes (CI `e2e` job); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -1885,6 +2055,7 @@ npm test                                       # Run all tests (Perfin + Per-sis
 npm run test:e2e                               # Playwright browser smokes (needs local Postgres; see e2e/boot-server.js)
 npm run test:perfin                            # Perfin tests only (tests/*.test.js)
 npm run test:persistent                        # Per-sistant tests only
+CONTRACT_DATABASE_URL=postgres://… npm run test:contract  # real-Postgres route contract suite (tests/contract/; skips without the URL; creates/drops contract_* scratch DBs)
 npm run reset:fresh                            # DRY RUN: print what a fresh-start reset would wipe/keep
 npm run reset:fresh -- --yes                   # perform the reset (wipes data+config, keeps bank links)
 
@@ -1937,7 +2108,9 @@ POST /api/sync/reconcile   # backfill/reconcile to recover dropped transactions
                            # to 2 years of history and can take a minute.
 GET  /api/sync/reconcile/status # poll the background reconcile job
                            # { running, started_at, finished_at, provider, days,
-                           #   result, error }
+                           #   result, error, errors[] } — error also summarizes
+                           # per-item errors inside a leg (reconcileErrors, WD-17), so
+                           # Settings + the push say "finished with errors" for them
 POST /api/detect-transfers # run recurring transfer detection
 GET  /api/recurring-transfers # list recurring transfers (query: filter=active|dismissed|all)
 PATCH /api/recurring-transfers/:id/dismiss   # dismiss a recurring transfer
@@ -2025,7 +2198,9 @@ GET  /api/subscriptions    # list detected subscriptions
 GET  /api/accounts         # list linked accounts with balances (includes is_shared, spending_split_pct)
 PATCH /api/accounts/:id    # update account details (apr 0-99.99; monthly_payment > 0
                            # or null — the manual loan fields driving the payoff projection)
-PATCH /api/accounts/:id/shared # mark account as shared/joint (body: is_shared, spending_split_pct)
+PATCH /api/accounts/:id/shared # mark account as shared/joint (body: is_shared, spending_split_pct
+                           # — an integer 0-100, 400 otherwise; 0 = all the partner's.
+                           # `parseInt(x) || 100` used to turn 0 into 100 — WUI-6)
 PATCH /api/accounts/:id/balance # update balance fields (current_balance, available_balance, credit_limit)
 POST /api/accounts/manual  # create a manual (non-Teller, non-Plaid) account
                            # (type: depository | credit | loan — loan subtype defaults 'auto')
@@ -2077,7 +2252,11 @@ GET  /api/goals            # list financial goals with projections; each goal in
                            # and `current_amount_manual` — when the FK is set but the
                            # account is gone (orphaned), current_amount falls back to
                            # current_amount_manual so pre-link progress is preserved.
-GET  /api/goals/funding-options # depository + investment accounts a goal can link to (Phase C)
+GET  /api/goals/funding-options # depository + investment accounts a goal can link to (Phase C).
+                           # A linked_accounts brokerage that is also an active
+                           # investment_accounts row (the $0 Plaid phantom) is left out —
+                           # the getNetWorth dedupe (WD-10). The Goals page shows an
+                           # orphaned funding link as a warning, not "Auto-tracked".
 GET  /api/fire-projection  # FIRE number/progress/time-to-FIRE + spending runway.
                            # Inputs: getNetWorth + trailing COMPLETED months'
                            # income/spending averages (partial month excluded) +
@@ -2221,7 +2400,11 @@ POST /api/plaid/sync-transactions       # cursor-based sync for all plaid_items 
                                # `errors: [{ institution, error: "decryption_failed" | ... }]`
 GET  /api/plaid/holdings   # list investment holdings
 GET  /api/investments/performance # portfolio returns + asset-class allocation + top winners/losers
-                                  # (Plaid holdings only; auto-hides on dashboard when empty)
+                                  # (Plaid holdings only; auto-hides on dashboard when empty).
+                                  # total_return / per-class return over KNOWN-basis holdings;
+                                  # cost_basis_coverage { holdings_with_basis, holdings_total,
+                                  # value_with_basis, value_pct }; top_winners return_pct > 0,
+                                  # top_losers < 0 (BSI-5 / WD-17)
 GET  /api/investments/performance-history # portfolio value series vs S&P 500
                                   # (query: months=3-60 default 12). Portfolio = daily
                                   # account_balance_snapshots summed across ALL investment
@@ -2239,8 +2422,10 @@ GET  /api/investments/performance-history # portfolio value series vs S&P 500
                                   # computed over FLOW-COVERED accounts only (Plaid-synced
                                   # + any account with manual flows) with a flow_coverage
                                   # block ({coverage_pct, flows_count, net_flows, scope:
-                                  # all|partial|none}) so partial coverage is explicit
-                                  # rather than silently wrong.
+                                  # all|partial|none, accounts_added}) so partial coverage
+                                  # is explicit rather than silently wrong. An account that
+                                  # joins mid-window is an opening inflow (accountEntryFlows,
+                                  # BSI-6; counted in accounts_added).
 POST /api/plaid/sync-flows # sync external cash flows (deposits/withdrawals/in-kind
                            # transfers) from Plaid investmentsTransactionsGet into
                            # investment_flows. Full ~24-month window every run, idempotent
@@ -2909,7 +3094,9 @@ rows) can dismiss them from the UI or run `POST /api/cleanup`.
   requests) — @simplewebauthn v11 already defaults it true, so this is a
   defense-in-depth pin against a future SDK-default flip (PSA2).
 - **WebAuthn transports**: registration persists the authenticator's
-  `transports` (`webauthn_credentials.transports TEXT[]`), but BOTH
+  `transports` (`webauthn_credentials.transports TEXT[]` — the Settings register
+  flow sends `response.getTransports()`; before WD-13 it sent none, so every row
+  was NULL), but BOTH
   authenticate-options endpoints (shell + standalone) deliberately advertise
   `transports: ['internal']` ONLY in `allowCredentials` at login. Registration
   pins `authenticatorAttachment: 'platform'`, so every credential lives on the
@@ -3199,6 +3386,15 @@ SX3-pinned — the Sheets Income tab.
   than runtime tests but they avoid pulling `express-rate-limit` and other
   deps that aren't installed at the repo root, while still catching the most
   common regression: a code reviewer reverting a fix.
+- **Real code over replicas; real Postgres for route SQL (Batch 15).** A test
+  must exercise the production module — a test that re-implements the logic
+  inline (the old `tests/teller.test.js` and Per-sistant `api.test.js`) can never
+  fail on a production change and was deleted. Unit tests use mock pools; route
+  SQL that only Postgres can judge (casts, `text[]` params, JOIN aliasing, mount
+  order) is covered by `tests/contract/` against a real database with the real
+  server.js mount order. A bug a real-code test exposes is recorded as a
+  node:test `{ todo }` (or a guard `KNOWN_GAPS` entry) in a test-only batch and
+  fixed separately — never by weakening the assertion.
 - **Service worker excludes `/api/*`.** The SW caches static assets but never
   API responses. A stale balance shown after the network drops would mislead
   the user worse than a clear "offline" error.
@@ -3594,6 +3790,11 @@ SX3-pinned — the Sheets Income tab.
   no holdings, so the extra items are cheap. The helper runs in the bank
   auto-sync chain, the AI pre-insights chain, and `POST /api/sync-balances`;
   the `POST /api/plaid/sync-holdings` route is a thin wrapper around it.
+  **Plaid's holdings response is authoritative per account (BSI-4):**
+  `writePlaidHoldings` deletes the holdings of each account IN the response
+  that the response no longer lists, so a sale clears its row; accounts not in
+  the response (other items, manual accounts) are never touched. A missing
+  cost basis is NULL and excluded from returns, never treated as $0 (BSI-5).
 - **Plaid sync advances the cursor only on a fully-successful page.**
   `syncPlaidItemTransactions` processes each `transactionsSync` page, and if
   ANY row in the page fails to upsert it halts WITHOUT advancing the cursor —
@@ -3692,6 +3893,22 @@ SX3-pinned — the Sheets Income tab.
   (DC-1). When adding a literal path next to an existing `/:param` route in
   another module, mount the literal one's module earlier (the order is pinned
   by `tests/scan-sept-fixes.test.js`, which mounts modules in server.js order).
+
+## Known Open Issues
+The bugs Batch 15's real-code tests exposed (calendar 500, Quick Add regexes,
+palette picker under the shell, undefined CSS vars, unvalidated theme /
+perfin_url) and its contract-coverage gap were fixed by the follow-on batch
+(`.cycle/blocks/6-batch15-followons-broad-implement.md`). Still open:
+- Plaid's transaction upsert (`teller/routes/investments.js` `upsertTxn`) builds
+  the legacy `category` array as a concatenated `{a,b}` literal — the DC-14 class.
+  Plaid's legacy category names contain no commas/quotes today, so it doesn't
+  fire; it should take a `text[]` parameter like the CSV and manual paths.
+- Per-sistant Quick Add computes its due date with `toISOString()` (UTC), so
+  "tomorrow" typed late in the evening west of UTC lands a day late.
+- Per-sistant `PATCH /api/settings` still stores `session_timeout_minutes` and
+  `default_horizon` unvalidated.
+- The contract suite doesn't drive the Plaid item loop (`syncAllPlaidTransactions`
+  needs a Plaid client from env) or the Teller enroll / Plaid exchange routes.
 
 ## Git
 - Render deploys from `main` (configured in the Render dashboard, not in `render.yaml`)
@@ -3858,7 +4075,8 @@ Knowledge / RAG (Per-sistant):
    (fact_upcoming), routes/settings.js (vault config), ai.js (answerWithCitations),
    pages/settings.js + settings-script.js + pages/dashboard-script.js, server.js
    (vault-sync cron). CROSS-APP SEAM: rag.js reads Perfin's perfinPool
-   (linked_accounts, detected_subscriptions) read-only — a new seam between
+   (linked_accounts + investment_accounts via getNetWorth, detected_subscriptions)
+   read-only — a new seam between
    Knowledge and Perfin's Bank Sync & Ingestion / Financial Analytics.)
 Legacy Plaid Server:
   plaid/server.js
@@ -3897,15 +4115,15 @@ INV-24 | sheets-sync.syncAll isolates each tab (per-tab try/catch + errors[]) AN
 INV-25 | Embedded sub-apps detect req.app.get("embedded") and skip their own auth; cross-app calls use the wired pool (perfinPool/persistentPool), never HTTP self-fetch | Subsystem: Per-sistant Backend / Platform, Shell & Auth
 INV-26 | Teller transaction pagination terminates on an empty page (count-explicit + from_id), never a hard-coded page-size compare | Subsystem: Bank Sync & Ingestion | Verify: tests/cycle-fixes.test.js (BS-1 block)
 INV-27 | Only sensitivity='normal' docs/facts are embedded AND retrieved; private/secret are never embedded or sent to AI. Frontmatter sensitivity resolution FAILS CLOSED: YAML comments stripped, block lists parsed, yes/no/on/off understood, the most restrictive of sensitivity/embed/private wins, and any unrecognized value → private (KR-2). Hard-deleted notes/documents are never vector-retrieved (the joined source row must exist, KR-6) | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js (buildRetrievalQuery), tests/knowledge-facts.test.js, apps/per-sistant/tests/scan-sept-fixes.test.js (KR-2/KR-6)
-INV-28 | pgvector objects are created defensively (only if the `vector` extension is available); the migration succeeds and Knowledge degrades to keyword retrieval rather than failing boot | Subsystem: Knowledge / RAG | Verify: code read db/014_vault_vectors.sql + vault-sync.vectorReady
-INV-29 | Retrieval is HYBRID (vector + keyword legs fused via Reciprocal Rank Fusion, dedupe on kind:id) — either leg failing degrades to the other alone; /query & /diagram degrade to sources-only / null when AI is off or unavailable | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js, apps/per-sistant/tests/rag-v2.test.js
+INV-28 | pgvector objects are created defensively (only if the `vector` extension is available); the migration succeeds and Knowledge degrades to keyword retrieval rather than failing boot — and the vault sync still ingests documents + facts without Voyage/pgvector, embedding them later via the backfill (KR-3) | Subsystem: Knowledge / RAG | Verify: code read db/014_vault_vectors.sql + vault-sync.vectorReady
+INV-29 | Retrieval is HYBRID (vector + keyword legs fused via Reciprocal Rank Fusion, each leg ranked per distinct source — the vector leg over-fetched 4× and collapsed to the best chunk per source; keyword terms drop function-word stopwords; keyword hits carry the matching passage, KR-4) — either leg failing degrades to the other alone; /query & /diagram degrade to sources-only / null when AI is off or unavailable | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js, apps/per-sistant/tests/rag-v2.test.js
 INV-30 | Embedding dimension (1024) matches chunks.embedding vector(1024); a provider/dimension change is a re-embed migration, not a config flip | Subsystem: Knowledge / RAG | Verify: code read services/embeddings.js EMBED_DIM
 INV-31 | embed_state content-hash skip prevents re-embedding unchanged sources | Subsystem: Knowledge / RAG | Verify: code read vault-sync.embedSource
 INV-32 | Answer cache keyed on query+model+corpus_version ("<APP_TIMEZONE date>|" + notes+documents+facts+fact_verifications max(updated_at)+count — F14 folds in fact_verifications so verify/unverify invalidates; the date prefix (KR-5) expires cached answers when a fact's valid_from/valid_to boundary passes, and vault re-syncs no longer bump updated_at on unchanged documents/facts), with a SEMANTIC fallback layer (query-embedding cosine >= 0.97, same model+corpus_version+TTL — RAG v2, db/019); a SEMANTIC hit returns sources_from_similar_query=true (the cached sources reflect the original query's retrieval and the answer's [n] links are tied to that ordering, so they're kept, not re-retrieved — the Knowledge page caveats it; F12); finance-grounded answers bypass both layers | Subsystem: Knowledge / RAG | Verify: tests/knowledge-cache.test.js + apps/per-sistant/tests/rag-v2.test.js + routes/rag.js useCache gate
 INV-33 | Vault sync is read-only (VAULT_GITHUB_TOKEN); capture writes only with the separate write-scoped VAULT_GITHUB_WRITE_TOKEN (400 until set) | Subsystem: Knowledge / RAG | Verify: tests/knowledge-capture.test.js
 INV-34 | Citations enabled all-or-none per request; incompatible with structured outputs (unused here) | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js (answerWithCitations)
 INV-35 | Cross-app finance grounding reads perfinPool read-only, only on finance queries, never an HTTP self-fetch (parallels INV-25) | Subsystem: Knowledge / RAG | Verify: tests/knowledge-crossapp.test.js
-INV-36 | Single in-process vault-sync lock (isSyncing) prevents overlapping cron/reindex/GH-Action runs — BOTH syncVault AND syncNotes acquire it (busy→no-op), so the cron's notes phase can't overlap a concurrent reindex (K4); vault_last_sha advances only on success (errors stamp vault_last_error) | Subsystem: Knowledge / RAG | Verify: code read vault-sync.syncVault + syncNotes
+INV-36 | Single in-process vault-sync lock (isSyncing) prevents overlapping cron/reindex/GH-Action runs — BOTH syncVault AND syncNotes acquire it (busy→no-op), claimed synchronously before the first await (KR-8), so the cron's notes phase can't overlap a concurrent reindex (K4); vault_last_sha and vault_last_synced_at advance only when EVERY file succeeded (a failing file is isolated, removals run first, the error is recorded and the next sync retries the range — KR-7/KR-11); vault_last_attempt_at stamps every run | Subsystem: Knowledge / RAG | Verify: code read vault-sync.syncVault + syncNotes
 INV-37..47 | RETIRED — assigned by the cycle-3 reflect but their definitions were never written into the repo and are unrecoverable; numbers burned, never reuse (their subject matter — the cycle-3 fixes — is test-pinned via tests/cycle-fixes.test.js + audit-regressions) | — | Verify: n/a
 INV-48 | SPLIT_AMOUNT / INCOME_PREDICATE / NOT_TRANSFER are never re-inlined: every spending aggregation imports from financial-queries.js (aliased variants via incomePredicate(alias) or derived in place via .replace); the only permitted literal copies are scripts/sheets-sync.js (full structure byte-pinned by SX3) + apps-script/Code.gs (legacy, unpinned) | Subsystem: Financial Analytics (seam) | Verify: tests/seams-audit.test.js repo-wide literal-CASE scan
 INV-49 | Every member of Perfin's EMAIL_EVENTS set is accepted AND named (sendNameByEvent) by Per-sistant's HTTP webhook receiver — an unrecognized email event is 200-and-dropped in standalone deployments | Subsystem: Settings, Notifications & Cross-app (seam) | Verify: tests/seams-audit.test.js symmetry pin
@@ -3925,7 +4143,7 @@ INV-62 | The shell sets a nonce CSP + frame-ancestors 'none' + X-Frame-Options o
 INV-63 | Per-sistant's shared fetch wrapper (apps/per-sistant/views/js.js) redirects once to the root /login on a 401 or a followed 302→/login (session expiry), loop-guarded, returning the Response unchanged to callers — parity with Perfin INV-61, so an idle-timeout never leaves a blank/error page. The check uses indexOf('/login'), NOT a regex, because the module is one backtick template literal that eats regex backslashes (see Per-sistant CLAUDE.md gotcha) | Subsystem: Per-sistant Web UI | Verify: code read views/js.js fetch wrapper
 INV-64 | Job Radar's AI passes (job_fit + legitimacy) are cap-charged: cappedCall reads getAiBudgetCents()+monthlyAiSpendCents() and throws { code:'CAP' } BEFORE calling the model when over budget; on a successful call it charges an ai_usage row via recordAiUsage in a `finally` (idempotent, only when tokens were consumed). The 10 pre-existing Per-sistant AI features still use the uncapped callAI (unchanged) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (cappedCall charge-on-success + throw-CAP-before-model-call)
 INV-65 | Job Radar ingest is content_hash-idempotent: dedupPersist upserts ON CONFLICT (content_hash) and counts genuine inserts via (xmax = 0), so a re-run over identical listings adds 0, no duplicate rows. Retention strips old new/dismissed descriptions but KEEPS the hash+status tombstone so a dismissed job re-ingested stays dismissed | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (dedup idempotency, retention)
-INV-66 | gatherJobRadarSummary is the SINGLE fail-soft aggregator feeding the /jobs page, the notification check, and the AI daily-briefing line (the gatherHealthSummary pattern) — a query error returns the safe empty shape, never 500s those surfaces; the notif-check + briefing call it gated on job_radar_enabled. Listing status changes ARCHIVE (saved/applied/dismissed), never hard-delete | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (aggregator fail-soft + archive-not-delete)
+INV-66 | gatherJobRadarSummary is the SINGLE fail-soft aggregator feeding the /jobs page, the notification check, and the AI daily-briefing line (the gatherHealthSummary pattern) — a query error returns the safe empty shape, never 500s those surfaces; the notif-check + briefing call it gated on job_radar_enabled. Listing status changes ARCHIVE (saved/applied/dismissed), never hard-delete, and removing a target company deactivates it (active=false — the db/021 seed would re-insert a deleted row) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (aggregator fail-soft + archive-not-delete)
 INV-67 | Every transaction-sync trigger (POST /api/sync + daily-sync.yml, bank auto-sync, pre-insights chain) goes through syncAllTransactions — Teller then Plaid, each failure-isolated — and runAnomalyCheck runs ONCE over the combined added count; reconcile/backfill never runs it | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-sept-batch2.test.js (BSI-2 / DD-1 block)
 INV-68 | last_sync_result is merged PER PROVIDER (a write replaces only the providers it ran; null result = untouched), never last-writer-wins; errors[] is the flat union | Subsystem: Bank Sync & Ingestion / Data Freshness | Verify: tests/scan-sept-batch2.test.js (BSI-11 block)
 INV-69 | incomePredicate(alias) qualifies EVERY outer column reference with the caller's alias, including inside the __t2 double-count guard (an unqualified ref inside a subquery resolves to the subquery's own table) | Subsystem: Financial Analytics | Verify: tests/scan-sept-batch3.test.js (FAN-2) + tests/ops-and-alerts.test.js
@@ -3943,6 +4161,19 @@ INV-81 | scripts/reset-fresh.js classifies EVERY table the Perfin migrations cre
 INV-82 | Sheets formatting is re-runnable: formatSheet deletes a tab's banding + conditional-format rules before re-adding them (Dashboard also resets cell formats), so a second syncAll over the same spreadsheet succeeds | Subsystem: Sheets & External Export | Verify: tests/scan-sept-batch10.test.js (SXE-2 block, stateful fake Sheets API)
 INV-83 | No exported text is ever evaluated as a formula: Sheets writes go through guardSheetsWrites (strings starting = + - @ tab/CR, or date-shaped, are "'"-prefixed; only sheetFormula() values pass through) and every CSV download builds text cells with csvText | Subsystem: Sheets & External Export | Verify: tests/scan-sept-batch10.test.js (SXE-13 block)
 INV-84 | A month archive tab is written only once the month is settled (month-end + 10 days) and is final only with its completion marker; an unmarked archive is rebuilt, never trusted | Subsystem: Sheets & External Export | Verify: tests/scan-sept-batch10.test.js (SXE-3 block)
+INV-85 | A failed Knowledge sync is visible: vault_last_synced_at means last SUCCESS (vault_last_attempt_at records attempts), /api/rag/status reports reindex.ok, the knowledge-reindex Action polls it and fails on ok:false, and the notification check raises vault_sync_error while vault_last_error is set | Subsystem: Knowledge / RAG | Verify: apps/per-sistant/tests/scan-sept-batch11.test.js (KR-11 block)
+INV-86 | A capture marked private or secret is never sent to the AI for structuring and is committed with that sensitivity; model-supplied fields never write reserved frontmatter keys (type/sensitivity/embed/private/valid_*…) | Subsystem: Knowledge / RAG | Verify: apps/per-sistant/tests/scan-sept-batch11.test.js (KR-10 block)
+INV-87 | Plaid holdings mirror Plaid's response per returned account: every holdings write goes through writePlaidHoldings, which prunes that account's positions no longer returned (other accounts untouched); an unknown cost basis is stored NULL and never counted as a $0 basis in returns (cost_basis_coverage reports the known share) | Subsystem: Bank Sync & Ingestion / Financial Analytics | Verify: tests/scan-sept-batch12.test.js (BSI-4 / BSI-5 blocks)
+INV-88 | TWR/XIRR treat an account that first appears mid-window as an opening inflow on its first snapshot date (its own flows on/before that date are part of the balance), never as investment return | Subsystem: Bank Sync & Ingestion (investment-performance.js) | Verify: tests/scan-sept-batch12.test.js (BSI-6 block)
+INV-89 | Every Perfin page write reports its outcome: the response goes through writeOk (2xx → continue, else a toast with the server's error), never `await apiFetch(...)` then assume success; prompt amounts go through parseAmountInput and a non-number is refused | Subsystem: Web UI | Verify: tests/scan-sept-batch13.test.js (WUI-6 / WD-12 blocks)
+INV-90 | Every Perfin modal (and the bell panel) is a dialog via openDialog / watchDialog — role="dialog" aria-modal, focus moved in, Tab trapped, Esc closes, focus restored; and every var(--x) used without a fallback is defined in perfin-shared.css | Subsystem: Web UI | Verify: tests/scan-sept-batch13.test.js (IF-1 / IF-4 blocks)
+INV-91 | The Job Radar main bucket (and so top_pick, the job_radar notification and the briefing line) holds only listings with trust ≥ 60, a NON-NULL fit_score ≥ 65 and no 'suspect' verdict; an unscored or suspect listing is "verify first", a 'scam' verdict is never shown, and a 'new' listing ≥ STALE_DAYS behind the latest refresh's last_seen is dropped; each refresh re-scores trust for every live listing (keeping a Claude verdict) and a profile text edit clears the fit scores | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch14.test.js (PB-4 / PB-5 / PB-6 blocks)
+INV-92 | The Per-sistant service worker never reports a queued write as success (offline → 503 ok:false), never queues send / refresh / AI / RAG / auth writes, never caches /api/rag/secret* or auth responses, and removes a queued entry only on a definitive answer (2xx or a non-retryable 4xx) or after 24h | Subsystem: Per-sistant Web UI | Verify: apps/per-sistant/tests/scan-sept-batch14.test.js (PB-17 block — the emitted sw.js run in a vm)
+INV-93 | Every stored automation is validated by helpers.validateAutomationRule (runnable trigger/action pair for the trigger's entity, required value, priority/horizon enums) on POST and merged PATCH, runAutomations skips an invalid stored rule and isolates each rule in its own try/catch, and a set_* action only ever touches the todo that fired it | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch14.test.js (PD-6 block)
+INV-94 | A change to route SQL or router mounting keeps the real-Postgres contract suite green: tests/contract/ runs both apps' own migrations and mounts every router in the order parsed from teller/server.js and apps/per-sistant/server.js with the real deps object — if either server.js's mount spelling changes, the parser regexes (pinned by scan-sept-batch15) must be updated, never bypassed | Subsystem: Test Coverage Quality (all route subsystems) | Verify: CI migrations job (npm run test:contract) + tests/scan-sept-batch15.test.js (contract wiring)
+INV-95 | Source guards (un-nonced style, root-relative navigation, undefined CSS vars) carry a KNOWN_GAPS list that only shrinks: a new offender fails, and so does a listed entry that no longer occurs; a test never re-implements production logic inline (TQ-1) | Subsystem: Test Coverage Quality | Verify: tests/scan-sept-batch15.test.js
+INV-96 | Every Per-sistant routes/*.js factory destructures only keys present in server.js's `const deps = { pool, config, helpers, views }` — a helper is read off `helpers`, never expected as its own dep (calendar.js read `advanceRecurrence` off deps, got undefined, and 500'd) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/batch15-followons.test.js (FO-1 guard) + tests/contract (persistentApp builds routers with the real deps)
+INV-97 | No Per-sistant client template-literal module (a pages/ or views/ file that exports a string) contains a single-escaped regex class or delimiter (\b \d \s \w \/ \. …) — the template consumes the backslash, so the regex silently changes meaning in the browser; double-escape or use string methods | Subsystem: Per-sistant Web UI | Verify: apps/per-sistant/tests/batch15-followons.test.js (FO-2 guard)
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
 ### Policy Configuration
@@ -3991,7 +4222,7 @@ SK2 | Knowledge privacy | Subsystem: Knowledge / RAG
 SK3 | pgvector unavailable | Subsystem: Knowledge / RAG
   Steps:
     - Boot against a Postgres without the `vector` extension available
-  Expected: migration still succeeds (no boot crash); Knowledge serves keyword retrieval
+  Expected: migration still succeeds (no boot crash); the vault sync still ingests documents + facts (embeddings: false); Knowledge serves keyword retrieval
 SK4 | Capture write-gating | Subsystem: Knowledge / RAG
   Steps:
     - POST /api/rag/capture with VAULT_GITHUB_WRITE_TOKEN unset, then set
@@ -4012,5 +4243,5 @@ Sheets & External Export: Apps Script side deploys via clasp — `clasp push` fr
 ### Cycle Rotation Plan
 Recommended first subsystem: Bank Sync & Ingestion (widest blast radius — every downstream number depends on correct transaction data; most invariants; richest recent bug history).
 Recommended order (frozen excluded): Bank Sync & Ingestion → Financial Analytics → Detection & Categorization → AI Insights & Audit → Knowledge / RAG (Per-sistant) → Platform, Shell & Auth → Settings, Notifications & Cross-app → Sheets & External Export → Web UI (Perfin) → Per-sistant Backend → Per-sistant Web UI.
-Seams audit frequency: every 3 subsystem cycles (focus: enrollments.js, subscriptions.js, settings.js, financial-queries.js, notifications.js, the Per-sistant integration seam routes/perfin.js + routes/webhooks.js, and the Knowledge↔Perfin seam — rag.js's read-only perfinPool use of linked_accounts/detected_subscriptions).
+Seams audit frequency: every 3 subsystem cycles (focus: enrollments.js, subscriptions.js, settings.js, financial-queries.js, notifications.js, the Per-sistant integration seam routes/perfin.js + routes/webhooks.js, and the Knowledge↔Perfin seam — rag.js's read-only perfinPool use of getNetWorth (linked_accounts/investment_accounts) + detected_subscriptions).
 Confidence: Bank Sync, Analytics, Detection, AI, Platform = High; Integrations, Sheets, Web UI, Per-sistant Backend, Per-sistant Web UI, Knowledge / RAG = Medium (Knowledge: new code, heavily tested, but unexercised against a live vault/Voyage/pgvector).

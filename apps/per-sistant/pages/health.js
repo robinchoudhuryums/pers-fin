@@ -238,7 +238,7 @@ function renderMetricCards() {
   if (!latestMetrics.length) { document.getElementById('metric-cards').innerHTML = '<div class="empty-msg">No measurements yet.</div>'; return; }
   document.getElementById('metric-cards').innerHTML = latestMetrics.map(function(m) {
     var when = m.recorded_on ? new Date(m.recorded_on).toISOString().split('T')[0] : '';
-    return '<div class="card" data-action="showChart" data-metric="'+escAttr(m.metric)+'" style="cursor:pointer;" title="Show trend">' +
+    return '<div class="card" role="button" tabindex="0" aria-label="'+escAttr('Show trend: '+m.metric)+'" data-action="showChart" data-metric="'+escAttr(m.metric)+'" style="cursor:pointer;" title="Show trend">' +
       '<div class="label">'+esc(m.metric)+'</div><div class="value teal">'+(+m.value)+(m.unit?' <span style="font-size:12px;color:var(--muted);">'+esc(m.unit)+'</span>':'')+'</div>' +
       '<div style="font-family:var(--mono);font-size:9px;color:var(--muted);">'+when+'</div></div>';
   }).join('');
@@ -322,7 +322,7 @@ function cellClick(id, date, value) {
 function renderDayChecks(selected) {
   document.getElementById('h-days-wrap').innerHTML = DOW.map(function(d, i) {
     var on = (selected||[]).indexOf(i) >= 0;
-    return '<button type="button" data-action="dayToggle" data-day="'+i+'" class="'+(on?'active':'')+'">'+d+'</button>';
+    return '<button type="button" data-action="dayToggle" data-day="'+i+'" aria-pressed="'+on+'" class="'+(on?'active':'')+'">'+d+'</button>';
   }).join('');
 }
 
@@ -436,7 +436,7 @@ onDelegate('today-list','click','[data-action="editHabit"]',function(){openEdit(
 onDelegate('week-grid','click','[data-action="cell"]',function(){cellClick(parseInt(this.dataset.id), this.dataset.date, Number(this.dataset.value));});
 onDelegate('metric-cards','click','[data-action="showChart"]',function(){showChart(this.dataset.metric);});
 onDelegate('archived-list','click','[data-action="restore"]',function(){restoreHabit(parseInt(this.dataset.id));});
-onDelegate('h-days-wrap','click','[data-action="dayToggle"]',function(){this.classList.toggle('active');});
+onDelegate('h-days-wrap','click','[data-action="dayToggle"]',function(){this.classList.toggle('active');this.setAttribute('aria-pressed',this.classList.contains('active')?'true':'false');});
 </script>
 </body></html>`);
   };

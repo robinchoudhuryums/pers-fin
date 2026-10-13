@@ -55,6 +55,12 @@ ${navBar("/knowledge")}
     <p style="font-size:11px;color:var(--muted);margin:8px 0;">Paste an email or jot a note &mdash; it's structured into a note or fact and committed to your vault. Requires a write-scoped token (<code>VAULT_GITHUB_WRITE_TOKEN</code>).</p>
     <textarea id="k-capture-text" rows="3" placeholder="Paste or type something to save to your vault&hellip;" style="width:100%;min-height:64px;"></textarea>
     <div class="actions" style="margin-top:8px;">
+      <label for="k-capture-sensitivity" style="font-size:11px;color:var(--muted);align-self:center;">Sensitivity</label>
+      <select id="k-capture-sensitivity" title="Private and secret captures are never sent to AI">
+        <option value="normal">Normal</option>
+        <option value="private">Private (not searchable by AI)</option>
+        <option value="secret">Secret (secret lookup only)</option>
+      </select>
       <button class="btn primary" id="k-capture-btn">Capture</button>
       <span id="k-capture-status" style="font-family:var(--mono);font-size:10px;color:var(--muted);align-self:center;line-height:1.5;"></span>
     </div>
@@ -184,7 +190,10 @@ async function loadKStatus(){
     if(st.counts) bits.push(st.counts.embedded + ' sources embedded');
     if(st.counts && st.counts.facts) bits.push(st.counts.facts + ' facts');
     if(st.vault && st.vault.enabled && st.vault.last_synced_at) bits.push('vault synced ' + new Date(st.vault.last_synced_at).toLocaleString());
-    if(st.vault && st.vault.last_error) bits.push('vault error: ' + st.vault.last_error);
+    if(st.vault && st.vault.last_error){
+      bits.push('vault error' + (st.vault.last_attempt_at ? ' (last attempt ' + new Date(st.vault.last_attempt_at).toLocaleString() + ')' : '') + ': ' + st.vault.last_error);
+    }
+    if(st.reindex && !st.reindex.running && st.reindex.ok === false && st.reindex.error) bits.push('last reindex failed: ' + st.reindex.error);
     el.textContent = bits.join('  ·  ');
     var btn = document.getElementById('k-reindex-btn');
     if(btn) btn.disabled = !!(st.reindex && st.reindex.running);
@@ -210,7 +219,7 @@ async function capture(){
   var btn = document.getElementById('k-capture-btn');
   st.textContent = 'Saving…'; btn.disabled = true;
   try {
-    var r = await fetch('/api/rag/capture', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})}).then(function(r){return r.json();});
+    var r = await fetch('/api/rag/capture', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t, sensitivity:document.getElementById('k-capture-sensitivity').value})}).then(function(r){return r.json();});
     if(r.error){ st.textContent = r.error; return; }
     st.innerHTML = 'Saved as <code>'+esc(r.path)+'</code> ('+esc(r.type)+'). Searchable after the next sync.';
     document.getElementById('k-capture-text').value = '';

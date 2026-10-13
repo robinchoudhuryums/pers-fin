@@ -16,9 +16,19 @@ function parseMoney(raw) {
   let s = String(raw).trim();
   if (s === "") return NaN;
   let sign = 1;
+  // Statement-style CR / DR suffix (BSI-16): "45.00 CR" is a credit (refund,
+  // payment, deposit) and "45.00 DR" a debit. Interpreted in this app's
+  // debit-positive convention — CR → negative, DR → positive — which is what
+  // a file carrying these markers means (formats that negate a signed Amount
+  // column, like Chase, don't use them). Previously both returned +45.
+  const crdr = s.match(/^(.*?)\s*(CR|DR)\.?$/i);
+  if (crdr) { if (crdr[2].toUpperCase() === "CR") sign = -sign; s = crdr[1].trim(); }
   // Accounting-style parenthesized negatives, e.g. "(45.00)".
-  if (/^\(.*\)$/.test(s)) { sign = -1; s = s.slice(1, -1); }
+  if (/^\(.*\)$/.test(s)) { sign = -sign; s = s.slice(1, -1); }
   s = s.replace(/[$,\s]/g, "");
+  // Trailing minus, e.g. "45.00-" (BSI-16 — parseFloat stopped at the "-"
+  // and returned +45, flipping the row's sign).
+  if (/^[\d.]+-$/.test(s)) { sign = -sign; s = s.slice(0, -1); }
   if (s === "") return NaN;
   const n = parseFloat(s);
   return isNaN(n) ? NaN : sign * n;
@@ -32,6 +42,22 @@ const CSV_FORMATS = {
       merchant_name: row["Description"],
       amount: -parseMoney(row["Amount"]),
       category: row["Category"] || "",
+    }),
+  },
+  // Chase CHECKING / savings export (BSI-16): "Details, Posting Date,
+  // Description, Amount, Type, Balance, Check or Slip #". Amount is signed with
+  // money OUT negative, so negate to the debit-positive convention (same as the
+  // Chase card format). Type is the transaction kind (DEBIT_CARD, ACH_CREDIT…),
+  // not a spending category, so it isn't used as one. It used to fall through
+  // to "generic", which read the date from the Details column ("DEBIT") and
+  // skipped every row.
+  chase_checking: {
+    detect: (headers) => headers.includes("Details") && headers.includes("Posting Date") && headers.includes("Description") && headers.includes("Amount"),
+    parse: (row) => ({
+      date: row["Posting Date"],
+      merchant_name: row["Description"],
+      amount: -parseMoney(row["Amount"]),
+      category: "",
     }),
   },
   capitalone: {
@@ -133,6 +159,7 @@ const CSV_FORMATS = {
 // for the same row instead of double-importing (F2).
 const INSTITUTION_LABELS = {
   chase: "Chase",
+  chase_checking: "Chase Checking",
   wellsfargo: "Wells Fargo",
   capitalone: "Capital One",
   discover: "Discover",

@@ -46,7 +46,7 @@ function startKeepAlive(port) {
       return;
     }
     try {
-      await fetch(pingUrl);
+      await fetch(pingUrl, { signal: AbortSignal.timeout(10000) }); // PB-19: never hang the tick
     } catch (err) {
       console.warn("Keep-alive ping failed:", err.message);
     }

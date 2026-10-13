@@ -181,6 +181,10 @@
       if (!form || !input || !wrap || !dotsEl || !padEl) return;
 
       var DOTS = 8;
+      // IF-6: the dots are a fixed-width mask, not a limit — a PIN longer
+      // than 8 digits used to be impossible to type on the pad. 64 is just a
+      // runaway guard.
+      var MAX_PIN = 64;
       var pin = '';
 
       // Swap the plain field for the pad.
@@ -209,7 +213,7 @@
         }
         input.value = pin;
       }
-      function add(n) { if (pin.length >= DOTS) return; pin += n; render(); }
+      function add(n) { if (pin.length >= MAX_PIN) return; pin += n; render(); }
       function back() { pin = pin.slice(0, -1); render(); }
       function go() { if (pin.length) form.submit(); }
 
@@ -222,6 +226,13 @@
         else if (b.dataset.action === 'go') go();
       });
       document.addEventListener('keydown', function (e) {
+        if (e.ctrlKey || e.metaKey || e.altKey) return;
+        // IF-6: leave Enter to another focused control (e.g. the biometric
+        // button) — it used to submit the PIN form instead of pressing the
+        // focused button. Digits/Backspace always go to the pad.
+        var t = e.target;
+        if (e.key === 'Enter' && t && t !== document.body && !(t.closest && t.closest('#pin-pad')) &&
+            /^(BUTTON|A|INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) return;
         if (/^[0-9]$/.test(e.key)) { add(e.key); }
         else if (e.key === 'Backspace') { e.preventDefault(); back(); }
         else if (e.key === 'Enter') { e.preventDefault(); go(); }

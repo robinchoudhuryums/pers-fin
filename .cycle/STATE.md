@@ -9,7 +9,181 @@ to the "none in progress" state.
 
 ## Current Cycle
 
-- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 10 DONE** on branch
+- **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 15 follow-ons DONE** on branch
+  `claude/lucid-darwin-7r8e59` (2026-10-10). The bugs Batch 15's real-code tests exposed are
+  fixed and the contract-coverage gap is closed (all unmerged with Batches 11–15, no PR).
+  - **Completed:** FO-1 (/api/calendar 500 — router now reads advanceRecurrence from helpers),
+    FO-2 (Quick Add regexes double-escaped), FO-3 (palette picker under the shell), FO-4
+    (views/js.js on current theme tokens), FO-5 (theme + perfin_url validated), FO-6 (contract tests
+    for the Teller/Plaid sync engines, categorize, generateInsights + audit, and the Knowledge
+    pipeline). Guards added: router deps ⊆ server.js deps; no single-escaped regex in client
+    template literals. Batch 15 KNOWN_GAPS lists are empty.
+  - **Not finished (selected):** none.
+  - **Tests:** npm test 1489/1489, 0 todo (Perfin 1033 + Per-sistant 456; 67 files). Contract 43/43,
+    0 todo (with and without pgvector). Playwright smokes + temporary follow-on specs green.
+  - **Decisions:** calendar router takes `helpers` (no new dep key); perfin_url stored trimmed
+    without a trailing slash; undo button text uses --paper so it reads on the mono-dark accent.
+  - **Open follow-ons:** see `.cycle/blocks/6-batch15-followons-broad-implement.md` — Plaid
+    legacy-category array literal (DC-14 class), Quick Add UTC due date, unvalidated
+    session_timeout_minutes/default_horizon, no contract test of the Plaid item loop / Teller enroll.
+  - **Operator:** none required.
+  - **Where I left off:** committed and pushed (no PR). /sync-docs DONE (follow-ons): counts
+    1489/67 + contract 43, Known Open Issues rewritten to the remaining items, INV-96/97, Per-sistant
+    feature + gotcha notes, README. NEXT: a PR for Batches 11–15 + follow-ons when the operator asks.
+
+- **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 15 DONE** on branch
+  `claude/lucid-darwin-7r8e59` (2026-10-09). Batch 15 (test-quality guards) implemented on top of
+  Batches 11–14 (all unmerged, no PR), tested, pushed. Test/CI changes only — no production code.
+  - **Completed:** TQ-2 (tests/contract/ real-Postgres route contract suite — financial queries,
+    housing + settle-up, calendar + exports, transaction writes + CSV import, Per-sistant routes;
+    `npm run test:contract`; CI `migrations` job step), TQ-1 (tests/teller.test.js + Per-sistant
+    api.test.js rewritten against the real code; replicas/tautologies deleted), source guards
+    (tests/scan-sept-batch15.test.js: style nonce, root-relative navigation, undefined CSS vars,
+    contract wiring).
+  - **Not finished (selected):** none.
+  - **Tests:** npm test 1475/1475 + 2 todo (Perfin 1033 + Per-sistant 442; 66 files). Contract
+    suite 27 pass + 1 todo on local PG16; mutation check (FAN-1 cast, DC-1 mount order, SXE-8
+    dates) turns it red.
+  - **Decisions:** one scratch DB per contract file; full real mount order in the contract app;
+    pre-existing bugs found by the new tests are recorded as node:test `todo`s / guard KNOWN_GAPS
+    (reported, not CI-red) rather than fixed in a test batch.
+  - **Open follow-ons:** see `.cycle/blocks/6-batch15-broad-implement.md` — /api/calendar 500
+    (advanceRecurrence), quick-add regexes lose `\b`, settings-patch pathname, Per-sistant legacy
+    CSS vars, unvalidated perfin_url/theme.
+  - **Operator:** none required.
+  - **Where I left off:** Batch 15 committed and pushed (no PR). This was the last planned batch of
+    the Sept 2026 broad scan. /sync-docs DONE (Batch 15): root CLAUDE.md (counts 1475/66, batch15 + tests/contract entries, ci.yml contract step, `npm run test:contract`, a real-code/contract Key Design Decision, INV-94/95, a Known Open Issues section), apps/per-sistant/CLAUDE.md (442, api.test.js real-code, Known Open Issues), README. NEXT: the follow-ons above (open a PR for Batches 11–15 when the operator asks).
+
+- **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 14 DONE** on branch
+  `claude/lucid-darwin-7r8e59` (2026-10-09). Batch 14 (Per-sistant correctness & UI)
+  implemented on top of Batches 11–13 (all unmerged, no PR), tested, pushed.
+  - **Completed:** PB-4, PB-5, PB-6, PB-9 (Job Radar: profile edit clears embedding + fits; live
+    re-score, fit backfill, stale exclusion, unscored = verify-first, batched embeds; scam hidden /
+    suspect verify-first; dismiss no longer penalizes the source), PB-7 (+PD-10, company remove =
+    deactivate), PB-17 (SW 503 + exclusions + safe replay), PB-19 (timeouts), PD-5 (location on
+    create + recurrence), PD-6 (automation validation + wiring + per-rule isolation), PD-7 (Ask /
+    Smart Suggestions models, db/024), PD-9 (single-recipient validation), PD-11 (iCal), PD-12
+    (dependencies), PD-13 (templates), PD-14 (review overdue), PUI-3..PUI-8 (undo semantics, Jobs
+    views + errors, keyboard + dialogs, webhook events, http(s) apply links, keep-alive embedded).
+  - **Not finished (selected):** none. PB-8, PB-16, PB-18, PB-20 deferred per the plan.
+  - **Tests:** 1647/1647 (Perfin 1025 + Per-sistant 622; 65 files). New
+    apps/per-sistant/tests/scan-sept-batch14.test.js (45; 42 fail pre-fix). Real PG: migrations ×2
+    incl. db/024 + every new SQL path. Browser: keyboard task toggle + recurring undo, dialog
+    Esc/focus, Jobs views, embedded keep-alive; 156 inline page scripts node --check clean.
+  - **Decisions:** PB-9 resolved by dropping the dismiss penalty + nudging only on a status change
+    (no company-trust table); stale = 14 days behind the latest refresh (not wall-clock); Ask
+    defaults to Haiku (user-initiated), Smart Suggestions inherits the briefing model; SW replays
+    keep 401/408/429/5xx and drop >24h entries; recurring undo deletes only an untouched next
+    instance (<1 day old) and steps the streak back by one.
+  - **Open follow-ons:** see `.cycle/blocks/6-batch14-broad-implement.md` — notably the
+    PRE-EXISTING `/api/calendar` 500 (calendar router never receives advanceRecurrence).
+  - **Operator:** none required.
+  - **/sync-docs DONE (Batch 14):** apps/per-sistant/CLAUDE.md — Job Radar (main needs a scored
+    fit, verify-first semantics, stale/scam handling, live re-score + fit backfill, profile-edit
+    reset, company deactivate, dismiss nudge, page views/errors, http(s) links, timeouts),
+    Offline Support (503 + exclusions + replay rules), Automations (triggers/actions, validation,
+    wiring, isolation), Ask/Smart Suggestions models (db/024), recipient + webhook-events validation,
+    iCal, dependencies, templates, weekly review, Undo (no send undo; recurring undo endpoint),
+    keyboard + dialogs, location, keep-alive, key files, API list, counts 622. Root CLAUDE.md —
+    counts 1647/65 (Per-sistant 622), batch14 test description, INV-66 extended (company
+    deactivate), NEW INV-91 (Job Radar buckets), INV-92 (service worker), INV-93 (automations).
+    README — counts + Batch 14 coverage. Subsystem paths resolve (globs). Operator state: none new
+    (db/024 auto-migrates; Ask defaults to Haiku — noted in the Per-sistant docs).
+  - **Where I left off (then):** Batch 14 and its docs committed and pushed.
+
+- **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 13 DONE** on branch
+  `claude/lucid-darwin-7r8e59` (2026-10-09). Batch 13 (Perfin UI correctness & accessibility)
+  implemented on top of Batches 11–12 (all unmerged, no PR), tested, pushed.
+  - **Completed:** WD-4, WD-5 (pyramid shapes; server net worth; loans in debt), WUI-6, WD-12
+    (writeOk on every listed write; 0% share kept client+server; NaN prompts refused), WD-7, WD-8
+    (CSV Auto-detect + Accounts preview; Plaid pre-build removed), WD-9, WD-11, WD-13, WD-15, IF-1
+    (openDialog/watchDialog on all modals + bell panel), IF-2..IF-7 (calendar buttons, labels, CSS
+    tokens, light-theme contrast, PIN pad, notification links).
+  - **Not finished (selected):** none.
+  - **Tests:** 1602/1602 (Perfin 1025 + Per-sistant 577; 64 files). New tests/scan-sept-batch13.test.js
+    (30; 29 fail pre-fix). Browser: 10 pages error-free, dialog trap/Esc/restore, light-theme
+    on-teal, Add Goal, Accounts CSV preview+import, PIN > 8 digits; e2e 8/8.
+  - **Decisions:** debt baseline acts as a high-water mark (raised when debt exceeds it); pyramid net
+    worth reads the latest snapshot rather than a new endpoint; dialogs via a MutationObserver
+    watcher so pages keep their own show/hide code; PIN-pad guard limited to Enter.
+  - **Open follow-ons:** see `.cycle/blocks/6-batch13-broad-implement.md`.
+  - **Operator:** none required.
+  - **/sync-docs DONE (Batch 13):** CLAUDE.md — perfin-shared.js (writeOk / parseAmountInput /
+    openDialog / watchDialog conventions) + perfin-shared.css (defined token aliases, --on-teal,
+    opaque options/modals) architecture entries, CSV import (Auto-detect default + Accounts
+    preview), loan accounts (UI form), account history (debt display, reset), pyramid modes,
+    bill calendar keyboard, notification links, accessibility, PIN pad, shared-split endpoint
+    validation, WebAuthn transports now stored, NEW INV-89 (writes report outcome) + INV-90
+    (dialogs + defined CSS vars), test counts 1602/64 (Perfin 1025) + batch13 description.
+    README — counts + Batch 13 coverage. Subsystem paths resolve. Operator state: none new.
+  - **Where I left off (then):** Batch 13 and its docs committed and pushed.
+
+- **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 12 DONE** on branch
+  `claude/lucid-darwin-7r8e59` (2026-10-09). Batch 12 (Investments) implemented on top of
+  Batch 11 (both unmerged, no PR), tested, pushed.
+  - **Completed:** BSI-4 (prune holdings Plaid no longer returns), BSI-5 (NULL cost basis +
+    known-basis return + cost_basis_coverage; Sheets + dashboard), BSI-6 (mid-window account entry
+    flows in TWR/XIRR), WD-2 (sparkline history source), WD-10 (funding-options phantom dedupe +
+    orphan warning), WD-17 (winners/losers filtered by sign, stale history chart cleared, reconcile
+    leg errors reported), BSI-16 (parseMoney CR/DR + trailing minus, chase_checking, trailing-comma
+    tolerance).
+  - **Not finished (selected):** none.
+  - **Tests:** 1572/1572 (Perfin 995 + Per-sistant 577; 63 files). New
+    tests/scan-sept-batch12.test.js (21; all fail pre-fix). Real PG: migrations ×2 (cost_basis
+    nullable), prune/NULL basis on the real table, performance figures, funding-options dedupe.
+    Browser: dashboard/goals/settings load with no script/CSP errors; e2e 8/8.
+  - **Decisions:** prune only accounts present in the item's response; unknown basis excluded from
+    the return (coverage shown) rather than estimated; CR → negative / DR → positive in the
+    debit-positive convention; Chase checking Type is not used as a category.
+  - **Open follow-ons:** see `.cycle/blocks/6-batch12-broad-implement.md`.
+  - **Operator:** none required.
+  - **/sync-docs DONE (Batch 12):** CLAUDE.md — csv-formats entry + CSV import bullet (Chase
+    checking, CR/DR, trailing minus, trailing-comma tolerance), Plaid holdings (prune, NULL basis),
+    Investments widget (known-basis return + coverage, winners/losers by sign, per-account sparkline
+    source, TWR entry flows, empty-range state), Sheets Investments tab, endpoint notes (reconcile
+    status errors, funding-options dedupe + orphan, performance coverage, performance-history
+    accounts_added), holdings Key Design Decision, NEW INV-87 (holdings mirror Plaid per account /
+    NULL basis) + INV-88 (mid-window entry inflow), test counts 1572/63 (Perfin 995) + batch12
+    description. README — counts + Batch 12 coverage. Subsystem paths resolve. Operator state:
+    none new.
+  - **Where I left off:** Batch 12 and its docs are committed and pushed (no PR). NEXT: Batch 13
+    (Perfin UI correctness & accessibility).
+
+- **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 11 DONE** on branch
+  `claude/lucid-darwin-7r8e59` (2026-10-08). Batches 3–10 were merged to `main` via
+  robinchoudhuryums/pers-fin#129; the branch was then restarted from the new `main` and
+  Batch 11 (Knowledge lifecycle & retrieval) implemented, tested, pushed (no PR opened).
+  - **Completed:** KR-3 (vault ingested without Voyage/pgvector + embedding backfill),
+    KR-4 (stopwords, per-source vector ranking with 4× over-fetch, matching-passage window),
+    KR-7 (Voyage retry/backoff, per-file/per-note isolation, removals first, sha held on failure),
+    KR-8 (lock claimed before the first await), KR-9 (finance snapshot via Perfin's getNetWorth +
+    monthly-equivalent subscriptions), KR-10 (capture reserved keys + sensitivity, no AI for
+    private/secret), KR-11 (success-only last_synced_at, db/023 vault_last_attempt_at, reindex ok,
+    Action polls + fails, vault_sync_error notification), KR-12 (inline-citation parse),
+    KR-13 (cache prune), KR-14 (word-segment attribute match, vault_repo validation, headers).
+  - **Not finished (selected):** none.
+  - **Tests:** 1551/1551 (Perfin 974 + Per-sistant 577; 62 files). New
+    apps/per-sistant/tests/scan-sept-batch11.test.js (32; 31 fail pre-fix). Real PG without
+    pgvector: migrations ×2, vault sync ingest/partial-failure/recovery, upcomingFacts, search
+    window, cache prune, finance snapshot = getNetWorth. Rendered pages' scripts parse; e2e 8/8.
+  - **Decisions:** keep an embedding whose text is unchanged when Voyage is off (no forced
+    re-embed); stopwords are function words only; finance snapshot imports Perfin's helper
+    (lazy, fail-soft) instead of mirroring it; the Action polls status rather than a long request.
+  - **Open follow-ons:** see `.cycle/blocks/6-batch11-broad-implement.md`.
+  - **Operator:** none required (db/023 auto-migrates); the reindex Action can now go red.
+  - **/sync-docs DONE (Batch 11):** CLAUDE.md — Knowledge operator state (vault synced without
+    Voyage/pgvector, backfill, retry), finance-grounding seam via getNetWorth (+ subsystem note and
+    rotation-plan seam focus), INV-28/29/36 extended, NEW INV-85 (sync failures visible) and INV-86
+    (capture sensitivity / reserved keys), SK3 expected result, test counts 1551/62 (Per-sistant 577)
+    + batch11 test description. apps/per-sistant/CLAUDE.md — sync lifecycle, ranking, citation
+    fallback, cache prune, finance snapshot, capture sensitivity, attribute segments, db/023,
+    vault_sync_error, /api/rag/status + reindex + capture API notes, VOYAGE env, test counts 577.
+    README.md + apps/per-sistant/README.md — keyword-degrade wording (vault docs + facts too),
+    counts + Batch 11 coverage. Subsystem paths resolve. Operator state: none new.
+  - **Where I left off:** Batch 11 and its docs are committed and pushed (no PR). NEXT: Batch 12
+    (Investments) — restart the branch from main first if Batch 11 has been merged.
+
+- **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 10 DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-10-08). Batch 10 (Sheets & exports) implemented, tested, pushed (no PR opened).
   - **Completed:**
     - SXE-1 / WD-6: Sheets sync outcome persisted (user_settings.last_sheets_sync_result), signature-deduped notification, data-health issue, "Partial: N tabs failed" in dashboard / Subscriptions / Settings.

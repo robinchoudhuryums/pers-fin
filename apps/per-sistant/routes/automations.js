@@ -5,6 +5,7 @@
 const express = require("express");
 
 const { serverError } = require("../errors");
+const { validateAutomationRule } = require("../helpers");
 
 module.exports = function ({ pool, config }) {
   const router = express.Router();
@@ -23,6 +24,10 @@ module.exports = function ({ pool, config }) {
       if (!name) return res.status(400).json({ error: "Name is required." });
       if (!VALID_TRIGGERS.includes(trigger_type)) return res.status(400).json({ error: "Invalid trigger. Must be: " + VALID_TRIGGERS.join(", ") });
       if (!VALID_ACTIONS.includes(action_type)) return res.status(400).json({ error: "Invalid action. Must be: " + VALID_ACTIONS.join(", ") });
+      // PD-6: action_data validated (a priority of "High" broke the todos CHECK
+      // at run time) and the action must suit the trigger's entity.
+      const invalid = validateAutomationRule({ trigger_type, action_type, action_data });
+      if (invalid) return res.status(400).json({ error: invalid });
       const r = await pool.query(
         "INSERT INTO automations (name, trigger_type, conditions, action_type, action_data) VALUES ($1,$2,$3,$4,$5) RETURNING *",
         [name, trigger_type, conditions || {}, action_type, action_data || {}]
@@ -36,6 +41,18 @@ module.exports = function ({ pool, config }) {
       const { name, trigger_type, conditions, action_type, action_data, enabled } = req.body;
       if (trigger_type && !VALID_TRIGGERS.includes(trigger_type)) return res.status(400).json({ error: "Invalid trigger." });
       if (action_type && !VALID_ACTIONS.includes(action_type)) return res.status(400).json({ error: "Invalid action." });
+      // PD-6: validate the rule as it will be AFTER the update.
+      if (trigger_type !== undefined || action_type !== undefined || action_data !== undefined) {
+        const cur = await pool.query("SELECT trigger_type, action_type, action_data FROM automations WHERE id = $1", [req.params.id]);
+        if (!cur.rows.length) return res.status(404).json({ error: "Not found." });
+        const merged = {
+          trigger_type: trigger_type !== undefined ? trigger_type : cur.rows[0].trigger_type,
+          action_type: action_type !== undefined ? action_type : cur.rows[0].action_type,
+          action_data: action_data !== undefined ? action_data : cur.rows[0].action_data,
+        };
+        const invalid = validateAutomationRule(merged);
+        if (invalid) return res.status(400).json({ error: invalid });
+      }
       const fields = []; const params = []; let idx = 1;
       if (name !== undefined) { fields.push(`name = $${idx++}`); params.push(name); }
       if (trigger_type !== undefined) { fields.push(`trigger_type = $${idx++}`); params.push(trigger_type); }

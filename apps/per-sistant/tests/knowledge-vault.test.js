@@ -108,7 +108,9 @@ describe("Vault — syncVault config guards", () => {
     }
   });
 
-  it("returns vector_unavailable when configured but chunks table is missing", async () => {
+  // KR-3 reversed this: without pgvector the sync still ingests documents and
+  // facts (keyword-retrievable); it just doesn't embed. It must reach GitHub.
+  it("still syncs (no vector_unavailable bail-out) when the chunks table is missing", async () => {
     const savedTok = process.env.VAULT_GITHUB_TOKEN;
     const savedVoy = process.env.VOYAGE_API_KEY;
     process.env.VAULT_GITHUB_TOKEN = "ghp_test";
@@ -121,9 +123,12 @@ describe("Vault — syncVault config guards", () => {
           return { rows: [] };
         },
       };
-      const r = await vault.syncVault(mockPool);
-      assert.equal(r.ok, false);
-      assert.equal(r.reason, "vector_unavailable");
+      let reachedGitHub = false;
+      const fetchImpl = async () => { reachedGitHub = true; return { ok: false, status: 503, text: async () => "down" }; };
+      const r = await vault.syncVault(mockPool, { fetchImpl });
+      assert.notEqual(r.reason, "vector_unavailable");
+      assert.equal(reachedGitHub, true);
+      assert.equal(r.ok, false); // the stubbed GitHub is down
     } finally {
       if (savedTok === undefined) delete process.env.VAULT_GITHUB_TOKEN; else process.env.VAULT_GITHUB_TOKEN = savedTok;
       if (savedVoy === undefined) delete process.env.VOYAGE_API_KEY; else process.env.VOYAGE_API_KEY = savedVoy;

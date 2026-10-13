@@ -12,6 +12,10 @@
 // stored as a document row but never chunked/embedded, and excluded from
 // retrieval (see routes/rag.js). Only `normal` sensitivity is embedded.
 //
+// Documents and facts are ingested even without Voyage/pgvector (keyword
+// retrieval + facts work without embeddings); embedding is an extra step,
+// with a backfill pass for anything ingested while it was unavailable.
+//
 // Network functions take an injectable { token, fetchImpl } so tests can stub
 // GitHub; the pure helpers (parseFrontmatter, chunkMarkdown, …) are exported.
 // ============================================================================
@@ -25,6 +29,9 @@ const INDEXABLE_RE = /\.(md|markdown|txt)$/i;
 
 // Single in-process lock so the hourly cron, manual "Reindex now", and the
 // GitHub-Actions trigger can't run overlapping syncs against the same tables.
+// It is CLAIMED synchronously, before the first await (KR-8): checking it and
+// only setting it after the config/vector-readiness queries left a window in
+// which two callers could both pass the check and run concurrently.
 let _syncing = false;
 function isSyncing() {
   return _syncing;
@@ -252,7 +259,15 @@ function yamlScalar(v) {
   return /[:#\n"']/.test(s) ? JSON.stringify(s) : s;
 }
 
-function buildCaptureMarkdown({ type, title, entity, fields, tags, body }) {
+// KR-10: `fields` come from the model, so a field named `type`, `sensitivity`,
+// `embed`, `private`, `valid_to`… would have written a SECOND copy of a
+// metadata key (turning a fact file into a note, or downgrading/overriding
+// the sensitivity). Reserved keys are dropped from fields; the metadata is
+// written only from the trusted arguments. `sensitivity` (normal | private |
+// secret) is the user's choice on the capture form.
+const CAPTURE_SENSITIVITIES = new Set(["normal", "private", "secret"]);
+
+function buildCaptureMarkdown({ type, title, entity, fields, tags, body, sensitivity }) {
   const fm = [];
   if (type === "fact") {
     fm.push("type: fact");
@@ -260,10 +275,13 @@ function buildCaptureMarkdown({ type, title, entity, fields, tags, body }) {
     for (const [k, v] of Object.entries(fields || {})) {
       if (v == null || v === "") continue;
       const key = String(k).toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
-      if (key) fm.push(`${key}: ${yamlScalar(v)}`);
+      if (key && !RESERVED_FACT_KEYS.has(key)) fm.push(`${key}: ${yamlScalar(v)}`);
     }
   } else if (title) {
     fm.push(`title: ${yamlScalar(title)}`);
+  }
+  if (sensitivity && sensitivity !== "normal" && CAPTURE_SENSITIVITIES.has(sensitivity)) {
+    fm.push(`sensitivity: ${sensitivity}`);
   }
   if (tags && tags.length) fm.push(`tags: [${tags.map((t) => yamlScalar(t)).join(", ")}]`);
   const front = fm.length ? `---\n${fm.join("\n")}\n---\n\n` : "";
@@ -322,7 +340,7 @@ async function vectorReady(pool) {
 
 async function getVaultConfig(pool) {
   const r = await pool.query(
-    "SELECT vault_enabled, vault_repo, vault_branch, vault_last_sha, vault_last_synced_at, vault_last_error FROM user_settings WHERE id = 1"
+    "SELECT vault_enabled, vault_repo, vault_branch, vault_last_sha, vault_last_synced_at, vault_last_error, vault_last_attempt_at FROM user_settings WHERE id = 1"
   );
   return r.rows[0] || {};
 }
@@ -332,13 +350,39 @@ async function clearSource(pool, kind, id) {
   await pool.query("DELETE FROM embed_state WHERE source_kind = $1 AND source_id = $2", [kind, id]);
 }
 
+// Forget a source's embedding when it can't be (re-)embedded right now — no
+// Voyage key or no pgvector (KR-3). Dropping embed_state marks the document
+// "unembedded", so the backfill pass re-embeds it once embeddings are
+// available, and any chunks of its OLD content stop being retrievable. The
+// chunks table may not exist at all without pgvector; embed_state always does.
+async function forgetEmbedding(pool, kind, id, vectorTable) {
+  if (vectorTable) await pool.query("DELETE FROM chunks WHERE source_kind = $1 AND source_id = $2", [kind, id]);
+  await pool.query("DELETE FROM embed_state WHERE source_kind = $1 AND source_id = $2", [kind, id]);
+}
+
+// Vault documents that should have an embedding but don't — ingested while
+// embeddings were unavailable, or whose embed failed (KR-3/KR-7). Bounded per
+// run; the next sync picks up the rest.
+const BACKFILL_LIMIT = 200;
+
+// CHUNKING_VERSION salts the hash: a chunker change invalidates every
+// stored hash → clean re-embed on next sync, no manual migration.
+function embedHash(text) {
+  const body = String(text || "");
+  return sha256("chunkv" + CHUNKING_VERSION + "\n" + body);
+}
+
+// True when the stored embedding was made from exactly this text.
+async function embeddingIsCurrent(pool, kind, id, text) {
+  const st = await pool.query("SELECT content_sha FROM embed_state WHERE source_kind = $1 AND source_id = $2", [kind, id]);
+  return !!(st.rows[0] && st.rows[0].content_sha === embedHash(text));
+}
+
 // Chunk + embed a single source, skipping work when the content hash is
 // unchanged. Replaces all chunks for the source atomically.
 async function embedSource(pool, kind, id, text) {
   const body = String(text || "");
-  // CHUNKING_VERSION salts the hash: a chunker change invalidates every
-  // stored hash → clean re-embed on next sync, no manual migration.
-  const sha = sha256("chunkv" + CHUNKING_VERSION + "\n" + body);
+  const sha = embedHash(body);
   const st = await pool.query("SELECT content_sha FROM embed_state WHERE source_kind = $1 AND source_id = $2", [kind, id]);
   if (st.rows[0] && st.rows[0].content_sha === sha) return { skipped: true };
 
@@ -412,12 +456,12 @@ async function upsertVaultDocument(pool, path, title, content, sensitivity, tags
   return existing.rows[0].id;
 }
 
-async function removeVaultDocument(pool, path) {
+async function removeVaultDocument(pool, path, vectorTable = true) {
   const r = await pool.query(
     "UPDATE documents SET deleted_at = now() WHERE source = 'vault' AND source_ref = $1 AND deleted_at IS NULL RETURNING id",
     [path]
   );
-  if (r.rows[0]) await clearSource(pool, "document", r.rows[0].id);
+  if (r.rows[0]) await forgetEmbedding(pool, "document", r.rows[0].id, vectorTable);
 }
 
 // Order-independent signature of a fact set (KR-5 change detection).
@@ -567,26 +611,50 @@ async function commitVaultFile(repo, branch, path, content, message, ctx) {
 // ---------------------------------------------------------------------------
 // syncVault(pool, { full?, fetchImpl? }) — incremental by default (diff
 // last-indexed SHA → HEAD); full re-walks the whole tree. Idempotent.
+//
+// Documents and facts are ingested even without embeddings (KR-3): facts need
+// none, and documents are keyword-retrievable — embedding is an extra step
+// that runs only when VOYAGE_API_KEY is set AND pgvector is present, and a
+// backfill pass embeds anything ingested while it wasn't.
+//
+// Failure handling (KR-7): removals run first, then each file is processed in
+// its own try/catch, so one bad file or a Voyage error no longer aborts the
+// whole sync. When any file failed, vault_last_sha is NOT advanced (the next
+// sync retries the same range; unchanged files are cheap thanks to the
+// content-hash / unchanged-row skips) and the run reports ok:false.
+// vault_last_synced_at is stamped only on success; vault_last_attempt_at on
+// every run (KR-11).
 async function syncVault(pool, opts = {}) {
   if (_syncing) return { ok: false, reason: "busy" };
+  _syncing = true; // KR-8: claimed before the first await
+  try {
+    return await runVaultSync(pool, opts);
+  } finally {
+    _syncing = false;
+  }
+}
+
+async function runVaultSync(pool, opts) {
   const cfg = await getVaultConfig(pool);
   const token = process.env.VAULT_GITHUB_TOKEN;
   if (!cfg.vault_enabled || !cfg.vault_repo || !token) return { ok: false, reason: "not_configured" };
-  if (!embeddings.isConfigured()) return { ok: false, reason: "embeddings_not_configured" };
-  if (!(await vectorReady(pool))) return { ok: false, reason: "vector_unavailable" };
+  const vectorTable = await vectorReady(pool);
+  const canEmbed = embeddings.isConfigured() && vectorTable;
 
   const ctx = { token, fetchImpl: opts.fetchImpl };
   const repo = cfg.vault_repo;
   const branch = cfg.vault_branch || "main";
-  _syncing = true;
+  await pool.query("UPDATE user_settings SET vault_last_attempt_at = now() WHERE id = 1").catch(() => {});
   try {
     const head = await getHeadSha(repo, branch, ctx);
     let full = !!opts.full || !cfg.vault_last_sha;
     let changed = [];
     let removed = [];
     if (!full && cfg.vault_last_sha === head) {
+      const backfill = canEmbed ? await backfillEmbeddings(pool) : { embedded: 0, failed: [] };
+      if (backfill.failed.length) return await finishWithFailures(pool, backfill.failed, { up_to_date: true, head, embeddings: canEmbed });
       await pool.query("UPDATE user_settings SET vault_last_synced_at = now(), vault_last_error = NULL WHERE id = 1");
-      return { ok: true, up_to_date: true, changed: 0, removed: 0, embedded: 0, skipped: 0, head };
+      return { ok: true, up_to_date: true, changed: 0, removed: 0, embedded: backfill.embedded, skipped: 0, head, embeddings: canEmbed };
     }
     if (!full) {
       // An incremental diff can't be trusted when the base commit is gone
@@ -624,87 +692,167 @@ async function syncVault(pool, opts = {}) {
       }
     }
 
+    // Removals FIRST (KR-7): they used to run after the file loop, so while any
+    // file kept failing, deleted notes and facts were never removed.
+    const failed = [];
+    const removedSet = new Set(removed);
+    for (const path of removed) {
+      try {
+        await removeVaultDocument(pool, path, vectorTable);
+        await clearFacts(pool, path);
+      } catch (e) {
+        failed.push({ path, error: e.message });
+      }
+    }
+
     let embedded = 0;
     let skipped = 0;
     let factFiles = 0;
     for (const path of changed) {
-      const text = await getFileText(repo, path, head, ctx);
-      const { meta, body } = parseFrontmatter(text);
-
-      // Fact file: structured records only. Replace its facts and drop any
-      // prior prose document/chunks for the same path.
-      if (isFactFile(meta)) {
-        await upsertFacts(pool, path, extractFacts(meta, path));
-        await removeVaultDocument(pool, path);
-        factFiles++;
-        continue;
-      }
-
-      const sensitivity = resolveSensitivity(meta);
-      const title = (meta.title && String(meta.title)) || titleFromPath(path);
-      const tags = Array.isArray(meta.tags) ? meta.tags : meta.tags ? [String(meta.tags)] : null;
-      // K1: this path is NOT a fact file. If it WAS one previously (the user
-      // dropped `type: fact`), its extracted fact rows would otherwise linger
-      // and keep being injected into answers as authoritative "Known facts" —
-      // the fact→prose transition was unhandled (only repo-removal cleared
-      // facts). Clear them here so the conversion is symmetric with prose→fact
-      // (which calls removeVaultDocument). No-op when the file was never a fact file.
-      await clearFacts(pool, path);
-      const docId = await upsertVaultDocument(pool, path, title, body, sensitivity, tags);
-      if (sensitivity === "normal") {
-        const r = await embedSource(pool, "document", docId, body);
+      if (removedSet.has(path)) continue;
+      try {
+        const r = await ingestFile(pool, repo, path, head, ctx, { canEmbed, vectorTable });
+        if (r.fact) factFiles++;
+        if (r.embedded) embedded++;
         if (r.skipped) skipped++;
-        else embedded++;
-      } else {
-        // private/secret: kept as a document row but never embedded/retrievable.
-        await clearSource(pool, "document", docId);
+      } catch (e) {
+        failed.push({ path, error: e.message });
       }
     }
-    for (const path of removed) {
-      await removeVaultDocument(pool, path);
-      await clearFacts(pool, path);
+    if (canEmbed) {
+      const backfill = await backfillEmbeddings(pool);
+      embedded += backfill.embedded;
+      failed.push(...backfill.failed);
     }
 
+    const summary = { changed: changed.length, removed: removed.length, embedded, skipped, facts: factFiles, head, embeddings: canEmbed };
+    if (failed.length) return await finishWithFailures(pool, failed, summary);
     await pool.query(
       "UPDATE user_settings SET vault_last_sha = $1, vault_last_synced_at = now(), vault_last_error = NULL WHERE id = 1",
       [head]
     );
-    return { ok: true, changed: changed.length, removed: removed.length, embedded, skipped, facts: factFiles, head };
+    return { ok: true, ...summary };
   } catch (e) {
+    // KR-11: a failed run records the error but NOT vault_last_synced_at (it
+    // used to stamp it, so a sync failing for days still looked fresh).
     await pool
-      .query("UPDATE user_settings SET vault_last_error = $1, vault_last_synced_at = now() WHERE id = 1", [
-        String(e.message).slice(0, 500),
-      ])
+      .query("UPDATE user_settings SET vault_last_error = $1 WHERE id = 1", [String(e.message).slice(0, 500)])
       .catch(() => {});
     return { ok: false, error: e.message };
-  } finally {
-    _syncing = false;
   }
+}
+
+// One vault file → documents/facts (+ chunks when embeddings are available).
+async function ingestFile(pool, repo, path, head, ctx, { canEmbed, vectorTable }) {
+  const text = await getFileText(repo, path, head, ctx);
+  const { meta, body } = parseFrontmatter(text);
+
+  // Fact file: structured records only. Replace its facts and drop any
+  // prior prose document/chunks for the same path.
+  if (isFactFile(meta)) {
+    await upsertFacts(pool, path, extractFacts(meta, path));
+    await removeVaultDocument(pool, path, vectorTable);
+    return { fact: true };
+  }
+
+  const sensitivity = resolveSensitivity(meta);
+  const title = (meta.title && String(meta.title)) || titleFromPath(path);
+  const tags = Array.isArray(meta.tags) ? meta.tags : meta.tags ? [String(meta.tags)] : null;
+  // K1: this path is NOT a fact file. If it WAS one previously (the user
+  // dropped `type: fact`), its extracted fact rows would otherwise linger
+  // and keep being injected into answers as authoritative "Known facts" —
+  // the fact→prose transition was unhandled (only repo-removal cleared
+  // facts). Clear them here so the conversion is symmetric with prose→fact
+  // (which calls removeVaultDocument). No-op when the file was never a fact file.
+  await clearFacts(pool, path);
+  const docId = await upsertVaultDocument(pool, path, title, body, sensitivity, tags);
+  if (sensitivity !== "normal") {
+    // private/secret: kept as a document row but never embedded/retrievable.
+    await forgetEmbedding(pool, "document", docId, vectorTable);
+    return {};
+  }
+  if (!canEmbed) {
+    // Keyword-retrievable now; the backfill embeds it once embeddings work.
+    // An embedding of exactly this text (from when Voyage was configured) is
+    // kept — only a stale one is dropped, so a temporarily missing key doesn't
+    // wipe the index and force a full paid re-embed.
+    if (!(await embeddingIsCurrent(pool, "document", docId, body))) {
+      await forgetEmbedding(pool, "document", docId, vectorTable);
+    }
+    return {};
+  }
+  const r = await embedSource(pool, "document", docId, body);
+  return r.skipped ? { skipped: true } : { embedded: true };
+}
+
+async function backfillEmbeddings(pool) {
+  const out = { embedded: 0, failed: [] };
+  let rows = [];
+  try {
+    rows = (await pool.query(
+      `SELECT d.id, d.source_ref, d.content FROM documents d
+       WHERE d.source = 'vault' AND d.deleted_at IS NULL AND d.sensitivity = 'normal'
+         AND NOT EXISTS (SELECT 1 FROM embed_state e WHERE e.source_kind = 'document' AND e.source_id = d.id)
+       ORDER BY d.id
+       LIMIT $1`,
+      [BACKFILL_LIMIT]
+    )).rows;
+  } catch (e) {
+    out.failed.push({ path: "(backfill)", error: e.message });
+    return out;
+  }
+  for (const d of rows) {
+    try {
+      const r = await embedSource(pool, "document", d.id, d.content);
+      if (!r.skipped) out.embedded++;
+    } catch (e) {
+      out.failed.push({ path: d.source_ref || `document ${d.id}`, error: e.message });
+    }
+  }
+  return out;
+}
+
+async function finishWithFailures(pool, failed, summary) {
+  const first = failed[0];
+  const msg = `${failed.length} file(s) failed to sync; first: ${first.path}: ${first.error}`;
+  await pool.query("UPDATE user_settings SET vault_last_error = $1 WHERE id = 1", [msg.slice(0, 500)]).catch(() => {});
+  return { ok: false, partial: true, failed: failed.length, failures: failed.slice(0, 20), error: msg, ...summary };
 }
 
 // Embed existing notes into the same polymorphic chunk store, and prune chunks
 // for notes that were deleted. Cheap on re-run thanks to the content-hash skip.
 async function syncNotes(pool) {
-  if (!embeddings.isConfigured() || !(await vectorReady(pool))) return { ok: false, reason: "not_ready" };
   // K4: hold the same single-flight lock syncVault uses so the hourly cron and a
   // concurrent POST /api/rag/reindex can't run overlapping note-embeds. The cron
   // only checks isSyncing() once (before syncVault), leaving a window during its
   // syncNotes phase where a reindex could slip in; self-locking here closes it.
   // Writes are idempotent regardless, so a busy no-op is safely retried next tick.
+  // Claimed before the first await (KR-8).
   if (_syncing) return { ok: false, reason: "busy" };
   _syncing = true;
   try {
+    if (!embeddings.isConfigured() || !(await vectorReady(pool))) return { ok: false, reason: "not_ready" };
     let embedded = 0;
     let skipped = 0;
     const notes = await pool.query("SELECT id, title, content FROM notes WHERE deleted_at IS NULL");
+    let failed = 0;
+    let firstError = null;
     for (const n of notes.rows) {
       const text = (n.title ? n.title + "\n\n" : "") + (n.content || "");
-      const r = await embedSource(pool, "note", n.id, text);
-      if (r.skipped) skipped++;
-      else embedded++;
+      // KR-7: one note failing to embed (e.g. a Voyage error after retries)
+      // no longer aborts the rest; it is retried next run (no embed_state row).
+      try {
+        const r = await embedSource(pool, "note", n.id, text);
+        if (r.skipped) skipped++;
+        else embedded++;
+      } catch (e) {
+        failed++;
+        if (!firstError) firstError = e.message;
+      }
     }
     await pool.query("DELETE FROM chunks WHERE source_kind = 'note' AND source_id NOT IN (SELECT id FROM notes WHERE deleted_at IS NULL)");
     await pool.query("DELETE FROM embed_state WHERE source_kind = 'note' AND source_id NOT IN (SELECT id FROM notes WHERE deleted_at IS NULL)");
+    if (failed) return { ok: false, partial: true, failed, error: firstError, embedded, skipped, total: notes.rows.length };
     return { ok: true, embedded, skipped, total: notes.rows.length };
   } finally {
     _syncing = false;
@@ -744,4 +892,5 @@ module.exports = {
   upsertVaultDocument,
   upsertFacts,
   factSetSignature,
+  backfillEmbeddings,
 };

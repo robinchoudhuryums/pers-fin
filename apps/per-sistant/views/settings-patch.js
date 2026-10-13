@@ -7,7 +7,14 @@
 // in a single tool-call push, so we enhance it client-side instead.
 module.exports = `
 (function(){
-  if (location.pathname !== '/settings') return;
+  // Compare the path with the mount base stripped: under the shell the page is
+  // /per-sistant/settings, so a bare '/settings' check never matched there.
+  var base = window.BASE_PATH || '';
+  var path = location.pathname;
+  if (base && path.indexOf(base) === 0) path = path.slice(base.length) || '/';
+  // (string methods, not a regex: this module is a template literal that eats backslashes)
+  while (path.length > 1 && path.charAt(path.length - 1) === '/') path = path.slice(0, -1);
+  if (path !== '/settings') return;
   var PALETTES = [
     { id: 'copper', swatch: '#b5714a', label: 'Copper' },
     { id: 'indigo', swatch: '#4d5bce', label: 'Indigo' },

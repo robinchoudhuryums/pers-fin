@@ -14,7 +14,7 @@
   <div class="card" id="hz-owed-card" style="margin-bottom:16px;display:none;">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
       <h2 style="margin:0;">Owed</h2>
-      <button class="btn-sm" id="hz-record-btn" disabled style="font-size:13px;padding:8px 14px;border:1px solid var(--teal);border-radius:6px;background:var(--teal);color:#000;cursor:pointer;font-family:inherit;font-weight:500;">Record payment</button>
+      <button class="btn-sm" id="hz-record-btn" disabled style="font-size:13px;padding:8px 14px;border:1px solid var(--teal);border-radius:6px;background:var(--teal);color:var(--on-teal);cursor:pointer;font-family:inherit;font-weight:500;">Record payment</button>
     </div>
     <div id="hz-obligations" style="margin-top:10px;"></div>
   </div>
@@ -41,7 +41,7 @@
       <h2 style="margin:0;">Payment history</h2>
       <div style="display:flex;align-items:center;gap:6px;font-size:12px;">
         <span style="color:var(--text-muted);">Export</span>
-        <input id="hz-export-year" type="number" min="2000" max="2100" class="hz-in" style="width:78px;padding:5px 8px;">
+        <input id="hz-export-year" aria-label="Export year" type="number" min="2000" max="2100" class="hz-in" style="width:78px;padding:5px 8px;">
         <button class="btn-sm hz-export" data-fmt="csv" type="button" style="font-size:12px;padding:5px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-family:inherit;">CSV</button>
         <button class="btn-sm hz-export" data-fmt="pdf" type="button" style="font-size:12px;padding:5px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-family:inherit;">PDF</button>
       </div>
@@ -57,10 +57,10 @@
         <input type="checkbox" id="hz-enabled"> Track rent &amp; utilities for a payee
       </label>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-        <div><div class="hz-lbl">Payee name</div><input id="hz-payee" placeholder="e.g. Landlord" class="hz-in"></div>
-        <div><div class="hz-lbl">Reminder: days before due</div><input id="hz-lead" type="number" min="0" max="28" value="5" class="hz-in"></div>
-        <div><div class="hz-lbl">Monthly rent</div><input id="hz-rent" type="number" min="0" step="0.01" placeholder="0.00" class="hz-in"></div>
-        <div><div class="hz-lbl">Rent due day (1-31)</div><input id="hz-rent-day" type="number" min="1" max="31" value="1" class="hz-in"></div>
+        <div><div class="hz-lbl">Payee name</div><input aria-label="Payee name" id="hz-payee" placeholder="e.g. Landlord" class="hz-in"></div>
+        <div><div class="hz-lbl">Reminder: days before due</div><input aria-label="Reminder: days before due" id="hz-lead" type="number" min="0" max="28" value="5" class="hz-in"></div>
+        <div><div class="hz-lbl">Monthly rent</div><input aria-label="Monthly rent" id="hz-rent" type="number" min="0" step="0.01" placeholder="0.00" class="hz-in"></div>
+        <div><div class="hz-lbl">Rent due day (1-31)</div><input aria-label="Rent due day (1-31)" id="hz-rent-day" type="number" min="1" max="31" value="1" class="hz-in"></div>
       </div>
       <div>
         <div class="hz-lbl" style="display:flex;justify-content:space-between;align-items:center;">Utilities <button class="btn-sm" id="hz-add-util" type="button" style="font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-family:inherit;">+ Add utility</button></div>
@@ -73,19 +73,19 @@
         </label>
         <div id="hz-split-cfg" style="display:none;margin-top:10px;">
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-            <div><div class="hz-lbl">Partner name</div><input id="hz-split-name" placeholder="e.g. Sarah" class="hz-in"></div>
+            <div><div class="hz-lbl">Partner name</div><input aria-label="Partner name" id="hz-split-name" placeholder="e.g. Sarah" class="hz-in"></div>
             <div><div class="hz-lbl">Car payment source</div>
-              <select id="hz-split-carsrc" class="hz-in">
+              <select aria-label="Car payment source" id="hz-split-carsrc" class="hz-in">
                 <option value="fixed">Enter a fixed amount</option>
               </select>
             </div>
           </div>
-          <div id="hz-split-fixedwrap" style="margin-top:8px;"><div class="hz-lbl">Car payment ($/mo)</div><input id="hz-split-fixed" type="number" min="0" step="0.01" placeholder="0.00" class="hz-in" style="max-width:200px;"></div>
+          <div id="hz-split-fixedwrap" style="margin-top:8px;"><div class="hz-lbl">Car payment ($/mo)</div><input aria-label="Car payment ($/mo)" id="hz-split-fixed" type="number" min="0" step="0.01" placeholder="0.00" class="hz-in" style="max-width:200px;"></div>
           <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">You send your partner (rent+utilities − car) ÷ 2 so each of you bears half of the total. Pick the car loan to auto-pull its monthly payment, or enter a fixed amount.</div>
         </div>
       </div>
       <div style="display:flex;gap:10px;">
-        <button class="btn-sm" id="hz-save-cfg" style="font-size:13px;padding:8px 16px;border:1px solid var(--teal);border-radius:6px;background:var(--teal);color:#000;cursor:pointer;font-family:inherit;font-weight:500;">Save &amp; generate</button>
+        <button class="btn-sm" id="hz-save-cfg" style="font-size:13px;padding:8px 16px;border:1px solid var(--teal);border-radius:6px;background:var(--teal);color:var(--on-teal);cursor:pointer;font-family:inherit;font-weight:500;">Save &amp; generate</button>
       </div>
     </div>
   </details>
@@ -96,15 +96,15 @@
       <h3 style="margin:0 0 12px;">Record payment</h3>
       <div id="hz-pay-items" style="font-size:12px;color:var(--text-muted);margin-bottom:12px;"></div>
       <div style="display:flex;flex-direction:column;gap:10px;">
-        <div><div class="hz-lbl">Memo</div><input id="hz-pay-memo" class="hz-in" placeholder="(auto from selection)"></div>
+        <div><div class="hz-lbl">Memo</div><input aria-label="Memo" id="hz-pay-memo" class="hz-in" placeholder="(auto from selection)"></div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-          <div><div class="hz-lbl">Date paid</div><input id="hz-pay-date" type="date" class="hz-in"></div>
-          <div><div class="hz-lbl">Amount sent</div><input id="hz-pay-amount" type="number" min="0" step="0.01" class="hz-in"></div>
+          <div><div class="hz-lbl">Date paid</div><input aria-label="Date paid" id="hz-pay-date" type="date" class="hz-in"></div>
+          <div><div class="hz-lbl">Amount sent</div><input aria-label="Amount sent" id="hz-pay-amount" type="number" min="0" step="0.01" class="hz-in"></div>
         </div>
         <div id="hz-pay-status" style="font-size:12px;min-height:16px;"></div>
         <div style="display:flex;gap:10px;justify-content:flex-end;">
           <button class="btn-sm" id="hz-pay-cancel" style="font-size:13px;padding:10px 16px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-family:inherit;">Cancel</button>
-          <button class="btn-sm" id="hz-pay-confirm" style="font-size:13px;padding:10px 16px;border:1px solid var(--teal);border-radius:6px;background:var(--teal);color:#000;cursor:pointer;font-family:inherit;font-weight:500;">Confirm payment</button>
+          <button class="btn-sm" id="hz-pay-confirm" style="font-size:13px;padding:10px 16px;border:1px solid var(--teal);border-radius:6px;background:var(--teal);color:var(--on-teal);cursor:pointer;font-family:inherit;font-weight:500;">Confirm payment</button>
         </div>
       </div>
     </div>
@@ -140,17 +140,17 @@
       // label edit renames the stored rows instead of backfilling a new
       // placeholder for every past cycle (FAN-4).
       if (u.label) div.setAttribute('data-orig-label', u.label);
-        '<input class="hz-in hz-u-label" placeholder="e.g. Electricity" value="'+esc(u.label)+'">' +
-        '<select class="hz-in hz-u-cad">' +
+        '<input class="hz-in hz-u-label" aria-label="Utility name" placeholder="e.g. Electricity" value="'+esc(u.label)+'">' +
+        '<select class="hz-in hz-u-cad" aria-label="How often this bill comes">' +
           '<option value="1"'+(u.cadence_months==1?' selected':'')+'>Monthly</option>' +
           '<option value="2"'+(u.cadence_months==2?' selected':'')+'>Every 2 months</option>' +
           '<option value="3"'+(u.cadence_months==3?' selected':'')+'>Quarterly</option>' +
         '</select>' +
-        '<input class="hz-in hz-u-day" type="number" min="1" max="31" value="'+(u.due_day||15)+'" title="Due day">' +
-        '<button class="btn-sm hz-u-del" type="button" style="border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--red,#eb6b6b);cursor:pointer;padding:6px 10px;font-family:inherit;">&times;</button>' +
+        '<input class="hz-in hz-u-day" type="number" min="1" max="31" value="'+(u.due_day||15)+'" title="Due day" aria-label="Due day of month">' +
+        '<button class="btn-sm hz-u-del" type="button" aria-label="Remove this utility" style="border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--red,#eb6b6b);cursor:pointer;padding:6px 10px;font-family:inherit;">&times;</button>' +
         // Statement merchant names (FAN-10) — what the bill looks like on a card
         // statement, for the Settle Up double-count check. Blank = the label.
-        '<input class="hz-in hz-u-merchants" style="grid-column:1/-1;" placeholder="Name on card statements, e.g. PG&amp;E, Pacific Gas (optional)" value="'+esc((u.merchant_patterns||[]).join(', '))+'" title="Merchant names this bill shows up as on a card statement — used to warn when it is also on the shared card">';
+        '<input class="hz-in hz-u-merchants" aria-label="Names this bill shows up as on a card statement" style="grid-column:1/-1;" placeholder="Name on card statements, e.g. PG&amp;E, Pacific Gas (optional)" value="'+esc((u.merchant_patterns||[]).join(', '))+'" title="Merchant names this bill shows up as on a card statement — used to warn when it is also on the shared card">';
       div.querySelector('.hz-u-del').addEventListener('click', function(){ div.remove(); });
       return div;
     }
@@ -247,13 +247,13 @@
             '<span class="hz-amt" style="display:flex;gap:6px;align-items:center;">' +
               '<button class="btn-sm hz-camera" data-id="'+o.id+'" title="Take a photo of the bill" style="border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--teal);cursor:pointer;padding:5px 9px;font-family:inherit;font-size:13px;">📷</button>' +
               '<button class="btn-sm hz-scan" data-id="'+o.id+'" title="Upload a bill photo/PDF to fill the amount" style="border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--teal);cursor:pointer;padding:5px 10px;font-family:inherit;font-size:12px;">Scan</button>' +
-              '<input class="hz-in hz-set-amt" type="number" min="0" step="0.01" placeholder="amount" style="width:110px;padding:5px 8px;" data-id="'+o.id+'">' +
+              '<input class="hz-in hz-set-amt" aria-label="Bill amount" type="number" min="0" step="0.01" placeholder="amount" style="width:110px;padding:5px 8px;" data-id="'+o.id+'">' +
               '<button class="btn-sm hz-save-amt" data-id="'+o.id+'" style="border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;padding:5px 10px;font-family:inherit;font-size:12px;">Set</button>' +
             '</span></div>';
         } else if (o.status === 'unpaid') {
           unpaidExists = true;
           html += '<div class="hz-row" data-id="'+o.id+'">' +
-            '<input type="checkbox" class="hz-pick" data-id="'+o.id+'" data-amt="'+o.amount+'" data-label="'+esc(o.label)+'" data-period="'+o.period+'">' +
+            '<input type="checkbox" class="hz-pick" aria-label="Include '+esc(plabel(o.period))+' '+esc(o.label)+' in the payment" data-id="'+o.id+'" data-amt="'+o.amount+'" data-label="'+esc(o.label)+'" data-period="'+o.period+'">' +
             '<span class="hz-period">'+esc(plabel(o.period))+'</span>' +
             '<span>'+esc(o.label)+'</span>' +
             '<span class="hz-amt">'+money(o.amount)+'</span></div>';
@@ -325,9 +325,12 @@
       var input = document.querySelector('.hz-set-amt[data-id="'+id+'"]');
       var val = input.value === '' ? null : parseFloat(input.value);
       if (val !== null && (!isFinite(val) || val < 0)) { showMsg('Enter a valid amount.', false); return; }
-      var res = await apiFetch('/api/housing/obligations/'+id, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ amount: val }) });
-      if (res.ok) { showMsg('Amount saved.', true); load(); }
-      else { var e = await res.json().catch(function(){return {};}); showMsg(e.error || 'Failed', false); }
+      // WUI-6: a network failure used to reject unhandled (no message).
+      try {
+        var res = await apiFetch('/api/housing/obligations/'+id, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ amount: val }) });
+        if (!(await writeOk(res, 'Could not save the amount'))) return;
+        showMsg('Amount saved.', true); load();
+      } catch (err) { showMsg('Could not save the amount: ' + err.message, false); }
     }
 
     function renderPayments(payments){
@@ -345,9 +348,11 @@
     }
     async function undoPayment(id){
       if (!confirm('Undo this payment? The covered months go back to unpaid.')) return;
-      var res = await apiFetch('/api/housing/payments/'+id, { method:'DELETE' });
-      if (res.ok) { showMsg('Payment undone.', true); load(); }
-      else { showMsg('Failed to undo.', false); }
+      try {
+        var res = await apiFetch('/api/housing/payments/'+id, { method:'DELETE' });
+        if (!(await writeOk(res, 'Could not undo the payment'))) return;
+        showMsg('Payment undone.', true); load();
+      } catch (err) { showMsg('Could not undo the payment: ' + err.message, false); }
     }
 
     // ---- Record-payment modal ----
@@ -365,6 +370,8 @@
       modal.style.display = 'block';
     }
     function closePay(){ modal.style.display = 'none'; }
+    // IF-1: dialog semantics, focus trap, Esc and focus restore.
+    watchDialog(modal, { label: 'Record payment', onClose: closePay });
     document.getElementById('hz-record-btn').addEventListener('click', openPay);
     document.getElementById('hz-pay-cancel').addEventListener('click', closePay);
     modal.addEventListener('click', function(e){ if (e.target === modal) closePay(); });
