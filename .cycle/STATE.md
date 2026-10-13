@@ -18,7 +18,7 @@ Updated: 2026-10-13
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Cycle 6 REFLECTED (2026-10-13)** — net +102 (117 prod fixes − 15 new failure modes), block `.cycle/blocks/6-a-reflect.md`; NEXT: Health Synthesis (§6a → PROJECT_HEALTH.md) or the next audit opens Cycle 7. Earlier: **Cycle 6 — Sept 2026 broad-scan, Batch 15 follow-ons DONE** on branch
+- **Status:** **Cycle 6 REFLECTED + SYNTHESIZED (2026-10-13)** — net +102 (117 prod fixes − 15 new failure modes), block `.cycle/blocks/6-a-reflect.md`; synthesis in PROJECT_HEALTH.md (Axis A 7 / 7.5, Axis B 7 / 7.5, 3 policy responses mandatory for cycle 7). NEXT: the next audit opens Cycle 7 with the policy fixes in scope. Earlier: **Cycle 6 — Sept 2026 broad-scan, Batch 15 follow-ons DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-10-10). The bugs Batch 15's real-code tests exposed are
   fixed and the contract-coverage gap is closed (all unmerged with Batches 11–15, no PR).
   - **Completed:** FO-1 (/api/calendar 500 — router now reads advanceRecurrence from helpers),
