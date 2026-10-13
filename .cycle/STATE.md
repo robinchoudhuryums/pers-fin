@@ -27,8 +27,9 @@ to the "none in progress" state.
     legacy-category array literal (DC-14 class), Quick Add UTC due date, unvalidated
     session_timeout_minutes/default_horizon, no contract test of the Plaid item loop / Teller enroll.
   - **Operator:** none required.
-  - **Where I left off:** committed and pushed (no PR). NEXT: /sync-docs (drop the Known Open
-    Issues sections, update counts); then a PR for Batches 11–15 + follow-ons when the operator asks.
+  - **Where I left off:** committed and pushed (no PR). /sync-docs DONE (follow-ons): counts
+    1489/67 + contract 43, Known Open Issues rewritten to the remaining items, INV-96/97, Per-sistant
+    feature + gotcha notes, README. NEXT: a PR for Batches 11–15 + follow-ons when the operator asks.
 
 - **Previous:** **Cycle 6 — Sept 2026 broad-scan, Batch 15 DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-10-09). Batch 15 (test-quality guards) implemented on top of

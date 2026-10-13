@@ -525,9 +525,17 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1475 tests as of latest); use
+  Perfin and Per-sistant test files (1489 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1475 tests (+2 todo) across 66 test files (incl.
+  Current count: 1489 tests across 67 test files (incl.
+  `apps/per-sistant/tests/batch15-followons.test.js` — the fixes for the bugs
+  Batch 15's real-code tests exposed: the calendar router built with server.js's
+  real deps + a guard that every `routes/*.js` factory only destructures keys
+  server.js passes ({pool, config, helpers, views}) (FO-1), a guard that no
+  client template-literal module (`pages/*.js`, `views/*.js` exporting a string)
+  carries a single-escaped regex + the emitted Quick Add `\b` (FO-2), the palette
+  picker run in a vm under /per-sistant/settings (FO-3), current theme tokens in
+  views/js.js (FO-4) and theme / perfin_url validation (FO-5);
   `tests/scan-sept-batch15.test.js` — the Sept 2026 broad-scan Batch 15
   test-quality guards: contract-suite wiring (script, CI step, per-file skip +
   unique scratch DB, the server.js route-order regexes still matching), no
@@ -540,7 +548,8 @@ shell/
   production code — they used to test inline copies written inside the test, so
   no production change could fail them (−244 replica/tautology tests, +58 real
   ones; that is why the count dropped from 1647). Real bugs those tests exposed
-  are node:test `todo`s, not fixes — see Known Open Issues below;
+  were recorded as node:test `todo`s and then fixed by the follow-on batch (no
+  `todo`s remain);
   `tests/contract/` — the real-Postgres ROUTE CONTRACT suite (TQ-2, NOT in
   `npm test`; `npm run test:contract`, gated on `CONTRACT_DATABASE_URL`, every
   suite skips without it). `_setup.js` creates one scratch database per file
@@ -557,9 +566,21 @@ shell/
   the real mount order, user_* overrides, splits, manual cash, CSV preview →
   import → re-import) and persistent (todo location, dependency cycles,
   recurring complete/undo, templates, automations, email validation, review,
-  iCal, Job Radar). 28 tests (27 + 1 todo); a mutation check (dropping the
-  FAN-1 `::numeric` cast, swapping the DC-1 mount order, raw export dates) turns
-  it red;
+  iCal, Job Radar, GET /api/calendar), sync-ai (the Teller and Plaid SYNC
+  ENGINES — syncAllEnrollments signs / pending skip / watermark / re-sync adds 0,
+  reconcileTeller, syncAllBalances + snapshots + accounts_changed,
+  syncAllTransactions, syncPlaidItemTransactions insert / re-delivery /
+  modified-upsert / removed / cursor — plus POST /api/categorize and
+  generateInsights + audit, with only Teller's HTTP client, a Plaid client
+  object and the Anthropic SDK stubbed; generateInsights must report
+  `modules_failed: []` with ≥8 modules run) and knowledge (syncVault through a
+  fake GitHub API via its `fetchImpl`, syncNotes, keyword search never returning
+  secret text, secret-lookup, facts current vs `all=1` + verify, /api/rag/query
+  without AI, an incremental compare that removes a deleted file). 43 tests, run
+  with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
+  cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
+  upsert as an insert, dropping the sensitivity filter from keyword retrieval)
+  turn it red;
   `apps/per-sistant/tests/scan-sept-batch14.test.js` — the Sept 2026 broad-scan
   Batch 14 Per-sistant pins: Job Radar profile-edit reset (PB-4), live re-score /
   fit backfill / stale + scam + unscored buckets / batched embeds (PB-5/PB-6),
@@ -2023,7 +2044,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1475 tests passing (+2 todo) across 66 test files (Perfin 1033 + Per-sistant 442), plus the real-Postgres route contract suite (28 tests, 27 + 1 todo; CI `migrations` job, `npm run test:contract`) and 8 Playwright browser smokes (CI `e2e` job); neither of the last two is in `npm test`
+- 1489 tests passing across 67 test files (Perfin 1033 + Per-sistant 456), plus the real-Postgres route contract suite (43 tests; CI `migrations` job, `npm run test:contract`) and 8 Playwright browser smokes (CI `e2e` job); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -3873,26 +3894,21 @@ SX3-pinned — the Sheets Income tab.
   another module, mount the literal one's module earlier (the order is pinned
   by `tests/scan-sept-fixes.test.js`, which mounts modules in server.js order).
 
-## Known Open Issues (found by Batch 15's real-code tests, not yet fixed)
-- **Per-sistant `GET /api/calendar` 500s whenever an open recurring todo exists**
-  — `apps/per-sistant/routes/calendar.js` destructures `advanceRecurrence` from
-  deps, but `server.js` never passes it (Calendar page + dashboard mini-calendar).
-  Pinned as a `todo` in `tests/contract/persistent.contract.test.js`.
-- **Per-sistant Quick Add never detects priority or a date** —
-  `pages/todos-script-2.js` is a template literal, so its `\b` regexes reach the
-  browser as a backspace character. Pinned as 2 `todo`s in
-  `apps/per-sistant/tests/api.test.js` (QUICK_ADD_BUG).
-- **Palette picker never shows under the shell** —
-  `apps/per-sistant/views/settings-patch.js` compares
-  `location.pathname !== '/settings'` (the embedded path is
-  `/per-sistant/settings`). Listed in the batch15 navigation guard's KNOWN_GAPS.
-- **Per-sistant `views/js.js` uses undefined legacy CSS vars** (`--border`,
-  `--green`, `--surface-2`, `--teal`, `--text`, `--text-muted`, `--warm`,
-  `--yellow`) — the undo toast, offline banner and rendered markdown lose their
-  colours/background. Listed in the batch15 CSS-var guard's KNOWN_GAPS.
-- Per-sistant `PATCH /api/settings` stores `perfin_url` and `theme` unvalidated.
-- The contract suite does not yet cover the Teller/Plaid sync engines, insights
-  or Knowledge against a real schema.
+## Known Open Issues
+The bugs Batch 15's real-code tests exposed (calendar 500, Quick Add regexes,
+palette picker under the shell, undefined CSS vars, unvalidated theme /
+perfin_url) and its contract-coverage gap were fixed by the follow-on batch
+(`.cycle/blocks/6-batch15-followons-broad-implement.md`). Still open:
+- Plaid's transaction upsert (`teller/routes/investments.js` `upsertTxn`) builds
+  the legacy `category` array as a concatenated `{a,b}` literal — the DC-14 class.
+  Plaid's legacy category names contain no commas/quotes today, so it doesn't
+  fire; it should take a `text[]` parameter like the CSV and manual paths.
+- Per-sistant Quick Add computes its due date with `toISOString()` (UTC), so
+  "tomorrow" typed late in the evening west of UTC lands a day late.
+- Per-sistant `PATCH /api/settings` still stores `session_timeout_minutes` and
+  `default_horizon` unvalidated.
+- The contract suite doesn't drive the Plaid item loop (`syncAllPlaidTransactions`
+  needs a Plaid client from env) or the Teller enroll / Plaid exchange routes.
 
 ## Git
 - Render deploys from `main` (configured in the Render dashboard, not in `render.yaml`)
@@ -4156,6 +4172,8 @@ INV-92 | The Per-sistant service worker never reports a queued write as success 
 INV-93 | Every stored automation is validated by helpers.validateAutomationRule (runnable trigger/action pair for the trigger's entity, required value, priority/horizon enums) on POST and merged PATCH, runAutomations skips an invalid stored rule and isolates each rule in its own try/catch, and a set_* action only ever touches the todo that fired it | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch14.test.js (PD-6 block)
 INV-94 | A change to route SQL or router mounting keeps the real-Postgres contract suite green: tests/contract/ runs both apps' own migrations and mounts every router in the order parsed from teller/server.js and apps/per-sistant/server.js with the real deps object — if either server.js's mount spelling changes, the parser regexes (pinned by scan-sept-batch15) must be updated, never bypassed | Subsystem: Test Coverage Quality (all route subsystems) | Verify: CI migrations job (npm run test:contract) + tests/scan-sept-batch15.test.js (contract wiring)
 INV-95 | Source guards (un-nonced style, root-relative navigation, undefined CSS vars) carry a KNOWN_GAPS list that only shrinks: a new offender fails, and so does a listed entry that no longer occurs; a test never re-implements production logic inline (TQ-1) | Subsystem: Test Coverage Quality | Verify: tests/scan-sept-batch15.test.js
+INV-96 | Every Per-sistant routes/*.js factory destructures only keys present in server.js's `const deps = { pool, config, helpers, views }` — a helper is read off `helpers`, never expected as its own dep (calendar.js read `advanceRecurrence` off deps, got undefined, and 500'd) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/batch15-followons.test.js (FO-1 guard) + tests/contract (persistentApp builds routers with the real deps)
+INV-97 | No Per-sistant client template-literal module (a pages/ or views/ file that exports a string) contains a single-escaped regex class or delimiter (\b \d \s \w \/ \. …) — the template consumes the backslash, so the regex silently changes meaning in the browser; double-escape or use string methods | Subsystem: Per-sistant Web UI | Verify: apps/per-sistant/tests/batch15-followons.test.js (FO-2 guard)
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
 ### Policy Configuration
