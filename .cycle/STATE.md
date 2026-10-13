@@ -9,6 +9,15 @@ to the "none in progress" state.
 
 ## Current Cycle
 
+Cycle: 6
+Phase: reflect
+Scope: broad (Sept 2026 broad scan, Batches 1–15 + follow-ons)
+Updated: 2026-10-13
+
+(Machine-read fields for the v1.43.0 commands: the next /broad-scan,
+/targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
+implement and reflect sessions only set Phase.)
+
 - **Status:** **Cycle 6 — Sept 2026 broad-scan, Batch 15 follow-ons DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-10-10). The bugs Batch 15's real-code tests exposed are
   fixed and the contract-coverage gap is closed (all unmerged with Batches 11–15, no PR).

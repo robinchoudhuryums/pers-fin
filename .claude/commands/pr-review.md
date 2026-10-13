@@ -53,7 +53,8 @@ Review across these lenses, scoped to the diff:
    test (Category D).
 8. Invariant cross-check: does the diff touch any rule in the Invariant
    Library? Flag every invariant at risk, and run its Verify test if one
-   is defined (command-style Verify runs via scripts/invariant-check.mjs).
+   is defined (if the project has scripts/invariant-check.mjs it runs
+   command-style Verify fields; otherwise run the Verify command directly).
 9. Docs drift: does the PR change behavior the docs/README/CLAUDE.md
    describe without updating them?
 

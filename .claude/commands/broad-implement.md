@@ -1,7 +1,9 @@
 If $ARGUMENTS is empty or missing, respond with exactly this and stop:
 
-Usage: /broad-implement <finding IDs or description of fixes to implement>
+Usage: /broad-implement <finding IDs, G/ST expansion IDs, or description of fixes to implement>
 Example: /broad-implement F03, F07, F12
+Example: /broad-implement Batch 2   (every finding in that batch of the scan's plan)
+Example: /broad-implement G2, ST1   (or an expansion batch: E1)
 
 Paste or reference the findings from a prior /broad-scan session.
 
@@ -15,6 +17,12 @@ Read CLAUDE.md (especially Common Gotchas) before starting.
 
 Rules:
 - Implement ONLY the findings specified above — nothing else
+- A batch name ("Batch 2", "E1") means every item the scan's plan lists
+  under it. Read the list from the scan report; if the report is not in
+  this session, ask for it rather than guessing what the batch held
+- G (completeness gap) and ST (strategic suggestion) items from the
+  scan's EXPANSION PLAN are in scope only when named above, by ID or by
+  their E-batch. They are new capability, not fixes — see REFLECT
 - Do not fix, refactor, or improve anything outside this scope even if
   you notice other issues — note them at the end
 - If a fix is more complex than expected, stop and describe what you
@@ -61,17 +69,21 @@ For each file you modified:
 For each fix completed:
 a) Would this bug have actually fired in production this month? YES/NO
 b) Did this fix introduce a new failure mode, documented or not? YES/NO
+G/ST items answer NO to (a) — list them as new capabilities, never as
+production fixes — but still answer (b).
 Tally: [production fixes] − [new failure modes] = [net score]
 
 4. INVARIANT CHECK
 Check whether any changes could have violated invariants from the project's
-invariant library (listed in CLAUDE.md Common Gotchas). Flag any at risk.
+invariant library (the Invariant Library section of CLAUDE.md's Cycle
+Workflow Config). Flag any at risk.
 
 5. SUMMARY
 Produce a BROAD SCAN IMPLEMENTATION SUMMARY:
 
 ---BROAD SCAN IMPLEMENTATION SUMMARY---
 Findings implemented: [list finding IDs and one-line descriptions]
+New capabilities (G/ST): [list G/ST IDs and one-line descriptions, or "None"]
 Files modified: [list all files touched]
 
 CHANGES:
@@ -106,8 +118,11 @@ If a .cycle/ directory exists at the project root, create or update
 .cycle/STATE.md to reflect this session: completed findings, any
 selected findings not finished, open follow-on items, decisions made,
 and a "Where I left off" line. This lets /cycle-resume continue cleanly
-in a fresh session if context runs out. If .cycle/ does not exist, skip
-this step — the summary block above is the record, as usual.
+in a fresh session if context runs out. Set Phase: implement; leave Cycle
+exactly as the audit's CYCLE OPEN step set it — implement sessions never
+increment it, so every batch from one audit names its block with the
+same number. If .cycle/ does not exist, skip this step — the summary
+block above is the record, as usual.
 
 ALSO write the summary block VERBATIM to
 .cycle/blocks/<cycle>-<version-or-scope>-broad-implement.md (create the

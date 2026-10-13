@@ -22,10 +22,15 @@ Rules:
 
 After all actions complete:
 
-1. RUN TESTS — read Test Command from CLAUDE.md. If `manual`, walk
-   Regression Scenarios for the touched subsystem(s) instead. Classify
-   failures (this session / pre-existing / real bug). See
-   `/broad-implement` Step 1 for the full branching detail.
+1. RUN TESTS — read the Test Command from CLAUDE.md's Cycle Workflow Config.
+   - If it is `manual`: walk every Regression Scenario whose Subsystem
+     overlaps a file you modified, and record PASS / FAIL / NOT APPLICABLE
+     (with the reason for NOT APPLICABLE). A FAIL counts as a test failure.
+   - Otherwise: run the suite (the Test Command, or `npm test` if none is
+     set), then walk any configured Regression Scenarios.
+   Classify each failure: caused by this session (fix now) / pre-existing
+   (note, don't fix) / a real production bug exposed by a correct test or
+   scenario (flag as a follow-on, don't fix here).
 2. REGRESSION CHECK — review each modified file for breakage risk,
    cross-reference CROSS-MODULE RISKS from handoff block
 3. REFLECT — for each action: production bug? (YES/NO) New failure
@@ -71,7 +76,9 @@ If a .cycle/ directory exists at the project root, create or update
 .cycle/STATE.md to reflect this session: completed actions, any actions
 not finished, open follow-on items, decisions made, and a "Where I left
 off" line. This lets /cycle-resume continue cleanly in a fresh session
-if context runs out. If .cycle/ does not exist, skip this step.
+if context runs out. Set Phase: implement; leave Cycle exactly as the
+audit's CYCLE OPEN step set it — implement sessions never increment it.
+If .cycle/ does not exist, skip this step.
 
 ALSO write the summary block VERBATIM to
 .cycle/blocks/<cycle>-<version-or-scope>-targeted-implement.md (create the

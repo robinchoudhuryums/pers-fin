@@ -1,7 +1,18 @@
-Do not make any changes to any files during the audit phase.
+Do not make any changes to any files during the audit phase, other than
+the optional CYCLE OPEN step below.
 
 Read CLAUDE.md (especially Common Gotchas and Key Design Decisions),
 README, and the roadmap carefully before doing anything else.
+
+CYCLE OPEN (optional — only if .cycle/STATE.md exists): this audit opens
+a new cycle, and this is the ONLY file write the session may make. Unless
+STATE.md's Phase is already "audit" (a parallel or re-run audit of a
+cycle that is already open — then leave Cycle alone and say so),
+increment its Cycle field by 1 (treat a missing or non-numeric value as
+0, so a project's first audit is Cycle 1) and set Phase: audit, Scope to
+this audit's scope, and Updated to today's date. Every later phase of
+this cycle carries that number; none of them increments it. Skip if
+.cycle/STATE.md does not exist.
 
 This audit runs in three stages within this session. Complete each stage fully before starting the next.
 
@@ -10,6 +21,9 @@ STAGE 1 — BROAD PASS
 ═══════════════════════════════════════════
 
 Audit the codebase thoroughly. For each finding:
+- ID: F1, F2, … — one sequence across all three stages (Stage 2 and
+  interface findings continue it; a retracted ID is never reused). These
+  are session-local labels for the batch plan, not invariant IDs
 - State the issue, cite the file and function/line area
 - Severity: Critical / High / Medium / Low
 - Confidence: High / Medium / Low (flag if you only skimmed this area)
@@ -20,7 +34,15 @@ Flag:
 - Bugs and logic errors in currently-reachable code paths
 - Security and compliance gaps (auth, sensitive data handling, audit logging)
 - Inconsistencies between CLAUDE.md/docs and actual implementation
-- Dead code, unused exports, stale TODOs only if they create confusion
+- Dead or superseded artifacts — code, exports, styles/classes, markup,
+  config, feature flags, exemptions — but ONLY where the thing is
+  actively misleading: it hides a live defect, contradicts what the code
+  does now, or survives a change that replaced it. Volume is not a
+  finding; concealment is. For each, state how you verified it is
+  unreferenced, and mark it SAFE (mechanically verified — no reference in
+  any code path, template string, or generated markup) or PROPOSE (looks
+  unused, but dynamic or generated references cannot be ruled out).
+  PROPOSE items are questions for the operator, never removals.
 - Silent degradation paths: places where failure is swallowed and the
   app continues with wrong results rather than surfacing an error
 
@@ -33,6 +55,9 @@ For findings in any Frozen Subsystem (see CLAUDE.md Cycle Workflow Config):
 DO NOT flag code for "simplification" or "cleanup" unless the current
 code is actively wrong or creates a maintenance trap. Working code
 that could be written differently is not a finding.
+Removing something is a change like any other and needs the same evidence
+a fix needs. If you cannot name the check that proves nothing references
+it, it is a PROPOSE, not a finding.
 
 After the broad pass, provide ratings out of 10 with reasoning for
 each dimension listed in the "Health Dimensions" section of CLAUDE.md's
@@ -146,7 +171,7 @@ FEATURE EFFECTIVENESS (for each major feature area):
   [1-2 sentences on how effectively it serves users, not code quality]
 
 INTERFACE FINDINGS (structural only — omit if no user-facing surface):
-- [Finding] — [file/component] — [Severity] — [what a user hits] —
+- [ID] — [Finding] — [file/component] — [Severity] — [what a user hits] —
   [effort: S/M/L + rough time estimate]
 (or "None — no structural interface findings")
 
@@ -155,12 +180,14 @@ OPERATOR VISUAL CHECKS (perceptual — needs a person at a browser):
 (or "None needed")
 
 COMPLETENESS GAPS (what's not built yet that should be):
-- [Gap] — [impact on users] — [effort: S/M/L + rough time estimate]
-(list the top 5 most impactful gaps)
+- G1 | [Gap] — [impact on users] — [effort: S/M/L + rough time estimate]
+(list the top 5 most impactful gaps, numbered G1–G5)
 
 STRATEGIC SUGGESTIONS (what would make this significantly more valuable):
-- [Suggestion] — [why it matters] — [builds on what already exists]
-(3-5 suggestions, grounded in what you observed, not generic advice)
+- ST1 | [Suggestion] — [why it matters] — [builds on what already exists] —
+  [effort: S/M/L + rough time estimate]
+(3-5 suggestions, numbered ST1–ST5, grounded in what you observed, not
+ generic advice. ST, not S — S1… is the Regression Scenario numbering)
 
 PRODUCTION READINESS ASSESSMENT:
 One paragraph: is this tool ready for production use? What's the gap
@@ -185,5 +212,24 @@ Deferred (not batched): [ID] — [why: needs a decision, out of scope, or blocke
 Every finding must appear exactly once — in a batch or under Deferred.
 The sequence is a suggestion; I will choose which batches to run.
 
-After I review the audit, I will tell you which findings to implement.
-Do not implement anything until then.
+EXPANSION PLAN (new capability — NOT fixes; kept apart from the batch plan):
+The batch plan above covers findings only. This plan covers the
+COMPLETENESS GAPS (G) and STRATEGIC SUGGESTIONS (ST) from Stage 3 —
+work that adds capability rather than correcting what exists. Keep the
+two plans distinct: never place a G or ST item in a numbered Batch, and
+never count its hours in a Batch total. Group them into Expansion
+batches (E1, E2, …), each sized for one /broad-implement session. Order
+by user impact, then by dependency — including on the fix batches above
+(a gap that builds on a path a Batch fixes goes after that Batch).
+
+Expansion E1 — [theme] | est. [total hours]
+  [GAP: G1 / STRATEGIC: ST2] | [one-line deliverable] | [effort: S/M/L + hours] | [depends on: Batch N / E-batch, or "—"]
+(repeat per expansion batch)
+Not batched: [G/ST ID] — [why: needs a product decision, too large for one session → /roadmap, or blocked on another item]
+
+Every G and ST item must appear exactly once — in an Expansion batch or
+under Not batched. This plan is optional scope: the fix batches come
+first unless I say otherwise.
+
+After I review the audit, I will tell you which findings (and any G/ST
+items) to implement. Do not implement anything until then.

@@ -5,8 +5,9 @@ missing — NEVER overwrite or modify a file that already exists.
 
 1. If .cycle/ does not exist, create it.
 2. If .cycle/STATE.md does not exist, create it from the template in
-   CLAUDE.md's "Cycle State & Memory" section, with Phase: idle and a
-   "Where I left off" line pointing at the first audit.
+   CLAUDE.md's "Cycle State & Memory" section, with Cycle: 0 (no cycle
+   opened yet — the first audit's CYCLE OPEN step makes it 1), Phase: idle
+   and a "Where I left off" line pointing at the first audit.
 3. If .cycle/metrics.csv does not exist, create it with just the header:
    date,cycle,subsystem,phase,net_score,prod_fixes,new_failure_modes,category_d_ratio,axis_b_lowest,notes,defensive_count
 4. If .cycle/estimates.csv does not exist, create it with just the header:
