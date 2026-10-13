@@ -26,7 +26,7 @@ same scope discipline as /implement:
   to Completed, refresh "Where I left off").
 
 When pending work is complete (or you must stop), update
-.cycle/STATE.md, run the test step per CLAUDE.md's Test Command (or walk
+.cycle/STATE.md (Phase: implement; never change Cycle), run the test step per CLAUDE.md's Test Command (or walk
 the Regression Scenarios if `manual`), then emit the same
 implementation summary block the original implement command would have.
 Suggest /regression, /reflect, /test-sync, and /sync-docs as applicable.
