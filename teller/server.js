@@ -142,8 +142,11 @@ function requireAuth(req, res, next) {
   if (!AUTH_SECRET) return next();
   if (["/login", "/api/login", "/api/webauthn/authenticate-options", "/api/webauthn/authenticate", "/manifest.json", "/sw.js", "/health", "/api/keep-alive-schedule", "/apple-touch-icon.svg", "/apple-touch-icon.png", "/logo.svg", "/api/sso/validate"].includes(req.path)) return next();
   if (req.path.endsWith(".css") || req.path.endsWith(".js")) return next();
-  // Allow API key authenticated requests through (validated later in API key middleware)
-  if (req.path.startsWith("/api/") && req.headers["x-api-key"]) return next();
+  // Allow API key authenticated requests through (validated later in API key
+  // middleware) — only when an API_KEY is configured: with none set, that
+  // middleware lets everything through, so the bare header was a full auth
+  // bypass on a standalone deployment with a PIN/password (F6).
+  if (req.path.startsWith("/api/") && req.headers["x-api-key"] && process.env.API_KEY) return next();
   if (req.session && req.session.authenticated) {
     const timeout = (req.session.timeoutMinutes || 15) * 60 * 1000;
     if (Date.now() - req.session.lastActivity < timeout) {

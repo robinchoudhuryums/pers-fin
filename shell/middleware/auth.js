@@ -127,6 +127,14 @@ function setSessionCookie(res, idleMs) {
   });
 }
 
+// Constant-time string equality over fixed-length SHA-256 digests: never
+// throws on a length (or UTF-8 byte-length) mismatch and leaks neither length.
+function safeEqual(provided, expected) {
+  const a = crypto.createHash("sha256").update(String(provided), "utf8").digest();
+  const b = crypto.createHash("sha256").update(String(expected), "utf8").digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
 function isValidApiKey(req) {
   // Non-interactive clients (cron, CI workflows, etc.) authenticate with
   // x-api-key against the same API_KEY env var Perfin uses. Validated here
@@ -233,17 +241,12 @@ async function handleLogin(req, res) {
     return renderLogin(res, 429, `Too many failed attempts. PIN login is locked for ${mins} more minute${mins === 1 ? "" : "s"} — use biometric login or try later.`, returnTo);
   }
 
-  // Length-mismatch is itself information; pad before compare so we don't
-  // leak the expected length via the early-exit branch.
-  const expectedBuf = Buffer.from(expected || " ", "utf8");
-  const submittedBuf = Buffer.from(
-    submitted.padEnd(expectedBuf.length, " ").slice(0, expectedBuf.length),
-    "utf8"
-  );
-  const matches =
-    expected.length > 0 &&
-    submitted.length === expected.length &&
-    crypto.timingSafeEqual(submittedBuf, expectedBuf);
+  // Digest compare (safeEqual): the old padded-buffer compare checked the
+  // CHARACTER count but compared UTF-8 BYTES, so a multibyte PIN of the right
+  // length made timingSafeEqual throw inside this async handler — an
+  // unhandled rejection that killed the process and reset every in-memory
+  // brute-force counter (F1).
+  const matches = expected.length > 0 && safeEqual(submitted, expected);
 
   if (!matches) {
     recordPinFailure();
@@ -292,6 +295,26 @@ function handleLogout(_req, res) {
   res.redirect("/login");
 }
 
+// The onLockout handler the shell registers: one "PIN login locked" alert per
+// LOCKOUT_ALERT_WINDOW_HOURS (F7) — while the ceiling keeps re-tripping, the
+// first alert already told the operator. `getNotifications` returns Perfin's
+// notifications module ({ sendToAll, sentRecently }); sentRecently fails open,
+// so a DB error still alerts.
+const LOCKOUT_ALERT_WINDOW_HOURS = 6;
+function makeLockoutNotifier(getNotifications) {
+  return async ({ failures, lockedUntil }) => {
+    const { sendToAll, sentRecently } = getNotifications();
+    if (await sentRecently("pin-lockout", LOCKOUT_ALERT_WINDOW_HOURS)) return false;
+    await sendToAll({
+      title: "PIN login locked",
+      body: `${failures} failed PIN attempts within an hour. PIN login is locked until ${lockedUntil.toISOString().slice(11, 16)} UTC. If this wasn't you, rotate SHELL_PIN.`,
+      tag: "pin-lockout",
+      data: { url: "/" },
+    });
+    return true;
+  };
+}
+
 module.exports = {
   COOKIE_NAME,
   DEFAULT_IDLE_MS,
@@ -305,11 +328,14 @@ module.exports = {
   init,
   invalidateIdleCache,
   isValidSession,
+  LOCKOUT_ALERT_WINDOW_HOURS,
+  makeLockoutNotifier,
   makeSession,
   setSessionCookie,
   getIdleMs,
   requireAuth,
   handleLogin,
   handleLogout,
+  safeEqual,
   safeReturnTo,
 };

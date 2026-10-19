@@ -503,12 +503,16 @@ describe("Security middleware (middleware.setup / requireAuth)", () => {
     app.get("/api/thing", (req, res) => res.json({ ok: true }));
     return app;
   }
-  it("CSRF: a bare POST is refused; JSON, X-Requested-With and multipart pass; GET is exempt", async () => {
+  it("CSRF: a bare POST is refused; JSON and X-Requested-With pass; multipart needs the header; GET is exempt", async () => {
     const app = securedApp();
     await supertest(app).post("/api/thing").set("Content-Type", "text/plain").send("x").expect(403);
     await supertest(app).post("/api/thing").send({ a: 1 }).expect(200);
     await supertest(app).post("/api/thing").set("X-Requested-With", "XMLHttpRequest").set("Content-Type", "text/plain").send("x").expect(200);
-    await supertest(app).post("/api/thing").attach("f", Buffer.from("x"), "f.txt").expect(200);
+    // F11: a cross-site <form> can send multipart, and a no-cors fetch can send
+    // a text/plain type that merely CONTAINS "application/json".
+    await supertest(app).post("/api/thing").attach("f", Buffer.from("x"), "f.txt").expect(403);
+    await supertest(app).post("/api/thing").set("X-Requested-With", "XMLHttpRequest").attach("f", Buffer.from("x"), "f.txt").expect(200);
+    await supertest(app).post("/api/thing").set("Content-Type", "text/plain; x=application/json").send("x").expect(403);
     await supertest(app).get("/api/thing").expect(200);
   });
   it("/api/health reports ok, and degraded (503) when the DB probe fails", async () => {

@@ -14,6 +14,28 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    # PUBLIC-LOG SAFETY (F2): this repo's Actions logs are world-readable
+    # while the repo is public, so response bodies are never printed — they
+    # carry account names, balances, net worth and merchant names. SUMMARY_JS
+    # prints only the listed keys: numbers/booleans as-is, arrays as a count,
+    # strings only when the key is suffixed ":str". Details live in the app
+    # (Settings -> Sync Health).
+    env:
+      SUMMARY_JS: |
+        const fs = require("fs");
+        const [file, ...keys] = process.argv.slice(1);
+        let d;
+        try { d = JSON.parse(fs.readFileSync(file, "utf8")); } catch { console.log("(no JSON body)"); process.exit(0); }
+        for (const k of keys) {
+          const str = k.endsWith(":str");
+          const path = (str ? k.slice(0, -4) : k).split(".");
+          let v = d;
+          for (const p of path) v = v && typeof v === "object" ? v[p] : undefined;
+          const name = path.join(".");
+          if (Array.isArray(v)) console.log(name + ": " + v.length);
+          else if (typeof v === "number" || typeof v === "boolean") console.log(name + ": " + v);
+          else if (str && typeof v === "string") console.log(name + ": " + v.slice(0, 40));
+        }
     steps:
       - name: Wake server (Render free tier cold start)
         run: |
@@ -34,7 +56,7 @@ jobs:
             -H "x-api-key: ${{ secrets.API_KEY }}" \
             -H "Content-Type: application/json")
           echo "Sync status: $STATUS"
-          cat /tmp/sync.json
+          node -e "$SUMMARY_JS" /tmp/sync.json enrollments_synced transactions_added errors
           if [ "$STATUS" -ne 200 ]; then echo "Sync failed"; exit 1; fi
 
       - name: Sync balances + holdings + investment flows
@@ -48,7 +70,7 @@ jobs:
             -H "x-api-key: ${{ secrets.API_KEY }}" \
             -H "Content-Type: application/json")
           echo "Balance sync status: $STATUS"
-          cat /tmp/balances.json
+          node -e "$SUMMARY_JS" /tmp/balances.json accounts_updated accounts_changed errors plaid_accounts_updated plaid_errors holdings_updated holdings_accounts_updated holdings_errors flows_added flows_errors
           if [ "$STATUS" -ne 200 ]; then echo "Balance sync failed"; exit 1; fi
 
       - name: Net worth snapshot
@@ -60,7 +82,7 @@ jobs:
             -H "x-api-key: ${{ secrets.API_KEY }}" \
             -H "Content-Type: application/json")
           echo "Snapshot status: $STATUS"
-          cat /tmp/networth.json
+          # The body is the snapshot row incl. the per-account breakdown — never printed (F2).
 
       - name: Run subscription detection
         run: |
@@ -69,7 +91,7 @@ jobs:
             -H "x-api-key: ${{ secrets.API_KEY }}" \
             -H "Content-Type: application/json")
           echo "Detection status: $STATUS"
-          cat /tmp/detect.json
+          node -e "$SUMMARY_JS" /tmp/detect.json detected_count
 
       - name: Check for new/changed subscriptions
         id: check
@@ -85,21 +107,16 @@ jobs:
           summary = data.get('summary', {})
 
           print(f\"Active: {summary.get('total_active', 0)}\")
-          print(f\"Monthly cost: \${summary.get('monthly_cost', 0):.2f}\")
           print(f\"New subscriptions: {len(new_subs)}\")
           print(f\"Price changes: {len(changed)}\")
 
+          # Counts only — names and amounts stay in the app (F2: public logs).
           if new_subs:
-              print('::warning::New subscriptions detected:')
-              for s in new_subs:
-                  print(f\"  - {s['display_name']}: \${float(s['amount']):.2f}\")
+              print(f'::warning::{len(new_subs)} new subscription(s) detected — see the Subscriptions page')
           if changed:
-              print('::warning::Price changes detected:')
-              for s in changed:
-                  print(f\"  - {s['display_name']}: \${float(s['amount']):.2f} (was \${float(s.get('prior_amount', 0)):.2f})\")
+              print(f'::warning::{len(changed)} price change(s) detected — see the Subscriptions page')
 
           with open('$GITHUB_OUTPUT', 'a') as f:
               f.write(f'new_count={len(new_subs)}\n')
               f.write(f'changed_count={len(changed)}\n')
-              f.write(f'monthly_cost={summary.get(\"monthly_cost\", 0)}\n')
           " 2>/dev/null || echo "Subscription check completed"

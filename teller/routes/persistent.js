@@ -198,8 +198,10 @@ async function sendPerSistantWebhook(event, data) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8000);
   try {
+    // redirect:"manual" — a configured URL must not bounce the signed POST
+    // (or the probes below) to another host (F82); a 3xx reads as not-ok.
     const r = await fetch(`${config.url}/api/perfin/webhook`, {
-      method: "POST", headers, body, signal: controller.signal,
+      method: "POST", headers, body, signal: controller.signal, redirect: "manual",
     });
     clearTimeout(timeout);
     if (!r.ok) {
@@ -294,7 +296,7 @@ router.get("/api/persistent/status", async (req, res) => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
   try {
-    const r = await fetch(`${config.url}/api/health`, { signal: controller.signal });
+    const r = await fetch(`${config.url}/api/health`, { signal: controller.signal, redirect: "manual" });
     clearTimeout(timeout);
     if (!r.ok) return res.json({ connected: false, url: config.url, status: r.status });
     const data = await r.json();
@@ -346,8 +348,8 @@ router.get("/api/persistent/productivity-context", async (req, res) => {
   const timeout = setTimeout(() => controller.abort(), 5000);
   try {
     const [statsR, reviewR] = await Promise.all([
-      fetch(`${config.url}/api/stats`, { signal: controller.signal }).then(r => r.ok ? r.json() : null).catch(() => null),
-      fetch(`${config.url}/api/review`, { signal: controller.signal }).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(`${config.url}/api/stats`, { signal: controller.signal, redirect: "manual" }).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(`${config.url}/api/review`, { signal: controller.signal, redirect: "manual" }).then(r => r.ok ? r.json() : null).catch(() => null),
     ]);
     clearTimeout(timeout);
     const context = { connected: true };

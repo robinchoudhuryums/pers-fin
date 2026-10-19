@@ -14,6 +14,16 @@ jobs:
   import:
     runs-on: ubuntu-latest
     steps:
+      # A bank CSV pushed to a PUBLIC repo is published the moment it lands —
+      # importing and `git rm`-ing it afterwards doesn't take it back (F2).
+      # Fail loudly so this path is never used while the repo is public; make
+      # the repo private (or upload through the app's CSV import instead).
+      - name: Refuse CSV uploads to a public repository
+        if: ${{ !github.event.repository.private }}
+        run: |
+          echo "::error::This repository is public — bank CSVs pushed here are publicly visible. Make the repo private, delete the upload commit from history (git filter-repo), and use the in-app CSV import instead."
+          exit 1
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4

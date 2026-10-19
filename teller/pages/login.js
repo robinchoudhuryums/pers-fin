@@ -50,9 +50,12 @@ router.post("/api/login", async (req, res) => {
   if (!AUTH_SECRET) return res.json({ ok: true });
   const { password } = req.body;
   if (!password) return res.status(400).json({ error: (AUTH_MODE === "pin" ? "PIN" : "Password") + " required" });
-  const providedBuf = Buffer.from(password);
-  const expectedBuf = Buffer.from(AUTH_SECRET);
-  if (providedBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(providedBuf, expectedBuf)) {
+  // Fixed-length digests: Buffer.from(<number>) threw (a JSON {password: 1234}
+  // crashed the async handler) and the length check leaked the secret's
+  // length (F6).
+  const providedHash = crypto.createHash("sha256").update(String(password), "utf8").digest();
+  const expectedHash = crypto.createHash("sha256").update(String(AUTH_SECRET), "utf8").digest();
+  if (!crypto.timingSafeEqual(providedHash, expectedHash)) {
     return res.status(401).json({ error: AUTH_MODE === "pin" ? "Invalid PIN" : "Invalid password" });
   }
   req.session.authenticated = true;

@@ -1,4 +1,5 @@
 const { pageHead, navBar, themeScript, nonceAttr } = require("../views");
+const { MERMAID_CDN_BASE } = require("../config");
 
 module.exports = function() {
   return (req, res) => {
@@ -107,7 +108,7 @@ function showEmpty(msg){ document.getElementById('k-empty-msg').textContent = ms
 var _mermaid = null;
 async function loadMermaid(){
   if(_mermaid) return _mermaid;
-  var mod = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+  var mod = await import('${MERMAID_CDN_BASE}dist/mermaid.esm.min.mjs');
   _mermaid = mod.default;
   _mermaid.initialize({ startOnLoad:false, securityLevel:'strict', theme:'neutral' });
   return _mermaid;

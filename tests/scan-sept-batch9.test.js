@@ -137,7 +137,10 @@ describe("PSC-14 — global PIN failure ceiling", () => {
 
   it("the shell wires the alert to Perfin's notifications and warns on a short PIN", () => {
     const idx = read("shell", "index.js");
-    assert.match(idx, /onLockout: async[\s\S]*?sendToAll\(\{[\s\S]*?tag: "pin-lockout"/);
+    // The handler itself (deduped, F7) is exercised behaviorally in
+    // tests/scan-oct-batch1.test.js; here, only that the shell wires it to
+    // Perfin's notifications module.
+    assert.match(idx, /onLockout: auth\.makeLockoutNotifier\(\(\) => require\("\.\.\/teller\/routes\/notifications"\)\)/);
     assert.match(idx, /SHELL_PIN\.length < 6/);
   });
 });

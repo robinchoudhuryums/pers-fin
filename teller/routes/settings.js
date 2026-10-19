@@ -46,6 +46,21 @@ function toInt(v) {
   return NaN;
 }
 
+// persistent_url (F82): an http(s) URL with no embedded credentials, at most
+// 500 chars, stored trimmed without a trailing slash; "" / null clears it.
+// Returns { value } or { error }. (Private hosts stay allowed — a standalone
+// Per-sistant is often on localhost/LAN; the fetches don't follow redirects.)
+function normalizePersistentUrl(v) {
+  if (v === null || v === undefined || (typeof v === "string" && !v.trim())) return { value: null };
+  if (typeof v !== "string" || v.trim().length > 500) return { error: "persistent_url must be an http(s) URL of at most 500 characters" };
+  const trimmed = v.trim().replace(/\/+$/, "");
+  let u;
+  try { u = new URL(trimmed); } catch { return { error: "persistent_url must be a valid http(s) URL" }; }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return { error: "persistent_url must be an http(s) URL" };
+  if (u.username || u.password) return { error: "persistent_url must not contain credentials" };
+  return { value: trimmed };
+}
+
 function isValidTimeZone(tz) {
   if (typeof tz !== "string" || !tz || tz.length > 50) return false;
   try { new Intl.DateTimeFormat("en-US", { timeZone: tz }); return true; } catch { return false; }
@@ -161,7 +176,9 @@ router.patch("/api/settings", async (req, res) => {
     }
     // Per-sistant integration settings
     if (req.body.persistent_url !== undefined) {
-      updates.push("persistent_url = $" + idx++); values.push(req.body.persistent_url || null);
+      const pu = normalizePersistentUrl(req.body.persistent_url);
+      if (pu.error) return res.status(400).json({ error: pu.error });
+      updates.push("persistent_url = $" + idx++); values.push(pu.value);
     }
     if (req.body.persistent_webhook_secret !== undefined) {
       // Stored encrypted at rest with TOKEN_ENCRYPTION_PASSPHRASE. Empty string
@@ -294,7 +311,11 @@ router.patch("/api/settings", async (req, res) => {
     if (Object.keys(req.body || {}).some(k => k.startsWith("keep_alive_"))) {
       try { require("../services/keep-alive").invalidateKeepAliveCache(); } catch {}
     }
-    res.json(result.rows[0]);
+    // Never echo ciphertext columns (persistent_webhook_secret_enc) to the
+    // client — RETURNING * included them (F82).
+    const row = { ...result.rows[0] };
+    for (const k of Object.keys(row)) if (k.endsWith("_enc")) delete row[k];
+    res.json(row);
   } catch (err) {
     console.error("settings error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
@@ -730,3 +751,4 @@ module.exports = router;
 // `module.exports = router` so the router assignment doesn't drop it (INV-19).
 module.exports.sanitizeBoolMap = sanitizeBoolMap;
 module.exports.recordSheetsSyncResult = recordSheetsSyncResult;
+module.exports.normalizePersistentUrl = normalizePersistentUrl;

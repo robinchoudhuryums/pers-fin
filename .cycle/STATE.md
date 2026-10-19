@@ -10,7 +10,7 @@ to the "none in progress" state.
 ## Current Cycle
 
 Cycle: 7
-Phase: audit
+Phase: implement
 Scope: broad (Oct 2026 broad scan — all non-frozen subsystems + cycle-6 policy responses)
 Updated: 2026-10-19
 
@@ -18,7 +18,40 @@ Updated: 2026-10-19
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Cycle 6 REFLECTED + SYNTHESIZED (2026-10-13)** — net +102 (117 prod fixes − 15 new failure modes), block `.cycle/blocks/6-a-reflect.md`; synthesis in PROJECT_HEALTH.md (Axis A 7 / 7.5, Axis B 7 / 7.5, 3 policy responses mandatory for cycle 7). NEXT: the next audit opens Cycle 7 with the policy fixes in scope. Earlier: **Cycle 6 — Sept 2026 broad-scan, Batch 15 follow-ons DONE** on branch
+- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 1 DONE** on branch
+  `claude/sweet-ritchie-f9d8ah` (2026-10-19). Scan: 9 Stage-1 auditors + 2 Stage-2 sweeps
+  (real-PG reproduction, browser click sweep); 139 findings F1–F139, G1–G5, ST1–ST5 (the full
+  report lives in the scan session's chat — the batch plan below is the durable copy).
+  - **Completed:** F2 (workflows print counts only; csv-import refuses while the repo is
+    public), F1 (digest PIN/token compare + unhandledRejection logger), F6 (standalone
+    x-api-key bypass needs API_KEY; login digest), F125 (Mermaid 11.4.1 + path-scoped CSP),
+    F82 (persistent_url validated, no redirects, no *_enc echoed), F11 (Per-sistant CSRF),
+    F7 (lockout alert deduped 6h).
+  - **Not finished (selected):** none.
+  - **Tests:** npm test 1508/1508 (+19, tests/scan-oct-batch1.test.js; all 6 suites fail
+    pre-fix). Block: `.cycle/blocks/7-batch1-broad-implement.md`.
+  - **Decisions:** strip *_enc from the settings PATCH response rather than an explicit
+    column list; private hosts stay allowed for persistent_url (standalone Per-sistant on
+    localhost/LAN); lockout alert window 6h.
+  - **Operator:** make the repo PRIVATE; delete old Actions logs (balances/net worth);
+    check one Knowledge diagram renders after deploy.
+  - **Remaining cycle-7 batches (scan plan):**
+    B2 broken pages & dead channels (F87 F88 F89 F90 F74 F60 F93 F92 F137) ·
+    B3 backstops/outcomes/operator state — policy responses (F3 F4 F5 F8 F23 F69 F73 F63 F14
+    F15 F16 + empty-catch scan) · B4 bank-sync durability (F17 F18 F19 F25 F22 F27 F24 F28 F29
+    F30) · B5 money accuracy & classification (F31 F32 F51 F49 F50 F34 F37 F36 F33 F38 F40 F41
+    F42 F43) · B6 delete integrity & feeds (F20 F21 F45 F59 F56 F57 F58) · B7 categorization
+    (F46 F47 F48 F52 F54) · B8 AI trust (F61 F62 F64 F65 F66 F67 F68 F70 F71 F72) · B9 Sheets &
+    cross-app (F75 F76 F77 F78 F79 F80 F83 F84 F86 F44) · B10 Perfin UI (F91 F94 F95 F96 F97 F99
+    F101 F39 F98 F100 F102–F108) · B11 Per-sistant (F109 F113 F111 F110 F112 F114 F115 F121 F122
+    F116–F120 F123 F124) · B12 Knowledge (F126 F127 F128 F133 F129–F132 F135) · B13 platform +
+    tests + drift guards (F9 F10 F12 F13 F136 F138 F139 + canonical-helper scan, tz lint,
+    Sheets-vs-getBudgetStatus parity). Deferred: F35→G4, F53→G5, F55→ST2, F134→ST5, F81, F85,
+    F26 (decisions). Expansion: E1 (G1 G2) · E2 (ST1 G3) · E3 (G4 G5 ST2) · E4 (ST3 ST4 ST5).
+  - **Where I left off:** Batch 1 committed and pushed (no PR). NEXT: /sync-docs for Batch 1,
+    then Batch 2.
+
+- **Previous:** **Cycle 6 REFLECTED + SYNTHESIZED (2026-10-13)** — net +102 (117 prod fixes − 15 new failure modes), block `.cycle/blocks/6-a-reflect.md`; synthesis in PROJECT_HEALTH.md (Axis A 7 / 7.5, Axis B 7 / 7.5, 3 policy responses mandatory for cycle 7). NEXT: the next audit opens Cycle 7 with the policy fixes in scope. Earlier: **Cycle 6 — Sept 2026 broad-scan, Batch 15 follow-ons DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-10-10). The bugs Batch 15's real-code tests exposed are
   fixed and the contract-coverage gap is closed (all unmerged with Batches 11–15, no PR).
   - **Completed:** FO-1 (/api/calendar 500 — router now reads advanceRecurrence from helpers),

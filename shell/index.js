@@ -173,10 +173,9 @@ app.get("/health", (_req, res) => res.json({ ok: true }));
 app.get("/calendar.ics", async (req, res) => {
   const expected = process.env.CALENDAR_FEED_TOKEN || "";
   if (!expected) return res.status(404).end();
-  const provided = String(req.query.token || "");
-  const a = Buffer.from(provided.padEnd(expected.length, " ").slice(0, expected.length));
-  const b = Buffer.from(expected);
-  if (provided.length !== expected.length || !crypto.timingSafeEqual(a, b)) {
+  // Digest compare — a padded raw-buffer compare threw on a multibyte token of
+  // the right character length and crashed the process before login (F1).
+  if (!auth.safeEqual(String(req.query.token || ""), expected)) {
     return res.status(401).end();
   }
   try {
@@ -222,15 +221,9 @@ webauthn.attach(app, perfin.pool);
 // Perfin's notification channel (push + the in-app bell log).
 auth.init({
   pool: perfin.pool,
-  onLockout: async ({ failures, lockedUntil }) => {
-    const { sendToAll } = require("../teller/routes/notifications");
-    await sendToAll({
-      title: "PIN login locked",
-      body: `${failures} failed PIN attempts within an hour. PIN login is locked until ${lockedUntil.toISOString().slice(11, 16)} UTC. If this wasn't you, rotate SHELL_PIN.`,
-      tag: "pin-lockout",
-      data: { url: "/" },
-    });
-  },
+  // Deduped (F7): a sustained guesser re-trips the lockout every 30 minutes,
+  // which used to push ~48 alerts a day.
+  onLockout: auth.makeLockoutNotifier(() => require("../teller/routes/notifications")),
 });
 // Expose the cache invalidator on Perfin's app so /api/settings can drop
 // the 60s read-cache on the idle-timeout column the moment the user
@@ -347,6 +340,14 @@ async function start() {
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
 }
+
+// Express 4 does not catch a rejected promise from an async handler, and
+// Node 22 exits on an unhandled rejection — so one throwing request handler
+// took the whole process down (and with it the in-memory PIN lockout and rate
+// limiters, F1). Log instead; boot failures still exit via start().catch.
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled promise rejection:", reason && reason.stack ? reason.stack : reason);
+});
 
 start().catch(err => {
   console.error("Shell startup failed:", err);

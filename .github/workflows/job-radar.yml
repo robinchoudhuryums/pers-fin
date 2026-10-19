@@ -18,6 +18,28 @@ on:
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    # PUBLIC-LOG SAFETY (F2): this repo's Actions logs are world-readable
+    # while the repo is public, so response bodies are never printed — they
+    # carry account names, balances, net worth and merchant names. SUMMARY_JS
+    # prints only the listed keys: numbers/booleans as-is, arrays as a count,
+    # strings only when the key is suffixed ":str". Details live in the app
+    # (Settings -> Sync Health).
+    env:
+      SUMMARY_JS: |
+        const fs = require("fs");
+        const [file, ...keys] = process.argv.slice(1);
+        let d;
+        try { d = JSON.parse(fs.readFileSync(file, "utf8")); } catch { console.log("(no JSON body)"); process.exit(0); }
+        for (const k of keys) {
+          const str = k.endsWith(":str");
+          const path = (str ? k.slice(0, -4) : k).split(".");
+          let v = d;
+          for (const p of path) v = v && typeof v === "object" ? v[p] : undefined;
+          const name = path.join(".");
+          if (Array.isArray(v)) console.log(name + ": " + v.length);
+          else if (typeof v === "number" || typeof v === "boolean") console.log(name + ": " + v);
+          else if (str && typeof v === "string") console.log(name + ": " + v.slice(0, 40));
+        }
     steps:
       - name: Wake server (Render free tier cold start)
         run: |
@@ -34,7 +56,7 @@ jobs:
             -H "x-api-key: ${{ secrets.API_KEY }}" \
             -H "Content-Type: application/json")
           echo "Refresh status: $STATUS"
-          cat /tmp/jobradar.json || true
+          node -e "$SUMMARY_JS" /tmp/jobradar.json ok skipped:str fetched added scored fit_scored legitimacy_reviewed capped purged
           if [ "$STATUS" != "200" ]; then
             echo "Job Radar refresh failed"; exit 1
           fi

@@ -152,6 +152,13 @@ function validateWebhookHeaders(headers) {
   return { valid: true };
 }
 
+// Mermaid (Knowledge diagrams) — an EXACT version, and the CSP allows only
+// this path prefix: a floating "@11" took whatever release was newest, and a
+// host-wide cdn.jsdelivr.net allowlist let any npm/GitHub file run as script
+// on the page that serves secret lookups (F125). The ESM build's chunks are
+// relative imports under the same prefix.
+const MERMAID_CDN_BASE = "https://cdn.jsdelivr.net/npm/mermaid@11.4.1/";
+
 module.exports = {
   isPrivateAddress,
   resolveSafeWebhookTarget,
@@ -164,4 +171,5 @@ module.exports = {
   MAX_TITLE_LENGTH, MAX_BODY_LENGTH, MAX_CONTENT_LENGTH,
   MAX_BULK_IDS, MAX_PAGINATION_LIMIT,
   isValidWebhookUrl, validateWebhookHeaders, BLOCKED_WEBHOOK_HEADERS,
+  MERMAID_CDN_BASE,
 };

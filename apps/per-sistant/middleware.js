@@ -9,7 +9,7 @@ const cors = require("cors");
 const rateLimit = require("express-rate-limit");
 
 const { pool } = require("./db");
-const { AUTH_SECRET, AUTH_MODE, SESSION_SECRET } = require("./config");
+const { AUTH_SECRET, AUTH_MODE, SESSION_SECRET, MERMAID_CDN_BASE } = require("./config");
 
 function setup(app) {
   // Session
@@ -49,8 +49,13 @@ function setup(app) {
   app.use((req, res, next) => {
     if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return next();
     if (req.path === "/api/login") return next();
-    const ct = (req.headers["content-type"] || "").toLowerCase();
-    if (req.headers["x-requested-with"] || ct.includes("application/json") || ct.includes("multipart/form-data")) return next();
+    // A cross-site page can send a plain <form> as multipart/form-data, and a
+    // no-cors fetch can send "text/plain; x=application/json" — so only an
+    // X-Requested-With header (which forces a CORS preflight) or a real JSON
+    // content type passes (F11). Uploads must send the header; the shared
+    // fetch wrapper adds it to every /api call.
+    const ct = (req.headers["content-type"] || "").toLowerCase().trim();
+    if (req.headers["x-requested-with"] || ct.startsWith("application/json")) return next();
     return res.status(403).json({ error: "Forbidden: missing CSRF header" });
   });
 
@@ -63,13 +68,14 @@ function setup(app) {
         // per-request nonce is generated in views.basePathMiddleware (which
         // server.js installs BEFORE this helmet middleware) and every inline
         // <script> emitted by pageHead/themeScript/pages/login carries
-        // nonceAttr(). cdn.jsdelivr.net stays allowlisted for Mermaid on the
-        // Knowledge page. No 'unsafe-inline' — an injected inline script
-        // without the nonce won't run.
+        // nonceAttr(). Only the pinned Mermaid path on cdn.jsdelivr.net is
+        // allowlisted (F125 — the bare host let any npm/GitHub file run).
+        // No 'unsafe-inline' — an injected inline script without the nonce
+        // won't run.
         scriptSrc: [
           "'self'",
           (_req, res) => `'nonce-${res.locals.cspNonce}'`,
-          "https://cdn.jsdelivr.net",
+          MERMAID_CDN_BASE,
         ],
         // Pin script-src-attr to 'none' explicitly (PWUI5) so inline event
         // handlers (onclick/onerror) are blocked regardless of helmet's
