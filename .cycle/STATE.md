@@ -9,10 +9,10 @@ to the "none in progress" state.
 
 ## Current Cycle
 
-Cycle: 6
-Phase: reflect
-Scope: broad (Sept 2026 broad scan, Batches 1–15 + follow-ons)
-Updated: 2026-10-13
+Cycle: 7
+Phase: audit
+Scope: broad (Oct 2026 broad scan — all non-frozen subsystems + cycle-6 policy responses)
+Updated: 2026-10-19
 
 (Machine-read fields for the v1.43.0 commands: the next /broad-scan,
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
