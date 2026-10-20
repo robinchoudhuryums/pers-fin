@@ -33,8 +33,14 @@ implement and reflect sessions only set Phase.)
     provider upserts); CSV re-import doesn't check tombstones (preview parity).
   - **Follow-ons:** no undelete; CSV re-import vs tombstones decision.
   - **Block:** `.cycle/blocks/7-batch6-broad-implement.md`.
-  - **Where I left off:** Batch 6 committed and pushed (no PR). NEXT: /sync-docs for Batch 6,
-    then Batch 7.
+  - **Where I left off:** Batch 6 committed and pushed (no PR). /sync-docs DONE (Batch 6):
+    CLAUDE.md — deleted_transactions (dedup bullet, Database, reset list, DELETE endpoint),
+    CSV-overlap pairing (dedup bullet + endpoints + transactions.js note), ICS clamp + folding
+    (Rent ledger bullet + /calendar.ics), Undismiss (subscription + transfer sections), F57
+    400s + APP_TIMEZONE defaults (manual bills, bill-calendar, bill-payments, search, manual
+    txn), cadence.isValidYmd, Known Issues (Batch 6 follow-ons), new INV-111, counts 1583 / 73
+    (Perfin 1127) + contract 75; README counts + Batch 6 summary. Paths verified. npm test
+    1583/1583. NEXT: Batch 7.
 
 - **Previous:** **Cycle 7 — Oct 2026 broad scan, Batch 5 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-20). Money accuracy and classification.

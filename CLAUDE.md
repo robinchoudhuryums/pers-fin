@@ -121,6 +121,8 @@ teller/
                            detectors, /api/forecast, /api/bill-calendar,
                            /calendar.ics, the cash-flow bill schedule and
                            POST /api/subscriptions. Requireable from scripts/.
+                           isValidYmd(s) checks a real calendar date, not just
+                           the YYYY-MM-DD shape (cycle-7 F57).
     benchmarks.js        — S&P 500 benchmark closes for portfolio comparison.
                            Stooq daily-close CSV (keyless), cached in
                            benchmark_prices, fetched lazily — at most once/day
@@ -180,6 +182,8 @@ teller/
                            /duplicates, /csv-overlap +resolve),
                            PATCH/DELETE /api/transactions/:id,
                            GET/POST/DELETE /api/transactions/:id/splits.
+                           The CSV-overlap pairing helpers (merchantsSimilar,
+                           pairOverlaps — cycle-7 F21) are exported for tests.
                            (Original subscriptions.js entry continues:)
                            GET /api/transactions, GET /api/transactions/search, POST /api/detect,
                            POST /api/import-csv, GET /api/csv-imports, POST /api/cleanup,
@@ -536,8 +540,8 @@ shell/
   the next sync re-pulls full clean history. Dry-run by default (prints per-table
   row counts); only mutates with `--yes` / `CONFIRM_RESET=YES`; runs in one
   transaction. Three exported lists: `WIPE_TABLES` (incl. `investment_flows`,
-  `payee_obligations`, `payee_payments`, `settlements`, `payee_obligation_skips`
-  — PSC-6: missing them left
+  `payee_obligations`, `payee_payments`, `settlements`, `payee_obligation_skips`,
+  `deleted_transactions` — PSC-6: missing them left
   flows pointing at re-used `investment_accounts` ids after `RESTART IDENTITY`),
   `KEEP_TABLES`, and `UNTOUCHED_TABLES` (`schema_migrations`, `job_runs`,
   `benchmark_prices`). `tests/scan-sept-batch9.test.js` asserts every table the
@@ -557,9 +561,16 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1573 tests as of latest); use
+  Perfin and Per-sistant test files (1583 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1573 tests across 72 test files (incl.
+  Current count: 1583 tests across 73 test files (incl.
+  `tests/scan-oct-batch6.test.js` — the Oct 2026 (cycle 7) Batch 6 delete-integrity
+  / feed pins that need no database: both provider upserts skipping
+  `deleted_transactions` + the DELETE recording it (F20), `merchantsSimilar` /
+  `pairOverlaps` (F21), `icsFold` (F59), `isValidYmd` + the route 400s and the
+  literal search LIKE (F57), Undismiss re-activating (F56) and the removed dead
+  artifacts (F58) — the database-backed half lives in
+  `tests/contract/delete-feeds.contract.test.js`;
   `tests/scan-oct-batch5.test.js` — the Oct 2026 (cycle 7) Batch 5 money-accuracy
   pins that need no database: the budget push on getBudgetStatus with unrounded
   thresholds (F40), the context export's unknown card limit (F36),
@@ -662,11 +673,15 @@ shell/
   categorize queue for Plaid legacy categories, a removed housing placeholder
   staying removed, next month's rent reminder, whole-month Spending Summary
   windows, budget snapshots outside a budget's life, Zelle rent as a peer
-  transfer, semimonthly cash-flow income, and the Sheets Watchlist) and knowledge (syncVault through a
+  transfer, semimonthly cash-flow income, and the Sheets Watchlist),
+  delete-feeds (cycle-7 Batch 6: a deleted transaction surviving a Teller
+  reconcile and a Plaid re-delivery, the one-to-one / similar-merchant CSV
+  overlap, a 30th-of-month rent in the ICS feed, folded UTF-8 summaries,
+  Undismiss, and the F57 400s + literal search) and knowledge (syncVault through a
   fake GitHub API via its `fetchImpl`, syncNotes, keyword search never returning
   secret text, secret-lookup, facts current vs `all=1` + verify, /api/rag/query
   without AI, an incremental compare that removes a deleted file) plus insight
-  feedback set / change / clear (the F60 `$1::text` cast). 68 tests, run
+  feedback set / change / clear (the F60 `$1::text` cast). 75 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -937,6 +952,17 @@ shell/
   `rows_skipped` — and `rows_skipped` counts ONLY unparseable rows (DC-15; it used to include the
   duplicates too, so it disagreed with the preview). The `csv_imports` history row keeps its
   "not imported" meaning (skipped + duplicates), same as the CLI.
+  **A deleted transaction stays deleted (cycle-7 F20):** `DELETE /api/transactions/:id` records
+  the id in `deleted_transactions` (same transaction as the delete), and the Teller and Plaid
+  upserts are `INSERT … SELECT … WHERE NOT EXISTS (deleted_transactions)` — the 7-day lookback,
+  the weekly reconcile and a Plaid reconcile used to re-insert a row the duplicate cleanup had
+  removed. A skipped row is neither inserted nor counted and isn't a failed page. CSV imports
+  don't check the tombstone (re-importing the same file brings a hand-deleted CSV row back);
+  there is no undelete. **CSV-overlap (F21)** pairs a CSV row with a synced row one-to-one, only
+  when the merchants look alike (a shared word of 3+ letters, or a ≥4-letter prefix, noise words
+  ignored; the synced row's raw description is tried too), closest date first — amount + date
+  alone matched two different $4.50 coffees and let one synced row claim every same-amount CSV
+  row near it, so Resolve could delete genuine rows. GET and Resolve share the same pairs.
 - **CSV import → manual account balance** (DC-6): when the import's institution/label exactly
   matches a manual account, that account's KNOWN balance is ROLLED FORWARD by only the rows this
   import genuinely inserted that are dated after its `balance_updated_at` (credit: + net spend;
@@ -987,7 +1013,9 @@ shell/
   third charge (F2; previously gated on `>= 365`).
   The upsert respects user state via an `is_active` CASE: if the user cancelled a subscription
   (`cancelled_at IS NOT NULL`) or dismissed it (`is_dismissed = true`), detection will not
-  re-activate it even if the merchant charges again.
+  re-activate it even if the merchant charges again. "Undismiss" re-activates the
+  row (unless cancelled) — detection had kept it inactive, so it used to vanish
+  from both lists until the next detection run (cycle-7 F56).
   Matching rules (Sept 2026 Batch 4):
   - **Raw description (cycle-7 F49)**: a row whose raw description (`name`, read
     only when the user hasn't renamed the row) carries a payment/transfer phrase
@@ -1063,7 +1091,8 @@ shell/
 - **Manual bills**: User-created expected charges for the bill calendar (name, amount,
   due_day 1-31, cadence monthly/quarterly/yearly, category). CRUD via
   `/api/manual-bills`. Integrated into `/api/bill-calendar` alongside detected
-  subscriptions.
+  subscriptions. POST 400s a non-integer due_day (it passed `NaN < 1` and 500'd,
+  cycle-7 F57).
 - **Bill payment tracking**: Mark bills (both detected subscriptions and manual) as paid
   for specific dates via `/api/bill-payments`. Calendar shows paid state with
   strikethrough + checkmark. Click to toggle paid/unpaid. A payment recorded
@@ -1110,7 +1139,9 @@ shell/
   **bill calendar** (`bill_source='housing'`, display-only — settled via the Rent
   page, not the calendar's `bill_payments` toggle) AND on the public token-gated
   `/calendar.ics` feed (unpaid, known-amount obligations as all-day VEVENTs with
-  a stable `housing-<id>@perfin` UID). The Rent page also shows a **per-utility
+  a stable `housing-<id>@perfin` UID, on the due day clamped to the period's real
+  month length — the old 28-day cap moved rent due on the 30th to the 28th and
+  flagged it OVERDUE before it was due, cycle-7 F45). The Rent page also shows a **per-utility
   trend** section — an inline-SVG amount sparkline per utility with a
   vs-same-month-last-year (falling back to vs-previous) % delta, computed
   client-side from the ledger's obligation history (no extra endpoint). A
@@ -2237,7 +2268,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1573 tests passing across 72 test files (Perfin 1117 + Per-sistant 456), plus the real-Postgres route contract suite (68 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
+- 1583 tests passing across 73 test files (Perfin 1127 + Per-sistant 456), plus the real-Postgres route contract suite (75 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -2317,20 +2348,23 @@ PATCH /api/recurring-transfers/:id/dismiss   # dismiss a recurring transfer
 PATCH /api/recurring-transfers/:id/undismiss # restore a dismissed transfer
 PATCH /api/recurring-transfers/:id/type      # reclassify transfer type
 GET  /api/transactions     # list transactions (query: months, limit, offset)
-GET  /api/transactions/search # search/filter (query: q, category, account_id, min/max_amount, start/end_date)
+GET  /api/transactions/search # search/filter (query: q, category, account_id, min/max_amount, start/end_date);
+                           # q is matched literally (LIKE \ % _ escaped) and a non-date
+                           # start/end_date is a 400 (cycle-7 F57)
 GET  /api/transactions/duplicates # find candidate duplicate transactions across accounts
 GET  /api/transactions/csv-overlap         # CSV virtual accounts whose transactions
                                            # overlap with Plaid/Teller-synced accounts
-                                           # (same amount, date ±2 days, ≥3 matches).
+                                           # (same amount, date ±2 days, similar merchant,
+                                           # paired one-to-one — F21; ≥3 pairs).
                                            # CSV accounts = linked_accounts under a
                                            # plaid_items row with status='CSV' (NOT
                                            # is_manual — DC-5: CSV accounts are never
                                            # manual, so the old filter found nothing);
-                                           # counts/sums DISTINCT CSV rows.
+                                           # counts/sums the paired CSV rows.
                                            # Common after linking a previously
                                            # CSV-only bank via Plaid — historical
                                            # CSV rows + 2yr Plaid history double-count.
-POST /api/transactions/csv-overlap/resolve # delete CSV-side rows that have a matching
+POST /api/transactions/csv-overlap/resolve # delete CSV-side rows paired one-to-one with a
                                            # Plaid/Teller row (body: csv_account_id,
                                            # synced_account_id, dry_run?). Keeps the
                                            # synced account as canonical going forward.
@@ -2345,24 +2379,30 @@ PATCH /api/transactions/:id # user overrides: merchant_name, notes, is_reimburse
 POST /api/transactions/manual # add a one-off manual EXPENSE (e.g. cash spending
                             # bank sync never sees). Body: account_id (an existing
                             # is_manual account — 400 otherwise), amount (>0), date (YYYY-MM-DD),
-                            # merchant_name?, category?, notes?. Stores amount
+                            # merchant_name?, category?, notes?. A date that isn't a
+                            # real calendar date ("2026-13-45") is a 400 (F57). Stores amount
                             # POSITIVE (the spending sign), a unique manual_<ts>_<rand>
                             # transaction_id (never touched by re-sync), notes→user_notes.
-DELETE /api/transactions/:id # delete a single transaction (deduplication tool)
+DELETE /api/transactions/:id # delete a single transaction (deduplication tool); the id is
+                            # recorded in deleted_transactions so a Teller/Plaid re-fetch
+                            # can't re-insert it (F20)
 GET  /api/transactions/:id/splits # list splits for a transaction (Phase B3)
 POST /api/transactions/:id/splits # replace splits, validates sum matches parent ±$0.01
 DELETE /api/transactions/:id/splits # clear all splits, revert to parent-row aggregation
 GET  /api/forecast         # 7-90 day projection of recurring subscription charges
                            # (calendar-month stepping from the last charge, DC-9;
                            # includes a charge due today, days_away 0)
-GET  /api/bill-calendar    # monthly calendar of expected charges + recurring income (query: year, month)
+GET  /api/bill-calendar    # monthly calendar of expected charges + recurring income (query: year, month
+                           # — defaults are the APP_TIMEZONE month; a month outside 1-12 or a
+                           # year outside 1900-2999 is a 400, F57)
                            # — income projected per stream cadence (DC-10)
 GET  /api/manual-bills     # list all active manual bills
 POST /api/manual-bills     # create a manual bill (body: name, amount, due_day, cadence, category)
 PATCH /api/manual-bills/:id # update a manual bill (400 on a non-numeric/≤0 amount
                             # or a due_day outside 1-31 — DC-15)
 DELETE /api/manual-bills/:id # delete a manual bill
-GET  /api/bill-payments    # list payments for a month (query: year, month)
+GET  /api/bill-payments    # list payments for a month (query: year, month — same validation
+                           # and APP_TIMEZONE default as bill-calendar, F57)
 POST /api/bill-payments    # mark a bill as paid (body: bill_source, bill_id, paid_date,
                            # paid_amount? — defaults to the bill's amount, SXE-11)
 DELETE /api/bill-payments/:id # unmark a bill payment
@@ -2758,7 +2798,10 @@ GET  /calendar.ics                        # bill-calendar iCalendar feed (subscr
                                           # TODAY flagged "OVERDUE", same stable UID —
                                           # SXE-12),
                                           # "today" = the APP_TIMEZONE date,
-                                          # 90 days default (?days=7-365). Builder:
+                                          # 90 days default (?days=7-365). A rent/utility
+                                          # due day is clamped to its month's real length
+                                          # (F45); SUMMARY lines are folded at 75 octets per
+                                          # RFC 5545 (icsFold, UTF-8 safe — F59). Builder:
                                           # subscriptions.buildBillCalendarIcs.
 ```
 
@@ -2928,6 +2971,9 @@ standalone-mode fallback if either app is run on its own Render service.
   `'ai'`-sourced so the miss counts in the running accuracy %, while the
   corrected category still wins via `user_category`. Re-categorizing a row
   clears the prior verdict.
+- `deleted_transactions` (cycle-7 F20): `transaction_id TEXT PRIMARY KEY` +
+  `deleted_at` — ids the user deleted via `DELETE /api/transactions/:id`; the
+  Teller and Plaid upserts skip them. In reset-fresh's WIPE_TABLES.
 - `transaction_splits` (Phase B3): subdivides a single Teller transaction into
   multiple `(amount, category, merchant_name, notes)` rows that REPLACE the
   parent in per-category aggregations. `parent_transaction_id` references
@@ -3215,7 +3261,8 @@ Transfers are identified by keyword matching on merchant_name/name fields:
 - Outgoing recurring transfers integrated into cash flow forecast
 - User-dismissed transfers are preserved across detection runs: the upsert's
   `is_active` CASE checks `is_dismissed` and keeps dismissed transfers inactive,
-  mirroring the subscription detection logic
+  mirroring the subscription detection logic; Undismiss sets `is_active = true`
+  again (cycle-7 F56)
 - Stale patterns (last transfer past `max(120d, 1.5×cadence)`, the stale sweep's
   window) are skipped before the upsert (DC-2, shared `isStale` helper), so a
   long-stopped transfer isn't re-activated from 36 months of history
@@ -4221,9 +4268,9 @@ SX3-pinned — the Sheets Income tab.
 
 ## Known Open Issues
 **Cycle 7 (Oct 2026 broad scan) — open until their batches run** (plan in
-`.cycle/STATE.md`; Batches 1–5 — exposure / pre-auth safety, broken pages and
+`.cycle/STATE.md`; Batches 1–6 — exposure / pre-auth safety, broken pages and
 dead channels, backstops / outcomes / operator state, bank-sync durability, money
-accuracy and classification — are done):
+accuracy and classification, delete integrity and feeds — are done):
 - The repo is PUBLIC (operator: make it private and delete old Actions logs —
   they printed balances and net worth before Batch 1).
 - OPERATOR: Database Backup has never produced a backup (its secrets were never
@@ -4248,6 +4295,9 @@ accuracy and classification — are done):
   NOT_TRANSFER keyword list. Refunds still don't reduce spending outside the
   settlement (F35) and rollover / one-time budgets have no UI (F39). Batch 5
   follow-ons / later batches.
+- A deleted transaction has no undelete (its `deleted_transactions` row would
+  need clearing), and a CSV re-import doesn't honor the tombstone. Batch 6
+  follow-ons.
 - Per-sistant `POST /api/ai/review-summary` answers 500 (callAI throws →
   serverError) instead of 501 when `ANTHROPIC_API_KEY` is unset, and the Review
   page fires it on every load (found by `e2e/pages.spec.js`, tolerated in its
@@ -4540,6 +4590,7 @@ INV-107 | A Plaid link (exchange-transactions / hosted-link-complete) that dupli
 INV-108 | The CSV workflow deletes only files the CLI imported (CSV_IMPORTED_LIST); the CLI exits non-zero on any failed file | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-oct-batch4.test.js (F19 block)
 INV-109 | NOT_TRANSFER matches bank/processor BRAND words on the cleaned merchant only (payment/transfer phrases may read the raw description), and excludes a row categorized Transfer or Investment (user category, or the provider category for a non-Plaid row) | Subsystem: Financial Analytics | Verify: tests/contract/money-classification.contract.test.js (F32/F51) + SX3
 INV-110 | Income aggregates count a deposit at its account's share (INCOME_AMOUNT = −SPLIT_AMOUNT); the cash-flow forecast and bill calendar project the same live income streams (getLiveIncomeStreams) | Subsystem: Financial Analytics | Verify: tests/contract/money-classification.contract.test.js (F37/F34)
+INV-111 | A transaction the user deleted is never re-inserted by a provider sync or reconcile: the Teller and Plaid upserts skip ids in deleted_transactions (written in the same transaction as the DELETE) | Subsystem: Bank Sync & Ingestion | Verify: tests/contract/delete-feeds.contract.test.js (F20) + tests/scan-oct-batch6.test.js
 INV-106 | No server-side file gains a bare catch (`catch {}`, `.catch(() => {})`, `.catch(() => null)`) beyond its KNOWN_GAPS count; the list only shrinks (a stale count fails too) | Subsystem: Test Coverage Quality / Silent Degradation | Verify: tests/scan-oct-batch3.test.js (empty-catch scan)
 INV-104 | Every secret comparison (shell PIN, CALENDAR_FEED_TOKEN, API_KEY, standalone SESSION_PIN/PASSWORD) is a fixed-length SHA-256 digest compare (auth.safeEqual / isValidApiKey) — never timingSafeEqual over raw buffers whose byte lengths can differ — and the shell logs unhandled rejections instead of exiting | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch1.test.js (F1 / F6 blocks)
 INV-97 | No Per-sistant client template-literal module (a pages/ or views/ file that exports a string) contains a single-escaped regex class or delimiter (\b \d \s \w \/ \. …) — the template consumes the backslash, so the regex silently changes meaning in the browser; double-escape or use string methods | Subsystem: Per-sistant Web UI | Verify: apps/per-sistant/tests/batch15-followons.test.js (FO-2 guard)
