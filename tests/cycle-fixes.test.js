@@ -545,7 +545,8 @@ describe("Plaid: balance sync surfaces a genuine liabilities failure", () => {
     // account (Discover) — brokerage/depository-only items stay quiet.
     assert.match(inv, /const hasCreditAccount = \(balRes\.data\.accounts \|\| \[\]\)\.some\(a => a\.type === "credit"\)/);
     assert.match(inv, /lib\.skipped === "not_supported" && hasCreditAccount/);
-    assert.match(inv, /re-link this card to enable Plaid Liabilities/);
+    // Cycle-7 F18: a second link of the same bank is refused, so the hint says unlink + link.
+    assert.match(inv, /unlink it and link the bank again to enable them/);
   });
 });
 

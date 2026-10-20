@@ -474,7 +474,14 @@ router.patch("/api/investment-accounts/:id", async (req, res) => {
     for (const f of ALLOWED_FIELDS) {
       if (req.body[f] !== undefined) { updates.push(`"${f}" = $${idx++}`); values.push(f === "notes" ? (req.body[f] || null) : req.body[f]); }
     }
-    if (req.body.balance !== undefined) { updates.push(`"balance" = $${idx++}`); values.push(parseFloat(req.body.balance)); }
+    if (req.body.balance !== undefined) {
+      // Cycle-7 F29: reject a non-numeric balance instead of storing NaN.
+      const raw = req.body.balance;
+      const bal = typeof raw === "number" ? raw
+        : (typeof raw === "string" && raw.trim() !== "" ? Number(raw.trim().replace(/[$,]/g, "")) : NaN);
+      if (!Number.isFinite(bal)) return res.status(400).json({ error: "balance must be a number" });
+      updates.push(`"balance" = $${idx++}`); values.push(bal);
+    }
     if (updates.length === 0) return res.status(400).json({ error: "No fields to update" });
     updates.push(`updated_at = now()`);
     values.push(req.params.id);

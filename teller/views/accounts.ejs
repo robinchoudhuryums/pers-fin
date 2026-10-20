@@ -213,8 +213,9 @@
         itemsList.innerHTML = items.map(i =>
           '<div class="item">' +
             '<div class="item-info"><strong>' + esc(i.institution_name) + '</strong>' +
-            ' (' + esc(i.provider || 'teller') + ') \u2014 ' +
-            i.accounts.length + ' account(s) \u2014 Status: ' + esc(i.status) + '</div>' +
+            ' (' + esc(i.provider === 'plaid_investment' ? 'plaid, investments' : (i.provider || 'teller')) + ') \u2014 ' +
+            (i.provider === 'plaid_investment' ? 'investment accounts' : i.accounts.length + ' account(s)') +
+            ' \u2014 Status: ' + esc(i.status) + '</div>' +
             '<div class="item-actions"><button class="btn-unlink" data-action="unlink" data-id="' + i.id + '" data-provider="' + esc(i.provider || 'teller') + '" data-name="' + esc(i.institution_name || '') + '">Unlink</button></div>' +
           '</div>'
         ).join('');
@@ -230,7 +231,9 @@
       console.log('[unlink] confirm result', confirmed);
       if (!confirmed) return;
       try {
-        var endpoint = provider === 'plaid' ? '/api/items/' + id : '/api/enrollments/' + id;
+        var endpoint = provider === 'plaid' ? '/api/items/' + id
+          : provider === 'plaid_investment' ? '/api/plaid/investment-items/' + id
+          : '/api/enrollments/' + id;
         console.log('[unlink] DELETE', endpoint);
         var res = await apiFetch(endpoint, { method: 'DELETE' });
         console.log('[unlink] response status', res.status);

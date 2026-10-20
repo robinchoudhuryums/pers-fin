@@ -411,44 +411,69 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
         [req.file.originalname, institution, accountLabel, imported, skipped + duplicates]
       );
 
-      // Auto-update manual account balance if institution matches
+      // Auto-update manual account balance if institution matches. Runs under
+      // a SAVEPOINT (cycle-7 F25): a failure here used to be swallowed by a
+      // bare catch INSIDE the open transaction, so the COMMIT below silently
+      // rolled the whole import back while the route reported rows_imported.
+      await client.query("SAVEPOINT csv_balance");
       try {
-        // Match the user's manual account by EXACT institution name or EXACT
-        // account label (L2). The previous `name LIKE '%institution%'` substring
-        // could match the wrong manual account (e.g. a short institution token
-        // matching an unrelated account name) and silently overwrite ITS
-        // current_balance from this CSV's net — both matches are now exact.
+        // Match the user's manual account by EXACT account label, else EXACT
+        // institution name (L2). F25: an exact label match wins over an
+        // institution match, and when the best level still matches more than
+        // one account the balance is left alone — it used to be `LIMIT 1`
+        // with no ORDER BY, so an arbitrary account could be rolled forward.
+        const { APP_TIMEZONE } = require("../services/financial-queries");
         const manualAcct = await client.query(
           `SELECT id, type, current_balance,
-                  to_char(balance_updated_at, 'YYYY-MM-DD') AS balance_as_of
+                  (LOWER(name) = LOWER($2)) AS label_match,
+                  to_char(balance_updated_at AT TIME ZONE $3, 'YYYY-MM-DD') AS balance_as_of
            FROM linked_accounts
            WHERE is_manual = true
              AND (LOWER(institution_name_manual) = LOWER($1) OR LOWER(name) = LOWER($2))
-           LIMIT 1`,
-          [institution, accountLabel]
+           ORDER BY (LOWER(name) = LOWER($2)) DESC, id`,
+          [institution, accountLabel, APP_TIMEZONE]
         );
-        const acct = manualAcct.rows[0];
+        const best = manualAcct.rows.filter(r => !!r.label_match === !!(manualAcct.rows[0] && manualAcct.rows[0].label_match));
+        const acct = best.length === 1 ? best[0] : null;
+        if (best.length > 1) {
+          console.warn(`CSV import: ${best.length} manual accounts match "${accountLabel}" / "${institution}" — balance not rolled forward.`);
+        }
         // DC-6: ROLL the known balance forward by only the rows this import
         // genuinely added that post-date it. This used to OVERWRITE the balance
         // with the net of every CSV row ever imported (a partial statement
         // history is not a balance — a user-entered $4,200 checking balance
         // became e.g. -$1,300). An account with no known balance is left alone.
+        // The as-of date is the APP_TIMEZONE date of balance_updated_at (F25:
+        // it was the UTC date, so an evening entry west of UTC read as the
+        // next day and that day's rows were dropped).
         if (acct && acct.current_balance !== null && acct.balance_as_of) {
-          const net = insertedRows
-            .filter(r => r.date > acct.balance_as_of)
-            .reduce((sum, r) => sum + parseFloat(r.amount), 0);
+          const included = insertedRows.filter(r => r.date > acct.balance_as_of);
+          const net = included.reduce((sum, r) => sum + parseFloat(r.amount), 0);
           if (Math.abs(net) >= 0.005) {
-            // Import sign: positive = money out. Credit balances are amount
-            // owed (spend raises it); depository balances fall with spend.
-            const delta = acct.type === "credit" ? net : -net;
+            // Import sign: positive = money out. Credit and loan balances are
+            // amounts owed (spend raises them, a payment lowers them — F25: a
+            // loan was treated like a depository account); depository balances
+            // fall with spend.
+            const owed = acct.type === "credit" || acct.type === "loan";
+            const delta = owed ? net : -net;
             const balance = Math.round((parseFloat(acct.current_balance) + delta) * 100) / 100;
+            // The balance is now known as of the newest row it includes — not
+            // "now" (F25: stamping now() hid rows dated between that row and
+            // today from the next import's roll-forward).
+            const asOf = included.reduce((m, r) => (r.date > m ? r.date : m), acct.balance_as_of);
             await client.query(
-              `UPDATE linked_accounts SET current_balance = $1, balance_updated_at = now() WHERE id = $2`,
-              [balance, acct.id]
+              `UPDATE linked_accounts SET current_balance = $1,
+                      balance_updated_at = ($2::date + time '12:00') AT TIME ZONE $3
+               WHERE id = $4`,
+              [balance, asOf, APP_TIMEZONE, acct.id]
             );
           }
         }
-      } catch (e) { /* non-critical */ }
+        await client.query("RELEASE SAVEPOINT csv_balance");
+      } catch (e) {
+        await client.query("ROLLBACK TO SAVEPOINT csv_balance");
+        console.error("CSV import: manual balance roll-forward failed (import kept):", e.message);
+      }
 
       await client.query("COMMIT");
 

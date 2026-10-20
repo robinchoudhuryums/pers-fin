@@ -2084,11 +2084,17 @@ the Liabilities product entirely (PRODUCTS_NOT_SUPPORTED) AND carries a credit
 account — it stays silent when Liabilities is present but the issuer simply
 returns no APR/limit data, which is the un-fixable Discover case.
 
-**Gotcha — a Plaid "needs re-authentication" item is fixed by RE-LINKING.** The
-app has no Plaid Link update mode, so an item flagged via `last_error_code`
-(Sync Health: "N Plaid item(s) need re-authentication") is recovered by running
-the Plaid link flow for that bank again — the exchange upsert (same `item_id`)
-clears the flag. CSV imports never count toward that warning.
+**Gotcha — a Plaid "needs re-authentication" item is fixed by UNLINK + LINK,
+not by linking again.** The app has no Plaid Link update mode yet (G3). Running
+the link flow for an already-linked bank creates a NEW Item (new item_id,
+account_ids and transaction_ids), so it would double every transaction and use a
+second Trial-plan slot — the exchange routes therefore REFUSE it (cycle-7 F18:
+`findDuplicatePlaidItem` — same institution + an account with the same mask and
+type on another GOOD item → the new Item is released at Plaid, nothing is
+stored, 409 with the recovery steps). To recover an item flagged via
+`last_error_code` (Sync Health: "N Plaid item(s) need re-authentication"):
+unlink it on the Accounts page (its transactions and the edits on them go with
+it), then link the bank again. CSV imports never count toward that warning.
 
 **Gotcha — Plaid Liabilities never covers auto loans (any issuer).** The
 product supports only credit cards, student loans, and mortgages, so an auto

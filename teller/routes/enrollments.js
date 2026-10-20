@@ -229,7 +229,9 @@ async function syncEnrollment(enrollment, opts = {}) {
             txn.date,
             txn.details?.counterparty?.name || txn.description || null,
             txn.description || "",
-            txn.details?.category ? `{${txn.details.category}}` : null,
+            // A text[] PARAMETER, never a concatenated `{…}` literal — a comma
+            // or quote in the category split it or failed the row (F30, DC-14 class).
+            txn.details?.category ? [String(txn.details.category)] : null,
           ]
         );
 
@@ -299,7 +301,7 @@ async function syncAllEnrollments(opts = {}) {
 
   const { rows: enrollments } = await pool.query(
     `SELECT te.id, te.enrollment_id, te.institution_name,
-            pgp_sym_decrypt(te.access_token_enc, $1) AS access_token,
+            perfin_try_decrypt(te.access_token_enc, $1) AS access_token,
             te.last_synced_txn_date, te.status
      FROM teller_enrollments te
      WHERE te.status != 'SUSPENDED'
@@ -801,7 +803,18 @@ router.get("/api/items", async (_req, res) => {
                 pi.id, pi.item_id, pi.institution_name, pi.status, pi.created_at
        ORDER BY COALESCE(te.created_at, pi.created_at)`
     );
-    res.json(result.rows);
+    // Investments-only Plaid Items (POST /api/plaid/exchange) live only in
+    // plaid_investment_items, so they were never listed and couldn't be
+    // unlinked (cycle-7 F22). Their accounts aren't in linked_accounts; the
+    // page unlinks them via DELETE /api/plaid/investment-items/:id.
+    const inv = await pool.query(
+      `SELECT pii.id, pii.item_id, pii.institution_name, 'GOOD' AS status, pii.created_at,
+              'plaid_investment' AS provider, '[]'::json AS accounts
+       FROM plaid_investment_items pii
+       WHERE NOT EXISTS (SELECT 1 FROM plaid_items pi WHERE pi.item_id = pii.item_id)
+       ORDER BY pii.created_at`
+    ).catch(() => ({ rows: [] }));
+    res.json(result.rows.concat(inv.rows));
   } catch (err) {
     console.error("list items error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
@@ -811,15 +824,19 @@ router.get("/api/items", async (_req, res) => {
 // DELETE /api/enrollments/:id
 router.delete("/api/enrollments/:id", async (req, res) => {
   try {
+    // Fail-soft decrypt (F17): unlinking is the recovery path for a token
+    // that no longer decrypts, so it must not fail on one.
     const { rows } = await pool.query(
       `SELECT enrollment_id,
-              pgp_sym_decrypt(access_token_enc, $1) AS access_token
+              perfin_try_decrypt(access_token_enc, $1) AS access_token
        FROM teller_enrollments WHERE id = $2`,
       [ENCRYPTION_PASSPHRASE, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: "Enrollment not found" });
 
-    try {
+    if (!rows[0].access_token) {
+      console.warn("Teller unlink: token won't decrypt — removing locally without revoking at Teller.");
+    } else try {
       const accounts = await tellerRequest("/accounts", rows[0].access_token);
       for (const acct of accounts) {
         // Per-account try (DD-10): one failed DELETE used to abort revocation
@@ -999,14 +1016,35 @@ router.post("/api/accounts/manual", async (req, res) => {
   }
 });
 
+// Parse a money field from a request body: a finite number (a "$1,234.50"
+// string is accepted), or null when `nullable`. Returns undefined when the
+// value is invalid. Cycle-7 F29: parseFloat let "abc" through as NaN, which
+// Postgres stores in NUMERIC and which then spread into net worth.
+function parseMoneyField(v, { nullable = false } = {}) {
+  if (v === null) return nullable ? null : undefined;
+  const n = typeof v === "number" ? v
+    : (typeof v === "string" && v.trim() !== "" ? Number(v.trim().replace(/[$,]/g, "")) : NaN);
+  return Number.isFinite(n) ? n : undefined;
+}
+
 // PATCH /api/accounts/:id/balance — Update balance on any account
 router.patch("/api/accounts/:id/balance", async (req, res) => {
   const { current_balance, available_balance, credit_limit } = req.body;
   try {
     const updates = []; const values = []; let idx = 1;
-    if (current_balance !== undefined) { updates.push("current_balance = $" + idx++); values.push(parseFloat(current_balance)); }
-    if (available_balance !== undefined) { updates.push("available_balance = $" + idx++); values.push(parseFloat(available_balance)); }
-    if (credit_limit !== undefined) { updates.push("credit_limit = $" + idx++); values.push(credit_limit === null ? null : parseFloat(credit_limit)); }
+    const fields = [
+      ["current_balance", current_balance, false],
+      ["available_balance", available_balance, true],
+      ["credit_limit", credit_limit, true],
+    ];
+    for (const [col, raw, nullable] of fields) {
+      if (raw === undefined) continue;
+      const v = parseMoneyField(raw, { nullable });
+      if (v === undefined || (col === "credit_limit" && v !== null && v < 0)) {
+        return res.status(400).json({ error: `${col} must be a number${nullable ? " or null" : ""}${col === "credit_limit" ? " ≥ 0" : ""}` });
+      }
+      updates.push(col + " = $" + idx++); values.push(v);
+    }
     if (!updates.length) return res.status(400).json({ error: "No fields to update" });
     updates.push("balance_updated_at = now()");
     values.push(parseInt(req.params.id));
@@ -1107,7 +1145,7 @@ function syncAllBalances() {
 async function syncAllBalancesOnce() {
   const enrollments = await pool.query(
     `SELECT id, enrollment_id, institution_name,
-            pgp_sym_decrypt(access_token_enc, $1) AS access_token
+            perfin_try_decrypt(access_token_enc, $1) AS access_token
      FROM teller_enrollments WHERE status = 'GOOD'`,
     [ENCRYPTION_PASSPHRASE]
   );

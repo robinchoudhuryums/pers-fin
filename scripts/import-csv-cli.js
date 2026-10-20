@@ -154,6 +154,11 @@ async function importCsvFile(filePath) {
       // re-import dedup intact while still separating genuinely-identical rows (F1).
       const transactionId = nextTxnId(accountLabel, date, parsed.amount, parsed.merchant_name);
 
+      // A savepoint per row (cycle-7 F19): a failed INSERT used to abort the
+      // whole transaction, so every later row "failed" and the final COMMIT
+      // silently rolled the file back — while the CLI reported it imported and
+      // the workflow then deleted the CSV.
+      await client.query("SAVEPOINT csv_row");
       try {
         const ins = await client.query(
           `INSERT INTO transactions (account_id, transaction_id, amount, date, merchant_name, name, category, pending)
@@ -161,11 +166,14 @@ async function importCsvFile(filePath) {
            ON CONFLICT (transaction_id) DO NOTHING`,
           [virtualAccountId, transactionId, parsed.amount, date, parsed.merchant_name, parsed.merchant_name, parsed.category ? [parsed.category] : null]
         );
+        await client.query("RELEASE SAVEPOINT csv_row");
         // ON CONFLICT DO NOTHING → rowCount 1 on a real insert, 0 on a dup.
         // Count dups as skipped, not imported (F30).
         if (ins.rowCount > 0) imported++;
         else skipped++;
-      } catch {
+      } catch (rowErr) {
+        await client.query("ROLLBACK TO SAVEPOINT csv_row");
+        console.error(`  row ${i + 1}: ${rowErr.message}`);
         skipped++;
       }
     }
@@ -212,12 +220,19 @@ async function main() {
   console.log(`\nImporting ${files.length} CSV file(s)...\n`);
 
   const results = [];
+  const imported = [];
   for (const file of files) {
     const result = await importCsvFile(file);
-    if (result) results.push(result);
+    if (result) { results.push(result); imported.push(file); }
   }
 
   console.log(`\nDone: ${results.length}/${files.length} files imported successfully.`);
+  // Cycle-7 F19: tell the caller exactly which files made it in. The
+  // csv-import workflow removes ONLY these from the repo (it used to `git rm`
+  // every CSV, including one that failed to import — the only copy of it).
+  if (process.env.CSV_IMPORTED_LIST) {
+    fs.writeFileSync(process.env.CSV_IMPORTED_LIST, imported.map(f => f + "\n").join(""));
+  }
 
   // Run subscription detection
   if (results.length > 0) {
@@ -232,6 +247,8 @@ async function main() {
   }
 
   await pool.end();
+  // A file that failed must fail the run (it used to exit 0).
+  if (results.length < files.length) process.exitCode = 1;
 }
 
 main().catch((err) => {

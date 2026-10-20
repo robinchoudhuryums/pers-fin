@@ -33,10 +33,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # The CLI exits 1 when any file fails and lists the files that DID import
+      # in $CSV_IMPORTED_LIST (cycle-7 F19).
       - name: Import CSV files
+        id: import
         env:
           NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
           TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.TOKEN_ENCRYPTION_PASSPHRASE }}
+          CSV_IMPORTED_LIST: ${{ runner.temp }}/csv-imported.txt
         run: node scripts/import-csv-cli.js csv-uploads/
 
       - name: Sync to Google Sheets
@@ -54,13 +58,21 @@ jobs:
       # statements in every future checkout. The rows now live in the database
       # (and Sheets); the upload commit itself is still in history, so delete
       # it with `git filter-repo` if that matters to you.
+      # Only the files the CLI reports as imported are removed — a file that
+      # failed stays in csv-uploads/ (and the run is red) so nothing is lost
+      # (F19). Runs after a partial failure too, so the good files still go.
       - name: Remove processed CSVs
+        if: ${{ !cancelled() && (steps.import.outcome == 'success' || steps.import.outcome == 'failure') }}
+        env:
+          CSV_IMPORTED_LIST: ${{ runner.temp }}/csv-imported.txt
         run: |
-          for f in csv-uploads/*.csv; do
-            if [ -f "$f" ]; then git rm -q "$f"; fi
-          done
+          if [ ! -f "$CSV_IMPORTED_LIST" ]; then echo "No import manifest — removing nothing."; exit 0; fi
+          while IFS= read -r f; do
+            if [ -n "$f" ] && [ -f "$f" ]; then git rm -q -- "$f"; fi
+          done < "$CSV_IMPORTED_LIST"
 
       - name: Commit cleanup
+        if: ${{ !cancelled() && (steps.import.outcome == 'success' || steps.import.outcome == 'failure') }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"

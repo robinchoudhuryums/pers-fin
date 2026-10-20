@@ -18,7 +18,31 @@ Updated: 2026-10-20
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 3 DONE** on branch
+- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 4 DONE** on branch
+  `claude/sweet-ritchie-f9d8ah` (2026-10-20). Bank-sync durability.
+  - **Completed:** F17 (perfin_try_decrypt — a wrong-key token row no longer fails every
+    sync; stale Teller enrollment unlinks), F18 (duplicate-Item guard on both exchange routes,
+    409 + release; docs/hints say unlink + link), F19 (CLI exits 1 + imported-files manifest;
+    workflow removes only those; per-row savepoint), F25 (roll-forward: label > institution,
+    ambiguity skip, loan sign, APP_TIMEZONE as-of + newest-row stamp, savepoint), F22 (removed
+    investment accounts stay removed; investments-only unlink route + listing), F27 (Plaid
+    sync/reconcile lock, bounded 10 min), F24 (flows_synced_at coverage; skip codes), F28
+    (liabilities only for card/loan Items, skip codes, `??`), F29 (balance PATCH validation),
+    F30 (snapshot day + Teller text[] category).
+  - **Not finished (selected):** none.
+  - **Tests:** npm test 1558/1558 (+11); contract 57/57 (+13, new bank-durability file);
+    migrations twice OK; Playwright 35/35. New tests fail pre-fix. Block:
+    `.cycle/blocks/7-batch4-broad-implement.md`.
+  - **Decisions:** F18 refuses a duplicate Item (release + 409) rather than merging histories —
+    G3 update mode is the real fix; perfin_try_decrypt swallows any decrypt error as NULL (reported
+    as decryption_failed); the Plaid lock wait is bounded so a hung call can't block forever; a
+    CSV-rolled balance is stamped as of its newest row.
+  - **Follow-ons:** G3; no duplicate guard on the investments-only exchange; setCreditLimit NaN →
+    null in the UI; Plaid upsertTxn "{a,b}" literal (known); data-health decrypt probe.
+  - **Where I left off:** Batch 4 committed and pushed (no PR). NEXT: /sync-docs for Batch 4,
+    then Batch 5.
+
+- **Previous:** **Cycle 7 — Oct 2026 broad scan, Batch 3 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-20). Backstops, outcomes, operator state (policy responses).
   - **Completed:** F3 (backup names missing secrets first — the run log confirmed both were unset;
     operator must add them), F4 (operator: re-enable 4 workflows; documented), F5 (daily-sync

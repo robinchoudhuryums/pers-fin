@@ -414,7 +414,7 @@ router.get("/api/data-health", async (_req, res) => {
     for (const e of syncErrors) {
       const who = e.institution || e.provider || "a sync source";
       const hint = e.error === "decryption_failed"
-        ? " — TOKEN_ENCRYPTION_PASSPHRASE mismatch; re-link or restore the passphrase"
+        ? " — TOKEN_ENCRYPTION_PASSPHRASE mismatch; restore the passphrase, or unlink and link the account again"
         : "";
       issues.push({ severity: "warning", message: `Last sync error — ${who}: ${e.error}${hint}` });
     }

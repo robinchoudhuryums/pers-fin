@@ -287,7 +287,7 @@ describe("PSC-15 — packaging, workflow, settings validation", () => {
     const wf = read(".github", "workflows", "csv-import.yml");
     assert.match(wf, /permissions:\s*\n\s*contents: write/);
     assert.doesNotMatch(wf, /mkdir -p csv-uploads\/processed|mv "\$f"/);
-    assert.match(wf, /git rm -q "\$f"/);
+    assert.match(wf, /git rm -q -- "\$f"/);
   });
 
   describe("PATCH /api/settings rejects bad bounded values with 400", () => {

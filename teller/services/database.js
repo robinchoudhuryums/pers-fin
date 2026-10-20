@@ -59,6 +59,20 @@ async function runMigrations() {
   try {
     await client.query("BEGIN");
     await client.query("CREATE EXTENSION IF NOT EXISTS pgcrypto");
+    // Cycle-7 F17: pgp_sym_decrypt RAISES on a wrong key (it doesn't return
+    // NULL), so one row encrypted under an old TOKEN_ENCRYPTION_PASSPHRASE
+    // failed the whole items query — every Teller/Plaid sync, the balance sync
+    // and the reconcile — and the per-row `decryption_failed` branches were
+    // dead code. Every token read goes through this wrapper: a row that won't
+    // decrypt is NULL, which those branches report and skip.
+    await client.query(`CREATE OR REPLACE FUNCTION perfin_try_decrypt(data bytea, key text)
+      RETURNS text LANGUAGE plpgsql STABLE AS $fn$
+      BEGIN
+        RETURN pgp_sym_decrypt(data, key);
+      EXCEPTION WHEN OTHERS THEN
+        RETURN NULL;
+      END
+      $fn$`);
 
     // Schema versioning — track which migration version has been applied
     await client.query(`CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -884,6 +898,11 @@ async function runMigrations() {
     )`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_inv_flows_src_date ON investment_flows (source, source_id, flow_date)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_inv_flows_date ON investment_flows (flow_date)`);
+    // Cycle-7 F24: when a Plaid account's external flows last synced
+    // completely. TWR/XIRR count a Plaid account as flow-covered only once
+    // this is set — before, every Plaid account counted as covered even if
+    // its flows never synced, so its deposits read as market return.
+    await client.query("ALTER TABLE investment_accounts ADD COLUMN IF NOT EXISTS flows_synced_at TIMESTAMPTZ");
 
     // Scheduled-job heartbeat table (F4 — missed-job detection). One row per
     // background job in teller/startup.js, UPSERTed by services/job-health.js

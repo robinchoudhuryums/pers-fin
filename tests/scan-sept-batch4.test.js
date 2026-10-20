@@ -371,7 +371,9 @@ describe("DC-6 / DC-15 — CSV import", () => {
     assert.equal(res.body.rows_skipped, 1, "rows_skipped no longer double-counts duplicates (matches the preview)");
     const upd = state.log.find(q => /UPDATE linked_accounts SET current_balance/.test(q.sql));
     assert.ok(upd, "balance update issued");
-    assert.deepEqual(upd.params, [980, 42], "1000 − 20 (only the Sep-10 row post-dates the balance)");
+    // 1000 − 20 (only the Sep-10 row post-dates the balance); the balance is
+    // then known as of that row's date (cycle-7 F25), not "now".
+    assert.deepEqual([upd.params[0], upd.params[1], upd.params[3]], [980, "2026-09-10", 42]);
     assert.ok(!state.log.some(q => /SELECT SUM\(amount\) AS net FROM transactions/.test(q.sql)));
     const hist = state.log.find(q => /INSERT INTO csv_imports/.test(q.sql));
     assert.equal(hist.params[4], 2, "history keeps 'not imported' = skipped + duplicates");
