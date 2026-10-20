@@ -38,13 +38,60 @@ const CROSS_PERIOD_RE = /\b(per year|\/?yr\b|\/year|annual|annually|a year|yearl
 // regardless of any nearby period word (F7).
 const THIS_MONTH_RE = /\b(this month|this period|so far this month|month[- ]to[- ]date|mtd|current month)\b/;
 
-// Extract dollar amounts from text: "$1,234.56" or "$500"
+// F61: a claim about a NAMED month ("In September, Dining hit $450",
+// "2026-09: $450") is about that month, not the month to date — comparing it
+// with this month's partial spend was a false CRITICAL. A month name or
+// YYYY-MM that isn't the current month makes the claim cross-period; the
+// current month's own name keeps it checkable. Case-sensitive so the verb
+// "may" and "march"/"august" in prose don't count.
+const MONTH_NAME_RE = /\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sept?(?:ember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\b|\b(\d{4})-(0[1-9]|1[0-2])\b/g;
+const MONTH_INDEX = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+function namesOtherMonth(window, thisMonth) {
+  const tm = Number(thisMonth.slice(5, 7));
+  for (const m of window.matchAll(MONTH_NAME_RE)) {
+    if (m[2]) { if (`${m[2]}-${m[3]}` !== thisMonth) return true; continue; }
+    if (MONTH_INDEX[m[1].slice(0, 3).toLowerCase()] !== tm) return true;
+  }
+  return false;
+}
+
+// F68: the period of a dollar claim is read from its own sentence up to the
+// claim, plus the rest of its clause — not a fixed ±80/40-character window,
+// which reached into the previous sentence ("Your annual subscriptions cost
+// $1,200. Dining hit $450." skipped the $450) or the next one.
+function claimPeriodParts(text, claim) {
+  const before = text.slice(Math.max(0, claim.index - 240), claim.index);
+  const breaks = [...before.matchAll(/[.!?;]\s|\n/g)];
+  const lead = breaks.length ? before.slice(breaks[breaks.length - 1].index + breaks[breaks.length - 1][0].length) : before;
+  const end = claim.index + claim.raw.length;
+  let trail = text.slice(end, end + 120);
+  const cut = trail.search(CLAUSE_END_RE);
+  if (cut >= 0) trail = trail.slice(0, cut);
+  return { lead, trail };
+}
+function claimPeriodWindow(text, claim) {
+  const { lead, trail } = claimPeriodParts(text, claim);
+  return lead + claim.raw + trail;
+}
+// The month a claim is about: any month named before it in its sentence, or
+// one attached right after it ("$450 in September", "$450 for 2026-09"). A
+// month named later in the clause belongs to another figure ("$450 compared
+// with September's $300").
+function claimNamesOtherMonth(text, claim, thisMonth) {
+  const { lead, trail } = claimPeriodParts(text, claim);
+  const attached = (trail.match(/^\s*(?:in|for|during|of)\s+(?:\d{4}-\d{2}|[A-Z][a-z]+)/) || [""])[0];
+  return namesOtherMonth(lead, thisMonth) || namesOtherMonth(attached, thisMonth);
+}
+
+// Extract dollar amounts from text: "$1,234.56", "$500", "$1.2k", "$1.5M".
+// A k / M suffix scales the figure (cycle-7 F68 — "$1.2k" was read as $1).
 function extractDollarClaims(text) {
   const matches = [];
-  const regex = /\$([0-9,]+(?:\.\d{1,2})?)\b/g;
+  const regex = /\$([0-9,]+(?:\.\d{1,2})?)(?:([kKmM])\b|\b)/g;
   let m;
   while ((m = regex.exec(text)) !== null) {
-    const value = parseFloat(m[1].replace(/,/g, ""));
+    const scale = m[2] ? (m[2].toLowerCase() === "k" ? 1e3 : 1e6) : 1;
+    const value = parseFloat(m[1].replace(/,/g, "")) * scale;
     if (!isNaN(value) && value > 0) {
       const ctx = text.substring(Math.max(0, m.index - 80), m.index + m[0].length + 40).trim();
       matches.push({ value, context: ctx, index: m.index, raw: m[0] });
@@ -73,7 +120,10 @@ function extractMerchantNames(text) {
   const names = new Set();
   // Look for patterns like "Merchant: $X" or "at Merchant" or "from Merchant"
   const patterns = [
-    /(?:at|from|to|for|cancelling?|cancel)\s+([A-Z][A-Za-z0-9. &'-]+)/g,
+    // A run of Capitalized words (or "&") only — the old class took in
+    // lower-case joiners, so "at Fakemart and Amazon" was one name that
+    // passed because it contained a known one (cycle-7 F67).
+    /(?:at|from|to|for|cancelling?|cancel)\s+([A-Z][A-Za-z0-9.&'-]*(?:\s+(?:&|[A-Z0-9][A-Za-z0-9.&'-]*))*)/g,
     // AIN-2: a "- **Heading**:" bullet is only an entity claim when the line
     // goes straight on to a dollar amount ("- **Netflix**: $15.99/mo"). Plain
     // section headings ("- **Spending trend**: overall spending is up") were
@@ -84,8 +134,11 @@ function extractMerchantNames(text) {
   for (const regex of patterns) {
     let m;
     while ((m = regex.exec(text)) !== null) {
-      const name = m[1].trim().replace(/[.,:]+$/, "");
-      if (name.length >= 3 && name.length <= 50) names.add(name);
+      // "A and B" / "A or B" / "A vs B" are two claims, each checked alone (F67).
+      for (const part of m[1].split(/\s+(?:and|or|vs\.?|versus)\s+/i)) {
+        const name = part.trim().replace(/[.,:]+$/, "");
+        if (name.length >= 3 && name.length <= 50) names.add(name);
+      }
     }
   }
   return [...names];
@@ -294,12 +347,14 @@ async function auditInsight(insightText, insightId) {
     const categoryNames = Object.keys(actualCategories);
     for (let i = 0; i < dollarClaims.length; i++) {
       const claim = dollarClaims[i];
-      const ctx = claim.context.toLowerCase();
       // Skip claims scoped to a non-current-month period (annual/multi-month/YTD/
-      // projected/average) — the per-category + subscription actuals below are
-      // this-month figures, so comparing a cross-period dollar amount would
-      // false-flag (AIA1).
-      const crossPeriod = CROSS_PERIOD_RE.test(ctx) && !THIS_MONTH_RE.test(ctx);
+      // projected/average, or a named other month — F61) — the per-category +
+      // subscription actuals below are this-month figures, so comparing a
+      // cross-period dollar amount would false-flag (AIA1). The period is read
+      // from the claim's own sentence (F68).
+      const periodWindow = claimPeriodWindow(insightText, claim);
+      const ctx = periodWindow.toLowerCase();
+      const crossPeriod = (CROSS_PERIOD_RE.test(ctx) || claimNamesOtherMonth(insightText, claim, thisMonth)) && !THIS_MONTH_RE.test(ctx);
       if (crossPeriod) continue;
       // AIN-1: judge the claim on its OWN clause, not an ±80-char window that
       // spans neighbouring figures. Budget/benchmark/savings/cancel windows and
@@ -633,4 +688,4 @@ async function getAuditAccuracy(days = 90) {
   }
 }
 
-module.exports = { auditInsight, getAuditStats, getAuditAccuracy, extractDollarClaims, extractPercentClaims, extractMerchantNames, extractTrendClaims, findContradictions, wordMatch, entityKnown, isGenericName, claimSegments, attributeCategory, CROSS_PERIOD_RE };
+module.exports = { auditInsight, getAuditStats, getAuditAccuracy, extractDollarClaims, extractPercentClaims, extractMerchantNames, extractTrendClaims, findContradictions, wordMatch, entityKnown, isGenericName, claimSegments, attributeCategory, CROSS_PERIOD_RE, namesOtherMonth, claimPeriodWindow, claimNamesOtherMonth };

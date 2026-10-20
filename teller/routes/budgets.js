@@ -193,7 +193,9 @@ router.post("/api/budgets/suggest", async (_req, res) => {
               type: "object",
               additionalProperties: false,
               properties: {
-                category: { type: "string" },
+                // Only the categories we sent (cycle-7 F70 — a free string let
+                // the model invent "Dining Out" or repeat a category).
+                category: { type: "string", enum: Object.keys(categories) },
                 monthly_limit: { type: "number" },
                 notes: { type: "string" },
               },
@@ -243,9 +245,14 @@ router.post("/api/budgets/suggest", async (_req, res) => {
       console.error("Budget AI did not return expected tool_use block");
       return res.status(500).json({ error: "AI returned unexpected format" });
     }
+    const seen = new Set();
     let suggestions = toolBlock.input.suggestions.filter(s =>
       s && typeof s.category === "string" && typeof s.monthly_limit === "number"
       && s.monthly_limit >= 0 && s.monthly_limit <= 100000 && isFinite(s.monthly_limit)
+      // A real spending category, once (F70 — a repeated category made
+      // Accept 500).
+      && Object.prototype.hasOwnProperty.call(categories, s.category)
+      && !seen.has(s.category) && seen.add(s.category)
     );
 
     res.json({ suggestions, tokens_used: (message.usage?.input_tokens || 0) + (message.usage?.output_tokens || 0) });
@@ -266,11 +273,18 @@ router.post("/api/budgets/accept", async (req, res) => {
     // non-negative, bounded — so a tampered/malformed array can't persist a
     // negative/NaN/absurd limit that yields a negative effective_limit and
     // nonsensical alert math downstream (F21).
-    const valid = budgets.filter(b => {
-      if (!b.category || b.monthly_limit == null) return false;
+    const filtered = budgets.filter(b => {
+      if (!b || typeof b.category !== "string" || !b.category.trim() || b.monthly_limit == null) return false;
       const n = parseFloat(b.monthly_limit);
       return Number.isFinite(n) && n >= 0 && n <= 100000;
     });
+    // One row per category (cycle-7 F70): the same category twice in one
+    // INSERT … ON CONFLICT DO UPDATE is a Postgres error ("cannot affect row a
+    // second time"), so a duplicate used to 500 the whole accept. The last
+    // entry for a category wins.
+    const byCategory = new Map();
+    for (const b of filtered) byCategory.set(b.category.trim(), { ...b, category: b.category.trim() });
+    const valid = [...byCategory.values()];
     if (valid.length === 0) return res.status(400).json({ error: "No valid budgets in array" });
 
     // Build batch upsert

@@ -65,6 +65,15 @@ async function getPersistentConfig() {
 let _embeddedPersistentPool = null;
 function setEmbeddedPersistentPool(p) { _embeddedPersistentPool = p; }
 
+// The absolute Perfin dashboard URL for links in emails, or null when the
+// public address isn't known. RENDER_EXTERNAL_URL is set by Render; under the
+// shell (the embedded pool is wired) Perfin lives at /perfin (cycle-7 F72).
+function perfinDashboardUrl() {
+  const base = String(process.env.RENDER_EXTERNAL_URL || "").replace(/\/+$/, "");
+  if (!/^https?:\/\//i.test(base)) return null;
+  return base + (_embeddedPersistentPool ? "/perfin" : "") + "/dashboard";
+}
+
 // The email-bearing events all carry { subject, html_body, plain_text }.
 const EMAIL_EVENTS = new Set(["insights_generated", "weekly_summary", "daily_summary", "critical_alert"]);
 
@@ -453,3 +462,4 @@ module.exports = router;
 module.exports.sendCriticalAlertEmail = sendCriticalAlertEmail;
 module.exports.sendPerSistantWebhook = sendPerSistantWebhook;
 module.exports.setEmbeddedPersistentPool = setEmbeddedPersistentPool;
+module.exports.perfinDashboardUrl = perfinDashboardUrl;

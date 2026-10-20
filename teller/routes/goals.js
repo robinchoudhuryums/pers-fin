@@ -766,3 +766,5 @@ router.get("/api/fire-projection", async (req, res) => {
 });
 
 module.exports = router;
+// Shared with the AI goal-tracking prompt (cycle-7 F62).
+module.exports.deriveGoalProgress = deriveGoalProgress;

@@ -18,7 +18,29 @@ Updated: 2026-10-20
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 7 DONE** on branch
+- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 8 DONE** on branch
+  `claude/sweet-ritchie-f9d8ah` (2026-10-20). AI trust.
+  - **Completed:** F61 (named other month = cross-period), F62 (goal prompt via
+    deriveGoalProgress), F64 (Ask charge flag after the write), F65 (last Ask round
+    tool_choice none), F66 (Ask APP_TIMEZONE date + served model; spend month in
+    APP_TIMEZONE), F67 (bounded entity capture), F68 (sentence/clause period window; k/M
+    suffix), F70 (suggest category enum + de-dup; Accept de-dup), F71 (ISO prompt dates),
+    F72 (weekly digest text completed goals; real dashboard link or none).
+  - **Scope note:** the scan plan's Batch 8 also lists F70/F71/F72 — the Batch 7 hand-off
+    line ("F61 … F68") left them off; implemented per the plan.
+  - **Tests:** npm test 1608/1608 (+17 scan-oct-batch8); contract 82/82 (+4 ai-trust);
+    migrations twice. New tests fail pre-fix except the unchanged-behaviour pins.
+  - **Net score:** 4 − 1 = 3 (F61's month attribution: documented false-negative mode).
+  - **Decisions:** a month counts when named before the figure in its sentence or attached
+    right after it; Accept keeps the last entry per category; no email link without
+    RENDER_EXTERNAL_URL.
+  - **Follow-ons:** capitalised "Cancel X" not captured; Ask tool results' DATE serialization;
+    other usage rows record the configured model.
+  - **Block:** `.cycle/blocks/7-batch8-broad-implement.md`.
+  - **Where I left off:** Batch 8 committed and pushed (no PR). NEXT: /sync-docs for Batch 8,
+    then Batch 9 (F75, F76, F77, F78, F79, F80).
+
+- **Previous:** **Cycle 7 — Oct 2026 broad scan, Batch 7 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-20). Categorization rules + income cadence.
   - **Completed:** F46 (most-specific rule order; saving a rule deactivates the merchant's
     other-category rules; times_applied no longer bumps updated_at), F47 (AI write only fills a

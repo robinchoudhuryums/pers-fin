@@ -10,6 +10,9 @@ const { pool } = require("../services/database");
 const { renderInsightEmail, renderWeeklyDigestEmail, renderWeeklyDigestText,
         renderDailyDigestEmail, renderDailyDigestText, escapeHtml } = require("./insights-email");
 const { getMonthlySpending, getMonthlyIncomeAndSpending, NOT_TRANSFER, SPLIT_AMOUNT, currentMonth, todayStr, getTaxDeductionTransactions } = require("../services/financial-queries");
+// Dates go into prompts as 'YYYY-MM-DD' (cycle-7 F71 — a DATE column arrives as
+// a JS Date, and string concatenation wrote "Tue Dec 31 2026 00:00:00 GMT…").
+const { isoDate } = require("../services/csv-export");
 
 // t2/la2-aliased variant of the canonical split expression, for the anomaly
 // baseline subquery (same in-place derivation convention as the NOT_TRANSFER
@@ -342,9 +345,15 @@ async function getAiBudgetCents() {
 // rebuild, ask, scan, suggest), priced per row by its own model ID (AIN-9).
 // The ONE spend tally the cap is checked against (AIN-10 — it used to be
 // copy-pasted into six call sites). Throws on a DB error; callers decide.
+// The month is the APP_TIMEZONE month (cycle-7 F66 — it was UTC's, so west of
+// UTC the cap reset hours early on the last evening of the month).
 async function monthAiSpendCents(db = pool) {
+  const { APP_TIMEZONE } = require("../services/financial-queries");
+  let tz = "UTC";
+  try { new Intl.DateTimeFormat("en-US", { timeZone: APP_TIMEZONE }); tz = APP_TIMEZONE; } catch { /* invalid zone → UTC, as currentMonth() does */ }
   const r = await db.query(
-    "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights WHERE created_at >= date_trunc('month', CURRENT_DATE)"
+    "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights WHERE created_at >= ($1::date::timestamp AT TIME ZONE $2)",
+    [currentMonth() + "-01", tz]
   );
   let cents = 0;
   for (const row of r.rows) {
@@ -746,7 +755,7 @@ async function generateInsights() {
             "Recent transactions significantly above their merchant's typical amount:\n" +
             anomalyData.rows.map(r =>
               sanitizeForPrompt(r.user_merchant_name || r.merchant_name || r.name) + ": $" + parseFloat(r.amount).toFixed(2) +
-              " on " + r.date + " (usual avg: $" + parseFloat(r.avg_amount).toFixed(2) +
+              " on " + isoDate(r.date) + " (usual avg: $" + parseFloat(r.avg_amount).toFixed(2) +
               " over " + r.txn_count + " transactions)"
             ).join("\n");
         } else {
@@ -832,7 +841,7 @@ async function generateInsights() {
                 : ", Limit unknown, Utilization unknown") +
               (c.apr ? ", APR " + c.apr + "%" : ", APR unknown");
             if (c.minimum_payment) line += ", Min Payment $" + parseFloat(c.minimum_payment).toFixed(2);
-            if (c.next_payment_due_date) line += ", Due " + c.next_payment_due_date;
+            if (c.next_payment_due_date) line += ", Due " + isoDate(c.next_payment_due_date);
             return line;
           }).join("\n");
           const totalDebt = cards.reduce((s, c) => s + parseFloat(c.current_balance || 0), 0);
@@ -953,16 +962,31 @@ async function generateInsights() {
     // --- Module: Goal tracking (dynamic data) ---
     if (modules.goal_tracking !== false) {
       try {
-        const goalsData = await pool.query("SELECT name, type, target_amount, current_amount, monthly_contribution, target_date, interest_rate FROM financial_goals WHERE is_active = true");
+        // A funding-linked goal's progress is balance − baseline, the same
+        // deriveGoalProgress the Goals page uses (cycle-7 F62 / INV-11 — the
+        // prompt read the stale stored current_amount).
+        const { deriveGoalProgress } = require("./goals");
+        const goalsData = await pool.query(
+          `SELECT g.name, g.type, g.target_amount, g.current_amount, g.monthly_contribution, g.target_date, g.interest_rate,
+                  g.funding_account_id, g.funding_investment_id, g.goal_baseline_amount,
+                  COALESCE(la.available_balance, la.current_balance) AS funding_account_balance,
+                  la.name AS funding_account_name,
+                  ia.balance AS funding_investment_balance,
+                  ia.name AS funding_investment_name
+           FROM financial_goals g
+           LEFT JOIN linked_accounts     la ON la.id = g.funding_account_id
+           LEFT JOIN investment_accounts ia ON ia.id = g.funding_investment_id
+           WHERE g.is_active = true`
+        );
         if (goalsData.rows.length > 0) {
           userMsg += "\n\n=== FINANCIAL GOALS ===\n" +
             goalsData.rows.map(g => {
               const target = parseFloat(g.target_amount);
-              const current = parseFloat(g.current_amount);
+              const current = deriveGoalProgress(g).current;
               const pct = target > 0 ? Math.round(current / target * 100) : 0;
               let line = sanitizeForPrompt(g.name) + " (" + g.type + "): $" + current.toFixed(2) + " / $" + target.toFixed(2) + " (" + pct + "%)";
               if (g.monthly_contribution > 0) line += ", contributing $" + parseFloat(g.monthly_contribution).toFixed(2) + "/mo";
-              if (g.target_date) line += ", target date: " + g.target_date;
+              if (g.target_date) line += ", target date: " + isoDate(g.target_date);
               if (g.interest_rate > 0) line += ", expected return: " + g.interest_rate + "%/yr";
               return line;
             }).join("\n");
@@ -1007,7 +1031,7 @@ async function generateInsights() {
         const latest = csResult.rows[0];
         const prior = csResult.rows[1];
         const oldest = csResult.rows[csResult.rows.length - 1];
-        let summary = "Latest: " + latest.score + " (" + (latest.score_type || "unknown") + ", " + latest.checked_at + ")";
+        let summary = "Latest: " + latest.score + " (" + (latest.score_type || "unknown") + ", " + isoDate(latest.checked_at) + ")";
         if (prior) summary += " | Prior: " + prior.score + " (delta " + (latest.score - prior.score > 0 ? "+" : "") + (latest.score - prior.score) + ")";
         if (csResult.rows.length >= 3) {
           summary += " | " + csResult.rows.length + "-entry range: " + oldest.score + " → " + latest.score +
@@ -1240,7 +1264,7 @@ async function generateInsights() {
       await sendPerSistantWebhook("insights_generated", {
         subject: "Perfin AI Financial Analysis — " + new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }),
         plain_text: insightText + auditNote,
-        html_body: renderInsightEmail(insightText, modulesUsed, auditResult),
+        html_body: renderInsightEmail(insightText, modulesUsed, auditResult, require("./persistent").perfinDashboardUrl()),
         modules_used: modulesUsed,
         cost_usd: parseFloat(estimateCostGranular(usage, actualModel).toFixed(6)),
       });
