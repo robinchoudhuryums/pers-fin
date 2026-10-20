@@ -135,7 +135,50 @@ function mapCategoryFor(row) {
 // taxonomy (e.g. 'general', 'dining') are eligible for categorization.
 const OUR_CATEGORIES_PG = "{" + CATEGORIES.map(c => '"' + c.replace(/"/g, '\\"') + '"').join(",") + "}";
 
+// ---------------------------------------------------------------------------
+// Categorization rules — order, validity, supersession (cycle-7 F46 / F48)
+// ---------------------------------------------------------------------------
+// Rules are applied one after another and each only touches still-uncategorized
+// rows, so ORDER decides which rule wins a merchant. Most specific first —
+// exact, then starts_with, then contains; a longer pattern before a shorter one;
+// then the most recently created/re-confirmed. (It was `times_applied DESC`, so
+// an old, busy rule always beat a newer "Remember" for the same merchant.)
+const RULE_ORDER_SQL =
+  "ORDER BY CASE match_type WHEN 'exact' THEN 0 WHEN 'starts_with' THEN 1 ELSE 2 END, " +
+  "LENGTH(merchant_pattern) DESC, updated_at DESC, id DESC";
+
+// A contains / starts_with rule needs at least this many characters: a blank or
+// 1-character "contains" rule matched (and categorized) the whole backlog.
+const MIN_PATTERN_LENGTH = 3;
+
+// null when (pattern, type) is a usable rule, else the reason it isn't.
+function rulePatternError(pattern, type) {
+  const p = String(pattern == null ? "" : pattern).trim();
+  if (!p) return "merchant_pattern must not be blank";
+  if (type !== "exact" && p.length < MIN_PATTERN_LENGTH) {
+    return `a ${type} rule needs at least ${MIN_PATTERN_LENGTH} characters (use match_type "exact" for a shorter merchant)`;
+  }
+  return null;
+}
+
+// A new / re-confirmed rule for a merchant supersedes the user's earlier rules
+// for the SAME pattern that point at a different category — they would
+// otherwise keep competing for those rows. Deactivated, not deleted.
+async function deactivateSupersededRules(db, pattern, category) {
+  const r = await db.query(
+    `UPDATE categorization_rules SET is_active = false, updated_at = now()
+     WHERE LOWER(merchant_pattern) = LOWER($1) AND category <> $2 AND is_active = true
+     RETURNING id`,
+    [String(pattern).trim(), category]
+  );
+  return r.rowCount || 0;
+}
+
 module.exports = {
+  RULE_ORDER_SQL,
+  MIN_PATTERN_LENGTH,
+  rulePatternError,
+  deactivateSupersededRules,
   CATEGORIES,
   CATEGORY_DESCRIPTIONS,
   TELLER_CATEGORY_MAP,

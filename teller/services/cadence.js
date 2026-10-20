@@ -158,7 +158,22 @@ function dayGap(a, b) {
 
 // Split sorted day-of-month values into two groups at the largest jump; each
 // group must be tight (spread <= 3 days) and hold >= 2 deposits.
+// Day of month is CIRCULAR (cycle-7 F52): a 1st payday that moves back to the
+// 30th/31st when the 1st falls on a weekend (or a last-day payday that lands on
+// the 1st) splits a linear cluster [30, 31, 1, 1] across both ends of the
+// month, so semimonthly pay read as biweekly. When the linear split fails, the
+// days late in the month are retried as negatives (30 → −1, 31 → 0); a cluster
+// centred on ≤ 0 is reported as day 31, which the projection clamps to the
+// month's last day.
 function twoDayClusters(daysOfMonth) {
+  const linear = twoDayClustersLinear(daysOfMonth);
+  if (linear) return linear;
+  const wrapped = twoDayClustersLinear(daysOfMonth.map((d) => (d >= 22 ? d - 31 : d)));
+  if (!wrapped) return null;
+  return wrapped.map((d) => (d <= 0 ? d + 31 : d)).sort((x, y) => x - y);
+}
+
+function twoDayClustersLinear(daysOfMonth) {
   const d = [...daysOfMonth].sort((x, y) => x - y);
   if (d.length < 4) return null;
   let cut = -1, best = -1;

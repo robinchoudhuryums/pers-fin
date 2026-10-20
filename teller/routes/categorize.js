@@ -23,6 +23,9 @@ const {
   PLAID_PFC_PRIMARY_MAP,
   mapCategoryFor,
   OUR_CATEGORIES_PG,
+  RULE_ORDER_SQL,
+  rulePatternError,
+  deactivateSupersededRules,
 } = require("./categorize-helpers");
 
 // GET /api/categorize/status — how many uncategorized transactions exist
@@ -65,6 +68,8 @@ const AI_BATCH = 50;
 // out), so one click makes a real dent in a large backlog. Budget-capped, so
 // this is a latency/sanity ceiling, not a cost control.
 const AI_MAX_PER_RUN = 300;
+// Days before a row the AI left unanswered is offered to it again (F54).
+const AI_SKIP_RETRY_DAYS = 30;
 
 // Live progress for the running categorize pass (single-operator, single
 // process → one pass at a time). Polled by GET /api/categorize/progress so the
@@ -121,11 +126,16 @@ async function runCategorizeOnce() {
     };
 
     // FREE PATH 1 — user-defined rules, bulk-applied across the whole backlog.
+    // Most specific rule first (RULE_ORDER_SQL, cycle-7 F46).
     const rules = await pool.query(
-      "SELECT * FROM categorization_rules WHERE is_active = true ORDER BY times_applied DESC"
+      `SELECT * FROM categorization_rules WHERE is_active = true ${RULE_ORDER_SQL}`
     ).catch(() => ({ rows: [] }));
     let ruleApplied = 0;
     for (const rule of rules.rows) {
+      // A stored blank / too-short contains rule would sweep the whole backlog
+      // (cycle-7 F48) — skip it (they can no longer be created).
+      const ruleErr = rulePatternError(rule.merchant_pattern, rule.match_type);
+      if (ruleErr) { console.error(`categorize: skipping rule ${rule.id} — ${ruleErr}`); continue; }
       // M1: escape LIKE metacharacters (\ % _) in the user-supplied pattern so a
       // pattern containing '%' or '_' can't act as a wildcard and mis-categorize
       // unrelated transactions. The trailing/leading '%' we append stay OUTSIDE
@@ -149,8 +159,10 @@ async function runCategorizeOnce() {
       );
       if (r.rowCount > 0) {
         ruleApplied += r.rowCount;
+        // times_applied only — updated_at means "created / re-confirmed by the
+        // user" and orders rules by recency (F46), so a busy rule mustn't bump it.
         await pool.query(
-          "UPDATE categorization_rules SET times_applied = times_applied + $1, updated_at = now() WHERE id = $2",
+          "UPDATE categorization_rules SET times_applied = times_applied + $1 WHERE id = $2",
           [r.rowCount, rule.id]
         ).catch(() => {});
       }
@@ -306,10 +318,15 @@ async function runCategorizeOnce() {
       // cleanly (returning what we got so far, not a 429).
       if ((await monthSpendCents()) >= budgetCents) { budgetHit = true; break; }
 
+      // A row the AI saw but left unanswered is not re-sent for
+      // AI_SKIP_RETRY_DAYS (cycle-7 F54) — it used to come back in the very
+      // next page (the same rows, paid for again, up to AI_MAX_PER_RUN) and in
+      // every later run. Rules and the free maps still reach it.
       const batchRes = await pool.query(
         `SELECT transaction_id, COALESCE(user_merchant_name, merchant_name, name) AS merchant, amount, date, category
          FROM transactions
          WHERE ${uncatPredicate}
+           AND (ai_skipped_at IS NULL OR ai_skipped_at < now() - make_interval(days => ${AI_SKIP_RETRY_DAYS}))
          ORDER BY date DESC
          LIMIT ${AI_BATCH}`,
         [OUR_CATEGORIES_PG]
@@ -364,20 +381,33 @@ async function runCategorizeOnce() {
         console.error("AI did not return expected tool_use block — stopping loop");
         break;
       }
+      const answered = new Set();
       for (const cat of toolBlock.input.categories) {
         if (!cat || typeof cat.index !== "number" || typeof cat.category !== "string") continue;
         const idx = cat.index - 1;
         if (idx < 0 || idx >= batch.length) continue;
         if (!CATEGORIES.includes(cat.category)) continue;
-        await pool.query(
+        answered.add(batch[idx].transaction_id);
+        const w = await pool.query(
           // user_category (scalar) survives re-sync; source='ai' + cleared
-          // verification feeds the accuracy sampler.
+          // verification feeds the accuracy sampler. `user_category IS NULL`:
+          // a category the user set while this batch was with the model wins
+          // (cycle-7 F47 — the AI used to overwrite it).
           `UPDATE transactions SET user_category = $1, user_category_source = 'ai',
              category_verified_at = NULL, category_was_correct = NULL
-           WHERE transaction_id = $2`,
+           WHERE transaction_id = $2 AND user_category IS NULL`,
           [cat.category, batch[idx].transaction_id]
         );
-        aiUpdated++;
+        if (w.rowCount) aiUpdated++;
+      }
+      // Rows the model left unanswered (F54): stamped so they aren't re-sent
+      // on the next page / run. Failure here only costs a re-send.
+      const skipped = batch.map((t) => t.transaction_id).filter((id) => !answered.has(id));
+      if (skipped.length) {
+        await pool.query(
+          "UPDATE transactions SET ai_skipped_at = now() WHERE transaction_id = ANY($1::text[]) AND user_category IS NULL",
+          [skipped]
+        ).catch((e) => console.error("categorize: could not mark unanswered rows:", e.message));
       }
       aiProcessed += batch.length;
       catProgress.by_ai = aiUpdated;
@@ -513,8 +543,13 @@ router.post("/api/categorize/review", async (req, res) => {
     if (!upd.rows.length) return res.status(404).json({ error: "Transaction not found" });
     const merchant = upd.rows[0].merchant;
 
-    let ruleCreated = false;
+    let ruleCreated = false, ruleError;
     if (create_rule && merchant) {
+      // A too-short merchant for a contains/starts_with rule (F48): the
+      // category is still applied, the rule isn't created.
+      ruleError = rulePatternError(merchant, ruleType) || undefined;
+    }
+    if (create_rule && merchant && !ruleError) {
       // ON CONFLICT DO UPDATE so re-applying the same merchant→category pair
       // doesn't error. DC3: do NOT overwrite match_type here — this is an
       // implicit "remember" path, so silently widening an existing rule's scope
@@ -527,9 +562,10 @@ router.post("/api/categorize/review", async (req, res) => {
            is_active = true, updated_at = now()`,
         [merchant.trim(), category, ruleType]
       );
+      await deactivateSupersededRules(pool, merchant, category); // F46
       ruleCreated = true;
     }
-    res.json({ ok: true, transaction_id, category, rule_created: ruleCreated });
+    res.json({ ok: true, transaction_id, category, rule_created: ruleCreated, rule_error: ruleError });
   } catch (err) {
     console.error("review apply error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
@@ -700,7 +736,7 @@ router.post("/api/categorize/accuracy-review", async (req, res) => {
     }
 
     let ruleCreated = false;
-    if (!correct && create_rule && merchant) {
+    if (!correct && create_rule && merchant && merchant.trim()) {
       await pool.query(
         // DC3: implicit accuracy-review "remember" path — reactivate on conflict
         // but keep the existing rule's match_type (don't silently widen scope).
@@ -711,6 +747,7 @@ router.post("/api/categorize/accuracy-review", async (req, res) => {
            is_active = true, updated_at = now()`,
         [merchant.trim(), corrected_category]
       );
+      await deactivateSupersededRules(pool, merchant, corrected_category); // F46
       ruleCreated = true;
     }
     res.json({ ok: true, transaction_id, correct, rule_created: ruleCreated });
@@ -747,6 +784,10 @@ router.post("/api/categorization-rules", async (req, res) => {
   }
   const validTypes = ["contains", "exact", "starts_with"];
   const type = validTypes.includes(match_type) ? match_type : "contains";
+  // A blank or 1–2 character contains / starts_with rule matched the whole
+  // backlog (cycle-7 F48).
+  const patternErr = rulePatternError(merchant_pattern, type);
+  if (patternErr) return res.status(400).json({ error: patternErr });
   try {
     const result = await pool.query(
       `INSERT INTO categorization_rules (merchant_pattern, category, match_type)
@@ -756,6 +797,7 @@ router.post("/api/categorization-rules", async (req, res) => {
        RETURNING *`,
       [merchant_pattern.trim(), category, type]
     );
+    await deactivateSupersededRules(pool, merchant_pattern, category); // F46
     res.json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: "An internal error occurred." });
@@ -776,13 +818,14 @@ router.delete("/api/categorization-rules/:id", async (req, res) => {
 router.post("/api/categorization-rules/apply", async (_req, res) => {
   try {
     const rules = await pool.query(
-      "SELECT * FROM categorization_rules WHERE is_active = true ORDER BY times_applied DESC"
+      `SELECT * FROM categorization_rules WHERE is_active = true ${RULE_ORDER_SQL}`
     );
     if (rules.rows.length === 0) {
       return res.json({ applied: 0, message: "No active rules." });
     }
     let totalApplied = 0;
     for (const rule of rules.rows) {
+      if (rulePatternError(rule.merchant_pattern, rule.match_type)) continue; // F48
       const pattern = rule.merchant_pattern;
       // M1: escape LIKE metacharacters in the user pattern so '%'/'_' can't act
       // as wildcards (parallel to runCategorize). exact uses '=', no escaping.
@@ -817,7 +860,7 @@ router.post("/api/categorization-rules/apply", async (_req, res) => {
       if (result.rowCount > 0) {
         totalApplied += result.rowCount;
         await pool.query(
-          "UPDATE categorization_rules SET times_applied = times_applied + $1, updated_at = now() WHERE id = $2",
+          "UPDATE categorization_rules SET times_applied = times_applied + $1 WHERE id = $2",
           [result.rowCount, rule.id]
         );
       }
@@ -852,6 +895,8 @@ router.post("/api/categorization-rules/from-transaction", async (req, res) => {
     const validTypes = ["contains", "exact", "starts_with"];
     // Implicit "remember this" rule → exact by default (DC-13).
     const type = validTypes.includes(match_type) ? match_type : "exact";
+    const patternErr = rulePatternError(merchant, type); // F48
+    if (patternErr) return res.status(400).json({ error: patternErr });
 
     const result = await pool.query(
       // DC3: from-transaction is an implicit "create rule from this manual
@@ -864,6 +909,7 @@ router.post("/api/categorization-rules/from-transaction", async (req, res) => {
        RETURNING *`,
       [merchant.trim(), category, type]
     );
+    await deactivateSupersededRules(pool, merchant, category); // F46
     res.json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: "An internal error occurred." });

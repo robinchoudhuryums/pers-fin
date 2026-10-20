@@ -18,7 +18,26 @@ Updated: 2026-10-20
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 6 DONE** on branch
+- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 7 DONE** on branch
+  `claude/sweet-ritchie-f9d8ah` (2026-10-20). Categorization rules + income cadence.
+  - **Completed:** F46 (most-specific rule order; saving a rule deactivates the merchant's
+    other-category rules; times_applied no longer bumps updated_at), F47 (AI write only fills a
+    still-uncategorized row), F48 (blank / <3-char contains|starts_with rules refused; stored ones
+    skipped), F52 (circular day-of-month for semimonthly income), F54 (unanswered rows stamped
+    ai_skipped_at, held back from the AI for 30 days).
+  - **Tests:** npm test 1591/1591 (+8 scan-oct-batch7); contract 78/78 (+3 categorize-rules);
+    migrations twice. All new tests fail pre-fix (except the unchanged-cadence pin).
+  - **Net score:** 3 − 0 = 3.
+  - **Decisions:** superseded = same pattern (case-insensitive) for another category, any
+    match_type; the Review "Remember" path still applies the category when the rule is refused
+    (returns rule_error); 30-day AI back-off rather than permanent.
+  - **Follow-ons:** Review widget doesn't show rule_error; no early reset of ai_skipped_at;
+    rules list doesn't flag too-short rules.
+  - **Block:** `.cycle/blocks/7-batch7-broad-implement.md`.
+  - **Where I left off:** Batch 7 committed and pushed (no PR). NEXT: /sync-docs for Batch 7,
+    then Batch 8 (F61, F62, F64, F65, F66, F67, F68).
+
+- **Previous:** **Cycle 7 — Oct 2026 broad scan, Batch 6 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-20). Delete integrity and feeds.
   - **Completed:** F20 (deleted_transactions tombstone skipped by the Teller + Plaid upserts),
     F21 (CSV-overlap: merchant-similar, one-to-one pairing; GET and Resolve share it), F45 (ICS

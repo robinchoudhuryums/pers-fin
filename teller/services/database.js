@@ -142,6 +142,9 @@ async function runMigrations() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_txn_account_date ON transactions (account_id, date DESC)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_txn_merchant ON transactions (merchant_name) WHERE merchant_name IS NOT NULL`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_txn_date ON transactions (date)`);
+    // Cycle-7 F54: when the categorize AI last saw this row and left it
+    // unanswered — it isn't re-sent for 30 days.
+    await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS ai_skipped_at TIMESTAMPTZ");
     // Cycle-7 F20: transactions the user deleted. The Teller and Plaid upserts
     // skip these ids so a re-fetch (lookback, reconcile) can't resurrect them.
     await client.query(`CREATE TABLE IF NOT EXISTS deleted_transactions (
