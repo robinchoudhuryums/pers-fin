@@ -36,6 +36,14 @@ module.exports = function ({ pool, config, helpers }) {
       );
       // PD-6: "Note Created" automations were importable but never run.
       await runAutomations('note_created', r.rows[0], 'note').catch(() => {});
+      // F116: the note_created webhook (+ Slack) was selectable but never
+      // fired. The payload leaves out the note's text — a webhook is an
+      // outside service.
+      const n = r.rows[0];
+      if (typeof fireWebhooks === "function") {
+        fireWebhooks('note_created', { id: n.id, title: n.title, tags: n.tags, created_at: n.created_at })
+          .catch((err) => console.error("note_created webhook:", err.message));
+      }
       res.json(r.rows[0]);
     } catch (err) {
       serverError(res, err);

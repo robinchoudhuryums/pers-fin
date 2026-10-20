@@ -296,7 +296,7 @@ async function postLog(id, body) {
 }
 
 async function removeLog(id, date) {
-  await fetch('/api/habits/'+id+'/log/'+date, {method:'DELETE'});
+  await writeOk(await tryFetch('/api/habits/'+id+'/log/'+date, {method:'DELETE'}), 'Could not remove the log');
   load();
 }
 
@@ -396,7 +396,7 @@ async function saveHabit() {
 async function archiveHabit() {
   var id = document.getElementById('h-id').value;
   if (!confirm('Archive this habit? Its history is kept and it can be restored below.')) return;
-  await fetch('/api/habits/'+id, {method:'DELETE'});
+  if (!(await writeOk(await tryFetch('/api/habits/'+id, {method:'DELETE'}), 'Could not archive the habit'))) return;
   closeHabit(); load();
 }
 
@@ -411,7 +411,7 @@ function renderArchived() {
 }
 
 async function restoreHabit(id) {
-  await fetch('/api/habits/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({is_active:true})});
+  if (!(await writeOk(await tryFetch('/api/habits/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({is_active:true})}), 'Could not restore the habit'))) return;
   load();
 }
 

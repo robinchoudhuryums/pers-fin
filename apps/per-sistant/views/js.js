@@ -42,6 +42,28 @@ module.exports = `
   };
 })();
 function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML;}
+// A DATE column (due_date) as a LOCAL-midnight Date for that calendar day
+// (F109, parity with Perfin's WUI-2). The API sends 'YYYY-MM-DD' or node-pg's
+// UTC-midnight 'YYYY-MM-DDT00:00:00.000Z'; new Date() reads either as UTC
+// midnight, which is the PREVIOUS day west of UTC (a task due on the 1st
+// landed on the 30th and fell off the month's calendar). String methods only:
+// this module is a template literal (see gotcha).
+function parseCalDate(v){
+  if (!v) return null;
+  if (v instanceof Date) return v;
+  var s = String(v);
+  var tail = s.slice(10);
+  if (s.length >= 10 && s.charAt(4) === '-' && s.charAt(7) === '-' &&
+      (tail === '' || tail === 'T00:00:00.000Z' || tail === 'T00:00:00Z')) {
+    var y = parseInt(s.slice(0, 4), 10), m = parseInt(s.slice(5, 7), 10), d = parseInt(s.slice(8, 10), 10);
+    if (y && m && d) return new Date(y, m - 1, d);
+  }
+  return new Date(s);
+}
+// Short display for a DATE value ('' when missing).
+function fmtCalDate(v){ var d = parseCalDate(v); return d && !isNaN(d.getTime()) ? d.toLocaleDateString() : ''; }
+// 'YYYY-MM-DD' of a Date in the browser's local zone.
+function ymdOfLocal(d){ var p = function(n){ return String(n).padStart(2, '0'); }; return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()); }
 // ISO timestamp -> <input type=datetime-local> value in the BROWSER's local
 // time ("YYYY-MM-DDTHH:MM"). The API returns UTC ISO strings; iso.slice(0,16)
 // put UTC wall-time in the field, and the save path's new Date(local)
@@ -154,6 +176,27 @@ var _undoTimer=null;
 // (extra = that instance's id). 'info' shows the message with no Undo — used
 // after sending an email, which can't be unsent (PUI-3: "Undo" used to flip a
 // delivered email back to draft, so the next Send mailed it twice).
+// F113: how every write reports its outcome (parity with Perfin's writeOk) —
+// true on 2xx; otherwise a toast "<what>: <server error>" (never an Undo) and
+// false, so the caller keeps the modal / form open instead of losing what was
+// typed. A null res (the fetch threw, e.g. offline) also reports.
+async function writeOk(res, what){
+  if (res && res.ok) return true;
+  var detail = res ? 'HTTP ' + res.status : 'no connection';
+  try { var b = await res.clone().json(); if (b && b.error) detail = b.error; } catch (e) { /* not JSON */ }
+  showUndo((what || 'Save failed') + ': ' + detail, '', '', 'info');
+  return false;
+}
+// fetch that resolves to null instead of throwing, for use with writeOk.
+function tryFetch(url, opts){ return fetch(url, opts).catch(function(){ return null; }); }
+// F111: run fn at most once at a time per key (a double-click on Send Now
+// used to create and send two emails). Returns undefined while one is running.
+var _pending = {};
+async function guardPending(key, fn){
+  if (_pending[key]) return undefined;
+  _pending[key] = true;
+  try { return await fn(); } finally { _pending[key] = false; }
+}
 function showUndo(msg,type,id,action,extra){
   clearTimeout(_undoTimer);
   var el=document.getElementById('undo-toast');

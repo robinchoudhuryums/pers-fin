@@ -90,10 +90,16 @@ function setup(app) {
   app.use(cors({ origin: false, credentials: true }));
 
   // Rate limiters
+  // F123 (parity with Perfin's PSC-8): under the unified shell every request
+  // has already passed the shell's PIN / x-api-key gate, and the Knowledge
+  // page's status poll alone made ~15 calls a minute — 200 per 15 minutes
+  // 429'd normal use and pages then failed on the JSON error. Skipped when
+  // embedded; it still guards a standalone deployment.
   const generalLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 200,
     message: { error: "Too many requests, please try again later." },
+    skip: (req) => !!req.app.get("embedded"),
   });
   app.use("/api/", generalLimiter);
 

@@ -132,7 +132,7 @@ async function loadTrash() {
 }
 
 async function restoreItem(type, id) {
-  await fetch('/api/trash/'+type+'/'+id+'/restore', {method:'POST'});
+  if (!(await writeOk(await tryFetch('/api/trash/'+type+'/'+id+'/restore', {method:'POST'}), 'Could not restore the item'))) return;
   loadTrash();
   var el = document.getElementById('status');
   el.className = 'status-msg success'; el.textContent = 'Item restored.';
@@ -141,13 +141,13 @@ async function restoreItem(type, id) {
 
 async function permanentDelete(type, id) {
   if (!confirm('Permanently delete this item? This cannot be undone.')) return;
-  await fetch('/api/trash/'+type+'/'+id, {method:'DELETE'});
+  if (!(await writeOk(await tryFetch('/api/trash/'+type+'/'+id, {method:'DELETE'}), 'Could not delete the item'))) return;
   loadTrash();
 }
 
 async function emptyTrash() {
   if (!confirm('Permanently delete all items in trash? This cannot be undone.')) return;
-  await fetch('/api/trash/empty', {method:'POST'});
+  if (!(await writeOk(await tryFetch('/api/trash/empty', {method:'POST'}), 'Could not empty the trash'))) return;
   loadTrash();
   var el = document.getElementById('status');
   el.className = 'status-msg success'; el.textContent = 'Trash emptied.';
@@ -234,11 +234,11 @@ async function saveAutomation() {
 }
 async function deleteAutomation() {
   var id = document.getElementById('auto-id').value;
-  await fetch('/api/automations/'+id, {method:'DELETE'});
+  if (!(await writeOk(await tryFetch('/api/automations/'+id, {method:'DELETE'}), 'Could not delete the automation'))) return;
   closeAutoModal(); loadAutomations();
 }
 async function toggleAutomation(id, enabled) {
-  await fetch('/api/automations/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})});
+  await writeOk(await tryFetch('/api/automations/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})}), 'Could not change the automation');
   loadAutomations();
 }
 function updateActionFields() {}
@@ -252,7 +252,7 @@ async function loadWebhooks() {
     '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--line);font-size:13px;">'
     +'<div style="flex:1;"><div>'+esc(w.name)+'</div>'
     +'<div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:2px;letter-spacing:0.04em;">'+esc(w.url.substring(0,50))+(w.url.length>50?'...':'')+'</div>'
-    +'<div style="font-family:var(--mono);font-size:9px;color:var(--muted);margin-top:2px;letter-spacing:0.08em;">Events: '+esc((w.events||[]).join(', '))+(w.last_status?' &middot; Last: '+esc(w.last_status):'')+'</div></div>'
+    +'<div style="font-family:var(--mono);font-size:9px;color:var(--muted);margin-top:2px;letter-spacing:0.08em;">Events: '+esc((w.events||[]).join(', '))+(w.last_status!=null?' &middot; Last: '+esc(String(w.last_status)):'')+'</div></div>'
     +'<div style="display:flex;gap:6px;align-items:center;">'
     +'<button class="btn" data-action="test-wh" data-id="'+w.id+'" style="color:var(--accent);border-color:var(--accent);">Test</button>'
     +'<button class="btn" data-action="toggle-wh" data-id="'+w.id+'" data-enabled="'+w.enabled+'"'+(w.enabled?' style="color:var(--good);border-color:var(--good);"':'')+'>'+(w.enabled?'On':'Off')+'</button>'
@@ -286,17 +286,20 @@ async function saveWebhook() {
   var data={name:document.getElementById('wh-name').value,url:document.getElementById('wh-url').value,events:events};
   if(!data.name||!data.url)return alert('Name and URL required');
   var id=document.getElementById('wh-id').value;
-  if(id) await fetch('/api/webhooks/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
-  else await fetch('/api/webhooks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+  var res = id
+    ? await tryFetch('/api/webhooks/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)})
+    : await tryFetch('/api/webhooks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+  // F113: a refused URL (private address, bad events) keeps the dialog open.
+  if (!(await writeOk(res, 'Could not save the webhook'))) return;
   closeWebhookModal();loadWebhooks();
 }
 async function deleteWebhook() {
   var id=document.getElementById('wh-id').value;
-  await fetch('/api/webhooks/'+id,{method:'DELETE'});
+  if (!(await writeOk(await tryFetch('/api/webhooks/'+id,{method:'DELETE'}), 'Could not delete the webhook'))) return;
   closeWebhookModal();loadWebhooks();
 }
 async function toggleWebhook(id,enabled) {
-  await fetch('/api/webhooks/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})});
+  await writeOk(await tryFetch('/api/webhooks/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})}), 'Could not change the webhook');
   loadWebhooks();
 }
 async function testWebhook(id) {

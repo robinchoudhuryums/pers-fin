@@ -18,7 +18,31 @@ Updated: 2026-10-20
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 10 DONE** on branch
+- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 11 DONE** on branch
+  `claude/sweet-ritchie-f9d8ah` (2026-10-20). Per-sistant correctness.
+  - **Completed:** F109 (parseCalDate on every DATE render), F113 (writeOk/tryFetch on ~70
+    writes), F111 (Send Now single-flight), F110 (oldest unpaid month → overdue), F112
+    (email_failed notifications; recipient validated), F114 (Job Radar new-only, keyed to the
+    newest), F115 (reminders + stats on the APP_TIMEZONE day), F116 (email_sent /
+    note_created / reminder_due + Slack wired), F117 (refresh single-flight; backstop moved +
+    skip-recent), F118 (Ask totals), F119 (review upcoming from today), F120 (sent final;
+    scheduled needs a time), F121 (attachments in Postgres; download route order; leftovers
+    purged), F122 (30-day trash purge), F123 (limiter skipped embedded), F124 (grouped).
+  - **Decisions (user):** F116 wire the events up (not remove); F121 store bytes in Postgres
+    (not flag). Mine: "automation/webhook parity" read as bulk complete / create-todo /
+    template apply running todo_* automations + webhooks; Slack gets every event.
+  - **Tests:** npm test 1678/1678 (+29 apps/per-sistant/tests/scan-oct-batch11); contract 99/99
+    (+9 persistent-batch11); migrations twice; Playwright 35/35. All new tests fail pre-fix.
+    The contract test found a pre-existing bug: /api/attachments/download/:id was shadowed by
+    /:entityType/:entityId (fixed under F121).
+  - **Net score:** 6 − 2 = 4 (F121 database growth; F117 skipped manual backstop runs).
+  - **Follow-ons:** Quick Add local parser UTC due date; settings session_timeout/default_horizon
+    unvalidated; attachments not sent with emails; no one-click Retry for a failed email.
+  - **Block:** `.cycle/blocks/7-batch11-broad-implement.md`.
+  - **Where I left off:** Batch 11 committed and pushed (no PR). NEXT: /sync-docs for Batch 11,
+    then Batch 12 (Knowledge ingest edges: F126, F127, F128, F133 …).
+
+- **Previous:** **Cycle 7 — Oct 2026 broad scan, Batch 10 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-20). Perfin UI correctness and a11y.
   - **Completed:** F91 (charts from /api/spending-summary + local month labels), F94 (nav wraps
     641–960px), F95 (calendar minmax(0, 1fr)), F96 (one DASHBOARD_WIDGETS list), F97

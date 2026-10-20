@@ -46,7 +46,7 @@ ${navBar("/review")}
 async function load() {
   var data = await fetch('/api/review').then(r=>r.json());
   document.getElementById('review-period').textContent =
-    'Week of '+new Date(data.week_start).toLocaleDateString()+' — '+new Date(data.week_end).toLocaleDateString();
+    'Week of '+fmtCalDate(data.week_start)+' — '+fmtCalDate(data.week_end);
 
   document.getElementById('review-cards').innerHTML = [
     {label:'Tasks Completed',value:data.tasks_completed.length,cls:'green'},
@@ -61,11 +61,11 @@ async function load() {
     : '<div class="empty-msg">No tasks completed yet this week</div>';
 
   document.getElementById('overdue-list').innerHTML = data.overdue_tasks.length
-    ? data.overdue_tasks.map(t => '<div class="todo-item"><div class="todo-content"><div class="todo-title" style="color:var(--warn)">'+esc(t.title)+'</div><div class="todo-meta"><span class="badge '+t.priority+'">'+t.priority+'</span><span style="color:var(--warn)">Due: '+new Date(t.due_date).toLocaleDateString()+'</span></div></div></div>').join('')
+    ? data.overdue_tasks.map(t => '<div class="todo-item"><div class="todo-content"><div class="todo-title" style="color:var(--warn)">'+esc(t.title)+'</div><div class="todo-meta"><span class="badge '+t.priority+'">'+t.priority+'</span><span style="color:var(--warn)">Due: '+fmtCalDate(t.due_date)+'</span></div></div></div>').join('')
     : '<div class="empty-msg">No overdue tasks.</div>';
 
   document.getElementById('next-week-list').innerHTML = data.upcoming_tasks.length
-    ? data.upcoming_tasks.map(t => '<div class="todo-item"><div class="todo-content"><div class="todo-title">'+esc(t.title)+'</div><div class="todo-meta"><span class="badge '+t.priority+'">'+t.priority+'</span><span>Due: '+new Date(t.due_date).toLocaleDateString()+'</span></div></div></div>').join('')
+    ? data.upcoming_tasks.map(t => '<div class="todo-item"><div class="todo-content"><div class="todo-title">'+esc(t.title)+'</div><div class="todo-meta"><span class="badge '+t.priority+'">'+t.priority+'</span><span>Due: '+fmtCalDate(t.due_date)+'</span></div></div></div>').join('')
     : '<div class="empty-msg">No tasks scheduled for next week</div>';
 
   // Load AI review summary (non-blocking)

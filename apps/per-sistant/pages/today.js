@@ -65,7 +65,7 @@ async function load() {
   var overdue = [], dueToday = [], streakAtRisk = [];
   todos.forEach(function(t) {
     if (!t.due_date) return;
-    var d = new Date(t.due_date); d.setHours(0,0,0,0);
+    var d = parseCalDate(t.due_date); // F109: the calendar day, not UTC midnight
     if (d < today0) overdue.push(t);
     else if (d.getTime() === today0.getTime()) dueToday.push(t);
     if (t.recurring && t.streak_count > 0 && d <= today0) streakAtRisk.push(t);
@@ -73,7 +73,7 @@ async function load() {
 
   // Sort overdue worst first, due-today by priority
   var pOrder = { urgent: 0, high: 1, medium: 2, low: 3 };
-  overdue.sort(function(a,b) { return new Date(a.due_date) - new Date(b.due_date); });
+  overdue.sort(function(a,b) { return parseCalDate(a.due_date) - parseCalDate(b.due_date); });
   dueToday.sort(function(a,b) { return (pOrder[a.priority]||3) - (pOrder[b.priority]||3); });
 
   var overdueMin = overdue.reduce(function(s,t){ return s + estMin(t); }, 0);
@@ -151,8 +151,7 @@ async function load() {
 
 function renderTodo(t) {
   var today0 = new Date(); today0.setHours(0,0,0,0);
-  var d = t.due_date ? new Date(t.due_date) : null;
-  if (d) d.setHours(0,0,0,0);
+  var d = t.due_date ? parseCalDate(t.due_date) : null;
   var isOverdue = d && d < today0;
   var dueTxt = d ? (isOverdue ? 'Overdue since ' + d.toLocaleDateString() : 'Due today') : '';
   var overdueStyle = isOverdue ? ' style="color:var(--warn);font-weight:500;"' : '';

@@ -555,7 +555,7 @@ describe("Policy — empty-catch scan", () => {
     "apps/per-sistant/routes/todos.js": [6, "automation / webhook fire-and-forget"],
     "apps/per-sistant/routes/trash.js": [2, "chunk / embed_state cleanup on note purge"],
     "apps/per-sistant/services/vault-sync.js": [3, "attempt / error stamps and a cache write"],
-    "apps/per-sistant/helpers.js": [4, "outbound webhook / Slack delivery (recorded on the webhook row elsewhere)"],
+    "apps/per-sistant/helpers.js": [3, "outbound webhook / Slack delivery (recorded on the webhook row elsewhere)"], // 4 → 3: fireWebhooks logs since cycle-7 F116
   };
 
   function files(rel) {

@@ -23,6 +23,7 @@ function normalizePerfinUrl(v) {
 }
 
 const { serverError } = require("../errors");
+const { todayStr } = require("./health");
 
 module.exports = function ({ pool, config }) {
   const router = express.Router();
@@ -75,7 +76,13 @@ module.exports = function ({ pool, config }) {
         if (url === undefined) return res.status(400).json({ error: "perfin_url must be an http(s) URL (or empty to clear it)." });
         fields.push(`perfin_url = $${idx++}`); params.push(url);
       }
-      if (perfin_webhook_recipient !== undefined) { fields.push(`perfin_webhook_recipient = $${idx++}`); params.push(perfin_webhook_recipient || null); }
+      if (perfin_webhook_recipient !== undefined) {
+        // F112: one valid address (or empty to clear) — an invalid one used to
+        // be stored, and every Perfin digest then failed at send time unseen.
+        const rcpt = perfin_webhook_recipient == null ? "" : String(perfin_webhook_recipient).trim();
+        if (rcpt && !config.EMAIL_REGEX.test(rcpt)) return res.status(400).json({ error: "perfin_webhook_recipient must be one email address (or empty to clear it)." });
+        fields.push(`perfin_webhook_recipient = $${idx++}`); params.push(rcpt || null);
+      }
       if (palette !== undefined) {
         if (!VALID_PALETTES.includes(palette)) return res.status(400).json({ error: `palette must be one of ${VALID_PALETTES.join(", ")}` });
         fields.push(`palette = $${idx++}`); params.push(palette);
@@ -136,7 +143,7 @@ module.exports = function ({ pool, config }) {
   router.get("/api/stats", async (req, res) => {
     try {
       const [todos, emails, notes] = await Promise.all([
-        pool.query("SELECT count(*) FILTER (WHERE NOT completed) as pending, count(*) FILTER (WHERE completed AND NOT COALESCE(missed, false)) as done, count(*) FILTER (WHERE NOT completed AND priority = 'urgent') as urgent, count(*) FILTER (WHERE NOT completed AND due_date <= CURRENT_DATE) as overdue FROM todos WHERE deleted_at IS NULL"),
+        pool.query("SELECT count(*) FILTER (WHERE NOT completed) as pending, count(*) FILTER (WHERE completed AND NOT COALESCE(missed, false)) as done, count(*) FILTER (WHERE NOT completed AND priority = 'urgent') as urgent, count(*) FILTER (WHERE NOT completed AND due_date <= $1::date) as overdue FROM todos WHERE deleted_at IS NULL", [todayStr()]),
         pool.query("SELECT count(*) FILTER (WHERE status = 'draft') as drafts, count(*) FILTER (WHERE status = 'scheduled') as scheduled, count(*) FILTER (WHERE status = 'sent') as sent, count(*) FILTER (WHERE status = 'failed') as failed FROM emails WHERE deleted_at IS NULL"),
         pool.query("SELECT count(*) as total FROM notes WHERE deleted_at IS NULL"),
       ]);

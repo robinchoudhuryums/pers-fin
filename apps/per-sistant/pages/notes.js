@@ -86,7 +86,7 @@ function updateNoteBulkCount() { document.getElementById('note-bulk-count').text
 function noteSelectAll() { document.querySelectorAll('.note-bulk-check').forEach(el => { el.checked = true; toggleNoteBulkItem(parseInt(el.dataset.id,10), true, {stopPropagation:function(){}}); }); }
 async function noteBulkAction(action) {
   if (!noteSelectedIds.size) return;
-  await fetch('/api/bulk/notes', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:Array.from(noteSelectedIds),action:action})});
+  if (!(await writeOk(await tryFetch('/api/bulk/notes', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:Array.from(noteSelectedIds),action:action})}), 'Bulk action failed'))) return;
   noteSelectedIds.clear(); updateNoteBulkCount(); load();
 }
 

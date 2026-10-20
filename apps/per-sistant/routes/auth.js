@@ -339,8 +339,11 @@ ${themeScript()}
           document.getElementById('dot-' + i).className = 'pin-dot' + (i < pin.length ? ' filled' : '');
         }
       }
+      // F124 (parity with Perfin IF-6): the 8 dots are only a mask — a longer
+      // PIN can be typed (it used to stop at 8, so a 9+ digit PIN could never
+      // log in). 64 is a sanity bound.
       function handleDigit(n) {
-        if (pin.length >= pinLen || submitting) return;
+        if (pin.length >= 64 || submitting) return;
         pin += n;
         updateDots();
         errEl.style.display = 'none';

@@ -5,6 +5,7 @@
 const express = require("express");
 
 const { serverError } = require("../errors");
+const { announceTodoEvent } = require("../helpers");
 
 module.exports = function ({ pool }) {
   const router = express.Router();
@@ -73,6 +74,7 @@ module.exports = function ({ pool }) {
       // Create cross-entity link
       await pool.query("INSERT INTO entity_links (source_type, source_id, target_type, target_id) VALUES ('note', $1, 'todo', $2) ON CONFLICT DO NOTHING",
         [n.id, todo.rows[0].id]);
+      announceTodoEvent("todo_created", todo.rows[0]); // F124 parity
       res.json(todo.rows[0]);
     } catch (err) { serverError(res, err); }
   });
@@ -90,6 +92,7 @@ module.exports = function ({ pool }) {
       );
       await pool.query("INSERT INTO entity_links (source_type, source_id, target_type, target_id) VALUES ('email', $1, 'todo', $2) ON CONFLICT DO NOTHING",
         [e.id, todo.rows[0].id]);
+      announceTodoEvent("todo_created", todo.rows[0]); // F124 parity
       res.json(todo.rows[0]);
     } catch (err) { serverError(res, err); }
   });

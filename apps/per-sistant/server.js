@@ -14,7 +14,7 @@ const express = require("express");
 
 const config = require("./config");
 const { pool, runMigrations } = require("./db");
-const { advanceRecurrence, rollMissedRecurring } = require("./helpers");
+const { advanceRecurrence, rollMissedRecurring, fireWebhooks, processDueReminders } = require("./helpers");
 const { todayStr } = require("./routes/health");
 const middleware = require("./middleware");
 const views = require("./views");
@@ -162,6 +162,9 @@ async function processScheduledEmails() {
         if (email.body_html) mail.html = email.body_html;
         await transporter.sendMail(mail);
         console.log(`Sent scheduled email ${email.id} to ${email.recipient_email}`);
+        // F116: email_sent webhook (+ Slack) for scheduled sends too.
+        fireWebhooks("email_sent", { id: email.id, subject: email.subject, recipient_email: email.recipient_email, sent_at: new Date().toISOString() })
+          .catch((e) => console.error("email_sent webhook:", e.message));
       } catch (err) {
         // Send failed — release the optimistic claim back to 'failed' so the
         // row reflects reality (it won't be retried, matching prior behavior).
@@ -215,6 +218,11 @@ async function start(opts = {}) {
   // up to 10 minutes late, which is unnoticeable for a personal app.
   if (cron) {
     cronTasks.push(cron.schedule("*/10 * * * *", processScheduledEmails));
+    // reminder_due webhooks / Slack for note reminders that came due (F116).
+    cronTasks.push(cron.schedule("*/10 * * * *", async () => {
+      try { await processDueReminders(pool); }
+      catch (err) { console.error("Reminder webhook error:", err.message); }
+    }));
     console.log("Email scheduler started (checks every 10 minutes)");
   }
 
@@ -230,6 +238,21 @@ async function start(opts = {}) {
       } catch (err) { console.error("Recurring task error:", err.message); }
     }, { timezone: process.env.APP_TIMEZONE || "UTC" }));
     console.log("Recurring task processor started (daily at midnight)");
+  }
+
+  // Trash retention (F122): permanently delete items trashed more than
+  // TRASH_RETENTION_DAYS (30) ago, with their attachments, links and note
+  // embeddings — the UI promised 30 days, but nothing ever purged.
+  if (cron) {
+    const trash = require("./routes/trash");
+    cronTasks.push(cron.schedule("41 3 * * *", async () => {
+      try {
+        const r = await trash.purgeTrash(pool, trash.TRASH_RETENTION_DAYS);
+        const n = Object.values(r).reduce((a, b) => a + b, 0);
+        if (n) console.log(`Trash purge: removed ${n} item(s) older than ${trash.TRASH_RETENTION_DAYS} days`);
+      } catch (err) { console.error("Trash purge error:", err.message); }
+    }, { timezone: process.env.APP_TIMEZONE || "UTC" }));
+    console.log("Trash purge started (daily, 30-day retention)");
   }
 
   // Knowledge vault sync — hourly incremental pull of the Obsidian vault +

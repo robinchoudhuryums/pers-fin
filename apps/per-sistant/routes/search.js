@@ -9,7 +9,9 @@ module.exports = function ({ pool }) {
     try {
       const { q } = req.query;
       if (!q || q.length < 2) return res.json([]);
-      const pattern = `%${q}%`;
+      // F124: the query is matched literally — % and _ are LIKE wildcards
+      // ("100%" matched everything that contains "100"); escape them and \.
+      const pattern = `%${String(q).replace(/[\\%_]/g, (c) => "\\" + c)}%`;
       const [todos, emails, notes, contacts] = await Promise.all([
         pool.query("SELECT id, title, description, priority, horizon, completed, recurring, 'todo' as type FROM todos WHERE deleted_at IS NULL AND (title ILIKE $1 OR description ILIKE $1) LIMIT 10", [pattern]),
         pool.query("SELECT id, subject as title, recipient_name as description, status, status as priority, 'email' as type FROM emails WHERE deleted_at IS NULL AND (subject ILIKE $1 OR body ILIKE $1 OR recipient_name ILIKE $1) LIMIT 10", [pattern]),

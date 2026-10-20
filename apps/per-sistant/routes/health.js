@@ -415,6 +415,11 @@ module.exports = function ({ pool, helpers }) {
       const habitR = await pool.query("SELECT * FROM habits WHERE id = $1", [req.params.id]);
       if (!habitR.rows.length) return res.status(404).json({ error: "Not found." });
       const habit = habitR.rows[0];
+      // F124: the milestone fires when THIS log makes the day count — a
+      // re-tick, a note edit or a quantity +1 on a day that already met its
+      // target used to fire streak_milestone again.
+      const prevR = await pool.query("SELECT value FROM habit_logs WHERE habit_id = $1 AND log_date = $2", [habit.id, logDate]);
+      const dayAlreadyMet = prevR.rows.length > 0 && meetsTarget(habit, Number(prevR.rows[0].value));
 
       const r = await pool.query(
         `INSERT INTO habit_logs (habit_id, log_date, value, note)
@@ -427,7 +432,7 @@ module.exports = function ({ pool, helpers }) {
 
       const logsR = await pool.query("SELECT log_date, value FROM habit_logs WHERE habit_id = $1", [habit.id]);
       const { current_streak, best_streak } = computeStreaks(habit, logsR.rows, today);
-      if (STREAK_MILESTONES.includes(current_streak) && meetsTarget(habit, v) && logDate === today) {
+      if (STREAK_MILESTONES.includes(current_streak) && meetsTarget(habit, v) && logDate === today && !dayAlreadyMet) {
         fireWebhooks("streak_milestone", {
           entity: "habit", id: habit.id, name: habit.name, streak: current_streak,
         }).catch(() => {});

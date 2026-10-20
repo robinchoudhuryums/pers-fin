@@ -23,7 +23,7 @@ function selectAll() {
 }
 async function bulkAction(action, data) {
   if (!selectedIds.size) return;
-  await fetch('/api/bulk/todos', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:Array.from(selectedIds),action:action,data:data||{}})});
+  if (!(await writeOk(await tryFetch('/api/bulk/todos', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:Array.from(selectedIds),action:action,data:data||{}})}), 'Bulk action failed'))) return;
   selectedIds.clear(); updateBulkCount(); load();
 }
 function setHorizon(v) { curHorizon = v; load(); }
@@ -68,8 +68,8 @@ async function load() {
   }));
 
   document.getElementById('todo-list').innerHTML = todos.map((t, idx) => {
-    var dueTxt = t.due_date ? 'Due: '+new Date(t.due_date).toLocaleDateString() : '';
-    var overdue = t.due_date && !t.completed && new Date(t.due_date) <= new Date() ? ' style="color:var(--warn)"' : '';
+    var dueTxt = t.due_date ? 'Due: '+fmtCalDate(t.due_date) : '';
+    var overdue = t.due_date && !t.completed && parseCalDate(t.due_date) <= new Date() ? ' style="color:var(--warn)"' : '';
     var subs = subtaskMap[t.id] || [];
     var subDone = subs.filter(s=>s.completed).length;
     var subHtml = '';
@@ -121,14 +121,14 @@ async function drop(e) {
   if (srcIdx > -1 && tgtIdx > -1) {
     var temp = order[srcIdx]; order[srcIdx] = order[tgtIdx]; order[tgtIdx] = temp;
     order.forEach((o, i) => o.sort_order = i);
-    await fetch('/api/todos/reorder', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order})});
+    await writeOk(await tryFetch('/api/todos/reorder', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order})}), 'Could not save the order');
     load();
   }
 }
 
 // Subtasks
 async function toggleSubtask(id, completed) {
-  await fetch('/api/subtasks/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({completed})});
+  await writeOk(await tryFetch('/api/subtasks/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({completed})}), 'Could not update the subtask');
   load();
 }
 
@@ -139,7 +139,7 @@ async function addSubtask() {
   if (!title) return;
   var todoId = document.getElementById('edit-id').value;
   if (todoId) {
-    await fetch('/api/todos/'+todoId+'/subtasks', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title})});
+    if (!(await writeOk(await tryFetch('/api/todos/'+todoId+'/subtasks', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title})}), 'Could not add the subtask'))) return;
     input.value = '';
     loadEditSubtasks(todoId);
   } else {
@@ -160,7 +160,7 @@ async function loadEditSubtasks(todoId) {
   ).join('');
 }
 async function deleteSubtask(id, todoId) {
-  await fetch('/api/subtasks/'+id, {method:'DELETE'});
+  await writeOk(await tryFetch('/api/subtasks/'+id, {method:'DELETE'}), 'Could not delete the subtask');
   loadEditSubtasks(todoId);
 }
 function inlineEditSubtask(span, id, todoId) {
@@ -175,7 +175,9 @@ function inlineEditSubtask(span, id, todoId) {
   function save() {
     var val = input.value.trim();
     if (val && val !== old) {
-      fetch('/api/subtasks/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:val})}).then(function(){ if(todoId) loadEditSubtasks(todoId); else load(); });
+      tryFetch('/api/subtasks/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:val})})
+        .then(function(res){ return writeOk(res, 'Could not rename the subtask'); })
+        .then(function(){ if(todoId) loadEditSubtasks(todoId); else load(); });
     } else {
       span.textContent = old;
     }
@@ -293,16 +295,22 @@ async function saveTodo() {
     location_radius: parseInt(document.getElementById('f-location-radius').value) || 200,
   };
   if (!data.title) return alert('Title is required');
-  var result;
-  if (id) {
-    result = await fetch('/api/todos/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}).then(r=>r.json());
-  } else {
-    result = await fetch('/api/todos', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}).then(r=>r.json());
+  // F113: a rejected save (bad date, location out of range…) keeps the modal
+  // open with what was typed — it used to close and lose it.
+  var res = id
+    ? await tryFetch('/api/todos/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)})
+    : await tryFetch('/api/todos', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+  if (!(await writeOk(res, 'Could not save the task'))) return;
+  if (!id) {
+    var result = await res.json().catch(function(){ return {}; });
     // Create subtasks for new todo
     if (result.id && editSubtasks.length) {
+      var failed = 0;
       for (var s of editSubtasks) {
-        await fetch('/api/todos/'+result.id+'/subtasks', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:s.title})});
+        var sr = await tryFetch('/api/todos/'+result.id+'/subtasks', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:s.title})});
+        if (!sr || !sr.ok) failed++;
       }
+      if (failed) showUndo('Task saved, but '+failed+' subtask'+(failed===1?'':'s')+' could not be added','','','info');
     }
   }
   closeModal(); load();

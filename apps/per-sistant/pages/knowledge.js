@@ -283,7 +283,9 @@ document.addEventListener('click', function(e){
     attribute: decodeURIComponent(b.dataset.attr),
     value: decodeURIComponent(b.dataset.value),
     verified: newV,
-  })}).then(function(){ loadFacts(); }).catch(function(){});
+  })}).catch(function(){ return null; }).then(function(res){
+    return writeOk(res, 'Could not update the fact').then(function(){ loadFacts(); });
+  });
 });
 document.getElementById('k-query').addEventListener('keydown',function(e){
   if(e.key==='Enter' && (e.metaKey || e.ctrlKey)){ e.preventDefault(); ask(); }

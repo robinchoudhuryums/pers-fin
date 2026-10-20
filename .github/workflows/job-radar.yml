@@ -12,7 +12,9 @@ name: Job Radar Refresh
 
 on:
   schedule:
-    - cron: '23 7 * * 1'   # Mondays 07:23 UTC (matches the in-process cron)
+    - cron: '47 9 * * 1'   # Mondays 09:47 UTC — after the in-process 07:23 cron (F117:
+                           # same minute = two overlapping, double-scored runs); the
+                           # endpoint skips when a refresh ran in the last 6 hours
   workflow_dispatch:        # manual trigger
 
 # Read-only token: nothing here writes to the repository (cycle-7 F16).

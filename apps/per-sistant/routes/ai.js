@@ -10,6 +10,26 @@ const { serverError } = require("../errors");
 const { gatherHealthSummary, todayStr } = require("./health");
 const { housingDue, housingDueSuffix } = require("./housing-due");
 
+// F124: the model's parse-todo answer is shaped before it reaches the page —
+// enums checked, the due date a real YYYY-MM-DD or null, text fields strings
+// of bounded length (the preview rendered them as HTML, and Add sent them
+// straight to POST /api/todos).
+const { VALID_PRIORITIES, VALID_HORIZONS } = require("../config");
+function normalizeParsedTodo(p, input) {
+  const o = p && typeof p === "object" ? p : {};
+  const str = (v, max) => (typeof v === "string" && v.trim() ? v.trim().slice(0, max) : null);
+  const due = str(o.due_date, 10);
+  const dueOk = due && /^\d{4}-\d{2}-\d{2}$/.test(due) && !isNaN(Date.parse(due + "T00:00:00Z"))
+    && new Date(due + "T00:00:00Z").toISOString().slice(0, 10) === due;
+  return {
+    title: str(o.title, 500) || String(input).slice(0, 500),
+    priority: VALID_PRIORITIES.includes(o.priority) ? o.priority : "medium",
+    horizon: VALID_HORIZONS.includes(o.horizon) ? o.horizon : "short",
+    category: str(o.category, 50),
+    due_date: dueOk ? due : null,
+  };
+}
+
 module.exports = function ({ pool }) {
   const router = express.Router();
 
@@ -66,15 +86,19 @@ module.exports = function ({ pool }) {
       if (model === "off") return res.status(400).json({ error: "AI quick add is disabled." });
       const { input } = req.body;
       if (!input) return res.status(400).json({ error: "Input is required." });
-      const today = new Date().toISOString().split("T")[0];
+      // F124: "today" in APP_TIMEZONE — the UTC date is already tomorrow on a
+      // US evening, so "tomorrow" became the day after.
+      const today = todayStr();
       const text = await callAI(model,
         `Today is ${today}.\nInput: "${input}"`,
         256,
         `You are a task parser. Parse natural language task descriptions into structured data.\n\nReturn ONLY a JSON object with:\n- "title": clean task title (remove time/priority words)\n- "priority": one of "low", "medium", "high", "urgent"\n- "horizon": one of "short", "medium", "long"\n- "category": inferred category (e.g. "work", "personal", "health", "finance", "errands", "home") or null\n- "due_date": ISO date string (YYYY-MM-DD) if a date/time is mentioned, or null\n\nBe smart about inferring: "ASAP" = urgent, "someday" = low priority long-term, "this week" = short-term, etc.`);
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (!jsonMatch) return res.status(500).json({ error: "Failed to parse AI response." });
-      try { const parsed = JSON.parse(jsonMatch[0]); res.json(parsed); }
+      let parsed;
+      try { parsed = JSON.parse(jsonMatch[0]); }
       catch { return res.status(500).json({ error: "Invalid AI response format." }); }
+      res.json(normalizeParsedTodo(parsed, input));
     } catch (err) {
       serverError(res, err);
     }
@@ -253,17 +277,36 @@ module.exports = function ({ pool }) {
       if (model === "off") return res.json({ answer: "Ask is turned off. Enable it in Settings → AI Models.", data: null });
       if (!isAIAvailable()) return res.json({ answer: "AI is not configured on this server (ANTHROPIC_API_KEY is not set).", data: null });
       // Gather context
-      const [todos, emails, notes] = await Promise.all([
+      const today = require("./health").todayStr();
+      const [todos, emails, notes, totals] = await Promise.all([
         pool.query("SELECT id, title, priority, horizon, category, due_date, completed, completed_at, recurring, recurrence_rule, streak_count, created_at FROM todos WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 50"),
         pool.query("SELECT id, subject, recipient_name, recipient_email, status, scheduled_at, sent_at, created_at FROM emails WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 20"),
         pool.query("SELECT id, title, content, tags, pinned, created_at, updated_at FROM notes WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 20"),
+        // F118: real totals over ALL rows — the lists below are only the most
+        // recent 50 / 20 / 20, so "how many tasks are overdue?" used to be
+        // counted from a sample with no warning.
+        pool.query(`SELECT
+            (SELECT count(*) FROM todos WHERE deleted_at IS NULL) AS todos_total,
+            (SELECT count(*) FROM todos WHERE deleted_at IS NULL AND NOT completed) AS todos_open,
+            (SELECT count(*) FROM todos WHERE deleted_at IS NULL AND NOT completed AND due_date < $1::date) AS todos_overdue,
+            (SELECT count(*) FROM todos WHERE deleted_at IS NULL AND NOT completed AND due_date = $1::date) AS todos_due_today,
+            (SELECT count(*) FROM todos WHERE deleted_at IS NULL AND completed AND NOT COALESCE(missed, false)) AS todos_done,
+            (SELECT count(*) FROM emails WHERE deleted_at IS NULL) AS emails_total,
+            (SELECT count(*) FROM emails WHERE deleted_at IS NULL AND status = 'sent') AS emails_sent,
+            (SELECT count(*) FROM emails WHERE deleted_at IS NULL AND status = 'scheduled') AS emails_scheduled,
+            (SELECT count(*) FROM notes WHERE deleted_at IS NULL) AS notes_total`, [today])
+          .then((r) => r.rows[0]).catch((err) => { console.error("ask totals:", err.message); return null; }),
       ]);
-      const todayStr = new Date().toISOString().split("T")[0];
-      const context = `Today: ${todayStr}\n\nTasks (${todos.rows.length}):\n${todos.rows.map(t => `- [${t.completed?'done':'pending'}] "${t.title}" priority:${t.priority} horizon:${t.horizon}${t.category?' cat:'+t.category:''}${t.due_date?' due:'+t.due_date.toISOString().split("T")[0]:''}${t.completed_at?' completed:'+t.completed_at.toISOString().split("T")[0]:''}${t.recurring?' recurring:'+t.recurrence_rule:''}`).join("\n")}\n\nEmails (${emails.rows.length}):\n${emails.rows.map(e => `- [${e.status}] "${e.subject}" to:${e.recipient_name||e.recipient_email}${e.sent_at?' sent:'+e.sent_at.toISOString().split("T")[0]:''}`).join("\n")}\n\nNotes (${notes.rows.length}):\n${notes.rows.map(n => `- "${n.title||n.content.substring(0,40)}"${n.tags?' tags:'+n.tags.join(','):''}${n.pinned?' pinned':''}`).join("\n")}`;
+      const todayStr = today;
+      const t = totals;
+      const totalsLine = t
+        ? `Totals over ALL data (use these for counts): tasks ${t.todos_total} (open ${t.todos_open}, overdue ${t.todos_overdue}, due today ${t.todos_due_today}, done ${t.todos_done}); emails ${t.emails_total} (sent ${t.emails_sent}, scheduled ${t.emails_scheduled}); notes ${t.notes_total}.\n`
+        : "";
+      const context = `Today: ${todayStr}\n${totalsLine}\nMost recent tasks (up to 50 shown of ${t ? t.todos_total : "?"} — a sample, not everything) (${todos.rows.length}):\n${todos.rows.map(t => `- [${t.completed?'done':'pending'}] "${t.title}" priority:${t.priority} horizon:${t.horizon}${t.category?' cat:'+t.category:''}${t.due_date?' due:'+t.due_date.toISOString().split("T")[0]:''}${t.completed_at?' completed:'+t.completed_at.toISOString().split("T")[0]:''}${t.recurring?' recurring:'+t.recurrence_rule:''}`).join("\n")}\n\nEmails (${emails.rows.length}):\n${emails.rows.map(e => `- [${e.status}] "${e.subject}" to:${e.recipient_name||e.recipient_email}${e.sent_at?' sent:'+e.sent_at.toISOString().split("T")[0]:''}`).join("\n")}\n\nNotes (${notes.rows.length}):\n${notes.rows.map(n => `- "${n.title||n.content.substring(0,40)}"${n.tags?' tags:'+n.tags.join(','):''}${n.pinned?' pinned':''}`).join("\n")}`;
       const answer = await callAI(model,
         `Data:\n${context}\n\nUser question: "${query}"`,
         1024,
-        `You are a personal assistant with access to the user's data. Answer their question based on the provided data. Be concise and helpful. If the question asks for counts, lists, or stats, provide specific numbers. Answer concisely.`);
+        `You are a personal assistant with access to the user's data. Answer their question based on the provided data. Be concise and helpful. For counts and stats use the "Totals over ALL data" line; the task / email / note lists are only the most recent items, so if a question needs something outside them, say the answer covers recent items only. Answer concisely.`);
       res.json({ answer });
     } catch (err) { res.json({ answer: "Sorry, I couldn't process that query.", error: "AI request failed." }); }
   });
@@ -300,3 +343,6 @@ module.exports = function ({ pool }) {
 
   return router;
 };
+
+// Helpers attached AFTER module.exports = router factory (INV-19).
+module.exports.normalizeParsedTodo = normalizeParsedTodo;

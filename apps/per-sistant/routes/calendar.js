@@ -29,7 +29,10 @@ module.exports = function ({ pool, helpers }) {
       for (const t of recurring.rows) {
         let nextDate = new Date(t.due_date);
         let safety = 0;
-        while (nextDate < end && safety++ < 100) {
+        // F124: the bound is a runaway guard, not a horizon — 100 steps of a
+        // daily task stopped projecting ~3 months out, so later months showed
+        // none of its instances. 5000 steps ≈ 13 years of a daily task.
+        while (nextDate < end && safety++ < 5000) {
           if (nextDate >= start && nextDate < end) {
             // Only add if not already in the actual todos
             const dateStr = nextDate.toISOString().split("T")[0];

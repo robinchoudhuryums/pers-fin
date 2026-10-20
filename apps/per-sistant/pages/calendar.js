@@ -52,7 +52,9 @@ async function load() {
     var date = new Date(calYear, calMonth, d);
     var isToday = date.getTime() === today.getTime();
     var dayEvents = events.filter(e => {
-      var ed = new Date(e.event_date);
+      // F109: a todo's event_date is a DATE (a calendar day); email / note
+      // times are real timestamps.
+      var ed = e.type === 'todo' ? parseCalDate(e.event_date) : new Date(e.event_date);
       return ed.getFullYear()===calYear && ed.getMonth()===calMonth && ed.getDate()===d;
     });
     html += '<div class="cal-day'+(isToday?' today':'')+'"><div class="cal-day-num">'+d+'</div>';

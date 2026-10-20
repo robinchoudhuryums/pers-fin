@@ -17,20 +17,21 @@ async function toggleTodo(id, completed, isRecurring) {
 }
 
 async function skipTodo(id) {
-  await fetch('/api/todos/'+id+'/skip-recurring', {method:'POST'});
+  await writeOk(await tryFetch('/api/todos/'+id+'/skip-recurring', {method:'POST'}), 'Could not skip the task');
   load();
 }
 
 async function snoozeTodo(id) {
   var until = prompt('Snooze until (YYYY-MM-DD):');
   if (!until) return;
-  await fetch('/api/todos/'+id+'/snooze', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({until:until})});
+  await writeOk(await tryFetch('/api/todos/'+id+'/snooze', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({until:until})}), 'Could not snooze the task');
   load();
 }
 
 async function deleteTodo() {
   var id = document.getElementById('edit-id').value;
-  await fetch('/api/todos/'+id, {method:'DELETE'});
+  // F113: no Undo offer for a delete that didn't happen.
+  if (!(await writeOk(await tryFetch('/api/todos/'+id, {method:'DELETE'}), 'Could not delete the task'))) return;
   closeModal(); load();
   showUndo('Task moved to trash','todo',id);
 }
@@ -106,7 +107,7 @@ async function addDep() {
   loadDeps(todoId);
 }
 async function removeDep(depId, todoId) {
-  await fetch('/api/dependencies/'+depId, {method:'DELETE'});
+  await writeOk(await tryFetch('/api/dependencies/'+depId, {method:'DELETE'}), 'Could not remove the dependency');
   loadDeps(todoId);
 }
 
@@ -153,7 +154,7 @@ function parseQuickTodo() {
 }
 async function confirmQuickTodo() {
   if (!parsedTodo || !parsedTodo.title) return;
-  await fetch('/api/todos', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(parsedTodo)});
+  if (!(await writeOk(await tryFetch('/api/todos', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(parsedTodo)}), 'Could not add the task'))) return;
   closeQuickTodo(); load();
 }
 
@@ -168,9 +169,12 @@ async function aiBreakdown() {
     if (r.error) { alert(r.error); return; }
     var todoId = document.getElementById('edit-id').value;
     if (todoId) {
+      var failed = 0;
       for (var s of r.subtasks) {
-        await fetch('/api/todos/'+todoId+'/subtasks', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:s})});
+        var sr = await tryFetch('/api/todos/'+todoId+'/subtasks', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:s})});
+        if (!sr || !sr.ok) failed++;
       }
+      if (failed) showUndo(failed+' subtask'+(failed===1?'':'s')+' could not be added','','','info');
       loadEditSubtasks(todoId);
     } else {
       r.subtasks.forEach(s => editSubtasks.push({title:s, completed:false}));
@@ -192,7 +196,7 @@ async function parseQuickTodoAI() {
     if (r.error) { parseQuickTodo(); return; } // Fallback to regex parsing
     parsedTodo = r;
     document.getElementById('qt-preview-content').innerHTML =
-      '<div style="font-size:13px;"><strong>Task:</strong> '+esc(r.title)+'<br><strong>Priority:</strong> '+r.priority+'<br><strong>Horizon:</strong> '+r.horizon+'<br><strong>Category:</strong> '+(r.category||'None')+'<br><strong>Due:</strong> '+(r.due_date||'None')+'</div>';
+      '<div style="font-size:13px;"><strong>Task:</strong> '+esc(r.title)+'<br><strong>Priority:</strong> '+esc(String(r.priority))+'<br><strong>Horizon:</strong> '+esc(String(r.horizon))+'<br><strong>Category:</strong> '+esc(r.category||'None')+'<br><strong>Due:</strong> '+esc(r.due_date||'None')+'</div>';
     document.getElementById('qt-preview').style.display = 'block';
     document.getElementById('qt-confirm').style.display = 'inline-block';
   } catch { parseQuickTodo(); } // Fallback to regex
@@ -214,12 +218,12 @@ async function openTemplateList() {
 }
 function closeTemplateList() { document.getElementById('template-modal').classList.remove('active'); }
 async function applyTemplate(id) {
-  await fetch('/api/todo-templates/'+id+'/apply', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+  if (!(await writeOk(await tryFetch('/api/todo-templates/'+id+'/apply', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})}), 'Could not use the template'))) return;
   closeTemplateList();
   load();
 }
 async function deleteTemplate(id) {
-  await fetch('/api/todo-templates/'+id, {method:'DELETE'});
+  await writeOk(await tryFetch('/api/todo-templates/'+id, {method:'DELETE'}), 'Could not delete the template');
   openTemplateList();
 }
 async function saveAsTemplate() {
@@ -246,8 +250,7 @@ async function saveAsTemplate() {
       data.subtasks = subs.map(s => s.title);
     } catch {}
   }
-  await fetch('/api/todo-templates', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
-  alert('Template saved!');
+  if (await writeOk(await tryFetch('/api/todo-templates', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}), 'Could not save the template')) alert('Template saved!');
 }
 
 // Keyboard shortcuts
