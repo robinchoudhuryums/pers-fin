@@ -32,8 +32,17 @@ implement and reflect sessions only set Phase.)
   - **New follow-on:** Per-sistant /api/ai/review-summary 500s (not 501) without an AI key
     (tolerated in e2e KNOWN_GAPS). F123 (Batch 11) confirmed by the smoke.
   - **Operator:** still — make the repo PRIVATE, delete old Actions logs (Batch 1).
-  - **Where I left off:** Batch 2 committed and pushed (no PR). NEXT: /sync-docs for Batch 2,
-    then Batch 3.
+  - **/sync-docs DONE (Batch 2, 2026-10-20):** CLAUDE.md — offline.html/offline.js/sw.js
+    architecture entries (perfin-v6, offlineResponse `<base>` injection), account-history
+    one-document note (F88), nav whenShared (F90), toast cap (F89), PWA + offline bullets,
+    Web Push JSONB keys + pruning (F74), test counts 1517/69 (Perfin 1061) + scan-oct-batch2
+    description, contract 44 (+ feedback, F60), ci.yml e2e note + Current Status (35 Playwright
+    tests, pages.spec.js / KNOWN_GAPS), Commands; Known Open Issues — Batch 2 UI items removed,
+    review-summary 500 and F123 added. README — counts, Batch 2 coverage, e2e sentence, sw.js
+    row. Per-sistant docs unchanged (no Per-sistant code touched). Subsystem paths all resolve
+    (offline.js is covered by teller/public/*.js). Operator state: none new beyond the
+    perfin-v6 activation note already in the Batch 2 block.
+  - **Where I left off:** Batch 2 + its /sync-docs committed and pushed (no PR). NEXT: Batch 3.
 
 - **Previous:** **Cycle 7 — Oct 2026 broad scan, Batch 1 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-19). Scan: 9 Stage-1 auditors + 2 Stage-2 sweeps

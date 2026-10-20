@@ -315,11 +315,18 @@ teller/
                            NOT the unified-shell PWA icon — that's the mask-crop PNG
                            served from shell/public/manifest.json.
     offline.html         — Branded offline fallback page served by the SW when navigation
-                           fails and no cache hit exists
-    sw.js                — Service worker (cache `perfin-v5`, network-first with offline
-                           fallback. Precaches CSS/JS/SVG/offline.html on install. `/api/*`
-                           is intentionally NOT cached — stale balances are worse than a
-                           clear network error. Push notifications.)
+                           fails and no cache hit exists. No inline handlers (CSP) —
+                           Retry + logo-error live in offline.js; assets are relative
+                           (`logo.svg`), so they resolve under the /perfin mount (F92)
+    offline.js           — The offline page's Retry (location.reload) + hide-logo-on-error
+    sw.js                — Service worker (cache `perfin-v6`, network-first with offline
+                           fallback. Precaches CSS/JS/SVG/offline.html/offline.js on
+                           install. The offline page is served through offlineResponse(),
+                           which injects `<base href="<mount>/">` (keeps the CSP headers,
+                           drops content-length) so its relative assets resolve from any
+                           failed URL (F92). `/api/*` is intentionally NOT cached — stale
+                           balances are worse than a clear network error. Push
+                           notifications.)
     perfin-shared.css    — Shared styles (variables, nav, cards, animations, responsive,
                            focus-visible, skip-link, WCAG AA contrast text colors,
                            40/44px touch-target minimums on buttons). Defines every
@@ -356,7 +363,11 @@ teller/
     transactions.ejs     — Transaction search/filter template, per-row Split modal
                            (Phase B3) and REIMBURSED badge (Phase B2)
     calendar.ejs         — Bill calendar template with Add Bill modal and paid-state toggling
-    account-history.ejs  — Per-account balance history chart (range selector, summary cards)
+    account-history.ejs  — Per-account balance history chart (range selector, summary cards).
+                           ONE document: the head partial (extraStyles widens .container
+                           to 980px) + the nav partial with `activePage` — it used to nest
+                           its own <html>/<head> and omit activePage, so every load 500'd
+                           (F88)
     budgets.ejs          — Budget tracking template with progress bars and alerts
     housing.ejs          — Rent & Utilities ledger template (balance, obligations,
                            record-payment modal, config form, payment history)
@@ -373,7 +384,11 @@ teller/
                            available in Settings + the notification log), notification
                            bell with unread count + dropdown panel (drops down on
                            desktop, slides up as a bottom sheet with backdrop on
-                           mobile ≤640px), <main> landmark
+                           mobile ≤640px), <main> landmark. The nav renders BEFORE
+                           perfin-shared.js loads, so its load-time apiFetch calls (sync
+                           badge, unread count) go through `whenShared(fn)` — run now if
+                           window.apiFetch exists, else on DOMContentLoaded (F90: they
+                           threw, so the badge and bell count never loaded)
     partials/foot.ejs    — Footer partial (closes <main>)
 ```
 
@@ -525,9 +540,16 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1508 tests as of latest); use
+  Perfin and Per-sistant test files (1517 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1508 tests across 68 test files (incl.
+  Current count: 1517 tests across 69 test files (incl.
+  `tests/scan-oct-batch2.test.js` — the Oct 2026 (cycle 7) Batch 2 broken-page /
+  dead-channel pins: Web Push to a JSONB (object) subscription + 410 pruning via a
+  stubbed web-push (F74), the toast cap run in a vm with a timeout (F89), the
+  account-history page rendered as one document standalone and under /perfin
+  (F88), the Rent page's utility-row markup assignment (F87), the nav's
+  `whenShared` deferral (F90), the relative logo mask (F93), and the offline
+  page's external script + the SW's `<base>` injection (F92);
   `tests/scan-oct-batch1.test.js` — the Oct 2026 (cycle 7) broad-scan Batch 1
   exposure / pre-auth pins: a multibyte PIN is a 401 rather than an unhandled
   rejection + `safeEqual` + the ICS route's digest compare + the shell's
@@ -585,7 +607,8 @@ shell/
   `modules_failed: []` with ≥8 modules run) and knowledge (syncVault through a
   fake GitHub API via its `fetchImpl`, syncNotes, keyword search never returning
   secret text, secret-lookup, facts current vs `all=1` + verify, /api/rag/query
-  without AI, an incremental compare that removes a deleted file). 43 tests, run
+  without AI, an incremental compare that removes a deleted file) plus insight
+  feedback set / change / clear (the F60 `$1::text` cast). 44 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -743,7 +766,7 @@ shell/
   fake @anthropic-ai/sdk: /api/ask + runCategorize charge their usage rows,
   429 once the cap is hit, ask charges accumulated tokens AND still charges
   on a mid-loop failure — F1).
-- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js`. The `migrations` job ALSO runs the route contract suite (`npm run test:contract`, step "Route contract tests against real Postgres", `CONTRACT_DATABASE_URL` = the same service container; the Postgres user must be able to CREATE/DROP DATABASE).
+- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). 35 tests. The `migrations` job ALSO runs the route contract suite (`npm run test:contract`, step "Route contract tests against real Postgres", `CONTRACT_DATABASE_URL` = the same service container; the Postgres user must be able to CREATE/DROP DATABASE).
 - `.claude/commands/` — Project slash-command prompts, generated from the
   claude-workflow-tools templates (synced to v1.43.0 via `/sync-commands`):
   the cycle commands (`/broad-scan`, `/broad-implement`, `/targeted-audit`,
@@ -1593,7 +1616,10 @@ shell/
 - **Status messages (toast stack)**: `showMsg(text, ok)` pushes onto a
   `#toast-stack` container (auto-created on first call) instead of
   overwriting a single per-page element. Stack caps at 5 visible toasts;
-  identical consecutive messages dedupe (timer bump, no pile-up). Each
+  identical consecutive messages dedupe (timer bump, no pile-up). The cap
+  counts only toasts that aren't already leaving and removes the excess
+  immediately (F89 — counting leaving toasts made the sixth message loop
+  forever and freeze the tab). Each
   toast auto-dismisses after 5 s (success) / 10 s (error); tap to dismiss
   early. Desktop: anchored top-right with slide-down. Mobile (≤640px):
   bottom-right `column-reverse` with slide-up so the newest is at thumb
@@ -1602,12 +1628,14 @@ shell/
   in templates so any direct DOM writes are silent no-ops.
 - **Dark/Light theme**: Toggle in Settings, persisted to DB + localStorage
 - **PWA**: Installable home screen app (manifest.json + service worker, helmet icon centered on home screen).
-  Service worker (cache `perfin-v5`) uses network-first, caches successful same-origin
+  Service worker (cache `perfin-v6`) uses network-first, caches successful same-origin
   static GETs, and explicitly skips `/api/*` so the dashboard never serves stale balances
   when offline.
 - **Offline fallback page** (Phase D): when navigation fails and no cache hit exists,
   the SW serves `/offline.html` — a branded "You're offline" page with a Retry
-  button — instead of the browser's generic error.
+  button — instead of the browser's generic error. Served with an injected
+  `<base href="<mount>/">` and an external `offline.js`, so the logo and Retry
+  work under the shell's mount and CSP (F92).
 - **Install prompt** (Phase D): `perfin-shared.js` captures `beforeinstallprompt`;
   Settings shows an "Install App" section with a button when the browser is ready,
   hides itself when already installed (`display-mode: standalone`), and falls back
@@ -1701,7 +1729,11 @@ shell/
   the next visit rather than being permanently silenced. Hidden when healthy;
   best-effort — a failed probe never blocks the dashboard.
 - **Web Push notifications**: VAPID-based push notifications for anomalies, budget alerts,
-  goal milestones
+  goal milestones. `push_subscriptions.keys` is JSONB, which node-pg returns as an
+  OBJECT — `subscriptionFromRow` accepts an object or a JSON string (F74: the old
+  `JSON.parse(row.keys)` threw on every row, so no push was ever delivered and dead
+  subscriptions were never pruned). A 410/404 prunes the subscription; any other
+  send failure is logged.
 - **Accessibility**: Skip-to-content link, `<main>` landmark, chart aria-labels, :focus-visible
   styles, WCAG AA contrast-compliant text colors. Modals and the bell panel go through the
   shared `openDialog` / `watchDialog` (focus trap, Esc, focus restore — IF-1); form controls
@@ -2059,7 +2091,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1508 tests passing across 68 test files (Perfin 1052 + Per-sistant 456), plus the real-Postgres route contract suite (43 tests; CI `migrations` job, `npm run test:contract`) and 8 Playwright browser smokes (CI `e2e` job); neither of the last two is in `npm test`
+- 1517 tests passing across 69 test files (Perfin 1061 + Per-sistant 456), plus the real-Postgres route contract suite (44 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -2067,7 +2099,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
 cd teller && npm install && node server.js    # Run locally
 npm install                                    # ALSO required at repo root for tests
 npm test                                       # Run all tests (Perfin + Per-sistant)
-npm run test:e2e                               # Playwright browser smokes (needs local Postgres; see e2e/boot-server.js)
+npm run test:e2e                               # Playwright browser smokes + every-page load check (needs local Postgres; see e2e/boot-server.js)
 npm run test:perfin                            # Perfin tests only (tests/*.test.js)
 npm run test:persistent                        # Per-sistant tests only
 CONTRACT_DATABASE_URL=postgres://… npm run test:contract  # real-Postgres route contract suite (tests/contract/; skips without the URL; creates/drops contract_* scratch DBs)
@@ -3943,7 +3975,8 @@ SX3-pinned — the Sheets Income tab.
 
 ## Known Open Issues
 **Cycle 7 (Oct 2026 broad scan) — open until their batches run** (plan in
-`.cycle/STATE.md`; Batch 1 — exposure / pre-auth safety — is done):
+`.cycle/STATE.md`; Batch 1 — exposure / pre-auth safety — and Batch 2 — broken
+pages and dead channels — are done):
 - The repo is PUBLIC (operator: make it private and delete old Actions logs —
   they printed balances and net worth before Batch 1).
 - Database Backup has never produced a backup (every run failed at the dump
@@ -3952,10 +3985,13 @@ SX3-pinned — the Sheets Income tab.
 - A passphrase mismatch on ANY token row makes `pgp_sym_decrypt` raise, failing
   every Teller/Plaid sync (the per-row `decryption_failed` branches never run;
   F17, Batch 4). Plaid "re-link to fix re-auth" creates a NEW item (F18).
-- Broken in the UI today: the Rent & Utilities page once a utility is
-  configured, `/accounts/:id/history` (500), the nav sync badge + unread count,
-  a sixth toast freezes the tab, Web Push never delivers, insight feedback
-  buttons 500 (Batch 2).
+- Per-sistant `POST /api/ai/review-summary` answers 500 (callAI throws →
+  serverError) instead of 501 when `ANTHROPIC_API_KEY` is unset, and the Review
+  page fires it on every load (found by `e2e/pages.spec.js`, tolerated in its
+  `KNOWN_GAPS` — remove the entry when fixed).
+- Per-sistant's general limiter (200 requests / 15 min) is not skipped under
+  the shell, so heavy use trips it and pages then throw on the 429 JSON (F123,
+  Batch 11 — confirmed by the page smoke).
 
 The bugs Batch 15's real-code tests exposed (calendar 500, Quick Add regexes,
 palette picker under the shell, undefined CSS vars, unvalidated theme /
