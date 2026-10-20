@@ -519,6 +519,10 @@ shell/
   `account_label` (e.g. the web dropdown) — those are intentionally separate
   accounts. (Earlier the CLI used a divergent, row-index-based ID and
   filename-based format detection — audit H8/F29/F31, now resolved.)
+  Each row INSERT runs under `SAVEPOINT csv_row`, so one bad row is skipped
+  instead of silently rolling the whole file back; the CLI exits 1 when ANY
+  file failed and writes the files it did import to `$CSV_IMPORTED_LIST`
+  (cycle-7 F19).
 - `scripts/retention-cleanup.sql` — Reference SQL for the manual cleanup queries
   exposed by `POST /api/cleanup`
 - `scripts/reset-fresh.js` — Guarded fresh-start reset (`npm run reset:fresh`).
@@ -552,9 +556,18 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1547 tests as of latest); use
+  Perfin and Per-sistant test files (1558 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1547 tests across 70 test files (incl.
+  Current count: 1558 tests across 71 test files (incl.
+  `tests/scan-oct-batch4.test.js` — the Oct 2026 (cycle 7) Batch 4 bank-sync
+  durability pins that need no database: every token read through
+  `perfin_try_decrypt` (F17), the CSV CLI's non-zero exit + imported-file
+  manifest + per-row savepoint and the workflow removing only listed files
+  (F19), the roll-forward savepoint keeping the import (F25), a Plaid
+  reconcile waiting for an in-flight sync + the bounded lock (F27), liabilities
+  skipped for a checking-only Item + the skip codes (F28), `snapshotDay` (F30)
+  and the unlink-then-link guidance (F18) — the database-backed half lives in
+  `tests/contract/bank-durability.contract.test.js`;
   `tests/scan-oct-batch3.test.js` — the Oct 2026 (cycle 7) Batch 3 backstop /
   outcome / operator-state pins: job outcomes via jobHealth.result + the
   changed-only flush + data-health flushing first and raising failed jobs (F8),
@@ -628,11 +641,16 @@ shell/
   modified-upsert / removed / cursor — plus POST /api/categorize and
   generateInsights + audit, with only Teller's HTTP client, a Plaid client
   object and the Anthropic SDK stubbed; generateInsights must report
-  `modules_failed: []` with ≥8 modules run) and knowledge (syncVault through a
+  `modules_failed: []` with ≥8 modules run), bank-durability (cycle-7 Batch 4:
+  a real wrong-key token reported as `decryption_failed` instead of failing the
+  sync, the duplicate-Item 409, the CSV loan roll-forward + label-over-institution
+  match, a removed investment account staying removed, the investments-only
+  unlink, flow coverage via `flows_synced_at`, a 0% APR, NaN balance rejection
+  and a comma in a Teller category) and knowledge (syncVault through a
   fake GitHub API via its `fetchImpl`, syncNotes, keyword search never returning
   secret text, secret-lookup, facts current vs `all=1` + verify, /api/rag/query
   without AI, an incremental compare that removes a deleted file) plus insight
-  feedback set / change / clear (the F60 `$1::text` cast). 44 tests, run
+  feedback set / change / clear (the F60 `$1::text` cast). 57 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -816,7 +834,10 @@ shell/
 - `.github/workflows/csv-import.yml` — imports CSVs pushed to `csv-uploads/`
   (scripts/import-csv-cli.js → Sheets), then `git rm`s them (PSC-15: they used to
   be archived under `csv-uploads/processed/`, keeping raw bank statements in every
-  checkout) and pushes — hence its `permissions: contents: write`. Its FIRST
+  checkout) and pushes. It removes ONLY the files listed in the CLI's
+  `CSV_IMPORTED_LIST` manifest, and runs that step after a partial failure too,
+  so a file that failed to import stays for a retry (F19 — the CLI used to exit
+  0 on a failed file and the step `git rm`'d every CSV) — hence its `permissions: contents: write`. Its FIRST
   step fails the run while the repository is public (cycle-7 F2): a CSV pushed
   to a public repo is published the moment it lands, so `git rm` afterwards
   can't take it back — use the in-app CSV import instead.
@@ -905,7 +926,11 @@ shell/
   import genuinely inserted that are dated after its `balance_updated_at` (credit: + net spend;
   depository: − net spend). An account with no known balance is left alone. (It used to be
   OVERWRITTEN with the net of every CSV row ever imported — a partial statement history, not a
-  balance.)
+  balance.) Matching (cycle-7 F25): an exact account-label match beats an institution match,
+  and when the best level matches more than one account nothing is rolled; a **loan** rolls like
+  a credit card (an amount owed); the as-of date is `balance_updated_at`'s APP_TIMEZONE day, and
+  the new balance is stamped as of the newest included row (local noon), not "now". The step runs
+  under `SAVEPOINT csv_balance` and logs a failure — the import itself still commits.
 - **Manual cash entry**: a one-off expense the bank never sees (cash spending),
   added via `POST /api/transactions/manual` and an "+ Add cash transaction"
   modal on the Transactions page. Requires an existing `is_manual` (depository)
@@ -1099,7 +1124,7 @@ shell/
   default to **`exact`** match (DC-13: a `contains` rule from a short merchant
   like "ARCO" also caught "Marco's Pizza"); an explicit `match_type` is still
   honored, and the explicit `POST /api/categorization-rules` keeps its
-  `contains` default. CSV-import and manual-entry categories are stored via a
+  `contains` default. CSV-import, manual-entry and Teller-sync categories are stored via a
   one-element `text[]` parameter, never a concatenated `{…}` literal (DC-14 — a
   comma split the category and a quote/brace 500'd the whole import).
 - **Budget rollover**: Budgets can enable `rollover_enabled` to carry unused budget
@@ -1187,7 +1212,9 @@ shell/
   benchmark source (Stooq, keyless) is unreachable. Portfolio line is
   value-based (contributions count as growth); below it the card shows the
   flow-adjusted figures — **TWR** (cumulative for the window) and **XIRR**
-  (annualized) — computed over flow-covered accounts, with a "(covers N% of
+  (annualized) — computed over flow-covered accounts (a Plaid account counts
+  only once its flows have completed a sync — `flows_synced_at`, F24; Items
+  without the Investments product are skipped quietly), with a "(covers N% of
   portfolio)" label when coverage is partial. An account that first appears
   partway through the window enters as an opening INFLOW on its first date
   (its own flows on/before that date are part of that balance), so linking a
@@ -2002,7 +2029,12 @@ on the operator's machine (or fed via env vars) before the app boots:
    token is reported as `decryption_failed` and the enrollment is skipped
    rather than 401-ing against Teller and being silently marked DISCONNECTED
    (which would wrongly demand a Teller Connect re-run on a mere passphrase
-   mismatch).
+   mismatch). Every sync/balance/holdings/flows/unlink token read goes through
+   `perfin_try_decrypt(data, key)` — a plpgsql wrapper created by the
+   migrations that returns NULL where `pgp_sym_decrypt` would RAISE (cycle-7
+   F17: one stale row used to fail the whole query, so every sync failed and
+   the per-row `decryption_failed` branches never ran). The Teller unlink of a
+   stale enrollment skips the Teller revoke and just deletes it locally.
 3. **Per-sistant Knowledge / RAG operator state** (all optional — the feature
    degrades to keyword-only without them; nothing blocks app boot):
    - `VOYAGE_API_KEY` — Voyage embeddings for semantic retrieval. Without it
@@ -2079,10 +2111,14 @@ to chase APR/limit. Instead use the **manual credit-limit + APR fields** on the
 dashboard credit card (limit → `PATCH /api/accounts/:id/balance { credit_limit }`,
 APR → `PATCH /api/accounts/:id { apr }`), which drive real utilization with no
 Plaid dependency. `syncAllPlaidBalances` surfaces an actionable
-"re-link this card to enable Plaid Liabilities" message ONLY when the item lacks
-the Liabilities product entirely (PRODUCTS_NOT_SUPPORTED) AND carries a credit
-account — it stays silent when Liabilities is present but the issuer simply
-returns no APR/limit data, which is the un-fixable Discover case.
+message ("this connection predates Plaid Liabilities; unlink it and link the bank
+again …") ONLY when the item lacks the Liabilities product entirely
+(PRODUCTS_NOT_SUPPORTED) AND carries a credit account — it stays silent when
+Liabilities is present but the issuer simply returns no APR/limit data, which is
+the un-fixable Discover case. `liabilitiesGet` is called only for an Item with a
+credit card or loan; `NO_LIABILITY_ACCOUNTS` is a quiet skip and
+`ADDITIONAL_CONSENT_REQUIRED` joins the not-supported skip; APR / minimum / last
+payment use `??`, so a 0% APR is stored as 0, not NULL (cycle-7 F28).
 
 **Gotcha — a Plaid "needs re-authentication" item is fixed by UNLINK + LINK,
 not by linking again.** The app has no Plaid Link update mode yet (G3). Running
@@ -2151,7 +2187,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1547 tests passing across 70 test files (Perfin 1091 + Per-sistant 456), plus the real-Postgres route contract suite (44 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
+- 1558 tests passing across 71 test files (Perfin 1102 + Per-sistant 456), plus the real-Postgres route contract suite (57 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -2184,6 +2220,13 @@ DELETE /api/items/:id      # unlink a Plaid item (BSI-3): best-effort itemRemove
                            # its transactions + linked_accounts + plaid_investment_items
                            # registry row, deactivate its investment_accounts and
                            # delete their holdings. Returns plaid_item_removed.
+GET  /api/items            # linked Teller enrollments + Plaid items; investments-only
+                           # Plaid items (plaid_investment_items registry rows with no
+                           # plaid_items twin) are listed as provider 'plaid_investment'
+                           # with accounts: [] (cycle-7 F22)
+DELETE /api/plaid/investment-items/:id # unlink an investments-only Plaid item: itemRemove
+                           # at Plaid (fail-soft), deactivate its investment_accounts,
+                           # drop their holdings, delete the registry row (F22)
 POST /api/sync-balances    # fetch latest account balances. Refreshes Teller
                            # (`syncAllBalances`), Plaid balances + credit limit
                            # + liabilities/APR (`syncAllPlaidBalances`), AND
@@ -2309,6 +2352,10 @@ PATCH /api/accounts/:id/shared # mark account as shared/joint (body: is_shared, 
                            # — an integer 0-100, 400 otherwise; 0 = all the partner's.
                            # `parseInt(x) || 100` used to turn 0 into 100 — WUI-6)
 PATCH /api/accounts/:id/balance # update balance fields (current_balance, available_balance, credit_limit)
+                           # — strict finite parse ("$1,250.50" accepted), 400 otherwise;
+                           # null only for available_balance / credit_limit; a negative
+                           # limit is a 400 (cycle-7 F29 — it used to store NaN; the
+                           # investment-account PATCH validates its balance the same way)
 POST /api/accounts/manual  # create a manual (non-Teller, non-Plaid) account
                            # (type: depository | credit | loan — loan subtype defaults 'auto')
 DELETE /api/accounts/manual/:id # delete a manual account
@@ -2411,9 +2458,9 @@ GET  /api/data-health      # operator health surface — per-source freshness,
                            # notifications, last_reconcile_at, last_sync_result,
                            # last_sheets_sync_result (+ an issue when the last Sheets
                            # run had failed tabs — SXE-1), and a top-level `ok` flag. Does NOT live-decrypt tokens to
-                           # probe a passphrase mismatch (pgp_sym_decrypt throws on a
-                           # wrong key); that condition surfaces here via
-                           # last_sync_result.errors (decryption_failed) instead (D).
+                           # probe a passphrase mismatch; that condition surfaces here
+                           # via last_sync_result.errors (decryption_failed — reachable
+                           # since the sync reads use perfin_try_decrypt, F17) (D).
 GET  /api/budgets          # list budgets with current spending (query: month=YYYY-MM)
 POST /api/budgets          # create budget (body: rollover_enabled, budget_type, effective_month)
 PATCH /api/budgets/:id     # update budget (400 on a non-finite/negative monthly_limit,
@@ -2502,11 +2549,18 @@ POST /api/plaid/link-token-transactions # create combined Transactions+Investmen
                                         # both checking + brokerage for banks like Schwab)
 POST /api/plaid/exchange-transactions   # exchange token, store in plaid_items, fetch accounts
                                         # into linked_accounts, run initial transaction sync,
-                                        # auto-detect + sync investment holdings if present
+                                        # auto-detect + sync investment holdings if present.
+                                        # accountsGet runs BEFORE anything is stored: a duplicate
+                                        # of a connected Item (same institution + an account with
+                                        # the same mask/type on another GOOD item) → the new Item
+                                        # is released at Plaid, nothing stored, 409 { duplicate_of }
+                                        # with the unlink-then-link steps; a pre-store failure also
+                                        # releases the Item (F18). /api/plaid/hosted-link-complete
+                                        # applies the same guard
 POST /api/plaid/sync-transactions       # cursor-based sync for all plaid_items (added/modified/removed)
                                # Response: { accounts_updated, holdings_updated, errors[]? }
-                               # Per-item failures (including NULL access_token from a
-                               # pgp_sym_decrypt mismatch) surface as
+                               # Per-item failures (including a NULL access_token from a
+                               # passphrase mismatch — perfin_try_decrypt) surface as
                                # `errors: [{ institution, error: "decryption_failed" | ... }]`
 GET  /api/plaid/holdings   # list investment holdings
 GET  /api/investments/performance # portfolio returns + asset-class allocation + top winners/losers
@@ -2529,13 +2583,17 @@ GET  /api/investments/performance-history # portfolio value series vs S&P 500
                                   # figures: twr_pct (true time-weighted return — daily
                                   # chain-linked, exact since valuations are daily) and
                                   # xirr_pct (annualized money-weighted return), both
-                                  # computed over FLOW-COVERED accounts only (Plaid-synced
-                                  # + any account with manual flows) with a flow_coverage
+                                  # computed over FLOW-COVERED accounts only (Plaid accounts
+                                  # whose flows completed a sync — investment_accounts.
+                                  # flows_synced_at set, F24 — + any account with manual
+                                  # flows) with a flow_coverage
                                   # block ({coverage_pct, flows_count, net_flows, scope:
                                   # all|partial|none, accounts_added}) so partial coverage
                                   # is explicit rather than silently wrong. An account that
                                   # joins mid-window is an opening inflow (accountEntryFlows,
-                                  # BSI-6; counted in accounts_added).
+                                  # BSI-6; counted in accounts_added). Snapshot dates are
+                                  # read as snapshot_date::text / snapshotDay() (the local
+                                  # calendar day — toISOString shifted them a day, F30).
 POST /api/plaid/sync-flows # sync external cash flows (deposits/withdrawals/in-kind
                            # transfers) from Plaid investmentsTransactionsGet into
                            # investment_flows. Full ~24-month window every run, idempotent
@@ -3960,6 +4018,9 @@ SX3-pinned — the Sheets Income tab.
   that the response no longer lists, so a sale clears its row; accounts not in
   the response (other items, manual accounts) are never touched. A missing
   cost basis is NULL and excluded from returns, never treated as $0 (BSI-5).
+  The upsert keeps `is_active`: an account the user removed is not revived by
+  the next sync and gets no mirror balance, snapshot or holdings (F22 — only a
+  new link brings it back).
 - **Plaid sync advances the cursor only on a fully-successful page.**
   `syncPlaidItemTransactions` processes each `transactionsSync` page, and if
   ANY row in the page fails to upsert it halts WITHOUT advancing the cursor —
@@ -4039,7 +4100,12 @@ SX3-pinned — the Sheets Income tab.
   outcome in `last_sync_result` (`teller_reconcile` / `plaid_reconcile`);
   `last_reconcile_at` always stamps the ATTEMPT (so a persistent failure isn't
   retried hourly) but `last_txn_sync_at` only when every leg completed (BSI-11).
-  Reconcile never runs the anomaly check (INV-05).
+  Reconcile never runs the anomaly check (INV-05). Plaid transaction syncs and
+  Plaid reconciles share one in-process lock (`withPlaidTxnLock`; the reconcile
+  resets cursors AND walks inside it), so a reconcile can't reset a cursor that a
+  running sync is about to overwrite (cycle-7 F27). The wait is bounded
+  (`PLAID_LOCK_MAX_WAIT_MS`, 10 min) so a hung Plaid call can't block every later
+  sync.
 - **Named route helpers are attached AFTER `module.exports = router`.** In
   modules that export an Express router AND helper functions (e.g.
   `routes/investments.js`), the helper attachments (`module.exports.syncAll… = …`)
@@ -4061,8 +4127,9 @@ SX3-pinned — the Sheets Income tab.
 
 ## Known Open Issues
 **Cycle 7 (Oct 2026 broad scan) — open until their batches run** (plan in
-`.cycle/STATE.md`; Batches 1–3 — exposure / pre-auth safety, broken pages and
-dead channels, backstops / outcomes / operator state — are done):
+`.cycle/STATE.md`; Batches 1–4 — exposure / pre-auth safety, broken pages and
+dead channels, backstops / outcomes / operator state, bank-sync durability — are
+done):
 - The repo is PUBLIC (operator: make it private and delete old Actions logs —
   they printed balances and net worth before Batch 1).
 - OPERATOR: Database Backup has never produced a backup (its secrets were never
@@ -4075,9 +4142,10 @@ dead channels, backstops / outcomes / operator state — are done):
   job-radar workflows still exit silently on a curl timeout (daily-sync has
   `CHECK_STATUS`); a self-healing reconcile that throws retries hourly (it is
   recorded now). Batch 3 follow-ons.
-- A passphrase mismatch on ANY token row makes `pgp_sym_decrypt` raise, failing
-  every Teller/Plaid sync (the per-row `decryption_failed` branches never run;
-  F17, Batch 4). Plaid "re-link to fix re-auth" creates a NEW item (F18).
+- Plaid re-auth still needs unlink + link (no Link update mode — G3); the
+  duplicate-Item guard (F18) is the stop-gap, so adding a new account at an
+  already-connected login also needs unlink + link. The investments-only
+  `POST /api/plaid/exchange` has no duplicate guard yet. Batch 4 follow-ons.
 - Per-sistant `POST /api/ai/review-summary` answers 500 (callAI throws →
   serverError) instead of 501 when `ANTHROPIC_API_KEY` is unset, and the Review
   page fires it on every load (found by `e2e/pages.spec.js`, tolerated in its
@@ -4300,7 +4368,7 @@ INV-18 | Scheduler invokes route logic via in-process helpers, never HTTP self-f
 INV-19 | Named helper exports attached AFTER module.exports = router | Subsystem: Platform, Shell & Auth
 INV-20 | Shell requireAuth honors x-api-key; embedded sub-apps skip own check | Subsystem: Platform, Shell & Auth | Verify: tests/audit-regressions.test.js
 INV-21 | Shell safeReturnTo allows only same-origin absolute paths | Subsystem: Platform, Shell & Auth
-INV-22 | Tokens + webhook secret encrypted at rest; mismatch surfaces as decryption_failed | Subsystem: Platform, Shell & Auth
+INV-22 | Tokens + webhook secret encrypted at rest; mismatch surfaces as decryption_failed (sync token reads use perfin_try_decrypt, never the raising pgp_sym_decrypt — one stale row never fails the query) | Subsystem: Platform, Shell & Auth
 INV-23 | Service worker never caches /api/* | Subsystem: Web UI
 INV-24 | sheets-sync.syncAll isolates each tab (per-tab try/catch + errors[]) AND every syncAll caller records the outcome via recordSheetsSyncResult (last_sheets_sync_result; one notification per change in the failing-tab set) — errors[] is never ignored | Subsystem: Sheets & External Export | Verify: tests/scan-sept-batch10.test.js (SXE-1 block)
 INV-25 | Embedded sub-apps detect req.app.get("embedded") and skip their own auth; cross-app calls use the wired pool (perfinPool/persistentPool), never HTTP self-fetch | Subsystem: Per-sistant Backend / Platform, Shell & Auth
@@ -4366,6 +4434,8 @@ INV-95 | Source guards (un-nonced style, root-relative navigation, undefined CSS
 INV-96 | Every Per-sistant routes/*.js factory destructures only keys present in server.js's `const deps = { pool, config, helpers, views }` — a helper is read off `helpers`, never expected as its own dep (calendar.js read `advanceRecurrence` off deps, got undefined, and 500'd) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/batch15-followons.test.js (FO-1 guard) + tests/contract (persistentApp builds routers with the real deps)
 INV-103 | No GitHub Actions workflow prints an HTTP response body (the repo's logs are public while it is): steps print only allowlisted counts via the job's SUMMARY_JS snippet (numbers/booleans, array counts, ":str" strings), never the net-worth breakdown or merchant/account names; csv-import refuses to run while the repo is public | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch1.test.js (F2 block)
 INV-105 | Every scheduled job in teller/startup.js that ran its body records its outcome via jobHealth.result({ok, error}) (job_runs.last_status / last_error); GET /api/data-health flushes in-memory ticks + outcomes before reading and raises a failed job as an issue; every ticked job is in JOB_INTERVALS_MS | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch3.test.js (F8 block)
+INV-107 | A Plaid link (exchange-transactions / hosted-link-complete) that duplicates a connected Item is refused before anything is stored: the new Item is released at Plaid and the route answers 409 — a second Item never doubles transactions | Subsystem: Bank Sync & Ingestion | Verify: tests/contract/bank-durability.contract.test.js (F18)
+INV-108 | The CSV workflow deletes only files the CLI imported (CSV_IMPORTED_LIST); the CLI exits non-zero on any failed file | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-oct-batch4.test.js (F19 block)
 INV-106 | No server-side file gains a bare catch (`catch {}`, `.catch(() => {})`, `.catch(() => null)`) beyond its KNOWN_GAPS count; the list only shrinks (a stale count fails too) | Subsystem: Test Coverage Quality / Silent Degradation | Verify: tests/scan-oct-batch3.test.js (empty-catch scan)
 INV-104 | Every secret comparison (shell PIN, CALENDAR_FEED_TOKEN, API_KEY, standalone SESSION_PIN/PASSWORD) is a fixed-length SHA-256 digest compare (auth.safeEqual / isValidApiKey) — never timingSafeEqual over raw buffers whose byte lengths can differ — and the shell logs unhandled rejections instead of exiting | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch1.test.js (F1 / F6 blocks)
 INV-97 | No Per-sistant client template-literal module (a pages/ or views/ file that exports a string) contains a single-escaped regex class or delimiter (\b \d \s \w \/ \. …) — the template consumes the backslash, so the regex silently changes meaning in the browser; double-escape or use string methods | Subsystem: Per-sistant Web UI | Verify: apps/per-sistant/tests/batch15-followons.test.js (FO-2 guard)

@@ -39,8 +39,16 @@ implement and reflect sessions only set Phase.)
     CSV-rolled balance is stamped as of its newest row.
   - **Follow-ons:** G3; no duplicate guard on the investments-only exchange; setCreditLimit NaN →
     null in the UI; Plaid upsertTxn "{a,b}" literal (known); data-health decrypt probe.
-  - **Where I left off:** Batch 4 committed and pushed (no PR). NEXT: /sync-docs for Batch 4,
-    then Batch 5.
+  - **Where I left off:** Batch 4 committed and pushed (no PR). /sync-docs DONE (Batch 4):
+    CLAUDE.md — perfin_try_decrypt (Operator state 2, INV-22, data-health + sync-transactions
+    notes), the duplicate-Item 409 on exchange-transactions / hosted-link-complete, GET
+    /api/items 'plaid_investment' + DELETE /api/plaid/investment-items/:id, holdings keep a user
+    removal, flows_synced_at coverage, the Plaid sync/reconcile lock, liabilities skips + `??`,
+    balance PATCH validation, CSV CLI exit/manifest + workflow removal rule + roll-forward rules,
+    snapshot dates, Teller text[] category, Known Issues (F17/F18 resolved → G3 limitation),
+    new INV-107 (duplicate-Item guard) + INV-108 (CSV workflow removes only imported files),
+    counts 1558 / 71 (Perfin 1102), contract 57; README counts + Batch 4 summary. Subsystem
+    paths verified. npm test 1558/1558. NEXT: Batch 5.
 
 - **Previous:** **Cycle 7 — Oct 2026 broad scan, Batch 3 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-20). Backstops, outcomes, operator state (policy responses).
