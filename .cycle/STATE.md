@@ -37,8 +37,14 @@ implement and reflect sessions only set Phase.)
   - **Follow-ons:** capitalised "Cancel X" not captured; Ask tool results' DATE serialization;
     other usage rows record the configured model.
   - **Block:** `.cycle/blocks/7-batch8-broad-implement.md`.
-  - **Where I left off:** Batch 8 committed and pushed (no PR). NEXT: /sync-docs for Batch 8,
-    then Batch 9 (F75, F76, F77, F78, F79, F80).
+  - **Where I left off:** Batch 8 committed and pushed (no PR). /sync-docs DONE (Batch 8):
+    CLAUDE.md — ask.js entry (F64/F65/F66), audit period window + named months + bounded
+    entities (F61/F67/F68), APP_TIMEZONE spend month (cost tracking, APP_TIMEZONE list,
+    INV-14), suggest/accept (F70 + endpoint), goal prompt + ISO dates (F62/F71, INV-11),
+    weekly digest text + dashboard link + RENDER_EXTERNAL_URL (F72), INV-55 update, new
+    INV-113, Known Issues (Batch 8 follow-ons), counts 1608 / 75 (Perfin 1152) + contract
+    82; README counts + Batch 8 summary. No new source paths or operator state. NEXT: Batch 9
+    (F75, F76, F77, F78, F79, F80).
 
 - **Previous:** **Cycle 7 — Oct 2026 broad scan, Batch 7 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-20). Categorization rules + income cadence.

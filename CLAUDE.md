@@ -294,7 +294,14 @@ teller/
                            throw on a LATER tool round still records the tokens
                            already consumed instead of letting the spend escape
                            the cap — parity with rebuild (AIA2) / categorize
-                           (M2) (F1). Dashboard "Ask Perfin" widget (key: ask).
+                           (M2) (F1); `charged` is set only after the row is
+                           written, so a failed write is retried there
+                           (cycle-7 F64). The last round is sent
+                           tool_choice "none" so it answers in text (F65);
+                           the system prompt's "today" is the APP_TIMEZONE
+                           date and the usage row records the model that
+                           served the call (`msg.model`, F66). Dashboard
+                           "Ask Perfin" widget (key: ask).
     whats-new.js         — GET /api/whats-new, POST /api/whats-new/seen
                            ("since you last looked" dashboard widget feed —
                            new transactions, balance deltas, new subscriptions,
@@ -564,9 +571,17 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1591 tests as of latest); use
+  Perfin and Per-sistant test files (1608 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1591 tests across 74 test files (incl.
+  Current count: 1608 tests across 75 test files (incl.
+  `tests/scan-oct-batch8.test.js` — the Oct 2026 (cycle 7) Batch 8 AI-trust pins that
+  need no database: named other months + the sentence/clause period window + k/M
+  amounts (F61/F68), bounded entity capture (F67), Ask's last round without tools /
+  charge after the write / APP_TIMEZONE date + served model and the APP_TIMEZONE
+  spend month (F64/F65/F66), the suggest category enum + Accept de-dup (F70), ISO
+  prompt dates (F71), the goal prompt's `deriveGoalProgress` (F62) and the weekly
+  digest text + dashboard link (F72) — the database-backed half lives in
+  `tests/contract/ai-trust.contract.test.js`;
   `tests/scan-oct-batch7.test.js` — the Oct 2026 (cycle 7) Batch 7 categorization /
   income-cadence pins that need no database: the circular semimonthly clustering
   (F52), `RULE_ORDER_SQL` + `deactivateSupersededRules` + times_applied not bumping
@@ -689,11 +704,15 @@ shell/
   Undismiss, and the F57 400s + literal search), categorize-rules (cycle-7 Batch 7:
   short rules refused / skipped, a specific rule beating an older busy one, a
   re-pointed merchant deactivating its old rule, a category set mid-run surviving
-  the AI write, an unanswered row not re-sent) and knowledge (syncVault through a
+  the AI write, an unanswered row not re-sent), ai-trust (cycle-7 Batch 8: the goal
+  prompt on funding-derived progress with ISO dates, the audit on real spending —
+  a named other month, an earlier sentence's period word, "$1.2k", a hallucinated
+  merchant next to a known one — the AI spend month and Accept with a repeated
+  category) and knowledge (syncVault through a
   fake GitHub API via its `fetchImpl`, syncNotes, keyword search never returning
   secret text, secret-lookup, facts current vs `all=1` + verify, /api/rag/query
   without AI, an incremental compare that removes a deleted file) plus insight
-  feedback set / change / clear (the F60 `$1::text` cast). 78 tests, run
+  feedback set / change / clear (the F60 `$1::text` cast). 82 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -1509,7 +1528,7 @@ shell/
   `tool_choice` auto — the 5.5 Opus/Sonnet reject a forced one) at low effort.
   Shares the `INSIGHTS_MONTHLY_BUDGET_CENTS` cap with `/api/insights` — returns 429
   when the monthly AI budget is exhausted (rules still apply for free).
-- **AI budget suggestions**: Claude suggests budgets based on the last 3 COMPLETE months of spending via tool_use (the partial current month is excluded — FAN-8). Shares the monthly AI cap: 429 past it, and an `entry_type='suggest'` usage row is written right after the call, before tool validation (AIN-10 — it used to be uncapped and uncharged).
+- **AI budget suggestions**: Claude suggests budgets based on the last 3 COMPLETE months of spending via tool_use (the partial current month is excluded — FAN-8). The tool's `category` is an enum of the categories sent and replies are filtered to them, once each; Accept keeps one row per (trimmed) category, the last entry winning — a repeated category used to 500 the whole accept ("ON CONFLICT DO UPDATE cannot affect row a second time", cycle-7 F70). Shares the monthly AI cap: 429 past it, and an `entry_type='suggest'` usage row is written right after the call, before tool validation (AIN-10 — it used to be uncapped and uncharged).
 - **AI Insights** (12 toggleable modules, auto-triggered based on cadence setting):
   - Utility rate comparison (vs state/national averages, requires ZIP)
   - Spending benchmarks (vs BLS Consumer Expenditure Survey)
@@ -1566,7 +1585,11 @@ shell/
     independent of AI success (AI-8): the rows are a deterministic keyword-matched
     view of real YTD transactions (not model output), so they accumulate even on
     a run that later hits the token cap or errors.
-  - Goal tracking (with real-world economic context)
+  - Goal tracking (with real-world economic context) — a funding-linked goal is
+    shown at balance − baseline via the shared `deriveGoalProgress` (goals.js;
+    cycle-7 F62 — the prompt read the stale stored `current_amount`). Dates in the
+    prompt (goal target, card due date, anomaly date, credit-score date) are
+    written `YYYY-MM-DD` via `isoDate` (F71 — not a JS Date string)
   - Recurring transfers (Zelle, bill payments, savings, investment patterns) —
     honors its Settings toggle (AIN-11; it used to run regardless)
 - **Partial current month (AIN-4)**: the prompt labels the month to date
@@ -1596,7 +1619,7 @@ shell/
   fails the run before the model call (F73) instead of running on "sonnet" with an
   empty memory and overwriting the stored summary. A manual `POST /api/insights`
   is never held back by the back-off.
-- **Cost tracking**: Granular token-level pricing — `input_tokens` from Anthropic's API (already excludes cache tokens) is multiplied by the input rate; `cache_read_input_tokens` and `cache_creation_input_tokens` are billed separately at their own rates (thinking tokens arrive inside `output_tokens`). Rates are keyed by MODEL ID (`MODEL_RATES_BY_ID` / `modelRates` in `data/reference-data.js`, AIN-9): Haiku 5.5 $0.10/$0.50 per MTok (cache read $0.01, write $0.125; a prompt over 100K tokens uses the $0.50/$2.50 card), Sonnet 5.5 $2/$10 (read $0.20), Opus 5.5 $4/$20 (read $0.20); the previous models (Haiku 4.5 $1/$5, Sonnet 4.6 $3/$15, Opus 4.6 $5/$25, older IDs) keep their own rates because usage rows are re-priced at READ time from their stored tokens + `model_used`. This restores accurate `INSIGHTS_MONTHLY_BUDGET_CENTS` enforcement when prompt caching is active. The monthly budget is shared between `/api/insights`, `/api/categorize`, `/api/insights/rebuild`, `/api/ask`, `/api/housing/scan-bill` and `/api/budgets/suggest` — all check the same cap before calling Claude, via ONE spend reader (`monthAiSpendCents()` in routes/insights.js, AIN-10 — it used to be copy-pasted in six places), AND each writes a `financial_insights` usage row after its AI call (`entry_type='categorize'` / `'rebuild'` / `'ask'` / `'scan'` for the housing bill-OCR / `'suggest'` / `'insight_empty'` for an insight run that produced no text /
+- **Cost tracking**: Granular token-level pricing — `input_tokens` from Anthropic's API (already excludes cache tokens) is multiplied by the input rate; `cache_read_input_tokens` and `cache_creation_input_tokens` are billed separately at their own rates (thinking tokens arrive inside `output_tokens`). Rates are keyed by MODEL ID (`MODEL_RATES_BY_ID` / `modelRates` in `data/reference-data.js`, AIN-9): Haiku 5.5 $0.10/$0.50 per MTok (cache read $0.01, write $0.125; a prompt over 100K tokens uses the $0.50/$2.50 card), Sonnet 5.5 $2/$10 (read $0.20), Opus 5.5 $4/$20 (read $0.20); the previous models (Haiku 4.5 $1/$5, Sonnet 4.6 $3/$15, Opus 4.6 $5/$25, older IDs) keep their own rates because usage rows are re-priced at READ time from their stored tokens + `model_used`. This restores accurate `INSIGHTS_MONTHLY_BUDGET_CENTS` enforcement when prompt caching is active. The monthly budget is shared between `/api/insights`, `/api/categorize`, `/api/insights/rebuild`, `/api/ask`, `/api/housing/scan-bill` and `/api/budgets/suggest` — all check the same cap before calling Claude, via ONE spend reader (`monthAiSpendCents()` in routes/insights.js, AIN-10 — it used to be copy-pasted in six places; it counts from the APP_TIMEZONE month start, cycle-7 F66 — it was UTC's), AND each writes a `financial_insights` usage row after its AI call (`entry_type='categorize'` / `'rebuild'` / `'ask'` / `'scan'` for the housing bill-OCR / `'suggest'` / `'insight_empty'` for an insight run that produced no text /
 `'insight_unsaved'` for an insight whose own row failed to write — cycle-7 F63) so its spend counts toward the cap (not just the read side). `/api/insights/rebuild` records that usage row IMMEDIATELY after the Claude call — before its tool-block validation early-returns and the summary UPDATE — so a rebuild that truncated or failed validation (which 500s) still charges the cap for the spend it already incurred (AIA2); `/api/categorize` likewise stops its AI loop if a usage-row write fails rather than spending uncapped (M2). Display queries that surface "AI Insights" filter `entry_type='insight'` to keep categorize/rebuild tracking rows out of the user-facing feed. The cap is checked-then-charged; for the insight path the insight row IS the usage row (if that INSERT fails, an `'insight_unsaved'` usage row still charges the call and the run returns 500 — F63), and the only gap (two concurrent generate calls both passing the pre-check) is accepted for a single-operator app rather than guarded with a provisional reservation (AI-11). `/api/insights/status` rounds the accumulated cost once and derives `budget_remaining_cents` from it so estimated + remaining == budget (AI-10).
 - **Insight inputs are split-adjusted**: AI insights see the same `spending_split_pct`-adjusted monthly spend totals and the same keyword-filtered income that the dashboard and `/api/savings-rate` show, via `services/financial-queries.js`.
 - **Structured running summary**: AI long-term memory is structured JSON, not plain text. `POST /api/insights` uses Anthropic tool_use (the `generate_financial_insight` tool — `strict: true` with `additionalProperties: false` on every object, requested with `tool_choice` auto via `createToolCall`) to return BOTH the user-facing `insights_text` AND a typed `summary` object with four arrays: `trends`, `completed_goals`, `pending_actions`, `alerts`. The summary is saved to `user_settings.insights_running_summary_json` (JSONB); the legacy `insights_running_summary` TEXT column gets a human-readable rendering for backward-compat callers. `sanitizeStructuredSummary` (exported) enforces shape/length bounds (max items per array, string lengths, enum values) AND returns null unless all four keys are ARRAYS in the raw input, so a pathological, empty (`summary: {}`) or partial tool response can't wipe long-term memory (AIN-8). The response includes `summary_status` — `"updated"` (normal), `"preserved_due_to_truncation"` (`stop_reason` was `max_tokens` — with or without a tool block, since a cut-off tool input may be partially parsed), `"preserved_no_tool_block"` (no tool call even after the re-ask, or a refusal), or `"preserved_validation_failed"` (sanitizer rejected the shape) — so callers can surface when long-term memory didn't advance. A run with NO insight text is charged as an `'insight_empty'` usage row but not stored as an insight, audited or emailed; it returns 502. `/api/insights/rebuild` returns 500 without writing on a `max_tokens` stop (after charging the cap). `GET /api/insights/status` returns the full `running_summary` object plus a `running_summary_counts` block (`{trends, completed_goals, pending_actions, alerts}`) so dashboards can show "tracking 3 trends · 2 goals · 5 actions · 1 alert" without a second fetch.
@@ -1629,6 +1652,15 @@ shell/
   budget limits used to be compared with the category / subscription TOTAL and flagged CRITICAL on
   correct insights. The subscription TOTAL is checked only when the clause names subscriptions AND
   phrases the figure as a total (`SUB_TOTAL_RE`: total / all / combined / "N subscriptions").
+  **Period window (cycle-7 F68)**: `CROSS_PERIOD_RE` / `THIS_MONTH_RE` read the claim's own
+  sentence up to the figure plus the rest of its clause (`claimPeriodWindow`) — the old ±80/40
+  characters reached into neighbouring sentences ("Your annual subscriptions cost $1,200. Dining
+  hit $450." skipped the $450) — and `$1.2k` / `$1.5M` are scaled (they read as $1).
+  **Named months (F61)**: a figure about a month that isn't this one — named before it in its
+  sentence ("In September, Dining hit $450", "2026-09") or attached right after it ("$210 in
+  August") — is cross-period and skipped (`claimNamesOtherMonth`; case-sensitive names, so the
+  verb "may" doesn't count); a month named later in the clause belongs to another figure.
+  Trade-off: "September was quiet while Dining hit $450" without "this month" is skipped.
   **Savings rate (AIN-3)**: checked against COMPLETE months — the closer of the last complete month
   and the complete-month average; only an explicit "this month" claim uses the month to date.
   (2) entity existence — merchant/goal/subscription names verified against DB via
@@ -1636,7 +1668,9 @@ shell/
   every claimed name and let hallucinations pass (AI-4). Category names are part of the known set;
   months, weekdays and generic finance nouns (`isGenericName` — "Spending trend", "Emergency fund",
   "March was") are not entity claims, and a "- **Heading**:" bullet is captured only when a `$`
-  amount follows (AIN-2); (3) trend direction — only **total/overall**
+  amount follows (AIN-2). A name after at/from/to/for/cancel is a run of Capitalized words (or
+  "&") and "A and|or|vs B" is split into two claims, so "Fakemart and Amazon" no longer passes
+  because it contains a known name (cycle-7 F67); (3) trend direction — only **total/overall**
   spending claims are checked, against the last two COMPLETE months (AIN-3 — the month to date
   always read "down"); category-specific claims are skipped rather
   than mis-flagged against the total baseline (AI-1); (4) consistency — detects self-contradictions
@@ -1659,7 +1693,9 @@ shell/
   `POST /api/insights` run — AIN-16; a run that produced no insight text sends nothing), Perfin sends
   an `insights_generated` webhook to Per-sistant with `{ subject, html_body, plain_text }`.
   HTML email is pre-rendered in Perfin with app-matching dark theme (gold/amber accents,
-  Arc Reactor branding). Includes audit findings section if critical issues detected.
+  Arc Reactor branding). Its "Open Dashboard" link is the real dashboard URL
+  (`perfinDashboardUrl()` in routes/persistent.js: `RENDER_EXTERNAL_URL` + `/perfin` under the
+  shell) and is left out when that address isn't known (cycle-7 F72 — it was `href="#"`). Includes audit findings section if critical issues detected.
   Per-sistant receives the webhook and forwards to its email service. If
   `persistent_webhook_secret_enc` is unset, `sendPerSistantWebhook` hard-refuses
   to dispatch (returns `{ sent: false, reason: "missing_secret" }`) — the
@@ -1688,7 +1724,8 @@ shell/
   `runWeeklyDigest` itself gates with a 6-day window from
   `last_weekly_digest_at` so the daily-aligned check is idempotent, and
   skips (`empty_summary`) when all four summary arrays are empty (AIN-16).
-  Alerts are coloured by their own critical/warning/info map (AIN-14).
+  Alerts are coloured by their own critical/warning/info map (AIN-14). The
+  plain-text version lists Recently Completed goals like the HTML one (F72).
   Requires Per-sistant webhook configured (same path as
   `insights_generated`); without it `sendPerSistantWebhook` short-circuits
   and the digest is a no-op.
@@ -2293,7 +2330,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1591 tests passing across 74 test files (Perfin 1135 + Per-sistant 456), plus the real-Postgres route contract suite (78 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
+- 1608 tests passing across 75 test files (Perfin 1152 + Per-sistant 456), plus the real-Postgres route contract suite (82 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -2589,7 +2626,7 @@ PATCH /api/budgets/:id     # update budget (400 on a non-finite/negative monthly
 DELETE /api/budgets/:id    # delete budget
 POST /api/budgets/suggest  # AI budget suggestions (from the last 3 COMPLETE months);
                            # 429 past the shared AI cap, charged as an entry_type='suggest' usage row
-POST /api/budgets/accept   # accept AI-suggested budget
+POST /api/budgets/accept   # accept AI-suggested budget (one row per category, last wins — F70)
 GET  /api/budgets/alerts   # spending velocity warnings (critical/warning/info)
 POST /api/budgets/snapshot # create monthly snapshot + compute rollovers (body: month=YYYY-MM, 01-12)
 GET  /api/budgets/history  # budget snapshots for trend analysis (query: months)
@@ -2885,7 +2922,7 @@ validation (SN-5).
 - `VAPID_EMAIL` — contact `mailto:` URL (default `mailto:admin@perfin.app`)
 
 ### Keep-alive (Perfin / shell)
-- `RENDER_EXTERNAL_URL` — auto-set by Render; the keep-alive self-ping uses it as the target URL when present, falling back to `http://localhost:PORT` for local runs. Operators don't set this manually.
+- `RENDER_EXTERNAL_URL` — auto-set by Render; the keep-alive self-ping uses it as the target URL when present, falling back to `http://localhost:PORT` for local runs. The insight email's "Open Dashboard" link is built from it too (no link without it — cycle-7 F72). Operators don't set this manually.
 
 ### Plaid (Perfin — investments + transactions for banks Teller doesn't cover)
 - `PLAID_CLIENT_ID`, `PLAID_SECRET_SANDBOX|DEV|PROD` — Plaid API credentials
@@ -2913,7 +2950,8 @@ validation (SN-5).
     snapshot month keys, weekly-digest weekday, daily-digest local date/hour,
     income-summary window, YoY defaults, housing reminder day / export year /
     payment date, credit-score date, goal + FIRE dates, the ICS feed's "today",
-    and the Sheets windows/timestamp/tax year/archive month. Rolling-window
+    and the Sheets windows/timestamp/tax year/archive month, plus (cycle-7 F66) the
+    AI-cap spend month (`monthAiSpendCents`) and Ask's "today". Rolling-window
     `CURRENT_DATE` lookbacks (90-day cash-flow, retention) are intentionally left
     UTC — tz-insensitive.
   - Default `UTC` (byte-identical to the prior UTC-anchored behavior); set it to
@@ -4305,10 +4343,10 @@ SX3-pinned — the Sheets Income tab.
 
 ## Known Open Issues
 **Cycle 7 (Oct 2026 broad scan) — open until their batches run** (plan in
-`.cycle/STATE.md`; Batches 1–7 — exposure / pre-auth safety, broken pages and
+`.cycle/STATE.md`; Batches 1–8 — exposure / pre-auth safety, broken pages and
 dead channels, backstops / outcomes / operator state, bank-sync durability, money
 accuracy and classification, delete integrity and feeds, categorization rules and
-income cadence — are done):
+income cadence, AI trust — are done):
 - The repo is PUBLIC (operator: make it private and delete old Actions logs —
   they printed balances and net worth before Batch 1).
 - OPERATOR: Database Backup has never produced a backup (its secrets were never
@@ -4340,6 +4378,10 @@ income cadence — are done):
   rule is silently not created); `ai_skipped_at` can't be cleared early (e.g.
   after switching the AI model); the rules list doesn't flag a stored rule
   skipped for being too short. Batch 7 follow-ons.
+- The audit's entity check doesn't capture a capitalised "Cancel Netflix" at a
+  sentence start; Ask's tool results still serialize DATE columns as full JSON
+  timestamps; the categorize / suggest / scan usage rows record the configured
+  model rather than the served one. Batch 8 follow-ons.
 - Per-sistant `POST /api/ai/review-summary` answers 500 (callAI throws →
   serverError) instead of 501 when `ANTHROPIC_API_KEY` is unset, and the Review
   page fires it on every load (found by `e2e/pages.spec.js`, tolerated in its
@@ -4551,10 +4593,10 @@ INV-07 | Every spending aggregation applies SPLIT_AMOUNT | Subsystem: Financial 
 INV-08 | Reimbursed transactions excluded from all spending aggregations | Subsystem: Financial Analytics
 INV-09 | transaction_splits replace parent in per-category totals; sum matches parent ±$0.01 | Subsystem: Financial Analytics
 INV-10 | Keyword filters use word-boundary regex, never LIKE '%kw%' (a user-supplied LIKE pattern — rules, Ask merchant search — escapes \ % _) | Subsystem: Financial Analytics | Verify: tests/audit-regressions.test.js
-INV-11 | Goal current_amount derived (balance − baseline) when funding-linked | Subsystem: Financial Analytics
+INV-11 | Goal current_amount derived (balance − baseline) when funding-linked — including in the AI goal-tracking prompt (deriveGoalProgress, F62) | Subsystem: Financial Analytics
 INV-12 | Categorization writes user_category, never category | Subsystem: Detection & Categorization
 INV-13 | Categorization rules applied before AI; only unmatched rows sent to Claude | Subsystem: Detection & Categorization
-INV-14 | INSIGHTS_MONTHLY_BUDGET_CENTS enforced across insight+categorize+rebuild+ask+scan+suggest, every check reading the ONE monthAiSpendCents() | Subsystem: AI Insights & Audit | Verify: tests/ai-cap-charge.test.js + tests/scan-sept-batch7.test.js (AIN-10)
+INV-14 | INSIGHTS_MONTHLY_BUDGET_CENTS enforced across insight+categorize+rebuild+ask+scan+suggest, every check reading the ONE monthAiSpendCents() (APP_TIMEZONE month, F66) | Subsystem: AI Insights & Audit | Verify: tests/ai-cap-charge.test.js + tests/scan-sept-batch7.test.js (AIN-10)
 INV-15 | Insight cost uses granular token pricing (input + cache_read + cache_creation), keyed by MODEL ID (modelRates — previous models keep their own rates; Haiku 5.5 long-prompt card) | Subsystem: AI Insights & Audit | Verify: tests/model-upgrade.test.js
 INV-16 | sanitizeStructuredSummary bounds the summary and requires all four arrays; failure, a max_tokens stop, or no tool call preserves the prior summary | Subsystem: AI Insights & Audit | Verify: tests/scan-sept-batch7.test.js (AIN-8)
 INV-17 | Migrations run in one transaction; failure is fatal | Subsystem: Platform, Shell & Auth
@@ -4585,7 +4627,7 @@ INV-51 | Habit streaks are computed at read time from habit_logs (a backfilled l
 INV-52 | Health consumers (notification check, AI daily briefing) call gatherHealthSummary fail-soft (.catch) — a health-tables error degrades to "no habit data", never 500s those surfaces | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/health.test.js integration pins
 INV-53 | CRITICAL scheduled jobs (transaction/balance sync + snapshot + detection; weekly reconcile; backups; knowledge reindex) have out-of-process GitHub-Actions backstops hitting x-api-key endpoints with idempotent writes, so Render free-tier sleep can't skip them | Subsystem: Platform, Shell & Auth | Verify: .github/workflows/{daily-sync,weekly-reconcile,db-backup,knowledge-reindex}.yml exist + idempotent-write invariants INV-01/05
 INV-54 | Re-sync is BEHAVIORALLY idempotent: syncAllEnrollments (Teller) + syncPlaidItemTransactions (Plaid) run twice over identical inputs add 0 on the 2nd run, no duplicate rows, watermark/cursor stable (not merely source-string-pinned) | Subsystem: Bank Sync & Ingestion | Verify: tests/sync-idempotency.test.js
-INV-55 | /api/ask charges the shared AI cap even on a mid-tool-loop failure — the usage row is written in a `finally` (idempotent `charged` flag) when tokens were consumed, so a throw on a later round doesn't let spend escape the cap (parity with rebuild AIA2 / categorize M2) | Subsystem: AI Insights & Audit | Verify: tests/ai-cap-charge.test.js
+INV-55 | /api/ask charges the shared AI cap even on a mid-tool-loop failure — the usage row is written in a `finally` (idempotent `charged` flag) when tokens were consumed, so a throw on a later round doesn't let spend escape the cap (parity with rebuild AIA2 / categorize M2); `charged` is set only after the row is written, so a failed write is retried (F64) | Subsystem: AI Insights & Audit | Verify: tests/ai-cap-charge.test.js
 INV-56 | The dashboard's inlined loanPayoff() is NUMERICALLY identical to services/projections.computeLoanPayoff across scenarios (months / total_interest ±$0.01 / insufficient flag), not merely string-equal | Subsystem: Web UI ↔ Financial Analytics (seam) | Verify: tests/loan-support.test.js (extract-and-run parity test)
 INV-57 | The critical-audit notification is deduped to ≤1 per 24h via sentRecently('audit-alert', 24), fail-open — a steady-state critical finding doesn't re-push on every 6h auto-insight tick | Subsystem: AI Insights & Audit / Notification Correctness | Verify: code read routes/insights.js audit-alert gate
 INV-58 | A kind='quantity' habit always has a non-null target_value, enforced on POST AND on PATCH against the MERGED post-update state (so switching to quantity without a target, or nulling a quantity habit's target, 400s instead of silently degrading meetsTarget) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/health.test.js (F9 PATCH tests)
@@ -4634,6 +4676,7 @@ INV-109 | NOT_TRANSFER matches bank/processor BRAND words on the cleaned merchan
 INV-110 | Income aggregates count a deposit at its account's share (INCOME_AMOUNT = −SPLIT_AMOUNT); the cash-flow forecast and bill calendar project the same live income streams (getLiveIncomeStreams) | Subsystem: Financial Analytics | Verify: tests/contract/money-classification.contract.test.js (F37/F34)
 INV-111 | A transaction the user deleted is never re-inserted by a provider sync or reconcile: the Teller and Plaid upserts skip ids in deleted_transactions (written in the same transaction as the DELETE) | Subsystem: Bank Sync & Ingestion | Verify: tests/contract/delete-feeds.contract.test.js (F20) + tests/scan-oct-batch6.test.js
 INV-112 | Categorization rules apply most-specific first (RULE_ORDER_SQL, never by times_applied); saving a rule deactivates the merchant's active rules for other categories; a blank or <3-character contains/starts_with pattern is never stored or applied; the AI write only fills a still-uncategorized row; a row the AI left unanswered is not re-sent for 30 days (ai_skipped_at) | Subsystem: Detection & Categorization | Verify: tests/contract/categorize-rules.contract.test.js + tests/scan-oct-batch7.test.js
+INV-113 | The tier-1 audit judges a dollar claim by its own sentence/clause (claimPeriodWindow) and never compares a claim about another named month (claimNamesOtherMonth) or another period with this month's actuals; tier-2 captures bounded Capitalized names, split on and/or/vs | Subsystem: AI Insights & Audit | Verify: tests/scan-oct-batch8.test.js + tests/contract/ai-trust.contract.test.js
 INV-106 | No server-side file gains a bare catch (`catch {}`, `.catch(() => {})`, `.catch(() => null)`) beyond its KNOWN_GAPS count; the list only shrinks (a stale count fails too) | Subsystem: Test Coverage Quality / Silent Degradation | Verify: tests/scan-oct-batch3.test.js (empty-catch scan)
 INV-104 | Every secret comparison (shell PIN, CALENDAR_FEED_TOKEN, API_KEY, standalone SESSION_PIN/PASSWORD) is a fixed-length SHA-256 digest compare (auth.safeEqual / isValidApiKey) — never timingSafeEqual over raw buffers whose byte lengths can differ — and the shell logs unhandled rejections instead of exiting | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch1.test.js (F1 / F6 blocks)
 INV-97 | No Per-sistant client template-literal module (a pages/ or views/ file that exports a string) contains a single-escaped regex class or delimiter (\b \d \s \w \/ \. …) — the template consumes the backslash, so the regex silently changes meaning in the browser; double-escape or use string methods | Subsystem: Per-sistant Web UI | Verify: apps/per-sistant/tests/batch15-followons.test.js (FO-2 guard)
