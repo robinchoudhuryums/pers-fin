@@ -38,8 +38,16 @@ implement and reflect sessions only set Phase.)
   - **Follow-ons:** Per-sistant housingDue has the same month-boundary gap (F43); no "+ add
     item" UI on the Rent page; Code.gs NOT_TRANSFER still the old list.
   - **Block:** `.cycle/blocks/7-batch5-broad-implement.md`.
-  - **Where I left off:** Batch 5 committed and pushed (no PR). NEXT: /sync-docs for Batch 5,
-    then Batch 6.
+  - **Where I left off:** Batch 5 committed and pushed (no PR). /sync-docs DONE (Batch 5):
+    CLAUDE.md — NOT_TRANSFER phrase vs brand lists + exemptions + Transfer/Investment
+    exclusion, INCOME_AMOUNT + reimbursement words, getLiveIncomeStreams (calendar + cash
+    flow), detectors' raw-description rule, Plaid uncategorized rule, 0% split, context-export
+    unknown limit, payee_obligation_skips (table, generation, DELETE endpoint, Remove button,
+    reset list), next-month rent reminder, snapshot in-effect rule, budget push via
+    getBudgetStatus, Spending Summary windows, Sheets Watchlist, Known Issues (Batch 5
+    follow-ons), INV-72 extended, new INV-109 / INV-110, counts 1573 / 72 (Perfin 1117) +
+    contract 68; README counts + Batch 5 summary. Paths verified. npm test 1573/1573.
+    NEXT: Batch 6.
 
 - **Previous:** **Cycle 7 — Oct 2026 broad scan, Batch 4 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-20). Bank-sync durability.

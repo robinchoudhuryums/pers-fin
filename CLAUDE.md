@@ -536,7 +536,8 @@ shell/
   the next sync re-pulls full clean history. Dry-run by default (prints per-table
   row counts); only mutates with `--yes` / `CONFIRM_RESET=YES`; runs in one
   transaction. Three exported lists: `WIPE_TABLES` (incl. `investment_flows`,
-  `payee_obligations`, `payee_payments`, `settlements` — PSC-6: missing them left
+  `payee_obligations`, `payee_payments`, `settlements`, `payee_obligation_skips`
+  — PSC-6: missing them left
   flows pointing at re-used `investment_accounts` ids after `RESTART IDENTITY`),
   `KEEP_TABLES`, and `UNTOUCHED_TABLES` (`schema_migrations`, `job_runs`,
   `benchmark_prices`). `tests/scan-sept-batch9.test.js` asserts every table the
@@ -556,9 +557,18 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1558 tests as of latest); use
+  Perfin and Per-sistant test files (1573 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1558 tests across 71 test files (incl.
+  Current count: 1573 tests across 72 test files (incl.
+  `tests/scan-oct-batch5.test.js` — the Oct 2026 (cycle 7) Batch 5 money-accuracy
+  pins that need no database: the budget push on getBudgetStatus with unrounded
+  thresholds (F40), the context export's unknown card limit (F36),
+  `nextRentInLeadWindow` (F43), the detectors' raw-description helpers (F49),
+  `mapCategoryFor` + the uncategorized predicates for Plaid rows (F50), the
+  dashboard's 0% split (F31), the NOT_TRANSFER brand/exemption shape (F32/F51),
+  the Sheets `INCOME_AMOUNT` mirror (F37) and the Rent page's Remove button +
+  reset-fresh classification (F33) — the database-backed half lives in
+  `tests/contract/money-classification.contract.test.js`;
   `tests/scan-oct-batch4.test.js` — the Oct 2026 (cycle 7) Batch 4 bank-sync
   durability pins that need no database: every token read through
   `perfin_try_decrypt` (F17), the CSV CLI's non-zero exit + imported-file
@@ -646,11 +656,17 @@ shell/
   sync, the duplicate-Item 409, the CSV loan roll-forward + label-over-institution
   match, a removed investment account staying removed, the investments-only
   unlink, flow coverage via `flows_synced_at`, a 0% APR, NaN balance rejection
-  and a comma in a Teller category) and knowledge (syncVault through a
+  and a comma in a Teller category), money-classification (cycle-7 Batch 5:
+  NOT_TRANSFER brand words / exemptions / Transfer-Investment categories,
+  joint-account income + reimbursement credits, a 0% Settle Up split, the
+  categorize queue for Plaid legacy categories, a removed housing placeholder
+  staying removed, next month's rent reminder, whole-month Spending Summary
+  windows, budget snapshots outside a budget's life, Zelle rent as a peer
+  transfer, semimonthly cash-flow income, and the Sheets Watchlist) and knowledge (syncVault through a
   fake GitHub API via its `fetchImpl`, syncNotes, keyword search never returning
   secret text, secret-lookup, facts current vs `all=1` + verify, /api/rag/query
   without AI, an incremental compare that removes a deleted file) plus insight
-  feedback set / change / clear (the F60 `$1::text` cast). 57 tests, run
+  feedback set / change / clear (the F60 `$1::text` cast). 68 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -973,6 +989,12 @@ shell/
   (`cancelled_at IS NOT NULL`) or dismissed it (`is_dismissed = true`), detection will not
   re-activate it even if the merchant charges again.
   Matching rules (Sept 2026 Batch 4):
+  - **Raw description (cycle-7 F49)**: a row whose raw description (`name`, read
+    only when the user hasn't renamed the row) carries a payment/transfer phrase
+    (the interest / fees / debt_payments / transfers exclusion lists —
+    `isExcludedDescription`; the retail list stays merchant-only) is dropped before
+    grouping, so monthly "ZELLE TO JOHN SMITH" rent (counterparty "John Smith") is
+    not a subscription.
   - **Recency (DC-2)**: a pattern whose last charge is past the stale window
     (`isStale` — the same `max(120d, 1.5×cadence)` the stale sweep uses) is skipped,
     so the upsert can't re-activate a row the sweep just retired. Before, 36 months
@@ -997,8 +1019,10 @@ shell/
 - **Utility separation**: Utilities tracked separately from optional subscriptions
 - **Shared accounts**: Joint/shared card support with two layers of split:
   account-level (`is_shared`, `spending_split_pct` on `linked_accounts`,
-  applied in all spending queries via SQL JOIN — default 50/50 on a shared
-  card) AND per-transaction override (`transactions.personal_for`, enum
+  applied in all spending queries via SQL JOIN — NULL means 100%; the dashboard
+  prompt suggests 50 when marking a card shared, and 0 is a real share — all the
+  partner's, kept as 0 by Settle Up and the account card since cycle-7 F31) AND
+  per-transaction override (`transactions.personal_for`, enum
   `'self' | 'partner' | NULL`, only honored when the account is_shared).
   `'self'` = user owes 100%; `'partner'` = the other cardholder owes 100%;
   `NULL` = use the account-level split. Powers the Shared Card Settlement
@@ -1060,10 +1084,16 @@ shell/
   (never earlier than `start_month` — FAN-3: the cap used to count forward from
   the pinned start_month, so generation silently stopped two years after setup),
   idempotently (a period that already has a rent row under any payee, or a
-  same-label utility row, is skipped — FAN-4), then
+  same-label utility row, is skipped — FAN-4 — and so is one the user REMOVED:
+  deleting an auto-generated row records it in `payee_obligation_skips`, keyed
+  (period, category, label); adding the item back via `POST
+  /api/housing/obligations` clears it — cycle-7 F33. Awaiting-bill rows have a
+  **Remove** button for a bill that won't come), then
   fires two deduped reminders: **payment-due** (balance owed near the rent due
-  day) and **missing-utility-amount** (a placeholder whose bill should have
-  arrived). Recording a payment ticks the unpaid obligations being settled,
+  day — and, inside the lead window for NEXT month's due day, next month's rent
+  while its row isn't generated yet: `nextRentInLeadWindow`, tag
+  `housing-due-<next month>`, cycle-7 F43) and **missing-utility-amount** (a
+  placeholder whose bill should have arrived). Recording a payment ticks the unpaid obligations being settled,
   auto-sums the amount, and **auto-derives the memo** by collapsing consecutive
   months into ranges (`deriveMemo` → "Jan–Mar 2026 Rent, Jan 2026 Electricity");
   **Renames carry history over (FAN-4)**: the ledger is single-payee, so saving
@@ -1143,6 +1173,10 @@ shell/
   query mirrors it in SQL. The scheduled prior-month snapshot (`runBudgetSnapshot`) is
   RE-TAKEN on days 1–5 of the month (`SNAPSHOT_REFRESH_DAYS`, DO UPDATE) so month-end
   charges that post on the 1st–3rd reach the rollover (FAN-7), then create-if-missing.
+  A snapshot is written only for months a budget was in effect — not for a one-time
+  budget outside its `effective_month`, nor for a month before the budget was created
+  (APP_TIMEZONE; cycle-7 F38 — a budget made on Oct 3 used to get a September
+  snapshot that carried its whole limit into October).
   `PATCH /api/budgets/:id` 400s a non-finite/negative limit, an unknown `budget_type`
   or a malformed `effective_month` (FAN-14).
 
@@ -1252,7 +1286,8 @@ shell/
   bucket and excludes PENDING charges (FAN-12). When a utility for the month is
   still awaiting its bill, the widget shows a "Waiting on …" note linking to
   `/housing#pending` and **disables "Mark settled"** until it's entered (enter 0
-  or delete the placeholder for a bill that won't come — FAN-9). Its links
+  or Remove the placeholder for a bill that won't come — FAN-9; a removal sticks
+  since cycle-7 F33). Its links
   (Rent page, per-card "Review →" → the Activity page filtered by
   `?account_id=<account_key>&month=`) carry the basePath (WUI-3). Auto-hides when
   there are no is_shared accounts AND the housing split isn't configured.
@@ -1380,8 +1415,16 @@ shell/
   not projected) — and projected into the month at the median amount; a stream
   whose last deposit is >35 days old (>50 for monthly) is dropped. (It used to show
   ONE averaged-day event per month per exact amount, so biweekly pay read ~50% low.)
+  The query + clustering is `getLiveIncomeStreams(pool)` in
+  `services/financial-queries.js`, shared with the cash-flow forecast (F34).
 - **Cash flow forecast**: Rolling 30–180 day projection with day-of-week spending averages,
-  income detection (keyword matching, excludes transfers/payments/refunds), bill scheduling.
+  income, bill scheduling. Income = the bill calendar's live streams
+  (`getLiveIncomeStreams` → `services/cadence.js`, cycle-7 F34): per-source
+  clusters with a weekly / biweekly / semimonthly / monthly cadence, stale streams
+  dropped, renames honored, projected with `incomeEventsBetween` (it used an
+  older inline classifier with no semimonthly cadence and no staleness check);
+  `recurring_income[]` carries `{source, amount, cadence, cadence_days, last_date,
+  days_of_month?}`. Stream amounts are full deposits (cash into the account).
   Starting balance = **depository, non-investment** cash only (FAN-5 — loans and
   Teller brokerage/IRA balances used to count as spendable). Nothing is counted
   twice (DD-4): active detected-subscription merchants are excluded from the
@@ -1626,7 +1669,10 @@ shell/
   `investment_accounts` are listed (markdown section + JSON `investment_accounts`),
   credit/loan balances render as `-$X owed` (JSON rows carry `is_liability`), the
   "latest insight" is a real insight (`entry_type = 'insight'`, not a categorize /
-  rebuild usage row), and dates are ISO `YYYY-MM-DD` (SXE-9).
+  rebuild usage row), and dates are ISO `YYYY-MM-DD` (SXE-9). A card's limit
+  follows the AIN-7 rule (credit_limit, else owed + available when available is
+  known, else unknown — JSON `credit_limit` / `utilization_pct` null, markdown
+  "limit unknown"; cycle-7 F36: an unknown limit read as 100% utilized).
 - **Real-time anomaly alerts**: Push notifications for charges 3x+ above merchant average during sync
   (case-insensitive merchant grouping; separate from the 2x AI analysis threshold).
   Covers Teller AND Plaid rows: `runAnomalyCheck()` (routes/enrollments.js) runs ONCE
@@ -1879,7 +1925,11 @@ shell/
     monitor backed by the `watchlist_items` DB table. Tab shows each
     item + its last-90-day matching transactions. Items edited via
     Settings → Watchlist; the tab itself is read-only with warning-only
-    protection. Empty-state writes a guidance row.
+    protection. Empty-state writes a guidance row. A value is matched
+    literally (LIKE `\ % _` escaped, INV-10) and the "90-Day Spend (your
+    share)" column is a separate aggregate of debits, reimbursed excluded,
+    the shared-card split applied (cycle-7 F42 — it summed the raw signed
+    amounts of ≤100 listed rows).
   - **Per-month archive tabs** (new): `syncMonthArchives()` creates a
     dedicated `YYYY-MM Transactions` tab with all that month's transactions +
     totals once the month is SETTLED — 10 days after month-end
@@ -2187,7 +2237,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1558 tests passing across 71 test files (Perfin 1102 + Per-sistant 456), plus the real-Postgres route contract suite (57 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
+- 1573 tests passing across 72 test files (Perfin 1117 + Per-sistant 456), plus the real-Postgres route contract suite (68 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -2323,7 +2373,9 @@ GET  /api/housing/ledger   # balance owed + obligations + payment history (with 
 POST /api/housing/generate # generate current/missing months' obligations from config (idempotent)
 POST /api/housing/obligations # add an ad-hoc obligation (body: label, period, amount?, category?, due_day?)
 PATCH /api/housing/obligations/:id # set amount (bill arrived → unpaid), notes, due_day, label
-DELETE /api/housing/obligations/:id # remove an obligation
+DELETE /api/housing/obligations/:id # remove an obligation; an auto-generated one is
+                           # recorded in payee_obligation_skips so generation doesn't
+                           # recreate it (F33) → { ok, skipped_from_generation }
 POST /api/housing/payments # settle a batch of unpaid obligations (body: obligation_ids[],
                            # paid_date?, amount? (default=sum), memo? (default=derived)); marks paid
 DELETE /api/housing/payments/:id # undo a payment, reverting its obligations to unpaid/pending_amount
@@ -2384,10 +2436,14 @@ GET  /api/spending-summary # monthly trends, categories, top merchants (split-ad
                            # incl. the current month-to-date); avg_monthly_spend /
                            # avg_daily_spend / avg_months are over COMPLETED months
                            # only, with real month lengths (FAN-6) — the dashboard
-                           # "Avg Monthly"/"Avg Daily" cards read these.
+                           # "Avg Monthly"/"Avg Daily" cards read these. by_category
+                           # and top_merchants use the SAME whole months (cycle-7
+                           # F41 — they were a rolling UTC `CURRENT_DATE − N months`).
 GET  /api/spending-categories # per-month category breakdown (query: month=YYYY-MM;
                            # splits/reimbursed/share-adjusted via getCategorySpendingForMonth)
-GET  /api/cash-flow        # rolling cash flow projection (query: days, default 90)
+GET  /api/cash-flow        # rolling cash flow projection (query: days, default 90);
+                           # income from getLiveIncomeStreams (the bill calendar's
+                           # streams — F34)
 GET  /api/savings-rate     # income vs spending analysis (query: months, default 3)
 GET  /api/income-summary   # income trend + top sources + by_account (query: months, default 6).
                            # Window anchored on the APP_TIMEZONE month; avg_monthly_income
@@ -3049,6 +3105,10 @@ standalone-mode fallback if either app is run on its own Render service.
   status on payment delete, no DB cascade), `notes`, `auto_generated`. UNIQUE
   (payee, period, category, label) so monthly generation is idempotent.
   Balance owed = SUM(amount) WHERE status='unpaid'.
+- `payee_obligation_skips` (cycle-7 F33): `(period, category, label)` PRIMARY KEY
+  + `created_at` — an auto-generated obligation the user removed; generation skips
+  it, a hand-added obligation with the same key clears it, a utility label rename
+  renames it. In reset-fresh's WIPE_TABLES.
 - `payee_payments`: a transfer settling a batch of obligations. Columns:
   `payee`, `paid_date`, `amount`, `memo` (auto-derived from covered months when
   blank). Obligations point back via `paid_payment_id`.
@@ -3144,6 +3204,13 @@ Transfers are identified by keyword matching on merchant_name/name fields:
   occurrence floor and the matching-gap threshold gate on `>= 60` — previously
   the gap threshold was `>= 90`, so a 60-day transfer still demanded 3 occurrences
   and the 2-occurrence allowance was unreachable (F4).
+- A row is included when its merchant key OR (cycle-7 F49) its raw description
+  — read only when not renamed — matches: the description is matched against the
+  phrase-like types only (peer apps except PayPal, bill payments, internal
+  transfers; `classifyTransferDescription`), so "ZELLE TO JOHN SMITH" is a
+  `peer_transfer` while "PAYPAL *NETFLIX" and brand words (Vanguard, Schwab,
+  savings) stay merchant-only. The group's type is the merchant key's, else the
+  most common per-row type.
 - Outgoing and incoming transactions analyzed as separate streams
 - Outgoing recurring transfers integrated into cash flow forecast
 - User-dismissed transfers are preserved across detection runs: the upsert's
@@ -3389,7 +3456,7 @@ second one (which re-sent the same uncategorized rows to Claude).
   check) → syncAllPlaidHoldings → syncAllBalances → detect subscriptions →
   detect transfers → categorize → generate insights → audit → email webhook.
   Ensures AI analyzes freshest data. Auto-categorization runs as part of this pipeline.
-- **Budget alerts**: every 3 hours, NOT activity-gated (push notifications at 80% and 100%+ thresholds, aligned with the in-app `/api/budgets/alerts` `warning`/`critical` levels). Like the endpoint, the push compares against the effective limit (base + PRIOR-month rollover, via `getBudgetStatus`) and skips one-time budgets outside their `effective_month`. The in-app `info`/pace heuristic is intentionally not pushed (too noisy as a notification). **Deduped to at most one notification per category+severity per 24h** via `sentRecently(tag, 24)` (`routes/notifications.js`, backed by `notification_log`) — previously a category that stayed over budget re-logged a notification on every 3-hour tick for the rest of the month. Escalation (warn → over) still fires immediately because the two severities use distinct tags.
+- **Budget alerts**: every 3 hours, NOT activity-gated (push notifications at 80% and 100%+ thresholds, aligned with the in-app `/api/budgets/alerts` `warning`/`critical` levels). The push CALLS `getBudgetStatus` (cycle-7 F40 — it used to re-implement it), so it compares against the effective limit (base + PRIOR-month rollover) and skips one-time budgets outside their `effective_month`; thresholds use the UNROUNDED share (99.5% is a warning, not "exceeded") and the shown % is floored. The in-app `info`/pace heuristic is intentionally not pushed (too noisy as a notification). **Deduped to at most one notification per category+severity per 24h** via `sentRecently(tag, 24)` (`routes/notifications.js`, backed by `notification_log`) — previously a category that stayed over budget re-logged a notification on every 3-hour tick for the rest of the month. Escalation (warn → over) still fires immediately because the two severities use distinct tags.
 - **Budget snapshot auto-trigger**: every 6 hours, `runBudgetSnapshot()`
   (`routes/budgets.js`) snapshots the previous month (spending + rollover
   amounts) so budget rollover advances automatically. Days 1–5 of a month
@@ -3525,7 +3592,12 @@ rather than re-inline.
 
 This affects: spending-summary (monthly_trend, byCategory, topMerchants),
 savings-rate, spending-yoy, budgets, budget alerts, cash flow, AI insights
-anomaly detection + seasonal, and the Settlement widget.
+anomaly detection + seasonal, and the Settlement widget — and, since cycle-7
+F37, INCOME: `INCOME_AMOUNT = (−SPLIT_AMOUNT)` puts a deposit on a shared
+account at the account's share in `getMonthlyIncome` (savings rate, insights,
+FIRE, Ask), `/api/income-summary` and the Sheets Income tab (mirrored, pinned in
+tests/scan-oct-batch5.test.js). The cash-flow / bill-calendar income streams
+stay full deposit amounts.
 
 ## Income Detection
 Income is identified via OR'd branches built by
@@ -3547,7 +3619,9 @@ lives — in `name`). No amount thresholds. Each branch is independently gated:
 **Branch (a) — strict keyword match with negative filter.** Matches deposits
 that look like payroll/direct-dep traffic AND are NOT excluded as transfers:
 - Includes: `\y(payroll|direct dep|direct deposit|dir dep|salary|employer|deposit|ach credit)\y`
-- Excludes: `\y(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|reversal|atm|withdrawal|bill pay)\y`
+- Excludes: `\y(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|reversal|reimbursement|reimburse|reimb|expense report|atm|withdrawal|bill pay)\y`
+  (the reimbursement words since cycle-7 F37 — an "EXPENSE REIMB DIRECT DEP" credit
+  repays spending, it isn't income)
 
 **Branch (b) — user-authorized brokerage transfer pattern.** Matches the
 specific case of paychecks landing in a brokerage account and the user then
@@ -3567,18 +3641,33 @@ category counts too — covers any row the user manually overrode to 'Income' vi
 (Plaid's current taxonomy; the legacy `category` array has no top-level Income).
 Includes Plaid's dividend/interest sub-codes. A user category wins.
 
-`NOT_TRANSFER` (the spending-side negative filter) matches
-`COALESCE(user_merchant_name, CONCAT_WS(' ', merchant_name, name))` — merchant +
-raw description (DD-2), but a user rename takes precedence so renaming stays the
-escape hatch for a payment that really is spending — AND excludes Plaid
-`TRANSFER_IN` / `TRANSFER_OUT` / `LOAN_PAYMENTS` rows unless the user has
-categorized the row as something other than `Transfer` (DD-3). It is a single
-parenthesized boolean, safe after `AND` and for the insights `t.`→`t2.`
-derivation.
+`NOT_TRANSFER` (the spending-side negative filter) has two keyword lists
+(cycle-7 F32):
+- the payment/transfer PHRASES (autopay, epay, payment thank, transfer to/from,
+  zelle, venmo, cash app, bill pay, card payment, atm, withdrawal, …) are matched
+  against `COALESCE(user_merchant_name, CONCAT_WS(' ', merchant_name, name))` —
+  merchant + raw description (DD-2), a user rename taking precedence so renaming
+  stays the escape hatch for a payment that really is spending;
+- bank / processor BRAND words (interest, paypal, chase, citi, discover, amex,
+  wells fargo, capital one, …, deposit) are matched against the CLEANED merchant
+  only (`COALESCE(user_merchant_name, merchant_name, name)`), with exemptions
+  (Citi Bike / Citi Field, Chase Center / Field, "security deposit", a
+  "PAYPAL *<merchant>" purchase). Matching them on the raw description made
+  "PAYPAL *NETFLIX", Citi Bike rides and a security deposit vanish from spending.
+  Trade-off: a card payment whose description names the bank but carries no
+  payment phrase AND whose cleaned merchant isn't the bank now counts as spending
+  (Plaid rows are still caught by their PFC).
+It also excludes a row categorized `Transfer` or `Investment` (cycle-7 F51 —
+`user_category`, or the provider `category[1]` for a non-Plaid row; a Plaid row's
+legacy category is not trusted) AND Plaid `TRANSFER_IN` / `TRANSFER_OUT` /
+`LOAN_PAYMENTS` rows unless the user has categorized the row as something other
+than `Transfer` (DD-3). It is a single parenthesized boolean, safe after `AND`
+and for the insights `t.`→`t2.` derivation; scripts/sheets-sync.js mirrors it
+(SX3-pinned).
 
 Constants exported from the same module: `INCOME_PREDICATE` (full predicate),
-`incomePredicate(alias)`, `NOT_TRANSFER`, `SPLIT_AMOUNT`, `NOT_REIMBURSED`,
-`INVESTMENT_ACCOUNT_TYPES`. Used by `/api/cash-flow`, `/api/savings-rate`,
+`incomePredicate(alias)`, `INCOME_AMOUNT`, `NOT_TRANSFER`, `SPLIT_AMOUNT`,
+`NOT_REIMBURSED`, `INVESTMENT_ACCOUNT_TYPES`; helper `getLiveIncomeStreams`. Used by `/api/cash-flow`, `/api/savings-rate`,
 `/api/income-summary` (its `by_account` now agrees with `monthly_trend`), AI
 insights income module, bill-calendar income detection, and — byte-mirrored,
 SX3-pinned — the Sheets Income tab.
@@ -3754,7 +3843,12 @@ SX3-pinned — the Sheets Income tab.
   `getCategorySpendingThisMonth(pool)` rather than re-implementing the
   CTE — that helper already handles splits + reimbursed + spending-split.
 - **Categorization rules first, then AI — free paths sweep the whole backlog,
-  only AI is batched.** When `POST /api/categorize` (or `runCategorize`) runs,
+  only AI is batched.** "Uncategorized" = no `user_category` AND (a Plaid row —
+  `personal_finance_category` set — OR no provider category OR one outside our
+  scheme): a Plaid row's LEGACY category is never taken as ours ("Travel" for gas
+  and taxis), and the Teller map runs only on non-Plaid rows (`mapCategoryFor`
+  likewise maps a Plaid row from its PFC only) — cycle-7 F50: such rows used to be
+  skipped by the PFC map and the AI. When `POST /api/categorize` (or `runCategorize`) runs,
   the FREE deterministic paths — user `categorization_rules`, the Teller
   `TELLER_CATEGORY_MAP` (`accommodation` = lodging → Travel and `loan` →
   Transfer since DC-12), and the Plaid `personal_finance_category` map
@@ -4127,9 +4221,9 @@ SX3-pinned — the Sheets Income tab.
 
 ## Known Open Issues
 **Cycle 7 (Oct 2026 broad scan) — open until their batches run** (plan in
-`.cycle/STATE.md`; Batches 1–4 — exposure / pre-auth safety, broken pages and
-dead channels, backstops / outcomes / operator state, bank-sync durability — are
-done):
+`.cycle/STATE.md`; Batches 1–5 — exposure / pre-auth safety, broken pages and
+dead channels, backstops / outcomes / operator state, bank-sync durability, money
+accuracy and classification — are done):
 - The repo is PUBLIC (operator: make it private and delete old Actions logs —
   they printed balances and net worth before Batch 1).
 - OPERATOR: Database Backup has never produced a backup (its secrets were never
@@ -4146,6 +4240,14 @@ done):
   duplicate-Item guard (F18) is the stop-gap, so adding a new account at an
   already-connected login also needs unlink + link. The investments-only
   `POST /api/plaid/exchange` has no duplicate guard yet. Batch 4 follow-ons.
+- Per-sistant's `housingDue` (`apps/per-sistant/routes/housing-due.js`) still sees
+  only this month's due date, so the briefing / notification check don't mention
+  next month's rent inside its lead window (Perfin's own reminder does since F43);
+  the Rent page has no "+ add item" UI, so a removed placeholder comes back only
+  via `POST /api/housing/obligations`; `apps-script/Code.gs` keeps the pre-F32
+  NOT_TRANSFER keyword list. Refunds still don't reduce spending outside the
+  settlement (F35) and rollover / one-time budgets have no UI (F39). Batch 5
+  follow-ons / later batches.
 - Per-sistant `POST /api/ai/review-summary` answers 500 (callAI throws →
   serverError) instead of 501 when `ANTHROPIC_API_KEY` is unset, and the Review
   page fires it on every load (found by `e2e/pages.spec.js`, tolerated in its
@@ -4408,7 +4510,7 @@ INV-68 | last_sync_result is merged PER PROVIDER (a write replaces only the prov
 INV-69 | incomePredicate(alias) qualifies EVERY outer column reference with the caller's alias, including inside the __t2 double-count guard (an unqualified ref inside a subquery resolves to the subquery's own table) | Subsystem: Financial Analytics | Verify: tests/scan-sept-batch3.test.js (FAN-2) + tests/ops-and-alerts.test.js
 INV-70 | Recurring projections (detection next_expected, /api/forecast, /api/bill-calendar, /calendar.ics, the /api/cash-flow bill schedule, POST /api/subscriptions) step month-scale cadences (30/60/90/365) by CALENDAR MONTH via services/cadence.js, anchored on the last real charge with next_expected as the lower bound — never a fixed N×86400000 step; manual bills use ONE placement rule (manualBillOccurrences) on both the calendar and the ICS feed | Subsystem: Detection & Categorization | Verify: tests/scan-sept-batch4.test.js (DC-9 / DC-15 blocks)
 INV-71 | Detection never re-activates a series whose last charge is past the stale window (isStale, same window as the stale sweep), and never overwrites a user-set transfer_type (transfer_type_user_set) | Subsystem: Detection & Categorization | Verify: tests/scan-sept-batch4.test.js (DC-2 / DC-4 blocks)
-INV-72 | The Rent & Utilities ledger is single-payee: generation covers the trailing 24 months and never regenerates a period that already has a rent row (any payee) or a same-label utility row; a payee/label rename carries the stored rows over (planConfigUpdate) instead of creating new ones; ledger + split are scoped to the configured payee | Subsystem: Financial Analytics | Verify: tests/scan-sept-batch5.test.js (FAN-3 / FAN-4 blocks)
+INV-72 | The Rent & Utilities ledger is single-payee: generation covers the trailing 24 months and never regenerates a period that already has a rent row (any payee) or a same-label utility row; a payee/label rename carries the stored rows over (planConfigUpdate) instead of creating new ones; ledger + split are scoped to the configured payee; an auto-generated row the user removed is never regenerated (payee_obligation_skips, F33) | Subsystem: Financial Analytics | Verify: tests/scan-sept-batch5.test.js (FAN-3 / FAN-4 blocks) + tests/contract/money-classification.contract.test.js (F33)
 INV-73 | Budget status has ONE definition — getBudgetStatus(pool, month) in financial-queries.js (spend via getCategorySpendingForMonth; effective_limit = monthly_limit + the PRIOR month's snapshot rollover when rollover_enabled; one-time budgets only in their effective_month). GET /api/budgets, /api/budgets/alerts, the insights prompt and the Ask budget tool call it; the Sheets Budget Status SQL mirrors it; no surface reads the bare monthly_limit as the limit | Subsystem: Financial Analytics | Verify: tests/scan-sept-batch6.test.js (AIN-6 block)
 INV-75 | The tax report (export + Sheets tab) is computed from transactions via getTaxDeductionTransactions (one shared keyword list); the tax_deductions table only annotates merchants and never supplies amounts | Subsystem: Financial Analytics / Sheets & External Export | Verify: tests/scan-sept-batch7.test.js (SXE-7)
 INV-76 | No model call uses a forced tool_choice (Opus/Sonnet 5.5 400 on it): structured calls go through createToolCall (auto + strict tool + one re-ask, usage summed for the cap); every call sets an explicit effort and reads content blocks by type | Subsystem: AI Insights & Audit (seam: categorize / budgets / housing / Per-sistant ai.js) | Verify: tests/model-upgrade.test.js + apps/per-sistant/tests/model-upgrade.test.js
@@ -4436,6 +4538,8 @@ INV-103 | No GitHub Actions workflow prints an HTTP response body (the repo's lo
 INV-105 | Every scheduled job in teller/startup.js that ran its body records its outcome via jobHealth.result({ok, error}) (job_runs.last_status / last_error); GET /api/data-health flushes in-memory ticks + outcomes before reading and raises a failed job as an issue; every ticked job is in JOB_INTERVALS_MS | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch3.test.js (F8 block)
 INV-107 | A Plaid link (exchange-transactions / hosted-link-complete) that duplicates a connected Item is refused before anything is stored: the new Item is released at Plaid and the route answers 409 — a second Item never doubles transactions | Subsystem: Bank Sync & Ingestion | Verify: tests/contract/bank-durability.contract.test.js (F18)
 INV-108 | The CSV workflow deletes only files the CLI imported (CSV_IMPORTED_LIST); the CLI exits non-zero on any failed file | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-oct-batch4.test.js (F19 block)
+INV-109 | NOT_TRANSFER matches bank/processor BRAND words on the cleaned merchant only (payment/transfer phrases may read the raw description), and excludes a row categorized Transfer or Investment (user category, or the provider category for a non-Plaid row) | Subsystem: Financial Analytics | Verify: tests/contract/money-classification.contract.test.js (F32/F51) + SX3
+INV-110 | Income aggregates count a deposit at its account's share (INCOME_AMOUNT = −SPLIT_AMOUNT); the cash-flow forecast and bill calendar project the same live income streams (getLiveIncomeStreams) | Subsystem: Financial Analytics | Verify: tests/contract/money-classification.contract.test.js (F37/F34)
 INV-106 | No server-side file gains a bare catch (`catch {}`, `.catch(() => {})`, `.catch(() => null)`) beyond its KNOWN_GAPS count; the list only shrinks (a stale count fails too) | Subsystem: Test Coverage Quality / Silent Degradation | Verify: tests/scan-oct-batch3.test.js (empty-catch scan)
 INV-104 | Every secret comparison (shell PIN, CALENDAR_FEED_TOKEN, API_KEY, standalone SESSION_PIN/PASSWORD) is a fixed-length SHA-256 digest compare (auth.safeEqual / isValidApiKey) — never timingSafeEqual over raw buffers whose byte lengths can differ — and the shell logs unhandled rejections instead of exiting | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch1.test.js (F1 / F6 blocks)
 INV-97 | No Per-sistant client template-literal module (a pages/ or views/ file that exports a string) contains a single-escaped regex class or delimiter (\b \d \s \w \/ \. …) — the template consumes the backslash, so the regex silently changes meaning in the browser; double-escape or use string methods | Subsystem: Per-sistant Web UI | Verify: apps/per-sistant/tests/batch15-followons.test.js (FO-2 guard)
