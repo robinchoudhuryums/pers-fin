@@ -117,7 +117,10 @@ teller/
                            bill rule for the calendar AND the ICS feed;
                            buildIncomeStreams / incomeEventsBetween classify
                            deposits into weekly/biweekly/semimonthly/monthly
-                           streams for the bill calendar. Used by both
+                           streams for the bill calendar (semimonthly days-of-
+                           month are clustered circularly when the linear test
+                           fails — a "1st" paid on the 29th–31st stays [1, 15],
+                           cycle-7 F52). Used by both
                            detectors, /api/forecast, /api/bill-calendar,
                            /calendar.ics, the cash-flow bill schedule and
                            POST /api/subscriptions. Requireable from scripts/.
@@ -561,9 +564,15 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1583 tests as of latest); use
+  Perfin and Per-sistant test files (1591 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1583 tests across 73 test files (incl.
+  Current count: 1591 tests across 74 test files (incl.
+  `tests/scan-oct-batch7.test.js` — the Oct 2026 (cycle 7) Batch 7 categorization /
+  income-cadence pins that need no database: the circular semimonthly clustering
+  (F52), `RULE_ORDER_SQL` + `deactivateSupersededRules` + times_applied not bumping
+  updated_at (F46), `rulePatternError` + the POST 400 (F48), the AI write's
+  `user_category IS NULL` guard (F47) and the `ai_skipped_at` back-off (F54) — the
+  database-backed half lives in `tests/contract/categorize-rules.contract.test.js`;
   `tests/scan-oct-batch6.test.js` — the Oct 2026 (cycle 7) Batch 6 delete-integrity
   / feed pins that need no database: both provider upserts skipping
   `deleted_transactions` + the DELETE recording it (F20), `merchantsSimilar` /
@@ -677,11 +686,14 @@ shell/
   delete-feeds (cycle-7 Batch 6: a deleted transaction surviving a Teller
   reconcile and a Plaid re-delivery, the one-to-one / similar-merchant CSV
   overlap, a 30th-of-month rent in the ICS feed, folded UTF-8 summaries,
-  Undismiss, and the F57 400s + literal search) and knowledge (syncVault through a
+  Undismiss, and the F57 400s + literal search), categorize-rules (cycle-7 Batch 7:
+  short rules refused / skipped, a specific rule beating an older busy one, a
+  re-pointed merchant deactivating its old rule, a category set mid-run surviving
+  the AI write, an unanswered row not re-sent) and knowledge (syncVault through a
   fake GitHub API via its `fetchImpl`, syncNotes, keyword search never returning
   secret text, secret-lookup, facts current vs `all=1` + verify, /api/rag/query
   without AI, an incremental compare that removes a deleted file) plus insight
-  feedback set / change / clear (the F60 `$1::text` cast). 75 tests, run
+  feedback set / change / clear (the F60 `$1::text` cast). 78 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -1185,7 +1197,19 @@ shell/
   default to **`exact`** match (DC-13: a `contains` rule from a short merchant
   like "ARCO" also caught "Marco's Pizza"); an explicit `match_type` is still
   honored, and the explicit `POST /api/categorization-rules` keeps its
-  `contains` default. CSV-import, manual-entry and Teller-sync categories are stored via a
+  `contains` default. Rules apply MOST SPECIFIC FIRST (`RULE_ORDER_SQL` in
+  categorize-helpers.js: exact → starts_with → contains, then longer pattern, then
+  newer rule) — they used to run by `times_applied`, so an old busy "shell" contains
+  rule beat a newer exact "Shell Oil 57444" one (cycle-7 F46); applying a rule no
+  longer bumps its `updated_at`. Saving a rule (POST, from-transaction, Review
+  "Remember", accuracy review) DEACTIVATES that merchant's active rules for other
+  categories (`deactivateSupersededRules`, case-insensitive pattern, any match type),
+  so re-pointing a merchant doesn't leave the old rule winning. A blank pattern, or a
+  contains / starts_with pattern under 3 characters (`MIN_PATTERN_LENGTH`,
+  `rulePatternError`), is a 400 — a 1-character "e" rule swept every merchant
+  (F48); the Review path still applies the category and returns `rule_error`
+  instead of creating the rule, and a short rule stored earlier is skipped (logged).
+  CSV-import, manual-entry and Teller-sync categories are stored via a
   one-element `text[]` parameter, never a concatenated `{…}` literal (DC-14 — a
   comma split the category and a quote/brace 500'd the whole import).
 - **Budget rollover**: Budgets can enable `rollover_enabled` to carry unused budget
@@ -1442,7 +1466,8 @@ shell/
   `COALESCE(user_merchant_name, merchant_name, name)`) are clustered per source by
   amount (±10%, so cents-varying paychecks stay one stream), each stream's cadence is
   classified from its gaps — weekly (median ≤10d), biweekly, semimonthly (gaps not a
-  steady 13–15 AND days-of-month form two tight clusters), monthly (≤45d; longer is
+  steady 13–15 AND days-of-month form two tight clusters — circularly, so a 1st that
+  posts on the 29th–31st still counts, cycle-7 F52), monthly (≤45d; longer is
   not projected) — and projected into the month at the median amount; a stream
   whose last deposit is >35 days old (>50 for monthly) is dropped. (It used to show
   ONE averaged-day event per month per exact amount, so biweekly pay read ~50% low.)
@@ -2268,7 +2293,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1583 tests passing across 73 test files (Perfin 1127 + Per-sistant 456), plus the real-Postgres route contract suite (75 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
+- 1591 tests passing across 74 test files (Perfin 1135 + Per-sistant 456), plus the real-Postgres route contract suite (78 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -2588,7 +2613,8 @@ GET  /api/insights/trust-overview # merged audit_accuracy + user_feedback for th
 POST /api/categorize       # ML categorize transactions (rules first, then Claude AI)
 GET  /api/categorize/status # ML categorization status
 GET  /api/categorize/review-queue # candidates the next AI categorize would send to Claude
-POST /api/categorize/review # apply a single user decision (sets user_category, optionally creates rule)
+POST /api/categorize/review # apply a single user decision (sets user_category, optionally creates rule;
+                            # a too-short merchant for the rule returns rule_error and no rule — F48)
 GET  /api/categorize/progress # live progress of the running categorize pass
                             # { running, phase, by_rules, by_teller_map, by_ai, ai_batches, remaining }
 GET  /api/categorize/accuracy # running ML accuracy over verified AI rows
@@ -2603,7 +2629,9 @@ POST /api/categorize/accuracy-review # record a verdict on a sampled AI row
 PATCH /api/transactions/:id/category # manually set transaction category — writes user_category
 PATCH /api/transactions/bulk-category # bulk update categories — writes user_category
 GET  /api/categorization-rules       # list all categorization rules
-POST /api/categorization-rules       # create a rule (body: merchant_pattern, category, match_type)
+POST /api/categorization-rules       # create a rule (body: merchant_pattern, category, match_type);
+                                     # 400 on a blank or <3-char contains/starts_with pattern (F48);
+                                     # deactivates the merchant's rules for other categories (F46)
 DELETE /api/categorization-rules/:id # delete a rule
 POST /api/categorization-rules/apply # apply all active rules to uncategorized transactions
 POST /api/categorization-rules/from-transaction # create rule from a manual categorization
@@ -2970,7 +2998,10 @@ standalone-mode fallback if either app is run on its own Render service.
   (partial index `idx_txn_cat_source_ai`) and a "wrong" verdict keeps the row
   `'ai'`-sourced so the miss counts in the running accuracy %, while the
   corrected category still wins via `user_category`. Re-categorizing a row
-  clears the prior verdict.
+  clears the prior verdict. `ai_skipped_at TIMESTAMPTZ` (cycle-7 F54): stamped on
+  a row the AI batch saw but left unanswered; the AI pass skips it for
+  `AI_SKIP_RETRY_DAYS` (30) — rules, the free maps and the Review widget still
+  reach it. Auto-migrated.
 - `deleted_transactions` (cycle-7 F20): `transaction_id TEXT PRIMARY KEY` +
   `deleted_at` — ids the user deleted via `DELETE /api/transactions/:id`; the
   Teller and Plaid upserts skip them. In reset-fresh's WIPE_TABLES.
@@ -3920,7 +3951,13 @@ SX3-pinned — the Sheets Income tab.
   merchant_name, name)` so user-renamed merchants are also handled, and the
   paid AI batch sends Claude that same name (DC-15 — it used to send the raw
   `COALESCE(merchant_name, name)`, ignoring the user's rename). All writes
-  go to `user_category` so a Teller/Plaid re-sync can't clobber them. The
+  go to `user_category` so a Teller/Plaid re-sync can't clobber them. The AI
+  write only fills a row whose `user_category` is still NULL, so a category the
+  user sets while a batch is with the model wins (cycle-7 F47 — it used to be
+  overwritten), and `categorized_by_ai` counts only rows actually written. Rows
+  the model leaves unanswered are stamped `ai_skipped_at` and held back from the
+  AI for 30 days (F54 — they came back on the very next page and every run,
+  paid for each time). The
   HTTP route still returns 501 when `ANTHROPIC_API_KEY` is unset (the Settings
   button is disabled without it), so the free sweep runs as part of an
   AI-enabled call, not standalone.
@@ -4268,9 +4305,10 @@ SX3-pinned — the Sheets Income tab.
 
 ## Known Open Issues
 **Cycle 7 (Oct 2026 broad scan) — open until their batches run** (plan in
-`.cycle/STATE.md`; Batches 1–6 — exposure / pre-auth safety, broken pages and
+`.cycle/STATE.md`; Batches 1–7 — exposure / pre-auth safety, broken pages and
 dead channels, backstops / outcomes / operator state, bank-sync durability, money
-accuracy and classification, delete integrity and feeds — are done):
+accuracy and classification, delete integrity and feeds, categorization rules and
+income cadence — are done):
 - The repo is PUBLIC (operator: make it private and delete old Actions logs —
   they printed balances and net worth before Batch 1).
 - OPERATOR: Database Backup has never produced a backup (its secrets were never
@@ -4298,6 +4336,10 @@ accuracy and classification, delete integrity and feeds — are done):
 - A deleted transaction has no undelete (its `deleted_transactions` row would
   need clearing), and a CSV re-import doesn't honor the tombstone. Batch 6
   follow-ons.
+- The dashboard Review widget doesn't show `rule_error` (a too-short "Remember"
+  rule is silently not created); `ai_skipped_at` can't be cleared early (e.g.
+  after switching the AI model); the rules list doesn't flag a stored rule
+  skipped for being too short. Batch 7 follow-ons.
 - Per-sistant `POST /api/ai/review-summary` answers 500 (callAI throws →
   serverError) instead of 501 when `ANTHROPIC_API_KEY` is unset, and the Review
   page fires it on every load (found by `e2e/pages.spec.js`, tolerated in its
@@ -4591,6 +4633,7 @@ INV-108 | The CSV workflow deletes only files the CLI imported (CSV_IMPORTED_LIS
 INV-109 | NOT_TRANSFER matches bank/processor BRAND words on the cleaned merchant only (payment/transfer phrases may read the raw description), and excludes a row categorized Transfer or Investment (user category, or the provider category for a non-Plaid row) | Subsystem: Financial Analytics | Verify: tests/contract/money-classification.contract.test.js (F32/F51) + SX3
 INV-110 | Income aggregates count a deposit at its account's share (INCOME_AMOUNT = −SPLIT_AMOUNT); the cash-flow forecast and bill calendar project the same live income streams (getLiveIncomeStreams) | Subsystem: Financial Analytics | Verify: tests/contract/money-classification.contract.test.js (F37/F34)
 INV-111 | A transaction the user deleted is never re-inserted by a provider sync or reconcile: the Teller and Plaid upserts skip ids in deleted_transactions (written in the same transaction as the DELETE) | Subsystem: Bank Sync & Ingestion | Verify: tests/contract/delete-feeds.contract.test.js (F20) + tests/scan-oct-batch6.test.js
+INV-112 | Categorization rules apply most-specific first (RULE_ORDER_SQL, never by times_applied); saving a rule deactivates the merchant's active rules for other categories; a blank or <3-character contains/starts_with pattern is never stored or applied; the AI write only fills a still-uncategorized row; a row the AI left unanswered is not re-sent for 30 days (ai_skipped_at) | Subsystem: Detection & Categorization | Verify: tests/contract/categorize-rules.contract.test.js + tests/scan-oct-batch7.test.js
 INV-106 | No server-side file gains a bare catch (`catch {}`, `.catch(() => {})`, `.catch(() => null)`) beyond its KNOWN_GAPS count; the list only shrinks (a stale count fails too) | Subsystem: Test Coverage Quality / Silent Degradation | Verify: tests/scan-oct-batch3.test.js (empty-catch scan)
 INV-104 | Every secret comparison (shell PIN, CALENDAR_FEED_TOKEN, API_KEY, standalone SESSION_PIN/PASSWORD) is a fixed-length SHA-256 digest compare (auth.safeEqual / isValidApiKey) — never timingSafeEqual over raw buffers whose byte lengths can differ — and the shell logs unhandled rejections instead of exiting | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch1.test.js (F1 / F6 blocks)
 INV-97 | No Per-sistant client template-literal module (a pages/ or views/ file that exports a string) contains a single-escaped regex class or delimiter (\b \d \s \w \/ \. …) — the template consumes the backslash, so the regex silently changes meaning in the browser; double-escape or use string methods | Subsystem: Per-sistant Web UI | Verify: apps/per-sistant/tests/batch15-followons.test.js (FO-2 guard)

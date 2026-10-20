@@ -34,8 +34,14 @@ implement and reflect sessions only set Phase.)
   - **Follow-ons:** Review widget doesn't show rule_error; no early reset of ai_skipped_at;
     rules list doesn't flag too-short rules.
   - **Block:** `.cycle/blocks/7-batch7-broad-implement.md`.
-  - **Where I left off:** Batch 7 committed and pushed (no PR). NEXT: /sync-docs for Batch 7,
-    then Batch 8 (F61, F62, F64, F65, F66, F67, F68).
+  - **Where I left off:** Batch 7 committed and pushed (no PR). /sync-docs DONE (Batch 7):
+    CLAUDE.md — rule order / superseded deactivation / minimum length / rule_error
+    (categorization-rules bullet + endpoints), the AI write guard + ai_skipped_at back-off
+    (categorization Key Design Decision + Database), semimonthly wrap (cadence.js entry + bill
+    calendar income), new INV-112, Known Issues (Batch 7 follow-ons), counts 1591 / 74
+    (Perfin 1135) + contract 78; README counts + Batch 7 summary. Paths verified. No new
+    operator state (ai_skipped_at is auto-migrated). NEXT: Batch 8 (F61, F62, F64, F65, F66,
+    F67, F68).
 
 - **Previous:** **Cycle 7 — Oct 2026 broad scan, Batch 6 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-20). Delete integrity and feeds.
