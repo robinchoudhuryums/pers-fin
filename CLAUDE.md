@@ -525,9 +525,18 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1489 tests as of latest); use
+  Perfin and Per-sistant test files (1508 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1489 tests across 67 test files (incl.
+  Current count: 1508 tests across 68 test files (incl.
+  `tests/scan-oct-batch1.test.js` — the Oct 2026 (cycle 7) broad-scan Batch 1
+  exposure / pre-auth pins: a multibyte PIN is a 401 rather than an unhandled
+  rejection + `safeEqual` + the ICS route's digest compare + the shell's
+  unhandledRejection logger (F1), no workflow prints a response body, the
+  SUMMARY_JS helper run on a body with balances, and csv-import's public-repo
+  guard (F2), the standalone x-api-key / numeric-password login fixes (F6), the
+  deduped lockout alert (F7), persistent_url validation + no redirect following
+  + no `*_enc` in the settings PATCH response (F82), and the pinned Mermaid path
+  in the served CSP (F125);
   `apps/per-sistant/tests/batch15-followons.test.js` — the fixes for the bugs
   Batch 15's real-code tests exposed: the calendar router built with server.js's
   real deps + a guard that every `routes/*.js` factory only destructures keys
@@ -753,7 +762,10 @@ shell/
 - `.github/workflows/csv-import.yml` — imports CSVs pushed to `csv-uploads/`
   (scripts/import-csv-cli.js → Sheets), then `git rm`s them (PSC-15: they used to
   be archived under `csv-uploads/processed/`, keeping raw bank statements in every
-  checkout) and pushes — hence its `permissions: contents: write`.
+  checkout) and pushes — hence its `permissions: contents: write`. Its FIRST
+  step fails the run while the repository is public (cycle-7 F2): a CSV pushed
+  to a public repo is published the moment it lands, so `git rm` afterwards
+  can't take it back — use the in-app CSV import instead.
 - `mobile/` — Capacitor iOS wrapper (remote-URL mode: the WebView loads the
   live Render deployment, so server deploys ARE app updates; no bundled web
   build). Deliberately NOT in the root npm workspaces so server deploys never
@@ -1547,8 +1559,11 @@ shell/
   failed key attempts, so browser/cron traffic is unaffected) — plus a GLOBAL
   ceiling across all IPs (PSC-14): 30 failed PINs within an hour locks PIN login
   for 30 minutes (429, even for the right PIN; biometric and x-api-key still
-  work) and pushes one "PIN login locked" notification (tag `pin-lockout`). The
-  counter is in memory (a restart clears it). Trade-off: anyone can trigger that
+  work) and pushes a "PIN login locked" notification (tag `pin-lockout`) — at
+  most one per 6 hours (`makeLockoutNotifier`, `sentRecently('pin-lockout', 6)`,
+  cycle-7 F7; a sustained guesser re-trips the lockout every 30 minutes). The
+  counter is in memory (a restart clears it — which is why the PIN compare must
+  never be able to crash the process, cycle-7 F1). Trade-off: anyone can trigger that
   30-minute PIN lockout. Boot warns when `SHELL_PIN` is shorter than 6 characters.
   The login keypad's 8 dots are only a mask — a longer PIN can be typed (it used to cap
   at 8) — and Enter is left to another focused control such as the biometric button
@@ -2044,7 +2059,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1489 tests passing across 67 test files (Perfin 1033 + Per-sistant 456), plus the real-Postgres route contract suite (43 tests; CI `migrations` job, `npm run test:contract`) and 8 Playwright browser smokes (CI `e2e` job); neither of the last two is in `npm test`
+- 1508 tests passing across 68 test files (Perfin 1052 + Per-sistant 456), plus the real-Postgres route contract suite (43 tests; CI `migrations` job, `npm run test:contract`) and 8 Playwright browser smokes (CI `e2e` job); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -2552,7 +2567,7 @@ validation (SN-5).
 ## Environment Variables
 
 ### Shell (unified PIN gate)
-- `SHELL_PIN` — unified PIN that fronts both apps (use at least 6 digits — boot warns otherwise; a global 30-failures/hour ceiling locks PIN login for 30 min, PSC-14). Constant-time compare with a 750ms throttle on incorrect attempts, backed by an IP rate limiter (10 failed attempts / 15 min) on `/login` and the biometric authenticate endpoints.
+- `SHELL_PIN` — unified PIN that fronts both apps (use at least 6 digits — boot warns otherwise; a global 30-failures/hour ceiling locks PIN login for 30 min, PSC-14). Compared as fixed-length SHA-256 digests (`auth.safeEqual` — the old padded raw-buffer compare threw on a multibyte PIN of the right length and crashed the process before login, cycle-7 F1), with a 750ms throttle on incorrect attempts, backed by an IP rate limiter (10 failed attempts / 15 min) on `/login` and the biometric authenticate endpoints.
 - `SHELL_SECRET` — random ~32+ char string (`openssl rand -hex 32`). Signs the shell session cookie. **Required — the shell refuses to boot without it** (PSC-11). Rotating it invalidates every active session.
 - `SHELL_PORT` — optional listener port override (defaults to `PORT` or `3000`)
 - `CALENDAR_FEED_TOKEN` — optional long random token enabling the public `/calendar.ics` bill feed (unset = feature off)
@@ -2731,7 +2746,8 @@ standalone-mode fallback if either app is run on its own Render service.
 - `user_settings` Phase A auto-sync: `auto_sync_enabled BOOLEAN DEFAULT false`,
   `auto_sync_interval_hours INT DEFAULT 6`, `last_auto_sync_at TIMESTAMPTZ`.
   Drives the in-process scheduled sync task in `server.js`.
-- `user_settings` includes Per-sistant config: `persistent_url TEXT`,
+- `user_settings` includes Per-sistant config: `persistent_url TEXT` (validated
+  on PATCH — http(s), no credentials, ≤500 chars, cycle-7 F82),
   `persistent_webhook_secret_enc BYTEA` (encrypted at rest with `pgp_sym_encrypt`,
   same passphrase as Teller/Plaid tokens), `persistent_webhook_enabled BOOLEAN`
 - `user_settings.last_anomaly_check_at TIMESTAMPTZ` — watermark used by the post-sync
@@ -3057,7 +3073,33 @@ rows) can dismiss them from the UI or run `POST /api/cleanup`.
   `/login` on a 401 or a followed `302→/login` (loop-guarded), so a mid-session idle timeout
   sends the user to re-auth instead of silently rendering a blank/error UI.
 - **CORS**: Rejects cross-origin requests when `ALLOWED_ORIGINS` not configured
-- **API key**: Header-only (`X-API-Key`), no query string support
+- **API key**: Header-only (`X-API-Key`), no query string support. Standalone
+  Perfin's `requireAuth` lets the header through ONLY when `API_KEY` is set
+  (cycle-7 F6 — with none set, the key middleware passes everything, so the bare
+  header used to bypass a configured PIN/password); standalone `/api/login`
+  compares SHA-256 digests (a numeric JSON password used to throw).
+- **Secret comparisons never throw (cycle-7 F1)**: every shell secret compare
+  (PIN, `CALENDAR_FEED_TOKEN`, `API_KEY`) goes through fixed-length SHA-256
+  digests (`auth.safeEqual` / `isValidApiKey`). Express 4 doesn't catch a
+  rejected async handler and Node 22 exits on an unhandled rejection, so the
+  shell also registers a `process.on("unhandledRejection")` LOGGER — a throwing
+  handler now leaves that one request hanging instead of restarting the process
+  (which used to reset the in-memory PIN lockout and rate limiters). Boot
+  failures still exit via `start().catch`.
+- **Public Actions logs (cycle-7 F2)**: while the repo is public its workflow
+  logs are world-readable, so no workflow prints a response body. Each job
+  defines a `SUMMARY_JS` env snippet (`node -e "$SUMMARY_JS" <file> <keys…>`)
+  that prints only the listed keys — numbers/booleans as-is, arrays as a
+  count, strings only for keys suffixed `:str`. Net-worth snapshot bodies (the
+  per-account breakdown) and subscription names/amounts are never printed;
+  details live in Settings → Sync Health. New workflow steps must follow this.
+- **Per-sistant integration URL (cycle-7 F82)**: `PATCH /api/settings`
+  validates `persistent_url` (`normalizePersistentUrl`: http(s), no embedded
+  credentials, ≤500 chars, stored trimmed without a trailing slash; ""/null
+  clears; 400 otherwise — private hosts stay allowed for a localhost/LAN
+  Per-sistant), every outbound fetch to it uses `redirect: "manual"` (a 3xx
+  reads as not-ok — configure the final URL), and the PATCH response drops
+  `*_enc` columns (it used to echo `persistent_webhook_secret_enc`).
 - **Token encryption**: pgcrypto `pgp_sym_encrypt` for Teller/Plaid access tokens AND the Per-sistant webhook HMAC secret (`persistent_webhook_secret_enc`) at rest, all keyed by `TOKEN_ENCRYPTION_PASSPHRASE`
 - **Session**: Secure cookies, configurable timeout, CSRF custom header check.
   The pgSession store only attaches when `AUTH_SECRET` is set
@@ -3147,7 +3189,12 @@ via /api/sync + balances/holdings/flows + net-worth snapshot + detection, daily
 7AM UTC) and
 `weekly-reconcile.yml` (Teller 90-day reconcile, Sundays). Both hit the
 x-api-key'd endpoints; all writes are idempotent so overlap with the
-in-process jobs is harmless. Per-app jobs live in
+in-process jobs is harmless. Their logs print counts only (`SUMMARY_JS`,
+cycle-7 F2 — see Security). **Caveat (cycle-7 scan, F3/F4):** as of Oct 2026
+GitHub had disabled Weekly Reconcile, Keep Alive, Job Radar and Database Backup
+for inactivity, and every Database Backup run had failed at the dump step — the
+backstops exist on paper until they are re-enabled and the backup secrets set
+(see Known Open Issues). Per-app jobs live in
 `teller/startup.js`; keep-alive runs at the shell layer (`shell/index.js`)
 under the unified shell so the timezone-aware self-ping fires regardless of
 which sub-app owns its own listener (sub-app `startKeepAlive` is no-op in
@@ -3895,6 +3942,21 @@ SX3-pinned — the Sheets Income tab.
   by `tests/scan-sept-fixes.test.js`, which mounts modules in server.js order).
 
 ## Known Open Issues
+**Cycle 7 (Oct 2026 broad scan) — open until their batches run** (plan in
+`.cycle/STATE.md`; Batch 1 — exposure / pre-auth safety — is done):
+- The repo is PUBLIC (operator: make it private and delete old Actions logs —
+  they printed balances and net worth before Batch 1).
+- Database Backup has never produced a backup (every run failed at the dump
+  step, most likely missing secrets) and four backstop workflows are disabled by
+  GitHub for inactivity, so INV-53 does not hold in production (F3/F4, Batch 3).
+- A passphrase mismatch on ANY token row makes `pgp_sym_decrypt` raise, failing
+  every Teller/Plaid sync (the per-row `decryption_failed` branches never run;
+  F17, Batch 4). Plaid "re-link to fix re-auth" creates a NEW item (F18).
+- Broken in the UI today: the Rent & Utilities page once a utility is
+  configured, `/accounts/:id/history` (500), the nav sync badge + unread count,
+  a sixth toast freezes the tab, Web Push never delivers, insight feedback
+  buttons 500 (Batch 2).
+
 The bugs Batch 15's real-code tests exposed (calendar 500, Quick Add regexes,
 palette picker under the shell, undefined CSS vars, unvalidated theme /
 perfin_url) and its contract-coverage gap were fixed by the follow-on batch
@@ -4155,7 +4217,7 @@ INV-75 | The tax report (export + Sheets tab) is computed from transactions via 
 INV-76 | No model call uses a forced tool_choice (Opus/Sonnet 5.5 400 on it): structured calls go through createToolCall (auto + strict tool + one re-ask, usage summed for the cap); every call sets an explicit effort and reads content blocks by type | Subsystem: AI Insights & Audit (seam: categorize / budgets / housing / Per-sistant ai.js) | Verify: tests/model-upgrade.test.js + apps/per-sistant/tests/model-upgrade.test.js
 INV-77 | Away-from-app channels (budget alerts + critical-alert email, weekly digest, daily digest, CSV reminder) are never gated on isUserActive(); each is bounded by its own watermark (last_weekly_digest_at / last_daily_digest_at / last_csv_reminder_at / sentRecently) plus a per-local-day settled memo, so it neither misses an away user nor re-queries the DB all day | Subsystem: Platform, Shell & Auth / Notification Correctness | Verify: tests/scan-sept-batch8.test.js (PSC-3 block)
 INV-78 | The auto-sync "complete" notification fires only on genuinely new transactions or a balance that actually changed (accounts_changed), and never while sync_notifications_enabled is false | Subsystem: Bank Sync & Ingestion / Notification Correctness | Verify: tests/scan-sept-batch8.test.js (PSC-1 block)
-INV-79 | The shell PIN gate has a GLOBAL failure ceiling (30 failed PINs/hour across all IPs → PIN login locked 30 min, even for the correct PIN, with one sendToAll alert per lockout); biometric + x-api-key paths are unaffected; the shell refuses to boot without SHELL_SECRET | Subsystem: Platform, Shell & Auth | Verify: tests/scan-sept-batch9.test.js (PSC-14 / PSC-11 blocks)
+INV-79 | The shell PIN gate has a GLOBAL failure ceiling (30 failed PINs/hour across all IPs → PIN login locked 30 min, even for the correct PIN, with at most one sendToAll alert per 6h — makeLockoutNotifier); biometric + x-api-key paths are unaffected; the shell refuses to boot without SHELL_SECRET; no login input can crash the process (and so reset the in-memory counter) — see INV-104 | Subsystem: Platform, Shell & Auth | Verify: tests/scan-sept-batch9.test.js (PSC-14 / PSC-11 blocks) + tests/scan-oct-batch1.test.js (F1 / F7 blocks)
 INV-80 | Per-sistant outbound webhooks/Slack are SSRF-checked at send time by resolveSafeWebhookTarget — literal IPs in any spelling (IPv4-mapped/compatible IPv6 unwrapped) and EVERY DNS-resolved address must be outside the net.BlockList private ranges; DNS failure fails closed; fetch uses redirect:'manual' | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch9.test.js (PB-14 blocks)
 INV-81 | scripts/reset-fresh.js classifies EVERY table the Perfin migrations create into exactly one of WIPE_TABLES / KEEP_TABLES / UNTOUCHED_TABLES (schema_migrations is never wiped) | Subsystem: Platform, Shell & Auth | Verify: tests/scan-sept-batch9.test.js (PSC-6 block)
 INV-82 | Sheets formatting is re-runnable: formatSheet deletes a tab's banding + conditional-format rules before re-adding them (Dashboard also resets cell formats), so a second syncAll over the same spreadsheet succeeds | Subsystem: Sheets & External Export | Verify: tests/scan-sept-batch10.test.js (SXE-2 block, stateful fake Sheets API)
@@ -4173,6 +4235,8 @@ INV-93 | Every stored automation is validated by helpers.validateAutomationRule 
 INV-94 | A change to route SQL or router mounting keeps the real-Postgres contract suite green: tests/contract/ runs both apps' own migrations and mounts every router in the order parsed from teller/server.js and apps/per-sistant/server.js with the real deps object — if either server.js's mount spelling changes, the parser regexes (pinned by scan-sept-batch15) must be updated, never bypassed | Subsystem: Test Coverage Quality (all route subsystems) | Verify: CI migrations job (npm run test:contract) + tests/scan-sept-batch15.test.js (contract wiring)
 INV-95 | Source guards (un-nonced style, root-relative navigation, undefined CSS vars) carry a KNOWN_GAPS list that only shrinks: a new offender fails, and so does a listed entry that no longer occurs; a test never re-implements production logic inline (TQ-1) | Subsystem: Test Coverage Quality | Verify: tests/scan-sept-batch15.test.js
 INV-96 | Every Per-sistant routes/*.js factory destructures only keys present in server.js's `const deps = { pool, config, helpers, views }` — a helper is read off `helpers`, never expected as its own dep (calendar.js read `advanceRecurrence` off deps, got undefined, and 500'd) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/batch15-followons.test.js (FO-1 guard) + tests/contract (persistentApp builds routers with the real deps)
+INV-103 | No GitHub Actions workflow prints an HTTP response body (the repo's logs are public while it is): steps print only allowlisted counts via the job's SUMMARY_JS snippet (numbers/booleans, array counts, ":str" strings), never the net-worth breakdown or merchant/account names; csv-import refuses to run while the repo is public | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch1.test.js (F2 block)
+INV-104 | Every secret comparison (shell PIN, CALENDAR_FEED_TOKEN, API_KEY, standalone SESSION_PIN/PASSWORD) is a fixed-length SHA-256 digest compare (auth.safeEqual / isValidApiKey) — never timingSafeEqual over raw buffers whose byte lengths can differ — and the shell logs unhandled rejections instead of exiting | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch1.test.js (F1 / F6 blocks)
 INV-97 | No Per-sistant client template-literal module (a pages/ or views/ file that exports a string) contains a single-escaped regex class or delimiter (\b \d \s \w \/ \. …) — the template consumes the backslash, so the regex silently changes meaning in the browser; double-escape or use string methods | Subsystem: Per-sistant Web UI | Verify: apps/per-sistant/tests/batch15-followons.test.js (FO-2 guard)
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 

@@ -281,7 +281,7 @@ Installable as a home screen icon:
 
 ### Security
 - **Helmet CSP**: Content Security Policy with strict directives — all inline event handlers eliminated via event delegation pattern (`bindEvents()`/`onDelegate()`), enabling `script-src-attr: 'none'`
-- **CSRF protection**: State-changing requests require `X-Requested-With` header or JSON/multipart content-type; auto-injected by client-side fetch wrapper
+- **CSRF protection**: State-changing requests require an `X-Requested-With` header or a JSON content type (uploads need the header); auto-injected by client-side fetch wrapper
 - **Postgres-backed sessions**: `connect-pg-simple` stores sessions in the database (survives restarts/deploys), auto-creates session table, prunes expired sessions every 15 minutes
 - **Constant-time auth**: `crypto.timingSafeEqual` for password and PIN comparison
 - **PIN length obfuscation**: PIN pad displays fixed 8-dot indicator regardless of actual PIN length

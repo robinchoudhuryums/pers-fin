@@ -48,8 +48,15 @@ implement and reflect sessions only set Phase.)
     tests + drift guards (F9 F10 F12 F13 F136 F138 F139 + canonical-helper scan, tz lint,
     Sheets-vs-getBudgetStatus parity). Deferred: F35→G4, F53→G5, F55→ST2, F134→ST5, F81, F85,
     F26 (decisions). Expansion: E1 (G1 G2) · E2 (ST1 G3) · E3 (G4 G5 ST2) · E4 (ST3 ST4 ST5).
-  - **Where I left off:** Batch 1 committed and pushed (no PR). NEXT: /sync-docs for Batch 1,
-    then Batch 2.
+  - **/sync-docs DONE (Batch 1, 2026-10-20):** CLAUDE.md — test counts 1508/68 (Perfin 1052) +
+    scan-oct-batch1 description, csv-import public-repo guard, lockout alert dedup + crash note,
+    SHELL_PIN digest compare, Security bullets (standalone API-key rule, secret compares never
+    throw + unhandledRejection logger, public Actions logs / SUMMARY_JS, persistent_url
+    validation), backstop caveat in Scheduled Tasks, persistent_url column note, INV-79 extended,
+    NEW INV-103 (no workflow prints a response body) + INV-104 (digest secret compares), Known
+    Open Issues cycle-7 block. Per-sistant CLAUDE.md — CSRF, CSP/Mermaid pin. READMEs — counts,
+    Batch 1 coverage, PIN compare, lockout dedup, CSRF. Subsystem paths resolve (83/83).
+  - **Where I left off:** Batch 1 + docs committed and pushed (no PR). NEXT: Batch 2.
 
 - **Previous:** **Cycle 6 REFLECTED + SYNTHESIZED (2026-10-13)** — net +102 (117 prod fixes − 15 new failure modes), block `.cycle/blocks/6-a-reflect.md`; synthesis in PROJECT_HEALTH.md (Axis A 7 / 7.5, Axis B 7 / 7.5, 3 policy responses mandatory for cycle 7). NEXT: the next audit opens Cycle 7 with the policy fixes in scope. Earlier: **Cycle 6 — Sept 2026 broad-scan, Batch 15 follow-ons DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-10-10). The bugs Batch 15's real-code tests exposed are
