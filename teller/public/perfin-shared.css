@@ -112,8 +112,10 @@ a:hover { color: var(--text); }
 .topnav .logo .logo-icon {
   display: inline-block; width: 20px; height: 20px; flex-shrink: 0;
   background: var(--logo-glow, #c8a86c);
-  -webkit-mask: url(/logo.svg) center / contain no-repeat;
-  mask: url(/logo.svg) center / contain no-repeat;
+  /* Relative to this stylesheet (F93): a root-relative /logo.svg 404'd under
+     the shell's /perfin mount, and an unloadable mask hides the icon. */
+  -webkit-mask: url(logo.svg) center / contain no-repeat;
+  mask: url(logo.svg) center / contain no-repeat;
   mask-mode: alpha; -webkit-mask-mode: alpha;
   filter: drop-shadow(0 0 4px rgba(200,168,108,0.4));
 }

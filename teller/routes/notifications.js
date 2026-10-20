@@ -25,6 +25,14 @@ function pushConfigured() {
   return !!(webpush && VAPID_PUBLIC && VAPID_PRIVATE);
 }
 
+// push_subscriptions.keys is JSONB, which node-pg already returns as an
+// OBJECT — JSON.parse(object) threw "[object Object] is not valid JSON" for
+// every subscriber, so no push was ever delivered and dead subscriptions were
+// never pruned (F74). Accept a string too (legacy TEXT column / tests).
+function subscriptionFromRow(row) {
+  return typeof row.keys === "string" ? JSON.parse(row.keys) : row.keys;
+}
+
 // GET /api/notifications/vapid — return public VAPID key for client subscription
 router.get("/api/notifications/vapid", (_req, res) => {
   if (!pushConfigured()) {
@@ -74,7 +82,7 @@ router.post("/api/notifications/test", async (_req, res) => {
     let sent = 0, failed = 0;
     for (const row of result.rows) {
       try {
-        const sub = JSON.parse(row.keys);
+        const sub = subscriptionFromRow(row);
         await webpush.sendNotification(sub, JSON.stringify({
           title: "Perfin",
           body: "Push notifications are working!",
@@ -166,12 +174,15 @@ async function sendToAll(payload) {
     let sent = 0, failed = 0;
     for (const row of result.rows) {
       try {
-        const sub = JSON.parse(row.keys);
+        const sub = subscriptionFromRow(row);
         await webpush.sendNotification(sub, JSON.stringify(payload));
         sent++;
       } catch (err) {
         if (err.statusCode === 410 || err.statusCode === 404) {
           await pool.query("DELETE FROM push_subscriptions WHERE endpoint = $1", [row.endpoint]);
+        } else {
+          // Anything else is a real delivery failure — say so (F74 hid here).
+          console.error("push delivery error:", err.statusCode || "", err.message);
         }
         failed++;
       }

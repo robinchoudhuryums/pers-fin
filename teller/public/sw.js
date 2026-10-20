@@ -9,7 +9,9 @@
 // Strip the trailing "/sw.js" to get the mount prefix ("" or "/perfin").
 const BASE = new URL(self.location.href).pathname.replace(/\/sw\.js$/, '');
 
-const CACHE = 'perfin-v5';
+// v6: offline.html + offline.js changed (F92) — the old cached page had
+// CSP-blocked inline handlers and a root-relative logo.
+const CACHE = 'perfin-v6';
 const OFFLINE_URL = BASE + '/offline.html';
 const PRECACHE = [
   BASE + '/perfin-shared.js',
@@ -17,6 +19,7 @@ const PRECACHE = [
   BASE + '/logo.svg',
   BASE + '/manifest.json',
   OFFLINE_URL,
+  BASE + '/offline.js',
 ];
 
 self.addEventListener('install', (e) => {
@@ -62,13 +65,30 @@ self.addEventListener('fetch', (e) => {
         if (cached) return cached;
         if (e.request.mode === 'navigate') {
           const offline = await caches.match(OFFLINE_URL);
-          if (offline) return offline;
+          if (offline) return offlineResponse(offline);
         }
         // Fall through: let the browser produce its default network-error page
         return Response.error();
       })
   );
 });
+
+// The offline page is served for whatever URL the user navigated to, so its
+// relative logo.svg / offline.js would resolve against THAT path. Inject a
+// <base> pointing at the mount so they resolve under BASE (F92).
+async function offlineResponse(cached) {
+  try {
+    const html = await cached.clone().text();
+    const body = html.replace('<head>', '<head><base href="' + BASE + '/">');
+    // Keep the cached headers (CSP included) but not the original length —
+    // the body just grew.
+    const headers = new Headers(cached.headers);
+    headers.delete('content-length');
+    return new Response(body, { status: 200, headers });
+  } catch (_) {
+    return cached;
+  }
+}
 
 self.addEventListener('push', (e) => {
   if (!e.data) return;

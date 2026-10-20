@@ -1431,11 +1431,14 @@ router.patch("/api/insights/:id/feedback", async (req, res) => {
   }
   const note = typeof text === "string" ? text.slice(0, 2000) : null;
   try {
+    // $1::text in BOTH places (F60): the untyped `$1 IS NULL` made Postgres
+    // fail with "could not determine data type of parameter $1", so every
+    // thumbs-up / down / mixed returned 500 and no rating was ever stored.
     const result = await pool.query(
       `UPDATE financial_insights
-         SET user_feedback = $1,
+         SET user_feedback = $1::text,
              user_feedback_text = $2,
-             user_feedback_at = CASE WHEN $1 IS NULL THEN NULL ELSE now() END
+             user_feedback_at = CASE WHEN $1::text IS NULL THEN NULL ELSE now() END
        WHERE id = $3 AND entry_type = 'insight'
        RETURNING id, user_feedback, user_feedback_text, user_feedback_at`,
       [feedback, note, id]

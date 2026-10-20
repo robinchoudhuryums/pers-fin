@@ -18,7 +18,24 @@ Updated: 2026-10-19
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 1 DONE** on branch
+- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 2 DONE** on branch
+  `claude/sweet-ritchie-f9d8ah` (2026-10-20). Broken pages & dead channels.
+  - **Completed:** F87 (Rent page utility row), F88 (account history 500), F89 (toast loop),
+    F90 (nav badge + unread count), F74 (Web Push JSONB keys), F60 (insight feedback SQL),
+    F93 (nav logo under /perfin), F92 (offline page + SW <base>, perfin-v6), F137 (every-page
+    Playwright smoke, minimum version).
+  - **Not finished (selected):** none.
+  - **Tests:** npm test 1517/1517 (+9); contract 44/44 (+1); Playwright 35/35 (+27). New tests
+    fail pre-fix. Block: `.cycle/blocks/7-batch2-broad-implement.md`.
+  - **Decisions:** nav waits via whenShared/DOMContentLoaded rather than moving perfin-shared.js
+    into <head>; the page smoke logs in once (cookie reuse) and keeps a KNOWN_GAPS list.
+  - **New follow-on:** Per-sistant /api/ai/review-summary 500s (not 501) without an AI key
+    (tolerated in e2e KNOWN_GAPS). F123 (Batch 11) confirmed by the smoke.
+  - **Operator:** still — make the repo PRIVATE, delete old Actions logs (Batch 1).
+  - **Where I left off:** Batch 2 committed and pushed (no PR). NEXT: /sync-docs for Batch 2,
+    then Batch 3.
+
+- **Previous:** **Cycle 7 — Oct 2026 broad scan, Batch 1 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-19). Scan: 9 Stage-1 auditors + 2 Stage-2 sweeps
   (real-PG reproduction, browser click sweep); 139 findings F1–F139, G1–G5, ST1–ST5 (the full
   report lives in the scan session's chat — the batch plan below is the durable copy).
@@ -56,7 +73,7 @@ implement and reflect sessions only set Phase.)
     NEW INV-103 (no workflow prints a response body) + INV-104 (digest secret compares), Known
     Open Issues cycle-7 block. Per-sistant CLAUDE.md — CSRF, CSP/Mermaid pin. READMEs — counts,
     Batch 1 coverage, PIN compare, lockout dedup, CSRF. Subsystem paths resolve (83/83).
-  - **Where I left off:** Batch 1 + docs committed and pushed (no PR). NEXT: Batch 2.
+  - **Where I left off (then):** Batch 1 + docs committed and pushed (no PR).
 
 - **Previous:** **Cycle 6 REFLECTED + SYNTHESIZED (2026-10-13)** — net +102 (117 prod fixes − 15 new failure modes), block `.cycle/blocks/6-a-reflect.md`; synthesis in PROJECT_HEALTH.md (Axis A 7 / 7.5, Axis B 7 / 7.5, 3 policy responses mandatory for cycle 7). NEXT: the next audit opens Cycle 7 with the policy fixes in scope. Earlier: **Cycle 6 — Sept 2026 broad-scan, Batch 15 follow-ons DONE** on branch
   `claude/lucid-darwin-7r8e59` (2026-10-10). The bugs Batch 15's real-code tests exposed are

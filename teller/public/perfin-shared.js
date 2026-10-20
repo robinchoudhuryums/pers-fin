@@ -111,11 +111,18 @@
     stack.appendChild(toast);
     toast._timer = setTimeout(function() { removeToast(toast); }, ok ? 5000 : 10000);
     // Cap at 5 visible toasts — anything older gets dropped so the stack
-    // doesn't grow unbounded during a rapid background-task burst.
-    while (stack.children.length > 5) {
-      var oldest = stack.firstElementChild;
-      if (oldest && oldest._timer) clearTimeout(oldest._timer);
-      if (oldest) removeToast(oldest);
+    // doesn't grow unbounded during a rapid background-task burst. Count only
+    // toasts that aren't already animating out, and drop the excess
+    // SYNCHRONOUSLY: removeToast() only detaches after 220ms, so the old
+    // `while (children.length > 5) removeToast(oldest)` never shrank the stack
+    // and a sixth toast hung the tab in an infinite loop (F89).
+    var live = [];
+    for (var i = 0; i < stack.children.length; i++) {
+      if (!stack.children[i].classList.contains('toast-leaving')) live.push(stack.children[i]);
+    }
+    for (var j = 0; j < live.length - 5; j++) {
+      if (live[j]._timer) clearTimeout(live[j]._timer);
+      if (live[j].parentNode) live[j].parentNode.removeChild(live[j]);
     }
   }
 

@@ -199,4 +199,19 @@ describe("sync engines + AI on real Postgres", { skip: SKIP }, () => {
     const list = (await supertest(app).get("/api/insights").expect(200)).body;
     assert.ok(JSON.stringify(list).includes("Groceries"));
   });
+
+  it("insight feedback: set, change and clear a rating (cycle-7 F60 — the untyped $1 IS NULL 500'd every click)", async () => {
+    const id = (await q("SELECT id FROM financial_insights WHERE entry_type='insight' ORDER BY id LIMIT 1")).rows[0].id;
+    const up = (await supertest(app).patch(`/api/insights/${id}/feedback`).send({ feedback: "positive" }).expect(200)).body;
+    assert.equal(up.user_feedback, "positive");
+    assert.ok(up.user_feedback_at, "rated rows carry a timestamp");
+    const mixed = (await supertest(app).patch(`/api/insights/${id}/feedback`).send({ feedback: "mixed", text: "the dining figure looked off" }).expect(200)).body;
+    assert.equal(mixed.user_feedback, "mixed");
+    assert.equal(mixed.user_feedback_text, "the dining figure looked off");
+    const cleared = (await supertest(app).patch(`/api/insights/${id}/feedback`).send({ feedback: null }).expect(200)).body;
+    assert.equal(cleared.user_feedback, null);
+    assert.equal(cleared.user_feedback_at, null);
+    const sum = (await supertest(app).get("/api/insights/feedback-summary").expect(200)).body;
+    assert.equal(JSON.stringify(sum).includes('"positive":1'), false, "the cleared rating no longer counts");
+  });
 });

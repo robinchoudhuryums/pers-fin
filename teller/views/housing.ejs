@@ -140,6 +140,10 @@
       // label edit renames the stored rows instead of backfilling a new
       // placeholder for every past cycle (FAN-4).
       if (u.label) div.setAttribute('data-orig-label', u.label);
+      // F87: this assignment was lost in Batch 5, leaving the string an
+      // expression statement — the querySelector below then threw, so the
+      // whole page failed to load once any utility was configured.
+      div.innerHTML =
         '<input class="hz-in hz-u-label" aria-label="Utility name" placeholder="e.g. Electricity" value="'+esc(u.label)+'">' +
         '<select class="hz-in hz-u-cad" aria-label="How often this bill comes">' +
           '<option value="1"'+(u.cadence_months==1?' selected':'')+'>Monthly</option>' +

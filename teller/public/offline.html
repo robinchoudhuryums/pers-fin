@@ -24,11 +24,16 @@
 </head>
 <body>
   <div class="wrap">
-    <img class="logo" src="/logo.svg" alt="Perfin" onerror="this.style.display='none'">
+    <!-- Relative URLs + no inline handlers (F92): the shell's nonce-only CSP
+         blocked onclick/onerror, and /logo.svg missed the /perfin mount. The
+         service worker injects <base href="<mount>/"> when it serves this page
+         for some other URL, so the relative paths resolve under the mount. -->
+    <img class="logo" id="offline-logo" src="logo.svg" alt="Perfin">
     <h1>You're offline</h1>
     <p class="subtitle">Perfin can't reach the server right now. Your data lives in the cloud, so live balances and transactions need a connection.</p>
-    <button class="retry" onclick="location.reload()">Retry</button>
+    <button class="retry" id="offline-retry" type="button">Retry</button>
     <p class="footer">If this persists, the app is still installable on your home screen and will reconnect automatically when you come back online.</p>
   </div>
+  <script src="offline.js"></script>
 </body>
 </html>
