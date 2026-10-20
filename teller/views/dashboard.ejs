@@ -1018,7 +1018,7 @@
             '<div class="acct-type">' + esc(a.subtype || a.type || '') + '</div>' +
             creditExtra +
             ((a.is_manual || a.provider === 'manual') ? '<button class="btn-sm" data-edit-balance="' + a.id + '" style="margin-top:4px;font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--warm);cursor:pointer;font-family:inherit;">Update Balance</button>' : '') +
-            (a.is_shared ? '<div style="margin-top:6px;font-size:10px;color:var(--teal);">Shared \u2022 Your split: ' + (a.spending_split_pct || 100) + '%</div>' : '') +
+            (a.is_shared ? '<div style="margin-top:6px;font-size:10px;color:var(--teal);">Shared \u2022 Your split: ' + (a.spending_split_pct == null ? 100 : a.spending_split_pct) + '%</div>' : '') +
             '<button data-shared-toggle="' + a.id + '" style="margin-top:4px;font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text-muted);cursor:pointer;font-family:inherit;">' + (a.is_shared ? 'Edit Split' : 'Mark Shared') + '</button>' +
           '</div>';
         }

@@ -809,6 +809,17 @@ async function runMigrations() {
       UNIQUE(payee, period, category, label)
     )`);
     await client.query("CREATE INDEX IF NOT EXISTS idx_payee_obligations_status ON payee_obligations (status, period)");
+    // Cycle-7 F33: an auto-generated obligation the user removes (a utility
+    // bill that won't come, a month with no rent) is remembered here, so the
+    // 6-hourly generation doesn't put it straight back. Keyed like the
+    // generation's own existence check (period + category + label, any payee).
+    await client.query(`CREATE TABLE IF NOT EXISTS payee_obligation_skips (
+      period     TEXT NOT NULL,
+      category   TEXT NOT NULL,
+      label      TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (period, category, label)
+    )`);
     await client.query(`CREATE TABLE IF NOT EXISTS payee_payments (
       id          SERIAL PRIMARY KEY,
       payee       TEXT NOT NULL,

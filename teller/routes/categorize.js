@@ -38,7 +38,8 @@ router.get("/api/categorize/status", async (_req, res) => {
        FROM transactions
        WHERE (
          user_category IS NULL
-         AND (category IS NULL
+         AND (personal_finance_category IS NOT NULL
+              OR category IS NULL
               OR category = '{}'
               OR NOT (category[1] = ANY($1::text[])))
        )
@@ -100,9 +101,14 @@ async function runCategorizeOnce() {
     // further down stays bounded. The shared predicate keys on $1 = our
     // 21-category list (Postgres array param).
     // -----------------------------------------------------------------
+    // F50: a Plaid row (personal_finance_category set) counts as uncategorized
+    // whatever its legacy category says — Plaid's legacy names overlap ours
+    // ("Travel" for gas and taxis), which used to hide those rows from the PFC
+    // map and the AI. Only Teller / CSV categories in our scheme count as set.
     const uncatPredicate = `
       user_category IS NULL
-      AND (category IS NULL OR category = '{}'
+      AND (personal_finance_category IS NOT NULL
+           OR category IS NULL OR category = '{}'
            OR NOT (category[1] = ANY($1::text[])))
       AND pending = false AND amount > 0`;
 
@@ -159,6 +165,7 @@ async function runCategorizeOnce() {
         `UPDATE transactions SET user_category = $3, user_category_source = 'teller_map',
            category_verified_at = NULL, category_was_correct = NULL
          WHERE ${uncatPredicate} AND LOWER(category[1]) = $2
+           AND personal_finance_category IS NULL
          RETURNING transaction_id`,
         [OUR_CATEGORIES_PG, tellerCat, ourCat]
       );
@@ -442,7 +449,8 @@ router.get("/api/categorize/review-queue", async (req, res) => {
               amount, date, category, personal_finance_category
        FROM transactions
        WHERE user_category IS NULL
-         AND (category IS NULL
+         AND (personal_finance_category IS NOT NULL
+              OR category IS NULL
               OR category = '{}'
               OR NOT (category[1] = ANY($1::text[])))
          AND pending = false AND amount > 0
@@ -796,7 +804,8 @@ router.post("/api/categorization-rules/apply", async (_req, res) => {
            category_verified_at = NULL, category_was_correct = NULL
          WHERE user_category IS NULL
            AND (
-             category IS NULL
+             personal_finance_category IS NOT NULL
+             OR category IS NULL
              OR category = '{}'
              OR NOT (category[1] = ANY($3::text[]))
            )

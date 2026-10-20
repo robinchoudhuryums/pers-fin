@@ -74,6 +74,9 @@ async function detectSubscriptions(externalPool) {
         transaction_id,
         COALESCE(user_merchant_name, merchant_name, LOWER(REGEXP_REPLACE(name, '[^a-zA-Z0-9 ]', '', 'g'))) AS merchant_key,
         COALESCE(user_merchant_name, merchant_name, name) AS display_name,
+        -- F49: the raw description, read only when the user hasn't renamed
+        -- the row (a rename stays the escape hatch, as in NOT_TRANSFER).
+        CASE WHEN user_merchant_name IS NULL THEN name END AS raw_description,
         amount,
         date
       FROM transactions
@@ -90,6 +93,11 @@ async function detectSubscriptions(externalPool) {
     for (const txn of txns) {
       const key = txn.merchant_key?.trim();
       if (!key) continue;
+      // F49: a payment/transfer whose raw description says so ("ZELLE TO JOHN
+      // SMITH", counterparty "John Smith") is never a subscription charge —
+      // the merchant key alone made monthly rent via Zelle a "John Smith"
+      // subscription (the DD-2 class).
+      if (isExcludedDescription(txn.raw_description)) continue;
       if (!groups[key]) groups[key] = [];
       groups[key].push(txn);
     }
@@ -304,6 +312,20 @@ function isExcludedMerchant(merchantKey) {
   return false;
 }
 
+// F49: the categories safe to match against a raw bank description. The
+// retail list is merchant-only — a raw description names a processor or a
+// location ("SHELL OIL 1234 …") too loosely to exclude on.
+const RAW_DESCRIPTION_EXCLUSIONS = ["interest", "fees", "debt_payments", "transfers"];
+function isExcludedDescription(description) {
+  if (!description) return false;
+  const lower = String(description).toLowerCase();
+  return RAW_DESCRIPTION_EXCLUSIONS.some((group) => EXCLUSION_PATTERNS[group].some((kw) => {
+    if (kw.includes(" ")) return lower.includes(kw);
+    const re = new RegExp("\\b" + kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b");
+    return re.test(lower);
+  }));
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -353,4 +375,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { detectSubscriptions, findModeAmount, findAnchorAmount, isStale, addDays, isExcludedMerchant, EXCLUSION_PATTERNS };
+module.exports = { detectSubscriptions, findModeAmount, findAnchorAmount, isStale, addDays, isExcludedMerchant, isExcludedDescription, EXCLUSION_PATTERNS };

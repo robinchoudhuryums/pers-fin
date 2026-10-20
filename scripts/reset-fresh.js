@@ -55,6 +55,7 @@ const WIPE_TABLES = [
   // housing_config. tests/scan-sept-batch9.test.js asserts every table the
   // migrations create is classified in one of the three lists.
   "investment_flows", "payee_obligations", "payee_payments", "settlements",
+  "payee_obligation_skips",
 ];
 
 // Preserved so the dry-run can show what's kept.

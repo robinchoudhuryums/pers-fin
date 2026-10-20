@@ -153,9 +153,11 @@ describe("INCOME_PREDICATE — expanded keywords", () => {
   });
 });
 
-// Extract NOT_TRANSFER pattern for testing
-const transferMatch = NOT_TRANSFER.match(/!~\*\s*'([^']+)'/);
-const TRANSFER_PATTERN = transferMatch ? transferMatch[1] : "";
+// Extract NOT_TRANSFER's exclusion patterns for testing — the payment/transfer
+// phrase list (merchant + raw description) and the brand list (cleaned
+// merchant only, F32); a merchant string matching either is excluded.
+const TRANSFER_PATTERN = [...NOT_TRANSFER.matchAll(/!~\*\s*'([^']+)'/g)]
+  .map((m) => "(?:" + m[1] + ")").join("|");
 
 describe("NOT_TRANSFER — credit card payment exclusion", () => {
   it("excludes 'Chase' standalone (not just 'Chase Bank')", () => {

@@ -118,10 +118,13 @@ const PLAID_PFC_PRIMARY_MAP = {
 // Suggested category for one row from the deterministic maps (Teller category
 // first, then Plaid PFC detailed → primary). Used by the review queue.
 function mapCategoryFor(row) {
-  const tellerCat = Array.isArray(row.category) && row.category[0] ? String(row.category[0]).toLowerCase() : null;
-  if (tellerCat && TELLER_CATEGORY_MAP[tellerCat]) return TELLER_CATEGORY_MAP[tellerCat];
   let pfc = row.personal_finance_category;
   if (typeof pfc === "string") { try { pfc = JSON.parse(pfc); } catch { pfc = null; } }
+  // F50: a Plaid row (it carries a PFC) is mapped from its PFC only — its
+  // legacy category ("Travel" for gas and taxis, "Service", "Tax") is not a
+  // Teller category and must not hit the Teller map.
+  const tellerCat = !pfc && Array.isArray(row.category) && row.category[0] ? String(row.category[0]).toLowerCase() : null;
+  if (tellerCat && TELLER_CATEGORY_MAP[tellerCat]) return TELLER_CATEGORY_MAP[tellerCat];
   if (pfc && pfc.detailed && PLAID_PFC_DETAILED_MAP[pfc.detailed]) return PLAID_PFC_DETAILED_MAP[pfc.detailed];
   if (pfc && pfc.primary && PLAID_PFC_PRIMARY_MAP[pfc.primary]) return PLAID_PFC_PRIMARY_MAP[pfc.primary];
   return null;

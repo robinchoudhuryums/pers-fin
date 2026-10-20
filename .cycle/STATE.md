@@ -18,7 +18,30 @@ Updated: 2026-10-20
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 4 DONE** on branch
+- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 5 DONE** on branch
+  `claude/sweet-ritchie-f9d8ah` (2026-10-20). Money accuracy and classification.
+  - **Completed:** F31 (0% split null-safe), F32 (NOT_TRANSFER brand words on the cleaned
+    merchant only + exemptions; Sheets mirror), F51 (Transfer/Investment category excluded),
+    F49 (detectors read the raw description — phrase-like words only), F50 (Plaid legacy
+    category = uncategorized; Teller map skips Plaid rows), F34 (cash-flow income via the shared
+    getLiveIncomeStreams / cadence.js), F37 (INCOME_AMOUNT joint-account share + reimbursement
+    words), F36 (context export unknown limit), F33 (payee_obligation_skips + Remove button),
+    F38 (snapshots only while a budget is in effect), F40 (push via getBudgetStatus, unrounded
+    thresholds), F41 (Spending Summary whole-month windows), F42 (Watchlist literal LIKE +
+    spend total), F43 (next month's rent in the lead window).
+  - **Tests:** npm test 1573/1573 (+15 scan-oct-batch5); contract 68/68 (+11
+    money-classification); migrations twice; Playwright 35/35. All new tests fail pre-fix.
+  - **Net score:** 0 − 1 = −1 (F32's narrower brand matching is a documented trade-off).
+  - **Decisions:** NULL split → 100 (SPLIT_AMOUNT's default) in Settle Up; cash-flow /
+    calendar income streams stay full deposit amounts (only aggregates use INCOME_AMOUNT);
+    removal skips keyed (period, category, label) like generation's own check.
+  - **Follow-ons:** Per-sistant housingDue has the same month-boundary gap (F43); no "+ add
+    item" UI on the Rent page; Code.gs NOT_TRANSFER still the old list.
+  - **Block:** `.cycle/blocks/7-batch5-broad-implement.md`.
+  - **Where I left off:** Batch 5 committed and pushed (no PR). NEXT: /sync-docs for Batch 5,
+    then Batch 6.
+
+- **Previous:** **Cycle 7 — Oct 2026 broad scan, Batch 4 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-20). Bank-sync durability.
   - **Completed:** F17 (perfin_try_decrypt — a wrong-key token row no longer fails every
     sync; stale Teller enrollment unlinks), F18 (duplicate-Item guard on both exchange routes,

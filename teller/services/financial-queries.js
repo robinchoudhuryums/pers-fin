@@ -69,7 +69,7 @@ function incomePredicate(a = "transactions") {
   return `
   (
     (${txt} ~* '\\y(payroll|direct dep|direct deposit|dir dep|salary|employer|deposit|ach credit)\\y'
-      AND ${txt} !~* '\\y(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|reversal|atm|withdrawal|bill pay)\\y')
+      AND ${txt} !~* '\\y(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|reversal|reimbursement|reimburse|reimb|expense report|atm|withdrawal|bill pay)\\y')
     OR (
       ${txt} ~* 'funds transfer from brokerage'
       AND NOT EXISTS (
@@ -104,9 +104,26 @@ const INCOME_PREDICATE = incomePredicate("transactions");
 // DD-3: Plaid's personal_finance_category TRANSFER_IN / TRANSFER_OUT /
 // LOAN_PAYMENTS rows are excluded too — unless the user has categorized the
 // row as something other than Transfer (their call that it's spending).
+// F32 (cycle 7): only the payment/transfer PHRASES read the raw description.
+// Bank and processor brand words (chase, citi, paypal, deposit, interest, …)
+// read the cleaned merchant only — "PAYPAL *NETFLIX" (merchant Netflix) or a
+// "SECURITY DEPOSIT" described charge used to vanish from all spending — and a
+// few known non-bank uses (Citi Bike, Chase Center, "PAYPAL *<merchant>"
+// purchases, a security deposit) are exempted even there.
+// F51: a row categorized Transfer or Investment is excluded too — the user
+// category always, the provider category only for non-Plaid rows (a Plaid
+// row's legacy category is not trusted; its PFC is checked below).
+// sheets-sync.js mirrors this byte-for-byte (SX3).
 const NOT_TRANSFER = `(
   COALESCE(t.user_merchant_name, CONCAT_WS(' ', t.merchant_name, t.name)) !~*
-    '\\y(payment thank|pymt|autopay|auto pay|minimum payment|directpay|automatic payment|interest|int charge|finance charge|funds tran|funds transfer|transfer to|transfer from|ach transfer|wire transfer|internal transfer|zelle|venmo|paypal|cash app|cashapp|square cash|bank of america|wells fargo|chase|citi|citibank|capital one|discover|amex|american express|us bank|pnc bank|td bank|ally bank|truist|boa transfer|online transfer|mobile transfer|bill pay|epay|credit card payment|card payment|cc payment|loan payment|mortgage payment|deposit|direct dep|atm|withdrawal)\\y'
+    '\\y(payment thank|pymt|autopay|auto pay|minimum payment|directpay|automatic payment|int charge|finance charge|funds tran|funds transfer|transfer to|transfer from|ach transfer|wire transfer|internal transfer|zelle|venmo|cash app|cashapp|square cash|boa transfer|online transfer|mobile transfer|bill pay|epay|credit card payment|card payment|cc payment|loan payment|mortgage payment|direct dep|atm|withdrawal)\\y'
+  AND (
+    COALESCE(t.user_merchant_name, t.merchant_name, t.name) !~*
+      '\\y(interest|paypal|bank of america|wells fargo|chase|citi|citibank|capital one|discover|amex|american express|us bank|pnc bank|td bank|ally bank|truist|deposit)\\y'
+    OR COALESCE(t.user_merchant_name, t.merchant_name, t.name) ~*
+      '\\y(citi ?bike|citi field|chase (center|field)|security deposit)\\y|\\ypaypal ?\\*'
+  )
+  AND LOWER(COALESCE(t.user_category, CASE WHEN t.personal_finance_category IS NULL THEN t.category[1] END, '')) NOT IN ('transfer', 'investment')
   AND NOT (
     COALESCE(t.personal_finance_category->>'primary', '') IN ('TRANSFER_IN', 'TRANSFER_OUT', 'LOAN_PAYMENTS')
     AND COALESCE(t.user_category, 'Transfer') = 'Transfer'
@@ -127,6 +144,13 @@ const SPLIT_AMOUNT = `(
     ELSE t.amount * COALESCE(la.spending_split_pct, 100) / 100.0
   END
 )`;
+
+// Income amount (F37) — a deposit's positive amount at the account's share, the
+// mirror of SPLIT_AMOUNT: income landing on a joint (is_shared) account counts at
+// spending_split_pct (personal_for 'self' = all yours, 'partner' = none), so a
+// shared paycheck account no longer reports the partner's pay as yours. Needs
+// `transactions t` + `linked_accounts la` like SPLIT_AMOUNT.
+const INCOME_AMOUNT = `(-${SPLIT_AMOUNT})`;
 
 // Reimbursed exclusion — use inside any spending aggregation so transactions
 // the user has flagged as reimbursed don't count against their budgets/cash
@@ -205,14 +229,15 @@ async function getMonthlySpending(pool, months = 6) {
  */
 async function getMonthlyIncome(pool, months = 6) {
   const result = await pool.query(
-    `SELECT TO_CHAR(date, 'YYYY-MM') AS month,
-            SUM(ABS(amount)) AS total_income
-     FROM transactions
-     WHERE amount < 0 AND pending = false
+    `SELECT TO_CHAR(t.date, 'YYYY-MM') AS month,
+            SUM(${INCOME_AMOUNT}) AS total_income
+     FROM transactions t
+     LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+     WHERE t.amount < 0 AND t.pending = false
        -- Whole-month window (FA-4) — see getMonthlySpending. tz-aware anchor (F11).
-       AND date >= date_trunc('month', $2::date) - make_interval(months => $1 - 1)
-       AND ${INCOME_PREDICATE}
-     GROUP BY TO_CHAR(date, 'YYYY-MM')
+       AND t.date >= date_trunc('month', $2::date) - make_interval(months => $1 - 1)
+       AND ${incomePredicate("t")}
+     GROUP BY TO_CHAR(t.date, 'YYYY-MM')
      ORDER BY month`,
     [months, currentMonth() + "-01"]
   );
@@ -498,9 +523,32 @@ async function getTaxDeductionTransactions(pool, year) {
   return r.rows.map(row => ({ ...row, category: taxCategoryFor(row.merchant) }));
 }
 
+/**
+ * The live recurring-income streams (F34) — the last 4 months of income
+ * deposits (INCOME_PREDICATE, source = the display merchant so a rename
+ * groups) clustered per source by amount and classified weekly / biweekly /
+ * semimonthly / monthly by services/cadence.js (DC-10); a stream whose last
+ * deposit is older than ~1.5 cycles is dropped. The ONE income source for the
+ * bill calendar and the cash-flow forecast, so the two can't disagree.
+ */
+async function getLiveIncomeStreams(pool, today = todayStr()) {
+  const { buildIncomeStreams, isIncomeStreamLive } = require("./cadence");
+  const result = await pool.query(`
+    SELECT COALESCE(user_merchant_name, merchant_name, name) AS source,
+           date, ABS(amount) AS amount
+    FROM transactions
+    WHERE amount < 0 AND pending = false
+      AND date >= CURRENT_DATE - INTERVAL '4 months'
+      AND ${INCOME_PREDICATE}
+    ORDER BY date
+  `);
+  return buildIncomeStreams(result.rows).filter((s) => isIncomeStreamLive(s, today));
+}
+
 module.exports = {
   INCOME_PREDICATE,
   incomePredicate,
+  INCOME_AMOUNT,
   SPLIT_AMOUNT,
   NOT_REIMBURSED,
   NOT_REIMBURSED_UNALIASED,
@@ -514,6 +562,7 @@ module.exports = {
   getBudgetStatus,
   previousMonthKey,
   getNetWorth,
+  getLiveIncomeStreams,
   currentMonth,
   todayStr,
   APP_TIMEZONE,

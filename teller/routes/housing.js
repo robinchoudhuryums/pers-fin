@@ -92,6 +92,23 @@ function addMonths(ym, n) {
   return `${Math.floor(t / 12)}-${String((t % 12) + 1).padStart(2, "0")}`;
 }
 
+// F43: next month's rent when TODAY is inside its reminder lead window — the
+// window for a due day near the start of a month begins in the previous month
+// (lead 5, due the 2nd → from the 28th), but next month's rent row isn't
+// generated until that month starts, so the payment-due reminder never saw it.
+// Pure: `today` is 'YYYY-MM-DD'; returns { period, due_date, days_until } or null.
+function nextRentInLeadWindow(cfg, today) {
+  const lead = Number.isFinite(cfg.reminder_lead_days) ? cfg.reminder_lead_days : 0;
+  const due = parseInt(cfg.rent_due_day, 10);
+  if (!(due >= 1 && due <= 31) || !(lead > 0)) return null;
+  const period = addMonths(today.slice(0, 7), 1);
+  const [y, m] = period.split("-").map(Number);
+  const day = Math.min(due, new Date(Date.UTC(y, m, 0)).getUTCDate());
+  const dueDate = `${period}-${String(day).padStart(2, "0")}`;
+  const until = Math.round((Date.parse(dueDate + "T00:00:00Z") - Date.parse(today + "T00:00:00Z")) / 86400000);
+  return until >= 0 && until <= lead ? { period, due_date: dueDate, days_until: until } : null;
+}
+
 // The months generation should cover (FAN-3): the TRAILING `cap` months ending
 // at `end`, never earlier than `start`. start_month is pinned forever, so a
 // cap counted forward from it stopped generating 24 months after setup — from
@@ -262,7 +279,8 @@ async function generateHousingObligations(pool_) {
   const months = generationMonths(cfg.start_month, thisMonth());
   let generated = 0;
   // A period that already has a rent row (under ANY payee name) — or a utility
-  // row with the same label — is not regenerated (FAN-4). The ON CONFLICT key
+  // row with the same label — is not regenerated (FAN-4), nor is one the user
+  // removed (payee_obligation_skips, F33). The ON CONFLICT key
   // includes the payee, so a payee rename that couldn't be propagated used to
   // regenerate rent for every month since start_month as unpaid.
   for (const period of months) {
@@ -271,6 +289,7 @@ async function generateHousingObligations(pool_) {
         `INSERT INTO payee_obligations (payee, category, label, period, amount, due_day, status, auto_generated)
          SELECT $1, 'rent', 'Rent', $2, $3, $4, 'unpaid', true
          WHERE NOT EXISTS (SELECT 1 FROM payee_obligations WHERE period = $2 AND category = 'rent')
+           AND NOT EXISTS (SELECT 1 FROM payee_obligation_skips WHERE period = $2 AND category = 'rent')
          ON CONFLICT (payee, period, category, label) DO NOTHING`,
         [cfg.payee_name, period, cfg.rent_amount, cfg.rent_due_day]
       );
@@ -283,6 +302,7 @@ async function generateHousingObligations(pool_) {
         `INSERT INTO payee_obligations (payee, category, label, period, amount, due_day, status, auto_generated)
          SELECT $1, 'utility', $2, $3, NULL, $4, 'pending_amount', true
          WHERE NOT EXISTS (SELECT 1 FROM payee_obligations WHERE period = $3 AND category = 'utility' AND label = $2)
+           AND NOT EXISTS (SELECT 1 FROM payee_obligation_skips WHERE period = $3 AND category = 'utility' AND label = $2)
          ON CONFLICT (payee, period, category, label) DO NOTHING`,
         [cfg.payee_name, u.label, period, u.due_day]
       );
@@ -297,7 +317,7 @@ async function generateHousingObligations(pool_) {
 // (2) missing utility amount (a pending_amount whose bill should have arrived).
 // Deduped via sentRecently so each reminder repeats at most every ~3 days.
 // ---------------------------------------------------------------------------
-async function runHousingReminders(pool_) {
+async function runHousingReminders(pool_, today = todayStr()) {
   const db = pool_ || pool;
   const cfg = await getConfig(db);
   if (!cfg.enabled || !cfg.payee_name) return { sent: 0 };
@@ -307,7 +327,7 @@ async function runHousingReminders(pool_) {
   catch { return { sent: 0 }; }
 
   // Day-of-month in APP_TIMEZONE (FAN-13), matching thisMonth().
-  const dom = parseInt(todayStr().slice(8, 10), 10);
+  const dom = parseInt(today.slice(8, 10), 10);
 
   // (1) Payment due — unpaid balance owed, and we're within the lead window of
   // the rent due day (or past it). One reminder per ~3 days while it stands.
@@ -318,12 +338,29 @@ async function runHousingReminders(pool_) {
     );
     const balance = parseFloat(bal.rows[0].balance);
     const count = parseInt(bal.rows[0].n);
-    if (balance > 0 && dom >= cfg.rent_due_day - cfg.reminder_lead_days) {
-      const tag = "housing-due-" + thisMonth();
+    // Next month's rent, when its lead window has already opened and its row
+    // doesn't exist yet (not generated, not removed by the user — F43).
+    let upcoming = 0;
+    const next = cfg.rent_amount > 0 ? nextRentInLeadWindow(cfg, today) : null;
+    if (next) {
+      const ex = await db.query(
+        `SELECT (EXISTS (SELECT 1 FROM payee_obligations WHERE period = $1 AND category = 'rent')
+              OR EXISTS (SELECT 1 FROM payee_obligation_skips WHERE period = $1 AND category = 'rent')) AS has`,
+        [next.period]
+      );
+      if (!(ex.rows[0] && ex.rows[0].has)) upcoming = cfg.rent_amount;
+    }
+    const dueNow = balance > 0 && dom >= cfg.rent_due_day - cfg.reminder_lead_days;
+    if (dueNow || upcoming > 0) {
+      const tag = "housing-due-" + (upcoming > 0 ? next.period : today.slice(0, 7));
       if (!(await sentRecently(tag, 72))) {
+        const total = (dueNow ? balance : 0) + upcoming;
+        const items = (dueNow ? count : 0) + (upcoming > 0 ? 1 : 0);
         const r = await sendToAll({
           title: "Rent/utilities due to " + cfg.payee_name,
-          body: "$" + balance.toFixed(2) + " owed across " + count + " item(s). Send the transfer.",
+          body: "$" + total.toFixed(2) + " owed across " + items + " item(s)" +
+            (upcoming > 0 ? " — " + periodLabel(next.period) + " rent is due " + next.due_date : "") +
+            ". Send the transfer.",
           tag,
           data: { url: "/housing" },
         });
@@ -415,6 +452,14 @@ router.patch("/api/housing/config", async (req, res) => {
            AND NOT EXISTS (SELECT 1 FROM payee_obligations x
                            WHERE x.payee = $1 AND x.period = o.period AND x.category = 'utility' AND x.label = $3)`,
         [merged.payee_name, r.from, r.to]
+      );
+      // A removed month of the old label stays removed under the new one (F33).
+      await client.query(
+        `UPDATE payee_obligation_skips s SET label = $2
+         WHERE s.category = 'utility' AND s.label = $1
+           AND NOT EXISTS (SELECT 1 FROM payee_obligation_skips x
+                           WHERE x.period = s.period AND x.category = 'utility' AND x.label = $2)`,
+        [r.from, r.to]
       );
     }
     await client.query("UPDATE user_settings SET housing_config = $1, updated_at = now() WHERE id = 1", [JSON.stringify(merged)]);
@@ -741,6 +786,10 @@ router.post("/api/housing/obligations", async (req, res) => {
   const cfg = await getConfig().catch(() => ({ payee_name: "" }));
   const pay = (payee && String(payee).trim()) || cfg.payee_name || "Payee";
   try {
+    // Adding an obligation by hand undoes an earlier removal of the same item
+    // (F33) — generation may manage it again.
+    await pool.query("DELETE FROM payee_obligation_skips WHERE period = $1 AND category = $2 AND label = $3",
+      [period, cat, String(label).trim()]);
     const r = await pool.query(
       `INSERT INTO payee_obligations (payee, category, label, period, amount, due_day, status, notes)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
@@ -790,13 +839,39 @@ router.patch("/api/housing/obligations/:id", async (req, res) => {
   } catch (err) { console.error("housing obligation patch error:", err.message); res.status(500).json({ error: "An internal error occurred." }); }
 });
 
-// DELETE /api/housing/obligations/:id
+// DELETE /api/housing/obligations/:id — remove an obligation. An
+// auto-generated one is remembered in payee_obligation_skips so the next
+// generation run doesn't recreate it (F33: "delete the placeholder for a bill
+// that won't come" used to last until the next 6-hourly run).
 router.delete("/api/housing/obligations/:id", async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid id" });
+  const client = await pool.connect();
   try {
-    const r = await pool.query("DELETE FROM payee_obligations WHERE id = $1 RETURNING id", [req.params.id]);
-    if (!r.rows.length) return res.status(404).json({ error: "Not found" });
-    res.json({ ok: true });
-  } catch (err) { console.error("housing obligation delete error:", err.message); res.status(500).json({ error: "An internal error occurred." }); }
+    await client.query("BEGIN");
+    const r = await client.query(
+      "DELETE FROM payee_obligations WHERE id = $1 RETURNING period, category, label, auto_generated",
+      [id]
+    );
+    if (!r.rows.length) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Not found" });
+    }
+    const o = r.rows[0];
+    if (o.auto_generated) {
+      await client.query(
+        `INSERT INTO payee_obligation_skips (period, category, label) VALUES ($1, $2, $3)
+         ON CONFLICT DO NOTHING`,
+        [o.period, o.category, o.label]
+      );
+    }
+    await client.query("COMMIT");
+    res.json({ ok: true, skipped_from_generation: !!o.auto_generated });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("housing obligation delete error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  } finally { client.release(); }
 });
 
 // POST /api/housing/payments — settle a batch of unpaid obligations.
@@ -874,6 +949,7 @@ module.exports.runHousingReminders = runHousingReminders;
 module.exports.monthsBetween = monthsBetween;
 module.exports.monthRange = monthRange;
 module.exports.addMonths = addMonths;
+module.exports.nextRentInLeadWindow = nextRentInLeadWindow;
 module.exports.generationMonths = generationMonths;
 module.exports.planConfigUpdate = planConfigUpdate;
 module.exports.deriveMemo = deriveMemo;

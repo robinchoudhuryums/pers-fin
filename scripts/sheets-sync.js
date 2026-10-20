@@ -688,7 +688,14 @@ async function buildDashboard(sheets, pool) {
   // cat_lines CTE below; total aggregations stay parent-keyed by design.
   const NOT_TRANSFER = `(
     COALESCE(t.user_merchant_name, CONCAT_WS(' ', t.merchant_name, t.name)) !~*
-      '\\y(payment thank|pymt|autopay|auto pay|minimum payment|directpay|automatic payment|interest|int charge|finance charge|funds tran|funds transfer|transfer to|transfer from|ach transfer|wire transfer|internal transfer|zelle|venmo|paypal|cash app|cashapp|square cash|bank of america|wells fargo|chase|citi|citibank|capital one|discover|amex|american express|us bank|pnc bank|td bank|ally bank|truist|boa transfer|online transfer|mobile transfer|bill pay|epay|credit card payment|card payment|cc payment|loan payment|mortgage payment|deposit|direct dep|atm|withdrawal)\\y'
+      '\\y(payment thank|pymt|autopay|auto pay|minimum payment|directpay|automatic payment|int charge|finance charge|funds tran|funds transfer|transfer to|transfer from|ach transfer|wire transfer|internal transfer|zelle|venmo|cash app|cashapp|square cash|boa transfer|online transfer|mobile transfer|bill pay|epay|credit card payment|card payment|cc payment|loan payment|mortgage payment|direct dep|atm|withdrawal)\\y'
+    AND (
+      COALESCE(t.user_merchant_name, t.merchant_name, t.name) !~*
+        '\\y(interest|paypal|bank of america|wells fargo|chase|citi|citibank|capital one|discover|amex|american express|us bank|pnc bank|td bank|ally bank|truist|deposit)\\y'
+      OR COALESCE(t.user_merchant_name, t.merchant_name, t.name) ~*
+        '\\y(citi ?bike|citi field|chase (center|field)|security deposit)\\y|\\ypaypal ?\\*'
+    )
+    AND LOWER(COALESCE(t.user_category, CASE WHEN t.personal_finance_category IS NULL THEN t.category[1] END, '')) NOT IN ('transfer', 'investment')
     AND NOT (
       COALESCE(t.personal_finance_category->>'primary', '') IN ('TRANSFER_IN', 'TRANSFER_OUT', 'LOAN_PAYMENTS')
       AND COALESCE(t.user_category, 'Transfer') = 'Transfer'
@@ -2282,7 +2289,7 @@ async function syncIncome(sheets, pool) {
     return `
     (
       (${txt} ~* '\\y(payroll|direct dep|direct deposit|dir dep|salary|employer|deposit|ach credit)\\y'
-        AND ${txt} !~* '\\y(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|reversal|atm|withdrawal|bill pay)\\y')
+        AND ${txt} !~* '\\y(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|reversal|reimbursement|reimburse|reimb|expense report|atm|withdrawal|bill pay)\\y')
       OR (
         ${txt} ~* 'funds transfer from brokerage'
         AND NOT EXISTS (
@@ -2298,34 +2305,43 @@ async function syncIncome(sheets, pool) {
     )
   `;
   }
-  const INCOME_PREDICATE = incomePredicate("transactions");
+  const INCOME_PREDICATE_T = incomePredicate("t");
+  // Mirror of financial-queries INCOME_AMOUNT (F37): a deposit at the joint
+  // account's share — the negation of the SPLIT_AMOUNT CASE.
+  const INCOME_AMOUNT = `(-(CASE
+      WHEN la.is_shared AND t.personal_for = 'self' THEN t.amount
+      WHEN la.is_shared AND t.personal_for = 'partner' THEN 0
+      ELSE t.amount * COALESCE(la.spending_split_pct, 100) / 100.0
+    END))`;
 
   // Monthly totals (last 24 months)
   const monthly = await pool.query(`
-    SELECT TO_CHAR(date, 'YYYY-MM') AS month,
-           SUM(ABS(amount)) AS total,
+    SELECT TO_CHAR(t.date, 'YYYY-MM') AS month,
+           SUM(${INCOME_AMOUNT}) AS total,
            COUNT(*) AS deposits
-    FROM transactions
-    WHERE pending = false
-      AND date >= ${sqlDate(sheetsMonth(-23) + "-01")}  -- 24 whole months (SXE-12)
-      AND amount < 0
-      AND ${INCOME_PREDICATE}
-    GROUP BY TO_CHAR(date, 'YYYY-MM')
+    FROM transactions t
+    LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+    WHERE t.pending = false
+      AND t.date >= ${sqlDate(sheetsMonth(-23) + "-01")}  -- 24 whole months (SXE-12)
+      AND t.amount < 0
+      AND ${INCOME_PREDICATE_T}
+    GROUP BY TO_CHAR(t.date, 'YYYY-MM')
     ORDER BY month DESC
   `);
 
   // Top sources (last 12 months) — group by merchant
   const sources = await pool.query(`
-    SELECT COALESCE(merchant_name, name) AS source,
-           SUM(ABS(amount)) AS total,
+    SELECT COALESCE(t.merchant_name, t.name) AS source,
+           SUM(${INCOME_AMOUNT}) AS total,
            COUNT(*) AS deposits,
-           MAX(date) AS most_recent
-    FROM transactions
-    WHERE pending = false
-      AND date >= ${sqlDate(sheetsMonth(-11) + "-01")}  -- 12 whole months (SXE-12)
-      AND amount < 0
-      AND ${INCOME_PREDICATE}
-    GROUP BY COALESCE(merchant_name, name)
+           MAX(t.date) AS most_recent
+    FROM transactions t
+    LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+    WHERE t.pending = false
+      AND t.date >= ${sqlDate(sheetsMonth(-11) + "-01")}  -- 12 whole months (SXE-12)
+      AND t.amount < 0
+      AND ${INCOME_PREDICATE_T}
+    GROUP BY COALESCE(t.merchant_name, t.name)
     ORDER BY total DESC
     LIMIT 50
   `);
@@ -3397,19 +3413,31 @@ async function syncWatchlist(sheets, pool) {
     return 0;
   }
 
-  // For each item, look up recent matching transactions
+  // For each item, look up recent matching transactions. A user value is a
+  // literal: LIKE metacharacters (\ % _) are escaped (F42 / INV-10 — "50%"
+  // or "a_b" acted as wildcards).
+  const likeLiteral = (v) => "%" + String(v).replace(/[\\%_]/g, (c) => "\\" + c) + "%";
+  // The 90-day total is SPENDING at your share (F42): debits only, reimbursed
+  // excluded, the shared-card split applied — the mirror of SPLIT_AMOUNT. It
+  // used to sum the raw signed amounts of at most 100 listed rows, so refunds
+  // and deposits netted in and a joint card counted in full.
+  const WATCH_SPEND = `(CASE
+      WHEN la.is_shared AND t.personal_for = 'self' THEN t.amount
+      WHEN la.is_shared AND t.personal_for = 'partner' THEN 0
+      ELSE t.amount * COALESCE(la.spending_split_pct, 100) / 100.0
+    END)`;
   const sections = [];
   for (const item of items) {
     let where, params;
     if (item.type === "merchant") {
-      where = `COALESCE(t.user_merchant_name, t.merchant_name, t.name) ILIKE $1`;
-      params = ["%" + item.value + "%"];
+      where = `COALESCE(t.user_merchant_name, t.merchant_name, t.name) ILIKE $1 ESCAPE '\\'`;
+      params = [likeLiteral(item.value)];
     } else if (item.type === "category") {
       where = `COALESCE(t.user_category, t.category[1]) = $1`;
       params = [item.value];
     } else { // keyword
-      where = `COALESCE(t.user_merchant_name, t.merchant_name, t.name) ILIKE $1 OR COALESCE(t.user_category, t.category[1]) ILIKE $1`;
-      params = ["%" + item.value + "%"];
+      where = `COALESCE(t.user_merchant_name, t.merchant_name, t.name) ILIKE $1 ESCAPE '\\' OR COALESCE(t.user_category, t.category[1]) ILIKE $1 ESCAPE '\\'`;
+      params = [likeLiteral(item.value)];
     }
     const { rows: matches } = await pool.query(
       `SELECT t.date, COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS merchant,
@@ -3424,11 +3452,21 @@ async function syncWatchlist(sheets, pool) {
        LIMIT 100`,
       params
     );
-    const total = matches.reduce((s, r) => s + parseFloat(r.amount), 0);
+    const { rows: [agg] } = await pool.query(
+      `SELECT COALESCE(SUM(${WATCH_SPEND}), 0) AS spend
+       FROM transactions t
+       JOIN linked_accounts la ON la.account_id = t.account_id
+       WHERE t.pending = false AND t.amount > 0
+         AND COALESCE(t.is_reimbursed, false) = false
+         AND t.date >= CURRENT_DATE - INTERVAL '90 days'
+         AND (${where})`,
+      params
+    );
+    const total = parseFloat((agg && agg.spend) || 0);
     sections.push({ item, matches, total });
   }
 
-  const allRows = [["Watchlist Item", "Type", "Match Count", "90-Day Total", "Notes"]];
+  const allRows = [["Watchlist Item", "Type", "Match Count", "90-Day Spend (your share)", "Notes"]];
   for (const s of sections) {
     allRows.push([s.item.value, s.item.type, s.matches.length, fmtCurrency(s.total), s.item.notes || ""]);
   }
@@ -3639,4 +3677,4 @@ if (require.main === module) {
 
 module.exports = { syncAll, syncDashboardOnly, syncTransactionsOnly };
 // Test seams (SXE-2/SXE-14).
-module.exports._internals = { guardCell, guardValues, guardSheetsWrites, sheetFormula, archiveReadyOn, archiveMarker, syncMonthArchives, MAX_ARCHIVES_PER_RUN, formatSheet, ensureSheet, getSheetId, sheetsShouldRetry, sheetsRetryDelayMs, SHEETS_RETRY_CONFIG };
+module.exports._internals = { syncWatchlist, guardCell, guardValues, guardSheetsWrites, sheetFormula, archiveReadyOn, archiveMarker, syncMonthArchives, MAX_ARCHIVES_PER_RUN, formatSheet, ensureSheet, getSheetId, sheetsShouldRetry, sheetsRetryDelayMs, SHEETS_RETRY_CONFIG };

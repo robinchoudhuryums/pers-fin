@@ -63,36 +63,24 @@ function localHourNow() {
 async function runBudgetAlertTick() {
   jobHealth.tick("budget-alerts");
   try {
-    const { getCategorySpendingThisMonth, currentMonth, previousMonthKey } = require("./services/financial-queries");
-    // tz-aware month keys (FAN-13) — the spending side (getCategorySpending-
-    // ThisMonth) is already APP_TIMEZONE-anchored, so the budget/rollover keys
-    // must be too. Rollover applied to this month is the PRIOR month's unused
-    // budget (FA-1) — the snapshot job stores it keyed by prevMonth.
-    const month = currentMonth();
-    const prevMonth = previousMonthKey(month);
-    const [budgets, spending, snapshots] = await Promise.all([
-      pool.query("SELECT id, category, monthly_limit, rollover_enabled, budget_type, effective_month FROM budgets"),
-      getCategorySpendingThisMonth(pool),
-      pool.query("SELECT budget_id, rollover_amount FROM budget_snapshots WHERE month = $1", [prevMonth]),
-    ]);
-    if (budgets.rows.length === 0) { jobHealth.result("budget-alerts", { ok: true }); return; }
-    const spendMap = {};
-    for (const r of spending) spendMap[r.category] = parseFloat(r.spent);
-    const snapMap = {};
-    for (const s of snapshots.rows) snapMap[s.budget_id] = s;
+    const { getBudgetStatus, currentMonth } = require("./services/financial-queries");
+    // ONE budget-status definition (F40, INV-73): getBudgetStatus applies the
+    // tz month (FAN-13), the PRIOR month's rollover (FA-1) and the one-time
+    // budget rule (F18) — the same numbers as GET /api/budgets and the in-app
+    // alerts. This tick used to re-implement all three.
+    const budgets = await getBudgetStatus(pool, currentMonth());
+    if (budgets.length === 0) { jobHealth.result("budget-alerts", { ok: true }); return; }
 
     const { sendToAll, sentRecently } = require("./routes/notifications");
-    for (const b of budgets.rows) {
-      // Skip one-time budgets outside their effective month, and compare
-      // against the effective limit (base + rollover) — same as the in-app
-      // alerts endpoint and GET /api/budgets (F18).
-      if (b.budget_type === "one_time" && b.effective_month && b.effective_month !== month) continue;
-      const spent = spendMap[b.category] || 0;
-      const snap = snapMap[b.id];
-      const rollover = (b.rollover_enabled && snap) ? parseFloat(snap.rollover_amount || 0) : 0;
-      const limit = parseFloat(b.monthly_limit) + rollover;
-      if (limit <= 0) continue;
-      const pct = Math.round((spent / limit) * 100);
+    for (const b of budgets) {
+      const spent = b.spent;
+      const limit = b.effective_limit;
+      if (!(limit > 0)) continue;
+      // Thresholds on the UNROUNDED share, like GET /api/budgets/alerts —
+      // Math.round made 99.5% "Budget exceeded". The shown % is floored so a
+      // warning never prints "100%".
+      const pct = (spent / limit) * 100;
+      const shownPct = Math.floor(pct);
       // At most one alert per category+severity per 24h: without this, a
       // category that stays over budget re-logged a notification_log row on
       // every 3-hour tick for the rest of the month — web-push collapsed the
@@ -104,7 +92,7 @@ async function runBudgetAlertTick() {
         if (await sentRecently(tag, 24)) continue;
         const r = await sendToAll({
           title: "Budget exceeded: " + b.category,
-          body: "$" + spent.toFixed(2) + " spent of $" + limit.toFixed(2) + " budget (" + pct + "%)",
+          body: "$" + spent.toFixed(2) + " spent of $" + limit.toFixed(2) + " budget (" + shownPct + "%)",
           tag,
           data: { url: "/budgets" },
         });
@@ -117,7 +105,7 @@ async function runBudgetAlertTick() {
             const { sendCriticalAlertEmail } = require("./routes/persistent");
             await sendCriticalAlertEmail(
               "Budget exceeded: " + b.category,
-              "$" + spent.toFixed(2) + " spent of $" + limit.toFixed(2) + " budget (" + pct + "%) this month."
+              "$" + spent.toFixed(2) + " spent of $" + limit.toFixed(2) + " budget (" + shownPct + "%) this month."
             );
           } catch (e) { console.error("Budget alert email error:", e.message); }
         } else {
@@ -128,7 +116,7 @@ async function runBudgetAlertTick() {
         if (await sentRecently(tag, 24)) continue;
         await sendToAll({
           title: "Budget warning: " + b.category,
-          body: "$" + spent.toFixed(2) + " of $" + limit.toFixed(2) + " (" + pct + "% — approaching limit)",
+          body: "$" + spent.toFixed(2) + " of $" + limit.toFixed(2) + " (" + shownPct + "% — approaching limit)",
           tag,
           data: { url: "/budgets" },
         });

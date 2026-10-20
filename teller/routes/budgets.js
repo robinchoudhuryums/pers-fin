@@ -5,7 +5,7 @@
 const express = require("express");
 const router = express.Router();
 const { pool } = require("../services/database");
-const { getCategorySpendingForMonth, getBudgetStatus, previousMonthKey, currentMonth, todayStr } = require("../services/financial-queries");
+const { getCategorySpendingForMonth, getBudgetStatus, previousMonthKey, currentMonth, todayStr, APP_TIMEZONE } = require("../services/financial-queries");
 const { MODEL_MAP } = require("../data/reference-data");
 
 let Anthropic;
@@ -395,6 +395,18 @@ router.post("/api/budgets/snapshot", async (req, res) => {
   }
 });
 
+// The APP_TIMEZONE 'YYYY-MM' of a timestamp (null when absent/invalid).
+function monthOf(ts) {
+  if (!ts) return null;
+  const d = ts instanceof Date ? ts : new Date(ts);
+  if (Number.isNaN(d.getTime())) return null;
+  try {
+    return new Intl.DateTimeFormat("en-CA", { timeZone: APP_TIMEZONE, year: "numeric", month: "2-digit" }).format(d).slice(0, 7);
+  } catch {
+    return d.toISOString().slice(0, 7); // invalid APP_TIMEZONE → UTC, like todayStr
+  }
+}
+
 // Snapshot a month's spending + rollover for every budget. `overwrite` = DO
 // UPDATE (refresh) vs DO NOTHING (create-if-missing). Returns rows written.
 async function writeBudgetSnapshot(db, month, { overwrite }) {
@@ -407,6 +419,13 @@ async function writeBudgetSnapshot(db, month, { overwrite }) {
   for (const r of spending) spendMap[r.category] = parseFloat(r.spent);
   let written = 0;
   for (const b of budgets.rows) {
+    // F38: only months the budget was in effect — a one-time budget's own
+    // effective_month (getBudgetStatus's rule), and nothing before the month
+    // the budget was created. A budget made on Oct 3 used to get a September
+    // snapshot carrying its whole limit as "unused", inflating October.
+    if (b.budget_type === "one_time" && b.effective_month && b.effective_month !== month) continue;
+    const createdMonth = monthOf(b.created_at);
+    if (createdMonth && createdMonth > month) continue;
     const spent = spendMap[b.category] || 0;
     const limit = parseFloat(b.monthly_limit);
     const rollover = b.rollover_enabled ? Math.max(0, limit - spent) : 0;

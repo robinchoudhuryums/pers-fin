@@ -11,10 +11,10 @@ const { categorizeSubscription, findCancelUrl } = require("../data/reference-dat
 const { CSV_FORMATS, INSTITUTION_LABELS, detectCsvFormat, parseDate, csvTransactionId, makeCsvTxnIdGenerator } = require("../data/csv-formats");
 const { detectSubscriptions } = require("../../scripts/detect-subscriptions");
 const { detectRecurringTransfers } = require("../../scripts/detect-transfers");
-const { INCOME_PREDICATE, NOT_TRANSFER, currentMonth, todayStr } = require("../services/financial-queries");
+const { NOT_TRANSFER, currentMonth, todayStr, getLiveIncomeStreams } = require("../services/financial-queries");
 const {
   nextOccurrence, seriesOccurrences, addDaysStr,
-  manualBillOccurrences, buildIncomeStreams, isIncomeStreamLive, incomeEventsBetween,
+  manualBillOccurrences, incomeEventsBetween,
 } = require("../services/cadence");
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -510,7 +510,8 @@ router.get("/api/csv-imports", async (_req, res) => {
 
 // GET /api/shared-settlement — month-by-month "who owes who" for shared
 // credit cards. Splits each transaction by personal_for: NULL rows use the
-// account's spending_split_pct (default 50/50 on a shared card); 'self' rows
+// account's spending_split_pct (NULL = 100, the SPLIT_AMOUNT default; 0 is a
+// real share — the card is all the partner's, F31); 'self' rows
 // are 100% the user; 'partner' rows are 100% the other cardholder. Reimbursed
 // rows are excluded entirely (they net out to neither party).
 // Query: month=YYYY-MM (default = current month), account_id (optional —
@@ -544,7 +545,7 @@ router.get("/api/shared-settlement", async (req, res) => {
         la.id AS account_id,
         la.account_id AS account_key,
         la.name AS account_name,
-        COALESCE(la.spending_split_pct, 50) AS split_pct,
+        COALESCE(la.spending_split_pct, 100) AS split_pct,
         COUNT(t.transaction_id)::int AS txn_count,
         ROUND(COALESCE(SUM(t.amount), 0)::numeric, 2) AS total_charges,
         ROUND(COALESCE(-SUM(t.amount) FILTER (WHERE t.amount < 0), 0)::numeric, 2) AS refunds_total,
@@ -571,14 +572,17 @@ router.get("/api/shared-settlement", async (req, res) => {
       const shared = parseFloat(r.shared_total) || 0;
       const yours = parseFloat(r.your_personal_total) || 0;
       const theirs = parseFloat(r.partner_personal_total) || 0;
-      const yourSplitPct = (parseInt(r.split_pct) || 50) / 100;
+      // 0% is a valid split — `parseInt(x) || 50` turned it into 50% (F31).
+      const pct = Number(r.split_pct);
+      const splitPct = Number.isFinite(pct) ? pct : 100;
+      const yourSplitPct = splitPct / 100;
       const yourShare = shared * yourSplitPct + yours;
       const theirShare = shared * (1 - yourSplitPct) + theirs;
       return {
         account_id: r.account_id,
         account_key: r.account_key,
         account_name: r.account_name,
-        split_pct: parseInt(r.split_pct),
+        split_pct: splitPct,
         txn_count: r.txn_count,
         total_charges: parseFloat(r.total_charges) || 0,
         refunds_total: parseFloat(r.refunds_total) || 0,
@@ -899,19 +903,9 @@ router.get("/api/bill-calendar", async (req, res) => {
     // biweekly / semimonthly (two fixed days) / monthly — then projected into
     // this month. The old GROUP BY (source, exact amount) + AVG(day) placed ONE
     // event per month, so biweekly/semimonthly pay read ~50% low.
-    const incomeResult = await pool.query(`
-      SELECT COALESCE(user_merchant_name, merchant_name, name) AS source,
-             date, ABS(amount) AS amount
-      FROM transactions
-      WHERE amount < 0 AND pending = false
-        AND date >= CURRENT_DATE - INTERVAL '4 months'
-        AND ${INCOME_PREDICATE}
-      ORDER BY date
-    `);
-
-    const today = todayStr();
-    for (const stream of buildIncomeStreams(incomeResult.rows)) {
-      if (!isIncomeStreamLive(stream, today)) continue;
+    // The query + clustering live in getLiveIncomeStreams, shared with the
+    // cash-flow forecast (F34).
+    for (const stream of await getLiveIncomeStreams(pool)) {
       for (const date of incomeEventsBetween(stream, startDate, endDate)) {
         const day = parseInt(date.slice(8, 10), 10);
         calendar[day].push({
