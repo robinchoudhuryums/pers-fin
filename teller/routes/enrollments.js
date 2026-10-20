@@ -210,9 +210,14 @@ async function syncEnrollment(enrollment, opts = {}) {
 
       try {
         const result = await pool.query(
+          // A transaction the user deleted (deleted_transactions, cycle-7
+          // F20) is never re-inserted — the 7-day lookback and the weekly
+          // reconcile re-fetch it. INSERT … SELECT needs explicit casts (its
+          // parameters aren't typed from the target columns).
           `INSERT INTO transactions (account_id, transaction_id, amount, iso_currency_code, date,
                                      merchant_name, name, category, pending)
-           VALUES ($1, $2, $3, 'USD', $4, $5, $6, $7, false)
+           SELECT $1::text, $2::text, $3::numeric, 'USD', $4::date, $5::text, $6::text, $7::text[], false
+           WHERE NOT EXISTS (SELECT 1 FROM deleted_transactions dt WHERE dt.transaction_id = $2::text)
            ON CONFLICT (transaction_id)
            DO UPDATE SET
              amount = EXCLUDED.amount,

@@ -291,12 +291,11 @@ describe("DC-4 — a user's transfer-type reclassification sticks", () => {
 // ---------------------------------------------------------------------------
 describe("DC-5 — csv-overlap identifies CSV accounts by their virtual item", () => {
   const app = () => mountApp("../teller/routes/transactions");
-  it("GET joins plaid_items status = 'CSV' (not is_manual) and counts DISTINCT CSV rows", async () => {
+  it("GET joins plaid_items status = 'CSV' (not is_manual); rows are paired one-to-one (cycle-7 F21)", async () => {
     let sql = "";
-    dbModule.pool.query = async (s) => { sql = s; return { rows: [] }; };
+    dbModule.pool.query = async (s) => { if (/AS csv_txn/.test(s)) sql = s; return { rows: [] }; };
     await supertest(app()).get("/api/transactions/csv-overlap").expect(200);
     assert.match(sql, /pi_csv\.status = 'CSV'/);
-    assert.match(sql, /SELECT DISTINCT/);
     assert.match(sql, /pi_s\.status <> 'CSV'/);
     assert.doesNotMatch(sql, /is_manual = true/);
   });
@@ -323,8 +322,11 @@ describe("DC-5 — csv-overlap identifies CSV accounts by their virtual item", (
       { id: 3, account_id: "csv_other", plaid_item_id: 8, teller_enrollment_id: null, plaid_status: "CSV" },
     ];
     dbModule.pool.query = async (s, p) => {
-      if (/FROM linked_accounts la/.test(s)) return { rows: rows.filter(r => p[0].includes(r.id)) };
-      if (/SELECT t_csv\.transaction_id/.test(s)) return { rows: [{ transaction_id: "x1" }, { transaction_id: "x2" }] };
+      if (/AS csv_txn/.test(s)) return { rows: [
+        { csv_id: 1, synced_id: 2, csv_txn: "x1", synced_txn: "s1", day_gap: 0, csv_merchant: "SAFEWAY 123", synced_merchant: "Safeway" },
+        { csv_id: 1, synced_id: 2, csv_txn: "x2", synced_txn: "s2", day_gap: 1, csv_merchant: "SHELL OIL", synced_merchant: "Shell" },
+      ] };
+      if (/FROM linked_accounts la\b/.test(s)) return { rows: rows.filter(r => p[0].includes(r.id)) };
       return { rows: [] };
     };
     const ok = await supertest(app()).post("/api/transactions/csv-overlap/resolve").send({ csv_account_id: 1, synced_account_id: 2, dry_run: true });

@@ -12,6 +12,7 @@
 const express = require("express");
 const router = express.Router();
 const { pool } = require("../services/database");
+const { isValidYmd } = require("../services/cadence");
 
 // GET /api/transactions/search — Full-text search with filters
 router.get("/api/transactions/search", async (req, res) => {
@@ -25,8 +26,10 @@ router.get("/api/transactions/search", async (req, res) => {
     let idx = 1;
 
     if (q) {
-      conditions.push(`(LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name, '')) LIKE $${idx})`);
-      values.push("%" + q.toLowerCase() + "%");
+      // The query is a literal (cycle-7 F57, INV-10): LIKE metacharacters are
+      // escaped so "50%" or "a_b" don't act as wildcards.
+      conditions.push(`(LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name, '')) LIKE $${idx} ESCAPE '\\')`);
+      values.push("%" + String(q).toLowerCase().replace(/[\\%_]/g, (c) => "\\" + c) + "%");
       idx++;
     }
     if (category) {
@@ -50,6 +53,10 @@ router.get("/api/transactions/search", async (req, res) => {
       conditions.push(`ABS(t.amount) <= $${idx}`);
       values.push(parseFloat(max_amount));
       idx++;
+    }
+    // A malformed date 500'd on the cast (F57).
+    if ((start_date && !isValidYmd(start_date)) || (end_date && !isValidYmd(end_date))) {
+      return res.status(400).json({ error: "start_date / end_date must be YYYY-MM-DD" });
     }
     if (start_date) {
       conditions.push(`t.date >= $${idx}`);
@@ -217,57 +224,111 @@ router.get("/api/transactions/duplicates", async (_req, res) => {
 // still in the database under a manual virtual account, and Plaid pulls fresh
 // copies of the same transactions under its own account_id. The transaction_id
 // scheme differs across sources so the existing ON CONFLICT dedup misses them.
+// Candidate pairs: a CSV row and a synced row with the same amount within ±2
+// days. Pairing happens in JS (pairOverlaps) — ONE synced row per CSV row and
+// vice versa, and only when the merchants look alike (cycle-7 F21: amount +
+// date alone matched two different $4.50 coffees, and one synced row matched
+// every same-amount CSV row around it, so "Resolve" deleted genuine CSV rows).
+const OVERLAP_CANDIDATES_SQL = `
+  SELECT la_csv.id AS csv_id, la_synced.id AS synced_id,
+         t_csv.transaction_id AS csv_txn, t_synced.transaction_id AS synced_txn,
+         t_csv.amount, t_csv.date,
+         ABS(t_synced.date - t_csv.date) AS day_gap,
+         COALESCE(t_csv.user_merchant_name, t_csv.merchant_name, t_csv.name) AS csv_merchant,
+         COALESCE(t_synced.user_merchant_name, t_synced.merchant_name, t_synced.name) AS synced_merchant,
+         t_synced.name AS synced_name
+  FROM linked_accounts la_csv
+  JOIN plaid_items pi_csv ON pi_csv.id = la_csv.plaid_item_id AND pi_csv.status = 'CSV'
+  JOIN transactions t_csv ON t_csv.account_id = la_csv.account_id
+  JOIN transactions t_synced ON t_synced.amount = t_csv.amount
+    AND ABS(t_synced.date - t_csv.date) <= 2
+    AND t_synced.account_id != t_csv.account_id
+  JOIN linked_accounts la_synced ON la_synced.account_id = t_synced.account_id
+  LEFT JOIN plaid_items pi_s ON pi_s.id = la_synced.plaid_item_id
+  WHERE (la_synced.teller_enrollment_id IS NOT NULL
+         OR (la_synced.plaid_item_id IS NOT NULL AND pi_s.status <> 'CSV'))`;
+
+// Merchant tokens: lower-case words of 3+ letters, minus processor/noise words.
+const MERCHANT_NOISE = new Set(["the", "and", "inc", "llc", "com", "www", "pos", "purchase", "debit", "card",
+  "payment", "recurring", "online", "sq", "tst", "paypal", "pending"]);
+function merchantTokens(s) {
+  return new Set(String(s || "").toLowerCase().replace(/[^a-z ]+/g, " ").split(/\s+/)
+    .filter((w) => w.length >= 3 && !MERCHANT_NOISE.has(w)));
+}
+// Two statement strings name the same merchant when they share a token, or one
+// token is a prefix (≥4 letters) of another ("amzn"/"amazon" don't — so the
+// raw synced description is tried as well as its cleaned merchant).
+function merchantsSimilar(a, b) {
+  const A = merchantTokens(a), B = merchantTokens(b);
+  for (const x of A) for (const y of B) {
+    if (x === y) return true;
+    if (x.length >= 4 && y.length >= 4 && (x.startsWith(y) || y.startsWith(x))) return true;
+  }
+  return false;
+}
+// One-to-one pairing per (csv account, synced account): merchant-similar
+// candidates only, closest dates first. Returns the matched candidate rows.
+function pairOverlaps(candidates) {
+  const ok = candidates
+    .filter((c) => merchantsSimilar(c.csv_merchant, c.synced_merchant) || merchantsSimilar(c.csv_merchant, c.synced_name))
+    .sort((x, y) => Number(x.day_gap) - Number(y.day_gap) || String(x.csv_txn).localeCompare(String(y.csv_txn)));
+  const used = new Set(), out = [];
+  for (const c of ok) {
+    const group = c.csv_id + "|" + c.synced_id;
+    const kc = group + "|csv|" + c.csv_txn, ks = group + "|synced|" + c.synced_txn;
+    if (used.has(kc) || used.has(ks)) continue;
+    used.add(kc); used.add(ks);
+    out.push(c);
+  }
+  return out;
+}
+
 router.get("/api/transactions/csv-overlap", async (_req, res) => {
   try {
     // CSV-imported accounts are NOT is_manual — /api/import-csv files them under
-    // a virtual plaid_items row with status = 'CSV' (DC-5). The old
-    // `la_csv.is_manual = true` filter matched only hand-made manual accounts
-    // (cash etc.), so real CSV/Plaid overlaps were never found, and a CSV
-    // account itself counted as the "synced" side (its plaid_item_id is set).
-    // Counts are over DISTINCT CSV rows: one CSV row matching two synced rows
-    // used to count (and sum) twice.
-    const result = await pool.query(`
-      WITH pairs AS (
-        SELECT DISTINCT
-          la_csv.id AS csv_id, la_synced.id AS synced_id,
-          t_csv.transaction_id, t_csv.amount, t_csv.date
-        FROM linked_accounts la_csv
-        JOIN plaid_items pi_csv ON pi_csv.id = la_csv.plaid_item_id AND pi_csv.status = 'CSV'
-        JOIN transactions t_csv ON t_csv.account_id = la_csv.account_id
-        JOIN transactions t_synced ON t_synced.amount = t_csv.amount
-          AND ABS(t_synced.date - t_csv.date) <= 2
-          AND t_synced.account_id != t_csv.account_id
-        JOIN linked_accounts la_synced ON la_synced.account_id = t_synced.account_id
-        LEFT JOIN plaid_items pi_s ON pi_s.id = la_synced.plaid_item_id
-        WHERE (la_synced.teller_enrollment_id IS NOT NULL
-               OR (la_synced.plaid_item_id IS NOT NULL AND pi_s.status <> 'CSV'))
-      )
-      SELECT
-        la_csv.id AS csv_account_id,
-        la_csv.name AS csv_account_name,
-        COALESCE(la_csv.institution_name_manual, pi_csv.institution_name) AS csv_institution,
-        la_synced.id AS synced_account_id,
-        la_synced.name AS synced_account_name,
-        COALESCE(pi.institution_name, te.institution_name) AS synced_institution,
-        CASE WHEN pi.id IS NOT NULL THEN 'plaid' ELSE 'teller' END AS synced_source,
-        COUNT(*)::int AS overlap_count,
-        SUM(p.amount)::numeric(14,2) AS overlap_amount,
-        MIN(p.date) AS overlap_first_date,
-        MAX(p.date) AS overlap_last_date
-      FROM pairs p
-      JOIN linked_accounts la_csv ON la_csv.id = p.csv_id
-      JOIN plaid_items pi_csv ON pi_csv.id = la_csv.plaid_item_id
-      JOIN linked_accounts la_synced ON la_synced.id = p.synced_id
-      LEFT JOIN plaid_items pi ON pi.id = la_synced.plaid_item_id
-      LEFT JOIN teller_enrollments te ON te.id = la_synced.teller_enrollment_id
-      GROUP BY la_csv.id, la_csv.name, la_csv.institution_name_manual, pi_csv.institution_name,
-               la_synced.id, la_synced.name, pi.institution_name, te.institution_name, pi.id
-      HAVING COUNT(*) >= 3
-      ORDER BY COUNT(*) DESC
-    `);
+    // a virtual plaid_items row with status = 'CSV' (DC-5). Counts are over
+    // one-to-one, merchant-checked pairs (F21).
+    const [cand, accts] = await Promise.all([
+      pool.query(OVERLAP_CANDIDATES_SQL),
+      pool.query(`
+        SELECT la.id, la.name,
+               COALESCE(la.institution_name_manual, pi.institution_name, te.institution_name) AS institution,
+               pi.status AS plaid_status, pi.id AS plaid_id
+        FROM linked_accounts la
+        LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
+        LEFT JOIN teller_enrollments te ON te.id = la.teller_enrollment_id`),
+    ]);
+    const byId = new Map(accts.rows.map((a) => [a.id, a]));
+    const groups = new Map();
+    for (const p of pairOverlaps(cand.rows)) {
+      const key = p.csv_id + "|" + p.synced_id;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(p);
+    }
+    const overlaps = [];
+    for (const [key, pairs] of groups) {
+      if (pairs.length < 3) continue;
+      const [csvId, syncedId] = key.split("|").map(Number);
+      const c = byId.get(csvId) || {}, s = byId.get(syncedId) || {};
+      const dates = pairs.map((p) => String(p.date instanceof Date ? p.date.toISOString() : p.date).slice(0, 10)).sort();
+      overlaps.push({
+        csv_account_id: csvId,
+        csv_account_name: c.name,
+        csv_institution: c.institution,
+        synced_account_id: syncedId,
+        synced_account_name: s.name,
+        synced_institution: s.institution,
+        synced_source: s.plaid_id ? "plaid" : "teller",
+        overlap_count: pairs.length,
+        overlap_amount: Math.round(pairs.reduce((sum, p) => sum + parseFloat(p.amount), 0) * 100) / 100,
+        overlap_first_date: dates[0],
+        overlap_last_date: dates[dates.length - 1],
+      });
+    }
+    overlaps.sort((a, b) => b.overlap_count - a.overlap_count);
     res.json({
-      overlaps: result.rows,
-      note: "CSV virtual accounts whose transactions overlap with Plaid/Teller-synced accounts. POST /api/transactions/csv-overlap/resolve with { csv_account_id, synced_account_id } to delete the CSV-side duplicates.",
+      overlaps,
+      note: "CSV virtual accounts whose transactions overlap with Plaid/Teller-synced accounts (same amount, date ±2 days, similar merchant, one-to-one). POST /api/transactions/csv-overlap/resolve with { csv_account_id, synced_account_id } to delete the CSV-side duplicates.",
     });
   } catch (err) {
     console.error("csv-overlap error:", err.message);
@@ -276,9 +337,10 @@ router.get("/api/transactions/csv-overlap", async (_req, res) => {
 });
 
 // POST /api/transactions/csv-overlap/resolve — delete CSV transactions that
-// have a matching Plaid/Teller transaction (same amount, date ±2 days). Keeps
-// the Plaid/Teller side as the canonical source going forward. Also offers a
-// dry_run flag so the user can preview the row count before committing.
+// pair one-to-one with a Plaid/Teller transaction (same amount, date ±2 days,
+// similar merchant — F21). Keeps the Plaid/Teller side as the canonical source
+// going forward. Also offers a dry_run flag so the user can preview the row
+// count before committing.
 router.post("/api/transactions/csv-overlap/resolve", async (req, res) => {
   const csvAccountId = parseInt(req.body?.csv_account_id);
   const syncedAccountId = parseInt(req.body?.synced_account_id);
@@ -307,21 +369,13 @@ router.post("/api/transactions/csv-overlap/resolve", async (req, res) => {
       return res.status(400).json({ error: "synced_account_id must be a Plaid- or Teller-linked account" });
     }
     const candidates = await pool.query(
-      `SELECT t_csv.transaction_id
-       FROM transactions t_csv
-       WHERE t_csv.account_id = $1
-         AND EXISTS (
-           SELECT 1 FROM transactions t_synced
-           WHERE t_synced.account_id = $2
-             AND t_synced.amount = t_csv.amount
-             AND ABS(EXTRACT(EPOCH FROM (t_synced.date::timestamp - t_csv.date::timestamp)) / 86400) <= 2
-         )`,
-      [csv.account_id, synced.account_id]
+      OVERLAP_CANDIDATES_SQL + " AND la_csv.id = $1 AND la_synced.id = $2",
+      [csvAccountId, syncedAccountId]
     );
+    const ids = pairOverlaps(candidates.rows).map((p) => p.csv_txn);
     if (dryRun) {
-      return res.json({ would_delete: candidates.rows.length, dry_run: true });
+      return res.json({ would_delete: ids.length, dry_run: true });
     }
-    const ids = candidates.rows.map(r => r.transaction_id);
     if (!ids.length) return res.json({ deleted: 0 });
     const del = await pool.query(
       `DELETE FROM transactions WHERE transaction_id = ANY($1::text[]) RETURNING transaction_id`,
@@ -349,7 +403,8 @@ router.post("/api/transactions/manual", async (req, res) => {
   if (!account_id) return res.status(400).json({ error: "account_id is required" });
   const amt = parseFloat(amount);
   if (!Number.isFinite(amt) || amt <= 0) return res.status(400).json({ error: "amount must be a positive number" });
-  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(String(date))) return res.status(400).json({ error: "date must be YYYY-MM-DD" });
+  // A real date, not just the shape — "2026-13-45" used to 500 on insert (F57).
+  if (!isValidYmd(date)) return res.status(400).json({ error: "date must be YYYY-MM-DD" });
   try {
     const acct = await pool.query("SELECT account_id, is_manual FROM linked_accounts WHERE account_id = $1", [account_id]);
     if (!acct.rows.length) return res.status(404).json({ error: "Account not found" });
@@ -508,20 +563,38 @@ router.delete("/api/transactions/:id/splits", async (req, res) => {
   }
 });
 
-// DELETE /api/transactions/:id — Delete a specific transaction (for dedup)
+// DELETE /api/transactions/:id — Delete a specific transaction (for dedup).
+// The id is remembered in deleted_transactions so a Teller / Plaid re-fetch
+// (the 7-day lookback, the weekly reconcile, a Plaid reconcile) doesn't bring
+// it back (cycle-7 F20 — the duplicate-cleanup's work was undone and the
+// row's splits were lost the second time).
 router.delete("/api/transactions/:id", async (req, res) => {
+  const client = await pool.connect();
   try {
-    const result = await pool.query(
+    await client.query("BEGIN");
+    const result = await client.query(
       "DELETE FROM transactions WHERE transaction_id = $1 RETURNING transaction_id",
       [req.params.id]
     );
-    if (!result.rows.length) return res.status(404).json({ error: "Transaction not found" });
+    if (!result.rows.length) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Transaction not found" });
+    }
+    await client.query(
+      "INSERT INTO deleted_transactions (transaction_id) VALUES ($1) ON CONFLICT DO NOTHING",
+      [req.params.id]
+    );
+    await client.query("COMMIT");
     res.json({ deleted: true, transaction_id: req.params.id });
   } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
     console.error("delete transaction error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
-  }
+  } finally { client.release(); }
 });
 
 
 module.exports = router;
+// Test seams (cycle-7 F21) — attached after the router assignment (INV-19).
+module.exports.pairOverlaps = pairOverlaps;
+module.exports.merchantsSimilar = merchantsSimilar;

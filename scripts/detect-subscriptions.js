@@ -6,8 +6,8 @@
 //
 // Usage:
 //   - As a standalone script: TOKEN_ENCRYPTION_PASSPHRASE=... NEON_DATABASE_URL=... node detect-subscriptions.js
-//   - Paste the detectSubscriptions() function body into an n8n Code node
-//     (the n8n variant is at the bottom of this file).
+//   - In-process: routes/subscriptions.js runSubscriptionDetection (the scheduler
+//     and POST /api/detect) calls detectSubscriptions(pool).
 //
 // Algorithm:
 //   1. Pull all non-pending transactions from the last 36 months

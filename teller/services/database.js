@@ -142,6 +142,12 @@ async function runMigrations() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_txn_account_date ON transactions (account_id, date DESC)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_txn_merchant ON transactions (merchant_name) WHERE merchant_name IS NOT NULL`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_txn_date ON transactions (date)`);
+    // Cycle-7 F20: transactions the user deleted. The Teller and Plaid upserts
+    // skip these ids so a re-fetch (lookback, reconcile) can't resurrect them.
+    await client.query(`CREATE TABLE IF NOT EXISTS deleted_transactions (
+      transaction_id TEXT PRIMARY KEY,
+      deleted_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
     await client.query(`CREATE TABLE IF NOT EXISTS detected_subscriptions (
       id             SERIAL PRIMARY KEY,
       merchant_key   TEXT NOT NULL,

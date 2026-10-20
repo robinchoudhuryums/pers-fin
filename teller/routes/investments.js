@@ -580,9 +580,13 @@ async function syncPlaidItemTransactions(client, plaidItemDbId, accessToken) {
   const upsertTxn = (txn) => {
     const logoUrl = txn.counterparties?.[0]?.logo_url || null;
     return pool.query(
+      // Never re-insert a transaction the user deleted (deleted_transactions,
+      // cycle-7 F20 — a Plaid reconcile re-walks the whole history). INSERT …
+      // SELECT needs explicit casts.
       `INSERT INTO transactions (account_id, transaction_id, amount, iso_currency_code, date,
                                  merchant_name, name, category, pending, personal_finance_category, logo_url)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, $9, $10)
+       SELECT $1::text, $2::text, $3::numeric, $4::text, $5::date, $6::text, $7::text, $8::text[], false, $9::jsonb, $10::text
+       WHERE NOT EXISTS (SELECT 1 FROM deleted_transactions dt WHERE dt.transaction_id = $2::text)
        ON CONFLICT (transaction_id)
        DO UPDATE SET
          amount = EXCLUDED.amount,

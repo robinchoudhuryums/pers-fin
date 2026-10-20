@@ -5,7 +5,7 @@
 const express = require("express");
 const router = express.Router();
 const { pool } = require("../services/database");
-const { MODEL_MAP, estimateCostUsd, estimateCostGranular } = require("../data/reference-data");
+const { MODEL_MAP, estimateCostUsd } = require("../data/reference-data");
 const { createToolCall, effortParams } = require("../services/claude");
 
 let Anthropic;

@@ -87,12 +87,6 @@ function occurrencesBetween(anchor, cadenceDays, from, to, max = 400) {
   return out;
 }
 
-// First occurrence on or after `from`.
-function firstOnOrAfter(anchor, cadenceDays, from) {
-  const far = fmt(...(() => { const p = parseYmd(from); return [p.y + 3, p.m, p.d]; })());
-  return occurrencesBetween(anchor, cadenceDays, from, far, 2000)[0] || null;
-}
-
 // Manual bills (DC-15): ONE placement rule shared by the in-app calendar and
 // the ICS feed. The series is anchored on the month the bill was created with
 // the bill's due_day (clamped to each month's real length — no blanket 28-day
@@ -255,7 +249,17 @@ function incomeEventsBetween(stream, from, to) {
   return [];
 }
 
+// A real calendar date in 'YYYY-MM-DD' form (cycle-7 F57) — the shape regex
+// alone let "2026-13-45" through to Postgres, which 500'd on the cast.
+function isValidYmd(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || ""));
+  if (!m) return false;
+  const y = +m[1], mo = +m[2], d = +m[3];
+  return mo >= 1 && mo <= 12 && d >= 1 && d <= daysInMonth(y, mo - 1);
+}
+
 module.exports = {
+  isValidYmd,
   seriesOccurrences,
   buildIncomeStreams,
   classifyIncomeDates,
@@ -271,5 +275,4 @@ module.exports = {
   stepDate,
   nextOccurrence,
   occurrencesBetween,
-  firstOnOrAfter,
 };

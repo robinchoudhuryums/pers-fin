@@ -14,7 +14,7 @@ const { detectRecurringTransfers } = require("../../scripts/detect-transfers");
 const { NOT_TRANSFER, currentMonth, todayStr, getLiveIncomeStreams } = require("../services/financial-queries");
 const {
   nextOccurrence, seriesOccurrences, addDaysStr,
-  manualBillOccurrences, incomeEventsBetween,
+  manualBillOccurrences, incomeEventsBetween, daysInMonth,
 } = require("../services/cadence");
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -83,7 +83,7 @@ router.post("/api/subscriptions", async (req, res) => {
   if (isNaN(parsedCadence) || parsedCadence < 1) return res.status(400).json({ error: "cadence_days must be a positive integer" });
   try {
     const merchantKey = `manual_${name.toLowerCase().replace(/[^a-z0-9]+/g, "_")}`;
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayStr(); // APP_TIMEZONE date, not UTC (cycle-7 F57)
     const nextExpected = nextOccurrence(today, parsedCadence); // DC-9 calendar-month stepping
 
     const result = await pool.query(
@@ -128,11 +128,14 @@ router.patch("/api/subscriptions/:id/dismiss", async (req, res) => {
   }
 });
 
-// PATCH /api/subscriptions/:id/undismiss
+// PATCH /api/subscriptions/:id/undismiss — also re-activates the row (unless
+// it was cancelled): detection keeps a dismissed row inactive, so restoring
+// only is_dismissed left it in neither the active nor the dismissed list
+// until the next detection run (cycle-7 F56).
 router.patch("/api/subscriptions/:id/undismiss", async (req, res) => {
   try {
     const result = await pool.query(
-      `UPDATE detected_subscriptions SET is_dismissed = false, updated_at = now()
+      `UPDATE detected_subscriptions SET is_dismissed = false, is_active = (cancelled_at IS NULL), updated_at = now()
        WHERE id = $1 RETURNING *`,
       [req.params.id]
     );
@@ -781,10 +784,22 @@ router.get("/api/forecast", async (req, res) => {
   }
 });
 
+// year/month query params for the calendar views (cycle-7 F57): defaults are
+// the APP_TIMEZONE month (they were the server's UTC month), and an impossible
+// month (13) or year is a 400 — it used to build "2026-13-01" and 500.
+function calendarMonthParams(query) {
+  const [cy, cmo] = currentMonth().split("-").map(Number);
+  const year = query.year == null || query.year === "" ? cy : Number(query.year);
+  const month = query.month == null || query.month === "" ? cmo : Number(query.month);
+  if (!Number.isInteger(year) || year < 1900 || year > 2999 || !Number.isInteger(month) || month < 1 || month > 12) return null;
+  return { year, month };
+}
+
 // GET /api/bill-calendar — Monthly calendar of expected charges
 router.get("/api/bill-calendar", async (req, res) => {
-  const year = parseInt(req.query.year) || new Date().getFullYear();
-  const month = parseInt(req.query.month) || new Date().getMonth() + 1;
+  const ym = calendarMonthParams(req.query);
+  if (!ym) return res.status(400).json({ error: "year must be 1900-2999 and month 1-12" });
+  const { year, month } = ym;
   try {
     const daysInMonth = new Date(year, month, 0).getDate();
     const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
@@ -1011,10 +1026,11 @@ router.patch("/api/recurring-transfers/:id/dismiss", async (req, res) => {
 });
 
 // PATCH /api/recurring-transfers/:id/undismiss — restore a dismissed transfer
+// (and re-activate it — detection kept it inactive while dismissed; F56).
 router.patch("/api/recurring-transfers/:id/undismiss", async (req, res) => {
   try {
     const result = await pool.query(
-      "UPDATE recurring_transfers SET is_dismissed = false, updated_at = now() WHERE id = $1 RETURNING *",
+      "UPDATE recurring_transfers SET is_dismissed = false, is_active = true, updated_at = now() WHERE id = $1 RETURNING *",
       [req.params.id]
     );
     if (!result.rows.length) return res.status(404).json({ error: "Not found" });
@@ -1065,8 +1081,9 @@ router.post("/api/manual-bills", async (req, res) => {
   if (!name || amount == null || !due_day) {
     return res.status(400).json({ error: "name, amount, and due_day are required" });
   }
-  const parsedDay = parseInt(due_day);
-  if (parsedDay < 1 || parsedDay > 31) return res.status(400).json({ error: "due_day must be 1-31" });
+  // A non-numeric due_day used to pass (NaN < 1 is false) and 500 on insert (F57).
+  const parsedDay = Number(due_day);
+  if (!Number.isInteger(parsedDay) || parsedDay < 1 || parsedDay > 31) return res.status(400).json({ error: "due_day must be 1-31" });
   const parsedAmount = parseFloat(amount);
   if (isNaN(parsedAmount) || parsedAmount <= 0) return res.status(400).json({ error: "amount must be positive" });
   const validCadences = ["monthly", "quarterly", "yearly"];
@@ -1183,8 +1200,9 @@ router.delete("/api/bill-payments/:id", async (req, res) => {
 
 // GET /api/bill-payments — list payments for a month
 router.get("/api/bill-payments", async (req, res) => {
-  const year = parseInt(req.query.year) || new Date().getFullYear();
-  const month = parseInt(req.query.month) || new Date().getMonth() + 1;
+  const ym = calendarMonthParams(req.query);
+  if (!ym) return res.status(400).json({ error: "year must be 1900-2999 and month 1-12" });
+  const { year, month } = ym;
   const startDate = `${year}-${String(month).padStart(2, "0")}-01`;
   const daysInMonth = new Date(year, month, 0).getDate();
   const endDate = `${year}-${String(month).padStart(2, "0")}-${String(daysInMonth).padStart(2, "0")}`;
@@ -1203,14 +1221,33 @@ router.get("/api/bill-payments", async (req, res) => {
 // ---------------------------------------------------------------------------
 // Bill-calendar iCalendar feed (subscribed from iOS/Google Calendar). Pure
 // read: projects the next `days` of expected charges — detected subscriptions
-// stepping next_expected by cadence_days, plus active manual bills (monthly =
-// every occurrence in the window; quarterly/yearly = next occurrence only,
-// since their anchor month is ambiguous). All-day VEVENTs with stable UIDs so
-// re-fetches update in place. Served via the shell's token-gated public
-// /calendar.ics route (calendar apps can't send headers or cookies).
+// by calendar-month cadence (seriesOccurrences), active manual bills via the
+// in-app calendar's own placement rule (manualBillOccurrences — every
+// occurrence in the window), and unpaid Rent & Utilities obligations. All-day
+// VEVENTs with stable UIDs so re-fetches update in place. Served via the
+// shell's token-gated public /calendar.ics route (calendar apps can't send
+// headers or cookies).
 // ---------------------------------------------------------------------------
 function icsEscape(t) {
   return String(t).replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
+}
+// RFC 5545 §3.1 line folding (cycle-7 F59): a content line longer than 75
+// OCTETS is split, each continuation starting with one space. Splits on UTF-8
+// character boundaries so a multi-byte merchant name is never cut mid-character.
+function icsFold(line) {
+  if (Buffer.byteLength(line, "utf8") <= 75) return line;
+  const parts = [];
+  let cur = "", curBytes = 0, limit = 75;
+  for (const ch of line) {
+    const b = Buffer.byteLength(ch, "utf8");
+    if (curBytes + b > limit) {
+      parts.push(cur);
+      cur = ""; curBytes = 0; limit = 74; // the leading space takes one octet
+    }
+    cur += ch; curBytes += b;
+  }
+  parts.push(cur);
+  return parts.join("\r\n ");
 }
 function icsDate(d) {
   return d.toISOString().slice(0, 10).replace(/-/g, "");
@@ -1274,7 +1311,10 @@ async function buildBillCalendarIcs(days) {
     for (const o of housing.rows) {
       const [y, m] = String(o.period).split("-").map(Number);
       if (!y || !m) continue;
-      const dueDay = Math.min(28, Math.max(1, parseInt(o.due_day) || 1));
+      // Clamped to the period's REAL length (cycle-7 F45): the 28-day cap
+      // placed a rent due on the 30th on the 28th and flagged it OVERDUE on
+      // the 29th–30th, before it was due.
+      const dueDay = Math.min(daysInMonth(y, m - 1), Math.max(1, parseInt(o.due_day) || 1));
       const d = new Date(Date.UTC(y, m - 1, dueDay));
       if (d <= end) {
         // An unpaid obligation whose due date has passed stays visible on TODAY,
@@ -1305,7 +1345,7 @@ async function buildBillCalendarIcs(days) {
       "UID:" + ev.uid,
       "DTSTAMP:" + stamp,
       "DTSTART;VALUE=DATE:" + icsDate(ev.date),
-      "SUMMARY:" + icsEscape(ev.summary),
+      icsFold("SUMMARY:" + icsEscape(ev.summary)),
       "TRANSP:TRANSPARENT",
       "END:VEVENT"
     );
@@ -1333,4 +1373,5 @@ function paidKey(billSource, billId, paidDate) {
 module.exports = router;
 module.exports.runSubscriptionDetection = runSubscriptionDetection;
 module.exports.buildBillCalendarIcs = buildBillCalendarIcs;
+module.exports.icsFold = icsFold; // test seam (cycle-7 F59)
 module.exports.paidKey = paidKey;

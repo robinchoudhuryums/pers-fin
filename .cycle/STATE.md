@@ -18,7 +18,25 @@ Updated: 2026-10-20
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 5 DONE** on branch
+- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 6 DONE** on branch
+  `claude/sweet-ritchie-f9d8ah` (2026-10-20). Delete integrity and feeds.
+  - **Completed:** F20 (deleted_transactions tombstone skipped by the Teller + Plaid upserts),
+    F21 (CSV-overlap: merchant-similar, one-to-one pairing; GET and Resolve share it), F45 (ICS
+    rent due day clamped to the real month), F59 (RFC 5545 folding), F56 (Undismiss
+    re-activates), F57 (calendar month / due_day / search dates / manual date 400s, literal
+    search LIKE, APP_TIMEZONE defaults), F58 (dead artifacts removed).
+  - **Tests:** npm test 1583/1583 (+10 scan-oct-batch6); contract 75/75 (+7 delete-feeds);
+    migrations twice; Playwright 35/35. All new tests fail pre-fix.
+  - **Net score:** 0 − 0 = 0.
+  - **Decisions:** tombstones only for the user DELETE route (Plaid `removed` and CSV-overlap
+    resolve deletions aren't tombstoned — provider-side and CSV ids never re-enter via the
+    provider upserts); CSV re-import doesn't check tombstones (preview parity).
+  - **Follow-ons:** no undelete; CSV re-import vs tombstones decision.
+  - **Block:** `.cycle/blocks/7-batch6-broad-implement.md`.
+  - **Where I left off:** Batch 6 committed and pushed (no PR). NEXT: /sync-docs for Batch 6,
+    then Batch 7.
+
+- **Previous:** **Cycle 7 — Oct 2026 broad scan, Batch 5 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-20). Money accuracy and classification.
   - **Completed:** F31 (0% split null-safe), F32 (NOT_TRANSFER brand words on the cleaned
     merchant only + exemptions; Sheets mirror), F51 (Transfer/Investment category excluded),
