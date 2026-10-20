@@ -541,7 +541,8 @@ GET    /sw.js               # Service worker
   inbound `insights_generated` webhooks from Perfin. `routes/perfin.js` reads
   this to decide who to mail the rendered insight HTML to; falls back to
   `SMTP_FROM` / `SMTP_USER` if unset, or saves the email as a draft if no
-  destination resolves.
+  destination resolves. (Under the shell Perfin writes the `emails` row itself —
+  `deliverDigestInProcess` — and reports a draft as NOT sent, cycle-7 F79.)
 - Perfin also emits `weekly_summary` and `daily_summary` webhooks
   (different event names, same `{ subject, html_body, plain_text }`
   payload shape) for the opt-in weekly + daily digest channels.
@@ -771,7 +772,11 @@ runs as an Express sub-app mounted at `/per-sistant`. Three things change:
   `persistent.app.set("perfinPool", perfin.pool)`, so any route can
   `req.app.get("perfinPool")` to query Perfin's database directly. The Perfin
   widget at `routes/perfin.js` uses this for an embedded fast-path; the HTTP
-  fetch path is preserved only as the standalone fallback.
+  fetch path is preserved only as the standalone fallback. Both paths compute
+  the figures with `widgetFigures(subs, today)`: monthly cost = Σ amount × 30 /
+  cadence_days (Perfin's monthly-equivalent rule), upcoming = `next_expected`
+  from today (APP_TIMEZONE, `health.todayStr()`) through today + 7 — a charge
+  due today counts (cycle-7 F80).
 - **basePath middleware.** `views.basePathMiddleware` (in `server.js`) makes
   `req.baseUrl` available to view helpers via AsyncLocalStorage so emitted
   URLs gain the `/per-sistant` prefix without each helper threading the

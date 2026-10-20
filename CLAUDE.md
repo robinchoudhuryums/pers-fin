@@ -562,7 +562,11 @@ shell/
   writing and throws on a server-sync layout instead of corrupting it (SXE-15) —
   point it at a SEPARATE spreadsheet from the server `GOOGLE_SHEETS_ID`. Its
   category column prefers the app category over Plaid's PFC
-  (`txn.category || txn.pfc_primary`).
+  (`txn.category || txn.pfc_primary`). Every data `setValues` / `appendRow`
+  goes through `guardRows_` / `guardCell_` (cycle-7 F84 — the server script's
+  formula guard, ported: text starting `= + - @` tab/CR is `'`-prefixed, plain
+  signed numbers pass); only the fixed header rows are written unguarded. Ships
+  via clasp, not the Render deploy.
 - `tests/` — Perfin test suite (node:test runner). Includes
   `tests/audit-regressions.test.js` which pins documented behavior for
   auth, SSO, template hygiene, exclusion rules, and the S1-S4 / #8 / #19
@@ -571,9 +575,18 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1608 tests as of latest); use
+  Perfin and Per-sistant test files (1624 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1608 tests across 75 test files (incl.
+  Current count: 1624 tests across 76 test files (incl.
+  `tests/scan-oct-batch9.test.js` — the Oct 2026 (cycle 7) Batch 9 Sheets / cross-app
+  pins that need no database: completed-month Sheets averages (F75), resetFormats on
+  Income / AI Trust / Watchlist and `singleFlight` (F77/F78), the guard's plain-number
+  pass-through (F83), Code.gs's `guardRows_` run in a vm + every data write guarded
+  (F84), Per-sistant's `widgetFigures` (F80), the in-process draft reported not sent +
+  the daily tick settling on it (F79), the settings 400s / dashboard env check /
+  partial-sync failure record / once-a-day notification prune (F86) and the
+  income-predicate comment (F44) — the database-backed half lives in
+  `tests/contract/sheets-crossapp.contract.test.js`;
   `tests/scan-oct-batch8.test.js` — the Oct 2026 (cycle 7) Batch 8 AI-trust pins that
   need no database: named other months + the sentence/clause period window + k/M
   amounts (F61/F68), bounded entity capture (F67), Ask's last round without tools /
@@ -708,11 +721,15 @@ shell/
   prompt on funding-derived progress with ISO dates, the audit on real spending —
   a named other month, an earlier sentence's period word, "$1.2k", a hallucinated
   merchant next to a known one — the AI spend month and Accept with a repeated
-  category) and knowledge (syncVault through a
+  category), sheets-crossapp (cycle-7 Batch 9, a recording fake Sheets API: a
+  yearly utility's next due on its anniversary, every monthly manual-bill
+  occurrence in Important Dates + a month-end transfer stepped by calendar month,
+  the Credit Scores change per score type, notification_log retention, and the
+  in-process digest draft reported not sent) and knowledge (syncVault through a
   fake GitHub API via its `fetchImpl`, syncNotes, keyword search never returning
   secret text, secret-lookup, facts current vs `all=1` + verify, /api/rag/query
   without AI, an incremental compare that removes a deleted file) plus insight
-  feedback set / change / clear (the F60 `$1::text` cast). 82 tests, run
+  feedback set / change / clear (the F60 `$1::text` cast). 87 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -1103,7 +1120,8 @@ shell/
   (740+=green, 670+=teal, 580+=yellow, <580=red), delta vs prior entry,
   delta vs ~6 months ago, collapsible history, and inline log form.
   Synced to a Google Sheets "Credit Scores" tab with per-entry change
-  column. The last 6 score entries + trajectory are injected into the
+  column (vs the previous entry of the SAME score type — cycle-7 F86: a FICO
+  row used to be compared with an interleaved VantageScore). The last 6 score entries + trajectory are injected into the
   AI insights prompt so Claude can correlate score changes with spending
   behavior (e.g. reduced utilization → score improvement).
 - **Tax deduction report**: computed at EXPORT time from the transactions ledger
@@ -1707,7 +1725,13 @@ shell/
   (`insights_generated`, `weekly_summary`, `daily_summary`) through
   `deliverDigestInProcess`, which INSERTs straight into Per-sistant's `emails`
   table (recipient = `perfin_webhook_recipient` → `SMTP_FROM` → `SMTP_USER` →
-  draft) — no `persistent_url`/secret/HMAC needed. The HTTP webhook path remains
+  draft) — no `persistent_url`/secret/HMAC needed. The recipient must look like
+  an address; with none (or an invalid one) the email is still stored as a draft
+  but the call returns `{ sent: false, stored: "draft", reason:
+  "no_recipient_configured" | "invalid_recipient" }` (cycle-7 F79 — a draft used
+  to be reported `sent: true`). The weekly / daily digest ticks treat those two
+  reasons as settled for the local day (no hourly drafts) and record the run as
+  a failed job, so Sync Health shows it. The HTTP webhook path remains
   the standalone fallback, and the `test` event always uses HTTP (it exists to
   probe the webhook config). `GET /api/settings` returns `embedded` so the
   Settings UI suppresses the "configure the webhook" digest prereq warning when
@@ -1726,9 +1750,10 @@ shell/
   skips (`empty_summary`) when all four summary arrays are empty (AIN-16).
   Alerts are coloured by their own critical/warning/info map (AIN-14). The
   plain-text version lists Recently Completed goals like the HTML one (F72).
-  Requires Per-sistant webhook configured (same path as
-  `insights_generated`); without it `sendPerSistantWebhook` short-circuits
-  and the digest is a no-op.
+  Under the shell it's delivered in-process (needs a recipient address — else
+  a draft, reported not sent, F79); a STANDALONE Perfin needs the Per-sistant
+  webhook configured (same path as `insights_generated`); without it
+  `sendPerSistantWebhook` short-circuits and the digest is a no-op.
 - **Daily activity digest**: opt-in once-per-day digest of yesterday's
   new transactions, balance deltas, new subscriptions, and notifications.
   Fires the `daily_summary` webhook event with `{ subject, html_body,
@@ -1959,10 +1984,12 @@ shell/
     highlight; warning-only sheet protection.
   - **Utilities**: auto-detected utility subscriptions + `manual_bills`
     with `category='utility'`, TOTAL roll-up combining monthly + yearly.
-    The UNION is wrapped in a subquery before its `ORDER BY CASE WHEN
-    u.status = 'Active' …` — Postgres rejects an expression ORDER BY directly
-    on a UNION, which had failed this tab on every sync (found Sept 2026
-    Batch 6; isolated into `errors[]` by INV-24 until fixed).
+    A manual bill's Next Due comes from `cadence.manualBillOccurrences` (the
+    app's creation-anchored, month-length-clamped rule, APP_TIMEZONE today) —
+    cycle-7 F76: the SQL put a yearly bill next month and capped the day at 28.
+    Rows are sorted in JS (Active first, then Next Due, blanks last). (The old
+    SQL `ORDER BY CASE … ` on a UNION failed the tab on every sync — Sept 2026
+    Batch 6.)
   - **AI Insights**: main grid (date / model / tokens / feedback /
     feedback note / insight) + four sub-tables below from the structured
     `insights_running_summary_json` (Trends, Pending Actions, Active
@@ -1986,6 +2013,10 @@ shell/
     APP_TIMEZONE (SXE-12 — it was hard-wired to America/New_York); the script's
     `SHEETS_TZ` / `sheetsTodayStr()` / `sheetsMonth(offset)` also anchor the
     Income windows, the tax year and the month-archive "current month".
+    Avg Monthly / Avg Daily Spend are over COMPLETED months with real month
+    lengths (`completedMonthAverages`, cycle-7 F75 — parity with FAN-6; it was
+    the 6-month window ÷ 6 incl. the month to date), blank until a month is
+    complete.
   - **Investments** (new): Plaid holdings with cost basis, current
     value, return $, return % (green positive / red negative), grand
     total. Teller-linked accounts excluded (no Teller cost-basis API).
@@ -2008,12 +2039,15 @@ shell/
     `bill_source`; variance column flags >10% deviation. A payment with no
     recorded amount (legacy calendar clicks) shows Paid Amount + Variance
     blank instead of −100% (SXE-11).
-  - **Important Dates** (new): 90-day upcoming-events view UNIONing
-    subscription next-charge dates, manual-bill due dates (computed
-    from `due_day` + `cadence` with month-end safety via
-    `LEAST(due_day, 28)`), recurring-transfer projections
-    (`last_transferred + cadence_days`), and goal `target_date`. Days Away is
-    a Sheets formula. Today=red, ≤7 days=amber.
+  - **Important Dates** (new): 90-day upcoming-events view (from the
+    APP_TIMEZONE today) of subscription next-charge dates and goal
+    `target_date`s (SQL), EVERY manual-bill occurrence in the window
+    (`cadence.manualBillOccurrences` — day clamped to the real month length,
+    no 28 cap) and each recurring transfer's next date stepped by calendar
+    month from its last transfer (`cadence.seriesOccurrences`) — cycle-7 F76:
+    `last_transferred + cadence_days` dropped a month-end transfer and the
+    SQL listed one bill date. A subscription still shows only its stored
+    `next_expected`. Days Away is a Sheets formula. Today=red, ≤7 days=amber.
   - **Watchlist** (new): user-curated merchant / category / keyword
     monitor backed by the `watchlist_items` DB table. Tab shows each
     item + its last-90-day matching transactions. Items edited via
@@ -2041,8 +2075,9 @@ shell/
   tab's existing banding and conditional-format rules before re-adding them —
   `addBanding` on an already-banded range throws ("cannot add alternating
   background colors"), which used to fail every tab's second sync. The
-  Dashboard (whose row layout shifts between runs) also resets cell formats
-  first. **Quota (SXE-14):** sheet ids come from a per-client cache
+  Dashboard, Income, AI Trust and Watchlist (whose row layouts shift between
+  runs — cycle-7 F77 for the last three) also reset cell formats first, so a
+  shorter run doesn't leave stale colours on rows that now hold other data. **Quota (SXE-14):** sheet ids come from a per-client cache
   (`sheetIdMap`, one `spreadsheets.get` per run instead of one per tab), and
   the client's `retryConfig` retries 429s (any method, honoring Retry-After,
   else 15s × attempt ≤ 60s) but NEVER retries a POST on a 5xx (a
@@ -2051,7 +2086,13 @@ shell/
   cell starting with `= + - @` tab/CR or shaped like `1/2` / `3-4` (Sheets
   would parse it as a date), so a merchant name can never execute as a
   formula; the script's own formulas are wrapped in `sheetFormula()` to pass
-  through. **Goals** use the DERIVED amount (balance − baseline when
+  through. A plain signed number / amount / percentage (`-12.5%`, `-$45.00`,
+  `-1,234.56`, `PLAIN_NUMBER_RE`) is left alone so it stays a number (cycle-7
+  F83 — it was turned into text). **Single-flight (F78):** `syncAll`,
+  `syncTransactionsOnly` and `syncDashboardOnly` go through `singleFlight(kind,
+  fn)` — a second run of the same kind shares the running promise, a different
+  kind waits for it and then runs, so the hourly auto-sync and a manual click
+  never write the same tabs at once. **Goals** use the DERIVED amount (balance − baseline when
   funding-linked, SXE-5 / INV-11) like `GET /api/goals`; the category
   expressions are the app's (`COALESCE(user_category, category[1])`, no Plaid
   PFC fallback — SXE-6, SX3-pinned); the Dashboard's KPI-count row is formatted
@@ -2066,7 +2107,10 @@ shell/
   `sheets-sync`), `GET /api/data-health` raises an issue for a failed last run,
   and the dashboard/Subscriptions/Settings UIs say "Partial: N tabs failed"
   instead of reporting success. (Before, `syncAll` returned `errors[]` and
-  every caller ignored it — a tab could fail silently forever.)
+  every caller ignored it — a tab could fail silently forever.) A FAILED
+  partial sync (`/api/sheets/sync-transactions`, `/api/sheets/dashboard`) is
+  recorded too, as a one-step error (cycle-7 F86); a partial SUCCESS is not
+  recorded, so it doesn't clear a full run's failing tabs.
 
   Triggered by:
   - Scheduled `sheets-auto-sync` job (configurable cadence: daily / weekly
@@ -2077,7 +2121,8 @@ shell/
     only refreshes the Transactions tab (~5s). Called by the dashboard
     CSV upload modal so users see uploaded transactions in Sheets
     quickly.
-  - `POST /api/sheets/dashboard` — Dashboard tab only.
+  - `POST /api/sheets/dashboard` — Dashboard tab only (checks the Sheets env
+    like the other two — F86).
 
 ### Per-sistant Integration (Companion App)
 Under the unified shell both apps run in the same Node process, so most of
@@ -2121,7 +2166,12 @@ shared session cookie. Cross-app surface area today:
   HTTP fetch is the standalone fallback. The fallback now correctly
   unwraps Perfin's `{subscriptions, summary}` response shape (an earlier
   version assumed a bare array and crashed silently, so the widget always
-  showed "not connected" in standalone Per-sistant deployments).
+  showed "not connected" in standalone Per-sistant deployments). Both paths
+  compute the figures with `widgetFigures(subs, today)` (routes/perfin.js):
+  monthly cost = Σ amount × 30 / cadence_days (Perfin's monthly-equivalent
+  rule — it used to add a yearly charge at full price), upcoming = a
+  `next_expected` from today (APP_TIMEZONE) through today + 7, so a charge due
+  today counts (cycle-7 F80).
 
 **Legacy two-services integration** (still in code as standalone fallback):
 - **Cross-app SSO**: HMAC-signed token exchange (60s expiry, per-token nonce
@@ -2334,7 +2384,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1608 tests passing across 75 test files (Perfin 1152 + Per-sistant 456), plus the real-Postgres route contract suite (82 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
+- 1624 tests passing across 76 test files (Perfin 1168 + Per-sistant 456), plus the real-Postgres route contract suite (87 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -2695,7 +2745,8 @@ POST /api/sheets/sync      # full sync to Google Sheets (all 16+ tabs, ~30-60s).
                            # Returns { ...result, partial, tabs_failed } and records
                            # the outcome in last_sheets_sync_result (SXE-1)
 POST /api/sheets/sync-transactions # partial sync — Transactions tab only (~5s); called from CSV upload modal
-POST /api/sheets/dashboard # sync dashboard data to Sheets
+POST /api/sheets/dashboard # sync dashboard data to Sheets (a failure is recorded in
+                           # last_sheets_sync_result — F86)
 GET  /api/watchlist        # list watchlist items (merchant/category/keyword)
 POST /api/watchlist        # add watchlist item (body: type, value, notes?)
 PATCH /api/watchlist/:id   # toggle is_active or update notes
@@ -2875,7 +2926,8 @@ GET  /calendar.ics                        # bill-calendar iCalendar feed (subscr
 ```
 
 `PATCH /api/settings` accepts a new `shell_idle_timeout_minutes` field
-(integer, 5-10080 minutes) that drives the shell's sliding-window auth.
+(integer, 5-10080 minutes, strict integer parse) that drives the shell's
+sliding-window auth.
 After the PATCH a hook fires `auth.invalidateIdleCache()` so the new
 value applies on the very next request, not after the 60s cache lag.
 
@@ -2883,7 +2935,13 @@ The `insight_modules` and `dashboard_widgets` toggle maps are coerced to a
 flat `{ string: boolean }` object via `sanitizeBoolMap` before persisting
 (rejects arrays / nested objects, caps key length, `!!`-coerces values) so a
 pathological body can't be stored verbatim — parity with the `target_allocation_pct`
-validation (SN-5).
+validation (SN-5); a non-object map is a 400. Since cycle-7 F86 the remaining
+fields 400 instead of being silently dropped: `theme` (dark/light),
+`dashboard_months` (integer 1-24), `insights_model` (haiku/sonnet/opus),
+`insights_cadence_days` (7/14/30/60/90), `pyramid_data_source` / `pyramid_color_mode` (their
+enums), `debt_baseline_amount` (a finite number ≥ 0 or null),
+`sheets_auto_sync_interval` (daily/weekly/monthly) and
+`session_timeout_minutes` (integer 1-1440).
 
 ## Environment Variables
 
@@ -4046,8 +4104,10 @@ SX3-pinned — the Sheets Income tab.
   notification center works independently of web push — users who haven't
   granted push permissions or whose push subscriptions expired still see
   their anomaly alerts, budget warnings, and goal milestones in the nav
-  bell dropdown. The log is append-only; old notifications are never deleted
-  automatically.
+  bell dropdown. READ notifications older than `NOTIFICATION_RETENTION_DAYS`
+  (180) are pruned by `pruneNotificationLog`, called from `sendToAll` at most
+  once a day (cycle-7 F86 — the table grew forever); unread ones are kept.
+  `sentRecently` dedup windows (≤ days) are unaffected.
 - **The scheduler calls helpers in-process, not via HTTP self-fetch.**
   Every route module that the scheduler invokes exports a callable helper
   alongside its Express router:
@@ -4351,7 +4411,7 @@ SX3-pinned — the Sheets Income tab.
 `.cycle/STATE.md`; Batches 1–8 — exposure / pre-auth safety, broken pages and
 dead channels, backstops / outcomes / operator state, bank-sync durability, money
 accuracy and classification, delete integrity and feeds, categorization rules and
-income cadence, AI trust — are done):
+income cadence, AI trust, Sheets and cross-app — are done):
 - The repo is PUBLIC (operator: make it private and delete old Actions logs —
   they printed balances and net worth before Batch 1).
 - OPERATOR: Database Backup has never produced a backup (its secrets were never
@@ -4387,6 +4447,13 @@ income cadence, AI trust — are done):
   sentence start; Ask's tool results still serialize DATE columns as full JSON
   timestamps; the categorize / suggest / scan usage rows record the configured
   model rather than the served one. Batch 8 follow-ons.
+- Settings → AI Insights still tells a standalone user to configure the webhook
+  "in Per-sistant integration below", a section that doesn't exist (F81); the
+  standalone HTTP webhook path still reports `sent: true` when Per-sistant's
+  receiver stores a draft; the Sheets Important Dates tab lists a subscription
+  by its one stored `next_expected` only; notification retention is a fixed 180
+  days (no setting). OPERATOR: `clasp push` the Code.gs guard (F84). Batch 9
+  follow-ons.
 - Per-sistant `POST /api/ai/review-summary` answers 500 (callAI throws →
   serverError) instead of 501 when `ANTHROPIC_API_KEY` is unset, and the Review
   page fires it on every load (found by `e2e/pages.spec.js`, tolerated in its
@@ -4636,7 +4703,7 @@ INV-55 | /api/ask charges the shared AI cap even on a mid-tool-loop failure — 
 INV-56 | The dashboard's inlined loanPayoff() is NUMERICALLY identical to services/projections.computeLoanPayoff across scenarios (months / total_interest ±$0.01 / insufficient flag), not merely string-equal | Subsystem: Web UI ↔ Financial Analytics (seam) | Verify: tests/loan-support.test.js (extract-and-run parity test)
 INV-57 | The critical-audit notification is deduped to ≤1 per 24h via sentRecently('audit-alert', 24), fail-open — a steady-state critical finding doesn't re-push on every 6h auto-insight tick | Subsystem: AI Insights & Audit / Notification Correctness | Verify: code read routes/insights.js audit-alert gate
 INV-58 | A kind='quantity' habit always has a non-null target_value, enforced on POST AND on PATCH against the MERGED post-update state (so switching to quantity without a target, or nulling a quantity habit's target, 400s instead of silently degrading meetsTarget) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/health.test.js (F9 PATCH tests)
-INV-59 | Bounded settings (target_allocation_pct, shell_idle_timeout_minutes, fire_*, ai_monthly_budget_cents, and since PSC-15 keep_alive_start/end, keep_alive_timezone (Intl-validated), auto_sync_interval_hours, csv_reminder_days, weekly_digest_day — strict integer parse, null/""/"6abc" rejected) reject invalid input with 400 — never silent-drop + 200 | Subsystem: Settings, Notifications & Cross-app | Verify: tests/budget-cap-webauthn.test.js (PATCH /api/settings validation) + tests/scan-sept-batch9.test.js (PSC-15)
+INV-59 | Bounded settings (target_allocation_pct, shell_idle_timeout_minutes, fire_*, ai_monthly_budget_cents, and since PSC-15 keep_alive_start/end, keep_alive_timezone (Intl-validated), auto_sync_interval_hours, csv_reminder_days, weekly_digest_day — strict integer parse, null/""/"6abc" rejected; since cycle-7 F86 also theme, dashboard_months, insights_model, insights_cadence_days, insight_modules / dashboard_widgets, pyramid_*, debt_baseline_amount, sheets_auto_sync_interval, session_timeout_minutes) reject invalid input with 400 — never silent-drop + 200 | Subsystem: Settings, Notifications & Cross-app | Verify: tests/budget-cap-webauthn.test.js (PATCH /api/settings validation) + tests/scan-sept-batch9.test.js (PSC-15) + tests/scan-oct-batch9.test.js (F86)
 INV-60 | Perfin "Sign Out" clears the SHELL session via the root POST /logout under the unified shell (not a basePath'd /api/logout); redirect target is the root /login — both un-prefixed; standalone Perfin (no BASE_PATH) posts /api/logout instead (WD-16), and Per-sistant's embedded Log Out also posts the root /logout (PB-21) | Subsystem: Web UI ↔ Platform, Shell & Auth (seam) | Verify: code read teller/views/settings.ejs logout() + shell POST /logout (auth.handleLogout)
 INV-61 | apiFetch redirects once to /login on a 401 or a followed 302→/login (session expiry), loop-guarded, while returning the Response unchanged to callers — idle timeout never leaves a blank/error UI | Subsystem: Web UI | Verify: code read teller/public/perfin-shared.js apiFetch
 INV-62 | The shell sets a nonce CSP + frame-ancestors 'none' + X-Frame-Options on its own routes (login/landing), with COOP/CORP/COEP DISABLED so the global middleware doesn't break sub-app Plaid/Teller Link popups; helmet is a declared shell dependency | Subsystem: Platform, Shell & Auth | Verify: header assertion on GET /login (frame-ancestors none, COOP/CORP absent, login scripts nonced)
@@ -4682,6 +4749,8 @@ INV-110 | Income aggregates count a deposit at its account's share (INCOME_AMOUN
 INV-111 | A transaction the user deleted is never re-inserted by a provider sync or reconcile: the Teller and Plaid upserts skip ids in deleted_transactions (written in the same transaction as the DELETE) | Subsystem: Bank Sync & Ingestion | Verify: tests/contract/delete-feeds.contract.test.js (F20) + tests/scan-oct-batch6.test.js
 INV-112 | Categorization rules apply most-specific first (RULE_ORDER_SQL, never by times_applied); saving a rule deactivates the merchant's active rules for other categories; a blank or <3-character contains/starts_with pattern is never stored or applied; the AI write only fills a still-uncategorized row; a row the AI left unanswered is not re-sent for 30 days (ai_skipped_at) | Subsystem: Detection & Categorization | Verify: tests/contract/categorize-rules.contract.test.js + tests/scan-oct-batch7.test.js
 INV-113 | The tier-1 audit judges a dollar claim by its own sentence/clause (claimPeriodWindow) and never compares a claim about another named month (claimNamesOtherMonth) or another period with this month's actuals; tier-2 captures bounded Capitalized names, split on and/or/vs | Subsystem: AI Insights & Audit | Verify: tests/scan-oct-batch8.test.js + tests/contract/ai-trust.contract.test.js
+INV-114 | The Sheets export places manual bills and recurring transfers with the app's own cadence rules (cadence.manualBillOccurrences / seriesOccurrences, APP_TIMEZONE today) — never a SQL re-derivation (LEAST(due_day, 28), last + cadence_days); Sheets runs are single-flight (singleFlight: same kind shares, different kind waits) | Subsystem: Sheets & External Export | Verify: tests/contract/sheets-crossapp.contract.test.js + tests/scan-oct-batch9.test.js (F78)
+INV-115 | An in-process digest/insight email is reported sent only when it was queued to a valid address; a draft-only delivery returns sent:false with stored:"draft" and a reason, and the digest ticks settle for the day on it while recording a failed job | Subsystem: Settings, Notifications & Cross-app | Verify: tests/contract/sheets-crossapp.contract.test.js (F79) + tests/scan-oct-batch9.test.js
 INV-106 | No server-side file gains a bare catch (`catch {}`, `.catch(() => {})`, `.catch(() => null)`) beyond its KNOWN_GAPS count; the list only shrinks (a stale count fails too) | Subsystem: Test Coverage Quality / Silent Degradation | Verify: tests/scan-oct-batch3.test.js (empty-catch scan)
 INV-104 | Every secret comparison (shell PIN, CALENDAR_FEED_TOKEN, API_KEY, standalone SESSION_PIN/PASSWORD) is a fixed-length SHA-256 digest compare (auth.safeEqual / isValidApiKey) — never timingSafeEqual over raw buffers whose byte lengths can differ — and the shell logs unhandled rejections instead of exiting | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch1.test.js (F1 / F6 blocks)
 INV-97 | No Per-sistant client template-literal module (a pages/ or views/ file that exports a string) contains a single-escaped regex class or delimiter (\b \d \s \w \/ \. …) — the template consumes the backslash, so the regex silently changes meaning in the browser; double-escape or use string methods | Subsystem: Per-sistant Web UI | Verify: apps/per-sistant/tests/batch15-followons.test.js (FO-2 guard)

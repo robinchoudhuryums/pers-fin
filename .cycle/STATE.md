@@ -37,8 +37,17 @@ implement and reflect sessions only set Phase.)
   - **Follow-ons:** Settings text pointing at a non-existent integration section (F81); the HTTP
     webhook path's sent:true on a receiver draft; Important Dates subs single next_expected.
   - **Block:** `.cycle/blocks/7-batch9-broad-implement.md`.
-  - **Where I left off:** Batch 9 committed and pushed (no PR). NEXT: /sync-docs for Batch 9,
-    then Batch 10 (F91, F94, F95, F96, F97, F99 …).
+  - **Where I left off:** Batch 9 committed and pushed (no PR). /sync-docs DONE (Batch 9):
+    CLAUDE.md — Sheets (completed-month averages F75, Utilities / Important Dates via
+    cadence.js F76, resetFormats F77, single-flight F78, plain-number pass-through F83,
+    Credit Scores per type F86), Code.gs guard (F84), in-process draft = not sent (F79, insight
+    email + weekly digest bullets), Per-sistant widget figures (F80, also
+    apps/per-sistant/CLAUDE.md), settings 400s (PATCH note + INV-59), dashboard env check +
+    partial-sync failure record (SXE-1 paragraph + endpoint), notification_log retention, new
+    INV-114 / INV-115, Known Issues (Batch 9 follow-ons + clasp push), counts 1624 / 76
+    (Perfin 1168) + contract 87; README counts + Batch 9 summary. No new source paths; the
+    only operator step is `clasp push` for Code.gs. NEXT: Batch 10 (F91, F94, F95, F96, F97,
+    F99 …).
 
 - **Previous:** **Cycle 7 — Oct 2026 broad scan, Batch 8 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-20). AI trust.
