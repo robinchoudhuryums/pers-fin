@@ -473,7 +473,7 @@ describe("BSI-2 / DD-1 — /api/sync covers Teller + Plaid; anomaly check on the
   it("the schedulers use the unified entry point", () => {
     const startup = fs.readFileSync(path.join(ROOT, "teller/startup.js"), "utf8");
     assert.match(startup, /const all = await syncAllTransactions\(\)/);
-    assert.match(startup, /try \{ await syncAllTransactions\(\); \}/);
+    assert.match(startup, /await step\("Pre-insights sync", \(\) => syncAllTransactions\(\)\)/);
     assert.doesNotMatch(startup, /await syncAllPlaidTransactions\(\)/, "no separate Plaid txn call that would skip the shared anomaly check");
   });
 });
@@ -534,7 +534,7 @@ describe("BSI-11 — last_sync_result is merged per provider", () => {
     const e = fs.readFileSync(path.join(ROOT, "teller/routes/enrollments.js"), "utf8");
     const st = fs.readFileSync(path.join(ROOT, "teller/startup.js"), "utf8");
     assert.match(e, /provider: "plaid_flows", result: flowsResult/);
-    assert.match(st, /provider: "plaid_flows", result: flowsResult/);
+    assert.match(st, /provider: "plaid_flows", result: orThrew\("plaid_flows", flowsResult\)/);
     assert.match(st, /flowsResult = await syncAllPlaidInvestmentFlows\(\)/);
   });
 });

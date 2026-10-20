@@ -322,9 +322,13 @@ async function start() {
     startKeepAlive(PORT);
   });
 
-  // Graceful shutdown — close the listener, then drain both DB pools.
+  // Graceful shutdown — stop both apps' scheduled jobs (cycle-7 F16: they kept
+  // firing against pools being drained), close the listener, then drain both
+  // DB pools.
   function shutdown(signal) {
     console.log(`\n${signal} received — shutting down gracefully…`);
+    try { perfin.stopBackgroundJobs(); } catch (err) { console.error("Perfin job stop error:", err.message); }
+    try { persistent.stopJobs(); } catch (err) { console.error("Per-sistant cron stop error:", err.message); }
     server.close(async () => {
       try {
         await perfin.pool.end().catch(() => null);

@@ -3454,8 +3454,8 @@ SX3-pinned — the Sheets Income tab.
   re-declares the subset that tests directly import (`pg`, `express`,
   `multer`, `csv-parse`, `supertest`). The root's `express` is pinned to v4
   to match `teller/` so tests run against the same Express version the
-  primary tested module uses at runtime; `apps/per-sistant/` declares v5 in
-  its own workspace. CI runs a single `npm ci` at the root — npm workspaces
+  primary tested module uses at runtime; `apps/per-sistant/` pins the same
+  v4 (`^4.21.0`) in its own workspace. CI runs a single `npm ci` at the root — npm workspaces
   walks shell/, teller/, and apps/per-sistant/ in one pass. Local devs must
   `npm install` at the root before `npm test`.
 - **Source-pinned regression tests.** `tests/audit-regressions.test.js` includes

@@ -75,7 +75,7 @@ async function runBudgetAlertTick() {
       getCategorySpendingThisMonth(pool),
       pool.query("SELECT budget_id, rollover_amount FROM budget_snapshots WHERE month = $1", [prevMonth]),
     ]);
-    if (budgets.rows.length === 0) return;
+    if (budgets.rows.length === 0) { jobHealth.result("budget-alerts", { ok: true }); return; }
     const spendMap = {};
     for (const r of spending) spendMap[r.category] = parseFloat(r.spent);
     const snapMap = {};
@@ -134,8 +134,10 @@ async function runBudgetAlertTick() {
         });
       }
     }
+    jobHealth.result("budget-alerts", { ok: true });
   } catch (err) {
     console.error("Budget alert notification error:", err.message);
+    jobHealth.result("budget-alerts", { ok: false, error: err.message });
   }
 }
 
@@ -154,15 +156,16 @@ async function runWeeklyDigestTick() {
     if (localWeekday !== (s.weekly_digest_day ?? 1)) { markAwaySettled("weekly-digest"); return; }
     const { runWeeklyDigest } = require("./routes/insights");
     const result = await runWeeklyDigest();
-    if (result.sent || ["already_sent_this_week", "disabled", "no_summary", "empty_summary"].includes(result.reason)) {
-      markAwaySettled("weekly-digest");
-    }
+    const settled = result.sent || ["already_sent_this_week", "disabled", "no_summary", "empty_summary"].includes(result.reason);
+    if (settled) markAwaySettled("weekly-digest");
+    jobHealth.result("weekly-digest", settled ? { ok: true } : { ok: false, error: result.reason || result.error });
     if (result.sent) console.log("Weekly digest sent.");
     else if (result.reason && result.reason !== "already_sent_this_week" && result.reason !== "disabled") {
       console.log("Weekly digest skipped:", result.reason);
     }
   } catch (err) {
     console.error("Weekly digest scheduler error:", err.message);
+    jobHealth.result("weekly-digest", { ok: false, error: err.message });
   }
 }
 
@@ -173,15 +176,18 @@ async function runDailyDigestTick() {
     const { runDailyDigest, DAILY_DIGEST_HOUR } = require("./routes/insights");
     if (localHourNow() < DAILY_DIGEST_HOUR) return;
     const result = await runDailyDigest();
-    if (result.sent || ["already_sent_today", "disabled", "nothing_new"].includes(result.reason)) {
-      markAwaySettled("daily-digest");
-    }
+    const settled = result.sent || ["already_sent_today", "disabled", "nothing_new"].includes(result.reason);
+    if (settled) markAwaySettled("daily-digest");
+    // too_early (an APP_TIMEZONE hour edge) is a skip, not a failure.
+    if (settled || result.reason === "too_early") jobHealth.result("daily-digest", { ok: true });
+    else jobHealth.result("daily-digest", { ok: false, error: result.reason || result.error });
     if (result.sent) console.log("Daily digest sent.");
     else if (result.reason && result.reason !== "already_sent_today" && result.reason !== "disabled" && result.reason !== "nothing_new") {
       console.log("Daily digest skipped:", result.reason);
     }
   } catch (err) {
     console.error("Daily digest scheduler error:", err.message);
+    jobHealth.result("daily-digest", { ok: false, error: err.message });
   }
 }
 
@@ -228,8 +234,103 @@ async function runCsvReminderTick() {
     // Stamp the evaluation (sent or nothing stale) so the next check is ≥24h out.
     await pool.query("UPDATE user_settings SET last_csv_reminder_at = now() WHERE id = 1");
     markAwaySettled("csv-reminder");
+    jobHealth.result("csv-reminder", { ok: true });
   } catch (err) {
     console.error("CSV reminder scheduler error:", err.message);
+    jobHealth.result("csv-reminder", { ok: false, error: err.message });
+  }
+}
+
+// Rent & Utilities ledger (cycle-7 F15): generate the current/missing months'
+// obligations from housing_config (idempotent), then fire the two reminders —
+// payment-due and missing-utility-amount — each deduped via sentRecently inside
+// runHousingReminders. An "away" channel like the digests (INV-77): a reminder
+// that rent is due must reach a user who isn't in Perfin, so it is NOT
+// activity-gated; once a local day's pass succeeds it skips its DB reads until
+// the next day. No-op when the ledger isn't configured. In-process helpers,
+// never an HTTP self-fetch (INV-18).
+async function runHousingLedgerTick() {
+  jobHealth.tick("housing-ledger");
+  if (awaySettledToday("housing-ledger")) return;
+  try {
+    const housing = require("./routes/housing");
+    await housing.generateHousingObligations();
+    await housing.runHousingReminders();
+    markAwaySettled("housing-ledger");
+    jobHealth.result("housing-ledger", { ok: true });
+  } catch (err) {
+    console.error("Housing ledger task error:", err.message);
+    jobHealth.result("housing-ledger", { ok: false, error: err.message });
+  }
+}
+
+// AI insights auto-trigger (every 6 hours, respects insights_cadence_days).
+// Pre-syncs transactions + balances + detection so AI sees fresh data.
+// Cycle-7 F63: a run that couldn't produce an insight (cap reached, empty
+// answer, DB error) left insights_last_run untouched, so EVERY 6-hour tick
+// re-ran the whole Teller + Plaid sync chain and the paid call. Now (1) the
+// shared monthly AI cap is checked BEFORE the chain — over the cap there is
+// nothing to do until next month, and (2) every attempt is stamped in
+// insights_last_attempt_at and a failed attempt is retried at most once per
+// INSIGHTS_RETRY_MS. A manual POST /api/insights is never held back by this.
+const INSIGHTS_RETRY_MS = 24 * 60 * 60 * 1000;
+
+async function runInsightsAutoTriggerTick() {
+  jobHealth.tick("insights-auto-trigger");
+  try {
+    if (!process.env.ANTHROPIC_API_KEY) return;
+    const settings = await pool.query(
+      "SELECT insights_enabled, insights_cadence_days, insights_last_run, insights_last_attempt_at FROM user_settings WHERE id = 1"
+    );
+    const s = settings.rows[0];
+    if (!s || !s.insights_enabled) return;
+    const cadenceDays = s.insights_cadence_days || 30;
+    const lastRun = s.insights_last_run ? new Date(s.insights_last_run) : null;
+    const now = new Date();
+    if (lastRun && (now - lastRun) / 86400000 < cadenceDays) return;
+    const lastAttempt = s.insights_last_attempt_at ? new Date(s.insights_last_attempt_at) : null;
+    if (lastAttempt && (!lastRun || lastAttempt > lastRun) && (now - lastAttempt) < INSIGHTS_RETRY_MS) return;
+
+    const { generateInsights, getAiBudgetCents, monthAiSpendCents } = require("./routes/insights");
+    if (await monthAiSpendCents() >= await getAiBudgetCents()) {
+      // Not a failure: the cap is the user's setting. Nothing runs until the
+      // month turns or the cap is raised — the check itself is one query.
+      jobHealth.result("insights-auto-trigger", { ok: true });
+      return;
+    }
+    await pool.query("UPDATE user_settings SET insights_last_attempt_at = now() WHERE id = 1");
+
+    const { syncAllTransactions, syncAllBalances } = require("./routes/enrollments");
+    const { runSubscriptionDetection } = require("./routes/subscriptions");
+    const { syncAllPlaidHoldings, syncAllPlaidInvestmentFlows } = require("./routes/investments");
+    const { detectRecurringTransfers } = require("../scripts/detect-transfers");
+    const { runCategorize } = require("./routes/categorize");
+
+    // Teller + Plaid + ONE anomaly check over the combined count (DD-1). Each
+    // step is isolated; the first failure is what the job outcome reports.
+    const stepErrors = [];
+    const step = async (label, fn) => {
+      try { return await fn(); }
+      catch (e) { console.error(label + " error:", e.message); stepErrors.push(label + ": " + e.message); return null; }
+    };
+    await step("Pre-insights sync", () => syncAllTransactions());
+    await step("Pre-insights holdings sync", () => syncAllPlaidHoldings());
+    await step("Pre-insights investment-flows", () => syncAllPlaidInvestmentFlows());
+    await step("Pre-insights balance", () => syncAllBalances());
+    await step("Pre-insights detect", () => runSubscriptionDetection());
+    await step("Pre-insights detect-transfers", () => detectRecurringTransfers(pool));
+    // Categorize BEFORE generating insights so the AI sees freshly
+    // categorized rows (matches the documented chain in CLAUDE.md).
+    const cat = await step("Pre-insights categorize", () => runCategorize());
+    if (cat && !cat.ok) console.log("Auto-trigger categorize skipped:", cat.error);
+    const ins = await step("Auto-trigger insights", () => generateInsights());
+    if (ins && ins.ok) console.log("Auto-triggered AI insights (cadence: " + cadenceDays + " days).");
+    else if (ins) console.log("Auto-trigger insights skipped:", ins.error);
+    const failure = ins && !ins.ok ? "insights: " + ins.error : stepErrors[0];
+    jobHealth.result("insights-auto-trigger", failure ? { ok: false, error: failure } : { ok: true });
+  } catch (err) {
+    console.error("Insights auto-trigger error:", err.message);
+    jobHealth.result("insights-auto-trigger", { ok: false, error: err.message });
   }
 }
 
@@ -265,9 +366,11 @@ function startBackgroundJobs() {
         const record = await recordSheetsSyncResult(result);
         await pool.query("UPDATE user_settings SET sheets_last_auto_sync = now() WHERE id = 1");
         console.log(record.ok ? "Auto-sync to Google Sheets complete." : `Auto-sync to Google Sheets: ${record.tabs_failed} tab(s) failed.`);
+        jobHealth.result("sheets-auto-sync", record.ok ? { ok: true } : { ok: false, error: `${record.tabs_failed} tab(s) failed` });
       }
     } catch (err) {
       console.error("Sheets auto-sync error:", err.message);
+      jobHealth.result("sheets-auto-sync", { ok: false, error: err.message });
     }
   }, 60 * 60 * 1000));
 
@@ -297,8 +400,10 @@ function startBackgroundJobs() {
         [nw.total_assets, nw.total_liabilities, nw.net_worth, JSON.stringify(nw.breakdown)]
       );
       console.log("Daily net worth snapshot recorded: $" + nw.net_worth.toFixed(2));
+      jobHealth.result("net-worth-snapshot", { ok: true });
     } catch (err) {
       console.error("Net worth auto-snapshot error:", err.message);
+      jobHealth.result("net-worth-snapshot", { ok: false, error: err.message });
     }
   }, 60 * 60 * 1000));
 
@@ -348,85 +453,31 @@ function startBackgroundJobs() {
                 tag: "goal-" + g.id,
                 data: { url: "/goals" },
               });
-            } catch {}
+            } catch (e) { console.error("Goal milestone notification error:", e.message); }
             notes = (notes ? notes + " " : "") + key;
             await pool.query("UPDATE financial_goals SET notes = $1 WHERE id = $2", [notes, g.id]);
           }
         }
       }
+      jobHealth.result("goal-milestones", { ok: true });
     } catch (err) {
       console.error("Goal milestone check error:", err.message);
+      jobHealth.result("goal-milestones", { ok: false, error: err.message });
     }
   }, 6 * 60 * 60 * 1000));
 
   // Auto-trigger AI insights based on cadence (every 6 hours).
   // Pre-syncs transactions + balances + detection so AI sees fresh data.
-  intervalHandles.push(setInterval(async () => {
-    jobHealth.tick("insights-auto-trigger");
-    try {
-      if (!process.env.ANTHROPIC_API_KEY) return;
-      const settings = await pool.query(
-        "SELECT insights_enabled, insights_cadence_days, insights_last_run FROM user_settings WHERE id = 1"
-      );
-      const s = settings.rows[0];
-      if (!s || !s.insights_enabled) return;
-      const cadenceDays = s.insights_cadence_days || 30;
-      const lastRun = s.insights_last_run ? new Date(s.insights_last_run) : null;
-      const now = new Date();
-      if (!lastRun || (now - lastRun) / 86400000 >= cadenceDays) {
-        const { syncAllTransactions, syncAllBalances } = require("./routes/enrollments");
-        const { runSubscriptionDetection } = require("./routes/subscriptions");
-        const { syncAllPlaidHoldings, syncAllPlaidInvestmentFlows } = require("./routes/investments");
-        const { detectRecurringTransfers } = require("../scripts/detect-transfers");
-        const { runCategorize } = require("./routes/categorize");
-        const { generateInsights } = require("./routes/insights");
-
-        // Teller + Plaid + ONE anomaly check over the combined count (DD-1).
-        try { await syncAllTransactions(); } catch (e) { console.error("Pre-insights sync error:", e.message); }
-        try { await syncAllPlaidHoldings(); } catch (e) { console.error("Pre-insights holdings sync error:", e.message); }
-        try { await syncAllPlaidInvestmentFlows(); } catch (e) { console.error("Pre-insights investment-flows error:", e.message); }
-        try { await syncAllBalances(); } catch (e) { console.error("Pre-insights balance error:", e.message); }
-        try { await runSubscriptionDetection(); } catch (e) { console.error("Pre-insights detect error:", e.message); }
-        try { await detectRecurringTransfers(pool); } catch (e) { console.error("Pre-insights detect-transfers error:", e.message); }
-        // Categorize BEFORE generating insights so the AI sees freshly
-        // categorized rows (matches the documented chain in CLAUDE.md).
-        try {
-          const cat = await runCategorize();
-          if (!cat.ok) console.log("Auto-trigger categorize skipped:", cat.error);
-        } catch (e) { console.error("Pre-insights categorize error:", e.message); }
-        try {
-          const ins = await generateInsights();
-          if (ins.ok) console.log("Auto-triggered AI insights (cadence: " + cadenceDays + " days).");
-          else console.log("Auto-trigger insights skipped:", ins.error);
-        } catch (err) { console.error("Auto-trigger insights error:", err.message); }
-      }
-    } catch (err) {
-      console.error("Insights auto-trigger error:", err.message);
-    }
-  }, 6 * 60 * 60 * 1000));
+  intervalHandles.push(setInterval(() => runInsightsAutoTriggerTick(), 6 * 60 * 60 * 1000));
 
   // Budget alert push notifications (every 3 hours). NOT activity-gated
   // (PSC-3): the push + opt-in critical-alert email are "away" channels;
   // repeats are bounded by the per-category+severity 24h sentRecently dedup.
   intervalHandles.push(setInterval(() => runBudgetAlertTick(), 3 * 60 * 60 * 1000));
 
-  // Rent & Utilities ledger (every 6 hours): generate the current/missing
-  // months' obligations from housing_config (idempotent), then fire the two
-  // reminders — payment-due (balance owed near the rent due day) and
-  // missing-utility-amount (a placeholder whose bill should have arrived). Both
-  // are deduped via sentRecently inside runHousingReminders. No-op when the
-  // ledger isn't configured. In-process helpers, never an HTTP self-fetch (INV-18).
-  intervalHandles.push(setInterval(async () => {
-    jobHealth.tick("housing-ledger");
-    if (!isUserActive()) return;
-    try {
-      const housing = require("./routes/housing");
-      await housing.generateHousingObligations();
-      await housing.runHousingReminders();
-    } catch (err) {
-      console.error("Housing ledger task error:", err.message);
-    }
-  }, 6 * 60 * 60 * 1000));
+  // Rent & Utilities ledger (every 6 hours) — an away channel, see
+  // runHousingLedgerTick (cycle-7 F15: it used to be activity-gated).
+  intervalHandles.push(setInterval(() => runHousingLedgerTick(), 6 * 60 * 60 * 1000));
 
   // Budget snapshot auto-trigger (every 6 hours). Snapshots the PRIOR (now-
   // complete) month's spending + rollover so rollover-enabled budgets advance.
@@ -448,11 +499,13 @@ function startBackgroundJobs() {
       // creates it if missing afterwards (M5 catch-up); tz-anchored (FAN-13).
       const { runBudgetSnapshot } = require("./routes/budgets");
       const r = await runBudgetSnapshot(pool);
+      jobHealth.result("budget-snapshot", { ok: true });
       if (r.mode === "exists") return;
       const prevMonth = r.month + " (" + r.mode + ", " + r.written + " row(s))";
       console.log("Auto budget snapshot for", prevMonth);
     } catch (err) {
       console.error("Budget snapshot auto-trigger error:", err.message);
+      jobHealth.result("budget-snapshot", { ok: false, error: err.message });
     }
   }, 6 * 60 * 60 * 1000));
 
@@ -473,9 +526,12 @@ function startBackgroundJobs() {
       const dueMs = intervalHours * 60 * 60 * 1000;
       if (lastSync && (now - lastSync) < dueMs) return;
 
-      const { syncAllTransactions, syncAllBalances, recordSyncResult } = require("./routes/enrollments");
+      const { syncAllTransactions, syncAllBalances, recordSyncResult, thrownSyncResult } = require("./routes/enrollments");
       const { syncAllPlaidHoldings, syncAllPlaidInvestmentFlows } = require("./routes/investments");
       let txnResult = null, balResult = null, plaidResult = null, holdingsResult = null, flowsResult = null;
+      // A step that THROWS is recorded as an error for its provider (cycle-7
+      // F23) — it used to be recorded as nothing, keeping a stale clean entry.
+      const threw = {};
       // Teller + Plaid via the shared entry point so the anomaly check runs
       // ONCE over the combined added count — Plaid charges get anomaly alerts
       // too (DD-1). Each provider is failure-isolated inside it.
@@ -483,15 +539,15 @@ function startBackgroundJobs() {
         const all = await syncAllTransactions();
         txnResult = all.teller;
         plaidResult = all.plaid;
-      } catch (e) { console.error("Auto-sync transaction error:", e.message); }
+      } catch (e) { console.error("Auto-sync transaction error:", e.message); threw.teller_txn = e; }
       try { holdingsResult = await syncAllPlaidHoldings(); }
-      catch (e) { console.error("Auto-sync holdings error:", e.message); }
+      catch (e) { console.error("Auto-sync holdings error:", e.message); threw.plaid_holdings = e; }
       // External cash flows for TWR/XIRR — full-window idempotent re-pull,
       // cheap (≤1 page for a personal account) and failure-isolated.
       try { flowsResult = await syncAllPlaidInvestmentFlows(); }
-      catch (e) { console.error("Auto-sync investment-flows error:", e.message); }
+      catch (e) { console.error("Auto-sync investment-flows error:", e.message); threw.plaid_flows = e; }
       try { balResult = await syncAllBalances(); }
-      catch (e) { console.error("Auto-sync balances error:", e.message); }
+      catch (e) { console.error("Auto-sync balances error:", e.message); threw.teller_balance = e; }
 
       // Auto-categorize freshly-synced transactions so the user doesn't have
       // to click "Categorize" after every sync. runCategorize sweeps the FULL
@@ -516,13 +572,15 @@ function startBackgroundJobs() {
       // per-institution failures) surface in the Sync Health card even on a
       // scheduled run nobody is watching (addition D). The auto-sync covers all
       // providers, so its record is the comprehensive one.
+      const orThrew = (provider, result) => threw[provider] ? thrownSyncResult(threw[provider]) : result;
       const syncRecord = await recordSyncResult([
-        { provider: "teller_txn", result: txnResult },
+        { provider: "teller_txn", result: orThrew("teller_txn", txnResult) },
         { provider: "plaid_txn", result: plaidResult },
-        { provider: "plaid_holdings", result: holdingsResult },
-        // Investment-flow errors were never recorded (DD-10).
-        { provider: "plaid_flows", result: flowsResult && flowsResult.ok === false && !flowsResult.errors ? null : flowsResult },
-        { provider: "teller_balance", result: balResult },
+        { provider: "plaid_holdings", result: orThrew("plaid_holdings", holdingsResult) },
+        // Investment-flow errors were never recorded (DD-10); "Plaid not
+        // configured" is skipped inside recordSyncResult.
+        { provider: "plaid_flows", result: orThrew("plaid_flows", flowsResult) },
+        { provider: "teller_balance", result: orThrew("teller_balance", balResult) },
       ]);
       // Notify ONLY when the error set changes (new errors appeared) so a
       // persistent passphrase mismatch doesn't spam a notification every hour.
@@ -540,7 +598,7 @@ function startBackgroundJobs() {
             tag: "sync-error",
             data: { url: "/settings" },
           });
-        } catch {}
+        } catch (e) { console.error("Sync error notification failed:", e.message); }
       }
       const tellerTxns = txnResult ? txnResult.transactions_added : 0;
       const plaidTxns = plaidResult && plaidResult.ok ? plaidResult.transactions_added : 0;
@@ -553,6 +611,9 @@ function startBackgroundJobs() {
       const balancesChanged = balResult ? (balResult.accounts_changed || 0) : 0;
       const anyFailed = !txnResult || txnResult.failed === true || !balResult;
       const anyChanged = txnsAdded > 0 || balancesChanged > 0;
+      jobHealth.result("bank-auto-sync", anyFailed
+        ? { ok: false, error: !txnResult || txnResult.failed === true ? "transaction sync failed" : "balance sync failed" }
+        : { ok: true });
       if (s.sync_notifications_enabled !== false && (anyChanged || anyFailed)) {
         try {
           const { sendToAll } = require("./routes/notifications");
@@ -562,10 +623,11 @@ function startBackgroundJobs() {
             tag: "auto-sync",
             data: { url: "/dashboard" },
           });
-        } catch {}
+        } catch (e) { console.error("Auto-sync notification failed:", e.message); }
       }
     } catch (err) {
       console.error("Auto-sync scheduler error:", err.message);
+      jobHealth.result("bank-auto-sync", { ok: false, error: err.message });
     }
   }, 60 * 60 * 1000));
 
@@ -585,13 +647,24 @@ function startBackgroundJobs() {
       if (last && (Date.now() - last.getTime()) < WEEK_MS) return;
       const { reconcileTeller } = require("./routes/enrollments");
       const result = await reconcileTeller(90);
-      await pool.query("UPDATE user_settings SET last_reconcile_at = now() WHERE id = 1").catch(() => {});
+      await pool.query("UPDATE user_settings SET last_reconcile_at = now() WHERE id = 1")
+        .catch(e => console.error("last_reconcile_at update failed:", e.message));
       // Record the outcome so a failing weekly heal is visible (BSI-11).
       const { recordSyncResult } = require("./routes/enrollments");
       await recordSyncResult([{ provider: "teller_reconcile", result }]);
       console.log("Self-healing Teller reconcile complete:", JSON.stringify(result));
+      const reconcileErrors = result && Array.isArray(result.errors) ? result.errors.length : 0;
+      jobHealth.result("self-healing-reconcile", reconcileErrors
+        ? { ok: false, error: `${reconcileErrors} enrollment error(s)` }
+        : { ok: true });
     } catch (err) {
       console.error("Self-healing reconcile error:", err.message);
+      jobHealth.result("self-healing-reconcile", { ok: false, error: err.message });
+      // A thrown reconcile used to leave no trace in last_sync_result (F23).
+      try {
+        const { recordSyncResult, thrownSyncResult } = require("./routes/enrollments");
+        await recordSyncResult([{ provider: "teller_reconcile", result: thrownSyncResult(err) }]);
+      } catch (e) { console.error("Could not record the reconcile failure:", e.message); }
     }
   }, 60 * 60 * 1000));
 
@@ -652,6 +725,12 @@ async function start(app, opts = {}) {
 
   await runMigrations();
   startBackgroundJobs();
+  // Cycle-7 F14: check the Teller cert at boot (not on the first Teller call);
+  // Settings → Sync Health raises the same condition via /api/data-health.
+  try {
+    const { tellerCertStatus, COMPROMISED_CERT_WARNING } = require("./services/teller-api");
+    if (tellerCertStatus().compromised) console.error(COMPROMISED_CERT_WARNING);
+  } catch (e) { console.error("Teller cert check failed:", e.message); }
 
   if (!standalone) {
     // Embedded mode: shell owns the listener, keep-alive, and shutdown.
@@ -687,5 +766,6 @@ module.exports = { start, startBackgroundJobs, stopBackgroundJobs, touchActivity
 // Exposed for tests (PSC-3): the "away" job ticks and the per-day memo reset.
 module.exports._awayJobs = {
   runBudgetAlertTick, runWeeklyDigestTick, runDailyDigestTick, runCsvReminderTick,
+  runHousingLedgerTick, runInsightsAutoTriggerTick,
   reset() { for (const k of Object.keys(_awaySettled)) delete _awaySettled[k]; },
 };

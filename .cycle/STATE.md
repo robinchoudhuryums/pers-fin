@@ -12,13 +12,40 @@ to the "none in progress" state.
 Cycle: 7
 Phase: implement
 Scope: broad (Oct 2026 broad scan — all non-frozen subsystems + cycle-6 policy responses)
-Updated: 2026-10-19
+Updated: 2026-10-20
 
 (Machine-read fields for the v1.43.0 commands: the next /broad-scan,
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 2 DONE** on branch
+- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 3 DONE** on branch
+  `claude/sweet-ritchie-f9d8ah` (2026-10-20). Backstops, outcomes, operator state (policy responses).
+  - **Completed:** F3 (backup names missing secrets first — the run log confirmed both were unset;
+    operator must add them), F4 (operator: re-enable 4 workflows; documented), F5 (daily-sync
+    steps independent + timeout reported, 420 s), F8 (job outcomes via jobHealth.result, data-health
+    flushes first + raises failed jobs, housing-ledger watched), F23 (wholesale/thrown sync failures
+    recorded), F69 (failed finding INSERT → audit_incomplete), F73 (no settings fallback in
+    generateInsights), F63 (cap pre-check, insights_last_attempt_at + 24 h back-off, 'insight_unsaved'
+    charge), F14 (tellerCertStatus → data-health issue + boot log), F15 (housing reminders = away
+    job), F16 (workflow permissions, gpg + verified backups, generic test-notification error,
+    shutdown stops jobs, Express v4 doc), policy empty-catch scan (KNOWN_GAPS, 9 catches fixed).
+  - **Not finished (selected):** none in code. F3/F4 need the operator (secrets, re-enable,
+    restore drill).
+  - **Tests:** npm test 1547/1547 (+30); contract 44/44; migrations twice OK; new tests fail
+    pre-fix. Block: `.cycle/blocks/7-batch3-broad-implement.md`.
+  - **Decisions:** auto-insight retry back-off 24 h; backups switched to gpg (integrity-checked) —
+    no openssl backup ever existed; the empty-catch scan covers server code only, keyed per-file
+    count (no line numbers), ROLLBACK().catch is the one sanctioned idiom; data-health flush writes
+    only changed jobs.
+  - **Follow-ons:** rebuild's sonnet fallback (F73 pattern); port CHECK_STATUS to the other
+    workflows; reconcile throw retries hourly; KNOWN_GAPS 38 catches / 16 files.
+  - **Operator:** add NEON_DATABASE_URL + BACKUP_ENCRYPTION_PASSPHRASE (+ PERSISTENT_DATABASE_URL)
+    secrets; re-enable Database Backup / Weekly Reconcile / Keep Alive / Job Radar; run one backup
+    + restore drill; make the repo PRIVATE; delete old Actions logs.
+  - **Where I left off:** Batch 3 committed and pushed (no PR). NEXT: /sync-docs for Batch 3,
+    then Batch 4.
+
+- **Previous:** **Cycle 7 — Oct 2026 broad scan, Batch 2 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-20). Broken pages & dead channels.
   - **Completed:** F87 (Rent page utility row), F88 (account history 500), F89 (toast loop),
     F90 (nav badge + unread count), F74 (Web Push JSONB keys), F60 (insight feedback SQL),

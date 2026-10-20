@@ -14,6 +14,10 @@ on:
     - cron: '30 6,18 * * *'  # 6:30 and 18:30 UTC
   workflow_dispatch:          # manual trigger
 
+# Read-only token: nothing here writes to the repository (cycle-7 F16).
+permissions:
+  contents: read
+
 jobs:
   reindex:
     runs-on: ubuntu-latest

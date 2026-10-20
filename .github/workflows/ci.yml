@@ -5,6 +5,10 @@ on:
   push:
     branches: ['claude/subscription-tracker-plaid-WeQTA', 'main', 'master']
 
+# Read-only token: nothing here writes to the repository (cycle-7 F16).
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest

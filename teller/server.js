@@ -383,7 +383,7 @@ app.get("/api/keep-alive-schedule", async (_req, res) => {
 // the configured Express app without immediately binding a port. When
 // run directly (`node server.js`), we still bootstrap exactly as before.
 
-const { start } = require("./startup");
+const { start, stopBackgroundJobs } = require("./startup");
 
 if (require.main === module) {
   start(app).catch((err) => {
@@ -392,4 +392,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { app, start, pool };
+module.exports = { app, start, pool, stopBackgroundJobs };

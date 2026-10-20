@@ -23,6 +23,14 @@
 // on the job_runs row `_watchdog`. A persisting outage notifies once; a
 // recovery (empty signature) silently resets so the next outage notifies
 // again.
+//
+// Outcomes (cycle-7 F8): a tick only says the scheduler fired. A job that
+// actually ran its body also reports result(name, { ok, error }), so
+// job_runs.last_status / last_error say whether the last run SUCCEEDED
+// (last_status used to be hard-coded 'ok'). Like ticks, results stay in
+// memory until a flush — the watchdog's, or GET /api/data-health's, which
+// flushes before reading so a user returning after time away doesn't see
+// fresh in-process jobs reported as stale.
 
 // Expected tick interval per job (ms). Keys must match the tick() names used
 // in startup.js. A job is "missed" when now - last_run_at exceeds
@@ -40,6 +48,7 @@ const JOB_INTERVALS_MS = {
   "weekly-digest": 1 * HOUR,
   "daily-digest": 1 * HOUR,
   "csv-reminder": 1 * HOUR, // hourly tick, watermark-gated (PSC-3)
+  "housing-ledger": 6 * HOUR, // ticked since FAN-3 but never watched (F8)
 };
 const MISSED_FACTOR = 4;
 const MIN_THRESHOLD_MS = 36 * HOUR;
@@ -47,9 +56,24 @@ const WATCHDOG_ROW = "_watchdog";
 
 // In-memory tick log: job_name → epoch ms of the most recent tick.
 const memoryTicks = new Map();
+// In-memory outcome log: job_name → { status: 'ok'|'error', error } of the most
+// recent run that got past its gates. Absent = no run since the last flush.
+const memoryResults = new Map();
+// job_name → the tick time last written, so a flush only writes what changed
+// (GET /api/data-health flushes on every dashboard load).
+const flushedTicks = new Map();
 
 function tick(jobName) {
   memoryTicks.set(jobName, Date.now());
+}
+
+// Record how a job's run went. Call it only when the body actually ran — a
+// gated skip (user away, not due, disabled) is neither a success nor a failure.
+function result(jobName, { ok = true, error = null } = {}) {
+  memoryResults.set(jobName, {
+    status: ok ? "ok" : "error",
+    error: ok ? null : String(error || "failed").slice(0, 300),
+  });
 }
 
 function thresholdMs(jobName) {
@@ -57,19 +81,26 @@ function thresholdMs(jobName) {
   return Math.max(MISSED_FACTOR * interval, MIN_THRESHOLD_MS);
 }
 
-// Persist all in-memory ticks. Never throws.
+// Persist all in-memory ticks and outcomes. Never throws. A job with a tick
+// but no new outcome keeps its stored last_status / last_error; a recorded
+// outcome is cleared from memory once written, so it's persisted exactly once.
 async function flush(pool) {
   for (const [name, at] of memoryTicks) {
+    const outcome = memoryResults.get(name) || null;
+    if (!outcome && flushedTicks.get(name) === at) continue; // nothing new
     try {
       await pool.query(
-        `INSERT INTO job_runs (job_name, last_run_at, last_status, updated_at)
-         VALUES ($1, to_timestamp($2 / 1000.0), 'ok', now())
+        `INSERT INTO job_runs (job_name, last_run_at, last_status, last_error, updated_at)
+         VALUES ($1, to_timestamp($2 / 1000.0), $3, $4, now())
          ON CONFLICT (job_name) DO UPDATE SET
            last_run_at = GREATEST(job_runs.last_run_at, EXCLUDED.last_run_at),
-           last_status = 'ok',
+           last_status = CASE WHEN $3::text IS NULL THEN job_runs.last_status ELSE $3::text END,
+           last_error = CASE WHEN $3::text IS NULL THEN job_runs.last_error ELSE $4::text END,
            updated_at = now()`,
-        [name, at]
+        [name, at, outcome ? outcome.status : null, outcome ? outcome.error : null]
       );
+      if (outcome && memoryResults.get(name) === outcome) memoryResults.delete(name);
+      flushedTicks.set(name, at);
     } catch (err) {
       console.error("job-health flush error (" + name + "):", err.message);
       return; // table missing / DB blip — try again next watchdog pass
@@ -149,10 +180,13 @@ async function checkMissedJobs(pool, { sendToAll } = {}) {
 
 module.exports = {
   tick,
+  result,
   flush,
   checkMissedJobs,
   thresholdMs,
   JOB_INTERVALS_MS,
   // exported for tests
   _memoryTicks: memoryTicks,
+  _memoryResults: memoryResults,
+  _flushedTicks: flushedTicks,
 };

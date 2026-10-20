@@ -686,6 +686,10 @@ async function runMigrations() {
     // survives restarts — it used to be a 24-hour setInterval that needed 24h
     // of continuous uptime and essentially never fired).
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_csv_reminder_at TIMESTAMPTZ");
+    // Cycle-7 F63: the AI-insights auto-trigger stamps every ATTEMPT here, so a
+    // run that fails (cap reached, empty answer, DB error) isn't re-attempted —
+    // full Teller+Plaid sync chain included — on every 6-hour tick.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insights_last_attempt_at TIMESTAMPTZ");
 
     // ---- Self-healing reconcile watermark ----
     // Tracks the last time the trailing-window backfill (POST /api/sync/reconcile

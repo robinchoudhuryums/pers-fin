@@ -496,8 +496,27 @@ function flattenSyncErrors(provider, result) {
         error: e && e.error ? e.error : String(e),
       });
     }
+  } else if (result && (result.ok === false || result.failed === true)) {
+    // A WHOLESALE failure — the helper caught its own throw and returned
+    // { ok:false, error } with no errors[] (syncAllPlaidHoldings,
+    // syncAllPlaidInvestmentFlows). It used to flatten to [] and be recorded
+    // as a clean run (cycle-7 F23).
+    out.push({ provider, institution: null, error: String(result.error || "sync failed") });
   }
   return out;
+}
+
+// A Plaid helper's "feature off" answer is not a sync result: recording it
+// would either look like a failure or wipe that provider's last real outcome.
+function isNotConfigured(result) {
+  return !!result && result.ok === false && !Array.isArray(result.errors) && result.error === "Plaid not configured";
+}
+
+// The result to record for a step that THREW instead of returning (cycle-7
+// F23): a thrown step used to be recorded as nothing at all, leaving the
+// provider's previous — often clean — entry in place.
+function thrownSyncResult(err) {
+  return { errors: [{ institution: null, error: (err && err.message) || String(err) }] };
 }
 
 async function recordSyncResult(parts) {
@@ -519,7 +538,7 @@ async function recordSyncResult(parts) {
     console.error("read last sync result error:", e.message);
   }
   for (const { provider, result } of parts) {
-    if (result === null || result === undefined) continue;
+    if (result === null || result === undefined || isNotConfigured(result)) continue;
     providers[provider] = { at, errors: flattenSyncErrors(provider, result) };
   }
   const errors = [];
@@ -598,7 +617,7 @@ router.post("/api/sync", async (req, res) => {
     // Update data freshness timestamp
     await pool.query(
       "UPDATE user_settings SET last_txn_sync_at = now() WHERE id = 1"
-    ).catch(() => {});
+    ).catch(e => console.error("last_txn_sync_at update failed:", e.message));
     await recordSyncResult([
       { provider: "teller_txn", result: result.teller },
       { provider: "plaid_txn", result: result.plaid },
@@ -661,7 +680,7 @@ async function runReconcile(days, provider) {
     legFailed
       ? "UPDATE user_settings SET last_reconcile_at = now() WHERE id = 1"
       : "UPDATE user_settings SET last_reconcile_at = now(), last_txn_sync_at = now() WHERE id = 1"
-  ).catch(() => {});
+  ).catch(e => console.error("reconcile timestamp update failed:", e.message));
   return out;
 }
 
@@ -738,7 +757,7 @@ router.post("/api/sync/reconcile", async (req, res) => {
           tag: "reconcile",
           data: { url: "/settings" },
         });
-      } catch {}
+      } catch (e) { console.error("Reconcile notification failed:", e.message); }
     })();
     return res.status(202).json({ started: true, running: true, provider, days });
   }
@@ -1229,7 +1248,12 @@ async function syncAllBalancesOnce() {
 // POST /api/sync-balances
 router.post("/api/sync-balances", async (_req, res) => {
   try {
-    const tellerResult = await syncAllBalances();
+    // A Teller throw is recorded and still answers 500 (daily-sync.yml goes
+    // red), but no longer skips the Plaid refresh or the record (cycle-7 F23).
+    let tellerResult = null;
+    let tellerThrew = null;
+    try { tellerResult = await syncAllBalances(); }
+    catch (e) { console.error("Teller balance sync error:", e.message); tellerThrew = e; }
     // Also refresh Plaid balances so users with both providers get one-click
     // freshness. Lazy-required to avoid a circular import via routes/investments.
     let plaidResult = null;
@@ -1261,15 +1285,17 @@ router.post("/api/sync-balances", async (_req, res) => {
     }
     await pool.query(
       "UPDATE user_settings SET last_balance_sync_at = now() WHERE id = 1"
-    ).catch(() => {});
+    ).catch(e => console.error("last_balance_sync_at update failed:", e.message));
     await recordSyncResult([
-      { provider: "teller_balance", result: tellerResult },
+      { provider: "teller_balance", result: tellerThrew ? thrownSyncResult(tellerThrew) : tellerResult },
       { provider: "plaid_balance", result: plaidResult },
       { provider: "plaid_holdings", result: holdingsResult },
-      // Investment-flow errors were never recorded (DD-10).
-      { provider: "plaid_flows", result: flowsResult && flowsResult.ok === false && !flowsResult.errors ? null : flowsResult },
+      // Investment-flow errors were never recorded (DD-10); "Plaid not
+      // configured" is skipped inside recordSyncResult.
+      { provider: "plaid_flows", result: flowsResult },
       ...(plaidThrew ? [{ provider: "plaid", result: { errors: [{ institution: null, error: plaidThrew }] } }] : []),
     ]);
+    if (tellerThrew) return res.status(500).json({ error: "An internal error occurred." });
     res.json({
       ...tellerResult,
       plaid_accounts_updated: plaidResult?.accounts_updated || 0,
@@ -1390,6 +1416,7 @@ module.exports.reconcileTeller = reconcileTeller;
 module.exports.reconcileErrors = reconcileErrors;
 module.exports.summarizeReconcile = summarizeReconcile;
 module.exports.recordSyncResult = recordSyncResult;
+module.exports.thrownSyncResult = thrownSyncResult;
 module.exports.syncAllTransactions = syncAllTransactions;
 module.exports.runAnomalyCheck = runAnomalyCheck;
 module.exports.lookbackFloor = lookbackFloor; // exported for testing (BSI-8)

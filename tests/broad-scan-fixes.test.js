@@ -34,15 +34,28 @@ describe("F1 — db-backup workflow", () => {
 
   it("dumps both databases and encrypts before upload", () => {
     const src = fs.readFileSync(wfPath, "utf8");
-    assert.match(src, /pg_dump "\$DB_URL"/, "must use pg_dump");
-    assert.match(src, /NEON_DATABASE_URL/, "must back up Perfin's DB");
-    assert.match(src, /PERSISTENT_DATABASE_URL/, "must back up Per-sistant's DB");
-    assert.match(src, /openssl enc -aes-256-cbc -pbkdf2/, "dumps must be encrypted");
+    assert.match(src, /pg_dump "\$url"/, "must use pg_dump");
+    assert.match(src, /backup_db perfin "\$DB_URL"/, "must back up Perfin's DB");
+    assert.match(src, /backup_db persistent "\$DB_URL"/, "must back up Per-sistant's DB");
+    assert.match(src, /NEON_DATABASE_URL/);
+    assert.match(src, /PERSISTENT_DATABASE_URL/);
+    // Cycle-7 F16: gpg symmetric AES-256 (integrity-checked), not unauthenticated CBC.
+    assert.match(src, /gpg --batch[\s\S]*?--symmetric --cipher-algo AES256/, "dumps must be encrypted");
+    assert.doesNotMatch(src, /openssl enc/);
     assert.match(src, /BACKUP_ENCRYPTION_PASSPHRASE/, "encryption keyed by dedicated secret");
     assert.match(src, /retention-days:\s*90/, "artifacts must have 90-day retention");
     // Plaintext dump must be removed before the artifact upload step.
-    assert.match(src, /rm "perfin-\$DATE\.dump"/, "plaintext perfin dump must be deleted");
-    assert.match(src, /path:\s*'\*\.dump\.enc'/, "only encrypted files are uploaded");
+    assert.match(src, /rm "\$name\.dump"/, "plaintext dump must be deleted");
+    assert.match(src, /path:\s*'\*\.dump\.gpg'/, "only encrypted files are uploaded");
+  });
+
+  it("verifies each encrypted backup and names missing secrets up front (cycle-7 F3/F16)", () => {
+    const src = fs.readFileSync(wfPath, "utf8");
+    assert.match(src, /set -o pipefail/, "the verify pipe must fail when gpg fails");
+    assert.match(src, /--decrypt "\$out" \| pg_restore --list > \/dev\/null/, "the ENCRYPTED file is decrypted and its archive TOC read");
+    const steps = src.slice(src.indexOf("steps:"));
+    assert.ok(steps.indexOf("name: Check secrets") < steps.indexOf("name: Install PostgreSQL"), "secrets are checked first");
+    assert.match(src, /Repository secret\(s\) not set:\$missing/);
   });
 });
 

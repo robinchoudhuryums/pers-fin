@@ -187,6 +187,15 @@ async function processScheduledEmails() {
 
 const PORT = parseInt(process.env.PORT || "3001", 10);
 
+// node-cron tasks started by start(), so shutdown can stop them (cycle-7 F16:
+// the shell's shutdown left every cron running while the pools drained).
+const cronTasks = [];
+function stopJobs() {
+  while (cronTasks.length) {
+    try { cronTasks.pop().stop(); } catch (err) { console.error("cron stop error:", err.message); }
+  }
+}
+
 async function start(opts = {}) {
   const standalone = opts.standalone !== false;
 
@@ -205,7 +214,7 @@ async function start(opts = {}) {
   // 1,440 queries/day; now 144/day). Worst case: a scheduled email fires
   // up to 10 minutes late, which is unnoticeable for a personal app.
   if (cron) {
-    cron.schedule("*/10 * * * *", processScheduledEmails);
+    cronTasks.push(cron.schedule("*/10 * * * *", processScheduledEmails));
     console.log("Email scheduler started (checks every 10 minutes)");
   }
 
@@ -214,12 +223,12 @@ async function start(opts = {}) {
     // Local midnight in APP_TIMEZONE (PB-10); the roll itself (claim → mark
     // MISSED → next instance on/after today with the chain's anchor day) is
     // helpers.rollMissedRecurring.
-    cron.schedule("0 0 * * *", async () => {
+    cronTasks.push(cron.schedule("0 0 * * *", async () => {
       try {
         const { rolled } = await rollMissedRecurring(pool, todayStr());
         if (rolled) console.log(`Processed ${rolled} recurring tasks`);
       } catch (err) { console.error("Recurring task error:", err.message); }
-    }, { timezone: process.env.APP_TIMEZONE || "UTC" });
+    }, { timezone: process.env.APP_TIMEZONE || "UTC" }));
     console.log("Recurring task processor started (daily at midnight)");
   }
 
@@ -230,7 +239,7 @@ async function start(opts = {}) {
   // reliability while the Render free tier sleeps; the in-process lock
   // (vault-sync.isSyncing) keeps the two from overlapping.
   if (cron) {
-    cron.schedule("17 * * * *", async () => {
+    cronTasks.push(cron.schedule("17 * * * *", async () => {
       try {
         if (vaultSync.isSyncing()) return;
         // Each self-guards: syncVault no-ops without vault config; syncNotes
@@ -241,7 +250,7 @@ async function start(opts = {}) {
       } catch (err) {
         console.error("Vault sync error:", err.message);
       }
-    });
+    }));
     console.log("Knowledge vault sync started (hourly when configured)");
   }
 
@@ -253,7 +262,7 @@ async function start(opts = {}) {
   // job_radar_enabled so it's a no-op until the operator turns it on.
   if (cron) {
     const jobs = require("./routes/jobs");
-    cron.schedule("23 7 * * 1", async () => {
+    cronTasks.push(cron.schedule("23 7 * * 1", async () => {
       try {
         const s = await pool.query("SELECT job_radar_enabled FROM user_settings WHERE id = 1");
         if (!s.rows.length || !s.rows[0].job_radar_enabled) return;
@@ -262,7 +271,7 @@ async function start(opts = {}) {
       } catch (err) {
         console.error("Job Radar refresh error:", err.message);
       }
-    });
+    }));
     console.log("Job Radar weekly refresh started (Mondays, when enabled)");
   }
 
@@ -286,6 +295,7 @@ async function start(opts = {}) {
   // Graceful shutdown — drain connections and stop cron jobs
   function shutdown(signal) {
     console.log(`\n${signal} received — shutting down gracefully...`);
+    stopJobs();
     server.close(() => {
       pool.end().then(() => {
         console.log("Database pool closed.");
@@ -313,4 +323,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { app, pool, start, processScheduledEmails, parseTimeExpr: null };
+module.exports = { app, pool, start, stopJobs, processScheduledEmails, parseTimeExpr: null };

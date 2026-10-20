@@ -99,7 +99,9 @@ router.post("/api/notifications/test", async (_req, res) => {
     }
     res.json({ sent, failed, total: result.rows.length });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    // Log the detail, answer generically (cycle-7 F16 — it echoed err.message).
+    console.error("Test notification error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 

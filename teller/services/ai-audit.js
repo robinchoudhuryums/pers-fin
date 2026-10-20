@@ -489,7 +489,14 @@ async function auditInsight(insightText, insightId) {
          VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [insightId, f.check, f.severity, `tier${f.tier}`, f.claim || f.context, f.expected || "", f.context || ""]
       );
-    } catch {}
+    } catch (err) {
+      // A finding that wasn't stored can't be counted, so the run must not be
+      // stamped as completely audited — with no rows behind it, a run whose
+      // CRITICAL finding failed to insert read as "clean" and inflated
+      // audit_accuracy (cycle-7 F69). Mark it incomplete instead.
+      console.error("Audit finding insert error:", err.message);
+      incomplete = true;
+    }
   }
 
   // AI-5/AI-6: stamp the run as audited so getAuditAccuracy can tell a

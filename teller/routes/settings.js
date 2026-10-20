@@ -432,20 +432,39 @@ router.get("/api/data-health", async (_req, res) => {
     let jobs = [];
     try {
       const jobHealth = require("../services/job-health");
+      // Persist this process's in-memory heartbeats + outcomes first (cycle-7
+      // F8): ticks are only flushed by the activity-gated watchdog, so after
+      // time away every job read as "stale" here although it had been ticking.
+      await jobHealth.flush(pool);
       const jr = await pool.query(
-        "SELECT job_name, last_run_at, last_status FROM job_runs WHERE job_name != '_watchdog' ORDER BY job_name"
+        "SELECT job_name, last_run_at, last_status, last_error FROM job_runs WHERE job_name != '_watchdog' ORDER BY job_name"
       );
       const nowMs = Date.now();
       jobs = jr.rows.map(j => ({
         job: j.job_name,
         last_run_at: j.last_run_at,
+        last_status: j.last_status || null,
+        last_error: j.last_status === "error" ? (j.last_error || null) : null,
         stale: j.last_run_at ? (nowMs - new Date(j.last_run_at).getTime()) > jobHealth.thresholdMs(j.job_name) : false,
       }));
       const staleJobs = jobs.filter(j => j.stale).map(j => j.job);
       if (staleJobs.length) {
         issues.push({ severity: "warning", message: `Scheduled job(s) haven't run recently: ${staleJobs.join(", ")} — server likely asleep (check keep-alive).` });
       }
+      // A job that ran but FAILED (its outcome, not just its heartbeat — F8).
+      for (const j of jobs.filter(j => j.last_status === "error")) {
+        issues.push({ severity: "warning", message: `Scheduled job ${j.job} failed its last run: ${j.last_error || "unknown error"}` });
+      }
     } catch (e) { /* job_runs not migrated yet — omit */ }
+
+    // Operator state (cycle-7 F14): the Teller certificate still being the one
+    // committed to git history used to be a boot-log line only.
+    try {
+      const { tellerCertStatus } = require("../services/teller-api");
+      if (tellerCertStatus().compromised) {
+        issues.push({ severity: "warning", message: "The Teller certificate in use is the one exposed in git history — generate a new one in the Teller dashboard and update TELLER_CERT / TELLER_KEY." });
+      }
+    } catch (e) { console.error("data-health cert check failed:", e.message); }
 
     res.json({
       thresholds: { fresh_seconds: FRESH_SEC, stale_seconds: STALE_SEC },

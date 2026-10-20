@@ -1,9 +1,18 @@
 # Nightly encrypted database backups (broad-scan F1)
 #
 # Dumps BOTH Neon databases (Perfin + Per-sistant) with pg_dump, encrypts
-# each dump with AES-256, and stores them as GitHub Actions artifacts with
-# 90-day retention. Runs independently of the app server, so backups happen
-# even while the Render free tier is asleep.
+# each dump with AES-256 (gpg symmetric — the ciphertext carries an integrity
+# check, so a corrupted or altered file fails to decrypt instead of restoring
+# garbage), VERIFIES each one by decrypting it and reading its table of
+# contents with pg_restore --list, and stores them as GitHub Actions artifacts
+# with 90-day retention. Runs independently of the app server, so backups
+# happen even while the Render free tier is asleep.
+#
+# Cycle 7 (Oct 2026): every run before then failed — the secrets below were
+# never set (F3) — so NO backup existed. The first step now names any missing
+# secret. GitHub also disables a public repo's scheduled workflows after 60
+# days without repository activity (F4): re-enable it under Actions →
+# Database Backup if it shows "disabled", and keep the repo private.
 #
 # Required repository secrets:
 #   NEON_DATABASE_URL            — Perfin's Postgres connection string
@@ -17,10 +26,8 @@
 # ── RESTORE RUNBOOK ─────────────────────────────────────────────────────────
 # 1. Download the artifact from the workflow run (Actions → Database Backup →
 #    pick a run → Artifacts) and unzip it.
-# 2. Decrypt:
-#      openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
-#        -pass pass:'<BACKUP_ENCRYPTION_PASSPHRASE>' \
-#        -in perfin-YYYY-MM-DD.dump.enc -out perfin.dump
+# 2. Decrypt (prompts for BACKUP_ENCRYPTION_PASSPHRASE; refuses a damaged file):
+#      gpg --decrypt --output perfin.dump perfin-YYYY-MM-DD.dump.gpg
 # 3. Restore into a fresh database (Neon: create a new database/branch first):
 #      pg_restore --clean --if-exists --no-owner --no-privileges \
 #        -d "$NEW_DATABASE_URL" perfin.dump
@@ -39,10 +46,45 @@ on:
     - cron: '23 8 * * *'   # daily, 8:23 AM UTC (offset to avoid load spikes)
   workflow_dispatch:        # manual trigger
 
+# Read-only token: nothing here writes to the repository (cycle-7 F16).
+permissions:
+  contents: read
+
 jobs:
   backup:
     runs-on: ubuntu-latest
+    env:
+      # Shared by both dump steps: dump, encrypt, then verify the ENCRYPTED file
+      # decrypts and is a readable pg_dump archive. Usage: backup_db <name> <url>
+      BACKUP_FN: |
+        set -o pipefail
+        backup_db() {
+          local name="$1" url="$2" date out
+          date=$(date -u +%F)
+          out="$name-$date.dump.gpg"
+          pg_dump "$url" --no-owner --no-privileges --format=custom --file="$name.dump"
+          printf '%s' "$BACKUP_PASSPHRASE" | gpg --batch --yes --quiet --pinentry-mode loopback \
+            --passphrase-fd 0 --symmetric --cipher-algo AES256 \
+            --s2k-digest-algo SHA512 --s2k-count 65011712 --output "$out" "$name.dump"
+          rm "$name.dump"
+          printf '%s' "$BACKUP_PASSPHRASE" | gpg --batch --quiet --pinentry-mode loopback \
+            --passphrase-fd 0 --decrypt "$out" | pg_restore --list > /dev/null
+          echo "$out: $(du -h "$out" | cut -f1), verified (decrypts + pg_restore --list)"
+        }
     steps:
+      - name: Check secrets
+        env:
+          DB_URL: ${{ secrets.NEON_DATABASE_URL }}
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
+        run: |
+          missing=""
+          [ -n "$DB_URL" ] || missing="$missing NEON_DATABASE_URL"
+          [ -n "$BACKUP_PASSPHRASE" ] || missing="$missing BACKUP_ENCRYPTION_PASSPHRASE"
+          if [ -n "$missing" ]; then
+            echo "::error::Repository secret(s) not set:$missing — add them under Settings → Secrets and variables → Actions. No backup can be taken until then."
+            exit 1
+          fi
+
       - name: Install PostgreSQL 17 client (matches Neon's server major)
         run: |
           sudo install -d /usr/share/postgresql-common/pgdg
@@ -53,23 +95,15 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq postgresql-client-17
 
-      - name: Dump + encrypt Perfin database
+      - name: Dump + encrypt + verify Perfin database
         env:
           DB_URL: ${{ secrets.NEON_DATABASE_URL }}
           BACKUP_PASSPHRASE: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
         run: |
-          if [ -z "$DB_URL" ]; then echo "NEON_DATABASE_URL secret not set"; exit 1; fi
-          if [ -z "$BACKUP_PASSPHRASE" ]; then echo "BACKUP_ENCRYPTION_PASSPHRASE secret not set"; exit 1; fi
-          DATE=$(date -u +%F)
-          pg_dump "$DB_URL" --no-owner --no-privileges --format=custom \
-            --file="perfin-$DATE.dump"
-          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
-            -pass env:BACKUP_PASSPHRASE \
-            -in "perfin-$DATE.dump" -out "perfin-$DATE.dump.enc"
-          rm "perfin-$DATE.dump"
-          ls -lh perfin-*.dump.enc
+          eval "$BACKUP_FN"
+          backup_db perfin "$DB_URL"
 
-      - name: Dump + encrypt Per-sistant database
+      - name: Dump + encrypt + verify Per-sistant database
         env:
           DB_URL: ${{ secrets.PERSISTENT_DATABASE_URL }}
           BACKUP_PASSPHRASE: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
@@ -78,19 +112,13 @@ jobs:
             echo "PERSISTENT_DATABASE_URL secret not set — skipping (standalone-Perfin setup)"
             exit 0
           fi
-          DATE=$(date -u +%F)
-          pg_dump "$DB_URL" --no-owner --no-privileges --format=custom \
-            --file="persistent-$DATE.dump"
-          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
-            -pass env:BACKUP_PASSPHRASE \
-            -in "persistent-$DATE.dump" -out "persistent-$DATE.dump.enc"
-          rm "persistent-$DATE.dump"
-          ls -lh persistent-*.dump.enc
+          eval "$BACKUP_FN"
+          backup_db persistent "$DB_URL"
 
       - name: Upload encrypted backups
         uses: actions/upload-artifact@v4
         with:
           name: db-backup-${{ github.run_id }}
-          path: '*.dump.enc'
+          path: '*.dump.gpg'
           retention-days: 90
           if-no-files-found: error

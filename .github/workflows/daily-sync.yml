@@ -11,6 +11,10 @@ on:
     - cron: '0 7 * * *'  # 7 AM UTC daily
   workflow_dispatch:       # manual trigger
 
+# Read-only token: the steps only call the app's API (cycle-7 F16).
+permissions:
+  contents: read
+
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -21,6 +25,21 @@ jobs:
     # strings only when the key is suffixed ":str". Details live in the app
     # (Settings -> Sync Health).
     env:
+      # Cycle-7 F5: every step after "Sync transactions" is an INDEPENDENT
+      # backstop, so each runs with `if: ${{ !cancelled() }}` — one failed call
+      # (nine timed-out syncs in Oct 2026) no longer skips the balance sync, the
+      # net-worth snapshot and detection. CHECK_STATUS reports a curl timeout or
+      # unreachable server ("000") as an error annotation instead of the step
+      # dying silently under `bash -e`: usage `check_status <label> <status>`.
+      CHECK_STATUS: |
+        check_status() {
+          if [ "$2" = "000" ]; then
+            echo "::error::$1: no response (timed out or server unreachable). A long sync may still be finishing on the server — see Settings -> Sync Health."
+            return 1
+          fi
+          if [ "$2" -ne 200 ]; then echo "::error::$1 failed with HTTP $2"; return 1; fi
+          echo "$1: HTTP $2"
+        }
       SUMMARY_JS: |
         const fs = require("fs");
         const [file, ...keys] = process.argv.slice(1);
@@ -51,50 +70,57 @@ jobs:
           # behind the unified shell. The shell's requireAuth honors x-api-key
           # the same way Perfin's standalone middleware did. /api/sync covers
           # Teller AND Plaid transactions (+ one anomaly check over both).
-          STATUS=$(curl -s -o /tmp/sync.json -w "%{http_code}" --max-time 240 \
+          # 420s: a Plaid item re-walk after a long gap can exceed the old 240s.
+          eval "$CHECK_STATUS"
+          STATUS=$(curl -s -o /tmp/sync.json -w "%{http_code}" --max-time 420 \
             -X POST "${{ secrets.SERVER_URL }}/perfin/api/sync" \
             -H "x-api-key: ${{ secrets.API_KEY }}" \
-            -H "Content-Type: application/json")
-          echo "Sync status: $STATUS"
+            -H "Content-Type: application/json") || true
           node -e "$SUMMARY_JS" /tmp/sync.json enrollments_synced transactions_added errors
-          if [ "$STATUS" -ne 200 ]; then echo "Sync failed"; exit 1; fi
+          check_status "Transaction sync" "$STATUS"
 
       - name: Sync balances + holdings + investment flows
+        if: ${{ !cancelled() }}
         run: |
           # One call refreshes Teller balances, Plaid balances/liabilities,
           # investment holdings, and external cash flows (TWR/XIRR) — the
           # in-process hourly job only runs while the server is awake, so this
           # guarantees at least daily freshness.
+          eval "$CHECK_STATUS"
           STATUS=$(curl -s -o /tmp/balances.json -w "%{http_code}" --max-time 240 \
             -X POST "${{ secrets.SERVER_URL }}/perfin/api/sync-balances" \
             -H "x-api-key: ${{ secrets.API_KEY }}" \
-            -H "Content-Type: application/json")
-          echo "Balance sync status: $STATUS"
+            -H "Content-Type: application/json") || true
           node -e "$SUMMARY_JS" /tmp/balances.json accounts_updated accounts_changed errors plaid_accounts_updated plaid_errors holdings_updated holdings_accounts_updated holdings_errors flows_added flows_errors
-          if [ "$STATUS" -ne 200 ]; then echo "Balance sync failed"; exit 1; fi
+          check_status "Balance sync" "$STATUS"
 
       - name: Net worth snapshot
+        if: ${{ !cancelled() }}
         run: |
           # Daily guaranteed snapshot (ON CONFLICT (snapshot_date) upsert —
           # the awake-hours in-process job just overwrites with fresher data).
+          eval "$CHECK_STATUS"
           STATUS=$(curl -s -o /tmp/networth.json -w "%{http_code}" --max-time 120 \
             -X POST "${{ secrets.SERVER_URL }}/perfin/api/net-worth/snapshot" \
             -H "x-api-key: ${{ secrets.API_KEY }}" \
-            -H "Content-Type: application/json")
-          echo "Snapshot status: $STATUS"
+            -H "Content-Type: application/json") || true
           # The body is the snapshot row incl. the per-account breakdown — never printed (F2).
+          check_status "Net worth snapshot" "$STATUS"
 
       - name: Run subscription detection
+        if: ${{ !cancelled() }}
         run: |
-          STATUS=$(curl -s -o /tmp/detect.json -w "%{http_code}" \
+          eval "$CHECK_STATUS"
+          STATUS=$(curl -s -o /tmp/detect.json -w "%{http_code}" --max-time 240 \
             -X POST "${{ secrets.SERVER_URL }}/perfin/api/detect" \
             -H "x-api-key: ${{ secrets.API_KEY }}" \
-            -H "Content-Type: application/json")
-          echo "Detection status: $STATUS"
+            -H "Content-Type: application/json") || true
           node -e "$SUMMARY_JS" /tmp/detect.json detected_count
+          check_status "Subscription detection" "$STATUS"
 
       - name: Check for new/changed subscriptions
         id: check
+        if: ${{ !cancelled() }}
         run: |
           curl -s "${{ secrets.SERVER_URL }}/perfin/api/subscriptions?filter=all" \
             -H "x-api-key: ${{ secrets.API_KEY }}" | \

@@ -507,9 +507,14 @@ async function generateInsights() {
       pool.query(
         "SELECT insight_text, created_at FROM financial_insights WHERE entry_type = 'insight' ORDER BY created_at DESC LIMIT 1"
       ).catch(() => ({ rows: [] })),
+      // No fallback (cycle-7 F73): a failed read used to substitute defaults —
+      // a NULL running summary and the "sonnet" model — so the run went ahead,
+      // charged the cap on the wrong model and then OVERWROTE the stored
+      // long-term memory with one built from nothing. Failing here costs
+      // nothing: the Claude call hasn't happened yet.
       pool.query(
         "SELECT insights_running_summary, insights_running_summary_json, insights_model, insights_cadence_days, zip_code, insight_modules FROM user_settings WHERE id = 1"
-      ).catch(() => ({ rows: [{ insights_running_summary: null, insights_running_summary_json: null, insights_model: "sonnet", insights_cadence_days: 30, zip_code: null, insight_modules: {} }] })),
+      ),
       // S1: user feedback on the last 5 audited insights, fed back into the
       // prompt so Claude can adjust tone/focus when the user pushes back.
       pool.query(
@@ -1165,10 +1170,25 @@ async function generateInsights() {
         summary_status: summaryStatus === "updated" ? "preserved_no_tool_block" : summaryStatus,
       };
     }
-    const insightRow = await pool.query(
-      "INSERT INTO financial_insights (insight_text, period_start, period_end, model_used, tokens_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens) VALUES ($1, CURRENT_DATE - INTERVAL '6 months', CURRENT_DATE, $2, $3, $4, $5, $6, $7) RETURNING id",
-      [insightText, actualModel, tokensUsed, usage.input_tokens || 0, usage.output_tokens || 0, usage.cache_read_input_tokens || 0, usage.cache_creation_input_tokens || 0]
-    );
+    const usageParams = [actualModel, tokensUsed, usage.input_tokens || 0, usage.output_tokens || 0, usage.cache_read_input_tokens || 0, usage.cache_creation_input_tokens || 0];
+    let insightRow;
+    try {
+      insightRow = await pool.query(
+        "INSERT INTO financial_insights (insight_text, period_start, period_end, model_used, tokens_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens) VALUES ($1, CURRENT_DATE - INTERVAL '6 months', CURRENT_DATE, $2, $3, $4, $5, $6, $7) RETURNING id",
+        [insightText, ...usageParams]
+      );
+    } catch (insertErr) {
+      // The insight row IS the usage row, so a failed INSERT used to leave the
+      // call uncharged — and the next tick paid for it again (cycle-7 F63).
+      // Charge it on its own under a non-'insight' entry_type (never shown,
+      // audited or emailed), then report the failure.
+      console.error("Insight INSERT failed:", insertErr.message);
+      await pool.query(
+        "INSERT INTO financial_insights (insight_text, period_start, period_end, model_used, tokens_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, entry_type) VALUES ($1, CURRENT_DATE - INTERVAL '6 months', CURRENT_DATE, $2, $3, $4, $5, $6, $7, 'insight_unsaved')",
+        ["[Unsaved insight] the insight row could not be written", ...usageParams]
+      ).catch(err => console.error("unsaved-insight usage row failed — monthly AI cap may under-count:", err.message));
+      return { ok: false, status: 500, error: "The insight was generated but could not be saved." };
+    }
     const insightId = insightRow.rows[0]?.id || null;
     if (summaryStatus === "updated" && newSummaryJson) {
       await pool.query(
@@ -1199,7 +1219,7 @@ async function generateInsights() {
               data: { url: "/settings" },
             });
           }
-        } catch {}
+        } catch (e) { console.error("Audit alert notification failed:", e.message); }
       }
     } catch (auditErr) {
       console.error("AI audit error:", auditErr.message);

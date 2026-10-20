@@ -13,6 +13,10 @@ on:
     - cron: '0 9 * * 0'   # Sundays 9 AM UTC
   workflow_dispatch:
 
+# Read-only token: nothing here writes to the repository (cycle-7 F16).
+permissions:
+  contents: read
+
 jobs:
   reconcile:
     runs-on: ubuntu-latest
