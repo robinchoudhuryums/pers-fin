@@ -37,9 +37,15 @@ implement and reflect sessions only set Phase.)
   - **Follow-ons:** a future-month one-time budget is invisible until its month; the category
     month selector keeps the first response; no toggles for the credit-score / insights widgets.
   - **Block:** `.cycle/blocks/7-batch10-broad-implement.md`.
-  - **Where I left off:** Batch 10 committed and pushed (no PR). NEXT: /sync-docs for Batch 10,
-    then Batch 11 (Per-sistant correctness: F109, F113, F111, F110, F112, F114, F115, F121,
-    F122, F116–F124).
+  - **Where I left off:** Batch 10 committed and pushed (no PR). /sync-docs DONE (Batch 10):
+    CLAUDE.md — sw.js entry + PWA bullet (v7, path keys, shouldCache — F107), perfin-shared.js
+    entry (DASHBOARD_WIDGETS / applyDashboardWidgets — F96), dashboard charts (F91/F108), split
+    modal (F103), budget rollover UI + POST upsert (F39, bullet + endpoint; F39 removed from
+    the Batch 5 Known Issues line), loan display (F105), nav / calendar layout (F94/F95),
+    Accessibility scan pages (F101), W3 + INV-61 return_to (F102), new INV-116, Known Issues
+    (Batch 10 follow-ons), counts 1649 / 77 (Perfin 1193) + contract 90; README counts +
+    Batch 10 summary. No new source paths or operator state. NEXT: Batch 11 (Per-sistant
+    correctness: F109, F113, F111, F110, F112, F114, F115, F121, F122, F116–F124).
 
 - **Previous:** **Cycle 7 — Oct 2026 broad scan, Batch 9 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-20). Sheets and cross-app.

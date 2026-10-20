@@ -343,9 +343,14 @@ teller/
                            Retry + logo-error live in offline.js; assets are relative
                            (`logo.svg`), so they resolve under the /perfin mount (F92)
     offline.js           — The offline page's Retry (location.reload) + hide-logo-on-error
-    sw.js                — Service worker (cache `perfin-v6`, network-first with offline
+    sw.js                — Service worker (cache `perfin-v7`, network-first with offline
                            fallback. Precaches CSS/JS/SVG/offline.html/offline.js on
-                           install. The offline page is served through offlineResponse(),
+                           install. Entries are keyed by origin + path, query dropped
+                           (`cacheKey`), so a new `?v=` replaces the old copy instead
+                           of piling up; `shouldCache` stores only an ok, same-origin,
+                           NON-redirected response, and HTML only for a page
+                           navigation — an expired session's login page can't be
+                           stored as an asset (cycle-7 F107). The offline page is served through offlineResponse(),
                            which injects `<base href="<mount>/">` (keeps the CSP headers,
                            drops content-length) so its relative assets resolve from any
                            failed URL (F92). `/api/*` is intentionally NOT cached — stale
@@ -382,6 +387,13 @@ teller/
                            overlay the page shows/hides itself (MutationObserver on
                            style/hidden/class). Every Perfin modal and the bell panel
                            use one of them (IF-1).
+                           DASHBOARD_WIDGETS ([{key, label, selector}]) is the ONE
+                           dashboard widget-key list: Settings renders a toggle per
+                           entry and the dashboard calls applyDashboardWidgets(map),
+                           which toggles `.widget-off` (display:none !important, so a
+                           loader showing its section can't undo it) on each switched-
+                           off key's element (cycle-7 F96 — the two pages kept separate
+                           lists and five toggles hid nothing). Add a new widget there.
   views/
     dashboard.ejs        — Dashboard template with 3D financial wellness pyramid
     transactions.ejs     — Transaction search/filter template, per-row Split modal
@@ -575,9 +587,19 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1624 tests as of latest); use
+  Perfin and Per-sistant test files (1649 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1624 tests across 76 test files (incl.
+  Current count: 1649 tests across 77 test files (incl.
+  `tests/scan-oct-batch10.test.js` — the Oct 2026 (cycle 7) Batch 10 Perfin UI pins: the
+  REAL loadCharts run against a canned spending summary and a fake Chart, incl. a
+  west-of-UTC month label under TZ=America/Los_Angeles (F91), the nav wrap and calendar
+  minmax (F94/F95), DASHBOARD_WIDGETS — every selector present on the dashboard, every
+  settings default key covered, applyDashboardWidgets run in a vm (F96), parseAmountInput /
+  parseCalDate / writeOk on the listed paths (F97/F98/F99), the computed-display Add
+  forms (F100), the budget POST keeping unsent fields + its 400s (F39), return_to,
+  the Split modal, the one style attribute, loans as owed, escaped error text (F102–F106),
+  sw.js `cacheKey` / `shouldCache` run in a vm (F107) and the failed-load states (F108) —
+  the database-backed half lives in `tests/contract/ui-writes.contract.test.js`;
   `tests/scan-oct-batch9.test.js` — the Oct 2026 (cycle 7) Batch 9 Sheets / cross-app
   pins that need no database: completed-month Sheets averages (F75), resetFormats on
   Income / AI Trust / Watchlist and `singleFlight` (F77/F78), the guard's plain-number
@@ -725,11 +747,13 @@ shell/
   yearly utility's next due on its anniversary, every monthly manual-bill
   occurrence in Important Dates + a month-end transfer stepped by calendar month,
   the Credit Scores change per score type, notification_log retention, and the
-  in-process digest draft reported not sent) and knowledge (syncVault through a
+  in-process digest draft reported not sent), ui-writes (cycle-7 Batch 10: an Add-form
+  re-save keeping a budget's rollover / notes, a one-time budget keeping its month and
+  showing only in it, the rollover PATCH) and knowledge (syncVault through a
   fake GitHub API via its `fetchImpl`, syncNotes, keyword search never returning
   secret text, secret-lookup, facts current vs `all=1` + verify, /api/rag/query
   without AI, an incremental compare that removes a deleted file) plus insight
-  feedback set / change / clear (the F60 `$1::text` cast). 87 tests, run
+  feedback set / change / clear (the F60 `$1::text` cast). 90 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -1053,7 +1077,9 @@ shell/
   ±$0.01). Splits REPLACE the parent row in per-category aggregations; total
   amounts (monthly trend, cash flow, savings rate) are unchanged because splits
   sum to the parent. Powered by `getCategorySpendingThisMonth` in
-  `services/financial-queries.js`.
+  `services/financial-queries.js`. The Activity page's Split modal refuses to
+  open when it can't read the existing splits (an empty editor saved over
+  them) and carries each split's `merchant_name` through a save (cycle-7 F103).
 - **Subscription detection**: Automatic recurring charge identification (30/60/90/365-day cadences).
   The 30-day cadence requires 3+ charges; 60/90/365-day cadences need only 2+
   (1 matching gap) — the same `>= 60` relaxation the recurring-transfer detector
@@ -1251,7 +1277,14 @@ shell/
   comma split the category and a quote/brace 500'd the whole import).
 - **Budget rollover**: Budgets can enable `rollover_enabled` to carry unused budget
   to the next month. `budget_type` can be `recurring` (perpetual) or `one_time`
-  (applies only to `effective_month`). Monthly snapshots via `POST /api/budgets/snapshot`
+  (applies only to `effective_month`). The Budgets page sets both (cycle-7 F39):
+  the Add form has Type (Every month / One month only) + Month + "Carry unused
+  budget into next month", each card shows "<month> only" / "Rolls over" badges
+  and a "Roll over unused / Stop rollover" button (PATCH). `POST /api/budgets`
+  upserts by category and KEEPS any field it isn't sent (rollover_enabled,
+  budget_type + effective_month, notes — COALESCE), so re-saving a category from
+  the Add form no longer resets its rollover or clears its notes; an unknown
+  `budget_type` or malformed `effective_month` is a 400. Monthly snapshots via `POST /api/budgets/snapshot`
   capture spending + rollover amounts. History via `GET /api/budgets/history`.
   `GET /api/budgets` returns `effective_limit` (base + rollover) and accepts
   `?month=YYYY-MM` query parameter. Budget status has ONE definition,
@@ -1274,7 +1307,14 @@ shell/
 
 ### Dashboard & Views
 - **Dashboard**: Monthly spending trend (line chart), category breakdown (doughnut), account balances,
-  3D financial wellness pyramid, savings rate widget, cash flow forecast widget, Per-sistant productivity widget
+  3D financial wellness pyramid, savings rate widget, cash flow forecast widget, Per-sistant productivity widget.
+  The two charts draw `GET /api/spending-summary` (`monthly_trend` / `by_category`) —
+  the same request as the tables beside them (`getSpendingSummary`; the tables
+  fetch fresh, the charts reuse the latest) — so transfers, reimbursed rows and
+  the shared-card split are handled identically; month labels are built from a
+  local date (cycle-7 F91 — they summed raw `/api/transactions` rows and labelled
+  each month as the previous one west of UTC). A failed load replaces the
+  tables' "Loading..." rows (F108).
 - **Grouped accounts grid**: The dashboard accounts list groups under section
   headers — Cash (depository), Credit, Loans, Investments, Other — using the
   `is_investment` flag returned from `GET /api/accounts` plus the raw `type`.
@@ -1291,7 +1331,8 @@ shell/
   via `POST /api/accounts/manual` with `type:"loan"`, subtype defaults `auto` — the
   Accounts page's manual-account form offers a Loan type, WD-11)
   are first-class DEBT: the dashboard renders the balance negative/red under a
-  Loans group header (an $18k loan never shows as +$18k), the grid net total
+  Loans group header (an $18k loan never shows as +$18k; the Accounts page's
+  manual list shows it as "-$X owed" in red since cycle-7 F105), the grid net total
   subtracts it, and `getNetWorth` counts it as a liability (F1). Plaid's
   Liabilities product does NOT cover auto loans (any issuer — only
   credit/student/mortgage), so **APR and monthly payment are manual fields on
@@ -1858,9 +1899,9 @@ shell/
   in templates so any direct DOM writes are silent no-ops.
 - **Dark/Light theme**: Toggle in Settings, persisted to DB + localStorage
 - **PWA**: Installable home screen app (manifest.json + service worker, helmet icon centered on home screen).
-  Service worker (cache `perfin-v6`) uses network-first, caches successful same-origin
-  static GETs, and explicitly skips `/api/*` so the dashboard never serves stale balances
-  when offline.
+  Service worker (cache `perfin-v7`) uses network-first, caches successful same-origin
+  static GETs (keyed by path, never a redirected response or stray HTML — F107), and
+  explicitly skips `/api/*` so the dashboard never serves stale balances when offline.
 - **Offline fallback page** (Phase D): when navigation fails and no cache hit exists,
   the SW serves `/offline.html` — a branded "You're offline" page with a Retry
   button — instead of the browser's generic error. Served with an injected
@@ -1886,6 +1927,10 @@ shell/
   destinations (Home/Activity/Subs/Budgets/Settings) thumb-reachable. Both are
   in `partials/nav.ejs` + `perfin-shared.css`; desktop is unchanged (both
   hidden). Body gets bottom padding and the toast stack lifts above the bar.
+  Between 641 and 960px the top bar wraps and the links take their own
+  full-width row (cycle-7 F94 — eight links + badge + bell scrolled the page
+  sideways); the bill calendar's columns are `minmax(0, 1fr)` so a long event
+  name can't widen the page (F95).
 - **Responsive tables → cards**: wide data tables opt into a shared
   `responsive-cards` pattern (`perfin-shared.css`) — at ≤640px the header row is
   visually hidden and each `<td>` (with a `data-label`) renders as a label:value
@@ -1970,7 +2015,8 @@ shell/
   styles, WCAG AA contrast-compliant text colors. Modals and the bell panel go through the
   shared `openDialog` / `watchDialog` (focus trap, Esc, focus restore — IF-1); form controls
   carry a `<label for>` or `aria-label` (IF-3, scan-pinned for the Activity, Rent, Accounts,
-  Goals, Budgets and Calendar pages).
+  Goals, Budgets, Calendar, Settings and Subscriptions pages — the last two since cycle-7
+  F101, with the template-built Goals link picker and investment remove buttons named too).
 - **CSP nonces**: Per-request cryptographic nonces for all inline scripts (no `'unsafe-inline'` in `scriptSrc`). Style policy is split: `styleSrcElem` is nonce-gated for `<style>` blocks while `styleSrcAttr` keeps `'unsafe-inline'` for inline `style=""` attributes.
 - **Keep-alive**: Timezone-aware self-ping to prevent Render free tier sleep (10s timeout)
 - **Per-model cost tracking**: Usage history with granular pricing (Haiku/Sonnet/Opus)
@@ -2384,7 +2430,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1624 tests passing across 76 test files (Perfin 1168 + Per-sistant 456), plus the real-Postgres route contract suite (87 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
+- 1649 tests passing across 77 test files (Perfin 1193 + Per-sistant 456), plus the real-Postgres route contract suite (90 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -2674,7 +2720,9 @@ GET  /api/data-health      # operator health surface — per-source freshness,
                            # via last_sync_result.errors (decryption_failed — reachable
                            # since the sync reads use perfin_try_decrypt, F17) (D).
 GET  /api/budgets          # list budgets with current spending (query: month=YYYY-MM)
-POST /api/budgets          # create budget (body: rollover_enabled, budget_type, effective_month)
+POST /api/budgets          # create budget, upsert by category (body: rollover_enabled, budget_type,
+                           # effective_month, notes — a field not sent keeps its stored value, F39;
+                           # 400 on an unknown budget_type / malformed effective_month)
 PATCH /api/budgets/:id     # update budget (400 on a non-finite/negative monthly_limit,
                            # unknown budget_type or malformed effective_month — FAN-14)
 DELETE /api/budgets/:id    # delete budget
@@ -3476,8 +3524,10 @@ rows) can dismiss them from the UI or run `POST /api/cleanup`.
 - **Body limit**: the shell's JSON/urlencoded parsers run first, so their limit is the
   effective one for both sub-apps — 1mb (PSC-7; 64kb overrode Per-sistant's 1mb note limit).
 - **Client session-expiry handling (W3)**: `apiFetch` (`perfin-shared.js`) redirects once to
-  `/login` on a 401 or a followed `302→/login` (loop-guarded), so a mid-session idle timeout
-  sends the user to re-auth instead of silently rendering a blank/error UI.
+  `/login?return_to=<current path + query>` on a 401 or a followed `302→/login` (loop-guarded),
+  so a mid-session idle timeout sends the user to re-auth and back to the same page (return_to
+  since cycle-7 F102 — the shell's PSC-9 carry-through) instead of silently rendering a
+  blank/error UI.
 - **CORS**: Rejects cross-origin requests when `ALLOWED_ORIGINS` not configured
 - **API key**: Header-only (`X-API-Key`), no query string support. Standalone
   Perfin's `requireAuth` lets the header through ONLY when `API_KEY` is set
@@ -4411,7 +4461,7 @@ SX3-pinned — the Sheets Income tab.
 `.cycle/STATE.md`; Batches 1–8 — exposure / pre-auth safety, broken pages and
 dead channels, backstops / outcomes / operator state, bank-sync durability, money
 accuracy and classification, delete integrity and feeds, categorization rules and
-income cadence, AI trust, Sheets and cross-app — are done):
+income cadence, AI trust, Sheets and cross-app, Perfin UI — are done):
 - The repo is PUBLIC (operator: make it private and delete old Actions logs —
   they printed balances and net worth before Batch 1).
 - OPERATOR: Database Backup has never produced a backup (its secrets were never
@@ -4434,8 +4484,7 @@ income cadence, AI trust, Sheets and cross-app — are done):
   the Rent page has no "+ add item" UI, so a removed placeholder comes back only
   via `POST /api/housing/obligations`; `apps-script/Code.gs` keeps the pre-F32
   NOT_TRANSFER keyword list. Refunds still don't reduce spending outside the
-  settlement (F35) and rollover / one-time budgets have no UI (F39). Batch 5
-  follow-ons / later batches.
+  settlement (F35). Batch 5 follow-ons / later batches.
 - A deleted transaction has no undelete (its `deleted_transactions` row would
   need clearing), and a CSV re-import doesn't honor the tombstone. Batch 6
   follow-ons.
@@ -4454,6 +4503,12 @@ income cadence, AI trust, Sheets and cross-app — are done):
   by its one stored `next_expected` only; notification retention is a fixed 180
   days (no setting). OPERATOR: `clasp push` the Code.gs guard (F84). Batch 9
   follow-ons.
+- `GET /api/budgets` leaves out a one-time budget outside the requested month and
+  the Budgets page has no month selector, so a one-time budget for a later month
+  can't be seen or edited until that month; the dashboard's category-month
+  selector keeps the first response's aggregate and the charts don't redraw after
+  a sync; the credit-score and AI-insights widgets have no Settings toggle (not
+  in DASHBOARD_WIDGETS). Batch 10 follow-ons.
 - Per-sistant `POST /api/ai/review-summary` answers 500 (callAI throws →
   serverError) instead of 501 when `ANTHROPIC_API_KEY` is unset, and the Review
   page fires it on every load (found by `e2e/pages.spec.js`, tolerated in its
@@ -4705,7 +4760,7 @@ INV-57 | The critical-audit notification is deduped to ≤1 per 24h via sentRece
 INV-58 | A kind='quantity' habit always has a non-null target_value, enforced on POST AND on PATCH against the MERGED post-update state (so switching to quantity without a target, or nulling a quantity habit's target, 400s instead of silently degrading meetsTarget) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/health.test.js (F9 PATCH tests)
 INV-59 | Bounded settings (target_allocation_pct, shell_idle_timeout_minutes, fire_*, ai_monthly_budget_cents, and since PSC-15 keep_alive_start/end, keep_alive_timezone (Intl-validated), auto_sync_interval_hours, csv_reminder_days, weekly_digest_day — strict integer parse, null/""/"6abc" rejected; since cycle-7 F86 also theme, dashboard_months, insights_model, insights_cadence_days, insight_modules / dashboard_widgets, pyramid_*, debt_baseline_amount, sheets_auto_sync_interval, session_timeout_minutes) reject invalid input with 400 — never silent-drop + 200 | Subsystem: Settings, Notifications & Cross-app | Verify: tests/budget-cap-webauthn.test.js (PATCH /api/settings validation) + tests/scan-sept-batch9.test.js (PSC-15) + tests/scan-oct-batch9.test.js (F86)
 INV-60 | Perfin "Sign Out" clears the SHELL session via the root POST /logout under the unified shell (not a basePath'd /api/logout); redirect target is the root /login — both un-prefixed; standalone Perfin (no BASE_PATH) posts /api/logout instead (WD-16), and Per-sistant's embedded Log Out also posts the root /logout (PB-21) | Subsystem: Web UI ↔ Platform, Shell & Auth (seam) | Verify: code read teller/views/settings.ejs logout() + shell POST /logout (auth.handleLogout)
-INV-61 | apiFetch redirects once to /login on a 401 or a followed 302→/login (session expiry), loop-guarded, while returning the Response unchanged to callers — idle timeout never leaves a blank/error UI | Subsystem: Web UI | Verify: code read teller/public/perfin-shared.js apiFetch
+INV-61 | apiFetch redirects once to /login (with return_to = the current path, F102) on a 401 or a followed 302→/login (session expiry), loop-guarded, while returning the Response unchanged to callers — idle timeout never leaves a blank/error UI | Subsystem: Web UI | Verify: code read teller/public/perfin-shared.js apiFetch
 INV-62 | The shell sets a nonce CSP + frame-ancestors 'none' + X-Frame-Options on its own routes (login/landing), with COOP/CORP/COEP DISABLED so the global middleware doesn't break sub-app Plaid/Teller Link popups; helmet is a declared shell dependency | Subsystem: Platform, Shell & Auth | Verify: header assertion on GET /login (frame-ancestors none, COOP/CORP absent, login scripts nonced)
 INV-63 | Per-sistant's shared fetch wrapper (apps/per-sistant/views/js.js) redirects once to the root /login on a 401 or a followed 302→/login (session expiry), loop-guarded, returning the Response unchanged to callers — parity with Perfin INV-61, so an idle-timeout never leaves a blank/error page. The check uses indexOf('/login'), NOT a regex, because the module is one backtick template literal that eats regex backslashes (see Per-sistant CLAUDE.md gotcha) | Subsystem: Per-sistant Web UI | Verify: code read views/js.js fetch wrapper
 INV-64 | Job Radar's AI passes (job_fit + legitimacy) are cap-charged: cappedCall reads getAiBudgetCents()+monthlyAiSpendCents() and throws { code:'CAP' } BEFORE calling the model when over budget; on a successful call it charges an ai_usage row via recordAiUsage in a `finally` (idempotent, only when tokens were consumed). The 10 pre-existing Per-sistant AI features still use the uncapped callAI (unchanged) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (cappedCall charge-on-success + throw-CAP-before-model-call)
@@ -4751,6 +4806,7 @@ INV-112 | Categorization rules apply most-specific first (RULE_ORDER_SQL, never 
 INV-113 | The tier-1 audit judges a dollar claim by its own sentence/clause (claimPeriodWindow) and never compares a claim about another named month (claimNamesOtherMonth) or another period with this month's actuals; tier-2 captures bounded Capitalized names, split on and/or/vs | Subsystem: AI Insights & Audit | Verify: tests/scan-oct-batch8.test.js + tests/contract/ai-trust.contract.test.js
 INV-114 | The Sheets export places manual bills and recurring transfers with the app's own cadence rules (cadence.manualBillOccurrences / seriesOccurrences, APP_TIMEZONE today) — never a SQL re-derivation (LEAST(due_day, 28), last + cadence_days); Sheets runs are single-flight (singleFlight: same kind shares, different kind waits) | Subsystem: Sheets & External Export | Verify: tests/contract/sheets-crossapp.contract.test.js + tests/scan-oct-batch9.test.js (F78)
 INV-115 | An in-process digest/insight email is reported sent only when it was queued to a valid address; a draft-only delivery returns sent:false with stored:"draft" and a reason, and the digest ticks settle for the day on it while recording a failed job | Subsystem: Settings, Notifications & Cross-app | Verify: tests/contract/sheets-crossapp.contract.test.js (F79) + tests/scan-oct-batch9.test.js
+INV-116 | The dashboard widget keys have ONE source, DASHBOARD_WIDGETS in perfin-shared.js: Settings renders its toggles from it and the dashboard hides through applyDashboardWidgets — every selector exists on the dashboard and every key the settings route defaults is in the list | Subsystem: Web UI | Verify: tests/scan-oct-batch10.test.js (F96)
 INV-106 | No server-side file gains a bare catch (`catch {}`, `.catch(() => {})`, `.catch(() => null)`) beyond its KNOWN_GAPS count; the list only shrinks (a stale count fails too) | Subsystem: Test Coverage Quality / Silent Degradation | Verify: tests/scan-oct-batch3.test.js (empty-catch scan)
 INV-104 | Every secret comparison (shell PIN, CALENDAR_FEED_TOKEN, API_KEY, standalone SESSION_PIN/PASSWORD) is a fixed-length SHA-256 digest compare (auth.safeEqual / isValidApiKey) — never timingSafeEqual over raw buffers whose byte lengths can differ — and the shell logs unhandled rejections instead of exiting | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch1.test.js (F1 / F6 blocks)
 INV-97 | No Per-sistant client template-literal module (a pages/ or views/ file that exports a string) contains a single-escaped regex class or delimiter (\b \d \s \w \/ \. …) — the template consumes the backslash, so the regex silently changes meaning in the browser; double-escape or use string methods | Subsystem: Per-sistant Web UI | Verify: apps/per-sistant/tests/batch15-followons.test.js (FO-2 guard)
