@@ -25,7 +25,7 @@
     <div class="setting-row">
       <div class="setting-info"><div class="name">Theme</div><div class="desc">Switch between dark (night) and light (day) mode</div></div>
       <div class="setting-control">
-        <select id="theme-select">
+        <select id="theme-select" aria-label="Theme">
           <option value="dark">Night Mode</option><option value="light">Day Mode</option>
         </select>
       </div>
@@ -33,7 +33,7 @@
     <div class="setting-row">
       <div class="setting-info"><div class="name">Dashboard Range</div><div class="desc">Months of spending shown in charts</div></div>
       <div class="setting-control">
-        <select id="months-select">
+        <select id="months-select" aria-label="Dashboard months">
           <option value="3">3 months</option><option value="6">6 months</option>
           <option value="12">12 months</option><option value="24">24 months</option>
         </select>
@@ -45,7 +45,7 @@
     <div class="setting-row">
       <div class="setting-info"><div class="name">Data Source</div><div class="desc">What the pyramid tiers represent</div></div>
       <div class="setting-control">
-        <select id="pyramid-source-select">
+        <select id="pyramid-source-select" aria-label="Pyramid data source">
           <option value="wellness">Financial Wellness</option>
           <option value="debt_payoff">Debt Payoff</option>
           <option value="goal_progress">Goal Progress</option>
@@ -57,7 +57,7 @@
     <div class="setting-row">
       <div class="setting-info"><div class="name">Color Mode</div><div class="desc">Single amber-orange or multi-color per tier</div></div>
       <div class="setting-control">
-        <select id="pyramid-color-select">
+        <select id="pyramid-color-select" aria-label="Pyramid color mode">
           <option value="single">Single Color (Amber)</option>
           <option value="multi">Multi-Color</option>
         </select>
@@ -77,13 +77,13 @@
     <div class="setting-row">
       <div class="setting-info"><div class="name">Session Timeout</div><div class="desc">Minutes before requiring password again (1-1440)</div></div>
       <div class="setting-control">
-        <input type="number" id="timeout-input" min="1" max="1440" value="15">
+        <input type="number" id="timeout-input" aria-label="Session timeout (minutes)" min="1" max="1440" value="15">
       </div>
     </div>
     <div class="setting-row">
       <div class="setting-info"><div class="name">App Idle Timeout</div><div class="desc">Minutes of inactivity before the unified-shell PIN is required again. Refreshes on every request you make, so an active session never times out mid-use. (5-10080)</div></div>
       <div class="setting-control">
-        <input type="number" id="shell-idle-input" min="5" max="10080" value="60">
+        <input type="number" id="shell-idle-input" aria-label="App idle timeout (minutes)" min="5" max="10080" value="60">
       </div>
     </div>
     <div class="setting-row">
@@ -125,7 +125,7 @@
     <div class="setting-row">
       <div class="setting-info"><div class="name">AI Model</div><div class="desc">Haiku (~$0.005/run), Sonnet (~$0.02/run), Opus (~$0.10/run). Always uses latest version.</div></div>
       <div class="setting-control">
-        <select id="model-select">
+        <select id="model-select" aria-label="AI model">
           <option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="opus">Opus</option>
         </select>
       </div>
@@ -133,7 +133,7 @@
     <div class="setting-row">
       <div class="setting-info"><div class="name">Analysis Cadence</div><div class="desc" id="cadence-desc">How often automated analysis runs. More frequent = finer trend tracking.</div></div>
       <div class="setting-control">
-        <select id="cadence-select">
+        <select id="cadence-select" aria-label="AI insights cadence">
           <option value="7">Weekly</option><option value="14">Every 2 weeks</option>
           <option value="30">Monthly</option><option value="60">Every 2 months</option>
           <option value="90">Quarterly</option>
@@ -155,7 +155,7 @@
     <div class="setting-row">
       <div class="setting-info"><div class="name">Digest Day</div><div class="desc">Day of week the digest fires (when enabled).</div></div>
       <div class="setting-control">
-        <select id="weekly-digest-day-select">
+        <select id="weekly-digest-day-select" aria-label="Weekly digest day">
           <option value="0">Sunday</option><option value="1">Monday</option>
           <option value="2">Tuesday</option><option value="3">Wednesday</option>
           <option value="4">Thursday</option><option value="5">Friday</option>
@@ -184,13 +184,13 @@
     <div class="setting-row">
       <div class="setting-info"><div class="name">ZIP Code</div><div class="desc">For regional rate comparisons (utility costs vs your area's average)</div></div>
       <div class="setting-control">
-        <input type="text" id="zip-input" maxlength="5" placeholder="e.g. 10001" style="width:80px;padding:8px 12px;font-size:13px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;text-align:center;">
+        <input type="text" id="zip-input" aria-label="ZIP code" maxlength="5" placeholder="e.g. 10001" style="width:80px;padding:8px 12px;font-size:13px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;text-align:center;">
       </div>
     </div>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Partner Name</div><div class="desc">Used in the Shared Card Settlement widget — e.g. "Sarah owes you $X" instead of "Partner owes you $X"</div></div>
       <div class="setting-control">
-        <input type="text" id="partner-name-input" maxlength="50" placeholder="e.g. Sarah" style="width:140px;padding:8px 12px;font-size:13px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;">
+        <input type="text" id="partner-name-input" aria-label="Partner name" maxlength="50" placeholder="e.g. Sarah" style="width:140px;padding:8px 12px;font-size:13px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;">
       </div>
     </div>
     <div class="setting-row" style="flex-direction:column;align-items:stretch;">
@@ -280,17 +280,17 @@
     <div class="setting-row">
       <div class="setting-info"><div class="name">Active Hours</div><div class="desc" id="keepalive-hours-desc">Hours when keep-alive runs (saves Render free tier hours)</div></div>
       <div class="setting-control" style="display:flex;gap:6px;align-items:center;">
-        <select id="keepalive-start">
+        <select id="keepalive-start" aria-label="Active hours start">
         </select>
         <span style="color:var(--text-muted);font-size:12px;">to</span>
-        <select id="keepalive-end">
+        <select id="keepalive-end" aria-label="Active hours end">
         </select>
       </div>
     </div>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Timezone</div><div class="desc">Your local timezone for active hour scheduling</div></div>
       <div class="setting-control">
-        <select id="keepalive-tz">
+        <select id="keepalive-tz" aria-label="Keep-alive timezone">
           <option value="America/New_York">Eastern (ET)</option>
           <option value="America/Chicago">Central (CT)</option>
           <option value="America/Denver">Mountain (MT)</option>
@@ -320,7 +320,7 @@
     <div class="setting-row">
       <div class="setting-info"><div class="name">Reminder Interval</div><div class="desc">Days between reminders</div></div>
       <div class="setting-control">
-        <select id="csv-reminder-days">
+        <select id="csv-reminder-days" aria-label="CSV reminder after (days)">
           <option value="7">Every 7 days</option><option value="14">Every 14 days</option>
           <option value="21">Every 21 days</option><option value="30">Every 30 days</option>
         </select>
@@ -338,7 +338,7 @@
     <div class="setting-row">
       <div class="setting-info"><div class="name">Sync Interval</div><div class="desc">How often to fetch new transactions (process must be awake — enable Keep-Alive on free-tier Render)</div></div>
       <div class="setting-control">
-        <select id="auto-sync-interval-select">
+        <select id="auto-sync-interval-select" aria-label="Bank auto-sync interval">
           <option value="1">Every hour</option>
           <option value="3">Every 3 hours</option>
           <option value="6" selected>Every 6 hours</option>
@@ -377,7 +377,7 @@
     <div class="setting-row">
       <div class="setting-info"><div class="name">Sync Interval</div><div class="desc">How often to auto-push to Sheets</div></div>
       <div class="setting-control">
-        <select id="sheets-interval-select">
+        <select id="sheets-interval-select" aria-label="Sheets auto-sync interval">
           <option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option>
         </select>
       </div>
@@ -410,9 +410,9 @@
       </div>
       <div id="target-alloc-rows" style="display:flex;flex-direction:column;gap:8px;"></div>
       <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
-        <input id="target-alloc-new-class" placeholder="asset class (e.g. equity)"
+        <input id="target-alloc-new-class" aria-label="New asset class" placeholder="asset class (e.g. equity)"
                style="flex:1 1 160px;min-width:140px;padding:8px 10px;background:transparent;color:var(--text);border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:13px;">
-        <input id="target-alloc-new-pct" type="number" min="0" max="100" step="0.1" placeholder="%"
+        <input id="target-alloc-new-pct" aria-label="Target percent for the new asset class" type="number" min="0" max="100" step="0.1" placeholder="%"
                style="width:80px;padding:8px 10px;background:transparent;color:var(--text);border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:13px;text-align:center;">
         <button class="btn" id="target-alloc-add-btn" style="min-width:90px;">+ Add</button>
       </div>
@@ -438,12 +438,12 @@
       </div>
       <div id="watchlist-rows" style="display:flex;flex-direction:column;gap:6px;"></div>
       <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
-        <select id="watchlist-new-type" style="padding:8px 10px;background:transparent;color:var(--text);border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:13px;min-width:120px;">
+        <select id="watchlist-new-type" aria-label="Watchlist item type" style="padding:8px 10px;background:transparent;color:var(--text);border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:13px;min-width:120px;">
           <option value="merchant">Merchant</option>
           <option value="category">Category</option>
           <option value="keyword">Keyword</option>
         </select>
-        <input id="watchlist-new-value" placeholder="e.g. Amazon, Food and Drink, refund" style="flex:1 1 200px;min-width:140px;padding:8px 10px;background:transparent;color:var(--text);border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:13px;">
+        <input id="watchlist-new-value" aria-label="Watchlist item value" placeholder="e.g. Amazon, Food and Drink, refund" style="flex:1 1 200px;min-width:140px;padding:8px 10px;background:transparent;color:var(--text);border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:13px;">
         <button class="btn" id="watchlist-add-btn" style="min-width:90px;">+ Add</button>
       </div>
       <div id="watchlist-status" style="margin-top:6px;font-size:11px;color:var(--text-muted);"></div>
@@ -463,7 +463,7 @@
     <div class="setting-row">
       <div class="setting-info"><div class="name">Tax Report</div><div class="desc">Year-end deduction summary for tax prep</div></div>
       <div class="setting-control" style="display:flex;gap:6px;">
-        <select id="tax-year-select" style="padding:8px 12px;font-size:13px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;"></select>
+        <select id="tax-year-select" aria-label="Tax year" style="padding:8px 12px;font-size:13px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;"></select>
         <a id="tax-csv-link" href="#"><button class="btn">CSV</button></a>
         <a id="tax-json-link" href="#"><button class="btn">JSON</button></a>
         <a id="tax-pdf-link" href="#"><button class="btn">PDF</button></a>
@@ -686,6 +686,14 @@
           var modList = (data.modules_used || []).length > 0 ? ' Modules: ' + data.modules_used.join(', ') + '.' : '';
           showMsg('Insights generated (' + (data.tokens_used || 0) + ' tokens).' + modList, true);
           renderInsight(data.insight);
+          // F99: say when a module had no data or long-term memory didn't advance,
+          // instead of a clean success toast.
+          if ((data.modules_failed || []).length) {
+            showMsg('Some modules got no data and were skipped: ' + data.modules_failed.join(', '), false);
+          }
+          if (data.summary_status && data.summary_status !== 'updated') {
+            showMsg('Long-term AI memory was not updated this run (' + data.summary_status.replace(/_/g, ' ') + ').', false);
+          }
         }
         else showMsg(data.error || 'Failed', false);
       } catch (e) { showMsg(e.message, false); }
@@ -718,9 +726,11 @@
     }
     async function loadUsageHistory() {
       try {
-        const res = await apiFetch('/api/insights/usage');
-        const data = await res.json();
         const sumEl = document.getElementById('usage-summary');
+        const res = await apiFetch('/api/insights/usage');
+        // A failed load says so instead of staying on "Loading..." (F108).
+        if (!res.ok) { sumEl.textContent = 'Could not load AI usage (HTTP ' + res.status + ').'; return; }
+        const data = await res.json();
         const t = data.totals;
         sumEl.innerHTML = '<span style="color:var(--text)">' + t.total_runs + ' total runs</span> &middot; ' +
           Number(t.total_tokens).toLocaleString() + ' tokens &middot; <span style="color:var(--warm)">$' +
@@ -742,7 +752,10 @@
         });
         html += '</table></div>';
         histEl.innerHTML = html;
-      } catch {}
+      } catch (e) {
+        const sumEl = document.getElementById('usage-summary');
+        if (sumEl) sumEl.textContent = 'Could not load AI usage: ' + e.message;
+      }
     }
     async function resetContext() {
       if (!confirm('Clear all long-term AI memory? Next analysis will start fresh with no prior context.')) return;
@@ -882,7 +895,7 @@
       try {
         var res = await apiFetch('/api/categorize/accuracy-sample?limit=8');
         var d = await res.json();
-        if (!res.ok) { panel.innerHTML = '<div style="font-size:12px;color:var(--red,#eb6b6b);">' + (d.error || 'Failed to load sample') + '</div>'; return; }
+        if (!res.ok) { panel.innerHTML = '<div style="font-size:12px;color:var(--red,#eb6b6b);">' + esc(d.error || 'Failed to load sample') + '</div>'; return; }
         if (!d.transactions || d.transactions.length === 0) {
           panel.innerHTML = '<div style="font-size:12px;color:var(--text-muted);">Nothing left to verify — all AI categorizations have been reviewed.</div>';
           return;
@@ -896,7 +909,7 @@
               '<div style="font-size:11px;color:var(--text-muted);">$' + Math.abs(t.amount).toFixed(2) + ' · ' + escAttr(String(t.date).slice(0,10)) + ' · AI: <strong>' + escAttr(t.ai_category) + '</strong></div>' +
             '</div>' +
             '<button type="button" class="btn cat-correct" style="min-height:36px;">Correct</button>' +
-            '<select class="cat-fix-select" style="min-height:36px;">' + opts + '</select>' +
+            '<select class="cat-fix-select" aria-label="Correct category for ' + escAttr(t.merchant) + '" style="min-height:36px;">' + opts + '</select>' +
             '<button type="button" class="btn cat-wrong" style="min-height:36px;">Wrong → save</button>' +
           '</div>';
         }).join('');
@@ -909,7 +922,7 @@
             submitAccuracyReview(id, false, corrected, row);
           });
         });
-      } catch (e) { panel.innerHTML = '<div style="font-size:12px;color:var(--red,#eb6b6b);">' + e.message + '</div>'; }
+      } catch (e) { panel.innerHTML = '<div style="font-size:12px;color:var(--red,#eb6b6b);">' + esc(e.message) + '</div>'; }
     }
     async function submitAccuracyReview(id, correct, corrected, row) {
       try {
@@ -950,16 +963,20 @@
         var reg = await navigator.serviceWorker.ready;
         var sub = await reg.pushManager.getSubscription();
         if (sub) {
-          await apiFetch('/api/notifications/subscribe', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: sub.endpoint }) });
+          var delRes = await apiFetch('/api/notifications/subscribe', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: sub.endpoint }) });
           await sub.unsubscribe();
-          showMsg('Push notifications disabled.', true);
+          // F99: the browser side is off either way; say if the server still holds it.
+          if (await writeOk(delRes, 'Push turned off here, but the server could not remove it')) showMsg('Push notifications disabled.', true);
         } else {
           var vapidRes = await apiFetch('/api/notifications/vapid');
           if (!vapidRes.ok) { var d = await vapidRes.json(); showMsg(d.error || 'VAPID not configured', false); btnLoading(btn, false, 'Enable'); return; }
           var vapid = await vapidRes.json();
           var newSub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(vapid.publicKey) });
-          await apiFetch('/api/notifications/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subscription: newSub }) });
-          showMsg('Push notifications enabled!', true);
+          var subRes = await apiFetch('/api/notifications/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subscription: newSub }) });
+          // F99: a subscription the server didn't store never receives a push —
+          // undo the browser side and say so instead of "enabled!".
+          if (await writeOk(subRes, 'Could not enable push')) showMsg('Push notifications enabled!', true);
+          else await newSub.unsubscribe().catch(function() {});
         }
         checkPushStatus();
       } catch (e) { showMsg(e.message, false); }
@@ -1003,20 +1020,11 @@
     })();
 
     // --- Widget toggles ---
-    var WIDGET_LABELS = {
-      pyramid: 'Financial Pyramid', accounts: 'Account Balances', ask: 'Ask Perfin (AI Q&A)', 
-      monthlySpend: 'Monthly Spending', categories: 'Categories', merchants: 'Top Merchants',
-      upcoming: 'Upcoming Charges', forecast: '30-Day Forecast', charts: 'Charts',
-      calendar: 'Bill Calendar Link', cashFlow: 'Cash Flow', savingsRate: 'Savings Rate', yoy: 'Year-over-Year',
-      investments: 'Investments',
-      reviewQueue: 'Review Uncategorized',
-      aiMemory: 'AI Memory',
-      housing: 'Rent & Utilities'
-    };
     function renderWidgetToggles(widgets) {
       var container = document.getElementById('widget-toggles');
-      container.innerHTML = Object.entries(WIDGET_LABELS).map(function(e) {
-        var key = e[0], label = e[1];
+      // The shared list in perfin-shared.js — the same keys the dashboard reads (F96).
+      container.innerHTML = window.DASHBOARD_WIDGETS.map(function(d) {
+        var key = d.key, label = d.label;
         var checked = widgets[key] !== false ? 'checked' : '';
         return '<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;cursor:pointer;font-size:12px;">' +
           '<input type="checkbox" ' + checked + ' data-widget="' + key + '">' +
@@ -1044,10 +1052,10 @@
         return '<div style="display:flex;align-items:center;gap:8px;">' +
           '<span style="flex:1 1 auto;text-transform:capitalize;font-size:13px;color:var(--text);">' + esc(cls) + '</span>' +
           '<input type="number" min="0" max="100" step="0.1" value="' + Number(pct) +
-            '" data-target-class="' + esc(cls) + '" ' +
+            '" data-target-class="' + esc(cls) + '" aria-label="Target percent for ' + esc(cls) + '" ' +
             'style="width:80px;padding:6px 8px;background:transparent;color:var(--text);border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:12px;text-align:center;">' +
           '<span style="font-size:11px;color:var(--text-muted);">%</span>' +
-          '<button class="btn btn-sm" data-remove-class="' + esc(cls) + '" title="Remove" style="min-width:36px;">×</button>' +
+          '<button class="btn btn-sm" data-remove-class="' + esc(cls) + '" title="Remove" aria-label="Remove ' + esc(cls) + ' target" style="min-width:36px;">×</button>' +
         '</div>';
       }).join('');
       var total = entries.reduce(function(s, e) { return s + Number(e[1]); }, 0);

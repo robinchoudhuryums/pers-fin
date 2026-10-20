@@ -18,7 +18,30 @@ Updated: 2026-10-20
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 9 DONE** on branch
+- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 10 DONE** on branch
+  `claude/sweet-ritchie-f9d8ah` (2026-10-20). Perfin UI correctness and a11y.
+  - **Completed:** F91 (charts from /api/spending-summary + local month labels), F94 (nav wraps
+    641–960px), F95 (calendar minmax(0, 1fr)), F96 (one DASHBOARD_WIDGETS list), F97
+    (parseAmountInput in the prompts), F98 (parseCalDate for goal / credit-score dates), F99
+    (five writes report failures), F100 (one-click Add forms), F101 (labels + IF-3 scan on
+    Settings / Subscriptions), F39 (budget type / month / rollover UI; upsert keeps unsent
+    fields), F102 (return_to on expiry), F103 (Split modal), F104 (one style attr), F105
+    (manual loan owed), F106 (escaped errors), F107 (SW path keys, no redirect / stray HTML,
+    v7), F108 (failed loads say so).
+  - **Tests:** npm test 1649/1649 (+24 scan-oct-batch10, +2 IF-3 files); contract 90/90 (+3
+    ui-writes); Playwright 35/35; ad-hoc layout check (no horizontal scroll 390–1280px). All
+    new tests fail pre-fix except the PATCH toggle contract test.
+  - **Net score:** 8 − 1 = 7 (F96: dormant stored "off" toggles now take effect).
+  - **Decisions:** the charts reuse the tables' latest summary request; the SW keys by path
+    (query dropped) for pages too; a failed push-subscribe POST unsubscribes the browser.
+  - **Follow-ons:** a future-month one-time budget is invisible until its month; the category
+    month selector keeps the first response; no toggles for the credit-score / insights widgets.
+  - **Block:** `.cycle/blocks/7-batch10-broad-implement.md`.
+  - **Where I left off:** Batch 10 committed and pushed (no PR). NEXT: /sync-docs for Batch 10,
+    then Batch 11 (Per-sistant correctness: F109, F113, F111, F110, F112, F114, F115, F121,
+    F122, F116–F124).
+
+- **Previous:** **Cycle 7 — Oct 2026 broad scan, Batch 9 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-20). Sheets and cross-app.
   - **Completed:** F75 (Sheets averages over completed months), F76 (Utilities / Important
     Dates via cadence.js + APP_TIMEZONE), F77 (resetFormats on 3 tabs), F78 (Sheets

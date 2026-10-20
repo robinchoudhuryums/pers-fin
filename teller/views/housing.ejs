@@ -231,8 +231,10 @@
         if (cfg.enabled && !cfg.payee_name) { showMsg('Enter a payee name first.', false); btn.disabled = false; return; }
         var res = await apiFetch('/api/housing/config', { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify(cfg) });
         if (!res.ok) { var e = await res.json().catch(function(){return {};}); showMsg(e.error || 'Save failed', false); btn.disabled = false; return; }
-        await apiFetch('/api/housing/generate', { method:'POST' }).catch(function(){});
-        showMsg('Saved.', true);
+        // F99: the config saved; say if this month's rows couldn't be created
+        // (the 6-hourly job retries) instead of a silent catch.
+        var gen = await apiFetch('/api/housing/generate', { method:'POST' }).catch(function(){ return null; });
+        if (await writeOk(gen, 'Saved, but this month\'s items could not be created yet')) showMsg('Saved.', true);
         load();
       } catch (err) { showMsg('Save failed: ' + err.message, false); }
       finally { btn.disabled = false; }

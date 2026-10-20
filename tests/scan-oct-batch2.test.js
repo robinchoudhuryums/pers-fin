@@ -201,7 +201,7 @@ describe("F92 — offline page + service worker", () => {
 
   it("the SW precaches offline.js, bumps its cache, and serves the page with a <base> for the mount", async () => {
     const src = read("teller", "public", "sw.js");
-    assert.match(src, /const CACHE = 'perfin-v6';/);
+    assert.match(src, /const CACHE = 'perfin-v7';/); // v7 since F107
     assert.match(src, /BASE \+ '\/offline\.js'/);
     const listeners = {};
     const ctx = vm.createContext({

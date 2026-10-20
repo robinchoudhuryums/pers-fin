@@ -420,13 +420,15 @@
         list.innerHTML = manualAccts.map(function(a) {
           var bal = parseFloat(a.current_balance || 0);
           var balStr = '$' + Math.abs(bal).toLocaleString('en-US', {minimumFractionDigits: 2});
-          if (a.type === 'credit') balStr = '-' + balStr;
+          // F105: a loan is a debt like a card — negative and red, never a green "+".
+          var isDebt = a.type === 'credit' || a.type === 'loan';
+          if (isDebt) balStr = '-' + balStr + ' owed';
           var limitStr = a.credit_limit ? ' / Limit: $' + parseFloat(a.credit_limit).toLocaleString('en-US', {minimumFractionDigits: 2}) : '';
           return '<div class="item">' +
             '<div class="item-info"><strong>' + esc(a.name) + '</strong>' +
             ' (' + esc(a.institution_name || 'Manual') + ')' +
             ' \u2014 ' + esc(a.subtype || a.type) +
-            ' \u2014 <span style="color:' + (a.type === 'credit' ? 'var(--red)' : 'var(--green)') + ';font-weight:400;">' + balStr + '</span>' +
+            ' \u2014 <span style="color:' + (isDebt ? 'var(--red)' : 'var(--green)') + ';font-weight:400;">' + balStr + '</span>' +
             limitStr + '</div>' +
             '<div class="item-actions" style="display:flex;gap:6px;">' +
               '<button class="btn-unlink" style="border-color:var(--border);color:var(--warm);" data-action="update-manual" data-id="' + a.id + '">Update Balance</button>' +
@@ -466,15 +468,15 @@
     async function updateManualBalance(id) {
       var val = prompt('Enter current balance ($):');
       if (val === null) return;
-      var num = parseFloat(val);
-      if (isNaN(num)) { showStatus('Invalid number.', false); return; }
+      // F97: parseFloat("1,200") is 1 — parseAmountInput reads the whole number.
+      var num = parseAmountInput(val);
+      if (isNaN(num)) { showStatus('Enter an amount like 1,200 or -45.50', false); return; }
       try {
         var res = await apiFetch('/api/accounts/' + id + '/balance', {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ current_balance: num, available_balance: num }),
         });
-        if (res.ok) { showStatus('Balance updated.', true); loadManualAccounts(); }
-        else showStatus('Failed to update.', false);
+        if (await writeOk(res, 'Could not update the balance')) { showStatus('Balance updated.', true); loadManualAccounts(); }
       } catch (e) { showStatus(e.message, false); }
     }
 

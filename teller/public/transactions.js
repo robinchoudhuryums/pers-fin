@@ -218,14 +218,18 @@
     }
 
     async function openSplitModal(txnId, parentAmount, merchant) {
-      var existing = [];
+      // F103: if the existing splits can't be read, stop — opening an empty
+      // editor and saving it replaced the real splits with one "Other" row.
+      var existing;
       try {
         var r = await apiFetch('/api/transactions/' + encodeURIComponent(txnId) + '/splits');
-        if (r.ok) existing = (await r.json()).splits || [];
-      } catch (_) {}
+        if (!(await writeOk(r, 'Could not load this transaction\'s splits'))) return;
+        existing = (await r.json()).splits || [];
+      } catch (e) { showMsg('Could not load this transaction\'s splits: ' + e.message, false); return; }
 
+      // merchant_name rides along so a save doesn't drop it (F103).
       var rows = existing.length
-        ? existing.map(function(s) { return { amount: s.amount, category: s.category || 'Other', notes: s.notes || '' }; })
+        ? existing.map(function(s) { return { amount: s.amount, category: s.category || 'Other', notes: s.notes || '', merchant_name: s.merchant_name || null }; })
         : [{ amount: parentAmount, category: 'Other', notes: '' }];
 
       var backdrop = document.createElement('div');
@@ -305,7 +309,7 @@
           var r = await apiFetch('/api/transactions/' + encodeURIComponent(txnId) + '/splits', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ splits: rows.map(function(x) { return { amount: x.amount, category: x.category, notes: x.notes }; }) }),
+            body: JSON.stringify({ splits: rows.map(function(x) { return { amount: x.amount, category: x.category, notes: x.notes, merchant_name: x.merchant_name || null }; }) }),
           });
           var d = await r.json().catch(function() { return {}; });
           if (r.ok) { showMsg('Splits saved.', true); close(); searchTransactions(currentOffset); }
@@ -445,12 +449,17 @@
             // just overrode it we want to build the rule off the new name
             // so the rule matches future occurrences as they'll also be
             // renamed (user_merchant_name takes precedence in the matcher).
-            try {
-              await apiFetch('/api/categorization-rules/from-transaction', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ transaction_id: txnId, category: newCategory }),
-              });
-            } catch (_) { /* non-fatal — the category already saved */ }
+            // F99: the category already saved; a rule that wasn't created (too
+            // short a merchant, server error) is reported, not swallowed.
+            var ruleRes = await apiFetch('/api/categorization-rules/from-transaction', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ transaction_id: txnId, category: newCategory }),
+            }).catch(function() { return null; });
+            if (!(await writeOk(ruleRes, 'Category updated, but not remembered'))) {
+              closeEdit();
+              searchTransactions(currentOffset);
+              return;
+            }
           }
           showMsg(
             categoryChanged && remember ? 'Updated and remembered for this merchant.'

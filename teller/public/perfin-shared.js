@@ -70,7 +70,9 @@
         (res.redirected && ON_LOGIN_RE.test(res.url || ''));
       if (expired && !_authRedirecting && !ON_LOGIN_RE.test(win.location.pathname)) {
         _authRedirecting = true;
-        win.location.href = '/login';
+        // F102: carry the page through login (the shell's return_to, PSC-9) —
+        // the PIN used to land on the default page instead of where you were.
+        win.location.href = '/login?return_to=' + encodeURIComponent(win.location.pathname + win.location.search);
       }
       return res;
     });
@@ -358,6 +360,46 @@
   }
 
   // Export to window
+  // --- Dashboard widget toggles (F96) ---
+  // ONE list of dashboard widget keys: Settings renders a toggle per entry and
+  // the dashboard hides each entry's element when its key is false. The two
+  // used to keep separate lists — five Settings toggles hid nothing and the
+  // documented whatsNew / investmentReturns / settlement keys had no toggle.
+  var DASHBOARD_WIDGETS = [
+    { key: 'pyramid', label: 'Financial Pyramid', selector: '.wellness-section' },
+    { key: 'accounts', label: 'Account Balances', selector: '#accounts-section' },
+    { key: 'ask', label: 'Ask Perfin (AI Q&A)', selector: '#ask-section' },
+    { key: 'monthlySpend', label: 'Monthly Spending', selector: '[data-collapse-key="monthlySpend"]' },
+    { key: 'categories', label: 'Categories', selector: '[data-collapse-key="categories"]' },
+    { key: 'merchants', label: 'Top Merchants', selector: '[data-collapse-key="merchants"]' },
+    { key: 'upcoming', label: 'Upcoming Charges', selector: '[data-collapse-key="upcoming"]' },
+    { key: 'forecast', label: '30-Day Forecast', selector: '#forecast-section' },
+    { key: 'charts', label: 'Charts', selector: '.charts-grid' },
+    { key: 'calendar', label: 'Upcoming Bills', selector: '#calendar-widget' },
+    { key: 'cashFlow', label: 'Cash Flow', selector: '#cashflow-section' },
+    { key: 'savingsRate', label: 'Savings Rate', selector: '#savings-rate-section' },
+    { key: 'yoy', label: 'Year-over-Year', selector: '#yoy-section' },
+    { key: 'investments', label: 'Investments', selector: '#investments-section' },
+    { key: 'investmentReturns', label: 'Investment Returns', selector: '#investments-performance' },
+    { key: 'whatsNew', label: 'Since You Last Looked', selector: '#whats-new-widget' },
+    { key: 'reviewQueue', label: 'Review Uncategorized', selector: '#review-queue-section' },
+    { key: 'aiMemory', label: 'AI Memory', selector: '#ai-memory-section' },
+    { key: 'settlement', label: 'Settle Up', selector: '#settlement-section' },
+    { key: 'housing', label: 'Rent & Utilities', selector: '#housing-widget-section' },
+  ];
+  // Hide the switched-off widgets with a class (.widget-off is display:none
+  // !important), so a loader that later shows its section can't bring it back.
+  function applyDashboardWidgets(widgets) {
+    var w = widgets || {};
+    DASHBOARD_WIDGETS.forEach(function(d) {
+      document.querySelectorAll(d.selector).forEach(function(el) {
+        el.classList.toggle('widget-off', w[d.key] === false);
+      });
+    });
+  }
+
+  win.DASHBOARD_WIDGETS = DASHBOARD_WIDGETS;
+  win.applyDashboardWidgets = applyDashboardWidgets;
   win.openDialog = openDialog;
   win.watchDialog = watchDialog;
   win.writeOk = writeOk;

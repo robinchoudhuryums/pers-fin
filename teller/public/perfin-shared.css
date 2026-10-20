@@ -102,6 +102,9 @@ body::after {
 a { color: var(--warm); text-decoration: none; transition: color 0.2s; }
 a:hover { color: var(--text); }
 
+/* A dashboard widget switched off in Settings (F96, applyDashboardWidgets). */
+.widget-off { display: none !important; }
+
 /* Nav */
 .topnav { display: flex; align-items: center; justify-content: space-between;
           position: relative;
@@ -121,6 +124,14 @@ a:hover { color: var(--text); }
 }
 .topnav .nav-links { display: flex; gap: 24px; font-size: 13px; font-weight: 400;
                      letter-spacing: 0.5px; }
+/* F94: between the mobile drawer (≤640px) and a full desktop width, eight
+   links + the logo, badge, cross-app icon and bell don't fit on one row and
+   the page scrolled sideways. Wrap instead: the links take their own full-width
+   row under the bar, with a tighter gap. */
+.topnav { flex-wrap: wrap; row-gap: 10px; }
+@media (min-width: 641px) and (max-width: 960px) {
+  .topnav .nav-links { order: 10; flex-basis: 100%; flex-wrap: wrap; gap: 8px 18px; }
+}
 .topnav .nav-links a { color: var(--text-muted); }
 .topnav .nav-links a:hover { color: var(--text); }
 .topnav .nav-links a.active { color: var(--warm); }

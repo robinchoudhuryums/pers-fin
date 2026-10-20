@@ -266,7 +266,8 @@ describe("IF-2 — calendar keyboard access", () => {
 describe("IF-3 — form controls have accessible names", () => {
   // Every static <input>/<select>/<textarea> with an id needs a <label for>,
   // a wrapping <label>, or an aria-label (hidden/file pickers excepted).
-  for (const file of ["transactions.ejs", "housing.ejs", "accounts.ejs", "goals.ejs", "budgets.ejs", "calendar.ejs"]) {
+  // settings.ejs + subscriptions.ejs since cycle-7 F101.
+  for (const file of ["transactions.ejs", "housing.ejs", "accounts.ejs", "goals.ejs", "budgets.ejs", "calendar.ejs", "settings.ejs", "subscriptions.ejs"]) {
     it(file, () => {
       const s = read("teller", "views", file);
       const forIds = new Set([...s.matchAll(/<label[^>]*\bfor="([^"]+)"/g)].map((m) => m[1]));

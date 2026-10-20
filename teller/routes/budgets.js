@@ -52,16 +52,31 @@ router.post("/api/budgets", async (req, res) => {
   if (!category || monthly_limit == null) return res.status(400).json({ error: "category and monthly_limit are required" });
   const parsedLimit = parseFloat(monthly_limit);
   if (isNaN(parsedLimit) || parsedLimit < 0) return res.status(400).json({ error: "monthly_limit must be a non-negative number" });
-  const validTypes = ["recurring", "one_time"];
-  const type = validTypes.includes(budget_type) ? budget_type : "recurring";
+  if (budget_type !== undefined && budget_type !== null && !["recurring", "one_time"].includes(budget_type)) {
+    return res.status(400).json({ error: "budget_type must be 'recurring' or 'one_time'" });
+  }
+  if (effective_month !== undefined && effective_month !== null && effective_month !== "" && !MONTH_KEY_RE.test(String(effective_month))) {
+    return res.status(400).json({ error: "effective_month must be 'YYYY-MM' with month 01-12" });
+  }
+  // F39: a field the request leaves out keeps the existing budget's value. The
+  // upsert used to write rollover_enabled = false / budget_type = 'recurring' /
+  // notes = NULL whenever the Add form re-saved a category, silently switching
+  // its rollover off. A NULL parameter here means "not sent".
+  const type = budget_type == null ? null : budget_type;
+  const month = type === "one_time" ? (effective_month || currentMonthKey()) : null;
   try {
     const result = await pool.query(
       `INSERT INTO budgets (category, monthly_limit, notes, rollover_enabled, budget_type, effective_month)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (category) DO UPDATE SET monthly_limit = $2, notes = $3, is_ai_suggested = false,
-         rollover_enabled = $4, budget_type = $5, effective_month = $6, updated_at = now()
+       VALUES ($1, $2, $3, COALESCE($4::boolean, false), COALESCE($5::text, 'recurring'), $6)
+       ON CONFLICT (category) DO UPDATE SET monthly_limit = $2,
+         notes = COALESCE($3, budgets.notes), is_ai_suggested = false,
+         rollover_enabled = COALESCE($4::boolean, budgets.rollover_enabled),
+         budget_type = COALESCE($5::text, budgets.budget_type),
+         effective_month = CASE WHEN $5::text IS NULL THEN budgets.effective_month ELSE $6 END,
+         updated_at = now()
        RETURNING *`,
-      [category, parsedLimit, notes || null, !!rollover_enabled, type, type === "one_time" ? (effective_month || currentMonthKey()) : null]
+      [category, parsedLimit, notes == null || notes === "" ? null : notes,
+        rollover_enabled == null ? null : !!rollover_enabled, type, month]
     );
     res.json(result.rows[0]);
   } catch (err) {

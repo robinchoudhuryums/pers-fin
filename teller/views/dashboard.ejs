@@ -1088,11 +1088,26 @@
     }
 
 
+    // One /api/spending-summary request feeds both the tables and the charts
+    // (F91 — the charts used to sum raw transactions: transfers and reimbursed
+    // rows included, no shared-card split, so they contradicted the tables).
+    // The tables always fetch fresh (they re-run after a sync); the charts
+    // reuse the latest request.
+    var spendingSummaryPromise = null;
+    function getSpendingSummary(fresh) {
+      if (fresh || !spendingSummaryPromise) {
+        spendingSummaryPromise = apiFetch('/api/spending-summary?months=6').then(function(res) {
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          return res.json();
+        });
+        spendingSummaryPromise.catch(function() { spendingSummaryPromise = null; });
+      }
+      return spendingSummaryPromise;
+    }
+
     async function loadSpendingSummary() {
       try {
-        const res = await apiFetch('/api/spending-summary?months=6');
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const data = await res.json();
+        const data = await getSpendingSummary(true);
 
         const monthBody = document.getElementById('monthly-body');
         if (data.monthly_trend.length) {
@@ -1190,6 +1205,11 @@
 
       } catch (e) {
         showMsg('Could not load spending data: ' + e.message, false);
+        // Replace the "Loading..." rows instead of leaving them forever (F108).
+        [['monthly-body', 4], ['category-body', 3], ['merchant-body', 3], ['upcoming-body', 3]].forEach(function(t) {
+          var body = document.getElementById(t[0]);
+          if (body) body.innerHTML = '<tr><td colspan="' + t[1] + '" class="empty-msg">Could not load spending data.</td></tr>';
+        });
       }
     }
 
@@ -1423,8 +1443,10 @@
           var ev = u.event;
           var cls = ev.is_income ? 'color:var(--green)' : 'color:var(--text-muted)';
           var prefix = ev.is_income ? '+' : '-';
-          var paid = ev.is_paid ? ' style="text-decoration:line-through;opacity:0.5;"' : '';
-          return '<div' + paid + ' style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border);font-size:12px;">' +
+          // F104: ONE style attribute — a second one is ignored, so paid rows lost
+          // their layout (the browser keeps the first).
+          var paid = ev.is_paid ? 'text-decoration:line-through;opacity:0.5;' : '';
+          return '<div style="' + paid + 'display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border);font-size:12px;">' +
             '<span>' + (ev.is_paid ? '\u2713 ' : '') + esc(ev.name) + ' <span style="color:var(--text-muted);font-size:11px;">(Day ' + u.day + ')</span></span>' +
             '<span style="' + cls + ';">' + prefix + '$' + Math.abs(ev.amount).toFixed(2) + '</span></div>';
         }).join('');
@@ -1908,7 +1930,7 @@
               '<div style="margin-top:6px;display:flex;flex-direction:column;gap:2px;">' +
               data.scores.map(function(s) {
                 return '<div style="display:flex;justify-content:space-between;gap:12px;">' +
-                  '<span>' + new Date(s.checked_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + '</span>' +
+                  '<span>' + parseCalDate(s.checked_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + '</span>' +
                   '<span style="font-weight:500;color:' + scoreColor(s.score) + ';">' + s.score + '</span>' +
                   '<span style="color:var(--text-muted);">' + esc(s.source || s.score_type) + '</span>' +
                 '</div>';
@@ -2971,7 +2993,7 @@
           var removeBtn = a.source === 'teller'
             ? ''
             : '<button type="button" class="inv-remove" data-id="' + a.id + '" data-name="' + esc(a.name) + '" ' +
-              'title="Remove this investment account" ' +
+              'title="Remove this investment account" aria-label="Remove ' + esc(a.name) + '" ' +
               'style="position:absolute;top:6px;right:6px;border:none;background:transparent;color:var(--text-muted);cursor:pointer;font-size:14px;line-height:1;padding:2px 4px;">&times;</button>';
           return '<div class="acct-card" style="padding:10px;position:relative;">' +
             removeBtn +
@@ -3092,7 +3114,14 @@
             match_type: 'exact',
           }),
         });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
+        // F99: a failed Apply used to just re-enable the button with no message.
+        if (!(await writeOk(res, 'Could not apply the category'))) {
+          this.disabled = false;
+          this.textContent = 'Apply';
+          return;
+        }
+        var result = await res.json().catch(function() { return {}; });
+        if (createRule && result.rule_error) showMsg('Category applied, but not remembered: ' + result.rule_error, false);
         // Remove the row and re-fetch the queue if it's now empty.
         var rid = 'rev-' + txnId.replace(/[^a-zA-Z0-9]/g, '_');
         var row = document.getElementById(rid);
@@ -3100,6 +3129,7 @@
         var remaining = document.querySelectorAll('#review-queue-list > div').length;
         if (remaining === 0) loadReviewQueue();
       } catch (e) {
+        showMsg('Could not apply the category: ' + e.message, false);
         this.disabled = false;
         this.textContent = 'Apply';
       }
@@ -3467,30 +3497,8 @@
         var res = await apiFetch('/api/settings');
         if (!res.ok) return;
         var s = await res.json();
-        var w = s.dashboard_widgets || {};
-        // Map widget keys to section IDs
-        var map = {
-          pyramid: '.wellness-section',
-          accounts: '#accounts-section',
-          charts: '.charts-grid',
-          ask: '#ask-section',
-          forecast: '#forecast-section',
-          savingsRate: '#savings-rate-section',
-          cashFlow: '#cashflow-section',
-          yoy: '#yoy-section',
-          investments: '#investments-section',
-          reviewQueue: '#review-queue-section',
-          aiMemory: '#ai-memory-section',
-          settlement: '#settlement-section',
-          housing: '#housing-widget-section',
-        };
-        Object.entries(map).forEach(function(e) {
-          var key = e[0], selector = e[1];
-          if (w[key] === false) {
-            var el = document.querySelector(selector);
-            if (el) el.style.display = 'none';
-          }
-        });
+        // One key list shared with Settings (perfin-shared.js, F96).
+        applyDashboardWidgets(s.dashboard_widgets || {});
       } catch (e) { /* non-critical */ }
     }
     applyWidgetVisibility();
@@ -3525,17 +3533,11 @@
       Chart.defaults.color = textColor;
       Chart.defaults.borderColor = gridColor;
       try {
-        const txRes = await apiFetch('/api/transactions?months=6');
-        const txData = await txRes.json();
-        const monthlyMap = {};
-        (txData.transactions || []).forEach(t => {
-          if (t.amount > 0) {
-            const m = t.date.slice(0, 7);
-            monthlyMap[m] = (monthlyMap[m] || 0) + parseFloat(t.amount);
-          }
-        });
-        const months = Object.keys(monthlyMap).sort();
-        const amounts = months.map(m => monthlyMap[m]);
+        const data = await getSpendingSummary();
+        // monthly_trend is newest-first; the chart reads oldest → newest.
+        const trend = (data.monthly_trend || []).slice().reverse();
+        const months = trend.map(m => m.month);
+        const amounts = trend.map(m => parseFloat(m.total_spend) || 0);
         const trendCtx = document.getElementById('trend-chart');
         if (trendCtx && months.length === 0) {
           trendCtx.parentElement.innerHTML = '<div style="text-align:center;padding:32px;color:var(--text-muted);font-size:13px;">No spending data yet</div>';
@@ -3544,7 +3546,9 @@
           new Chart(trendCtx, {
             type: 'line',
             data: {
-              labels: months.map(m => { const d = new Date(m + '-01'); return d.toLocaleString('default', { month: 'short', year: '2-digit' }); }),
+              // A local-midnight date for the month (new Date('YYYY-MM-01') is
+              // UTC midnight, which labels the PREVIOUS month west of UTC — F91).
+              labels: months.map(m => { const p = m.split('-'); return new Date(Number(p[0]), Number(p[1]) - 1, 1).toLocaleString('default', { month: 'short', year: '2-digit' }); }),
               datasets: [{
                 label: 'Spending',
                 data: amounts,
@@ -3564,14 +3568,7 @@
             }
           });
         }
-        const catMap = {};
-        (txData.transactions || []).forEach(t => {
-          if (t.amount > 0) {
-            const cat = (t.personal_finance_category && t.personal_finance_category.primary) || t.category || 'Other';
-            catMap[cat] = (catMap[cat] || 0) + parseFloat(t.amount);
-          }
-        });
-        const cats = Object.entries(catMap).sort((a, b) => b[1] - a[1]).slice(0, 8);
+        const cats = (data.by_category || []).slice(0, 8).map(c => [c.category, parseFloat(c.total) || 0]);
         const pieColors = ['#d4a574', '#5a8f8f', '#c8856c', '#6fcf97', '#7fb5e6', '#f0c36d', '#eb6b6b', '#b08ed6'];
         const catCtx = document.getElementById('category-chart');
         if (catCtx && cats.length === 0) {
