@@ -80,28 +80,35 @@ router.patch("/api/settings", async (req, res) => {
   const { session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules, pyramid_data_source, pyramid_color_mode, debt_baseline_amount, partner_name } = req.body;
   try {
     const updates = []; const values = []; let idx = 1;
+    // Cycle-7 F86: an invalid value for any of the fields below is a 400. They
+    // used to be dropped (or clamped) silently and the request still returned
+    // 200, so the Settings page reported a save that didn't happen.
     if (session_timeout_minutes !== undefined) {
-      updates.push("session_timeout_minutes = $" + idx++);
-      values.push(Math.max(1, Math.min(parseInt(session_timeout_minutes) || 15, 1440)));
-      if (req.session) req.session.timeoutMinutes = values[values.length - 1];
+      const m = toInt(session_timeout_minutes);
+      if (!Number.isInteger(m) || m < 1 || m > 1440) return res.status(400).json({ error: "session_timeout_minutes must be an integer 1-1440" });
+      updates.push("session_timeout_minutes = $" + idx++); values.push(m);
+      if (req.session) req.session.timeoutMinutes = m;
     }
-    if (theme !== undefined && ["dark", "light"].includes(theme)) {
+    if (theme !== undefined) {
+      if (!["dark", "light"].includes(theme)) return res.status(400).json({ error: "theme must be dark or light" });
       updates.push("theme = $" + idx++); values.push(theme);
     }
     if (dashboard_months !== undefined) {
-      updates.push("dashboard_months = $" + idx++);
-      values.push(Math.max(1, Math.min(parseInt(dashboard_months) || 6, 24)));
+      const m = toInt(dashboard_months);
+      if (!Number.isInteger(m) || m < 1 || m > 24) return res.status(400).json({ error: "dashboard_months must be an integer 1-24" });
+      updates.push("dashboard_months = $" + idx++); values.push(m);
     }
     if (insights_enabled !== undefined) {
       updates.push("insights_enabled = $" + idx++); values.push(!!insights_enabled);
     }
-    if (insights_model !== undefined && ["haiku", "sonnet", "opus"].includes(insights_model)) {
+    if (insights_model !== undefined) {
+      if (!["haiku", "sonnet", "opus"].includes(insights_model)) return res.status(400).json({ error: "insights_model must be haiku, sonnet or opus" });
       updates.push("insights_model = $" + idx++); values.push(insights_model);
     }
     if (insights_cadence_days !== undefined) {
-      const valid = [7, 14, 30, 60, 90];
-      const val = parseInt(insights_cadence_days);
-      if (valid.includes(val)) { updates.push("insights_cadence_days = $" + idx++); values.push(val); }
+      const val = toInt(insights_cadence_days);
+      if (![7, 14, 30, 60, 90].includes(val)) return res.status(400).json({ error: "insights_cadence_days must be 7, 14, 30, 60 or 90" });
+      updates.push("insights_cadence_days = $" + idx++); values.push(val);
     }
     if (keep_alive_enabled !== undefined) {
       updates.push("keep_alive_enabled = $" + idx++); values.push(!!keep_alive_enabled);
@@ -130,12 +137,15 @@ router.patch("/api/settings", async (req, res) => {
     }
     if (insight_modules !== undefined) {
       const clean = sanitizeBoolMap(insight_modules);
-      if (clean) { updates.push("insight_modules = $" + idx++); values.push(JSON.stringify(clean)); }
+      if (!clean) return res.status(400).json({ error: "insight_modules must be an object of {module: boolean}" });
+      updates.push("insight_modules = $" + idx++); values.push(JSON.stringify(clean));
     }
-    if (pyramid_data_source !== undefined && ["wellness", "debt_payoff", "goal_progress", "spending_categories", "net_worth"].includes(pyramid_data_source)) {
+    if (pyramid_data_source !== undefined) {
+      if (!["wellness", "debt_payoff", "goal_progress", "spending_categories", "net_worth"].includes(pyramid_data_source)) return res.status(400).json({ error: "unknown pyramid_data_source" });
       updates.push("pyramid_data_source = $" + idx++); values.push(pyramid_data_source);
     }
-    if (pyramid_color_mode !== undefined && ["single", "multi"].includes(pyramid_color_mode)) {
+    if (pyramid_color_mode !== undefined) {
+      if (!["single", "multi"].includes(pyramid_color_mode)) return res.status(400).json({ error: "pyramid_color_mode must be single or multi" });
       updates.push("pyramid_color_mode = $" + idx++); values.push(pyramid_color_mode);
     }
     if (partner_name !== undefined) {
@@ -143,15 +153,15 @@ router.patch("/api/settings", async (req, res) => {
       updates.push("partner_name = $" + idx++); values.push(v || null);
     }
     if (debt_baseline_amount !== undefined) {
-      const val = debt_baseline_amount === null ? null : parseFloat(debt_baseline_amount);
-      if (val === null || (!isNaN(val) && val >= 0)) {
-        updates.push("debt_baseline_amount = $" + idx++); values.push(val);
-      }
+      const val = debt_baseline_amount === null ? null : Number(debt_baseline_amount);
+      if (!(val === null || (Number.isFinite(val) && val >= 0))) return res.status(400).json({ error: "debt_baseline_amount must be a number >= 0 or null" });
+      updates.push("debt_baseline_amount = $" + idx++); values.push(val);
     }
     if (req.body.sheets_auto_sync_enabled !== undefined) {
       updates.push("sheets_auto_sync_enabled = $" + idx++); values.push(!!req.body.sheets_auto_sync_enabled);
     }
-    if (req.body.sheets_auto_sync_interval !== undefined && ["daily", "weekly", "monthly"].includes(req.body.sheets_auto_sync_interval)) {
+    if (req.body.sheets_auto_sync_interval !== undefined) {
+      if (!["daily", "weekly", "monthly"].includes(req.body.sheets_auto_sync_interval)) return res.status(400).json({ error: "sheets_auto_sync_interval must be daily, weekly or monthly" });
       updates.push("sheets_auto_sync_interval = $" + idx++); values.push(req.body.sheets_auto_sync_interval);
     }
     // Bank auto-sync (Phase A)
@@ -171,8 +181,10 @@ router.patch("/api/settings", async (req, res) => {
     if (req.body.csv_reminder_enabled !== undefined) {
       updates.push("csv_reminder_enabled = $" + idx++); values.push(!!req.body.csv_reminder_enabled);
     }
-    if (req.body.dashboard_widgets !== undefined && sanitizeBoolMap(req.body.dashboard_widgets)) {
-      updates.push("dashboard_widgets = $" + idx++); values.push(JSON.stringify(sanitizeBoolMap(req.body.dashboard_widgets)));
+    if (req.body.dashboard_widgets !== undefined) {
+      const clean = sanitizeBoolMap(req.body.dashboard_widgets);
+      if (!clean) return res.status(400).json({ error: "dashboard_widgets must be an object of {widget: boolean}" });
+      updates.push("dashboard_widgets = $" + idx++); values.push(JSON.stringify(clean));
     }
     // Per-sistant integration settings
     if (req.body.persistent_url !== undefined) {
@@ -287,7 +299,8 @@ router.patch("/api/settings", async (req, res) => {
     // silently disable auth or lock the user out from too-tight an idle.
     let invalidateShellIdleCache = false;
     if (req.body.shell_idle_timeout_minutes !== undefined) {
-      const m = parseInt(req.body.shell_idle_timeout_minutes);
+      // toInt, not parseInt: parseInt("30abc") is 30 (cycle-7 F86).
+      const m = toInt(req.body.shell_idle_timeout_minutes);
       // F11: 400 on out-of-bounds instead of silently dropping (consistent with
       // the other bounded numeric settings) so a bad value isn't a silent no-op.
       if (!(Number.isFinite(m) && m >= 5 && m <= 10080)) {
@@ -564,6 +577,10 @@ router.post("/api/sheets/sync-transactions", async (_req, res) => {
     res.json(result);
   } catch (err) {
     console.error("Sheets sync-transactions error:", err.message);
+    // A failed partial sync is recorded like a failed tab (cycle-7 F86 — it
+    // was only logged). A partial SUCCESS isn't recorded: it says nothing
+    // about the other tabs, so it mustn't clear a full sync's failure.
+    await recordSheetsSyncResult({ errors: [{ step: "transactions", error: err.message }] });
     res.status(500).json({ error: "An internal error occurred." });
   }
 });
@@ -573,10 +590,17 @@ router.post("/api/sheets/dashboard", async (_req, res) => {
   if (!sheetsSync) {
     return res.status(501).json({ error: "Google Sheets integration not available." });
   }
+  // Same configuration check as the other Sheets endpoints (cycle-7 F86 — this
+  // one skipped it and failed inside the Google client with a 500).
+  if (!process.env.GOOGLE_SHEETS_ID || !process.env.GOOGLE_SERVICE_ACCOUNT_KEY) {
+    return res.status(400).json({ error: "Set GOOGLE_SHEETS_ID and GOOGLE_SERVICE_ACCOUNT_KEY in .env" });
+  }
   try {
     const result = await sheetsSync.syncDashboardOnly();
     res.json(result);
   } catch (err) {
+    console.error("Sheets dashboard sync error:", err.message);
+    await recordSheetsSyncResult({ errors: [{ step: "dashboard", error: err.message }] });
     res.status(500).json({ error: "An internal error occurred." });
   }
 });

@@ -2228,14 +2228,18 @@ on the operator's machine (or fed via env vars) before the app boots:
 
 Both the **weekly digest** (Settings → AI Insights → "Weekly Digest
 Email") and the **daily activity digest** ("Daily Activity Digest"
-toggle) have a soft prerequisite: Per-sistant must be configured with
-`persistent_url` and a webhook secret. Without those, the schedulers
-still run but `sendPerSistantWebhook` short-circuits with
+toggle) are delivered IN-PROCESS under the unified shell (no webhook
+config needed — the email lands in Per-sistant's `emails` table for
+`perfin_webhook_recipient` → `SMTP_FROM` → `SMTP_USER`; with no valid
+address it is saved as a draft and reported NOT sent, cycle-7 F79). A
+STANDALONE Perfin needs `persistent_url` and a webhook secret; without
+them `sendPerSistantWebhook` short-circuits with
 `{ sent: false, reason: "not_configured" | "missing_secret" }` and the
-digests are a no-op. The weekly toggle surfaces an inline warning when
-the prereq is missing; the daily toggle inherits the same constraint.
-Operators enabling either should verify the Per-sistant integration
-first under Settings → Integrations.
+digests are a no-op. There is no Settings section for that standalone
+config (F81) — set `persistent_url` / `persistent_webhook_secret` /
+`persistent_webhook_enabled` via `PATCH /api/settings`. (An earlier
+version of this note pointed at a "Settings → Integrations" section that
+doesn't exist — cycle-7 F44.)
 
 **Plaid** (optional — for banks Teller doesn't cover): create a Plaid
 account at dashboard.plaid.com. New accounts after April 2026 get the
@@ -3861,7 +3865,8 @@ SX3-pinned — the Sheets Income tab.
     rate, context-export, AI trends) treat each returned month as complete (FA-4).
     The current month is still included (partial-to-date, as expected in-progress).
   - `getCategorySpendingThisMonth(pool)` — current-month per-category spend
-    (anchored to Postgres `CURRENT_DATE` so month-end semantics match the SQL)
+    (delegates to `getCategorySpendingForMonth(pool, currentMonth())` — the
+    APP_TIMEZONE month, not Postgres `CURRENT_DATE`)
   - `getCategorySpendingForMonth(pool, monthStr)` — same shape, but for an
     arbitrary `'YYYY-MM'` month; used by `GET /api/budgets?month=...`,
     `POST /api/budgets/snapshot`, and the budget-snapshot auto-trigger so

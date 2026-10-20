@@ -18,7 +18,29 @@ Updated: 2026-10-20
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 8 DONE** on branch
+- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 9 DONE** on branch
+  `claude/sweet-ritchie-f9d8ah` (2026-10-20). Sheets and cross-app.
+  - **Completed:** F75 (Sheets averages over completed months), F76 (Utilities / Important
+    Dates via cadence.js + APP_TIMEZONE), F77 (resetFormats on 3 tabs), F78 (Sheets
+    single-flight), F79 (draft digest = not sent; ticks settle for the day), F80 (Per-sistant
+    widget monthly equivalent + due today), F83 (guard passes plain numbers), F84 (Code.gs
+    guard), F86 (settings 400s, dashboard env check, partial-sync failures recorded,
+    notification_log retention, Credit Scores change per type), F44 (doc fixes).
+  - **Scope note:** the plan's Batch 9 also lists F83/F84/F86/F44 — the Batch 8 hand-off line
+    ("F75 … F80") left them off; implemented per the plan.
+  - **Tests:** npm test 1624/1624 (+16 scan-oct-batch9); contract 87/87 (+5 sheets-crossapp);
+    migrations twice; Playwright 35/35. All new tests fail pre-fix.
+  - **Net score:** 5 − 1 = 4 (F79 day-settle delay).
+  - **Decisions:** a partial Sheets SUCCESS isn't recorded (only failures); a different-kind
+    Sheets run waits rather than skips; notification retention = read rows > 180 days.
+  - **Operator:** clasp push Code.gs (F84).
+  - **Follow-ons:** Settings text pointing at a non-existent integration section (F81); the HTTP
+    webhook path's sent:true on a receiver draft; Important Dates subs single next_expected.
+  - **Block:** `.cycle/blocks/7-batch9-broad-implement.md`.
+  - **Where I left off:** Batch 9 committed and pushed (no PR). NEXT: /sync-docs for Batch 9,
+    then Batch 10 (F91, F94, F95, F96, F97, F99 …).
+
+- **Previous:** **Cycle 7 — Oct 2026 broad scan, Batch 8 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-20). AI trust.
   - **Completed:** F61 (named other month = cross-period), F62 (goal prompt via
     deriveGoalProgress), F64 (Ask charge flag after the write), F65 (last Ask round

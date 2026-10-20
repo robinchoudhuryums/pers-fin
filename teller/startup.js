@@ -129,6 +129,10 @@ async function runBudgetAlertTick() {
   }
 }
 
+// deliverDigestInProcess saved the email as a draft (no or invalid recipient,
+// cycle-7 F79).
+const DRAFT_ONLY_REASONS = ["no_recipient_configured", "invalid_recipient"];
+
 async function runWeeklyDigestTick() {
   jobHealth.tick("weekly-digest");
   if (awaySettledToday("weekly-digest")) return;
@@ -145,7 +149,9 @@ async function runWeeklyDigestTick() {
     const { runWeeklyDigest } = require("./routes/insights");
     const result = await runWeeklyDigest();
     const settled = result.sent || ["already_sent_this_week", "disabled", "no_summary", "empty_summary"].includes(result.reason);
-    if (settled) markAwaySettled("weekly-digest");
+    // Saved as a draft for want of a valid recipient (F79): a failure for Sync
+    // Health, but done for the day — retrying hourly would only add drafts.
+    if (settled || DRAFT_ONLY_REASONS.includes(result.reason)) markAwaySettled("weekly-digest");
     jobHealth.result("weekly-digest", settled ? { ok: true } : { ok: false, error: result.reason || result.error });
     if (result.sent) console.log("Weekly digest sent.");
     else if (result.reason && result.reason !== "already_sent_this_week" && result.reason !== "disabled") {
@@ -165,7 +171,7 @@ async function runDailyDigestTick() {
     if (localHourNow() < DAILY_DIGEST_HOUR) return;
     const result = await runDailyDigest();
     const settled = result.sent || ["already_sent_today", "disabled", "nothing_new"].includes(result.reason);
-    if (settled) markAwaySettled("daily-digest");
+    if (settled || DRAFT_ONLY_REASONS.includes(result.reason)) markAwaySettled("daily-digest");
     // too_early (an APP_TIMEZONE hour edge) is a skip, not a failure.
     if (settled || result.reason === "too_early") jobHealth.result("daily-digest", { ok: true });
     else jobHealth.result("daily-digest", { ok: false, error: result.reason || result.error });

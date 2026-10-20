@@ -152,6 +152,25 @@ router.post("/api/notifications/read-all", async (_req, res) => {
 });
 
 // Utility: send notification to all subscribers (called internally)
+// notification_log retention (cycle-7 F86 — the table grew without bound):
+// READ notifications older than NOTIFICATION_RETENTION_DAYS are deleted, at
+// most once a day, on the next send. Unread ones stay until read. The longest
+// dedup window sentRecently() is asked for is days, far inside this.
+const NOTIFICATION_RETENTION_DAYS = 180;
+let lastNotificationPruneAt = 0;
+async function pruneNotificationLog(now = Date.now()) {
+  if (now - lastNotificationPruneAt < 24 * 60 * 60 * 1000) return;
+  lastNotificationPruneAt = now;
+  try {
+    await pool.query(
+      "DELETE FROM notification_log WHERE is_read = true AND created_at < now() - make_interval(days => $1)",
+      [NOTIFICATION_RETENTION_DAYS]
+    );
+  } catch (err) {
+    console.error("notification_log prune error:", err.message);
+  }
+}
+
 // Also logs to notification_log for in-app history.
 async function sendToAll(payload) {
   // Always log to notification_log, even if push isn't configured. This row is
@@ -169,6 +188,7 @@ async function sendToAll(payload) {
   } catch (err) {
     console.error("notification_log insert error:", err.message);
   }
+  await pruneNotificationLog();
 
   if (!pushConfigured()) return { sent: 0, failed: 0, logged };
   try {
@@ -217,3 +237,5 @@ async function sentRecently(tag, hours = 24) {
 module.exports = router;
 module.exports.sendToAll = sendToAll;
 module.exports.sentRecently = sentRecently;
+module.exports.pruneNotificationLog = pruneNotificationLog;
+module.exports.NOTIFICATION_RETENTION_DAYS = NOTIFICATION_RETENTION_DAYS;

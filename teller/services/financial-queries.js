@@ -17,7 +17,7 @@
 // Income identification — mix of strict keyword matching, explicit user-
 // authorized patterns, and Plaid's own "Income" category.
 //
-// Structured as three OR branches so each branch is independently gated:
+// Structured as four OR branches so each branch is independently gated:
 //   (a) Strict keyword match (payroll/direct-dep/salary/deposit/ach-credit)
 //       AND NOT excluded by the transfer/payment/refund negative filter.
 //       Keeps unknown transfers and card payments out of income.
@@ -27,7 +27,11 @@
 //       "Funds transfer from brokerage" credit that's the real paycheck
 //       from the user's perspective). The pattern must be specific enough
 //       that it won't accidentally match unrelated transfers.
-//   (c) Plaid's own category hierarchy tagging the txn as Income.
+//   (c) The row's category (user override, else provider) is 'income',
+//       case-insensitive.
+//   (d) Plaid's personal_finance_category primary is INCOME and the user
+//       hasn't categorized the row (DD-3). (Cycle-7 F44: this comment said
+//       "three branches" with (c) as Plaid's legacy hierarchy.)
 //
 // To add another known-good income pattern, add it to (b). Keep patterns
 // narrow — "transfer from X" with X specific. A permissive "transfer from"

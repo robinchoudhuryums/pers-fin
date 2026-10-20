@@ -102,14 +102,18 @@ async function deliverDigestInProcess(event, data) {
     const subject = (data && data.subject) || fallbackSubject;
     const body = (data && data.plain_text) || "(no body)";
     const html = (data && data.html_body) || null;
-    if (!recipient) {
-      // No destination configured — save as a draft so the content isn't lost,
-      // matching the receiver's behavior.
+    // No destination, or one that isn't an email address: save a draft so the
+    // content isn't lost (the receiver does the same) — but report it as NOT
+    // sent (cycle-7 F79). It used to return sent: true, so the digest
+    // watermarks advanced and nothing ever reached an inbox.
+    const validRecipient = recipient && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(recipient).trim());
+    if (!validRecipient) {
       await pp.query(
         "INSERT INTO emails (recipient_email, subject, body, body_html, status) VALUES ($1, $2, $3, $4, 'draft')",
-        ["unset@localhost", subject, body, html]
+        [recipient ? String(recipient).slice(0, 200) : "unset@localhost", subject, body, html]
       );
-      return { sent: true, delivery: "in_process", stored: "draft", reason: "no_recipient_configured" };
+      return { sent: false, delivery: "in_process", stored: "draft",
+        reason: recipient ? "invalid_recipient" : "no_recipient_configured" };
     }
     await pp.query(
       "INSERT INTO emails (recipient_name, recipient_email, subject, body, body_html, status, scheduled_at) VALUES ($1, $2, $3, $4, $5, 'scheduled', now())",

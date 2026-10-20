@@ -13,6 +13,36 @@ setInterval(() => {
   for (const [sig, ts] of _seenWebhookSigs) if (ts < cutoff) _seenWebhookSigs.delete(sig);
 }, WEBHOOK_REPLAY_WINDOW_MS).unref();
 
+// Widget figures (cycle-7 F80), shared by the embedded and standalone paths:
+// the monthly cost is every active subscription's monthly equivalent
+// (amount × 30 / cadence_days — Perfin's rule; quarterly and annual ones used
+// to be left out), and "this week" is today through today + 7 by APP_TIMEZONE
+// calendar date (a charge due today was dropped once the day had begun).
+function widgetFigures(subs, today) {
+  const monthly = subs.reduce((sum, s) => {
+    const days = parseInt(s.cadence_days, 10);
+    return sum + (days > 0 ? parseFloat(s.amount || 0) * 30 / days : 0);
+  }, 0);
+  const [y, m, d] = today.split("-").map(Number);
+  const weekEnd = new Date(Date.UTC(y, m - 1, d + 7)).toISOString().slice(0, 10);
+  const upcoming = subs.filter((s) => {
+    const next = ymdOf(s.next_expected);
+    return next !== null && next >= today && next <= weekEnd;
+  });
+  return { monthly_cost: monthly.toFixed(2), upcoming };
+}
+// A DATE as 'YYYY-MM-DD': node-pg's local-midnight Date via local getters, a
+// string by its first ten characters.
+function ymdOf(v) {
+  if (!v) return null;
+  if (v instanceof Date) {
+    if (isNaN(v.getTime())) return null;
+    return `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, "0")}-${String(v.getDate()).padStart(2, "0")}`;
+  }
+  const s = String(v).slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+}
+
 module.exports = function ({ pool, config }) {
   const router = express.Router();
   const PERFIN_URL = config.PERFIN_URL;
@@ -32,17 +62,9 @@ module.exports = function ({ pool, config }) {
           FROM detected_subscriptions
           WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL
         `);
-        const now = new Date();
         const subs = result.rows;
-        const totalMonthly = subs
-          .filter(s => parseInt(s.cadence_days) <= 31)
-          .reduce((sum, s) => sum + parseFloat(s.amount || 0), 0);
-        const upcoming = subs.filter(s => {
-          if (!s.next_expected) return false;
-          const next = new Date(s.next_expected);
-          const diff = (next - now) / 86400000;
-          return diff >= 0 && diff <= 7;
-        }).map(s => ({
+        const { monthly_cost, upcoming: due } = widgetFigures(subs, require("./health").todayStr());
+        const upcoming = due.map(s => ({
           display_name: s.display_name,
           amount: s.amount,
           cadence_days: s.cadence_days,
@@ -51,7 +73,7 @@ module.exports = function ({ pool, config }) {
         return res.json({
           connected: true,
           total_subscriptions: subs.length,
-          monthly_cost: totalMonthly.toFixed(2),
+          monthly_cost,
           upcoming_this_week: upcoming.length,
           upcoming,
         });
@@ -77,15 +99,8 @@ module.exports = function ({ pool, config }) {
       // so the standalone widget path silently returned `{connected: false}`.
       const body = await r.json();
       const subs = Array.isArray(body) ? body : (body.subscriptions || []);
-      const totalMonthly = subs.filter(s => s.cadence_days <= 31).reduce((sum, s) => sum + parseFloat(s.amount || 0), 0);
-      const upcoming = subs.filter(s => {
-        if (!s.next_expected) return false;
-        const next = new Date(s.next_expected);
-        const now = new Date();
-        const diff = (next - now) / 86400000;
-        return diff >= 0 && diff <= 7;
-      });
-      res.json({ connected: true, total_subscriptions: subs.length, monthly_cost: totalMonthly.toFixed(2), upcoming_this_week: upcoming.length, upcoming });
+      const { monthly_cost, upcoming } = widgetFigures(subs, require("./health").todayStr());
+      res.json({ connected: true, total_subscriptions: subs.length, monthly_cost, upcoming_this_week: upcoming.length, upcoming });
     } catch {
       res.json({ connected: false });
     }
@@ -192,3 +207,4 @@ module.exports = function ({ pool, config }) {
 
   return router;
 };
+module.exports.widgetFigures = widgetFigures;
