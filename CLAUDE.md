@@ -64,7 +64,11 @@ teller/
   services/
     database.js          — Postgres pool + transactional auto-migrations with schema versioning
     teller-api.js        — mTLS HTTP client for Teller API (retry with exponential backoff;
-                           5xx/network AND 429 — Retry-After honored, capped 10s)
+                           5xx/network AND 429 — Retry-After honored, capped 10s).
+                           tellerCertStatus() reads the configured cert without
+                           throwing or touching the network (cached) and reports
+                           whether it is the compromised one from git history —
+                           raised as a data-health issue + logged at boot (F14)
     plaid-client.js      — Plaid client factory (shared by investments.js +
                            investment-performance.js so the two route modules
                            don't need a circular require)
@@ -75,7 +79,13 @@ teller/
                            the watchdog flushes ticks to job_runs and pushes a
                            signature-deduped "Scheduled jobs missed" notification
                            when any job hasn't ticked for 36h+ (process asleep
-                           with keep-alive off, crash loops)
+                           with keep-alive off, crash loops). A job whose body
+                           ran also reports result(name, {ok, error}) — stored
+                           as job_runs.last_status / last_error (cycle-7 F8: the
+                           status used to be hard-coded 'ok'). flush() writes
+                           only jobs with a new tick or outcome; GET
+                           /api/data-health flushes before it reads, so a user
+                           back from time away doesn't see every job "stale"
     financial-queries.js — Shared income/spending SQL helpers (split-adjusted spending,
                            keyword-filtered income, current-month per-category spending
                            that honors transaction_splits) — single source of truth used
@@ -397,7 +407,9 @@ The unified shell adds:
 ```
 shell/
   index.js                     — PIN gate, sub-app mounts, cross-pool wiring,
-                                 keep-alive, graceful shutdown, public PWA-icon
+                                 keep-alive, graceful shutdown (stops Perfin's
+                                 intervals + Per-sistant's node-cron tasks
+                                 before draining the pools — F16), public PWA-icon
                                  + /health routes mounted before the auth gate
   middleware/
     auth.js                    — Shell auth: HMAC-signed cookie session
@@ -540,9 +552,21 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1517 tests as of latest); use
+  Perfin and Per-sistant test files (1547 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1517 tests across 69 test files (incl.
+  Current count: 1547 tests across 70 test files (incl.
+  `tests/scan-oct-batch3.test.js` — the Oct 2026 (cycle 7) Batch 3 backstop /
+  outcome / operator-state pins: job outcomes via jobHealth.result + the
+  changed-only flush + data-health flushing first and raising failed jobs (F8),
+  the housing ledger as an away job (F15), the insights auto-trigger's cap
+  pre-check / attempt stamp / 24 h back-off and the 'insight_unsaved' charge
+  (F63), no settings fallback in generateInsights (F73), wholesale + thrown sync
+  failures in last_sync_result (F23), audit_incomplete on a failed finding
+  insert (F69), tellerCertStatus + the data-health cert issue (F14), daily-sync's
+  independent steps + timeout report and every workflow's permissions block
+  (F5/F16), the generic test-notification error and shutdown stopping jobs
+  (F16), and the empty-catch scan — a per-file KNOWN_GAPS count of bare catches
+  in server code that fails on growth AND on a stale entry;
   `tests/scan-oct-batch2.test.js` — the Oct 2026 (cycle 7) Batch 2 broken-page /
   dead-channel pins: Web Push to a JSONB (object) subscription + 410 pruning via a
   stubbed web-push (F74), the toast cap run in a vm with a timeout (F89), the
@@ -782,6 +806,13 @@ shell/
   (PSC-4); render.yaml deliberately does NOT (Render passes envVars to the build
   too, and NODE_ENV=production makes `npm install` skip devDependencies) — the
   shell's Secure-cookie and error-handler behaviour don't depend on it.
+- Workflow hygiene (cycle-7 F5/F16): every workflow declares `permissions:
+  contents: read` (only csv-import has `write`). In `daily-sync.yml` the steps
+  after "Sync transactions" are independent backstops — each runs with `if:
+  ${{ !cancelled() }}`, so one failed or timed-out call no longer skips the
+  balance sync, snapshot and detection — and a `CHECK_STATUS` helper turns a
+  curl timeout ("000") into an `::error::` annotation instead of a silent
+  `bash -e` exit (each `curl` ends `|| true`; the sync's max-time is 420 s).
 - `.github/workflows/csv-import.yml` — imports CSVs pushed to `csv-uploads/`
   (scripts/import-csv-cli.js → Sheets), then `git rm`s them (PSC-15: they used to
   be archived under `csv-uploads/processed/`, keeping raw bank statements in every
@@ -1431,8 +1462,16 @@ shell/
   set and dropped from the response's `modules_used`, surfacing instead in a new
   `modules_failed` array — so a swallowed query error no longer reports a module as
   analyzed when Claude actually received no data for it.
-- **Auto-trigger**: Insights auto-generate based on `insights_cadence_days` setting (checked every 6 hours)
-- **Cost tracking**: Granular token-level pricing — `input_tokens` from Anthropic's API (already excludes cache tokens) is multiplied by the input rate; `cache_read_input_tokens` and `cache_creation_input_tokens` are billed separately at their own rates (thinking tokens arrive inside `output_tokens`). Rates are keyed by MODEL ID (`MODEL_RATES_BY_ID` / `modelRates` in `data/reference-data.js`, AIN-9): Haiku 5.5 $0.10/$0.50 per MTok (cache read $0.01, write $0.125; a prompt over 100K tokens uses the $0.50/$2.50 card), Sonnet 5.5 $2/$10 (read $0.20), Opus 5.5 $4/$20 (read $0.20); the previous models (Haiku 4.5 $1/$5, Sonnet 4.6 $3/$15, Opus 4.6 $5/$25, older IDs) keep their own rates because usage rows are re-priced at READ time from their stored tokens + `model_used`. This restores accurate `INSIGHTS_MONTHLY_BUDGET_CENTS` enforcement when prompt caching is active. The monthly budget is shared between `/api/insights`, `/api/categorize`, `/api/insights/rebuild`, `/api/ask`, `/api/housing/scan-bill` and `/api/budgets/suggest` — all check the same cap before calling Claude, via ONE spend reader (`monthAiSpendCents()` in routes/insights.js, AIN-10 — it used to be copy-pasted in six places), AND each writes a `financial_insights` usage row after its AI call (`entry_type='categorize'` / `'rebuild'` / `'ask'` / `'scan'` for the housing bill-OCR / `'suggest'` / `'insight_empty'` for an insight run that produced no text) so its spend counts toward the cap (not just the read side). `/api/insights/rebuild` records that usage row IMMEDIATELY after the Claude call — before its tool-block validation early-returns and the summary UPDATE — so a rebuild that truncated or failed validation (which 500s) still charges the cap for the spend it already incurred (AIA2); `/api/categorize` likewise stops its AI loop if a usage-row write fails rather than spending uncapped (M2). Display queries that surface "AI Insights" filter `entry_type='insight'` to keep categorize/rebuild tracking rows out of the user-facing feed. The cap is checked-then-charged; for the insight path the insight row IS the usage row (atomic — a failed write loses the insight and its charge together), and the only gap (two concurrent generate calls both passing the pre-check) is accepted for a single-operator app rather than guarded with a provisional reservation (AI-11). `/api/insights/status` rounds the accumulated cost once and derives `budget_remaining_cents` from it so estimated + remaining == budget (AI-10).
+- **Auto-trigger**: Insights auto-generate based on `insights_cadence_days` setting (checked every 6 hours).
+  The monthly AI cap is checked BEFORE the pre-insights sync chain, every attempt
+  is stamped in `insights_last_attempt_at`, and a failed attempt is retried at most
+  once per 24 h (`INSIGHTS_RETRY_MS`) — cycle-7 F63: a cap-exhausted or failing run
+  used to re-run the whole Teller+Plaid chain every 6 hours. A failed settings read
+  fails the run before the model call (F73) instead of running on "sonnet" with an
+  empty memory and overwriting the stored summary. A manual `POST /api/insights`
+  is never held back by the back-off.
+- **Cost tracking**: Granular token-level pricing — `input_tokens` from Anthropic's API (already excludes cache tokens) is multiplied by the input rate; `cache_read_input_tokens` and `cache_creation_input_tokens` are billed separately at their own rates (thinking tokens arrive inside `output_tokens`). Rates are keyed by MODEL ID (`MODEL_RATES_BY_ID` / `modelRates` in `data/reference-data.js`, AIN-9): Haiku 5.5 $0.10/$0.50 per MTok (cache read $0.01, write $0.125; a prompt over 100K tokens uses the $0.50/$2.50 card), Sonnet 5.5 $2/$10 (read $0.20), Opus 5.5 $4/$20 (read $0.20); the previous models (Haiku 4.5 $1/$5, Sonnet 4.6 $3/$15, Opus 4.6 $5/$25, older IDs) keep their own rates because usage rows are re-priced at READ time from their stored tokens + `model_used`. This restores accurate `INSIGHTS_MONTHLY_BUDGET_CENTS` enforcement when prompt caching is active. The monthly budget is shared between `/api/insights`, `/api/categorize`, `/api/insights/rebuild`, `/api/ask`, `/api/housing/scan-bill` and `/api/budgets/suggest` — all check the same cap before calling Claude, via ONE spend reader (`monthAiSpendCents()` in routes/insights.js, AIN-10 — it used to be copy-pasted in six places), AND each writes a `financial_insights` usage row after its AI call (`entry_type='categorize'` / `'rebuild'` / `'ask'` / `'scan'` for the housing bill-OCR / `'suggest'` / `'insight_empty'` for an insight run that produced no text /
+`'insight_unsaved'` for an insight whose own row failed to write — cycle-7 F63) so its spend counts toward the cap (not just the read side). `/api/insights/rebuild` records that usage row IMMEDIATELY after the Claude call — before its tool-block validation early-returns and the summary UPDATE — so a rebuild that truncated or failed validation (which 500s) still charges the cap for the spend it already incurred (AIA2); `/api/categorize` likewise stops its AI loop if a usage-row write fails rather than spending uncapped (M2). Display queries that surface "AI Insights" filter `entry_type='insight'` to keep categorize/rebuild tracking rows out of the user-facing feed. The cap is checked-then-charged; for the insight path the insight row IS the usage row (if that INSERT fails, an `'insight_unsaved'` usage row still charges the call and the run returns 500 — F63), and the only gap (two concurrent generate calls both passing the pre-check) is accepted for a single-operator app rather than guarded with a provisional reservation (AI-11). `/api/insights/status` rounds the accumulated cost once and derives `budget_remaining_cents` from it so estimated + remaining == budget (AI-10).
 - **Insight inputs are split-adjusted**: AI insights see the same `spending_split_pct`-adjusted monthly spend totals and the same keyword-filtered income that the dashboard and `/api/savings-rate` show, via `services/financial-queries.js`.
 - **Structured running summary**: AI long-term memory is structured JSON, not plain text. `POST /api/insights` uses Anthropic tool_use (the `generate_financial_insight` tool — `strict: true` with `additionalProperties: false` on every object, requested with `tool_choice` auto via `createToolCall`) to return BOTH the user-facing `insights_text` AND a typed `summary` object with four arrays: `trends`, `completed_goals`, `pending_actions`, `alerts`. The summary is saved to `user_settings.insights_running_summary_json` (JSONB); the legacy `insights_running_summary` TEXT column gets a human-readable rendering for backward-compat callers. `sanitizeStructuredSummary` (exported) enforces shape/length bounds (max items per array, string lengths, enum values) AND returns null unless all four keys are ARRAYS in the raw input, so a pathological, empty (`summary: {}`) or partial tool response can't wipe long-term memory (AIN-8). The response includes `summary_status` — `"updated"` (normal), `"preserved_due_to_truncation"` (`stop_reason` was `max_tokens` — with or without a tool block, since a cut-off tool input may be partially parsed), `"preserved_no_tool_block"` (no tool call even after the re-ask, or a refusal), or `"preserved_validation_failed"` (sanitizer rejected the shape) — so callers can surface when long-term memory didn't advance. A run with NO insight text is charged as an `'insight_empty'` usage row but not stored as an insight, audited or emailed; it returns 502. `/api/insights/rebuild` returns 500 without writing on a `max_tokens` stop (after charging the cap). `GET /api/insights/status` returns the full `running_summary` object plus a `running_summary_counts` block (`{trends, completed_goals, pending_actions, alerts}`) so dashboards can show "tracking 3 trends · 2 goals · 5 actions · 1 alert" without a second fetch.
 - **AI insight auditing**: Post-generation validation via `services/ai-audit.js`. Four tiers:
@@ -1718,6 +1757,8 @@ shell/
   one with `plaid_items.last_error_code` set — BSI-10), a derived
   `issues[]` list (disconnected links, stale balances, never-synced, plus the
   per-item errors from the most recent sync run — see `last_sync_result` below),
+  scheduled jobs whose last run FAILED (jobs[].last_status / last_error — F8)
+  and the compromised-Teller-cert warning (F14),
   and the last reconcile time — plus a "Reconcile Now" button that POSTs
   `/api/sync/reconcile` to recover any dropped transactions.
 - **Sync-degradation strip** (dashboard): a banner (`#sync-health-strip`) fetches
@@ -1941,7 +1982,9 @@ on the operator's machine (or fed via env vars) before the app boots:
    (`teller/services/teller-api.js`) logs a loud `*** SECURITY WARNING ***`
    at cert load when the loaded cert's DER SHA-256 matches the
    known-compromised fingerprint from history — the warning disappearing
-   is the signal that the rotation took effect.
+   is the signal that the rotation took effect. Since cycle-7 F14 the same
+   check runs at boot (`tellerCertStatus()`) and shows as a Settings → Sync
+   Health issue, so it no longer depends on reading logs at the first Teller call.
 2. **`TOKEN_ENCRYPTION_PASSPHRASE`** — used by `pgp_sym_encrypt` to store
    Teller access tokens, Plaid access tokens, and the Per-sistant webhook
    HMAC secret. **Missing it is FATAL at boot** (`services/database.js`
@@ -1991,11 +2034,22 @@ on the operator's machine (or fed via env vars) before the app boots:
 4. **`db-backup.yml` GitHub Action secrets** — `NEON_DATABASE_URL`,
    `PERSISTENT_DATABASE_URL` (optional), and `BACKUP_ENCRYPTION_PASSPHRASE`
    repo secrets for the nightly encrypted backup workflow (pg_dump of both
-   DBs → AES-256 artifacts, 90-day retention; runs from GitHub's runners so
-   it works while Render sleeps). Keep a copy of the backup passphrase
-   OUTSIDE GitHub — the artifacts are unreadable without it. The restore
-   runbook lives in the workflow file's header; do one restore drill into a
-   throwaway Neon branch before you need it for real.
+   DBs → gpg symmetric AES-256 `.dump.gpg` artifacts, 90-day retention; runs
+   from GitHub's runners so it works while Render sleeps). **Not set as of Oct
+   2026 — no backup has ever been taken (F3); the workflow's FIRST step now
+   names any missing secret.** Each backup is VERIFIED in the run (the
+   encrypted file is decrypted and its archive read with `pg_restore --list`);
+   gpg's integrity check makes a damaged or altered file fail to decrypt.
+   Restore with `gpg --decrypt --output perfin.dump perfin-YYYY-MM-DD.dump.gpg`
+   then `pg_restore` (runbook in the workflow header). Keep a copy of the
+   backup passphrase OUTSIDE GitHub — the artifacts are unreadable without it.
+   Do one restore drill into a throwaway Neon branch before you need it for real.
+5. **Scheduled workflows stay enabled** — GitHub disables a PUBLIC repo's
+   scheduled workflows after 60 days without repository activity (F4: Database
+   Backup, Weekly Reconcile, Keep Alive and Job Radar Refresh were all
+   `disabled_inactivity` in Oct 2026). Re-enable each under Actions → the
+   workflow → "Enable workflow"; making the repo private stops the auto-disable.
+   The app cannot see a disabled workflow yet (G1).
 
 Both the **weekly digest** (Settings → AI Insights → "Weekly Digest
 Email") and the **daily activity digest** ("Daily Activity Digest"
@@ -2091,7 +2145,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1517 tests passing across 69 test files (Perfin 1061 + Per-sistant 456), plus the real-Postgres route contract suite (44 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
+- 1547 tests passing across 70 test files (Perfin 1091 + Per-sistant 456), plus the real-Postgres route contract suite (44 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -2342,7 +2396,10 @@ GET  /api/data-freshness   # per-source sync timestamps with staleness flags
 GET  /api/data-health      # operator health surface — per-source freshness,
                            # Teller/Plaid connection status, scheduled-job
                            # heartbeats (jobs[] with per-job staleness from
-                           # job_runs + thresholdMs), derived issues[]
+                           # job_runs + thresholdMs, plus last_status /
+                           # last_error — in-memory ticks are flushed first,
+                           # F8), derived issues[] (incl. a failed scheduled
+                           # job and the compromised Teller cert, F14)
                            # (disconnected links, stale balances, never-synced,
                            # + per-item errors from last_sync_result), recent sync
                            # notifications, last_reconcile_at, last_sync_result,
@@ -2708,7 +2765,8 @@ standalone-mode fallback if either app is run on its own Render service.
   `payee_obligations`, `payee_payments` (Rent & Utilities ledger), `notification_log`,
   `ai_audit_log`, `account_balance_snapshots`, `watchlist_items`, `credit_scores`,
   `job_runs` (scheduled-job heartbeats — one row per background job, UPSERTed by
-  `services/job-health.js`; the `_watchdog` row stores the last-notified
+  `services/job-health.js`; `last_status` / `last_error` hold the last run's
+  outcome; the `_watchdog` row stores the last-notified
   missed-job signature), `investment_flows` (external cash flows for
   TWR/XIRR — polymorphic (source, source_id) like account_balance_snapshots,
   signed amount (positive = into the portfolio), provenance 'plaid' (UNIQUE
@@ -2815,6 +2873,9 @@ standalone-mode fallback if either app is run on its own Render service.
   hourly CSV-reminder tick — the reminder is evaluated at most once per 24h
   (stamped whether or not any account was stale). Auto-migrated
   (`ADD COLUMN IF NOT EXISTS`).
+- `user_settings.insights_last_attempt_at TIMESTAMPTZ` (cycle-7 F63): stamped by
+  the AI-insights auto-trigger before each attempt; an attempt newer than
+  `insights_last_run` blocks a retry for 24 h. Auto-migrated.
 - `user_settings.target_allocation_pct JSONB NOT NULL DEFAULT '{}'::jsonb`:
   per-asset-class target weights for the Investments performance card.
   Keys are lowercase `security_type` (etf, equity, bond, etc.); values
@@ -2867,7 +2928,11 @@ standalone-mode fallback if either app is run on its own Render service.
   Plaid balance/holdings throw inside `POST /api/sync-balances` (vs. the per-item
   errors the helpers collect) is also captured into `last_sync_result` now, so a
   total Plaid failure surfaces on the Sync Health card instead of only the log
-  (BS-6).
+  (BS-6). Cycle-7 F23: a helper's `{ ok:false, error }` with no `errors[]`
+  (wholesale holdings / flows failure) is recorded as one error entry, a THROWN
+  step (auto-sync, weekly reconcile, a Teller throw in sync-balances) is recorded
+  via `thrownSyncResult`, and "Plaid not configured" is skipped so it neither
+  looks like a failure nor wipes that provider's last real outcome.
 - `user_settings.shell_idle_timeout_minutes INT NOT NULL DEFAULT 60`: how
   many minutes of inactivity before the unified-shell PIN is required again
   (sliding window — every authenticated request resets the timer). Read by
@@ -3224,9 +3289,9 @@ x-api-key'd endpoints; all writes are idempotent so overlap with the
 in-process jobs is harmless. Their logs print counts only (`SUMMARY_JS`,
 cycle-7 F2 — see Security). **Caveat (cycle-7 scan, F3/F4):** as of Oct 2026
 GitHub had disabled Weekly Reconcile, Keep Alive, Job Radar and Database Backup
-for inactivity, and every Database Backup run had failed at the dump step — the
-backstops exist on paper until they are re-enabled and the backup secrets set
-(see Known Open Issues). Per-app jobs live in
+for inactivity, and every Database Backup run had failed because its secrets were
+never set — the backstops exist on paper until the operator re-enables them and
+sets the backup secrets (Operator state items 4–5). Per-app jobs live in
 `teller/startup.js`; keep-alive runs at the shell layer (`shell/index.js`)
 under the unified shell so the timezone-aware self-ping fires regardless of
 which sub-app owns its own listener (sub-app `startKeepAlive` is no-op in
@@ -3235,7 +3300,7 @@ embedded mode).
 recent Perfin activity (`isUserActive()`, 15 min) so Neon can auto-suspend
 while the user is away. The channels whose whole point is to reach the user
 WHILE away — budget alerts (+ critical-alert email), the weekly digest, the
-daily digest and the CSV reminder — are NOT activity-gated (before, they fired
+daily digest, the CSV reminder and the Rent & Utilities reminders (F15) — are NOT activity-gated (before, they fired
 only if the user had touched Perfin in the last 15 min, so an email-only user
 got no digest; Per-sistant traffic never counted). They are driven by their
 own watermarks plus a per-local-day (APP_TIMEZONE) in-memory "settled" memo,
@@ -3253,7 +3318,9 @@ second one (which re-sent the same uncategorized rows to Claude).
 - **Sheets auto-sync**: every 1 hour (daily/weekly/monthly cadence from settings)
 - **Net worth snapshot**: every 1 hour (`ON CONFLICT (snapshot_date) DO UPDATE` so a same-day re-run rewrites the row with the latest balances — late-arriving syncs are reflected immediately). Computes the figure via the shared `getNetWorth()` helper, so this job, `syncAllBalances`, and `POST /api/net-worth/snapshot` all write the same investment-deduped value (F1)
 - **Goal milestones**: every 6 hours (push notifications at 25/50/75/100%)
-- **AI insights auto-trigger**: every 6 hours (respects `insights_cadence_days` setting).
+- **AI insights auto-trigger**: every 6 hours (respects `insights_cadence_days` setting;
+  `runInsightsAutoTriggerTick` — cap pre-check, `insights_last_attempt_at` stamp,
+  24 h retry back-off after a failed attempt, F63).
   Pre-analysis sync chain: syncAllTransactions (Teller → Plaid → one anomaly
   check) → syncAllPlaidHoldings → syncAllBalances → detect subscriptions →
   detect transfers → categorize → generate insights → audit → email webhook.
@@ -3298,7 +3365,9 @@ second one (which re-sent the same uncategorized rows to Claude).
   it essentially never fired on the free tier). Checks manual (CSV-only) accounts
   whose most recent CSV import is older than `csv_reminder_days` setting.
   Sends notification listing specific account names needing a fresh upload.
-- **Rent & Utilities ledger**: every 6 hours (activity-gated). Calls
+- **Rent & Utilities ledger**: every 6 hours, NOT activity-gated (`runHousingLedgerTick`,
+  an away job — settled for the local day after a successful pass; cycle-7 F15:
+  it used to be activity-gated, so rent reminders never reached an away user). Calls
   `generateHousingObligations()` (idempotently create this/missing months' rent
   + utility placeholders from `housing_config`) then `runHousingReminders()`
   (payment-due + missing-utility-amount push notifications, deduped via
@@ -3343,7 +3412,9 @@ second one (which re-sent the same uncategorized rows to Claude).
   missed-job list is a signature stored on the `_watchdog` row, and an
   unchanged signature doesn't re-notify. Normal overnight sleeps stay
   under the 36h floor by design. Jobs with no row yet (fresh install)
-  never alarm.
+  never alarm. Every job also records its OUTCOME (`jobHealth.result`) when
+  its body ran — a failed run shows in Sync Health as "Scheduled job X failed
+  its last run" (F8); a gated skip (away, not due, disabled) records nothing.
 
 ## Shared Account Spending Split
 All spending queries apply the `SPLIT_AMOUNT` SQL fragment from
@@ -3474,6 +3545,15 @@ SX3-pinned — the Sheets Income tab.
   server.js mount order. A bug a real-code test exposes is recorded as a
   node:test `{ todo }` (or a guard `KNOWN_GAPS` entry) in a test-only batch and
   fixed separately — never by weakening the assertion.
+- **No new bare catch in server code (cycle-7 policy response).** A catch that
+  swallows an error must log it or carry a comment saying why ignoring it is
+  safe. `tests/scan-oct-batch3.test.js` scans the server-side files (teller
+  routes/services/startup/server/data, shell index + middleware, Per-sistant
+  server code, scripts) for `catch {}` / `.catch(() => {})` / `.catch(() =>
+  null)` and compares per-file counts with a `KNOWN_GAPS` map (count + reason):
+  a count that GROWS fails, and so does one that SHRINKS without the map being
+  updated, so the list only ever shrinks. `ROLLBACK").catch(() => {})` inside an
+  error path is the one sanctioned idiom. Browser code is out of scope.
 - **Service worker excludes `/api/*`.** The SW caches static assets but never
   API responses. A stale balance shown after the network drops would mislead
   the user worse than a clear "offline" error.
@@ -3975,13 +4055,20 @@ SX3-pinned — the Sheets Income tab.
 
 ## Known Open Issues
 **Cycle 7 (Oct 2026 broad scan) — open until their batches run** (plan in
-`.cycle/STATE.md`; Batch 1 — exposure / pre-auth safety — and Batch 2 — broken
-pages and dead channels — are done):
+`.cycle/STATE.md`; Batches 1–3 — exposure / pre-auth safety, broken pages and
+dead channels, backstops / outcomes / operator state — are done):
 - The repo is PUBLIC (operator: make it private and delete old Actions logs —
   they printed balances and net worth before Batch 1).
-- Database Backup has never produced a backup (every run failed at the dump
-  step, most likely missing secrets) and four backstop workflows are disabled by
-  GitHub for inactivity, so INV-53 does not hold in production (F3/F4, Batch 3).
+- OPERATOR: Database Backup has never produced a backup (its secrets were never
+  set — confirmed from the run log) and four backstop workflows are disabled by
+  GitHub for inactivity, so INV-53 does not hold in production until the secrets
+  are added and the workflows re-enabled (F3/F4 — the code side shipped in
+  Batch 3; see Operator state items 4–5).
+- `/api/insights/rebuild` still falls back to "sonnet" when its settings read
+  fails (the F73 pattern, model only); weekly-reconcile / knowledge-reindex /
+  job-radar workflows still exit silently on a curl timeout (daily-sync has
+  `CHECK_STATUS`); a self-healing reconcile that throws retries hourly (it is
+  recorded now). Batch 3 follow-ons.
 - A passphrase mismatch on ANY token row makes `pgp_sym_decrypt` raise, failing
   every Teller/Plaid sync (the per-row `decryption_failed` branches never run;
   F17, Batch 4). Plaid "re-link to fix re-auth" creates a NEW item (F18).
@@ -4251,7 +4338,7 @@ INV-72 | The Rent & Utilities ledger is single-payee: generation covers the trai
 INV-73 | Budget status has ONE definition — getBudgetStatus(pool, month) in financial-queries.js (spend via getCategorySpendingForMonth; effective_limit = monthly_limit + the PRIOR month's snapshot rollover when rollover_enabled; one-time budgets only in their effective_month). GET /api/budgets, /api/budgets/alerts, the insights prompt and the Ask budget tool call it; the Sheets Budget Status SQL mirrors it; no surface reads the bare monthly_limit as the limit | Subsystem: Financial Analytics | Verify: tests/scan-sept-batch6.test.js (AIN-6 block)
 INV-75 | The tax report (export + Sheets tab) is computed from transactions via getTaxDeductionTransactions (one shared keyword list); the tax_deductions table only annotates merchants and never supplies amounts | Subsystem: Financial Analytics / Sheets & External Export | Verify: tests/scan-sept-batch7.test.js (SXE-7)
 INV-76 | No model call uses a forced tool_choice (Opus/Sonnet 5.5 400 on it): structured calls go through createToolCall (auto + strict tool + one re-ask, usage summed for the cap); every call sets an explicit effort and reads content blocks by type | Subsystem: AI Insights & Audit (seam: categorize / budgets / housing / Per-sistant ai.js) | Verify: tests/model-upgrade.test.js + apps/per-sistant/tests/model-upgrade.test.js
-INV-77 | Away-from-app channels (budget alerts + critical-alert email, weekly digest, daily digest, CSV reminder) are never gated on isUserActive(); each is bounded by its own watermark (last_weekly_digest_at / last_daily_digest_at / last_csv_reminder_at / sentRecently) plus a per-local-day settled memo, so it neither misses an away user nor re-queries the DB all day | Subsystem: Platform, Shell & Auth / Notification Correctness | Verify: tests/scan-sept-batch8.test.js (PSC-3 block)
+INV-77 | Away-from-app channels (budget alerts + critical-alert email, weekly digest, daily digest, CSV reminder, Rent & Utilities reminders — F15) are never gated on isUserActive(); each is bounded by its own watermark (last_weekly_digest_at / last_daily_digest_at / last_csv_reminder_at / sentRecently) plus a per-local-day settled memo, so it neither misses an away user nor re-queries the DB all day | Subsystem: Platform, Shell & Auth / Notification Correctness | Verify: tests/scan-sept-batch8.test.js (PSC-3 block)
 INV-78 | The auto-sync "complete" notification fires only on genuinely new transactions or a balance that actually changed (accounts_changed), and never while sync_notifications_enabled is false | Subsystem: Bank Sync & Ingestion / Notification Correctness | Verify: tests/scan-sept-batch8.test.js (PSC-1 block)
 INV-79 | The shell PIN gate has a GLOBAL failure ceiling (30 failed PINs/hour across all IPs → PIN login locked 30 min, even for the correct PIN, with at most one sendToAll alert per 6h — makeLockoutNotifier); biometric + x-api-key paths are unaffected; the shell refuses to boot without SHELL_SECRET; no login input can crash the process (and so reset the in-memory counter) — see INV-104 | Subsystem: Platform, Shell & Auth | Verify: tests/scan-sept-batch9.test.js (PSC-14 / PSC-11 blocks) + tests/scan-oct-batch1.test.js (F1 / F7 blocks)
 INV-80 | Per-sistant outbound webhooks/Slack are SSRF-checked at send time by resolveSafeWebhookTarget — literal IPs in any spelling (IPv4-mapped/compatible IPv6 unwrapped) and EVERY DNS-resolved address must be outside the net.BlockList private ranges; DNS failure fails closed; fetch uses redirect:'manual' | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch9.test.js (PB-14 blocks)
@@ -4272,6 +4359,8 @@ INV-94 | A change to route SQL or router mounting keeps the real-Postgres contra
 INV-95 | Source guards (un-nonced style, root-relative navigation, undefined CSS vars) carry a KNOWN_GAPS list that only shrinks: a new offender fails, and so does a listed entry that no longer occurs; a test never re-implements production logic inline (TQ-1) | Subsystem: Test Coverage Quality | Verify: tests/scan-sept-batch15.test.js
 INV-96 | Every Per-sistant routes/*.js factory destructures only keys present in server.js's `const deps = { pool, config, helpers, views }` — a helper is read off `helpers`, never expected as its own dep (calendar.js read `advanceRecurrence` off deps, got undefined, and 500'd) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/batch15-followons.test.js (FO-1 guard) + tests/contract (persistentApp builds routers with the real deps)
 INV-103 | No GitHub Actions workflow prints an HTTP response body (the repo's logs are public while it is): steps print only allowlisted counts via the job's SUMMARY_JS snippet (numbers/booleans, array counts, ":str" strings), never the net-worth breakdown or merchant/account names; csv-import refuses to run while the repo is public | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch1.test.js (F2 block)
+INV-105 | Every scheduled job in teller/startup.js that ran its body records its outcome via jobHealth.result({ok, error}) (job_runs.last_status / last_error); GET /api/data-health flushes in-memory ticks + outcomes before reading and raises a failed job as an issue; every ticked job is in JOB_INTERVALS_MS | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch3.test.js (F8 block)
+INV-106 | No server-side file gains a bare catch (`catch {}`, `.catch(() => {})`, `.catch(() => null)`) beyond its KNOWN_GAPS count; the list only shrinks (a stale count fails too) | Subsystem: Test Coverage Quality / Silent Degradation | Verify: tests/scan-oct-batch3.test.js (empty-catch scan)
 INV-104 | Every secret comparison (shell PIN, CALENDAR_FEED_TOKEN, API_KEY, standalone SESSION_PIN/PASSWORD) is a fixed-length SHA-256 digest compare (auth.safeEqual / isValidApiKey) — never timingSafeEqual over raw buffers whose byte lengths can differ — and the shell logs unhandled rejections instead of exiting | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch1.test.js (F1 / F6 blocks)
 INV-97 | No Per-sistant client template-literal module (a pages/ or views/ file that exports a string) contains a single-escaped regex class or delimiter (\b \d \s \w \/ \. …) — the template consumes the backslash, so the regex silently changes meaning in the browser; double-escape or use string methods | Subsystem: Per-sistant Web UI | Verify: apps/per-sistant/tests/batch15-followons.test.js (FO-2 guard)
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)

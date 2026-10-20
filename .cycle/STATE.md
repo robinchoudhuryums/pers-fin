@@ -42,8 +42,20 @@ implement and reflect sessions only set Phase.)
   - **Operator:** add NEON_DATABASE_URL + BACKUP_ENCRYPTION_PASSPHRASE (+ PERSISTENT_DATABASE_URL)
     secrets; re-enable Database Backup / Weekly Reconcile / Keep Alive / Job Radar; run one backup
     + restore drill; make the repo PRIVATE; delete old Actions logs.
-  - **Where I left off:** Batch 3 committed and pushed (no PR). NEXT: /sync-docs for Batch 3,
-    then Batch 4.
+  - **/sync-docs DONE (Batch 3, 2026-10-20):** CLAUDE.md — job-health / teller-api / shell
+    index architecture entries, test counts 1547/70 (Perfin 1091) + scan-oct-batch3
+    description, Current Status, workflow hygiene note (permissions, daily-sync independent
+    steps + CHECK_STATUS), cost tracking ('insight_unsaved'), auto-trigger (cap pre-check,
+    attempt stamp, 24 h back-off, F73), Sync Health card, Operator state items 1 (cert check at
+    boot + Sync Health), 4 (gpg + verify + restore command, secrets never set) and NEW 5
+    (re-enable scheduled workflows), Scheduled Tasks (caveat, away channels + housing, auto-
+    trigger, housing ledger, job outcomes), data-health endpoint, last_sync_result (F23),
+    insights_last_attempt_at + job_runs columns, empty-catch Key Design Decision, INV-77
+    (+ housing), NEW INV-105 (job outcomes) + INV-106 (empty-catch scan), Known Open Issues
+    (Batches 1–3 done, F3/F4 operator-only, Batch 3 follow-ons). README — counts, Batch 3
+    coverage, backup section (gpg, verify, missing-secret step, re-enable). Per-sistant docs
+    unchanged. Subsystem paths resolve.
+  - **Where I left off:** Batch 3 + its /sync-docs committed and pushed (no PR). NEXT: Batch 4.
 
 - **Previous:** **Cycle 7 — Oct 2026 broad scan, Batch 2 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-20). Broken pages & dead channels.
