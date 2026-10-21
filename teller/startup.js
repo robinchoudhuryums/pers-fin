@@ -704,6 +704,18 @@ function startBackgroundJobs() {
     } catch (err) {
       console.error("Job watchdog error:", err.message);
     }
+    // Operator checks (cycle-7 G1 + ST4): refresh the GitHub part when its
+    // cache is stale and push one notification when the failing set changes.
+    try {
+      const { sendToAll } = require("./routes/notifications");
+      const operatorChecks = require("./services/operator-checks");
+      const result = await operatorChecks.getOperatorChecks({
+        persistentPool: require("./routes/persistent").getEmbeddedPersistentPool(),
+      });
+      await operatorChecks.notifyIfChanged(pool, result, { sendToAll });
+    } catch (err) {
+      console.error("Operator checks error:", err.message);
+    }
   };
   const bootCheck = setTimeout(runWatchdog, 2 * 60 * 1000);
   if (bootCheck.unref) bootCheck.unref();

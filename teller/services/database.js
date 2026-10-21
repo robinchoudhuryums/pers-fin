@@ -814,6 +814,9 @@ async function runMigrationsOnce() {
     // (insights_generated). On by default — the old behaviour — and switchable
     // off in Settings → AI Insights.
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insight_emails_enabled BOOLEAN NOT NULL DEFAULT true");
+    // Cycle-7 G1 / ST4: the set of failing operator checks last notified, so a
+    // persistent problem (no backups, a disabled backstop) notifies once.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS operator_checks_signature TEXT");
     // FIRE / runway projection assumptions (Goals page card). NULLs fall back
     // to defaults in GET /api/fire-projection (return 5%, withdrawal 4%,
     // spending derived from trailing months).

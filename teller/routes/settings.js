@@ -7,6 +7,7 @@ const router = express.Router();
 const { pool, ENCRYPTION_PASSPHRASE } = require("../services/database");
 const { INSIGHT_MODULES } = require("../data/reference-data");
 const { csvText, csvDate } = require("../services/csv-export");
+const operatorChecksService = require("../services/operator-checks");
 
 let sheetsSync;
 try {
@@ -384,7 +385,7 @@ router.get("/api/data-freshness", async (_req, res) => {
 // in logs. Note: we intentionally do NOT live-decrypt tokens to detect a
 // passphrase mismatch — pgp_sym_decrypt throws (not NULL) on a wrong key, which
 // would error the whole query; that condition surfaces via sync errors instead.
-router.get("/api/data-health", async (_req, res) => {
+router.get("/api/data-health", async (req, res) => {
   const FRESH_SEC = 6 * 60 * 60;
   const STALE_SEC = 24 * 60 * 60;
   const now = Date.now();
@@ -477,14 +478,19 @@ router.get("/api/data-health", async (_req, res) => {
       }
     } catch (e) { /* job_runs not migrated yet — omit */ }
 
-    // Operator state (cycle-7 F14): the Teller certificate still being the one
-    // committed to git history used to be a boot-log line only.
+    // Operator state (cycle-7 F14 → G1 / ST4): the operator checks — the
+    // compromised Teller cert (F14 used to raise it here directly), disabled or
+    // failing backstop workflows, no recent backup, missing workflow secrets, a
+    // public repo, a stale Knowledge index. Cached GitHub results only: this
+    // route never waits on GitHub (a stale cache refreshes in the background).
+    let operatorChecks = null;
     try {
-      const { tellerCertStatus } = require("../services/teller-api");
-      if (tellerCertStatus().compromised) {
-        issues.push({ severity: "warning", message: "The Teller certificate in use is the one exposed in git history — generate a new one in the Teller dashboard and update TELLER_CERT / TELLER_KEY." });
-      }
-    } catch (e) { console.error("data-health cert check failed:", e.message); }
+      operatorChecks = await operatorChecksService.getOperatorChecks({
+        cachedOnly: true,
+        persistentPool: req.app.get("persistentPool") || null,
+      });
+      issues.push(...operatorChecksService.toIssues(operatorChecks));
+    } catch (e) { console.error("data-health operator checks failed:", e.message); }
 
     res.json({
       thresholds: { fresh_seconds: FRESH_SEC, stale_seconds: STALE_SEC },
@@ -498,11 +504,29 @@ router.get("/api/data-health", async (_req, res) => {
       last_reconcile_at: s.last_reconcile_at || null,
       last_sync_result: s.last_sync_result || null,
       last_sheets_sync_result: s.last_sheets_sync_result || null,
+      operator_checks: operatorChecks,
       issues,
       recent_events: events.rows,
     });
   } catch (err) {
     console.error("data-health error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// GET /api/operator-checks — the operator doctor (cycle-7 G1 + ST4) for
+// Settings → Sync Health. Waits for the GitHub checks (cached 6h; ?refresh=1
+// forces a re-read). Read-only: no secret value is requested or returned, and
+// the GitHub token never appears in the response.
+router.get("/api/operator-checks", async (req, res) => {
+  try {
+    const result = await operatorChecksService.getOperatorChecks({
+      force: req.query.refresh === "1",
+      persistentPool: req.app.get("persistentPool") || null,
+    });
+    res.json(result);
+  } catch (err) {
+    console.error("operator-checks error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
   }
 });

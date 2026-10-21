@@ -64,6 +64,7 @@ async function getPersistentConfig() {
 // back to the signed HTTP webhook below.
 let _embeddedPersistentPool = null;
 function setEmbeddedPersistentPool(p) { _embeddedPersistentPool = p; }
+function getEmbeddedPersistentPool() { return _embeddedPersistentPool; }
 
 // The absolute Perfin dashboard URL for links in emails, or null when the
 // public address isn't known. RENDER_EXTERNAL_URL is set by Render; under the
@@ -466,4 +467,5 @@ module.exports = router;
 module.exports.sendCriticalAlertEmail = sendCriticalAlertEmail;
 module.exports.sendPerSistantWebhook = sendPerSistantWebhook;
 module.exports.setEmbeddedPersistentPool = setEmbeddedPersistentPool;
+module.exports.getEmbeddedPersistentPool = getEmbeddedPersistentPool;
 module.exports.perfinDashboardUrl = perfinDashboardUrl;

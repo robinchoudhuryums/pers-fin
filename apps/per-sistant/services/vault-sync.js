@@ -169,6 +169,14 @@ function resolveSensitivity(meta) {
 // bumping it invalidates every hash and forces a clean re-embed on the next
 // sync — the mechanism that makes future chunker changes safe to ship.
 const CHUNKING_VERSION = 2;
+
+// Bump VAULT_PARSE_VERSION whenever frontmatter parsing or sync semantics
+// change in a way that re-classifies existing files (KR-2, F132, …). A
+// successful FULL sync stamps it into user_settings.vault_parse_version, and
+// Perfin's operator checks (cycle-7 ST4) ask for one full reindex while the
+// stored value is older. 2 = the cycle-7 F132 rules ("--- " delimiters,
+// repeated privacy keys fail closed).
+const VAULT_PARSE_VERSION = 2;
 const DEFAULT_MAX_TOKENS = 480;   // comfortably inside voyage-3.5's window
 const DEFAULT_OVERLAP_TOKENS = 60;
 
@@ -791,7 +799,15 @@ async function runVaultSync(pool, opts) {
       "UPDATE user_settings SET vault_last_sha = $1, vault_last_synced_at = now(), vault_last_error = NULL WHERE id = 1",
       [head]
     );
-    return { ok: true, ...summary };
+    // ST4: only a full walk re-files every existing row under the current
+    // rules, so only a full one records the parser version. Fail-soft — a
+    // pre-029 schema just keeps no version.
+    if (full) {
+      await pool
+        .query("UPDATE user_settings SET vault_parse_version = $1 WHERE id = 1", [VAULT_PARSE_VERSION])
+        .catch((e) => console.error("vault parse-version stamp failed:", e.message));
+    }
+    return { ok: true, ...summary, full };
   } catch (e) {
     // KR-11: a failed run records the error but NOT vault_last_synced_at (it
     // used to stamp it, so a sync failing for days still looked fresh).
@@ -943,6 +959,7 @@ module.exports = {
   chunkMarkdown,
   estimateTokens,
   CHUNKING_VERSION,
+  VAULT_PARSE_VERSION,
   shouldIndex,
   sha256,
   titleFromPath,

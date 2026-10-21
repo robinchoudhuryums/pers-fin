@@ -18,7 +18,29 @@ Updated: 2026-10-21
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 16 DONE** on branch
+- **Status:** **Cycle 7 — expansion Batch 17 DONE** on branch `claude/sweet-ritchie-f9d8ah`
+  (2026-10-21). Operator visibility (G1 remaining + ST4), from `.cycle/plan-cycle7-expansion.md`.
+  Block: `.cycle/blocks/7-batch17-broad-implement.md`.
+  - **Completed:** teller/services/github-ops.js (read-only GitHub checks: backstop workflow state +
+    latest run, last successful backup ≤36h, workflow secret names, repo visibility; fail-soft, token
+    never logged/returned) + teller/services/operator-checks.js (6h cache, single-flight; local checks
+    incl. the F14 cert moved out of data-health; Knowledge parse-version check via persistentPool;
+    toIssues; notifyIfChanged on user_settings.operator_checks_signature). GET /api/operator-checks,
+    data-health operator issues + operator_checks, Settings → Sync Health "Operator Checks" + Check now,
+    watchdog refresh + notification. Per-sistant VAULT_PARSE_VERSION = 2 stamped by a successful FULL
+    sync (db/029).
+  - **Verification:** npm 1792/1792; contract 144/144; migrations twice (29 Per-sistant files);
+    Playwright 35/35; two mutation checks red. Net −1 (new capability; standing warning noise).
+  - **Decisions:** GitHub part cached 6h and never awaited by data-health; notification skipped while
+    any GitHub check is unknown; disabled optional workflows (keep-alive, job-radar, knowledge-reindex)
+    warn, critical ones fail; the parse version starts at 2 so existing vaults are asked for one reindex.
+  - **Operator:** set GITHUB_OPS_TOKEN (fine-grained, read-only Actions/Metadata/Secrets) +
+    GITHUB_OPS_REPO on Render; then act on the list.
+  - **Follow-ons:** feature-aware workflow checks; secrets presence only; parse version not on the
+    Knowledge page; github.com only.
+  - **Where I left off:** Batch 17 committed and pushed (no PR). NEXT: /sync-docs for Batch 17, then
+    `/broad-implement Batch 18` (async sync, ST1) → 19 → 20 → /reflect.
+- **Previous status:** **Cycle 7 — Oct 2026 broad scan, Batch 16 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-21). Imports, exports and privacy (F26, F81, F85,
   F134 → ST5), the last batch of `.cycle/plan-cycle7-deferred.md`. Block:
   `.cycle/blocks/7-batch16-broad-implement.md`.

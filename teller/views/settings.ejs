@@ -378,6 +378,11 @@
       <div class="setting-info"><div class="name">Reconcile Now</div><div class="desc">Re-fetch the last 90 days from every linked bank to recover any missed transactions. Safe to run anytime — duplicates are ignored.</div></div>
       <div class="setting-control"><button class="btn" id="reconcile-btn">Reconcile</button></div>
     </div>
+    <div class="setting-row" style="margin-top:12px;">
+      <div class="setting-info"><div class="name">Operator Checks</div><div class="desc">Things only you can fix outside the app: GitHub backstop workflows, backups, workflow secrets, repository visibility, the Teller certificate and the Knowledge index. GitHub results are cached for 6 hours.</div></div>
+      <div class="setting-control"><button class="btn" id="operator-checks-btn">Check now</button></div>
+    </div>
+    <div id="operator-checks-body" style="font-size:13px;color:var(--text-muted);">Loading…</div>
   </div>
 
   <div class="section"><h2>Google Sheets Auto-Sync</h2>
@@ -1484,8 +1489,10 @@
              + ' · Plaid: ' + (p.plaid.total || 0) + ' linked'
              + (p.plaid.not_good ? ', <span style="color:var(--red,#eb6b6b);">' + p.plaid.not_good + ' need re-auth</span>' : '')
              + '</div>';
-        if (h.issues && h.issues.length) {
-          out += '<ul style="margin:6px 0;padding-left:18px;">' + h.issues.map(function (i) {
+        // Operator-check issues are listed under Operator Checks below.
+        var dhIssues = (h.issues || []).filter(function (i) { return i.source !== 'operator'; });
+        if (dhIssues.length) {
+          out += '<ul style="margin:6px 0;padding-left:18px;">' + dhIssues.map(function (i) {
             var c = i.severity === 'info' ? 'var(--text-muted)' : 'var(--red,#eb6b6b)';
             return '<li style="color:' + c + ';">' + esc(i.message) + '</li>';
           }).join('') + '</ul>';
@@ -1496,6 +1503,43 @@
         el.innerHTML = out;
       } catch (e) { el.textContent = 'Unavailable'; }
     }
+    // Operator checks (cycle-7 G1 + ST4) — GET /api/operator-checks.
+    var OC_COLOR = { ok: 'var(--green,#4caf50)', info: 'var(--text-muted)', warn: 'var(--warm,#d4a574)', fail: 'var(--red,#eb6b6b)', unknown: 'var(--text-muted)' };
+    var OC_ORDER = { fail: 0, warn: 1, unknown: 2, info: 3, ok: 4 };
+    function renderOperatorChecks(r) {
+      var el = document.getElementById('operator-checks-body');
+      if (!el) return;
+      var g = r.github || {};
+      var head = '';
+      if (!g.configured) head = 'GitHub checks are off — set <code>GITHUB_OPS_TOKEN</code> (a read-only fine-grained token: Actions, Metadata, Secrets) and <code>GITHUB_OPS_REPO</code> (owner/repo) on the server.';
+      else if (!g.ok) head = 'GitHub checks failed: ' + esc(g.reason || 'unknown error');
+      else if (g.checked_at) head = 'GitHub checked ' + new Date(g.checked_at).toLocaleString() + '.';
+      var checks = (r.checks || []).slice().sort(function (a, b) { return (OC_ORDER[a.status] || 0) - (OC_ORDER[b.status] || 0); });
+      var out = head ? '<div style="margin:6px 0;">' + head + '</div>' : '';
+      out += '<ul style="margin:6px 0;padding-left:0;list-style:none;">' + checks.map(function (c) {
+        return '<li style="margin:4px 0;"><span style="color:' + (OC_COLOR[c.status] || 'inherit') + ';" aria-label="' + esc(c.status) + '">●</span> '
+          + '<strong>' + esc(c.label) + '</strong> — ' + esc(c.detail)
+          + (c.fix && c.status !== 'ok' ? '<div style="font-size:12px;margin-left:16px;">Fix: ' + esc(c.fix) + '</div>' : '')
+          + '</li>';
+      }).join('') + '</ul>';
+      el.innerHTML = out;
+    }
+    async function loadOperatorChecks(refresh) {
+      var el = document.getElementById('operator-checks-body');
+      try {
+        var res = await apiFetch('/api/operator-checks' + (refresh ? '?refresh=1' : ''));
+        if (!(await writeOk(res, 'Operator checks'))) { if (el) el.textContent = 'Unavailable'; return; }
+        renderOperatorChecks(await res.json());
+      } catch (e) { if (el) el.textContent = 'Unavailable'; }
+    }
+    (function () {
+      var ob = document.getElementById('operator-checks-btn');
+      if (!ob) return;
+      ob.addEventListener('click', async function () {
+        ob.disabled = true; var prev = ob.textContent; ob.textContent = 'Checking…';
+        try { await loadOperatorChecks(true); } finally { ob.disabled = false; ob.textContent = prev; }
+      });
+    })();
     (function () {
       var rb = document.getElementById('reconcile-btn');
       if (!rb) return;
@@ -1560,6 +1604,6 @@
     })();
 
     checkPushStatus();
-    loadSettings(); loadInsights(); loadUsageHistory(); loadCatStatus(); loadCatAccuracy(); loadBiometricCredentials(); loadDataHealth();
+    loadSettings(); loadInsights(); loadUsageHistory(); loadCatStatus(); loadCatAccuracy(); loadBiometricCredentials(); loadDataHealth(); loadOperatorChecks(false);
   </script>
 </body></html>
