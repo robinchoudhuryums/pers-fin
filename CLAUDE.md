@@ -60,7 +60,11 @@ teller/
                            (negate to debit-positive — BS-2), not Math.abs. WF detection
                            requires the first field to look like a date + the second to
                            parse as money so an arbitrary 5-col CSV isn't parsed with WF's
-                           positional columns (BS-3).
+                           positional columns (BS-3). The GENERIC parser takes
+                           opts.positiveMeans ('charges' default / 'deposits' —
+                           negated) and guessGenericSign(rows) reads a file's sign
+                           (inflow keywords, else a negative majority → deposits);
+                           known formats keep their fixed sign (cycle-7 F26).
   services/
     database.js          — Postgres pool + transactional auto-migrations with schema versioning
     teller-api.js        — mTLS HTTP client for Teller API (retry with exponential backoff;
@@ -547,9 +551,9 @@ shell/
   Strategic adds: Investments, Net Worth History (monthly), Income,
   AI Trust, Categorization Rules, Manual Bills (all categories),
   Bill Payments Log, Important Dates (90-day upcoming), Watchlist
-  (user-curated merchant/category/keyword monitor). Plus immutable
-  per-month archive tabs (`YYYY-MM Transactions`) created once per
-  completed month. Intentionally standalone — does not import the
+  (user-curated merchant/category/keyword monitor). Plus per-month
+  archive tabs (`YYYY-MM Transactions`) created once a month is settled
+  and rebuilt when its content fingerprint changes (cycle-7 F85). Intentionally standalone — does not import the
   route/services layer, so `incomePredicate` / `NOT_TRANSFER` /
   `SPLIT_AMOUNT` are duplicated from `services/financial-queries.js` —
   their full structure is byte-pinned (whitespace-normalized) by SX3 in
@@ -575,7 +579,9 @@ shell/
   Each row INSERT runs under `SAVEPOINT csv_row`, so one bad row is skipped
   instead of silently rolling the whole file back; the CLI exits 1 when ANY
   file failed and writes the files it did import to `$CSV_IMPORTED_LIST`
-  (cycle-7 F19).
+  (cycle-7 F19). `--positive-means=charges|deposits` sets a GENERIC file's
+  sign (default charges, the route's default too); the CLI warns when its
+  guess differs but never applies the guess unasked (cycle-7 F26).
 - `scripts/retention-cleanup.sql` — Reference SQL for the manual cleanup queries
   exposed by `POST /api/cleanup`
 - `scripts/reset-fresh.js` — Guarded fresh-start reset (`npm run reset:fresh`).
@@ -614,9 +620,20 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1755 tests as of latest); use
+  Perfin and Per-sistant test files (1773 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1755 tests across 82 test files (incl.
+  Current count: 1773 tests across 84 test files (incl.
+  `tests/scan-oct-batch16.test.js` — the Oct 2026 (cycle 7) Batch 16 pins: guessGenericSign
+  and the generic parser's positiveMeans, the preview's sign_guess / positive_means + the
+  400 on both routes + a known format ignoring it, one parseOpts for preview and commit, the
+  CLI flag and both upload forms (F26); the insight-email skip, the strict-boolean PATCH and
+  the Settings toggle + corrected webhook text (F81); archiveMarker with a fingerprint,
+  ARCHIVE_MONTHS_SQL, and a stateful fake Sheets API rebuilding exactly the changed or
+  legacy month (F85) — with `apps/per-sistant/tests/scan-oct-batch16.test.js` (the notes
+  privacy tier, F134 / ST5: db/028, route validation, chunks dropped on leaving normal,
+  syncNotes / retrieval / Ask / AI tagging limited to normal notes, masked secret text) —
+  the database-backed halves are `tests/contract/batch16-perfin.contract.test.js` and
+  `batch16-persistent.contract.test.js`;
   `tests/scan-oct-batch15.test.js` — the Oct 2026 (cycle 7) Batch 15 pins (F53 / G5 and
   F55 / ST2): the watchdog run fail-soft after detection, its 7-day grace / ±25% / 5%-or-$1
   constants, the detector's merchant key mirrored, one alert per charge / price and no mark
@@ -855,11 +872,17 @@ shell/
   the watchdog; "Apply to all" renames past rows, keeps a hand-renamed row and folds the
   cancelled subscription onto the new name with its notes, a later row is renamed and a
   hand edit wins, a too-short contains rule is a 400, deleting the rule reverts only its
-  rows) and knowledge (syncVault through a
+  rows), batch16-perfin (cycle-7 Batch 16: a generic CSV imported with
+  positive_means=deposits stored with charges positive + its preview's duplicates only
+  under the same choice, an insight run emailing by default and not when switched off,
+  and archive fingerprints on the real schema — a backfilled row and a rename rebuild
+  exactly their months), batch16-persistent (the notes privacy tier: the CHECK, keyword
+  retrieval returning normal notes only, search masking a secret note, chunks +
+  embed_state dropped when a note turns private) and knowledge (syncVault through a
   fake GitHub API via its `fetchImpl`, syncNotes, keyword search never returning
   secret text, secret-lookup, facts current vs `all=1` + verify, /api/rag/query
   without AI, an incremental compare that removes a deleted file) plus insight
-  feedback set / change / clear (the F60 `$1::text` cast). 134 tests, run
+  feedback set / change / clear (the F60 `$1::text` cast). 142 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -1125,6 +1148,15 @@ shell/
   the CLI's default, so the two produce the same dedup IDs (WD-7: the dropdown used to
   default to "Chase" and always send it, filing a Discover file under "Chase Account"
   and duplicating every row a CLI import had added).
+  **Generic-file sign (cycle-7 F26):** a file in no known bank format may write
+  deposits positive. The preview returns `sign_guess` (`guessGenericSign`) and
+  `positive_means` (what it applied); both forms then show a "Positive amounts in
+  this file are charges / deposits" select (generic files only), pre-set to the
+  guess — re-previewing with it — and send `positive_means` with the preview and
+  the import through the shared `parseCsvUpload`. With nothing sent the route
+  reads positives as charges (the old behaviour), so an earlier import keeps its
+  dedup IDs; choosing the opposite sign for an already-imported file makes new IDs,
+  which the preview shows as "new" rows. Known formats ignore it.
 - **Transaction deduplication**: SHA256-based duplicate detection across CSV imports and API syncs.
   CSV dedup IDs fold in a deterministic per-file occurrence index, so two genuinely-distinct rows
   sharing (account, date, amount, merchant) on the same day no longer collide and silently drop the
@@ -1909,6 +1941,8 @@ shell/
   Arc Reactor branding). Its "Open Dashboard" link is the real dashboard URL
   (`perfinDashboardUrl()` in routes/persistent.js: `RENDER_EXTERNAL_URL` + `/perfin` under the
   shell) and is left out when that address isn't known (cycle-7 F72 — it was `href="#"`). Includes audit findings section if critical issues detected.
+  Settings → AI Insights → **Insight Emails** (`user_settings.insight_emails_enabled`,
+  default on) turns it off — `generateInsights` then skips the send (cycle-7 F81).
   Per-sistant receives the webhook and forwards to its email service. If
   `persistent_webhook_secret_enc` is unset, `sendPerSistantWebhook` hard-refuses
   to dispatch (returns `{ sent: false, reason: "missing_secret" }`) — the
@@ -2264,12 +2298,18 @@ shell/
     (`archiveReadyOn`, SXE-3: archiving on the 1st froze the month before
     late-posting charges and pending→posted re-deliveries landed). A finished
     archive carries a completion marker (protection description
-    `Perfin archive complete — YYYY-MM`, `archiveMarker`) and is never touched
-    again; a tab WITHOUT the marker (a run that died mid-write, or a legacy
-    archive written too early) is cleared and rebuilt. At most
-    `MAX_ARCHIVES_PER_RUN` (6) archives per run, so a first sync over years of
-    history doesn't blow the Sheets quota. Immutable audit trail per month for
-    disputes / taxes / historical lookups.
+    `Perfin archive complete — YYYY-MM · <fp>`, `archiveMarker(month, fp)`);
+    `<fp>` is the first 12 hex of an md5 over the month's archived rows (id,
+    amount, date, account, display merchant + category, reimbursed, notes),
+    computed for every month by ONE grouped query per run (`ARCHIVE_MONTHS_SQL`).
+    A tab whose marker doesn't match the live fingerprint — a row backfilled into
+    the month later (a long Plaid history, a reconcile) or an edit to an archived
+    row — is cleared and rebuilt, and so is a tab with no marker (a run that died
+    mid-write) or a legacy marker without a fingerprint (cycle-7 F85: a finished
+    archive used to be final forever). At most `MAX_ARCHIVES_PER_RUN` (6) archives
+    per run, so a first sync over years of history doesn't blow the Sheets quota.
+    A per-month record for disputes / taxes / historical lookups that follows
+    later edits — it is not a frozen copy of what was exported at the time.
 
   **Re-runnable formatting (SXE-2).** Every tab's formatting goes through
   `formatSheet(sheets, sheetId, requests, {resetFormats})`, which DELETES the
@@ -2587,7 +2627,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1755 tests passing across 82 test files (Perfin 1238 + Per-sistant 517), plus the real-Postgres route contract suite (134 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
+- 1773 tests passing across 84 test files (Perfin 1249 + Per-sistant 524), plus the real-Postgres route contract suite (142 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -2868,7 +2908,8 @@ PATCH /api/settings        # update user settings. Accepts: theme,
                            # fire_withdrawal_rate_pct (1-10),
                            # fire_monthly_spending_override (>=0 or null),
                            # ai_monthly_budget_cents (1-10000 cents or null
-                           # to fall back to env), etc.
+                           # to fall back to env), insight_emails_enabled
+                           # (a strict boolean — F81), etc.
 GET  /api/data-freshness   # per-source sync timestamps with staleness flags
 GET  /api/data-health      # operator health surface — per-source freshness,
                            # Teller/Plaid connection status, scheduled-job
@@ -2950,12 +2991,16 @@ POST /api/import-csv/preview # dry-run a CSV import: detect format + classify ea
                            # row new/duplicate/skipped vs existing transaction_ids,
                            # WITHOUT writing. Returns { format_detected, account_label,
                            # rows_total, rows_parseable, rows_skipped, rows_new,
-                           # rows_duplicate, sample[] }. Backs the two-step upload modal.
+                           # rows_duplicate, positive_means, sign_guess, sample[] }.
+                           # Backs the two-step upload modal. body positive_means
+                           # (charges|deposits — generic files only; 400 otherwise;
+                           # null in the response for a known format — F26).
 POST /api/import-csv       # import bank CSV file (with deduplication). Returns
                            # { rows_imported, rows_skipped, rows_duplicate, format_detected }
                            # (rows_skipped = unparseable only, matching the preview).
                            # A name-matched manual account's balance is rolled
-                           # forward by the new post-balance rows (DC-6).
+                           # forward by the new post-balance rows (DC-6). Takes the
+                           # same positive_means as the preview and echoes it (F26).
 GET  /api/csv-imports      # list CSV import history
 GET  /api/export           # download transactions/subscriptions CSV — ISO
                            # YYYY-MM-DD dates, the display merchant (user rename
@@ -3398,6 +3443,10 @@ standalone-mode fallback if either app is run on its own Render service.
   hourly CSV-reminder tick — the reminder is evaluated at most once per 24h
   (stamped whether or not any account was stale). Auto-migrated
   (`ADD COLUMN IF NOT EXISTS`).
+- `user_settings.insight_emails_enabled BOOLEAN NOT NULL DEFAULT true` (cycle-7
+  F81): when false, an insight run doesn't send its `insights_generated` email.
+  Settings → AI Insights toggle; PATCH takes a strict boolean (400 otherwise).
+  Auto-migrated.
 - `user_settings.insights_last_attempt_at TIMESTAMPTZ` (cycle-7 F63): stamped by
   the AI-insights auto-trigger before each attempt; an attempt newer than
   `insights_last_run` blocks a retry for 24 h. Auto-migrated.
@@ -4667,8 +4716,10 @@ accuracy and classification, delete integrity and feeds, categorization rules an
 income cadence, AI trust, Sheets and cross-app, Perfin UI, Per-sistant correctness, Knowledge
 ingest edges, platform hardening / test quality / drift guards — are done; Batch 13 was the
 last scan batch. The deferred decisions became Batches 14–16 (`.cycle/plan-cycle7-deferred.md`
-— Batch 14, refund-aware spending, and Batch 15, the subscription watchdog + merchant
-rename rules, are done); expansion batches E1–E4 remain):
+— Batch 14, refund-aware spending, Batch 15, the subscription watchdog + merchant
+rename rules, and Batch 16, the CSV sign, insight-email toggle, archive fingerprints
+and notes privacy tier, are done — the deferred plan is complete); expansion batches
+E1, E2 and E4 remain):
 - The repo is PUBLIC (operator: make it private and delete old Actions logs —
   they printed balances and net worth before Batch 1).
 - OPERATOR: Database Backup has never produced a backup (its secrets were never
@@ -4702,9 +4753,7 @@ rename rules, are done); expansion batches E1–E4 remain):
   sentence start; Ask's tool results still serialize DATE columns as full JSON
   timestamps; the categorize / suggest / scan usage rows record the configured
   model rather than the served one. Batch 8 follow-ons.
-- Settings → AI Insights still tells a standalone user to configure the webhook
-  "in Per-sistant integration below", a section that doesn't exist (F81); the
-  standalone HTTP webhook path still reports `sent: true` when Per-sistant's
+- The standalone HTTP webhook path still reports `sent: true` when Per-sistant's
   receiver stores a draft; the Sheets Important Dates tab lists a subscription
   by its one stored `next_expected` only; notification retention is a fixed 180
   days (no setting). OPERATOR: `clasp push` the Code.gs guard (F84). Batch 9
@@ -4753,6 +4802,16 @@ rename rules, are done); expansion batches E1–E4 remain):
   have no Sheets tab, and a re-key onto a name that already has a row deactivates
   the old row rather than merging its user state; `PATCH /api/transactions/:id`
   with `apply_to_all` runs both detectors synchronously. Batch 15 follow-ons.
+- Batch 16 follow-ons: a month whose archived rows were ALL deleted keeps its stale
+  archive tab (the fingerprint query no longer lists it), and renaming an account
+  doesn't rebuild its months (the account id is hashed, not its name); the generic
+  CSV sign choice isn't remembered per account; a standalone deployment still has
+  no Settings form for `persistent_url` / the webhook secret (the text now points
+  at `PATCH /api/settings`); Per-sistant's `note_created` webhook still sends a
+  private / secret note's TITLE (never its text), Knowledge's Secret lookup covers
+  vault documents but not secret notes, and an untitled PRIVATE note's reminder
+  shows its first 50 characters in the in-app notification list (only secret notes
+  are masked there).
 
 The bugs Batch 15's real-code tests exposed (calendar 500, Quick Add regexes,
 palette picker under the shell, undefined CSS vars, unvalidated theme /
@@ -4973,7 +5032,7 @@ INV-23 | Service worker never caches /api/* | Subsystem: Web UI
 INV-24 | sheets-sync.syncAll isolates each tab (per-tab try/catch + errors[]) AND every syncAll caller records the outcome via recordSheetsSyncResult (last_sheets_sync_result; one notification per change in the failing-tab set) — errors[] is never ignored | Subsystem: Sheets & External Export | Verify: tests/scan-sept-batch10.test.js (SXE-1 block)
 INV-25 | Embedded sub-apps detect req.app.get("embedded") and skip their own auth; cross-app calls use the wired pool (perfinPool/persistentPool), never HTTP self-fetch | Subsystem: Per-sistant Backend / Platform, Shell & Auth
 INV-26 | Teller transaction pagination terminates on an empty page (count-explicit + from_id), never a hard-coded page-size compare | Subsystem: Bank Sync & Ingestion | Verify: tests/cycle-fixes.test.js (BS-1 block)
-INV-27 | Only sensitivity='normal' docs/facts are embedded AND retrieved; private/secret are never embedded or sent to AI. Frontmatter sensitivity resolution FAILS CLOSED: YAML comments stripped, block lists parsed, yes/no/on/off understood, the most restrictive of sensitivity/embed/private wins, and any unrecognized value → private (KR-2). Hard-deleted notes/documents are never vector-retrieved (the joined source row must exist, KR-6). Trailing whitespace on a `---` delimiter still parses, and a repeated sensitivity / embed / private key keeps every value so the most restrictive wins (cycle-7 F132) | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js (buildRetrievalQuery), tests/knowledge-facts.test.js, apps/per-sistant/tests/scan-sept-fixes.test.js (KR-2/KR-6)
+INV-27 | Only sensitivity='normal' docs/facts are embedded AND retrieved; private/secret are never embedded or sent to AI. Frontmatter sensitivity resolution FAILS CLOSED: YAML comments stripped, block lists parsed, yes/no/on/off understood, the most restrictive of sensitivity/embed/private wins, and any unrecognized value → private (KR-2). Hard-deleted notes/documents are never vector-retrieved (the joined source row must exist, KR-6). Trailing whitespace on a `---` delimiter still parses, and a repeated sensitivity / embed / private key keeps every value so the most restrictive wins (cycle-7 F132). NOTES follow the same rule since cycle-7 F134 / ST5: only notes.sensitivity='normal' notes are embedded, keyword- or vector-retrieved, listed in Ask's context or AI-tagged; a note leaving 'normal' loses its chunks + embed_state, and outside webhooks never get a private / secret note's text | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js (buildRetrievalQuery), tests/knowledge-facts.test.js, apps/per-sistant/tests/scan-sept-fixes.test.js (KR-2/KR-6), apps/per-sistant/tests/scan-oct-batch16.test.js + tests/contract/batch16-persistent.contract.test.js (notes)
 INV-28 | pgvector objects are created defensively — the CREATE EXTENSION is attempted in an EXCEPTION block and vector objects are built only when the extension is INSTALLED (pg_extension), so an available-but-not-creatable extension degrades too (cycle-7 F10); the migration succeeds and Knowledge degrades to keyword retrieval rather than failing boot — and the vault sync still ingests documents + facts without Voyage/pgvector, embedding them later via the backfill (KR-3) | Subsystem: Knowledge / RAG | Verify: code read db/014_vault_vectors.sql + vault-sync.vectorReady
 INV-29 | Retrieval is HYBRID (vector + keyword legs fused via Reciprocal Rank Fusion, each leg ranked per distinct source — the vector leg over-fetched 4× and collapsed to the best chunk per source; keyword terms drop function-word stopwords; keyword hits carry the matching passage, KR-4) — either leg failing degrades to the other alone; /query & /diagram degrade to sources-only / null when AI is off or unavailable | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js, apps/per-sistant/tests/rag-v2.test.js
 INV-30 | Embedding dimension (1024) matches chunks.embedding vector(1024); a provider/dimension change is a re-embed migration, not a config flip | Subsystem: Knowledge / RAG | Verify: code read services/embeddings.js EMBED_DIM
@@ -4995,7 +5054,7 @@ INV-55 | /api/ask charges the shared AI cap even on a mid-tool-loop failure — 
 INV-56 | The dashboard's inlined loanPayoff() is NUMERICALLY identical to services/projections.computeLoanPayoff across scenarios (months / total_interest ±$0.01 / insufficient flag), not merely string-equal | Subsystem: Web UI ↔ Financial Analytics (seam) | Verify: tests/loan-support.test.js (extract-and-run parity test)
 INV-57 | The critical-audit notification is deduped to ≤1 per 24h via sentRecently('audit-alert', 24), fail-open — a steady-state critical finding doesn't re-push on every 6h auto-insight tick | Subsystem: AI Insights & Audit / Notification Correctness | Verify: code read routes/insights.js audit-alert gate
 INV-58 | A kind='quantity' habit always has a non-null target_value, enforced on POST AND on PATCH against the MERGED post-update state (so switching to quantity without a target, or nulling a quantity habit's target, 400s instead of silently degrading meetsTarget) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/health.test.js (F9 PATCH tests)
-INV-59 | Bounded settings (target_allocation_pct, shell_idle_timeout_minutes, fire_*, ai_monthly_budget_cents, and since PSC-15 keep_alive_start/end, keep_alive_timezone (Intl-validated), auto_sync_interval_hours, csv_reminder_days, weekly_digest_day — strict integer parse, null/""/"6abc" rejected; since cycle-7 F86 also theme, dashboard_months, insights_model, insights_cadence_days, insight_modules / dashboard_widgets, pyramid_*, debt_baseline_amount, sheets_auto_sync_interval, session_timeout_minutes) reject invalid input with 400 — never silent-drop + 200 | Subsystem: Settings, Notifications & Cross-app | Verify: tests/budget-cap-webauthn.test.js (PATCH /api/settings validation) + tests/scan-sept-batch9.test.js (PSC-15) + tests/scan-oct-batch9.test.js (F86)
+INV-59 | Bounded settings (target_allocation_pct, shell_idle_timeout_minutes, fire_*, ai_monthly_budget_cents, and since PSC-15 keep_alive_start/end, keep_alive_timezone (Intl-validated), auto_sync_interval_hours, csv_reminder_days, weekly_digest_day — strict integer parse, null/""/"6abc" rejected; since cycle-7 F86 also theme, dashboard_months, insights_model, insights_cadence_days, insight_modules / dashboard_widgets, pyramid_*, debt_baseline_amount, sheets_auto_sync_interval, session_timeout_minutes; since cycle-7 F81 insight_emails_enabled as a strict boolean) reject invalid input with 400 — never silent-drop + 200 | Subsystem: Settings, Notifications & Cross-app | Verify: tests/budget-cap-webauthn.test.js (PATCH /api/settings validation) + tests/scan-sept-batch9.test.js (PSC-15) + tests/scan-oct-batch9.test.js (F86)
 INV-60 | Perfin "Sign Out" clears the SHELL session via the root POST /logout under the unified shell (not a basePath'd /api/logout); redirect target is the root /login — both un-prefixed; standalone Perfin (no BASE_PATH) posts /api/logout instead (WD-16), and Per-sistant's embedded Log Out also posts the root /logout (PB-21) | Subsystem: Web UI ↔ Platform, Shell & Auth (seam) | Verify: code read teller/views/settings.ejs logout() + shell POST /logout (auth.handleLogout)
 INV-61 | apiFetch redirects once to /login (with return_to = the current path, F102) on a 401 or a followed 302→/login (session expiry), loop-guarded, while returning the Response unchanged to callers — idle timeout never leaves a blank/error UI | Subsystem: Web UI | Verify: code read teller/public/perfin-shared.js apiFetch
 INV-62 | The shell sets a nonce CSP + frame-ancestors 'none' + X-Frame-Options on its own routes (login/landing), with COOP/CORP/COEP DISABLED so the global middleware doesn't break sub-app Plaid/Teller Link popups, and Perfin's own helmet sends COOP same-origin-allow-popups, never same-origin (cycle-7 F9); helmet is a declared shell dependency | Subsystem: Platform, Shell & Auth | Verify: header assertion on GET /login (frame-ancestors none, COOP/CORP absent, login scripts nonced) + tests/contract/platform-batch13 (Perfin COOP)
@@ -5019,7 +5078,7 @@ INV-80 | Per-sistant outbound webhooks/Slack are SSRF-checked at send time by re
 INV-81 | scripts/reset-fresh.js classifies EVERY table the Perfin migrations create into exactly one of WIPE_TABLES / KEEP_TABLES / UNTOUCHED_TABLES (schema_migrations is never wiped) | Subsystem: Platform, Shell & Auth | Verify: tests/scan-sept-batch9.test.js (PSC-6 block)
 INV-82 | Sheets formatting is re-runnable: formatSheet deletes a tab's banding + conditional-format rules before re-adding them (Dashboard also resets cell formats), so a second syncAll over the same spreadsheet succeeds | Subsystem: Sheets & External Export | Verify: tests/scan-sept-batch10.test.js (SXE-2 block, stateful fake Sheets API)
 INV-83 | No exported text is ever evaluated as a formula: Sheets writes go through guardSheetsWrites (strings starting = + - @ tab/CR, or date-shaped, are "'"-prefixed; only sheetFormula() values pass through) and every CSV download builds text cells with csvText | Subsystem: Sheets & External Export | Verify: tests/scan-sept-batch10.test.js (SXE-13 block)
-INV-84 | A month archive tab is written only once the month is settled (month-end + 10 days) and is final only with its completion marker; an unmarked archive is rebuilt, never trusted | Subsystem: Sheets & External Export | Verify: tests/scan-sept-batch10.test.js (SXE-3 block)
+INV-84 | A month archive tab is written only once the month is settled (month-end + 10 days) and counts as current only while its completion marker carries the month's LIVE content fingerprint (ARCHIVE_MONTHS_SQL, cycle-7 F85); an unmarked, legacy (fingerprint-less) or stale-fingerprint archive is cleared and rebuilt within MAX_ARCHIVES_PER_RUN, never trusted | Subsystem: Sheets & External Export | Verify: tests/scan-sept-batch10.test.js (SXE-3 block) + tests/scan-oct-batch16.test.js + tests/contract/batch16-perfin.contract.test.js (F85)
 INV-85 | A failed Knowledge sync is visible: vault_last_synced_at means last SUCCESS (vault_last_attempt_at records attempts), /api/rag/status reports reindex.ok, the knowledge-reindex Action polls it and fails on ok:false, and the notification check raises vault_sync_error while vault_last_error is set | Subsystem: Knowledge / RAG | Verify: apps/per-sistant/tests/scan-sept-batch11.test.js (KR-11 block)
 INV-86 | A capture marked private or secret is never sent to the AI for structuring and is committed with that sensitivity; model-supplied fields never write reserved frontmatter keys (type/sensitivity/embed/private/valid_*…) | Subsystem: Knowledge / RAG | Verify: apps/per-sistant/tests/scan-sept-batch11.test.js (KR-10 block)
 INV-87 | Plaid holdings mirror Plaid's response per returned account: every holdings write goes through writePlaidHoldings, which prunes that account's positions no longer returned (other accounts untouched); an unknown cost basis is stored NULL and never counted as a $0 basis in returns (cost_basis_coverage reports the known share) | Subsystem: Bank Sync & Ingestion / Financial Analytics | Verify: tests/scan-sept-batch12.test.js (BSI-4 / BSI-5 blocks)
@@ -5055,6 +5114,7 @@ INV-121 | Drift guards only shrink: the timezone lint (no new UTC today/month an
 INV-122 | Every spending aggregation nets refunds through the shared spend_lines (spendLinesCTE: charges + split lines + REFUND_PREDICATE lines) floored per (month, category) at $0 (NET_CATEGORY_MONTHS) — no route re-derives refunds, the Sheets mirror is SX3-pinned, and cash flow / anomaly / tax stay charge-level (cycle-7 F35) | Subsystem: Financial Analytics | Verify: tests/scan-oct-batch14.test.js + tests/contract/refunds.contract.test.js + tests/contract/budget-parity.contract.test.js
 INV-123 | The subscription watchdog alerts at most once per post-cancel charge (still_charging_txn) and once per new price (price_alerted_amount), only for a charge more than 7 days after cancelled_at at ±25% of the amount or a rise of ≥5% or ≥$1, and marks a row only after its notification was logged | Subsystem: Detection & Categorization / Notification Correctness | Verify: tests/contract/watchdog-rename.contract.test.js + tests/scan-oct-batch15.test.js
 INV-124 | A merchant rename rule matches the RAW merchant (never the user override), fills only a NULL user_merchant_name and tags it with user_merchant_rule_id — a hand rename always wins and clears the tag; deleting a rule reverts exactly its rows; re-keying detection keeps the rows' user state | Subsystem: Detection & Categorization | Verify: tests/contract/watchdog-rename.contract.test.js + tests/scan-oct-batch15.test.js
+INV-125 | A generic CSV's sign is applied identically by preview, import and CLI: positive_means goes through parseCsvUpload's one parseOpts (default 'charges' — the old reading, so earlier imports keep their dedup IDs); an unknown value is a 400; known bank formats ignore it | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-oct-batch16.test.js + tests/contract/batch16-perfin.contract.test.js (F26)
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
 ### Policy Configuration

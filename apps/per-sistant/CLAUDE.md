@@ -33,7 +33,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   at-most-once delivery). The manual `POST /api/emails/:id/send` claims the row
   the same way (`UPDATE … WHERE id = $1 AND status <> 'sent' RETURNING`) so a
   double-click / retry returns 409 instead of re-sending (PB-4).
-- **Tests**: `tests/` (node:test runner, `npm test`, 517 tests (api + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11/batch12/batch13 + model-upgrade))
+- **Tests**: `tests/` (node:test runner, `npm test`, 524 tests (api + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11/batch12/batch13/batch16 + model-upgrade))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of June 2026)
@@ -55,7 +55,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **AI Note Auto-Tagging**: Suggest tags for notes based on content
 - **AI Model Selection**: Per-feature choice of Haiku (fast/cheap), Sonnet (smarter), or Off — configurable in Settings
 - **Email Templates**: Save and reuse common email formats
-- **Notes**: Color-coded, pinnable, with optional reminders, tags, and Markdown support (bold, italic, lists, checkboxes, links, quotes, headings). The client-side `renderMd` link rule scheme-validates hrefs (`http(s):`/`mailto:` only, else neutralized to `#`) and quote-escapes the URL, so a `[x](javascript:…)` note can't render a clickable script URL (PS-4).
+- **Notes**: Color-coded, pinnable, with optional reminders, tags, and Markdown support (bold, italic, lists, checkboxes, links, quotes, headings). **Privacy tier** (cycle-7 F134 / ST5, `notes.sensitivity`, db/028): each note is `normal` (default), `private` or `secret` — a Privacy select in the note dialog. Only normal notes are embedded (`syncNotes`), keyword- or vector-retrieved for Knowledge, listed in Ask's context or sent for AI tagging (`POST /api/ai/suggest-tags` 400s a private / secret note before any model call); a note PATCHed away from normal loses its `chunks` / `embed_state` at once (and `syncNotes` prunes any non-normal note's). A secret note's text is also hidden in the notes list ("open the note to view it"), search (no snippet, matched on its title only) and the calendar / links / notifications / trash labels ("Secret note"); the reminder_due webhook / Slack never get a private or secret note's text ("Private note" when untitled). Existing notes stay normal; no reindex is needed. The client-side `renderMd` link rule scheme-validates hrefs (`http(s):`/`mailto:` only, else neutralized to `#`) and quote-escapes the URL, so a `[x](javascript:…)` note can't render a clickable script URL (PS-4).
 - **Task Dependencies**: Blocking/blocked-by relationships between tasks with circular dependency prevention — a cycle of ANY length is refused (`WITH RECURSIVE` reachability over `task_dependencies`; only a direct A↔B pair used to be caught) and a trashed task neither blocks nor is blocked (both dependency lists filter `t.deleted_at IS NULL`) (PD-12)
 - **Streak Tracking**: Recurring tasks track completion streaks (current + best) with on-time detection — "on time" compares the APP_TIMEZONE date (`todayStr()`) with the due date read via local getters (`ymdLocal`), so a completion on the due date's local evening west of UTC no longer resets the streak (PD-4)
 - **Contacts**: Name→email lookup for quick email addressing (POST/PATCH validate the address — PD-9)
@@ -251,6 +251,8 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `db/025_attachments_data.sql` — `attachments.data BYTEA` (F121: attachment bytes in Postgres)
 - `db/026_note_reminder_fired.sql` — `notes.reminder_fired_at` (F116: the reminder_due claim)
 - `db/027_streak_before_completion.sql` — `todos.streak_before_completion` (F124: Undo restores the streak)
+- `db/028_note_sensitivity.sql` — `notes.sensitivity` normal / private / secret + `chk_notes_sensitivity` (cycle-7 F134 / ST5: the notes privacy tier)
+- `tests/scan-oct-batch16.test.js` — cycle-7 Batch 16 notes privacy pins (7): db/028 + the config list, POST/PATCH validation, chunks dropped on leaving normal, syncNotes embedding / pruning by tier, keyword + vector retrieval and Ask limited to normal notes, suggest-tags refusing private / secret with no model call, and secret text masked in search / labels / the list (+ the webhook fallback). The database-backed half is the root `tests/contract/batch16-persistent.contract.test.js`
 - `db/024_ask_suggestion_models.sql` — `user_settings.ai_model_natural_language_query` (default haiku) + `ai_model_smart_suggestions` (default off); existing rows inherit once from `ai_model_daily_briefing` (Ask → haiku when the briefing was off). Only NULLs are updated, so re-runs change nothing (PD-7)
 - `errors.js` — `serverError(res, err)` shared 500 responder (logs real error, returns generic message; PB-2)
 - `views.js` — pageHead, navBar, themeScript (imports from `views/`)
@@ -282,7 +284,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (509 tests)
+# Run tests (524 tests)
 npm test
 
 # Pages
@@ -323,8 +325,10 @@ DELETE /api/emails/:id      # Delete email
 POST   /api/emails/:id/send # Send email now
 
 GET    /api/notes           # List notes (includes tags, format)
-POST   /api/notes           # Create note (with optional tags array, format: plain/markdown)
-PATCH  /api/notes/:id       # Update note (including format)
+POST   /api/notes           # Create note (with optional tags array, format: plain/markdown,
+                            # sensitivity: normal|private|secret — default normal; 400 otherwise)
+PATCH  /api/notes/:id       # Update note (including format and sensitivity; leaving 'normal'
+                            # drops the note's Knowledge chunks — F134)
 DELETE /api/notes/:id       # Delete note
 
 GET    /api/trash            # List all trashed items
@@ -463,7 +467,8 @@ POST   /api/ai/parse-todo          # Parse natural language into structured todo
 POST   /api/ai/review-summary      # Generate weekly review narrative
 POST   /api/ai/adjust-tone         # Rewrite email in different tone
 GET    /api/ai/daily-briefing      # Generate daily task briefing
-POST   /api/ai/suggest-tags        # Suggest tags for note content
+POST   /api/ai/suggest-tags        # Suggest tags for note content (body sensitivity: a private /
+                                   #   secret note is a 400 — never sent to the model, F134)
 GET    /api/ai/smart-suggestions   # AI productivity coaching suggestions
 POST   /api/ai/query               # Natural language query about your data
 GET    /api/ai/models              # Get per-feature model preferences
@@ -806,6 +811,9 @@ hoisted version.
     local DB substring match returned verbatim to the user, no model call. UI:
     "Secret lookup" box on the Knowledge page. (Stored in your own Neon DB; the
     tier's guarantee is "never sent to a third-party AI," not "never persisted.")
+    Notes have the same tiers since cycle-7 F134 / ST5 (`notes.sensitivity`): only
+    normal notes enter the keyword corpus, the vector join and `syncNotes`; a secret
+    NOTE is not reachable through secret-lookup (documents only — a follow-on).
 
 ## Embedded Mode (under the unified shell)
 When loaded by `shell/index.js` instead of run standalone, the Per-sistant app

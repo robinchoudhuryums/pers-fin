@@ -35,8 +35,17 @@ implement and reflect sessions only set Phase.)
   - **Follow-ons:** an all-deleted archived month keeps its tab; sign choice not remembered per
     account; no standalone Settings form for the webhook; note_created webhook sends a private
     note's title; Secret lookup doesn't cover secret notes.
-  - **Where I left off:** Batch 16 committed and pushed (no PR). NEXT: /sync-docs for Batch 16.
-    The deferred plan (Batches 14–16) is complete; expansion batches E1, E2, E4 remain.
+  - **/sync-docs DONE (Batch 16):** CLAUDE.md — csv-formats / sheets-sync / CLI entries, CSV
+    import (generic sign), insight email toggle, Sheets archive tabs (fingerprint), endpoints
+    (/api/import-csv*, PATCH /api/settings), user_settings.insight_emails_enabled, INV-27
+    (notes), INV-59, INV-84 reworded, new INV-125 (CSV sign), Known Open Issues (Batch 16 done,
+    the stale F81 text bullet removed, Batch 16 follow-ons), counts 1773 / 84 files / Perfin
+    1249 / Per-sistant 524 / contract 142 + test-file descriptions. apps/per-sistant/CLAUDE.md —
+    Notes privacy tier, db/028 + test file, notes / suggest-tags endpoints, secret tier note,
+    test counts. README — counts, coverage and contract lines.
+  - **Where I left off:** Batch 16 + its /sync-docs committed and pushed (no PR). The deferred
+    plan (Batches 14–16) is complete; NEXT: expansion batches E1, E2, E4 (or /reflect to close
+    cycle 7).
 - **Previous status:** **Cycle 7 — Oct 2026 broad scan, Batch 15 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-21). Subscription watchdog (F53 → G5) + merchant rename
   rules (F55 → ST2), from `.cycle/plan-cycle7-deferred.md`.
