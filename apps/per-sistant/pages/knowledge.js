@@ -19,7 +19,7 @@ ${navBar("/knowledge")}
   <div class="section">
     <div style="display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap;">
       <textarea id="k-query" rows="2" placeholder="Ask anything in your knowledge base… e.g. 'what's my car insurance deductible?'" style="flex:1;min-width:240px;min-height:52px;"></textarea>
-      <button id="k-mic-btn" class="btn" title="Voice input" aria-label="Voice input" style="font-size:16px;">&#127908;</button>
+      <button data-e2e-skip id="k-mic-btn" class="btn" title="Voice input" aria-label="Voice input" style="font-size:16px;">&#127908;</button>
     </div>
     <div class="actions" style="margin-top:10px;">
       <button class="btn primary" id="k-ask-btn">Ask</button>

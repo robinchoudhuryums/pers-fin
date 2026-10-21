@@ -39,7 +39,7 @@ ${navBar("/notes")}
     </div>
     <div style="position:relative;">
       <textarea id="n-content" style="min-height:200px" placeholder="Write your note... (supports **bold**, *italic*, - lists, > quotes, [links](url))"></textarea>
-      <button id="note-voice-btn" title="Voice input" style="position:absolute;top:10px;right:10px;padding:6px 10px;font-size:14px;border:1px solid var(--line);border-radius:2px;cursor:pointer;background:var(--paper-card);color:var(--accent);z-index:1;">&#127908;</button>
+      <button data-e2e-skip id="note-voice-btn" title="Voice input" style="position:absolute;top:10px;right:10px;padding:6px 10px;font-size:14px;border:1px solid var(--line);border-radius:2px;cursor:pointer;background:var(--paper-card);color:var(--accent);z-index:1;">&#127908;</button>
     </div>
     <div id="n-md-preview" style="display:none;min-height:100px;max-height:300px;overflow-y:auto;padding:12px 16px;background:var(--paper-card);border:1px solid var(--line);border-radius:var(--radius);font-size:13px;line-height:1.6;margin-bottom:12px;"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">

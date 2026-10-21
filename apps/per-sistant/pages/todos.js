@@ -167,7 +167,7 @@ ${navBar("/todos")}
     <label>What needs to be done?</label>
     <div style="display:flex;gap:8px;">
       <input type="text" id="qt-input" placeholder="Type or speak a task…" style="flex:1">
-      <button class="btn" id="qt-voice-btn" title="Voice input">&#127908;</button>
+      <button class="btn" data-e2e-skip id="qt-voice-btn" title="Voice input">&#127908;</button>
     </div>
     <div id="qt-preview" style="display:none;margin-top:14px;" class="section">
       <h2>Preview</h2>
