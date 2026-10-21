@@ -225,14 +225,14 @@ describe("SXE-3 — month archives", () => {
 
   function archivePool(months) {
     return { query: async (sql) => {
-      if (/SELECT DISTINCT TO_CHAR\(date, 'YYYY-MM'\) AS month/.test(sql)) return { rows: months.map((m) => ({ month: m })) };
+      if (/TO_CHAR\(t\.date, 'YYYY-MM'\) AS month,/.test(sql)) return { rows: months.map((m) => ({ month: m, fp: "fp" + m.replace("-", "") })) };
       return { rows: [{ date: "2020-01-05", merchant: "=cmd", amount: "12.50", transaction_id: "t1" }] };
     } };
   }
 
   it("skips a COMPLETED archive, rebuilds one without the marker, and writes the marker last", async () => {
     const api = fakeSheets({ sheets: [
-      { properties: { title: "2020-01 Transactions", sheetId: 1 }, protectedRanges: [{ description: I.archiveMarker("2020-01") }] },
+      { properties: { title: "2020-01 Transactions", sheetId: 1 }, protectedRanges: [{ description: I.archiveMarker("2020-01", "fp202001") }] },
       { properties: { title: "2020-02 Transactions", sheetId: 2 }, protectedRanges: [{ description: "Perfin sync — edits overwritten on next sync" }] },
     ] });
     const n = await I.syncMonthArchives(api, archivePool(["2020-01", "2020-02", "2020-03"]));
@@ -241,7 +241,7 @@ describe("SXE-3 — month archives", () => {
     const written = api.calls.update.map((u) => u.range);
     assert.deepEqual(written, ["2020-02 Transactions!A1", "2020-03 Transactions!A1"]);
     const sheet2 = api.calls.batchUpdate.flatMap((b) => b.requestBody.requests).filter((r) => r.addProtectedRange);
-    assert.deepEqual(sheet2.map((r) => r.addProtectedRange.protectedRange.description), [I.archiveMarker("2020-02"), I.archiveMarker("2020-03")]);
+    assert.deepEqual(sheet2.map((r) => r.addProtectedRange.protectedRange.description), [I.archiveMarker("2020-02", "fp202002"), I.archiveMarker("2020-03", "fp202003")]);
     const del = api.calls.batchUpdate.flatMap((b) => b.requestBody.requests).filter((r) => r.deleteProtectedRange);
     assert.equal(del.length, 1, "the legacy generic protection is replaced by the marker");
   });

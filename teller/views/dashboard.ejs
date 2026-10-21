@@ -784,6 +784,10 @@
         <input aria-label="Institution name" id="dash-csv-custom" placeholder="Institution name" style="display:none;padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
         <input aria-label="Account label (optional)" id="dash-csv-label" placeholder="Account label (e.g. Chase Checking)" style="padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
         <input aria-label="CSV file" id="dash-csv-file" type="file" accept=".csv,text/csv,.CSV" style="padding:8px;font-size:13px;color:var(--text-muted);">
+        <select aria-label="Positive amounts in this file are" id="dash-csv-sign" hidden style="padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface-solid);color:var(--text);font-family:inherit;min-height:44px;">
+          <option value="charges">Positive amounts are charges (money out)</option>
+          <option value="deposits">Positive amounts are deposits (money in)</option>
+        </select>
         <div id="dash-csv-preview" style="display:none;font-size:12px;border:1px solid var(--border);border-radius:8px;padding:10px 12px;max-height:240px;overflow:auto;"></div>
         <div id="dash-csv-status" style="font-size:12px;min-height:18px;"></div>
         <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:4px;">
@@ -1583,6 +1587,10 @@
       var csvFile = document.getElementById('dash-csv-file');
       var csvStatus = document.getElementById('dash-csv-status');
       var csvPreview = document.getElementById('dash-csv-preview');
+      // F26: the sign choice for a GENERIC file — hidden for known formats,
+      // pre-set to the server's guess on the first preview, sent with both calls.
+      var csvSign = document.getElementById('dash-csv-sign');
+      var csvSignChosen = false;
       // Two-step flow: 'preview' → dry-run classify, 'confirm' → real import.
       var csvStage = 'preview';
       function closeCsvModal() { if (csvModal) csvModal.style.display = 'none'; }
@@ -1597,12 +1605,21 @@
         if (csvCustom) { csvCustom.value = ''; csvCustom.style.display = 'none'; }
         if (csvInstitution) csvInstitution.value = '';
         if (csvStatus) { csvStatus.textContent = ''; csvStatus.style.color = ''; }
+        csvSignChosen = false;
+        if (csvSign) csvSign.hidden = true;
         clearPreview();
       }
       // Any change to the inputs invalidates a shown preview (the dedup counts
       // were computed for the prior file/label) — drop back to the preview step.
       [csvFile, csvLabel, csvCustom, csvInstitution].forEach(function (el) {
         if (el) el.addEventListener('change', clearPreview);
+      });
+      if (csvFile) csvFile.addEventListener('change', function () {
+        csvSignChosen = false;
+        if (csvSign) csvSign.hidden = true;
+      });
+      if (csvSign) csvSign.addEventListener('change', function () {
+        csvSignChosen = true; clearPreview(); doPreview();
       });
       function csvEsc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
       // WD-7: "Auto-detect" (the default) sends no institution / label, so
@@ -1619,6 +1636,7 @@
         fd.append('file', csvFile.files[0]);
         if (institution) fd.append('institution', institution);
         if (label) fd.append('account_label', label);
+        if (csvSignChosen && csvSign) fd.append('positive_means', csvSign.value);
         return fd;
       }
       function renderPreview(d) {
@@ -1671,6 +1689,13 @@
           var res = await apiFetch('/api/import-csv/preview', { method: 'POST', body: csvFormData() });
           var data = await res.json().catch(function() { return {}; });
           if (res.ok) {
+            if (csvSign) csvSign.hidden = data.format_detected !== 'generic';
+            if (csvSign && data.format_detected === 'generic' && !csvSignChosen) {
+              csvSignChosen = true;
+              csvSign.value = data.sign_guess || 'charges';
+              // The first preview read positives as charges; re-run it with the guess.
+              if (csvSign.value !== data.positive_means) return await doPreview();
+            }
             csvStatus.textContent = '';
             renderPreview(data);
             csvStage = 'confirm';

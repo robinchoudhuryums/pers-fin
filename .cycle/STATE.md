@@ -18,7 +18,26 @@ Updated: 2026-10-21
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 15 DONE** on branch
+- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 16 DONE** on branch
+  `claude/sweet-ritchie-f9d8ah` (2026-10-21). Imports, exports and privacy (F26, F81, F85,
+  F134 → ST5), the last batch of `.cycle/plan-cycle7-deferred.md`. Block:
+  `.cycle/blocks/7-batch16-broad-implement.md`.
+  - **Completed:** F26 generic-CSV sign (guessGenericSign, positive_means on preview + import via
+    parseCsvUpload, the select on both upload forms, CLI --positive-means); F81 insight_emails_enabled
+    (default true, strict-boolean PATCH, Settings toggle, generateInsights skips the email when false)
+    + the standalone text / log lines now name PATCH /api/settings; F85 month-archive fingerprint
+    (ARCHIVE_MONTHS_SQL, marker "… — YYYY-MM · <12 hex>", a mismatch or legacy marker rebuilds the
+    tab within the per-run cap); ST5 notes.sensitivity (db/028) — only normal notes embedded /
+    retrieved / in Ask / AI-tagged, chunks dropped when a note leaves normal, secret text masked in
+    lists, search, labels, and webhook titles.
+  - **Verification:** npm 1773/1773 (Perfin 1249 + Per-sistant 524, 84 files); contract 142/142;
+    migrations twice; Playwright 35/35; two mutation checks red. Net score −1 (1 fix − 2 new modes).
+  - **Follow-ons:** an all-deleted archived month keeps its tab; sign choice not remembered per
+    account; no standalone Settings form for the webhook; note_created webhook sends a private
+    note's title; Secret lookup doesn't cover secret notes.
+  - **Where I left off:** Batch 16 committed and pushed (no PR). NEXT: /sync-docs for Batch 16.
+    The deferred plan (Batches 14–16) is complete; expansion batches E1, E2, E4 remain.
+- **Previous status:** **Cycle 7 — Oct 2026 broad scan, Batch 15 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-21). Subscription watchdog (F53 → G5) + merchant rename
   rules (F55 → ST2), from `.cycle/plan-cycle7-deferred.md`.
   - **Completed:** runSubscriptionWatchdog after every detection (still charging > 7 days after

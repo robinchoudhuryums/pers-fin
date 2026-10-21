@@ -810,6 +810,10 @@ async function runMigrationsOnce() {
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS ai_monthly_budget_cents INT");
     // Critical-alert emails (budget exceeded / anomaly charges) — opt-in.
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS critical_alert_emails_enabled BOOLEAN NOT NULL DEFAULT false");
+    // Insight emails (cycle-7 F81): every insight run emails the report
+    // (insights_generated). On by default — the old behaviour — and switchable
+    // off in Settings → AI Insights.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS insight_emails_enabled BOOLEAN NOT NULL DEFAULT true");
     // FIRE / runway projection assumptions (Goals page card). NULLs fall back
     // to defaults in GET /api/fire-projection (return 5%, withdrawal 4%,
     // spending derived from trailing months).

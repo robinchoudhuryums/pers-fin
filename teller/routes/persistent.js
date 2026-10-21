@@ -184,7 +184,7 @@ async function sendPerSistantWebhook(event, data) {
     console.error(
       `sendPerSistantWebhook[${event}]: webhook secret decryption failed — ` +
       "TOKEN_ENCRYPTION_PASSPHRASE no longer matches the stored ciphertext. " +
-      "Re-save the Per-sistant webhook secret under Settings → Per-sistant integration."
+      "Re-save it with PATCH /api/settings { persistent_webhook_secret } (there is no Settings section for it)."
     );
     return { sent: false, reason: "decryption_failed" };
   }
@@ -197,8 +197,8 @@ async function sendPerSistantWebhook(event, data) {
   if (!config.secret) {
     console.error(
       `sendPerSistantWebhook[${event}]: refusing to send unsigned — ` +
-      "persistent_webhook_secret not configured. Set it via Settings → " +
-      "Per-sistant integration so the receiver can verify the HMAC."
+      "persistent_webhook_secret not configured. Set it with PATCH /api/settings " +
+      "{ persistent_webhook_secret } so the receiver can verify the HMAC."
     );
     return { sent: false, reason: "missing_secret" };
   }

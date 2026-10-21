@@ -19,14 +19,14 @@ module.exports = function ({ pool }) {
           CASE el.target_type
             WHEN 'todo' THEN (SELECT title FROM todos WHERE id = el.target_id)
             WHEN 'email' THEN (SELECT subject FROM emails WHERE id = el.target_id)
-            WHEN 'note' THEN (SELECT COALESCE(title, LEFT(content,50)) FROM notes WHERE id = el.target_id)
+            WHEN 'note' THEN (SELECT COALESCE(title, CASE WHEN sensitivity = 'secret' THEN 'Secret note' ELSE LEFT(content, 50) END) FROM notes WHERE id = el.target_id)
           END as target_title
           FROM entity_links el WHERE el.source_type = $1 AND el.source_id = $2`, [type, id]),
         pool.query(`SELECT el.*,
           CASE el.source_type
             WHEN 'todo' THEN (SELECT title FROM todos WHERE id = el.source_id)
             WHEN 'email' THEN (SELECT subject FROM emails WHERE id = el.source_id)
-            WHEN 'note' THEN (SELECT COALESCE(title, LEFT(content,50)) FROM notes WHERE id = el.source_id)
+            WHEN 'note' THEN (SELECT COALESCE(title, CASE WHEN sensitivity = 'secret' THEN 'Secret note' ELSE LEFT(content, 50) END) FROM notes WHERE id = el.source_id)
           END as source_title
           FROM entity_links el WHERE el.target_type = $1 AND el.target_id = $2`, [type, id]),
       ]);

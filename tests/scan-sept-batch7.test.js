@@ -323,7 +323,7 @@ describe("generateInsights — prompt + memory + tax persistence", () => {
       if (/total_spend/.test(sql)) return { rows: [
         { month: ppm, total_spend: "3000", txn_count: 50 }, { month: pm, total_spend: "3300", txn_count: 55 }, { month: cm, total_spend: "400", txn_count: 6 }] };
       if (/total_income/.test(sql)) return { rows: [{ month: pm, total_income: "5000" }, { month: cm, total_income: "5000" }] };
-      if (sql.includes("insight_modules FROM user_settings")) return { rows: [{ insights_model: "haiku", insight_modules: modules, insights_running_summary_json: prior, insights_running_summary: "x" }] };
+      if (/insight_modules(, insight_emails_enabled)? FROM user_settings/.test(sql)) return { rows: [{ insights_model: "haiku", insight_modules: modules, insights_running_summary_json: prior, insights_running_summary: "x" }] };
       if (sql.includes("INSERT INTO financial_insights")) { st.inserts.push({ sql, params }); return { rows: [{ id: 77 }] }; }
       if (/UPDATE user_settings SET insights_running_summary/.test(sql)) { st.updates.push({ sql, params }); return { rows: [] }; }
       if (/DELETE FROM tax_deductions/.test(sql)) { st.deletes.push({ sql, params }); return { rows: [] }; }

@@ -74,7 +74,7 @@ module.exports = function ({ pool }) {
         pool.query("SELECT id, title, streak_count, due_date FROM todos WHERE deleted_at IS NULL AND completed = false AND recurring = true AND streak_count >= 3 AND due_date = $1", [today]),
         // F115: the reminder's LOCAL (APP_TIMEZONE) day — DATE(reminder_at) is
         // the UTC day, so an evening reminder west of UTC showed a day late.
-        pool.query("SELECT id, COALESCE(title, LEFT(content,50)) as title, reminder_at FROM notes WHERE deleted_at IS NULL AND reminder_at IS NOT NULL AND (reminder_at AT TIME ZONE $2)::date = $1", [today, APP_TIMEZONE]),
+        pool.query("SELECT id, COALESCE(title, CASE WHEN sensitivity = 'secret' THEN 'Secret note' ELSE LEFT(content, 50) END) as title, reminder_at FROM notes WHERE deleted_at IS NULL AND reminder_at IS NOT NULL AND (reminder_at AT TIME ZONE $2)::date = $1", [today, APP_TIMEZONE]),
         upcomingFacts(pool, FACT_LOOKAHEAD_DAYS),
         // Fail-soft: a health-tables error degrades to "no habit alerts"
         // rather than 500ing the whole notification check.

@@ -335,7 +335,9 @@ describe("SXE-12 — Sheets windows / timestamps anchored on APP_TIMEZONE", () =
     assert.match(src, /WINDOW_THIS_MONTH = `t\.date >= \$\{sqlDate\(sheetsMonth\(0\) \+ "-01"\)\} AND t\.date < \$\{sqlDate\(sheetsMonth\(1\) \+ "-01"\)\}`/);
   });
   it("the monthly archive's 'current month' and the tax year come from the tz date", () => {
-    assert.match(src, /< \$\{sqlMonth\(sheetsMonth\(0\)\)\}/);
+    // F85: the month list moved into ARCHIVE_MONTHS_SQL, still bounded by the tz current month.
+    assert.match(src, /pool\.query\(ARCHIVE_MONTHS_SQL\(sqlMonth\(sheetsMonth\(0\)\)\)\)/);
+    assert.match(src, /AND TO_CHAR\(t\.date, 'YYYY-MM'\) < \$\{currentMonth\}/);
     assert.ok(!/new Date\(\)\.getFullYear\(\)/.test(src), "tax year no longer read from the server's Date");
   });
   it("Budget Status compares against the effective limit (SXE-4)", () => {

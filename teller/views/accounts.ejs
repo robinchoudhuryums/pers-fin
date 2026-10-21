@@ -109,6 +109,14 @@
         <input type="file" id="csv-file" accept=".csv">
       </div>
 
+      <div class="field" id="csv-sign-field" hidden>
+        <label for="csv-sign">Positive amounts in this file are</label>
+        <select id="csv-sign">
+          <option value="charges">Charges (money out)</option>
+          <option value="deposits">Deposits (money in)</option>
+        </select>
+      </div>
+
       <div id="csv-preview" style="display:none;font-size:12px;border:1px solid var(--border);border-radius:8px;padding:10px 12px;max-height:260px;overflow:auto;"></div>
       <button id="csv-upload-btn">Preview</button>
     </div>
@@ -327,6 +335,12 @@
     // to commit straight away with "Chase" as the default institution.
     let csvStage = 'preview';
     const csvPreviewEl = document.getElementById('csv-preview');
+    // F26: a generic CSV's sign is unknown. The preview guesses it; the select
+    // (shown only for the generic format) is pre-set to the guess and sent with
+    // the preview and the import, so both read the file the same way.
+    const csvSignField = document.getElementById('csv-sign-field');
+    const csvSign = document.getElementById('csv-sign');
+    let csvSignChosen = false;
     function resetCsvPreview() {
       csvStage = 'preview';
       csvPreviewEl.style.display = 'none'; csvPreviewEl.innerHTML = '';
@@ -336,6 +350,12 @@
     ['csv-file', 'csv-account-label', 'csv-custom-institution', 'csv-institution'].forEach(function (id) {
       const el = document.getElementById(id);
       if (el) el.addEventListener('change', resetCsvPreview);
+    });
+    document.getElementById('csv-file').addEventListener('change', function () {
+      csvSignChosen = false; csvSignField.hidden = true;
+    });
+    csvSign.addEventListener('change', function () {
+      csvSignChosen = true; resetCsvPreview(); uploadCsv();
     });
     function csvFormData(file) {
       const institution = csvInstitution.value === 'Other'
@@ -347,6 +367,7 @@
       formData.append('file', file);
       if (institution) formData.append('institution', institution);
       if (accountLabel) formData.append('account_label', accountLabel);
+      if (csvSignChosen) formData.append('positive_means', csvSign.value);
       return formData;
     }
     async function uploadCsv() {
@@ -361,6 +382,13 @@
           const d = await resp.json().catch(() => ({}));
           btnLoading(btn, false, 'Preview');
           if (!resp.ok) { showCsvStatus('Preview failed: ' + (d.error || 'HTTP ' + resp.status), false); return; }
+          csvSignField.hidden = d.format_detected !== 'generic';
+          if (d.format_detected === 'generic' && !csvSignChosen) {
+            csvSignChosen = true;
+            csvSign.value = d.sign_guess || 'charges';
+            // The first preview read positives as charges; re-run it with the guess.
+            if (csvSign.value !== d.positive_means) return await uploadCsv();
+          }
           csvPreviewEl.innerHTML =
             '<div style="margin-bottom:6px;"><strong>' + esc(d.format_detected) + '</strong> &middot; ' + esc(d.account_label) + '</div>' +
             '<div><span style="color:var(--green);">' + d.rows_new + ' new</span> &middot; ' +

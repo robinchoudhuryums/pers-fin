@@ -217,8 +217,10 @@ module.exports = function ({ pool }) {
     try {
       const model = await getAIModelForFeature("note_tagging");
       if (model === "off") return res.status(400).json({ error: "AI note tagging is disabled." });
-      const { title, content } = req.body;
+      const { title, content, sensitivity } = req.body;
       if (!content) return res.status(400).json({ error: "Content is required." });
+      // A private / secret note is never sent to the AI (F134).
+      if (sensitivity && sensitivity !== "normal") return res.status(400).json({ error: "AI tagging is off for private and secret notes." });
       const text = await callAI(model,
         `${title ? `Title: "${title}"\n` : ""}Content: "${content.substring(0, 500)}"`,
         128,
@@ -281,7 +283,8 @@ module.exports = function ({ pool }) {
       const [todos, emails, notes, totals] = await Promise.all([
         pool.query("SELECT id, title, priority, horizon, category, due_date, completed, completed_at, recurring, recurrence_rule, streak_count, created_at FROM todos WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 50"),
         pool.query("SELECT id, subject, recipient_name, recipient_email, status, scheduled_at, sent_at, created_at FROM emails WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 20"),
-        pool.query("SELECT id, title, content, tags, pinned, created_at, updated_at FROM notes WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 20"),
+        // Only 'normal' notes reach the model (cycle-7 F134 / ST5).
+        pool.query("SELECT id, title, content, tags, pinned, created_at, updated_at FROM notes WHERE deleted_at IS NULL AND sensitivity = 'normal' ORDER BY updated_at DESC LIMIT 20"),
         // F118: real totals over ALL rows — the lists below are only the most
         // recent 50 / 20 / 20, so "how many tasks are overdue?" used to be
         // counted from a sample with no warning.

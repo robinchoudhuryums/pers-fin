@@ -9,6 +9,9 @@
 //   node scripts/import-csv-cli.js                     # process csv-uploads/
 //   node scripts/import-csv-cli.js path/to/dir         # process custom dir
 //   node scripts/import-csv-cli.js path/to/file.csv    # process single file
+//   node scripts/import-csv-cli.js file.csv --positive-means=deposits
+//       # a GENERIC file whose positive amounts are deposits (cycle-7 F26;
+//       # default 'charges'). Known bank formats ignore it — their sign is fixed.
 //
 // Bank is auto-detected from the CSV content (headers / row shape — the
 // filename is not used): Chase card, Chase checking, Capital One, Discover,
@@ -28,7 +31,7 @@ const { parse } = require("csv-parse/sync");
 // CSV_FORMATS is the single source of truth in teller/data/csv-formats.js;
 // this CLI used to redefine it inline (and drift). We now import it so any
 // future bank-format change propagates to both the API route and the CLI.
-const { CSV_FORMATS, INSTITUTION_LABELS, detectCsvFormat, parseDate, makeCsvTxnIdGenerator } = require("../teller/data/csv-formats");
+const { CSV_FORMATS, INSTITUTION_LABELS, detectCsvFormat, guessGenericSign, POSITIVE_MEANS, parseDate, makeCsvTxnIdGenerator } = require("../teller/data/csv-formats");
 
 const ENCRYPTION_PASSPHRASE = process.env.TOKEN_ENCRYPTION_PASSPHRASE;
 const pool = new Pool({
@@ -48,7 +51,7 @@ const pool = new Pool({
 // ---------------------------------------------------------------------------
 // Import a single CSV file
 // ---------------------------------------------------------------------------
-async function importCsvFile(filePath) {
+async function importCsvFile(filePath, opts = {}) {
   const filename = path.basename(filePath);
   const content = fs.readFileSync(filePath, "utf-8");
 
@@ -93,6 +96,16 @@ async function importCsvFile(filePath) {
   const institution = INSTITUTION_LABELS[format] || "CSV Import";
   const accountLabel = `${institution} Account`;
 
+  // Generic files only: what a positive amount means (F26) — same default and
+  // parser option as /api/import-csv, so the two produce the same dedup IDs.
+  const parseOpts = { positiveMeans: format === "generic" ? (opts.positiveMeans || "charges") : null };
+  if (format === "generic") {
+    const guess = guessGenericSign(records);
+    if (guess !== parseOpts.positiveMeans) {
+      console.warn(`  ! ${filename}: positive amounts look like ${guess}, importing them as ${parseOpts.positiveMeans} — pass --positive-means=${guess} if that's wrong`);
+    }
+  }
+
   const institutionSlug = institution.toLowerCase().replace(/[^a-z0-9]+/g, "_");
   const accountSlug = accountLabel.toLowerCase().replace(/[^a-z0-9]+/g, "_");
   const virtualItemId = `csv_${institutionSlug}`;
@@ -133,7 +146,7 @@ async function importCsvFile(filePath) {
       try {
         // The teller/data/csv-formats.js parsers all share the (row, headers)
         // signature; for headerless formats, headers === fmt.columns.
-        parsed = fmt.parse(row, fmt.headerless ? fmt.columns : Object.keys(row));
+        parsed = fmt.parse(row, fmt.headerless ? fmt.columns : Object.keys(row), parseOpts);
       } catch {
         skipped++;
         continue;
@@ -200,7 +213,14 @@ async function importCsvFile(filePath) {
 // Main
 // ---------------------------------------------------------------------------
 async function main() {
-  const target = process.argv[2] || path.resolve(__dirname, "../csv-uploads");
+  const args = process.argv.slice(2);
+  const pmArg = args.find(a => a.startsWith("--positive-means="));
+  const positiveMeans = pmArg ? pmArg.slice("--positive-means=".length) : null;
+  if (positiveMeans && !POSITIVE_MEANS.includes(positiveMeans)) {
+    console.error(`--positive-means must be one of: ${POSITIVE_MEANS.join(", ")}`);
+    process.exit(1);
+  }
+  const target = args.find(a => !a.startsWith("--")) || path.resolve(__dirname, "../csv-uploads");
   const stat = fs.statSync(target, { throwIfNoEntry: false });
 
   if (!stat) {
@@ -222,7 +242,7 @@ async function main() {
   const results = [];
   const imported = [];
   for (const file of files) {
-    const result = await importCsvFile(file);
+    const result = await importCsvFile(file, { positiveMeans });
     if (result) { results.push(result); imported.push(file); }
   }
 

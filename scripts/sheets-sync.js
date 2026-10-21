@@ -3300,6 +3300,17 @@ async function syncImportantDates(sheets, pool) {
 //  SXE-14: at most MAX_ARCHIVES_PER_RUN tabs are (re)built per run so the first
 //      backfill after a long Plaid link doesn't blow the 60 writes/min quota;
 //      the rest follow on later runs.
+//  Cycle-7 F85: the marker carries a FINGERPRINT of the month's archived
+//      content ("… — YYYY-MM · <12 hex>"). A finished archive used to be final
+//      forever, so a row backfilled into the month later (a new Plaid link with
+//      two years of history, a reconcile, a CSV import) or an edit to an
+//      archived row (rename, category, reimbursed, notes) never reached it. Each
+//      run computes every month's live fingerprint in ONE grouped query
+//      (ARCHIVE_MONTHS_SQL); a tab whose marker doesn't match — including a
+//      legacy marker with no fingerprint — is cleared and rebuilt, within the
+//      same per-run cap. `transactions` has no updated_at, so a content hash is
+//      what catches both new rows and edits. Splits aren't shown in the archive,
+//      so they aren't part of the fingerprint.
 const ARCHIVE_DELAY_DAYS = 10;
 const MAX_ARCHIVES_PER_RUN = 6;
 function archiveReadyOn(month) {
@@ -3308,7 +3319,25 @@ function archiveReadyOn(month) {
   lastDay.setUTCDate(lastDay.getUTCDate() + ARCHIVE_DELAY_DAYS);
   return lastDay.toISOString().slice(0, 10);
 }
-function archiveMarker(month) { return `${ARCHIVE_COMPLETE_PREFIX} — ${month}`; }
+function archiveMarker(month, fp) { return `${ARCHIVE_COMPLETE_PREFIX} — ${month}${fp ? ` · ${fp}` : ""}`; }
+
+// Every archivable month with the fingerprint of the rows its archive shows
+// (the archive query's rows: settled, joined to an account). One query per run.
+const ARCHIVE_MONTHS_SQL = (currentMonth) => `
+    SELECT TO_CHAR(t.date, 'YYYY-MM') AS month,
+           LEFT(md5(string_agg(
+             t.transaction_id || '|' || t.amount::text || '|' || t.date::text || '|' || t.account_id || '|' ||
+             COALESCE(t.user_merchant_name, t.merchant_name, t.name, '') || '|' ||
+             COALESCE(t.user_category, t.category[1], '') || '|' ||
+             COALESCE(t.is_reimbursed, false)::text || '|' || COALESCE(t.user_notes, ''),
+             ',' ORDER BY t.transaction_id)), 12) AS fp
+    FROM transactions t
+    JOIN linked_accounts la ON la.account_id = t.account_id
+    WHERE t.pending = false
+      AND TO_CHAR(t.date, 'YYYY-MM') < ${currentMonth}  -- tz current month (SXE-12)
+    GROUP BY 1
+    ORDER BY month ASC
+  `;
 
 async function syncMonthArchives(sheets, pool) {
   console.log("Checking month archives...");
@@ -3316,13 +3345,7 @@ async function syncMonthArchives(sheets, pool) {
   // List months with transactions, excluding the current month (still
   // in flight). Older-first so newer archives appear leftmost in the
   // sheet tab bar.
-  const { rows: months } = await pool.query(`
-    SELECT DISTINCT TO_CHAR(date, 'YYYY-MM') AS month
-    FROM transactions
-    WHERE pending = false
-      AND TO_CHAR(date, 'YYYY-MM') < ${sqlMonth(sheetsMonth(0))}  -- tz current month (SXE-12)
-    ORDER BY month ASC
-  `);
+  const { rows: months } = await pool.query(ARCHIVE_MONTHS_SQL(sqlMonth(sheetsMonth(0))));
 
   const today = sheetsTodayStr();
   const ready = months.filter(({ month }) => archiveReadyOn(month) <= today);
@@ -3339,10 +3362,10 @@ async function syncMonthArchives(sheets, pool) {
   const tabs = new Map(meta.data.sheets.map(sh => [sh.properties.title, sh.protectedRanges || []]));
 
   let archivesCreated = 0;
-  for (const { month } of ready) {
+  for (const { month, fp } of ready) {
     const title = `${month} Transactions`;
     const existing = tabs.get(title);
-    const complete = existing && existing.some(pr => pr.description === archiveMarker(month));
+    const complete = existing && existing.some(pr => pr.description === archiveMarker(month, fp));
     if (complete) continue;
     if (archivesCreated >= MAX_ARCHIVES_PER_RUN) {
       console.log(`  archive cap (${MAX_ARCHIVES_PER_RUN}/run) reached — remaining months follow next sync.`);
@@ -3441,7 +3464,7 @@ async function syncMonthArchives(sheets, pool) {
       // Archive tabs are immutable — protect them with the per-month
       // COMPLETION marker (SXE-3), written last: its presence is what marks
       // the archive done on later runs.
-      await applyProtection(sheets, sheetId, archiveMarker(month));
+      await applyProtection(sheets, sheetId, archiveMarker(month, fp));
     }
 
     console.log(`  ${existing ? "rebuilt" : "created"} archive '${title}' with ${rows.length} transactions.`);
@@ -3775,4 +3798,4 @@ if (require.main === module) {
 
 module.exports = { syncAll, syncDashboardOnly, syncTransactionsOnly };
 // Test seams (SXE-2/SXE-14).
-module.exports._internals = { buildDashboard, completedMonthAverages, syncUtilities, syncImportantDates, syncCreditScores, singleFlight, PLAIN_NUMBER_RE, syncWatchlist, guardCell, guardValues, guardSheetsWrites, sheetFormula, archiveReadyOn, archiveMarker, syncMonthArchives, MAX_ARCHIVES_PER_RUN, formatSheet, ensureSheet, getSheetId, sheetsShouldRetry, sheetsRetryDelayMs, SHEETS_RETRY_CONFIG };
+module.exports._internals = { buildDashboard, completedMonthAverages, syncUtilities, syncImportantDates, syncCreditScores, singleFlight, PLAIN_NUMBER_RE, syncWatchlist, guardCell, guardValues, guardSheetsWrites, sheetFormula, archiveReadyOn, archiveMarker, ARCHIVE_MONTHS_SQL, syncMonthArchives, MAX_ARCHIVES_PER_RUN, formatSheet, ensureSheet, getSheetId, sheetsShouldRetry, sheetsRetryDelayMs, SHEETS_RETRY_CONFIG };

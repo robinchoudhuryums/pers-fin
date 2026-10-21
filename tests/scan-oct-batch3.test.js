@@ -277,7 +277,7 @@ describe("F63 / F73 — generateInsights charges an unsaved insight and fails on
     const st = { inserts: [], summaryUpdates: 0 };
     dbModule.pool.query = async (sql, params) => {
       if (sql.includes("ai_monthly_budget_cents")) return { rows: [{ ai_monthly_budget_cents: 5000 }] };
-      if (sql.includes("insight_modules FROM user_settings")) {
+      if (/insight_modules(, insight_emails_enabled)? FROM user_settings/.test(sql)) {
         if (settingsThrows) throw new Error("connection terminated unexpectedly");
         return { rows: [{ insights_model: "haiku", insight_modules: {}, insights_running_summary_json: null, insights_running_summary: null }] };
       }

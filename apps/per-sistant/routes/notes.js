@@ -5,6 +5,19 @@ const { serverError } = require("../errors");
 module.exports = function ({ pool, config, helpers }) {
   const router = express.Router();
   const { VALID_NOTE_COLORS, MAX_PAGINATION_LIMIT, MAX_CONTENT_LENGTH } = config;
+  const SENSITIVITIES = config.VALID_NOTE_SENSITIVITIES || ["normal", "private", "secret"];
+  const badSensitivity = (s) => s !== undefined && !SENSITIVITIES.includes(s);
+
+  // A note leaving the 'normal' tier loses its Knowledge chunks at once (F134) —
+  // retrieval already filters on sensitivity, and syncNotes would prune them
+  // on its next run; this just doesn't wait. The chunks table exists only with
+  // pgvector (42P01 otherwise — nothing to remove).
+  async function dropNoteChunks(id) {
+    await pool.query("DELETE FROM embed_state WHERE source_kind = 'note' AND source_id = $1", [id])
+      .catch((e) => console.error("note embed_state prune:", e.message));
+    await pool.query("DELETE FROM chunks WHERE source_kind = 'note' AND source_id = $1", [id])
+      .catch((e) => { if (e.code !== "42P01") console.error("note chunk prune:", e.message); });
+  }
   const { fireWebhooks, sendSlackNotification, runAutomations } = helpers;
 
   router.get("/api/notes", async (req, res) => {
@@ -24,15 +37,16 @@ module.exports = function ({ pool, config, helpers }) {
 
   router.post("/api/notes", async (req, res) => {
     try {
-      const { title, content, pinned, color, reminder_at, tags, format } = req.body;
+      const { title, content, pinned, color, reminder_at, tags, format, sensitivity } = req.body;
       if (!content) return res.status(400).json({ error: "Content is required." });
+      if (badSensitivity(sensitivity)) return res.status(400).json({ error: "Invalid sensitivity. Must be: " + SENSITIVITIES.join(", ") });
       if (content.length > MAX_CONTENT_LENGTH) return res.status(400).json({ error: `Content too long. Maximum ${MAX_CONTENT_LENGTH} characters.` });
       if (color && !VALID_NOTE_COLORS.includes(color)) return res.status(400).json({ error: "Invalid color. Must be: " + VALID_NOTE_COLORS.join(", ") });
       if (tags && !Array.isArray(tags)) return res.status(400).json({ error: "Tags must be an array." });
       if (format && !["plain", "markdown"].includes(format)) return res.status(400).json({ error: "Invalid format. Must be: plain, markdown" });
       const r = await pool.query(
-        `INSERT INTO notes (title, content, pinned, color, reminder_at, tags, format) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-        [title || null, content, pinned || false, color || "default", reminder_at || null, tags || null, format || "plain"]
+        `INSERT INTO notes (title, content, pinned, color, reminder_at, tags, format, sensitivity) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+        [title || null, content, pinned || false, color || "default", reminder_at || null, tags || null, format || "plain", sensitivity || "normal"]
       );
       // PD-6: "Note Created" automations were importable but never run.
       await runAutomations('note_created', r.rows[0], 'note').catch(() => {});
@@ -52,7 +66,8 @@ module.exports = function ({ pool, config, helpers }) {
 
   router.patch("/api/notes/:id", async (req, res) => {
     try {
-      const { title, content, pinned, color, reminder_at, tags, format } = req.body;
+      const { title, content, pinned, color, reminder_at, tags, format, sensitivity } = req.body;
+      if (badSensitivity(sensitivity)) return res.status(400).json({ error: "Invalid sensitivity. Must be: " + SENSITIVITIES.join(", ") });
       if (color !== undefined && !VALID_NOTE_COLORS.includes(color)) return res.status(400).json({ error: "Invalid color. Must be: " + VALID_NOTE_COLORS.join(", ") });
       if (tags !== undefined && tags !== null && !Array.isArray(tags)) return res.status(400).json({ error: "Tags must be an array." });
       if (format !== undefined && !["plain", "markdown"].includes(format)) return res.status(400).json({ error: "Invalid format. Must be: plain, markdown" });
@@ -66,10 +81,12 @@ module.exports = function ({ pool, config, helpers }) {
       if (reminder_at !== undefined) { fields.push(`reminder_at = $${idx++}`); params.push(reminder_at); }
       if (tags !== undefined) { fields.push(`tags = $${idx++}`); params.push(tags); }
       if (format !== undefined) { fields.push(`format = $${idx++}`); params.push(format); }
+      if (sensitivity !== undefined) { fields.push(`sensitivity = $${idx++}`); params.push(sensitivity); }
       if (!fields.length) return res.status(400).json({ error: "No fields to update." });
       params.push(req.params.id);
       const r = await pool.query(`UPDATE notes SET ${fields.join(", ")} WHERE id = $${idx} RETURNING *`, params);
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
+      if (r.rows[0].sensitivity && r.rows[0].sensitivity !== "normal") await dropNoteChunks(r.rows[0].id);
       res.json(r.rows[0]);
     } catch (err) {
       serverError(res, err);

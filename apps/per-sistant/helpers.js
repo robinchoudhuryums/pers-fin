@@ -173,7 +173,7 @@ async function processDueReminders(db = pool) {
       WHERE deleted_at IS NULL AND reminder_at IS NOT NULL
         AND reminder_at <= now() AND reminder_at > now() - interval '1 day'
         AND (reminder_fired_at IS NULL OR reminder_fired_at < reminder_at)
-      RETURNING id, COALESCE(title, LEFT(content, 50)) AS title, reminder_at`);
+      RETURNING id, COALESCE(title, CASE WHEN sensitivity = 'normal' THEN LEFT(content, 50) ELSE 'Private note' END) AS title, reminder_at`);
   for (const n of r.rows) {
     await fireWebhooks("reminder_due", { id: n.id, title: n.title, reminder_at: n.reminder_at });
   }

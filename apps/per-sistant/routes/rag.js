@@ -93,7 +93,7 @@ function buildRetrievalQuery(query, limit) {
   const sql = `
     WITH corpus AS (
       SELECT id::text AS id, title, content, 'note'::text AS kind, updated_at
-      FROM notes WHERE deleted_at IS NULL
+      FROM notes WHERE deleted_at IS NULL AND sensitivity = 'normal'
       UNION ALL
       SELECT id::text AS id, title, content, 'document'::text AS kind, updated_at
       FROM documents WHERE deleted_at IS NULL AND sensitivity = 'normal'
@@ -543,7 +543,7 @@ module.exports = function ({ pool }) {
 
   // Vector retrieval over the polymorphic chunk store, joining back to the
   // source row to get its title and honor deleted/sensitivity filters. Only
-  // 'normal' documents (and non-deleted notes) are retrievable. The
+  // 'normal' documents and 'normal' non-deleted notes (F134) are retrievable. The
   // `n.id IS NOT NULL` / `d.id IS NOT NULL` guards are load-bearing (KR-6):
   // with a LEFT JOIN, a chunk whose source row was HARD-deleted (trash
   // emptied) gets n.deleted_at = NULL, which `deleted_at IS NULL` accepted —
@@ -556,7 +556,7 @@ module.exports = function ({ pool }) {
     LEFT JOIN notes n ON c.source_kind = 'note' AND n.id = c.source_id
     LEFT JOIN documents d ON c.source_kind = 'document' AND d.id = c.source_id
     WHERE c.embedding IS NOT NULL
-      AND ( (c.source_kind = 'note' AND n.id IS NOT NULL AND n.deleted_at IS NULL)
+      AND ( (c.source_kind = 'note' AND n.id IS NOT NULL AND n.deleted_at IS NULL AND n.sensitivity = 'normal')
          OR (c.source_kind = 'document' AND d.id IS NOT NULL AND d.deleted_at IS NULL AND d.sensitivity = 'normal') )
     ORDER BY c.embedding <=> $1::vector
     LIMIT $2`;

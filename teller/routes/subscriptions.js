@@ -8,7 +8,7 @@ const multer = require("multer");
 const { parse } = require("csv-parse/sync");
 const { pool, ENCRYPTION_PASSPHRASE } = require("../services/database");
 const { categorizeSubscription, findCancelUrl } = require("../data/reference-data");
-const { CSV_FORMATS, INSTITUTION_LABELS, detectCsvFormat, parseDate, csvTransactionId, makeCsvTxnIdGenerator } = require("../data/csv-formats");
+const { CSV_FORMATS, INSTITUTION_LABELS, detectCsvFormat, guessGenericSign, POSITIVE_MEANS, parseDate, csvTransactionId, makeCsvTxnIdGenerator } = require("../data/csv-formats");
 const { detectSubscriptions } = require("../../scripts/detect-subscriptions");
 const { detectRecurringTransfers } = require("../../scripts/detect-transfers");
 const { NOT_TRANSFER, currentMonth, todayStr, getLiveIncomeStreams } = require("../services/financial-queries");
@@ -323,8 +323,18 @@ router.post("/api/detect", async (_req, res) => {
 // dedup-ID classification matches what the real import will actually do (same
 // format, same account label → same csvTransactionId occurrence sequence).
 // Returns { error } on a bad file, else { formatName, fmt, institution,
-// accountLabel, records, headers }.
+// accountLabel, records, headers, positiveMeans, signGuess, parseOpts }.
+//
+// Sign (cycle-7 F26): for the GENERIC format only, `body.positive_means`
+// ('charges' | 'deposits') says what a positive amount means; it defaults to
+// 'charges' (the old behaviour, so re-importing an earlier file keeps its IDs).
+// signGuess is guessGenericSign's read of the rows — the preview returns it and
+// the UI pre-selects it. Known formats have a fixed sign: both are null there.
 function parseCsvUpload(buffer, body = {}) {
+  const pm = body.positive_means;
+  if (pm != null && pm !== "" && !POSITIVE_MEANS.includes(pm)) {
+    return { error: "positive_means must be 'charges' or 'deposits'" };
+  }
   const content = buffer.toString("utf-8");
   // relax_column_count: Chase checking exports end every data row with a
   // trailing comma (one more field than the header), which threw
@@ -343,7 +353,10 @@ function parseCsvUpload(buffer, body = {}) {
   if (fmt.headerless && fmt.columns) {
     records = parse(content, { columns: fmt.columns, skip_empty_lines: true, trim: true, bom: true });
   }
-  return { formatName, fmt, institution, accountLabel, records, headers };
+  const generic = formatName === "generic";
+  const positiveMeans = generic ? (pm || "charges") : null;
+  const signGuess = generic ? guessGenericSign(records) : null;
+  return { formatName, fmt, institution, accountLabel, records, headers, positiveMeans, signGuess, parseOpts: { positiveMeans } };
 }
 
 // POST /api/import-csv/preview — dry-run a CSV import: detect the format and
@@ -358,14 +371,14 @@ router.post("/api/import-csv/preview", upload.single("file"), async (req, res) =
   try {
     const parsed = parseCsvUpload(req.file.buffer, req.body);
     if (parsed.error) return res.status(400).json({ error: parsed.error });
-    const { formatName, fmt, institution, accountLabel, records, headers } = parsed;
+    const { formatName, fmt, institution, accountLabel, records, headers, positiveMeans, signGuess, parseOpts } = parsed;
 
     const nextTxnId = makeCsvTxnIdGenerator();
     const rows = [];
     let skipped = 0;
     for (const row of records) {
       let p;
-      try { p = fmt.parse(row, fmt.headerless ? fmt.columns : headers); }
+      try { p = fmt.parse(row, fmt.headerless ? fmt.columns : headers, parseOpts); }
       catch { skipped++; continue; }
       const date = parseDate(p.date);
       if (!date || isNaN(p.amount) || p.amount === 0) { skipped++; continue; }
@@ -401,6 +414,8 @@ router.post("/api/import-csv/preview", upload.single("file"), async (req, res) =
       rows_skipped: skipped,
       rows_new: newCount,
       rows_duplicate: dupCount,
+      positive_means: positiveMeans,
+      sign_guess: signGuess,
       sample,
     });
   } catch (err) {
@@ -416,7 +431,7 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
   try {
     const up = parseCsvUpload(req.file.buffer, req.body);
     if (up.error) return res.status(400).json({ error: up.error });
-    const { formatName, fmt, institution, accountLabel, records, headers } = up;
+    const { formatName, fmt, institution, accountLabel, records, headers, positiveMeans, parseOpts } = up;
 
     const client = await pool.connect();
     try {
@@ -456,7 +471,7 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
         let parsed;
         try {
           // For headerless formats, row is keyed by fmt.columns after the re-parse above.
-          parsed = fmt.parse(row, fmt.headerless ? fmt.columns : headers);
+          parsed = fmt.parse(row, fmt.headerless ? fmt.columns : headers, parseOpts);
         } catch { skipped++; continue; }
 
         const date = parseDate(parsed.date);
@@ -579,6 +594,7 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
         rows_skipped: skipped,
         rows_duplicate: duplicates,
         account_label: accountLabel,
+        positive_means: positiveMeans,
       });
     } catch (err) {
       await client.query("ROLLBACK");

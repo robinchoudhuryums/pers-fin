@@ -522,7 +522,7 @@ async function generateInsights() {
       // long-term memory with one built from nothing. Failing here costs
       // nothing: the Claude call hasn't happened yet.
       pool.query(
-        "SELECT insights_running_summary, insights_running_summary_json, insights_model, insights_cadence_days, zip_code, insight_modules FROM user_settings WHERE id = 1"
+        "SELECT insights_running_summary, insights_running_summary_json, insights_model, insights_cadence_days, zip_code, insight_modules, insight_emails_enabled FROM user_settings WHERE id = 1"
       ),
       // S1: user feedback on the last 5 audited insights, fed back into the
       // prompt so Claude can adjust tone/focus when the user pushes back.
@@ -1254,8 +1254,10 @@ async function generateInsights() {
     const modulesFailed = [...failedModules];
     const modulesUsed = activeModules.filter(m => !failedModules.has(m));
 
-    // Send insight via webhook to Per-sistant for email delivery
-    try {
+    // Send insight via webhook to Per-sistant for email delivery — unless the
+    // user switched insight emails off (cycle-7 F81; only an explicit false
+    // skips it, so a settings row without the column keeps the old behaviour).
+    if (settings.insight_emails_enabled !== false) try {
       const { sendPerSistantWebhook } = require("./persistent");
       const auditNote = auditResult && auditResult.summary.critical > 0
         ? `\n\n⚠ Audit flagged ${auditResult.summary.critical} critical finding(s). Review accuracy before acting on this report.`

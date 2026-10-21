@@ -881,6 +881,9 @@ async function finishWithFailures(pool, failed, summary) {
 
 // Embed existing notes into the same polymorphic chunk store, and prune chunks
 // for notes that were deleted. Cheap on re-run thanks to the content-hash skip.
+// Only 'normal' notes are embedded (cycle-7 F134 / ST5, INV-27): a note marked
+// private or secret is never sent to Voyage, and its chunks + embed_state are
+// pruned like a deleted note's.
 async function syncNotes(pool) {
   // K4: hold the same single-flight lock syncVault uses so the hourly cron and a
   // concurrent POST /api/rag/reindex can't run overlapping note-embeds. The cron
@@ -894,7 +897,7 @@ async function syncNotes(pool) {
     if (!embeddings.isConfigured() || !(await vectorReady(pool))) return { ok: false, reason: "not_ready" };
     let embedded = 0;
     let skipped = 0;
-    const notes = await pool.query("SELECT id, title, content FROM notes WHERE deleted_at IS NULL");
+    const notes = await pool.query("SELECT id, title, content FROM notes WHERE deleted_at IS NULL AND sensitivity = 'normal'");
     let failed = 0;
     let firstError = null;
     for (const n of notes.rows) {
@@ -910,8 +913,8 @@ async function syncNotes(pool) {
         if (!firstError) firstError = e.message;
       }
     }
-    await pool.query("DELETE FROM chunks WHERE source_kind = 'note' AND source_id NOT IN (SELECT id FROM notes WHERE deleted_at IS NULL)");
-    await pool.query("DELETE FROM embed_state WHERE source_kind = 'note' AND source_id NOT IN (SELECT id FROM notes WHERE deleted_at IS NULL)");
+    await pool.query("DELETE FROM chunks WHERE source_kind = 'note' AND source_id NOT IN (SELECT id FROM notes WHERE deleted_at IS NULL AND sensitivity = 'normal')");
+    await pool.query("DELETE FROM embed_state WHERE source_kind = 'note' AND source_id NOT IN (SELECT id FROM notes WHERE deleted_at IS NULL AND sensitivity = 'normal')");
     if (failed) return { ok: false, partial: true, failed, error: firstError, embedded, skipped, total: notes.rows.length };
     return { ok: true, embedded, skipped, total: notes.rows.length };
   } finally {
