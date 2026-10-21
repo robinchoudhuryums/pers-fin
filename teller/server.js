@@ -217,6 +217,11 @@ app.use(helmet({
   // scripts/iframes) unless the remote server sends specific headers, which most CDNs don't
   crossOriginEmbedderPolicy: false,
   crossOriginResourcePolicy: { policy: "cross-origin" },
+  // F9: helmet's default COOP is `same-origin`, which severs window.opener for
+  // the Plaid OAuth / Teller Connect popups this page opens. allow-popups keeps
+  // the page isolated from cross-origin openers while its own popups can still
+  // post back (INV-62 — the shell disables COOP for the same reason).
+  crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
 }));
 
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS

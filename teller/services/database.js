@@ -54,10 +54,44 @@ if (!ENCRYPTION_PASSPHRASE) {
 // (gated on `currentVersion < 3`) instead of on every boot.
 const SCHEMA_VERSION = 3;
 
-async function runMigrations() {
+// Migration locking (cycle-7 F10). Each boot re-runs ~100 idempotent ALTER
+// TABLE statements in one transaction, and ALTER TABLE takes an ACCESS
+// EXCLUSIVE lock even when the column already exists. Two things bound that:
+//   - an advisory lock (MIGRATION_LOCK_KEY), so a second instance booting
+//     during a deploy overlap waits for the first instead of interleaving;
+//   - lock_timeout, so a migration stuck behind a long query on the old
+//     instance gives up in seconds — while it waits, every new query on that
+//     table queues behind its lock request and the live app freezes.
+// A lock timeout (SQLSTATE 55P03) rolls back and is retried with backoff;
+// any other failure, or running out of attempts, is still fatal (INV-17).
+const MIGRATION_LOCK_KEY = 727274001; // Per-sistant uses 727274002
+const MIGRATION_LOCK_TIMEOUT = "5s";
+const MIGRATION_ATTEMPTS = 5;
+
+async function runMigrations({ attempts = MIGRATION_ATTEMPTS, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await runMigrationsOnce();
+    } catch (err) {
+      if (err && err.code === "55P03" && attempt < attempts) {
+        console.warn(`Migration lock timeout (attempt ${attempt}/${attempts}) — retrying: ${err.message}`);
+        await sleep(2000 * attempt);
+        continue;
+      }
+      console.error("FATAL: Migration failed:", err.message);
+      throw err;
+    }
+  }
+}
+
+async function runMigrationsOnce() {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    // Advisory lock FIRST, with no timeout: a second instance waits for the
+    // first runner (whose own statements are bounded by lock_timeout below).
+    await client.query("SELECT pg_advisory_xact_lock($1)", [MIGRATION_LOCK_KEY]);
+    await client.query(`SET LOCAL lock_timeout = '${MIGRATION_LOCK_TIMEOUT}'`);
     await client.query("CREATE EXTENSION IF NOT EXISTS pgcrypto");
     // Cycle-7 F17: pgp_sym_decrypt RAISES on a wrong key (it doesn't return
     // NULL), so one row encrypted under an old TOKEN_ENCRYPTION_PASSPHRASE
@@ -236,6 +270,9 @@ async function runMigrations() {
     // Enforce a sane lower bound at write time, not here, so existing rows
     // don't break if the bound shifts.
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS shell_idle_timeout_minutes INT NOT NULL DEFAULT 60");
+    // Shell session epoch (cycle-7 F12): "Sign out everywhere" bumps it and the
+    // shell refuses any cookie signed with an older epoch.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS shell_session_epoch INT NOT NULL DEFAULT 0");
     // Pyramid visualization settings
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS pyramid_data_source TEXT NOT NULL DEFAULT 'wellness'");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS pyramid_color_mode TEXT NOT NULL DEFAULT 'single'");
@@ -985,11 +1022,10 @@ async function runMigrations() {
     console.log("Migrations complete.");
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
-    console.error("FATAL: Migration failed:", err.message);
     throw err;
   } finally {
     client.release();
   }
 }
 
-module.exports = { pool, ENCRYPTION_PASSPHRASE, runMigrations };
+module.exports = { pool, ENCRYPTION_PASSPHRASE, runMigrations, MIGRATION_LOCK_KEY };

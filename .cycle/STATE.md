@@ -18,7 +18,28 @@ Updated: 2026-10-21
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 12 DONE** on branch
+- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 13 DONE** on branch
+  `claude/sweet-ritchie-f9d8ah` (2026-10-21). Platform hardening, test quality, drift guards.
+  - **Completed:** F9 (Perfin COOP same-origin-allow-popups), F10 (migration advisory lock →
+    lock_timeout 5s, 55P03 retried ×5, else fatal; pgvector create in an EXCEPTION block, vector
+    objects only when installed — db/014/019/021), F12 (shell cookie carries
+    user_settings.shell_session_epoch; POST /logout?everywhere=1 + Settings "Sign Out
+    Everywhere"), F13 (Dockerfile chowns apps/per-sistant/uploads), F136 (Per-sistant
+    integration.test.js deleted → tests/contract/persistent-batch13), F138/F139 (behavioural
+    tests: runMigrations fake clients, passphrase/NEON exit via child process, PS-2 concurrent
+    email claim, SSO replay, perfin_try_decrypt, session epoch, reindex endpoint, Per-sistant
+    login gate, analytics), policy guards (tz lint + canonical-helper scan with KNOWN_GAPS;
+    tests/contract/budget-parity — Sheets Budget Status = getBudgetStatus).
+  - **Decisions:** advisory lock taken BEFORE lock_timeout so a second instance waits for the
+    first; distinct lock keys per app; legacy cookies = epoch 0 (nobody logged out on deploy);
+    epoch fails open on a DB blip; "everywhere" requires a valid session.
+  - **Results:** npm 1732/1732 (80 files), contract 123/123, migrations ×2 OK, Playwright 35/35.
+    Net score 0 − 2 = −2. Block: `.cycle/blocks/7-batch13-broad-implement.md`.
+  - **Follow-ons:** Per-sistant AI cap month / Ask "Today" / capture file date are UTC (tz-lint
+    KNOWN_GAPS); reset-fresh resets the session epoch; Per-sistant /api/login raw-buffer compare.
+  - **Where I left off:** Batch 13 committed and pushed (no PR). NEXT: /sync-docs for Batch 13,
+    then the deferred decisions / expansion batches (E1–E4) or /reflect for cycle 7.
+- **Previous status:** **Cycle 7 — Oct 2026 broad scan, Batch 12 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-21). Knowledge ingest edges.
   - **Completed:** F126 (empty / max_tokens answers not cached; truncated flag), F127 (truncated
     tree → reported failure, SHA holds), F128 (>1 MB files via the blobs API), F129 (GitHub +

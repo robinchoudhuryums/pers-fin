@@ -3729,4 +3729,4 @@ if (require.main === module) {
 
 module.exports = { syncAll, syncDashboardOnly, syncTransactionsOnly };
 // Test seams (SXE-2/SXE-14).
-module.exports._internals = { completedMonthAverages, syncUtilities, syncImportantDates, syncCreditScores, singleFlight, PLAIN_NUMBER_RE, syncWatchlist, guardCell, guardValues, guardSheetsWrites, sheetFormula, archiveReadyOn, archiveMarker, syncMonthArchives, MAX_ARCHIVES_PER_RUN, formatSheet, ensureSheet, getSheetId, sheetsShouldRetry, sheetsRetryDelayMs, SHEETS_RETRY_CONFIG };
+module.exports._internals = { buildDashboard, completedMonthAverages, syncUtilities, syncImportantDates, syncCreditScores, singleFlight, PLAIN_NUMBER_RE, syncWatchlist, guardCell, guardValues, guardSheetsWrites, sheetFormula, archiveReadyOn, archiveMarker, syncMonthArchives, MAX_ARCHIVES_PER_RUN, formatSheet, ensureSheet, getSheetId, sheetsShouldRetry, sheetsRetryDelayMs, SHEETS_RETRY_CONFIG };

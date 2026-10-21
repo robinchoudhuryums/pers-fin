@@ -90,7 +90,8 @@ describe("RAG v2 — semantic answer cache", () => {
 
   it("migration 019 adds the embedding column defensively (INV-28 posture)", () => {
     const sql = fs.readFileSync(path.join(ROOT, "db", "019_semantic_cache.sql"), "utf8");
-    assert.match(sql, /IF EXISTS \(SELECT 1 FROM pg_available_extensions WHERE name = 'vector'\)/);
+    // F10: guarded on the INSTALLED extension (db/014 creates it), not on its availability
+    assert.match(sql, /IF EXISTS \(SELECT 1 FROM pg_extension WHERE extname = 'vector'\)/);
     assert.match(sql, /ADD COLUMN IF NOT EXISTS query_embedding vector\(1024\)/);
   });
 });

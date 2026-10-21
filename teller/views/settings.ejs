@@ -90,6 +90,10 @@
       <div class="setting-info"><div class="name">Sign Out</div><div class="desc">End your current session</div></div>
       <div class="setting-control"><button class="btn danger" id="logout-btn">Sign Out</button></div>
     </div>
+    <div class="setting-row" id="logout-all-row" style="display:none;">
+      <div class="setting-info"><div class="name">Sign Out Everywhere</div><div class="desc">End every signed-in session on every device, including this one</div></div>
+      <div class="setting-control"><button class="btn danger" id="logout-all-btn">Sign Out Everywhere</button></div>
+    </div>
   </div>
 
   <div class="section" id="biometric-section" style="display:none;"><h2>Biometric Login</h2>
@@ -676,6 +680,15 @@
       try { await fetch(logoutUrl, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' } }); } catch (e) {}
       window.location.href = '/login';
     }
+    // F12: under the shell, revoke every session (the shell bumps its session epoch).
+    async function logoutEverywhere() {
+      if (!confirm('Sign out on every device, including this one?')) return;
+      var res = null;
+      try { res = await fetch('/logout?everywhere=1', { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' } }); } catch (e) {}
+      if (!res || !(res.ok || res.redirected)) { showMsg('Could not sign out other sessions.', false); return; }
+      window.location.href = '/login';
+    }
+    if (window.BASE_PATH) { var lar = document.getElementById('logout-all-row'); if (lar) lar.style.display = ''; }
     async function generateInsights() {
       const btn = document.getElementById('insights-btn');
       btn.classList.add('btn-loading'); btn.disabled = true;
@@ -1341,6 +1354,7 @@
       ['timeout-input', 'change', function() { updateSetting('session_timeout_minutes', parseInt(this.value)); }],
       ['shell-idle-input', 'change', function() { updateSetting('shell_idle_timeout_minutes', parseInt(this.value)); }],
       ['logout-btn', 'click', logout],
+      ['logout-all-btn', 'click', logoutEverywhere],
       ['biometric-register-btn', 'click', registerBiometric],
       ['insights-toggle', 'change', function() { updateSetting('insights_enabled', this.checked); }],
       ['insights-btn', 'click', generateInsights],

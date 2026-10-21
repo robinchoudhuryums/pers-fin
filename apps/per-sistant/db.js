@@ -33,8 +33,34 @@ const pool = new Pool({
   connectionTimeoutMillis: 5000,
 });
 
-async function runMigrations() {
-  const client = await pool.connect();
+// Migration locking (cycle-7 F10) — same rules as Perfin's runner: an
+// advisory lock serialises two booting instances, lock_timeout stops a
+// migration from freezing the live app behind a long query, and a lock
+// timeout (55P03) is retried with backoff; anything else stays fatal (PS-1).
+// A distinct key from Perfin's (727274001): a standalone Per-sistant can
+// share Perfin's database.
+const MIGRATION_LOCK_KEY = 727274002;
+const MIGRATION_LOCK_TIMEOUT = "5s";
+const MIGRATION_ATTEMPTS = 5;
+
+async function runMigrations({ attempts = MIGRATION_ATTEMPTS, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), db = pool } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await runMigrationsOnce(db);
+    } catch (err) {
+      if (err && err.code === "55P03" && attempt < attempts) {
+        console.warn(`Migration lock timeout (attempt ${attempt}/${attempts}) — retrying: ${err.message}`);
+        await sleep(2000 * attempt);
+        continue;
+      }
+      console.error("Migration error (fatal):", err.message);
+      throw err;
+    }
+  }
+}
+
+async function runMigrationsOnce(db) {
+  const client = await db.connect();
   try {
     const migrationsDir = path.join(__dirname, "db");
     if (!fs.existsSync(migrationsDir)) return;
@@ -47,6 +73,10 @@ async function runMigrations() {
     // server booted against it anyway. This mirrors Perfin's atomic + fatal
     // migration guarantee — the throw propagates to start(), which exits.
     await client.query("BEGIN");
+    // Advisory lock FIRST, with no timeout: a second instance waits for the
+    // first runner (whose own statements are bounded by lock_timeout below).
+    await client.query("SELECT pg_advisory_xact_lock($1)", [MIGRATION_LOCK_KEY]);
+    await client.query(`SET LOCAL lock_timeout = '${MIGRATION_LOCK_TIMEOUT}'`);
     for (const file of files) {
       const sql = fs.readFileSync(path.join(migrationsDir, file), "utf8");
       await client.query(sql);
@@ -55,11 +85,10 @@ async function runMigrations() {
     console.log(`Migrations complete (${files.length} files)`);
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
-    console.error("Migration error (fatal):", err.message);
     throw err;
   } finally {
     client.release();
   }
 }
 
-module.exports = { pool, runMigrations };
+module.exports = { pool, runMigrations, MIGRATION_LOCK_KEY };

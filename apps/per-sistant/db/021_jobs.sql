@@ -118,8 +118,8 @@ INSERT INTO job_profile (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 -- Added as nullable columns (additive) so existing rows are untouched.
 DO $vec$
 BEGIN
-  IF EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'vector') THEN
-    CREATE EXTENSION IF NOT EXISTS vector;
+  -- Installed, not merely available (cycle-7 F10 — see db/014).
+  IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector') THEN
     EXECUTE 'ALTER TABLE job_listings ADD COLUMN IF NOT EXISTS embedding vector(1024)';
     EXECUTE 'ALTER TABLE job_profile  ADD COLUMN IF NOT EXISTS profile_embedding vector(1024)';
     EXECUTE 'CREATE INDEX IF NOT EXISTS idx_job_listings_embedding ON job_listings USING hnsw (embedding vector_cosine_ops)';
