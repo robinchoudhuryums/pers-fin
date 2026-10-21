@@ -225,7 +225,87 @@ async function runSubscriptionDetection() {
       );
     }
   }
-  return { detected_count: detected.length, subscriptions: detected };
+  // F53 / G5: alert on a cancelled subscription that keeps charging and on a
+  // price rise. Fail-soft — detection already succeeded.
+  let watchdog = null;
+  try { watchdog = await runSubscriptionWatchdog(); }
+  catch (err) { console.error("Subscription watchdog error:", err.message); }
+  return { detected_count: detected.length, subscriptions: detected, watchdog };
+}
+
+// Subscription watchdog (cycle-7 F53 / G5), run after every detection (POST
+// /api/detect — daily-sync's detect step — and the pre-insights chain).
+//  - Still charging: a cancelled subscription with a settled charge from the
+//    same merchant key (the detector's own key expression) within ±25% of its
+//    amount, dated more than STILL_CHARGING_GRACE_DAYS after the cancellation.
+//    One alert per charge: the latest matching charge is remembered.
+//  - Price rise: an active subscription whose detected amount rose over the
+//    previous one by ≥ PRICE_RISE_PCT or ≥ PRICE_RISE_ABS, charged recently
+//    (an old change on a row detection no longer refreshes isn't news). One
+//    alert per new price.
+// Both are logged + pushed through sendToAll; a still-charging charge also
+// goes to the critical-alert email when that toggle is on.
+const STILL_CHARGING_GRACE_DAYS = 7;
+const PRICE_RISE_PCT = 0.05;
+const PRICE_RISE_ABS = 1;
+const SUB_MERCHANT_KEY_SQL =
+  "TRIM(COALESCE(t.user_merchant_name, t.merchant_name, LOWER(REGEXP_REPLACE(t.name, '[^a-zA-Z0-9 ]', '', 'g'))))";
+
+async function runSubscriptionWatchdog(db = pool) {
+  const { sendToAll } = require("./notifications");
+  const { sendCriticalAlertEmail } = require("./persistent");
+  const money = (n) => "$" + Number(n).toFixed(2);
+  const out = { still_charging: 0, price_rises: 0 };
+
+  const charging = await db.query(`
+    SELECT ds.id, ds.display_name, ds.amount, ds.cancelled_at,
+           c.transaction_id, c.amount AS charged, c.date::text AS charged_on
+    FROM detected_subscriptions ds
+    JOIN LATERAL (
+      SELECT t.transaction_id, t.amount, t.date
+      FROM transactions t
+      WHERE t.amount > 0 AND t.pending = false
+        AND ${SUB_MERCHANT_KEY_SQL} = ds.merchant_key
+        AND t.date > ds.cancelled_at::date + $1::int
+        AND t.amount BETWEEN ds.amount * 0.75 AND ds.amount * 1.25
+      ORDER BY t.date DESC, t.transaction_id DESC
+      LIMIT 1
+    ) c ON true
+    WHERE ds.cancelled_at IS NOT NULL
+      AND c.transaction_id IS DISTINCT FROM ds.still_charging_txn`, [STILL_CHARGING_GRACE_DAYS]);
+  for (const r of charging.rows) {
+    const title = `${r.display_name} charged ${money(r.charged)} after you cancelled it`;
+    const body = `A ${money(r.charged)} charge on ${r.charged_on} matches ${r.display_name}, which you marked cancelled. ` +
+      "Check the merchant — the cancellation may not have gone through.";
+    const sent = await sendToAll({ title, body, tag: "sub-still-charging-" + r.id, data: { url: "/subscriptions" } });
+    if (!sent.logged) continue; // not recorded → retry on the next run
+    await db.query(
+      "UPDATE detected_subscriptions SET still_charging_txn = $2, still_charging_at = $3, still_charging_amount = $4, updated_at = now() WHERE id = $1",
+      [r.id, r.transaction_id, r.charged_on, r.charged]);
+    out.still_charging++;
+    await sendCriticalAlertEmail(title, body);
+  }
+
+  const rises = await db.query(`
+    SELECT id, display_name, amount, prior_amount
+    FROM detected_subscriptions
+    WHERE is_active AND NOT is_dismissed AND cancelled_at IS NULL
+      AND amount_changed AND prior_amount > 0 AND amount > prior_amount
+      AND (amount - prior_amount >= $1 OR (amount - prior_amount) / prior_amount >= $2)
+      AND last_charged >= CURRENT_DATE - 45
+      AND price_alerted_amount IS DISTINCT FROM amount`, [PRICE_RISE_ABS, PRICE_RISE_PCT]);
+  for (const r of rises.rows) {
+    const sent = await sendToAll({
+      title: `${r.display_name} went up from ${money(r.prior_amount)} to ${money(r.amount)}`,
+      body: `${r.display_name}'s latest charge is ${money(r.amount)} (was ${money(r.prior_amount)}).`,
+      tag: "sub-price-" + r.id,
+      data: { url: "/subscriptions" },
+    });
+    if (!sent.logged) continue;
+    await db.query("UPDATE detected_subscriptions SET price_alerted_amount = amount WHERE id = $1", [r.id]);
+    out.price_rises++;
+  }
+  return out;
 }
 
 // POST /api/detect — HTTP wrapper around runSubscriptionDetection().
@@ -476,6 +556,19 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
       } catch (e) {
         await client.query("ROLLBACK TO SAVEPOINT csv_balance");
         console.error("CSV import: manual balance roll-forward failed (import kept):", e.message);
+      }
+
+      // F55: merchant rename rules cover the new rows, in the import's own
+      // transaction under a savepoint — a rule failure keeps the import.
+      if (imported > 0) {
+        try {
+          await client.query("SAVEPOINT csv_rename");
+          await require("./merchant-rename").applyRenameRules(client);
+          await client.query("RELEASE SAVEPOINT csv_rename");
+        } catch (e) {
+          await client.query("ROLLBACK TO SAVEPOINT csv_rename");
+          console.error("CSV import: rename rules failed (import kept):", e.message);
+        }
       }
 
       await client.query("COMMIT");
@@ -1372,6 +1465,7 @@ function paidKey(billSource, billId, paidDate) {
 
 module.exports = router;
 module.exports.runSubscriptionDetection = runSubscriptionDetection;
+module.exports.runSubscriptionWatchdog = runSubscriptionWatchdog;
 module.exports.buildBillCalendarIcs = buildBillCalendarIcs;
 module.exports.icsFold = icsFold; // test seam (cycle-7 F59)
 module.exports.paidKey = paidKey;

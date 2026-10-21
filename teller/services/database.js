@@ -245,6 +245,13 @@ async function runMigrationsOnce() {
     await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'detected'");
     await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ");
     await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS cancel_confirmed BOOLEAN NOT NULL DEFAULT false");
+    // Subscription watchdog (cycle-7 F53 / G5): the latest post-cancellation
+    // charge already alerted (one alert per charge) and the price last alerted
+    // (one alert per new price).
+    await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS still_charging_txn TEXT");
+    await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS still_charging_at DATE");
+    await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS still_charging_amount NUMERIC(12,2)");
+    await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS price_alerted_amount NUMERIC(12,2)");
     await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS notes TEXT");
     await client.query("ALTER TABLE detected_subscriptions ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'subscription'");
     // 004_balances.sql
@@ -590,6 +597,21 @@ async function runMigrationsOnce() {
       UNIQUE(merchant_pattern, category)
     )`);
     await client.query("CREATE INDEX IF NOT EXISTS idx_categorization_rules_active ON categorization_rules (is_active) WHERE is_active = true");
+    // Merchant rename rules (cycle-7 F55 / ST2): raw merchant pattern → display
+    // name, applied at sync time; user_merchant_rule_id marks the rows a rule
+    // renamed (NULL = renamed by hand, which always wins).
+    await client.query(`CREATE TABLE IF NOT EXISTS merchant_rename_rules (
+      id SERIAL PRIMARY KEY,
+      merchant_pattern TEXT NOT NULL,
+      match_type TEXT NOT NULL DEFAULT 'exact' CHECK (match_type IN ('exact', 'starts_with', 'contains')),
+      rename_to TEXT NOT NULL,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      times_applied INT NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (merchant_pattern, match_type)
+    )`);
+    await client.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS user_merchant_rule_id INT");
 
     // ---- Budget rollover / monthly snapshots ----
     await client.query("ALTER TABLE budgets ADD COLUMN IF NOT EXISTS rollover_enabled BOOLEAN NOT NULL DEFAULT false");

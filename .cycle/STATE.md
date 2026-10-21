@@ -18,7 +18,27 @@ Updated: 2026-10-21
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 14 DONE** on branch
+- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 15 DONE** on branch
+  `claude/sweet-ritchie-f9d8ah` (2026-10-21). Subscription watchdog (F53 → G5) + merchant rename
+  rules (F55 → ST2), from `.cycle/plan-cycle7-deferred.md`.
+  - **Completed:** runSubscriptionWatchdog after every detection (still charging > 7 days after
+    cancel within ±25%, one alert per charge; price rise ≥ 5% or ≥ $1 within 45 days, one alert per
+    price) + STILL CHARGING / PRICE UP badges; merchant_rename_rules + routes/merchant-rename.js
+    (raw-merchant match, NULL-only fill, user_merchant_rule_id, re-key of detection rows keeping
+    user state, revert on delete), applied at sync (before anomaly), in the CSV import transaction
+    and on manual entry; Edit dialog "Apply to all past and future"; Settings rename-rules panel.
+  - **Decisions:** reuse prior_amount (already maintained by detection) instead of a new
+    previous_amount column; the watchdog lives in routes/subscriptions.js (it notifies); rule rows
+    tracked by user_merchant_rule_id so a delete reverts only them; CSV rule-apply moved inside the
+    import transaction (savepoint) after a test hang exposed the post-COMMIT pool call.
+  - **Results:** npm 1755/1755 (82 files), contract 134/134, migrations ×2, Playwright 35/35.
+    Net 0 − 2 = −2. Block: `.cycle/blocks/7-batch15-broad-implement.md`.
+  - **Follow-ons:** watchdog only with detection (not hourly auto-sync); no price-drop alert;
+    rename rules not editable / not applied by the CSV CLI / no Sheets tab; re-key clash doesn't
+    merge user state.
+  - **Where I left off:** Batch 15 committed and pushed (no PR). NEXT: /sync-docs for Batch 15,
+    then `/broad-implement Batch 16` (plan file).
+- **Previous status:** **Cycle 7 — Oct 2026 broad scan, Batch 14 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-21). Refund-aware spending (F35 → G4), from
   `.cycle/plan-cycle7-deferred.md`.
   - **Completed:** REFUND_PREDICATE + REFUND_PRIOR_CATEGORY_JOIN + spendLinesCTE +

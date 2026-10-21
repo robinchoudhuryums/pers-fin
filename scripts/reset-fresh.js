@@ -56,6 +56,7 @@ const WIPE_TABLES = [
   // migrations create is classified in one of the three lists.
   "investment_flows", "payee_obligations", "payee_payments", "settlements",
   "payee_obligation_skips", "deleted_transactions",
+  "merchant_rename_rules",
 ];
 
 // Preserved so the dry-run can show what's kept.

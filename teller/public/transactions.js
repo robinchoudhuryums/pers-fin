@@ -352,6 +352,15 @@
           '<h3>Edit Transaction</h3>' +
           '<div class="edit-field"><label for="edit-merchant">Merchant Name</label>' +
             '<input id="edit-merchant" value="' + esc(currentMerchant) + '" placeholder="Override merchant name"></div>' +
+          // F55 / ST2: a rename rule instead of a one-row override.
+          '<div class="edit-field" style="display:flex;gap:8px;align-items:flex-start;">' +
+            '<input type="checkbox" id="edit-rename-all" style="width:auto;min-height:auto;margin-top:3px;">' +
+            '<label style="margin:0;font-weight:400;" for="edit-rename-all">Apply to all past and future' +
+              '<div style="font-size:11px;color:var(--text-muted);font-weight:300;margin-top:2px;">' +
+                'Rename every transaction from this merchant, now and on future syncs, so it stays one subscription.' +
+              '</div>' +
+            '</label>' +
+          '</div>' +
           '<div class="edit-field"><label for="edit-category">Category' +
             (currentCategory ? ' <span style="color:var(--text-muted);font-weight:300;">(current: ' + esc(currentCategory) + ')</span>' : '') +
             '</label>' +
@@ -405,6 +414,10 @@
         var remember = document.getElementById('edit-remember').checked;
 
         if (newMerchant !== currentMerchant) body.merchant_name = newMerchant || null;
+        var renameAll = document.getElementById('edit-rename-all').checked;
+        if (renameAll && !newMerchant) { showMsg('Enter the merchant name to apply to all.', false); return; }
+        // Re-applying the current name as a rule is allowed (it renames the siblings).
+        if (renameAll) { body.merchant_name = newMerchant; body.apply_to_all = true; }
         if (newNotes !== currentNotes) body.notes = newNotes || null;
         if (newReimbursed !== currentReimbursed) body.is_reimbursed = newReimbursed;
         if (isSharedAccount) {
@@ -428,6 +441,11 @@
               var d = await r.json().catch(function() { return {}; });
               showMsg(d.error || 'Failed to update', false);
               return;
+            }
+            if (body.apply_to_all) {
+              var rr = await r.json().catch(function() { return {}; });
+              if (rr.rename_rule_error) showMsg('Renamed this one, but not the rest: ' + rr.rename_rule_error, false);
+              else showMsg('Renamed ' + ((rr.renamed || 0) + 1) + ' transaction' + (rr.renamed ? 's' : '') + ' — future ones will follow.', true);
             }
           }
           if (categoryChanged) {

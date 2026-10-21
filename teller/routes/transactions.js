@@ -421,7 +421,14 @@ router.post("/api/transactions/manual", async (req, res) => {
        VALUES ($1, $2, $3, $4, $5, $5, $6, $7, false) RETURNING *`,
       [account_id, txnId, Math.abs(amt), date, merchant, cat, notes ? String(notes).slice(0, 500) : null]
     );
-    res.json(result.rows[0]);
+    // F55: merchant rename rules apply to hand-entered rows too (fail-soft).
+    let row = result.rows[0];
+    try {
+      if (await require("./merchant-rename").applyRenameRules() > 0) {
+        row = (await pool.query("SELECT * FROM transactions WHERE transaction_id = $1", [txnId])).rows[0] || row;
+      }
+    } catch (e) { console.error("manual transaction: rename rules failed:", e.message); }
+    res.json(row);
   } catch (err) {
     console.error("manual transaction error:", err.message);
     res.status(500).json({ error: "Failed to add transaction" });
@@ -429,11 +436,19 @@ router.post("/api/transactions/manual", async (req, res) => {
 });
 
 router.patch("/api/transactions/:id", async (req, res) => {
-  const { merchant_name, notes, is_reimbursed, personal_for } = req.body;
+  const { merchant_name, notes, is_reimbursed, personal_for, apply_to_all } = req.body;
   const updates = []; const values = []; let idx = 1;
+  let newMerchant = null;
   if (merchant_name !== undefined) {
     const v = typeof merchant_name === "string" ? merchant_name.trim() : null;
-    updates.push("user_merchant_name = $" + idx++); values.push(v || null);
+    newMerchant = v || null;
+    updates.push("user_merchant_name = $" + idx++); values.push(newMerchant);
+    // A hand rename always wins over a rename rule (F55): clear the rule link.
+    updates.push("user_merchant_rule_id = NULL");
+  }
+  // F55 / ST2: "Apply to all past and future" needs the new name.
+  if (apply_to_all && !newMerchant) {
+    return res.status(400).json({ error: "apply_to_all needs a merchant_name" });
   }
   if (notes !== undefined) {
     const v = typeof notes === "string" ? notes : null;
@@ -462,6 +477,14 @@ router.patch("/api/transactions/:id", async (req, res) => {
       values
     );
     if (!result.rows.length) return res.status(404).json({ error: "Transaction not found" });
+    if (apply_to_all) {
+      const { createRuleFromTransaction } = require("./merchant-rename");
+      const out = await createRuleFromTransaction(req.params.id, newMerchant);
+      // The row itself is already renamed; a rule error is reported, not fatal.
+      return res.json({ ...result.rows[0], user_merchant_name: newMerchant,
+        rename_rule: out.error ? null : out.rule, rename_rule_error: out.error || null,
+        renamed: out.renamed || 0, rekeyed: out.rekeyed || null });
+    }
     res.json(result.rows[0]);
   } catch (err) {
     console.error("patch transaction error:", err.message);

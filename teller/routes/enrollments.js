@@ -602,6 +602,13 @@ async function syncAllTransactionsOnce() {
   }
   const tellerAdded = (teller && teller.transactions_added) || 0;
   const plaidAdded = (plaid && plaid.transactions_added) || 0;
+  // F55: merchant rename rules name the new rows BEFORE the anomaly check (and
+  // the categorize / detection steps that follow every caller) group them.
+  // Fail-soft: a rule error never fails the sync.
+  if (tellerAdded + plaidAdded > 0) {
+    try { await require("./merchant-rename").applyRenameRules(); }
+    catch (e) { console.error("rename rules after sync failed:", e.message); }
+  }
   if (tellerAdded + plaidAdded > 0) await runAnomalyCheck();
   const errors = [].concat(
     ((teller && teller.errors) || []).map(e => ({ provider: "teller", ...e })),

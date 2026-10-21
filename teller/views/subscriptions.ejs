@@ -146,12 +146,17 @@
         tbody.innerHTML = data.subscriptions.map(s => {
           const badges = [];
           if (s.is_new) badges.push('<span class="badge badge-new">NEW</span>');
-          if (s.amount_changed) badges.push('<span class="badge badge-price">PRICE CHANGE</span>');
+          // F53: say how much a price RISE was; any other change keeps the generic badge.
+          const rise = s.amount_changed && Number(s.prior_amount) > 0 ? Number(s.amount) - Number(s.prior_amount) : 0;
+          if (rise > 0) badges.push('<span class="badge badge-price">PRICE UP ' + fmt(rise) + '</span>');
+          else if (s.amount_changed) badges.push('<span class="badge badge-price">PRICE CHANGE</span>');
           if (s.source === 'manual') badges.push('<span class="badge badge-manual">MANUAL</span>');
           if (s.category === 'utility') badges.push('<span class="badge badge-utility">UTILITY</span>');
           else if (s.display_category && s.display_category !== 'other') badges.push('<span class="badge badge-category">' + esc(s.display_category) + '</span>');
           if (s.is_dismissed) badges.push('<span class="badge badge-dismissed">DISMISSED</span>');
           if (s.cancelled_at) badges.push('<span class="badge badge-cancelled">CANCELLED</span>');
+          // F53: a cancelled subscription the merchant charged again after the cancellation.
+          if (s.cancelled_at && s.still_charging_at) badges.push('<span class="badge badge-cancelled" title="Charged ' + esc(fmt(s.still_charging_amount)) + ' on ' + esc(parseCalDate(s.still_charging_at).toLocaleDateString()) + ' after you cancelled it">STILL CHARGING</span>');
           const overdue = !s.cancelled_at && isOverdue(s.next_expected);
           const nextClass = overdue ? 'next-date overdue' : 'next-date';
           const nextLabel = s.cancelled_at ? 'Cancelled ' + new Date(s.cancelled_at).toLocaleDateString() : parseCalDate(s.next_expected).toLocaleDateString();

@@ -309,6 +309,7 @@ app.use(require("./routes/enrollments"));
 // "bulk-category") and 400 every bulk recategorize (DC-1).
 app.use(require("./routes/categorize"));
 app.use(require("./routes/subscriptions"));
+app.use(require("./routes/merchant-rename"));
 app.use(require("./routes/goals"));
 app.use(require("./routes/settings"));
 app.use(require("./routes/insights"));
