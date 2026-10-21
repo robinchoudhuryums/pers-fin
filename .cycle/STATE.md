@@ -18,7 +18,27 @@ Updated: 2026-10-21
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Cycle 7 — expansion Batch 19 DONE** on branch `claude/sweet-ritchie-f9d8ah`
+- **Status:** **Cycle 7 — expansion Batch 20 DONE** on branch `claude/sweet-ritchie-f9d8ah`
+  (2026-10-21). Browser quality (G2 remaining) + the Per-sistant client kit (ST3), from
+  `.cycle/plan-cycle7-expansion.md`. Block: `.cycle/blocks/7-batch20-broad-implement.md`.
+  Cycle 7's planned work (scan Batches 1–13, deferred 14–16, expansion 17–20) is complete.
+  - **Completed:** views/js.js withPending(btn, key, fn, busyText) + the 10 hand-rolled pending
+    toggles migrated (Send Now, AI draft / tone / breakdown / parse / tags, Knowledge reindex +
+    capture, Job Radar Refresh, Ask) + a shrinking guard; e2e/seed.js (both apps seeded through
+    their routes, one Job Radar row direct), console.error failures and a click sweep on all 22
+    pages (data-e2e-skip on destructive / off-app / device controls, SWEEP_KNOWN_GAPS).
+  - **Verification:** npm 1832/1832; contract 152/152; migrations twice; Playwright 57/57 (220
+    controls pressed); the ST3 guard goes red on a planted toggle. Net 0. The sweep found no app bug
+    (its first-run failures were the microphone buttons and Teller Connect — skipped).
+  - **Decisions:** seeding lives in pages.spec.js's beforeAll (webServer readiness would race a
+    boot-server seed); the sweep skips by data-e2e-skip AND a destructive-label regex for runtime
+    row buttons; withPending restores each button's own prior disabled state.
+  - **Follow-ons:** the sweep counts controls on load only (dialogs / rows rendered after a click
+    aren't swept — Activity's rows); the mic buttons only log a refused permission; unguarded Save
+    buttons not covered by withPending.
+  - **Where I left off:** Batch 20 committed and pushed (no PR). NEXT: `/sync-docs` for Batch 20,
+    then `/reflect` to close cycle 7.
+- **Previous status:** **Cycle 7 — expansion Batch 19 DONE** on branch `claude/sweet-ritchie-f9d8ah`
   (2026-10-21). Plaid Link update mode (G3) + the Batch 4 investments-exchange duplicate-guard
   follow-on, from `.cycle/plan-cycle7-expansion.md`. Block: `.cycle/blocks/7-batch19-broad-implement.md`.
   - **Completed:** investments.js — POST /api/plaid/link-token-update (the item's own token, no
@@ -48,7 +68,7 @@ implement and reflect sessions only set Phase.)
     endpoint rows, coverage text. Per-sistant docs unchanged. Subsystem paths unchanged.
   - **Where I left off:** Batch 19 + its /sync-docs committed and pushed (no PR). NEXT:
     `/broad-implement Batch 20` (browser quality + the Per-sistant client kit, G2 + ST3) → /reflect.
-- **Previous status:** **Cycle 7 — expansion Batch 18 DONE** on branch `claude/sweet-ritchie-f9d8ah`
+- **Earlier status:** **Cycle 7 — expansion Batch 18 DONE** on branch `claude/sweet-ritchie-f9d8ah`
   (2026-10-21). Asynchronous sync for the backstops (ST1) + the Batch 3 workflow-timeout
   follow-on, from `.cycle/plan-cycle7-expansion.md`. Block: `.cycle/blocks/7-batch18-broad-implement.md`.
   - **Completed:** enrollments.js background tracker (bgJobs by kind, reconcileJob folded in),
