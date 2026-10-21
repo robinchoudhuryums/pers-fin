@@ -35,8 +35,14 @@ implement and reflect sessions only set Phase.)
     Block: `.cycle/blocks/7-batch14-broad-implement.md`.
   - **Follow-ons:** Settle Up's own refund rule vs REFUND_PREDICATE; Watchlist 90-day spend + Code.gs
     stay gross; no "net of refunds" UI copy; pre-deploy budget snapshots stay gross.
-  - **Where I left off:** Batch 14 committed and pushed (no PR). NEXT: /sync-docs for Batch 14,
-    then `/broad-implement Batch 15` (plan file).
+  - **/sync-docs DONE (Batch 14):** CLAUDE.md — financial-queries entry (refund helpers), new
+    "Refunds reduce spending" feature bullet, Ask total, Sheets Dashboard, spending-summary /
+    spending-yoy endpoint notes, Shared financial queries, INV-07/08 wording + NEW INV-122,
+    Known Open Issues (F35 removed, Batch 14 follow-ons, batch-status header), counts 1745/81
+    (Perfin 1228), contract 128 + refunds / budget-parity descriptions, scan-oct-batch14 entry.
+    README — counts + Batch 14 coverage + contract line. No subsystem path or operator-state change.
+  - **Where I left off:** Batch 14 + its /sync-docs committed and pushed (no PR). NEXT:
+    `/broad-implement Batch 15` (subscription watchdog + rename rules — plan file).
 - **Previous status:** **Cycle 7 — Oct 2026 broad scan, Batch 13 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-21). Platform hardening, test quality, drift guards.
   - **Completed:** F9 (Perfin COOP same-origin-allow-popups), F10 (migration advisory lock →

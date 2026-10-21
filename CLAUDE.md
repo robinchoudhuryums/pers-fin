@@ -89,7 +89,14 @@ teller/
     financial-queries.js — Shared income/spending SQL helpers (split-adjusted spending,
                            keyword-filtered income, current-month per-category spending
                            that honors transaction_splits) — single source of truth used
-                           by AI insights and budgets so the numbers match the dashboard
+                           by AI insights and budgets so the numbers match the dashboard.
+                           Refunds (cycle-7 F35): REFUND_PREDICATE (settled, non-
+                           reimbursed credit passing NOT_TRANSFER and NOT income — the
+                           income test COALESCEd, it is NULL for non-Plaid rows),
+                           spendLinesCTE(window) (charges + split lines + refund lines;
+                           a refund takes the merchant's latest earlier charge category)
+                           and NET_CATEGORY_MONTHS (per month + category floored at $0)
+                           are the ONE spending-line source every spending surface reads
     projections.js       — FIRE/runway/loan math (pure): computeFireProjection
                            (FIRE number = annual spend × 100/withdrawal-rate,
                            monthly geometric compounding, 40-yr series) +
@@ -281,7 +288,8 @@ teller/
                            (monthly overview, category spending, transaction
                            search w/ adjusted totals — the total applies
                            the dashboard spending filters: shared-card split,
-                           reimbursed AND NOT_TRANSFER excluded; match_count
+                           reimbursed AND NOT_TRANSFER excluded, matching
+                           refunds netted and floored at $0 (F35); match_count
                            counts the listed rows; LIKE metacharacters escaped
                            (AIN-13) — net worth,
                            subscriptions, budget status, FIRE projection) so
@@ -595,9 +603,16 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1732 tests as of latest); use
+  Perfin and Per-sistant test files (1745 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1732 tests across 80 test files (incl.
+  Current count: 1745 tests across 81 test files (incl.
+  `tests/scan-oct-batch14.test.js` — the Oct 2026 (cycle 7) Batch 14 refund-aware spending
+  pins (F35 / G4): REFUND_PREDICATE (NULL-safe income test), spendLinesCTE's three legs +
+  window, NET_CATEGORY_MONTHS's floor, every spending surface reading spend_lines (helpers,
+  spending-summary, spending-yoy, the insights seasonal block, Ask's search total, the
+  Sheets Dashboard), cash flow staying gross, and refund lines defined only in
+  financial-queries.js + the SX3-pinned Sheets mirror — the database-backed half lives in
+  `tests/contract/refunds.contract.test.js` (+ refund rows in `budget-parity`);
   `tests/scan-oct-batch13.test.js` — the Oct 2026 (cycle 7) Batch 13 platform / test-quality
   pins that need no database: runMigrations against fake clients (BEGIN → advisory lock →
   lock_timeout, rollback + no retry on an ordinary error, 55P03 retried with backoff, give-up
@@ -810,11 +825,15 @@ shell/
   (the schema checks ported from the deleted integration.test.js, GET /api/analytics, two
   concurrent scheduled-email runners sending each email once, POST /api/rag/reindex → status,
   concurrent migrations), budget-parity (the Sheets Dashboard's Budget Status rows equal
-  getBudgetStatus to the cent) and knowledge (syncVault through a
+  getBudgetStatus to the cent — with refund rows since Batch 14), refunds (cycle-7 Batch 14:
+  a refund nets and inherits its merchant's category, a larger one floors at $0, a 50%
+  shared-card refund, refund-only categories / merchants unlisted, budgets / spending-summary /
+  spending-yoy agreeing with the helpers, and payroll / card-payment / Zelle / reimbursed /
+  pending credits never counted as refunds) and knowledge (syncVault through a
   fake GitHub API via its `fetchImpl`, syncNotes, keyword search never returning
   secret text, secret-lookup, facts current vs `all=1` + verify, /api/rag/query
   without AI, an incremental compare that removes a deleted file) plus insight
-  feedback set / change / clear (the F60 `$1::text` cast). 123 tests, run
+  feedback set / change / clear (the F60 `$1::text` cast). 128 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -1144,6 +1163,23 @@ shell/
   `services/financial-queries.js`. The Activity page's Split modal refuses to
   open when it can't read the existing splits (an empty editor saved over
   them) and carries each split's `merchant_name` through a save (cycle-7 F103).
+- **Refunds reduce spending** (cycle-7 F35 / G4): a refund — a settled,
+  non-reimbursed credit that `NOT_TRANSFER` keeps (so not a card payment or
+  transfer) and that is not income — nets against its category in the month it
+  POSTS, and each (month, category) is floored at $0, so a refund never makes a
+  month or category negative. Credits are never categorized, so an uncategorized
+  refund takes the category of the same display merchant's latest earlier charge
+  (180 days), then its own provider category, then "Uncategorized". It counts at
+  the shared-card share like the charge. Applies to budgets / alerts / push /
+  snapshots, `/api/spending-summary` (trend, categories, top merchants — a
+  merchant's refunds net against it), `/api/spending-yoy`, savings rate, FIRE,
+  the context export, Ask, the insights trend / seasonal / budget blocks and the
+  Sheets Dashboard. A category or merchant with only refunds that month is not
+  listed; month `txn_count` counts charges. Charge-level on purpose: the cash-flow
+  forecast, anomaly detection, the tax report and Settle Up (which nets
+  same-month refunds itself, FAN-12). Trade-off: a credit the filters don't
+  recognise as income or a transfer (side income without a payroll keyword, a
+  cashback credit) reduces spending too — the floor bounds it.
 - **Subscription detection**: Automatic recurring charge identification (30/60/90/365-day cadences).
   The 30-day cadence requires 3+ charges; 60/90/365-day cadences need only 2+
   (1 matching gap) — the same `>= 60` relaxation the recurring-transfer detector
@@ -2114,7 +2150,8 @@ shell/
     (December charges posting in January, late confirmations); a past year
     with no rows gets no tab. Warning-only protection.
   - **Dashboard**: net worth, budgets, goals, over-budget conditional
-    formatting; SPENDING BY CATEGORY section gained 6 per-month columns
+    formatting (every spending figure net of refunds through a mirrored
+    `refund_lines` + `net_cat_months`, SX3-pinned — cycle-7 F35); SPENDING BY CATEGORY section gained 6 per-month columns
     + SPARKLINE Trend column + gradient heatmap conditional formatting
     over the month cells; "Synced [day, time]" banner restyled. Budget Status
     compares against the EFFECTIVE limit (base + prior-month rollover, one-time
@@ -2496,7 +2533,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1732 tests passing across 80 test files (Perfin 1215 + Per-sistant 517), plus the real-Postgres route contract suite (123 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
+- 1745 tests passing across 81 test files (Perfin 1228 + Per-sistant 517), plus the real-Postgres route contract suite (128 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -2699,7 +2736,9 @@ POST /api/settlement/settle # mark a month squared (upsert by period; body: mont
                             # net_amount, direction, note?). Records the client-computed
                             # combined net at settle time.
 DELETE /api/settlement/:period # undo a month's settlement (period=YYYY-MM)
-GET  /api/spending-summary # monthly trends, categories, top merchants (split-adjusted).
+GET  /api/spending-summary # monthly trends, categories, top merchants (split-adjusted,
+                           # net of refunds floored at $0 per month + category — F35;
+                           # txn_count / avg_transaction describe the charges).
                            # monthly_trend uses WHOLE months (months=6 → 6 buckets
                            # incl. the current month-to-date); avg_monthly_spend /
                            # avg_daily_spend / avg_months are over COMPLETED months
@@ -2719,7 +2758,8 @@ GET  /api/income-summary   # income trend + top sources + by_account (query: mon
 GET  /api/spending-yoy     # year-over-year comparison (query: month, year; defaults =
                            # the APP_TIMEZONE date). The current month is capped at
                            # today's day for every year (through_day; null = whole
-                           # month); comparisons only between consecutive years (DD-11)
+                           # month); comparisons only between consecutive years (DD-11);
+                           # refunds net per (year, category), floored at $0 (F35)
 GET  /api/accounts/:id/balance-history # daily balance series for an account (query: source=linked|investment, months)
 GET  /api/goals            # list financial goals with projections; each goal includes
                            # `suggested_transfers[]` matching active recurring transfers
@@ -4048,7 +4088,8 @@ SX3-pinned — the Sheets Income tab.
 - **Shared financial queries.** `services/financial-queries.js` is the
   source of truth for "income" and "spending" computations: keyword-filtered
   payroll/direct-dep income (excluding transfers/payments/refunds) and
-  split-adjusted spending that honors `transaction_splits`, the
+  split-adjusted spending NET OF REFUNDS (`spendLinesCTE` + `NET_CATEGORY_MONTHS`,
+  floored at $0 per month + category — F35) that honors `transaction_splits`, the
   account-level `spending_split_pct`, AND the per-transaction `personal_for`
   override on shared accounts (`SPLIT_AMOUNT` is a CASE expression — see
   the Shared Account Spending Split section). AI insights routes through
@@ -4550,7 +4591,8 @@ dead channels, backstops / outcomes / operator state, bank-sync durability, mone
 accuracy and classification, delete integrity and feeds, categorization rules and
 income cadence, AI trust, Sheets and cross-app, Perfin UI, Per-sistant correctness, Knowledge
 ingest edges, platform hardening / test quality / drift guards — are done; Batch 13 was the
-last planned batch, the deferred decisions and expansion batches E1–E4 remain):
+last scan batch. The deferred decisions became Batches 14–16 (`.cycle/plan-cycle7-deferred.md`
+— Batch 14, refund-aware spending, is done); expansion batches E1–E4 remain):
 - The repo is PUBLIC (operator: make it private and delete old Actions logs —
   they printed balances and net worth before Batch 1).
 - OPERATOR: Database Backup has never produced a backup (its secrets were never
@@ -4572,8 +4614,7 @@ last planned batch, the deferred decisions and expansion batches E1–E4 remain)
   next month's rent inside its lead window (Perfin's own reminder does since F43);
   the Rent page has no "+ add item" UI, so a removed placeholder comes back only
   via `POST /api/housing/obligations`; `apps-script/Code.gs` keeps the pre-F32
-  NOT_TRANSFER keyword list. Refunds still don't reduce spending outside the
-  settlement (F35). Batch 5 follow-ons / later batches.
+  NOT_TRANSFER keyword list. Batch 5 follow-ons / later batches.
 - A deleted transaction has no undelete (its `deleted_transactions` row would
   need clearing), and a CSV re-import doesn't honor the tombstone. Batch 6
   follow-ons.
@@ -4621,6 +4662,12 @@ last planned batch, the deferred decisions and expansion batches E1–E4 remain)
   Everywhere" becomes valid again until it idles out. Per-sistant's standalone
   `POST /api/login` compares raw buffers (length-checked) rather than the SHA-256
   digest compare INV-104 describes. Batch 13 follow-ons.
+- Refunds (F35): Settle Up's shared-card leg keeps its own refund rule (FAN-12 —
+  no income exclusion, no category inheritance), so it can disagree with
+  `REFUND_PREDICATE`; the Sheets Watchlist 90-day spend and `apps-script/Code.gs`
+  stay gross; no UI copy says spending is net of refunds; budget snapshots taken
+  before the Batch 14 deploy (outside the days 1–5 refresh) keep their gross
+  spend and rollover. Batch 14 follow-ons.
 
 The bugs Batch 15's real-code tests exposed (calendar 500, Quick Add regexes,
 palette picker under the shell, undefined CSS vars, unvalidated theme /
@@ -4821,8 +4868,8 @@ INV-03 | Teller incremental filter uses >= against a 7-day lookback floor behind
 INV-04 | Plaid cursor advances only after a fully-successful page; persisted progressively; on mutation-during-pagination the loop restarts from (and re-persists) the loop-start cursor (BSI-12); new item accounts are registered before the walk so their rows can't FK-stall a page (BSI-1) | Subsystem: Bank Sync & Ingestion | Verify: code read syncPlaidItemTransactions
 INV-05 | Reconcile is watermark-independent + idempotent; anomaly push suppressed | Subsystem: Bank Sync & Ingestion | Verify: reconcileTeller / tests/sync-durability.test.js
 INV-06 | User overrides never clobbered by re-sync; display uses COALESCE | Subsystem: Bank Sync & Ingestion
-INV-07 | Every spending aggregation applies SPLIT_AMOUNT | Subsystem: Financial Analytics | Verify: tests/financial-queries.test.js
-INV-08 | Reimbursed transactions excluded from all spending aggregations | Subsystem: Financial Analytics
+INV-07 | Every spending aggregation applies SPLIT_AMOUNT (refund lines included) | Subsystem: Financial Analytics | Verify: tests/financial-queries.test.js
+INV-08 | Reimbursed transactions (and reimbursed credits) excluded from all spending aggregations | Subsystem: Financial Analytics
 INV-09 | transaction_splits replace parent in per-category totals; sum matches parent ±$0.01 | Subsystem: Financial Analytics
 INV-10 | Keyword filters use word-boundary regex, never LIKE '%kw%' (a user-supplied LIKE pattern — rules, Ask merchant search — escapes \ % _) | Subsystem: Financial Analytics | Verify: tests/audit-regressions.test.js
 INV-11 | Goal current_amount derived (balance − baseline) when funding-linked — including in the AI goal-tracking prompt (deriveGoalProgress, F62) | Subsystem: Financial Analytics
@@ -4920,6 +4967,7 @@ INV-104 | Every secret comparison (shell PIN, CALENDAR_FEED_TOKEN, API_KEY, stan
 INV-97 | No Per-sistant client template-literal module (a pages/ or views/ file that exports a string) contains a single-escaped regex class or delimiter (\b \d \s \w \/ \. …) — the template consumes the backslash, so the regex silently changes meaning in the browser; double-escape or use string methods | Subsystem: Per-sistant Web UI | Verify: apps/per-sistant/tests/batch15-followons.test.js (FO-2 guard)
 INV-120 | Shell sessions are revocable server-side: the cookie carries user_settings.shell_session_epoch and is refused once the epoch moves; POST /logout?everywhere=1 needs a valid session and bumps it; a legacy epoch-less cookie counts as epoch 0 | Subsystem: Platform, Shell & Auth | Verify: tests/contract/platform-batch13.contract.test.js (F12)
 INV-121 | Drift guards only shrink: the timezone lint (no new UTC today/month anchor in server code) and the canonical-helper scan (net worth via getNetWorth, budget_snapshots / income streams / AI spend / effective limit derived in one place) keep per-file KNOWN_GAPS that fail on growth AND on a stale entry; the Sheets Budget Status equals getBudgetStatus on real Postgres | Subsystem: Test Coverage Quality / Parallel Source-of-Truth Drift | Verify: tests/scan-oct-batch13.test.js + tests/contract/budget-parity.contract.test.js
+INV-122 | Every spending aggregation nets refunds through the shared spend_lines (spendLinesCTE: charges + split lines + REFUND_PREDICATE lines) floored per (month, category) at $0 (NET_CATEGORY_MONTHS) — no route re-derives refunds, the Sheets mirror is SX3-pinned, and cash flow / anomaly / tax stay charge-level (cycle-7 F35) | Subsystem: Financial Analytics | Verify: tests/scan-oct-batch14.test.js + tests/contract/refunds.contract.test.js + tests/contract/budget-parity.contract.test.js
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
 ### Policy Configuration
