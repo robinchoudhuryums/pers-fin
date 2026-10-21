@@ -25,6 +25,9 @@ jobs:
     # strings only when the key is suffixed ":str". Details live in the app
     # (Settings -> Sync Health).
     env:
+      # Secrets as env vars for the run_background helper (GitHub masks them).
+      SERVER_URL: ${{ secrets.SERVER_URL }}
+      API_KEY: ${{ secrets.API_KEY }}
       # Cycle-7 F5: every step after "Sync transactions" is an INDEPENDENT
       # backstop, so each runs with `if: ${{ !cancelled() }}` — one failed call
       # (nine timed-out syncs in Oct 2026) no longer skips the balance sync, the
@@ -39,6 +42,55 @@ jobs:
           fi
           if [ "$2" -ne 200 ]; then echo "::error::$1 failed with HTTP $2"; return 1; fi
           echo "$1: HTTP $2"
+        }
+      # Cycle-7 ST1: the two long calls run IN THE BACKGROUND on the server.
+      # run_background POSTs {"background": true} (202 + a job id; 409 = one
+      # is already running, which it then follows), polls
+      # /perfin/api/sync/status?kind=<kind> every BG_POLL_SECONDS (15) for up to
+      # BG_DEADLINE_SECONDS (1200), and fails the step when the job reports an
+      # error, the server lost it (its id is gone — a restart), or the deadline
+      # passes. A single request held open for the whole sync used to fail on
+      # cold starts and long Plaid walks while the sync was still running.
+      # The final status JSON lands in <out>; print it only through SUMMARY_JS.
+      # Usage: run_background <label> <path> <kind> <out> <json body>
+      RUN_BACKGROUND: |
+        run_background() {
+          local label="$1" path="$2" kind="$3" out="$4" body="$5"
+          local status id state deadline
+          status=$(curl -s -o /tmp/bg-start.json -w "%{http_code}" --max-time 90 \
+            -X POST "$SERVER_URL$path" -H "x-api-key: $API_KEY" \
+            -H "Content-Type: application/json" -d "$body") || true
+          if [ "$status" = "409" ]; then
+            echo "$label: a run is already in progress on the server; following it"
+          elif [ "$status" != "202" ]; then
+            check_status "$label (start)" "$status" || return 1
+            echo "::error::$label: expected 202 (started), got HTTP $status"
+            return 1
+          fi
+          id=$(node -e 'try{const d=JSON.parse(require("fs").readFileSync("/tmp/bg-start.json","utf8"));process.stdout.write(String(d.id ?? ""))}catch{}' || true)
+          deadline=$((SECONDS + ${BG_DEADLINE_SECONDS:-1200}))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            sleep "${BG_POLL_SECONDS:-15}"
+            status=$(curl -s -o "$out" -w "%{http_code}" --max-time 30 \
+              "$SERVER_URL/perfin/api/sync/status?kind=$kind" -H "x-api-key: $API_KEY") || true
+            if [ "$status" != "200" ]; then echo "$label: status check HTTP $status, retrying"; continue; fi
+            state=$(node -e '
+              const [file, id] = process.argv.slice(1);
+              let j;
+              try { j = JSON.parse(require("fs").readFileSync(file, "utf8")); } catch { console.log("unknown"); process.exit(0); }
+              if (id && String(j.id) !== id) console.log("lost");
+              else if (j.running) console.log("running");
+              else if (j.error) console.log("error");
+              else console.log("done");' "$out" "$id" || echo unknown)
+            case "$state" in
+              done) echo "$label: finished"; return 0 ;;
+              error) echo "::error::$label failed on the server. See Settings -> Sync Health."; return 1 ;;
+              lost) echo "::error::$label: the server lost the run (restarted?). See Settings -> Sync Health."; return 1 ;;
+              *) echo "$label: $state" ;;
+            esac
+          done
+          echo "::error::$label: still running after $(( ${BG_DEADLINE_SECONDS:-1200} / 60 )) minutes. It may still finish; see Settings -> Sync Health."
+          return 1
         }
       SUMMARY_JS: |
         const fs = require("fs");
@@ -69,15 +121,14 @@ jobs:
           # Endpoints live under /perfin/* now that Perfin runs as a sub-app
           # behind the unified shell. The shell's requireAuth honors x-api-key
           # the same way Perfin's standalone middleware did. /api/sync covers
-          # Teller AND Plaid transactions (+ one anomaly check over both).
-          # 420s: a Plaid item re-walk after a long gap can exceed the old 240s.
+          # Teller AND Plaid transactions (+ one anomaly check over both); it
+          # runs in the background (ST1 — see RUN_BACKGROUND).
           eval "$CHECK_STATUS"
-          STATUS=$(curl -s -o /tmp/sync.json -w "%{http_code}" --max-time 420 \
-            -X POST "${{ secrets.SERVER_URL }}/perfin/api/sync" \
-            -H "x-api-key: ${{ secrets.API_KEY }}" \
-            -H "Content-Type: application/json") || true
-          node -e "$SUMMARY_JS" /tmp/sync.json enrollments_synced transactions_added errors
-          check_status "Transaction sync" "$STATUS"
+          eval "$RUN_BACKGROUND"
+          RC=0
+          run_background "Transaction sync" /perfin/api/sync sync /tmp/sync.json '{"background": true}' || RC=$?
+          node -e "$SUMMARY_JS" /tmp/sync.json result.enrollments_synced result.transactions_added result.errors
+          exit $RC
 
       - name: Sync balances + holdings + investment flows
         if: ${{ !cancelled() }}
@@ -87,12 +138,11 @@ jobs:
           # in-process hourly job only runs while the server is awake, so this
           # guarantees at least daily freshness.
           eval "$CHECK_STATUS"
-          STATUS=$(curl -s -o /tmp/balances.json -w "%{http_code}" --max-time 240 \
-            -X POST "${{ secrets.SERVER_URL }}/perfin/api/sync-balances" \
-            -H "x-api-key: ${{ secrets.API_KEY }}" \
-            -H "Content-Type: application/json") || true
-          node -e "$SUMMARY_JS" /tmp/balances.json accounts_updated accounts_changed errors plaid_accounts_updated plaid_errors holdings_updated holdings_accounts_updated holdings_errors flows_added flows_errors
-          check_status "Balance sync" "$STATUS"
+          eval "$RUN_BACKGROUND"
+          RC=0
+          run_background "Balance sync" /perfin/api/sync-balances sync-balances /tmp/balances.json '{"background": true}' || RC=$?
+          node -e "$SUMMARY_JS" /tmp/balances.json result.accounts_updated result.accounts_changed result.errors result.plaid_accounts_updated result.plaid_errors result.holdings_updated result.holdings_accounts_updated result.holdings_errors result.flows_added result.flows_errors
+          exit $RC
 
       - name: Net worth snapshot
         if: ${{ !cancelled() }}

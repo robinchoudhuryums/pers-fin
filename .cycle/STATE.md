@@ -18,7 +18,23 @@ Updated: 2026-10-21
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Cycle 7 — expansion Batch 17 DONE** on branch `claude/sweet-ritchie-f9d8ah`
+- **Status:** **Cycle 7 — expansion Batch 18 DONE** on branch `claude/sweet-ritchie-f9d8ah`
+  (2026-10-21). Asynchronous sync for the backstops (ST1) + the Batch 3 workflow-timeout
+  follow-on, from `.cycle/plan-cycle7-expansion.md`. Block: `.cycle/blocks/7-batch18-broad-implement.md`.
+  - **Completed:** enrollments.js background tracker (bgJobs by kind, reconcileJob folded in),
+    runTransactionSync / runBalanceSync + sharedRun single-flight, `background: true` on /api/sync and
+    /api/sync-balances (202 + id, 409 follows), GET /api/sync/status?kind=; daily-sync + weekly-reconcile
+    use run_background (poll by id, 20-minute deadline, fixed error lines, allowlisted counts only);
+    check_status in weekly-reconcile / knowledge-reindex / job-radar.
+  - **Verification:** npm 1807/1807; contract 146/146; migrations twice; Playwright 35/35; the bash
+    helper run against a fake server; one mutation check red. Net 0.
+  - **Decisions:** the status's error is a fixed sentence (never an exception message — public logs);
+    a poller follows a 409'd run by its id; a missing id = "lost"; synchronous answers unchanged.
+  - **Follow-ons:** snapshot / detection steps still synchronous; knowledge-reindex prints vault JSON on
+    failure; job slots in memory only.
+  - **Where I left off:** Batch 18 committed and pushed (no PR). NEXT: /sync-docs for Batch 18, then
+    `/broad-implement Batch 19` (Plaid Link update mode, G3) → 20 → /reflect.
+- **Previous status:** **Cycle 7 — expansion Batch 17 DONE** on branch `claude/sweet-ritchie-f9d8ah`
   (2026-10-21). Operator visibility (G1 remaining + ST4), from `.cycle/plan-cycle7-expansion.md`.
   Block: `.cycle/blocks/7-batch17-broad-implement.md`.
   - **Completed:** teller/services/github-ops.js (read-only GitHub checks: backstop workflow state +

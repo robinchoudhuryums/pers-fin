@@ -472,9 +472,13 @@ describe("F5 / F16 — workflows", () => {
       assert.match(block.slice(0, 200), /if: \$\{\{ !cancelled\(\) \}\}/, step);
     }
     assert.match(yaml, /if \[ "\$2" = "000" \]; then[\s\S]*?::error::\$1: no response \(timed out or server unreachable\)/);
-    assert.equal((yaml.match(/-H "Content-Type: application\/json"\) \|\| true/g) || []).length, 4, "curl failures don't kill the step before it reports");
-    assert.equal((yaml.match(/check_status "/g) || []).length, 4);
-    assert.match(yaml, /--max-time 420/);
+    // Since cycle-7 ST1 the two sync steps run in the background through
+    // run_background (one curl + one check_status inside it) — see
+    // tests/scan-oct-batch18.test.js; the other two steps call curl directly.
+    assert.equal((yaml.match(/-H "Content-Type: application\/json"\) \|\| true/g) || []).length, 2, "curl failures don't kill the step before it reports");
+    assert.equal((yaml.match(/-H "Content-Type: application\/json" -d "\$body"\) \|\| true/g) || []).length, 1);
+    assert.equal((yaml.match(/check_status "/g) || []).length, 3);
+    assert.match(yaml, /run_background "Transaction sync" \/perfin\/api\/sync sync /);
   });
 
   it("every workflow declares least-privilege permissions", () => {

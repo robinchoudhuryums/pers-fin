@@ -31,6 +31,20 @@ jobs:
     # strings only when the key is suffixed ":str". Details live in the app
     # (Settings -> Sync Health).
     env:
+      # CHECK_STATUS reports a curl timeout or unreachable server ("000") as an
+      # error annotation instead of the step dying silently under `bash -e`
+      # (Batch 3 follow-on). Usage: check_status <label> <status> [expected…]
+      CHECK_STATUS: |
+        check_status() {
+          local label="$1" status="$2"; shift 2
+          if [ "$status" = "000" ]; then
+            echo "::error::$label: no response (timed out or server unreachable). The server may still be working."
+            return 1
+          fi
+          for ok in "${@:-200}"; do [ "$status" = "$ok" ] && { echo "$label: HTTP $status"; return 0; }; done
+          echo "::error::$label failed with HTTP $status"
+          return 1
+        }
       SUMMARY_JS: |
         const fs = require("fs");
         const [file, ...keys] = process.argv.slice(1);
@@ -57,12 +71,10 @@ jobs:
           # Job Radar runs under the Per-sistant sub-app behind the unified
           # shell; the shell's requireAuth honors x-api-key. Returns 200 with a
           # JSON summary; a non-200 fails the job so the run is visible.
-          STATUS=$(curl -s -o /tmp/jobradar.json -w "%{http_code}" \
+          eval "$CHECK_STATUS"
+          STATUS=$(curl -s -o /tmp/jobradar.json -w "%{http_code}" --max-time 600 \
             -X POST "${{ secrets.SERVER_URL }}/per-sistant/api/jobs/refresh" \
             -H "x-api-key: ${{ secrets.API_KEY }}" \
-            -H "Content-Type: application/json")
-          echo "Refresh status: $STATUS"
+            -H "Content-Type: application/json") || true
           node -e "$SUMMARY_JS" /tmp/jobradar.json ok skipped:str fetched added scored fit_scored legitimacy_reviewed capped purged
-          if [ "$STATUS" != "200" ]; then
-            echo "Job Radar refresh failed"; exit 1
-          fi
+          check_status "Job Radar refresh" "$STATUS"

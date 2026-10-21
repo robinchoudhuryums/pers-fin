@@ -623,31 +623,122 @@ async function syncAllTransactionsOnce() {
   };
 }
 
-// POST /api/sync
-router.post("/api/sync", async (req, res) => {
-  try {
-    // Teller AND Plaid (BSI-2) — last_txn_sync_at now honestly covers both.
-    const result = await syncAllTransactions();
-    // Update data freshness timestamp
-    await pool.query(
-      "UPDATE user_settings SET last_txn_sync_at = now() WHERE id = 1"
-    ).catch(e => console.error("last_txn_sync_at update failed:", e.message));
-    await recordSyncResult([
-      { provider: "teller_txn", result: result.teller },
-      { provider: "plaid_txn", result: result.plaid },
-    ]);
-    // Nothing synced at all (the Teller run threw outright and Plaid didn't
-    // succeed either) → still a 500, as before the Plaid leg was added, so the
-    // daily-sync.yml backstop goes red instead of reporting a green no-op.
-    const plaidOk = result.plaid && result.plaid.ok !== false;
-    if (result.teller && result.teller.failed && !plaidOk) {
-      return res.status(500).json({ error: "An internal error occurred.", errors: result.errors });
+// ---------------------------------------------------------------------------
+// Background jobs (cycle-7 ST1). The GitHub Actions backstops used to hold one
+// HTTP request open for the whole sync (curl --max-time 420), and a cold start
+// or a long Plaid walk outran it — the step failed while the sync was still
+// finishing on the server. POST /api/sync, /api/sync-balances and
+// /api/sync/reconcile accept `background: true`: they answer 202 at once, the
+// work runs detached, and GET /api/sync/status?kind= reports it. One slot per
+// kind, in memory (single-operator, single-process app); a restart loses the
+// slot, which a poller detects because the job `id` it was given is gone.
+// ---------------------------------------------------------------------------
+const BG_KINDS = ["sync", "sync-balances", "reconcile"];
+let bgSeq = 0;
+function idleJob(kind) {
+  return { kind, id: null, running: false, phase: null, started_at: null, finished_at: null, result: null, error: null };
+}
+const bgJobs = Object.fromEntries(BG_KINDS.map((k) => [k, idleJob(k)]));
+function startBgJob(kind, extra = {}) {
+  bgJobs[kind] = { ...idleJob(kind), ...extra, id: ++bgSeq, running: true, phase: "Starting", started_at: new Date().toISOString() };
+  return bgJobs[kind];
+}
+function finishBgJob(job, { result = null, error = null } = {}) {
+  job.running = false;
+  job.phase = null;
+  job.finished_at = new Date().toISOString();
+  job.result = result;
+  job.error = error;
+}
+
+// Route-level single-flight: a manual POST while a background run (or another
+// manual one) of the same kind is in progress shares that run's promise and
+// result instead of starting a second sync and recording it twice (PSC-12).
+const routeInFlight = {};
+function sharedRun(key, fn) {
+  if (routeInFlight[key]) return routeInFlight[key];
+  const p = (async () => fn())().finally(() => {
+    if (routeInFlight[key] === p) routeInFlight[key] = null;
+  });
+  routeInFlight[key] = p;
+  return p;
+}
+
+// Start `run` (→ { status, body, failure? }) detached under bgJobs[kind] and
+// answer 202, or 409 with the running job's id while one is in progress.
+// The status's `error` is a fixed, generic sentence — never an exception
+// message (a Teller error carries the response body) — because the backstop
+// workflows' logs are public while the repo is (INV-103).
+function startBackground(res, kind, run, extra) {
+  const cur = bgJobs[kind];
+  if (cur.running) {
+    return res.status(409).json({ running: true, kind, id: cur.id, started_at: cur.started_at, error: "A run of this kind is already in progress." });
+  }
+  const job = startBgJob(kind, extra);
+  job.phase = "Running";
+  (async () => {
+    try {
+      const r = await run();
+      finishBgJob(job, { result: r.body, error: r.status >= 400 ? (r.failure || "The run failed.") : null });
+    } catch (e) {
+      console.error(`Background ${kind} error:`, e.message);
+      finishBgJob(job, { error: "The run failed with an internal error — see the server log." });
     }
-    res.json(result);
+  })();
+  return res.status(202).json({ started: true, running: true, kind, id: job.id, started_at: job.started_at });
+}
+
+// The work behind POST /api/sync, shared by the synchronous and background
+// paths. Returns { status, body, failure? } (failure = the status's error).
+async function runTransactionSync() {
+  // Teller AND Plaid (BSI-2) — last_txn_sync_at now honestly covers both.
+  const result = await syncAllTransactions();
+  // Update data freshness timestamp
+  await pool.query(
+    "UPDATE user_settings SET last_txn_sync_at = now() WHERE id = 1"
+  ).catch(e => console.error("last_txn_sync_at update failed:", e.message));
+  await recordSyncResult([
+    { provider: "teller_txn", result: result.teller },
+    { provider: "plaid_txn", result: result.plaid },
+  ]);
+  // Nothing synced at all (the Teller run threw outright and Plaid didn't
+  // succeed either) → still a 500, as before the Plaid leg was added, so the
+  // daily-sync.yml backstop goes red instead of reporting a green no-op.
+  const plaidOk = result.plaid && result.plaid.ok !== false;
+  if (result.teller && result.teller.failed && !plaidOk) {
+    return {
+      status: 500,
+      body: { error: "An internal error occurred.", errors: result.errors },
+      failure: "Nothing synced: the Teller sync failed and Plaid did not succeed.",
+    };
+  }
+  return { status: 200, body: result };
+}
+
+// POST /api/sync — body { background?: true } (ST1): 202 + poll
+// GET /api/sync/status?kind=sync. Without it, unchanged: the result inline.
+router.post("/api/sync", async (req, res) => {
+  if (req.body && req.body.background === true) {
+    return startBackground(res, "sync", () => sharedRun("sync", runTransactionSync));
+  }
+  try {
+    const r = await sharedRun("sync", runTransactionSync);
+    res.status(r.status).json(r.body);
   } catch (err) {
     console.error("Sync error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
   }
+});
+
+// GET /api/sync/status?kind=sync|sync-balances|reconcile — the background job
+// slot (ST1): { kind, id, running, phase, started_at, finished_at, result,
+// error }. An idle slot has id null (never run since this process started).
+router.get("/api/sync/status", (req, res) => {
+  const kind = String(req.query.kind || "sync");
+  if (!BG_KINDS.includes(kind)) {
+    return res.status(400).json({ error: "kind must be one of " + BG_KINDS.join(", ") });
+  }
+  res.json(bgJobs[kind]);
 });
 
 // reconcileTeller — re-fetch the trailing N days from every Teller enrollment,
@@ -666,18 +757,18 @@ async function reconcileTeller(days = 90) {
 async function runReconcile(days, provider) {
   const out = { days, provider };
   if (provider === "teller" || provider === "all") {
-    reconcileJob.phase = "Re-fetching Teller transactions";
+    bgJobs.reconcile.phase = "Re-fetching Teller transactions";
     try { out.teller = await reconcileTeller(days); }
     catch (e) { out.teller = { error: e.message }; }
   }
   if (provider === "plaid" || provider === "all") {
-    reconcileJob.phase = "Re-walking Plaid history (this is the slow part)";
+    bgJobs.reconcile.phase = "Re-walking Plaid history (this is the slow part)";
     try {
       const { reconcilePlaidTransactions } = require("./investments");
       out.plaid = await reconcilePlaidTransactions();
     } catch (e) { out.plaid = { error: e.message }; }
   }
-  reconcileJob.phase = "Finalizing";
+  bgJobs.reconcile.phase = "Finalizing";
   // Record the reconcile outcome in last_sync_result (BSI-11) — it was never
   // recorded, so a failing reconcile was invisible. A leg that threw becomes a
   // single error entry.
@@ -698,11 +789,10 @@ async function runReconcile(days, provider) {
   return out;
 }
 
-// In-memory background-reconcile tracker. The Plaid leg is a full cursor
-// re-walk (up to 2 years across every item) and can take a while, so the UI
-// runs it in the background and polls /status; on completion we push a
-// notification. Single-operator, single-process app → one job at a time.
-let reconcileJob = { running: false, phase: null, started_at: null, finished_at: null, provider: null, days: null, result: null, error: null };
+// Background reconcile: the Plaid leg is a full cursor re-walk (up to 2 years
+// across every item) and can take a while, so the UI runs it in the background
+// and polls /status; on completion we push a notification. It lives in the
+// shared tracker above (bgJobs.reconcile — ST1), one job at a time.
 
 // Flatten every per-item / per-leg error out of a reconcile result (WD-17).
 // A leg that threw carries { error }; a leg that ran but had failing items
@@ -743,37 +833,37 @@ router.post("/api/sync/reconcile", async (req, res) => {
   const provider = ["teller", "plaid", "all"].includes(req.body.provider) ? req.body.provider : "all";
 
   if (req.body.background === true) {
-    if (reconcileJob.running) {
-      return res.status(409).json({ running: true, started_at: reconcileJob.started_at, error: "A reconcile is already running." });
+    if (bgJobs.reconcile.running) {
+      return res.status(409).json({ running: true, kind: "reconcile", id: bgJobs.reconcile.id, started_at: bgJobs.reconcile.started_at, error: "A reconcile is already running." });
     }
-    reconcileJob = { running: true, phase: "Starting", started_at: new Date().toISOString(), finished_at: null, provider, days, result: null, error: null };
+    const job = startBgJob("reconcile", { provider, days });
     // Fire-and-forget. Completion is reported via the status endpoint + a push.
     (async () => {
       let out;
       try { out = await runReconcile(days, provider); }
       catch (e) { out = { days, provider, error: e.message }; }
-      reconcileJob.running = false;
-      reconcileJob.finished_at = new Date().toISOString();
-      reconcileJob.result = out;
       // WD-17: per-item errors inside a leg (out.teller.errors / out.plaid.errors)
       // used to be ignored, so a reconcile whose items all failed still read
       // "Reconcile complete" in Settings and in the push.
       const errs = reconcileErrors(out);
-      reconcileJob.error = out.error || (errs.length
-        ? errs.length + " error(s): " + errs.slice(0, 3).map(e => (e.institution ? e.institution + ": " : (e.provider ? e.provider + ": " : "")) + e.error).join("; ")
-        : null);
-      reconcileJob.errors = errs;
+      finishBgJob(job, {
+        result: out,
+        error: out.error || (errs.length
+          ? errs.length + " error(s): " + errs.slice(0, 3).map(e => (e.institution ? e.institution + ": " : (e.provider ? e.provider + ": " : "")) + e.error).join("; ")
+          : null),
+      });
+      job.errors = errs;
       try {
         const { sendToAll } = require("./notifications");
         await sendToAll({
-          title: reconcileJob.error ? "Reconcile finished with errors" : "Reconcile complete",
+          title: job.error ? "Reconcile finished with errors" : "Reconcile complete",
           body: summarizeReconcile(out),
           tag: "reconcile",
           data: { url: "/settings" },
         });
       } catch (e) { console.error("Reconcile notification failed:", e.message); }
     })();
-    return res.status(202).json({ started: true, running: true, provider, days });
+    return res.status(202).json({ started: true, running: true, kind: "reconcile", id: job.id, started_at: job.started_at, provider, days });
   }
 
   try {
@@ -787,7 +877,7 @@ router.post("/api/sync/reconcile", async (req, res) => {
 
 // GET /api/sync/reconcile/status — poll the background reconcile job state.
 router.get("/api/sync/reconcile/status", (_req, res) => {
-  res.json(reconcileJob);
+  res.json(bgJobs.reconcile);
 });
 
 // GET /api/items
@@ -1296,66 +1386,80 @@ async function syncAllBalancesOnce() {
 }
 
 // POST /api/sync-balances
-router.post("/api/sync-balances", async (_req, res) => {
+// The work behind POST /api/sync-balances, shared by the synchronous and
+// background paths (ST1). Returns { status, body, failure? }.
+async function runBalanceSync() {
+  // A Teller throw is recorded and still answers 500 (daily-sync.yml goes
+  // red), but no longer skips the Plaid refresh or the record (cycle-7 F23).
+  let tellerResult = null;
+  let tellerThrew = null;
+  try { tellerResult = await syncAllBalances(); }
+  catch (e) { console.error("Teller balance sync error:", e.message); tellerThrew = e; }
+  // Also refresh Plaid balances so users with both providers get one-click
+  // freshness. Lazy-required to avoid a circular import via routes/investments.
+  let plaidResult = null;
+  let holdingsResult = null;
+  let flowsResult = null;
+  let plaidThrew = null;
   try {
-    // A Teller throw is recorded and still answers 500 (daily-sync.yml goes
-    // red), but no longer skips the Plaid refresh or the record (cycle-7 F23).
-    let tellerResult = null;
-    let tellerThrew = null;
-    try { tellerResult = await syncAllBalances(); }
-    catch (e) { console.error("Teller balance sync error:", e.message); tellerThrew = e; }
-    // Also refresh Plaid balances so users with both providers get one-click
-    // freshness. Lazy-required to avoid a circular import via routes/investments.
-    let plaidResult = null;
-    let holdingsResult = null;
-    let flowsResult = null;
-    let plaidThrew = null;
-    try {
-      const inv = require("./investments");
-      if (typeof inv.syncAllPlaidBalances === "function") {
-        plaidResult = await inv.syncAllPlaidBalances();
-      }
-      // Also refresh investment holdings so brokerage values + the
-      // investment_accounts rows repopulate from one "Sync Balances" click
-      // (notably right after a fresh-start reset, when those rows were wiped).
-      if (typeof inv.syncAllPlaidHoldings === "function") {
-        holdingsResult = await inv.syncAllPlaidHoldings();
-      }
-      // And external cash flows (TWR/XIRR) — idempotent full-window re-pull.
-      if (typeof inv.syncAllPlaidInvestmentFlows === "function") {
-        flowsResult = await inv.syncAllPlaidInvestmentFlows();
-      }
-    } catch (e) {
-      // A wholesale throw (vs. per-item errors collected inside the helpers)
-      // used to be only console.error'd, so a total Plaid balance/holdings
-      // failure left no trace in last_sync_result and was invisible on the
-      // Sync Health card (BS-6). Capture it so recordSyncResult surfaces it.
-      console.error("Plaid balance/holdings sync error:", e.message);
-      plaidThrew = e.message;
+    const inv = require("./investments");
+    if (typeof inv.syncAllPlaidBalances === "function") {
+      plaidResult = await inv.syncAllPlaidBalances();
     }
-    await pool.query(
-      "UPDATE user_settings SET last_balance_sync_at = now() WHERE id = 1"
-    ).catch(e => console.error("last_balance_sync_at update failed:", e.message));
-    await recordSyncResult([
-      { provider: "teller_balance", result: tellerThrew ? thrownSyncResult(tellerThrew) : tellerResult },
-      { provider: "plaid_balance", result: plaidResult },
-      { provider: "plaid_holdings", result: holdingsResult },
-      // Investment-flow errors were never recorded (DD-10); "Plaid not
-      // configured" is skipped inside recordSyncResult.
-      { provider: "plaid_flows", result: flowsResult },
-      ...(plaidThrew ? [{ provider: "plaid", result: { errors: [{ institution: null, error: plaidThrew }] } }] : []),
-    ]);
-    if (tellerThrew) return res.status(500).json({ error: "An internal error occurred." });
-    res.json({
-      ...tellerResult,
-      plaid_accounts_updated: plaidResult?.accounts_updated || 0,
-      plaid_errors: plaidResult?.errors?.length ? plaidResult.errors : undefined,
-      holdings_updated: holdingsResult?.holdings_updated || 0,
-      holdings_accounts_updated: holdingsResult?.accounts_updated || 0,
-      holdings_errors: holdingsResult?.errors?.length ? holdingsResult.errors : undefined,
-      flows_added: flowsResult?.flows_added || 0,
-      flows_errors: flowsResult?.errors?.length ? flowsResult.errors : undefined,
-    });
+    // Also refresh investment holdings so brokerage values + the
+    // investment_accounts rows repopulate from one "Sync Balances" click
+    // (notably right after a fresh-start reset, when those rows were wiped).
+    if (typeof inv.syncAllPlaidHoldings === "function") {
+      holdingsResult = await inv.syncAllPlaidHoldings();
+    }
+    // And external cash flows (TWR/XIRR) — idempotent full-window re-pull.
+    if (typeof inv.syncAllPlaidInvestmentFlows === "function") {
+      flowsResult = await inv.syncAllPlaidInvestmentFlows();
+    }
+  } catch (e) {
+    // A wholesale throw (vs. per-item errors collected inside the helpers)
+    // used to be only console.error'd, so a total Plaid balance/holdings
+    // failure left no trace in last_sync_result and was invisible on the
+    // Sync Health card (BS-6). Capture it so recordSyncResult surfaces it.
+    console.error("Plaid balance/holdings sync error:", e.message);
+    plaidThrew = e.message;
+  }
+  await pool.query(
+    "UPDATE user_settings SET last_balance_sync_at = now() WHERE id = 1"
+  ).catch(e => console.error("last_balance_sync_at update failed:", e.message));
+  await recordSyncResult([
+    { provider: "teller_balance", result: tellerThrew ? thrownSyncResult(tellerThrew) : tellerResult },
+    { provider: "plaid_balance", result: plaidResult },
+    { provider: "plaid_holdings", result: holdingsResult },
+    // Investment-flow errors were never recorded (DD-10); "Plaid not
+    // configured" is skipped inside recordSyncResult.
+    { provider: "plaid_flows", result: flowsResult },
+    ...(plaidThrew ? [{ provider: "plaid", result: { errors: [{ institution: null, error: plaidThrew }] } }] : []),
+  ]);
+  if (tellerThrew) {
+    return { status: 500, body: { error: "An internal error occurred." }, failure: "The Teller balance sync failed." };
+  }
+  return { status: 200, body: {
+    ...tellerResult,
+    plaid_accounts_updated: plaidResult?.accounts_updated || 0,
+    plaid_errors: plaidResult?.errors?.length ? plaidResult.errors : undefined,
+    holdings_updated: holdingsResult?.holdings_updated || 0,
+    holdings_accounts_updated: holdingsResult?.accounts_updated || 0,
+    holdings_errors: holdingsResult?.errors?.length ? holdingsResult.errors : undefined,
+    flows_added: flowsResult?.flows_added || 0,
+    flows_errors: flowsResult?.errors?.length ? flowsResult.errors : undefined,
+  } };
+}
+
+// POST /api/sync-balances — body { background?: true } (ST1): 202 + poll
+// GET /api/sync/status?kind=sync-balances. Without it, unchanged.
+router.post("/api/sync-balances", async (req, res) => {
+  if (req.body && req.body.background === true) {
+    return startBackground(res, "sync-balances", () => sharedRun("sync-balances", runBalanceSync));
+  }
+  try {
+    const r = await sharedRun("sync-balances", runBalanceSync);
+    res.status(r.status).json(r.body);
   } catch (err) {
     console.error("sync-balances error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
@@ -1469,4 +1573,7 @@ module.exports.recordSyncResult = recordSyncResult;
 module.exports.thrownSyncResult = thrownSyncResult;
 module.exports.syncAllTransactions = syncAllTransactions;
 module.exports.runAnomalyCheck = runAnomalyCheck;
+module.exports.runTransactionSync = runTransactionSync;
+module.exports.runBalanceSync = runBalanceSync;
+module.exports._bgJobs = bgJobs;
 module.exports.lookbackFloor = lookbackFloor; // exported for testing (BSI-8)
