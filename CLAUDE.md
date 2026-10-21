@@ -197,6 +197,12 @@ teller/
                            Teller sync engine, and account management. Also
                            hosts syncAllTransactions (the single Teller+Plaid
                            transaction-sync entry point) + runAnomalyCheck.
+                           Background jobs (cycle-7 ST1): bgJobs, one in-memory
+                           slot per kind (sync / sync-balances / reconcile, each
+                           with an id); runTransactionSync / runBalanceSync are
+                           the route bodies, shared through sharedRun (a POST
+                           during a run joins it) and startBackground (202 +
+                           id, 409 while running); GET /api/sync/status.
                            Mounts spending-analytics.js (route-file split).
     spending-analytics.js — split from enrollments.js: the six read-only
                            aggregation endpoints — /api/spending-summary,
@@ -645,9 +651,18 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1792 tests as of latest); use
+  Perfin and Per-sistant test files (1807 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1792 tests across 86 test files (incl.
+  Current count: 1807 tests across 87 test files (incl.
+  `tests/scan-oct-batch18.test.js` — the cycle-7 expansion Batch 18 pins (ST1): POST
+  /api/sync {background:true} → 202 + id, status running → done, a second start a 409 on
+  the same id; a manual POST during a background run sharing it (one sync, one record); the
+  fixed status error (never exception text); the synchronous path unchanged; sync-balances
+  and the reconcile in the same tracker; the unknown-kind 400; daily-sync's run_background
+  helper EXECUTED in bash against a fake server (done / server error / lost run / down
+  server / deadline / 409-follow / unreachable, the job's error text never printed); the
+  workflow wiring and check_status in every workflow that calls the app — the
+  database-backed half is `tests/contract/async-sync.contract.test.js`;
   `tests/scan-oct-batch17.test.js` — the cycle-7 expansion Batch 17 pins (G1 + ST4): the
   GitHub checks against a fake API (healthy repo, disabled critical vs optional workflow,
   failing / stale / missing runs, no or old backup, missing secrets, a public repo, a 401 /
@@ -913,13 +928,15 @@ shell/
   exactly their months), operator-checks (cycle-7 Batch 17: the Knowledge check asking for
   a reindex until a real full vault sync stamps vault_parse_version, and GitHub problems
   reaching /api/operator-checks + data-health with one notification per failing set),
+  async-sync (cycle-7 Batch 18: a background /api/sync and /api/sync-balances finishing and
+  recording last_txn_sync_at / last_balance_sync_at + last_sync_result per provider),
   batch16-persistent (the notes privacy tier: the CHECK, keyword
   retrieval returning normal notes only, search masking a secret note, chunks +
   embed_state dropped when a note turns private) and knowledge (syncVault through a
   fake GitHub API via its `fetchImpl`, syncNotes, keyword search never returning
   secret text, secret-lookup, facts current vs `all=1` + verify, /api/rag/query
   without AI, an incremental compare that removes a deleted file) plus insight
-  feedback set / change / clear (the F60 `$1::text` cast). 144 tests, run
+  feedback set / change / clear (the F60 `$1::text` cast). 146 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -1102,7 +1119,18 @@ shell/
   ${{ !cancelled() }}`, so one failed or timed-out call no longer skips the
   balance sync, snapshot and detection — and a `CHECK_STATUS` helper turns a
   curl timeout ("000") into an `::error::` annotation instead of a silent
-  `bash -e` exit (each `curl` ends `|| true`; the sync's max-time is 420 s).
+  `bash -e` exit (each `curl` ends `|| true`). Since cycle-7 Batch 18 (ST1) every
+  workflow that calls the app defines `check_status` (weekly-reconcile,
+  knowledge-reindex and job-radar used to exit silently on a timeout; it takes an
+  expected-status list, default 200), and daily-sync's two sync steps and
+  weekly-reconcile run IN THE BACKGROUND through a `RUN_BACKGROUND` helper:
+  `run_background <label> <path> <kind> <out> <body>` POSTs `{"background": true}`
+  (409 → follows the job already running), polls `/perfin/api/sync/status?kind=` by
+  job id every `BG_POLL_SECONDS` (15) for up to `BG_DEADLINE_SECONDS` (1200), and
+  fails the step on the job's error, a lost run (its id gone — a restart), a failed
+  start or the deadline — never printing the job's error text; the final status is
+  printed only through `SUMMARY_JS` (`result.*` keys). The job env carries
+  `SERVER_URL` / `API_KEY` from secrets for it.
 - `.github/workflows/csv-import.yml` — imports CSVs pushed to `csv-uploads/`
   (scripts/import-csv-cli.js → Sheets), then `git rm`s them (PSC-15: they used to
   be archived under `csv-uploads/processed/`, keeping raw bank statements in every
@@ -2684,7 +2712,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1792 tests passing across 86 test files (Perfin 1265 + Per-sistant 527), plus the real-Postgres route contract suite (144 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
+- 1807 tests passing across 87 test files (Perfin 1280 + Per-sistant 527), plus the real-Postgres route contract suite (146 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -2710,7 +2738,12 @@ POST /api/sync             # pull transactions from Teller AND Plaid via
                            # teller, plaid }. 500 only when nothing synced (Teller
                            # threw and Plaid didn't succeed) so daily-sync.yml goes
                            # red. Stamps last_txn_sync_at; records teller_txn +
-                           # plaid_txn in last_sync_result.
+                           # plaid_txn in last_sync_result. Body background:true
+                           # (cycle-7 ST1) → 202 { started, running, kind, id,
+                           # started_at } and the run continues detached (409 with
+                           # the running job's id while one runs); poll GET
+                           # /api/sync/status?kind=sync. A POST during a run joins
+                           # it (one sync, one record).
 DELETE /api/items/:id      # unlink a Plaid item (BSI-3): best-effort itemRemove at
                            # Plaid (frees a Trial slot; skipped for CSV virtual
                            # items; token decrypt fail-soft), then in one txn delete
@@ -2724,7 +2757,9 @@ GET  /api/items            # linked Teller enrollments + Plaid items; investment
 DELETE /api/plaid/investment-items/:id # unlink an investments-only Plaid item: itemRemove
                            # at Plaid (fail-soft), deactivate its investment_accounts,
                            # drop their holdings, delete the registry row (F22)
-POST /api/sync-balances    # fetch latest account balances. Refreshes Teller
+POST /api/sync-balances    # (body background:true → 202 + job id, kind
+                           # sync-balances — ST1; same rules as /api/sync)
+                           # fetch latest account balances. Refreshes Teller
                            # (`syncAllBalances`), Plaid balances + credit limit
                            # + liabilities/APR (`syncAllPlaidBalances`), AND
                            # Plaid investment holdings (`syncAllPlaidHoldings`)
@@ -2750,12 +2785,21 @@ POST /api/sync/reconcile   # backfill/reconcile to recover dropped transactions
                            # { days, provider, teller?, plaid? } per-provider
                            # summaries inline (the contract API/CLI callers rely on).
                            # With background:true the work runs detached: returns 202
-                           # { started, running, provider, days } immediately and
+                           # { started, running, kind, id, started_at, provider,
+                           # days } immediately and
                            # pushes a "Reconcile complete" notification on finish
                            # (409 if one is already running). The Sync Health UI uses
                            # background mode + polling since the Plaid leg re-walks up
                            # to 2 years of history and can take a minute.
-GET  /api/sync/reconcile/status # poll the background reconcile job
+GET  /api/sync/status      # a background job slot (cycle-7 ST1; query kind=
+                           # sync|sync-balances|reconcile, default sync; 400 otherwise):
+                           # { kind, id, running, phase, started_at, finished_at,
+                           # result, error }. error is a FIXED sentence ("Nothing synced:
+                           # the Teller sync failed and Plaid did not succeed." …), never
+                           # an exception message; an idle slot has id null. In memory —
+                           # a restart empties it (pollers compare the id they were given)
+GET  /api/sync/reconcile/status # poll the background reconcile job (the same slot as
+                           # /api/sync/status?kind=reconcile)
                            # { running, started_at, finished_at, provider, days,
                            #   result, error, errors[] } — error also summarizes
                            # per-item errors inside a leg (reconcileErrors, WD-17), so
@@ -3888,7 +3932,8 @@ rows) can dismiss them from the UI or run `POST /api/cleanup`.
 - **Rate limiting**: General (100/15min), tight (5/1min) for sync/detect, login (10/15min),
   SSO validate (10/15min). Under the shell the general limiter is SKIPPED (the request
   already passed the shell gate; the dashboard alone makes ~35-40 /api calls per load), and
-  the tight limiter skips GETs so the 4-second `GET /api/sync/reconcile/status` poll isn't
+  the tight limiter skips GETs so the 4-second `GET /api/sync/reconcile/status` poll (and the
+  workflows' `GET /api/sync/status` polls) isn't
   429'd (PSC-8) — they still apply to a standalone deployment / the sync triggers. Shell layer (the sole auth gate): `authLimiter`
   (10 failed/15min, `skipSuccessfulRequests`) on `POST /login` and the
   biometric `authenticate`/`authenticate-options` endpoints, plus `apiKeyLimiter`
@@ -3964,8 +4009,8 @@ All run automatically after server startup — and the CRITICAL ones are
 additionally guaranteed out-of-process by GitHub Actions cron (so Render
 free-tier sleep can't skip them): `daily-sync.yml` (Teller + Plaid transactions
 via /api/sync + balances/holdings/flows + net-worth snapshot + detection, daily
-7AM UTC) and
-`weekly-reconcile.yml` (Teller 90-day reconcile, Sundays). Both hit the
+7AM UTC — the two syncs started in the background and polled by job id, cycle-7 ST1) and
+`weekly-reconcile.yml` (Teller 90-day reconcile, Sundays — background + polling too). Both hit the
 x-api-key'd endpoints; all writes are idempotent so overlap with the
 in-process jobs is harmless. Their logs print counts only (`SUMMARY_JS`,
 cycle-7 F2 — see Security). **Caveat (cycle-7 scan, F3/F4):** as of Oct 2026
@@ -4799,8 +4844,9 @@ last scan batch. The deferred decisions became Batches 14–16 (`.cycle/plan-cyc
 rename rules, and Batch 16, the CSV sign, insight-email toggle, archive fingerprints
 and notes privacy tier, are done — the deferred plan is complete). The expansion work is
 re-cut into Batches 17–20 (`.cycle/plan-cycle7-expansion.md`): Batch 17, operator
-visibility (G1 + ST4), is done; 18 async sync (ST1), 19 Plaid update mode (G3) and 20
-browser quality + the Per-sistant client kit (G2 + ST3) remain):
+visibility (G1 + ST4), and Batch 18, async sync for the backstops (ST1), are done; 19
+Plaid update mode (G3) and 20 browser quality + the Per-sistant client kit (G2 + ST3)
+remain):
 - The repo is PUBLIC (operator: make it private and delete old Actions logs —
   they printed balances and net worth before Batch 1).
 - OPERATOR: Database Backup has never produced a backup (its secrets were never
@@ -4810,10 +4856,9 @@ browser quality + the Per-sistant client kit (G2 + ST3) remain):
   Batch 3; see Operator state items 4–5). Settings → Sync Health → Operator
   Checks shows it once `GITHUB_OPS_TOKEN` is set (item 6).
 - `/api/insights/rebuild` still falls back to "sonnet" when its settings read
-  fails (the F73 pattern, model only); weekly-reconcile / knowledge-reindex /
-  job-radar workflows still exit silently on a curl timeout (daily-sync has
-  `CHECK_STATUS`); a self-healing reconcile that throws retries hourly (it is
-  recorded now). Batch 3 follow-ons.
+  fails (the F73 pattern, model only); a self-healing reconcile that throws
+  retries hourly (it is recorded now). Batch 3 follow-ons (the silent curl-timeout
+  exits in three workflows were fixed in Batch 18).
 - Plaid re-auth still needs unlink + link (no Link update mode — G3); the
   duplicate-Item guard (F18) is the stop-gap, so adding a new account at an
   already-connected login also needs unlink + link. The investments-only
@@ -4900,6 +4945,13 @@ browser quality + the Per-sistant client kit (G2 + ST3) remain):
   presence only (a wrong SERVER_URL / API_KEY shows up as failing runs); the Knowledge
   page and `/api/rag/status` don't show the parse version; the GitHub checks support
   github.com only; a SHELL_PIN under 6 characters is a standing dashboard warning.
+- Batch 18 follow-ons: daily-sync's net-worth snapshot and detection steps still hold
+  one request open; `knowledge-reindex.yml` prints its `{reindex, vault}` status JSON on
+  a failed reindex (the vault block can carry repo / file names — an INV-103 gap that
+  predates the batch); the background job slots are in memory, so a restart mid-run
+  reads as "lost" (the step fails though the next run recovers); a deploy must reach
+  the server before the next daily-sync — an old server answers 200 to
+  `background: true`, which run_background reports as a failure.
 
 The bugs Batch 15's real-code tests exposed (calendar 500, Quick Add regexes,
 palette picker under the shell, undefined CSS vars, unvalidated theme /
@@ -5203,6 +5255,7 @@ INV-121 | Drift guards only shrink: the timezone lint (no new UTC today/month an
 INV-122 | Every spending aggregation nets refunds through the shared spend_lines (spendLinesCTE: charges + split lines + REFUND_PREDICATE lines) floored per (month, category) at $0 (NET_CATEGORY_MONTHS) — no route re-derives refunds, the Sheets mirror is SX3-pinned, and cash flow / anomaly / tax stay charge-level (cycle-7 F35) | Subsystem: Financial Analytics | Verify: tests/scan-oct-batch14.test.js + tests/contract/refunds.contract.test.js + tests/contract/budget-parity.contract.test.js
 INV-123 | The subscription watchdog alerts at most once per post-cancel charge (still_charging_txn) and once per new price (price_alerted_amount), only for a charge more than 7 days after cancelled_at at ±25% of the amount or a rise of ≥5% or ≥$1, and marks a row only after its notification was logged | Subsystem: Detection & Categorization / Notification Correctness | Verify: tests/contract/watchdog-rename.contract.test.js + tests/scan-oct-batch15.test.js
 INV-124 | A merchant rename rule matches the RAW merchant (never the user override), fills only a NULL user_merchant_name and tags it with user_merchant_rule_id — a hand rename always wins and clears the tag; deleting a rule reverts exactly its rows; re-keying detection keeps the rows' user state | Subsystem: Detection & Categorization | Verify: tests/contract/watchdog-rename.contract.test.js + tests/scan-oct-batch15.test.js
+INV-127 | A background sync (POST /api/sync, /api/sync-balances, /api/sync/reconcile with background:true) answers 202 with a job id at once and runs the SAME body as the synchronous call (records last_sync_result / freshness identically); a POST during a run of that kind joins it (sharedRun) and a second background start is a 409 carrying the running id; the status's error is a fixed sentence, never an exception message; the backstop workflows poll by id and fail on an error, a lost run or the deadline without printing the error text | Subsystem: Bank Sync & Ingestion / Platform, Shell & Auth | Verify: tests/scan-oct-batch18.test.js + tests/contract/async-sync.contract.test.js
 INV-126 | Operator checks are fail-soft and read-only: the GitHub client only GETs, with GITHUB_OPS_TOKEN read from the environment per call — never stored, logged or returned (errors carry only the HTTP status) — and never requests a secret's value; any failure is an "unknown" check with a reason, never a throw into data-health; data-health reads cached GitHub results only; the notification fires once per change in the failing set | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch17.test.js + tests/contract/operator-checks.contract.test.js
 INV-125 | A generic CSV's sign is applied identically by preview, import and CLI: positive_means goes through parseCsvUpload's one parseOpts (default 'charges' — the old reading, so earlier imports keep their dedup IDs); an unknown value is a 400; known bank formats ignore it | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-oct-batch16.test.js + tests/contract/batch16-perfin.contract.test.js (F26)
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)

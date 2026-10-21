@@ -32,7 +32,15 @@ implement and reflect sessions only set Phase.)
     a poller follows a 409'd run by its id; a missing id = "lost"; synchronous answers unchanged.
   - **Follow-ons:** snapshot / detection steps still synchronous; knowledge-reindex prints vault JSON on
     failure; job slots in memory only.
-  - **Where I left off:** Batch 18 committed and pushed (no PR). NEXT: /sync-docs for Batch 18, then
+  - **/sync-docs DONE (Batch 18):** CLAUDE.md — enrollments.js background-tracker note, the
+    workflow-hygiene paragraph (check_status everywhere, RUN_BACKGROUND / run_background, poll by
+    id, 20-minute deadline), Commands (/api/sync + /api/sync-balances background mode, the
+    reconcile 202 shape, new GET /api/sync/status), the limiter note, Scheduled Tasks backstop
+    text, Known Open Issues (Batch 18 done; the Batch 3 curl-timeout follow-on resolved; Batch 18
+    follow-ons), new INV-127, counts 1807 / 87 files / Perfin 1280 / contract 146 + test-file
+    descriptions. README — counts and coverage. Per-sistant docs unchanged (no Per-sistant code
+    or test change). Subsystem paths unchanged.
+  - **Where I left off:** Batch 18 + its /sync-docs committed and pushed (no PR). NEXT:
     `/broad-implement Batch 19` (Plaid Link update mode, G3) → 20 → /reflect.
 - **Previous status:** **Cycle 7 — expansion Batch 17 DONE** on branch `claude/sweet-ritchie-f9d8ah`
   (2026-10-21). Operator visibility (G1 remaining + ST4), from `.cycle/plan-cycle7-expansion.md`.
