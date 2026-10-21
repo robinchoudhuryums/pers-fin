@@ -18,7 +18,28 @@ Updated: 2026-10-21
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Cycle 7 — expansion Batch 18 DONE** on branch `claude/sweet-ritchie-f9d8ah`
+- **Status:** **Cycle 7 — expansion Batch 19 DONE** on branch `claude/sweet-ritchie-f9d8ah`
+  (2026-10-21). Plaid Link update mode (G3) + the Batch 4 investments-exchange duplicate-guard
+  follow-on, from `.cycle/plan-cycle7-expansion.md`. Block: `.cycle/blocks/7-batch19-broad-implement.md`.
+  - **Completed:** investments.js — POST /api/plaid/link-token-update (the item's own token, no
+    products, account selection on; decryption_failed 409) and POST /api/plaid/update-complete (no
+    exchange; transactions: register accounts → clear last_error_code → sync that item under the
+    Plaid lock; investments: holdings sync for that Item via syncAllPlaidHoldings({ itemId })); the
+    investments-only exchange refuses a duplicate (findDuplicateInvestmentItem + the new
+    investment_accounts.mask); the F18 text points to Re-authenticate / Add accounts; a NEW re-auth
+    code notifies once (url /accounts). GET /api/items carries last_error_code; the data-health issue
+    links to /accounts (Settings + dashboard strip render issue links); Accounts page buttons.
+  - **Verification:** npm 1825/1825; contract 152/152; migrations twice; Playwright 35/35; two mutation
+    checks red. Net −1.
+  - **Decisions:** update mode uses the in-page Link (popup OAuth), not the hosted flow; the
+    investments-only duplicate match is institution name + mask + type (investment_accounts has no item
+    link); update-complete does no balance / liabilities refresh (the next sync does).
+  - **Follow-ons:** no hosted (iOS Safari) update mode; no last_sync_result write from update-complete;
+    investments-only Items never flagged for re-auth; new brokerage accounts on a Transactions Item wait
+    for the next holdings sync.
+  - **Where I left off:** Batch 19 committed and pushed (no PR). NEXT: `/sync-docs` for Batch 19, then
+    `/broad-implement Batch 20` (browser quality + the Per-sistant client kit, G2 + ST3) → /reflect.
+- **Previous status:** **Cycle 7 — expansion Batch 18 DONE** on branch `claude/sweet-ritchie-f9d8ah`
   (2026-10-21). Asynchronous sync for the backstops (ST1) + the Batch 3 workflow-timeout
   follow-on, from `.cycle/plan-cycle7-expansion.md`. Block: `.cycle/blocks/7-batch18-broad-implement.md`.
   - **Completed:** enrollments.js background tracker (bgJobs by kind, reconcileJob folded in),

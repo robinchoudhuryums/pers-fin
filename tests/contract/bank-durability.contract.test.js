@@ -110,7 +110,7 @@ describe("bank-sync durability on real Postgres", { skip: SKIP }, () => {
     const res = await supertest(app).post("/api/plaid/exchange-transactions")
       .send({ public_token: "pub", institution: { institution_id: "ins_9", name: "Capital Bank" } }).expect(409);
     assert.equal(res.body.duplicate_of.id, old);
-    assert.match(res.body.error, /unlink the existing one/);
+    assert.match(res.body.error, /Re-authenticate \/ Add accounts/);
     assert.deepEqual(removed, ["new_tok"]);
     assert.equal((await q("SELECT COUNT(*)::int AS n FROM plaid_items WHERE item_id='p_new'")).rows[0].n, 0);
     assert.equal((await q("SELECT COUNT(*)::int AS n FROM linked_accounts WHERE account_id='new_acc'")).rows[0].n, 0);

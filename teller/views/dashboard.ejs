@@ -1563,7 +1563,10 @@
           if (!warnings.length) return; // healthy (or info-only) → stay hidden
           try { if (sessionStorage.getItem('perfin_synchealth_dismissed') === '1') return; } catch (e) {}
           var esc = (window.esc) || function (s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); };
-          list.innerHTML = warnings.slice(0, 3).map(function (i) { return esc(i.message); }).join('<br>') +
+          list.innerHTML = warnings.slice(0, 3).map(function (i) {
+            // An issue with a `link` (Plaid re-auth → /accounts, G3) opens it.
+            return i.link ? '<a href="' + esc(window.withBase ? window.withBase(i.link) : i.link) + '" style="color:inherit;">' + esc(i.message) + '</a>' : esc(i.message);
+          }).join('<br>') +
             (warnings.length > 3 ? '<br>+' + (warnings.length - 3) + ' more' : '');
           strip.style.display = 'block';
         } catch (e) { /* health probe is best-effort — never block the dashboard */ }

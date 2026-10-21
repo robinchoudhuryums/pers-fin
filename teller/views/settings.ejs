@@ -1494,7 +1494,9 @@
         if (dhIssues.length) {
           out += '<ul style="margin:6px 0;padding-left:18px;">' + dhIssues.map(function (i) {
             var c = i.severity === 'info' ? 'var(--text-muted)' : 'var(--red,#eb6b6b)';
-            return '<li style="color:' + c + ';">' + esc(i.message) + '</li>';
+            // An issue with a `link` (e.g. Plaid re-auth → /accounts, G3) opens it.
+            var msg = i.link ? '<a href="' + esc(window.withBase ? window.withBase(i.link) : i.link) + '" style="color:inherit;">' + esc(i.message) + '</a>' : esc(i.message);
+            return '<li style="color:' + c + ';">' + msg + '</li>';
           }).join('') + '</ul>';
         }
         if (h.last_reconcile_at) {

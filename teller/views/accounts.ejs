@@ -218,15 +218,28 @@
         if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || 'HTTP ' + res.status); }
         const items = await res.json();
         if (!items.length) { itemsList.textContent = 'No institutions linked yet.'; return; }
-        itemsList.innerHTML = items.map(i =>
-          '<div class="item">' +
+        itemsList.innerHTML = items.map(function (i) {
+          // Plaid Link update mode (cycle-7 G3): a connected Plaid item is
+          // repaired / extended in place — "Re-authenticate" when the last sync
+          // recorded a re-auth code, "Add accounts" always. CSV imports aren't
+          // Plaid connections.
+          var plaidKind = i.provider === 'plaid_investment' ? 'investments'
+            : (i.provider === 'plaid' && i.status !== 'CSV') ? 'transactions' : null;
+          var upd = '';
+          if (plaidKind) {
+            var attrs = ' data-id="' + i.id + '" data-kind="' + plaidKind + '" data-name="' + esc(i.institution_name || '') + '"';
+            if (i.last_error_code) upd += '<button class="btn-unlink" style="border-color:var(--warm);color:var(--warm);" data-action="plaid-update" data-mode="reauth"' + attrs + '>Re-authenticate</button> ';
+            upd += '<button class="btn-unlink" style="border-color:var(--border);color:var(--teal);" data-action="plaid-update" data-mode="add"' + attrs + '>Add accounts</button> ';
+          }
+          return '<div class="item">' +
             '<div class="item-info"><strong>' + esc(i.institution_name) + '</strong>' +
             ' (' + esc(i.provider === 'plaid_investment' ? 'plaid, investments' : (i.provider || 'teller')) + ') \u2014 ' +
             (i.provider === 'plaid_investment' ? 'investment accounts' : i.accounts.length + ' account(s)') +
-            ' \u2014 Status: ' + esc(i.status) + '</div>' +
-            '<div class="item-actions"><button class="btn-unlink" data-action="unlink" data-id="' + i.id + '" data-provider="' + esc(i.provider || 'teller') + '" data-name="' + esc(i.institution_name || '') + '">Unlink</button></div>' +
-          '</div>'
-        ).join('');
+            ' \u2014 Status: ' + esc(i.status) +
+            (i.last_error_code ? ' \u2014 <span style="color:var(--red,#eb6b6b);">needs re-authentication</span>' : '') + '</div>' +
+            '<div class="item-actions">' + upd + '<button class="btn-unlink" data-action="unlink" data-id="' + i.id + '" data-provider="' + esc(i.provider || 'teller') + '" data-name="' + esc(i.institution_name || '') + '">Unlink</button></div>' +
+          '</div>';
+        }).join('');
       } catch (e) {
         itemsList.textContent = 'Could not load items: ' + e.message;
         showStatus('Failed to load linked accounts: ' + e.message, false);
@@ -609,19 +622,21 @@
         if (d.configured) document.getElementById('plaid-inv-btn').style.display = 'inline-block';
       } catch {}
     }
+    async function ensurePlaidSdk() {
+      if (window.Plaid) return;
+      await new Promise(function(resolve, reject) {
+        var s = document.createElement('script');
+        s.src = 'https://cdn.plaid.com/link/v2/stable/link-initialize.js';
+        s.onload = resolve; s.onerror = function () { reject(new Error('Could not load Plaid Link')); };
+        document.head.appendChild(s);
+      });
+    }
     async function linkPlaidInvestments() {
       try {
         var res = await apiFetch('/api/plaid/link-token', { method: 'POST' });
         var d = await res.json();
         if (!res.ok) { showStatus(d.error || 'Failed', false); return; }
-        if (!window.Plaid) {
-          await new Promise(function(resolve, reject) {
-            var s = document.createElement('script');
-            s.src = 'https://cdn.plaid.com/link/v2/stable/link-initialize.js';
-            s.onload = resolve; s.onerror = reject;
-            document.head.appendChild(s);
-          });
-        }
+        await ensurePlaidSdk();
         var handler = window.Plaid.create({
           token: d.link_token,
           onSuccess: async function(public_token, metadata) {
@@ -641,6 +656,43 @@
         });
         handler.open();
       } catch (e) { showStatus(e.message, false); }
+    }
+
+    // Plaid Link UPDATE MODE (cycle-7 G3) — Re-authenticate / Add accounts on
+    // an existing Plaid connection. The Item and its access token stay the
+    // same, so there is no token exchange: on success the server registers any
+    // new accounts, clears the re-auth flag and syncs that connection.
+    async function updatePlaidItem(id, kind, name) {
+      try {
+        var res = await apiFetch('/api/plaid/link-token-update', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ item_id: id, kind: kind }),
+        });
+        if (!(await writeOk(res, 'Could not open Plaid for ' + name))) return;
+        var d = await res.json();
+        await ensurePlaidSdk();
+        var handler = window.Plaid.create({
+          token: d.link_token,
+          onSuccess: async function () {
+            try {
+              showStatus('Refreshing ' + name + '...', true);
+              var r = await apiFetch('/api/plaid/update-complete', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ item_id: id, kind: kind }),
+              });
+              if (!(await writeOk(r, 'Could not refresh ' + name))) { loadItems(); return; }
+              var out = await r.json();
+              showStatus(name + ' updated: ' + out.accounts_added + ' new account(s), ' + out.transactions_added + ' new transaction(s).', true);
+              loadItems();
+              if (kind === 'investments') loadInvestments();
+            } catch (e) { showStatus('Could not refresh ' + name + ': ' + e.message, false); }
+          },
+          onExit: function (err) {
+            if (err) showStatus('Plaid: ' + (err.display_message || err.error_message || err.error_code || 'closed'), false);
+          },
+        });
+        handler.open();
+      } catch (e) { showStatus('Could not open Plaid for ' + name + ': ' + e.message, false); }
     }
 
     // --- Plaid transactions link (for Capital One, Discover, etc.) ---
@@ -809,6 +861,9 @@
     // Event delegation for dynamically generated unlink/investment buttons
     onDelegate('items-list', 'click', '[data-action="unlink"]', function() {
       unlinkAccount(parseInt(this.dataset.id), this.dataset.name, this.dataset.provider);
+    });
+    onDelegate('items-list', 'click', '[data-action="plaid-update"]', function() {
+      updatePlaidItem(parseInt(this.dataset.id), this.dataset.kind, this.dataset.name);
     });
     onDelegate('inv-list', 'click', '[data-action]', function() {
       var action = this.dataset.action;

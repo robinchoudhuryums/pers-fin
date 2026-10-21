@@ -419,7 +419,8 @@ router.get("/api/data-health", async (req, res) => {
 
     const issues = [];
     if (t.disconnected > 0) issues.push({ severity: "warning", message: `${t.disconnected} Teller enrollment(s) disconnected — re-link in Accounts.` });
-    if (p.not_good > 0) issues.push({ severity: "warning", message: `${p.not_good} Plaid item(s) need re-authentication.` });
+    // Fixed in place on the Accounts page (Link update mode, cycle-7 G3).
+    if (p.not_good > 0) issues.push({ severity: "warning", message: `${p.not_good} Plaid item(s) need re-authentication — open Accounts → Re-authenticate.`, link: "/accounts" });
     if (!s.last_txn_sync_at && !s.last_auto_sync_at) {
       issues.push({ severity: "info", message: "No transaction sync has run yet." });
     } else if (freshness.transactions.level === "stale") {

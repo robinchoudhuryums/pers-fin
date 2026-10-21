@@ -989,6 +989,10 @@ async function runMigrationsOnce() {
     // this is set — before, every Plaid account counted as covered even if
     // its flows never synced, so its deposits read as market return.
     await client.query("ALTER TABLE investment_accounts ADD COLUMN IF NOT EXISTS flows_synced_at TIMESTAMPTZ");
+    // Cycle-7 G3: a Plaid investment account's mask (last digits), written by
+    // the holdings sync + both exchange paths, so the investments-only link
+    // can refuse a duplicate of an earlier investments-only Item (F18 guard).
+    await client.query("ALTER TABLE investment_accounts ADD COLUMN IF NOT EXISTS mask TEXT");
 
     // Scheduled-job heartbeat table (F4 — missed-job detection). One row per
     // background job in teller/startup.js, UPSERTed by services/job-health.js

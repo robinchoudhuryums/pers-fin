@@ -891,6 +891,7 @@ router.get("/api/items", async (_req, res) => {
          COALESCE(te.status, pi.status) AS status,
          COALESCE(te.created_at, pi.created_at) AS created_at,
          CASE WHEN te.id IS NOT NULL THEN 'teller' ELSE 'plaid' END AS provider,
+         pi.last_error_code,
          json_agg(json_build_object(
            'account_id', la.account_id,
            'name', la.name,
@@ -902,7 +903,7 @@ router.get("/api/items", async (_req, res) => {
        LEFT JOIN teller_enrollments te ON te.id = la.teller_enrollment_id
        LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
        GROUP BY te.id, te.enrollment_id, te.institution_name, te.status, te.created_at,
-                pi.id, pi.item_id, pi.institution_name, pi.status, pi.created_at
+                pi.id, pi.item_id, pi.institution_name, pi.status, pi.created_at, pi.last_error_code
        ORDER BY COALESCE(te.created_at, pi.created_at)`
     );
     // Investments-only Plaid Items (POST /api/plaid/exchange) live only in
@@ -911,7 +912,7 @@ router.get("/api/items", async (_req, res) => {
     // page unlinks them via DELETE /api/plaid/investment-items/:id.
     const inv = await pool.query(
       `SELECT pii.id, pii.item_id, pii.institution_name, 'GOOD' AS status, pii.created_at,
-              'plaid_investment' AS provider, '[]'::json AS accounts
+              'plaid_investment' AS provider, NULL AS last_error_code, '[]'::json AS accounts
        FROM plaid_investment_items pii
        WHERE NOT EXISTS (SELECT 1 FROM plaid_items pi WHERE pi.item_id = pii.item_id)
        ORDER BY pii.created_at`
