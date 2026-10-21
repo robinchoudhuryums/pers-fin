@@ -191,6 +191,7 @@ describe("F18 — the re-auth guidance matches the guard", () => {
   it("no message tells the user to simply re-link a Plaid bank", () => {
     assert.doesNotMatch(read("teller", "routes", "investments.js"), /re-link this card to enable Plaid Liabilities/);
     assert.match(read("teller", "routes", "investments.js"), /if \(dup\) \{\s*await releasePlaidItem\(client, accessToken\);\s*return res\.status\(409\)/);
-    assert.match(read("CLAUDE.md"), /fixed by UNLINK \+ LINK,\s*not by linking again/);
+    // Since cycle-7 G3 (Batch 19) the fix is Link update mode on the same Item.
+    assert.match(read("CLAUDE.md"), /fixed with RE-AUTHENTICATE,\s*not by linking again/);
   });
 });
