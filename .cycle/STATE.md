@@ -36,8 +36,17 @@ implement and reflect sessions only set Phase.)
   - **Follow-ons:** watchdog only with detection (not hourly auto-sync); no price-drop alert;
     rename rules not editable / not applied by the CSV CLI / no Sheets tab; re-key clash doesn't
     merge user state.
-  - **Where I left off:** Batch 15 committed and pushed (no PR). NEXT: /sync-docs for Batch 15,
-    then `/broad-implement Batch 16` (plan file).
+  - **/sync-docs DONE (Batch 15):** CLAUDE.md — architecture tree (merchant-rename.js entry,
+    watchdog note on subscriptions.js), Detection & Categorization subsystem list, Features
+    (watchdog paragraph under Subscription detection, new Merchant rename rules bullet), the
+    PATCH /api/transactions/:id + POST /api/detect endpoint notes and the
+    /api/merchant-rename-rules endpoints, Database (merchant_rename_rules,
+    user_merchant_rule_id, the four watchdog columns), reset-fresh WIPE_TABLES mention,
+    INV-123 (watchdog) + INV-124 (rename rules), Known Open Issues (Batch 15 done + follow-ons
+    bullet), counts 1755 / 82 files / Perfin 1238 / contract 134 + test-file descriptions.
+    README — counts, coverage and contract lines.
+  - **Where I left off:** Batch 15 + its /sync-docs committed and pushed (no PR). NEXT:
+    `/broad-implement Batch 16` (plan file `.cycle/plan-cycle7-deferred.md`).
 - **Previous status:** **Cycle 7 — Oct 2026 broad scan, Batch 14 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-21). Refund-aware spending (F35 → G4), from
   `.cycle/plan-cycle7-deferred.md`.

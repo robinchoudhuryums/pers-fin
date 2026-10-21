@@ -186,7 +186,10 @@ teller/
                            uncancel/category, POST /api/detect, CSV import,
                            recurring transfers, manual bills, bill payments,
                            bill-calendar (+ICS builder), settlement. Mounts
-                           transactions.js (route-file split).
+                           transactions.js (route-file split). Also the
+                           subscription watchdog (runSubscriptionWatchdog —
+                           still-charging-after-cancel + price-rise alerts, run
+                           after every detection; cycle-7 F53 / G5).
     transactions.js      — split from subscriptions.js: per-transaction
                            endpoints — GET /api/transactions (+/search,
                            /duplicates, /csv-overlap +resolve),
@@ -238,6 +241,14 @@ teller/
                            POST /api/categorization-rules/from-transaction
                            (ML categorization via Claude tool_use structured output,
                            with user-defined rules applied first before AI)
+    merchant-rename.js   — merchant rename rules (cycle-7 F55 / ST2):
+                           GET/POST /api/merchant-rename-rules,
+                           POST /api/merchant-rename-rules/apply,
+                           DELETE /api/merchant-rename-rules/:id. Exports
+                           applyRenameRules (run by syncAllTransactions, the CSV
+                           import and manual entry), createRenameRule,
+                           createRuleFromTransaction (PATCH /api/transactions/:id
+                           apply_to_all) and ruleCondition
     investments.js       — AGGREGATOR for the investment routes: mounts
                            investment-performance.js and re-exports its helpers
                            (route-file split — import paths unchanged).
@@ -579,7 +590,7 @@ shell/
   row counts); only mutates with `--yes` / `CONFIRM_RESET=YES`; runs in one
   transaction. Three exported lists: `WIPE_TABLES` (incl. `investment_flows`,
   `payee_obligations`, `payee_payments`, `settlements`, `payee_obligation_skips`,
-  `deleted_transactions` — PSC-6: missing them left
+  `deleted_transactions`, `merchant_rename_rules` — PSC-6: missing them left
   flows pointing at re-used `investment_accounts` ids after `RESTART IDENTITY`),
   `KEEP_TABLES`, and `UNTOUCHED_TABLES` (`schema_migrations`, `job_runs`,
   `benchmark_prices`). `tests/scan-sept-batch9.test.js` asserts every table the
@@ -603,9 +614,18 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1745 tests as of latest); use
+  Perfin and Per-sistant test files (1755 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1745 tests across 81 test files (incl.
+  Current count: 1755 tests across 82 test files (incl.
+  `tests/scan-oct-batch15.test.js` — the Oct 2026 (cycle 7) Batch 15 pins (F53 / G5 and
+  F55 / ST2): the watchdog run fail-soft after detection, its 7-day grace / ±25% / 5%-or-$1
+  constants, the detector's merchant key mirrored, one alert per charge / price and no mark
+  without a logged notification, the STILL CHARGING / PRICE UP badges and columns; rename
+  rules matching the RAW merchant with LIKE escaping, most-specific-first order, a too-short
+  rule skipped, only NULL names filled, applied after a sync (before the anomaly check),
+  inside the CSV import transaction and after a manual entry, a hand rename clearing the rule
+  link, apply_to_all needing a name, and the Edit-dialog / Settings UI — the database-backed
+  half lives in `tests/contract/watchdog-rename.contract.test.js`;
   `tests/scan-oct-batch14.test.js` — the Oct 2026 (cycle 7) Batch 14 refund-aware spending
   pins (F35 / G4): REFUND_PREDICATE (NULL-safe income test), spendLinesCTE's three legs +
   window, NET_CATEGORY_MONTHS's floor, every spending surface reading spend_lines (helpers,
@@ -829,11 +849,17 @@ shell/
   a refund nets and inherits its merchant's category, a larger one floors at $0, a 50%
   shared-card refund, refund-only categories / merchants unlisted, budgets / spending-summary /
   spending-yoy agreeing with the helpers, and payroll / card-payment / Zelle / reimbursed /
-  pending credits never counted as refunds) and knowledge (syncVault through a
+  pending credits never counted as refunds), watchdog-rename (cycle-7 Batch 15: a charge
+  15 days after cancelling alerts once and a new charge again, one inside the 7-day grace
+  doesn't, a price rise alerts once and a 2% / $0.20 change doesn't, POST /api/detect runs
+  the watchdog; "Apply to all" renames past rows, keeps a hand-renamed row and folds the
+  cancelled subscription onto the new name with its notes, a later row is renamed and a
+  hand edit wins, a too-short contains rule is a 400, deleting the rule reverts only its
+  rows) and knowledge (syncVault through a
   fake GitHub API via its `fetchImpl`, syncNotes, keyword search never returning
   secret text, secret-lookup, facts current vs `all=1` + verify, /api/rag/query
   without AI, an incremental compare that removes a deleted file) plus insight
-  feedback set / change / clear (the F60 `$1::text` cast). 128 tests, run
+  feedback set / change / clear (the F60 `$1::text` cast). 134 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -1146,6 +1172,23 @@ shell/
   so renames also collapse duplicate merchant rows in top-merchants ranking.
   The Transactions page provides an Edit modal per row (merchant name, notes,
   reimbursed toggle) that calls the same PATCH endpoint.
+- **Merchant rename rules** (cycle-7 F55 / ST2): renaming one transaction used to
+  split its merchant (detection keys on the display name, so a subscription
+  fragmented into two rows). The Edit dialog's **"Apply to all past and future"**
+  (`PATCH /api/transactions/:id { merchant_name, apply_to_all: true }`) saves an
+  EXACT rule on the row's RAW merchant (`COALESCE(merchant_name, name)`) in
+  `merchant_rename_rules`, renames every past row from it, re-keys the existing
+  `detected_subscriptions` / `recurring_transfers` rows from the old merchant keys
+  to the new name KEEPING their user state (cancelled, dismissed, category, notes —
+  an old-key row whose new key already exists is deactivated instead), then re-runs
+  both detectors. Rules fill `user_merchant_name` only where it is NULL and tag the
+  row with `user_merchant_rule_id`, so a hand rename always wins (a hand edit clears
+  the tag) and deleting a rule reverts exactly its rows. They apply most specific
+  first (`RULE_ORDER_SQL`) with the categorization rules' 3-character minimum for
+  contains / starts_with, and run after every `syncAllTransactions` (before the
+  anomaly check), inside the CSV import transaction (`SAVEPOINT csv_rename`) and
+  after a manual entry. Settings → Rules lists them with Delete
+  (`/api/merchant-rename-rules`).
 - **Reimbursed flag** (Phase B2): mark transactions as reimbursed (work travel,
   medical, friend-paid bills) via the same PATCH endpoint. Excluded from every
   spending aggregation: `/api/spending-summary`, `/api/budgets`,
@@ -1214,6 +1257,17 @@ shell/
   - `next_expected` steps by calendar month (`services/cadence.js`, DC-9).
   DC-7/DC-8 apply to subscriptions only; the transfer detector keeps the
   floor-majority + global-mode amount.
+  **Watchdog (cycle-7 F53 / G5)**: `runSubscriptionWatchdog()` runs after every
+  detection (fail-soft; `POST /api/detect` returns its counts as `watchdog`).
+  **Still charging** — a CANCELLED subscription charged more than 7 days after
+  `cancelled_at` (`STILL_CHARGING_GRACE_DAYS`) by the same merchant key at ±25% of
+  its amount pushes "<name> charged you after you cancelled" (tag
+  `sub-still-charging-<id>`, deep link `/subscriptions`) plus a critical-alert
+  email, once per charge (`still_charging_txn`). **Price rise** — an active
+  subscription whose amount rose ≥5% or ≥$1 over `prior_amount` within 45 days
+  pushes once per new price (`price_alerted_amount`, tag `sub-price-<id>`). A row
+  is marked only when the notification was logged, so a failed send retries. The
+  Subscriptions page shows "STILL CHARGING" and "PRICE UP $X" badges.
 - **Recurring transfer detection**: Auto-detect Zelle, Venmo, bill payments, savings transfers,
   investment contributions, ACH/wire (7/14/30/60/90/365-day cadences, outgoing/incoming split).
   Stale patterns are skipped (DC-2) and a user-set `transfer_type` survives
@@ -2533,7 +2587,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1745 tests passing across 81 test files (Perfin 1228 + Per-sistant 517), plus the real-Postgres route contract suite (128 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
+- 1755 tests passing across 82 test files (Perfin 1238 + Per-sistant 517), plus the real-Postgres route contract suite (134 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -2586,7 +2640,9 @@ POST /api/sync-balances    # fetch latest account balances. Refreshes Teller
                            # (syncAllPlaidInvestmentFlows) for TWR/XIRR. plaid_errors now also carries
                            # surfaced liabilities failures ("liabilities: <code>")
                            # so a card whose APR/limit won't load is visible.
-POST /api/detect           # run subscription detection
+POST /api/detect           # run subscription detection, then the watchdog
+                           # (response: { detected_count, subscriptions,
+                           # watchdog: { still_charging, price_rises } } — G5)
 POST /api/sync/reconcile   # backfill/reconcile to recover dropped transactions
                            # (body: days=1-365 default 90, provider=teller|plaid|all,
                            # background?=bool). Teller re-fetches the trailing window
@@ -2640,7 +2696,11 @@ POST /api/transactions/csv-overlap/resolve # delete CSV-side rows paired one-to-
 PATCH /api/transactions/:id # user overrides: merchant_name, notes, is_reimbursed
                             # (Phase B1/B2), personal_for ('self'|'partner'|null —
                             # shared-card settlement override; invalid values
-                            # silently coerced to NULL)
+                            # silently coerced to NULL). A merchant_name edit clears
+                            # user_merchant_rule_id; with apply_to_all: true it also
+                            # creates an exact rename rule on the row's raw merchant
+                            # and returns rename_rule / rename_rule_error / renamed /
+                            # rekeyed (400 without a merchant_name — ST2)
 POST /api/transactions/manual # add a one-off manual EXPENSE (e.g. cash spending
                             # bank sync never sees). Body: account_id (an existing
                             # is_manual account — 400 otherwise), amount (>0), date (YYYY-MM-DD),
@@ -2880,6 +2940,12 @@ POST /api/categorization-rules       # create a rule (body: merchant_pattern, ca
 DELETE /api/categorization-rules/:id # delete a rule
 POST /api/categorization-rules/apply # apply all active rules to uncategorized transactions
 POST /api/categorization-rules/from-transaction # create rule from a manual categorization
+GET  /api/merchant-rename-rules      # list merchant rename rules (most specific first — ST2)
+POST /api/merchant-rename-rules      # create/re-point a rule (body: merchant_pattern, rename_to,
+                                     # match_type? default exact); renames past rows, re-keys
+                                     # detection, re-detects; 400 on a <3-char contains/starts_with
+POST /api/merchant-rename-rules/apply # re-apply every active rule → { renamed }
+DELETE /api/merchant-rename-rules/:id # delete a rule and revert the rows it renamed
 POST /api/import-csv/preview # dry-run a CSV import: detect format + classify each
                            # row new/duplicate/skipped vs existing transaction_ids,
                            # WITHOUT writing. Returns { format_detected, account_label,
@@ -3413,6 +3479,15 @@ standalone-mode fallback if either app is run on its own Render service.
 - `categorization_rules`: persistent merchant→category rules. Columns: `merchant_pattern`,
   `category`, `match_type` (contains/exact/starts_with), `is_active`, `times_applied`.
   UNIQUE on (merchant_pattern, category). Applied before AI in `POST /api/categorize`.
+- `merchant_rename_rules` (cycle-7 F55 / ST2): `merchant_pattern`, `match_type`
+  (CHECK exact/starts_with/contains, default exact), `rename_to`, `is_active`,
+  `times_applied`, timestamps; UNIQUE (merchant_pattern, match_type). Rows a rule
+  renamed carry `transactions.user_merchant_rule_id INT` (NULL for a hand rename).
+  In reset-fresh's WIPE_TABLES.
+- `detected_subscriptions` watchdog columns (cycle-7 F53 / G5): `still_charging_txn
+  TEXT`, `still_charging_at DATE`, `still_charging_amount NUMERIC(12,2)` (the last
+  post-cancel charge alerted) and `price_alerted_amount NUMERIC(12,2)` (the price
+  last alerted). Auto-migrated.
 - `manual_bills`: user-created expected charges for the bill calendar. Columns: `name`,
   `amount`, `due_day` (1-31), `cadence` (monthly/quarterly/yearly), `category`,
   `is_active`, `notes`. Integrated into `/api/bill-calendar` and `/calendar.ics`
@@ -4592,7 +4667,8 @@ accuracy and classification, delete integrity and feeds, categorization rules an
 income cadence, AI trust, Sheets and cross-app, Perfin UI, Per-sistant correctness, Knowledge
 ingest edges, platform hardening / test quality / drift guards — are done; Batch 13 was the
 last scan batch. The deferred decisions became Batches 14–16 (`.cycle/plan-cycle7-deferred.md`
-— Batch 14, refund-aware spending, is done); expansion batches E1–E4 remain):
+— Batch 14, refund-aware spending, and Batch 15, the subscription watchdog + merchant
+rename rules, are done); expansion batches E1–E4 remain):
 - The repo is PUBLIC (operator: make it private and delete old Actions logs —
   they printed balances and net worth before Batch 1).
 - OPERATOR: Database Backup has never produced a backup (its secrets were never
@@ -4668,6 +4744,15 @@ last scan batch. The deferred decisions became Batches 14–16 (`.cycle/plan-cyc
   stay gross; no UI copy says spending is net of refunds; budget snapshots taken
   before the Batch 14 deploy (outside the days 1–5 refresh) keep their gross
   spend and rollover. Batch 14 follow-ons.
+- Watchdog / rename rules (F53 / F55): the watchdog runs only with detection (the
+  6-hourly insights chain, `POST /api/detect`, daily-sync), so an alert can lag a
+  charge by up to a day; there is no price-drop alert; a cancelled subscription
+  sharing its merchant key with another product (one store, two plans) can raise a
+  false "still charging". Rename rules can't be edited (delete + re-create), aren't
+  applied by the CSV CLI (`scripts/import-csv-cli.js` — the next sync applies them),
+  have no Sheets tab, and a re-key onto a name that already has a row deactivates
+  the old row rather than merging its user state; `PATCH /api/transactions/:id`
+  with `apply_to_all` runs both detectors synchronously. Batch 15 follow-ons.
 
 The bugs Batch 15's real-code tests exposed (calendar 500, Quick Add regexes,
 palette picker under the shell, undefined CSS vars, unvalidated theme /
@@ -4783,8 +4868,8 @@ Bank Sync & Ingestion:
 Detection & Categorization:
   teller/routes/subscriptions.js, teller/routes/transactions.js,
   teller/routes/categorize.js,
-  teller/routes/categorize-helpers.js, teller/data/reference-data.js,
-  teller/services/cadence.js,
+  teller/routes/categorize-helpers.js, teller/routes/merchant-rename.js,
+  teller/data/reference-data.js, teller/services/cadence.js,
   scripts/detect-subscriptions.js, scripts/detect-transfers.js
 Financial Analytics:
   teller/services/financial-queries.js, teller/routes/spending-analytics.js,
@@ -4968,6 +5053,8 @@ INV-97 | No Per-sistant client template-literal module (a pages/ or views/ file 
 INV-120 | Shell sessions are revocable server-side: the cookie carries user_settings.shell_session_epoch and is refused once the epoch moves; POST /logout?everywhere=1 needs a valid session and bumps it; a legacy epoch-less cookie counts as epoch 0 | Subsystem: Platform, Shell & Auth | Verify: tests/contract/platform-batch13.contract.test.js (F12)
 INV-121 | Drift guards only shrink: the timezone lint (no new UTC today/month anchor in server code) and the canonical-helper scan (net worth via getNetWorth, budget_snapshots / income streams / AI spend / effective limit derived in one place) keep per-file KNOWN_GAPS that fail on growth AND on a stale entry; the Sheets Budget Status equals getBudgetStatus on real Postgres | Subsystem: Test Coverage Quality / Parallel Source-of-Truth Drift | Verify: tests/scan-oct-batch13.test.js + tests/contract/budget-parity.contract.test.js
 INV-122 | Every spending aggregation nets refunds through the shared spend_lines (spendLinesCTE: charges + split lines + REFUND_PREDICATE lines) floored per (month, category) at $0 (NET_CATEGORY_MONTHS) — no route re-derives refunds, the Sheets mirror is SX3-pinned, and cash flow / anomaly / tax stay charge-level (cycle-7 F35) | Subsystem: Financial Analytics | Verify: tests/scan-oct-batch14.test.js + tests/contract/refunds.contract.test.js + tests/contract/budget-parity.contract.test.js
+INV-123 | The subscription watchdog alerts at most once per post-cancel charge (still_charging_txn) and once per new price (price_alerted_amount), only for a charge more than 7 days after cancelled_at at ±25% of the amount or a rise of ≥5% or ≥$1, and marks a row only after its notification was logged | Subsystem: Detection & Categorization / Notification Correctness | Verify: tests/contract/watchdog-rename.contract.test.js + tests/scan-oct-batch15.test.js
+INV-124 | A merchant rename rule matches the RAW merchant (never the user override), fills only a NULL user_merchant_name and tags it with user_merchant_rule_id — a hand rename always wins and clears the tag; deleting a rule reverts exactly its rows; re-keying detection keeps the rows' user state | Subsystem: Detection & Categorization | Verify: tests/contract/watchdog-rename.contract.test.js + tests/scan-oct-batch15.test.js
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
 ### Policy Configuration
