@@ -296,6 +296,12 @@ teller/
                            syncing for banks Teller doesn't cover — Capital One,
                            Discover, Schwab, etc. Combined link token requests
                            both Transactions + Investments in one session).
+                           Link UPDATE MODE (cycle-7 G3): POST /api/plaid/
+                           link-token-update + POST /api/plaid/update-complete
+                           (loadUpdateItem; re-authenticate / add accounts on the
+                           SAME Item). Duplicate guards: findDuplicatePlaidItem
+                           (F18) + findDuplicateInvestmentItem (the investments-
+                           only exchange; investment_accounts.mask).
                            GET /api/investments returns the unified picture
                            across Teller-linked, manual, and Plaid sources.
                            GET /api/investments/performance aggregates returns,
@@ -651,9 +657,19 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1807 tests as of latest); use
+  Perfin and Per-sistant test files (1825 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1807 tests across 87 test files (incl.
+  Current count: 1825 tests across 88 test files (incl.
+  `tests/scan-oct-batch19.test.js` — the cycle-7 expansion Batch 19 pins (G3): the
+  update-mode token request (the item's own access_token, no products, account selection
+  on), the decryption_failed 409 / 400 / 404 / CSV-item refusals, update-complete
+  registering a new account BEFORE the cursor walk, clearing last_error_code and syncing
+  only that item (a re-auth error keeps the flag, 409), the investments kind's one-Item
+  holdings sync, the investments-only exchange's duplicate 409 (via a Transactions link or
+  an earlier investments-only Item by mask) + release + mask write, the once-per-new-code
+  re-auth notification to /accounts, the data-health issue link, and the Accounts page's
+  REAL loadItems run in a vm (Re-authenticate / Add accounts per item kind) — the
+  database-backed half is `tests/contract/plaid-update.contract.test.js`;
   `tests/scan-oct-batch18.test.js` — the cycle-7 expansion Batch 18 pins (ST1): POST
   /api/sync {background:true} → 202 + id, status running → done, a second start a 409 on
   the same id; a manual POST during a background run sharing it (one sync, one record); the
@@ -930,13 +946,18 @@ shell/
   reaching /api/operator-checks + data-health with one notification per failing set),
   async-sync (cycle-7 Batch 18: a background /api/sync and /api/sync-balances finishing and
   recording last_txn_sync_at / last_balance_sync_at + last_sync_result per provider),
+  plaid-update (cycle-7 Batch 19: a flagged Plaid item with edited transactions through
+  update-complete — flag cleared, a new account registered under the same Item, no
+  duplicate rows, every edit intact, the cursor continued; GET /api/items' last_error_code;
+  the investments-only exchange refusing an earlier investments-only Item by mask; the
+  investments kind syncing one Item's holdings; a stale token's 409),
   batch16-persistent (the notes privacy tier: the CHECK, keyword
   retrieval returning normal notes only, search masking a secret note, chunks +
   embed_state dropped when a note turns private) and knowledge (syncVault through a
   fake GitHub API via its `fetchImpl`, syncNotes, keyword search never returning
   secret text, secret-lookup, facts current vs `all=1` + verify, /api/rag/query
   without AI, an incremental compare that removes a deleted file) plus insight
-  feedback set / change / clear (the F60 `$1::text` cast). 146 tests, run
+  feedback set / change / clear (the F60 `$1::text` cast). 152 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -1170,6 +1191,15 @@ shell/
     standard `syncAllBalances` path.
   - **Plaid-linked**: full holdings sync (qty / cost basis / current value
     per security). Stored in `investment_accounts` + `investment_holdings`.
+    **Link update mode (cycle-7 G3):** a connected Plaid item is repaired or
+    extended IN PLACE from the Accounts page — "Re-authenticate" (shown while
+    `plaid_items.last_error_code` is set) and "Add accounts" (every Plaid item,
+    incl. investments-only) open Plaid Link with an update-mode token, then
+    `POST /api/plaid/update-complete` registers new accounts, clears the flag and
+    syncs that one Item. The Item, its transactions and the edits on them stay
+    (it used to take unlink + link). An item that NEWLY gets a re-auth code sends
+    one "Bank connection needs re-authentication" notification (tag
+    `plaid-reauth-<id>`, deep link `/accounts`).
     Endpoints: `/api/plaid/{status,link-token,exchange,sync-holdings,holdings}`.
     Holdings sync (`syncAllPlaidHoldings`) UPSERTs `investment_accounts` so the
     rows survive a reset/wipe, and uses the sum of an account's holdings as the
@@ -2243,7 +2273,9 @@ shell/
 - **Sync Health card** (Settings): renders `GET /api/data-health` — per-source
   freshness dots (green/yellow/red), Teller/Plaid connection status (the Plaid
   count EXCLUDES `status='CSV'` virtual items; "need re-auth" = a non-GOOD item or
-  one with `plaid_items.last_error_code` set — BSI-10), a derived
+  one with `plaid_items.last_error_code` set — BSI-10; that issue carries
+  `link: "/accounts"`, which Sync Health and the dashboard strip render as a link
+  to the Re-authenticate button — G3), a derived
   `issues[]` list (disconnected links, stale balances, never-synced, plus the
   per-item errors from the most recent sync run — see `last_sync_result` below),
   scheduled jobs whose last run FAILED (jobs[].last_status / last_error — F8)
@@ -2645,17 +2677,23 @@ credit card or loan; `NO_LIABILITY_ACCOUNTS` is a quiet skip and
 `ADDITIONAL_CONSENT_REQUIRED` joins the not-supported skip; APR / minimum / last
 payment use `??`, so a 0% APR is stored as 0, not NULL (cycle-7 F28).
 
-**Gotcha — a Plaid "needs re-authentication" item is fixed by UNLINK + LINK,
-not by linking again.** The app has no Plaid Link update mode yet (G3). Running
-the link flow for an already-linked bank creates a NEW Item (new item_id,
-account_ids and transaction_ids), so it would double every transaction and use a
-second Trial-plan slot — the exchange routes therefore REFUSE it (cycle-7 F18:
-`findDuplicatePlaidItem` — same institution + an account with the same mask and
-type on another GOOD item → the new Item is released at Plaid, nothing is
-stored, 409 with the recovery steps). To recover an item flagged via
-`last_error_code` (Sync Health: "N Plaid item(s) need re-authentication"):
-unlink it on the Accounts page (its transactions and the edits on them go with
-it), then link the bank again. CSV imports never count toward that warning.
+**Gotcha — a Plaid "needs re-authentication" item is fixed with RE-AUTHENTICATE,
+not by linking again.** Running the link flow for an already-linked bank creates
+a NEW Item (new item_id, account_ids and transaction_ids), so it would double
+every transaction and use a second Trial-plan slot — the exchange routes therefore
+REFUSE it (cycle-7 F18: `findDuplicatePlaidItem` — same institution + an account
+with the same mask and type on another GOOD item; the investments-only exchange
+also checks `findDuplicateInvestmentItem` — an active Plaid investment account at
+the same institution name with the same mask + type, G3 → the new Item is released
+at Plaid, nothing is stored, 409 pointing to Re-authenticate / Add accounts). To
+recover an item flagged via `last_error_code` (Sync Health: "N Plaid item(s) need
+re-authentication — open Accounts → Re-authenticate", which links there): press
+**Re-authenticate** on the Accounts page (Plaid Link update mode, G3 — same Item,
+transactions and edits kept); **Add accounts** does the same for a new card at a
+connected login. Only an item whose token no longer decrypts (a changed
+TOKEN_ENCRYPTION_PASSPHRASE — 409 `decryption_failed`) still needs unlink + link.
+CSV imports never count toward that warning. Update mode opens the in-page Link
+(popup OAuth); there is no hosted-Link variant for iOS Safari yet.
 
 **Gotcha — Plaid Liabilities never covers auto loans (any issuer).** The
 product supports only credit cards, student loans, and mortgages, so an auto
@@ -2712,7 +2750,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1807 tests passing across 87 test files (Perfin 1280 + Per-sistant 527), plus the real-Postgres route contract suite (146 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
+- 1825 tests passing across 88 test files (Perfin 1298 + Per-sistant 527), plus the real-Postgres route contract suite (152 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -2753,7 +2791,8 @@ DELETE /api/items/:id      # unlink a Plaid item (BSI-3): best-effort itemRemove
 GET  /api/items            # linked Teller enrollments + Plaid items; investments-only
                            # Plaid items (plaid_investment_items registry rows with no
                            # plaid_items twin) are listed as provider 'plaid_investment'
-                           # with accounts: [] (cycle-7 F22)
+                           # with accounts: [] (cycle-7 F22); each row carries
+                           # last_error_code (NULL for Teller / investments-only — G3)
 DELETE /api/plaid/investment-items/:id # unlink an investments-only Plaid item: itemRemove
                            # at Plaid (fail-soft), deactivate its investment_accounts,
                            # drop their holdings, delete the registry row (F22)
@@ -3132,7 +3171,23 @@ POST /api/credit-scores    # log a score (body: score 300-850, score_type?, sour
 DELETE /api/credit-scores/:id # remove an entry
 GET  /api/plaid/status     # Plaid API config status (configured + environment)
 POST /api/plaid/link-token # create Plaid Link token for investments only
-POST /api/plaid/exchange   # exchange public token for investment accounts
+POST /api/plaid/exchange   # exchange public token for investment accounts. accountsGet
+                           # runs BEFORE anything is stored; a duplicate (findDuplicatePlaidItem
+                           # or findDuplicateInvestmentItem — same institution + mask + type)
+                           # → the Item is released at Plaid, 409 { duplicate_of }; writes
+                           # investment_accounts.mask (cycle-7 G3)
+POST /api/plaid/link-token-update # Plaid Link UPDATE MODE token (body: item_id, kind=
+                           # transactions → plaid_items.id | investments →
+                           # plaid_investment_items.id): the item's own access_token
+                           # (perfin_try_decrypt), no products, update.account_selection_
+                           # enabled. 400 bad kind/id or a CSV item, 404, 409 { reason:
+                           # "decryption_failed" } (the one case needing unlink + link) — G3
+POST /api/plaid/update-complete # after update-mode Link succeeds (same body; no token
+                           # exchange). transactions: under the Plaid lock, accountsGet →
+                           # registerMissingPlaidAccounts → clear last_error_code → sync that
+                           # item only; investments: syncAllPlaidHoldings({ itemId }) for that
+                           # Item. → { accounts_added, transactions_added, incomplete?,
+                           # holdings_updated? }; a re-auth code again → flag kept, 409
 POST /api/plaid/sync-holdings # sync investment holdings (thin wrapper around the
                               # exported syncAllPlaidHoldings helper; UPSERTs
                               # investment_accounts so wiped rows are re-created)
@@ -3146,7 +3201,7 @@ POST /api/plaid/exchange-transactions   # exchange token, store in plaid_items, 
                                         # of a connected Item (same institution + an account with
                                         # the same mask/type on another GOOD item) → the new Item
                                         # is released at Plaid, nothing stored, 409 { duplicate_of }
-                                        # with the unlink-then-link steps; a pre-store failure also
+                                        # pointing to Re-authenticate / Add accounts (G3); a pre-store failure also
                                         # releases the Item (F18). /api/plaid/hosted-link-complete
                                         # applies the same guard
 POST /api/plaid/sync-transactions       # cursor-based sync for all plaid_items (added/modified/removed)
@@ -3418,8 +3473,15 @@ standalone-mode fallback if either app is run on its own Render service.
   running out of attempts (~45s of contention), is still fatal.
 - `plaid_items.last_error_code TEXT` (BSI-10): the Plaid ITEM_* re-auth code from the
   last failed sync (NULL = healthy). Set by `syncAllPlaidTransactions` /
-  `syncAllPlaidBalances`, cleared by a clean transaction sync and by both exchange
-  (re-link) upserts. `status` stays `'GOOD' | 'CSV'`.
+  `syncAllPlaidBalances` (only when the code CHANGES — a newly flagged item sends
+  one notification to `/accounts`, G3), cleared by a clean transaction sync, by
+  `POST /api/plaid/update-complete` and by both exchange upserts. `status` stays
+  `'GOOD' | 'CSV'`. Surfaced by `GET /api/items` (the Accounts page's
+  Re-authenticate button).
+- `investment_accounts.mask TEXT` (cycle-7 G3): a Plaid investment account's last
+  digits, written by the holdings sync and both exchange paths (COALESCE keeps a
+  known mask); read by the investments-only exchange's duplicate guard. Rows synced
+  earlier fill on the next holdings sync. Auto-migrated.
 - Migration creates base tables (`plaid_items`, `teller_enrollments`, `linked_accounts`,
   `sync_cursors`, `transactions`, `detected_subscriptions`, `csv_imports`) idempotently
   via `CREATE TABLE IF NOT EXISTS` before the per-feature `ALTER TABLE` steps.
@@ -4844,9 +4906,9 @@ last scan batch. The deferred decisions became Batches 14–16 (`.cycle/plan-cyc
 rename rules, and Batch 16, the CSV sign, insight-email toggle, archive fingerprints
 and notes privacy tier, are done — the deferred plan is complete). The expansion work is
 re-cut into Batches 17–20 (`.cycle/plan-cycle7-expansion.md`): Batch 17, operator
-visibility (G1 + ST4), and Batch 18, async sync for the backstops (ST1), are done; 19
-Plaid update mode (G3) and 20 browser quality + the Per-sistant client kit (G2 + ST3)
-remain):
+visibility (G1 + ST4), Batch 18, async sync for the backstops (ST1), and Batch 19,
+Plaid Link update mode (G3), are done; 20 browser quality + the Per-sistant client kit
+(G2 + ST3) remains):
 - The repo is PUBLIC (operator: make it private and delete old Actions logs —
   they printed balances and net worth before Batch 1).
 - OPERATOR: Database Backup has never produced a backup (its secrets were never
@@ -4859,10 +4921,6 @@ remain):
   fails (the F73 pattern, model only); a self-healing reconcile that throws
   retries hourly (it is recorded now). Batch 3 follow-ons (the silent curl-timeout
   exits in three workflows were fixed in Batch 18).
-- Plaid re-auth still needs unlink + link (no Link update mode — G3); the
-  duplicate-Item guard (F18) is the stop-gap, so adding a new account at an
-  already-connected login also needs unlink + link. The investments-only
-  `POST /api/plaid/exchange` has no duplicate guard yet. Batch 4 follow-ons.
 - Per-sistant's `housingDue` (`apps/per-sistant/routes/housing-due.js`) still sees
   only this month's due date, so the briefing / notification check don't mention
   next month's rent inside its lead window (Perfin's own reminder does since F43);
@@ -4952,6 +5010,18 @@ remain):
   reads as "lost" (the step fails though the next run recovers); a deploy must reach
   the server before the next daily-sync — an old server answers 200 to
   `background: true`, which run_background reports as a failure.
+- Batch 19 follow-ons: Plaid update mode opens the in-page Link (popup OAuth) — the
+  hosted / redirect flow the Accounts page uses for iOS Safari has no update-mode
+  variant, so Re-authenticate may not open there; update-complete doesn't refresh a new
+  account's balance / liabilities (the next balance sync does) or write
+  last_sync_result (an old plaid_txn error stays in Sync Health until the next full
+  sync); investments-only Items never record a re-auth code (they show only "Add
+  accounts", which re-authenticates too); a brokerage account added to a Transactions
+  Item gets its holdings at the next holdings sync; the investments-only duplicate guard
+  matches institution NAME + mask + type, so a separate same-broker login with a
+  matching account would be refused, and pre-G3 rows have no mask until a holdings
+  sync. The Liabilities "predates Plaid Liabilities; unlink it and link the bank again"
+  message stays (update mode can't add a product).
 
 The bugs Batch 15's real-code tests exposed (calendar 500, Quick Add regexes,
 palette picker under the shell, undefined CSS vars, unvalidated theme /
@@ -5234,7 +5304,7 @@ INV-95 | Source guards (un-nonced style, root-relative navigation, undefined CSS
 INV-96 | Every Per-sistant routes/*.js factory destructures only keys present in server.js's `const deps = { pool, config, helpers, views }` — a helper is read off `helpers`, never expected as its own dep (calendar.js read `advanceRecurrence` off deps, got undefined, and 500'd) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/batch15-followons.test.js (FO-1 guard) + tests/contract (persistentApp builds routers with the real deps)
 INV-103 | No GitHub Actions workflow prints an HTTP response body (the repo's logs are public while it is): steps print only allowlisted counts via the job's SUMMARY_JS snippet (numbers/booleans, array counts, ":str" strings), never the net-worth breakdown or merchant/account names; csv-import refuses to run while the repo is public | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch1.test.js (F2 block)
 INV-105 | Every scheduled job in teller/startup.js that ran its body records its outcome via jobHealth.result({ok, error}) (job_runs.last_status / last_error); GET /api/data-health flushes in-memory ticks + outcomes before reading and raises a failed job as an issue; every ticked job is in JOB_INTERVALS_MS | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch3.test.js (F8 block)
-INV-107 | A Plaid link (exchange-transactions / hosted-link-complete) that duplicates a connected Item is refused before anything is stored: the new Item is released at Plaid and the route answers 409 — a second Item never doubles transactions | Subsystem: Bank Sync & Ingestion | Verify: tests/contract/bank-durability.contract.test.js (F18)
+INV-107 | A Plaid link (exchange-transactions / hosted-link-complete / the investments-only exchange — G3) that duplicates a connected Item is refused before anything is stored: the new Item is released at Plaid and the route answers 409 — a second Item never doubles transactions or holdings | Subsystem: Bank Sync & Ingestion | Verify: tests/contract/bank-durability.contract.test.js (F18) + tests/contract/plaid-update.contract.test.js
 INV-108 | The CSV workflow deletes only files the CLI imported (CSV_IMPORTED_LIST); the CLI exits non-zero on any failed file | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-oct-batch4.test.js (F19 block)
 INV-109 | NOT_TRANSFER matches bank/processor BRAND words on the cleaned merchant only (payment/transfer phrases may read the raw description), and excludes a row categorized Transfer or Investment (user category, or the provider category for a non-Plaid row) | Subsystem: Financial Analytics | Verify: tests/contract/money-classification.contract.test.js (F32/F51) + SX3
 INV-110 | Income aggregates count a deposit at its account's share (INCOME_AMOUNT = −SPLIT_AMOUNT); the cash-flow forecast and bill calendar project the same live income streams (getLiveIncomeStreams) | Subsystem: Financial Analytics | Verify: tests/contract/money-classification.contract.test.js (F37/F34)
@@ -5255,6 +5325,7 @@ INV-121 | Drift guards only shrink: the timezone lint (no new UTC today/month an
 INV-122 | Every spending aggregation nets refunds through the shared spend_lines (spendLinesCTE: charges + split lines + REFUND_PREDICATE lines) floored per (month, category) at $0 (NET_CATEGORY_MONTHS) — no route re-derives refunds, the Sheets mirror is SX3-pinned, and cash flow / anomaly / tax stay charge-level (cycle-7 F35) | Subsystem: Financial Analytics | Verify: tests/scan-oct-batch14.test.js + tests/contract/refunds.contract.test.js + tests/contract/budget-parity.contract.test.js
 INV-123 | The subscription watchdog alerts at most once per post-cancel charge (still_charging_txn) and once per new price (price_alerted_amount), only for a charge more than 7 days after cancelled_at at ±25% of the amount or a rise of ≥5% or ≥$1, and marks a row only after its notification was logged | Subsystem: Detection & Categorization / Notification Correctness | Verify: tests/contract/watchdog-rename.contract.test.js + tests/scan-oct-batch15.test.js
 INV-124 | A merchant rename rule matches the RAW merchant (never the user override), fills only a NULL user_merchant_name and tags it with user_merchant_rule_id — a hand rename always wins and clears the tag; deleting a rule reverts exactly its rows; re-keying detection keeps the rows' user state | Subsystem: Detection & Categorization | Verify: tests/contract/watchdog-rename.contract.test.js + tests/scan-oct-batch15.test.js
+INV-128 | Plaid re-authentication and new accounts at a connected login go through Link UPDATE MODE on the same Item: link-token-update sends the item's own access_token (perfin_try_decrypt) with no products; update-complete never exchanges a token, registers new accounts BEFORE the cursor walk, clears last_error_code and syncs only that Item under withPlaidTxnLock (investments: syncAllPlaidHoldings({ itemId })); only a token that won't decrypt is sent to unlink + link | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-oct-batch19.test.js + tests/contract/plaid-update.contract.test.js
 INV-127 | A background sync (POST /api/sync, /api/sync-balances, /api/sync/reconcile with background:true) answers 202 with a job id at once and runs the SAME body as the synchronous call (records last_sync_result / freshness identically); a POST during a run of that kind joins it (sharedRun) and a second background start is a 409 carrying the running id; the status's error is a fixed sentence, never an exception message; the backstop workflows poll by id and fail on an error, a lost run or the deadline without printing the error text | Subsystem: Bank Sync & Ingestion / Platform, Shell & Auth | Verify: tests/scan-oct-batch18.test.js + tests/contract/async-sync.contract.test.js
 INV-126 | Operator checks are fail-soft and read-only: the GitHub client only GETs, with GITHUB_OPS_TOKEN read from the environment per call — never stored, logged or returned (errors carry only the HTTP status) — and never requests a secret's value; any failure is an "unknown" check with a reason, never a throw into data-health; data-health reads cached GitHub results only; the notification fires once per change in the failing set | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch17.test.js + tests/contract/operator-checks.contract.test.js
 INV-125 | A generic CSV's sign is applied identically by preview, import and CLI: positive_means goes through parseCsvUpload's one parseOpts (default 'charges' — the old reading, so earlier imports keep their dedup IDs); an unknown value is a 400; known bank formats ignore it | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-oct-batch16.test.js + tests/contract/batch16-perfin.contract.test.js (F26)

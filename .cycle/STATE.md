@@ -37,7 +37,16 @@ implement and reflect sessions only set Phase.)
   - **Follow-ons:** no hosted (iOS Safari) update mode; no last_sync_result write from update-complete;
     investments-only Items never flagged for re-auth; new brokerage accounts on a Transactions Item wait
     for the next holdings sync.
-  - **Where I left off:** Batch 19 committed and pushed (no PR). NEXT: `/sync-docs` for Batch 19, then
+  - **/sync-docs DONE (Batch 19):** CLAUDE.md — investments.js entry (update-mode routes + both
+    duplicate guards), Features (Plaid-linked: Link update mode + the re-auth notification), the
+    re-auth gotcha rewritten (Re-authenticate / Add accounts; only decryption_failed needs unlink +
+    link), Commands (/api/items last_error_code, /api/plaid/exchange guard, link-token-update,
+    update-complete, the F18 409 text), Database (last_error_code changes-only + notification;
+    investment_accounts.mask), Sync Health issue link, Known Open Issues (Batch 19 done; the Batch 4
+    G3 / investments-guard bullet removed; Batch 19 follow-ons), INV-107 widened, new INV-128, counts
+    1825 / 88 files / Perfin 1298 / contract 152 + test-file descriptions. README — counts, two
+    endpoint rows, coverage text. Per-sistant docs unchanged. Subsystem paths unchanged.
+  - **Where I left off:** Batch 19 + its /sync-docs committed and pushed (no PR). NEXT:
     `/broad-implement Batch 20` (browser quality + the Per-sistant client kit, G2 + ST3) → /reflect.
 - **Previous status:** **Cycle 7 — expansion Batch 18 DONE** on branch `claude/sweet-ritchie-f9d8ah`
   (2026-10-21). Asynchronous sync for the backstops (ST1) + the Batch 3 workflow-timeout
