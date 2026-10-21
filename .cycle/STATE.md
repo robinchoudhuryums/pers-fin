@@ -45,9 +45,17 @@ implement and reflect sessions only set Phase.)
     Known Open Issues (Batch 13 done + follow-ons). Per-sistant CLAUDE.md — counts, test list
     (integration.test.js removed), migration locking, vector guard wording. README — counts +
     Batch 13 coverage + contract line. Subsystem paths resolve; no new operator state.
-  - **Where I left off:** Batch 13 + its /sync-docs committed and pushed (no PR). All planned
-    cycle-7 batches are done. NEXT: the deferred decisions (F35→G4, F53→G5, F55→ST2, F134→ST5,
-    F81, F85, F26), the expansion batches E1–E4, or /reflect for cycle 7.
+  - **Deferred decisions RESOLVED (2026-10-21, operator accepted every recommendation):**
+    F35 net refunds in their posting month, floored per category · F53 still-charging (>7 days
+    after cancel) + price-rise (≥5% or $1) alerts · F55 rename rules (exact, apply to past +
+    future, at sync) · F26 sign toggle in the CSV preview · F81 fix the text + an insight-email
+    toggle, no standalone UI · F85 rebuild an archive whose content fingerprint changed · F134
+    notes privacy tier. Plan: `.cycle/plan-cycle7-deferred.md` — Batch 14 (refund-aware
+    spending), Batch 15 (subscription watchdog + rename rules), Batch 16 (CSV sign, F81, archive
+    fingerprints, notes privacy).
+  - **Where I left off:** Batch 13 + its /sync-docs committed and pushed (no PR); the deferred
+    plan is written. NEXT: `/broad-implement Batch 14` (read the plan file for the scope), then
+    15 and 16; expansion E1–E4 stays separate.
 - **Previous status:** **Cycle 7 — Oct 2026 broad scan, Batch 12 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-21). Knowledge ingest edges.
   - **Completed:** F126 (empty / max_tokens answers not cached; truncated flag), F127 (truncated
