@@ -457,6 +457,11 @@ describe("SX3 — sheets-sync inlined SQL fragments match financial-queries cano
     assert.ok(m, "CAT_EXPR_* not found");
     assert.doesNotMatch(m[1] + m[2], /personal_finance_category/);
   });
+  // F35: the refund predicate, the prior-charge category join and the refund
+  // category expression are mirrored too.
+  pin("REFUND_PREDICATE", /const REFUND_PREDICATE = `\( t\.amount < 0[\s\S]*?\.trim\(\)\}, false\) \)`;/, true);
+  pin("REFUND_PRIOR_CATEGORY_JOIN", /const REFUND_PRIOR_CATEGORY_JOIN = `LEFT JOIN LATERAL \([\s\S]*?\) prior ON true`;/, true);
+  pin("refund category expression", /COALESCE\(t\.user_category, prior\.category, t\.category\[1\], 'Uncategorized'\)/);
   pin("SPLIT_AMOUNT CASE",
     /personal_for = 'self' THEN t\.amount WHEN la\.is_shared AND t\.personal_for = 'partner' THEN 0 ELSE t\.amount \* COALESCE\(la\.spending_split_pct, 100\) \/ 100\.0/,
     true);

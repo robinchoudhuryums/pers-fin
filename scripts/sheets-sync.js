@@ -701,6 +701,34 @@ async function syncSubscriptions(sheets, pool) {
 // ---------------------------------------------------------------------------
 // Build Dashboard
 // ---------------------------------------------------------------------------
+// Byte-mirror of financial-queries.js incomePredicate (FAN-2 / DD-2 / DD-3),
+// pinned by SX3 in tests/audit-regressions.test.js. Module-level so the
+// Income tab and the Dashboard's refund lines (F35) share it.
+function incomeText(a) {
+  return `CONCAT_WS(' ', ${a}.user_merchant_name, ${a}.merchant_name, ${a}.name)`;
+}
+function incomePredicate(a = "transactions") {
+  const txt = incomeText(a);
+  return `
+  (
+    (${txt} ~* '\\y(payroll|direct dep|direct deposit|dir dep|salary|employer|deposit|ach credit)\\y'
+      AND ${txt} !~* '\\y(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|reversal|reimbursement|reimburse|reimb|expense report|atm|withdrawal|bill pay)\\y')
+    OR (
+      ${txt} ~* 'funds transfer from brokerage'
+      AND NOT EXISTS (
+        SELECT 1 FROM transactions __t2
+        WHERE __t2.account_id <> ${a}.account_id
+          AND __t2.amount = ABS(${a}.amount)
+          AND __t2.pending = false
+          AND __t2.date BETWEEN ${a}.date - INTERVAL '2 days' AND ${a}.date + INTERVAL '2 days'
+      )
+    )
+    OR LOWER(COALESCE(${a}.user_category, ${a}.category[1], '')) = 'income'
+    OR (${a}.user_category IS NULL AND ${a}.personal_finance_category->>'primary' = 'INCOME')
+  )
+`;
+}
+
 async function buildDashboard(sheets, pool) {
   console.log("Building dashboard...");
 
@@ -739,10 +767,10 @@ async function buildDashboard(sheets, pool) {
   // each split's (category, amount) REPLACES the parent row in per-category
   // aggregations (mirrors getCategorySpendingThisMonth / getCategorySpendingForMonth
   // in services/financial-queries.js); transactions without splits contribute the
-  // parent row. TOTAL aggregations (monthlySummary, totals) are intentionally NOT
-  // routed through this — splits sum to the parent, so totals are unchanged — and
-  // topMerchants stays parent-keyed (splits-replacement is per-CATEGORY, matching
-  // the app). `whereClause` is the date-window predicate on `t`.
+  // parent row. Since F35 every spending figure (monthly totals, merchants, the
+  // KPI totals) reads these lines too, because refund lines net per (month,
+  // category) and the floor must apply the same way everywhere; merchant is the
+  // parent's display merchant. `whereClause` is the date-window predicate on `t`.
   // SXE-6: the SAME category expression as getCategorySpendingForMonth (and this
   // script's own Transactions tab). A personal_finance_category->>'primary' term
   // here bucketed an uncategorized Plaid charge as "FOOD_AND_DRINK" in the Sheets
@@ -754,11 +782,35 @@ async function buildDashboard(sheets, pool) {
       WHEN la.is_shared AND t.personal_for = 'partner' THEN 0
       ELSE s.amount * COALESCE(la.spending_split_pct, 100) / 100.0
     END)`;
+  // F35 mirror of financial-queries REFUND_PREDICATE / REFUND_PRIOR_CATEGORY_JOIN
+  // (pinned by SX3): a settled, non-transfer, non-income, non-reimbursed credit
+  // nets against its category in the month it posts, taking the category of the
+  // merchant's latest earlier charge. Every spending query below floors each
+  // (month, category) at $0, like the app's NET_CATEGORY_MONTHS.
+  const REFUND_PREDICATE = `(
+  t.amount < 0 AND t.pending = false
+  AND COALESCE(t.is_reimbursed, false) = false
+  AND ${NOT_TRANSFER}
+  AND NOT COALESCE(${incomePredicate("t").trim()}, false)
+)`;
+  const REFUND_PRIOR_CATEGORY_JOIN = `LEFT JOIN LATERAL (
+    SELECT COALESCE(c.user_category, c.category[1]) AS category
+    FROM transactions c
+    WHERE c.amount > 0 AND c.pending = false
+      AND LOWER(COALESCE(c.user_merchant_name, c.merchant_name, c.name))
+          = LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name))
+      AND c.date <= t.date AND c.date >= t.date - 180
+      AND COALESCE(c.user_category, c.category[1]) IS NOT NULL
+    ORDER BY c.date DESC, c.transaction_id DESC
+    LIMIT 1
+  ) prior ON true`;
+  const MERCHANT_EXPR = "COALESCE(t.user_merchant_name, t.merchant_name, t.name)";
   const catLinesCTE = (whereClause) => `
     WITH parent_no_splits AS (
       SELECT ${CAT_EXPR_PARENT} AS category,
              TO_CHAR(t.date, 'YYYY-MM') AS month,
-             ${SPLIT_AMT} AS amount
+             ${SPLIT_AMT} AS amount,
+             ${MERCHANT_EXPR} AS merchant, false AS is_refund, t.transaction_id
       FROM transactions t
       LEFT JOIN linked_accounts la ON la.account_id = t.account_id
       WHERE t.pending = false AND t.amount > 0 AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER}
@@ -768,17 +820,38 @@ async function buildDashboard(sheets, pool) {
     from_splits AS (
       SELECT ${CAT_EXPR_SPLIT} AS category,
              TO_CHAR(t.date, 'YYYY-MM') AS month,
-             ${SPLIT_AMT_S} AS amount
+             ${SPLIT_AMT_S} AS amount,
+             ${MERCHANT_EXPR} AS merchant, false AS is_refund, t.transaction_id
       FROM transaction_splits s
       JOIN transactions t ON t.transaction_id = s.parent_transaction_id
       LEFT JOIN linked_accounts la ON la.account_id = t.account_id
       WHERE t.pending = false AND t.amount > 0 AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER}
         AND ${whereClause}
     ),
+    refund_lines AS (
+      SELECT COALESCE(t.user_category, prior.category, t.category[1], 'Uncategorized') AS category,
+             TO_CHAR(t.date, 'YYYY-MM') AS month,
+             ${SPLIT_AMT} AS amount,
+             ${MERCHANT_EXPR} AS merchant, true AS is_refund, t.transaction_id
+      FROM transactions t
+      LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+      ${REFUND_PRIOR_CATEGORY_JOIN}
+      WHERE ${REFUND_PREDICATE}
+        AND ${whereClause}
+    ),
     cat_lines AS (
-      SELECT category, month, amount FROM parent_no_splits
+      SELECT * FROM parent_no_splits
       UNION ALL
-      SELECT category, month, amount FROM from_splits
+      SELECT * FROM from_splits
+      UNION ALL
+      SELECT * FROM refund_lines
+    ),
+    net_cat_months AS (
+      SELECT month, category, GREATEST(SUM(amount), 0) AS spent,
+             COUNT(*) FILTER (WHERE NOT is_refund) AS charge_lines
+      FROM cat_lines
+      GROUP BY month, category
+      HAVING COUNT(*) FILTER (WHERE NOT is_refund) > 0
     )`;
   // WHOLE-month windows in APP_TIMEZONE (SXE-12, parity with the app's FA-4
   // whole-month windows): "6 months" = this month + the 5 before it, starting
@@ -789,18 +862,21 @@ async function buildDashboard(sheets, pool) {
   const WINDOW_THIS_MONTH = `t.date >= ${sqlDate(sheetsMonth(0) + "-01")} AND t.date < ${sqlDate(sheetsMonth(1) + "-01")}`;
 
   // Fetch summary data from DB
+  // F35: every spending figure below is net of refunds (net_cat_months floors
+  // each month's categories at $0), matching the app's spend_lines; counts and
+  // averages describe the CHARGES.
   const { rows: monthlySummary } = await pool.query(`
-    SELECT
-      TO_CHAR(t.date, 'YYYY-MM') AS month,
-      COUNT(*) AS txn_count,
-      SUM(${SPLIT_AMT}) AS total_spend,
-      ROUND(AVG(${SPLIT_AMT}), 2) AS avg_transaction
-    FROM transactions t
-    LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-    WHERE t.pending = false AND t.amount > 0 AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER}
-      AND ${WINDOW_6MO}
-    GROUP BY TO_CHAR(t.date, 'YYYY-MM')
-    ORDER BY month DESC
+    ${catLinesCTE(WINDOW_6MO)},
+    charges AS (
+      SELECT month, COUNT(DISTINCT transaction_id) AS txn_count, SUM(amount) AS gross
+      FROM cat_lines WHERE NOT is_refund GROUP BY month
+    )
+    SELECT n.month, MAX(c.txn_count) AS txn_count, SUM(n.spent) AS total_spend,
+           ROUND(MAX(c.gross) / NULLIF(MAX(c.txn_count), 0), 2) AS avg_transaction
+    FROM net_cat_months n
+    JOIN charges c ON c.month = n.month
+    GROUP BY n.month
+    ORDER BY n.month DESC
   `);
 
   // M4: splits-replacement so per-category totals match the app dashboard. The
@@ -808,8 +884,8 @@ async function buildDashboard(sheets, pool) {
   // its split rows), not raw transactions — the dollar total is what's rendered.
   const { rows: categorySummary } = await pool.query(`
     ${catLinesCTE(WINDOW_6MO)}
-    SELECT category, SUM(amount) AS total, COUNT(*) AS txn_count
-    FROM cat_lines
+    SELECT category, SUM(spent) AS total, SUM(charge_lines) AS txn_count
+    FROM net_cat_months
     GROUP BY category
     ORDER BY total DESC
     LIMIT 15
@@ -820,9 +896,8 @@ async function buildDashboard(sheets, pool) {
   // category list's "Trend" column has data to graph. Splits-replaced (M4).
   const { rows: categoryByMonth } = await pool.query(`
     ${catLinesCTE(WINDOW_6MO)}
-    SELECT category, month, SUM(amount) AS total
-    FROM cat_lines
-    GROUP BY 1, 2
+    SELECT category, month, spent AS total
+    FROM net_cat_months
   `);
   // Build a {category: {month: total}} map for fast lookup, and the list
   // of months oldest-to-newest matching what we'll show as columns.
@@ -834,15 +909,13 @@ async function buildDashboard(sheets, pool) {
   const sparklineMonths = (monthlySummary || []).map(m => m.month).slice().reverse();
 
   const { rows: topMerchants } = await pool.query(`
-    SELECT
-      COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS merchant,
-      SUM(${SPLIT_AMT}) AS total,
-      COUNT(*) AS txn_count
-    FROM transactions t
-    LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-    WHERE t.pending = false AND t.amount > 0 AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER}
-      AND ${WINDOW_6MO}
+    ${catLinesCTE(WINDOW_6MO)}
+    SELECT merchant, GREATEST(SUM(amount), 0) AS total,
+           COUNT(DISTINCT transaction_id) FILTER (WHERE NOT is_refund) AS txn_count
+    FROM cat_lines
+    WHERE merchant IS NOT NULL
     GROUP BY merchant
+    HAVING COUNT(*) FILTER (WHERE NOT is_refund) > 0
     ORDER BY total DESC
     LIMIT 10
   `);
@@ -859,14 +932,15 @@ async function buildDashboard(sheets, pool) {
   `);
 
   const { rows: totals } = await pool.query(`
-    SELECT
-      COALESCE(SUM(${SPLIT_AMT}), 0) AS total_6mo,
-      COALESCE(AVG(${SPLIT_AMT}), 0) AS avg_txn,
-      COUNT(*) AS txn_count
-    FROM transactions t
-    LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-    WHERE t.pending = false AND t.amount > 0 AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER}
-      AND ${WINDOW_6MO}
+    ${catLinesCTE(WINDOW_6MO)},
+    charges AS (
+      SELECT COUNT(DISTINCT transaction_id) AS txn_count, SUM(amount) AS gross
+      FROM cat_lines WHERE NOT is_refund
+    )
+    SELECT COALESCE((SELECT SUM(spent) FROM net_cat_months), 0) AS total_6mo,
+           COALESCE(c.gross / NULLIF(c.txn_count, 0), 0) AS avg_txn,
+           c.txn_count
+    FROM charges c
   `);
 
   // Per-month totals for the KPI averages: COMPLETED months only, with their
@@ -874,12 +948,10 @@ async function buildDashboard(sheets, pool) {
   // window includes the month to date, so total / 6 understated the average
   // (cycle-7 F75).
   const { rows: monthTotals } = await pool.query(`
-    SELECT TO_CHAR(t.date, 'YYYY-MM') AS month, COALESCE(SUM(${SPLIT_AMT}), 0) AS total
-    FROM transactions t
-    LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-    WHERE t.pending = false AND t.amount > 0 AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER}
-      AND ${WINDOW_6MO}
-    GROUP BY TO_CHAR(t.date, 'YYYY-MM')
+    ${catLinesCTE(WINDOW_6MO)}
+    SELECT month, COALESCE(SUM(spent), 0) AS total
+    FROM net_cat_months
+    GROUP BY month
   `);
 
   // Net worth history
@@ -901,7 +973,7 @@ async function buildDashboard(sheets, pool) {
   const { rows: budgetData } = await pool.query(`
     ${catLinesCTE(WINDOW_THIS_MONTH)},
     cat_spend AS (
-      SELECT category, SUM(amount) AS spent FROM cat_lines GROUP BY category
+      SELECT category, spent FROM net_cat_months
     )
     SELECT b.category, b.monthly_limit,
            b.monthly_limit + CASE WHEN b.rollover_enabled THEN COALESCE(bs.rollover_amount, 0) ELSE 0 END AS effective_limit,
@@ -2313,32 +2385,6 @@ async function syncNetWorthHistory(sheets, pool) {
 async function syncIncome(sheets, pool) {
   console.log("Syncing income summary to Google Sheets...");
 
-  // Byte-mirror of financial-queries.js incomePredicate (FAN-2 / DD-2 / DD-3),
-  // pinned by SX3 in tests/audit-regressions.test.js.
-  function incomeText(a) {
-    return `CONCAT_WS(' ', ${a}.user_merchant_name, ${a}.merchant_name, ${a}.name)`;
-  }
-  function incomePredicate(a = "transactions") {
-    const txt = incomeText(a);
-    return `
-    (
-      (${txt} ~* '\\y(payroll|direct dep|direct deposit|dir dep|salary|employer|deposit|ach credit)\\y'
-        AND ${txt} !~* '\\y(payment|transfer|pymt|zelle|venmo|paypal|cash app|refund|reversal|reimbursement|reimburse|reimb|expense report|atm|withdrawal|bill pay)\\y')
-      OR (
-        ${txt} ~* 'funds transfer from brokerage'
-        AND NOT EXISTS (
-          SELECT 1 FROM transactions __t2
-          WHERE __t2.account_id <> ${a}.account_id
-            AND __t2.amount = ABS(${a}.amount)
-            AND __t2.pending = false
-            AND __t2.date BETWEEN ${a}.date - INTERVAL '2 days' AND ${a}.date + INTERVAL '2 days'
-        )
-      )
-      OR LOWER(COALESCE(${a}.user_category, ${a}.category[1], '')) = 'income'
-      OR (${a}.user_category IS NULL AND ${a}.personal_finance_category->>'primary' = 'INCOME')
-    )
-  `;
-  }
   const INCOME_PREDICATE_T = incomePredicate("t");
   // Mirror of financial-queries INCOME_AMOUNT (F37): a deposit at the joint
   // account's share — the negation of the SPLIT_AMOUNT CASE.

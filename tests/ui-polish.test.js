@@ -130,7 +130,7 @@ describe("GET /api/spending-categories", () => {
 
   it("returns the month's categories sorted by spend (splits-aware helper)", async () => {
     dbModule.pool.query = async (sql) => {
-      if (/WITH bounds AS/i.test(sql)) return { rows: [
+      if (/net_category_months/i.test(sql)) return { rows: [
         { category: "Groceries", spent: "120.00" },
         { category: "Dining", spent: "240.50" },
       ]};

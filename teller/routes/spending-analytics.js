@@ -12,7 +12,7 @@ const express = require("express");
 const router = express.Router();
 const { pool } = require("../services/database");
 const { seriesOccurrences, incomeEventsBetween } = require("../services/cadence");
-const { INCOME_AMOUNT, incomePredicate, NOT_TRANSFER, SPLIT_AMOUNT, INVESTMENT_ACCOUNT_TYPES, getLiveIncomeStreams, getMonthlySpending, getMonthlyIncome, getCategorySpendingForMonth, currentMonth, todayStr } = require("../services/financial-queries");
+const { INCOME_AMOUNT, incomePredicate, NOT_TRANSFER, SPLIT_AMOUNT, spendLinesCTE, NET_CATEGORY_MONTHS, INVESTMENT_ACCOUNT_TYPES, getLiveIncomeStreams, getMonthlySpending, getMonthlyIncome, getCategorySpendingForMonth, currentMonth, todayStr } = require("../services/financial-queries");
 
 // The one query here that JOINs linked_accounts must qualify its column refs
 // (`name` exists on both tables — the unqualified form 500'd /api/income-summary
@@ -41,6 +41,10 @@ router.get("/api/spending-categories", async (req, res) => {
 });
 
 // GET /api/spending-summary
+// The summary's whole-month window over spend_lines ($1 = months, $2 = the
+// APP_TIMEZONE month start).
+const SUMMARY_WINDOW = "t.date >= date_trunc('month', $2::date) - make_interval(months => $1 - 1)";
+
 router.get("/api/spending-summary", async (req, res) => {
   const months = parseInt(req.query.months) || 6;
   try {
@@ -48,18 +52,23 @@ router.get("/api/spending-summary", async (req, res) => {
     // floor to the 1st so `months=6` returns 6 buckets (5 complete + the
     // current month-to-date), not 7 with a partial OLDEST month that dragged
     // the dashboard's "Avg Monthly" down. tz-aware anchor (F11).
+    // F35: total_spend is net of refunds (each month's categories floored at
+    // $0 — the same spend_lines every spending surface reads); txn_count and
+    // avg_transaction describe the month's CHARGES.
     const monthlyTrend = await pool.query(
-      `SELECT TO_CHAR(t.date, 'YYYY-MM') AS month,
-              ROUND(SUM(${SPLIT_AMOUNT}), 2) AS total_spend,
-              COUNT(*) AS txn_count,
-              ROUND(AVG(${SPLIT_AMOUNT}), 2) AS avg_transaction
-       FROM transactions t
-       LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-       WHERE t.amount > 0 AND t.pending = false AND COALESCE(t.is_reimbursed, false) = false
-         AND ${NOT_TRANSFER}
-         AND t.date >= date_trunc('month', $2::date) - make_interval(months => $1 - 1)
-       GROUP BY TO_CHAR(t.date, 'YYYY-MM')
-       ORDER BY month DESC`,
+      `WITH ${spendLinesCTE(SUMMARY_WINDOW)},
+       ${NET_CATEGORY_MONTHS},
+       charges AS (
+         SELECT month, COUNT(DISTINCT transaction_id) AS txn_count, SUM(amount) AS gross
+         FROM spend_lines WHERE NOT is_refund GROUP BY month
+       )
+       SELECT n.month, ROUND(SUM(n.spent), 2) AS total_spend,
+              MAX(c.txn_count) AS txn_count,
+              ROUND(MAX(c.gross) / NULLIF(MAX(c.txn_count), 0), 2) AS avg_transaction
+       FROM net_category_months n
+       JOIN charges c ON c.month = n.month
+       GROUP BY n.month
+       ORDER BY n.month DESC`,
       [months, currentMonth() + "-01"]
     );
     // Averages over COMPLETED months only (FAN-6, as savings-rate does): the
@@ -85,34 +94,13 @@ router.get("/api/spending-summary", async (req, res) => {
     // transaction has splits, each split contributes to its own category
     // instead of the parent row's category. Parents without splits contribute
     // the full amount to the parent's category[1].
+    // F35: refunds net per (month, category), floored at $0, then summed
+    // across the window — so the breakdown adds up to the trend.
     const byCategory = await pool.query(
-      `WITH parent_no_splits AS (
-         SELECT COALESCE(t.user_category, t.category[1], 'Uncategorized') AS category,
-                ${SPLIT_AMOUNT} AS amount,
-                1 AS line_count
-         FROM transactions t
-         LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-         WHERE t.amount > 0 AND t.pending = false AND COALESCE(t.is_reimbursed, false) = false
-           AND ${NOT_TRANSFER}
-           AND t.date >= date_trunc('month', $2::date) - make_interval(months => $1 - 1)
-           AND NOT EXISTS (SELECT 1 FROM transaction_splits s WHERE s.parent_transaction_id = t.transaction_id)
-       ),
-       from_splits AS (
-         SELECT COALESCE(s.category, t.user_category, t.category[1], 'Uncategorized') AS category,
-                ${SPLIT_AMOUNT.replace(/t\.amount/g, "s.amount")} AS amount,
-                1 AS line_count
-         FROM transaction_splits s
-         JOIN transactions t ON t.transaction_id = s.parent_transaction_id
-         LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-         WHERE t.amount > 0 AND t.pending = false AND COALESCE(t.is_reimbursed, false) = false
-           AND ${NOT_TRANSFER}
-           AND t.date >= date_trunc('month', $2::date) - make_interval(months => $1 - 1)
-       ),
-       all_lines AS (
-         SELECT * FROM parent_no_splits UNION ALL SELECT * FROM from_splits
-       )
-       SELECT category, ROUND(SUM(amount), 2) AS total, SUM(line_count) AS txn_count
-       FROM all_lines
+      `WITH ${spendLinesCTE(SUMMARY_WINDOW)},
+       ${NET_CATEGORY_MONTHS}
+       SELECT category, ROUND(SUM(spent), 2) AS total, SUM(charge_lines) AS txn_count
+       FROM net_category_months
        GROUP BY category
        ORDER BY total DESC
        LIMIT 15`,
@@ -126,17 +114,16 @@ router.get("/api/spending-summary", async (req, res) => {
     // Group by the user's overridden merchant name when set, so renames like
     // "AMAZON MKTP*4321" -> "Amazon" collapse multiple rows into one merchant.
     // Reimbursed transactions are excluded from the total (Phase B2).
+    // F35: a merchant's refunds net against its charges (floored at $0).
     const topMerchants = await pool.query(
-      `SELECT COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS merchant,
-              ROUND(SUM(${SPLIT_AMOUNT}), 2) AS total_spent,
-              COUNT(*) AS txn_count
-       FROM transactions t
-       LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-       WHERE t.amount > 0 AND t.pending = false AND COALESCE(t.is_reimbursed, false) = false
-             AND COALESCE(t.user_merchant_name, t.merchant_name, t.name) IS NOT NULL
-             AND ${NOT_TRANSFER}
-             AND t.date >= date_trunc('month', $2::date) - make_interval(months => $1 - 1)
-       GROUP BY COALESCE(t.user_merchant_name, t.merchant_name, t.name)
+      `WITH ${spendLinesCTE(SUMMARY_WINDOW)}
+       SELECT merchant,
+              ROUND(GREATEST(SUM(amount), 0), 2) AS total_spent,
+              COUNT(DISTINCT transaction_id) FILTER (WHERE NOT is_refund) AS txn_count
+       FROM spend_lines
+       WHERE merchant IS NOT NULL
+       GROUP BY merchant
+       HAVING COUNT(*) FILTER (WHERE NOT is_refund) > 0
        ORDER BY total_spent DESC
        LIMIT 10`,
       [months, curMonth + "-01"]
@@ -391,41 +378,20 @@ router.get("/api/spending-yoy", async (req, res) => {
   const throughDay = isCurrentMonth ? parseInt(today.slice(8, 10), 10) : 31;
   try {
     // Phase B3: honor transaction_splits for per-category breakdowns.
+    // F35: refunds net per (year, category) within the compared month,
+    // floored at $0; txn_count counts charges.
     const result = await pool.query(`
-      WITH parent_no_splits AS (
-        SELECT t.date, COALESCE(t.user_category, t.category[1], 'Uncategorized') AS category,
-               ${SPLIT_AMOUNT} AS amount
-        FROM transactions t
-        LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-        WHERE t.amount > 0 AND t.pending = false
-          AND COALESCE(t.is_reimbursed, false) = false
-          AND ${NOT_TRANSFER}
-          AND EXTRACT(MONTH FROM t.date) = $1
+      WITH ${spendLinesCTE(`EXTRACT(MONTH FROM t.date) = $1
           AND EXTRACT(YEAR FROM t.date) BETWEEN $2 - 2 AND $2
-          AND EXTRACT(DAY FROM t.date) <= $3
-          AND NOT EXISTS (SELECT 1 FROM transaction_splits s WHERE s.parent_transaction_id = t.transaction_id)
-      ),
-      from_splits AS (
-        SELECT t.date, COALESCE(s.category, t.user_category, t.category[1], 'Uncategorized') AS category,
-               ${SPLIT_AMOUNT.replace(/t\.amount/g, "s.amount")} AS amount
-        FROM transaction_splits s
-        JOIN transactions t ON t.transaction_id = s.parent_transaction_id
-        LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-        WHERE t.amount > 0 AND t.pending = false
-          AND COALESCE(t.is_reimbursed, false) = false
-          AND ${NOT_TRANSFER}
-          AND EXTRACT(MONTH FROM t.date) = $1
-          AND EXTRACT(YEAR FROM t.date) BETWEEN $2 - 2 AND $2
-          AND EXTRACT(DAY FROM t.date) <= $3
-      ),
-      all_lines AS (SELECT * FROM parent_no_splits UNION ALL SELECT * FROM from_splits)
+          AND EXTRACT(DAY FROM t.date) <= $3`)}
       SELECT TO_CHAR(date, 'YYYY') AS year,
              TO_CHAR(date, 'MM') AS month,
              category,
-             ROUND(SUM(amount), 2) AS total,
-             COUNT(*) AS txn_count
-      FROM all_lines
+             ROUND(GREATEST(SUM(amount), 0), 2) AS total,
+             COUNT(*) FILTER (WHERE NOT is_refund) AS txn_count
+      FROM spend_lines
       GROUP BY TO_CHAR(date, 'YYYY'), TO_CHAR(date, 'MM'), category
+      HAVING COUNT(*) FILTER (WHERE NOT is_refund) > 0
       ORDER BY year DESC, total DESC
     `, [month, year, throughDay]);
 

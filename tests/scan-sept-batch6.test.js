@@ -54,7 +54,7 @@ function budgetPool({ budgets = [], spending = [], snapshots = [], onSnapshot } 
         return { rows: snapshots };
       }
       if (/FROM budgets/.test(sql)) return { rows: budgets };
-      if (/month_start/.test(sql)) return { rows: spending };
+      if (/net_category_months/.test(sql)) return { rows: spending };
       return { rows: [] };
     },
   };
@@ -149,7 +149,7 @@ describe("FAN-7 — the prior-month snapshot is refreshed on days 1-5", () => {
         if (/SELECT 1 FROM budget_snapshots/.test(sql)) return { rows: existing ? [{ "?column?": 1 }] : [] };
         if (/INSERT INTO budget_snapshots/.test(sql)) { inserts.push({ sql, params }); return { rowCount: 1, rows: [] }; }
         if (/SELECT \* FROM budgets/.test(sql)) return { rows: [{ id: 1, category: "Dining", monthly_limit: "500", rollover_enabled: true }] };
-        if (/month_start/.test(sql)) return { rows: [{ category: "Dining", spent: "480" }] };
+        if (/net_category_months/.test(sql)) return { rows: [{ category: "Dining", spent: "480" }] };
         return { rows: [] };
       },
     };

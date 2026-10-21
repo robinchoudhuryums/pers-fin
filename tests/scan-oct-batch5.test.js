@@ -44,7 +44,7 @@ describe("F40 — the budget push", () => {
     notifications.sentRecently = async () => false;
     dbModule.pool.query = async (sql) => {
       if (/SELECT \* FROM budgets/.test(sql)) return { rows: [{ id: 1, category: "Dining", monthly_limit: String(limit), rollover_enabled: rollover != null }] };
-      if (/month_start/.test(sql)) return { rows: [{ category: "Dining", spent: String(spent) }] };
+      if (/net_category_months/.test(sql)) return { rows: [{ category: "Dining", spent: String(spent) }] };
       if (/FROM budget_snapshots/.test(sql)) return { rows: rollover != null ? [{ budget_id: 1, rollover_amount: String(rollover) }] : [] };
       return { rows: [] };
     };

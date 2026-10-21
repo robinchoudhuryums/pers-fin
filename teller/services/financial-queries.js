@@ -163,6 +163,94 @@ const INCOME_AMOUNT = `(-${SPLIT_AMOUNT})`;
 const NOT_REIMBURSED = "COALESCE(t.is_reimbursed, false) = false";
 const NOT_REIMBURSED_UNALIASED = "COALESCE(is_reimbursed, false) = false";
 
+// Refunds (cycle-7 F35 / G4). A refund is a settled credit that is not a
+// transfer or card payment (NOT_TRANSFER), not income, and not reimbursed. It
+// nets against its category in the month it POSTS; each (month, category) is
+// floored at $0, so a refund can never make a month or category negative.
+// Credits are never categorized (the free maps and the AI only touch debits),
+// so a refund takes the category of the most recent earlier charge from the
+// same display merchant (180 days), then its own provider category. The
+// income test is COALESCEd: it is NULL (not false) for a row with no Plaid
+// category, and NOT NULL would drop every refund.
+// Charge-level surfaces stay gross on purpose: the cash-flow forecast,
+// anomaly detection, the tax report and the shared-card settlement (which
+// nets same-month refunds itself — FAN-12). sheets-sync.js mirrors
+// REFUND_PREDICATE and the refund lines (SX3).
+const REFUND_PREDICATE = `(
+  t.amount < 0 AND t.pending = false
+  AND COALESCE(t.is_reimbursed, false) = false
+  AND ${NOT_TRANSFER}
+  AND NOT COALESCE(${incomePredicate("t").trim()}, false)
+)`;
+const REFUND_PRIOR_CATEGORY_JOIN = `LEFT JOIN LATERAL (
+    SELECT COALESCE(c.user_category, c.category[1]) AS category
+    FROM transactions c
+    WHERE c.amount > 0 AND c.pending = false
+      AND LOWER(COALESCE(c.user_merchant_name, c.merchant_name, c.name))
+          = LOWER(COALESCE(t.user_merchant_name, t.merchant_name, t.name))
+      AND c.date <= t.date AND c.date >= t.date - 180
+      AND COALESCE(c.user_category, c.category[1]) IS NOT NULL
+    ORDER BY c.date DESC, c.transaction_id DESC
+    LIMIT 1
+  ) prior ON true`;
+
+// spend_lines — the ONE source of spending lines every spending aggregation
+// reads (charges, split lines replacing their parent, and refunds as negative
+// lines). `windowSql` filters on `t.date` (the posting date). Columns: date,
+// month ('YYYY-MM'), category, merchant (parent display merchant), amount
+// (share-adjusted; negative for a refund), is_refund, transaction_id.
+// Callers floor per (month, category) — see netCategoryMonths.
+function spendLinesCTE(windowSql) {
+  const merchant = "COALESCE(t.user_merchant_name, t.merchant_name, t.name)";
+  return `spend_lines AS (
+    SELECT t.date, TO_CHAR(t.date, 'YYYY-MM') AS month,
+           COALESCE(t.user_category, t.category[1], 'Uncategorized') AS category,
+           ${merchant} AS merchant, ${SPLIT_AMOUNT} AS amount,
+           false AS is_refund, t.transaction_id
+    FROM transactions t
+    LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+    WHERE t.amount > 0 AND t.pending = false
+      AND COALESCE(t.is_reimbursed, false) = false
+      AND ${NOT_TRANSFER}
+      AND ${windowSql}
+      AND NOT EXISTS (SELECT 1 FROM transaction_splits s WHERE s.parent_transaction_id = t.transaction_id)
+    UNION ALL
+    SELECT t.date, TO_CHAR(t.date, 'YYYY-MM') AS month,
+           COALESCE(s.category, t.user_category, t.category[1], 'Uncategorized') AS category,
+           ${merchant} AS merchant, ${SPLIT_AMOUNT.replace(/t\.amount/g, "s.amount")} AS amount,
+           false AS is_refund, t.transaction_id
+    FROM transaction_splits s
+    JOIN transactions t ON t.transaction_id = s.parent_transaction_id
+    LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+    WHERE t.amount > 0 AND t.pending = false
+      AND COALESCE(t.is_reimbursed, false) = false
+      AND ${NOT_TRANSFER}
+      AND ${windowSql}
+    UNION ALL
+    SELECT t.date, TO_CHAR(t.date, 'YYYY-MM') AS month,
+           COALESCE(t.user_category, prior.category, t.category[1], 'Uncategorized') AS category,
+           ${merchant} AS merchant, ${SPLIT_AMOUNT} AS amount,
+           true AS is_refund, t.transaction_id
+    FROM transactions t
+    LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+    ${REFUND_PRIOR_CATEGORY_JOIN}
+    WHERE ${REFUND_PREDICATE}
+      AND ${windowSql}
+  )`;
+}
+
+// Per (month, category) net spend, floored at $0, for categories that had at
+// least one charge that month (a refund-only category isn't listed). Needs
+// spend_lines in the same WITH. Columns: month, category, spent, charge_lines.
+const NET_CATEGORY_MONTHS = `net_category_months AS (
+    SELECT month, category,
+           GREATEST(SUM(amount), 0) AS spent,
+           COUNT(*) FILTER (WHERE NOT is_refund) AS charge_lines
+    FROM spend_lines
+    GROUP BY month, category
+    HAVING COUNT(*) FILTER (WHERE NOT is_refund) > 0
+  )`;
+
 // Investment-account detection — covers Teller-linked accounts enrolled as
 // brokerage / IRA / 401k / 529 / HSA / pension / etc. Teller's API doesn't
 // expose holdings or cost basis like Plaid does (only account-level balance),
@@ -201,26 +289,30 @@ function currentMonth(tz = APP_TIMEZONE) {
 }
 
 /**
- * Monthly spending totals for the last N months, split-adjusted.
+ * Monthly spending totals for the last N months, split-adjusted and net of
+ * refunds (F35 — each month's categories floored at $0).
  * Returns rows: { month: 'YYYY-MM', total_spend: NUMERIC, txn_count: INT }
  */
 async function getMonthlySpending(pool, months = 6) {
+  // F35: net of refunds — each (month, category) floored at $0, then summed.
+  // txn_count counts the month's charges.
   const result = await pool.query(
-    `SELECT TO_CHAR(t.date, 'YYYY-MM') AS month,
-            ROUND(SUM(${SPLIT_AMOUNT}), 2) AS total_spend,
-            COUNT(*) AS txn_count
-     FROM transactions t
-     LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-     WHERE t.amount > 0 AND t.pending = false
-       AND COALESCE(t.is_reimbursed, false) = false
-       AND ${NOT_TRANSFER}
-       -- Whole-month window (FA-4): floor to the 1st of the month so the
-       -- oldest bucket is a FULL month, not a partial one — callers (savings-
-       -- rate, context-export, AI trends) treat each returned month as complete.
-       -- Anchor is the tz-aware current month ($2), not UTC CURRENT_DATE (F11).
-       AND t.date >= date_trunc('month', $2::date) - make_interval(months => $1 - 1)
-     GROUP BY TO_CHAR(t.date, 'YYYY-MM')
-     ORDER BY month`,
+    `WITH ${spendLinesCTE(
+       // Whole-month window (FA-4): floor to the 1st of the month so the
+       // oldest bucket is a FULL month, not a partial one — callers (savings-
+       // rate, context-export, AI trends) treat each returned month as complete.
+       // Anchor is the tz-aware current month ($2), not UTC CURRENT_DATE (F11).
+       "t.date >= date_trunc('month', $2::date) - make_interval(months => $1 - 1)")},
+     ${NET_CATEGORY_MONTHS},
+     charges AS (
+       SELECT month, COUNT(DISTINCT transaction_id) AS txn_count
+       FROM spend_lines WHERE NOT is_refund GROUP BY month
+     )
+     SELECT n.month, ROUND(SUM(n.spent), 2) AS total_spend, MAX(c.txn_count) AS txn_count
+     FROM net_category_months n
+     JOIN charges c ON c.month = n.month
+     GROUP BY n.month
+     ORDER BY n.month`,
     [months, currentMonth() + "-01"]
   );
   return result.rows;
@@ -276,6 +368,8 @@ async function getMonthlyIncomeAndSpending(pool, months = 6) {
  * has splits, each split contributes its own category/amount (replacing the
  * parent row); when it has none, the parent row's `category[1]` is used.
  * Honors spending_split_pct and the reimbursed exclusion on both paths.
+ * Refunds posted that month net against their category, floored at $0; a
+ * category with no charge that month is not listed (F35).
  *
  * Returns rows: { category: TEXT, spent: NUMERIC }
  */
@@ -289,45 +383,13 @@ async function getCategorySpendingForMonth(pool, monthStr) {
     throw new Error("getCategorySpendingForMonth: month must be 'YYYY-MM' with month 01-12");
   }
   const monthStart = monthStr + "-01";
+  // F35: refunds net against their category in the month they post (floored
+  // at $0) — spend_lines carries charges, split lines and refund lines.
   const result = await pool.query(`
-    WITH bounds AS (
-      SELECT $1::date AS month_start,
-             ($1::date + INTERVAL '1 month')::date AS month_end
-    ),
-    parent_no_splits AS (
-      SELECT COALESCE(t.user_category, t.category[1], 'Uncategorized') AS category,
-             ${SPLIT_AMOUNT} AS amount
-      FROM transactions t
-      LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-      CROSS JOIN bounds b
-      WHERE t.amount > 0 AND t.pending = false
-        AND COALESCE(t.is_reimbursed, false) = false
-        AND ${NOT_TRANSFER}
-        AND t.date >= b.month_start
-        AND t.date <  b.month_end
-        AND NOT EXISTS (SELECT 1 FROM transaction_splits s WHERE s.parent_transaction_id = t.transaction_id)
-    ),
-    from_splits AS (
-      SELECT COALESCE(s.category, t.user_category, t.category[1], 'Uncategorized') AS category,
-             (CASE WHEN la.is_shared AND t.personal_for = 'self' THEN s.amount WHEN la.is_shared AND t.personal_for = 'partner' THEN 0 ELSE s.amount * COALESCE(la.spending_split_pct, 100) / 100.0 END) AS amount
-      FROM transaction_splits s
-      JOIN transactions t ON t.transaction_id = s.parent_transaction_id
-      LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-      CROSS JOIN bounds b
-      WHERE t.amount > 0 AND t.pending = false
-        AND COALESCE(t.is_reimbursed, false) = false
-        AND ${NOT_TRANSFER}
-        AND t.date >= b.month_start
-        AND t.date <  b.month_end
-    ),
-    all_lines AS (
-      SELECT category, amount FROM parent_no_splits
-      UNION ALL
-      SELECT category, amount FROM from_splits
-    )
-    SELECT category, ROUND(SUM(amount), 2) AS spent
-    FROM all_lines
-    GROUP BY category
+    WITH ${spendLinesCTE("t.date >= $1::date AND t.date < ($1::date + INTERVAL '1 month')::date")},
+    ${NET_CATEGORY_MONTHS}
+    SELECT category, ROUND(spent, 2) AS spent
+    FROM net_category_months
   `, [monthStart]);
   return result.rows;
 }
@@ -557,6 +619,9 @@ module.exports = {
   NOT_REIMBURSED,
   NOT_REIMBURSED_UNALIASED,
   NOT_TRANSFER,
+  REFUND_PREDICATE,
+  spendLinesCTE,
+  NET_CATEGORY_MONTHS,
   INVESTMENT_ACCOUNT_TYPES,
   getMonthlySpending,
   getMonthlyIncome,

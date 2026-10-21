@@ -9,7 +9,7 @@ const { pool } = require("../services/database");
 // module keeps using and RE-EXPORTING them, so import paths are unchanged.
 const { renderInsightEmail, renderWeeklyDigestEmail, renderWeeklyDigestText,
         renderDailyDigestEmail, renderDailyDigestText, escapeHtml } = require("./insights-email");
-const { getMonthlySpending, getMonthlyIncomeAndSpending, NOT_TRANSFER, SPLIT_AMOUNT, currentMonth, todayStr, getTaxDeductionTransactions } = require("../services/financial-queries");
+const { getMonthlySpending, getMonthlyIncomeAndSpending, NOT_TRANSFER, SPLIT_AMOUNT, spendLinesCTE, NET_CATEGORY_MONTHS, currentMonth, todayStr, getTaxDeductionTransactions } = require("../services/financial-queries");
 // Dates go into prompts as 'YYYY-MM-DD' (cycle-7 F71 — a DATE column arrives as
 // a JS Date, and string concatenation wrote "Tue Dec 31 2026 00:00:00 GMT…").
 const { isoDate } = require("../services/csv-export");
@@ -771,21 +771,20 @@ async function generateInsights() {
         // shown to the AI match the "Monthly Spending (6mo)" block earlier in
         // the same prompt — the previous query was a raw SUM that included
         // credit-card payments, ACH transfers, and 100% of joint-account spend.
+        // F35: net of refunds, each month's categories floored at $0 — the
+        // same spend_lines as getMonthlySpending.
         const seasonalData = await pool.query(
-          `SELECT EXTRACT(MONTH FROM t.date)::int AS month_num,
-                  TO_CHAR(t.date, 'Mon') AS month_name,
-                  EXTRACT(YEAR FROM t.date)::int AS year,
-                  ROUND(SUM(${SPLIT_AMOUNT}), 2) AS total
-           FROM transactions t
-           LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-           WHERE t.amount > 0 AND t.pending = false
-             AND COALESCE(t.is_reimbursed, false) = false
-             AND ${NOT_TRANSFER}
-             AND t.date >= CURRENT_DATE - INTERVAL '24 months'
-             -- AIN-4: complete months only (the month-to-date total is not a
-             -- seasonal data point).
-             AND t.date < $1::date
-           GROUP BY EXTRACT(MONTH FROM t.date), TO_CHAR(t.date, 'Mon'), EXTRACT(YEAR FROM t.date)
+          `WITH ${spendLinesCTE(
+             // AIN-4: complete months only (the month-to-date total is not a
+             // seasonal data point).
+             "t.date >= CURRENT_DATE - INTERVAL '24 months' AND t.date < $1::date")},
+           ${NET_CATEGORY_MONTHS}
+           SELECT EXTRACT(MONTH FROM (month || '-01')::date)::int AS month_num,
+                  TO_CHAR((month || '-01')::date, 'Mon') AS month_name,
+                  EXTRACT(YEAR FROM (month || '-01')::date)::int AS year,
+                  ROUND(SUM(spent), 2) AS total
+           FROM net_category_months
+           GROUP BY month
            ORDER BY year, month_num`,
           [thisMonthKey + "-01"]
         );

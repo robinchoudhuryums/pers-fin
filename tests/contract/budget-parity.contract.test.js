@@ -5,7 +5,8 @@
 // this pins their RESULT — for a budget set that exercises every rule (prior-
 // month rollover, rollover off, a one-time budget in and out of its month, a
 // split parent, a reimbursed charge, a shared card at 50% and personal_for)
-// the Sheets rows must equal getBudgetStatus row-for-row to the cent.
+// the Sheets rows must equal getBudgetStatus row-for-row to the cent. Since
+// Batch 14 (F35) the fixture also carries refunds (inherited category, floor).
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 const { SKIP, perfinDb } = require("./_setup");
@@ -57,6 +58,12 @@ describe("Sheets Budget Status = getBudgetStatus on real Postgres", { skip: SKIP
     await tx("dine", "card", 64.1, "Dining");
     await tx("old", "card", 999, "Dining", { date: pm + "-15" });     // last month — not counted
     await tx("zelle", "card", 300, "Dining", { merchant: "ZELLE TO JOHN SMITH" }); // a transfer
+    // F35 (Batch 14): uncategorized refunds inherit the merchant's prior charge
+    // category and net in their posting month; Dining's refund exceeds its
+    // charges, so it floors at $0.
+    await q(`INSERT INTO transactions (account_id, transaction_id, amount, date, merchant_name, name, category, pending)
+             VALUES ('card','gref',-20.25,$1,'Shop g1','Shop g1',NULL,false),
+                    ('card','dref',-100,$1,'Shop dine','Shop dine',NULL,false)`, [cm + "-03"]);
     const g = (await q("INSERT INTO budgets (category, monthly_limit, rollover_enabled) VALUES ('Groceries', 250, true) RETURNING id")).rows[0].id;
     const d = (await q("INSERT INTO budgets (category, monthly_limit, rollover_enabled) VALUES ('Dining', 150, false) RETURNING id")).rows[0].id;
     await q("INSERT INTO budgets (category, monthly_limit, budget_type, effective_month) VALUES ('Travel', 600, 'one_time', $1)", [cm]);
@@ -78,8 +85,8 @@ describe("Sheets Budget Status = getBudgetStatus on real Postgres", { skip: SKIP
     const app = Object.fromEntries((await fq.getBudgetStatus(pool, cm)).map((b) => [b.category, { spent: b.spent.toFixed(2), limit: b.effective_limit.toFixed(2) }]));
     assert.deepEqual(sheet, app);
     // The fixture really exercises the rules (so parity isn't vacuous):
-    assert.deepEqual(app.Groceries, { spent: "233.58", limit: "310.00" }); // 80.25 + 50 + 33.33 + 0 + 70 split; 250 + 60 rollover
-    assert.deepEqual(app.Dining, { spent: "64.10", limit: "150.00" });     // rollover off; old month + transfer excluded
+    assert.deepEqual(app.Groceries, { spent: "213.33", limit: "310.00" }); // 80.25 + 50 + 33.33 + 0 + 70 split − 20.25 refund; 250 + 60 rollover
+    assert.deepEqual(app.Dining, { spent: "0.00", limit: "150.00" });      // 64.10 − 100 refund floors at $0; rollover off; old month + transfer excluded
     assert.deepEqual(app.Travel, { spent: "210.50", limit: "600.00" });    // reimbursed excluded; one-time in its month
     assert.equal(app.Gifts, undefined);                                     // one-time outside its month
     assert.deepEqual(app.Household, { spent: "50.00", limit: "40.00" });

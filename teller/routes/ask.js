@@ -17,7 +17,7 @@ const router = express.Router();
 const { pool } = require("../services/database");
 const {
   getMonthlyIncome, getMonthlySpending, getNetWorth,
-  getCategorySpendingForMonth, SPLIT_AMOUNT, NOT_REIMBURSED, NOT_TRANSFER, currentMonth, todayStr,
+  getCategorySpendingForMonth, SPLIT_AMOUNT, NOT_REIMBURSED, NOT_TRANSFER, REFUND_PREDICATE, currentMonth, todayStr,
 } = require("../services/financial-queries");
 const { MODEL_MAP, estimateCostGranular } = require("../data/reference-data");
 
@@ -106,9 +106,12 @@ async function toolSearchTransactions(args) {
       // spend total applies the dashboard's spending filters — reimbursed AND
       // transfers / card payments (NOT_TRANSFER) excluded — so a date-range
       // "how much did I spend" no longer adds card payments and Zelle moves.
+      // F35: matching refunds (REFUND_PREDICATE) net against the matching
+      // charges, floored at $0 like every other spending total.
       `SELECT COUNT(*) AS match_count,
-              ROUND(SUM(CASE WHEN t.amount > 0 AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER}
-                             THEN ${SPLIT_AMOUNT} ELSE 0 END), 2) AS total_spent_adjusted
+              ROUND(GREATEST(COALESCE(SUM(CASE WHEN (t.amount > 0 AND ${NOT_REIMBURSED} AND ${NOT_TRANSFER})
+                                                 OR ${REFUND_PREDICATE}
+                                               THEN ${SPLIT_AMOUNT} ELSE 0 END), 0), 0), 2) AS total_spent_adjusted
        FROM transactions t
        LEFT JOIN linked_accounts la ON la.account_id = t.account_id
        WHERE ${where}`,
@@ -118,7 +121,7 @@ async function toolSearchTransactions(args) {
   return {
     match_count: parseInt(totals.rows[0].match_count),
     total_spent_adjusted: totals.rows[0].total_spent_adjusted,
-    note: "total_spent_adjusted is shared-card adjusted and excludes reimbursed rows and transfers/card payments (the dashboard's spending filters); the row list shows raw amounts. With a category filter it counts a split transaction's FULL parent amount — use get_category_spending for exact per-category month totals.",
+    note: "total_spent_adjusted is shared-card adjusted, excludes reimbursed rows and transfers/card payments, and nets matching refunds (the dashboard's spending filters); the row list shows raw amounts. With a category filter it counts a split transaction's FULL parent amount — use get_category_spending for exact per-category month totals.",
     transactions: rows.rows,
   };
 }

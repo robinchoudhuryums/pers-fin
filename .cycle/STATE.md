@@ -18,7 +18,26 @@ Updated: 2026-10-21
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 13 DONE** on branch
+- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 14 DONE** on branch
+  `claude/sweet-ritchie-f9d8ah` (2026-10-21). Refund-aware spending (F35 → G4), from
+  `.cycle/plan-cycle7-deferred.md`.
+  - **Completed:** REFUND_PREDICATE + REFUND_PRIOR_CATEGORY_JOIN + spendLinesCTE +
+    NET_CATEGORY_MONTHS in financial-queries.js; getMonthlySpending / getCategorySpendingForMonth
+    (→ budgets, alerts, push, snapshots, savings rate, FIRE, context export, Ask, insights),
+    /api/spending-summary, /api/spending-yoy, the insights seasonal block, Ask's search total and
+    the Sheets Dashboard (SX3-pinned mirror) all net refunds per (month, category), floored at $0.
+    Cash flow, anomaly, tax and Settle Up stay charge-level.
+  - **Decisions:** refunds take the merchant's latest earlier charge category (180 days), then their
+    own provider category; refund-only categories / merchants aren't listed; txn_count = charges;
+    the income test inside the refund predicate is COALESCEd (NULL for non-Plaid rows — the first
+    version matched no refund at all; caught by the new contract tests).
+  - **Results:** npm 1745/1745 (81 files), contract 128/128, Playwright 35/35. Net 1 − 1 = 0.
+    Block: `.cycle/blocks/7-batch14-broad-implement.md`.
+  - **Follow-ons:** Settle Up's own refund rule vs REFUND_PREDICATE; Watchlist 90-day spend + Code.gs
+    stay gross; no "net of refunds" UI copy; pre-deploy budget snapshots stay gross.
+  - **Where I left off:** Batch 14 committed and pushed (no PR). NEXT: /sync-docs for Batch 14,
+    then `/broad-implement Batch 15` (plan file).
+- **Previous status:** **Cycle 7 — Oct 2026 broad scan, Batch 13 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-21). Platform hardening, test quality, drift guards.
   - **Completed:** F9 (Perfin COOP same-origin-allow-popups), F10 (migration advisory lock →
     lock_timeout 5s, 55P03 retried ×5, else fatal; pgvector create in an EXCEPTION block, vector
