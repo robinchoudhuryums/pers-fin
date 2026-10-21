@@ -106,7 +106,7 @@ ${navBar("/health")}
     <div class="modal-actions">
       <button id="btn-cancel-habit">Cancel</button>
       <button class="primary" id="btn-save-habit">Save</button>
-      <button class="danger" id="h-archive-btn" style="display:none">Archive</button>
+      <button class="danger" data-e2e-skip id="h-archive-btn" style="display:none">Archive</button>
     </div>
   </div>
 </div>

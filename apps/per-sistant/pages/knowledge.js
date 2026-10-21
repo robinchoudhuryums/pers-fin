@@ -205,13 +205,15 @@ async function loadKStatus(){
   } catch(e){}
 }
 async function reindex(){
-  var btn = document.getElementById('k-reindex-btn');
-  btn.disabled = true;
-  try {
-    var r = await fetch('/api/rag/reindex', {method:'POST'}).then(function(r){return r.json();});
-    if(r && r.error){ document.getElementById('k-status-text').textContent = r.error; btn.disabled = false; return; }
+  // The button is re-enabled when this returns; loadKStatus then disables it
+  // again while the background reindex runs.
+  return withPending(document.getElementById('k-reindex-btn'), 'reindex', async function(){
+    try {
+      var r = await fetch('/api/rag/reindex', {method:'POST'}).then(function(r){return r.json();});
+      if(r && r.error){ document.getElementById('k-status-text').textContent = r.error; return; }
+    } catch(e){ return; }
     loadKStatus();
-  } catch(e){ btn.disabled = false; }
+  });
 }
 
 async function capture(){
@@ -219,7 +221,8 @@ async function capture(){
   if(!t) return;
   var st = document.getElementById('k-capture-status');
   var btn = document.getElementById('k-capture-btn');
-  st.textContent = 'Saving…'; btn.disabled = true;
+  st.textContent = 'Saving…';
+  return withPending(btn, 'capture', async function(){
   try {
     var r = await fetch('/api/rag/capture', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t, sensitivity:document.getElementById('k-capture-sensitivity').value})}).then(function(r){return r.json();});
     if(r.error){ st.textContent = r.error; return; }
@@ -227,7 +230,7 @@ async function capture(){
     document.getElementById('k-capture-text').value = '';
     loadKStatus();
   } catch(e){ st.textContent = 'Capture failed.'; }
-  finally { btn.disabled = false; }
+  });
 }
 
 bindEvents([

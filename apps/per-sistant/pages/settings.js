@@ -168,7 +168,7 @@ ${navBar("/settings")}
     <div id="trash-list" style="margin-bottom:10px;"></div>
     <div class="actions" style="margin-bottom:0;">
       <button class="btn" id="view-trash-btn">View Trash</button>
-      <button class="btn danger" id="empty-trash-btn">Empty Trash</button>
+      <button class="btn danger" data-e2e-skip id="empty-trash-btn">Empty Trash</button>
     </div>
   </div>
 
@@ -238,7 +238,7 @@ ${navBar("/settings")}
     </div>
   </div>
 
-  ${(AUTH_SECRET || req.app.get("embedded")) ? '<div class="section"><h2>Session</h2><div class="actions" style="margin-bottom:0;"><button class="btn danger" id="logout-btn">Log Out</button></div></div>' : ''}
+  ${(AUTH_SECRET || req.app.get("embedded")) ? '<div class="section"><h2>Session</h2><div class="actions" style="margin-bottom:0;"><button class="btn danger" data-e2e-skip id="logout-btn">Log Out</button></div></div>' : ''}
 </div>
 
 <!-- Automation Modal -->
@@ -279,7 +279,7 @@ ${navBar("/settings")}
     <div class="modal-actions">
       <button class="btn" id="auto-cancel-btn">Cancel</button>
       <button class="btn primary" id="auto-save-btn">Save</button>
-      <button class="btn danger" id="auto-delete-btn" style="display:none">Delete</button>
+      <button class="btn danger" data-e2e-skip id="auto-delete-btn" style="display:none">Delete</button>
     </div>
   </div>
 </div>
@@ -304,7 +304,7 @@ ${navBar("/settings")}
     <div class="modal-actions">
       <button class="btn" id="wh-cancel-btn">Cancel</button>
       <button class="btn primary" id="wh-save-btn">Save</button>
-      <button class="btn danger" id="wh-delete-btn" style="display:none">Delete</button>
+      <button class="btn danger" data-e2e-skip id="wh-delete-btn" style="display:none">Delete</button>
     </div>
   </div>
 </div>

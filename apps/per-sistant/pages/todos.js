@@ -20,7 +20,7 @@ ${navBar("/todos")}
   <div id="bulk-bar" class="section" style="display:none;padding:10px 14px;margin-bottom:14px;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;">
     <span id="bulk-count" class="mono-label">0 selected</span>
     <button class="btn" id="bulk-complete-btn">Complete</button>
-    <button class="btn danger" id="bulk-delete-btn">Delete</button>
+    <button class="btn danger" data-e2e-skip id="bulk-delete-btn">Delete</button>
     <select id="bulk-priority">
       <option value="">Set Priority...</option><option value="urgent">Urgent</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option>
     </select>
@@ -141,7 +141,7 @@ ${navBar("/todos")}
       <button class="btn" id="cancel-modal-btn">Cancel</button>
       <button class="btn primary" id="save-todo-btn">Save</button>
       <button class="btn" id="save-template-btn" style="display:none;">Save as Template</button>
-      <button class="btn danger" id="delete-btn" style="display:none">Delete</button>
+      <button class="btn danger" data-e2e-skip id="delete-btn" style="display:none">Delete</button>
     </div>
   </div>
 </div>

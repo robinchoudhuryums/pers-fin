@@ -16,7 +16,7 @@ ${navBar("/notes")}
   </div>
   <div id="note-bulk-bar" style="display:none;padding:10px 16px;margin-bottom:12px;background:var(--paper-2);border:1px solid var(--line);border-radius:var(--radius);align-items:center;gap:8px;font-size:13px;">
     <span id="note-bulk-count">0 selected</span>
-    <button class="btn danger" id="note-bulk-del-btn">Delete</button>
+    <button class="btn danger" data-e2e-skip id="note-bulk-del-btn">Delete</button>
     <button class="btn" id="note-select-all-btn" style="margin-left:auto;">Select All</button>
   </div>
 
@@ -73,7 +73,7 @@ ${navBar("/notes")}
     <div class="modal-actions">
       <button class="btn" id="close-note-btn">Cancel</button>
       <button class="btn primary" id="save-note-btn">Save</button>
-      <button class="btn danger" id="n-delete-btn" style="display:none">Delete</button>
+      <button class="btn danger" data-e2e-skip id="n-delete-btn" style="display:none">Delete</button>
     </div>
   </div>
 </div>
@@ -119,14 +119,14 @@ async function suggestTags() {
   // F134: a private / secret note is never sent to the AI.
   if (sensitivity !== 'normal') return alert('AI tagging is off for private and secret notes.');
   var btn = document.getElementById('suggest-tags-btn');
-  btn.textContent = 'Thinking...'; btn.disabled = true;
+  return withPending(btn, 'suggest-tags', async function() {
   try {
     var r = await fetch('/api/ai/suggest-tags', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title, content, sensitivity})}).then(r=>r.json());
     if (r.error) { alert(r.error); return; }
     r.tags.forEach(t => { if (!currentTags.includes(t)) currentTags.push(t); });
     renderTags();
   } catch (err) { alert('Failed: '+err.message); }
-  finally { btn.textContent = 'AI Suggest'; btn.disabled = false; }
+  }, 'Thinking...');
 }
 
 async function load() {

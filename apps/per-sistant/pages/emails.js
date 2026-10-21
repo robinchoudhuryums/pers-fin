@@ -18,7 +18,7 @@ ${navBar("/emails")}
   </div>
   <div id="email-bulk-bar" style="display:none;padding:10px 16px;margin-bottom:12px;background:var(--paper-2);border:1px solid var(--line);border-radius:var(--radius);align-items:center;gap:8px;font-size:13px;">
     <span id="email-bulk-count">0 selected</span>
-    <button class="btn danger" id="email-bulk-del-btn">Delete</button>
+    <button class="btn danger" data-e2e-skip id="email-bulk-del-btn">Delete</button>
     <button class="btn" id="email-select-all-btn" style="margin-left:auto;">Select All</button>
   </div>
 
@@ -63,7 +63,7 @@ ${navBar("/emails")}
       <button class="btn primary" id="save-email-btn">Save Draft</button>
       <button class="btn" id="schedule-btn" style="color:var(--warn);border-color:var(--warn);">Schedule</button>
       <button class="btn" id="send-now-btn" style="color:var(--good);border-color:var(--good);">Send Now</button>
-      <button class="btn danger" id="e-delete-btn" style="display:none">Delete</button>
+      <button class="btn danger" data-e2e-skip id="e-delete-btn" style="display:none">Delete</button>
     </div>
   </div>
 </div>
@@ -204,19 +204,15 @@ async function saveAndSchedule() {
 async function sendNow() {
   // F111: one Send at a time — a double-click saved (created) the new email
   // twice and sent both.
-  return guardPending('send-now', async function() {
-    var btn = document.getElementById('send-now-btn');
-    if (btn) btn.disabled = true;
-    try {
-      // ALWAYS persist the form first — for an existing email the old
-      // "only save when new" path sent the STALE stored body, silently dropping
-      // any edits made in the modal (PUI-2). saveEmail returns null on failure.
-      var id = await saveEmail();
-      if (!id) return;
-      var r = await fetch('/api/emails/'+id+'/send', {method:'POST'}).then(r=>r.json()).catch(function(){ return { error: 'no connection' }; });
-      if (r.ok) { alert('Email sent!'); closeCompose(); load(); }
-      else alert('Failed: '+(r.error||'Unknown error'));
-    } finally { if (btn) btn.disabled = false; }
+  return withPending(document.getElementById('send-now-btn'), 'send-now', async function() {
+    // ALWAYS persist the form first — for an existing email the old
+    // "only save when new" path sent the STALE stored body, silently dropping
+    // any edits made in the modal (PUI-2). saveEmail returns null on failure.
+    var id = await saveEmail();
+    if (!id) return;
+    var r = await fetch('/api/emails/'+id+'/send', {method:'POST'}).then(r=>r.json()).catch(function(){ return { error: 'no connection' }; });
+    if (r.ok) { alert('Email sent!'); closeCompose(); load(); }
+    else alert('Failed: '+(r.error||'Unknown error'));
   });
 }
 
@@ -253,28 +249,27 @@ async function aiDraft() {
   var name = document.getElementById('e-name').value;
   var prompt = subject || document.getElementById('e-body').value;
   if (!prompt) { prompt = window.prompt('Describe the email you want to write:'); if (!prompt) return; }
-  var btn = document.getElementById('ai-draft-btn'); btn.textContent = 'Drafting...'; btn.disabled = true;
+  return withPending(document.getElementById('ai-draft-btn'), 'ai-draft', async function() {
   try {
     var r = await fetch('/api/ai/draft-email', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt, recipient_name: name})}).then(r=>r.json());
     if (r.error) { alert(r.error); return; }
     if (r.subject) document.getElementById('e-subject').value = r.subject;
     if (r.body) document.getElementById('e-body').value = r.body;
   } catch (err) { alert('AI draft failed: '+err.message); }
-  finally { btn.textContent = 'AI Draft'; btn.disabled = false; }
+  }, 'Drafting...');
 }
 
 // Tone adjustment
 async function adjustTone(tone) {
   var body = document.getElementById('e-body').value;
   if (!body) return alert('Write or draft an email first');
-  var btns = document.querySelectorAll('.tone-btn');
-  btns.forEach(b => { b.disabled = true; });
+  return withPending(document.querySelectorAll('.tone-btn'), 'adjust-tone', async function() {
   try {
     var r = await fetch('/api/ai/adjust-tone', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({body, tone})}).then(r=>r.json());
     if (r.error) { alert(r.error); return; }
     if (r.body) document.getElementById('e-body').value = r.body;
   } catch (err) { alert('Tone adjustment failed: '+err.message); }
-  finally { btns.forEach(b => { b.disabled = false; }); }
+  });
 }
 
 // Templates

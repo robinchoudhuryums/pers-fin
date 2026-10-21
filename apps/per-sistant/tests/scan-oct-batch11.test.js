@@ -113,7 +113,8 @@ describe("F113 / F111 — writes report failures; one Send at a time", () => {
     release("done");
     assert.equal(await first, "done");
     assert.equal(await ctx.g("send-now", async () => "again"), "again");
-    assert.match(read("pages/emails.js"), /return guardPending\('send-now', async function\(\)/);
+    // Since cycle-7 Batch 20 (ST3) Send Now goes through withPending (guardPending + the button).
+    assert.match(read("pages/emails.js"), /return withPending\(document\.getElementById\('send-now-btn'\), 'send-now', async function\(\)/);
   });
 
   it("no page discards a write's response", () => {

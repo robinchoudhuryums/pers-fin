@@ -163,7 +163,7 @@ async function aiBreakdown() {
   var title = document.getElementById('f-title').value;
   if (!title) return alert('Enter a task title first');
   var btn = document.getElementById('ai-breakdown-btn');
-  btn.textContent = 'Thinking...'; btn.disabled = true;
+  return withPending(btn, 'ai-breakdown', async function() {
   try {
     var r = await fetch('/api/ai/task-breakdown', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title, description: document.getElementById('f-desc').value})}).then(r=>r.json());
     if (r.error) { alert(r.error); return; }
@@ -181,7 +181,7 @@ async function aiBreakdown() {
       renderEditSubtasks();
     }
   } catch (err) { alert('AI breakdown failed: '+err.message); }
-  finally { btn.textContent = 'AI Breakdown'; btn.disabled = false; }
+  }, 'Thinking...');
 }
 
 // AI-enhanced Quick Add
@@ -190,7 +190,7 @@ async function parseQuickTodoAI() {
   var input = document.getElementById('qt-input').value.trim();
   if (!input) return;
   var btn = document.querySelector('#quick-todo-modal .primary');
-  btn.textContent = 'Parsing...'; btn.disabled = true;
+  return withPending(btn, 'parse-todo', async function() {
   try {
     var r = await fetch('/api/ai/parse-todo', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({input})}).then(r=>r.json());
     if (r.error) { parseQuickTodo(); return; } // Fallback to regex parsing
@@ -200,7 +200,7 @@ async function parseQuickTodoAI() {
     document.getElementById('qt-preview').style.display = 'block';
     document.getElementById('qt-confirm').style.display = 'inline-block';
   } catch { parseQuickTodo(); } // Fallback to regex
-  finally { btn.textContent = 'Parse'; btn.disabled = false; }
+  }, 'Parsing...');
 }
 
 // Templates

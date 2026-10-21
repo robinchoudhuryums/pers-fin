@@ -197,6 +197,22 @@ async function guardPending(key, fn){
   _pending[key] = true;
   try { return await fn(); } finally { _pending[key] = false; }
 }
+// ST3: the ONE "button busy while its action runs" helper. Runs fn single-flight
+// under key (guardPending), with btn (an element, a NodeList / array of them, or
+// null) disabled + aria-busy and, when busyText is given, relabelled — every
+// change restored in a finally. Returns undefined while a run with that key is
+// in progress. Pages use this instead of toggling .disabled by hand.
+async function withPending(btn, key, fn, busyText){
+  var list = !btn ? [] : (btn.tagName ? [btn] : Array.prototype.slice.call(btn));
+  return guardPending(key, async function(){
+    var saved = list.map(function(b){ return { b: b, text: b.textContent, disabled: b.disabled }; });
+    list.forEach(function(b){ b.disabled = true; b.setAttribute('aria-busy', 'true'); if (busyText) b.textContent = busyText; });
+    try { return await fn(); }
+    finally {
+      saved.forEach(function(s){ s.b.disabled = s.disabled; s.b.removeAttribute('aria-busy'); if (busyText) s.b.textContent = s.text; });
+    }
+  });
+}
 function showUndo(msg,type,id,action,extra){
   clearTimeout(_undoTimer);
   var el=document.getElementById('undo-toast');
@@ -435,16 +451,17 @@ document.addEventListener('keydown',function(e){
     if (!q) return;
     answer.hidden = false;
     answer.textContent = 'Thinking…';
-    sendBtn.disabled = true;
-    fetch('/api/ai/query', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: q }),
-    }).then(function (r) { return r.json(); }).then(function (r) {
-      answer.textContent = (r && r.answer) || 'No answer available.';
-    }).catch(function (err) {
-      answer.textContent = 'Error: ' + ((err && err.message) || 'request failed');
-    }).then(function () { sendBtn.disabled = false; });
+    withPending(sendBtn, 'ask', function () {
+      return fetch('/api/ai/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: q }),
+      }).then(function (r) { return r.json(); }).then(function (r) {
+        answer.textContent = (r && r.answer) || 'No answer available.';
+      }).catch(function (err) {
+        answer.textContent = 'Error: ' + ((err && err.message) || 'request failed');
+      });
+    });
   }
   document.addEventListener('click', function (e) {
     var t = e.target.closest('#ask-ps-btn');

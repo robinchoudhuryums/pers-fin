@@ -33,7 +33,7 @@ ${navBar("/contacts")}
     <div class="modal-actions">
       <button id="btn-cancel-contact">Cancel</button>
       <button class="primary" id="btn-save-contact">Save</button>
-      <button class="danger" id="c-delete-btn" style="display:none">Delete</button>
+      <button class="danger" data-e2e-skip id="c-delete-btn" style="display:none">Delete</button>
     </div>
   </div>
 </div>

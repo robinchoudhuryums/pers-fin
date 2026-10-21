@@ -212,7 +212,7 @@ async function refresh(){
   var s = document.getElementById('refresh-status');
   var btn = document.getElementById('btn-refresh');
   if(btn.disabled) return;
-  btn.disabled = true;
+  return withPending(btn, 'jobs-refresh', async function(){
   s.textContent = 'Refreshing...';
   try {
     var resp = await fetch('/api/jobs/refresh?force=1', {method:'POST'});
@@ -224,7 +224,7 @@ async function refresh(){
     }
     load();
   } catch(e){ s.textContent = 'Refresh failed — could not reach the server.'; }
-  finally { btn.disabled = false; }
+  });
 }
 
 // ----- Profile modal -------------------------------------------------------
