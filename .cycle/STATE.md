@@ -44,8 +44,12 @@ implement and reflect sessions only set Phase.)
     Notes privacy tier, db/028 + test file, notes / suggest-tags endpoints, secret tier note,
     test counts. README — counts, coverage and contract lines.
   - **Where I left off:** Batch 16 + its /sync-docs committed and pushed (no PR). The deferred
-    plan (Batches 14–16) is complete; NEXT: expansion batches E1, E2, E4 (or /reflect to close
-    cycle 7).
+    plan (Batches 14–16) is complete. The expansion E-batches don't each fit one
+    /broad-implement run (E1 ≈ 18–20h, E2 ≈ 13h, E4 ≈ 2h vs the ~8–12h a run holds), so they
+    were re-cut into `.cycle/plan-cycle7-expansion.md`: Batch 17 operator visibility (G1 + ST4),
+    Batch 18 async sync for the backstops (ST1), Batch 19 Plaid Link update mode (G3), Batch 20
+    browser quality + Per-sistant client kit (G2 + ST3). NEXT: `/broad-implement Batch 17`,
+    then 18 → 19 → 20, then /reflect to close cycle 7.
 - **Previous status:** **Cycle 7 — Oct 2026 broad scan, Batch 15 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-21). Subscription watchdog (F53 → G5) + merchant rename
   rules (F55 → ST2), from `.cycle/plan-cycle7-deferred.md`.
