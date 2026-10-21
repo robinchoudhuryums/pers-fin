@@ -449,9 +449,17 @@ shell/
                                  invalidateIdleCache, makeSession,
                                  setSessionCookie, cookieSecure, isValidSession,
                                  safeReturnTo, loginReturnTo, pinLockedForMs,
-                                 COOKIE_NAME, DEFAULT_IDLE_MS. Also owns the
-                                 global PIN-failure ceiling (PSC-14) and the
-                                 return_to carry-through (PSC-9).
+                                 COOKIE_NAME, DEFAULT_IDLE_MS, currentEpoch.
+                                 Also owns the global PIN-failure ceiling
+                                 (PSC-14), the return_to carry-through (PSC-9)
+                                 and the session epoch (cycle-7 F12): the
+                                 cookie signs "<expires>:<epoch>" and is valid
+                                 only while the epoch equals
+                                 user_settings.shell_session_epoch (read with
+                                 the idle window; a legacy "<expires>" cookie
+                                 is epoch 0; a DB blip keeps the last epoch).
+                                 POST /logout?everywhere=1 (valid session
+                                 required) bumps it — "Sign Out Everywhere".
     webauthn.js                — Shell-side biometric login: hosts
                                  `/api/shell/webauthn/{available,authenticate-options,authenticate}`
                                  mounted BEFORE requireAuth; reads
@@ -587,9 +595,25 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1702 tests as of latest); use
+  Perfin and Per-sistant test files (1732 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1702 tests across 79 test files (incl.
+  Current count: 1732 tests across 80 test files (incl.
+  `tests/scan-oct-batch13.test.js` — the Oct 2026 (cycle 7) Batch 13 platform / test-quality
+  pins that need no database: runMigrations against fake clients (BEGIN → advisory lock →
+  lock_timeout, rollback + no retry on an ordinary error, 55P03 retried with backoff, give-up
+  after N — F10/PS-1), teller/services/database booted in a child process (exit 1 without
+  TOKEN_ENCRYPTION_PASSPHRASE / NEON_DATABASE_URL — F138), the pgvector guards (F10), the
+  Sign Out Everywhere wiring (F12), the Dockerfile uploads chown (F13), a scan that no test
+  opens a pool on NEON/PERSISTENT_DATABASE_URL (F136), and two POLICY guards with shrinking
+  KNOWN_GAPS — a timezone lint (no new `new Date().toISOString()` today/month slice or
+  `date_trunc('month', CURRENT_DATE | now())` in server code) and a canonical-helper scan
+  (net_worth_snapshots writers call getNetWorth; budget_snapshots, income streams, the AI
+  spend and the effective budget limit are each read/derived in one place);
+  `apps/per-sistant/tests/scan-oct-batch13.test.js` — Per-sistant runMigrations with a fake
+  `db` (PS-1 + F10) and the standalone login gate run for real (requireAuth + POST
+  /api/login, expiry, embedded skip, webhook exemption — F139); the database-backed half of
+  Batch 13 lives in `tests/contract/platform-batch13`, `persistent-batch13` and
+  `budget-parity`;
   `apps/per-sistant/tests/scan-oct-batch12.test.js` — the Oct 2026 (cycle 7) Batch 12
   Knowledge ingest pins that need no database: an empty or max_tokens answer never cached +
   the truncated flag and callAI's `meta.stop_reason` (F126), a truncated tree reported with
@@ -779,11 +803,18 @@ shell/
   only current facts announced against a given day, a "--- " file with a repeated sensitivity
   key stored as secret, a 1 MB fact file read through the blobs API keeping its facts, a
   truncated tree reported with the SHA held, and a force-pushed history removing a file from
-  the dropped commits) and knowledge (syncVault through a
+  the dropped commits), platform-batch13 (cycle-7 Batch 13: Perfin's COOP header from the
+  real app, SSO replay refused + a forged signature not burning the nonce, perfin_try_decrypt
+  NULL for a wrong key, concurrent migration runs + a held table lock → 55P03 → retry,
+  session-epoch revocation through the real handleLogout / requireAuth), persistent-batch13
+  (the schema checks ported from the deleted integration.test.js, GET /api/analytics, two
+  concurrent scheduled-email runners sending each email once, POST /api/rag/reindex → status,
+  concurrent migrations), budget-parity (the Sheets Dashboard's Budget Status rows equal
+  getBudgetStatus to the cent) and knowledge (syncVault through a
   fake GitHub API via its `fetchImpl`, syncNotes, keyword search never returning
   secret text, secret-lookup, facts current vs `all=1` + verify, /api/rag/query
   without AI, an incremental compare that removes a deleted file) plus insight
-  feedback set / change / clear (the F60 `$1::text` cast). 103 tests, run
+  feedback set / change / clear (the F60 `$1::text` cast). 123 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -956,7 +987,10 @@ shell/
   `ENV NODE_ENV=production` AFTER the install and fly.toml sets it in `[env]`
   (PSC-4); render.yaml deliberately does NOT (Render passes envVars to the build
   too, and NODE_ENV=production makes `npm install` skip devDependencies) — the
-  shell's Secure-cookie and error-handler behaviour don't depend on it.
+  shell's Secure-cookie and error-handler behaviour don't depend on it. The
+  Dockerfile creates and chowns `apps/per-sistant/uploads` to `appuser` before
+  `USER appuser` (cycle-7 F13 — it was root-owned; only the legacy disk-attachment
+  migration reads it now).
 - Workflow hygiene (cycle-7 F5/F16): every workflow declares `permissions:
   contents: read` (only csv-import has `write`). In `daily-sync.yml` the steps
   after "Sync transactions" are independent backstops — each runs with `if:
@@ -2462,7 +2496,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1702 tests passing across 79 test files (Perfin 1193 + Per-sistant 509), plus the real-Postgres route contract suite (103 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
+- 1732 tests passing across 80 test files (Perfin 1215 + Per-sistant 517), plus the real-Postgres route contract suite (123 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -3111,6 +3145,14 @@ standalone-mode fallback if either app is run on its own Render service.
 - Auto-migration runs on server startup in a transaction (BEGIN/COMMIT/ROLLBACK) — no
   manual SQL needed. Migration failures are now fatal (the process throws and exits)
   rather than logging a "non-fatal" warning while leaving the schema half-applied.
+  **Locking (cycle-7 F10):** each run takes `pg_advisory_xact_lock(MIGRATION_LOCK_KEY)`
+  first (Perfin 727274001, Per-sistant 727274002 — a standalone Per-sistant can share the
+  database), with no timeout, so a second instance booting during a deploy overlap waits
+  for the first; then `SET LOCAL lock_timeout = '5s'`, because every boot's ~100 idempotent
+  `ALTER TABLE`s each take an ACCESS EXCLUSIVE lock and one stuck behind a long query
+  froze the live app. A lock timeout (SQLSTATE 55P03) rolls back and is retried
+  (`runMigrations({ attempts = 5, sleep })`, 2s × attempt backoff); any other error, or
+  running out of attempts (~45s of contention), is still fatal.
 - `plaid_items.last_error_code TEXT` (BSI-10): the Plaid ITEM_* re-auth code from the
   last failed sync (NULL = healthy). Set by `syncAllPlaidTransactions` /
   `syncAllPlaidBalances`, cleared by a clean transaction sync and by both exchange
@@ -3317,6 +3359,11 @@ standalone-mode fallback if either app is run on its own Render service.
   invalidated on `PATCH /api/settings` via a hook the shell registers on
   Perfin's Express app. Bounded 5–10080 minutes (5 min … 7 days) at the
   PATCH layer.
+- `user_settings.shell_session_epoch INT NOT NULL DEFAULT 0` (cycle-7 F12): the
+  shell session epoch, read with the idle window. "Sign Out Everywhere"
+  (`POST /logout?everywhere=1`) increments it, which invalidates every shell cookie
+  minted before. Not settable via `PATCH /api/settings`. `npm run reset:fresh`
+  resets it to 0 (follow-on).
 - `budgets` rollover columns: `rollover_enabled BOOLEAN DEFAULT false`,
   `budget_type TEXT DEFAULT 'recurring'` (recurring or one_time),
   `effective_month TEXT` (YYYY-MM, only used for one_time budgets).
@@ -3537,7 +3584,15 @@ rows) can dismiss them from the UI or run `POST /api/cleanup`.
   intact. Standalone Perfin (no BASE_PATH) POSTs its own `/api/logout` instead — the root
   `/logout` was a no-op there (WD-16). Per-sistant's embedded "Log Out" does the same: it is
   shown whenever embedded and POSTs the root `/logout` via an absolute URL so the fetch
-  wrapper doesn't prefix BASE_PATH (PB-21).
+  wrapper doesn't prefix BASE_PATH (PB-21). The shell cookie is stateless, so a plain
+  Sign Out clears only that device's cookie; Settings → Security → **Sign Out
+  Everywhere** (under the shell) POSTs the root `/logout?everywhere=1`, which bumps
+  `user_settings.shell_session_epoch` and so revokes every session, including a copied
+  cookie (cycle-7 F12).
+- **COOP on Perfin (cycle-7 F9)**: Perfin's own helmet sets
+  `Cross-Origin-Opener-Policy: same-origin-allow-popups` — its default `same-origin`
+  overwrote the shell's disabled COOP on every Perfin page, which INV-62 forbids and which
+  can sever a Plaid/Teller OAuth popup's opener.
 - **Secure cookies + no stack traces (PSC-4)**: the shell session cookie and the WebAuthn
   challenge cookie are `Secure` when `NODE_ENV=production` OR `req.secure` (trust proxy is
   set, so true behind Render's/Fly's TLS proxy; plain-HTTP local runs still work); Perfin's
@@ -4494,7 +4549,8 @@ SX3-pinned — the Sheets Income tab.
 dead channels, backstops / outcomes / operator state, bank-sync durability, money
 accuracy and classification, delete integrity and feeds, categorization rules and
 income cadence, AI trust, Sheets and cross-app, Perfin UI, Per-sistant correctness, Knowledge
-ingest edges — are done):
+ingest edges, platform hardening / test quality / drift guards — are done; Batch 13 was the
+last planned batch, the deferred decisions and expansion batches E1–E4 remain):
 - The repo is PUBLIC (operator: make it private and delete old Actions logs —
   they printed balances and net worth before Batch 1).
 - OPERATOR: Database Backup has never produced a backup (its secrets were never
@@ -4557,6 +4613,14 @@ ingest edges — are done):
   serverError) instead of 501 when `ANTHROPIC_API_KEY` is unset, and the Review
   page fires it on every load (found by `e2e/pages.spec.js`, tolerated in its
   `KNOWN_GAPS` — remove the entry when fixed).
+- Per-sistant's AI cost-cap month (`ai.js` monthlyAiSpendCents), its Ask context's
+  "Today:" line and capture-to-vault file names use the UTC date (Perfin's F66
+  equivalent) — listed as FOLLOW-ON entries in the timezone lint's KNOWN_GAPS
+  (tests/scan-oct-batch13.test.js). `npm run reset:fresh` resets
+  `shell_session_epoch` to 0, so a cookie minted before an earlier "Sign Out
+  Everywhere" becomes valid again until it idles out. Per-sistant's standalone
+  `POST /api/login` compares raw buffers (length-checked) rather than the SHA-256
+  digest compare INV-104 describes. Batch 13 follow-ons.
 
 The bugs Batch 15's real-code tests exposed (calendar 500, Quick Add regexes,
 palette picker under the shell, undefined CSS vars, unvalidated theme /
@@ -4767,7 +4831,7 @@ INV-13 | Categorization rules applied before AI; only unmatched rows sent to Cla
 INV-14 | INSIGHTS_MONTHLY_BUDGET_CENTS enforced across insight+categorize+rebuild+ask+scan+suggest, every check reading the ONE monthAiSpendCents() (APP_TIMEZONE month, F66) | Subsystem: AI Insights & Audit | Verify: tests/ai-cap-charge.test.js + tests/scan-sept-batch7.test.js (AIN-10)
 INV-15 | Insight cost uses granular token pricing (input + cache_read + cache_creation), keyed by MODEL ID (modelRates — previous models keep their own rates; Haiku 5.5 long-prompt card) | Subsystem: AI Insights & Audit | Verify: tests/model-upgrade.test.js
 INV-16 | sanitizeStructuredSummary bounds the summary and requires all four arrays; failure, a max_tokens stop, or no tool call preserves the prior summary | Subsystem: AI Insights & Audit | Verify: tests/scan-sept-batch7.test.js (AIN-8)
-INV-17 | Migrations run in one transaction; failure is fatal | Subsystem: Platform, Shell & Auth
+INV-17 | Migrations run in one transaction; failure is fatal — except a lock timeout (55P03), which rolls back and is retried a bounded number of times; each run holds a per-app advisory lock and a SET LOCAL lock_timeout (cycle-7 F10) | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch13.test.js + tests/contract/platform-batch13.contract.test.js
 INV-18 | Scheduler invokes route logic via in-process helpers, never HTTP self-fetch | Subsystem: Platform, Shell & Auth
 INV-19 | Named helper exports attached AFTER module.exports = router | Subsystem: Platform, Shell & Auth
 INV-20 | Shell requireAuth honors x-api-key; embedded sub-apps skip own check | Subsystem: Platform, Shell & Auth | Verify: tests/audit-regressions.test.js
@@ -4778,7 +4842,7 @@ INV-24 | sheets-sync.syncAll isolates each tab (per-tab try/catch + errors[]) AN
 INV-25 | Embedded sub-apps detect req.app.get("embedded") and skip their own auth; cross-app calls use the wired pool (perfinPool/persistentPool), never HTTP self-fetch | Subsystem: Per-sistant Backend / Platform, Shell & Auth
 INV-26 | Teller transaction pagination terminates on an empty page (count-explicit + from_id), never a hard-coded page-size compare | Subsystem: Bank Sync & Ingestion | Verify: tests/cycle-fixes.test.js (BS-1 block)
 INV-27 | Only sensitivity='normal' docs/facts are embedded AND retrieved; private/secret are never embedded or sent to AI. Frontmatter sensitivity resolution FAILS CLOSED: YAML comments stripped, block lists parsed, yes/no/on/off understood, the most restrictive of sensitivity/embed/private wins, and any unrecognized value → private (KR-2). Hard-deleted notes/documents are never vector-retrieved (the joined source row must exist, KR-6). Trailing whitespace on a `---` delimiter still parses, and a repeated sensitivity / embed / private key keeps every value so the most restrictive wins (cycle-7 F132) | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js (buildRetrievalQuery), tests/knowledge-facts.test.js, apps/per-sistant/tests/scan-sept-fixes.test.js (KR-2/KR-6)
-INV-28 | pgvector objects are created defensively (only if the `vector` extension is available); the migration succeeds and Knowledge degrades to keyword retrieval rather than failing boot — and the vault sync still ingests documents + facts without Voyage/pgvector, embedding them later via the backfill (KR-3) | Subsystem: Knowledge / RAG | Verify: code read db/014_vault_vectors.sql + vault-sync.vectorReady
+INV-28 | pgvector objects are created defensively — the CREATE EXTENSION is attempted in an EXCEPTION block and vector objects are built only when the extension is INSTALLED (pg_extension), so an available-but-not-creatable extension degrades too (cycle-7 F10); the migration succeeds and Knowledge degrades to keyword retrieval rather than failing boot — and the vault sync still ingests documents + facts without Voyage/pgvector, embedding them later via the backfill (KR-3) | Subsystem: Knowledge / RAG | Verify: code read db/014_vault_vectors.sql + vault-sync.vectorReady
 INV-29 | Retrieval is HYBRID (vector + keyword legs fused via Reciprocal Rank Fusion, each leg ranked per distinct source — the vector leg over-fetched 4× and collapsed to the best chunk per source; keyword terms drop function-word stopwords; keyword hits carry the matching passage, KR-4) — either leg failing degrades to the other alone; /query & /diagram degrade to sources-only / null when AI is off or unavailable | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js, apps/per-sistant/tests/rag-v2.test.js
 INV-30 | Embedding dimension (1024) matches chunks.embedding vector(1024); a provider/dimension change is a re-embed migration, not a config flip | Subsystem: Knowledge / RAG | Verify: code read services/embeddings.js EMBED_DIM
 INV-31 | embed_state content-hash skip prevents re-embedding unchanged sources | Subsystem: Knowledge / RAG | Verify: code read vault-sync.embedSource
@@ -4802,7 +4866,7 @@ INV-58 | A kind='quantity' habit always has a non-null target_value, enforced on
 INV-59 | Bounded settings (target_allocation_pct, shell_idle_timeout_minutes, fire_*, ai_monthly_budget_cents, and since PSC-15 keep_alive_start/end, keep_alive_timezone (Intl-validated), auto_sync_interval_hours, csv_reminder_days, weekly_digest_day — strict integer parse, null/""/"6abc" rejected; since cycle-7 F86 also theme, dashboard_months, insights_model, insights_cadence_days, insight_modules / dashboard_widgets, pyramid_*, debt_baseline_amount, sheets_auto_sync_interval, session_timeout_minutes) reject invalid input with 400 — never silent-drop + 200 | Subsystem: Settings, Notifications & Cross-app | Verify: tests/budget-cap-webauthn.test.js (PATCH /api/settings validation) + tests/scan-sept-batch9.test.js (PSC-15) + tests/scan-oct-batch9.test.js (F86)
 INV-60 | Perfin "Sign Out" clears the SHELL session via the root POST /logout under the unified shell (not a basePath'd /api/logout); redirect target is the root /login — both un-prefixed; standalone Perfin (no BASE_PATH) posts /api/logout instead (WD-16), and Per-sistant's embedded Log Out also posts the root /logout (PB-21) | Subsystem: Web UI ↔ Platform, Shell & Auth (seam) | Verify: code read teller/views/settings.ejs logout() + shell POST /logout (auth.handleLogout)
 INV-61 | apiFetch redirects once to /login (with return_to = the current path, F102) on a 401 or a followed 302→/login (session expiry), loop-guarded, while returning the Response unchanged to callers — idle timeout never leaves a blank/error UI | Subsystem: Web UI | Verify: code read teller/public/perfin-shared.js apiFetch
-INV-62 | The shell sets a nonce CSP + frame-ancestors 'none' + X-Frame-Options on its own routes (login/landing), with COOP/CORP/COEP DISABLED so the global middleware doesn't break sub-app Plaid/Teller Link popups; helmet is a declared shell dependency | Subsystem: Platform, Shell & Auth | Verify: header assertion on GET /login (frame-ancestors none, COOP/CORP absent, login scripts nonced)
+INV-62 | The shell sets a nonce CSP + frame-ancestors 'none' + X-Frame-Options on its own routes (login/landing), with COOP/CORP/COEP DISABLED so the global middleware doesn't break sub-app Plaid/Teller Link popups, and Perfin's own helmet sends COOP same-origin-allow-popups, never same-origin (cycle-7 F9); helmet is a declared shell dependency | Subsystem: Platform, Shell & Auth | Verify: header assertion on GET /login (frame-ancestors none, COOP/CORP absent, login scripts nonced) + tests/contract/platform-batch13 (Perfin COOP)
 INV-63 | Per-sistant's shared fetch wrapper (apps/per-sistant/views/js.js) redirects once to the root /login on a 401 or a followed 302→/login (session expiry), loop-guarded, returning the Response unchanged to callers — parity with Perfin INV-61, so an idle-timeout never leaves a blank/error page. The check uses indexOf('/login'), NOT a regex, because the module is one backtick template literal that eats regex backslashes (see Per-sistant CLAUDE.md gotcha) | Subsystem: Per-sistant Web UI | Verify: code read views/js.js fetch wrapper
 INV-64 | Job Radar's AI passes (job_fit + legitimacy) are cap-charged: cappedCall reads getAiBudgetCents()+monthlyAiSpendCents() and throws { code:'CAP' } BEFORE calling the model when over budget; on a successful call it charges an ai_usage row via recordAiUsage in a `finally` (idempotent, only when tokens were consumed). The 10 pre-existing Per-sistant AI features still use the uncapped callAI (unchanged) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (cappedCall charge-on-success + throw-CAP-before-model-call)
 INV-65 | Job Radar ingest is content_hash-idempotent: dedupPersist upserts ON CONFLICT (content_hash) and counts genuine inserts via (xmax = 0), so a re-run over identical listings adds 0, no duplicate rows. Retention strips old new/dismissed descriptions but KEEPS the hash+status tombstone so a dismissed job re-ingested stays dismissed | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (dedup idempotency, retention)
@@ -4854,6 +4918,8 @@ INV-116 | The dashboard widget keys have ONE source, DASHBOARD_WIDGETS in perfin
 INV-106 | No server-side file gains a bare catch (`catch {}`, `.catch(() => {})`, `.catch(() => null)`) beyond its KNOWN_GAPS count; the list only shrinks (a stale count fails too) | Subsystem: Test Coverage Quality / Silent Degradation | Verify: tests/scan-oct-batch3.test.js (empty-catch scan)
 INV-104 | Every secret comparison (shell PIN, CALENDAR_FEED_TOKEN, API_KEY, standalone SESSION_PIN/PASSWORD) is a fixed-length SHA-256 digest compare (auth.safeEqual / isValidApiKey) — never timingSafeEqual over raw buffers whose byte lengths can differ — and the shell logs unhandled rejections instead of exiting | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch1.test.js (F1 / F6 blocks)
 INV-97 | No Per-sistant client template-literal module (a pages/ or views/ file that exports a string) contains a single-escaped regex class or delimiter (\b \d \s \w \/ \. …) — the template consumes the backslash, so the regex silently changes meaning in the browser; double-escape or use string methods | Subsystem: Per-sistant Web UI | Verify: apps/per-sistant/tests/batch15-followons.test.js (FO-2 guard)
+INV-120 | Shell sessions are revocable server-side: the cookie carries user_settings.shell_session_epoch and is refused once the epoch moves; POST /logout?everywhere=1 needs a valid session and bumps it; a legacy epoch-less cookie counts as epoch 0 | Subsystem: Platform, Shell & Auth | Verify: tests/contract/platform-batch13.contract.test.js (F12)
+INV-121 | Drift guards only shrink: the timezone lint (no new UTC today/month anchor in server code) and the canonical-helper scan (net worth via getNetWorth, budget_snapshots / income streams / AI spend / effective limit derived in one place) keep per-file KNOWN_GAPS that fail on growth AND on a stale entry; the Sheets Budget Status equals getBudgetStatus on real Postgres | Subsystem: Test Coverage Quality / Parallel Source-of-Truth Drift | Verify: tests/scan-oct-batch13.test.js + tests/contract/budget-parity.contract.test.js
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
 ### Policy Configuration

@@ -37,8 +37,17 @@ implement and reflect sessions only set Phase.)
     Net score 0 − 2 = −2. Block: `.cycle/blocks/7-batch13-broad-implement.md`.
   - **Follow-ons:** Per-sistant AI cap month / Ask "Today" / capture file date are UTC (tz-lint
     KNOWN_GAPS); reset-fresh resets the session epoch; Per-sistant /api/login raw-buffer compare.
-  - **Where I left off:** Batch 13 committed and pushed (no PR). NEXT: /sync-docs for Batch 13,
-    then the deferred decisions / expansion batches (E1–E4) or /reflect for cycle 7.
+  - **/sync-docs DONE (Batch 13):** CLAUDE.md — counts 1732/80 (Perfin 1215 + Per-sistant 517),
+    contract 123, scan-oct-batch13 (both apps) + platform-batch13 / persistent-batch13 /
+    budget-parity descriptions, shell auth session epoch + exports, Dockerfile uploads chown,
+    Database migration locking + shell_session_epoch column, Security (Sign Out Everywhere,
+    Perfin COOP), INV-17/28/62 reworded, NEW INV-120 (session epoch) + INV-121 (drift guards),
+    Known Open Issues (Batch 13 done + follow-ons). Per-sistant CLAUDE.md — counts, test list
+    (integration.test.js removed), migration locking, vector guard wording. README — counts +
+    Batch 13 coverage + contract line. Subsystem paths resolve; no new operator state.
+  - **Where I left off:** Batch 13 + its /sync-docs committed and pushed (no PR). All planned
+    cycle-7 batches are done. NEXT: the deferred decisions (F35→G4, F53→G5, F55→ST2, F134→ST5,
+    F81, F85, F26), the expansion batches E1–E4, or /reflect for cycle 7.
 - **Previous status:** **Cycle 7 — Oct 2026 broad scan, Batch 12 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-21). Knowledge ingest edges.
   - **Completed:** F126 (empty / max_tokens answers not cached; truncated flag), F127 (truncated

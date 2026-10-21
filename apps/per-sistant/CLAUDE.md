@@ -33,7 +33,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   at-most-once delivery). The manual `POST /api/emails/:id/send` claims the row
   the same way (`UPDATE … WHERE id = $1 AND status <> 'sent' RETURNING`) so a
   double-click / retry returns 409 instead of re-sending (PB-4).
-- **Tests**: `tests/` (node:test runner, `npm test`, 509 tests (api + integration + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11/batch12 + model-upgrade))
+- **Tests**: `tests/` (node:test runner, `npm test`, 517 tests (api + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11/batch12/batch13 + model-upgrade))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of June 2026)
@@ -272,7 +272,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `tests/scan-oct-batch11.test.js` — cycle-7 Batch 11 pins (29): calendar dates under TZ=America/Los_Angeles, housing oldest-unpaid overdue, Send Now single-flight, recipient validation + email_failed, writeOk on every page write, Job Radar new-only nudge + refresh single-flight / skip-recent, APP_TIMEZONE reminder / overdue days, webhook + Slack wiring + reminder claim, Ask totals, review upcoming, email PATCH rules, attachments in Postgres + download route order, trash purge, limiter skip, and the F124 group (escaped preview, literal search, PIN length, projection bound, streak undo, milestone once, parse-todo validation). The database-backed half is the root `tests/contract/persistent-batch11.contract.test.js`
 - `tests/scan-oct-batch12.test.js` — cycle-7 Batch 12 Knowledge ingest pins (24): empty / max_tokens answers not cached + the truncated flag, truncated tree reported, the blobs-API fallback, fetch timeouts, the AI limiter + length caps, upcomingFacts' validity window + tz date, "--- " + repeated privacy keys, diverged compare → full walk, field-less fact capture → note. The database-backed half is the root `tests/contract/knowledge-batch12.contract.test.js`
 - `tests/batch15-followons.test.js` — the fixes for the bugs Batch 15's tests exposed: router factories read only server.js's deps (FO-1 guard + calendar), no single-escaped regex in client template literals + the emitted Quick Add `\\b` (FO-2), the palette picker under /per-sistant/settings in a vm (FO-3), current theme tokens in views/js.js (FO-4), theme / perfin_url validation (FO-5)
-- `tests/integration.test.js` — integration tests (requires DB, auto-skips without)
+- `tests/scan-oct-batch13.test.js` — cycle-7 Batch 13 pins (8): runMigrations with a fake `db` (BEGIN → advisory lock → lock_timeout, rollback + no retry on a failing file, a lock timeout retried to COMMIT) and the standalone login gate run for real (requireAuth + POST /api/login, session expiry, embedded skip, webhook exemption). Schema, analytics, scheduled-email at-most-once and reindex run against a real database in the root `tests/contract/persistent-batch13.contract.test.js` — it replaced the old `tests/integration.test.js` (cycle-7 F136: replica SQL pointed at NEON_DATABASE_URL, never run in CI)
 - `Dockerfile` / `docker-compose.yml` — container deployment
 - `fly.toml` — Fly.io config
 - `render.yaml` — Render blueprint
@@ -554,6 +554,9 @@ GET    /sw.js               # Service worker
   the pool uses — so a pure-standalone deployment with only
   `PERSISTENT_DATABASE_URL` set still runs them (previously gated on
   `NEON_DATABASE_URL` alone, which silently skipped migrations in that config).
+  Each run takes `pg_advisory_xact_lock(727274002)` (Perfin uses 727274001) and then
+  `SET LOCAL lock_timeout = '5s'`; a lock timeout (55P03) rolls back and is retried
+  (`runMigrations({ attempts, sleep, db })`), anything else stays fatal (cycle-7 F10).
   Because PS-1 made re-runs fatal, every statement MUST be idempotent. Most use
   `IF NOT EXISTS` / `CREATE OR REPLACE` / `DO $$ … IF NOT EXISTS(pg_constraint)`,
   but `CREATE TRIGGER` has no `IF NOT EXISTS` form, so each trigger is preceded
@@ -595,7 +598,7 @@ hoisted version.
   UI-editable ATS allowlist, UNIQUE(ats, slug), seeded with one example),
   `job_listings` (normalized + deduped on `content_hash` UNIQUE; `trust_score` /
   `legitimacy` / `fit_score` / `fit_rationale` / `embedding vector(1024)` [added
-  defensively behind the db/014 `pg_available_extensions` guard] / `status`
+  defensively behind the installed-extension (`pg_extension`) guard — cycle-7 F10] / `status`
   new|saved|applied|dismissed; HNSW cosine index), `job_profile` (single row:
   resume/preferences + `profile_embedding`). `ai_usage` (entry_type / model /
   tokens / `cost_cents`) is the AI-cost-cap ledger; `user_settings` gains
@@ -608,7 +611,9 @@ hoisted version.
     retrievable; private/secret are stored but never embedded/returned.
   - `chunks` — polymorphic (`source_kind` note/document, `source_id`) with
     `embedding vector(1024)`, HNSW cosine index. **Created defensively** — the
-    migration only builds it when the `vector` extension is available, so an
+    migration attempts `CREATE EXTENSION vector` inside an EXCEPTION block and builds
+    the table only when the extension is then INSTALLED (cycle-7 F10 — available but
+    not creatable by this role also degrades), so an
     unsupported Postgres degrades to keyword retrieval instead of failing the
     (fatal) migration and crashing the shell. `services/vault-sync.vectorReady`
     + `routes/rag.js` gate on its existence.
