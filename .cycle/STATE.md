@@ -12,13 +12,34 @@ to the "none in progress" state.
 Cycle: 7
 Phase: implement
 Scope: broad (Oct 2026 broad scan — all non-frozen subsystems + cycle-6 policy responses)
-Updated: 2026-10-20
+Updated: 2026-10-21
 
 (Machine-read fields for the v1.43.0 commands: the next /broad-scan,
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 11 DONE** on branch
+- **Status:** **Cycle 7 — Oct 2026 broad scan, Batch 12 DONE** on branch
+  `claude/sweet-ritchie-f9d8ah` (2026-10-21). Knowledge ingest edges.
+  - **Completed:** F126 (empty / max_tokens answers not cached; truncated flag), F127 (truncated
+    tree → reported failure, SHA holds), F128 (>1 MB files via the blobs API), F129 (GitHub +
+    Voyage timeouts), F130 (aiLimiter on rag query/diagram/capture; 1000 / 20000-char caps),
+    F131 (upcomingFacts validity window + APP_TIMEZONE), F132 ("--- " + repeated privacy keys
+    fail closed), F133 (diverged/behind compare → full walk), F135 (field-less fact capture → note).
+  - **Decisions (mine):** F130's "cap" read as the input-length cap (per the plan line), not the
+    AI cost cap (opt-in per call site, D1); F127 surfaces the truncation rather than walking
+    subtrees.
+  - **Tests:** npm test 1702/1702 (+24 scan-oct-batch12); contract 103/103 (+4 knowledge-batch12);
+    Playwright 35/35. New tests fail pre-fix (22/24 unit — two controls; 4/4 contract). Two KR-1
+    tests in scan-sept-fixes encoded ok:true on a truncated tree and were updated.
+  - **Net score:** 0 − 1 = −1 (nothing would have fired on the current vault; F127's hourly full
+    re-walk for an over-large vault is the documented new failure mode).
+  - **Follow-ons:** RAG calls not charged to the AI cost cap; a field-less fact FILE drops its body;
+    unclosed frontmatter read as body; subtree walk for over-large vaults; F134 → ST5.
+  - **Block:** `.cycle/blocks/7-batch12-broad-implement.md`.
+  - **Where I left off:** Batch 12 committed and pushed (no PR). NEXT: /sync-docs for Batch 12,
+    then Batch 13 (platform hardening, test quality and drift guards: F9, F10, F12, F13, F136 …).
+
+- **Previous:** **Cycle 7 — Oct 2026 broad scan, Batch 11 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-20). Per-sistant correctness.
   - **Completed:** F109 (parseCalDate on every DATE render), F113 (writeOk/tryFetch on ~70
     writes), F111 (Send Now single-flight), F110 (oldest unpaid month → overdue), F112

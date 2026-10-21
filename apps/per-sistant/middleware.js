@@ -116,6 +116,9 @@ function setup(app) {
     message: { error: "Too many AI requests, please slow down." },
   });
   app.use("/api/ai/", aiLimiter);
+  // F130: the Knowledge endpoints that call Claude (and Voyage) share the AI
+  // limiter — they used to have none.
+  app.use(["/api/rag/query", "/api/rag/diagram", "/api/rag/capture"], aiLimiter);
 }
 
 function requireAuth(req, res, next) {

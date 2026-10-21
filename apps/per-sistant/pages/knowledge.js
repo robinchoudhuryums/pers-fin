@@ -148,7 +148,8 @@ async function ask(){
     if(r.answer){
       document.getElementById('k-ungrounded').style.display = (r.grounded === false) ? 'block' : 'none';
       document.getElementById('k-similar').style.display = r.sources_from_similar_query ? 'block' : 'none';
-      document.getElementById('k-answer').innerHTML = renderMd(r.answer);
+      document.getElementById('k-answer').innerHTML = renderMd(r.answer) +
+        (r.truncated ? '<p style="font-size:11px;color:var(--warn)">This answer was cut off. Ask a narrower question for the rest.</p>' : '');
       kShow('k-answer-wrap', true);
     } else if(r.note){
       document.getElementById('k-empty-msg').textContent = r.note;

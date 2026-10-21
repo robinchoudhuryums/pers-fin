@@ -65,10 +65,16 @@ async function embedBatch(texts, inputType, fetchImpl, opts = {}) {
   }
 }
 
+// F129: each request has a deadline (a timeout is a retryable error above) — a
+// hung connection used to wait out the platform's ~5-minute socket timeout per
+// attempt while the vault sync held its lock. A query gets a short one.
+const VOYAGE_TIMEOUT_MS = { document: 30000, query: 10000 };
+
 async function embedRequest(texts, inputType, fetchImpl) {
   const f = fetchImpl || globalThis.fetch;
   return f(VOYAGE_URL, {
     method: "POST",
+    signal: AbortSignal.timeout(VOYAGE_TIMEOUT_MS[inputType] || VOYAGE_TIMEOUT_MS.document),
     headers: {
       Authorization: `Bearer ${process.env.VOYAGE_API_KEY}`,
       "Content-Type": "application/json",
@@ -101,4 +107,4 @@ function toVectorLiteral(vec) {
   return `[${vec.join(",")}]`;
 }
 
-module.exports = { embed, isConfigured, toVectorLiteral, VOYAGE_MODEL, EMBED_DIM };
+module.exports = { embed, isConfigured, toVectorLiteral, VOYAGE_MODEL, EMBED_DIM, VOYAGE_TIMEOUT_MS };

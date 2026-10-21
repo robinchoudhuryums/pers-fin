@@ -26,6 +26,13 @@ const { todayStr } = require("./health");
 // Cap how much of each source we feed the model, and how many sources.
 const MAX_SOURCES = 8;
 const MAX_SNIPPET_CHARS = 1500;
+// F130: bounded inputs — a question / diagram request is sent to Voyage and
+// Claude, and a capture to Claude, so an unbounded body was an unbounded bill.
+const MAX_QUERY_CHARS = 1000;
+const MAX_CAPTURE_CHARS = 20000;
+function tooLong(s, max, what) {
+  return s.length > max ? `${what} is too long (max ${max} characters).` : null;
+}
 
 // Background reindex status (module-scoped so it survives across requests).
 // The real concurrency lock lives in vault-sync (isSyncing); this is UI state.
@@ -350,13 +357,18 @@ async function matchFacts(pool, query, limit) {
 // validity window ending (valid_to) or a date-valued attribute (renewal/
 // expiration/due/deadline). Returns rows { entity, kind, on_date, days_away }
 // within `days`. Used by the notification check. Schema-drift safe.
-async function upcomingFacts(pool, days = 30) {
+//
+// F131: only facts that are CURRENT on `today` (valid_from ≤ today ≤ valid_to,
+// NULL = open) count — a superseded fact's old renewal date used to be
+// announced — and "today" is the APP_TIMEZONE date, not UTC's CURRENT_DATE.
+async function upcomingFacts(pool, days = 30, today = todayStr()) {
   try {
     const r = await pool.query(
-      `SELECT entity, kind, on_date, (on_date - CURRENT_DATE) AS days_away FROM (
+      `SELECT entity, kind, on_date, (on_date - $2::date) AS days_away FROM (
          SELECT entity, 'expires'::text AS kind, valid_to AS on_date
          FROM facts
          WHERE deleted_at IS NULL AND sensitivity = 'normal' AND valid_to IS NOT NULL
+           AND (valid_from IS NULL OR valid_from <= $2::date)
          UNION ALL
          SELECT entity, attribute AS kind,
                 -- to_date (not value::date) so a date-SHAPED but out-of-range
@@ -367,16 +379,18 @@ async function upcomingFacts(pool, days = 30) {
                 CASE WHEN value ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN to_date(value, 'YYYY-MM-DD') END AS on_date
          FROM facts
          WHERE deleted_at IS NULL AND sensitivity = 'normal'
+           AND (valid_from IS NULL OR valid_from <= $2::date)
+           AND (valid_to IS NULL OR valid_to >= $2::date)
            -- Whole snake_case/space-separated segments only (KR-14, INV-10):
            -- the bare substrings also matched "friends", "residue", "vendor".
            AND attribute ~* '(^|[^a-z0-9])(renew[a-z]*|expir[a-z]*|due|deadline|valid[^a-z0-9]?until|ends?)([^a-z0-9]|$)'
        ) s
        WHERE on_date IS NOT NULL
-         AND on_date >= CURRENT_DATE
-         AND on_date <= CURRENT_DATE + ($1 || ' days')::interval
+         AND on_date >= $2::date
+         AND on_date <= $2::date + ($1 || ' days')::interval
        ORDER BY on_date
        LIMIT 50`,
-      [String(parseInt(days, 10) || 30)]
+      [String(parseInt(days, 10) || 30), today]
     );
     return r.rows;
   } catch {
@@ -592,6 +606,8 @@ module.exports = function ({ pool }) {
     try {
       const q = (req.query.q || "").toString().trim();
       if (!q) return res.status(400).json({ error: "Query is required." });
+      const longQ = tooLong(q, MAX_QUERY_CHARS, "Query");
+      if (longQ) return res.status(400).json({ error: longQ });
       const rows = await retrieve(q, MAX_SOURCES);
       res.json({
         results: rows.map((r) => ({
@@ -613,6 +629,8 @@ module.exports = function ({ pool }) {
     try {
       const query = (req.body && req.body.query || "").toString().trim();
       if (!query) return res.status(400).json({ error: "Query is required." });
+      const longQ = tooLong(query, MAX_QUERY_CHARS, "Query");
+      if (longQ) return res.status(400).json({ error: longQ });
 
       // One Voyage call serves both hybrid retrieval and the semantic cache.
       const qvec = await embedQuerySafe(query);
@@ -706,18 +724,23 @@ module.exports = function ({ pool }) {
       // back to the prompt-cite path if the citations call fails for any reason.
       let answer;
       let citedIndexes = [];
+      let stopReason = null;
       try {
         const out = await answerWithCitations({ model, system: SYSTEM, query, documents });
         answer = out.text;
         citedIndexes = out.citedIndexes;
+        stopReason = out.stop_reason || null;
       } catch (e) {
+        const meta = {};
         const context = documents.map((d, i) => `[${i + 1}] ${d.title}\n${d.content}`).join("\n\n");
         answer = await callAI(
           model,
           `Sources:\n${context}\n\nQuestion: "${query}"`,
           1024,
-          `${SYSTEM} Cite the sources you use inline with their bracketed numbers, e.g. [1] or [2][3].`
+          `${SYSTEM} Cite the sources you use inline with their bracketed numbers, e.g. [1] or [2][3].`,
+          meta
         );
+        stopReason = meta.stop_reason || null;
         // KR-12: this path cites with inline [n] markers, not Citations blocks,
         // so citedIndexes stayed empty and every fallback answer was flagged
         // "ungrounded". Read the markers back.
@@ -730,8 +753,16 @@ module.exports = function ({ pool }) {
       // ungrounded answer (no citations) may have drawn on outside knowledge —
       // the UI flags it for the user to double-check.
       const grounded = finalSources.some((s) => s.cited);
-      if (useCache) await cacheSet(pool, qn, model, ver, answer, finalSources, qvec ? embeddings.toVectorLiteral(qvec) : null);
-      res.json({ answer, sources: finalSources, cached: false, grounded });
+      // F126: an empty answer (thinking used up the budget) or one cut off at
+      // max_tokens is returned once but never cached — it used to be served for
+      // the next 24 hours to the same (or a paraphrased) question.
+      const truncated = stopReason === "max_tokens";
+      if (!String(answer || "").trim()) {
+        return res.json({ answer: null, sources: finalSources, cached: false, grounded: false,
+          note: "The AI returned no answer this time. Try again, or ask a narrower question. Showing matching sources." });
+      }
+      if (useCache && !truncated) await cacheSet(pool, qn, model, ver, answer, finalSources, qvec ? embeddings.toVectorLiteral(qvec) : null);
+      res.json({ answer, sources: finalSources, cached: false, grounded, ...(truncated ? { truncated: true } : {}) });
     } catch (err) {
       serverError(res, err);
     }
@@ -744,6 +775,8 @@ module.exports = function ({ pool }) {
     try {
       const query = (req.body && req.body.query || "").toString().trim();
       if (!query) return res.status(400).json({ error: "Query is required." });
+      const longQ = tooLong(query, MAX_QUERY_CHARS, "Diagram request");
+      if (longQ) return res.status(400).json({ error: longQ });
 
       // One Voyage call serves both hybrid retrieval and the semantic cache.
       const qvec = await embedQuerySafe(query);
@@ -867,6 +900,8 @@ module.exports = function ({ pool }) {
     try {
       const text = (req.body && req.body.text || "").toString().trim();
       if (!text) return res.status(400).json({ error: "text is required." });
+      const longT = tooLong(text, MAX_CAPTURE_CHARS, "Captured text");
+      if (longT) return res.status(400).json({ error: longT });
       // KR-10: the user can mark a capture private or secret. Anything but
       // "normal" is never sent to the AI for structuring (same rule as
       // retrieval — INV-27); it is committed as a raw note/fact instead.
@@ -915,6 +950,9 @@ module.exports = function ({ pool }) {
         }
       }
 
+      // F135: a "fact" with no usable fields is saved as a note (buildCaptureMarkdown
+      // does the same) so the text isn't committed with nothing to index.
+      if (entry.type === "fact" && !vaultSync.captureFieldLines(entry.fields).length) entry.type = "note";
       const title = entry.title || entry.entity || text.slice(0, 40);
       const md = vaultSync.buildCaptureMarkdown({ ...entry, sensitivity });
       const date = new Date().toISOString().slice(0, 10);

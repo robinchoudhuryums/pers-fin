@@ -61,7 +61,9 @@ function setCache(key, value) {
   aiCache.set(key, { value, ts: Date.now() });
 }
 
-async function callAI(model, prompt, maxTokens = 1024, systemPrompt = null) {
+// `meta` (optional) receives the response's stop_reason, so a caller that
+// stores the answer can tell a truncated (max_tokens) reply from a complete one.
+async function callAI(model, prompt, maxTokens = 1024, systemPrompt = null, meta = null) {
   if (!Anthropic || !process.env.ANTHROPIC_API_KEY) throw new Error("AI not configured");
   if (!AI_MODELS[model]) throw new Error("Invalid model: " + model);
   const client = getAnthropicClient();
@@ -75,6 +77,7 @@ async function callAI(model, prompt, maxTokens = 1024, systemPrompt = null) {
     params.system = [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }];
   }
   const msg = await client.messages.create(params);
+  if (meta && typeof meta === "object") meta.stop_reason = msg.stop_reason || null;
   // By type: a 5.5 response can begin with a thinking block (content[0]).
   return responseText(msg);
 }
@@ -184,7 +187,7 @@ async function answerWithCitations({ model, system, query, documents, maxTokens 
       spans.push({ document_index: cit.document_index, cited_text: cit.cited_text });
     }
   }
-  return { text: text.trim(), citedIndexes: Array.from(cited).sort((a, b) => a - b), citations: spans };
+  return { text: text.trim(), citedIndexes: Array.from(cited).sort((a, b) => a - b), citations: spans, stop_reason: msg.stop_reason || null };
 }
 
 async function getAIModelForFeature(feature) {
