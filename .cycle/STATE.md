@@ -36,8 +36,9 @@ implement and reflect sessions only set Phase.)
   - **Follow-ons:** RAG calls not charged to the AI cost cap; a field-less fact FILE drops its body;
     unclosed frontmatter read as body; subtree walk for over-large vaults; F134 → ST5.
   - **Block:** `.cycle/blocks/7-batch12-broad-implement.md`.
-  - **Where I left off:** Batch 12 committed and pushed (no PR). NEXT: /sync-docs for Batch 12,
-    then Batch 13 (platform hardening, test quality and drift guards: F9, F10, F12, F13, F136 …).
+  - **Where I left off:** Batch 12 committed and pushed (no PR); its /sync-docs is done (root
+    CLAUDE.md counts + INV-27/32/36 + Batch 12 follow-ons + reindex note, Per-sistant CLAUDE.md
+    Knowledge block, README). OPERATOR: one full Knowledge reindex after deploy (F132). NEXT: Batch 13 (platform hardening, test quality and drift guards: F9, F10, F12, F13, F136 …).
 
 - **Previous:** **Cycle 7 — Oct 2026 broad scan, Batch 11 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-20). Per-sistant correctness.

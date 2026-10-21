@@ -33,7 +33,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   at-most-once delivery). The manual `POST /api/emails/:id/send` claims the row
   the same way (`UPDATE … WHERE id = $1 AND status <> 'sent' RETURNING`) so a
   double-click / retry returns 409 instead of re-sending (PB-4).
-- **Tests**: `tests/` (node:test runner, `npm test`, 485 tests (api + integration + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11 + model-upgrade))
+- **Tests**: `tests/` (node:test runner, `npm test`, 509 tests (api + integration + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11/batch12 + model-upgrade))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of June 2026)
@@ -186,7 +186,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **Health Check Endpoint**: `/api/health` returns server status, uptime, memory, DB connectivity (no auth required)
 - **API Pagination**: `limit` and `offset` query params on todos, emails, and notes list endpoints
 - **Performance Indexes**: Database indexes on common query patterns (completed, due_date, priority, category, recurring, etc.)
-- **Rate Limiting**: General (200/15min), auth (10/15min), and AI (20/min) rate limiters. Under the shell the general limiter is SKIPPED (`skip: req => !!req.app.get("embedded")` — the shell gate already authenticated the request, and a dashboard load alone makes ~15 calls; cycle-7 F123, parity with Perfin's PSC-8).
+- **Rate Limiting**: General (200/15min), auth (10/15min), and AI (20/min) rate limiters. The AI limiter also covers the Knowledge endpoints that call the model — `/api/rag/query`, `/diagram` and `/capture` (cycle-7 F130). Under the shell the general limiter is SKIPPED (`skip: req => !!req.app.get("embedded")` — the shell gate already authenticated the request, and a dashboard load alone makes ~15 calls; cycle-7 F123, parity with Perfin's PSC-8).
 - **CSRF Protection**: State-changing requests require `X-Requested-With` or a content type that STARTS with `application/json` (cycle-7 F11 — a cross-site `<form>` can send multipart, and a no-cors fetch can send `text/plain; x=application/json`, so multipart uploads now need the header too); auto-injected by the shared-JS `window.fetch` wrapper (`views/js.js`), which ALSO prepends `BASE_PATH` and (INV-63) redirects once to the root `/login` on a 401 / followed `302→/login` so a mid-session idle timeout sends the user to re-auth instead of leaving a blank/error page (loop-guarded; Response returned unchanged to callers). The same module carries the client write/date kit (cycle-7 Batch 11): `writeOk(res, what)` (true on 2xx, else an error toast with the server's message — F113, every page write uses it), `tryFetch(url, opts)` (resolves to null instead of throwing on a network failure), `guardPending(key, fn)` (single-flight for a button action) and `parseCalDate` / `fmtCalDate` / `ymdOfLocal` (a DATE value — 'YYYY-MM-DD' or a UTC-midnight timestamp — as a LOCAL-midnight Date, string methods only; F109: `new Date('YYYY-MM-DD')` showed every due date a day early west of UTC)
 - **Postgres Sessions**: `connect-pg-simple` stores sessions in DB (survives restarts/deploys), auto-creates table, prunes expired sessions every 15 min
 - **Webhooks**: Configure external webhook endpoints to receive event notifications; test webhooks from Settings. Every offered event (`VALID_WEBHOOK_EVENTS`) fires (cycle-7 F116 — before, `email_sent`, `note_created` and `reminder_due` never fired and Slack never posted): `todo_created` / `todo_completed` from every create/complete path incl. bulk complete, links and template apply (`announceTodoEvent`, which logs a failure), `email_sent` from the manual and the cron send, `note_created` (title + tags, never the note text), `reminder_due` (a 10-minute cron runs `processDueReminders`, which claims each note reminder that came due in the last day once via `notes.reminder_fired_at`, db/026 — moving the reminder later re-arms it) and `streak_milestone` (once per day — a second log the same day doesn't re-fire it). `fireWebhooks` also posts a one-line summary to Slack (`slackLineFor`) and logs a delivery error. Both the webhook URLs AND the Slack URL (`config.isValidWebhookUrl`) are SSRF-validated at write-time (on create/PATCH) AND re-validated before each outbound send (`helpers.sendWebhook` + `sendSlackNotification`, PSB2): `http(s)` only, and private/loopback/link-local ranges are blocked — including `169.254.0.0/16` (the cloud metadata endpoint `169.254.169.254`), the full `127.0.0.0/8`, RFC-1918, and bracketed IPv6 loopback/ULA (PB-1/PB-5). Since PB-14 the check is a real CIDR match (`config.isPrivateAddress`, node's built-in `net.BlockList`: 0/8, 10/8, 100.64/10, 127/8, 169.254/16, 172.16/12, 192.0.0/24, 192.168/16, 198.18/15, 224/4, 240/4, ::/96, 64:ff9b::/96, fc00::/7, fe80::/10, ff00::/8) with IPv4-mapped/compatible IPv6 unwrapped first — `http://[::ffff:169.254.169.254]/` normalizes to `[::ffff:a9fe:a9fe]` and used to pass the string-prefix checks. At SEND time `config.resolveSafeWebhookTarget(url)` also DNS-resolves the hostname and rejects it if ANY address is private (fails closed on a DNS error), and both senders fetch with `redirect: "manual"` so a public URL can't 30x to an internal one (a redirect is recorded as its 3xx status). A rebinding race between that lookup and fetch's own remains possible.
@@ -270,6 +270,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `tests/scan-sept-batch11.test.js` — Batch 11 Knowledge pins (ingest without embeddings + backfill, Voyage retry, per-file isolation, lock, ranking, finance snapshot vs getNetWorth, capture sensitivity, sync-failure visibility, citation fallback, cache prune, attribute word segments, vault_repo validation)
 - `tests/scan-sept-batch14.test.js` — Batch 14 pins: Job Radar profile-edit reset, live re-score / fit backfill / stale + scam buckets / batched embeds, company deactivate, dismiss nudge, fetch timeouts, http(s) apply links, Jobs views; the service worker run in a vm against fake caches (503, no secret caching, replay rules); task location on create + recurrence; automation validation / wiring / isolation; Ask model column + db/024; single-recipient validation; iCal escaping/DTSTAMP/DTEND/folding; dependency cycles + trashed blockers; template validation + transactional apply; review overdue; recurring undo; keyboard/dialog wiring; webhook events; embedded keep-alive
 - `tests/scan-oct-batch11.test.js` — cycle-7 Batch 11 pins (29): calendar dates under TZ=America/Los_Angeles, housing oldest-unpaid overdue, Send Now single-flight, recipient validation + email_failed, writeOk on every page write, Job Radar new-only nudge + refresh single-flight / skip-recent, APP_TIMEZONE reminder / overdue days, webhook + Slack wiring + reminder claim, Ask totals, review upcoming, email PATCH rules, attachments in Postgres + download route order, trash purge, limiter skip, and the F124 group (escaped preview, literal search, PIN length, projection bound, streak undo, milestone once, parse-todo validation). The database-backed half is the root `tests/contract/persistent-batch11.contract.test.js`
+- `tests/scan-oct-batch12.test.js` — cycle-7 Batch 12 Knowledge ingest pins (24): empty / max_tokens answers not cached + the truncated flag, truncated tree reported, the blobs-API fallback, fetch timeouts, the AI limiter + length caps, upcomingFacts' validity window + tz date, "--- " + repeated privacy keys, diverged compare → full walk, field-less fact capture → note. The database-backed half is the root `tests/contract/knowledge-batch12.contract.test.js`
 - `tests/batch15-followons.test.js` — the fixes for the bugs Batch 15's tests exposed: router factories read only server.js's deps (FO-1 guard + calendar), no single-escaped regex in client template literals + the emitted Quick Add `\\b` (FO-2), the palette picker under /per-sistant/settings in a vm (FO-3), current theme tokens in views/js.js (FO-4), theme / perfin_url validation (FO-5)
 - `tests/integration.test.js` — integration tests (requires DB, auto-skips without)
 - `Dockerfile` / `docker-compose.yml` — container deployment
@@ -281,7 +282,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (485 tests)
+# Run tests (509 tests)
 npm test
 
 # Pages
@@ -471,7 +472,9 @@ PATCH  /api/ai/models              # Update per-feature model preferences
 # Knowledge / RAG API (personal knowledge base Q&A)
 GET    /api/rag/search             # retrieval only (vector if configured, else keyword); zero LLM cost
 POST   /api/rag/query              # source-grounded answer via the Citations feature (each source
-                                   #   flagged cited:true/false); exact-match answer cache (free repeats)
+                                   #   flagged cited:true/false); exact-match answer cache (free repeats).
+                                   #   query ≤1000 chars (400); a cut-off answer carries truncated:true and an
+                                   #   empty one returns answer:null + note — neither is cached (F126/F130)
 GET    /api/rag/status             # vault config (last_synced_at = last SUCCESS, last_attempt_at, last_error) +
                                    #   index counts + embeddings/vector readiness + reindex state (incl. ok)
 POST   /api/rag/reindex            # background full reindex (vault re-walk + notes); 202, poll status (reindex.ok —
@@ -479,10 +482,12 @@ POST   /api/rag/reindex            # background full reindex (vault re-walk + no
 GET    /api/rag/facts              # browse current structured facts (query: entity, all=1 to include expired); includes `verified`
 POST   /api/rag/facts/verify       # mark/unmark a fact verified (body: entity, attribute, value, verified?)
 GET    /api/rag/secret-lookup       # local exact match over sensitivity='secret' items; never embedded/sent to AI
-POST   /api/rag/diagram            # generate a Mermaid diagram from the knowledge base (facts+finance+prose)
+POST   /api/rag/diagram            # generate a Mermaid diagram from the knowledge base (facts+finance+prose);
+                                   #   query ≤1000 chars (400). GET /api/rag/search caps q the same way (F130)
 POST   /api/rag/capture            # structure raw text into a note/fact and COMMIT it to the vault repo
                                    #   (needs VAULT_GITHUB_WRITE_TOKEN; 400 if unset). body: text, sensitivity?
-                                   #   normal|private|secret (400 otherwise) — private/secret skip the AI step
+                                   #   normal|private|secret (400 otherwise) — private/secret skip the AI step;
+                                   #   text ≤20000 chars (400); a fact with no usable fields is saved as a note (F135)
 
 POST   /api/login           # Authenticate
 POST   /api/logout          # End session
@@ -513,7 +518,8 @@ GET    /sw.js               # Service worker
   complete-recurring on-time check, the notification check's / AI briefing's
   "today" (PB-13), the Knowledge answer-cache date stamp and (cycle-7 F115/F119/F124)
   note reminders "today" (`(reminder_at AT TIME ZONE tz)::date`), `/api/stats` overdue,
-  the weekly review's upcoming list and AI parse-todo dates. (Residual: the
+  the weekly review's upcoming list, AI parse-todo dates and the Knowledge
+  upcoming-fact reminders (F131). (Residual: the
   90-day heatmap grid + the SQL `CURRENT_DATE` range windows are still UTC —
   cosmetic 1-day edge only.)
 - `VOYAGE_API_KEY` — Voyage AI key for Knowledge embeddings (optional). Without
@@ -521,6 +527,8 @@ GET    /sw.js               # Service worker
   ingested and keyword-searchable; adding the key later backfills embeddings
   (≤200 documents per sync, KR-3). Voyage 429/5xx/network errors are retried:
   3 times while indexing, once for an interactive query (Retry-After honored, KR-7).
+  Each request times out (30 s document, 10 s query — `VOYAGE_TIMEOUT_MS`, cycle-7
+  F129); a timeout is retried like a network error.
 - `VOYAGE_MODEL` — embedding model (default `voyage-3.5`, 1024-dim — must match
   the `chunks.embedding vector(1024)` column)
 - `VAULT_GITHUB_TOKEN` — read-only fine-grained GitHub PAT for the private
@@ -624,7 +632,12 @@ hoisted version.
     resolved FAIL-CLOSED (KR-2): trailing ` # comments` are stripped (quote a
     value that must contain " #"), Obsidian block lists (`key:` + `- item`) are
     parsed, yes/no/on/off are understood, the MOST restrictive signal wins, and
-    any unrecognized sensitivity/embed/private value resolves to `private`).
+    any unrecognized sensitivity/embed/private value resolves to `private`;
+    cycle-7 F132: trailing spaces/tabs after a `---` delimiter are allowed — an
+    opener of "--- " used to leave the file unparsed and embedded as normal —
+    and a REPEATED sensitivity / embed / private key keeps every value
+    (`setMetaValue`), so `sensitivity: secret` then `sensitivity: normal` is secret
+    and a repeated embed/private key resolves to private; other keys stay last-wins).
     A FULL sync mark-and-sweeps: vault documents/facts whose file is absent
     from the (untruncated, well-formed) tree are removed, so deleted/renamed
     vault files stop being retrieved (KR-1). An incremental sync falls back to
@@ -657,6 +670,19 @@ hoisted version.
     `/api/rag/status` carries `reindex.ok` (`reindexOutcome`: not_configured /
     not_ready are not failures) and the GitHub Action polls it and goes red on a
     failed reindex. A failing sync raises the `vault_sync_error` reminder.
+    **Ingest edges (cycle-7 Batch 12):** a TRUNCATED tree listing (GitHub's flag
+    for a vault too big for one recursive listing) still ingests the files it
+    lists but is a reported failure ("(file list)" entry, `vault_last_error`, SHA
+    held), so every sync retries a full walk (F127 — it used to say ok and advance
+    the SHA past the unseen files). A file over 1 MB (the Contents API's encoding
+    "none") is read through `GET /git/blobs/:sha`; if that fails too, the file
+    fails instead of being ingested EMPTY, which used to clear a fact file's facts
+    (F128). An incremental compare is trusted only when its status is "ahead" or
+    "identical" — after a force-push the old base still exists, so the compare is
+    a 200 "diverged" that never lists files from the dropped commits as removed;
+    that (or "behind") now forces a full walk + sweep (F133). Every GitHub call has
+    a deadline (20 s read, 30 s capture write — F129: a hung connection held the
+    sync lock for ~5 minutes per attempt).
   - **Citations (Phase 2):** `POST /api/rag/query` answers via the Anthropic
     Citations feature (`ai.answerWithCitations` — each retrieved source is a
     plain-text document block with citations enabled; response flags each
@@ -679,7 +705,12 @@ hoisted version.
     to bump `updated_at` on everything and flush the cache twice a day. Auto-invalidates when
     the corpus changes; survives restarts (unlike the in-memory ai.js cache).
     Helpers in `routes/rag.js` swallow errors so a pre-migration/missing table
-    degrades to "no cache". Semantic (paraphrase) caching shipped (RAG v2, db/019): rag_answer_cache
+    degrades to "no cache". Only a COMPLETE answer is cached (cycle-7 F126): an
+    empty answer returns `answer: null` + a note + the sources, and a `max_tokens`
+    answer is returned with `truncated: true` (the page says it was cut off) —
+    neither is stored, so it isn't served again for 24 h. `answerWithCitations`
+    reports `stop_reason`; the prompt-cite fallback reads it through `callAI`'s
+    optional `meta` argument. Semantic (paraphrase) caching shipped (RAG v2, db/019): rag_answer_cache
     rows carry the query embedding; a paraphrase hits at cosine >= 0.97 with
     the same model + corpus version + TTL. One Voyage call per /query serves
     retrieval AND the cache (embedQuerySafe). Pre-019 / no-pgvector schemas
@@ -735,13 +766,18 @@ hoisted version.
     AI for structuring — it is committed as a raw note/fact (KR-10). Fields the
     model returns can't write reserved keys (`type`, `sensitivity`, `embed`,
     `private`, `valid_*`, …), so they can't turn a fact into a note or relax its
-    sensitivity. Kicks a background
+    sensitivity. A "fact" with no usable fields (`captureFieldLines` empty) is
+    committed as a NOTE titled by its title or entity — a fact file is indexed from
+    its fields only, so its text used to be lost (cycle-7 F135); the response's
+    `type` says which. Captured text is capped at 20000 characters (F130). Kicks a background
     syncVault so the capture is searchable soon. Capture box on the Knowledge page.
   - **Proactive surfacing (Phase 3):** `routes/rag.upcomingFacts(pool, days)`
     finds facts with an upcoming date — the validity window ending (`valid_to`)
     or a date-valued attribute (`renew`/`expir`/`due`/`deadline`/…, matched as
     whole snake_case/space segments — "trial_ends" yes, "friends"/"residue" no,
-    KR-14). `GET
+    KR-14) — only facts CURRENT on today (valid_from ≤ today ≤ valid_to, NULL
+    open; a superseded fact's old renewal date used to be announced), with today
+    the APP_TIMEZONE date passed in, not `CURRENT_DATE` (cycle-7 F131). `GET
     /api/notifications/check` includes these as `fact_upcoming` notifications (+
     a count) over a 30-day lookahead; the dashboard browser-notifies the
     imminent ones (≤7 days). Schema-drift safe (errors → no upcoming facts).

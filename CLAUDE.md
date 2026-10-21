@@ -587,9 +587,18 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1678 tests as of latest); use
+  Perfin and Per-sistant test files (1702 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1678 tests across 78 test files (incl.
+  Current count: 1702 tests across 79 test files (incl.
+  `apps/per-sistant/tests/scan-oct-batch12.test.js` — the Oct 2026 (cycle 7) Batch 12
+  Knowledge ingest pins that need no database: an empty or max_tokens answer never cached +
+  the truncated flag and callAI's `meta.stop_reason` (F126), a truncated tree reported with
+  the SHA held (F127), the blobs-API fallback for a file over 1 MB (F128), timeout signals
+  on GitHub + Voyage fetches (F129), the AI limiter on the RAG model endpoints + the
+  1000 / 20000-character caps (F130), upcomingFacts' validity window + APP_TIMEZONE date
+  (F131), "--- " delimiters + repeated privacy keys failing closed (F132), a diverged compare
+  forcing a full walk (F133) and a field-less fact capture written as a note (F135) — the
+  database-backed half lives in `tests/contract/knowledge-batch12.contract.test.js`;
   `apps/per-sistant/tests/scan-oct-batch11.test.js` — the Oct 2026 (cycle 7) Batch 11
   Per-sistant correctness pins that need no database: parseCalDate / fmtCalDate run in a vm
   under TZ=America/Los_Angeles + no page splitting a DATE with `new Date(…)` (F109),
@@ -766,11 +775,15 @@ shell/
   the 30-day trash purge, a note reminder claimed once, a sent email refusing edits and
   'scheduled' needing a time, the recipient 400 + email_failed notification, the Job Radar
   new-only nudge + skip-recent refresh, Undo restoring a reset streak, literal search +
-  bulk-complete automations, and the review's upcoming list) and knowledge (syncVault through a
+  bulk-complete automations, and the review's upcoming list), knowledge-batch12 (cycle-7 Batch 12:
+  only current facts announced against a given day, a "--- " file with a repeated sensitivity
+  key stored as secret, a 1 MB fact file read through the blobs API keeping its facts, a
+  truncated tree reported with the SHA held, and a force-pushed history removing a file from
+  the dropped commits) and knowledge (syncVault through a
   fake GitHub API via its `fetchImpl`, syncNotes, keyword search never returning
   secret text, secret-lookup, facts current vs `all=1` + verify, /api/rag/query
   without AI, an incremental compare that removes a deleted file) plus insight
-  feedback set / change / clear (the F60 `$1::text` cast). 99 tests, run
+  feedback set / change / clear (the F60 `$1::text` cast). 103 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -2318,7 +2331,9 @@ on the operator's machine (or fed via env vars) before the app boots:
      let the Action fire). Incremental syncs only re-read CHANGED files, so rows
      stored under the old rules (e.g. the pre-Sept-2026 fail-OPEN sensitivity
      parser, KR-2) keep their old classification until a full walk re-files
-     them and sweeps deleted-file orphans (KR-1).
+     them and sweeps deleted-file orphans (KR-1). Cycle-7 Batch 12 is such a deploy
+     (F132: "--- " delimiters and repeated sensitivity / embed / private keys now
+     resolve fail-closed).
 4. **`db-backup.yml` GitHub Action secrets** — `NEON_DATABASE_URL`,
    `PERSISTENT_DATABASE_URL` (optional), and `BACKUP_ENCRYPTION_PASSPHRASE`
    repo secrets for the nightly encrypted backup workflow (pg_dump of both
@@ -2447,7 +2462,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1678 tests passing across 78 test files (Perfin 1193 + Per-sistant 485), plus the real-Postgres route contract suite (99 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
+- 1702 tests passing across 79 test files (Perfin 1193 + Per-sistant 509), plus the real-Postgres route contract suite (103 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -4478,7 +4493,8 @@ SX3-pinned — the Sheets Income tab.
 `.cycle/STATE.md`; Batches 1–8 — exposure / pre-auth safety, broken pages and
 dead channels, backstops / outcomes / operator state, bank-sync durability, money
 accuracy and classification, delete integrity and feeds, categorization rules and
-income cadence, AI trust, Sheets and cross-app, Perfin UI, Per-sistant correctness — are done):
+income cadence, AI trust, Sheets and cross-app, Perfin UI, Per-sistant correctness, Knowledge
+ingest edges — are done):
 - The repo is PUBLIC (operator: make it private and delete old Actions logs —
   they printed balances and net worth before Batch 1).
 - OPERATOR: Database Backup has never produced a backup (its secrets were never
@@ -4530,6 +4546,13 @@ income cadence, AI trust, Sheets and cross-app, Perfin UI, Per-sistant correctne
   sent; a failed email has no one-click Retry and the Emails list doesn't show its
   error (the notification check does); the palette / mode / collapsed-nav preference
   PATCHes still ignore failures (localStorage-first by design). Batch 11 follow-ons.
+- Knowledge: the RAG endpoints are rate-limited but not charged to Per-sistant's AI
+  cost cap (opt-in per call site — only Job Radar uses it); a vault fact FILE with no
+  non-reserved keys still drops its body at ingest; an unclosed frontmatter block is
+  read as body text (its `sensitivity:` ignored); a vault too large for one recursive
+  tree listing fails every sync with a full re-walk (F127 surfaces it — a subtree walk
+  would index it). OPERATOR: run one full Knowledge reindex after deploying Batch 12 —
+  F132 changed frontmatter parsing. Batch 12 follow-ons.
 - Per-sistant `POST /api/ai/review-summary` answers 500 (callAI throws →
   serverError) instead of 501 when `ANTHROPIC_API_KEY` is unset, and the Review
   page fires it on every load (found by `e2e/pages.spec.js`, tolerated in its
@@ -4754,16 +4777,16 @@ INV-23 | Service worker never caches /api/* | Subsystem: Web UI
 INV-24 | sheets-sync.syncAll isolates each tab (per-tab try/catch + errors[]) AND every syncAll caller records the outcome via recordSheetsSyncResult (last_sheets_sync_result; one notification per change in the failing-tab set) — errors[] is never ignored | Subsystem: Sheets & External Export | Verify: tests/scan-sept-batch10.test.js (SXE-1 block)
 INV-25 | Embedded sub-apps detect req.app.get("embedded") and skip their own auth; cross-app calls use the wired pool (perfinPool/persistentPool), never HTTP self-fetch | Subsystem: Per-sistant Backend / Platform, Shell & Auth
 INV-26 | Teller transaction pagination terminates on an empty page (count-explicit + from_id), never a hard-coded page-size compare | Subsystem: Bank Sync & Ingestion | Verify: tests/cycle-fixes.test.js (BS-1 block)
-INV-27 | Only sensitivity='normal' docs/facts are embedded AND retrieved; private/secret are never embedded or sent to AI. Frontmatter sensitivity resolution FAILS CLOSED: YAML comments stripped, block lists parsed, yes/no/on/off understood, the most restrictive of sensitivity/embed/private wins, and any unrecognized value → private (KR-2). Hard-deleted notes/documents are never vector-retrieved (the joined source row must exist, KR-6) | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js (buildRetrievalQuery), tests/knowledge-facts.test.js, apps/per-sistant/tests/scan-sept-fixes.test.js (KR-2/KR-6)
+INV-27 | Only sensitivity='normal' docs/facts are embedded AND retrieved; private/secret are never embedded or sent to AI. Frontmatter sensitivity resolution FAILS CLOSED: YAML comments stripped, block lists parsed, yes/no/on/off understood, the most restrictive of sensitivity/embed/private wins, and any unrecognized value → private (KR-2). Hard-deleted notes/documents are never vector-retrieved (the joined source row must exist, KR-6). Trailing whitespace on a `---` delimiter still parses, and a repeated sensitivity / embed / private key keeps every value so the most restrictive wins (cycle-7 F132) | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js (buildRetrievalQuery), tests/knowledge-facts.test.js, apps/per-sistant/tests/scan-sept-fixes.test.js (KR-2/KR-6)
 INV-28 | pgvector objects are created defensively (only if the `vector` extension is available); the migration succeeds and Knowledge degrades to keyword retrieval rather than failing boot — and the vault sync still ingests documents + facts without Voyage/pgvector, embedding them later via the backfill (KR-3) | Subsystem: Knowledge / RAG | Verify: code read db/014_vault_vectors.sql + vault-sync.vectorReady
 INV-29 | Retrieval is HYBRID (vector + keyword legs fused via Reciprocal Rank Fusion, each leg ranked per distinct source — the vector leg over-fetched 4× and collapsed to the best chunk per source; keyword terms drop function-word stopwords; keyword hits carry the matching passage, KR-4) — either leg failing degrades to the other alone; /query & /diagram degrade to sources-only / null when AI is off or unavailable | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js, apps/per-sistant/tests/rag-v2.test.js
 INV-30 | Embedding dimension (1024) matches chunks.embedding vector(1024); a provider/dimension change is a re-embed migration, not a config flip | Subsystem: Knowledge / RAG | Verify: code read services/embeddings.js EMBED_DIM
 INV-31 | embed_state content-hash skip prevents re-embedding unchanged sources | Subsystem: Knowledge / RAG | Verify: code read vault-sync.embedSource
-INV-32 | Answer cache keyed on query+model+corpus_version ("<APP_TIMEZONE date>|" + notes+documents+facts+fact_verifications max(updated_at)+count — F14 folds in fact_verifications so verify/unverify invalidates; the date prefix (KR-5) expires cached answers when a fact's valid_from/valid_to boundary passes, and vault re-syncs no longer bump updated_at on unchanged documents/facts), with a SEMANTIC fallback layer (query-embedding cosine >= 0.97, same model+corpus_version+TTL — RAG v2, db/019); a SEMANTIC hit returns sources_from_similar_query=true (the cached sources reflect the original query's retrieval and the answer's [n] links are tied to that ordering, so they're kept, not re-retrieved — the Knowledge page caveats it; F12); finance-grounded answers bypass both layers | Subsystem: Knowledge / RAG | Verify: tests/knowledge-cache.test.js + apps/per-sistant/tests/rag-v2.test.js + routes/rag.js useCache gate
+INV-32 | Answer cache keyed on query+model+corpus_version ("<APP_TIMEZONE date>|" + notes+documents+facts+fact_verifications max(updated_at)+count — F14 folds in fact_verifications so verify/unverify invalidates; the date prefix (KR-5) expires cached answers when a fact's valid_from/valid_to boundary passes, and vault re-syncs no longer bump updated_at on unchanged documents/facts), with a SEMANTIC fallback layer (query-embedding cosine >= 0.97, same model+corpus_version+TTL — RAG v2, db/019); a SEMANTIC hit returns sources_from_similar_query=true (the cached sources reflect the original query's retrieval and the answer's [n] links are tied to that ordering, so they're kept, not re-retrieved — the Knowledge page caveats it; F12); finance-grounded answers bypass both layers; only a COMPLETE answer is cached — an empty one or a `max_tokens` stop is returned once (truncated:true) and never stored (cycle-7 F126) | Subsystem: Knowledge / RAG | Verify: tests/knowledge-cache.test.js + apps/per-sistant/tests/rag-v2.test.js + routes/rag.js useCache gate
 INV-33 | Vault sync is read-only (VAULT_GITHUB_TOKEN); capture writes only with the separate write-scoped VAULT_GITHUB_WRITE_TOKEN (400 until set) | Subsystem: Knowledge / RAG | Verify: tests/knowledge-capture.test.js
 INV-34 | Citations enabled all-or-none per request; incompatible with structured outputs (unused here) | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js (answerWithCitations)
 INV-35 | Cross-app finance grounding reads perfinPool read-only, only on finance queries, never an HTTP self-fetch (parallels INV-25) | Subsystem: Knowledge / RAG | Verify: tests/knowledge-crossapp.test.js
-INV-36 | Single in-process vault-sync lock (isSyncing) prevents overlapping cron/reindex/GH-Action runs — BOTH syncVault AND syncNotes acquire it (busy→no-op), claimed synchronously before the first await (KR-8), so the cron's notes phase can't overlap a concurrent reindex (K4); vault_last_sha and vault_last_synced_at advance only when EVERY file succeeded (a failing file is isolated, removals run first, the error is recorded and the next sync retries the range — KR-7/KR-11); vault_last_attempt_at stamps every run | Subsystem: Knowledge / RAG | Verify: code read vault-sync.syncVault + syncNotes
+INV-36 | Single in-process vault-sync lock (isSyncing) prevents overlapping cron/reindex/GH-Action runs — BOTH syncVault AND syncNotes acquire it (busy→no-op), claimed synchronously before the first await (KR-8), so the cron's notes phase can't overlap a concurrent reindex (K4); vault_last_sha and vault_last_synced_at advance only when EVERY file succeeded (a failing file is isolated, removals run first, the error is recorded and the next sync retries the range — KR-7/KR-11); vault_last_attempt_at stamps every run; a truncated tree listing, or a compare whose status isn't ahead/identical (force-push → diverged), never lets the SHA advance past unseen files — the former is a reported failure, the latter forces a full walk + sweep (cycle-7 F127/F133); a file over 1 MB is read through the blobs API, never ingested empty (F128) | Subsystem: Knowledge / RAG | Verify: code read vault-sync.syncVault + syncNotes
 INV-37..47 | RETIRED — assigned by the cycle-3 reflect but their definitions were never written into the repo and are unrecoverable; numbers burned, never reuse (their subject matter — the cycle-3 fixes — is test-pinned via tests/cycle-fixes.test.js + audit-regressions) | — | Verify: n/a
 INV-48 | SPLIT_AMOUNT / INCOME_PREDICATE / NOT_TRANSFER are never re-inlined: every spending aggregation imports from financial-queries.js (aliased variants via incomePredicate(alias) or derived in place via .replace); the only permitted literal copies are scripts/sheets-sync.js (full structure byte-pinned by SX3) + apps-script/Code.gs (legacy, unpinned) | Subsystem: Financial Analytics (seam) | Verify: tests/seams-audit.test.js repo-wide literal-CASE scan
 INV-49 | Every member of Perfin's EMAIL_EVENTS set is accepted AND named (sendNameByEvent) by Per-sistant's HTTP webhook receiver — an unrecognized email event is 200-and-dropped in standalone deployments | Subsystem: Settings, Notifications & Cross-app (seam) | Verify: tests/seams-audit.test.js symmetry pin
