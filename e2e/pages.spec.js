@@ -10,8 +10,9 @@ const { test, expect } = require("@playwright/test");
 
 const PIN = process.env.E2E_SHELL_PIN || "246810";
 // Log in ONCE and reuse the session: a fresh login per test lands on the
-// Per-sistant dashboard (~15 API calls) every time, which alone trips
-// Per-sistant's 200-requests/15-min limiter part-way through the run (F123).
+// Per-sistant dashboard (~15 API calls) every time, which alone tripped
+// Per-sistant's 200-requests/15-min limiter part-way through the run before
+// the limiter was skipped under the shell (F123).
 let sessionCookies = [];
 
 // Known, already-filed gaps this smoke tolerates (each with its finding). Keep

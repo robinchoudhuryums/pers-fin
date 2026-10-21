@@ -587,9 +587,21 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1649 tests as of latest); use
+  Perfin and Per-sistant test files (1678 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1649 tests across 77 test files (incl.
+  Current count: 1678 tests across 78 test files (incl.
+  `apps/per-sistant/tests/scan-oct-batch11.test.js` — the Oct 2026 (cycle 7) Batch 11
+  Per-sistant correctness pins that need no database: parseCalDate / fmtCalDate run in a vm
+  under TZ=America/Los_Angeles + no page splitting a DATE with `new Date(…)` (F109),
+  computeHousingDue's oldest-unpaid overdue (F110), Send Now single-flight (F111), the
+  recipient 400 + email_failed notification (F112), every page write through
+  writeOk(tryFetch(…)) (F113), the Job Radar new-only nudge + 7-day window (F114), the
+  APP_TIMEZONE note-reminder / overdue days (F115), the webhook + Slack wiring and the
+  reminder claim (F116), refresh single-flight + skip-recent + the workflow time (F117),
+  Ask totals (F118), the review's upcoming list (F119), the email PATCH rules (F120),
+  attachments in Postgres + the download route order (F121), the trash purge (F122), the
+  limiter skip under the shell (F123) and the F124 group — the database-backed half lives
+  in `tests/contract/persistent-batch11.contract.test.js`;
   `tests/scan-oct-batch10.test.js` — the Oct 2026 (cycle 7) Batch 10 Perfin UI pins: the
   REAL loadCharts run against a canned spending summary and a fake Chart, incl. a
   west-of-UTC month label under TZ=America/Los_Angeles (F91), the nav wrap and calendar
@@ -749,11 +761,16 @@ shell/
   the Credit Scores change per score type, notification_log retention, and the
   in-process digest draft reported not sent), ui-writes (cycle-7 Batch 10: an Add-form
   re-save keeping a budget's rollover / notes, a one-time budget keeping its month and
-  showing only in it, the rollover PATCH) and knowledge (syncVault through a
+  showing only in it, the rollover PATCH), persistent-batch11 (cycle-7 Batch 11, Per-sistant: an attachment
+  stored in its row, downloaded without a disk file and purged with its email + links,
+  the 30-day trash purge, a note reminder claimed once, a sent email refusing edits and
+  'scheduled' needing a time, the recipient 400 + email_failed notification, the Job Radar
+  new-only nudge + skip-recent refresh, Undo restoring a reset streak, literal search +
+  bulk-complete automations, and the review's upcoming list) and knowledge (syncVault through a
   fake GitHub API via its `fetchImpl`, syncNotes, keyword search never returning
   secret text, secret-lookup, facts current vs `all=1` + verify, /api/rag/query
   without AI, an incremental compare that removes a deleted file) plus insight
-  feedback set / change / clear (the F60 `$1::text` cast). 90 tests, run
+  feedback set / change / clear (the F60 `$1::text` cast). 99 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -2430,7 +2447,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1649 tests passing across 77 test files (Perfin 1193 + Per-sistant 456), plus the real-Postgres route contract suite (90 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
+- 1678 tests passing across 78 test files (Perfin 1193 + Per-sistant 485), plus the real-Postgres route contract suite (99 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -4461,7 +4478,7 @@ SX3-pinned — the Sheets Income tab.
 `.cycle/STATE.md`; Batches 1–8 — exposure / pre-auth safety, broken pages and
 dead channels, backstops / outcomes / operator state, bank-sync durability, money
 accuracy and classification, delete integrity and feeds, categorization rules and
-income cadence, AI trust, Sheets and cross-app, Perfin UI — are done):
+income cadence, AI trust, Sheets and cross-app, Perfin UI, Per-sistant correctness — are done):
 - The repo is PUBLIC (operator: make it private and delete old Actions logs —
   they printed balances and net worth before Batch 1).
 - OPERATOR: Database Backup has never produced a backup (its secrets were never
@@ -4509,13 +4526,14 @@ income cadence, AI trust, Sheets and cross-app, Perfin UI — are done):
   selector keeps the first response's aggregate and the charts don't redraw after
   a sync; the credit-score and AI-insights widgets have no Settings toggle (not
   in DASHBOARD_WIDGETS). Batch 10 follow-ons.
+- Per-sistant: email attachments are stored but never attached when the email is
+  sent; a failed email has no one-click Retry and the Emails list doesn't show its
+  error (the notification check does); the palette / mode / collapsed-nav preference
+  PATCHes still ignore failures (localStorage-first by design). Batch 11 follow-ons.
 - Per-sistant `POST /api/ai/review-summary` answers 500 (callAI throws →
   serverError) instead of 501 when `ANTHROPIC_API_KEY` is unset, and the Review
   page fires it on every load (found by `e2e/pages.spec.js`, tolerated in its
   `KNOWN_GAPS` — remove the entry when fixed).
-- Per-sistant's general limiter (200 requests / 15 min) is not skipped under
-  the shell, so heavy use trips it and pages then throw on the 429 JSON (F123,
-  Batch 11 — confirmed by the page smoke).
 
 The bugs Batch 15's real-code tests exposed (calendar 500, Quick Add regexes,
 palette picker under the shell, undefined CSS vars, unvalidated theme /
@@ -4806,6 +4824,9 @@ INV-112 | Categorization rules apply most-specific first (RULE_ORDER_SQL, never 
 INV-113 | The tier-1 audit judges a dollar claim by its own sentence/clause (claimPeriodWindow) and never compares a claim about another named month (claimNamesOtherMonth) or another period with this month's actuals; tier-2 captures bounded Capitalized names, split on and/or/vs | Subsystem: AI Insights & Audit | Verify: tests/scan-oct-batch8.test.js + tests/contract/ai-trust.contract.test.js
 INV-114 | The Sheets export places manual bills and recurring transfers with the app's own cadence rules (cadence.manualBillOccurrences / seriesOccurrences, APP_TIMEZONE today) — never a SQL re-derivation (LEAST(due_day, 28), last + cadence_days); Sheets runs are single-flight (singleFlight: same kind shares, different kind waits) | Subsystem: Sheets & External Export | Verify: tests/contract/sheets-crossapp.contract.test.js + tests/scan-oct-batch9.test.js (F78)
 INV-115 | An in-process digest/insight email is reported sent only when it was queued to a valid address; a draft-only delivery returns sent:false with stored:"draft" and a reason, and the digest ticks settle for the day on it while recording a failed job | Subsystem: Settings, Notifications & Cross-app | Verify: tests/contract/sheets-crossapp.contract.test.js (F79) + tests/scan-oct-batch9.test.js
+INV-117 | Every Per-sistant page write reports its outcome: it goes through writeOk(await tryFetch(...)) (views/js.js — a non-2xx or network failure toasts the server's error and returns false), a modal stays open on a failed save, and Undo is offered only after a write succeeded; DATE columns are rendered via parseCalDate / fmtCalDate (never `new Date('YYYY-MM-DD')`, which is a day early west of UTC) | Subsystem: Per-sistant Web UI | Verify: apps/per-sistant/tests/scan-oct-batch11.test.js (F109 / F113 blocks)
+INV-118 | Per-sistant attachments live in Postgres (attachments.data BYTEA, ≤10MB — a disk file on Render's ephemeral filesystem vanished on every deploy); list/upload responses never carry the bytes (META_COLUMNS); the download route is declared before the generic /:entityType/:entityId; purging an entity from the trash (by hand or the 30-day purgeTrash cron) removes its attachments, entity_links and Knowledge chunks | Subsystem: Per-sistant Backend | Verify: tests/contract/persistent-batch11.contract.test.js (F121 / F122)
+INV-119 | Every webhook event Per-sistant offers (VALID_WEBHOOK_EVENTS) is fired by the code that causes it — todo_created / todo_completed from every create/complete path (announceTodoEvent), email_sent from the manual and cron sends, note_created, reminder_due (processDueReminders, claimed once via reminder_fired_at) and streak_milestone (once per day) — and Slack receives each through fireWebhooks | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-oct-batch11.test.js (F116 block) + tests/contract/persistent-batch11.contract.test.js
 INV-116 | The dashboard widget keys have ONE source, DASHBOARD_WIDGETS in perfin-shared.js: Settings renders its toggles from it and the dashboard hides through applyDashboardWidgets — every selector exists on the dashboard and every key the settings route defaults is in the list | Subsystem: Web UI | Verify: tests/scan-oct-batch10.test.js (F96)
 INV-106 | No server-side file gains a bare catch (`catch {}`, `.catch(() => {})`, `.catch(() => null)`) beyond its KNOWN_GAPS count; the list only shrinks (a stale count fails too) | Subsystem: Test Coverage Quality / Silent Degradation | Verify: tests/scan-oct-batch3.test.js (empty-catch scan)
 INV-104 | Every secret comparison (shell PIN, CALENDAR_FEED_TOKEN, API_KEY, standalone SESSION_PIN/PASSWORD) is a fixed-length SHA-256 digest compare (auth.safeEqual / isValidApiKey) — never timingSafeEqual over raw buffers whose byte lengths can differ — and the shell logs unhandled rejections instead of exiting | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch1.test.js (F1 / F6 blocks)

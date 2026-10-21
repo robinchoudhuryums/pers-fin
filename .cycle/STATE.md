@@ -39,8 +39,8 @@ implement and reflect sessions only set Phase.)
   - **Follow-ons:** Quick Add local parser UTC due date; settings session_timeout/default_horizon
     unvalidated; attachments not sent with emails; no one-click Retry for a failed email.
   - **Block:** `.cycle/blocks/7-batch11-broad-implement.md`.
-  - **Where I left off:** Batch 11 committed and pushed (no PR). NEXT: /sync-docs for Batch 11,
-    then Batch 12 (Knowledge ingest edges: F126, F127, F128, F133 …).
+  - **Where I left off:** Batch 11 committed and pushed (no PR); its /sync-docs is done
+    (root CLAUDE.md INV-117..119 + counts, Per-sistant CLAUDE.md, README). NEXT: Batch 12 (Knowledge ingest edges: F126, F127, F128, F133 …).
 
 - **Previous:** **Cycle 7 — Oct 2026 broad scan, Batch 10 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-20). Perfin UI correctness and a11y.
