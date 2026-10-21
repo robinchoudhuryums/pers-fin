@@ -38,7 +38,15 @@ implement and reflect sessions only set Phase.)
     GITHUB_OPS_REPO on Render; then act on the list.
   - **Follow-ons:** feature-aware workflow checks; secrets presence only; parse version not on the
     Knowledge page; github.com only.
-  - **Where I left off:** Batch 17 committed and pushed (no PR). NEXT: /sync-docs for Batch 17, then
+  - **/sync-docs DONE (Batch 17):** CLAUDE.md — github-ops.js / operator-checks.js architecture
+    entries + Platform subsystem paths, Sync Health card (Operator Checks), data-health + new GET
+    /api/operator-checks endpoint, env GITHUB_OPS_TOKEN / GITHUB_OPS_REPO, Operator state item 3
+    (VAULT_PARSE_VERSION) + item 5 updated + new item 6 (GitHub ops token), scheduled-tasks caveat +
+    watchdog step, user_settings.operator_checks_signature, new INV-126, Known Open Issues (expansion
+    re-cut into Batches 17–20, Batch 17 follow-ons), counts 1792 / 86 files / Perfin 1265 /
+    Per-sistant 527 / contract 144 + test-file descriptions. apps/per-sistant/CLAUDE.md — db/029 +
+    "bump VAULT_PARSE_VERSION" note, test file, counts. README — counts and coverage lines.
+  - **Where I left off:** Batch 17 + its /sync-docs committed and pushed (no PR). NEXT:
     `/broad-implement Batch 18` (async sync, ST1) → 19 → 20 → /reflect.
 - **Previous status:** **Cycle 7 — Oct 2026 broad scan, Batch 16 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-21). Imports, exports and privacy (F26, F81, F85,

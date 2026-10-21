@@ -90,6 +90,31 @@ teller/
                            only jobs with a new tick or outcome; GET
                            /api/data-health flushes before it reads, so a user
                            back from time away doesn't see every job "stale"
+    github-ops.js        — Read-only GitHub Actions checks (cycle-7 G1):
+                           runGithubChecks over GITHUB_OPS_TOKEN + GITHUB_OPS_REPO —
+                           each backstop workflow's state + latest COMPLETED run
+                           (BACKSTOPS: daily-sync / weekly-reconcile / db-backup
+                           critical, knowledge-reindex / keep-alive / job-radar
+                           optional), the last successful db-backup run (≤36h),
+                           workflow secret NAMES, repo visibility. GET-only, 10s
+                           timeout, fail-soft ("unknown" + reason; a 401 / 404 on
+                           the repo = one reason, no checks); errors carry only
+                           the HTTP status, never the token or a response body
+    operator-checks.js   — The operator doctor (cycle-7 ST4): getOperatorChecks
+                           = the GitHub checks (cached 6h, single-flight;
+                           cachedOnly never waits — it starts a background
+                           refresh) + localChecks (the compromised Teller cert,
+                           F14 — moved here from data-health, TOKEN_ENCRYPTION_
+                           PASSPHRASE, SHELL_PIN < 6, info notes for APP_TIMEZONE
+                           UTC / no VAPID / no CALENDAR_FEED_TOKEN) + knowledgeCheck
+                           (Per-sistant's vault_parse_version < VAULT_PARSE_VERSION
+                           → "run one full reindex", read-only via persistentPool).
+                           Each check { id, label, status ok|info|warn|fail|
+                           unknown, detail, fix }. toIssues (warn/fail → data-health
+                           warnings tagged source:'operator') and notifyIfChanged
+                           (one push per change in the failing-id set, stored in
+                           user_settings.operator_checks_signature; skipped while a
+                           GitHub check is unknown)
     financial-queries.js — Shared income/spending SQL helpers (split-adjusted spending,
                            keyword-filtered income, current-month per-category spending
                            that honors transaction_splits) — single source of truth used
@@ -620,9 +645,18 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1773 tests as of latest); use
+  Perfin and Per-sistant test files (1792 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1773 tests across 84 test files (incl.
+  Current count: 1792 tests across 86 test files (incl.
+  `tests/scan-oct-batch17.test.js` — the cycle-7 expansion Batch 17 pins (G1 + ST4): the
+  GitHub checks against a fake API (healthy repo, disabled critical vs optional workflow,
+  failing / stale / missing runs, no or old backup, missing secrets, a public repo, a 401 /
+  403 / timeout fail-soft with the token never echoed), the local and Knowledge checks, the
+  6h cache + force + cachedOnly, toIssues, notifyIfChanged's once-per-change / unreadable /
+  failed-send rules, data-health not waiting on GitHub, GET /api/operator-checks and the
+  Settings / watchdog wiring — with `apps/per-sistant/tests/scan-oct-batch17.test.js` (a
+  successful FULL vault sync stamps VAULT_PARSE_VERSION; incremental / failed syncs don't);
+  the database-backed half is `tests/contract/operator-checks.contract.test.js`;
   `tests/scan-oct-batch16.test.js` — the Oct 2026 (cycle 7) Batch 16 pins: guessGenericSign
   and the generic parser's positiveMeans, the preview's sign_guess / positive_means + the
   400 on both routes + a known format ignoring it, one parseOpts for preview and commit, the
@@ -876,13 +910,16 @@ shell/
   positive_means=deposits stored with charges positive + its preview's duplicates only
   under the same choice, an insight run emailing by default and not when switched off,
   and archive fingerprints on the real schema — a backfilled row and a rename rebuild
-  exactly their months), batch16-persistent (the notes privacy tier: the CHECK, keyword
+  exactly their months), operator-checks (cycle-7 Batch 17: the Knowledge check asking for
+  a reindex until a real full vault sync stamps vault_parse_version, and GitHub problems
+  reaching /api/operator-checks + data-health with one notification per failing set),
+  batch16-persistent (the notes privacy tier: the CHECK, keyword
   retrieval returning normal notes only, search masking a secret note, chunks +
   embed_state dropped when a note turns private) and knowledge (syncVault through a
   fake GitHub API via its `fetchImpl`, syncNotes, keyword search never returning
   secret text, secret-lookup, facts current vs `all=1` + verify, /api/rag/query
   without AI, an incremental compare that removes a deleted file) plus insight
-  feedback set / change / clear (the F60 `$1::text` cast). 142 tests, run
+  feedback set / change / clear (the F60 `$1::text` cast). 144 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -2182,9 +2219,19 @@ shell/
   `issues[]` list (disconnected links, stale balances, never-synced, plus the
   per-item errors from the most recent sync run — see `last_sync_result` below),
   scheduled jobs whose last run FAILED (jobs[].last_status / last_error — F8)
-  and the compromised-Teller-cert warning (F14),
+  and the operator checks' warnings (cycle-7 G1 + ST4 — tagged `source:'operator'`
+  and listed in their own section instead),
   and the last reconcile time — plus a "Reconcile Now" button that POSTs
-  `/api/sync/reconcile` to recover any dropped transactions.
+  `/api/sync/reconcile` to recover any dropped transactions, and an **Operator
+  Checks** list (`GET /api/operator-checks`, "Check now" = `?refresh=1`): each check
+  with a status dot, detail and fix text — backstop workflows disabled / failing /
+  stale, no successful backup in 36h, missing workflow secrets, a public repo (these
+  need `GITHUB_OPS_TOKEN` + `GITHUB_OPS_REPO`; without them the list says GitHub checks
+  are off), the compromised Teller cert, the token passphrase, a SHELL_PIN under 6
+  characters, timezone / push / calendar-feed notes and a Knowledge index needing one
+  full reindex. Warn / fail checks also reach the dashboard strip, and the 6-hour
+  watchdog pushes one "Operator checks: N need attention" notification (tag
+  `operator-checks`) per change in the failing set.
 - **Sync-degradation strip** (dashboard): a banner (`#sync-health-strip`) fetches
   `GET /api/data-health` on load and surfaces its warning-level `issues[]`
   (disconnected links, stale sync, `decryption_failed`, stale scheduled jobs) at
@@ -2493,7 +2540,10 @@ on the operator's machine (or fed via env vars) before the app boots:
      Render free tier sleeps.
    - **After any deploy that changes vault frontmatter parsing or sync
      semantics, run ONE full reindex** (`POST /per-sistant/api/rag/reindex`, or
-     let the Action fire). Incremental syncs only re-read CHANGED files, so rows
+     let the Action fire). Such a deploy bumps `VAULT_PARSE_VERSION`
+     (apps/per-sistant/services/vault-sync.js); a successful full sync stamps
+     `user_settings.vault_parse_version`, and Settings → Sync Health → Operator
+     Checks shows "Knowledge index" as a warning until it matches (cycle-7 ST4). Incremental syncs only re-read CHANGED files, so rows
      stored under the old rules (e.g. the pre-Sept-2026 fail-OPEN sensitivity
      parser, KR-2) keep their old classification until a full walk re-files
      them and sweeps deleted-file orphans (KR-1). Cycle-7 Batch 12 is such a deploy
@@ -2517,7 +2567,14 @@ on the operator's machine (or fed via env vars) before the app boots:
    Backup, Weekly Reconcile, Keep Alive and Job Radar Refresh were all
    `disabled_inactivity` in Oct 2026). Re-enable each under Actions → the
    workflow → "Enable workflow"; making the repo private stops the auto-disable.
-   The app cannot see a disabled workflow yet (G1).
+   With `GITHUB_OPS_TOKEN` set (item 6) Settings → Sync Health → Operator Checks
+   shows a disabled or failing backstop and a missing backup (cycle-7 G1).
+6. **GitHub ops token** (optional, cycle-7 G1 / ST4) — a fine-grained GitHub token
+   for this repository with READ-ONLY Actions, Metadata and Secrets permissions, set
+   as `GITHUB_OPS_TOKEN` with `GITHUB_OPS_REPO` = `owner/repo` on Render. The app
+   reads workflow state and runs, the last successful backup, secret NAMES (never
+   values) and repo visibility; the token is never stored, logged or returned.
+   Without it the GitHub checks read "off" (one info line in Sync Health).
 
 Both the **weekly digest** (Settings → AI Insights → "Weekly Digest
 Email") and the **daily activity digest** ("Daily Activity Digest"
@@ -2627,7 +2684,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1773 tests passing across 84 test files (Perfin 1249 + Per-sistant 524), plus the real-Postgres route contract suite (142 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
+- 1792 tests passing across 86 test files (Perfin 1265 + Per-sistant 527), plus the real-Postgres route contract suite (144 tests; CI `migrations` job, `npm run test:contract`) and 35 Playwright browser tests (CI `e2e` job — smoke.spec.js + the every-page pages.spec.js); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -2926,6 +2983,16 @@ GET  /api/data-health      # operator health surface — per-source freshness,
                            # probe a passphrase mismatch; that condition surfaces here
                            # via last_sync_result.errors (decryption_failed — reachable
                            # since the sync reads use perfin_try_decrypt, F17) (D).
+                           # Also operator_checks (+ each warn/fail check as an issue
+                           # tagged source:'operator') from CACHED GitHub results —
+                           # it never waits on GitHub (cycle-7 G1 + ST4)
+GET  /api/operator-checks  # the operator doctor (cycle-7 G1 + ST4): { checked_at,
+                           # github: { configured, ok, reason, checked_at, pending },
+                           # checks: [{ id, label, status ok|info|warn|fail|unknown,
+                           # detail, fix }] } — GitHub workflows / backup / secrets /
+                           # visibility (6h cache; ?refresh=1 forces), local checks,
+                           # the Knowledge parse version. Read-only; no secret value
+                           # or token in the response
 GET  /api/budgets          # list budgets with current spending (query: month=YYYY-MM)
 POST /api/budgets          # create budget, upsert by category (body: rollover_enabled, budget_type,
                            # effective_month, notes — a field not sent keeps its stored value, F39;
@@ -3215,6 +3282,7 @@ enums), `debt_baseline_amount` (a finite number ≥ 0 or null),
 - `SHELL_SECRET` — random ~32+ char string (`openssl rand -hex 32`). Signs the shell session cookie. **Required — the shell refuses to boot without it** (PSC-11). Rotating it invalidates every active session.
 - `SHELL_PORT` — optional listener port override (defaults to `PORT` or `3000`)
 - `CALENDAR_FEED_TOKEN` — optional long random token enabling the public `/calendar.ics` bill feed (unset = feature off)
+- `GITHUB_OPS_TOKEN` / `GITHUB_OPS_REPO` — optional (cycle-7 G1): a fine-grained, READ-ONLY GitHub token (Actions, Metadata, Secrets) and the repo as `owner/repo`, so Settings → Sync Health → Operator Checks can see disabled / failing backstop workflows, the last successful backup, missing workflow secrets (names only) and repo visibility. Unset = GitHub checks off. Never stored, logged or returned.
 
 ### Databases (one per sub-app)
 - `NEON_DATABASE_URL` — Perfin's Neon PostgreSQL connection string
@@ -3447,6 +3515,9 @@ standalone-mode fallback if either app is run on its own Render service.
   F81): when false, an insight run doesn't send its `insights_generated` email.
   Settings → AI Insights toggle; PATCH takes a strict boolean (400 otherwise).
   Auto-migrated.
+- `user_settings.operator_checks_signature TEXT` (cycle-7 G1 + ST4): the sorted ids of
+  the warn / fail operator checks last notified — `notifyIfChanged` pushes only when
+  it changes. Auto-migrated.
 - `user_settings.insights_last_attempt_at TIMESTAMPTZ` (cycle-7 F63): stamped by
   the AI-insights auto-trigger before each attempt; an attempt newer than
   `insights_last_run` blocks a retry for 24 h. Auto-migrated.
@@ -3901,7 +3972,9 @@ cycle-7 F2 — see Security). **Caveat (cycle-7 scan, F3/F4):** as of Oct 2026
 GitHub had disabled Weekly Reconcile, Keep Alive, Job Radar and Database Backup
 for inactivity, and every Database Backup run had failed because its secrets were
 never set — the backstops exist on paper until the operator re-enables them and
-sets the backup secrets (Operator state items 4–5). Per-app jobs live in
+sets the backup secrets (Operator state items 4–5). Since cycle-7 Batch 17 the
+Operator Checks in Settings → Sync Health show this state (with a GitHub ops token,
+item 6). Per-app jobs live in
 `teller/startup.js`; keep-alive runs at the shell layer (`shell/index.js`)
 under the unified shell so the timezone-aware self-ping fires regardless of
 which sub-app owns its own listener (sub-app `startKeepAlive` is no-op in
@@ -4025,6 +4098,12 @@ second one (which re-sent the same uncategorized rows to Claude).
   never alarm. Every job also records its OUTCOME (`jobHealth.result`) when
   its body ran — a failed run shows in Sync Health as "Scheduled job X failed
   its last run" (F8); a gated skip (away, not due, disabled) records nothing.
+  The same tick then refreshes the **operator checks** (cycle-7 G1 + ST4 — the
+  GitHub part only when its 6h cache is stale) and calls `notifyIfChanged`: one
+  "Operator checks: N need attention" push (tag `operator-checks`, deep link
+  `/settings#sync-health`) when the set of failing check ids changes
+  (`user_settings.operator_checks_signature`); unchanged → silent, recovery →
+  silent, a round with an unreadable GitHub check → skipped.
 
 ## Shared Account Spending Split
 All spending queries apply the `SPLIT_AMOUNT` SQL fragment from
@@ -4718,15 +4797,18 @@ ingest edges, platform hardening / test quality / drift guards — are done; Bat
 last scan batch. The deferred decisions became Batches 14–16 (`.cycle/plan-cycle7-deferred.md`
 — Batch 14, refund-aware spending, Batch 15, the subscription watchdog + merchant
 rename rules, and Batch 16, the CSV sign, insight-email toggle, archive fingerprints
-and notes privacy tier, are done — the deferred plan is complete); expansion batches
-E1, E2 and E4 remain):
+and notes privacy tier, are done — the deferred plan is complete). The expansion work is
+re-cut into Batches 17–20 (`.cycle/plan-cycle7-expansion.md`): Batch 17, operator
+visibility (G1 + ST4), is done; 18 async sync (ST1), 19 Plaid update mode (G3) and 20
+browser quality + the Per-sistant client kit (G2 + ST3) remain):
 - The repo is PUBLIC (operator: make it private and delete old Actions logs —
   they printed balances and net worth before Batch 1).
 - OPERATOR: Database Backup has never produced a backup (its secrets were never
   set — confirmed from the run log) and four backstop workflows are disabled by
   GitHub for inactivity, so INV-53 does not hold in production until the secrets
   are added and the workflows re-enabled (F3/F4 — the code side shipped in
-  Batch 3; see Operator state items 4–5).
+  Batch 3; see Operator state items 4–5). Settings → Sync Health → Operator
+  Checks shows it once `GITHUB_OPS_TOKEN` is set (item 6).
 - `/api/insights/rebuild` still falls back to "sonnet" when its settings read
   fails (the F73 pattern, model only); weekly-reconcile / knowledge-reindex /
   job-radar workflows still exit silently on a curl timeout (daily-sync has
@@ -4812,6 +4894,12 @@ E1, E2 and E4 remain):
   vault documents but not secret notes, and an untitled PRIVATE note's reminder
   shows its first 50 characters in the in-app notification list (only secret notes
   are masked there).
+- Batch 17 follow-ons: the keep-alive / Job Radar / Knowledge-reindex workflow checks
+  don't know whether those features are wanted, so a deliberately switched-off one
+  still warns when its workflow is disabled; workflow secrets are checked for
+  presence only (a wrong SERVER_URL / API_KEY shows up as failing runs); the Knowledge
+  page and `/api/rag/status` don't show the parse version; the GitHub checks support
+  github.com only; a SHELL_PIN under 6 characters is a standing dashboard warning.
 
 The bugs Batch 15's real-code tests exposed (calendar 500, Quick Add regexes,
 palette picker under the shell, undefined CSS vars, unvalidated theme /
@@ -4956,6 +5044,7 @@ Platform, Shell & Auth:
   shell/middleware/error-handler.js,
   teller/server.js, teller/startup.js, teller/services/database.js,
   teller/services/keep-alive.js, teller/services/job-health.js,
+  teller/services/github-ops.js, teller/services/operator-checks.js,
   scripts/reset-fresh.js, scripts/ci-migration-test.js, db/*.sql
 Web UI (Perfin):
   teller/pages/*.js, teller/views/*.ejs, teller/views/partials/*.ejs,
@@ -5114,6 +5203,7 @@ INV-121 | Drift guards only shrink: the timezone lint (no new UTC today/month an
 INV-122 | Every spending aggregation nets refunds through the shared spend_lines (spendLinesCTE: charges + split lines + REFUND_PREDICATE lines) floored per (month, category) at $0 (NET_CATEGORY_MONTHS) — no route re-derives refunds, the Sheets mirror is SX3-pinned, and cash flow / anomaly / tax stay charge-level (cycle-7 F35) | Subsystem: Financial Analytics | Verify: tests/scan-oct-batch14.test.js + tests/contract/refunds.contract.test.js + tests/contract/budget-parity.contract.test.js
 INV-123 | The subscription watchdog alerts at most once per post-cancel charge (still_charging_txn) and once per new price (price_alerted_amount), only for a charge more than 7 days after cancelled_at at ±25% of the amount or a rise of ≥5% or ≥$1, and marks a row only after its notification was logged | Subsystem: Detection & Categorization / Notification Correctness | Verify: tests/contract/watchdog-rename.contract.test.js + tests/scan-oct-batch15.test.js
 INV-124 | A merchant rename rule matches the RAW merchant (never the user override), fills only a NULL user_merchant_name and tags it with user_merchant_rule_id — a hand rename always wins and clears the tag; deleting a rule reverts exactly its rows; re-keying detection keeps the rows' user state | Subsystem: Detection & Categorization | Verify: tests/contract/watchdog-rename.contract.test.js + tests/scan-oct-batch15.test.js
+INV-126 | Operator checks are fail-soft and read-only: the GitHub client only GETs, with GITHUB_OPS_TOKEN read from the environment per call — never stored, logged or returned (errors carry only the HTTP status) — and never requests a secret's value; any failure is an "unknown" check with a reason, never a throw into data-health; data-health reads cached GitHub results only; the notification fires once per change in the failing set | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch17.test.js + tests/contract/operator-checks.contract.test.js
 INV-125 | A generic CSV's sign is applied identically by preview, import and CLI: positive_means goes through parseCsvUpload's one parseOpts (default 'charges' — the old reading, so earlier imports keep their dedup IDs); an unknown value is a 400; known bank formats ignore it | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-oct-batch16.test.js + tests/contract/batch16-perfin.contract.test.js (F26)
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 

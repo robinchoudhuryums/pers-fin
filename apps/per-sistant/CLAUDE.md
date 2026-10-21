@@ -33,7 +33,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   at-most-once delivery). The manual `POST /api/emails/:id/send` claims the row
   the same way (`UPDATE … WHERE id = $1 AND status <> 'sent' RETURNING`) so a
   double-click / retry returns 409 instead of re-sending (PB-4).
-- **Tests**: `tests/` (node:test runner, `npm test`, 524 tests (api + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11/batch12/batch13/batch16 + model-upgrade))
+- **Tests**: `tests/` (node:test runner, `npm test`, 527 tests (api + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11/batch12/batch13/batch16/batch17 + model-upgrade))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of June 2026)
@@ -252,6 +252,8 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `db/026_note_reminder_fired.sql` — `notes.reminder_fired_at` (F116: the reminder_due claim)
 - `db/027_streak_before_completion.sql` — `todos.streak_before_completion` (F124: Undo restores the streak)
 - `db/028_note_sensitivity.sql` — `notes.sensitivity` normal / private / secret + `chk_notes_sensitivity` (cycle-7 F134 / ST5: the notes privacy tier)
+- `db/029_vault_parse_version.sql` — `user_settings.vault_parse_version` (cycle-7 ST4): the `VAULT_PARSE_VERSION` (services/vault-sync.js) a successful FULL vault sync last ran under. **Bump `VAULT_PARSE_VERSION` whenever frontmatter parsing or sync semantics change** — Perfin's Settings → Sync Health → Operator Checks then asks for one full reindex (read-only through the wired pool) until a full sync stamps the new value
+- `tests/scan-oct-batch17.test.js` — cycle-7 Batch 17 pins (3): db/029 + the exported constant, a successful full sync stamps the version, an incremental or failed sync doesn't. The database-backed half is the root `tests/contract/operator-checks.contract.test.js`
 - `tests/scan-oct-batch16.test.js` — cycle-7 Batch 16 notes privacy pins (7): db/028 + the config list, POST/PATCH validation, chunks dropped on leaving normal, syncNotes embedding / pruning by tier, keyword + vector retrieval and Ask limited to normal notes, suggest-tags refusing private / secret with no model call, and secret text masked in search / labels / the list (+ the webhook fallback). The database-backed half is the root `tests/contract/batch16-persistent.contract.test.js`
 - `db/024_ask_suggestion_models.sql` — `user_settings.ai_model_natural_language_query` (default haiku) + `ai_model_smart_suggestions` (default off); existing rows inherit once from `ai_model_daily_briefing` (Ask → haiku when the briefing was off). Only NULLs are updated, so re-runs change nothing (PD-7)
 - `errors.js` — `serverError(res, err)` shared 500 responder (logs real error, returns generic message; PB-2)
@@ -284,7 +286,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (524 tests)
+# Run tests (527 tests)
 npm test
 
 # Pages
