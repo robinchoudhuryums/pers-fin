@@ -10,9 +10,9 @@ to the "none in progress" state.
 ## Current Cycle
 
 Cycle: 7
-Phase: implement
+Phase: reflect
 Scope: broad (Oct 2026 broad scan — all non-frozen subsystems + cycle-6 policy responses)
-Updated: 2026-10-21
+Updated: 2026-10-22
 
 (Machine-read fields for the v1.43.0 commands: the next /broad-scan,
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
@@ -1281,7 +1281,7 @@ then rotate to Detection & Categorization.
 10. Per-sistant Web UI
 
 - **Seams audit:** every 3 subsystem cycles.
-- **Subsystem cycles since last Seams audit:** 2 (cycle-6 Sept 2026 broad scan reflected 2026-10-13; cycle-5 broad-scan reflected 2026-06-15; cadence 3 — due after the next cycle. June 2026 Seams & Invariants audit #2 record below.)
+- **Subsystem cycles since last Seams audit:** 3 (cycle-7 Oct 2026 broad scan reflected 2026-10-22; cycle-6 Sept 2026 broad scan reflected 2026-10-13; cycle-5 broad-scan reflected 2026-06-15; cadence 3 — a Seams & Invariants audit is DUE now. June 2026 Seams & Invariants audit #2 record below.)
 - **Last subsystem audited:** Sheets & External Export
 - **Cycles completed:** rotation complete this session (broad-scan + 8 targeted + 1 seams); reflect recorded (cycle 3, net +4); Health Synthesis still pending.
 
