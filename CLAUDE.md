@@ -270,7 +270,10 @@ teller/
                            GET /api/context-export, GET/POST /api/investment-accounts
     budgets.js           — GET/POST/PATCH/DELETE /api/budgets, POST /api/budgets/suggest,
                            POST /api/budgets/accept, GET /api/budgets/alerts,
-                           POST /api/budgets/snapshot, GET /api/budgets/history
+                           POST /api/budgets/snapshot, GET /api/budgets/history,
+                           GET /api/budgets/one-time (roadmap T1.5 — every
+                           one-month budget with its month, for the Budgets
+                           page's other-month links)
     housing.js           — Rent & Utilities payee ledger: GET/PATCH /api/housing/config,
                            GET /api/housing/ledger, POST /api/housing/generate,
                            POST/PATCH/DELETE /api/housing/obligations, POST/DELETE
@@ -300,11 +303,13 @@ teller/
     merchant-rename.js   — merchant rename rules (cycle-7 F55 / ST2):
                            GET/POST /api/merchant-rename-rules,
                            POST /api/merchant-rename-rules/apply,
-                           DELETE /api/merchant-rename-rules/:id. Exports
+                           PATCH /api/merchant-rename-rules/:id (roadmap T1.5 —
+                           rename_to / is_active), DELETE
+                           /api/merchant-rename-rules/:id. Exports
                            applyRenameRules (run by syncAllTransactions, the CSV
                            import and manual entry), createRenameRule,
                            createRuleFromTransaction (PATCH /api/transactions/:id
-                           apply_to_all) and ruleCondition
+                           apply_to_all), updateRenameRule and ruleCondition
     investments.js       — AGGREGATOR for the investment routes: mounts
                            investment-performance.js and re-exports its helpers
                            (route-file split — import paths unchanged).
@@ -683,9 +688,17 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1864 tests as of latest); use
+  Perfin and Per-sistant test files (1879 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1864 tests across 91 test files (incl.
+  Current count: 1879 tests across 92 test files (incl.
+  `tests/roadmap-t1-quickwins.test.js` — roadmap T1.5 Batch B: the real loadCharts
+  redrawn twice (the old charts destroyed) and the empty-state round trip, the real
+  renderCategoryMonth in a vm (the latest aggregate, a slow month fetch never
+  overwriting a later choice), the refreshSpending wiring; GET /api/budgets/one-time,
+  the Budgets page's month arithmetic in a vm and its month / other-month wiring;
+  updateRenameRule's validation / off / name-only / no-op paths and the Settings
+  Edit + Turn off / on controls — the database-backed half is
+  `tests/contract/quickwins.contract.test.js`;
   `tests/roadmap-t1-errors-uptime.test.js` — roadmap T1.4 Batch A: the error log's
   fingerprinting / describe / source frame, the wrapper (still prints, groups, uninstalls,
   never throws or recurses, the 100-entry cap), flush (one batched upsert, announce new /
@@ -1007,7 +1020,10 @@ shell/
   T1.4: captured errors grouped and counted in app_errors, one "New server error"
   notification, GET /api/errors + the data-health warning, Resolve and a later
   recurrence reopening it as "back", /health/deep 200 on the real database and 503
-  when it can't connect). 156 tests, run
+  when it can't connect), and quickwins (roadmap T1.5 Batch B: the one-time budget
+  listing; a rename rule's new name renaming its rows and re-keying its subscription
+  with the notes kept while a hand-renamed row stays; off reverting its rows and
+  keeping the rule, on re-applying it; the PATCH 400s / 404). 160 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -1382,8 +1398,14 @@ shell/
   first (`RULE_ORDER_SQL`) with the categorization rules' 3-character minimum for
   contains / starts_with, and run after every `syncAllTransactions` (before the
   anomaly check), inside the CSV import transaction (`SAVEPOINT csv_rename`) and
-  after a manual entry. Settings → Rules lists them with Delete
-  (`/api/merchant-rename-rules`).
+  after a manual entry. Settings → Rules lists them with Edit, Turn off / Turn on
+  and Delete (`/api/merchant-rename-rules`). Since roadmap T1.5, `PATCH
+  /api/merchant-rename-rules/:id` (`updateRenameRule`) takes a new `rename_to`
+  (the rows the rule renamed and the detected subscription / transfer keyed on the
+  old name follow it, user state kept, then both detectors re-run) and/or
+  `is_active` (off undoes the rule's renames exactly as Delete does but keeps the
+  rule; on re-applies it through `createRenameRule`). A new name on a rule that
+  stays off is only stored. The pattern and match type are not editable.
 - **Reimbursed flag** (Phase B2): mark transactions as reimbursed (work travel,
   medical, friend-paid bills) via the same PATCH endpoint. Excluded from every
   spending aggregation: `/api/spending-summary`, `/api/budgets`,
@@ -1629,7 +1651,13 @@ shell/
   (applies only to `effective_month`). The Budgets page sets both (cycle-7 F39):
   the Add form has Type (Every month / One month only) + Month + "Carry unused
   budget into next month", each card shows "<month> only" / "Rolls over" badges
-  and a "Roll over unused / Stop rollover" button (PATCH). `POST /api/budgets`
+  and a "Roll over unused / Stop rollover" button (PATCH). Since roadmap T1.5 the
+  page has ‹ month › navigation (This month, a `?month=` deep link) and asks
+  `GET /api/budgets?month=` for the viewed month; "One month only" defaults to the
+  viewed month, and one-month budgets set for OTHER months are listed as links
+  ("Dec 2026 · Gifts", `GET /api/budgets/one-time`) — a later month's one-time
+  budget used to be invisible until its month. The page's month is the browser's
+  local month. `POST /api/budgets`
   upserts by category and KEEPS any field it isn't sent (rollover_enabled,
   budget_type + effective_month, notes — COALESCE), so re-saving a category from
   the Add form no longer resets its rollover or clears its notes; an unknown
@@ -1663,7 +1691,12 @@ shell/
   the shared-card split are handled identically; month labels are built from a
   local date (cycle-7 F91 — they summed raw `/api/transactions` rows and labelled
   each month as the previous one west of UTC). A failed load replaces the
-  tables' "Loading..." rows (F108).
+  tables' "Loading..." rows (F108). After Sync Transactions, Run Detection or a
+  shared-split change, `refreshSpending()` reloads the tables and REDRAWS both
+  charts from the same fresh response (roadmap T1.5 — `replaceChart` destroys the
+  previous Chart.js instance; the empty state hides the canvas and shows a
+  `.chart-empty` note instead of replacing it), and the Spending by Category month
+  selector reads the latest response and rebuilds its months on each load.
 - **Grouped accounts grid**: The dashboard accounts list groups under section
   headers — Cash (depository), Credit, Loans, Investments, Other — using the
   `is_investment` flag returned from `GET /api/accounts` plus the raw `type`.
@@ -2824,7 +2857,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1864 tests passing across 91 test files (Perfin 1330 + Per-sistant 534), plus the real-Postgres route contract suite (156 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 1879 tests passing across 92 test files (Perfin 1345 + Per-sistant 534), plus the real-Postgres route contract suite (160 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -3157,6 +3190,8 @@ GET  /api/operator-checks  # the operator doctor (cycle-7 G1 + ST4): { checked_a
                            # the Knowledge parse version. Read-only; no secret value
                            # or token in the response
 GET  /api/budgets          # list budgets with current spending (query: month=YYYY-MM)
+GET  /api/budgets/one-time # every one-month budget → { budgets: [{ id, category,
+                           # monthly_limit, effective_month }] } (roadmap T1.5)
 POST /api/budgets          # create budget, upsert by category (body: rollover_enabled, budget_type,
                            # effective_month, notes — a field not sent keeps its stored value, F39;
                            # 400 on an unknown budget_type / malformed effective_month)
@@ -3216,6 +3251,10 @@ POST /api/merchant-rename-rules      # create/re-point a rule (body: merchant_pa
                                      # match_type? default exact); renames past rows, re-keys
                                      # detection, re-detects; 400 on a <3-char contains/starts_with
 POST /api/merchant-rename-rules/apply # re-apply every active rule → { renamed }
+PATCH /api/merchant-rename-rules/:id # body rename_to? (1-200 chars) / is_active? (boolean):
+                                     # a new name renames the rule's rows + re-keys detection
+                                     # (redetected); off reverts its rows and keeps the rule;
+                                     # on re-applies it (roadmap T1.5). 400 / 404
 DELETE /api/merchant-rename-rules/:id # delete a rule and revert the rows it renamed
 POST /api/import-csv/preview # dry-run a CSV import: detect format + classify each
                            # row new/duplicate/skipped vs existing transaction_ids,
@@ -5051,12 +5090,9 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   by its one stored `next_expected` only; notification retention is a fixed 180
   days (no setting). OPERATOR: `clasp push` the Code.gs guard (F84). Batch 9
   follow-ons.
-- `GET /api/budgets` leaves out a one-time budget outside the requested month and
-  the Budgets page has no month selector, so a one-time budget for a later month
-  can't be seen or edited until that month; the dashboard's category-month
-  selector keeps the first response's aggregate and the charts don't redraw after
-  a sync; the credit-score and AI-insights widgets have no Settings toggle (not
-  in DASHBOARD_WIDGETS). Batch 10 follow-ons.
+- The credit-score and AI-insights widgets have no Settings toggle (not in
+  DASHBOARD_WIDGETS). Batch 10 follow-on (the budgets month picker and the chart
+  redraw were fixed in roadmap T1.5 Batch B).
 - Per-sistant: email attachments are stored but never attached when the email is
   sent; a failed email has no one-click Retry and the Emails list doesn't show its
   error (the notification check does); the palette / mode / collapsed-nav preference
@@ -5090,7 +5126,8 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   6-hourly insights chain, `POST /api/detect`, daily-sync), so an alert can lag a
   charge by up to a day; there is no price-drop alert; a cancelled subscription
   sharing its merchant key with another product (one store, two plans) can raise a
-  false "still charging". Rename rules can't be edited (delete + re-create), aren't
+  false "still charging". A rename rule's pattern can't be edited (delete +
+  re-create; its name and on / off can since roadmap T1.5); rules aren't
   applied by the CSV CLI (`scripts/import-csv-cli.js` — the next sync applies them),
   have no Sheets tab, and a re-key onto a name that already has a row deactivates
   the old row rather than merging its user state; `PATCH /api/transactions/:id`
@@ -5136,6 +5173,10 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   those routes 501 without logging); only the unified shell installs the console.error
   wrapper, so a standalone Perfin / Per-sistant records nothing; the heartbeat reports a
   failed job only for jobs that ran in the current process (a restart clears it).
+- Roadmap T1.5 (Batch B) follow-ons: turning a rename rule off (like deleting it)
+  doesn't re-key or re-run detection, so the next detection run creates a second
+  subscription row under the bank's merchant name; the Budgets page's "this month"
+  is the browser's month, not APP_TIMEZONE's.
 - Batch 20 follow-ons: the e2e click sweep counts controls on page load, so controls
   inside a dialog a click opens, and rows rendered only after a click, aren't swept (the
   Activity page's rows appear after Search — its sweep presses 3 controls); Per-sistant's
@@ -5445,7 +5486,7 @@ INV-120 | Shell sessions are revocable server-side: the cookie carries user_sett
 INV-121 | Drift guards only shrink: the timezone lint (no new UTC today/month anchor in server code) and the canonical-helper scan (net worth via getNetWorth, budget_snapshots / income streams / AI spend / effective limit derived in one place) keep per-file KNOWN_GAPS that fail on growth AND on a stale entry; the Sheets Budget Status equals getBudgetStatus on real Postgres | Subsystem: Test Coverage Quality / Parallel Source-of-Truth Drift | Verify: tests/scan-oct-batch13.test.js + tests/contract/budget-parity.contract.test.js
 INV-122 | Every spending aggregation nets refunds through the shared spend_lines (spendLinesCTE: charges + split lines + REFUND_PREDICATE lines) floored per (month, category) at $0 (NET_CATEGORY_MONTHS) — no route re-derives refunds, the Sheets mirror is SX3-pinned, and cash flow / anomaly / tax stay charge-level (cycle-7 F35) | Subsystem: Financial Analytics | Verify: tests/scan-oct-batch14.test.js + tests/contract/refunds.contract.test.js + tests/contract/budget-parity.contract.test.js
 INV-123 | The subscription watchdog alerts at most once per post-cancel charge (still_charging_txn) and once per new price (price_alerted_amount), only for a charge more than 7 days after cancelled_at at ±25% of the amount or a rise of ≥5% or ≥$1, and marks a row only after its notification was logged | Subsystem: Detection & Categorization / Notification Correctness | Verify: tests/contract/watchdog-rename.contract.test.js + tests/scan-oct-batch15.test.js
-INV-124 | A merchant rename rule matches the RAW merchant (never the user override), fills only a NULL user_merchant_name and tags it with user_merchant_rule_id — a hand rename always wins and clears the tag; deleting a rule reverts exactly its rows; re-keying detection keeps the rows' user state | Subsystem: Detection & Categorization | Verify: tests/contract/watchdog-rename.contract.test.js + tests/scan-oct-batch15.test.js
+INV-124 | A merchant rename rule matches the RAW merchant (never the user override), fills only a NULL user_merchant_name and tags it with user_merchant_rule_id — a hand rename always wins and clears the tag; deleting a rule — or turning it off — reverts exactly its rows; renaming a rule moves exactly its rows and re-keys detection keeping the rows' user state | Subsystem: Detection & Categorization | Verify: tests/contract/watchdog-rename.contract.test.js + tests/contract/quickwins.contract.test.js + tests/scan-oct-batch15.test.js
 INV-129 | Per-sistant client code disables a button for a pending action only through withPending(btn, key, fn, busyText) (views/js.js — guardPending single-flight + disabled + aria-busy, each button's prior state restored in a finally); no page re-enables a button or sets aria-busy by hand (shrinking KNOWN_GAPS guard); the e2e click sweep never presses a data-e2e-skip control, so every destructive, off-app or device-permission control carries it | Subsystem: Per-sistant Web UI / Test Coverage Quality | Verify: apps/per-sistant/tests/scan-oct-batch20.test.js + e2e/pages.spec.js
 INV-128 | Plaid re-authentication and new accounts at a connected login go through Link UPDATE MODE on the same Item: link-token-update sends the item's own access_token (perfin_try_decrypt) with no products; update-complete never exchanges a token, registers new accounts BEFORE the cursor walk, clears last_error_code and syncs only that Item under withPlaidTxnLock (investments: syncAllPlaidHoldings({ itemId })); only a token that won't decrypt is sent to unlink + link | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-oct-batch19.test.js + tests/contract/plaid-update.contract.test.js
 INV-127 | A background sync (POST /api/sync, /api/sync-balances, /api/sync/reconcile with background:true) answers 202 with a job id at once and runs the SAME body as the synchronous call (records last_sync_result / freshness identically); a POST during a run of that kind joins it (sharedRun) and a second background start is a 409 carrying the running id; the status's error is a fixed sentence, never an exception message; the backstop workflows poll by id and fail on an error, a lost run or the deadline without printing the error text | Subsystem: Bank Sync & Ingestion / Platform, Shell & Auth | Verify: tests/scan-oct-batch18.test.js + tests/contract/async-sync.contract.test.js

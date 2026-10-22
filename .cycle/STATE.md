@@ -33,7 +33,13 @@ implement and reflect sessions only set Phase.)
     turning a rule off behaves like Delete (no re-key / re-detect).
   - **Follow-ons:** off / delete leave detection keyed on the rule's name; pattern not editable; the
     Budgets page month is the browser's.
-  - **Where I left off:** Batch B committed; run `/sync-docs`, then `/broad-implement Batch C`.
+  - **/sync-docs DONE (Batch B):** CLAUDE.md — budgets.js + merchant-rename.js entries, Features
+    (dashboard chart redraw, Budgets month navigation, rename-rule Edit / off / on), Commands (GET
+    /api/budgets/one-time, PATCH /api/merchant-rename-rules/:id), Known Open Issues (Batch 10 / 15
+    follow-ons narrowed; Batch B follow-ons), INV-124 widened, counts 1879 / 92 files / Perfin 1345 /
+    contract 160 + test-file descriptions. README — counts, coverage text, one endpoint row. Subsystem
+    paths and operator state unchanged.
+  - **Where I left off:** Batch B + its /sync-docs committed and pushed. NEXT: `/broad-implement Batch C`.
 - **Previous status:** **Post-cycle-7 roadmap — T1.4 Batch A DONE** on branch `claude/sweet-ritchie-f9d8ah`
   (2026-10-22). Error log + uptime. Block: `.cycle/blocks/7-roadmap-t1-batchA-broad-implement.md`.
 - **Previous status:** **Cycle 7 — expansion Batch 20 DONE** on branch `claude/sweet-ritchie-f9d8ah`
