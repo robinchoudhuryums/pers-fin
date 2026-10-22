@@ -100,6 +100,27 @@ teller/
                            timeout, fail-soft ("unknown" + reason; a 401 / 404 on
                            the repo = one reason, no checks); errors carry only
                            the HTTP status, never the token or a response body
+    hosting.js           — What the host provides (VPS move): publicUrl (PUBLIC_URL,
+                           else RENDER_EXTERNAL_URL), alwaysOn (ALWAYS_ON — no
+                           keep-alive ping), serverBackups (SERVER_BACKUPS —
+                           backup.sh stamps user_settings.last_backup_at)
+    error-log.js         — In-app error log (roadmap T1.4): install() wraps
+                           console.error in the shell (still prints); capture()
+                           groups each call by fingerprint (source app from the
+                           caller's frame + first line with numbers / hex ids /
+                           quoted values blanked), re-entrancy guarded, never
+                           throws, ≤100 distinct per minute; flush() writes one
+                           batched UPSERT per fingerprint into app_errors each
+                           minute, reopens a resolved row on a later occurrence,
+                           announces new / reopened errors (≤5 notified in 24h,
+                           tag app-error-<fp>) and prunes (resolved >30d, any
+                           >90d); listErrors / recentUnresolvedCount / resolveError
+    uptime.js            — Uptime (roadmap T1.4): deepHealthHandler for GET
+                           /health/deep (SELECT 1 per database, 3s, single-flight
+                           60s cache, 200 / 503 with yes/no fields only) and the
+                           optional HEARTBEAT_URL ping (30-minute tick, NOT
+                           activity-gated, no database call — <url>/fail while
+                           job-health.failingJobs() is non-empty)
     operator-checks.js   — The operator doctor (cycle-7 ST4): getOperatorChecks
                            = the GitHub checks (cached 6h, single-flight;
                            cachedOnly never waits — it starts a background
@@ -496,7 +517,12 @@ shell/
                                  keep-alive, graceful shutdown (stops Perfin's
                                  intervals + Per-sistant's node-cron tasks
                                  before draining the pools — F16), public PWA-icon
-                                 + /health routes mounted before the auth gate
+                                 + /health + /health/deep routes mounted before
+                                 the auth gate. Installs the error-log
+                                 console.error wrapper before either sub-app
+                                 loads and starts its flush + the uptime
+                                 heartbeat after both apps' migrations
+                                 (roadmap T1.4); a final flush on shutdown
   middleware/
     auth.js                    — Shell auth: HMAC-signed cookie session
                                  (SHELL_PIN + SHELL_SECRET) with sliding-window
@@ -657,9 +683,17 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1845 tests as of latest); use
+  Perfin and Per-sistant test files (1864 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1845 tests across 90 test files (incl.
+  Current count: 1864 tests across 91 test files (incl.
+  `tests/roadmap-t1-errors-uptime.test.js` — roadmap T1.4 Batch A: the error log's
+  fingerprinting / describe / source frame, the wrapper (still prints, groups, uninstalls,
+  never throws or recurses, the 100-entry cap), flush (one batched upsert, announce new /
+  reopened once, the 5-per-24h cap, re-buffer on a failed write), resolve / list
+  validation, /health/deep (ok, failing, hanging, unwired, 503 + cache), the heartbeat
+  (off / <url> / <url>/fail, never throws), job-health failingJobs, the Operator Checks
+  heartbeat note and the shell / Settings / migration wiring — the database-backed half
+  is `tests/contract/error-log.contract.test.js`;
   `tests/vps-hosting.test.js` — the VPS-move hosting facts: PUBLIC_URL over
   RENDER_EXTERNAL_URL, ALWAYS_ON (no keep-alive ping, schedule reports disabled,
   Settings note), SERVER_BACKUPS (no GitHub backup check, the Database Backup /
@@ -969,7 +1003,11 @@ shell/
   fake GitHub API via its `fetchImpl`, syncNotes, keyword search never returning
   secret text, secret-lookup, facts current vs `all=1` + verify, /api/rag/query
   without AI, an incremental compare that removes a deleted file) plus insight
-  feedback set / change / clear (the F60 `$1::text` cast). 152 tests, run
+  feedback set / change / clear (the F60 `$1::text` cast), and error-log (roadmap
+  T1.4: captured errors grouped and counted in app_errors, one "New server error"
+  notification, GET /api/errors + the data-health warning, Resolve and a later
+  recurrence reopening it as "back", /health/deep 200 on the real database and 503
+  when it can't connect). 156 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -2321,7 +2359,13 @@ shell/
   characters, timezone / push / calendar-feed notes and a Knowledge index needing one
   full reindex. Warn / fail checks also reach the dashboard strip, and the 6-hour
   watchdog pushes one "Operator checks: N need attention" notification (tag
-  `operator-checks`) per change in the failing set.
+  `operator-checks`) per change in the failing set. Below them, **Recent errors**
+  (roadmap T1.4, anchor `#recent-errors`, `GET /api/errors`): the in-app error
+  log's unresolved errors from both apps — source, message, count, first / last
+  seen, the sample stack under Details and a Resolve button
+  (`POST /api/errors/:fingerprint/resolve`; it reopens on the next occurrence).
+  Data-health raises "N server error(s) in the last 24 hours" while any are
+  unresolved, and each new or reopened error notifies once (≤5 a day).
 - **Sync-degradation strip** (dashboard): a banner (`#sync-health-strip`) fetches
   `GET /api/data-health` on load and surfaces its warning-level `issues[]`
   (disconnected links, stale sync, `decryption_failed`, stale scheduled jobs) at
@@ -2780,7 +2824,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1845 tests passing across 90 test files (Perfin 1311 + Per-sistant 534), plus the real-Postgres route contract suite (152 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 1864 tests passing across 91 test files (Perfin 1330 + Per-sistant 534), plus the real-Postgres route contract suite (156 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -3099,6 +3143,12 @@ GET  /api/data-health      # operator health surface — per-source freshness,
                            # Also operator_checks (+ each warn/fail check as an issue
                            # tagged source:'operator') from CACHED GitHub results —
                            # it never waits on GitHub (cycle-7 G1 + ST4)
+GET  /api/errors           # the in-app error log (roadmap T1.4): { errors: [{ fingerprint,
+                           # source, message, sample, count, first_seen, last_seen,
+                           # resolved_at }] } — unresolved, newest first (?all=1 adds
+                           # resolved; ?limit 1-100, default 20). Flushes the buffer first
+POST /api/errors/:fingerprint/resolve # hide an error until it happens again (400 on a
+                           # malformed id, 404 unknown)
 GET  /api/operator-checks  # the operator doctor (cycle-7 G1 + ST4): { checked_at,
                            # github: { configured, ok, reason, checked_at, pending },
                            # checks: [{ id, label, status ok|info|warn|fail|unknown,
@@ -3353,6 +3403,11 @@ GET  /health                    # health check (Perfin standalone) — also
 
 # Shell-level public endpoints (no auth, mounted before requireAuth):
 GET  /health                              # process-up probe (shell, JSON)
+GET  /health/deep                         # SELECT 1 on both databases (3s each), cached
+                                          # 60s: 200 / 503 { ok, perfin_db, persistent_db }
+                                          # — yes/no fields only (roadmap T1.4). Monitor
+                                          # /health instead on Render + Neon (probing the
+                                          # database every few minutes keeps Neon awake)
 GET  /manifest.json                       # unified-shell PWA manifest
 GET  /apple-touch-icon.png                # iOS home-screen icon (mask-crop PNG)
 GET  /apple-touch-icon-precomposed.png    # older-iOS probe path; same bytes
@@ -3451,6 +3506,7 @@ enums), `debt_baseline_amount` (a finite number ≥ 0 or null),
 ### Hosting (`teller/services/hosting.js` — set on a self-hosted server, see `deploy/vps/`)
 - `PUBLIC_URL` — the public https address; wins over `RENDER_EXTERNAL_URL` (which still works when this is unset). Used for the keep-alive target and the insight email's dashboard link.
 - `ALWAYS_ON` — `true` when the host never sleeps: neither app starts the keep-alive ping (`startKeepAlive` returns false), both `/api/keep-alive-schedule` endpoints report `enabled: false` (so `keep-alive.yml` stops pinging), Settings → Keep-Alive shows a note instead of its controls (`GET /api/settings` returns `always_on`), and Operator Checks lists the Keep Alive workflow as "not needed" (info).
+- `HEARTBEAT_URL` — optional (roadmap T1.4): a healthchecks.io ping URL (period 1 hour, grace 1 hour). Pinged every 30 minutes by `services/uptime.js`, or `<url>/fail` while a scheduled job's last run in this process failed; the service alerts on /fail and when pings stop. Not activity-gated and no database call. On a sleeping host (Render free tier) the pings stop whenever it sleeps — use it on an always-on server or with keep-alive on. Unset = an info line in Operator Checks.
 - `SERVER_BACKUPS` — `true` when `deploy/vps/backup.sh` takes the backups: Operator Checks drops the GitHub backup check and the Database Backup workflow's secrets, lists that workflow as "not needed", and adds a `local:server-backup` check on `user_settings.last_backup_at` (fail when missing or older than 36h; needs no GitHub token).
 
 ### Plaid (Perfin — investments + transactions for banks Teller doesn't cover)
@@ -3656,6 +3712,13 @@ standalone-mode fallback if either app is run on its own Render service.
   F81): when false, an insight run doesn't send its `insights_generated` email.
   Settings → AI Insights toggle; PATCH takes a strict boolean (400 otherwise).
   Auto-migrated.
+- `app_errors` (roadmap T1.4): the in-app error log — `fingerprint TEXT PRIMARY KEY`,
+  `source` (perfin / per-sistant / shell / scripts / app), `message` (first line, ≤300),
+  `sample` (≤2000 — a stack when there was one), `count`, `first_seen`, `last_seen`,
+  `resolved_at` (cleared by a later occurrence), `notified_at`. Written once a minute by
+  `services/error-log.js`; pruned daily (resolved >30 days, any >90). In reset-fresh's
+  UNTOUCHED_TABLES. Messages can carry merchant or account names — they stay in this
+  database; the notification body carries the first 120 characters.
 - `user_settings.last_backup_at TIMESTAMPTZ` (VPS move): stamped by `deploy/vps/backup.sh`
   after each verified nightly backup; read by Operator Checks' on-server backup check
   when `SERVER_BACKUPS=true`. Auto-migrated.
@@ -4228,6 +4291,13 @@ second one (which re-sent the same uncategorized rows to Claude).
   is only awake before 07:00 local that day, the digest is skipped and the
   next one covers the gap. On send, fires the
   `daily_summary` webhook to Per-sistant. No AI call.
+- **Error-log flush** (shell, roadmap T1.4): every minute, writes the console.error
+  entries captured since the last flush (nothing to write → no database call).
+- **Uptime heartbeat** (shell, roadmap T1.4, only with `HEARTBEAT_URL`): at boot, then
+  every 30 minutes, NOT activity-gated, no database call — pings the URL, or `/fail`
+  while `jobHealth.failingJobs()` (each job's latest outcome in this process) is
+  non-empty. Deliberately not inside the watchdog below, which is activity-gated and so
+  would stop pinging (a false alarm) whenever the user is away.
 - **Missed-job watchdog**: ~2 minutes after boot, then every 6 hours
   (activity-gated). Every scheduled interval above calls
   `jobHealth.tick(name)` as its first statement — BEFORE the activity
@@ -5060,6 +5130,12 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   matching account would be refused, and pre-G3 rows have no mask until a holdings
   sync. The Liabilities "predates Plaid Liabilities; unlink it and link the bank again"
   message stays (update mode can't add a product).
+- Roadmap T1.4 (Batch A) follow-ons: there is no permanent Mute for a known-benign error —
+  Resolve hides it only until it happens again, so a recurring one can notify up to 5
+  times a day (Per-sistant's "AI not configured" 500s are one, until T1.5 Batch C makes
+  those routes 501 without logging); only the unified shell installs the console.error
+  wrapper, so a standalone Perfin / Per-sistant records nothing; the heartbeat reports a
+  failed job only for jobs that ran in the current process (a restart clears it).
 - Batch 20 follow-ons: the e2e click sweep counts controls on page load, so controls
   inside a dialog a click opens, and rows rendered only after a click, aren't swept (the
   Activity page's rows appear after Search — its sweep presses 3 controls); Per-sistant's
@@ -5211,6 +5287,7 @@ Platform, Shell & Auth:
   teller/server.js, teller/startup.js, teller/services/database.js,
   teller/services/keep-alive.js, teller/services/job-health.js,
   teller/services/github-ops.js, teller/services/operator-checks.js,
+  teller/services/hosting.js, teller/services/error-log.js, teller/services/uptime.js,
   scripts/reset-fresh.js, scripts/ci-migration-test.js, db/*.sql
 Web UI (Perfin):
   teller/pages/*.js, teller/views/*.ejs, teller/views/partials/*.ejs,
@@ -5374,6 +5451,11 @@ INV-128 | Plaid re-authentication and new accounts at a connected login go throu
 INV-127 | A background sync (POST /api/sync, /api/sync-balances, /api/sync/reconcile with background:true) answers 202 with a job id at once and runs the SAME body as the synchronous call (records last_sync_result / freshness identically); a POST during a run of that kind joins it (sharedRun) and a second background start is a 409 carrying the running id; the status's error is a fixed sentence, never an exception message; the backstop workflows poll by id and fail on an error, a lost run or the deadline without printing the error text | Subsystem: Bank Sync & Ingestion / Platform, Shell & Auth | Verify: tests/scan-oct-batch18.test.js + tests/contract/async-sync.contract.test.js
 INV-126 | Operator checks are fail-soft and read-only: the GitHub client only GETs, with GITHUB_OPS_TOKEN read from the environment per call — never stored, logged or returned (errors carry only the HTTP status) — and never requests a secret's value; any failure is an "unknown" check with a reason, never a throw into data-health; data-health reads cached GitHub results only; the notification fires once per change in the failing set | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch17.test.js + tests/contract/operator-checks.contract.test.js
 INV-125 | A generic CSV's sign is applied identically by preview, import and CLI: positive_means goes through parseCsvUpload's one parseOpts (default 'charges' — the old reading, so earlier imports keep their dedup IDs); an unknown value is a 400; known bank formats ignore it | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-oct-batch16.test.js + tests/contract/batch16-perfin.contract.test.js (F26)
+INV-130 | The e2e page run is SEEDED through the apps' own routes (the one direct insert is a Job Radar listing) and fails a page on an uncaught page error, a browser console.error or a non-501 5xx; its click sweep never presses a data-e2e-skip or destructively-labelled control | Subsystem: Test Coverage Quality | Verify: e2e/pages.spec.js + e2e/seed.js
+INV-131 | A Plaid item's re-authentication notification is sent once per transition into a re-auth code (last_error_code NULL → set, setPlaidItemErrorCode's prev CTE), never on every failing sync | Subsystem: Bank Sync & Ingestion / Notification Correctness | Verify: tests/scan-oct-batch19.test.js
+INV-132 | Every Plaid investment write path (the holdings sync and both exchange routes) stores investment_accounts.mask, keeping a known mask (COALESCE), so the investments-only duplicate guard can match | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-oct-batch19.test.js + tests/contract/plaid-update.contract.test.js
+INV-133 | Recording an error never throws into the caller and never recurses: the shell's console.error wrapper always prints first, capture() is re-entrancy guarded, the error log reports its own failures through the ORIGINAL console.error under an ignored "[error-log]" prefix, and a failed write re-buffers instead of dropping; new / reopened errors notify at most 5 times in 24 hours | Subsystem: Platform, Shell & Auth | Verify: tests/roadmap-t1-errors-uptime.test.js + tests/contract/error-log.contract.test.js
+INV-134 | GET /health/deep is public but exposes only yes/no database fields (never an error message), is bounded per probe and cached 60s single-flight; the heartbeat never touches the database and is never activity-gated | Subsystem: Platform, Shell & Auth | Verify: tests/roadmap-t1-errors-uptime.test.js + tests/contract/error-log.contract.test.js
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
 ### Policy Configuration
