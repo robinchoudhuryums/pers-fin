@@ -120,6 +120,19 @@ teller/
                            else of the error object); a Teller event carries
                            payload.reason and the DISTINCT account ids of
                            payload.transactions (≤50) — never the transactions (W5)
+    webhook-status.js    — Bank webhook visibility (roadmap T2.1 W6):
+                           getWebhookStatus(pool, { env }) reads webhook_events per
+                           provider (last event + status, 24h count + failures —
+                           never a body), the Plaid registration (GOOD items +
+                           investments-only Items whose webhook_url starts with
+                           hosting.webhookBaseUrl and ends /api/webhooks/plaid) and
+                           the non-suspended Teller enrollment count; fail-soft
+                           (error: true). webhookChecks(status) → the operator checks
+                           webhooks:plaid (info while PUBLIC_URL is unset, WARN while
+                           a connection isn't registered at it, info after 7 quiet
+                           days, else ok) and webhooks:teller (info without a secret
+                           or after 7 quiet days, else ok); each omitted when nothing
+                           of that provider is connected
     webauthn-ids.js      — WebAuthn credential ids (seams audit #3, INV-136):
                            legacyCredentialId spots a double-encoded stored id
                            (registration used to re-encode the already-base64url
@@ -162,7 +175,9 @@ teller/
                            warnings tagged source:'operator') and notifyIfChanged
                            (one push per change in the failing-id set, stored in
                            user_settings.operator_checks_signature; skipped while a
-                           GitHub check is unknown)
+                           GitHub check is unknown). Also the bank-webhook
+                           checks (roadmap T2.1 W6 — webhook-status.js, when a
+                           pool or a precomputed webhookStatus is passed)
     financial-queries.js — Shared income/spending SQL helpers (split-adjusted spending,
                            keyword-filtered income, current-month per-category spending
                            that honors transaction_splits) — single source of truth used
@@ -312,7 +327,7 @@ teller/
                            GET /api/budgets/one-time (roadmap T1.5 — every
                            one-month budget with its month, for the Budgets
                            page's other-month links)
-    webhooks.js          — Bank webhook receivers (roadmap T2.1, W1–W5):
+    webhooks.js          — Bank webhook receivers (roadmap T2.1, W1–W6):
                            POST /api/webhooks/plaid + /api/webhooks/teller,
                            mounted in server.js BEFORE session / auth / CSRF /
                            API key / activity. Body required + 512 KB cap; 503
@@ -801,9 +816,16 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1995 tests as of latest); use
+  Perfin and Per-sistant test files (2008 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1995 tests across 100 test files (incl.
+  Current count: 2008 tests across 101 test files (incl.
+  `tests/roadmap-t2-webhooks-w6.test.js` — roadmap T2.1 W6: getWebhookStatus (per-provider
+  events, the PUBLIC_URL-prefix registration SQL, the Teller count, RENDER_EXTERNAL_URL
+  never counting, fail-soft parts), every webhookChecks branch, getOperatorChecks reusing a
+  passed status + the warn reaching toIssues and the failing signature, GET /api/data-health's
+  webhooks / connections / failed-event issue and fail-soft blocks, and the Sync Health
+  Webhooks line, Register button (data-e2e-skip) and Connections list run in a vm — the
+  database-backed half is `tests/contract/webhooks-w6`;
   `tests/roadmap-t2-webhooks-w5.test.js` — roadmap T2.1 W5: the Teller handler
   (transactions.processed by enrollment id or by account ids, one post-sync pass, gone /
   empty ignored, a failed sync failing the event; enrollment.disconnected's GOOD-only
@@ -1213,8 +1235,12 @@ shell/
   and webhooks-w5 (roadmap T2.1 W5: a signed transactions.processed naming only an
   account id syncing just its enrollment — row, watermark, last_synced_at, the anomaly
   watermark, nothing global — enrollment.disconnected setting DISCONNECTED with one
-  notification across two deliveries, webhook.test done, unknown enrollments ignored).
-  186 tests, run
+  notification across two deliveries, webhook.test done, unknown enrollments ignored),
+  and webhooks-w6 (roadmap T2.1 W6: data-health's per-provider webhook status — last
+  status, 24h count / failures with an older row not counted — the failed-event issue,
+  per-connection freshness without CSV items or suspended enrollments and with the
+  re-auth state; the not-registered warning for an Item registered at another address,
+  gone after Register; Teller without a secret as info). 189 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -2580,8 +2606,9 @@ shell/
   stale, no successful backup in 36h, missing workflow secrets, a public repo (these
   need `GITHUB_OPS_TOKEN` + `GITHUB_OPS_REPO`; without them the list says GitHub checks
   are off), the compromised Teller cert, the token passphrase, a SHELL_PIN under 6
-  characters, timezone / push / calendar-feed notes and a Knowledge index needing one
-  full reindex. Warn / fail checks also reach the dashboard strip, and the 6-hour
+  characters, timezone / push / calendar-feed notes, bank webhooks (roadmap T2.1 W6 — a
+  Plaid connection not registered at PUBLIC_URL is a warning; webhooks off or quiet for
+  7 days are info) and a Knowledge index needing one full reindex. Warn / fail checks also reach the dashboard strip, and the 6-hour
   watchdog pushes one "Operator checks: N need attention" notification (tag
   `operator-checks`) per change in the failing set. Below them, **Recent errors**
   (roadmap T1.4, anchor `#recent-errors`, `GET /api/errors`): the in-app error
@@ -2590,6 +2617,16 @@ shell/
   (`POST /api/errors/:fingerprint/resolve`; it reopens on the next occurrence).
   Data-health raises "N server error(s) in the last 24 hours" while any are
   unresolved, and each new or reopened error notifies once (≤5 a day).
+  **Webhooks + connections (roadmap T2.1 W6)**: under the provider counts the card
+  shows a Webhooks line per provider — "off — set PUBLIC_URL / TELLER_WEBHOOK_SECRET",
+  or the last event's age and status, the last 24 hours' count and failures — a
+  "Register Plaid webhooks" button (`POST /api/plaid/webhooks/register`,
+  `data-e2e-skip`; shown while PUBLIC_URL is set and Plaid connections exist, with
+  "N of M registered at <url>") and a collapsible Connections list: each Teller
+  enrollment / Plaid item with a freshness dot from its own `last_synced_at` ("no
+  complete sync recorded yet" until one stamps it) and a re-auth / disconnected
+  state. Data-health raises "N <provider> webhook event(s) failed in the last 24
+  hours".
 - **Sync-degradation strip** (dashboard): a banner (`#sync-health-strip`) fetches
   `GET /api/data-health` on load and surfaces its warning-level `issues[]`
   (disconnected links, stale sync, `decryption_failed`, stale scheduled jobs) at
@@ -3053,7 +3090,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1995 tests passing across 100 test files (Perfin 1444 + Per-sistant 551), plus the real-Postgres route contract suite (186 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2008 tests passing across 101 test files (Perfin 1457 + Per-sistant 551), plus the real-Postgres route contract suite (189 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -3396,7 +3433,15 @@ GET  /api/data-health      # operator health surface — per-source freshness,
                            # since the sync reads use perfin_try_decrypt, F17) (D).
                            # Also operator_checks (+ each warn/fail check as an issue
                            # tagged source:'operator') from CACHED GitHub results —
-                           # it never waits on GitHub (cycle-7 G1 + ST4)
+                           # it never waits on GitHub (cycle-7 G1 + ST4). Also
+                           # webhooks (getWebhookStatus — per provider last event /
+                           # 24h events + failures, the Plaid registration; a failed
+                           # event in 24h is an issue) and connections ([{ provider,
+                           # id, institution, status (NEEDS_REAUTH for a Plaid
+                           # re-auth code), last_synced: { timestamp, age_seconds,
+                           # level } }] from each enrollment's / item's own
+                           # last_synced_at — no CSV items, no SUSPENDED) — roadmap
+                           # T2.1 W6
 GET  /api/errors           # the in-app error log (roadmap T1.4): { errors: [{ fingerprint,
                            # source, message, sample, count, first_seen, last_seen,
                            # resolved_at }] } — unresolved, newest first (?all=1 adds
@@ -3838,7 +3883,7 @@ standalone-mode fallback if either app is run on its own Render service.
 - `plaid_items.webhook_url TEXT` + `plaid_investment_items.webhook_url TEXT` (roadmap
   T2.1 W4): the URL the Item was linked with (when PUBLIC_URL was set) or last
   registered at via `POST /api/plaid/webhooks/register`; NULL = none known. Read by
-  W6's operator check. Auto-migrated.
+  the webhooks:plaid operator check and Sync Health's "N of M registered" (W6). Auto-migrated.
 - `teller_enrollments.last_synced_at TIMESTAMPTZ` (roadmap T2.1 W5): when the
   enrollment last synced every account and row (syncOneTellerEnrollment — the
   scheduled sync, a reconcile pass and a webhook sync alike; a partial run doesn't
@@ -5427,13 +5472,16 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   email's attachments or warn before Send that one's file is missing (the refusal
   arrives as the send's error toast); Retry sends a failed SCHEDULED email at once
   rather than offering to reschedule it.
-- Roadmap T2.1 (bank webhooks) is in progress (`.cycle/plan-t2-1-webhooks.md`): W1–W5
-  (receivers, event log, signature verification, Plaid transaction / item / holdings /
+- Roadmap T2.1 (bank webhooks) is DONE (`.cycle/plan-t2-1-webhooks.md`, W1–W6:
+  receivers, event log, signature verification, Plaid transaction / item / holdings /
   investment-transaction events, webhook registration, Teller transactions.processed /
-  enrollment.disconnected / webhook.test) are done. Plaid webhooks turn on once the
-  operator sets `PUBLIC_URL` and calls `POST /api/plaid/webhooks/register` once (the
-  Sync Health button comes with W6); Teller's once its dashboard has the URL and
-  `TELLER_WEBHOOK_SECRET` is set. W6 (Sync Health visibility) remains. W5 follow-ons:
+  enrollment.disconnected / webhook.test, Sync Health visibility). OPERATOR: Plaid
+  webhooks turn on once `PUBLIC_URL` is set and Settings → Sync Health → "Register
+  Plaid webhooks" is pressed once; Teller's once its dashboard has the URL and
+  `TELLER_WEBHOOK_SECRET` is set. W6 follow-ons: the Connections list has no link
+  per connection (re-auth is on the Accounts page); a webhook_events row a restart
+  caught mid-handler counts in neither "done" nor "failed"; the 7-day quiet check
+  can't tell a quiet account from a broken URL. W5 follow-ons:
   a Teller per-enrollment sync isn't serialized with a running syncAllEnrollments (both
   upsert idempotently; the watermark is written by whichever finishes last — never
   past data either fetched); Teller's transactions.processed payload shape (enrollment
@@ -5582,7 +5630,8 @@ Bank Sync & Ingestion:
   teller/services/teller-api.js, teller/services/benchmarks.js,
   teller/data/csv-formats.js, scripts/import-csv-cli.js,
   teller/routes/webhooks.js, teller/services/webhook-verify.js,
-  teller/routes/plaid-webhook-events.js, teller/routes/teller-webhook-events.js
+  teller/routes/plaid-webhook-events.js, teller/routes/teller-webhook-events.js,
+  teller/services/webhook-status.js
   (Teller and Plaid are co-equal, first-class linking paths — both write the
    same transactions/linked_accounts tables. Plaid additionally covers banks
    Teller doesn't, plus investment holdings.)
@@ -5791,6 +5840,7 @@ INV-133 | Recording an error never throws into the caller and never recurses: th
 INV-134 | GET /health/deep is public but exposes only yes/no database fields (never an error message), is bounded per probe and cached 60s single-flight; the heartbeat never touches the database and is never activity-gated | Subsystem: Platform, Shell & Auth | Verify: tests/roadmap-t1-errors-uptime.test.js + tests/contract/error-log.contract.test.js
 INV-135 | A Per-sistant email is sent with EVERY one of its stored attachments or not at all: both senders load them through routes/attachments.loadEmailAttachments; a missing file or a total over 20MB makes Send Now a 400 before its claim (the email stays unsent) and makes the scheduler mark the claimed row failed with the reason; Retry reuses the Send Now claim, so it can't double-send | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/roadmap-t1-batchc.test.js + tests/contract/persistent-batchc.contract.test.js
 INV-137 | A bank webhook is verified before anything is recorded (Plaid's ES256 JWT incl. the body hash; Teller's HMAC with digest compares), recorded once per (provider, dedupe key) — a re-delivery is answered 200 and not processed again — answered 200 before its handler runs, and its body is never stored or logged; a provider without credentials / a secret answers 503 and writes nothing; only the two exact POST paths pass the shell gate | Subsystem: Bank Sync & Ingestion / Platform, Shell & Auth | Verify: tests/roadmap-t2-webhooks-w1.test.js + tests/roadmap-t2-webhooks-w2.test.js + tests/contract/webhooks-w1 / webhooks-w2
+INV-141 | Bank webhooks are visible without ever exposing a payload: GET /api/data-health reports per provider the last event + status and the last 24 hours' count and failures from webhook_events (no body is read), raises a failed event in 24h as an issue, and lists each connection's own last_synced_at; the operator checks warn while a GOOD Plaid connection isn't registered under the current PUBLIC_URL (webhook_url prefix + /api/webhooks/plaid) and only inform about webhooks off or quiet; every part is fail-soft | Subsystem: Bank Sync & Ingestion / Platform, Shell & Auth | Verify: tests/roadmap-t2-webhooks-w6.test.js + tests/contract/webhooks-w6.contract.test.js
 INV-140 | A Teller webhook is a trigger, not data: transactions.processed syncs only the enrollment(s) it names (by enrollment id or its transactions' account ids — never a SUSPENDED one) through the same syncOneTellerEnrollment the scheduled sync loops, coalesced per enrollment, recording nothing global (the enrollment's last_synced_at only), then ONE runPostSyncSteps; enrollment.disconnected changes only a GOOD enrollment and notifies once per transition | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-webhooks-w5.test.js + tests/contract/webhooks-w5.contract.test.js
 INV-139 | Plaid webhooks are opt-in by PUBLIC_URL alone (hosting.webhookBaseUrl — never RENDER_EXTERNAL_URL): without it no link token carries a webhook and registration is a 400; a clean sync never clears a webhook's advance warning (PENDING_EXPIRATION / PENDING_DISCONNECT — setPlaidItemErrorCode keepWarnings), only a re-authentication does; an ITEM ERROR sets the signal only for a re-auth code | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-webhooks-w4.test.js + tests/contract/webhooks-w4.contract.test.js
 INV-138 | A Plaid webhook is a trigger, not data: SYNC_UPDATES_AVAILABLE syncs only the named GOOD item, through the same syncOnePlaidItem the scheduled sync loops, under withPlaidTxnLock and coalesced per item (a request during its run → one more round, never a parallel walk); it records nothing global (no last_txn_sync_at / last_sync_result — the item's last_synced_at only, stamped when the walk reached the end of the cursor) | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-webhooks-w3.test.js + tests/contract/webhooks-w3.contract.test.js

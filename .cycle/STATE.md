@@ -18,7 +18,28 @@ Updated: 2026-10-22
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T2.1 (bank webhooks) — W5 DONE** on branch `claude/sweet-ritchie-f9d8ah`
+- **Status:** **Roadmap T2.1 (bank webhooks) — W6 DONE; T2.1 COMPLETE** on branch
+  `claude/sweet-ritchie-f9d8ah` (2026-10-22, in PR robinchoudhuryums/pers-fin#133). Plan:
+  `.cycle/plan-t2-1-webhooks.md`. Block: `.cycle/blocks/7-roadmap-t2-1-w6-broad-implement.md`.
+  - **Completed:** services/webhook-status.js (getWebhookStatus — per-provider last event / 24h
+    events + failures from webhook_events, the Plaid registration under PUBLIC_URL, the Teller
+    enrollment count; webhookChecks — webhooks:plaid warn while a connection isn't registered,
+    info off / quiet 7 days; webhooks:teller info off / quiet); operator-checks includes them
+    (precomputed status reused); data-health returns webhooks + connections (each enrollment's /
+    item's own last_synced_at) and raises failed webhook events; Settings → Sync Health Webhooks
+    line, "Register Plaid webhooks" button (data-e2e-skip) and Connections list. Docs folded in
+    (new INV-141).
+  - **Verification:** npm 2008/2008 (13 new); contract 189/189 (3 new); Playwright 57/57; no schema
+    change (migrations not re-run); three mutation checks red.
+  - **Decisions:** registration = webhook_url prefix of PUBLIC_URL + /api/webhooks/plaid suffix (no
+    mount knowledge needed, works for the watchdog); per-connection freshness is data + UI only (no
+    issue — partial syncs already report via last_sync_result); no new endpoint (data-health carries
+    it; the router before auth must not gain a GET).
+  - **Follow-ons:** see Known Open Issues (T2.1 W6 follow-ons); confirm Teller's signature format and
+    payload before switching Teller on.
+  - **Where I left off:** W6 committed and pushed with docs; roadmap T2.1 complete. NEXT: the next
+    roadmap item, or a /reflect over T2.1.
+- **Previous status:** **Roadmap T2.1 (bank webhooks) — W5 DONE** on branch `claude/sweet-ritchie-f9d8ah`
   (2026-10-22, in PR robinchoudhuryums/pers-fin#133). Plan: `.cycle/plan-t2-1-webhooks.md`.
   Block: `.cycle/blocks/7-roadmap-t2-1-w5-broad-implement.md`.
   - **Completed:** enrollments.js — syncOneTellerEnrollment (the per-enrollment body of

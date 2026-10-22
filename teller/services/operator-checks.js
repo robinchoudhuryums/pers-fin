@@ -7,6 +7,9 @@
 //   - local: the compromised Teller certificate (F14 — moved here so there is
 //     one source), TOKEN_ENCRYPTION_PASSPHRASE, a short SHELL_PIN, and info
 //     notes for APP_TIMEZONE / push / the calendar feed;
+//   - bank webhooks (roadmap T2.1 W6, services/webhook-status.js): Plaid
+//     connections not registered at the current address (warn), Plaid / Teller
+//     webhooks off or quiet for 7 days (info);
 //   - Knowledge: an index built under older vault parsing rules
 //     (Per-sistant's user_settings.vault_parse_version < VAULT_PARSE_VERSION),
 //     read-only through the wired Per-sistant pool (INV-25).
@@ -20,6 +23,7 @@
 
 const githubOps = require("./github-ops");
 const hosting = require("./hosting");
+const webhookStatus = require("./webhook-status");
 
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 let githubCache = null;      // { at, result }
@@ -137,7 +141,8 @@ async function serverBackupCheck(pool, env = process.env, now = Date.now()) {
   }
 }
 
-// opts: { pool, persistentPool, force, cachedOnly, env, fetchImpl }
+// opts: { pool, persistentPool, force, cachedOnly, env, fetchImpl,
+//         webhookStatus (a getWebhookStatus result the caller already read) }
 async function getOperatorChecks(opts = {}) {
   const env = opts.env || process.env;
   let gh = githubCache;
@@ -153,6 +158,14 @@ async function getOperatorChecks(opts = {}) {
   const checks = [...(gh ? gh.result.checks : []), ...localChecks(env)];
   const sb = await serverBackupCheck(opts.pool, env);
   if (sb) checks.push(sb);
+  // Bank webhooks (roadmap T2.1 W6) — needs the database; fail-soft (the
+  // status reader logs and leaves a failed part empty).
+  if (opts.webhookStatus || opts.pool) {
+    try {
+      const ws = opts.webhookStatus || await webhookStatus.getWebhookStatus(opts.pool, { env });
+      checks.push(...webhookStatus.webhookChecks(ws));
+    } catch (e) { console.error("operator-checks webhook check failed:", e.message); }
+  }
   const k = await knowledgeCheck(opts.persistentPool);
   if (k) checks.push(k);
   return { checked_at: new Date().toISOString(), github, checks };

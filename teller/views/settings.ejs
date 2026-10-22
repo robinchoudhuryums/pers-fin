@@ -380,7 +380,7 @@
       <div class="setting-control"><button class="btn" id="reconcile-btn">Reconcile</button></div>
     </div>
     <div class="setting-row" style="margin-top:12px;">
-      <div class="setting-info"><div class="name">Operator Checks</div><div class="desc">Things only you can fix outside the app: GitHub backstop workflows, backups, workflow secrets, repository visibility, the Teller certificate and the Knowledge index. GitHub results are cached for 6 hours.</div></div>
+      <div class="setting-info"><div class="name">Operator Checks</div><div class="desc">Things only you can fix outside the app: GitHub backstop workflows, backups, workflow secrets, repository visibility, the Teller certificate, bank webhooks and the Knowledge index. GitHub results are cached for 6 hours.</div></div>
       <div class="setting-control"><button class="btn" id="operator-checks-btn">Check now</button></div>
     </div>
     <div id="operator-checks-body" style="font-size:13px;color:var(--text-muted);">Loading…</div>
@@ -1499,6 +1499,8 @@
              + ' · Plaid: ' + (p.plaid.total || 0) + ' linked'
              + (p.plaid.not_good ? ', <span style="color:var(--red,#eb6b6b);">' + p.plaid.not_good + ' need re-auth</span>' : '')
              + '</div>';
+        out += renderWebhooks(h.webhooks);
+        out += renderConnections(h.connections);
         // Operator-check issues are listed under Operator Checks below.
         var dhIssues = (h.issues || []).filter(function (i) { return i.source !== 'operator'; });
         if (dhIssues.length) {
@@ -1515,6 +1517,55 @@
         el.innerHTML = out;
       } catch (e) { el.textContent = 'Unavailable'; }
     }
+    // Bank webhooks + per-connection freshness (roadmap T2.1 W6) — both from
+    // GET /api/data-health (webhooks / connections).
+    function whLine(name, w, offText) {
+      if (!w) return '';
+      if (!w.configured) return '<div>' + name + ': <span style="color:var(--text-muted);">' + offText + '</span></div>';
+      var last = w.last_event_at ? dhAge(Math.round((Date.now() - new Date(w.last_event_at).getTime()) / 1000)) + (w.last_status ? ' (' + esc(w.last_status) + ')' : '') : 'none yet';
+      return '<div>' + name + ': last event ' + last + ' · ' + (w.events_24h || 0) + ' in 24h'
+        + (w.failed_24h ? ' · <span style="color:var(--red,#eb6b6b);">' + w.failed_24h + ' failed</span>' : '') + '</div>';
+    }
+    function renderWebhooks(wh) {
+      if (!wh) return '';
+      var pl = wh.plaid || {}, te = wh.teller || {};
+      var plaidOff = !pl.configured ? 'Plaid not configured' : 'off — set PUBLIC_URL';
+      var out = '<div style="margin:8px 0 6px;"><div style="font-weight:600;">Webhooks</div>';
+      out += whLine('Plaid', pl.configured && pl.opted_in ? pl : { configured: false }, plaidOff);
+      if (pl.configured && pl.opted_in && pl.items_total) {
+        out += '<div style="font-size:12px;">' + (pl.items_registered || 0) + ' of ' + pl.items_total + ' Plaid connection(s) registered at ' + esc(pl.base_url)
+          + ' <button class="btn" id="register-plaid-webhooks-btn" data-e2e-skip style="margin-left:8px;">Register Plaid webhooks</button></div>';
+      }
+      out += whLine('Teller', te, 'off — set TELLER_WEBHOOK_SECRET');
+      return out + '</div>';
+    }
+    function renderConnections(list) {
+      if (!list || !list.length) return '';
+      return '<details style="margin:6px 0;"><summary>Connections (' + list.length + ')</summary><ul style="margin:6px 0;padding-left:0;list-style:none;">'
+        + list.map(function (c) {
+          var ls = c.last_synced || {};
+          var state = c.status === 'GOOD' ? '' : ' · <span style="color:var(--red,#eb6b6b);">' + esc(c.status === 'NEEDS_REAUTH' ? 'needs re-auth' : c.status.toLowerCase()) + '</span>';
+          return '<li style="margin:3px 0;">' + dhDot(ls.level) + esc(c.provider === 'plaid' ? 'Plaid' : 'Teller') + ' — ' + esc(c.institution || 'Unknown')
+            + ': ' + (ls.timestamp ? 'synced ' + dhAge(ls.age_seconds) : 'no complete sync recorded yet') + state + '</li>';
+        }).join('') + '</ul></details>';
+    }
+    (function () {
+      var el = document.getElementById('data-health-body');
+      if (!el) return;
+      el.addEventListener('click', async function (ev) {
+        var btn = ev.target.closest('#register-plaid-webhooks-btn');
+        if (!btn) return;
+        btn.disabled = true;
+        try {
+          var res = await apiFetch('/api/plaid/webhooks/register', { method: 'POST' });
+          if (await writeOk(res, 'Register Plaid webhooks')) {
+            var r = await res.json();
+            showMsg('Registered ' + r.registered + ' Plaid connection(s)' + (r.failed ? ' — ' + r.failed + ' failed' : '') + '.', !r.failed);
+            loadDataHealth();
+          }
+        } finally { btn.disabled = false; }
+      });
+    })();
     // Operator checks (cycle-7 G1 + ST4) — GET /api/operator-checks.
     var OC_COLOR = { ok: 'var(--green,#4caf50)', info: 'var(--text-muted)', warn: 'var(--warm,#d4a574)', fail: 'var(--red,#eb6b6b)', unknown: 'var(--text-muted)' };
     var OC_ORDER = { fail: 0, warn: 1, unknown: 2, info: 3, ok: 4 };

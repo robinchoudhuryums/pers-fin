@@ -496,12 +496,51 @@ router.get("/api/data-health", async (req, res) => {
     // failing backstop workflows, no recent backup, missing workflow secrets, a
     // public repo, a stale Knowledge index. Cached GitHub results only: this
     // route never waits on GitHub (a stale cache refreshes in the background).
+    // Bank webhooks (roadmap T2.1 W6): per provider the last event, the last
+    // 24 hours' count + failures and the Plaid registration — read once and
+    // shared with the operator checks below.
+    let webhooks = null;
+    try {
+      webhooks = await require("../services/webhook-status").getWebhookStatus(pool);
+    } catch (e) { console.error("data-health webhook status failed:", e.message); }
+    if (webhooks) {
+      for (const [provider, w] of [["Plaid", webhooks.plaid], ["Teller", webhooks.teller]]) {
+        if (w.failed_24h > 0) {
+          issues.push({ severity: "warning", message: `${w.failed_24h} ${provider} webhook event(s) failed in the last 24 hours — the scheduled sync is the backstop; see the server log.` });
+        }
+      }
+    }
+
+    // Per-connection freshness (roadmap T2.1 W6): when each Teller enrollment /
+    // Plaid item last synced completely (its own last_synced_at — W3 / W5).
+    let connections = [];
+    try {
+      const cr = await pool.query(
+        `SELECT 'teller' AS provider, id, institution_name, status, last_synced_at
+           FROM teller_enrollments WHERE status <> 'SUSPENDED'
+         UNION ALL
+         SELECT 'plaid', id, institution_name,
+                CASE WHEN last_error_code IS NOT NULL THEN 'NEEDS_REAUTH' ELSE status END,
+                last_synced_at
+           FROM plaid_items WHERE status <> 'CSV'
+         ORDER BY 1, 3`
+      );
+      connections = cr.rows.map(c => ({
+        provider: c.provider,
+        id: c.id,
+        institution: c.institution_name,
+        status: c.status,
+        last_synced: ageInfo(c.last_synced_at),
+      }));
+    } catch (e) { console.error("data-health connections read failed:", e.message); }
+
     let operatorChecks = null;
     try {
       operatorChecks = await operatorChecksService.getOperatorChecks({
         cachedOnly: true,
         pool,
         persistentPool: req.app.get("persistentPool") || null,
+        webhookStatus: webhooks || undefined,
       });
       issues.push(...operatorChecksService.toIssues(operatorChecks));
     } catch (e) { console.error("data-health operator checks failed:", e.message); }
@@ -519,6 +558,8 @@ router.get("/api/data-health", async (req, res) => {
       last_sync_result: s.last_sync_result || null,
       last_sheets_sync_result: s.last_sheets_sync_result || null,
       operator_checks: operatorChecks,
+      webhooks,
+      connections,
       issues,
       recent_events: events.rows,
     });
