@@ -37,8 +37,9 @@ implement and reflect sessions only set Phase.)
     it; the router before auth must not gain a GET).
   - **Follow-ons:** see Known Open Issues (T2.1 W6 follow-ons); confirm Teller's signature format and
     payload before switching Teller on.
-  - **Where I left off:** W6 committed and pushed with docs; roadmap T2.1 complete. NEXT: the next
-    roadmap item, or a /reflect over T2.1.
+  - **Where I left off:** W6 committed and pushed with docs; roadmap T2.1 complete. Roadmap T2.2
+    (low-balance and payday alerts) is PLANNED in `.cycle/plan-t2-2-cash-alerts.md` — batches
+    L1–L4, decisions proposed. NEXT: accept / change the decisions, then `/broad-implement L1`.
 - **Previous status:** **Roadmap T2.1 (bank webhooks) — W5 DONE** on branch `claude/sweet-ritchie-f9d8ah`
   (2026-10-22, in PR robinchoudhuryums/pers-fin#133). Plan: `.cycle/plan-t2-1-webhooks.md`.
   Block: `.cycle/blocks/7-roadmap-t2-1-w5-broad-implement.md`.
