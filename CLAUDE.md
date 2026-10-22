@@ -688,9 +688,15 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1879 tests as of latest); use
+  Perfin and Per-sistant test files (1890 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1879 tests across 92 test files (incl.
+  Current count: 1890 tests across 93 test files (incl.
+  `apps/per-sistant/tests/roadmap-t1-batchc.test.js` — roadmap T1.5 Batch C:
+  loadEmailAttachments (order + shape, a legacy disk file, a missing file, the 20MB
+  cap, none), both senders' wiring, Send Now's 400 without a claim, the Emails page's
+  error line + single-flight Retry (data-e2e-skip), every model-calling AI route's
+  501 without a key (a 400 still first), the Review page's AI gate and the removed
+  e2e gap — the database-backed half is `tests/contract/persistent-batchc.contract.test.js`;
   `tests/roadmap-t1-quickwins.test.js` — roadmap T1.5 Batch B: the real loadCharts
   redrawn twice (the old charts destroyed) and the empty-state round trip, the real
   renderCategoryMonth in a vm (the latest aggregate, a slow month fetch never
@@ -1023,7 +1029,11 @@ shell/
   when it can't connect), and quickwins (roadmap T1.5 Batch B: the one-time budget
   listing; a rename rule's new name renaming its rows and re-keying its subscription
   with the notes kept while a hand-renamed row stays; off reverting its rows and
-  keeping the rule, on re-applying it; the PATCH 400s / 404). 160 tests, run
+  keeping the rule, on re-applying it; the PATCH 400s / 404), and persistent-batchc
+  (roadmap T1.5 Batch C: Send Now carrying two stored attachments, a missing one a 400
+  that leaves a draft, the scheduler marking it failed with the reason + the failed
+  list, Retry after removing it sending once and a second Retry 409, review-summary
+  501). 165 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -1181,7 +1191,7 @@ shell/
   fake @anthropic-ai/sdk: /api/ask + runCategorize charge their usage rows,
   429 once the cap is hit, ask charges accumulated tokens AND still charges
   on a mid-loop failure — F1).
-- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). Since cycle-7 Batch 20 (G2) the run is SEEDED (`e2e/seed.js`, in the spec's beforeAll — through the apps' own routes: housing config + generated obligations, a manual account + manual expense, a generic CSV with a refund row and a split, a rollover budget, a goal, a subscription, a credit score; Per-sistant notes in each privacy tier, a habit with logs, a todo with subtasks; one Job Radar listing inserted directly, since no route creates one), a `console.error` fails a page (the browser's "Failed to load resource" line is left to the response check), and a CLICK SWEEP per page presses every visible, enabled `button / [role=button|checkbox|tab] / summary` counted on load (≤80) that isn't `data-e2e-skip` or labelled destructive (delete / remove / unlink / send / empty / sign out / log out / reset / purge / disconnect / archive / trash / revoke / cancel subscription / mark settled), dismissing dialogs and returning to the page between presses; a failure names the control pressed, and `SWEEP_KNOWN_GAPS` must only shrink. Mark a new destructive, off-app (an external SDK) or device-permission control (microphone) `data-e2e-skip`. 57 tests (22 of them sweeps, ~220 controls pressed). The `migrations` job ALSO runs the route contract suite (`npm run test:contract`, step "Route contract tests against real Postgres", `CONTRACT_DATABASE_URL` = the same service container; the Postgres user must be able to CREATE/DROP DATABASE).
+- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink — empty since roadmap T1.5 Batch C fixed the Review page's review-summary 500), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). Since cycle-7 Batch 20 (G2) the run is SEEDED (`e2e/seed.js`, in the spec's beforeAll — through the apps' own routes: housing config + generated obligations, a manual account + manual expense, a generic CSV with a refund row and a split, a rollover budget, a goal, a subscription, a credit score; Per-sistant notes in each privacy tier, a habit with logs, a todo with subtasks; one Job Radar listing inserted directly, since no route creates one), a `console.error` fails a page (the browser's "Failed to load resource" line is left to the response check), and a CLICK SWEEP per page presses every visible, enabled `button / [role=button|checkbox|tab] / summary` counted on load (≤80) that isn't `data-e2e-skip` or labelled destructive (delete / remove / unlink / send / empty / sign out / log out / reset / purge / disconnect / archive / trash / revoke / cancel subscription / mark settled), dismissing dialogs and returning to the page between presses; a failure names the control pressed, and `SWEEP_KNOWN_GAPS` must only shrink. Mark a new destructive, off-app (an external SDK) or device-permission control (microphone) `data-e2e-skip`. 57 tests (22 of them sweeps, ~220 controls pressed). The `migrations` job ALSO runs the route contract suite (`npm run test:contract`, step "Route contract tests against real Postgres", `CONTRACT_DATABASE_URL` = the same service container; the Postgres user must be able to CREATE/DROP DATABASE).
 - `.claude/commands/` — Project slash-command prompts, generated from the
   claude-workflow-tools templates (synced to v1.43.0 via `/sync-commands`):
   the cycle commands (`/broad-scan`, `/broad-implement`, `/targeted-audit`,
@@ -2857,7 +2867,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1879 tests passing across 92 test files (Perfin 1345 + Per-sistant 534), plus the real-Postgres route contract suite (160 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 1890 tests passing across 93 test files (Perfin 1345 + Per-sistant 545), plus the real-Postgres route contract suite (165 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -5093,10 +5103,9 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
 - The credit-score and AI-insights widgets have no Settings toggle (not in
   DASHBOARD_WIDGETS). Batch 10 follow-on (the budgets month picker and the chart
   redraw were fixed in roadmap T1.5 Batch B).
-- Per-sistant: email attachments are stored but never attached when the email is
-  sent; a failed email has no one-click Retry and the Emails list doesn't show its
-  error (the notification check does); the palette / mode / collapsed-nav preference
-  PATCHes still ignore failures (localStorage-first by design). Batch 11 follow-ons.
+- Per-sistant: the palette / mode / collapsed-nav preference PATCHes still ignore
+  failures (localStorage-first by design). Batch 11 follow-on (attachments on send
+  and the failed-email error + Retry were fixed in roadmap T1.5 Batch C).
 - Knowledge: the RAG endpoints are rate-limited but not charged to Per-sistant's AI
   cost cap (opt-in per call site — only Job Radar uses it); a vault fact FILE with no
   non-reserved keys still drops its body at ingest; an unclosed frontmatter block is
@@ -5104,10 +5113,6 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   tree listing fails every sync with a full re-walk (F127 surfaces it — a subtree walk
   would index it). OPERATOR: run one full Knowledge reindex after deploying Batch 12 —
   F132 changed frontmatter parsing. Batch 12 follow-ons.
-- Per-sistant `POST /api/ai/review-summary` answers 500 (callAI throws →
-  serverError) instead of 501 when `ANTHROPIC_API_KEY` is unset, and the Review
-  page fires it on every load (found by `e2e/pages.spec.js`, tolerated in its
-  `KNOWN_GAPS` — remove the entry when fixed).
 - Per-sistant's AI cost-cap month (`ai.js` monthlyAiSpendCents), its Ask context's
   "Today:" line and capture-to-vault file names use the UTC date (Perfin's F66
   equivalent) — listed as FOLLOW-ON entries in the timezone lint's KNOWN_GAPS
@@ -5177,6 +5182,10 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   doesn't re-key or re-run detection, so the next detection run creates a second
   subscription row under the bank's merchant name; the Budgets page's "this month"
   is the browser's month, not APP_TIMEZONE's.
+- Roadmap T1.5 (Batch C) follow-ons: Per-sistant's compose dialog doesn't list an
+  email's attachments or warn before Send that one's file is missing (the refusal
+  arrives as the send's error toast); Retry sends a failed SCHEDULED email at once
+  rather than offering to reschedule it.
 - Batch 20 follow-ons: the e2e click sweep counts controls on page load, so controls
   inside a dialog a click opens, and rows rendered only after a click, aren't swept (the
   Activity page's rows appear after Search — its sweep presses 3 controls); Per-sistant's
@@ -5497,6 +5506,7 @@ INV-131 | A Plaid item's re-authentication notification is sent once per transit
 INV-132 | Every Plaid investment write path (the holdings sync and both exchange routes) stores investment_accounts.mask, keeping a known mask (COALESCE), so the investments-only duplicate guard can match | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-oct-batch19.test.js + tests/contract/plaid-update.contract.test.js
 INV-133 | Recording an error never throws into the caller and never recurses: the shell's console.error wrapper always prints first, capture() is re-entrancy guarded, the error log reports its own failures through the ORIGINAL console.error under an ignored "[error-log]" prefix, and a failed write re-buffers instead of dropping; new / reopened errors notify at most 5 times in 24 hours | Subsystem: Platform, Shell & Auth | Verify: tests/roadmap-t1-errors-uptime.test.js + tests/contract/error-log.contract.test.js
 INV-134 | GET /health/deep is public but exposes only yes/no database fields (never an error message), is bounded per probe and cached 60s single-flight; the heartbeat never touches the database and is never activity-gated | Subsystem: Platform, Shell & Auth | Verify: tests/roadmap-t1-errors-uptime.test.js + tests/contract/error-log.contract.test.js
+INV-135 | A Per-sistant email is sent with EVERY one of its stored attachments or not at all: both senders load them through routes/attachments.loadEmailAttachments; a missing file or a total over 20MB makes Send Now a 400 before its claim (the email stays unsent) and makes the scheduler mark the claimed row failed with the reason; Retry reuses the Send Now claim, so it can't double-send | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/roadmap-t1-batchc.test.js + tests/contract/persistent-batchc.contract.test.js
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
 ### Policy Configuration

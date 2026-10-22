@@ -29,7 +29,12 @@ implement and reflect sessions only set Phase.)
   - **Decisions:** the 501 comes after each route's own 400s (existing tests pin input validation
     without a key); Send Now refuses before claiming, the scheduler fails the claimed row.
   - **Follow-ons:** compose dialog doesn't list attachments; Retry sends a failed scheduled email now.
-  - **Where I left off:** Batch C committed; run `/sync-docs`, then the Seams & Invariants audit.
+  - **/sync-docs DONE (Batch C):** CLAUDE.md — Known Open Issues (Batch 11 attachments / Retry and the
+    review-summary 500 removed; Batch C follow-ons), the e2e KNOWN_GAPS note (empty), new INV-135, counts
+    1890 / 93 files / Per-sistant 545 / contract 165 + test-file descriptions. Per-sistant CLAUDE.md —
+    Email senders + attachments, failed-email Retry, File Attachments, the AI routes' 501, the Review gate,
+    Commands, the test file, 545. README — counts and coverage. Subsystem paths and operator state unchanged.
+  - **Where I left off:** Batch C + its /sync-docs committed and pushed. NEXT: the Seams & Invariants audit.
 - **Previous status:** **Post-cycle-7 roadmap — T1.5 Batch B DONE** on branch `claude/sweet-ritchie-f9d8ah`
   (2026-10-22, in PR robinchoudhuryums/pers-fin#133). Perfin quick wins. Block:
   `.cycle/blocks/7-roadmap-t1-batchB-broad-implement.md`. Next: Batch C (Per-sistant: attachments on
