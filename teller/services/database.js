@@ -1010,6 +1010,23 @@ async function runMigrationsOnce() {
       updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
 
+    // In-app error log (roadmap T1.4): server errors grouped by fingerprint,
+    // written by services/error-log.js (the shell's console.error wrapper) and
+    // shown in Settings → Sync Health. A resolved row reopens when the error
+    // happens again; notified_at caps the notifications.
+    await client.query(`CREATE TABLE IF NOT EXISTS app_errors (
+      fingerprint TEXT PRIMARY KEY,
+      source      TEXT NOT NULL DEFAULT 'app',
+      message     TEXT NOT NULL,
+      sample      TEXT,
+      count       INT NOT NULL DEFAULT 1,
+      first_seen  TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_seen   TIMESTAMPTZ NOT NULL DEFAULT now(),
+      resolved_at TIMESTAMPTZ,
+      notified_at TIMESTAMPTZ
+    )`);
+    await client.query("CREATE INDEX IF NOT EXISTS idx_app_errors_last_seen ON app_errors (last_seen DESC)");
+
     // One-shot cleanup: detection-key migration orphans (PSA1 — now genuinely
     // one-shot, gated on the schema version so it doesn't re-run every boot).
     // When detection started keying on COALESCE(user_merchant_name, merchant_name, name)

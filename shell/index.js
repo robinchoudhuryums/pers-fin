@@ -31,6 +31,15 @@ const auth = require("./middleware/auth");
 const webauthn = require("./middleware/webauthn");
 const errorHandler = require("./middleware/error-handler");
 const { startKeepAlive } = require("../teller/services/keep-alive");
+const errorLog = require("../teller/services/error-log");
+const uptime = require("../teller/services/uptime");
+const jobHealth = require("../teller/services/job-health");
+
+// In-app error log (roadmap T1.4): every console.error from here on — both
+// sub-apps, the shell, unhandled rejections — is also recorded, grouped and
+// shown in Perfin → Settings → Sync Health. Installed before the sub-apps load
+// so their boot errors count; written to the database once migrations ran.
+errorLog.install();
 
 const app = express();
 app.set("trust proxy", 1);
@@ -163,6 +172,12 @@ app.get("/android-chrome-512x512.png", sendShellIcon("android-chrome-512x512.png
 // touch the DB so a brief DB blip doesn't surface here as a false negative.
 // Mounted before requireAuth.
 app.get("/health", (_req, res) => res.json({ ok: true }));
+
+// Database-backed probe for an uptime monitor (roadmap T1.4): SELECT 1 on both
+// databases (3s each), cached 60s, 200 / 503 with yes/no fields only. Public
+// like /health. On Render + Neon monitor /health instead — probing the database
+// every few minutes keeps Neon awake (teller/services/uptime.js).
+app.get("/health/deep", uptime.deepHealthHandler({ perfinPool: perfin.pool, persistentPool: persistent.pool }));
 
 // Bill-calendar iCalendar feed — public route with its own dedicated token,
 // because calendar apps (iOS Calendar, Google Calendar) fetch subscription
@@ -309,6 +324,10 @@ async function start() {
   await perfin.start(perfin.app, { standalone: false });
   console.log("Starting Per-sistant (embedded)…");
   await persistent.start({ standalone: false });
+  // Both apps' migrations have run, so app_errors exists: start writing the
+  // error log, and the optional uptime heartbeat (HEARTBEAT_URL).
+  errorLog.start({ pool: perfin.pool });
+  uptime.startHeartbeat({ failingJobs: jobHealth.failingJobs });
 
   const PORT = parseInt(process.env.SHELL_PORT || process.env.PORT || "3000", 10);
   const server = app.listen(PORT, "0.0.0.0", () => {
@@ -329,8 +348,11 @@ async function start() {
     console.log(`\n${signal} received — shutting down gracefully…`);
     try { perfin.stopBackgroundJobs(); } catch (err) { console.error("Perfin job stop error:", err.message); }
     try { persistent.stopJobs(); } catch (err) { console.error("Per-sistant cron stop error:", err.message); }
+    uptime.stopHeartbeat();
+    errorLog.stop();
     server.close(async () => {
       try {
+        await errorLog.flush({ notify: false }); // keep the last minute's errors
         await perfin.pool.end().catch(() => null);
         await persistent.pool.end().catch(() => null);
         console.log("Database pools closed.");

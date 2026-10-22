@@ -66,9 +66,9 @@ const KEEP_TABLES = [
   "push_subscriptions", "user_settings",
 ];
 
-// Never touched: migration bookkeeping, scheduler heartbeats, and the S&P 500
-// close cache (market data, not the user's).
-const UNTOUCHED_TABLES = ["schema_migrations", "job_runs", "benchmark_prices"];
+// Never touched: migration bookkeeping, scheduler heartbeats, the S&P 500
+// close cache (market data, not the user's) and the server error log.
+const UNTOUCHED_TABLES = ["schema_migrations", "job_runs", "benchmark_prices", "app_errors"];
 
 let pool = null;
 

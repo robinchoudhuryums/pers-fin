@@ -62,6 +62,10 @@ const memoryResults = new Map();
 // job_name → the tick time last written, so a flush only writes what changed
 // (GET /api/data-health flushes on every dashboard load).
 const flushedTicks = new Map();
+// job_name → the latest outcome, kept across flushes (memoryResults is cleared
+// once written). The uptime heartbeat (services/uptime.js) reads it without a
+// database call, so a job whose last run failed reports /fail.
+const latestOutcomes = new Map();
 
 function tick(jobName) {
   memoryTicks.set(jobName, Date.now());
@@ -70,10 +74,17 @@ function tick(jobName) {
 // Record how a job's run went. Call it only when the body actually ran — a
 // gated skip (user away, not due, disabled) is neither a success nor a failure.
 function result(jobName, { ok = true, error = null } = {}) {
-  memoryResults.set(jobName, {
+  const outcome = {
     status: ok ? "ok" : "error",
     error: ok ? null : String(error || "failed").slice(0, 300),
-  });
+  };
+  memoryResults.set(jobName, outcome);
+  latestOutcomes.set(jobName, outcome);
+}
+
+// The jobs whose most recent run in this process failed (no database call).
+function failingJobs() {
+  return [...latestOutcomes].filter(([, o]) => o.status === "error").map(([name]) => name).sort();
 }
 
 function thresholdMs(jobName) {
@@ -181,6 +192,7 @@ async function checkMissedJobs(pool, { sendToAll } = {}) {
 module.exports = {
   tick,
   result,
+  failingJobs,
   flush,
   checkMissedJobs,
   thresholdMs,
@@ -188,5 +200,6 @@ module.exports = {
   // exported for tests
   _memoryTicks: memoryTicks,
   _memoryResults: memoryResults,
+  _latestOutcomes: latestOutcomes,
   _flushedTicks: flushedTicks,
 };

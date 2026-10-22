@@ -384,6 +384,10 @@
       <div class="setting-control"><button class="btn" id="operator-checks-btn">Check now</button></div>
     </div>
     <div id="operator-checks-body" style="font-size:13px;color:var(--text-muted);">Loading…</div>
+    <div class="setting-row" id="recent-errors" style="margin-top:12px;">
+      <div class="setting-info"><div class="name">Recent errors</div><div class="desc">Server errors the app recorded, grouped by kind (both apps). Resolve one to hide it until it happens again. Kept for 90 days.</div></div>
+    </div>
+    <div id="recent-errors-body" style="font-size:13px;color:var(--text-muted);">Loading…</div>
   </div>
 
   <div class="section"><h2>Google Sheets Auto-Sync</h2>
@@ -1532,6 +1536,39 @@
       }).join('') + '</ul>';
       el.innerHTML = out;
     }
+    // Recent errors (roadmap T1.4): GET /api/errors, newest first, with Resolve.
+    async function loadRecentErrors() {
+      var el = document.getElementById('recent-errors-body');
+      if (!el) return;
+      try {
+        var res = await apiFetch('/api/errors?limit=20');
+        if (!(await writeOk(res, 'Recent errors'))) { el.textContent = 'Unavailable'; return; }
+        var list = (await res.json()).errors || [];
+        if (!list.length) { el.textContent = 'No unresolved server errors.'; return; }
+        el.innerHTML = '<ul style="margin:6px 0;padding-left:0;list-style:none;">' + list.map(function (e) {
+          return '<li style="margin:8px 0;">'
+            + '<span style="color:var(--red);" aria-hidden="true">●</span> '
+            + '<strong>' + esc(e.source) + '</strong> — ' + esc(e.message)
+            + '<div style="font-size:12px;margin-left:16px;">' + esc(String(e.count)) + '× · last ' + esc(new Date(e.last_seen).toLocaleString())
+            + ' · first ' + esc(new Date(e.first_seen).toLocaleString())
+            + ' <button class="btn" data-resolve-error="' + esc(e.fingerprint) + '" style="margin-left:8px;">Resolve</button></div>'
+            + (e.sample && e.sample !== e.message ? '<details style="margin-left:16px;font-size:12px;"><summary>Details</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere;">' + esc(e.sample) + '</pre></details>' : '')
+            + '</li>';
+        }).join('') + '</ul>';
+      } catch (e) { el.textContent = 'Unavailable'; }
+    }
+    (function () {
+      var el = document.getElementById('recent-errors-body');
+      if (!el) return;
+      el.addEventListener('click', async function (ev) {
+        var btn = ev.target.closest('[data-resolve-error]');
+        if (!btn) return;
+        btn.disabled = true;
+        var res = await apiFetch('/api/errors/' + encodeURIComponent(btn.getAttribute('data-resolve-error')) + '/resolve', { method: 'POST' });
+        if (await writeOk(res, 'Resolve error')) { showMsg('Resolved — it will reappear if it happens again.', true); loadRecentErrors(); }
+        else btn.disabled = false;
+      });
+    })();
     async function loadOperatorChecks(refresh) {
       var el = document.getElementById('operator-checks-body');
       try {
@@ -1612,6 +1649,6 @@
     })();
 
     checkPushStatus();
-    loadSettings(); loadInsights(); loadUsageHistory(); loadCatStatus(); loadCatAccuracy(); loadBiometricCredentials(); loadDataHealth(); loadOperatorChecks(false);
+    loadSettings(); loadInsights(); loadUsageHistory(); loadCatStatus(); loadCatAccuracy(); loadBiometricCredentials(); loadDataHealth(); loadOperatorChecks(false); loadRecentErrors();
   </script>
 </body></html>

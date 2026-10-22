@@ -180,7 +180,7 @@ describe("ST4 — local and Knowledge checks", () => {
     assert.equal(c["local:timezone"].status, "info");
     assert.equal(c["local:push"].status, "info");
     assert.equal(c["local:calendar-feed"].status, "info");
-    const good = byId(oc.localChecks({ TOKEN_ENCRYPTION_PASSPHRASE: "p", SHELL_PIN: "123456", APP_TIMEZONE: "America/New_York", VAPID_PUBLIC_KEY: "a", VAPID_PRIVATE_KEY: "b", CALENDAR_FEED_TOKEN: "c" }));
+    const good = byId(oc.localChecks({ TOKEN_ENCRYPTION_PASSPHRASE: "p", SHELL_PIN: "123456", APP_TIMEZONE: "America/New_York", VAPID_PUBLIC_KEY: "a", VAPID_PRIVATE_KEY: "b", CALENDAR_FEED_TOKEN: "c", HEARTBEAT_URL: "https://hc-ping.com/x" }));
     assert.deepEqual(Object.values(good).filter((x) => x.status !== "ok").map((x) => x.id), []);
     assert.equal(byId(oc.localChecks({}))["local:shell-pin"], undefined, "no SHELL_PIN (standalone) → no PIN check");
   });

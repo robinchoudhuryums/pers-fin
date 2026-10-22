@@ -5,6 +5,7 @@
 const express = require("express");
 const router = express.Router();
 const { pool, ENCRYPTION_PASSPHRASE } = require("../services/database");
+const errorLog = require("../services/error-log");
 const { INSIGHT_MODULES } = require("../data/reference-data");
 const { csvText, csvDate } = require("../services/csv-export");
 const operatorChecksService = require("../services/operator-checks");
@@ -481,6 +482,15 @@ router.get("/api/data-health", async (req, res) => {
       }
     } catch (e) { /* job_runs not migrated yet — omit */ }
 
+    // Server errors (roadmap T1.4): unresolved errors from the last 24h in the
+    // in-app error log. The shell flushes it every minute; flush first so a
+    // just-logged error counts.
+    try {
+      await errorLog.flush();
+      const n = await errorLog.recentUnresolvedCount(pool, 24);
+      if (n > 0) issues.push({ severity: "warning", message: `${n} server error(s) in the last 24 hours — see Settings → Sync Health → Recent errors.`, link: "/settings#recent-errors" });
+    } catch (e) { console.error("data-health error-log read failed:", e.message); }
+
     // Operator state (cycle-7 F14 → G1 / ST4): the operator checks — the
     // compromised Teller cert (F14 used to raise it here directly), disabled or
     // failing backstop workflows, no recent backup, missing workflow secrets, a
@@ -522,6 +532,32 @@ router.get("/api/data-health", async (req, res) => {
 // Settings → Sync Health. Waits for the GitHub checks (cached 6h; ?refresh=1
 // forces a re-read). Read-only: no secret value is requested or returned, and
 // the GitHub token never appears in the response.
+// GET /api/errors — the in-app error log (roadmap T1.4) for Settings → Sync
+// Health → Recent errors: unresolved errors, newest first (?all=1 includes
+// resolved ones). The buffer is flushed first so the list is current.
+router.get("/api/errors", async (req, res) => {
+  try {
+    await errorLog.flush();
+    const errors = await errorLog.listErrors(pool, { limit: req.query.limit, includeResolved: req.query.all === "1" });
+    res.json({ errors });
+  } catch (err) {
+    console.error("errors list failed:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// POST /api/errors/:fingerprint/resolve — hide an error until it happens again.
+router.post("/api/errors/:fingerprint/resolve", async (req, res) => {
+  try {
+    const r = await errorLog.resolveError(pool, req.params.fingerprint);
+    if (!r.ok) return res.status(r.status).json({ error: r.error });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("error resolve failed:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
 router.get("/api/operator-checks", async (req, res) => {
   try {
     const result = await operatorChecksService.getOperatorChecks({

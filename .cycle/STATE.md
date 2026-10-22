@@ -10,7 +10,7 @@ to the "none in progress" state.
 ## Current Cycle
 
 Cycle: 7
-Phase: reflect
+Phase: implement
 Scope: broad (Oct 2026 broad scan — all non-frozen subsystems + cycle-6 policy responses)
 Updated: 2026-10-22
 
@@ -18,7 +18,22 @@ Updated: 2026-10-22
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Cycle 7 — expansion Batch 20 DONE** on branch `claude/sweet-ritchie-f9d8ah`
+- **Status:** **Post-cycle-7 roadmap — T1.4 Batch A DONE** on branch `claude/sweet-ritchie-f9d8ah`
+  (2026-10-22, in PR robinchoudhuryums/pers-fin#133). Roadmap Tier 1 work after the cycle-7 reflect:
+  T1.4 Batch A (error log + uptime) done; T1.5 Batch B (Perfin quick wins: charts redraw after
+  a sync, Budgets month picker + other_months, editable rename rules) and Batch C (Per-sistant:
+  attachments on send, failed-email error + Retry, AI routes 501 without a key) are next, then
+  the Seams & Invariants audit (counter at 3). Block:
+  `.cycle/blocks/7-roadmap-t1-batchA-broad-implement.md`.
+  - **Completed:** in-app error log (shell console.error wrapper → teller/services/error-log.js →
+    app_errors; Settings → Sync Health → Recent errors + Resolve; data-health warning; ≤5
+    notifications/day) and uptime (public GET /health/deep; optional HEARTBEAT_URL on a 30-min
+    in-memory tick — not the activity-gated watchdog; Operator Checks info; runbook Monitoring).
+  - **Decisions:** in-app error log only, no Sentry; heartbeat on its own tick (the watchdog is
+    activity-gated → false alarms while away).
+  - **Follow-ons:** a permanent Mute for benign errors; standalone apps don't record errors.
+  - **Where I left off:** Batch A committed; start `/broad-implement Batch B` next.
+- **Previous status:** **Cycle 7 — expansion Batch 20 DONE** on branch `claude/sweet-ritchie-f9d8ah`
   (2026-10-21). Browser quality (G2 remaining) + the Per-sistant client kit (ST3), from
   `.cycle/plan-cycle7-expansion.md`. Block: `.cycle/blocks/7-batch20-broad-implement.md`.
   Cycle 7's planned work (scan Batches 1–13, deferred 14–16, expansion 17–20) is complete.

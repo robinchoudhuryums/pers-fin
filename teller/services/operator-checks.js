@@ -73,6 +73,11 @@ function localChecks(env = process.env) {
   if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY) {
     checks.push({ id: "local:push", label: "Push notifications", status: "info", detail: "VAPID keys aren't set, so alerts reach the in-app bell only.", fix: "npx web-push generate-vapid-keys; set VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY." });
   }
+  if (!require("./uptime").heartbeatUrl(env)) {
+    checks.push({ id: "local:heartbeat", label: "Uptime heartbeat", status: "info",
+      detail: "HEARTBEAT_URL isn't set, so nothing outside the app notices if it stops running or a scheduled job keeps failing.",
+      fix: "Create a check at healthchecks.io (period 1 hour, grace 1 hour) and set HEARTBEAT_URL to its ping URL — on an always-on server, or with keep-alive on (a sleeping host stops pinging)." });
+  }
   if (!env.CALENDAR_FEED_TOKEN) {
     checks.push({ id: "local:calendar-feed", label: "Calendar feed", status: "info", detail: "CALENDAR_FEED_TOKEN isn't set, so the /calendar.ics bill feed is off.", fix: null });
   }

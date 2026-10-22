@@ -404,6 +404,21 @@ $ docker compose exec -T db dropdb -U postgres drill && rm dumps/drill.dump
 `persistent` on a fresh stack: `docker compose down -v`, `up -d db`, then step 8d
 with the decrypted files.
 
+## Monitoring
+
+Three layers, none of which needs anything installed on the server:
+
+| What | How | Catches |
+|---|---|---|
+| **Uptime monitor** | A free UptimeRobot / Better Stack HTTP monitor on `https://<DOMAIN>/health/deep`, every 5 minutes, alerting by email. It answers 200 only when both databases respond (yes/no fields only, cached 60 s). | The server, Caddy or a database is down |
+| **Heartbeat** | A free healthchecks.io check (period 1 hour, grace 1 hour); put its ping URL in `HEARTBEAT_URL` in `app.env`. The app pings it every 30 minutes, and `<url>/fail` while a scheduled job's last run failed. | The app stopped or hung; a scheduled job keeps failing |
+| **Recent errors** | Built in: Perfin → Settings → Sync Health → Recent errors, plus a notification for each new kind of error (at most 5 a day). | Errors inside the app |
+
+While the app is still on Render + Neon, point the uptime monitor at the shallow
+`/health` instead: probing the databases every few minutes would keep Neon from
+suspending and use up its free compute hours. Leave `HEARTBEAT_URL` unset there
+unless keep-alive is on — the pings stop whenever Render puts the app to sleep.
+
 ## Routine upkeep
 
 | When | What |
