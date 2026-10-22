@@ -154,6 +154,13 @@ Subscriptions / Tax Deductions / Recurring Transfers / Per-month archives / Watc
 
 **Fly.io (~$2/mo):** see `fly.toml` — set secrets via `fly secrets set`.
 
+**Single VPS (always on, own Postgres — draft, not yet live):** `deploy/vps/` —
+Docker Compose with the app, Postgres + pgvector and Caddy (automatic HTTPS), a
+deploy workflow (`.github/workflows/deploy-vps.yml`, inert until the
+`VPS_DEPLOY_ENABLED` repository variable is `true`), a nightly encrypted
+on-server backup and the Render + Neon → VPS migration runbook
+(`deploy/vps/RUNBOOK.md`).
+
 **Docker:**
 ```bash
 docker compose up --build

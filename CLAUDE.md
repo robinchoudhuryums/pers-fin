@@ -1130,6 +1130,22 @@ shell/
   `/cycle-resume`, `/cycle-init`), and maintenance (`/test-sync`,
   `/sync-docs`, `/sync-commands`, `/setup-cycle`, `/systems-map`, `/roadmap`).
   Summary blocks for fresh-session consumption land in `.cycle/blocks/`.
+- `deploy/vps/` — DRAFT single-VPS deployment (not live; the app still runs on
+  Render + Neon): `docker-compose.yml` (app from GHCR + `pgvector/pgvector` +
+  Caddy; Postgres unpublished, the app runs `PGSSLMODE=disable` on the compose
+  network), `postgres-init/01-databases.sh` (the `app` role, `perfin` +
+  `persistent` databases, pgcrypto + vector as superuser), `Caddyfile`,
+  `.env.example` / `app.env.example` (compose settings vs the app's environment —
+  `RENDER_EXTERNAL_URL` must be set by hand off Render), `deploy.sh` (the
+  forced-command target of `.github/workflows/deploy-vps.yml`: validates the tag,
+  pulls, restarts, waits for the image healthcheck, rolls back to the previous
+  tag on failure), `backup.sh` (nightly gpg-AES256 dumps in db-backup.yml's
+  format, verified with `pg_restore --list`, rclone offsite, healthchecks ping)
+  and `RUNBOOK.md` (harden → rehearse → cutover from Neon with `pg_dump` /
+  `pg_restore -L` minus extension entries, `--role=app` → verify counts + token
+  decryption → repoint → rollback → decommission). On a VPS, `db-backup.yml`
+  can't reach the database, so Operator Checks would report it disabled — a
+  code follow-on.
 - `Dockerfile`, `fly.toml`, `render.yaml` — Deployment configs (the Dockerfile
   installs all workspaces and boots `node shell/index.js`; render.yaml uses
   `npm install` + `npm start` and bypasses the Dockerfile). The Dockerfile sets
@@ -5405,7 +5421,7 @@ SK5 | Temporal validity | Subsystem: Knowledge / RAG
 - n8n Workflows — n8n-workflows/*.json, superseded by in-process scheduled tasks in teller/startup.js. Unfreeze only if scheduling moves back out-of-process.
 
 ### Deploy Command
-Platform, Shell & Auth: Render auto-deploys on push to `main` (configured in the Render dashboard, not via CLI). Alt: `fly deploy` (Dockerfile-based).
+Platform, Shell & Auth: Render auto-deploys on push to `main` (configured in the Render dashboard, not via CLI). Alt: `fly deploy` (Dockerfile-based). Planned (not live): a single VPS — `.github/workflows/deploy-vps.yml` builds the image to GHCR after CI passes on `main` and runs `deploy/vps/deploy.sh` over a forced-command SSH key; inert until the `VPS_DEPLOY_ENABLED` repository variable is `true` (runbook: `deploy/vps/RUNBOOK.md`).
 Sheets & External Export: Apps Script side deploys via clasp — `clasp push` from apps-script/, then Apps Script editor → Deploy → New version. (Server-side sheets-sync.js ships with the main Render deploy.)
 
 ### Cycle Rotation Plan

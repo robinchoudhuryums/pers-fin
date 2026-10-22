@@ -1,0 +1,21 @@
+# Caddy — HTTPS in front of the unified shell. Certificates come from Let's
+# Encrypt automatically (DOMAIN must already point at this server, and ports
+# 80 + 443 must be open). The app sets its own security headers (helmet), so
+# none are added here. All three apps run with `trust proxy` = 1, which matches
+# this single proxy hop: req.secure and the client IP (rate limiters, the PIN
+# lockout) come from Caddy's X-Forwarded-* headers.
+{
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy app:3000 {
+		# A cold start runs both apps' migrations; give it a moment.
+		lb_try_duration 30s
+	}
+	log {
+		output stdout
+		format console
+	}
+}
