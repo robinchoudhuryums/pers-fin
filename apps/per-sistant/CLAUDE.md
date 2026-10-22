@@ -196,7 +196,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **Internal error handling**: route 500s go through `errors.serverError(res, err)`, which logs the real error server-side and returns a generic `"An internal error occurred."` — raw DB/constraint/internal text is never echoed to the client (PB-2, matching Perfin's convention).
 - **Event Delegation**: All pages use `bindEvents()` for static elements and `onDelegate()` for dynamic content — zero inline `onclick`/`onchange` attributes; enables `script-src-attr: 'none'` CSP
 - **Constant-Time Auth**: `crypto.timingSafeEqual` for password/PIN comparison; PIN pad shows fixed 8-dot display regardless of actual PIN length (a PIN longer than 8 digits can be typed — the pad stops at 63, F124)
-- **Keep-Alive**: Self-ping system to prevent Render free tier from sleeping (14-minute interval, 10 s fetch timeout — PB-19). Embedded under the shell the ping is the shell's and reads PERFIN's keep-alive settings, so the Settings section hides its controls (kept in the DOM for the script) and points to Perfin → Settings → Keep-Alive (PUI-8).
+- **Keep-Alive**: Self-ping system to prevent Render free tier from sleeping (14-minute interval, 10 s fetch timeout — PB-19). Off on an always-on host (`ALWAYS_ON=true` — `startKeepAlive` returns false and `/api/keep-alive-schedule` reports disabled); the ping target is `PUBLIC_URL`, else `RENDER_EXTERNAL_URL`. Embedded under the shell the ping is the shell's and reads PERFIN's keep-alive settings, so the Settings section hides its controls (kept in the DOM for the script) and points to Perfin → Settings → Keep-Alive (PUI-8).
 
 ## Known Open Issues
 - Quick Add's due date uses `toISOString()` (UTC): "tomorrow" typed late in the evening

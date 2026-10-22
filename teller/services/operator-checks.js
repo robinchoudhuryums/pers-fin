@@ -19,6 +19,7 @@
 // pushes one notification when the set of failing checks changes.
 
 const githubOps = require("./github-ops");
+const hosting = require("./hosting");
 
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 let githubCache = null;      // { at, result }
@@ -108,7 +109,30 @@ async function knowledgeCheck(persistentPool) {
   }
 }
 
-// opts: { persistentPool, force, cachedOnly, env, fetchImpl }
+// With SERVER_BACKUPS=true the backups are taken on the server by
+// deploy/vps/backup.sh, which stamps user_settings.last_backup_at after each
+// verified run. Same 36h limit as the GitHub backup check; needs no GitHub
+// token. Omitted when SERVER_BACKUPS is off (the GitHub check covers backups).
+async function serverBackupCheck(pool, env = process.env, now = Date.now()) {
+  if (!hosting.serverBackups(env)) return null;
+  const id = "local:server-backup";
+  const label = "Database backup";
+  const fix = "On the server: run /opt/pers-fin/backup.sh by hand and check its log, and that /etc/cron.d/pers-fin-backup exists (deploy/vps/RUNBOOK.md → Backups).";
+  if (!pool) return { id, label, status: "unknown", detail: "Couldn't read the backup record (no database connection).", fix: null };
+  try {
+    const r = await pool.query("SELECT last_backup_at FROM user_settings WHERE id = 1");
+    const at = r.rows[0] && r.rows[0].last_backup_at;
+    if (!at) return { id, label, status: "fail", detail: "No on-server backup has been recorded yet — there may be no backup of either database.", fix };
+    const age = now - new Date(at).getTime();
+    const hours = Math.round(age / 3600000);
+    if (age > githubOps.BACKUP_MAX_AGE_MS) return { id, label, status: "fail", detail: `The last on-server backup is ${hours}h old.`, fix };
+    return { id, label, status: "ok", detail: `Last on-server backup ${hours}h ago.`, fix: null };
+  } catch (e) {
+    return { id, label, status: "unknown", detail: "Couldn't read the backup record: " + e.message, fix: null };
+  }
+}
+
+// opts: { pool, persistentPool, force, cachedOnly, env, fetchImpl }
 async function getOperatorChecks(opts = {}) {
   const env = opts.env || process.env;
   let gh = githubCache;
@@ -122,6 +146,8 @@ async function getOperatorChecks(opts = {}) {
     ? { configured: gh.result.configured, ok: gh.result.ok, reason: gh.result.reason, checked_at: new Date(gh.at).toISOString(), pending: false }
     : { configured: githubOps._config(env).configured, ok: false, reason: null, checked_at: null, pending: true };
   const checks = [...(gh ? gh.result.checks : []), ...localChecks(env)];
+  const sb = await serverBackupCheck(opts.pool, env);
+  if (sb) checks.push(sb);
   const k = await knowledgeCheck(opts.persistentPool);
   if (k) checks.push(k);
   return { checked_at: new Date().toISOString(), github, checks };
@@ -197,6 +223,7 @@ module.exports = {
   notifyIfChanged,
   localChecks,
   knowledgeCheck,
+  serverBackupCheck,
   CACHE_TTL_MS,
   // exported for tests
   _failingSignature: failingSignature,

@@ -67,11 +67,12 @@ function setEmbeddedPersistentPool(p) { _embeddedPersistentPool = p; }
 function getEmbeddedPersistentPool() { return _embeddedPersistentPool; }
 
 // The absolute Perfin dashboard URL for links in emails, or null when the
-// public address isn't known. RENDER_EXTERNAL_URL is set by Render; under the
-// shell (the embedded pool is wired) Perfin lives at /perfin (cycle-7 F72).
+// public address isn't known — PUBLIC_URL, else Render's RENDER_EXTERNAL_URL
+// (services/hosting.js); under the shell (the embedded pool is wired) Perfin
+// lives at /perfin (cycle-7 F72).
 function perfinDashboardUrl() {
-  const base = String(process.env.RENDER_EXTERNAL_URL || "").replace(/\/+$/, "");
-  if (!/^https?:\/\//i.test(base)) return null;
+  const base = require("../services/hosting").publicUrl();
+  if (!base) return null;
   return base + (_embeddedPersistentPool ? "/perfin" : "") + "/dashboard";
 }
 

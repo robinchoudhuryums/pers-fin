@@ -657,9 +657,15 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1832 tests as of latest); use
+  Perfin and Per-sistant test files (1845 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1832 tests across 89 test files (incl.
+  Current count: 1845 tests across 90 test files (incl.
+  `tests/vps-hosting.test.js` — the VPS-move hosting facts: PUBLIC_URL over
+  RENDER_EXTERNAL_URL, ALWAYS_ON (no keep-alive ping, schedule reports disabled,
+  Settings note), SERVER_BACKUPS (no GitHub backup check, the Database Backup /
+  Keep Alive workflows read as "not needed" info, their secrets not required, the
+  on-server backup check on user_settings.last_backup_at, backup.sh's stamp after
+  the verified loop);
   `apps/per-sistant/tests/scan-oct-batch20.test.js` — the cycle-7 expansion Batch 20 pin
   (ST3): `withPending` run in a vm from the EMITTED client bundle (busy state + restore,
   single-flight per key, restore on a throw, button lists / null / an already-disabled
@@ -1136,16 +1142,18 @@ shell/
   network), `postgres-init/01-databases.sh` (the `app` role, `perfin` +
   `persistent` databases, pgcrypto + vector as superuser), `Caddyfile`,
   `.env.example` / `app.env.example` (compose settings vs the app's environment —
-  `RENDER_EXTERNAL_URL` must be set by hand off Render), `deploy.sh` (the
+  the VPS template sets `PUBLIC_URL`, `ALWAYS_ON=true` and `SERVER_BACKUPS=true`
+  — `services/hosting.js`), `deploy.sh` (the
   forced-command target of `.github/workflows/deploy-vps.yml`: validates the tag,
   pulls, restarts, waits for the image healthcheck, rolls back to the previous
   tag on failure), `backup.sh` (nightly gpg-AES256 dumps in db-backup.yml's
   format, verified with `pg_restore --list`, rclone offsite, healthchecks ping)
   and `RUNBOOK.md` (harden → rehearse → cutover from Neon with `pg_dump` /
   `pg_restore -L` minus extension entries, `--role=app` → verify counts + token
-  decryption → repoint → rollback → decommission). On a VPS, `db-backup.yml`
-  can't reach the database, so Operator Checks would report it disabled — a
-  code follow-on.
+  decryption → repoint → rollback → decommission). `backup.sh` stamps
+  `user_settings.last_backup_at` after each verified run; with `SERVER_BACKUPS`
+  Operator Checks reads that stamp (no GitHub token needed) and lists the
+  Database Backup / Keep Alive workflows as "not needed" instead of warning.
 - `Dockerfile`, `fly.toml`, `render.yaml` — Deployment configs (the Dockerfile
   installs all workspaces and boots `node shell/index.js`; render.yaml uses
   `npm install` + `npm start` and bypasses the Dockerfile). The Dockerfile sets
@@ -2056,7 +2064,7 @@ shell/
   an `insights_generated` webhook to Per-sistant with `{ subject, html_body, plain_text }`.
   HTML email is pre-rendered in Perfin with app-matching dark theme (gold/amber accents,
   Arc Reactor branding). Its "Open Dashboard" link is the real dashboard URL
-  (`perfinDashboardUrl()` in routes/persistent.js: `RENDER_EXTERNAL_URL` + `/perfin` under the
+  (`perfinDashboardUrl()` in routes/persistent.js: `PUBLIC_URL` / `RENDER_EXTERNAL_URL` + `/perfin` under the
   shell) and is left out when that address isn't known (cycle-7 F72 — it was `href="#"`). Includes audit findings section if critical issues detected.
   Settings → AI Insights → **Insight Emails** (`user_settings.insight_emails_enabled`,
   default on) turns it off — `generateInsights` then skips the send (cycle-7 F81).
@@ -2772,7 +2780,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1832 tests passing across 89 test files (Perfin 1298 + Per-sistant 534), plus the real-Postgres route contract suite (152 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 1845 tests passing across 90 test files (Perfin 1311 + Per-sistant 534), plus the real-Postgres route contract suite (152 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -3438,7 +3446,12 @@ enums), `debt_baseline_amount` (a finite number ≥ 0 or null),
 - `VAPID_EMAIL` — contact `mailto:` URL (default `mailto:admin@perfin.app`)
 
 ### Keep-alive (Perfin / shell)
-- `RENDER_EXTERNAL_URL` — auto-set by Render; the keep-alive self-ping uses it as the target URL when present, falling back to `http://localhost:PORT` for local runs. The insight email's "Open Dashboard" link is built from it too (no link without it — cycle-7 F72). Operators don't set this manually.
+- `RENDER_EXTERNAL_URL` — auto-set by Render; the keep-alive self-ping uses it as the target URL when present, falling back to `http://localhost:PORT` for local runs. The insight email's "Open Dashboard" link is built from it too (no link without it — cycle-7 F72). Operators don't set this manually on Render.
+
+### Hosting (`teller/services/hosting.js` — set on a self-hosted server, see `deploy/vps/`)
+- `PUBLIC_URL` — the public https address; wins over `RENDER_EXTERNAL_URL` (which still works when this is unset). Used for the keep-alive target and the insight email's dashboard link.
+- `ALWAYS_ON` — `true` when the host never sleeps: neither app starts the keep-alive ping (`startKeepAlive` returns false), both `/api/keep-alive-schedule` endpoints report `enabled: false` (so `keep-alive.yml` stops pinging), Settings → Keep-Alive shows a note instead of its controls (`GET /api/settings` returns `always_on`), and Operator Checks lists the Keep Alive workflow as "not needed" (info).
+- `SERVER_BACKUPS` — `true` when `deploy/vps/backup.sh` takes the backups: Operator Checks drops the GitHub backup check and the Database Backup workflow's secrets, lists that workflow as "not needed", and adds a `local:server-backup` check on `user_settings.last_backup_at` (fail when missing or older than 36h; needs no GitHub token).
 
 ### Plaid (Perfin — investments + transactions for banks Teller doesn't cover)
 - `PLAID_CLIENT_ID`, `PLAID_SECRET_SANDBOX|DEV|PROD` — Plaid API credentials
@@ -3643,6 +3656,9 @@ standalone-mode fallback if either app is run on its own Render service.
   F81): when false, an insight run doesn't send its `insights_generated` email.
   Settings → AI Insights toggle; PATCH takes a strict boolean (400 otherwise).
   Auto-migrated.
+- `user_settings.last_backup_at TIMESTAMPTZ` (VPS move): stamped by `deploy/vps/backup.sh`
+  after each verified nightly backup; read by Operator Checks' on-server backup check
+  when `SERVER_BACKUPS=true`. Auto-migrated.
 - `user_settings.operator_checks_signature TEXT` (cycle-7 G1 + ST4): the sorted ids of
   the warn / fail operator checks last notified — `notifyIfChanged` pushes only when
   it changes. Auto-migrated.

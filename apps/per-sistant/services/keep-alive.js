@@ -32,12 +32,21 @@ function isWithinActiveHours(startHour, endHour, timezone) {
   }
 }
 
-function startKeepAlive(port) {
-  if (keepAliveInterval) return;
-  // Render sets RENDER_EXTERNAL_URL automatically; fall back to localhost
-  const pingUrl = process.env.RENDER_EXTERNAL_URL
-    ? `${process.env.RENDER_EXTERNAL_URL}/api/health`
-    : `http://localhost:${port}/api/health`;
+// An always-on host (ALWAYS_ON=true) never sleeps, so there is nothing to keep
+// awake. The public address is PUBLIC_URL, else Render's RENDER_EXTERNAL_URL
+// (the same rule as Perfin's teller/services/hosting.js). Returns true when
+// the ping was started.
+const alwaysOn = (env = process.env) => /^(1|true|yes|on)$/i.test(String(env.ALWAYS_ON || "").trim());
+function publicUrl(env = process.env) {
+  const raw = String(env.PUBLIC_URL || env.RENDER_EXTERNAL_URL || "").trim().replace(/\/+$/, "");
+  return /^https?:\/\/[^\s/]+/i.test(raw) ? raw : null;
+}
+
+function startKeepAlive(port, env = process.env) {
+  if (keepAliveInterval) return true;
+  if (alwaysOn(env)) return false;
+  const base = publicUrl(env);
+  const pingUrl = base ? `${base}/api/health` : `http://localhost:${port}/api/health`;
   const INTERVAL = 14 * 60 * 1000; // 14 minutes
   keepAliveInterval = setInterval(async () => {
     const config = await loadKeepAliveConfig();
@@ -52,6 +61,7 @@ function startKeepAlive(port) {
     }
   }, INTERVAL);
   keepAliveInterval.unref(); // Don't prevent process exit
+  return true;
 }
 
-module.exports = { loadKeepAliveConfig, isWithinActiveHours, startKeepAlive };
+module.exports = { loadKeepAliveConfig, isWithinActiveHours, startKeepAlive, alwaysOn, publicUrl };

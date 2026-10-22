@@ -330,7 +330,7 @@ describe("ST4 — routes and wiring", () => {
 
   it("the watchdog refreshes and notifies; Settings renders the list; the migration adds the signature column", () => {
     const startup = read("teller", "startup.js");
-    assert.match(startup, /operatorChecks\.getOperatorChecks\(\{\s*persistentPool: require\("\.\/routes\/persistent"\)\.getEmbeddedPersistentPool\(\),/);
+    assert.match(startup, /operatorChecks\.getOperatorChecks\(\{\s*pool,\s*persistentPool: require\("\.\/routes\/persistent"\)\.getEmbeddedPersistentPool\(\),/);
     assert.match(startup, /await operatorChecks\.notifyIfChanged\(pool, result, \{ sendToAll \}\)/);
     const view = read("teller", "views", "settings.ejs");
     assert.match(view, /id="operator-checks-btn"/);

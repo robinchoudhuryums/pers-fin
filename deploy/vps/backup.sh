@@ -7,7 +7,8 @@
 # applies unchanged: pg_dump custom format → gpg symmetric AES-256
 # (<db>-YYYY-MM-DD.dump.gpg). Each file is VERIFIED before it counts: decrypted
 # and read back with `pg_restore --list`. Then it is copied offsite with rclone
-# and old copies are pruned locally and remotely.
+# and old copies are pruned locally and remotely. The time of each verified run
+# is stamped in user_settings.last_backup_at, which Operator Checks reads.
 #
 # Settings come from /opt/pers-fin/.env (BACKUP_*). The passphrase lives in its
 # own root-only file; keep a copy OUTSIDE this server — the backups are
@@ -56,6 +57,13 @@ for db in perfin persistent; do
   echo "$(date -u +%FT%TZ) $db: $(du -h "$out" | cut -f1), $entries table entries"
 done
 CUR=""
+
+# Record the verified backup for Settings → Sync Health → Operator Checks
+# (SERVER_BACKUPS=true in app.env). A failed stamp doesn't fail the backup —
+# the check will just report it as missing until the next night's stamp.
+docker compose exec -T db psql -U postgres -d perfin -qc \
+  "UPDATE user_settings SET last_backup_at = now() WHERE id = 1" >/dev/null \
+  || echo "$(date -u +%FT%TZ) WARNING: couldn't record the backup time in user_settings" >&2
 
 find "$DIR" -name '*.dump.gpg' -mtime +"$KEEP" -delete
 find "$DIR" -name '*.partial' -delete

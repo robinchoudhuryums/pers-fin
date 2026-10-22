@@ -131,8 +131,12 @@ In `app.env`:
   `TOKEN_ENCRYPTION_PASSPHRASE`. A different passphrase can't decrypt any stored
   bank token, and every bank would need re-linking.
 - The two database URLs point at `db` (in the template) with `APP_DB_PASSWORD`.
-- `RENDER_EXTERNAL_URL=https://<DOMAIN>`. Render set it automatically; the
-  insight email's "Open Dashboard" link is built from it.
+- `PUBLIC_URL=https://<DOMAIN>`, `ALWAYS_ON=true` and `SERVER_BACKUPS=true`
+  (already in the template). Render set `RENDER_EXTERNAL_URL` automatically;
+  `PUBLIC_URL` replaces it (the insight email's "Open Dashboard" link is built
+  from it). `ALWAYS_ON` turns the keep-alive ping off. `SERVER_BACKUPS` makes
+  Settings → Sync Health → Operator Checks read the time `backup.sh` records,
+  and stop expecting the Database Backup workflow and its secrets.
 - Google Sheets: put the key file at `secrets/service-account-key.json`
   (`chmod 644`) and uncomment the `volumes:` block under `app` in
   `docker-compose.yml`.
@@ -309,7 +313,8 @@ $ docker compose logs -f caddy      # wait for "certificate obtained successfull
 - **Settings → Sync Health**: no `decryption_failed`, no new errors. Run
   **Sync now** (both providers) and **Sync Balances**; both succeed.
 - Dashboard numbers match what Render showed (net worth, this month's spending).
-- **Settings → Keep-Alive: turn it OFF.** The server never sleeps now.
+- Settings → Keep-Alive says the server is always on (`ALWAYS_ON`), with no
+  controls left to change.
 - Per-sistant **Knowledge** → status shows the vault and embeddings ready; run
   one **Reindex**.
 - Send yourself a **test notification** (Settings → Notifications).
@@ -345,9 +350,9 @@ re-doing, or a reverse dump/restore (step 8 with the roles swapped).
 1. Take one last Neon dump of each database (8c), encrypt it
    (`gpg --symmetric --cipher-algo AES256`) and keep it offsite.
 2. Delete the Render service, then the Neon project.
-3. `db-backup.yml` can't reach the new database. Disable it. Settings → Sync
-   Health → Operator Checks will then report the backup workflow as disabled
-   (a needed code follow-on: teach the check about on-server backups).
+3. Disable **Database Backup** and **Keep Alive** in GitHub → Actions. Neither
+   can do anything for this server, and Operator Checks lists both as "not
+   needed" (`SERVER_BACKUPS` / `ALWAYS_ON`) rather than warning.
 
 ---
 
@@ -368,6 +373,11 @@ $ sudo nano /opt/pers-fin/.env  # BACKUP_REMOTE=b2:pers-fin-backups
 
 Optionally create a free healthchecks.io check (daily, 2 h grace) and put its
 URL in `BACKUP_HEALTHCHECK_URL`. A missed or failed night then emails you.
+
+Each verified run is stamped in `user_settings.last_backup_at`. Settings →
+Sync Health → Operator Checks shows "Database backup" as failing until the first
+stamp and again whenever the newest one is more than 36 hours old. That check
+needs no GitHub token.
 
 **Schedule and first run:**
 

@@ -817,6 +817,9 @@ async function runMigrationsOnce() {
     // Cycle-7 G1 / ST4: the set of failing operator checks last notified, so a
     // persistent problem (no backups, a disabled backstop) notifies once.
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS operator_checks_signature TEXT");
+    // VPS move: deploy/vps/backup.sh stamps each verified nightly backup here;
+    // with SERVER_BACKUPS=true Operator Checks reads it (services/hosting.js).
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_backup_at TIMESTAMPTZ");
     // FIRE / runway projection assumptions (Goals page card). NULLs fall back
     // to defaults in GET /api/fire-projection (return 5%, withdrawal 4%,
     // spending derived from trailing months).

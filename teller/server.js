@@ -38,6 +38,7 @@ const morgan = require("morgan");
 const { pool, runMigrations } = require("./services/database");
 const { TELLER_APP_ID, TELLER_ENV } = require("./services/teller-api");
 const { startKeepAlive, getKeepAliveConfigCached } = require("./services/keep-alive");
+const hosting = require("./services/hosting");
 
 // --- Auth config ---
 const SESSION_PASSWORD = process.env.SESSION_PASSWORD;
@@ -370,7 +371,8 @@ app.get("/api/keep-alive-schedule", async (_req, res) => {
     // Cached (PSC-2) — the 14-minute probe must not query Neon each time.
     const config = await getKeepAliveConfigCached();
     res.json({
-      enabled: config.keep_alive_enabled,
+      // An always-on host needs no external ping either (services/hosting.js).
+      enabled: !hosting.alwaysOn() && !!config.keep_alive_enabled,
       start: config.keep_alive_start,
       end: config.keep_alive_end,
       timezone: config.keep_alive_timezone,

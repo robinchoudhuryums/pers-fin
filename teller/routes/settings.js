@@ -27,7 +27,9 @@ router.get("/api/settings", async (req, res) => {
     const defaults = { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true, anomaly_detection: true, seasonal_forecast: true, debt_optimizer: true, bill_negotiation: true, income_savings: true, tax_deductions: true, goal_tracking: true, recurring_transfers: true }, pyramid_data_source: "wellness", pyramid_color_mode: "single", debt_baseline_amount: null, sheets_auto_sync_enabled: false, sheets_auto_sync_interval: 'weekly', sheets_last_auto_sync: null, csv_reminder_days: 14, csv_reminder_enabled: true, dashboard_widgets: {pyramid:true,accounts:true,monthlySpend:true,categories:true,merchants:true,upcoming:true,forecast:true,charts:true,calendar:true,cashFlow:true,savingsRate:true,yoy:true}, auto_sync_enabled: false, auto_sync_interval_hours: 6, last_auto_sync_at: null, last_balance_sync_at: null, last_txn_sync_at: null, sync_notifications_enabled: true, ai_monthly_budget_cents: null, critical_alert_emails_enabled: false, insight_emails_enabled: true };
     const row = result.rows[0] || defaults;
     if (typeof row.insight_modules === "string") row.insight_modules = JSON.parse(row.insight_modules);
-    res.json({ ...defaults, ...row, embedded, available_modules: INSIGHT_MODULES });
+    // always_on (services/hosting.js): the host never sleeps, so Settings
+    // replaces the Keep-Alive controls with a note.
+    res.json({ ...defaults, ...row, embedded, always_on: require("../services/hosting").alwaysOn(), available_modules: INSIGHT_MODULES });
   } catch {
     res.json({ session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true, anomaly_detection: true, seasonal_forecast: true, debt_optimizer: true, bill_negotiation: true, income_savings: true, tax_deductions: true, goal_tracking: true, recurring_transfers: true }, pyramid_data_source: "wellness", pyramid_color_mode: "single", available_modules: INSIGHT_MODULES });
   }
@@ -488,6 +490,7 @@ router.get("/api/data-health", async (req, res) => {
     try {
       operatorChecks = await operatorChecksService.getOperatorChecks({
         cachedOnly: true,
+        pool,
         persistentPool: req.app.get("persistentPool") || null,
       });
       issues.push(...operatorChecksService.toIssues(operatorChecks));
@@ -523,6 +526,7 @@ router.get("/api/operator-checks", async (req, res) => {
   try {
     const result = await operatorChecksService.getOperatorChecks({
       force: req.query.refresh === "1",
+      pool,
       persistentPool: req.app.get("persistentPool") || null,
     });
     res.json(result);

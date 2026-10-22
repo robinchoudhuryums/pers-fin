@@ -28,22 +28,31 @@ const HOUR = 60 * 60 * 1000;
 // (GitHub delays scheduled runs, often by hours for the 14-minute keep-alive).
 // `critical` decides whether a DISABLED workflow is a fail or a warn — the
 // keep-alive ping and Job Radar refresh are optional features.
+// `notNeededWhen` names the hosting flag (services/hosting.js) under which the
+// workflow has no job to do: an always-on host needs no keep-alive ping, and a
+// server that backs itself up (deploy/vps/backup.sh) can't be reached by the
+// backup workflow anyway. Such a workflow reads as info, its secrets aren't
+// required, and the backup check moves to operator-checks' on-server check.
 const BACKSTOPS = [
   { file: "daily-sync.yml", label: "Daily Sync", cadenceMs: 24 * HOUR, critical: true,
     secrets: ["SERVER_URL", "API_KEY"] },
   { file: "weekly-reconcile.yml", label: "Weekly Reconcile", cadenceMs: 7 * 24 * HOUR, critical: true,
     secrets: ["SERVER_URL", "API_KEY"] },
   { file: "db-backup.yml", label: "Database Backup", cadenceMs: 24 * HOUR, critical: true,
-    secrets: ["NEON_DATABASE_URL", "BACKUP_ENCRYPTION_PASSPHRASE"], optionalSecrets: ["PERSISTENT_DATABASE_URL"] },
+    secrets: ["NEON_DATABASE_URL", "BACKUP_ENCRYPTION_PASSPHRASE"], optionalSecrets: ["PERSISTENT_DATABASE_URL"],
+    notNeededWhen: "SERVER_BACKUPS" },
   { file: "knowledge-reindex.yml", label: "Knowledge Reindex", cadenceMs: 12 * HOUR, critical: false,
     secrets: ["SERVER_URL", "API_KEY"] },
   { file: "keep-alive.yml", label: "Keep Alive", cadenceMs: 14 * 60 * 1000, critical: false,
-    secrets: ["SERVER_URL", "API_KEY"] },
+    secrets: ["SERVER_URL", "API_KEY"], notNeededWhen: "ALWAYS_ON" },
   { file: "job-radar.yml", label: "Job Radar Refresh", cadenceMs: 7 * 24 * HOUR, critical: false,
     secrets: ["SERVER_URL", "API_KEY"] },
 ];
 const BACKUP_MAX_AGE_MS = 36 * HOUR;
 const MIN_STALE_MS = 6 * HOUR;
+
+const { envFlag } = require("./hosting");
+const isNeeded = (def, env) => !(def.notNeededWhen && envFlag(env, def.notNeededWhen));
 
 function config(env = process.env) {
   const token = env.GITHUB_OPS_TOKEN ? String(env.GITHUB_OPS_TOKEN).trim() : "";
@@ -135,20 +144,34 @@ function backupCheck(successRuns, err, now) {
   return { id, label, status: "ok", detail: `Last successful backup ${ageHours(age)}h ago.`, fix: null };
 }
 
-function secretsCheck(names, err) {
+// A workflow this host doesn't need (notNeededWhen): info either way — enabled
+// it only spends Actions minutes, disabled is the right state.
+function notNeededCheck(wf, def) {
+  const why = def.notNeededWhen === "ALWAYS_ON"
+    ? "this server is always on (ALWAYS_ON), so nothing needs keeping awake"
+    : "backups run on the server (SERVER_BACKUPS — deploy/vps/backup.sh)";
+  const active = wf && (!wf.state || wf.state === "active");
+  return {
+    id: "workflow:" + def.file, label: "Workflow: " + def.label, status: "info",
+    detail: `Not needed: ${why}.` + (active ? " It is still enabled." : ""),
+    fix: active ? `GitHub → Actions → ${def.label} → "Disable workflow".` : null,
+  };
+}
+
+function secretsCheck(names, err, backstops = BACKSTOPS) {
   const id = "secrets:workflows";
   const label = "Workflow secrets";
   if (err) return { id, label, status: "unknown", detail: "Couldn't list the repository secrets: " + reasonFor(err), fix: err.status === 403 ? "Give the token the read-only \"Secrets\" repository permission." : null };
   const have = new Set(names);
   const missing = [];
-  for (const def of BACKSTOPS) {
+  for (const def of backstops) {
     for (const s of def.secrets) if (!have.has(s) && !missing.includes(s)) missing.push(s);
   }
   if (missing.length) {
-    const users = BACKSTOPS.filter((d) => d.secrets.some((s) => missing.includes(s))).map((d) => d.label);
+    const users = backstops.filter((d) => d.secrets.some((s) => missing.includes(s))).map((d) => d.label);
     return { id, label, status: "fail", detail: `Missing repository secret(s): ${missing.join(", ")} — needed by ${users.join(", ")}.`, fix: "GitHub → Settings → Secrets and variables → Actions → New repository secret." };
   }
-  const optional = BACKSTOPS.flatMap((d) => d.optionalSecrets || []).filter((s) => !have.has(s));
+  const optional = backstops.flatMap((d) => d.optionalSecrets || []).filter((s) => !have.has(s));
   return { id, label, status: "ok", detail: "Every backstop's required secrets are set." + (optional.length ? ` (Optional, not set: ${optional.join(", ")}.)` : ""), fix: null };
 }
 
@@ -190,11 +213,19 @@ async function runGithubChecks({ env = process.env, fetchImpl, now = Date.now() 
   }
 
   const checks = [];
+  const needed = BACKSTOPS.filter((d) => isNeeded(d, env));
   checks.push(visibilityCheck(repoR.value, repoR.error));
-  checks.push(backupCheck(backupR.value && backupR.value.workflow_runs, backupR.error, now));
-  checks.push(secretsCheck(secretsR.value && (secretsR.value.secrets || []).map((s) => s.name), secretsR.error));
+  // With SERVER_BACKUPS the backup check is operator-checks' on-server one.
+  if (needed.some((d) => d.file === "db-backup.yml")) {
+    checks.push(backupCheck(backupR.value && backupR.value.workflow_runs, backupR.error, now));
+  }
+  checks.push(secretsCheck(secretsR.value && (secretsR.value.secrets || []).map((s) => s.name), secretsR.error, needed));
   const workflows = (wfR.value && wfR.value.workflows) || [];
   BACKSTOPS.forEach((def, i) => {
+    if (!isNeeded(def, env)) {
+      checks.push(notNeededCheck(wfR.error ? null : workflows.find((w) => String(w.path || "").endsWith("/" + def.file)), def));
+      return;
+    }
     if (wfR.error) {
       checks.push({ id: "workflow:" + def.file, label: "Workflow: " + def.label, status: "unknown", detail: "Couldn't list the workflows: " + reasonFor(wfR.error), fix: null });
       return;

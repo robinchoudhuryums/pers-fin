@@ -1,6 +1,6 @@
 const express = require("express");
 const { isAIAvailable } = require("../ai");
-const { loadKeepAliveConfig } = require("../services/keep-alive");
+const { loadKeepAliveConfig, alwaysOn } = require("../services/keep-alive");
 
 const VALID_PALETTES = ["copper", "indigo", "forest", "slate", "plum", "mono"];
 // The Settings page's theme options. theme and perfin_url used to be stored
@@ -34,7 +34,7 @@ module.exports = function ({ pool, config }) {
     try {
       const cfg = await loadKeepAliveConfig();
       res.json({
-        enabled: cfg.keep_alive_enabled,
+        enabled: !alwaysOn() && !!cfg.keep_alive_enabled,
         start: cfg.keep_alive_start,
         end: cfg.keep_alive_end,
         timezone: cfg.keep_alive_timezone,

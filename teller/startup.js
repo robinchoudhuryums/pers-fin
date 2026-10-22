@@ -710,6 +710,7 @@ function startBackgroundJobs() {
       const { sendToAll } = require("./routes/notifications");
       const operatorChecks = require("./services/operator-checks");
       const result = await operatorChecks.getOperatorChecks({
+        pool,
         persistentPool: require("./routes/persistent").getEmbeddedPersistentPool(),
       });
       await operatorChecks.notifyIfChanged(pool, result, { sendToAll });
