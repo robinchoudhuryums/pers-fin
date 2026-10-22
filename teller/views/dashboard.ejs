@@ -31,6 +31,7 @@
                      letter-spacing: 1.5px; margin-bottom: 16px; }
     .chart-card canvas { width: 100% !important; display: block; }
     .chart-wrap { position: relative; width: 100%; height: 240px; }
+    .chart-empty { text-align: center; padding: 32px; color: var(--text-muted); font-size: 13px; }
     @media (max-width: 640px) {
       .charts-grid { grid-template-columns: 1fr; }
       .two-col { grid-template-columns: 1fr; }
@@ -1109,6 +1110,50 @@
       return spendingSummaryPromise;
     }
 
+    // The Spending-by-Category table. renderCategoryMonth('') shows the
+    // N-month aggregate from the latest spending summary; a month fetches it.
+    var latestCategoryData = null;
+    var categoryMonthSeq = 0;
+    function renderCategoryRows(rows) {
+      const catBody = document.getElementById('category-body');
+      if (!rows.length) {
+        catBody.innerHTML = '<tr><td colspan="3" class="empty-msg">No category data yet.</td></tr>';
+        return;
+      }
+      const maxCat = parseFloat(rows[0].total);
+      catBody.innerHTML = rows.map((c, i) => {
+        const pct = maxCat > 0 ? Math.round((parseFloat(c.total) / maxCat) * 100) : 0;
+        const color = barColors[i % barColors.length];
+        return '<tr><td class="cell-primary">' + esc(c.category) + '</td>' +
+          '<td class="amount warm" data-label="Total">' + fmt(c.total) + '</td>' +
+          '<td data-label="Share"><div class="bar-container"><div class="bar-fill" style="width:' + pct + '%;background:' + color + '"></div></div></td></tr>';
+      }).join('');
+    }
+    async function renderCategoryMonth(month) {
+      const seq = ++categoryMonthSeq; // a later pick or reload wins over a slow fetch
+      if (!month) { renderCategoryRows((latestCategoryData && latestCategoryData.by_category) || []); return; }
+      const catBody = document.getElementById('category-body');
+      catBody.innerHTML = '<tr><td colspan="3" class="empty-msg">Loading...</td></tr>';
+      try {
+        const r = await apiFetch('/api/spending-categories?month=' + encodeURIComponent(month));
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const dm = await r.json();
+        if (seq !== categoryMonthSeq) return;
+        renderCategoryRows((dm.categories || []).map(function(c) {
+          return { category: c.category, total: c.spent };
+        }));
+      } catch (e) {
+        if (seq === categoryMonthSeq) catBody.innerHTML = '<tr><td colspan="3" class="empty-msg">Could not load that month.</td></tr>';
+      }
+    }
+
+    // After a write that changes spending (a sync, a shared split, detection):
+    // reload the tables, then redraw both charts from the same fresh response.
+    function refreshSpending() {
+      loadSpendingSummary();
+      if (typeof Chart !== 'undefined') loadCharts();
+    }
+
     async function loadSpendingSummary() {
       try {
         const data = await getSpendingSummary(true);
@@ -1135,48 +1180,31 @@
           monthBody.innerHTML = '<tr><td colspan="4" class="empty-msg">No spending data yet.</td></tr>';
         }
 
-        const catBody = document.getElementById('category-body');
-        function renderCategoryRows(rows) {
-          if (!rows.length) {
-            catBody.innerHTML = '<tr><td colspan="3" class="empty-msg">No category data yet.</td></tr>';
-            return;
-          }
-          const maxCat = parseFloat(rows[0].total);
-          catBody.innerHTML = rows.map((c, i) => {
-            const pct = maxCat > 0 ? Math.round((parseFloat(c.total) / maxCat) * 100) : 0;
-            const color = barColors[i % barColors.length];
-            return '<tr><td class="cell-primary">' + esc(c.category) + '</td>' +
-              '<td class="amount warm" data-label="Total">' + fmt(c.total) + '</td>' +
-              '<td data-label="Share"><div class="bar-container"><div class="bar-fill" style="width:' + pct + '%;background:' + color + '"></div></div></td></tr>';
-          }).join('');
-        }
-        renderCategoryRows(data.by_category);
         // Per-month category breakdown: default option = the N-month aggregate
         // already in this response; picking a month fetches
         // /api/spending-categories (same splits/reimbursed/share-adjusted
-        // helper the budgets use, so the numbers match everywhere).
+        // helper the budgets use, so the numbers match everywhere). The handler
+        // reads the LATEST response and the options are rebuilt on every load,
+        // so after a sync the aggregate and the month list are current (it used
+        // to keep the first response's aggregate and months forever).
+        latestCategoryData = data;
         const catSel = document.getElementById('cat-month-select');
-        if (catSel && !catSel.dataset.wired) {
-          catSel.dataset.wired = '1';
+        if (catSel) {
+          const keep = catSel.value;
+          Array.prototype.slice.call(catSel.options, 1).forEach(function(o) { catSel.removeChild(o); });
           (data.monthly_trend || []).forEach(function(m) {
             const opt = document.createElement('option');
             opt.value = m.month; opt.textContent = m.month;
             catSel.appendChild(opt);
           });
-          catSel.addEventListener('change', async function() {
-            if (!catSel.value) { renderCategoryRows(data.by_category); return; }
-            catBody.innerHTML = '<tr><td colspan="3" class="empty-msg">Loading...</td></tr>';
-            try {
-              const r = await apiFetch('/api/spending-categories?month=' + encodeURIComponent(catSel.value));
-              if (!r.ok) throw new Error('HTTP ' + r.status);
-              const dm = await r.json();
-              renderCategoryRows((dm.categories || []).map(function(c) {
-                return { category: c.category, total: c.spent };
-              }));
-            } catch (e) {
-              catBody.innerHTML = '<tr><td colspan="3" class="empty-msg">Could not load that month.</td></tr>';
-            }
-          });
+          catSel.value = (data.monthly_trend || []).some(function(m) { return m.month === keep; }) ? keep : '';
+          if (!catSel.dataset.wired) {
+            catSel.dataset.wired = '1';
+            catSel.addEventListener('change', function() { renderCategoryMonth(catSel.value); });
+          }
+          renderCategoryMonth(catSel.value);
+        } else {
+          renderCategoryRows(data.by_category);
         }
 
         const merchBody = document.getElementById('merchant-body');
@@ -1230,7 +1258,7 @@
           if (data.errors && data.errors.length) {
             showMsg('Sync issues: ' + data.errors.map(function (e) { return (e.institution || e.provider) + ': ' + e.error; }).join('; '), false);
           }
-          loadSpendingSummary();
+          refreshSpending();
         } else {
           showMsg('Sync error: ' + (data.error || 'HTTP ' + res.status), false);
         }
@@ -1273,7 +1301,7 @@
         const data = await res.json().catch(() => ({}));
         if (res.ok) {
           showMsg('Detection complete: ' + (data.detected_count || 0) + ' subscriptions found.', true);
-          loadSpendingSummary();
+          refreshSpending();
         } else {
           showMsg('Detection error: ' + (data.error || 'HTTP ' + res.status), false);
         }
@@ -1308,7 +1336,7 @@
         if (!res.ok) { var e1 = await res.json().catch(function() { return {}; }); showMsg('Could not update the split: ' + (e1.error || 'HTTP ' + res.status), false); return; }
         showMsg(num < 100 ? 'Shared at ' + num + '% yours' : 'Marked as fully yours', true);
         loadAccounts();
-        loadSpendingSummary();
+        refreshSpending();
       } catch (e) { showMsg('Could not update the split: ' + e.message, false); }
     }
 
@@ -3567,11 +3595,14 @@
         const months = trend.map(m => m.month);
         const amounts = trend.map(m => parseFloat(m.total_spend) || 0);
         const trendCtx = document.getElementById('trend-chart');
-        if (trendCtx && months.length === 0) {
-          trendCtx.parentElement.innerHTML = '<div style="text-align:center;padding:32px;color:var(--text-muted);font-size:13px;">No spending data yet</div>';
+        if (trendCtx) {
+          // A redraw (after a sync) replaces the previous chart on the same
+          // canvas; the canvas is kept, so the empty state is a sibling note.
+          replaceChart('trend', null);
+          setChartEmpty(trendCtx, months.length ? '' : 'No spending data yet');
         }
         if (trendCtx && months.length > 0) {
-          new Chart(trendCtx, {
+          replaceChart('trend', new Chart(trendCtx, {
             type: 'line',
             data: {
               // A local-midnight date for the month (new Date('YYYY-MM-01') is
@@ -3594,16 +3625,17 @@
                 x: { grid: { display: false } }
               }
             }
-          });
+          }));
         }
         const cats = (data.by_category || []).slice(0, 8).map(c => [c.category, parseFloat(c.total) || 0]);
         const pieColors = ['#d4a574', '#5a8f8f', '#c8856c', '#6fcf97', '#7fb5e6', '#f0c36d', '#eb6b6b', '#b08ed6'];
         const catCtx = document.getElementById('category-chart');
-        if (catCtx && cats.length === 0) {
-          catCtx.parentElement.innerHTML = '<div style="text-align:center;padding:32px;color:var(--text-muted);font-size:13px;">No category data yet</div>';
+        if (catCtx) {
+          replaceChart('category', null);
+          setChartEmpty(catCtx, cats.length ? '' : 'No category data yet');
         }
         if (catCtx && cats.length > 0) {
-          new Chart(catCtx, {
+          replaceChart('category', new Chart(catCtx, {
             type: 'doughnut',
             data: {
               labels: cats.map(c => c[0]),
@@ -3616,9 +3648,31 @@
                 tooltip: { callbacks: { label: ctx => ctx.label + ': $' + parseFloat(ctx.raw).toLocaleString() } }
               }
             }
-          });
+          }));
         }
       } catch (e) { console.warn('Charts load error:', e); }
+    }
+
+    // The two dashboard charts, kept so a redraw destroys the old one first
+    // (Chart.js refuses a second chart on a canvas that still has one).
+    var dashboardCharts;
+    function replaceChart(key, chart) {
+      dashboardCharts = dashboardCharts || {};
+      const old = dashboardCharts[key];
+      if (old && old !== chart && typeof old.destroy === 'function') old.destroy();
+      dashboardCharts[key] = chart;
+    }
+    function setChartEmpty(canvas, text) {
+      const wrap = canvas.parentElement;
+      if (!wrap || typeof wrap.querySelector !== 'function') return;
+      let note = wrap.querySelector('.chart-empty');
+      if (text && !note) {
+        note = document.createElement('div');
+        note.className = 'chart-empty';
+        wrap.appendChild(note);
+      }
+      if (note) { note.textContent = text; note.hidden = !text; }
+      canvas.style.display = text ? 'none' : ''; // .chart-card canvas sets display:block, which beats [hidden]
     }
   </script>
 </body>

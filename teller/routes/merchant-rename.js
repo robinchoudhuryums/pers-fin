@@ -188,6 +188,65 @@ router.post("/api/merchant-rename-rules/apply", async (_req, res) => {
   }
 });
 
+// Edit a rule (roadmap T1.5): a new display name and/or an on / off switch.
+// The pattern itself is not editable (delete + re-create).
+// - Turning a rule OFF undoes its renames exactly as DELETE does (rows it
+//   renamed go back to their bank names; another rule may then claim them) but
+//   keeps the rule. Detection rows are left as they are, like DELETE.
+// - A new name on an active rule, or turning a rule back ON, goes through
+//   createRenameRule: the rows the rule renamed take the new name, the detected
+//   subscription / recurring transfer keyed on the old name is re-keyed with its
+//   user state kept, and the caller re-runs detection.
+// - A new name on a rule that stays off is only stored.
+// Returns { rule, renamed?, reverted?, rekeyed? } or { error, status }.
+async function updateRenameRule(id, { renameTo, isActive } = {}, db = pool) {
+  if (renameTo === undefined && isActive === undefined) return { error: "Send rename_to and/or is_active", status: 400 };
+  if (isActive !== undefined && typeof isActive !== "boolean") return { error: "is_active must be true or false", status: 400 };
+  let name;
+  if (renameTo !== undefined) {
+    name = typeof renameTo === "string" ? renameTo.trim() : "";
+    if (!name || name.length > 200) return { error: "rename_to must be 1-200 characters", status: 400 };
+  }
+  const cur = (await db.query("SELECT * FROM merchant_rename_rules WHERE id = $1", [id])).rows[0];
+  if (!cur) return { error: "Not found", status: 404 };
+  const active = isActive === undefined ? cur.is_active : isActive;
+
+  if (!active) {
+    const rule = (await db.query(
+      `UPDATE merchant_rename_rules SET is_active = false, rename_to = COALESCE($2, rename_to), updated_at = now()
+       WHERE id = $1 RETURNING *`, [id, name === undefined ? null : name])).rows[0];
+    let reverted = 0, renamed = 0;
+    if (cur.is_active) {
+      reverted = (await db.query(
+        "UPDATE transactions SET user_merchant_name = NULL, user_merchant_rule_id = NULL WHERE user_merchant_rule_id = $1",
+        [id])).rowCount;
+      renamed = await applyRenameRules(db);
+    }
+    return { rule, reverted, renamed, redetect: false };
+  }
+  if (cur.is_active && (name === undefined || name === cur.rename_to)) return { rule: cur, renamed: 0, redetect: false };
+  const out = await createRenameRule({ pattern: cur.merchant_pattern, matchType: cur.match_type, renameTo: name === undefined ? cur.rename_to : name }, db);
+  if (out.error) return { error: out.error, status: 400 };
+  return { ...out, redetect: true };
+}
+
+// PATCH /api/merchant-rename-rules/:id — body: rename_to?, is_active?
+router.patch("/api/merchant-rename-rules/:id", async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id) || String(id) !== String(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+  try {
+    const { rename_to, is_active } = req.body || {};
+    const out = await updateRenameRule(id, { renameTo: rename_to, isActive: is_active });
+    if (out.error) return res.status(out.status || 400).json({ error: out.error });
+    const { redetect: needed, ...body } = out;
+    if (needed) body.redetected = await redetect();
+    res.json(body);
+  } catch (err) {
+    console.error("rename rule update error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
 // DELETE /api/merchant-rename-rules/:id — removes the rule and reverts the rows
 // it renamed (other rules may then claim them).
 router.delete("/api/merchant-rename-rules/:id", async (req, res) => {
@@ -211,4 +270,5 @@ module.exports = router;
 module.exports.applyRenameRules = applyRenameRules;
 module.exports.createRenameRule = createRenameRule;
 module.exports.createRuleFromTransaction = createRuleFromTransaction;
+module.exports.updateRenameRule = updateRenameRule;
 module.exports.ruleCondition = ruleCondition;

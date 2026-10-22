@@ -46,6 +46,26 @@ router.get("/api/budgets", async (req, res) => {
   }
 });
 
+// GET /api/budgets/one-time — every one-month budget with its month, so the
+// Budgets page can link to a month other than the one being viewed. GET
+// /api/budgets lists only the budgets in effect for its month, so a one-time
+// budget set for a later month couldn't be seen or edited until that month.
+// (A separate route rather than a field on GET /api/budgets, whose array
+// response the dashboard, the Ask tool's tests and the contract suite read.)
+router.get("/api/budgets/one-time", async (_req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT id, category, monthly_limit, effective_month FROM budgets
+        WHERE budget_type = 'one_time' AND effective_month IS NOT NULL
+        ORDER BY effective_month, category`
+    );
+    res.json({ budgets: r.rows });
+  } catch (err) {
+    console.error("GET /api/budgets/one-time failed:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
 // POST /api/budgets — create or update a budget
 router.post("/api/budgets", async (req, res) => {
   const { category, monthly_limit, notes, rollover_enabled, budget_type, effective_month } = req.body;
