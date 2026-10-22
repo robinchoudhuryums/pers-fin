@@ -130,7 +130,7 @@ describe("W2 — Teller HMAC verification", () => {
     const r = await v.verify(tellerReq(tellerSig(TELLER_BODY)));
     assert.equal(r.ok, true);
     assert.equal(r.dedupeKey, "evt:wh_123");
-    assert.deepEqual(r.event, { type: "enrollment.disconnected", code: null, subject: "enr_1" });
+    assert.deepEqual(r.event, { type: "enrollment.disconnected", code: null, subject: "enr_1", reason: "disconnected", account_ids: [] });
   });
 
   it("a wrong secret, a tampered body and a stale or far-future timestamp are refused", async () => {

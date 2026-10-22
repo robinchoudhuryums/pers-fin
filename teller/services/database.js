@@ -929,6 +929,9 @@ async function runMigrationsOnce() {
     // POST /api/plaid/webhooks/register — roadmap T2.1 W4); NULL = none known.
     await client.query("ALTER TABLE plaid_items ADD COLUMN IF NOT EXISTS webhook_url TEXT");
     await client.query("ALTER TABLE plaid_investment_items ADD COLUMN IF NOT EXISTS webhook_url TEXT");
+    // When a Teller enrollment last synced every account and row — the
+    // per-connection freshness a webhook sync advances (roadmap T2.1 W5).
+    await client.query("ALTER TABLE teller_enrollments ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ");
 
     // ---- Settle-up log: one row per month the user marks squared with the
     // partner (combined shared-card + housing even-up). UNIQUE(period) so

@@ -287,6 +287,112 @@ async function syncEnrollment(enrollment, opts = {}) {
   return { added, incomplete: fetchError || insertError };
 }
 
+// The non-suspended Teller enrollments with their decrypted tokens
+// (perfin_try_decrypt — NULL, never a raised error, for a row the passphrase
+// can't open; INV-22).
+const TELLER_ENROLLMENTS_SQL =
+  `SELECT te.id, te.enrollment_id, te.institution_name,
+            perfin_try_decrypt(te.access_token_enc, $1) AS access_token,
+            te.last_synced_txn_date, te.status
+     FROM teller_enrollments te
+     WHERE te.status != 'SUSPENDED'`;
+
+// syncOneTellerEnrollment — one enrollment's sync with its bookkeeping: the
+// decryption check, DISCONNECTED on a 401/403 on every account and the
+// self-heal back to GOOD, the partial-failure error, and (roadmap T2.1 W5)
+// teller_enrollments.last_synced_at when every account and row landed. Never
+// throws: { added, errors[], failed } — failed = it didn't sync at all. Shared
+// by syncAllEnrollments and syncTellerEnrollment (a Teller webhook). Runs no
+// anomaly check (the callers do).
+async function syncOneTellerEnrollment(enrollment, { backfillFrom = null } = {}) {
+  const out = { added: 0, errors: [], failed: false };
+  // A NULL decrypted token means the TOKEN_ENCRYPTION_PASSPHRASE no longer
+  // matches the ciphertext (e.g. after a passphrase rotation). Surface it as
+  // `decryption_failed` (parity with the Plaid sync paths) instead of letting
+  // a null token reach Teller, 401, and silently mark the enrollment
+  // DISCONNECTED — which would wrongly require re-linking on a key rotation (F7).
+  if (!enrollment.access_token) {
+    console.error(`Teller enrollment "${enrollment.institution_name}": token decryption failed (passphrase mismatch?) — skipping, not disconnecting.`);
+    out.errors.push({ institution: enrollment.institution_name, error: "decryption_failed" });
+    out.failed = true;
+    return out;
+  }
+  try {
+    const result = await syncEnrollment(enrollment, { backfillFrom });
+    out.added += result.added;
+    // The token authenticated again → self-heal a DISCONNECTED flag (BSI-9
+    // made DISCONNECTED reachable; syncAllBalances only runs GOOD
+    // enrollments, so a transient 401 must not stop balance syncs until a
+    // manual re-link).
+    if (enrollment.status === "DISCONNECTED") {
+      await pool.query(
+        "UPDATE teller_enrollments SET status = 'GOOD', updated_at = now() WHERE id = $1 AND status = 'DISCONNECTED'",
+        [enrollment.id]
+      ).catch(e => console.error("enrollment status restore error:", e.message));
+    }
+    if (result.incomplete) {
+      // Partial failure: some accounts synced, one fetch errored and the
+      // watermark was held back. Surface it (without marking the whole
+      // enrollment unsynced) so Sync Health / last_sync_result shows the
+      // enrollment needs a retry instead of looking clean (F15).
+      out.errors.push({ institution: enrollment.institution_name, error: "partial_sync_incomplete" });
+    } else {
+      // The enrollment's own freshness (roadmap T2.1 W5): every account
+      // fetched and every row landed.
+      await pool.query("UPDATE teller_enrollments SET last_synced_at = now() WHERE id = $1", [enrollment.id])
+        .catch(e => console.error("teller enrollment last_synced_at update error:", e.message));
+    }
+  } catch (err) {
+    console.error(`Sync error for ${enrollment.institution_name}:`, err.message);
+    if (err.status === 401 || err.status === 403) {
+      await pool.query(
+        `UPDATE teller_enrollments SET status = 'DISCONNECTED', updated_at = now()
+         WHERE id = $1`,
+        [enrollment.id]
+      ).catch(e => console.error("enrollment status update error:", e.message));
+    }
+    out.errors.push({ institution: enrollment.institution_name, error: err.message });
+    out.failed = true;
+  }
+  return out;
+}
+
+// syncTellerEnrollment — sync ONE Teller enrollment (teller_enrollments.id)
+// now, incrementally: what a Teller transactions.processed webhook asks for
+// (roadmap T2.1 W5). COALESCED per enrollment like the Plaid per-item sync: a
+// request while that enrollment's sync runs makes it go round once more and
+// shares its promise. Returns { ok: false, error: "not_found" } (no
+// non-suspended enrollment with that id) or { ok: true, runs, added (summed),
+// errors, failed (the last run's) }. Records nothing globally (no
+// last_txn_sync_at / last_sync_result — the enrollment's last_synced_at only)
+// and runs no post-sync steps; the caller runs runPostSyncSteps(added).
+const _tellerSyncs = new Map(); // teller_enrollments.id → { again, promise }
+function syncTellerEnrollment(enrollmentDbId) {
+  const running = _tellerSyncs.get(enrollmentDbId);
+  if (running) { running.again = true; return running.promise; }
+  const state = { again: false, promise: null };
+  _tellerSyncs.set(enrollmentDbId, state);
+  state.promise = (async () => {
+    const total = { ok: true, runs: 0, added: 0, errors: [], failed: false };
+    try {
+      do {
+        state.again = false;
+        const { rows } = await pool.query(TELLER_ENROLLMENTS_SQL + " AND te.id = $2", [ENCRYPTION_PASSPHRASE, enrollmentDbId]);
+        if (!rows.length) return { ok: false, error: "not_found" };
+        const r = await syncOneTellerEnrollment(rows[0]);
+        total.runs++;
+        total.added += r.added;
+        total.errors = r.errors;
+        total.failed = r.failed;
+      } while (state.again);
+      return total;
+    } finally {
+      _tellerSyncs.delete(enrollmentDbId);
+    }
+  })();
+  return state.promise;
+}
+
 // syncAllEnrollments — in-process sync of every non-suspended Teller enrollment.
 // Used by both POST /api/sync (HTTP handler) and the scheduled auto-sync task
 // in server.js. Returns { enrollments_synced, transactions_added, errors }.
@@ -304,15 +410,7 @@ async function syncAllEnrollments(opts = {}) {
     backfillFrom = d.toISOString().split("T")[0];
   }
 
-  const { rows: enrollments } = await pool.query(
-    `SELECT te.id, te.enrollment_id, te.institution_name,
-            perfin_try_decrypt(te.access_token_enc, $1) AS access_token,
-            te.last_synced_txn_date, te.status
-     FROM teller_enrollments te
-     WHERE te.status != 'SUSPENDED'
-     ORDER BY te.id`,
-    [ENCRYPTION_PASSPHRASE]
-  );
+  const { rows: enrollments } = await pool.query(TELLER_ENROLLMENTS_SQL + " ORDER BY te.id", [ENCRYPTION_PASSPHRASE]);
 
   let totalAdded = 0;
   const errors = [];
@@ -323,49 +421,10 @@ async function syncAllEnrollments(opts = {}) {
   let hardFailures = 0;
 
   for (const enrollment of enrollments) {
-    // A NULL decrypted token means the TOKEN_ENCRYPTION_PASSPHRASE no longer
-    // matches the ciphertext (e.g. after a passphrase rotation). Surface it as
-    // `decryption_failed` (parity with the Plaid sync paths) instead of letting
-    // a null token reach Teller, 401, and silently mark the enrollment
-    // DISCONNECTED — which would wrongly require re-linking on a key rotation (F7).
-    if (!enrollment.access_token) {
-      console.error(`Teller enrollment "${enrollment.institution_name}": token decryption failed (passphrase mismatch?) — skipping, not disconnecting.`);
-      errors.push({ institution: enrollment.institution_name, error: "decryption_failed" });
-      hardFailures++;
-      continue;
-    }
-    try {
-      const result = await syncEnrollment(enrollment, { backfillFrom });
-      totalAdded += result.added;
-      // The token authenticated again → self-heal a DISCONNECTED flag (BSI-9
-      // made DISCONNECTED reachable; syncAllBalances only runs GOOD
-      // enrollments, so a transient 401 must not stop balance syncs until a
-      // manual re-link).
-      if (enrollment.status === "DISCONNECTED") {
-        await pool.query(
-          "UPDATE teller_enrollments SET status = 'GOOD', updated_at = now() WHERE id = $1 AND status = 'DISCONNECTED'",
-          [enrollment.id]
-        ).catch(e => console.error("enrollment status restore error:", e.message));
-      }
-      if (result.incomplete) {
-        // Partial failure: some accounts synced, one fetch errored and the
-        // watermark was held back. Surface it (without marking the whole
-        // enrollment unsynced) so Sync Health / last_sync_result shows the
-        // enrollment needs a retry instead of looking clean (F15).
-        errors.push({ institution: enrollment.institution_name, error: "partial_sync_incomplete" });
-      }
-    } catch (err) {
-      console.error(`Sync error for ${enrollment.institution_name}:`, err.message);
-      if (err.status === 401 || err.status === 403) {
-        await pool.query(
-          `UPDATE teller_enrollments SET status = 'DISCONNECTED', updated_at = now()
-           WHERE id = $1`,
-          [enrollment.id]
-        );
-      }
-      errors.push({ institution: enrollment.institution_name, error: err.message });
-      hardFailures++;
-    }
+    const r = await syncOneTellerEnrollment(enrollment, { backfillFrom });
+    totalAdded += r.added;
+    errors.push(...r.errors);
+    if (r.failed) hardFailures++;
   }
 
   // Anomaly check on NEW rows (DD-1). Skipped for reconcile/backfill (a
@@ -1623,6 +1682,8 @@ router.get("/api/accounts/:id/balance-history", async (req, res) => {
 
 module.exports = router;
 module.exports.syncAllEnrollments = syncAllEnrollments;
+module.exports.syncTellerEnrollment = syncTellerEnrollment; // roadmap T2.1 W5: the per-enrollment sync a Teller webhook triggers
+module.exports.syncOneTellerEnrollment = syncOneTellerEnrollment;
 module.exports.syncAllBalances = syncAllBalances;
 module.exports.reconcileTeller = reconcileTeller;
 module.exports.reconcileBusy = reconcileBusy;

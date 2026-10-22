@@ -331,7 +331,7 @@ describe("W3 — the Plaid event handler", () => {
   it("the router's default Plaid handler is this one, required lazily", () => {
     const src = read("teller/routes/webhooks.js");
     assert.match(src, /plaid: \(event, ctx\) => require\("\.\/plaid-webhook-events"\)\.handlePlaidEvent\(event, ctx\)/);
-    assert.doesNotMatch(src, /^\s*teller:/m, "Teller events wait for W5");
+    assert.match(src, /teller: \(event, ctx\) => require\("\.\/teller-webhook-events"\)\.handleTellerEvent\(event, ctx\)/, "Teller's handler since W5");
   });
 });
 

@@ -28,9 +28,9 @@
 // once Plaid credentials are set; Teller's HMAC — once TELLER_WEBHOOK_SECRET is
 // set. A provider without them answers 503.
 //
-// Handlers (W3–W5): a Plaid SYNC_UPDATES_AVAILABLE syncs that item (W3); other
-// events are recorded and marked 'ignored' until W4 (Plaid item events) and W5
-// (Teller).
+// Handlers: Plaid transaction / item / investment events (W3–W4) and Teller
+// transactions.processed / enrollment.disconnected / webhook.test (W5); any
+// event a handler doesn't act on is recorded and marked 'ignored'.
 // ============================================================================
 const express = require("express");
 const rateLimit = require("express-rate-limit");
@@ -51,11 +51,12 @@ const notConfigured = { configured: () => false, verify: async () => ({ ok: fals
 const DEFAULT_VERIFIERS = { plaid: createPlaidVerifier(), teller: createTellerVerifier() };
 
 // Handlers: provider → async (event, ctx) → { status: 'done' | 'ignored' }.
-// Plaid (W3): SYNC_UPDATES_AVAILABLE syncs that item (routes/plaid-webhook-
-// events.js, required lazily so this module loads without the sync code).
-// Teller comes with W5 — its events are recorded and 'ignored'.
+// Plaid (W3–W4): routes/plaid-webhook-events.js; Teller (W5):
+// routes/teller-webhook-events.js — both required lazily so this module loads
+// without the sync code.
 const DEFAULT_HANDLERS = {
   plaid: (event, ctx) => require("./plaid-webhook-events").handlePlaidEvent(event, ctx),
+  teller: (event, ctx) => require("./teller-webhook-events").handleTellerEvent(event, ctx),
 };
 
 const clip = (v, n) => (v == null ? null : String(v).slice(0, n));

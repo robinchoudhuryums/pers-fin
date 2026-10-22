@@ -18,7 +18,26 @@ Updated: 2026-10-22
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T2.1 (bank webhooks) — W4 DONE** on branch `claude/sweet-ritchie-f9d8ah`
+- **Status:** **Roadmap T2.1 (bank webhooks) — W5 DONE** on branch `claude/sweet-ritchie-f9d8ah`
+  (2026-10-22, in PR robinchoudhuryums/pers-fin#133). Plan: `.cycle/plan-t2-1-webhooks.md`.
+  Block: `.cycle/blocks/7-roadmap-t2-1-w5-broad-implement.md`.
+  - **Completed:** enrollments.js — syncOneTellerEnrollment (the per-enrollment body of
+    syncAllEnrollments, + teller_enrollments.last_synced_at on a clean run) and
+    syncTellerEnrollment(id) (coalesced per enrollment, nothing global); routes/teller-webhook-
+    events.js (transactions.processed → the enrollment by id or by its transactions' account ids →
+    runPostSyncSteps; enrollment.disconnected → GOOD → DISCONNECTED + one notification with the reason
+    in words; webhook.test done) as the router's Teller handler; the verifier passes payload.reason +
+    the transactions' account ids (never the transactions). Docs folded in (new INV-140).
+  - **Verification:** npm 1995/1995 (15 new); contract 186/186 (3 new); migrations twice OK;
+    Playwright not re-run (no page / mount change); three mutation checks red.
+  - **Decisions:** both payload shapes handled (enrollment_id or account ids only) since Teller's
+    docs were unreachable again; the DISCONNECTED write in a failed sync is now fail-soft (logged) so
+    syncOneTellerEnrollment never throws.
+  - **Follow-ons:** confirm Teller's signature header + transactions.processed payload against its
+    docs before switching it on; Teller per-enrollment sync not serialized with syncAllEnrollments.
+  - **Where I left off:** W5 committed and pushed with docs. NEXT: W6 (Sync Health visibility +
+    Register button + operator checks + per-connection freshness).
+- **Previous status:** **Roadmap T2.1 (bank webhooks) — W4 DONE** on branch `claude/sweet-ritchie-f9d8ah`
   (2026-10-22, in PR robinchoudhuryums/pers-fin#133). Plan: `.cycle/plan-t2-1-webhooks.md`.
   Block: `.cycle/blocks/7-roadmap-t2-1-w4-broad-implement.md`.
   - **Completed:** plaid-webhook-events.js — ITEM events (re-auth ERROR / PENDING_EXPIRATION /

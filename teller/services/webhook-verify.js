@@ -6,7 +6,8 @@
 // exact bytes received — the shell's JSON parser keeps them), req.headers and
 // the parsed req.body. A verifier never logs the body; on any doubt it returns
 // { ok: false } (the router answers 401). event carries only short provider
-// fields: { type, code, subject } (+ Plaid's error_code — W4).
+// fields: { type, code, subject } (+ Plaid's error_code — W4; Teller's reason
+// and account_ids — W5).
 //
 // Plaid — the `Plaid-Verification` header is an ES256 JWT:
 //   - alg must be ES256 (anything else, including "none", is refused);
@@ -163,7 +164,17 @@ function createTellerVerifier({ secrets = () => tellerSecrets(), now = () => Dat
       return {
         ok: true,
         dedupeKey,
-        event: { type: clip(body.type, 100), code: null, subject: clip(payload.enrollment_id, 200) },
+        // W5: reason (enrollment.disconnected) and the account ids a
+        // transactions.processed event names — the handler finds the
+        // enrollment by them when the payload carries no enrollment_id. The
+        // transactions themselves are never read (a webhook is a trigger).
+        event: {
+          type: clip(body.type, 100), code: null, subject: clip(payload.enrollment_id, 200),
+          reason: clip(payload.reason, 100),
+          account_ids: Array.isArray(payload.transactions)
+            ? [...new Set(payload.transactions.map((t) => (t && typeof t.account_id === "string" ? t.account_id.slice(0, 100) : null)).filter(Boolean))].slice(0, 50)
+            : [],
+        },
       };
     },
   };
