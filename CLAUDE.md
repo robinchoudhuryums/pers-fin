@@ -100,6 +100,21 @@ teller/
                            timeout, fail-soft ("unknown" + reason; a 401 / 404 on
                            the repo = one reason, no checks); errors carry only
                            the HTTP status, never the token or a response body
+    webhook-verify.js    — Bank webhook signatures (roadmap T2.1, W2):
+                           createPlaidVerifier — the Plaid-Verification ES256
+                           JWT (alg must be ES256; key by kid via
+                           webhookVerificationKeyGet, cached 24h, an expired_at
+                           key refused; iat within 5 min, 1 min skew ahead;
+                           request_body_sha256 = SHA-256 of req.rawBody; dedupe
+                           key "jwt:" + hash of the token — Plaid events carry no
+                           id and SYNC_UPDATES_AVAILABLE bodies repeat).
+                           createTellerVerifier — "t=…,v1=…" HMAC-SHA256 over
+                           "<t>.<raw body>" against every TELLER_WEBHOOK_SECRET
+                           (comma-separated, for rotation), digest compares,
+                           t within 5 min; dedupe key "evt:" + event id (or the
+                           signature hash). Configured = Plaid credentials set /
+                           a Teller secret set. The Teller format is from its
+                           docs as remembered — re-check before switching it on
     webauthn-ids.js      — WebAuthn credential ids (seams audit #3, INV-136):
                            legacyCredentialId spots a double-encoded stored id
                            (registration used to re-encode the already-base64url
@@ -279,6 +294,21 @@ teller/
                            GET /api/budgets/one-time (roadmap T1.5 — every
                            one-month budget with its month, for the Budgets
                            page's other-month links)
+    webhooks.js          — Bank webhook receivers (roadmap T2.1, W1–W2):
+                           POST /api/webhooks/plaid + /api/webhooks/teller,
+                           mounted in server.js BEFORE session / auth / CSRF /
+                           API key / activity. Body required + 512 KB cap; 503
+                           while the provider's verifier isn't configured; 401
+                           (fixed text, console.warn) on a bad signature, ≤20
+                           failures per IP per 15 min; a verified event goes into
+                           webhook_events under its dedupe key (a re-delivery →
+                           200 { duplicate: true }, not processed), the route
+                           answers 200, then the provider's handler runs detached
+                           and the row ends done / ignored / failed (fixed text).
+                           No handlers yet (W3–W5), so events end 'ignored'. The
+                           body is never stored or logged. 30-day prune, at most
+                           daily. createWebhookRouter({ verifiers, handlers, db,
+                           defer, now }) for tests
     housing.js           — Rent & Utilities payee ledger: GET/PATCH /api/housing/config,
                            GET /api/housing/ledger, POST /api/housing/generate,
                            POST/PATCH/DELETE /api/housing/obligations, POST/DELETE
@@ -672,7 +702,7 @@ shell/
   `deleted_transactions`, `merchant_rename_rules` — PSC-6: missing them left
   flows pointing at re-used `investment_accounts` ids after `RESTART IDENTITY`),
   `KEEP_TABLES`, and `UNTOUCHED_TABLES` (`schema_migrations`, `job_runs`,
-  `benchmark_prices`). `tests/scan-sept-batch9.test.js` asserts every table the
+  `benchmark_prices`, `app_errors`, `webhook_events`). `tests/scan-sept-batch9.test.js` asserts every table the
   migrations create is in exactly one list — add a new table to one of them.
 - `apps-script/Code.gs` — Google Sheets Apps Script (standalone + server sync).
   Its column-index writes assume the script's own tab layout, so
@@ -693,9 +723,20 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1915 tests as of latest); use
+  Perfin and Per-sistant test files (1944 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1915 tests across 95 test files (incl.
+  Current count: 1944 tests across 97 test files (incl.
+  `tests/roadmap-t2-webhooks-w1.test.js` + `tests/roadmap-t2-webhooks-w2.test.js` —
+  roadmap T2.1 W1–W2: the receivers answering 503 and writing nothing while
+  unconfigured, 400 / 413 / 404, a bad or throwing verification a 401 logged as a
+  warning, record → 200 → detached handler → done / ignored / failed, a duplicate not
+  processed, a failed insert a 500, the body never stored or logged, the failed-
+  verification limiter, the daily prune, the shell's exact exemption and the server.js
+  mount order; Plaid JWTs signed with a local P-256 key (tampered body, stale / future
+  iat, alg none / HS256 with no key fetch, unknown / expired / wrong key, malformed
+  tokens, the key cache) and Teller HMACs (wrong secret, rotation, stale t, tampered
+  body, id-less events, garbage headers), both through the production router — the
+  database-backed halves are `tests/contract/webhooks-w1` / `webhooks-w2`;
   `tests/seams-audit-3.test.js` + `apps/per-sistant/tests/seams-audit-3.test.js` —
   Seams & Invariants audit #3: WebAuthn credential ids stored as given +
   `repairCredentialIds` (a double-encoded row rewritten, a duplicate dropped,
@@ -1052,7 +1093,11 @@ shell/
   that leaves a draft, the scheduler marking it failed with the reason + the failed
   list, Retry after removing it sending once and a second Retry 409, review-summary
   501), and seams3 (Seams audit #3: GET /api/items without a manual account's null
-  item; repairCredentialIds on the real table). 167 tests, run
+  item; repairCredentialIds on the real table), and webhooks-w1 / webhooks-w2 (roadmap
+  T2.1: the webhook_events CHECKs, one row per delivery and per provider, a failed
+  handler's fixed error, the 30-day prune, the production router writing nothing while
+  unconfigured; a signed Plaid event recorded once under its JWT key with a replay and
+  a forgery adding nothing, a Teller event re-signed later still one row). 175 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -2891,7 +2936,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1915 tests passing across 95 test files (Perfin 1364 + Per-sistant 551), plus the real-Postgres route contract suite (167 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 1944 tests passing across 97 test files (Perfin 1393 + Per-sistant 551), plus the real-Postgres route contract suite (175 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -2908,6 +2953,12 @@ npm run reset:fresh -- --yes                   # perform the reset (wipes data+c
 
 # Key API endpoints
 POST /api/enroll           # store Teller access token after Connect
+POST /api/webhooks/plaid   # Plaid webhooks (roadmap T2.1): verified by the
+                           # Plaid-Verification JWT; 503 without Plaid credentials;
+                           # past the shell gate (self-authenticating). Recorded in
+                           # webhook_events; no action yet (W3–W4)
+POST /api/webhooks/teller  # Teller webhooks: Teller-Signature HMAC with
+                           # TELLER_WEBHOOK_SECRET; 503 without it. No action yet (W5)
 POST /api/sync             # pull transactions from Teller AND Plaid via
                            # syncAllTransactions (BSI-2): Teller, then Plaid
                            # (each failure-isolated), then ONE anomaly check over
@@ -3558,6 +3609,7 @@ enums), `debt_baseline_amount` (a finite number ≥ 0 or null),
 - `TELLER_CERT` / `TELLER_KEY` — base64-encoded mTLS PEMs (Render)
 - `TELLER_CERT_PATH` / `TELLER_KEY_PATH` — file paths (default `./certificate.pem` / `./private_key.pem`)
 - `TELLER_CERT_CONTENT` / `TELLER_KEY_CONTENT` — raw PEM contents written to disk by `docker-entrypoint.sh` at container start
+- `TELLER_WEBHOOK_SECRET` — optional (roadmap T2.1): the webhook signing secret from the Teller dashboard; a comma-separated list during a rotation. Unset = `POST /perfin/api/webhooks/teller` answers 503.
 
 ### Per-app auth (mostly bypassed when embedded under shell)
 - `SESSION_PASSWORD` — text password for standalone Perfin login
@@ -3798,6 +3850,12 @@ standalone-mode fallback if either app is run on its own Render service.
   `services/error-log.js`; pruned daily (resolved >30 days, any >90). In reset-fresh's
   UNTOUCHED_TABLES. Messages can carry merchant or account names — they stay in this
   database; the notification body carries the first 120 characters.
+- `webhook_events` (roadmap T2.1): one row per VERIFIED Plaid / Teller webhook —
+  `provider` (CHECK plaid / teller), `event_type`, `event_code`, `subject` (item /
+  enrollment id), `dedupe_key` (UNIQUE with provider), `status` (CHECK received /
+  processing / done / failed / ignored), `error` (a fixed sentence), `received_at`,
+  `processed_at`. Never the body. Pruned after 30 days. In reset-fresh's
+  UNTOUCHED_TABLES. A row a restart caught mid-handler stays 'processing'.
 - `user_settings.last_backup_at TIMESTAMPTZ` (VPS move): stamped by `deploy/vps/backup.sh`
   after each verified nightly backup; read by Operator Checks' on-server backup check
   when `SERVER_BACKUPS=true`. Auto-migrated.
@@ -4128,7 +4186,9 @@ rows) can dismiss them from the UI or run `POST /api/cleanup`.
 - **Self-authenticating webhook route (PB-15)**: `POST /per-sistant/api/perfin/webhook`
   passes the shell's cookie gate (`isSelfAuthenticatingRoute`) and Per-sistant's standalone
   session check — the receiver verifies an HMAC over the raw body plus a timestamp replay
-  window and 503s without a secret. Only that exact method + path is exempt.
+  window and 503s without a secret. Only that exact method + path is exempt — and, since
+  roadmap T2.1, Perfin's `POST /perfin/api/webhooks/plaid` and `/teller` (the Plaid JWT /
+  Teller HMAC, 503 while unconfigured; `SELF_AUTHENTICATING_POSTS` in shell/middleware/auth.js).
 - **Body limit**: the shell's JSON/urlencoded parsers run first, so their limit is the
   effective one for both sub-apps — 1mb (PSC-7; 64kb overrode Per-sistant's 1mb note limit).
 - **Client session-expiry handling (W3)**: `apiFetch` (`perfin-shared.js`) redirects once to
@@ -5217,6 +5277,14 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   email's attachments or warn before Send that one's file is missing (the refusal
   arrives as the send's error toast); Retry sends a failed SCHEDULED email at once
   rather than offering to reschedule it.
+- Roadmap T2.1 (bank webhooks) is in progress (`.cycle/plan-t2-1-webhooks.md`): W1–W2
+  (receivers, event log, signature verification) are done, but no handler acts on an
+  event yet — Plaid isn't sent webhooks until W4 registers the URL, and Teller's only
+  once its dashboard and `TELLER_WEBHOOK_SECRET` are set. W3–W6 (Plaid per-item sync,
+  Plaid item events + registration, Teller events, Sync Health visibility) remain.
+  Teller's signature header format couldn't be re-checked against its docs from the
+  build environment — confirm it before switching Teller webhooks on. A webhook_events
+  row a restart caught mid-handler stays 'processing'.
 - Seams & Invariants audit #3 follow-ons: after a restart while the database is
   unreachable the shell's session epoch reads 0, so a cookie revoked by "Sign Out
   Everywhere" works until the database answers (fail-open by design, X5); the
@@ -5349,7 +5417,8 @@ Bank Sync & Ingestion:
   teller/routes/enrollments.js, teller/routes/investments.js,
   teller/routes/investment-performance.js, teller/services/plaid-client.js,
   teller/services/teller-api.js, teller/services/benchmarks.js,
-  teller/data/csv-formats.js, scripts/import-csv-cli.js
+  teller/data/csv-formats.js, scripts/import-csv-cli.js,
+  teller/routes/webhooks.js, teller/services/webhook-verify.js
   (Teller and Plaid are co-equal, first-class linking paths — both write the
    same transactions/linked_accounts tables. Plaid additionally covers banks
    Teller doesn't, plus investment holdings.)
@@ -5557,6 +5626,7 @@ INV-132 | Every Plaid investment write path (the holdings sync and both exchange
 INV-133 | Recording an error never throws into the caller and never recurses: the shell's console.error wrapper always prints first, capture() is re-entrancy guarded, the error log reports its own failures through the ORIGINAL console.error under an ignored "[error-log]" prefix, and a failed write re-buffers instead of dropping; new / reopened errors notify at most 5 times in 24 hours | Subsystem: Platform, Shell & Auth | Verify: tests/roadmap-t1-errors-uptime.test.js + tests/contract/error-log.contract.test.js
 INV-134 | GET /health/deep is public but exposes only yes/no database fields (never an error message), is bounded per probe and cached 60s single-flight; the heartbeat never touches the database and is never activity-gated | Subsystem: Platform, Shell & Auth | Verify: tests/roadmap-t1-errors-uptime.test.js + tests/contract/error-log.contract.test.js
 INV-135 | A Per-sistant email is sent with EVERY one of its stored attachments or not at all: both senders load them through routes/attachments.loadEmailAttachments; a missing file or a total over 20MB makes Send Now a 400 before its claim (the email stays unsent) and makes the scheduler mark the claimed row failed with the reason; Retry reuses the Send Now claim, so it can't double-send | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/roadmap-t1-batchc.test.js + tests/contract/persistent-batchc.contract.test.js
+INV-137 | A bank webhook is verified before anything is recorded (Plaid's ES256 JWT incl. the body hash; Teller's HMAC with digest compares), recorded once per (provider, dedupe key) — a re-delivery is answered 200 and not processed again — answered 200 before its handler runs, and its body is never stored or logged; a provider without credentials / a secret answers 503 and writes nothing; only the two exact POST paths pass the shell gate | Subsystem: Bank Sync & Ingestion / Platform, Shell & Auth | Verify: tests/roadmap-t2-webhooks-w1.test.js + tests/roadmap-t2-webhooks-w2.test.js + tests/contract/webhooks-w1 / webhooks-w2
 INV-136 | WebAuthn credential ids are stored exactly as the authenticator reports them (registrationInfo.credential.id — already base64url in @simplewebauthn v11), never re-encoded; a double-encoded row from before seams audit #3 is rewritten (or, when its real id already exists, removed) by repairCredentialIds in the migration | Subsystem: Platform, Shell & Auth | Verify: tests/seams-audit-3.test.js + tests/contract/seams3.contract.test.js
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 

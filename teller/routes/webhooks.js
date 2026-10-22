@@ -24,13 +24,15 @@
 // The request body is never stored and never logged — a Teller payload can
 // carry transactions, and Render's logs are not private.
 //
-// W1 ships the pipeline with NO verifier configured, so both endpoints answer
-// 503 and record nothing. W2 adds the Plaid JWT and Teller HMAC verifiers;
-// W3–W5 add the handlers that act on verified events.
+// Verifiers (W2, services/webhook-verify.js): Plaid's ES256 JWT — "configured"
+// once Plaid credentials are set; Teller's HMAC — once TELLER_WEBHOOK_SECRET is
+// set. A provider without them answers 503. No handler acts on an event yet
+// (W3–W5), so a verified event is recorded and marked 'ignored'.
 // ============================================================================
 const express = require("express");
 const rateLimit = require("express-rate-limit");
 const { pool } = require("../services/database");
+const { createPlaidVerifier, createTellerVerifier } = require("../services/webhook-verify");
 
 const PROVIDERS = ["plaid", "teller"];
 // Plaid's and Teller's webhook bodies are small; a transactions.processed
@@ -43,7 +45,7 @@ const FAILED_VERIFY_LIMIT = 20; // per IP per 15 minutes
 // A verifier: { configured() → bool, verify(req) → Promise<{ ok, event?, dedupeKey? }> }
 // where event = { type, code, subject } (short provider fields, never the body).
 const notConfigured = { configured: () => false, verify: async () => ({ ok: false }) };
-const DEFAULT_VERIFIERS = { plaid: notConfigured, teller: notConfigured };
+const DEFAULT_VERIFIERS = { plaid: createPlaidVerifier(), teller: createTellerVerifier() };
 
 // Handlers: provider → async (event, ctx) → { status: 'done' | 'ignored' }.
 // None yet (W3–W5).

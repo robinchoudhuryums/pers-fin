@@ -18,7 +18,21 @@ Updated: 2026-10-22
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T2.1 (bank webhooks) — W1 DONE** on branch `claude/sweet-ritchie-f9d8ah`
+- **Status:** **Roadmap T2.1 (bank webhooks) — W2 DONE** (+ W1's docs) on branch
+  `claude/sweet-ritchie-f9d8ah` (2026-10-22, in PR robinchoudhuryums/pers-fin#133). Plan:
+  `.cycle/plan-t2-1-webhooks.md`. Block: `.cycle/blocks/7-roadmap-t2-1-w2-broad-implement.md`.
+  - **Completed:** services/webhook-verify.js — Plaid ES256 JWT (kid key fetch + 24h cache,
+    expired_at refused, iat 5 min, body hash) and Teller HMAC (t window, rotation, digest compares);
+    the production router uses them; verified events recorded and marked 'ignored' (no handlers).
+    CLAUDE.md / README updated for W1 + W2 (new INV-137).
+  - **Verification:** npm 1944/1944; contract 175/175; Playwright not re-run (no page / mount
+    change; 57/57 on W1); two mutation checks red.
+  - **Decisions:** Plaid dedupe = hash of the signed JWT; Teller = event id (signature hash if none).
+  - **Follow-ons:** confirm Teller's signature format against its docs (unreachable from the build
+    environment) and whether Plaid retries non-200 deliveries.
+  - **Where I left off:** W2 committed and pushed with docs. NEXT: W3 (Plaid per-item sync:
+    syncOnePlaidItem + runPostSyncSteps + SYNC_UPDATES_AVAILABLE handler + plaid_items.last_synced_at).
+- **Previous status:** **Roadmap T2.1 (bank webhooks) — W1 DONE** on branch `claude/sweet-ritchie-f9d8ah`
   (2026-10-22, in PR robinchoudhuryums/pers-fin#133). Plan: `.cycle/plan-t2-1-webhooks.md` (W1–W6).
   Block: `.cycle/blocks/7-roadmap-t2-1-w1-broad-implement.md`.
   - **Completed:** routes/webhooks.js — POST /api/webhooks/{plaid,teller} (body required + 512 KB

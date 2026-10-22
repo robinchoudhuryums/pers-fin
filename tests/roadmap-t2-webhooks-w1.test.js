@@ -67,11 +67,20 @@ function captureConsole() {
 }
 
 // ---------------------------------------------------------------------------
-describe("W1 — the production router answers 503 and records nothing", () => {
+describe("W1 — the production router answers 503 and records nothing while unconfigured", () => {
   const realQuery = dbModule.pool.query;
   const calls = [];
-  before(() => { dbModule.pool.query = async (sql) => { calls.push(sql); return { rows: [] }; }; });
-  after(() => { dbModule.pool.query = realQuery; });
+  const saved = { plaid: process.env.PLAID_CLIENT_ID, teller: process.env.TELLER_WEBHOOK_SECRET };
+  before(() => {
+    // Unconfigured = no Plaid credentials and no Teller signing secret (W2).
+    delete process.env.PLAID_CLIENT_ID; delete process.env.TELLER_WEBHOOK_SECRET;
+    dbModule.pool.query = async (sql) => { calls.push(sql); return { rows: [] }; };
+  });
+  after(() => {
+    dbModule.pool.query = realQuery;
+    if (saved.plaid !== undefined) process.env.PLAID_CLIENT_ID = saved.plaid;
+    if (saved.teller !== undefined) process.env.TELLER_WEBHOOK_SECRET = saved.teller;
+  });
 
   it("both providers: 503 with no database write", async () => {
     const app = appWith(webhooks);

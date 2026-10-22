@@ -76,7 +76,8 @@ describe("Webhooks W1 on real Postgres", { skip: SKIP }, () => {
     assert.deepEqual(keys, ["delivery-3", "recent"]);
   });
 
-  it("the production router, mounted in server.js order, records nothing (503)", async () => {
+  it("the production router, mounted in server.js order, records nothing while unconfigured (503)", async () => {
+    delete process.env.PLAID_CLIENT_ID; delete process.env.TELLER_WEBHOOK_SECRET;
     const before = (await q("SELECT count(*)::int AS n FROM webhook_events")).rows[0].n;
     const a = express();
     a.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
