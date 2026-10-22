@@ -1033,6 +1033,28 @@ async function runMigrationsOnce() {
     )`);
     await client.query("CREATE INDEX IF NOT EXISTS idx_app_errors_last_seen ON app_errors (last_seen DESC)");
 
+    // Bank webhook event log (roadmap T2.1, W1): one row per VERIFIED Plaid /
+    // Teller delivery, written by routes/webhooks.js before it answers 200.
+    // dedupe_key is provider-supplied (Teller's event id; Plaid's signed
+    // verification header) so a replayed or re-delivered request is recorded
+    // and processed once. The request body is never stored. Pruned after 30
+    // days.
+    await client.query(`CREATE TABLE IF NOT EXISTS webhook_events (
+      id           BIGSERIAL PRIMARY KEY,
+      provider     TEXT NOT NULL CHECK (provider IN ('plaid', 'teller')),
+      event_type   TEXT,
+      event_code   TEXT,
+      subject      TEXT,
+      dedupe_key   TEXT NOT NULL,
+      status       TEXT NOT NULL DEFAULT 'received'
+                   CHECK (status IN ('received', 'processing', 'done', 'failed', 'ignored')),
+      error        TEXT,
+      received_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+      processed_at TIMESTAMPTZ,
+      UNIQUE (provider, dedupe_key)
+    )`);
+    await client.query("CREATE INDEX IF NOT EXISTS idx_webhook_events_received ON webhook_events (received_at DESC)");
+
     // One-shot cleanup: detection-key migration orphans (PSA1 — now genuinely
     // one-shot, gated on the schema version so it doesn't re-run every boot).
     // When detection started keying on COALESCE(user_merchant_name, merchant_name, name)

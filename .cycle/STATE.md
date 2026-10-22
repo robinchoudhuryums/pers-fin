@@ -18,7 +18,22 @@ Updated: 2026-10-22
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Seams & Invariants audit #3 DONE** on branch `claude/sweet-ritchie-f9d8ah`
+- **Status:** **Roadmap T2.1 (bank webhooks) — W1 DONE** on branch `claude/sweet-ritchie-f9d8ah`
+  (2026-10-22, in PR robinchoudhuryums/pers-fin#133). Plan: `.cycle/plan-t2-1-webhooks.md` (W1–W6).
+  Block: `.cycle/blocks/7-roadmap-t2-1-w1-broad-implement.md`.
+  - **Completed:** routes/webhooks.js — POST /api/webhooks/{plaid,teller} (body required + 512 KB
+    cap, 503 until a verifier is configured, 401 + per-IP limiter on failed verification, record in
+    webhook_events under a provider dedupe key, 200 then a detached handler, done / ignored / failed,
+    30-day prune); mounted before session / auth / CSRF / API key / activity; the shell exempts
+    exactly the two POSTs; webhook_events table (UNTOUCHED by reset-fresh).
+  - **Verification:** npm 1930/1930; contract 173/173; migrations ×2; Playwright 57/57; two mutation
+    checks red.
+  - **Decisions:** dedupe key is provider-supplied (Teller event id; Plaid JWT hash in W2) — a Plaid
+    body hash would drop legitimate identical SYNC_UPDATES_AVAILABLE events.
+  - **Follow-ons:** a row left 'processing' by a restart stays so (W6 shows it).
+  - **Where I left off:** W1 committed and pushed; /sync-docs not yet run for it. NEXT: W2
+    (signature verification) — confirm Teller's signature header format against its docs first.
+- **Previous status:** **Seams & Invariants audit #3 DONE** on branch `claude/sweet-ritchie-f9d8ah`
   (2026-10-22, in PR robinchoudhuryums/pers-fin#133). Block: `.cycle/blocks/7-seams3-audit.md`.
   - **Completed:** 16 confirmed findings fixed (X1 WebAuthn double-encoded credential ids + migration
     repair, C1 manual accounts in /api/items, S1 one reconcile at a time, S2 seasonal partial month, X3

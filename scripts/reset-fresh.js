@@ -68,7 +68,7 @@ const KEEP_TABLES = [
 
 // Never touched: migration bookkeeping, scheduler heartbeats, the S&P 500
 // close cache (market data, not the user's) and the server error log.
-const UNTOUCHED_TABLES = ["schema_migrations", "job_runs", "benchmark_prices", "app_errors"];
+const UNTOUCHED_TABLES = ["schema_migrations", "job_runs", "benchmark_prices", "app_errors", "webhook_events"];
 
 let pool = null;
 

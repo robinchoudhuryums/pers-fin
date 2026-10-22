@@ -60,8 +60,17 @@ app.locals.v = BUILD_VERSION;
 // Trust first proxy (Render/Fly.io load balancer) so secure cookies work behind TLS termination
 app.set("trust proxy", 1);
 app.use(morgan("short"));
-app.use(express.json());
+// The raw body is kept for the signed webhook receivers (roadmap T2.1). Under
+// the shell its own parser runs first and already sets req.rawBody; this hook
+// covers a standalone run.
+app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
 app.use(express.urlencoded({ extended: false }));
+
+// Bank webhooks (roadmap T2.1): each request authenticates itself with the
+// provider's signature, so the router is mounted BEFORE the session / auth /
+// CSRF / API-key middleware — and before the activity touch below, so a
+// webhook never keeps the Neon idle-gate open.
+app.use(require("./routes/webhooks"));
 
 // Sub-app mount awareness. When this app is mounted under the unified
 // shell (e.g. app.use("/perfin", subapp)), Express sets req.baseUrl to

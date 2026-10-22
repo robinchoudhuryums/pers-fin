@@ -173,8 +173,16 @@ function isValidApiKey(req) {
 // Per-sistant's Perfin webhook receiver verifies an HMAC over the raw body plus
 // a timestamp replay window (and 503s when no secret is configured). Perfin's
 // HTTP webhook path (e.g. the Settings "test" event) sends no shell cookie.
+// Perfin's bank webhook receivers (roadmap T2.1) verify the Plaid JWT /
+// Teller HMAC themselves and answer 503 while unconfigured. Exact method +
+// path only — nothing else under /perfin/api/webhooks passes.
+const SELF_AUTHENTICATING_POSTS = new Set([
+  "/per-sistant/api/perfin/webhook",
+  "/perfin/api/webhooks/plaid",
+  "/perfin/api/webhooks/teller",
+]);
 function isSelfAuthenticatingRoute(req) {
-  return req.method === "POST" && req.path === "/per-sistant/api/perfin/webhook";
+  return req.method === "POST" && SELF_AUTHENTICATING_POSTS.has(req.path);
 }
 
 async function requireAuth(req, res, next) {
