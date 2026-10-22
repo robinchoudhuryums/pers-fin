@@ -30,6 +30,16 @@ function normalizeParsedTodo(p, input) {
   };
 }
 
+// Roadmap T1.5: a model-calling route answers 501 when no API key is set —
+// after its own 400s (feature off, missing input), before any model call. It used to reach callAI, which throws "AI not configured",
+// and answer 500 — logged as a server error on every Review page load.
+const AI_NOT_CONFIGURED = "AI is not configured on this server (ANTHROPIC_API_KEY is not set).";
+function aiUnavailable(res) {
+  if (isAIAvailable()) return false;
+  res.status(501).json({ error: AI_NOT_CONFIGURED, ai_unavailable: true });
+  return true;
+}
+
 module.exports = function ({ pool }) {
   const router = express.Router();
 
@@ -42,6 +52,7 @@ module.exports = function ({ pool }) {
       if (model === "off") return res.status(400).json({ error: "AI email drafting is disabled. Enable it in Settings." });
       const { prompt, recipient_name } = req.body;
       if (!prompt) return res.status(400).json({ error: "Prompt is required." });
+      if (aiUnavailable(res)) return; // after input checks, before the model call
       const text = await callAI(model,
         `Draft an email based on this request: "${prompt}"${recipient_name ? ` The recipient's name is ${recipient_name}.` : ""}`,
         1024,
@@ -64,6 +75,7 @@ module.exports = function ({ pool }) {
       if (model === "off") return res.status(400).json({ error: "AI task breakdown is disabled. Enable it in Settings." });
       const { title, description } = req.body;
       if (!title) return res.status(400).json({ error: "Task title is required." });
+      if (aiUnavailable(res)) return; // after input checks, before the model call
       const text = await callAI(model,
         `Task: "${title}"${description ? `\nDetails: "${description}"` : ""}`,
         512,
@@ -86,6 +98,7 @@ module.exports = function ({ pool }) {
       if (model === "off") return res.status(400).json({ error: "AI quick add is disabled." });
       const { input } = req.body;
       if (!input) return res.status(400).json({ error: "Input is required." });
+      if (aiUnavailable(res)) return; // after input checks, before the model call
       // F124: "today" in APP_TIMEZONE — the UTC date is already tomorrow on a
       // US evening, so "tomorrow" became the day after.
       const today = todayStr();
@@ -113,6 +126,7 @@ module.exports = function ({ pool }) {
       if (model === "off") return res.status(400).json({ error: "AI review summary is disabled." });
       const { stats } = req.body;
       if (!stats) return res.status(400).json({ error: "Stats required." });
+      if (aiUnavailable(res)) return; // after input checks, before the model call
       const text = await callAI(model,
         `Stats:\n- Tasks completed: ${stats.tasks_completed}\n- Tasks created: ${stats.tasks_created}\n- Emails sent: ${stats.emails_sent}\n- Notes created: ${stats.notes_created}\n- Overdue tasks: ${stats.overdue}\n- Completed task titles: ${stats.completed_titles || "none"}`,
         256,
@@ -132,6 +146,7 @@ module.exports = function ({ pool }) {
       if (model === "off") return res.status(400).json({ error: "AI tone adjustment is disabled." });
       const { body, tone } = req.body;
       if (!body || !tone) return res.status(400).json({ error: "Body and tone are required." });
+      if (aiUnavailable(res)) return; // after input checks, before the model call
       const text = await callAI(model,
         `Tone: "${tone}"\n\nOriginal email:\n${body}`,
         1024,
@@ -149,6 +164,7 @@ module.exports = function ({ pool }) {
     try {
       const model = await getAIModelForFeature("daily_briefing");
       if (model === "off") return res.status(400).json({ error: "AI daily briefing is disabled." });
+      if (aiUnavailable(res)) return; // before the queries and the model call
       const today = todayStr(); // APP_TIMEZONE, matching the habit/rent lines (PB-13)
       const [pending, overdue, scheduled, upcoming, health] = await Promise.all([
         pool.query("SELECT title, priority, category, due_date FROM todos WHERE deleted_at IS NULL AND NOT completed ORDER BY CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END LIMIT 15"),
@@ -221,6 +237,7 @@ module.exports = function ({ pool }) {
       if (!content) return res.status(400).json({ error: "Content is required." });
       // A private / secret note is never sent to the AI (F134).
       if (sensitivity && sensitivity !== "normal") return res.status(400).json({ error: "AI tagging is off for private and secret notes." });
+      if (aiUnavailable(res)) return; // after input checks, before the model call
       const text = await callAI(model,
         `${title ? `Title: "${title}"\n` : ""}Content: "${content.substring(0, 500)}"`,
         128,

@@ -16,6 +16,7 @@ const config = require("./config");
 const { pool, runMigrations } = require("./db");
 const { advanceRecurrence, rollMissedRecurring, fireWebhooks, processDueReminders } = require("./helpers");
 const { todayStr } = require("./routes/health");
+const { loadEmailAttachments } = require("./routes/attachments");
 const middleware = require("./middleware");
 const views = require("./views");
 const { startKeepAlive } = require("./services/keep-alive");
@@ -160,6 +161,11 @@ async function processScheduledEmails() {
           text: email.body,
         };
         if (email.body_html) mail.html = email.body_html;
+        // Its attachments (roadmap T1.5) — a missing file or an oversized total
+        // throws, so the row is marked failed with the reason below instead of
+        // going out without them.
+        const attachments = await loadEmailAttachments(pool, email.id);
+        if (attachments.length) mail.attachments = attachments;
         await transporter.sendMail(mail);
         console.log(`Sent scheduled email ${email.id} to ${email.recipient_email}`);
         // F116: email_sent webhook (+ Slack) for scheduled sends too.

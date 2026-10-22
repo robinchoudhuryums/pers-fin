@@ -27,10 +27,8 @@ let sessionCookies = [];
 // Known, already-filed gaps this smoke tolerates (each with its finding). Keep
 // it shrinking: remove an entry when its fix lands.
 const KNOWN_GAPS = {
-  // Cycle-7 follow-on (found by this smoke): with no ANTHROPIC_API_KEY the
-  // review page's automatic POST /api/ai/review-summary answers 500 (callAI
-  // throws → serverError) instead of a 501. Production has a key.
-  "/per-sistant/review": /^500 .*\/per-sistant\/api\/ai\/review-summary$/,
+  // (empty — the Review page's review-summary 500 was fixed in roadmap T1.5:
+  // AI routes answer 501 without a key and the page skips the call.)
 };
 function unexpected(pagePath, problems, gaps = KNOWN_GAPS) {
   const allow = gaps[pagePath];

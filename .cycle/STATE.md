@@ -18,7 +18,19 @@ Updated: 2026-10-22
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Post-cycle-7 roadmap — T1.5 Batch B DONE** on branch `claude/sweet-ritchie-f9d8ah`
+- **Status:** **Post-cycle-7 roadmap — T1.5 Batch C DONE** on branch `claude/sweet-ritchie-f9d8ah`
+  (2026-10-22, in PR robinchoudhuryums/pers-fin#133). Per-sistant quick wins. Block:
+  `.cycle/blocks/7-roadmap-t1-batchC-broad-implement.md`. Roadmap T1.4 + T1.5 (Batches A–C) are
+  complete; next is the Seams & Invariants audit (counter at 3).
+  - **Completed:** C1 attachments sent by Send Now + the scheduler (loadEmailAttachments, 20MB cap,
+    a missing file refuses the send); C2 failed email error + Retry in the Emails list; C3 AI routes
+    501 without a key (after their own 400s) + the Review page gate; the e2e KNOWN_GAPS entry removed.
+  - **Verification:** npm 1890/1890; contract 165/165; Playwright 57/57; one mutation check red. Net 2.
+  - **Decisions:** the 501 comes after each route's own 400s (existing tests pin input validation
+    without a key); Send Now refuses before claiming, the scheduler fails the claimed row.
+  - **Follow-ons:** compose dialog doesn't list attachments; Retry sends a failed scheduled email now.
+  - **Where I left off:** Batch C committed; run `/sync-docs`, then the Seams & Invariants audit.
+- **Previous status:** **Post-cycle-7 roadmap — T1.5 Batch B DONE** on branch `claude/sweet-ritchie-f9d8ah`
   (2026-10-22, in PR robinchoudhuryums/pers-fin#133). Perfin quick wins. Block:
   `.cycle/blocks/7-roadmap-t1-batchB-broad-implement.md`. Next: Batch C (Per-sistant: attachments on
   send, failed-email error + Retry, AI routes 501 without a key), then the Seams & Invariants audit

@@ -8,6 +8,7 @@ try {
 }
 
 const { serverError } = require("../errors");
+const { loadEmailAttachments } = require("./attachments");
 
 module.exports = function createEmailRoutes({ pool, config, helpers }) {
   const router = express.Router();
@@ -144,6 +145,16 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
       if (!EMAIL_REGEX.test(email.recipient_email)) {
         return res.status(400).json({ error: "Invalid recipient email address." });
       }
+      // The email's attachments, loaded BEFORE the claim (roadmap T1.5): a
+      // missing file or an oversized total is a 400 with the reason and the
+      // email stays unsent — never sent without its attachments.
+      let attachments;
+      try {
+        attachments = await loadEmailAttachments(pool, email.id);
+      } catch (err) {
+        if (err.code === "ATTACHMENT_MISSING" || err.code === "ATTACHMENT_TOO_LARGE") return res.status(400).json({ error: err.message });
+        throw err;
+      }
       // Atomically CLAIM the row before sending (PB-4): flip to 'sent' guarded by
       // `status <> 'sent'`, so a double-POST / retry / concurrent request can't
       // send the same email twice. A losing racer matches 0 rows → 409. Reverted
@@ -167,6 +178,7 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
         text: email.body,
       };
       if (email.body_html) mail.html = email.body_html;
+      if (attachments.length) mail.attachments = attachments;
       await transporter.sendMail(mail);
       // F116: the email_sent webhook (+ Slack) was selectable but never fired.
       // Never allowed to fail the request: the mail has already gone.

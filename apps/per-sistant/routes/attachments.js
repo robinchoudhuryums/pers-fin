@@ -129,7 +129,44 @@ function removeLegacyFile(filename) {
   catch (err) { console.error("attachment file remove error:", err.message); }
 }
 
+// The attachments of an email, as nodemailer attachment objects (roadmap
+// T1.5): uploaded files used to be stored but never sent. Every attachment
+// must be included — a send with one missing would go out incomplete — so a
+// legacy row whose disk file is gone, or a total over MAX_EMAIL_ATTACHMENT_BYTES,
+// throws an error with a `code` and a message the sender shows / stores.
+const MAX_EMAIL_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+async function loadEmailAttachments(pool, emailId, { maxBytes = MAX_EMAIL_ATTACHMENT_BYTES, dir = LEGACY_UPLOADS_DIR } = {}) {
+  const r = await pool.query(
+    "SELECT id, filename, original_name, mime_type, data FROM attachments WHERE entity_type = 'email' AND entity_id = $1 ORDER BY id",
+    [emailId]);
+  const out = [];
+  let total = 0;
+  for (const row of r.rows) {
+    const name = String(row.original_name || row.filename || "attachment");
+    let bytes = row.data;
+    if (!bytes) {
+      const filePath = path.join(dir, path.basename(String(row.filename || "")));
+      if (row.filename && fs.existsSync(filePath)) bytes = fs.readFileSync(filePath);
+    }
+    if (!bytes) {
+      const err = new Error(`Attachment "${name}" is no longer available — remove it or upload it again, then send.`);
+      err.code = "ATTACHMENT_MISSING";
+      throw err;
+    }
+    total += bytes.length;
+    if (total > maxBytes) {
+      const err = new Error(`Attachments total more than ${Math.round(maxBytes / 1024 / 1024)}MB — remove some, then send.`);
+      err.code = "ATTACHMENT_TOO_LARGE";
+      throw err;
+    }
+    out.push({ filename: name, content: bytes, contentType: row.mime_type || "application/octet-stream" });
+  }
+  return out;
+}
+
 // Helpers attached AFTER module.exports = router factory (INV-19).
 module.exports.migrateDiskAttachments = migrateDiskAttachments;
 module.exports.removeLegacyFile = removeLegacyFile;
 module.exports.MAX_ATTACHMENT_BYTES = MAX_ATTACHMENT_BYTES;
+module.exports.loadEmailAttachments = loadEmailAttachments;
+module.exports.MAX_EMAIL_ATTACHMENT_BYTES = MAX_EMAIL_ATTACHMENT_BYTES;

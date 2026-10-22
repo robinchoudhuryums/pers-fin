@@ -117,7 +117,7 @@ async function load() {
   var emails = await fetch('/api/emails'+q).then(r=>r.json());
   if (!emails.length) { document.getElementById('email-list').innerHTML = '<div class="empty-msg">No emails found</div>'; return; }
   document.getElementById('email-list').innerHTML = '<table><thead><tr><th style="width:30px;"></th><th>Status</th><th>To</th><th>Subject</th><th>Scheduled</th><th>Actions</th></tr></thead><tbody>' +
-    emails.map(e => '<tr><td><input type="checkbox" class="email-bulk-check" data-id="'+e.id+'" style="display:'+(emailSelectMode?'inline-block':'none')+';accent-color:var(--accent);cursor:pointer;"></td><td><span class="badge '+e.status+'">'+e.status+'</span></td><td>'+esc(e.recipient_name||e.recipient_email)+'</td><td>'+esc(e.subject)+'</td><td>'+(e.scheduled_at?new Date(e.scheduled_at).toLocaleString():'—')+'</td><td><div class="todo-actions"><button data-action="edit-email" data-id="'+e.id+'">&#9998;</button><button class="delete" data-action="delete-email" data-id="'+e.id+'">&#10005;</button></div></td></tr>'
+    emails.map(e => '<tr><td><input type="checkbox" class="email-bulk-check" data-id="'+e.id+'" style="display:'+(emailSelectMode?'inline-block':'none')+';accent-color:var(--accent);cursor:pointer;"></td><td><span class="badge '+e.status+'">'+e.status+'</span></td><td>'+esc(e.recipient_name||e.recipient_email)+'</td><td>'+esc(e.subject)+(e.status==='failed'?'<div class="email-error" style="color:var(--warn);font-size:12px;margin-top:4px;">Not sent: '+esc(e.error_message||'unknown error')+'</div>':'')+'</td><td>'+(e.scheduled_at?new Date(e.scheduled_at).toLocaleString():'—')+'</td><td><div class="todo-actions">'+(e.status==='failed'?'<button data-action="retry-email" data-id="'+e.id+'" data-e2e-skip aria-label="'+escAttr('Retry sending: '+(e.subject||''))+'">Retry</button>':'')+'<button data-action="edit-email" data-id="'+e.id+'">&#9998;</button><button class="delete" data-action="delete-email" data-id="'+e.id+'">&#10005;</button></div></td></tr>'
     ).join('') + '</tbody></table>';
 }
 
@@ -213,6 +213,17 @@ async function sendNow() {
     var r = await fetch('/api/emails/'+id+'/send', {method:'POST'}).then(r=>r.json()).catch(function(){ return { error: 'no connection' }; });
     if (r.ok) { alert('Email sent!'); closeCompose(); load(); }
     else alert('Failed: '+(r.error||'Unknown error'));
+  });
+}
+
+// A failed email (roadmap T1.5) shows its error in the list and a Retry,
+// which sends it now through the same claim as Send Now (it allows a failed
+// row and refuses a sent one, so it can't double-send). Single-flight per email.
+async function retryEmail(id, btn) {
+  return withPending(btn, 'retry-email-'+id, async function() {
+    var ok = await writeOk(await tryFetch('/api/emails/'+id+'/send', {method:'POST'}), 'Could not send the email');
+    if (ok) showUndo('Email sent', 'email', id, 'info');
+    load();
   });
 }
 
@@ -432,6 +443,7 @@ document.addEventListener('click',function(e){
   var id=parseInt(btn.dataset.id),act=btn.dataset.action;
   e.stopPropagation();
   if(act==='edit-email')openEditEmail(id);
+  else if(act==='retry-email')retryEmail(id, btn);
   else if(act==='delete-email')deleteEmailDirect(id);
   else if(act==='use-tpl')useTemplate(id);
   else if(act==='delete-tpl')deleteTemplate(id);

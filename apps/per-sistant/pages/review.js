@@ -68,6 +68,12 @@ async function load() {
     ? data.upcoming_tasks.map(t => '<div class="todo-item"><div class="todo-content"><div class="todo-title">'+esc(t.title)+'</div><div class="todo-meta"><span class="badge '+t.priority+'">'+t.priority+'</span><span>Due: '+fmtCalDate(t.due_date)+'</span></div></div></div>').join('')
     : '<div class="empty-msg">No tasks scheduled for next week</div>';
 
+  // The AI summary + theme only when AI is configured (roadmap T1.5): with no
+  // API key the summary call answered 500 on every load, and the theme showed
+  // the "AI is not configured" answer as this week's theme.
+  var ai = await fetch('/api/ai/models').then(function(r){ return r.ok ? r.json() : {}; }).catch(function(){ return {}; });
+  if (!ai.available) return;
+
   // Load AI review summary (non-blocking)
   fetch('/api/ai/review-summary', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({stats:{
     tasks_completed: data.tasks_completed.length,
