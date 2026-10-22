@@ -111,8 +111,28 @@ router.get("/api/plaid/status", (_req, res) => {
   });
 });
 
+// Plaid webhooks (roadmap T2.1 W4). The URL Plaid should call for this app's
+// items: PUBLIC_URL (hosting.webhookBaseUrl — never the RENDER_EXTERNAL_URL
+// fallback: setting PUBLIC_URL is the opt-in) + the Perfin mount + the
+// receiver's path; null while PUBLIC_URL isn't set, and then no link token or
+// item gets a webhook (Plaid sends none).
+function plaidWebhookUrl(req) {
+  const base = require("../services/hosting").webhookBaseUrl();
+  if (!base) return null;
+  return base + (req && req.app && req.app.get("embedded") ? "/perfin" : "") + "/api/webhooks/plaid";
+}
+// Spread into a linkTokenCreate request: { webhook } only when a URL is known.
+const webhookParam = (req) => { const url = plaidWebhookUrl(req); return url ? { webhook: url } : {}; };
+// Remember the URL an Item was created / registered with (fail-soft — it only
+// feeds Sync Health, W6). table: 'plaid_items' | 'plaid_investment_items'.
+async function noteItemWebhook(table, plaidItemId, url) {
+  if (!url) return;
+  await pool.query(`UPDATE ${table === "plaid_investment_items" ? "plaid_investment_items" : "plaid_items"} SET webhook_url = $2 WHERE item_id = $1`, [plaidItemId, url])
+    .catch(e => console.error("plaid webhook_url update error:", e.message));
+}
+
 // POST /api/plaid/link-token — create a Plaid Link token for investments
-router.post("/api/plaid/link-token", async (_req, res) => {
+router.post("/api/plaid/link-token", async (req, res) => {
   const client = getPlaidClient();
   if (!client) return res.status(501).json({ error: "Plaid not configured. Set PLAID_CLIENT_ID and PLAID_SECRET." });
   try {
@@ -122,6 +142,7 @@ router.post("/api/plaid/link-token", async (_req, res) => {
       products: [Products.Investments],
       country_codes: [CountryCode.Us],
       language: "en",
+      ...webhookParam(req),
     });
     res.json({ link_token: response.data.link_token });
   } catch (err) {
@@ -244,6 +265,7 @@ router.post("/api/plaid/link-token-transactions", async (req, res) => {
       country_codes: [CountryCode.Us],
       language: "en",
       transactions: { days_requested: 730 },
+      ...webhookParam(req),
     };
     if (req.body?.redirect_uri) {
       tokenRequest.redirect_uri = req.body.redirect_uri;
@@ -281,6 +303,7 @@ router.post("/api/plaid/hosted-link", async (req, res) => {
       language: "en",
       transactions: { days_requested: 730 },
       redirect_uri: req.body.redirect_uri,
+      ...webhookParam(req),
       hosted_link: {
         url_lifetime_seconds: 3600,
         completion_redirect_uri: req.body.redirect_uri,
@@ -359,6 +382,7 @@ router.post("/api/plaid/hosted-link-complete", async (req, res) => {
       [itemId, institutionName, accessToken, ENCRYPTION_PASSPHRASE]
     );
     const plaidItemDbId = itemRow.rows[0].id;
+    await noteItemWebhook("plaid_items", itemId, plaidWebhookUrl(req));
 
     await pool.query(
       `INSERT INTO sync_cursors (plaid_item_id, cursor) VALUES ($1, '')
@@ -460,6 +484,7 @@ router.post("/api/plaid/exchange-transactions", async (req, res) => {
        accessToken, ENCRYPTION_PASSPHRASE]
     );
     const plaidItemDbId = itemRow.rows[0].id;
+    await noteItemWebhook("plaid_items", itemId, plaidWebhookUrl(req));
 
     // Initialize the sync cursor for cursor-based transactionsSync
     await pool.query(
@@ -523,6 +548,7 @@ router.post("/api/plaid/exchange-transactions", async (req, res) => {
              updated_at = now()`,
           [itemId, institution?.name || "Unknown", accessToken, ENCRYPTION_PASSPHRASE]
         );
+        await noteItemWebhook("plaid_investment_items", itemId, plaidWebhookUrl(req));
         const holdingsRes = await client.investmentsHoldingsGet({ access_token: accessToken });
         const holdings = holdingsRes.data.holdings || [];
         const securities = holdingsRes.data.securities || [];
@@ -627,6 +653,7 @@ router.post("/api/plaid/link-token-update", async (req, res) => {
       language: "en",
       access_token: r.item.access_token,
       update: { account_selection_enabled: true },
+      ...webhookParam(req),
     });
     res.json({ link_token: response.data.link_token, kind: r.kind, institution: r.item.institution_name });
   } catch (err) {
@@ -1013,8 +1040,9 @@ async function syncOnePlaidItem(client, item) {
     if (result.incomplete && result.incomplete_reason !== "max_pages") {
       out.errors.push({ institution: item.institution_name, error: "partial_sync_incomplete" });
     }
-    // The item authenticated and synced → clear any recorded re-auth need.
-    await setPlaidItemErrorCode(item.id, null);
+    // The item authenticated and synced → clear any recorded re-auth need —
+    // but not a webhook's advance warning (it still syncs until it expires).
+    await setPlaidItemErrorCode(item.id, null, { keepWarnings: true });
     // The item's own freshness (roadmap T2.1 W3): stamped only when the walk
     // reached the end of the cursor, so a stuck or still-paging item doesn't
     // read as current.
@@ -1173,28 +1201,47 @@ const PLAID_REAUTH_CODES = new Set([
 function isReauthErrorCode(code) {
   return typeof code === "string" && PLAID_REAUTH_CODES.has(code);
 }
+// Advance warnings a Plaid ITEM webhook sets (roadmap T2.1 W4): the item still
+// syncs until its consent expires / it disconnects, so a clean sync must NOT
+// clear them — only a re-authentication does (update-complete, a re-link,
+// LOGIN_REPAIRED). Once it really breaks, the sync's own code replaces them.
+const PLAID_ADVANCE_WARNINGS = ["PENDING_EXPIRATION", "PENDING_DISCONNECT"];
+
+// The notification an item NEWLY flagged with `code` sends.
+function reauthNotice(code, institution) {
+  const name = institution || "A Plaid connection";
+  if (PLAID_ADVANCE_WARNINGS.includes(code)) {
+    return { title: "Bank connection expires soon", body: `${name}'s connection will stop syncing soon. Open Accounts → Re-authenticate to keep it working.` };
+  }
+  if (code === "USER_PERMISSION_REVOKED") {
+    return { title: "Bank connection access revoked", body: `Access to ${name} was revoked at Plaid. Open Accounts → Re-authenticate (or unlink and link it again if that fails).` };
+  }
+  return { title: "Bank connection needs re-authentication", body: `${name} needs you to sign in again. Open Accounts → Re-authenticate.` };
+}
 
 // Record (code) or clear (null) the item's re-auth signal. Fail-soft: a missing
 // column (pre-migration) or DB blip must never break a sync. When an item NEWLY
 // needs re-authentication (no code before), one notification deep-links to the
 // Accounts page, where "Re-authenticate" opens Plaid Link in update mode
-// (cycle-7 G3). A code that stays set doesn't re-notify.
-async function setPlaidItemErrorCode(plaidItemDbId, code) {
+// (cycle-7 G3). A code that stays set doesn't re-notify. keepWarnings (a clean
+// sync's clear): leave an advance warning (PLAID_ADVANCE_WARNINGS) in place.
+async function setPlaidItemErrorCode(plaidItemDbId, code, { keepWarnings = false } = {}) {
   const r = await pool.query(
     code === null
-      ? "UPDATE plaid_items SET last_error_code = NULL WHERE id = $1 AND last_error_code IS NOT NULL"
+      ? (keepWarnings
+        ? "UPDATE plaid_items SET last_error_code = NULL WHERE id = $1 AND last_error_code IS NOT NULL AND last_error_code <> ALL($2::text[])"
+        : "UPDATE plaid_items SET last_error_code = NULL WHERE id = $1 AND last_error_code IS NOT NULL")
       : `WITH prev AS (SELECT last_error_code AS was FROM plaid_items WHERE id = $1)
          UPDATE plaid_items SET last_error_code = $2, updated_at = now()
          WHERE id = $1 AND last_error_code IS DISTINCT FROM $2
          RETURNING institution_name, (SELECT was FROM prev) AS was`,
-    code === null ? [plaidItemDbId] : [plaidItemDbId, code]
+    code === null ? (keepWarnings ? [plaidItemDbId, PLAID_ADVANCE_WARNINGS] : [plaidItemDbId]) : [plaidItemDbId, code]
   ).catch(e => { console.error("plaid item error-code update error:", e.message); return null; });
   if (code !== null && r && r.rows && r.rows.length && r.rows[0].was == null) {
     try {
       const { sendToAll } = require("./notifications");
       await sendToAll({
-        title: "Bank connection needs re-authentication",
-        body: `${r.rows[0].institution_name || "A Plaid connection"} needs you to sign in again. Open Accounts → Re-authenticate.`,
+        ...reauthNotice(code, r.rows[0].institution_name),
         tag: `plaid-reauth-${plaidItemDbId}`,
         data: { url: "/accounts" },
       });
@@ -1202,6 +1249,52 @@ async function setPlaidItemErrorCode(plaidItemDbId, code) {
   }
 }
 
+
+// POST /api/plaid/webhooks/register — point every connected Plaid Item at this
+// app's webhook URL (roadmap T2.1 W4): item/webhook/update for each GOOD
+// plaid_items row and each investments-only Item, recording the URL on the
+// ones Plaid accepted. Items linked after PUBLIC_URL was set already carry it
+// (the link tokens do); this is for the ones linked before, and after the
+// address changes. 400 while PUBLIC_URL isn't set. A token that won't decrypt
+// is reported per item (decryption_failed), never sent.
+router.post("/api/plaid/webhooks/register", async (req, res) => {
+  const client = getPlaidClient();
+  if (!client) return res.status(501).json({ error: "Plaid not configured." });
+  const url = plaidWebhookUrl(req);
+  if (!url) return res.status(400).json({ error: "Set PUBLIC_URL to this app's public https address first — Plaid calls that address." });
+  try {
+    const items = await pool.query(
+      `SELECT 'plaid_items' AS tbl, item_id, institution_name,
+              perfin_try_decrypt(access_token_enc, $1) AS access_token
+         FROM plaid_items WHERE status = 'GOOD'
+       UNION ALL
+       SELECT 'plaid_investment_items', pii.item_id, pii.institution_name,
+              perfin_try_decrypt(pii.access_token_enc, $1)
+         FROM plaid_investment_items pii
+        WHERE NOT EXISTS (SELECT 1 FROM plaid_items pi WHERE pi.item_id = pii.item_id)`,
+      [ENCRYPTION_PASSPHRASE]
+    );
+    let registered = 0;
+    const errors = [];
+    for (const item of items.rows) {
+      if (!item.access_token) { errors.push({ institution: item.institution_name, error: "decryption_failed" }); continue; }
+      try {
+        await client.itemWebhookUpdate({ access_token: item.access_token, webhook: url });
+        await noteItemWebhook(item.tbl, item.item_id, url);
+        // A combined Item also has an investments registry row — same Item.
+        if (item.tbl === "plaid_items") await noteItemWebhook("plaid_investment_items", item.item_id, url);
+        registered++;
+      } catch (err) {
+        console.error("Plaid webhook register error for", item.institution_name, ":", err.response?.data?.error_code || err.message);
+        errors.push({ institution: item.institution_name, error: err.response?.data?.error_code || "request_failed" });
+      }
+    }
+    res.json({ ok: errors.length === 0, url, registered, failed: errors.length, errors: errors.length ? errors : undefined });
+  } catch (err) {
+    console.error("Plaid webhook register error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
 
 // reconcilePlaidTransactions — reset every Plaid item's transactionsSync cursor
 // to empty, then re-walk the full history. Plaid's cursor model is all-or-
@@ -1564,6 +1657,7 @@ router.post("/api/plaid/exchange", async (req, res) => {
          updated_at = now()`,
       [itemId, institution?.name || "Unknown", accessToken, ENCRYPTION_PASSPHRASE]
     );
+    await noteItemWebhook("plaid_investment_items", itemId, plaidWebhookUrl(req));
 
     // Fetch initial holdings
     const holdingsRes = await client.investmentsHoldingsGet({ access_token: accessToken });
@@ -2302,6 +2396,10 @@ module.exports = router;
 module.exports.syncAllPlaidTransactions = syncAllPlaidTransactions;
 module.exports.syncPlaidItem = syncPlaidItem; // roadmap T2.1 W3: the per-item sync a Plaid webhook triggers
 module.exports.syncOnePlaidItem = syncOnePlaidItem;
+module.exports.setPlaidItemErrorCode = setPlaidItemErrorCode; // roadmap T2.1 W4: the Plaid ITEM webhook events
+module.exports.isReauthErrorCode = isReauthErrorCode;
+module.exports.PLAID_ADVANCE_WARNINGS = PLAID_ADVANCE_WARNINGS;
+module.exports.plaidWebhookUrl = plaidWebhookUrl;
 module.exports.syncPlaidItemTransactions = syncPlaidItemTransactions; // exported for testing (sync idempotency — T1)
 module.exports.reconcilePlaidTransactions = reconcilePlaidTransactions;
 module.exports.syncAllPlaidBalances = syncAllPlaidBalances;

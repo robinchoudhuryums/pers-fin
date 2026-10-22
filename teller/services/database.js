@@ -925,6 +925,10 @@ async function runMigrationsOnce() {
     // the per-connection freshness a webhook-triggered sync advances without
     // touching the global last_txn_sync_at (roadmap T2.1 W3).
     await client.query("ALTER TABLE plaid_items ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ");
+    // The webhook URL each Plaid item was last registered with (link token or
+    // POST /api/plaid/webhooks/register — roadmap T2.1 W4); NULL = none known.
+    await client.query("ALTER TABLE plaid_items ADD COLUMN IF NOT EXISTS webhook_url TEXT");
+    await client.query("ALTER TABLE plaid_investment_items ADD COLUMN IF NOT EXISTS webhook_url TEXT");
 
     // ---- Settle-up log: one row per month the user marks squared with the
     // partner (combined shared-card + housing even-up). UNIQUE(period) so

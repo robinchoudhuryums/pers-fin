@@ -274,7 +274,7 @@ describe("W3 — runPostSyncSteps", () => {
 
 describe("W3 — the Plaid event handler", () => {
   const { createPlaidEventHandler } = require("../teller/routes/plaid-webhook-events");
-  function handlerWith({ rows = [{ id: 7 }], result = { ok: true, added: 2, failed: false } } = {}) {
+  function handlerWith({ rows = [{ kind: "txn", id: 7, institution_name: "Capital Bank" }], result = { ok: true, added: 2, failed: false } } = {}) {
     const calls = { db: [], sync: [], post: [] };
     const h = createPlaidEventHandler({
       db: { query: async (sql, params) => { calls.db.push({ sql, params }); return { rows }; } },
@@ -289,6 +289,7 @@ describe("W3 — the Plaid event handler", () => {
     const { h, calls } = handlerWith();
     assert.deepEqual(await h(SYNC, { id: 1, provider: "plaid" }), { status: "done" });
     assert.match(calls.db[0].sql, /FROM plaid_items WHERE item_id = \$1 AND status = 'GOOD'/);
+    assert.match(calls.db[0].sql, /FROM plaid_investment_items WHERE item_id = \$1/);
     assert.deepEqual(calls.db[0].params, ["it_7"]);
     assert.deepEqual(calls.sync, [7]);
     assert.deepEqual(calls.post, [2]);
@@ -303,12 +304,12 @@ describe("W3 — the Plaid event handler", () => {
     assert.equal(noSubject.calls.db.length, 0);
   });
 
-  it("every other event is ignored without a query (item events come with W4)", async () => {
+  it("events it doesn't act on are ignored without a query", async () => {
     const { h, calls } = handlerWith();
     for (const ev of [
       { type: "TRANSACTIONS", code: "DEFAULT_UPDATE", subject: "it_7" },
-      { type: "ITEM", code: "ERROR", subject: "it_7" },
-      { type: "HOLDINGS", code: "DEFAULT_UPDATE", subject: "it_7" },
+      { type: "HOLDINGS", code: "OTHER", subject: "it_7" },
+      { type: "AUTH", code: "AUTOMATICALLY_VERIFIED", subject: "it_7" },
       {},
     ]) assert.deepEqual(await h(ev), { status: "ignored" });
     assert.equal(calls.db.length, 0);
@@ -322,6 +323,7 @@ describe("W3 — the Plaid event handler", () => {
 
   it("a failed item sync still names + checks what it added, then fails the event", async () => {
     const { h, calls } = handlerWith({ result: { ok: true, added: 1, failed: true } });
+    // (an investments-only registry row alone isn't a transactions item)
     await assert.rejects(() => h(SYNC), /Plaid item sync failed/);
     assert.deepEqual(calls.post, [1]);
   });
@@ -342,7 +344,7 @@ describe("W3 — through the production router", () => {
       pages: { tok_7: { added: [txn("t1")] } },
       db: async (sql, params) => {
         if (sql.includes("INSERT INTO webhook_events")) return { rows: [{ id: 41 }] };
-        if (sql.includes("SELECT id FROM plaid_items WHERE item_id = $1")) return { rows: ITEMS.filter((i) => i.item_id === params[0]).map((i) => ({ id: i.id })) };
+        if (sql.includes("FROM plaid_items WHERE item_id = $1")) return { rows: ITEMS.filter((i) => i.item_id === params[0]).map((i) => ({ kind: "txn", id: i.id, institution_name: i.institution_name })) };
         if (sql.includes("UPDATE webhook_events SET status = $2")) { statuses.push(params[1]); finished(); }
         if (sql.includes("UPDATE webhook_events SET status = 'processing'")) statuses.push("processing");
       },

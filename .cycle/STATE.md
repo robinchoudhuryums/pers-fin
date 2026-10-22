@@ -18,7 +18,29 @@ Updated: 2026-10-22
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T2.1 (bank webhooks) — W3 DONE** on branch `claude/sweet-ritchie-f9d8ah`
+- **Status:** **Roadmap T2.1 (bank webhooks) — W4 DONE** on branch `claude/sweet-ritchie-f9d8ah`
+  (2026-10-22, in PR robinchoudhuryums/pers-fin#133). Plan: `.cycle/plan-t2-1-webhooks.md`.
+  Block: `.cycle/blocks/7-roadmap-t2-1-w4-broad-implement.md`.
+  - **Completed:** plaid-webhook-events.js — ITEM events (re-auth ERROR / PENDING_EXPIRATION /
+    PENDING_DISCONNECT / USER_PERMISSION_REVOKED set last_error_code, LOGIN_REPAIRED clears,
+    NEW_ACCOUNTS_AVAILABLE notifies ≤1/day), HOLDINGS → syncAllPlaidHoldings({ itemId }),
+    INVESTMENTS_TRANSACTIONS → syncAllPlaidInvestmentFlows({ itemId }) (new filter); lookup in
+    plaid_items + plaid_investment_items. Registration: hosting.webhookBaseUrl (PUBLIC_URL only),
+    plaidWebhookUrl(req) on the four linkTokenCreate calls, webhook_url columns recorded at
+    exchange, POST /api/plaid/webhooks/register (itemWebhookUpdate per Item). Advance warnings
+    (PENDING_*) survive a clean sync (setPlaidItemErrorCode keepWarnings); per-code notification
+    text. Verifier passes error.error_code. Docs folded in (new INV-139).
+  - **Verification:** npm 1980/1980 (17 new); contract 183/183 (5 new); migrations twice OK;
+    Playwright not re-run (no page / mount change; link tokens unchanged without PUBLIC_URL);
+    three mutation checks red.
+  - **Decisions:** opt-in is PUBLIC_URL alone (never RENDER_EXTERNAL_URL — plan decision 1);
+    PENDING_* are advance warnings only a re-authentication clears; investments-only Items'
+    re-auth events ignored (no column); NEW_ACCOUNTS_AVAILABLE deduped with sentRecently 24h.
+  - **Follow-ons:** investments-only re-auth signal; confirm update mode repairs
+    USER_PERMISSION_REVOKED and accepts `webhook`; holdings sync not serialized with a webhook run.
+  - **Where I left off:** W4 committed and pushed with docs. NEXT: W5 (Teller events) — confirm
+    Teller's signature format first.
+- **Previous status:** **Roadmap T2.1 (bank webhooks) — W3 DONE** on branch `claude/sweet-ritchie-f9d8ah`
   (2026-10-22, in PR robinchoudhuryums/pers-fin#133). Plan: `.cycle/plan-t2-1-webhooks.md`.
   Block: `.cycle/blocks/7-roadmap-t2-1-w3-broad-implement.md`.
   - **Completed:** investments.js — syncOnePlaidItem (one item's whole sync, the loop body of

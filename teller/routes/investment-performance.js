@@ -144,7 +144,9 @@ function classifyPlaidFlow(txn) {
 const FLOW_BACKFILL_DAYS = 730;
 const FLOW_PAGE_SIZE = 500;
 const FLOW_MAX_PAGES = 30;
-async function syncAllPlaidInvestmentFlows() {
+// itemId (a Plaid item_id) limits the run to that one Item — a Plaid
+// INVESTMENTS_TRANSACTIONS webhook (roadmap T2.1 W4).
+async function syncAllPlaidInvestmentFlows({ itemId = null } = {}) {
   const client = getPlaidClient();
   if (!client) return { ok: false, error: "Plaid not configured" };
   try {
@@ -164,8 +166,9 @@ async function syncAllPlaidInvestmentFlows() {
            WHERE la.plaid_item_id = pi.id AND ${INVESTMENT_ACCOUNT_TYPES}
          )
        ) u
+       WHERE ($2::text IS NULL OR item_id = $2::text)
        ORDER BY item_id, src`,
-      [ENCRYPTION_PASSPHRASE]
+      [ENCRYPTION_PASSPHRASE, itemId]
     );
     const acctRows = await pool.query(
       "SELECT id, plaid_account_id FROM investment_accounts WHERE plaid_account_id IS NOT NULL"

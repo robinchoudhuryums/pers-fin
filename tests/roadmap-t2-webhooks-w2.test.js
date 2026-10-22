@@ -68,7 +68,7 @@ describe("W2 — Plaid JWT verification", () => {
     const r = await v.verify(plaidReq(token));
     assert.equal(r.ok, true);
     assert.equal(r.dedupeKey, "jwt:" + crypto.createHash("sha256").update(token).digest("hex"));
-    assert.deepEqual(r.event, { type: "TRANSACTIONS", code: "SYNC_UPDATES_AVAILABLE", subject: "item-1" });
+    assert.deepEqual(r.event, { type: "TRANSACTIONS", code: "SYNC_UPDATES_AVAILABLE", subject: "item-1", error_code: null });
   });
 
   it("a body that doesn't match request_body_sha256 is refused", async () => {

@@ -6,7 +6,7 @@
 // exact bytes received — the shell's JSON parser keeps them), req.headers and
 // the parsed req.body. A verifier never logs the body; on any doubt it returns
 // { ok: false } (the router answers 401). event carries only short provider
-// fields: { type, code, subject }.
+// fields: { type, code, subject } (+ Plaid's error_code — W4).
 //
 // Plaid — the `Plaid-Verification` header is an ES256 JWT:
 //   - alg must be ES256 (anything else, including "none", is refused);
@@ -102,7 +102,12 @@ function createPlaidVerifier({
       return {
         ok: true,
         dedupeKey: "jwt:" + sha256Hex(token),
-        event: { type: clip(body.webhook_type, 100), code: clip(body.webhook_code, 100), subject: clip(body.item_id, 200) },
+        // error_code: an ITEM / ERROR (or USER_PERMISSION_REVOKED) event's
+        // Plaid error code — the only field of its error object the handler reads.
+        event: {
+          type: clip(body.webhook_type, 100), code: clip(body.webhook_code, 100), subject: clip(body.item_id, 200),
+          error_code: clip(body.error && typeof body.error === "object" ? body.error.error_code : null, 100),
+        },
       };
     },
   };

@@ -29,7 +29,14 @@ function publicUrl(env = process.env) {
   return /^https?:\/\/[^\s/]+/i.test(raw) ? raw : null;
 }
 
+// The base URL bank webhooks are registered at (roadmap T2.1 W4): PUBLIC_URL
+// ONLY, never the RENDER_EXTERNAL_URL fallback — setting PUBLIC_URL is how the
+// operator opts in (a sleeping free-tier host would be woken by every event).
+function webhookBaseUrl(env = process.env) {
+  return publicUrl({ PUBLIC_URL: (env || {}).PUBLIC_URL });
+}
+
 const alwaysOn = (env = process.env) => envFlag(env, "ALWAYS_ON");
 const serverBackups = (env = process.env) => envFlag(env, "SERVER_BACKUPS");
 
-module.exports = { publicUrl, alwaysOn, serverBackups, envFlag };
+module.exports = { publicUrl, webhookBaseUrl, alwaysOn, serverBackups, envFlag };
