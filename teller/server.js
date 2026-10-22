@@ -292,9 +292,10 @@ app.use("/api", (req, res, next) => {
   if (req.path === "/login" || req.path === "/logout") return next();
   if (req.session && req.session.authenticated) return next();
   const provided = req.headers["x-api-key"];
-  const providedBuf = Buffer.from(provided || "");
-  const keyBuf = Buffer.from(API_KEY);
-  if (!provided || providedBuf.length !== keyBuf.length || !crypto.timingSafeEqual(providedBuf, keyBuf)) {
+  // Fixed-length SHA-256 digests (INV-104; seams audit #3): the length-checked
+  // raw-buffer compare leaked the key's length.
+  const digest = (v) => crypto.createHash("sha256").update(String(v)).digest();
+  if (!provided || !crypto.timingSafeEqual(digest(provided), digest(API_KEY))) {
     return res.status(401).json({ error: "Unauthorized: invalid or missing API key" });
   }
   next();

@@ -393,9 +393,10 @@ ${themeScript()}
     const { password } = req.body;
     if (!AUTH_SECRET) return res.json({ ok: true });
     if (!password) return res.status(400).json({ error: (AUTH_MODE === "pin" ? "PIN" : "Password") + " required" });
-    const providedBuf = Buffer.from(String(password));
-    const expectedBuf = Buffer.from(AUTH_SECRET);
-    if (providedBuf.length === expectedBuf.length && crypto.timingSafeEqual(providedBuf, expectedBuf)) {
+    // Fixed-length SHA-256 digests (INV-104; seams audit #3) — a raw-buffer
+    // compare behind a length check leaked the secret's length.
+    const digest = (v) => crypto.createHash("sha256").update(String(v)).digest();
+    if (crypto.timingSafeEqual(digest(password), digest(AUTH_SECRET))) {
       let timeout = 15;
       try {
         const r = await pool.query("SELECT session_timeout_minutes FROM user_settings WHERE id = 1");

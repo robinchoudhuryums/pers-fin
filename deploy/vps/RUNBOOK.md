@@ -85,10 +85,15 @@ scp -r deploy/vps/postgres-init admin@<server>:/tmp/
 ```
 
 ```bash
-$ cd /opt/pers-fin
-$ sudo mv /tmp/{docker-compose.yml,Caddyfile,deploy.sh,backup.sh,.env.example,app.env.example} /tmp/postgres-init .
-$ sudo chown -R deploy:deploy /opt/pers-fin && sudo chmod 755 deploy.sh backup.sh postgres-init/01-databases.sh
+$ sudo mv /tmp/{docker-compose.yml,Caddyfile,deploy.sh,backup.sh,.env.example,app.env.example} /tmp/postgres-init /opt/pers-fin/
+$ sudo chown -R deploy:deploy /opt/pers-fin
+$ sudo chmod 755 /opt/pers-fin/{deploy.sh,backup.sh,postgres-init/01-databases.sh}
 ```
+
+`/opt/pers-fin` belongs to `deploy` (mode 750) and only `deploy` is in the `docker`
+group, so **from step 5 on, run the `$` commands in `/opt/pers-fin` as that user**:
+`sudo -iu deploy`, then `cd /opt/pers-fin`. Commands shown with `sudo` (backups,
+cron) run from your own admin login.
 
 **The deploy key** — **(laptop)** generate a key used only by the workflow:
 
@@ -330,7 +335,7 @@ $ docker compose logs -f caddy      # wait for "certificate obtained successfull
 | Plaid dashboard | Add the new domain anywhere it lists allowed domains / OAuth redirect URIs |
 | Teller dashboard | Same check for the application's domain settings |
 | `mobile/capacitor.config.json` | `server.url` + `allowNavigation` → the new host (a code change) |
-| Uptime monitor | Point it at `https://<DOMAIN>/health` |
+| Uptime monitor | Point it at `https://<DOMAIN>/health/deep` (see Monitoring) |
 
 ## 10. Rollback (while Neon is still there)
 
@@ -387,17 +392,20 @@ $ echo '17 3 * * * root /opt/pers-fin/backup.sh >> /var/log/pers-fin-backup.log 
 ```
 
 **Restore drill** (do one now, then once or twice a year). It restores into
-scratch databases next to the real ones:
+scratch databases next to the real ones. The backups directory and the passphrase
+are root-only and the compose commands need the `docker` group, so run the drill
+from a root shell (`sudo -i`). `app` below is the default `APP_DB_USER` — use
+yours if you changed it (step 8d too):
 
 ```bash
-$ cd /opt/pers-fin && f=$(ls -t /var/backups/pers-fin/perfin-*.dump.gpg | head -1)
-$ sudo gpg --batch --pinentry-mode loopback --passphrase-file /root/.pers-fin-backup-passphrase -d "$f" > dumps/drill.dump
-$ docker compose exec -T db createdb -U postgres -O app drill
-$ docker compose exec -T db psql -U postgres -d drill -c 'CREATE EXTENSION pgcrypto; CREATE EXTENSION vector;'
-$ docker compose exec -T db sh -c "pg_restore -l /dumps/drill.dump | grep -v -E 'EXTENSION - |COMMENT - EXTENSION ' > /tmp/drill.list"
-$ docker compose exec -T db pg_restore -U postgres -d drill --no-owner --role=app -L /tmp/drill.list /dumps/drill.dump
-$ docker compose exec -T db psql -U postgres -d drill -Atc 'select count(*) from transactions'
-$ docker compose exec -T db dropdb -U postgres drill && rm dumps/drill.dump
+# cd /opt/pers-fin && f=$(ls -t /var/backups/pers-fin/perfin-*.dump.gpg | head -1)
+# gpg --batch --pinentry-mode loopback --passphrase-file /root/.pers-fin-backup-passphrase -d "$f" > dumps/drill.dump
+# docker compose exec -T db createdb -U postgres -O app drill
+# docker compose exec -T db psql -U postgres -d drill -c 'CREATE EXTENSION pgcrypto; CREATE EXTENSION vector;'
+# docker compose exec -T db sh -c "pg_restore -l /dumps/drill.dump | grep -v -E 'EXTENSION - |COMMENT - EXTENSION ' > /tmp/drill.list"
+# docker compose exec -T db pg_restore -U postgres -d drill --no-owner --role=app -L /tmp/drill.list /dumps/drill.dump
+# docker compose exec -T db psql -U postgres -d drill -Atc 'select count(*) from transactions'
+# docker compose exec -T db dropdb -U postgres drill && rm dumps/drill.dump
 ```
 
 **Restoring for real** (after a disaster) is the same, into `perfin` /

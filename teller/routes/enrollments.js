@@ -526,7 +526,20 @@ function thrownSyncResult(err) {
   return { errors: [{ institution: null, error: (err && err.message) || String(err) }] };
 }
 
-async function recordSyncResult(parts) {
+// Writes are serialized in-process (seams audit #3, INV-68): each one is a
+// read-merge-write of the per-provider map, so two recorders finishing
+// together (the auto-sync and a manual Sync Balances) could each read the old
+// map and the second write drop the first one's providers. One Node process
+// owns the row, so a promise chain is enough.
+let recordChain = Promise.resolve();
+function recordSyncResult(parts) {
+  const run = recordChain.then(() => recordSyncResultNow(parts));
+  // The chain moves on after a failure (the caller still gets the rejection).
+  recordChain = run.catch((e) => console.error("record sync result failed:", e.message));
+  return run;
+}
+
+async function recordSyncResultNow(parts) {
   const at = new Date().toISOString();
   let providers = {};
   try {
@@ -754,21 +767,39 @@ async function reconcileTeller(days = 90) {
 // background code paths. Teller re-fetches the trailing window; Plaid resets
 // each item's cursor and re-walks transactionsSync (idempotent upserts).
 // Stamps last_reconcile_at on completion.
-async function runReconcile(days, provider) {
+// One reconcile at a time (seams audit #3, INV-127): the synchronous route,
+// the background route and the weekly in-process heal all hold this guard, so
+// a second run is refused (409 / skipped) instead of repeating a 90-day
+// Teller re-fetch or a full Plaid re-walk next to the one already going.
+let reconcileActive = 0;
+function reconcileBusy() { return reconcileActive > 0 || bgJobs.reconcile.running; }
+async function withReconcileGuard(fn) {
+  reconcileActive++;
+  try { return await fn(); } finally { reconcileActive--; }
+}
+
+async function runReconcile(days, provider, job = null) {
+  return withReconcileGuard(() => runReconcileBody(days, provider, job));
+}
+
+async function runReconcileBody(days, provider, job) {
+  // The phase belongs to the background job only — a synchronous run used to
+  // write it onto the idle slot ("Finalizing" left behind).
+  const phase = (p) => { if (job) job.phase = p; };
   const out = { days, provider };
   if (provider === "teller" || provider === "all") {
-    bgJobs.reconcile.phase = "Re-fetching Teller transactions";
+    phase("Re-fetching Teller transactions");
     try { out.teller = await reconcileTeller(days); }
     catch (e) { out.teller = { error: e.message }; }
   }
   if (provider === "plaid" || provider === "all") {
-    bgJobs.reconcile.phase = "Re-walking Plaid history (this is the slow part)";
+    phase("Re-walking Plaid history (this is the slow part)");
     try {
       const { reconcilePlaidTransactions } = require("./investments");
       out.plaid = await reconcilePlaidTransactions();
     } catch (e) { out.plaid = { error: e.message }; }
   }
-  bgJobs.reconcile.phase = "Finalizing";
+  phase("Finalizing");
   // Record the reconcile outcome in last_sync_result (BSI-11) — it was never
   // recorded, so a failing reconcile was invisible. A leg that threw becomes a
   // single error entry.
@@ -832,27 +863,35 @@ router.post("/api/sync/reconcile", async (req, res) => {
   const days = Math.max(1, Math.min(365, parseInt(req.body.days, 10) || 90));
   const provider = ["teller", "plaid", "all"].includes(req.body.provider) ? req.body.provider : "all";
 
+  // Either path refuses while any reconcile runs (background, synchronous or
+  // the weekly heal) — a synchronous call can't join a run with other days /
+  // provider, so it gets the same 409 (id null when it isn't a background job).
+  if (reconcileBusy()) {
+    const cur = bgJobs.reconcile;
+    return res.status(409).json({ running: true, kind: "reconcile", id: cur.running ? cur.id : null, started_at: cur.running ? cur.started_at : null, error: "A reconcile is already running." });
+  }
   if (req.body.background === true) {
-    if (bgJobs.reconcile.running) {
-      return res.status(409).json({ running: true, kind: "reconcile", id: bgJobs.reconcile.id, started_at: bgJobs.reconcile.started_at, error: "A reconcile is already running." });
-    }
     const job = startBgJob("reconcile", { provider, days });
     // Fire-and-forget. Completion is reported via the status endpoint + a push.
     (async () => {
       let out;
-      try { out = await runReconcile(days, provider); }
+      try { out = await runReconcile(days, provider, job); }
       catch (e) { out = { days, provider, error: e.message }; }
       // WD-17: per-item errors inside a leg (out.teller.errors / out.plaid.errors)
       // used to be ignored, so a reconcile whose items all failed still read
       // "Reconcile complete" in Settings and in the push.
+      // The status's error is a FIXED sentence (INV-127, parity with the sync /
+      // sync-balances slots — seams audit #3): it used to carry exception text
+      // and Teller response bodies. The per-item detail is in last_sync_result
+      // (Settings → Sync Health); errors[] keeps only who failed.
       const errs = reconcileErrors(out);
       finishBgJob(job, {
         result: out,
-        error: out.error || (errs.length
-          ? errs.length + " error(s): " + errs.slice(0, 3).map(e => (e.institution ? e.institution + ": " : (e.provider ? e.provider + ": " : "")) + e.error).join("; ")
+        error: out.error ? "The reconcile failed." : (errs.length
+          ? errs.length + " item(s) failed — see Settings → Sync Health."
           : null),
       });
-      job.errors = errs;
+      job.errors = errs.map((e) => ({ provider: e.provider || null, institution: e.institution || null }));
       try {
         const { sendToAll } = require("./notifications");
         await sendToAll({
@@ -902,6 +941,10 @@ router.get("/api/items", async (_req, res) => {
        FROM linked_accounts la
        LEFT JOIN teller_enrollments te ON te.id = la.teller_enrollment_id
        LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
+       -- Manual accounts (no enrollment, no item) are listed on their own; they
+       -- used to group into one null "plaid" item with Add accounts / Unlink
+       -- buttons that answered 400 / 500 (seams audit #3).
+       WHERE la.teller_enrollment_id IS NOT NULL OR la.plaid_item_id IS NOT NULL
        GROUP BY te.id, te.enrollment_id, te.institution_name, te.status, te.created_at,
                 pi.id, pi.item_id, pi.institution_name, pi.status, pi.created_at, pi.last_error_code
        ORDER BY COALESCE(te.created_at, pi.created_at)`
@@ -1568,6 +1611,8 @@ module.exports = router;
 module.exports.syncAllEnrollments = syncAllEnrollments;
 module.exports.syncAllBalances = syncAllBalances;
 module.exports.reconcileTeller = reconcileTeller;
+module.exports.reconcileBusy = reconcileBusy;
+module.exports.withReconcileGuard = withReconcileGuard;
 module.exports.reconcileErrors = reconcileErrors;
 module.exports.summarizeReconcile = summarizeReconcile;
 module.exports.recordSyncResult = recordSyncResult;

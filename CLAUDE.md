@@ -100,6 +100,11 @@ teller/
                            timeout, fail-soft ("unknown" + reason; a 401 / 404 on
                            the repo = one reason, no checks); errors carry only
                            the HTTP status, never the token or a response body
+    webauthn-ids.js      — WebAuthn credential ids (seams audit #3, INV-136):
+                           legacyCredentialId spots a double-encoded stored id
+                           (registration used to re-encode the already-base64url
+                           credential.id); repairCredentialIds rewrites them in
+                           the migration transaction (a duplicate is removed)
     hosting.js           — What the host provides (VPS move): publicUrl (PUBLIC_URL,
                            else RENDER_EXTERNAL_URL), alwaysOn (ALWAYS_ON — no
                            keep-alive ping), serverBackups (SERVER_BACKUPS —
@@ -688,9 +693,22 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1890 tests as of latest); use
+  Perfin and Per-sistant test files (1915 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1890 tests across 93 test files (incl.
+  Current count: 1915 tests across 95 test files (incl.
+  `tests/seams-audit-3.test.js` + `apps/per-sistant/tests/seams-audit-3.test.js` —
+  Seams & Invariants audit #3: WebAuthn credential ids stored as given +
+  `repairCredentialIds` (a double-encoded row rewritten, a duplicate dropped,
+  idempotent), GET /api/items leaving manual accounts out, one reconcile at a time
+  (either route 409s while one runs, a synchronous run never writes the job slot, the
+  weekly heal skips) with a fixed-sentence background error, `recordSyncResult`
+  serialized (two at once keep both providers), rename rules after a single-Item
+  Plaid sync, the seasonal window's whole oldest month, the APP_TIMEZONE tax year,
+  goal milestones through `deriveGoalProgress`, the first VALID digest recipient,
+  whats-new `source_id`, the digest key compares; Per-sistant: the finance snapshot
+  listing a charge due today, the SW's `!r.redirected` + `per-sistant-v9`, the
+  knowledge-reindex 409 skip + count-only failure line, the standalone login digest
+  compare — the database-backed half is `tests/contract/seams3.contract.test.js`;
   `apps/per-sistant/tests/roadmap-t1-batchc.test.js` — roadmap T1.5 Batch C:
   loadEmailAttachments (order + shape, a legacy disk file, a missing file, the 20MB
   cap, none), both senders' wiring, Send Now's 400 without a claim, the Emails page's
@@ -1033,7 +1051,8 @@ shell/
   (roadmap T1.5 Batch C: Send Now carrying two stored attachments, a missing one a 400
   that leaves a draft, the scheduler marking it failed with the reason + the failed
   list, Retry after removing it sending once and a second Retry 409, review-summary
-  501). 165 tests, run
+  501), and seams3 (Seams audit #3: GET /api/items without a manual account's null
+  item; repairCredentialIds on the real table). 167 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -2615,17 +2634,20 @@ shared session cookie. Cross-app surface area today:
   self-fetching. Self-fetches 401 through the shell auth gate (the
   in-process fetch carries no shell session cookie), so the wired-pool
   path is the load-bearing design under the unified shell.
-- **Insight email pipeline**: Perfin's scheduled insight generation sends an
-  `insights_generated` event with `{ subject, html_body, plain_text }` to
-  Per-sistant's webhook receiver, which forwards to its email service.
-  Code: `teller/routes/persistent.js` (`sendPerSistantWebhook()`). Still
-  goes via HTTP because Per-sistant's webhook receiver is HMAC-verified and
-  the verification path expects a real HTTP request shape.
+- **Insight / digest email pipeline**: the four email events
+  (`insights_generated`, `weekly_summary`, `daily_summary`, `critical_alert` —
+  `{ subject, html_body, plain_text }`) go through `sendPerSistantWebhook()`
+  (`teller/routes/persistent.js`). Under the shell they are delivered IN-PROCESS
+  (`deliverDigestInProcess` — a row in Per-sistant's `emails` table for the first
+  VALID address of `perfin_webhook_recipient` → `SMTP_FROM` → `SMTP_USER`, checked
+  with Per-sistant's own `EMAIL_REGEX`; seams audit #3 — it stopped at the first SET
+  value, so a display-form `SMTP_FROM` made every digest a draft). Only a standalone
+  Perfin (and the `test` event) uses the HMAC-signed HTTP webhook.
 - **Productivity context** (`GET /api/persistent/productivity-context`):
-  Perfin fetches task/review stats from Per-sistant for AI insights prompt
-  enrichment. Embedded fast-path queries Per-sistant's pool directly via
-  `queryPersistentStats` / `queryPersistentReview`; HTTP fetch is the
-  standalone fallback.
+  task/review stats from Per-sistant (embedded fast-path queries Per-sistant's
+  pool via `queryPersistentStats` / `queryPersistentReview`; HTTP fetch is the
+  standalone fallback). Nothing in Perfin calls it today — the AI insights
+  prompt does not include it (seams audit #3; an endpoint for external use).
 - **Per-sistant's Perfin widget** (`GET /api/perfin/stats`): symmetric — the
   embedded fast-path queries Perfin's `detected_subscriptions` directly;
   HTTP fetch is the standalone fallback. The fallback now correctly
@@ -2642,9 +2664,11 @@ shared session cookie. Cross-app surface area today:
 - **Cross-app SSO**: HMAC-signed token exchange (60s expiry, per-token nonce
   for replay protection). Format: `sso:<timestamp>:<nonce>:<signature>`.
   Required `SSO_SECRET` set on both apps. Unused under the unified shell.
-- **Webhook system**: HMAC-signed event notifications (anomaly_detected,
-  budget_exceeded, new_subscription, goal_milestone, csv_reminder). Now
-  in-process; signing layer remains for the standalone fallback. Dispatch
+- **Webhook system**: HMAC-signed event notifications. Perfin itself sends only
+  the four email events and `test`; `POST /api/persistent/webhook/send` can send
+  any event by hand (the receiver stores the email events and logs the rest).
+  Under the shell the email events are in-process; the signing layer remains for
+  the standalone fallback. Dispatch
   is refused (`{ sent: false, reason: "missing_secret" }`) when the shared
   secret isn't configured so misconfiguration surfaces immediately rather
   than being silently rejected at the receiver.
@@ -2867,7 +2891,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1890 tests passing across 93 test files (Perfin 1345 + Per-sistant 545), plus the real-Postgres route contract suite (165 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 1915 tests passing across 95 test files (Perfin 1364 + Per-sistant 551), plus the real-Postgres route contract suite (167 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -2944,7 +2968,10 @@ POST /api/sync/reconcile   # backfill/reconcile to recover dropped transactions
                            # { started, running, kind, id, started_at, provider,
                            # days } immediately and
                            # pushes a "Reconcile complete" notification on finish
-                           # (409 if one is already running). The Sync Health UI uses
+                           # (409 if one is already running — synchronous OR background,
+                           # and the weekly in-process heal skips while one runs: one
+                           # reconcile at a time, seams audit #3; a 409 for a run that
+                           # isn't a background job carries id null). The Sync Health UI uses
                            # background mode + polling since the Plaid leg re-walks up
                            # to 2 years of history and can take a minute.
 GET  /api/sync/status      # a background job slot (cycle-7 ST1; query kind=
@@ -2952,8 +2979,11 @@ GET  /api/sync/status      # a background job slot (cycle-7 ST1; query kind=
                            # { kind, id, running, phase, started_at, finished_at,
                            # result, error }. error is a FIXED sentence ("Nothing synced:
                            # the Teller sync failed and Plaid did not succeed." …), never
-                           # an exception message; an idle slot has id null. In memory —
-                           # a restart empties it (pollers compare the id they were given)
+                           # an exception message (the reconcile slot too since seams
+                           # audit #3: "N item(s) failed — see Settings → Sync Health.",
+                           # errors[] names provider + institution only); an idle slot
+                           # has id null. In memory — a restart empties it (pollers
+                           # compare the id they were given)
 GET  /api/sync/reconcile/status # poll the background reconcile job (the same slot as
                            # /api/sync/status?kind=reconcile)
                            # { running, started_at, finished_at, provider, days,
@@ -4590,8 +4620,9 @@ SX3-pinned — the Sheets Income tab.
   `/api/budgets/suggest` uses `getCategorySpendingForMonth` over the 3 previous
   COMPLETE months (FAN-8); `/api/context-export` uses `getMonthlySpending` — so AI suggestions
   and the Claude-chat export see the same split-adjusted numbers as the
-  dashboard. The spending-summary monthly-trend path still inlines equivalent
-  SQL — any new financial endpoint should use this module instead of re-inlining.
+  dashboard. The spending-summary monthly trend reads the same `spendLinesCTE` +
+  `NET_CATEGORY_MONTHS` (F35) — any new financial endpoint should use this module
+  instead of re-inlining.
 - **Net worth is computed by one shared helper, not re-derived per writer.**
   `getNetWorth(pool)` in `services/financial-queries.js` is the single source of
   truth, used by all three `net_worth_snapshots` writers — the hourly snapshot
@@ -5186,6 +5217,24 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   email's attachments or warn before Send that one's file is missing (the refusal
   arrives as the send's error toast); Retry sends a failed SCHEDULED email at once
   rather than offering to reschedule it.
+- Seams & Invariants audit #3 follow-ons: after a restart while the database is
+  unreachable the shell's session epoch reads 0, so a cookie revoked by "Sign Out
+  Everywhere" works until the database answers (fail-open by design, X5); the
+  weekly in-process reconcile and a weekly-reconcile.yml run that meet get a 409
+  with id null and the workflow reads the idle slot's last state; `POST
+  /api/plaid/sync-transactions` (no UI caller) and the reconcile legs don't stamp
+  `last_txn_sync_at` or record `last_sync_result`, and the link exchanges' first sync
+  runs outside `withPlaidTxnLock` (a new Item, so benign); Per-sistant's dashboard rent
+  link uses `window.PERFIN_URL || '/perfin'` and nothing sets it, so a standalone
+  Per-sistant links to `/perfin/housing` (C3); csv-import.yml passes the Google key
+  CONTENT where sheets-sync.js expects a file path and `continue-on-error` hides it
+  (O4 — fails once the repo is private); the Dockerfile's `TELLER_CERT_CONTENT` path
+  writes the PEMs into the root-owned `/app` as `appuser` and fails (O5 — Render and
+  fly.toml use `TELLER_CERT`); `npm run reset:fresh` clears `last_backup_at` (a false
+  "no server backup" check under `SERVER_BACKUPS`) and `operator_checks_signature`;
+  Per-sistant `GET /api/calendar` defaults its month / year from the server clock
+  (in the timezone lint's KNOWN_GAPS); the timezone lint still misses a UTC "today"
+  computed through a Date assigned to a variable first.
 - Batch 20 follow-ons: the e2e click sweep counts controls on page load, so controls
   inside a dialog a click opens, and rows rendered only after a click, aren't swept (the
   Activity page's rows appear after Search — its sweep presses 3 controls); Per-sistant's
@@ -5338,6 +5387,7 @@ Platform, Shell & Auth:
   teller/services/keep-alive.js, teller/services/job-health.js,
   teller/services/github-ops.js, teller/services/operator-checks.js,
   teller/services/hosting.js, teller/services/error-log.js, teller/services/uptime.js,
+  teller/services/webauthn-ids.js,
   scripts/reset-fresh.js, scripts/ci-migration-test.js, db/*.sql
 Web UI (Perfin):
   teller/pages/*.js, teller/views/*.ejs, teller/views/partials/*.ejs,
@@ -5425,12 +5475,12 @@ INV-34 | Citations enabled all-or-none per request; incompatible with structured
 INV-35 | Cross-app finance grounding reads perfinPool read-only, only on finance queries, never an HTTP self-fetch (parallels INV-25) | Subsystem: Knowledge / RAG | Verify: tests/knowledge-crossapp.test.js
 INV-36 | Single in-process vault-sync lock (isSyncing) prevents overlapping cron/reindex/GH-Action runs — BOTH syncVault AND syncNotes acquire it (busy→no-op), claimed synchronously before the first await (KR-8), so the cron's notes phase can't overlap a concurrent reindex (K4); vault_last_sha and vault_last_synced_at advance only when EVERY file succeeded (a failing file is isolated, removals run first, the error is recorded and the next sync retries the range — KR-7/KR-11); vault_last_attempt_at stamps every run; a truncated tree listing, or a compare whose status isn't ahead/identical (force-push → diverged), never lets the SHA advance past unseen files — the former is a reported failure, the latter forces a full walk + sweep (cycle-7 F127/F133); a file over 1 MB is read through the blobs API, never ingested empty (F128) | Subsystem: Knowledge / RAG | Verify: code read vault-sync.syncVault + syncNotes
 INV-37..47 | RETIRED — assigned by the cycle-3 reflect but their definitions were never written into the repo and are unrecoverable; numbers burned, never reuse (their subject matter — the cycle-3 fixes — is test-pinned via tests/cycle-fixes.test.js + audit-regressions) | — | Verify: n/a
-INV-48 | SPLIT_AMOUNT / INCOME_PREDICATE / NOT_TRANSFER are never re-inlined: every spending aggregation imports from financial-queries.js (aliased variants via incomePredicate(alias) or derived in place via .replace); the only permitted literal copies are scripts/sheets-sync.js (full structure byte-pinned by SX3) + apps-script/Code.gs (legacy, unpinned) | Subsystem: Financial Analytics (seam) | Verify: tests/seams-audit.test.js repo-wide literal-CASE scan
+INV-48 | SPLIT_AMOUNT / INCOME_PREDICATE / NOT_TRANSFER are never re-inlined: every spending aggregation imports from financial-queries.js (aliased variants via incomePredicate(alias) or derived in place via .replace); the only permitted literal copies are scripts/sheets-sync.js (structure byte-pinned by SX3; every one of its five SPLIT CASE copies pinned since seams audit #3) + apps-script/Code.gs (legacy, unpinned) | Subsystem: Financial Analytics (seam) | Verify: tests/seams-audit.test.js literal-CASE scan (teller routes/services/top level/data/pages + scripts) + tests/audit-regressions.test.js SX3
 INV-49 | Every member of Perfin's EMAIL_EVENTS set is accepted AND named (sendNameByEvent) by Per-sistant's HTTP webhook receiver — an unrecognized email event is 200-and-dropped in standalone deployments | Subsystem: Settings, Notifications & Cross-app (seam) | Verify: tests/seams-audit.test.js symmetry pin
-INV-50 | WebAuthn auth-options advertise transports ['internal'] ONLY in allowCredentials (NOT 'hybrid') — registration pins authenticatorAttachment:'platform' so credentials are same-device; advertising the cross-device 'hybrid' transport is what surfaced the "use a phone" QR option instead of local Touch/Face ID, so internal-only suppresses the QR path; both shell and standalone auth-options endpoints comply (transports still persisted at registration, just not used as the login hint) | Subsystem: Platform, Shell & Auth | Verify: tests/budget-cap-webauthn.test.js
+INV-50 | WebAuthn auth-options advertise transports ['internal'] ONLY in allowCredentials (NOT 'hybrid') — registration pins authenticatorAttachment:'platform' so credentials are same-device; advertising the cross-device 'hybrid' transport is what surfaced the "use a phone" QR option instead of local Touch/Face ID, so internal-only suppresses the QR path; both shell and standalone auth-options endpoints comply (transports still persisted at registration, just not used as the login hint). NOTE (seams audit #3): the QR prompt also had a second cause — registration stored every credential id double-encoded, so allowCredentials named an id no authenticator holds; see INV-136 | Subsystem: Platform, Shell & Auth | Verify: tests/budget-cap-webauthn.test.js
 INV-51 | Habit streaks are computed at read time from habit_logs (a backfilled log retroactively repairs a streak; an unlogged today never breaks one); no stored streak counters exist for habits | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/health.test.js backfill-repair test
 INV-52 | Health consumers (notification check, AI daily briefing) call gatherHealthSummary fail-soft (.catch) — a health-tables error degrades to "no habit data", never 500s those surfaces | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/health.test.js integration pins
-INV-53 | CRITICAL scheduled jobs (transaction/balance sync + snapshot + detection; weekly reconcile; backups; knowledge reindex) have out-of-process GitHub-Actions backstops hitting x-api-key endpoints with idempotent writes, so Render free-tier sleep can't skip them | Subsystem: Platform, Shell & Auth | Verify: .github/workflows/{daily-sync,weekly-reconcile,db-backup,knowledge-reindex}.yml exist + idempotent-write invariants INV-01/05
+INV-53 | CRITICAL scheduled jobs (transaction/balance sync + snapshot + detection; weekly reconcile; backups — and the knowledge reindex, which Operator Checks lists as an OPTIONAL backstop because the feature is opt-in) have out-of-process GitHub-Actions backstops hitting x-api-key endpoints with idempotent writes, so Render free-tier sleep can't skip them | Subsystem: Platform, Shell & Auth | Verify: .github/workflows/{daily-sync,weekly-reconcile,db-backup,knowledge-reindex}.yml exist + idempotent-write invariants INV-01/05
 INV-54 | Re-sync is BEHAVIORALLY idempotent: syncAllEnrollments (Teller) + syncPlaidItemTransactions (Plaid) run twice over identical inputs add 0 on the 2nd run, no duplicate rows, watermark/cursor stable (not merely source-string-pinned) | Subsystem: Bank Sync & Ingestion | Verify: tests/sync-idempotency.test.js
 INV-55 | /api/ask charges the shared AI cap even on a mid-tool-loop failure — the usage row is written in a `finally` (idempotent `charged` flag) when tokens were consumed, so a throw on a later round doesn't let spend escape the cap (parity with rebuild AIA2 / categorize M2); `charged` is set only after the row is written, so a failed write is retried (F64) | Subsystem: AI Insights & Audit | Verify: tests/ai-cap-charge.test.js
 INV-56 | The dashboard's inlined loanPayoff() is NUMERICALLY identical to services/projections.computeLoanPayoff across scenarios (months / total_interest ±$0.01 / insufficient flag), not merely string-equal | Subsystem: Web UI ↔ Financial Analytics (seam) | Verify: tests/loan-support.test.js (extract-and-run parity test)
@@ -5484,12 +5534,12 @@ INV-112 | Categorization rules apply most-specific first (RULE_ORDER_SQL, never 
 INV-113 | The tier-1 audit judges a dollar claim by its own sentence/clause (claimPeriodWindow) and never compares a claim about another named month (claimNamesOtherMonth) or another period with this month's actuals; tier-2 captures bounded Capitalized names, split on and/or/vs | Subsystem: AI Insights & Audit | Verify: tests/scan-oct-batch8.test.js + tests/contract/ai-trust.contract.test.js
 INV-114 | The Sheets export places manual bills and recurring transfers with the app's own cadence rules (cadence.manualBillOccurrences / seriesOccurrences, APP_TIMEZONE today) — never a SQL re-derivation (LEAST(due_day, 28), last + cadence_days); Sheets runs are single-flight (singleFlight: same kind shares, different kind waits) | Subsystem: Sheets & External Export | Verify: tests/contract/sheets-crossapp.contract.test.js + tests/scan-oct-batch9.test.js (F78)
 INV-115 | An in-process digest/insight email is reported sent only when it was queued to a valid address; a draft-only delivery returns sent:false with stored:"draft" and a reason, and the digest ticks settle for the day on it while recording a failed job | Subsystem: Settings, Notifications & Cross-app | Verify: tests/contract/sheets-crossapp.contract.test.js (F79) + tests/scan-oct-batch9.test.js
-INV-117 | Every Per-sistant page write reports its outcome: it goes through writeOk(await tryFetch(...)) (views/js.js — a non-2xx or network failure toasts the server's error and returns false), a modal stays open on a failed save, and Undo is offered only after a write succeeded; DATE columns are rendered via parseCalDate / fmtCalDate (never `new Date('YYYY-MM-DD')`, which is a day early west of UTC) | Subsystem: Per-sistant Web UI | Verify: apps/per-sistant/tests/scan-oct-batch11.test.js (F109 / F113 blocks)
+INV-117 | Every Per-sistant page write reports its outcome: it goes through writeOk(await tryFetch(...)) (views/js.js — a non-2xx or network failure toasts the server's error and returns false) — a few older pages (notes, health, jobs, today, the dashboard script) check r.ok / d.error and alert instead, which reports HTTP failures but not a rejected fetch (seams audit #3 — follow-on to move them onto writeOk) — a modal stays open on a failed save, and Undo is offered only after a write succeeded; DATE columns are rendered via parseCalDate / fmtCalDate (never `new Date('YYYY-MM-DD')`, which is a day early west of UTC) | Subsystem: Per-sistant Web UI | Verify: apps/per-sistant/tests/scan-oct-batch11.test.js (F109 / F113 blocks)
 INV-118 | Per-sistant attachments live in Postgres (attachments.data BYTEA, ≤10MB — a disk file on Render's ephemeral filesystem vanished on every deploy); list/upload responses never carry the bytes (META_COLUMNS); the download route is declared before the generic /:entityType/:entityId; purging an entity from the trash (by hand or the 30-day purgeTrash cron) removes its attachments, entity_links and Knowledge chunks | Subsystem: Per-sistant Backend | Verify: tests/contract/persistent-batch11.contract.test.js (F121 / F122)
 INV-119 | Every webhook event Per-sistant offers (VALID_WEBHOOK_EVENTS) is fired by the code that causes it — todo_created / todo_completed from every create/complete path (announceTodoEvent), email_sent from the manual and cron sends, note_created, reminder_due (processDueReminders, claimed once via reminder_fired_at) and streak_milestone (once per day) — and Slack receives each through fireWebhooks | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-oct-batch11.test.js (F116 block) + tests/contract/persistent-batch11.contract.test.js
 INV-116 | The dashboard widget keys have ONE source, DASHBOARD_WIDGETS in perfin-shared.js: Settings renders its toggles from it and the dashboard hides through applyDashboardWidgets — every selector exists on the dashboard and every key the settings route defaults is in the list | Subsystem: Web UI | Verify: tests/scan-oct-batch10.test.js (F96)
 INV-106 | No server-side file gains a bare catch (`catch {}`, `.catch(() => {})`, `.catch(() => null)`) beyond its KNOWN_GAPS count; the list only shrinks (a stale count fails too) | Subsystem: Test Coverage Quality / Silent Degradation | Verify: tests/scan-oct-batch3.test.js (empty-catch scan)
-INV-104 | Every secret comparison (shell PIN, CALENDAR_FEED_TOKEN, API_KEY, standalone SESSION_PIN/PASSWORD) is a fixed-length SHA-256 digest compare (auth.safeEqual / isValidApiKey) — never timingSafeEqual over raw buffers whose byte lengths can differ — and the shell logs unhandled rejections instead of exiting | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch1.test.js (F1 / F6 blocks)
+INV-104 | Every secret comparison (shell PIN, CALENDAR_FEED_TOKEN, API_KEY, standalone SESSION_PIN/PASSWORD, standalone Perfin's x-api-key, Per-sistant's standalone /api/login — the last two since seams audit #3) is a fixed-length SHA-256 digest compare (auth.safeEqual / isValidApiKey) — never timingSafeEqual over raw buffers whose byte lengths can differ — and the shell logs unhandled rejections instead of exiting | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch1.test.js (F1 / F6 blocks) + tests/seams-audit-3.test.js + apps/per-sistant/tests/seams-audit-3.test.js
 INV-97 | No Per-sistant client template-literal module (a pages/ or views/ file that exports a string) contains a single-escaped regex class or delimiter (\b \d \s \w \/ \. …) — the template consumes the backslash, so the regex silently changes meaning in the browser; double-escape or use string methods | Subsystem: Per-sistant Web UI | Verify: apps/per-sistant/tests/batch15-followons.test.js (FO-2 guard)
 INV-120 | Shell sessions are revocable server-side: the cookie carries user_settings.shell_session_epoch and is refused once the epoch moves; POST /logout?everywhere=1 needs a valid session and bumps it; a legacy epoch-less cookie counts as epoch 0 | Subsystem: Platform, Shell & Auth | Verify: tests/contract/platform-batch13.contract.test.js (F12)
 INV-121 | Drift guards only shrink: the timezone lint (no new UTC today/month anchor in server code) and the canonical-helper scan (net worth via getNetWorth, budget_snapshots / income streams / AI spend / effective limit derived in one place) keep per-file KNOWN_GAPS that fail on growth AND on a stale entry; the Sheets Budget Status equals getBudgetStatus on real Postgres | Subsystem: Test Coverage Quality / Parallel Source-of-Truth Drift | Verify: tests/scan-oct-batch13.test.js + tests/contract/budget-parity.contract.test.js
@@ -5498,7 +5548,7 @@ INV-123 | The subscription watchdog alerts at most once per post-cancel charge (
 INV-124 | A merchant rename rule matches the RAW merchant (never the user override), fills only a NULL user_merchant_name and tags it with user_merchant_rule_id — a hand rename always wins and clears the tag; deleting a rule — or turning it off — reverts exactly its rows; renaming a rule moves exactly its rows and re-keys detection keeping the rows' user state | Subsystem: Detection & Categorization | Verify: tests/contract/watchdog-rename.contract.test.js + tests/contract/quickwins.contract.test.js + tests/scan-oct-batch15.test.js
 INV-129 | Per-sistant client code disables a button for a pending action only through withPending(btn, key, fn, busyText) (views/js.js — guardPending single-flight + disabled + aria-busy, each button's prior state restored in a finally); no page re-enables a button or sets aria-busy by hand (shrinking KNOWN_GAPS guard); the e2e click sweep never presses a data-e2e-skip control, so every destructive, off-app or device-permission control carries it | Subsystem: Per-sistant Web UI / Test Coverage Quality | Verify: apps/per-sistant/tests/scan-oct-batch20.test.js + e2e/pages.spec.js
 INV-128 | Plaid re-authentication and new accounts at a connected login go through Link UPDATE MODE on the same Item: link-token-update sends the item's own access_token (perfin_try_decrypt) with no products; update-complete never exchanges a token, registers new accounts BEFORE the cursor walk, clears last_error_code and syncs only that Item under withPlaidTxnLock (investments: syncAllPlaidHoldings({ itemId })); only a token that won't decrypt is sent to unlink + link | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-oct-batch19.test.js + tests/contract/plaid-update.contract.test.js
-INV-127 | A background sync (POST /api/sync, /api/sync-balances, /api/sync/reconcile with background:true) answers 202 with a job id at once and runs the SAME body as the synchronous call (records last_sync_result / freshness identically); a POST during a run of that kind joins it (sharedRun) and a second background start is a 409 carrying the running id; the status's error is a fixed sentence, never an exception message; the backstop workflows poll by id and fail on an error, a lost run or the deadline without printing the error text | Subsystem: Bank Sync & Ingestion / Platform, Shell & Auth | Verify: tests/scan-oct-batch18.test.js + tests/contract/async-sync.contract.test.js
+INV-127 | A background sync (POST /api/sync, /api/sync-balances, /api/sync/reconcile with background:true) answers 202 with a job id at once and runs the SAME body as the synchronous call (records last_sync_result / freshness identically); for sync / sync-balances a POST during a run of that kind joins it (sharedRun) and a second background start is a 409 carrying the running id; a reconcile runs one at a time — either route answers 409 while any reconcile runs (background, synchronous or the weekly heal, which skips) and only a background run writes the slot (seams audit #3); the status's error is a fixed sentence, never an exception message (the reconcile slot included); the backstop workflows poll by id and fail on an error, a lost run or the deadline without printing the error text | Subsystem: Bank Sync & Ingestion / Platform, Shell & Auth | Verify: tests/scan-oct-batch18.test.js + tests/contract/async-sync.contract.test.js
 INV-126 | Operator checks are fail-soft and read-only: the GitHub client only GETs, with GITHUB_OPS_TOKEN read from the environment per call — never stored, logged or returned (errors carry only the HTTP status) — and never requests a secret's value; any failure is an "unknown" check with a reason, never a throw into data-health; data-health reads cached GitHub results only; the notification fires once per change in the failing set | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch17.test.js + tests/contract/operator-checks.contract.test.js
 INV-125 | A generic CSV's sign is applied identically by preview, import and CLI: positive_means goes through parseCsvUpload's one parseOpts (default 'charges' — the old reading, so earlier imports keep their dedup IDs); an unknown value is a 400; known bank formats ignore it | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-oct-batch16.test.js + tests/contract/batch16-perfin.contract.test.js (F26)
 INV-130 | The e2e page run is SEEDED through the apps' own routes (the one direct insert is a Job Radar listing) and fails a page on an uncaught page error, a browser console.error or a non-501 5xx; its click sweep never presses a data-e2e-skip or destructively-labelled control | Subsystem: Test Coverage Quality | Verify: e2e/pages.spec.js + e2e/seed.js
@@ -5507,6 +5557,7 @@ INV-132 | Every Plaid investment write path (the holdings sync and both exchange
 INV-133 | Recording an error never throws into the caller and never recurses: the shell's console.error wrapper always prints first, capture() is re-entrancy guarded, the error log reports its own failures through the ORIGINAL console.error under an ignored "[error-log]" prefix, and a failed write re-buffers instead of dropping; new / reopened errors notify at most 5 times in 24 hours | Subsystem: Platform, Shell & Auth | Verify: tests/roadmap-t1-errors-uptime.test.js + tests/contract/error-log.contract.test.js
 INV-134 | GET /health/deep is public but exposes only yes/no database fields (never an error message), is bounded per probe and cached 60s single-flight; the heartbeat never touches the database and is never activity-gated | Subsystem: Platform, Shell & Auth | Verify: tests/roadmap-t1-errors-uptime.test.js + tests/contract/error-log.contract.test.js
 INV-135 | A Per-sistant email is sent with EVERY one of its stored attachments or not at all: both senders load them through routes/attachments.loadEmailAttachments; a missing file or a total over 20MB makes Send Now a 400 before its claim (the email stays unsent) and makes the scheduler mark the claimed row failed with the reason; Retry reuses the Send Now claim, so it can't double-send | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/roadmap-t1-batchc.test.js + tests/contract/persistent-batchc.contract.test.js
+INV-136 | WebAuthn credential ids are stored exactly as the authenticator reports them (registrationInfo.credential.id — already base64url in @simplewebauthn v11), never re-encoded; a double-encoded row from before seams audit #3 is rewritten (or, when its real id already exists, removed) by repairCredentialIds in the migration | Subsystem: Platform, Shell & Auth | Verify: tests/seams-audit-3.test.js + tests/contract/seams3.contract.test.js
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
 ### Policy Configuration

@@ -30,11 +30,14 @@ describe("SPLIT_AMOUNT is never re-inlined (INV-07 corollary)", () => {
   const LITERAL_CASE = /is_shared\s+AND\s+\w+\.personal_for/;
 
   it("no teller route/service besides financial-queries.js contains a literal copy", () => {
-    const dirs = [["teller", "routes"], ["teller", "services"]];
+    // Seams audit #3: also teller/ top level (startup.js, server.js), teller/data,
+    // teller/pages and scripts/ (sheets-sync.js is the one sanctioned copy).
+    const dirs = [["teller", "routes"], ["teller", "services"], ["teller"], ["teller", "data"], ["teller", "pages"], ["scripts"]];
     const offenders = [];
     for (const dir of dirs) {
       for (const f of fs.readdirSync(path.join(ROOT, ...dir)).filter(f => f.endsWith(".js"))) {
         if (dir[1] === "services" && f === "financial-queries.js") continue;
+        if (dir[0] === "scripts" && f === "sheets-sync.js") continue;
         if (LITERAL_CASE.test(read(...dir, f))) offenders.push(dir.join("/") + "/" + f);
       }
     }

@@ -498,14 +498,18 @@ async function perfinFinanceSnapshot(perfinPool) {
     if (subs.rows.length) {
       const monthly = subs.rows.reduce((sum, s) => sum + monthlyEquivalent(s.amount, s.cadence_days), 0);
       lines.push(`Active subscriptions: ${subs.rows.length} (~${money(monthly)}/mo)`);
-      const now = Date.now();
+      // By APP_TIMEZONE calendar date, a charge due TODAY included — the
+      // widget's rule (cycle-7 F80; seams audit #3: this copy measured from
+      // now, so today's charge dropped out once the day had begun, and its
+      // toISOString date shifted a day east of UTC).
+      const { ymdOf } = require("./perfin");
+      const today = todayStr();
+      const [ty, tm, td] = today.split("-").map(Number);
+      const until = new Date(Date.UTC(ty, tm - 1, td + 14)).toISOString().slice(0, 10);
       const upcoming = subs.rows
-        .filter((s) => {
-          if (!s.next_expected) return false;
-          const d = (new Date(s.next_expected).getTime() - now) / 86400000;
-          return d >= 0 && d <= 14;
-        })
-        .map((s) => `${s.display_name} ${money(s.amount)} on ${new Date(s.next_expected).toISOString().slice(0, 10)}`);
+        .map((s) => ({ s, next: ymdOf(s.next_expected) }))
+        .filter(({ next }) => next !== null && next >= today && next <= until)
+        .map(({ s, next }) => `${s.display_name} ${money(s.amount)} on ${next}`);
       if (upcoming.length) lines.push("Upcoming charges (next 14 days): " + upcoming.join("; "));
     }
     if (!lines.length) return null;

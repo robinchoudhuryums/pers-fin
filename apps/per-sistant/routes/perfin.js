@@ -208,3 +208,4 @@ module.exports = function ({ pool, config }) {
   return router;
 };
 module.exports.widgetFigures = widgetFigures;
+module.exports.ymdOf = ymdOf;

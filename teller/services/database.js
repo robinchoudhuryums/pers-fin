@@ -530,6 +530,12 @@ async function runMigrationsOnce() {
     // for the hint.
     await client.query(`ALTER TABLE webauthn_credentials
       ADD COLUMN IF NOT EXISTS transports TEXT[]`);
+    // Seams audit #3: credential ids used to be stored double-encoded, so no
+    // biometric login could match. Rewrite them to the real id (idempotent).
+    {
+      const n = await require("./webauthn-ids").repairCredentialIds(client);
+      if (n) console.log(`Repaired ${n} biometric credential id(s)`);
+    }
     // Recurring transfers — detected recurring transfers between accounts
     await client.query(`CREATE TABLE IF NOT EXISTS recurring_transfers (
       id SERIAL PRIMARY KEY,

@@ -3,8 +3,9 @@
 # Nightly encrypted backup of both databases, run on the VPS by cron:
 #   17 3 * * *  /opt/pers-fin/backup.sh >> /var/log/pers-fin-backup.log 2>&1
 # ============================================================================
-# The same format as .github/workflows/db-backup.yml, so its restore runbook
-# applies unchanged: pg_dump custom format → gpg symmetric AES-256
+# The same file format as .github/workflows/db-backup.yml (its decrypt +
+# pg_restore steps apply; restore into the compose Postgres per RUNBOOK.md's
+# restore drill): pg_dump custom format → gpg symmetric AES-256
 # (<db>-YYYY-MM-DD.dump.gpg). Each file is VERIFIED before it counts: decrypted
 # and read back with `pg_restore --list`. Then it is copied offsite with rclone
 # and old copies are pruned locally and remotely. The time of each verified run

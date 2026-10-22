@@ -39,7 +39,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   or a total over the cap, is never sent around: Send Now answers 400 with the reason
   BEFORE claiming (the email stays unsent), and the scheduler marks the claimed row
   `failed` with it.
-- **Tests**: `tests/` (node:test runner, `npm test`, 545 tests (api + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11/batch12/batch13/batch16/batch17/batch20 + roadmap-t1-batchc + model-upgrade))
+- **Tests**: `tests/` (node:test runner, `npm test`, 551 tests (api + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11/batch12/batch13/batch16/batch17/batch20 + roadmap-t1-batchc + seams-audit-3 + model-upgrade))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of June 2026)
@@ -170,7 +170,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - **Voice Input**: Web Speech API microphone button on Quick Add and notes (Chrome/Edge)
 - **Location-Based Reminders**: Set location (name + coordinates + radius) on tasks, periodic geofence checking with browser notifications. `POST /api/todos` stores `location_*` (it used to drop them) and every next recurring instance (complete, skip, midnight roll) carries them; lat/lng/radius are range-checked (`parseLocationFields`, 400 instead of a CHECK-constraint 500) (PD-5).
 - **Mobile-Optimized**: Bottom navigation bar, hamburger menu, swipe between pages, floating action button, horizontal-scroll filters, responsive layouts, pull-to-refresh in standalone PWA mode (views/js.js `initPullToRefresh` — passive listeners, overlay exclusions; the shared-JS module is one exported template literal, so the PTR block must stay backtick-free). **GOTCHA — `views/js.js` is one backtick template literal**, so beyond backticks, any `\` inside it is consumed by the template string: a regex literal like `/\/login(\?|#)/` emits `//login(?|#)/` (a `//` line comment) and silently breaks the whole client bundle. Use `indexOf`/`String` methods, or DOUBLE-escape (`\\/`, `\\?`), for any regex in this module — and `node --check` the EMITTED bundle. The same applies to every page script exporting a string (`pages/*-script*.js`, `views/settings-patch.js` …); `tests/batch15-followons.test.js` fails on any single-escaped regex in them (INV-97). Do the check by loading the module (`require('./views/js.js')` → write to a file → `node --check`) after editing it, since the source file parses fine while the emitted string does not.
-- **Offline Support**: Service worker caches pages and API responses, queues mutations for sync when back online, offline banner indicator. A write made offline returns **503** `{ ok:false, offline:true, queued, error }` — never `ok:true`, so "Email sent!"-style UI can't claim success. Writes whose late replay would surprise (`/send`, `/refresh`, `/api/ai/`, `/api/rag/`, auth, `/reindex`, `/sync`) are never queued, `/api/rag/secret*` and auth responses are never cached (Cache Storage persists them), and only `r.ok` GETs are cached. Replay keeps an entry on a network error / 401 / 408 / 429 / 5xx, drops it on success or a permanent 4xx, and drops entries older than 24 h (PB-17). The path lists use string matching (`routes/pwa.js` is a template literal). Cache `per-sistant-v8`.
+- **Offline Support**: Service worker caches pages and API responses, queues mutations for sync when back online, offline banner indicator. A write made offline returns **503** `{ ok:false, offline:true, queued, error }` — never `ok:true`, so "Email sent!"-style UI can't claim success. Writes whose late replay would surprise (`/send`, `/refresh`, `/api/ai/`, `/api/rag/`, auth, `/reindex`, `/sync`) are never queued, `/api/rag/secret*` and auth responses are never cached (Cache Storage persists them), and only `r.ok` GETs are cached. Replay keeps an entry on a network error / 401 / 408 / 429 / 5xx, drops it on success or a permanent 4xx, and drops entries older than 24 h (PB-17). The path lists use string matching (`routes/pwa.js` is a template literal). A redirected response is never cached (after a session expiry the shell answers an API GET with a redirect to the login page — seams audit #3). Cache `per-sistant-v9`.
 - **Global Search**: Search across todos, emails, and notes — the term is matched literally (LIKE `\ % _` escaped — F124: "100%" matched "1000 things")
 - **Calendar View**: Monthly calendar with iCal export, showing tasks, emails, and notes by date. `routes/calendar.js` reads `advanceRecurrence` from `helpers` — routers receive only server.js's `{ pool, config, helpers, views }` (INV-96); reading it off deps made `/api/calendar` 500 whenever an open recurring todo existed.
 - **Weekly Review**: Stats summary + AI narrative of completed tasks, emails sent, notes created. "Upcoming" = open tasks due today (APP_TIMEZONE) or later in the coming week (F119 — it started tomorrow in UTC, so today's tasks were in neither list). "Overdue" = open tasks due before TODAY (APP_TIMEZONE `todayStr()`), not before the week's start — a task due Monday and still open on Wednesday used to be in neither list nor the AI summary's count (PD-14). The page asks `GET /api/ai/models` first and makes its AI summary / weekly-theme calls only when `available` (roadmap T1.5 — without a key the summary answered 500 on every load and the theme showed "AI is not configured").
@@ -214,6 +214,13 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   west of UTC lands a day late.
 - `PATCH /api/settings` still stores `session_timeout_minutes` and `default_horizon`
   unvalidated (`theme` and `perfin_url` are validated since the Batch 15 follow-ons).
+- `GET /api/calendar` defaults its month / year from the server clock, not APP_TIMEZONE
+  (in the root timezone lint's KNOWN_GAPS since seams audit #3).
+- The dashboard's rent link uses `window.PERFIN_URL || '/perfin'` and nothing sets
+  `window.PERFIN_URL`, so a standalone deployment links to `/perfin/housing`.
+- Older pages (notes, health, jobs, today, the dashboard script) report a save's HTTP
+  failure through their own `r.ok` / `d.error` check, not `writeOk(tryFetch(…))`, so a
+  rejected fetch isn't reported there.
 
 ## Key Files
 - `.env` — all secrets (never commit)
@@ -265,6 +272,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `db/028_note_sensitivity.sql` — `notes.sensitivity` normal / private / secret + `chk_notes_sensitivity` (cycle-7 F134 / ST5: the notes privacy tier)
 - `db/029_vault_parse_version.sql` — `user_settings.vault_parse_version` (cycle-7 ST4): the `VAULT_PARSE_VERSION` (services/vault-sync.js) a successful FULL vault sync last ran under. **Bump `VAULT_PARSE_VERSION` whenever frontmatter parsing or sync semantics change** — Perfin's Settings → Sync Health → Operator Checks then asks for one full reindex (read-only through the wired pool) until a full sync stamps the new value
 - `tests/roadmap-t1-batchc.test.js` — roadmap T1.5 Batch C pins (11): loadEmailAttachments (order + shape, a legacy disk file, a missing file, the 20MB cap, none), both senders' wiring, Send Now's 400 without a claim, the Emails page's error line + Retry, the AI routes' 501 (a 400 still first), the Review page's AI gate. The database-backed half is the root `tests/contract/persistent-batchc.contract.test.js`
+- `tests/seams-audit-3.test.js` — Seams & Invariants audit #3 pins (6): the Knowledge finance snapshot listing a charge due today and today+14 by APP_TIMEZONE calendar date (a DATE value printed as its own day), the service worker's `!r.redirected` guard + `per-sistant-v9`, `knowledge-reindex.yml`'s 409 skip + count-only failure line, the standalone `/api/login` digest compare. The Perfin side is the root `tests/seams-audit-3.test.js`
 - `tests/scan-oct-batch20.test.js` — cycle-7 Batch 20 pins (7, ST3): `withPending` run in a vm from the emitted bundle (busy + restore, single-flight, restore on a throw, lists / null / an already-disabled button), the hand-rolled-toggle guard (shrinking KNOWN_GAPS, empty) and each migrated action's key. Destructive static buttons and the microphone buttons carry `data-e2e-skip`, which the root `e2e/pages.spec.js` click sweep honors — mark any new destructive, off-app or device-permission control the same way
 - `tests/scan-oct-batch17.test.js` — cycle-7 Batch 17 pins (3): db/029 + the exported constant, a successful full sync stamps the version, an incremental or failed sync doesn't. The database-backed half is the root `tests/contract/operator-checks.contract.test.js`
 - `tests/scan-oct-batch16.test.js` — cycle-7 Batch 16 notes privacy pins (7): db/028 + the config list, POST/PATCH validation, chunks dropped on leaving normal, syncNotes embedding / pruning by tier, keyword + vector retrieval and Ask limited to normal notes, suggest-tags refusing private / secret with no model call, and secret text masked in search / labels / the list (+ the webhook fallback). The database-backed half is the root `tests/contract/batch16-persistent.contract.test.js`
@@ -299,7 +307,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (545 tests)
+# Run tests (551 tests)
 npm test
 
 # Pages
@@ -596,8 +604,8 @@ GET    /sw.js               # Service worker
 - Perfin also emits `weekly_summary` and `daily_summary` webhooks
   (different event names, same `{ subject, html_body, plain_text }`
   payload shape) for the opt-in weekly + daily digest channels.
-  `routes/perfin.js` routes all three (`insights_generated`,
-  `weekly_summary`, `daily_summary`) through the same email-store
+  `routes/perfin.js` routes all four email events (`insights_generated`,
+  `weekly_summary`, `daily_summary`, `critical_alert`) through the same email-store
   handler — they share `recipient_email` selection (from
   `perfin_webhook_recipient` → SMTP_FROM → SMTP_USER → draft), differ
   only on the `recipient_name` label and fallback subject.

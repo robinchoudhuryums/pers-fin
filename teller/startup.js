@@ -406,21 +406,19 @@ function startBackgroundJobs() {
     jobHealth.tick("goal-milestones");
     if (!isUserActive()) return;
     try {
-      // Derive current_amount the same way GET /api/goals does: for a
-      // funding-linked goal the real progress is (account_balance - baseline),
-      // and the stored current_amount column is never updated — so milestones
-      // must compute it here too, or funding-linked goals would fire on a stale
-      // value (F13). Orphaned funding links (FK set but row gone) fall back to
-      // the stored value via the la.id / ia.id NULL guards.
+      // Progress through the shared deriveGoalProgress (INV-11) — the Goals
+      // page, the insights prompt and the context export use it. This job
+      // used to re-derive it in SQL and read a funding account with no
+      // balance as $0 progress instead of falling back to the stored value
+      // (seams audit #3).
+      const { deriveGoalProgress } = require("./routes/goals");
       const goals = await pool.query(
-        `SELECT g.id, g.name, g.target_amount, g.notes,
-                CASE
-                  WHEN g.funding_account_id IS NOT NULL AND la.id IS NOT NULL
-                    THEN GREATEST(0, COALESCE(la.available_balance, la.current_balance, 0) - COALESCE(g.goal_baseline_amount, 0))
-                  WHEN g.funding_investment_id IS NOT NULL AND ia.id IS NOT NULL
-                    THEN GREATEST(0, COALESCE(ia.balance, 0) - COALESCE(g.goal_baseline_amount, 0))
-                  ELSE g.current_amount
-                END AS current_amount
+        `SELECT g.id, g.name, g.target_amount, g.notes, g.current_amount,
+                g.funding_account_id, g.funding_investment_id, g.goal_baseline_amount,
+                COALESCE(la.available_balance, la.current_balance) AS funding_account_balance,
+                la.name AS funding_account_name,
+                ia.balance AS funding_investment_balance,
+                ia.name AS funding_investment_name
          FROM financial_goals g
          LEFT JOIN linked_accounts     la ON la.id = g.funding_account_id
          LEFT JOIN investment_accounts ia ON ia.id = g.funding_investment_id
@@ -430,7 +428,7 @@ function startBackgroundJobs() {
       for (const g of goals.rows) {
         const target = parseFloat(g.target_amount);
         if (target <= 0) continue;
-        const pct = Math.floor((parseFloat(g.current_amount) / target) * 100);
+        const pct = Math.floor((deriveGoalProgress(g).current / target) * 100);
         // Notes come from the main SELECT (no per-goal re-query) and are
         // tracked locally so multiple milestones crossed in one pass append
         // correctly before the single UPDATE per milestone.
@@ -639,8 +637,11 @@ function startBackgroundJobs() {
       const last = r.rows[0]?.last_reconcile_at ? new Date(r.rows[0].last_reconcile_at) : null;
       const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
       if (last && (Date.now() - last.getTime()) < WEEK_MS) return;
-      const { reconcileTeller } = require("./routes/enrollments");
-      const result = await reconcileTeller(90);
+      const { reconcileTeller, reconcileBusy, withReconcileGuard } = require("./routes/enrollments");
+      // A reconcile already running (e.g. weekly-reconcile.yml's background
+      // one) covers this week; retry on the next tick (seams audit #3).
+      if (reconcileBusy()) return;
+      const result = await withReconcileGuard(() => reconcileTeller(90));
       await pool.query("UPDATE user_settings SET last_reconcile_at = now() WHERE id = 1")
         .catch(e => console.error("last_reconcile_at update failed:", e.message));
       // Record the outcome so a failing weekly heal is visible (BSI-11).

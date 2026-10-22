@@ -254,7 +254,7 @@ describe("T1.4 wiring", () => {
     const started = shell.indexOf("errorLog.start({ pool: perfin.pool });");
     assert.ok(started > shell.indexOf("await persistent.start({ standalone: false });"));
     assert.match(shell, /uptime\.startHeartbeat\(\{ failingJobs: jobHealth\.failingJobs \}\)/);
-    assert.match(shell, /await errorLog\.flush\(\{ notify: false \}\)/);
+    assert.match(shell, /await errorLog\.flush\(\{ notify: false, drain: true \}\)/);
     const deep = shell.indexOf('app.get("/health/deep"');
     assert.ok(deep > 0 && deep < shell.indexOf("app.use(auth.requireAuth)"), "public, mounted before the auth gate");
   });

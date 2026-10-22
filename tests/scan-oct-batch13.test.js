@@ -191,12 +191,13 @@ const codeLines = (src) => src.split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.t
 
 describe("Policy: timezone lint — no new UTC 'today' / 'this month' anchors in server code", () => {
   // A UTC "today" (new Date().toISOString().slice(0, 10)) or month bucket
-  // (date_trunc('month', CURRENT_DATE | now())) is the operator's wrong day
+  // (date_trunc('month', CURRENT_DATE | now())), or a server-clock year
+  // (new Date().getFullYear() — seams audit #3), is the operator's wrong day
   // or month west/east of UTC (F11 / FAN-13 / F66). Use todayStr() /
   // currentMonth() (Perfin) or Per-sistant's APP_TIMEZONE helpers. Date math on
   // an already-anchored date is fine and not matched. Entries only shrink: a
   // count that grows fails, and so does one that drops without an update here.
-  const PATTERN = /new Date\(\)\.toISOString\(\)\.(slice\(0,\s*(7|10)\)|split\(["']T["']\)\[0\]|substring\(0,\s*(7|10)\))|date_trunc\(\s*'month',\s*(CURRENT_DATE|now\(\))\s*\)/g;
+  const PATTERN = /new Date\(\)\.toISOString\(\)\.(slice\(0,\s*(7|10)\)|split\(["']T["']\)\[0\]|substring\(0,\s*(7|10)\))|date_trunc\(\s*'month',\s*(CURRENT_DATE|now\(\))\s*\)|new Date\(\)\.getFullYear\(\)/g;
   const KNOWN_GAPS = {
     "teller/services/financial-queries.js": { count: 1, reason: "todayStr()'s invalid-APP_TIMEZONE fallback to UTC (documented)" },
     "teller/services/projections.js": { count: 1, reason: "computeLoanPayoff's default `today` arg; every server caller passes todayStr()" },
@@ -205,6 +206,7 @@ describe("Policy: timezone lint — no new UTC 'today' / 'this month' anchors in
     "apps/per-sistant/ai.js": { count: 1, reason: "FOLLOW-ON: Per-sistant's AI cap month (monthlyAiSpendCents) is the UTC month — Perfin's equivalent was fixed in F66" },
     "apps/per-sistant/routes/ai.js": { count: 1, reason: "FOLLOW-ON: the Ask context's 'Today:' line is the UTC date" },
     "apps/per-sistant/routes/rag.js": { count: 1, reason: "FOLLOW-ON: capture-to-vault file names use the UTC date" },
+    "apps/per-sistant/routes/calendar.js": { count: 1, reason: "FOLLOW-ON: GET /api/calendar's default year (and month) is the server's clock — seams audit #3 added new Date().getFullYear() to the lint" },
   };
   it("per-file counts match KNOWN_GAPS exactly", () => {
     const found = {};

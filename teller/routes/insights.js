@@ -776,8 +776,10 @@ async function generateInsights() {
         const seasonalData = await pool.query(
           `WITH ${spendLinesCTE(
              // AIN-4: complete months only (the month-to-date total is not a
-             // seasonal data point).
-             "t.date >= CURRENT_DATE - INTERVAL '24 months' AND t.date < $1::date")},
+             // seasonal data point) — and the OLDEST month whole too: a rolling
+             // CURRENT_DATE − 24 months bound left it a partial month, a false
+             // "seasonal jump" in the prompt (seams audit #3, the FA-4 class).
+             "t.date >= $1::date - INTERVAL '24 months' AND t.date < $1::date")},
            ${NET_CATEGORY_MONTHS}
            SELECT EXTRACT(MONTH FROM (month || '-01')::date)::int AS month_num,
                   TO_CHAR((month || '-01')::date, 'Mon') AS month_name,
@@ -1423,7 +1425,9 @@ router.post("/api/insights/rebuild", async (_req, res) => {
 
 // GET /api/tax-deductions — retrieve accumulated tax deductions for a year
 router.get("/api/tax-deductions", async (req, res) => {
-  const year = parseInt(req.query.year) || new Date().getFullYear();
+  // The APP_TIMEZONE year, like the insights writer and the tax export — the
+  // server's UTC year flipped on Dec 31 evening west of UTC (seams audit #3).
+  const year = parseInt(req.query.year) || parseInt(todayStr().slice(0, 4), 10);
   try {
     const result = await pool.query(
       "SELECT * FROM tax_deductions WHERE tax_year = $1 ORDER BY amount DESC",

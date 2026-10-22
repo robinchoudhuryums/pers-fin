@@ -140,7 +140,10 @@ router.post("/api/webauthn/register", async (req, res) => {
     }
 
     const { credential, credentialDeviceType } = verification.registrationInfo;
-    const credentialIdBase64 = Buffer.from(credential.id).toString("base64url");
+    // credential.id is already a base64url string in @simplewebauthn v11 — store
+    // it as given (re-encoding it made every stored id unmatchable; seams audit
+    // #3, services/webauthn-ids.js repairs rows written that way).
+    const credentialIdBase64 = credential.id;
     const publicKeyBase64 = Buffer.from(credential.publicKey).toString("base64url");
 
     const deviceName = (req.body.deviceName || credentialDeviceType || "Biometric Device").slice(0, 100);

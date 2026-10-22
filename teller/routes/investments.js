@@ -393,6 +393,7 @@ router.post("/api/plaid/hosted-link-complete", async (req, res) => {
     }
 
     const syncResult = await syncPlaidItemTransactions(client, plaidItemDbId, accessToken);
+    await renameNewRows(syncResult.added);
     const liabResult = await syncPlaidLiabilities(client, accessToken, plaidItemDbId);
 
     res.json({
@@ -497,6 +498,7 @@ router.post("/api/plaid/exchange-transactions", async (req, res) => {
 
     // Run initial transaction sync immediately
     const syncResult = await syncPlaidItemTransactions(client, plaidItemDbId, accessToken);
+    await renameNewRows(syncResult.added);
 
     // #1: Sync liabilities (APR, min payment, due dates) — runs for
     // credit cards, student loans, and mortgages. Fails gracefully when
@@ -653,6 +655,7 @@ router.post("/api/plaid/update-complete", async (req, res) => {
         const accountsAdded = await registerMissingPlaidAccounts(item.id, acc.data.accounts || []);
         await setPlaidItemErrorCode(item.id, null);
         const sync = await syncPlaidItemTransactions(client, item.id, item.access_token);
+        await renameNewRows(sync.added);
         return { accountsAdded, sync };
       });
       return res.json({
@@ -702,6 +705,16 @@ router.post("/api/plaid/update-complete", async (req, res) => {
 // Plaid amount convention: positive = money leaving account (debit),
 // negative = money entering (credit). This matches our convention directly
 // (no sign flip needed, unlike Teller which is inverted).
+// Merchant rename rules for rows a single-Item sync inserted outside
+// syncAllTransactions (the link exchanges and update-complete — seams audit
+// #3): those rows kept their raw names until a later sync added a row, and
+// detection run in between split a renamed subscription (F55). Fail-soft.
+async function renameNewRows(added) {
+  if (!(added > 0)) return;
+  try { await require("./merchant-rename").applyRenameRules(); }
+  catch (e) { console.error("rename rules after Plaid item sync failed:", e.message); }
+}
+
 async function syncPlaidItemTransactions(client, plaidItemDbId, accessToken) {
   // Read the current cursor
   const cursorRow = await pool.query(

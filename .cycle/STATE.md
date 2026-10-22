@@ -18,7 +18,19 @@ Updated: 2026-10-22
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Post-cycle-7 roadmap — T1.5 Batch C DONE** on branch `claude/sweet-ritchie-f9d8ah`
+- **Status:** **Seams & Invariants audit #3 DONE** on branch `claude/sweet-ritchie-f9d8ah`
+  (2026-10-22, in PR robinchoudhuryums/pers-fin#133). Block: `.cycle/blocks/7-seams3-audit.md`.
+  - **Completed:** 16 confirmed findings fixed (X1 WebAuthn double-encoded credential ids + migration
+    repair, C1 manual accounts in /api/items, S1 one reconcile at a time, S2 seasonal partial month, X3
+    digest recipient chain, O1–O3 reindex workflow + reconcile error text, S3–S6, X2, X6, C4, C5,
+    INV-104 standalone compares) + doc/comment drift; new INV-136; SX3 / literal-CASE / timezone
+    guards widened.
+  - **Verification:** npm 1915/1915; contract 167/167; migrations ×2 OK; Playwright 57/57; mutation
+    checks red.
+  - **Follow-ons:** in CLAUDE.md Known Open Issues ("Seams & Invariants audit #3 follow-ons").
+  - **Where I left off:** audit committed and pushed; seams counter reset to 0. NEXT: per rotation,
+    or /reflect / health synthesis if wanted.
+- **Previous status:** **Post-cycle-7 roadmap — T1.5 Batch C DONE** on branch `claude/sweet-ritchie-f9d8ah`
   (2026-10-22, in PR robinchoudhuryums/pers-fin#133). Per-sistant quick wins. Block:
   `.cycle/blocks/7-roadmap-t1-batchC-broad-implement.md`. Roadmap T1.4 + T1.5 (Batches A–C) are
   complete; next is the Seams & Invariants audit (counter at 3).
@@ -1322,7 +1334,19 @@ then rotate to Detection & Categorization.
 10. Per-sistant Web UI
 
 - **Seams audit:** every 3 subsystem cycles.
-- **Subsystem cycles since last Seams audit:** 3 (cycle-7 Oct 2026 broad scan reflected 2026-10-22; cycle-6 Sept 2026 broad scan reflected 2026-10-13; cycle-5 broad-scan reflected 2026-06-15; cadence 3 — a Seams & Invariants audit is DUE now. June 2026 Seams & Invariants audit #2 record below.)
+- **Subsystem cycles since last Seams audit:** 0 (Seams & Invariants audit #3, 2026-10-22 — record below; audit #2 June 2026 below it.)
+
+### Seams & Invariants audit #3 (2026-10-22 — counter reset to 0)
+Four parallel read-only reviews (cross-app, client↔server, ops, shared truth + mounts), each finding
+re-verified. 16 fixed: X1 (High) WebAuthn ids double-encoded at registration — no passkey could ever
+match; stored as given + migration repair (INV-136). Medium: C1 manual accounts as a null Plaid item,
+S2 seasonal prompt's partial oldest month, X3 display-form SMTP_FROM turning digests into drafts. Low:
+S1 reconcile overlap (INV-127), O1–O3 reindex workflow 409 / printed status JSON (INV-103) + reconcile
+error text, S3 rename rules after single-Item Plaid syncs, S4 recordSyncResult race (INV-68), S5 tax
+year, S6 milestones via deriveGoalProgress (INV-11), X2 today's charge in Knowledge grounding, X6
+shutdown flush, C4 source_id, C5 SW caching a redirect, INV-104 standalone compares. Guards widened
+(SX3 all copies, literal-CASE scan dirs, timezone lint getFullYear). Tests 1915 (+25), contract 167
+(+2). Follow-ons in CLAUDE.md Known Open Issues. Block: `.cycle/blocks/7-seams3-audit.md`.
 - **Last subsystem audited:** Sheets & External Export
 - **Cycles completed:** rotation complete this session (broad-scan + 8 targeted + 1 seams); reflect recorded (cycle 3, net +4); Health Synthesis still pending.
 

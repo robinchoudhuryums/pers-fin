@@ -336,8 +336,9 @@ async function start() {
     // own the listener, so their startup.js skips startKeepAlive — without this
     // the keep_alive_enabled setting was wired to nothing and scheduled jobs
     // never fired on Render free tier between user sessions. Keep-alive reads
-    // its enable flag and active-hours from Perfin's user_settings each tick,
-    // so settings changes still take effect immediately.
+    // its enable flag and active-hours from Perfin's user_settings through
+    // getKeepAliveConfigCached (6h cache, PSC-2); PATCH /api/settings
+    // invalidates it on a keep_alive_* change, so edits still apply at once.
     startKeepAlive(PORT);
   });
 
@@ -352,7 +353,7 @@ async function start() {
     errorLog.stop();
     server.close(async () => {
       try {
-        await errorLog.flush({ notify: false }); // keep the last minute's errors
+        await errorLog.flush({ notify: false, drain: true }); // keep the last minute's errors, after any flush in flight
         await perfin.pool.end().catch(() => null);
         await persistent.pool.end().catch(() => null);
         console.log("Database pools closed.");

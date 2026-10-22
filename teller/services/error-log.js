@@ -37,7 +37,7 @@ const IGNORE = [/^\[error-log\]/, /^Forced shutdown after timeout/];
 
 const buffer = new Map(); // fingerprint → { fingerprint, source, message, sample, count, firstAt, lastAt }
 const state = {
-  pool: null, timer: null, flushing: false, capturing: false, dropped: 0,
+  pool: null, timer: null, flushing: false, inFlight: null, capturing: false, dropped: 0,
   origError: null, lastPrune: 0,
 };
 
@@ -155,7 +155,18 @@ const UPSERT_SQL = `
 
 // Write the buffered errors, announce new / reopened ones, prune old rows.
 // Never throws. Entries that couldn't be written go back into the buffer.
-async function flush({ notify = true } = {}) {
+// `drain: true` (the shutdown flush) first waits for a periodic flush already
+// writing — it used to return at once, losing up to a minute of errors
+// (seams audit #3).
+async function flush(opts = {}) {
+  if (opts.drain) while (state.inFlight) await state.inFlight;
+  const owns = !state.flushing;
+  const p = flushOnce(opts);
+  if (owns) state.inFlight = p;
+  try { return await p; } finally { if (state.inFlight === p) state.inFlight = null; }
+}
+
+async function flushOnce({ notify = true } = {}) {
   const pool = state.pool;
   if (!pool || state.flushing || buffer.size === 0) return { written: 0 };
   state.flushing = true;
@@ -279,7 +290,7 @@ module.exports = {
   _reset() {
     buffer.clear();
     stop();
-    state.pool = null; state.flushing = false; state.capturing = false;
+    state.pool = null; state.flushing = false; state.inFlight = null; state.capturing = false;
     state.dropped = 0; state.lastPrune = 0;
   },
 };

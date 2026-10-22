@@ -79,6 +79,14 @@ function perfinDashboardUrl() {
 // The email-bearing events all carry { subject, html_body, plain_text }.
 const EMAIL_EVENTS = new Set(["insights_generated", "weekly_summary", "daily_summary", "critical_alert"]);
 
+// Per-sistant's single-recipient rule (config.EMAIL_REGEX — it rejects a list or
+// a display form), read from its own config so the two can't disagree; the
+// same pattern if that module isn't present (a standalone Perfin never gets here).
+function recipientRegex() {
+  try { return require("../../apps/per-sistant/config").EMAIL_REGEX; }
+  catch { return /^[^\s@,;<>"'()]+@[^\s@,;<>"'()]+\.[^\s@,;<>"'()]+$/; }
+}
+
 // In-process delivery — mirrors what apps/per-sistant/routes/perfin.js does on
 // receipt of the HTTP webhook (recipient resolution + emails-table insert), but
 // against the wired pool so no network round-trip or signature is involved.
@@ -88,8 +96,15 @@ async function deliverDigestInProcess(event, data) {
     const setR = await pp.query(
       "SELECT perfin_webhook_recipient FROM user_settings WHERE id = 1"
     ).catch(() => ({ rows: [] }));
-    const recipient = (setR.rows[0] && setR.rows[0].perfin_webhook_recipient)
-      || process.env.SMTP_FROM || process.env.SMTP_USER || null;
+    // The first VALID address in the chain (seams audit #3): it stopped at the
+    // first SET value, so a display-form SMTP_FROM ("Perfin <me@x.com>", fine as
+    // a From) turned every digest into a draft even with a valid SMTP_USER. The
+    // check is Per-sistant's own EMAIL_REGEX — the sender re-checks with it, so a
+    // looser test here reported "me@x.com>" sent and the cron then failed it.
+    const chain = [setR.rows[0] && setR.rows[0].perfin_webhook_recipient, process.env.SMTP_FROM, process.env.SMTP_USER]
+      .map((v) => (v == null ? "" : String(v).trim())).filter(Boolean);
+    const emailRe = recipientRegex();
+    const recipient = chain.find((v) => emailRe.test(v)) || chain[0] || null;
     const fallbackSubject = event === "weekly_summary"
       ? "Perfin: Your Weekly Financial Digest"
       : event === "daily_summary"
@@ -108,7 +123,7 @@ async function deliverDigestInProcess(event, data) {
     // content isn't lost (the receiver does the same) — but report it as NOT
     // sent (cycle-7 F79). It used to return sent: true, so the digest
     // watermarks advanced and nothing ever reached an inbox.
-    const validRecipient = recipient && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(recipient).trim());
+    const validRecipient = recipient && emailRe.test(recipient);
     if (!validRecipient) {
       await pp.query(
         "INSERT INTO emails (recipient_email, subject, body, body_html, status) VALUES ($1, $2, $3, $4, 'draft')",
