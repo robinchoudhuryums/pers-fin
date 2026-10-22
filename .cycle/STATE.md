@@ -36,8 +36,14 @@ implement and reflect sessions only set Phase.)
   - **Follow-ons:** the sweep counts controls on load only (dialogs / rows rendered after a click
     aren't swept — Activity's rows); the mic buttons only log a refused permission; unguarded Save
     buttons not covered by withPending.
-  - **Where I left off:** Batch 20 committed and pushed (no PR). NEXT: `/sync-docs` for Batch 20,
-    then `/reflect` to close cycle 7.
+  - **/sync-docs DONE (Batch 20):** CLAUDE.md — the CI e2e description (seeded run, console
+    errors, click sweep, data-e2e-skip convention, 57 tests), Known Open Issues (Batch 20 done —
+    planned work complete; Batch 20 follow-ons), new INV-129 (withPending + data-e2e-skip), counts
+    1832 / 89 files / Per-sistant 534 + the new test file. Per-sistant CLAUDE.md — withPending in the
+    client kit, the test file, 534. README — counts, coverage and e2e text. Subsystem paths and
+    operator state unchanged.
+  - **Where I left off:** Batch 20 + its /sync-docs committed and pushed (no PR). NEXT: `/reflect`
+    to close cycle 7.
 - **Previous status:** **Cycle 7 — expansion Batch 19 DONE** on branch `claude/sweet-ritchie-f9d8ah`
   (2026-10-21). Plaid Link update mode (G3) + the Batch 4 investments-exchange duplicate-guard
   follow-on, from `.cycle/plan-cycle7-expansion.md`. Block: `.cycle/blocks/7-batch19-broad-implement.md`.
