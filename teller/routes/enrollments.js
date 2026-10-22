@@ -615,14 +615,7 @@ async function syncAllTransactionsOnce() {
   }
   const tellerAdded = (teller && teller.transactions_added) || 0;
   const plaidAdded = (plaid && plaid.transactions_added) || 0;
-  // F55: merchant rename rules name the new rows BEFORE the anomaly check (and
-  // the categorize / detection steps that follow every caller) group them.
-  // Fail-soft: a rule error never fails the sync.
-  if (tellerAdded + plaidAdded > 0) {
-    try { await require("./merchant-rename").applyRenameRules(); }
-    catch (e) { console.error("rename rules after sync failed:", e.message); }
-  }
-  if (tellerAdded + plaidAdded > 0) await runAnomalyCheck();
+  await runPostSyncSteps(tellerAdded + plaidAdded);
   const errors = [].concat(
     ((teller && teller.errors) || []).map(e => ({ provider: "teller", ...e })),
     ((plaid && plaid.errors) || []).map(e => ({ provider: "plaid", ...e }))
@@ -634,6 +627,27 @@ async function syncAllTransactionsOnce() {
     teller,
     plaid,
   };
+}
+
+// runPostSyncSteps — what follows a transaction sync that added rows: the
+// merchant rename rules (F55) name the new rows BEFORE the anomaly check (and the
+// categorize / detection steps that follow every caller) group them, then ONE
+// anomaly check over everything the sync added (DD-1 / INV-67). Shared by
+// syncAllTransactions and the per-item sync a Plaid webhook triggers (roadmap
+// T2.1 W3). Serialized: two syncs finishing together (a webhook during the daily
+// sync) run it one after the other, so the second check reads the watermark the
+// first advanced and a charge is pushed once. Never rejects — a rule error never
+// fails the sync, and runAnomalyCheck never throws.
+let _postSyncChain = Promise.resolve();
+function runPostSyncSteps(added) {
+  if (!(added > 0)) return Promise.resolve();
+  const run = _postSyncChain.then(async () => {
+    try { await require("./merchant-rename").applyRenameRules(); }
+    catch (e) { console.error("rename rules after sync failed:", e.message); }
+    await runAnomalyCheck();
+  });
+  _postSyncChain = run.catch(e => console.error("post-sync steps failed:", e.message));
+  return _postSyncChain;
 }
 
 // ---------------------------------------------------------------------------
@@ -1619,6 +1633,7 @@ module.exports.recordSyncResult = recordSyncResult;
 module.exports.thrownSyncResult = thrownSyncResult;
 module.exports.syncAllTransactions = syncAllTransactions;
 module.exports.runAnomalyCheck = runAnomalyCheck;
+module.exports.runPostSyncSteps = runPostSyncSteps;
 module.exports.runTransactionSync = runTransactionSync;
 module.exports.runBalanceSync = runBalanceSync;
 module.exports._bgJobs = bgJobs;

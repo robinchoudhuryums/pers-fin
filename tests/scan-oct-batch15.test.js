@@ -90,9 +90,12 @@ describe("ST2: merchant rename rules", () => {
 
   it("is applied after a sync (before the anomaly check), inside the CSV import transaction and after a manual entry", () => {
     const enr = read("teller/routes/enrollments.js");
-    const once = enr.slice(enr.indexOf("async function syncAllTransactionsOnce()"));
-    assert.ok(once.indexOf('require("./merchant-rename").applyRenameRules()') > 0);
-    assert.ok(once.indexOf('require("./merchant-rename").applyRenameRules()') < once.indexOf("await runAnomalyCheck()"));
+    // The post-sync steps live in runPostSyncSteps since roadmap T2.1 W3 (the
+    // Plaid webhook's per-item sync shares them); syncAllTransactions calls it.
+    assert.match(enr.slice(enr.indexOf("async function syncAllTransactionsOnce()")), /await runPostSyncSteps\(tellerAdded \+ plaidAdded\)/);
+    const post = enr.slice(enr.indexOf("function runPostSyncSteps("));
+    assert.ok(post.indexOf('require("./merchant-rename").applyRenameRules()') > 0);
+    assert.ok(post.indexOf('require("./merchant-rename").applyRenameRules()') < post.indexOf("await runAnomalyCheck()"));
     const subs = read("teller/routes/subscriptions.js");
     assert.match(subs, /SAVEPOINT csv_rename"\);\s*await require\("\.\/merchant-rename"\)\.applyRenameRules\(client\);/);
     assert.match(subs, /ROLLBACK TO SAVEPOINT csv_rename/);

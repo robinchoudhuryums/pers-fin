@@ -925,17 +925,18 @@ function withPlaidTxnLock(fn) {
 function syncAllPlaidTransactions() {
   return withPlaidTxnLock(() => syncAllPlaidTransactionsOnce());
 }
+// The GOOD Plaid items with their decrypted tokens (perfin_try_decrypt — NULL,
+// never a raised error, for a row the passphrase can't open; INV-22).
+const PLAID_ITEMS_SQL =
+  `SELECT pi.id, pi.item_id, pi.institution_name,
+            perfin_try_decrypt(pi.access_token_enc, $1) AS access_token
+     FROM plaid_items pi
+     WHERE pi.status = 'GOOD'`;
 async function syncAllPlaidTransactionsOnce() {
   const client = getPlaidClient();
   if (!client) return { ok: false, error: "Plaid not configured" };
 
-  const items = await pool.query(
-    `SELECT pi.id, pi.item_id, pi.institution_name,
-            perfin_try_decrypt(pi.access_token_enc, $1) AS access_token
-     FROM plaid_items pi
-     WHERE pi.status = 'GOOD'`,
-    [ENCRYPTION_PASSPHRASE]
-  );
+  const items = await pool.query(PLAID_ITEMS_SQL, [ENCRYPTION_PASSPHRASE]);
 
   let totalAdded = 0;
   let totalModified = 0;
@@ -948,98 +949,13 @@ async function syncAllPlaidTransactionsOnce() {
   let itemsFailed = 0;
 
   for (const item of items.rows) {
-    if (!item.access_token) {
-      errors.push({ institution: item.institution_name, error: "decryption_failed" });
-      itemsFailed++;
-      continue;
-    }
-    try {
-      // Fetch the item's accounts BEFORE walking the cursor and register any
-      // that aren't in linked_accounts yet (BSI-1). Rows only used to be
-      // created at link time, so an account the item gained later (a new card
-      // at the same bank, accounts added in update mode) had its transactions
-      // hit the transactions.account_id FK, fail the page, and — since the
-      // cursor never advances past a failed page (INV-04) — stall the WHOLE
-      // item forever. The same response feeds the balance refresh below.
-      // Fail-soft: an accountsGet error doesn't block the transaction sync
-      // (a genuinely broken item fails there too and is reported).
-      let balAccounts = null;
-      try {
-        const balRes = await client.accountsGet({ access_token: item.access_token });
-        balAccounts = balRes.data.accounts || [];
-        accountsRegistered += await registerMissingPlaidAccounts(item.id, balAccounts);
-      } catch (acctErr) {
-        console.error("Plaid accountsGet error for", item.institution_name, ":", acctErr.response?.data?.error_message || acctErr.message);
-      }
-
-      const result = await syncPlaidItemTransactions(client, item.id, item.access_token);
-      totalAdded += result.added;
-      totalModified += result.modified;
-      totalRemoved += result.removed;
-      // A halted cursor walk means the item is stuck/behind — surface it
-      // instead of reporting a clean success (BSI-1). max_pages is a normal
-      // resumable long walk, not an error.
-      if (result.incomplete && result.incomplete_reason !== "max_pages") {
-        errors.push({ institution: item.institution_name, error: "partial_sync_incomplete" });
-      }
-      // The item authenticated and synced → clear any recorded re-auth need.
-      await setPlaidItemErrorCode(item.id, null);
-
-      // #1: sync liabilities (APR, min payment) on each auto-sync cycle
-      try { await syncPlaidLiabilities(client, item.access_token, item.id); }
-      catch (libErr) { console.error("Liabilities sync error for", item.institution_name, ":", libErr.message); }
-
-      // Update balance snapshots for linked accounts under this item
-      const accts = await pool.query(
-        "SELECT id, account_id FROM linked_accounts WHERE plaid_item_id = $1",
-        [item.id]
-      );
-      try {
-        if (!balAccounts) {
-          const balRes = await client.accountsGet({ access_token: item.access_token });
-          balAccounts = balRes.data.accounts || [];
-        }
-        for (const ba of balAccounts) {
-          const la = accts.rows.find(a => a.account_id === ba.account_id);
-          if (!la) continue;
-          const bal = ba.balances?.current ?? ba.balances?.available ?? null;
-          if (bal !== null) {
-            // Keep credit_limit fresh on the auto-sync path too (only the
-            // balance-only path did before), so utilization stays correct when
-            // Plaid reports `available: null` for a credit card (F-credit).
-            await pool.query(
-              `UPDATE linked_accounts SET
-                 current_balance = $1, available_balance = $2,
-                 credit_limit = COALESCE($3, credit_limit), balance_updated_at = now()
-               WHERE id = $4`,
-              [ba.balances.current, ba.balances.available, ba.balances?.limit ?? null, la.id]
-            );
-            await pool.query(
-              `INSERT INTO account_balance_snapshots (source, source_id, snapshot_date, balance, current_balance, available_balance)
-               VALUES ('linked', $1, CURRENT_DATE, $2, $3, $4)
-               ON CONFLICT (source, source_id, snapshot_date) DO UPDATE SET
-                 balance = EXCLUDED.balance, current_balance = EXCLUDED.current_balance,
-                 available_balance = EXCLUDED.available_balance`,
-              // current_balance mirrors the picked balance (current ?? available)
-              // so a card reporting current=null/available=N doesn't snapshot a
-              // null current_balance inconsistent with the `balance` column (F16).
-              [la.id, ba.balances.current ?? ba.balances.available, ba.balances.current ?? ba.balances.available, ba.balances.available]
-            ).catch(e => console.error("Plaid balance snapshot error:", e.message));
-          }
-        }
-      } catch (balErr) {
-        console.error("Plaid balance update error for", item.institution_name, ":", balErr.message);
-      }
-    } catch (err) {
-      console.error("Plaid sync error for", item.institution_name, ":", err.response?.data?.error_message || err.message);
-      errors.push({ institution: item.institution_name, error: err.response?.data?.error_message || err.message });
-      itemsFailed++;
-      // An ITEM_* error that needs the user to re-authenticate is recorded so
-      // Sync Health can say so (BSI-10) — nothing ever flagged it before.
-      if (isReauthErrorCode(err.response?.data?.error_code)) {
-        await setPlaidItemErrorCode(item.id, err.response.data.error_code);
-      }
-    }
+    const r = await syncOnePlaidItem(client, item);
+    totalAdded += r.added;
+    totalModified += r.modified;
+    totalRemoved += r.removed;
+    accountsRegistered += r.accounts_registered;
+    errors.push(...r.errors);
+    if (r.failed) itemsFailed++;
   }
 
   return {
@@ -1051,6 +967,166 @@ async function syncAllPlaidTransactionsOnce() {
     accounts_registered: accountsRegistered || undefined,
     errors: errors.length > 0 ? errors : undefined,
   };
+}
+
+// syncOnePlaidItem — one item's whole sync: register new accounts, walk the
+// transaction cursor, clear a recorded re-auth need, refresh liabilities and
+// balances. `item` is a PLAID_ITEMS_SQL row. Never throws: the outcome is
+// { added, modified, removed, accounts_registered, errors[], failed } — failed
+// = the item did not sync at all (token / thrown error). Shared by the
+// all-items sync above and the per-item sync a Plaid webhook asks for
+// (syncPlaidItem, roadmap T2.1 W3). The caller holds withPlaidTxnLock. A walk
+// that reached the end of the cursor stamps plaid_items.last_synced_at.
+async function syncOnePlaidItem(client, item) {
+  const out = { added: 0, modified: 0, removed: 0, accounts_registered: 0, errors: [], failed: false };
+  if (!item.access_token) {
+    out.errors.push({ institution: item.institution_name, error: "decryption_failed" });
+    out.failed = true;
+    return out;
+  }
+  try {
+    // Fetch the item's accounts BEFORE walking the cursor and register any
+    // that aren't in linked_accounts yet (BSI-1). Rows only used to be
+    // created at link time, so an account the item gained later (a new card
+    // at the same bank, accounts added in update mode) had its transactions
+    // hit the transactions.account_id FK, fail the page, and — since the
+    // cursor never advances past a failed page (INV-04) — stall the WHOLE
+    // item forever. The same response feeds the balance refresh below.
+    // Fail-soft: an accountsGet error doesn't block the transaction sync
+    // (a genuinely broken item fails there too and is reported).
+    let balAccounts = null;
+    try {
+      const balRes = await client.accountsGet({ access_token: item.access_token });
+      balAccounts = balRes.data.accounts || [];
+      out.accounts_registered += await registerMissingPlaidAccounts(item.id, balAccounts);
+    } catch (acctErr) {
+      console.error("Plaid accountsGet error for", item.institution_name, ":", acctErr.response?.data?.error_message || acctErr.message);
+    }
+
+    const result = await syncPlaidItemTransactions(client, item.id, item.access_token);
+    out.added += result.added;
+    out.modified += result.modified;
+    out.removed += result.removed;
+    // A halted cursor walk means the item is stuck/behind — surface it
+    // instead of reporting a clean success (BSI-1). max_pages is a normal
+    // resumable long walk, not an error.
+    if (result.incomplete && result.incomplete_reason !== "max_pages") {
+      out.errors.push({ institution: item.institution_name, error: "partial_sync_incomplete" });
+    }
+    // The item authenticated and synced → clear any recorded re-auth need.
+    await setPlaidItemErrorCode(item.id, null);
+    // The item's own freshness (roadmap T2.1 W3): stamped only when the walk
+    // reached the end of the cursor, so a stuck or still-paging item doesn't
+    // read as current.
+    if (!result.incomplete) {
+      await pool.query("UPDATE plaid_items SET last_synced_at = now() WHERE id = $1", [item.id])
+        .catch(e => console.error("plaid item last_synced_at update error:", e.message));
+    }
+
+    // #1: sync liabilities (APR, min payment) on each auto-sync cycle
+    try { await syncPlaidLiabilities(client, item.access_token, item.id); }
+    catch (libErr) { console.error("Liabilities sync error for", item.institution_name, ":", libErr.message); }
+
+    // Update balance snapshots for linked accounts under this item
+    const accts = await pool.query(
+      "SELECT id, account_id FROM linked_accounts WHERE plaid_item_id = $1",
+      [item.id]
+    );
+    try {
+      if (!balAccounts) {
+        const balRes = await client.accountsGet({ access_token: item.access_token });
+        balAccounts = balRes.data.accounts || [];
+      }
+      for (const ba of balAccounts) {
+        const la = accts.rows.find(a => a.account_id === ba.account_id);
+        if (!la) continue;
+        const bal = ba.balances?.current ?? ba.balances?.available ?? null;
+        if (bal !== null) {
+          // Keep credit_limit fresh on the auto-sync path too (only the
+          // balance-only path did before), so utilization stays correct when
+          // Plaid reports `available: null` for a credit card (F-credit).
+          await pool.query(
+            `UPDATE linked_accounts SET
+               current_balance = $1, available_balance = $2,
+               credit_limit = COALESCE($3, credit_limit), balance_updated_at = now()
+             WHERE id = $4`,
+            [ba.balances.current, ba.balances.available, ba.balances?.limit ?? null, la.id]
+          );
+          await pool.query(
+            `INSERT INTO account_balance_snapshots (source, source_id, snapshot_date, balance, current_balance, available_balance)
+             VALUES ('linked', $1, CURRENT_DATE, $2, $3, $4)
+             ON CONFLICT (source, source_id, snapshot_date) DO UPDATE SET
+               balance = EXCLUDED.balance, current_balance = EXCLUDED.current_balance,
+               available_balance = EXCLUDED.available_balance`,
+            // current_balance mirrors the picked balance (current ?? available)
+            // so a card reporting current=null/available=N doesn't snapshot a
+            // null current_balance inconsistent with the `balance` column (F16).
+            [la.id, ba.balances.current ?? ba.balances.available, ba.balances.current ?? ba.balances.available, ba.balances.available]
+          ).catch(e => console.error("Plaid balance snapshot error:", e.message));
+        }
+      }
+    } catch (balErr) {
+      console.error("Plaid balance update error for", item.institution_name, ":", balErr.message);
+    }
+  } catch (err) {
+    console.error("Plaid sync error for", item.institution_name, ":", err.response?.data?.error_message || err.message);
+    out.errors.push({ institution: item.institution_name, error: err.response?.data?.error_message || err.message });
+    out.failed = true;
+    // An ITEM_* error that needs the user to re-authenticate is recorded so
+    // Sync Health can say so (BSI-10) — nothing ever flagged it before.
+    if (isReauthErrorCode(err.response?.data?.error_code)) {
+      await setPlaidItemErrorCode(item.id, err.response.data.error_code);
+    }
+  }
+  return out;
+}
+
+// syncPlaidItem — sync ONE Plaid item (plaid_items.id) now: what a Plaid
+// SYNC_UPDATES_AVAILABLE webhook asks for (roadmap T2.1 W3). Runs under
+// withPlaidTxnLock like every Plaid transaction walk (F27). COALESCED per item:
+// a request that arrives while that item's sync is queued or running doesn't
+// start a second one — it marks the running one to go round once more when it
+// finishes (Plaid may have more data than the run already fetched) and shares
+// its promise. Returns { ok: false, error: "Plaid not configured" | "not_found" }
+// (no GOOD item with that id), else { ok: true, runs, added, modified, removed,
+// accounts_registered (summed over the runs), errors, failed (the last run's) }.
+// It records nothing globally — no last_txn_sync_at, no last_sync_result (the
+// item's own last_synced_at only) — and runs no post-sync steps; the caller
+// runs enrollments.runPostSyncSteps(added).
+const _plaidItemSyncs = new Map(); // plaid_items.id → { again, promise }
+function syncPlaidItem(plaidItemDbId) {
+  const running = _plaidItemSyncs.get(plaidItemDbId);
+  if (running) { running.again = true; return running.promise; }
+  const state = { again: false, promise: null };
+  _plaidItemSyncs.set(plaidItemDbId, state);
+  state.promise = (async () => {
+    const total = { ok: true, runs: 0, added: 0, modified: 0, removed: 0, accounts_registered: 0, errors: [], failed: false };
+    try {
+      do {
+        state.again = false;
+        const r = await withPlaidTxnLock(() => syncPlaidItemOnce(plaidItemDbId));
+        if (!r.ok) return r;
+        total.runs++;
+        total.added += r.added;
+        total.modified += r.modified;
+        total.removed += r.removed;
+        total.accounts_registered += r.accounts_registered;
+        total.errors = r.errors;
+        total.failed = r.failed;
+      } while (state.again);
+      return total;
+    } finally {
+      _plaidItemSyncs.delete(plaidItemDbId);
+    }
+  })();
+  return state.promise;
+}
+async function syncPlaidItemOnce(plaidItemDbId) {
+  const client = getPlaidClient();
+  if (!client) return { ok: false, error: "Plaid not configured" };
+  const r = await pool.query(PLAID_ITEMS_SQL + " AND pi.id = $2", [ENCRYPTION_PASSPHRASE, plaidItemDbId]);
+  if (!r.rows.length) return { ok: false, error: "not_found" };
+  return { ok: true, ...(await syncOnePlaidItem(client, r.rows[0])) };
 }
 
 // registerMissingPlaidAccounts — insert linked_accounts rows for any account an
@@ -2224,6 +2300,8 @@ router.post("/api/plaid/migrate-overrides", async (req, res) => {
 // declarations, so they're defined by the time this runs.
 module.exports = router;
 module.exports.syncAllPlaidTransactions = syncAllPlaidTransactions;
+module.exports.syncPlaidItem = syncPlaidItem; // roadmap T2.1 W3: the per-item sync a Plaid webhook triggers
+module.exports.syncOnePlaidItem = syncOnePlaidItem;
 module.exports.syncPlaidItemTransactions = syncPlaidItemTransactions; // exported for testing (sync idempotency — T1)
 module.exports.reconcilePlaidTransactions = reconcilePlaidTransactions;
 module.exports.syncAllPlaidBalances = syncAllPlaidBalances;

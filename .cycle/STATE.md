@@ -18,7 +18,25 @@ Updated: 2026-10-22
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T2.1 (bank webhooks) — W2 DONE** (+ W1's docs) on branch
+- **Status:** **Roadmap T2.1 (bank webhooks) — W3 DONE** on branch `claude/sweet-ritchie-f9d8ah`
+  (2026-10-22, in PR robinchoudhuryums/pers-fin#133). Plan: `.cycle/plan-t2-1-webhooks.md`.
+  Block: `.cycle/blocks/7-roadmap-t2-1-w3-broad-implement.md`.
+  - **Completed:** investments.js — syncOnePlaidItem (one item's whole sync, the loop body of
+    syncAllPlaidTransactionsOnce), syncPlaidItem(id) (one GOOD item under withPlaidTxnLock, coalesced
+    per item with a re-run-once flag, nothing global recorded); plaid_items.last_synced_at (stamped
+    when the walk reached the end of the cursor); enrollments.js runPostSyncSteps(added) (rename
+    rules + one anomaly check, serialized) used by syncAllTransactions; routes/plaid-webhook-events.js
+    (SYNC_UPDATES_AVAILABLE → that item → post-sync steps; everything else 'ignored') as the router's
+    Plaid handler. Docs folded in (new INV-138, INV-67 widened).
+  - **Verification:** npm 1963/1963 (19 new); contract 178/178 (3 new); migrations twice OK;
+    Playwright not re-run (no page / mount change); three mutation checks red.
+  - **Decisions:** last_synced_at = "caught up" (not stamped on a stuck / still-paging walk;
+    sync_cursors.last_synced_at keeps its per-page meaning); a failed item sync still runs the
+    post-sync steps for rows it added, then fails the event; post-sync steps serialized globally.
+  - **Follow-ons:** update-complete doesn't stamp last_synced_at (own steps); W4–W6 remain.
+  - **Where I left off:** W3 committed and pushed with docs. NEXT: W4 (Plaid item events +
+    webhook registration).
+- **Previous status:** **Roadmap T2.1 (bank webhooks) — W2 DONE** (+ W1's docs) on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-22, in PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-1-webhooks.md`. Block: `.cycle/blocks/7-roadmap-t2-1-w2-broad-implement.md`.
   - **Completed:** services/webhook-verify.js — Plaid ES256 JWT (kid key fetch + 24h cache,

@@ -237,7 +237,10 @@ teller/
                            POST /api/sync-balances, reconcile endpoints, the
                            Teller sync engine, and account management. Also
                            hosts syncAllTransactions (the single Teller+Plaid
-                           transaction-sync entry point) + runAnomalyCheck.
+                           transaction-sync entry point) + runAnomalyCheck +
+                           runPostSyncSteps(added) (rename rules then ONE anomaly
+                           check, serialized — shared with the Plaid webhook's
+                           per-item sync, roadmap T2.1 W3).
                            Background jobs (cycle-7 ST1): bgJobs, one in-memory
                            slot per kind (sync / sync-balances / reconcile, each
                            with an id); runTransactionSync / runBalanceSync are
@@ -294,7 +297,7 @@ teller/
                            GET /api/budgets/one-time (roadmap T1.5 — every
                            one-month budget with its month, for the Budgets
                            page's other-month links)
-    webhooks.js          — Bank webhook receivers (roadmap T2.1, W1–W2):
+    webhooks.js          — Bank webhook receivers (roadmap T2.1, W1–W3):
                            POST /api/webhooks/plaid + /api/webhooks/teller,
                            mounted in server.js BEFORE session / auth / CSRF /
                            API key / activity. Body required + 512 KB cap; 503
@@ -305,10 +308,20 @@ teller/
                            200 { duplicate: true }, not processed), the route
                            answers 200, then the provider's handler runs detached
                            and the row ends done / ignored / failed (fixed text).
-                           No handlers yet (W3–W5), so events end 'ignored'. The
-                           body is never stored or logged. 30-day prune, at most
-                           daily. createWebhookRouter({ verifiers, handlers, db,
-                           defer, now }) for tests
+                           Plaid's handler is plaid-webhook-events.js (W3);
+                           Teller has none until W5, so its events end 'ignored'.
+                           The body is never stored or logged. 30-day prune, at
+                           most daily. createWebhookRouter({ verifiers, handlers,
+                           db, defer, now }) for tests
+    plaid-webhook-events.js — the Plaid webhook handler (roadmap T2.1 W3):
+                           TRANSACTIONS / SYNC_UPDATES_AVAILABLE → the GOOD item
+                           with that item_id is synced now (investments.
+                           syncPlaidItem) then runPostSyncSteps(added); an unknown /
+                           CSV item and every other event → 'ignored' (item events
+                           are W4); a failed item sync fails the event (after the
+                           post-sync steps for any rows it added). A trigger, not
+                           data — never reads the payload's transactions.
+                           createPlaidEventHandler({ db, syncItem, postSync })
     housing.js           — Rent & Utilities payee ledger: GET/PATCH /api/housing/config,
                            GET /api/housing/ledger, POST /api/housing/generate,
                            POST/PATCH/DELETE /api/housing/obligations, POST/DELETE
@@ -369,6 +382,15 @@ teller/
                            asset-class allocation, and top winners/losers from
                            Plaid-tracked holdings only (Teller-linked lacks
                            cost basis from Teller's API).
+                           Per-item Plaid sync (roadmap T2.1 W3): syncOnePlaidItem
+                           (client, item) is one item's whole sync (register new
+                           accounts, cursor walk, clear the re-auth code, stamp
+                           plaid_items.last_synced_at when the walk reached the end,
+                           liabilities, balances) — syncAllPlaidTransactions loops
+                           it; syncPlaidItem(id) syncs ONE GOOD item under
+                           withPlaidTxnLock, coalesced per item (a request during
+                           its run makes it go round once more and shares its
+                           promise), recording nothing global.
                            Also exports `syncAllPlaidTransactions`,
                            `syncAllPlaidBalances`, and `syncAllPlaidHoldings`
                            (UPSERTs investment_accounts; holdings-sum balance
@@ -723,9 +745,17 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (1944 tests as of latest); use
+  Perfin and Per-sistant test files (1963 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 1944 tests across 97 test files (incl.
+  Current count: 1963 tests across 98 test files (incl.
+  `tests/roadmap-t2-webhooks-w3.test.js` — roadmap T2.1 W3: syncPlaidItem syncing only
+  the named GOOD item behind the Plaid lock, stamping its last_synced_at only after a
+  complete walk and writing nothing global, the per-item coalescing (one extra round,
+  shared promise, other items not coalesced), syncAllPlaidTransactions through
+  syncOnePlaidItem, runPostSyncSteps (nothing for 0 rows, rename before the check, two
+  at once serialized), the handler's done / ignored / failed paths and a verified event
+  through the production router — the database-backed half is
+  `tests/contract/webhooks-w3`;
   `tests/roadmap-t2-webhooks-w1.test.js` + `tests/roadmap-t2-webhooks-w2.test.js` —
   roadmap T2.1 W1–W2: the receivers answering 503 and writing nothing while
   unconfigured, 400 / 413 / 404, a bad or throwing verification a 401 logged as a
@@ -1097,7 +1127,11 @@ shell/
   T2.1: the webhook_events CHECKs, one row per delivery and per provider, a failed
   handler's fixed error, the 30-day prune, the production router writing nothing while
   unconfigured; a signed Plaid event recorded once under its JWT key with a replay and
-  a forgery adding nothing, a Teller event re-signed later still one row). 175 tests, run
+  a forgery adding nothing, a Teller event re-signed later still one row), and webhooks-w3
+  (roadmap T2.1 W3: a signed SYNC_UPDATES_AVAILABLE syncing only that item with the real
+  engine — new row, cursor, balances, the item's last_synced_at, the anomaly watermark,
+  'done', last_txn_sync_at / last_sync_result untouched; a second delivery adding
+  nothing; a CSV / unknown item 'ignored'). 178 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -2936,7 +2970,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 1944 tests passing across 97 test files (Perfin 1393 + Per-sistant 551), plus the real-Postgres route contract suite (175 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 1963 tests passing across 98 test files (Perfin 1412 + Per-sistant 551), plus the real-Postgres route contract suite (178 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -2956,7 +2990,8 @@ POST /api/enroll           # store Teller access token after Connect
 POST /api/webhooks/plaid   # Plaid webhooks (roadmap T2.1): verified by the
                            # Plaid-Verification JWT; 503 without Plaid credentials;
                            # past the shell gate (self-authenticating). Recorded in
-                           # webhook_events; no action yet (W3–W4)
+                           # webhook_events; SYNC_UPDATES_AVAILABLE syncs that item
+                           # (W3); item events come with W4
 POST /api/webhooks/teller  # Teller webhooks: Teller-Signature HMAC with
                            # TELLER_WEBHOOK_SECRET; 503 without it. No action yet (W5)
 POST /api/sync             # pull transactions from Teller AND Plaid via
@@ -3700,6 +3735,12 @@ standalone-mode fallback if either app is run on its own Render service.
   `POST /api/plaid/update-complete` and by both exchange upserts. `status` stays
   `'GOOD' | 'CSV'`. Surfaced by `GET /api/items` (the Accounts page's
   Re-authenticate button).
+- `plaid_items.last_synced_at TIMESTAMPTZ` (roadmap T2.1 W3): when the item's
+  transaction walk last reached the END of its cursor (stamped by syncOnePlaidItem —
+  the scheduled sync and a webhook sync alike; a stuck or still-paging walk doesn't
+  stamp it). The per-connection freshness a webhook sync advances instead of the
+  global `last_txn_sync_at`. Distinct from `sync_cursors.last_synced_at`, which moves
+  on every clean page. Auto-migrated.
 - `investment_accounts.mask TEXT` (cycle-7 G3): a Plaid investment account's last
   digits, written by the holdings sync and both exchange paths (COALESCE keeps a
   known mask); read by the investments-only exchange's duplicate guard. Rows synced
@@ -5277,11 +5318,14 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   email's attachments or warn before Send that one's file is missing (the refusal
   arrives as the send's error toast); Retry sends a failed SCHEDULED email at once
   rather than offering to reschedule it.
-- Roadmap T2.1 (bank webhooks) is in progress (`.cycle/plan-t2-1-webhooks.md`): W1–W2
-  (receivers, event log, signature verification) are done, but no handler acts on an
-  event yet — Plaid isn't sent webhooks until W4 registers the URL, and Teller's only
-  once its dashboard and `TELLER_WEBHOOK_SECRET` are set. W3–W6 (Plaid per-item sync,
-  Plaid item events + registration, Teller events, Sync Health visibility) remain.
+- Roadmap T2.1 (bank webhooks) is in progress (`.cycle/plan-t2-1-webhooks.md`): W1–W3
+  (receivers, event log, signature verification, a Plaid SYNC_UPDATES_AVAILABLE syncing
+  that item) are done — still inert in production: Plaid isn't sent webhooks until W4
+  registers the URL, and Teller's only once its dashboard and `TELLER_WEBHOOK_SECRET`
+  are set. W4–W6 (Plaid item events + registration, Teller events, Sync Health
+  visibility) remain. POST /api/plaid/update-complete syncs its item with its own
+  steps, so it doesn't stamp `plaid_items.last_synced_at` (the next scheduled sync
+  does).
   Teller's signature header format couldn't be re-checked against its docs from the
   build environment — confirm it before switching Teller webhooks on. A webhook_events
   row a restart caught mid-handler stays 'processing'.
@@ -5418,7 +5462,8 @@ Bank Sync & Ingestion:
   teller/routes/investment-performance.js, teller/services/plaid-client.js,
   teller/services/teller-api.js, teller/services/benchmarks.js,
   teller/data/csv-formats.js, scripts/import-csv-cli.js,
-  teller/routes/webhooks.js, teller/services/webhook-verify.js
+  teller/routes/webhooks.js, teller/services/webhook-verify.js,
+  teller/routes/plaid-webhook-events.js
   (Teller and Plaid are co-equal, first-class linking paths — both write the
    same transactions/linked_accounts tables. Plaid additionally covers banks
    Teller doesn't, plus investment holdings.)
@@ -5563,7 +5608,7 @@ INV-63 | Per-sistant's shared fetch wrapper (apps/per-sistant/views/js.js) redir
 INV-64 | Job Radar's AI passes (job_fit + legitimacy) are cap-charged: cappedCall reads getAiBudgetCents()+monthlyAiSpendCents() and throws { code:'CAP' } BEFORE calling the model when over budget; on a successful call it charges an ai_usage row via recordAiUsage in a `finally` (idempotent, only when tokens were consumed). The 10 pre-existing Per-sistant AI features still use the uncapped callAI (unchanged) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (cappedCall charge-on-success + throw-CAP-before-model-call)
 INV-65 | Job Radar ingest is content_hash-idempotent: dedupPersist upserts ON CONFLICT (content_hash) and counts genuine inserts via (xmax = 0), so a re-run over identical listings adds 0, no duplicate rows. Retention strips old new/dismissed descriptions but KEEPS the hash+status tombstone so a dismissed job re-ingested stays dismissed | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (dedup idempotency, retention)
 INV-66 | gatherJobRadarSummary is the SINGLE fail-soft aggregator feeding the /jobs page, the notification check, and the AI daily-briefing line (the gatherHealthSummary pattern) — a query error returns the safe empty shape, never 500s those surfaces; the notif-check + briefing call it gated on job_radar_enabled. Listing status changes ARCHIVE (saved/applied/dismissed), never hard-delete, and removing a target company deactivates it (active=false — the db/021 seed would re-insert a deleted row) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (aggregator fail-soft + archive-not-delete)
-INV-67 | Every transaction-sync trigger (POST /api/sync + daily-sync.yml, bank auto-sync, pre-insights chain) goes through syncAllTransactions — Teller then Plaid, each failure-isolated — and runAnomalyCheck runs ONCE over the combined added count; reconcile/backfill never runs it | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-sept-batch2.test.js (BSI-2 / DD-1 block)
+INV-67 | Every transaction-sync trigger (POST /api/sync + daily-sync.yml, bank auto-sync, pre-insights chain) goes through syncAllTransactions — Teller then Plaid, each failure-isolated — and runAnomalyCheck runs ONCE over the combined added count; a Plaid webhook's per-item sync runs the same post-sync steps (runPostSyncSteps — rename rules, then one check; serialized, so two syncs finishing together check in turn); reconcile/backfill never runs it | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-sept-batch2.test.js (BSI-2 / DD-1 block) + tests/roadmap-t2-webhooks-w3.test.js
 INV-68 | last_sync_result is merged PER PROVIDER (a write replaces only the providers it ran; null result = untouched), never last-writer-wins; errors[] is the flat union | Subsystem: Bank Sync & Ingestion / Data Freshness | Verify: tests/scan-sept-batch2.test.js (BSI-11 block)
 INV-69 | incomePredicate(alias) qualifies EVERY outer column reference with the caller's alias, including inside the __t2 double-count guard (an unqualified ref inside a subquery resolves to the subquery's own table) | Subsystem: Financial Analytics | Verify: tests/scan-sept-batch3.test.js (FAN-2) + tests/ops-and-alerts.test.js
 INV-70 | Recurring projections (detection next_expected, /api/forecast, /api/bill-calendar, /calendar.ics, the /api/cash-flow bill schedule, POST /api/subscriptions) step month-scale cadences (30/60/90/365) by CALENDAR MONTH via services/cadence.js, anchored on the last real charge with next_expected as the lower bound — never a fixed N×86400000 step; manual bills use ONE placement rule (manualBillOccurrences) on both the calendar and the ICS feed | Subsystem: Detection & Categorization | Verify: tests/scan-sept-batch4.test.js (DC-9 / DC-15 blocks)
@@ -5627,6 +5672,7 @@ INV-133 | Recording an error never throws into the caller and never recurses: th
 INV-134 | GET /health/deep is public but exposes only yes/no database fields (never an error message), is bounded per probe and cached 60s single-flight; the heartbeat never touches the database and is never activity-gated | Subsystem: Platform, Shell & Auth | Verify: tests/roadmap-t1-errors-uptime.test.js + tests/contract/error-log.contract.test.js
 INV-135 | A Per-sistant email is sent with EVERY one of its stored attachments or not at all: both senders load them through routes/attachments.loadEmailAttachments; a missing file or a total over 20MB makes Send Now a 400 before its claim (the email stays unsent) and makes the scheduler mark the claimed row failed with the reason; Retry reuses the Send Now claim, so it can't double-send | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/roadmap-t1-batchc.test.js + tests/contract/persistent-batchc.contract.test.js
 INV-137 | A bank webhook is verified before anything is recorded (Plaid's ES256 JWT incl. the body hash; Teller's HMAC with digest compares), recorded once per (provider, dedupe key) — a re-delivery is answered 200 and not processed again — answered 200 before its handler runs, and its body is never stored or logged; a provider without credentials / a secret answers 503 and writes nothing; only the two exact POST paths pass the shell gate | Subsystem: Bank Sync & Ingestion / Platform, Shell & Auth | Verify: tests/roadmap-t2-webhooks-w1.test.js + tests/roadmap-t2-webhooks-w2.test.js + tests/contract/webhooks-w1 / webhooks-w2
+INV-138 | A Plaid webhook is a trigger, not data: SYNC_UPDATES_AVAILABLE syncs only the named GOOD item, through the same syncOnePlaidItem the scheduled sync loops, under withPlaidTxnLock and coalesced per item (a request during its run → one more round, never a parallel walk); it records nothing global (no last_txn_sync_at / last_sync_result — the item's last_synced_at only, stamped when the walk reached the end of the cursor) | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-webhooks-w3.test.js + tests/contract/webhooks-w3.contract.test.js
 INV-136 | WebAuthn credential ids are stored exactly as the authenticator reports them (registrationInfo.credential.id — already base64url in @simplewebauthn v11), never re-encoded; a double-encoded row from before seams audit #3 is rewritten (or, when its real id already exists, removed) by repairCredentialIds in the migration | Subsystem: Platform, Shell & Auth | Verify: tests/seams-audit-3.test.js + tests/contract/seams3.contract.test.js
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 

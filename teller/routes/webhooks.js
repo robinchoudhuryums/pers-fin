@@ -26,8 +26,11 @@
 //
 // Verifiers (W2, services/webhook-verify.js): Plaid's ES256 JWT — "configured"
 // once Plaid credentials are set; Teller's HMAC — once TELLER_WEBHOOK_SECRET is
-// set. A provider without them answers 503. No handler acts on an event yet
-// (W3–W5), so a verified event is recorded and marked 'ignored'.
+// set. A provider without them answers 503.
+//
+// Handlers (W3–W5): a Plaid SYNC_UPDATES_AVAILABLE syncs that item (W3); other
+// events are recorded and marked 'ignored' until W4 (Plaid item events) and W5
+// (Teller).
 // ============================================================================
 const express = require("express");
 const rateLimit = require("express-rate-limit");
@@ -48,8 +51,12 @@ const notConfigured = { configured: () => false, verify: async () => ({ ok: fals
 const DEFAULT_VERIFIERS = { plaid: createPlaidVerifier(), teller: createTellerVerifier() };
 
 // Handlers: provider → async (event, ctx) → { status: 'done' | 'ignored' }.
-// None yet (W3–W5).
-const DEFAULT_HANDLERS = {};
+// Plaid (W3): SYNC_UPDATES_AVAILABLE syncs that item (routes/plaid-webhook-
+// events.js, required lazily so this module loads without the sync code).
+// Teller comes with W5 — its events are recorded and 'ignored'.
+const DEFAULT_HANDLERS = {
+  plaid: (event, ctx) => require("./plaid-webhook-events").handlePlaidEvent(event, ctx),
+};
 
 const clip = (v, n) => (v == null ? null : String(v).slice(0, n));
 

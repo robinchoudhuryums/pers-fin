@@ -921,6 +921,10 @@ async function runMigrationsOnce() {
     // status = 'GOOD', so flipping status would STOP retrying the item and it
     // could never self-clear. status stays 'GOOD' | 'CSV'. ----
     await client.query("ALTER TABLE plaid_items ADD COLUMN IF NOT EXISTS last_error_code TEXT");
+    // When the item's transaction walk last reached the end of its cursor —
+    // the per-connection freshness a webhook-triggered sync advances without
+    // touching the global last_txn_sync_at (roadmap T2.1 W3).
+    await client.query("ALTER TABLE plaid_items ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ");
 
     // ---- Settle-up log: one row per month the user marks squared with the
     // partner (combined shared-card + housing even-up). UNIQUE(period) so
