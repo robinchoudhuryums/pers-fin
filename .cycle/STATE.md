@@ -18,7 +18,21 @@ Updated: 2026-10-23
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T2.4 (cross-app automation) — X3b DONE; T2.4 COMPLETE** (2026-10-23,
+- **Status:** **Roadmap T2.5 (transaction undelete + iOS re-authenticate) — PLANNED, split into 3
+  batches** (2026-10-23, branch `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133).
+  Plan: `.cycle/plan-t2-5-undelete-ios-reauth.md`.
+  - **Batches:**
+    - U1: snapshot at delete + list + restore + CSV import honouring the tombstone (server).
+    - U2: the Settings "Deleted transactions" list + the Activity page's Undo + docs.
+    - H1: hosted Plaid update mode on iOS / standalone / Capacitor + INV-145 + T2.5 close-out.
+  - **Decisions to accept with U1:**
+    - The row (and its splits) is snapshotted into the tombstone at delete time.
+    - Restore reinserts that snapshot. A pre-T2.5 tombstone just clears and says how the
+      row returns.
+    - CSV re-import skips deleted rows.
+    - Hosted update mode is checked through `linkTokenGet` before update-complete runs.
+  - **Where I left off:** plan written. NEXT: `/broad-implement U1` (or H1 — independent).
+- **Previous status (X3b):** **Roadmap T2.4 (cross-app automation) — X3b DONE; T2.4 COMPLETE** (2026-10-23,
   branch `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-4-crossapp-automation.md` (all seven batches DONE). Block:
   `.cycle/blocks/7-roadmap-t2-4-x3b-broad-implement.md`.
@@ -29,7 +43,7 @@ implement and reflect sessions only set Phase.)
   - **Tests:** npm 2237/2237 (14 new), contract 231/231, Playwright 61/61 (3 new); 15 mutations red.
   - **Where I left off:** X3b committed; roadmap T2.4 done. NEXT: `/reflect` to close cycle 7, or
     the next roadmap item.
-- **Previous status:** **Roadmap T2.4 (cross-app automation) — X3a DONE** (2026-10-23, branch
+- **Earlier status (X3a):** **Roadmap T2.4 (cross-app automation) — X3a DONE** (2026-10-23, branch
   `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-4-crossapp-automation.md`. Block: `.cycle/blocks/7-roadmap-t2-4-x3a-broad-implement.md`.
   - **Completed:** Per-sistant's GET /api/search finance group under the shell
