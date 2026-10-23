@@ -12,6 +12,9 @@ const { CSV_FORMATS, INSTITUTION_LABELS, detectCsvFormat, guessGenericSign, POSI
 const { detectSubscriptions } = require("../../scripts/detect-subscriptions");
 const { detectRecurringTransfers } = require("../../scripts/detect-transfers");
 const { NOT_TRANSFER, currentMonth, todayStr, getLiveIncomeStreams } = require("../services/financial-queries");
+// Linked tasks (roadmap T2.4 X2b): marking a bill paid / unpaid kicks a
+// fire-and-forget refresh; a still-charging alert creates its task.
+const linkedTasks = require("../services/linked-tasks");
 const {
   nextOccurrence, seriesOccurrences, addDaysStr,
   manualBillOccurrences, incomeEventsBetween, daysInMonth,
@@ -283,6 +286,10 @@ async function runSubscriptionWatchdog(db = pool) {
       "UPDATE detected_subscriptions SET still_charging_txn = $2, still_charging_at = $3, still_charging_amount = $4, updated_at = now() WHERE id = $1",
       [r.id, r.transaction_id, r.charged_on, r.charged]);
     out.still_charging++;
+    // Linked task (roadmap T2.4 X2b): one per (subscription, charge), only once
+    // the alert is marked; a failure never un-marks it.
+    try { await linkedTasks.ensureStillChargingTask(db, r); }
+    catch (e) { console.error("still-charging linked task failed:", e.message); }
     await sendCriticalAlertEmail(title, body);
   }
 
@@ -1291,6 +1298,7 @@ router.post("/api/bill-payments", async (req, res) => {
        RETURNING *`,
       [bill_source, parseInt(bill_id), paid_date, paidAmount, notes || null]
     );
+    linkedTasks.kick("bill-payment");
     res.json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: "An internal error occurred." });
@@ -1301,6 +1309,7 @@ router.post("/api/bill-payments", async (req, res) => {
 router.delete("/api/bill-payments/:id", async (req, res) => {
   try {
     await pool.query("DELETE FROM bill_payments WHERE id = $1", [req.params.id]);
+    linkedTasks.kick("bill-payment-undo");
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: "An internal error occurred." });

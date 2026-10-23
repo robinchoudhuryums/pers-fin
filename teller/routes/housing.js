@@ -16,6 +16,9 @@ const router = express.Router();
 const multer = require("multer");
 const { pool } = require("../services/database");
 const { currentMonth, todayStr } = require("../services/financial-queries");
+// Linked tasks (roadmap T2.4 X2b): a write that can resolve or reopen a task
+// kicks a fire-and-forget refresh — never failing or delaying the response.
+const linkedTasks = require("../services/linked-tasks");
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -538,7 +541,7 @@ router.get("/api/housing/ledger", async (_req, res) => {
 
 // POST /api/housing/generate — generate current/missing months from config.
 router.post("/api/housing/generate", async (_req, res) => {
-  try { res.json(await generateHousingObligations()); }
+  try { const out = await generateHousingObligations(); linkedTasks.kick("housing-generate"); res.json(out); }
   catch (err) { console.error("housing generate error:", err.message); res.status(500).json({ error: "An internal error occurred." }); }
 });
 
@@ -821,6 +824,7 @@ router.post("/api/housing/obligations", async (req, res) => {
        RETURNING *`,
       [pay, cat, String(label).trim(), period, amt, clampDay(due_day, 1), status, notes || null]
     );
+    linkedTasks.kick("housing-obligation-add");
     res.json(r.rows[0]);
   } catch (err) { console.error("housing obligation create error:", err.message); res.status(500).json({ error: "An internal error occurred." }); }
 });
@@ -857,6 +861,7 @@ router.patch("/api/housing/obligations/:id", async (req, res) => {
   try {
     const r = await pool.query(`UPDATE payee_obligations SET ${fields.join(", ")} WHERE id = $${i} RETURNING *`, params);
     if (!r.rows.length) return res.status(404).json({ error: "Not found" });
+    linkedTasks.kick("housing-obligation-edit");
     res.json(r.rows[0]);
   } catch (err) { console.error("housing obligation patch error:", err.message); res.status(500).json({ error: "An internal error occurred." }); }
 });
@@ -888,6 +893,7 @@ router.delete("/api/housing/obligations/:id", async (req, res) => {
       );
     }
     await client.query("COMMIT");
+    linkedTasks.kick("housing-obligation-delete");
     res.json({ ok: true, skipped_from_generation: !!o.auto_generated });
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
@@ -931,6 +937,7 @@ router.post("/api/housing/payments", async (req, res) => {
       [pp.rows[0].id, ids]
     );
     await client.query("COMMIT");
+    linkedTasks.kick("housing-payment");
     res.json({ payment: pp.rows[0], settled: ids.length });
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
@@ -955,6 +962,7 @@ router.delete("/api/housing/payments/:id", async (req, res) => {
     const d = await client.query("DELETE FROM payee_payments WHERE id = $1 RETURNING id", [req.params.id]);
     await client.query("COMMIT");
     if (!d.rows.length) return res.status(404).json({ error: "Not found" });
+    linkedTasks.kick("housing-payment-undo");
     res.json({ ok: true });
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});

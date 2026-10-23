@@ -240,9 +240,22 @@ teller/
                            occurrences 30 days back to the lead with no bill_payments
                            row (manualBillOccurrences). Each source isolated; only the
                            kinds read (ok_kinds) may close tasks; a source switched off
-                           isn't read; today = todayStr(). Pure reads — the runner and
-                           hooks that write through Per-sistant's services/linked-tasks
-                           .js land in X2b. SOURCES / DEFAULT_SOURCES (manual bills off)
+                           isn't read; today = todayStr(). SOURCES / DEFAULT_SOURCES
+                           (manual bills off). X2b: runLinkedTasks(pool, persistentPool
+                           = the embedded Per-sistant pool) — nothing without that pool
+                           (standalone) or while linked_tasks_enabled is off (then no
+                           settings read for the rest of the local day; invalidate()
+                           from the settings PATCH); computes, then Per-sistant's
+                           syncLinkedTasks with ONLY ok_kinds (lazy require), and stores
+                           { at, desired, created, updated, closed, reopened, skipped,
+                           errors } in user_settings.linked_tasks_state (fixed
+                           sentences, never exception text). One run at a time — a call
+                           during a run shares its promise and makes it go round once
+                           more. kick(reason) / refreshSoon: the fire-and-forget refresh
+                           the housing + bill-payment routes call after a write; never
+                           throws or rejects. ensureStillChargingTask(pool, sub): the
+                           watchdog's one-off task perfin:still-charging:<sub>:<txn>
+                           (switch + source on), never closed by a sync
     payday-alerts.js     — Payday alerts (roadmap T2.2 L3; off by default —
                            payday_alerts_enabled). runPaydayLanded (the third
                            runPostSyncSteps step — never a reconcile): settled
@@ -372,7 +385,9 @@ teller/
                            transactions.js (route-file split). Also the
                            subscription watchdog (runSubscriptionWatchdog —
                            still-charging-after-cancel + price-rise alerts, run
-                           after every detection; cycle-7 F53 / G5).
+                           after every detection; cycle-7 F53 / G5 — a logged
+                           still-charging alert also creates its linked task, T2.4 X2b;
+                           POST / DELETE /api/bill-payments kick the linked-task refresh).
     transactions.js      — split from subscriptions.js: per-transaction
                            endpoints — GET /api/transactions (+/search,
                            /duplicates, /csv-overlap +resolve),
@@ -463,7 +478,9 @@ teller/
                            and the pure periodDueDate / rentReminderOpen /
                            utilityAmountDue the reminder shares with the linked tasks
                            (roadmap T2.4 X2a — the payment-due window is now date-based,
-                           so rent due the 31st opens lead days before Feb 28).
+                           so rent due the 31st opens lead days before Feb 28). Since
+                           X2b, generate, the obligation writes and the payment writes
+                           kick the linked-task refresh after they commit.
     settings.js          — GET/PATCH /api/settings, POST /api/sheets/sync,
                            POST /api/sheets/dashboard, GET /api/export,
                            GET /api/data-freshness
@@ -894,9 +911,19 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2187 tests as of latest); use
+  Perfin and Per-sistant test files (2200 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2187 tests across 113 test files (incl.
+  Current count: 2200 tests across 114 test files (incl.
+  `tests/roadmap-t2-4-x2b.test.js` — roadmap T2.4 X2b: runLinkedTasks over a fake pool with
+  the computation and Per-sistant's sync injected (nothing without a Per-sistant pool; off →
+  no further read that day until invalidate(), and the settings PATCH invalidates; the sync
+  given only ok_kinds + desired; the state record with counts and fixed-sentence errors,
+  never exception text; a call during a run sharing its promise and causing one more round),
+  the hourly job's outcome (nothing when it didn't run), ensureStillChargingTask (key, shape,
+  the switch / source / pool gates), every hooked route kicking the refresher, a throwing
+  refresher leaving each route's 200, refreshSoon never rejecting, and the watchdog creating
+  the task after marking the alert with a failure never un-marking it — the cross-database
+  half is `tests/contract/linked-tasks-crossapp`;
   `tests/roadmap-t2-4-x2a.test.js` — roadmap T2.4 X2a: computeLinkedTasks over canned rows
   (rent & utilities per unpaid period inside the payment-due window — the lead edge, an
   overdue period urgent, next month's not-yet-generated rent, a skipped one left out; a
@@ -1465,7 +1492,13 @@ shell/
   urgent, a utility amount until PATCH enters it, next month's rent until DELETE records
   its skip, a 31st manual bill on the 30th until POST /api/bill-payments marks it paid and
   a subscription payment with the same id not counting; the settings defaults, the
-  sources merge and a 400 that writes nothing). 220 tests, run
+  sources merge and a 400 that writes nothing), and linked-tasks-crossapp (roadmap T2.4
+  X2b, both apps' real databases wired as the shell wires them: switched off a run writes
+  nothing; rent due → one Per-sistant task, a payment through Perfin's route closing it by the
+  route's own refresh, undo reopening it, a task completed by hand staying done across a
+  payment and its undo; a utility amount entered and a manual bill marked paid closing
+  theirs; a still-charging alert making one task across two watchdog runs that a sync
+  never closes; the run's record stored). 226 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -3340,7 +3373,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2187 tests passing across 113 test files (Perfin 1553 + Per-sistant 634), plus the real-Postgres route contract suite (220 tests; CI `migrations` job, `npm run test:contract`) and 58 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2200 tests passing across 114 test files (Perfin 1566 + Per-sistant 634), plus the real-Postgres route contract suite (226 tests; CI `migrations` job, `npm run test:contract`) and 58 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -4814,7 +4847,7 @@ embedded mode).
 recent Perfin activity (`isUserActive()`, 15 min) so Neon can auto-suspend
 while the user is away. The channels whose whole point is to reach the user
 WHILE away — budget alerts (+ critical-alert email), the weekly digest, the
-daily digest, the CSV reminder, the Rent & Utilities reminders (F15) and the low cash and missed-payday alerts (T2.2 L2 / L3) — are NOT activity-gated (before, they fired
+daily digest, the CSV reminder, the Rent & Utilities reminders (F15), the low cash and missed-payday alerts (T2.2 L2 / L3) and the linked tasks (T2.4 X2b) — are NOT activity-gated (before, they fired
 only if the user had touched Perfin in the last 15 min, so an email-only user
 got no digest; Per-sistant traffic never counted). They are driven by their
 own watermarks plus a per-local-day (APP_TIMEZONE) in-memory "settled" memo,
@@ -4882,6 +4915,13 @@ second one (which re-sent the same uncategorized rows to Claude).
   (T2.2 L4) are checked in the same evaluation. The same tick runs
   the "Payday missed?" check (`services/payday-alerts.runPaydayMissed`, T2.2 L3), each
   check isolated so one failing doesn't skip the other.
+- **Linked tasks** (roadmap T2.4 X2b): every 1 hour, NOT activity-gated
+  (`runLinkedTasksTick` → `services/linked-tasks.runLinkedTasks`). Does nothing in a
+  standalone Perfin (no Per-sistant pool) or while the switch is off (one settings read a
+  local day); otherwise computes the tasks that should be open and reconciles Per-sistant's
+  through its services/linked-tasks.js. The housing and bill-payment routes also kick it
+  right after a write. Records an outcome only when it ran (a source or the Per-sistant
+  write failing → a failed run).
 - **CSV import reminders**: every 1 hour, NOT activity-gated, evaluated at most
   once per 24h via `user_settings.last_csv_reminder_at` (PSC-3 — the old 24h
   `setInterval` needed a full day of uptime AND activity at that exact tick, so
@@ -5782,9 +5822,15 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   without one) on the To-Dos list, the dashboard task lists and the edit modal. X2a:
   Perfin's `teller/services/linked-tasks.js` computeLinkedTasks works out the tasks that
   should be open (rent & utilities due, utility amounts to enter, manual bills — off by
-  default) and the `linked_tasks_*` settings exist (PATCH-validated); nothing writes to
-  Per-sistant yet (the runner, the hourly job and the hooks are X2b; the Settings section
-  X2c). X2a follow-ons: a ledger switched off reads as "nothing due", so its open tasks
+  default) and the `linked_tasks_*` settings exist (PATCH-validated). X2b: the runner
+  (`runLinkedTasks`, the hourly `linked-tasks` away job, a refresh kicked by the housing and
+  bill-payment routes after a write, the run recorded in `linked_tasks_state`) and the
+  still-charging task from the subscription watchdog — the feature works once
+  `linked_tasks_enabled` is set (`PATCH /api/settings`; the Settings section is X2c). X2b
+  follow-ons: a kicked refresh runs the whole computation (a few queries), not just the
+  item that changed; the runner is in memory, so two processes (a deploy overlap) can run
+  at once — both reconcile idempotently through the unique key; transactions syncs don't
+  kick it (the hourly run catches a deposit-driven change). X2a follow-ons: a ledger switched off reads as "nothing due", so its open tasks
   will close; a rent task groups the period's utilities under the RENT due date (the
   ledger is paid as one transfer); manual-bill occurrences follow the calendar's rule,
   which also projects months before the bill was created. X1b follow-ons: the Today page and the
@@ -6146,7 +6192,7 @@ INV-72 | The Rent & Utilities ledger is single-payee: generation covers the trai
 INV-73 | Budget status has ONE definition — getBudgetStatus(pool, month) in financial-queries.js (spend via getCategorySpendingForMonth; effective_limit = monthly_limit + the PRIOR month's snapshot rollover when rollover_enabled; one-time budgets only in their effective_month). GET /api/budgets, /api/budgets/alerts, the insights prompt and the Ask budget tool call it; the Sheets Budget Status SQL mirrors it; no surface reads the bare monthly_limit as the limit | Subsystem: Financial Analytics | Verify: tests/scan-sept-batch6.test.js (AIN-6 block)
 INV-75 | The tax report (export + Sheets tab) is computed from transactions via getTaxDeductionTransactions (one shared keyword list); the tax_deductions table only annotates merchants and never supplies amounts | Subsystem: Financial Analytics / Sheets & External Export | Verify: tests/scan-sept-batch7.test.js (SXE-7)
 INV-76 | No model call uses a forced tool_choice (Opus/Sonnet 5.5 400 on it): structured calls go through createToolCall (auto + strict tool + one re-ask, usage summed for the cap); every call sets an explicit effort and reads content blocks by type | Subsystem: AI Insights & Audit (seam: categorize / budgets / housing / Per-sistant ai.js) | Verify: tests/model-upgrade.test.js + apps/per-sistant/tests/model-upgrade.test.js
-INV-77 | Away-from-app channels (budget alerts + critical-alert email, weekly digest, daily digest, CSV reminder, Rent & Utilities reminders — F15, the low cash and missed-payday alerts — T2.2 L2 / L3) are never gated on isUserActive(); each is bounded by its own watermark (last_weekly_digest_at / last_daily_digest_at / last_csv_reminder_at / sentRecently / cash_alerts_checked_at + cash_alert_state) plus a per-local-day settled memo, so it neither misses an away user nor re-queries the DB all day | Subsystem: Platform, Shell & Auth / Notification Correctness | Verify: tests/scan-sept-batch8.test.js (PSC-3 block) + tests/roadmap-t2-2-cash-l2.test.js
+INV-77 | Away-from-app channels (budget alerts + critical-alert email, weekly digest, daily digest, CSV reminder, Rent & Utilities reminders — F15, the low cash and missed-payday alerts — T2.2 L2 / L3, the linked tasks — T2.4 X2b) are never gated on isUserActive(); each is bounded by its own watermark (last_weekly_digest_at / last_daily_digest_at / last_csv_reminder_at / sentRecently / cash_alerts_checked_at + cash_alert_state) plus a per-local-day settled memo, so it neither misses an away user nor re-queries the DB all day | Subsystem: Platform, Shell & Auth / Notification Correctness | Verify: tests/scan-sept-batch8.test.js (PSC-3 block) + tests/roadmap-t2-2-cash-l2.test.js
 INV-78 | The auto-sync "complete" notification fires only on genuinely new transactions or a balance that actually changed (accounts_changed), and never while sync_notifications_enabled is false | Subsystem: Bank Sync & Ingestion / Notification Correctness | Verify: tests/scan-sept-batch8.test.js (PSC-1 block)
 INV-79 | The shell PIN gate has a GLOBAL failure ceiling (30 failed PINs/hour across all IPs → PIN login locked 30 min, even for the correct PIN, with at most one sendToAll alert per 6h — makeLockoutNotifier); biometric + x-api-key paths are unaffected; the shell refuses to boot without SHELL_SECRET; no login input can crash the process (and so reset the in-memory counter) — see INV-104 | Subsystem: Platform, Shell & Auth | Verify: tests/scan-sept-batch9.test.js (PSC-14 / PSC-11 blocks) + tests/scan-oct-batch1.test.js (F1 / F7 blocks)
 INV-80 | Per-sistant outbound webhooks/Slack are SSRF-checked at send time by resolveSafeWebhookTarget — literal IPs in any spelling (IPv4-mapped/compatible IPv6 unwrapped) and EVERY DNS-resolved address must be outside the net.BlockList private ranges; DNS failure fails closed; fetch uses redirect:'manual' | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch9.test.js (PB-14 blocks)

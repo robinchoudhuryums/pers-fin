@@ -183,4 +183,115 @@ async function computeLinkedTasks(pool, cfg = {}, today = todayStr()) {
   return result;
 }
 
-module.exports = { computeLinkedTasks, effectiveSources, SOURCES, SOURCE_KEYS, DEFAULT_SOURCES, APP };
+// ---------------------------------------------------------------------------
+// The runner (roadmap T2.4 X2b): compute, then reconcile Per-sistant's linked
+// tasks through ITS module (services/linked-tasks.js there — lazy, only when
+// the shell wired its pool). Only kinds read this run (ok_kinds) may close
+// tasks; a source switched off is neither read nor closed, so its tasks stay
+// as they are. Single-flight: a call during a run makes it go round once more
+// (the data it was called about may postdate the running computation) and
+// shares its promise. While the switch is off, the settings are read once a
+// local day (invalidate() from PATCH /api/settings).
+// ---------------------------------------------------------------------------
+const SYNC_ERROR = "Could not update the tasks in Per-sistant.";
+let _disabledDay = null;
+let _running = null;
+let _again = false;
+
+function invalidate() { _disabledDay = null; }
+
+function defaultPersistentPool() {
+  try { return require("../routes/persistent").getEmbeddedPersistentPool(); }
+  catch (e) { console.error("linked tasks: Per-sistant pool lookup failed:", e.message); return null; }
+}
+
+function persistentLinkedTasks() {
+  return require("../../apps/per-sistant/services/linked-tasks");
+}
+
+async function readSettings(pool) {
+  const r = await pool.query("SELECT linked_tasks_enabled, linked_tasks_sources, linked_tasks_bill_lead_days FROM user_settings WHERE id = 1");
+  const s = r.rows[0] || {};
+  return { enabled: !!s.linked_tasks_enabled, sources: effectiveSources(s.linked_tasks_sources), bill_lead_days: s.linked_tasks_bill_lead_days };
+}
+
+async function runOnce(pool, persistentPool, today, deps) {
+  if (_disabledDay === today) return { status: "disabled", ran: false };
+  const cfg = await readSettings(pool);
+  if (!cfg.enabled) { _disabledDay = today; return { status: "disabled", ran: false }; }
+  const compute = deps.compute || computeLinkedTasks;
+  const sync = deps.sync || ((p, args) => persistentLinkedTasks().syncLinkedTasks(p, args));
+  const computed = await compute(pool, cfg, today);
+  const errors = [...computed.errors];
+  let counts = { created: 0, updated: 0, closed: 0, reopened: 0, skipped: 0 };
+  try {
+    counts = { ...counts, ...(await sync(persistentPool, { app: APP, kinds: computed.ok_kinds, desired: computed.desired })) };
+  } catch (e) {
+    console.error("linked tasks: Per-sistant sync failed:", e.message);
+    errors.push({ kind: null, error: SYNC_ERROR });
+  }
+  const state = { at: new Date().toISOString(), desired: computed.desired.length, ...counts, errors };
+  try {
+    await pool.query("UPDATE user_settings SET linked_tasks_state = $1 WHERE id = 1", [JSON.stringify(state)]);
+  } catch (e) { console.error("linked tasks: state write failed:", e.message); }
+  return { status: errors.length ? "partial" : "ok", ran: true, ...state };
+}
+
+// → { status: 'no_persistent' | 'disabled' | 'ok' | 'partial', ran, … }
+// (Not `async`: a call during a run gets the running promise itself.)
+function runLinkedTasks(pool, persistentPool = defaultPersistentPool(), { today = todayStr(), deps = {} } = {}) {
+  if (!persistentPool) return Promise.resolve({ status: "no_persistent", ran: false });
+  if (_running) { _again = true; return _running; }
+  _running = (async () => {
+    try {
+      let result;
+      do {
+        _again = false;
+        result = await runOnce(pool, persistentPool, today, deps);
+      } while (_again);
+      return result;
+    } finally { _running = null; }
+  })();
+  return _running;
+}
+
+// Fire-and-forget refresh after a write that can resolve or reopen a task
+// (a housing payment, an obligation, a bill payment). Never throws or rejects;
+// a failure is logged. kick() is what routes call — it also survives a
+// refreshSoon that throws (the route's response never depends on it).
+function refreshSoon(reason) {
+  const pool = require("./database").pool;
+  Promise.resolve()
+    .then(() => module.exports.runLinkedTasks(pool))
+    .catch((e) => console.error(`linked tasks refresh (${reason}) failed:`, e.message));
+}
+function kick(reason) {
+  try { module.exports.refreshSoon(reason); }
+  catch (e) { console.error(`linked tasks refresh (${reason}) failed:`, e.message); }
+}
+
+// The still-charging event (decision 2): one task per (subscription, charge),
+// created when the watchdog's alert was logged, never closed by a sync. No-op
+// unless the switch and the source are on and the shell wired Per-sistant.
+async function ensureStillChargingTask(pool, sub, { persistentPool = defaultPersistentPool(), deps = {} } = {}) {
+  if (!persistentPool) return { status: "no_persistent", created: false };
+  const cfg = await readSettings(pool);
+  if (!cfg.enabled || !cfg.sources.still_charging) return { status: "disabled", created: false };
+  const txn = String(sub.transaction_id || "").replace(/[^A-Za-z0-9._:-]/g, "-").slice(0, 120) || "charge";
+  const ensure = deps.ensure || ((p, args) => persistentLinkedTasks().ensureLinkedTask(p, args));
+  const r = await ensure(persistentPool, { app: APP, task: {
+    key: `${APP}:still-charging:${sub.id}:${txn}`,
+    title: clip(`Check ${sub.display_name} — charged ${money(sub.charged)} after you cancelled`, 300),
+    description: `A ${money(sub.charged)} charge on ${sub.charged_on} matches ${sub.display_name}, which you marked cancelled. Check with the merchant — the cancellation may not have gone through.`,
+    url: "/subscriptions",
+    due_date: null,
+    priority: "high",
+  } });
+  return { status: r.error ? "invalid" : "ok", created: !!r.created, id: r.id || null };
+}
+
+module.exports = {
+  computeLinkedTasks, effectiveSources, SOURCES, SOURCE_KEYS, DEFAULT_SOURCES, APP,
+  runLinkedTasks, refreshSoon, kick, invalidate, ensureStillChargingTask, SYNC_ERROR,
+  _reset() { _disabledDay = null; _running = null; _again = false; },
+};

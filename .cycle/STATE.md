@@ -18,7 +18,17 @@ Updated: 2026-10-23
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T2.4 (cross-app automation) — X2a DONE** (2026-10-23, branch
+- **Status:** **Roadmap T2.4 (cross-app automation) — X2b DONE** (2026-10-23, branch
+  `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
+  `.cycle/plan-t2-4-crossapp-automation.md`. Block: `.cycle/blocks/7-roadmap-t2-4-x2b-broad-implement.md`.
+  - **Completed:** runLinkedTasks (single-flight, off memo, ok_kinds only, state record),
+    the hourly `linked-tasks` away job, kick() after the housing + bill-payment writes, the
+    still-charging task from the watchdog, settings invalidate.
+  - **Tests:** npm 2200/2200 (13 new), contract 226/226 (6 new, cross-database); 14
+    mutations red.
+  - **Where I left off:** X2b committed. NEXT: `/broad-implement X2c` (the Settings section,
+    POST /api/linked-tasks/run, X2 docs).
+- **Previous status:** **Roadmap T2.4 (cross-app automation) — X2a DONE** (2026-10-23, branch
   `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-4-crossapp-automation.md`. Block: `.cycle/blocks/7-roadmap-t2-4-x2a-broad-implement.md`.
   - **Completed:** user_settings.linked_tasks_* (switch, sources — bills off — lead 0–14,
@@ -31,7 +41,7 @@ implement and reflect sessions only set Phase.)
     14 mutations red.
   - **Where I left off:** X2a committed. NEXT: `/broad-implement X2b` (runLinkedTasks, the
     hourly linked-tasks away job, the route hooks, still-charging, cross-DB contract).
-- **Previous status:** **Roadmap T2.4 (cross-app automation) — X1b DONE** (2026-10-23, branch
+- **Earlier status:** **Roadmap T2.4 (cross-app automation) — X1b DONE** (2026-10-23, branch
   `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-4-crossapp-automation.md`. Block: `.cycle/blocks/7-roadmap-t2-4-x1b-broad-implement.md`.
   - **Completed:** per-field snapshot refresh in syncLinkedTasks (`updated`; your edits win);

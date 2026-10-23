@@ -50,6 +50,7 @@ const JOB_INTERVALS_MS = {
   "csv-reminder": 1 * HOUR, // hourly tick, watermark-gated (PSC-3)
   "housing-ledger": 6 * HOUR, // ticked since FAN-3 but never watched (F8)
   "cash-alerts": 1 * HOUR, // roadmap T2.2 L2
+  "linked-tasks": 1 * HOUR, // roadmap T2.4 X2b
 };
 const MISSED_FACTOR = 4;
 const MIN_THRESHOLD_MS = 36 * HOUR;

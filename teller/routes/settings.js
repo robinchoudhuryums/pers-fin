@@ -390,6 +390,11 @@ router.patch("/api/settings", async (req, res) => {
     if (req.body && req.body.payday_alerts_enabled !== undefined) {
       require("../services/payday-alerts").invalidate();
     }
+    // Linked tasks: the runner skips its settings read for the day once it
+    // found itself off; a change makes the next run look again.
+    if (Object.keys(req.body || {}).some(k => k.startsWith("linked_tasks_"))) {
+      require("../services/linked-tasks").invalidate();
+    }
     // Never echo ciphertext columns (persistent_webhook_secret_enc) to the
     // client — RETURNING * included them (F82).
     const row = { ...result.rows[0] };

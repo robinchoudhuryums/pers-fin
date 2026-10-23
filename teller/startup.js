@@ -267,6 +267,24 @@ async function runCashAlertsTick() {
   else if (ran) jobHealth.result("cash-alerts", { ok: true });
 }
 
+// Linked tasks (roadmap T2.4 X2b — services/linked-tasks.js): reconcile the
+// Per-sistant tasks Perfin keeps in step (rent due, utility amounts, manual
+// bills). An away channel (INV-77): NOT activity-gated, hourly; while the
+// switch is off the runner reads its settings once a local day (a Settings
+// change invalidates it), and with no Per-sistant pool wired (a standalone
+// Perfin) it does nothing at all. An outcome is recorded only when it ran.
+async function runLinkedTasksTick() {
+  jobHealth.tick("linked-tasks");
+  try {
+    const r = await require("./services/linked-tasks").runLinkedTasks(pool);
+    if (r.status === "partial") jobHealth.result("linked-tasks", { ok: false, error: (r.errors || []).map((e) => (e.kind ? e.kind + ": " : "") + e.error).join("; ") });
+    else if (r.ran) jobHealth.result("linked-tasks", { ok: true });
+  } catch (err) {
+    console.error("Linked tasks scheduler error:", err.message);
+    jobHealth.result("linked-tasks", { ok: false, error: err.message });
+  }
+}
+
 // Rent & Utilities ledger (cycle-7 F15): generate the current/missing months'
 // obligations from housing_config (idempotent), then fire the two reminders —
 // payment-due and missing-utility-amount — each deduped via sentRecently inside
@@ -721,6 +739,10 @@ function startBackgroundJobs() {
   // see runCashAlertsTick — no DB read while it's off.
   intervalHandles.push(setInterval(() => runCashAlertsTick(), 60 * 60 * 1000));
 
+  // Linked tasks (roadmap T2.4 X2b). Hourly, NOT activity-gated; see
+  // runLinkedTasksTick — nothing while off or standalone.
+  intervalHandles.push(setInterval(() => runLinkedTasksTick(), 60 * 60 * 1000));
+
   // Missed-job watchdog (F4). Flushes the in-memory job heartbeats to the
   // job_runs table and alerts (once per outage, signature-deduped) when any
   // scheduled job hasn't ticked for 36h+ — i.e. the process was asleep or
@@ -810,6 +832,6 @@ module.exports = { start, startBackgroundJobs, stopBackgroundJobs, touchActivity
 // Exposed for tests (PSC-3): the "away" job ticks and the per-day memo reset.
 module.exports._awayJobs = {
   runBudgetAlertTick, runWeeklyDigestTick, runDailyDigestTick, runCsvReminderTick,
-  runHousingLedgerTick, runInsightsAutoTriggerTick, runCashAlertsTick,
+  runHousingLedgerTick, runInsightsAutoTriggerTick, runCashAlertsTick, runLinkedTasksTick,
   reset() { for (const k of Object.keys(_awaySettled)) delete _awaySettled[k]; },
 };
