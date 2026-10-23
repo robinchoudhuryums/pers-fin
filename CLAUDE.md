@@ -218,7 +218,16 @@ teller/
                            critical-alert email — once, again when the breach moves
                            3+ days earlier or after 72 h; recovery silent. State in
                            user_settings.cash_alert_state, advanced only when the
-                           notification was logged (else retried next tick)
+                           notification was logged (else retried next tick).
+                           Account floors (T2.2 L4, checkFloors — same switch and
+                           gate, checked first): a spendable account with
+                           linked_accounts.low_balance_floor whose balance
+                           (available, else current) is below it pushes "Low
+                           balance: <name>" (tag balance-floor-<id>, /dashboard)
+                           once per account per 24 h (sentRecently); an account
+                           whose own balance is older than 36 h is skipped; push
+                           only. last_check.floors_below counts them; an unlogged
+                           floor push leaves cash_alerts_checked_at unstamped
     payday-alerts.js     — Payday alerts (roadmap T2.2 L3; off by default —
                            payday_alerts_enabled). runPaydayLanded (the third
                            runPostSyncSteps step — never a reconcile): settled
@@ -866,9 +875,18 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2066 tests as of latest); use
+  Perfin and Per-sistant test files (2083 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2066 tests across 104 test files (incl.
+  Current count: 2083 tests across 105 test files (incl.
+  `tests/roadmap-t2-2-cash-l4.test.js` — roadmap T2.2 L4: the per-account floor check
+  through runCashAlerts (below → one push with the exact text and no email, at the floor
+  not below, a recent alert deduped, a stale or unknown balance skipped, a negative
+  balance as -$X, an unlogged floor push leaving the check unstamped, the spendable-only
+  floor SQL, off → no floor read); PATCH /api/accounts/:id low_balance_floor (400s, cents,
+  null clears without a type filter, a non-spendable account a 400 and a missing one a
+  404, the memo reset only for a floor edit); the migration, GET /api/accounts and
+  reset-fresh keeping linked_accounts; the Settings last-check text and the floor list
+  run in a vm — the database-backed half is `tests/contract/cash-floors-l4`;
   `tests/roadmap-t2-2-cash-l3.test.js` — roadmap T2.2 L3: overduePayday (the grace, the
   latest within 14 days, none right after a payday); runPaydayLanded over a fake pool (off,
   the first switch-on initialising the watermark, a stream-matched deposit announced with
@@ -1331,7 +1349,11 @@ shell/
   L3: the switch-on moving the watermark; a biweekly paycheck 4 days overdue on a freshly
   synced Plaid connection notifying once and a stale connection's not; a matching deposit
   through runPostSyncSteps announced once and a one-off direct deposit not; nothing missed
-  after the paycheck). 198 tests, run
+  after the paycheck), and cash-floors-l4 (roadmap T2.2 L4: a floor stored in cents only on
+  a checking / savings account — a card or brokerage a 400, a missing account a 404 — and
+  returned by GET /api/accounts; a balance below its floor alerting once into
+  notification_log with last_check.floors_below, a 40-hour-old balance skipped, a second
+  evaluation within 24 h adding nothing; null clearing it). 201 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -2269,6 +2291,12 @@ shell/
   opt-in critical-alert email. Checked hourly when new bank data arrived, else once a
   local day; never on balances more than 36 hours old. Once per breach, again when it
   moves 3+ days earlier or after 72 hours; recovery is silent (`services/cash-alerts.js`).
+  **Account floors** (T2.2 L4, Settings → Cash Alerts → Account Floors, needs the Low
+  Cash Alert switch): a floor per checking / savings account; while its current balance
+  (available, else current — not a projection) is below it, "Low balance: <name>" is
+  pushed once a day per account (no email; skipped on a balance older than 36 hours).
+  The section also shows the last evaluation ("Last checked …: no dip below your floor
+  in the look-ahead · 1 account(s) below their floor", or why it was skipped).
 - **Payday alerts** (roadmap T2.2 L3, opt-in — Settings → Cash Alerts → Payday Alerts):
   "Paycheck landed" right after the sync that brings in a deposit matching a pay
   pattern seen at least twice (a live income stream, ±10%) — with webhooks on, within
@@ -3200,7 +3228,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2066 tests passing across 104 test files (Perfin 1515 + Per-sistant 551), plus the real-Postgres route contract suite (198 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2083 tests passing across 105 test files (Perfin 1532 + Per-sistant 551), plus the real-Postgres route contract suite (201 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -3419,7 +3447,10 @@ GET  /api/csv-reminder     # list manual accounts overdue for a CSV refresh
 GET  /api/subscriptions    # list detected subscriptions
 GET  /api/accounts         # list linked accounts with balances (includes is_shared, spending_split_pct)
 PATCH /api/accounts/:id    # update account details (apr 0-99.99; monthly_payment > 0
-                           # or null — the manual loan fields driving the payoff projection)
+                           # or null — the manual loan fields driving the payoff projection;
+                           # low_balance_floor 0-1e7 or null — the cash alerts' per-account
+                           # floor, cents-rounded; a non-null floor on an account that isn't
+                           # depository + non-investment is a 400, T2.2 L4)
 PATCH /api/accounts/:id/shared # mark account as shared/joint (body: is_shared, spending_split_pct
                            # — an integer 0-100, 400 otherwise; 0 = all the partner's.
                            # `parseInt(x) || 100` used to turn 0 into 100 — WUI-6)
@@ -4049,6 +4080,10 @@ standalone-mode fallback if either app is run on its own Render service.
 - `linked_accounts` loan/debt columns: `apr NUMERIC(5,2)` (manual — also used by
   credit cards) and `monthly_payment NUMERIC(12,2)` (manual, loans) drive the
   loan payoff projection; Plaid Liabilities never reports auto-loan terms.
+- `linked_accounts.low_balance_floor NUMERIC(12,2)` (roadmap T2.2 L4): the cash alerts'
+  per-account current-balance floor (NULL = none; settable only on a depository,
+  non-investment account). Auto-migrated; kept by `npm run reset:fresh` (linked_accounts
+  is a KEEP table), while the cash alert switch in user_settings is reset.
 - `linked_accounts` columns include: `is_shared BOOLEAN`, `spending_split_pct INT DEFAULT 100`,
   `is_manual BOOLEAN` — constraint `chk_account_source` (rebuilt only when missing or lacking
   `is_manual` — PSC-13, it used to be dropped + re-added with a full rescan on every boot)
@@ -4171,7 +4206,7 @@ standalone-mode fallback if either app is run on its own Render service.
 - `user_settings.cash_alert_enabled BOOLEAN NOT NULL DEFAULT false`, `cash_alert_threshold
   NUMERIC(12,2) NOT NULL DEFAULT 500`, `cash_alert_horizon_days INT NOT NULL DEFAULT 14`,
   `cash_alert_state JSONB` (`{ alert: { breach_date, low_date, low_balance, notified_at } |
-  null, last_check: { at, outcome, reason?, breach_date? } }`) and `cash_alerts_checked_at
+  null, last_check: { at, outcome, reason?, breach_date?, floors_below } }`) and `cash_alerts_checked_at
   TIMESTAMPTZ` (roadmap T2.2 L2 — the low cash alert's settings, dedup state and last
   evaluation; services/cash-alerts.js). Auto-migrated; reset by `npm run reset:fresh`.
 - `user_settings.payday_alerts_enabled BOOLEAN NOT NULL DEFAULT false` and
@@ -4716,7 +4751,8 @@ second one (which re-sent the same uncategorized rows to Claude).
   it reads the settings once a local day (a Settings change makes the next tick look
   again); while on, one settings + data-stamp read per tick, and the forecast only when
   new bank data arrived since the last check or on a new local day. Records an outcome
-  only when it evaluated (an unlogged notification is a failed run). The same tick runs
+  only when it evaluated (an unlogged notification is a failed run). The account floors
+  (T2.2 L4) are checked in the same evaluation. The same tick runs
   the "Payday missed?" check (`services/payday-alerts.runPaydayMissed`, T2.2 L3), each
   check isolated so one failing doesn't skip the other.
 - **CSV import reminders**: every 1 hour, NOT activity-gated, evaluated at most
@@ -5607,14 +5643,17 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   email's attachments or warn before Send that one's file is missing (the refusal
   arrives as the send's error toast); Retry sends a failed SCHEDULED email at once
   rather than offering to reschedule it.
-- Roadmap T2.2 (low-balance and payday alerts) is IN PROGRESS (`.cycle/plan-t2-2-cash-alerts.md`,
-  L1–L4): L1 (the forecast as `services/cash-flow.js`, APP_TIMEZONE today, the lowest
-  projected day), L2 (the low projected cash alert — `services/cash-alerts.js`, the
-  `cash-alerts` away job, Settings → Cash Alerts) and L3 (payday landed after each sync /
-  missed in the hourly job — `services/payday-alerts.js`) are done; L4 (account floors,
-  the last evaluation in Settings, the new invariant) is planned. L1 follow-ons: the 60-day spending averages still use Postgres
+- Roadmap T2.2 (low-balance and payday alerts) is DONE (`.cycle/plan-t2-2-cash-alerts.md`,
+  L1–L4): the forecast as `services/cash-flow.js` (APP_TIMEZONE today, the lowest
+  projected day), the low projected cash alert (`services/cash-alerts.js`, the
+  `cash-alerts` away job, Settings → Cash Alerts), payday landed / missed
+  (`services/payday-alerts.js`) and per-account floors + the last evaluation in Settings
+  (INV-142). L4 follow-ons: floors run only while the Low Cash Alert switch is on; a floor
+  alert is push-only (no critical-alert email); floors are set in Settings, not on the
+  dashboard account card; the last-check line shows only the latest evaluation, and a
+  floor account whose balance is stale is counted but not named. L1 follow-ons: the 60-day spending averages still use Postgres
   `CURRENT_DATE` (a documented rolling window); the projection is one total across
-  depository accounts (per-account floors come in L4). L2 follow-ons: the alert compares
+  depository accounts (the L4 floors are current-balance checks, not projections). L2 follow-ons: the alert compares
   the database's data stamps with the app's clock (a large clock skew between the two
   could delay a re-check to the next local day); with the alert on, the hourly settings
   read keeps a Neon database from suspending for long while the process is awake; the
@@ -5999,6 +6038,7 @@ INV-141 | Bank webhooks are visible without ever exposing a payload: GET /api/da
 INV-140 | A Teller webhook is a trigger, not data: transactions.processed syncs only the enrollment(s) it names (by enrollment id or its transactions' account ids — never a SUSPENDED one) through the same syncOneTellerEnrollment the scheduled sync loops, coalesced per enrollment, recording nothing global (the enrollment's last_synced_at only), then ONE runPostSyncSteps; enrollment.disconnected changes only a GOOD enrollment and notifies once per transition | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-webhooks-w5.test.js + tests/contract/webhooks-w5.contract.test.js
 INV-139 | Plaid webhooks are opt-in by PUBLIC_URL alone (hosting.webhookBaseUrl — never RENDER_EXTERNAL_URL): without it no link token carries a webhook and registration is a 400; a clean sync never clears a webhook's advance warning (PENDING_EXPIRATION / PENDING_DISCONNECT — setPlaidItemErrorCode keepWarnings), only a re-authentication does; an ITEM ERROR sets the signal only for a re-auth code | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-webhooks-w4.test.js + tests/contract/webhooks-w4.contract.test.js
 INV-138 | A Plaid webhook is a trigger, not data: SYNC_UPDATES_AVAILABLE syncs only the named GOOD item, through the same syncOnePlaidItem the scheduled sync loops, under withPlaidTxnLock and coalesced per item (a request during its run → one more round, never a parallel walk); it records nothing global (no last_txn_sync_at / last_sync_result — the item's last_synced_at only, stamped when the walk reached the end of the cursor) | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-webhooks-w3.test.js + tests/contract/webhooks-w3.contract.test.js
+INV-142 | Cash and payday alerts are away channels driven by the shared forecast (projectCashFlow / getCashFlowForecast — the same numbers as /api/cash-flow) and never fire on stale data: no projected-low or account-floor alert on a balance older than 36 h, no missed-payday alert without an error-free sync of that connection after the grace window; each is deduped (projected low: cash_alert_state; account floor: 24 h per account via sentRecently; payday: per expected date / per deposit) and advances its state only when the notification was logged; reconcile never triggers a landed-paycheck alert | Subsystem: Financial Analytics / Notification Correctness | Verify: tests/roadmap-t2-2-cash-l2.test.js + tests/roadmap-t2-2-cash-l3.test.js + tests/roadmap-t2-2-cash-l4.test.js + tests/contract/cash-alerts-l2 / payday-l3 / cash-floors-l4
 INV-136 | WebAuthn credential ids are stored exactly as the authenticator reports them (registrationInfo.credential.id — already base64url in @simplewebauthn v11), never re-encoded; a double-encoded row from before seams audit #3 is rewritten (or, when its real id already exists, removed) by repairCredentialIds in the migration | Subsystem: Platform, Shell & Auth | Verify: tests/seams-audit-3.test.js + tests/contract/seams3.contract.test.js
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 

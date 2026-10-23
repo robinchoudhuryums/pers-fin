@@ -24,9 +24,15 @@
 //      and only then is the opt-in critical-alert email sent; an unlogged one
 //      leaves cash_alerts_checked_at alone so the next tick retries.
 //
+//   5. Per-account floors (L4, checked first, under the same switch and the same
+//      "something new" gate): a spendable account with low_balance_floor set
+//      whose current balance (available, else current) is below it pushes
+//      "Low balance: <name>" once per account per 24 h (sentRecently); an
+//      account whose own balance is older than 36 h is skipped. Push only.
+//
 // State (user_settings.cash_alert_state JSONB):
 //   { alert: { breach_date, low_date, low_balance, notified_at } | null,
-//     last_check: { at, outcome, reason?, breach_date? } }
+//     last_check: { at, outcome, reason?, breach_date?, floors_below } }
 // ============================================================================
 const { INVESTMENT_ACCOUNT_TYPES, todayStr, APP_TIMEZONE } = require("./financial-queries");
 const { addDaysStr, parseYmd } = require("./cadence");
@@ -35,6 +41,8 @@ const STALE_BALANCE_HOURS = 36;
 const RENOTIFY_HOURS = 72;
 const EARLIER_DAYS = 3;
 const TAG = "cash-low";
+const FLOOR_TAG = "balance-floor-";
+const FLOOR_RENOTIFY_HOURS = 24;
 
 // A disabled feature costs no DB read for the rest of the local day; a Settings
 // change to any cash_alert_* field clears this (routes/settings.js).
@@ -73,6 +81,7 @@ async function runCashAlerts(pool, { now = new Date(), today = todayStr(), deps 
   const forecast = deps.forecast || ((days) => require("./cash-flow").getCashFlowForecast(pool, { days, today }));
   const sendToAll = deps.sendToAll || ((p) => require("../routes/notifications").sendToAll(p));
   const sendEmail = deps.sendEmail || ((t, b) => require("../routes/persistent").sendCriticalAlertEmail(t, b));
+  const sentRecently = deps.sentRecently || ((t, h) => require("../routes/notifications").sentRecently(t, h));
 
   const { rows } = await pool.query(`
     SELECT s.cash_alert_enabled, s.cash_alert_threshold, s.cash_alert_horizon_days,
@@ -97,14 +106,34 @@ async function runCashAlerts(pool, { now = new Date(), today = todayStr(), deps 
 
   const state = (s.cash_alert_state && typeof s.cash_alert_state === "object") ? s.cash_alert_state : {};
   const at = now.toISOString();
-  const save = (next) => pool.query(
-    "UPDATE user_settings SET cash_alert_state = $1::jsonb, cash_alerts_checked_at = $2 WHERE id = 1",
-    [JSON.stringify(next), at]);
 
+  // Per-account floors first (L4) — each on its own balance's freshness.
+  const floors = await checkFloors(pool, { now, sendToAll, sentRecently });
+  const proj = await checkProjection(s, state, { now, at, forecast, sendToAll, sendEmail });
+
+  // An unlogged push isn't deduped, so the check stays unstamped and the next
+  // tick retries; the projection's own state is still saved when ITS push was
+  // logged (otherwise a retry would announce it twice).
+  const stamp = !(proj.unlogged || floors.unlogged);
+  if (proj.next) {
+    const next = { ...proj.next, last_check: { ...proj.next.last_check, floors_below: floors.below } };
+    await pool.query(
+      `UPDATE user_settings SET cash_alert_state = $1::jsonb,
+              cash_alerts_checked_at = CASE WHEN $3::boolean THEN $2::timestamptz ELSE cash_alerts_checked_at END
+        WHERE id = 1`,
+      [JSON.stringify(next), at, stamp]);
+  }
+  const { next, unlogged, ...result } = proj;
+  return { ...result, status: stamp ? result.status : "unlogged", ran: true, floors };
+}
+
+// The low projected cash check. Returns { status, breach?, reason?, unlogged?,
+// next } — `next` is the state to save (absent when its push wasn't logged).
+async function checkProjection(s, state, { now, at, forecast, sendToAll, sendEmail }) {
   const balancesAt = s.balances_at ? new Date(s.balances_at) : null;
   if (!balancesAt || now.getTime() - balancesAt.getTime() > STALE_BALANCE_HOURS * 3600e3) {
-    await save({ alert: state.alert || null, last_check: { at, outcome: "skipped", reason: balancesAt ? "stale_balances" : "no_balances" } });
-    return { status: "skipped", ran: true, reason: balancesAt ? "stale_balances" : "no_balances" };
+    const reason = balancesAt ? "stale_balances" : "no_balances";
+    return { status: "skipped", reason, next: { alert: state.alert || null, last_check: { at, outcome: "skipped", reason } } };
   }
 
   const threshold = parseFloat(s.cash_alert_threshold);
@@ -112,36 +141,67 @@ async function runCashAlerts(pool, { now = new Date(), today = todayStr(), deps 
   const f = await forecast(days);
   const { firstBelow } = require("./cash-flow");
   const breach = firstBelow(f.projection, threshold);
-  if (!breach) {
-    await save({ alert: null, last_check: { at, outcome: "clear" } });
-    return { status: "clear", ran: true };
-  }
+  if (!breach) return { status: "clear", next: { alert: null, last_check: { at, outcome: "clear" } } };
 
   const prev = state.alert || null;
   if (!shouldNotify(breach, prev, now)) {
-    await save({ alert: prev, last_check: { at, outcome: "held", breach_date: breach.date } });
-    return { status: "held", ran: true, breach };
+    return { status: "held", breach, next: { alert: prev, last_check: { at, outcome: "held", breach_date: breach.date } } };
   }
 
   const body = alertText(threshold, breach, f.lowest);
   const r = await sendToAll({ title: "Low cash ahead", body, tag: TAG, data: { url: "/dashboard" } });
   if (!(r && r.logged)) {
-    // Not recorded → not deduped: leave the check unstamped so the next tick retries.
     console.error("Cash alert: notification not logged — will retry on the next tick.");
-    return { status: "unlogged", ran: true, breach };
+    return { status: "unlogged", breach, unlogged: true };
   }
   try { await sendEmail("Low cash ahead", body); }
   catch (e) { console.error("Cash alert email error:", e.message); }
-  await save({
-    alert: { breach_date: breach.date, low_date: f.lowest ? f.lowest.date : breach.date,
-             low_balance: f.lowest ? f.lowest.balance : breach.balance, notified_at: at },
-    last_check: { at, outcome: "notified", breach_date: breach.date },
-  });
-  return { status: "notified", ran: true, breach };
+  return {
+    status: "notified", breach,
+    next: {
+      alert: { breach_date: breach.date, low_date: f.lowest ? f.lowest.date : breach.date,
+               low_balance: f.lowest ? f.lowest.balance : breach.balance, notified_at: at },
+      last_check: { at, outcome: "notified", breach_date: breach.date },
+    },
+  };
+}
+
+// Per-account current-balance floors (roadmap T2.2 L4): every spendable
+// account with a low_balance_floor whose balance (available, else current) is
+// below it pushes "Low balance: <name>" — once per account per FLOOR_RENOTIFY_HOURS
+// (sentRecently on tag balance-floor-<id>). An account whose balance is older
+// than STALE_BALANCE_HOURS is skipped, never alerted.
+async function checkFloors(pool, { now, sendToAll, sentRecently }) {
+  const { rows } = await pool.query(`
+    SELECT la.id, la.name, COALESCE(la.available_balance, la.current_balance) AS balance,
+           la.low_balance_floor AS floor, la.balance_updated_at
+      FROM linked_accounts la
+     WHERE la.low_balance_floor IS NOT NULL
+       AND la.type = 'depository' AND NOT ${INVESTMENT_ACCOUNT_TYPES}
+       AND COALESCE(la.available_balance, la.current_balance) IS NOT NULL
+     ORDER BY la.id`);
+  const out = { checked: rows.length, below: 0, notified: 0, unlogged: 0, stale: 0 };
+  for (const a of rows) {
+    const updated = a.balance_updated_at ? new Date(a.balance_updated_at).getTime() : 0;
+    if (!updated || now.getTime() - updated > STALE_BALANCE_HOURS * 3600e3) { out.stale++; continue; }
+    const balance = parseFloat(a.balance), floor = parseFloat(a.floor);
+    if (!(balance < floor)) continue;
+    out.below++;
+    const tag = FLOOR_TAG + a.id;
+    if (await sentRecently(tag, FLOOR_RENOTIFY_HOURS)) continue;
+    const r = await sendToAll({
+      title: "Low balance: " + a.name,
+      body: `${a.name} is at ${money(balance)}, below your ${money(floor)} floor.`,
+      tag, data: { url: "/dashboard" },
+    });
+    if (r && r.logged) out.notified++;
+    else { out.unlogged++; console.error("Balance floor alert: notification not logged — will retry on the next tick."); }
+  }
+  return out;
 }
 
 module.exports = {
   runCashAlerts, shouldNotify, alertText, invalidate,
-  STALE_BALANCE_HOURS, RENOTIFY_HOURS, EARLIER_DAYS, TAG,
+  STALE_BALANCE_HOURS, RENOTIFY_HOURS, EARLIER_DAYS, TAG, FLOOR_TAG, FLOOR_RENOTIFY_HOURS,
   _reset() { _disabledDay = null; },
 };

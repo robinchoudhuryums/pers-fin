@@ -1196,7 +1196,7 @@ router.get("/api/accounts", async (_req, res) => {
     const result = await pool.query(
       `SELECT la.id, la.account_id, la.name, la.official_name, la.type, la.subtype, la.mask,
               la.available_balance, la.current_balance, la.balance_currency, la.balance_updated_at, la.apr,
-              la.monthly_payment,
+              la.monthly_payment, la.low_balance_floor,
               COALESCE(te.institution_name, pi.institution_name, la.institution_name_manual) AS institution_name,
               CASE WHEN te.id IS NOT NULL THEN 'teller' WHEN la.is_manual THEN 'manual' ELSE 'plaid' END AS provider,
               la.is_manual, la.credit_limit, la.is_shared, la.spending_split_pct,
@@ -1320,7 +1320,7 @@ router.delete("/api/accounts/manual/:id", async (req, res) => {
 
 // PATCH /api/accounts/:id
 router.patch("/api/accounts/:id", async (req, res) => {
-  const { apr, monthly_payment } = req.body;
+  const { apr, monthly_payment, low_balance_floor } = req.body;
   try {
     const updates = []; const values = []; let idx = 1;
     if (apr !== undefined) {
@@ -1339,13 +1339,35 @@ router.patch("/api/accounts/:id", async (req, res) => {
       }
       updates.push("monthly_payment = $" + idx++); values.push(val);
     }
+    // The cash alerts' per-account floor (roadmap T2.2 L4): a number 0-10,000,000
+    // or null (none). Only a spendable account — depository and not an
+    // investment type — can carry one; anything else is a 400.
+    let settingFloor = false;
+    if (low_balance_floor !== undefined) {
+      const v = low_balance_floor;
+      const val = v === null ? null
+        : (typeof v === "number" || (typeof v === "string" && v.trim() !== "")) ? Number(v) : NaN;
+      if (val !== null && (!Number.isFinite(val) || val < 0 || val > 1e7)) {
+        return res.status(400).json({ error: "low_balance_floor must be a number 0-10000000, or null" });
+      }
+      updates.push("low_balance_floor = $" + idx++); values.push(val === null ? null : Math.round(val * 100) / 100);
+      settingFloor = val !== null;
+    }
     if (!updates.length) return res.status(400).json({ error: "No valid fields" });
     values.push(req.params.id);
     const result = await pool.query(
-      "UPDATE linked_accounts SET " + updates.join(", ") + " WHERE id = $" + idx + " RETURNING *",
+      "UPDATE linked_accounts la SET " + updates.join(", ") + " WHERE la.id = $" + idx +
+        (settingFloor ? ` AND la.type = 'depository' AND NOT ${INVESTMENT_ACCOUNT_TYPES}` : "") + " RETURNING *",
       values
     );
-    if (!result.rows.length) return res.status(404).json({ error: "Account not found" });
+    if (!result.rows.length) {
+      if (settingFloor) {
+        const exists = await pool.query("SELECT 1 FROM linked_accounts WHERE id = $1", [req.params.id]);
+        if (exists.rows.length) return res.status(400).json({ error: "A low-balance floor needs a checking or savings account" });
+      }
+      return res.status(404).json({ error: "Account not found" });
+    }
+    if (low_balance_floor !== undefined) require("../services/cash-alerts").invalidate();
     res.json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: "An internal error occurred." });

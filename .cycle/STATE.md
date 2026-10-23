@@ -18,7 +18,24 @@ Updated: 2026-10-23
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T2.2 (low-balance and payday alerts) — L3 DONE** on branch
+- **Status:** **Roadmap T2.2 (low-balance and payday alerts) — L4 DONE; T2.2 COMPLETE** on branch
+  `claude/sweet-ritchie-f9d8ah` (2026-10-23, in PR robinchoudhuryums/pers-fin#133). Plan:
+  `.cycle/plan-t2-2-cash-alerts.md`. Block: `.cycle/blocks/7-roadmap-t2-2-l4-broad-implement.md`.
+  - **Completed:** linked_accounts.low_balance_floor (migration); PATCH /api/accounts/:id
+    low_balance_floor (0-1e7 or null, cents, 400 on a non-spendable account, the memo reset);
+    GET /api/accounts returns it; cash-alerts.js split into checkFloors + checkProjection — a
+    floor below its account's fresh balance pushes "Low balance: <name>" once per account per
+    24 h, push only; an unlogged floor push leaves the check unstamped; last_check.floors_below;
+    Settings → Cash Alerts → Account Floors list + the last-evaluation line; INV-142; docs.
+  - **Verification:** npm 2083/2083 (17 new); contract 201/201 (3 new); migrations twice OK;
+    Playwright 57/57; six mutation checks red.
+  - **Decisions:** floors ride the Low Cash Alert switch and its "something new" gate (no second
+    job); push only (no email) for floors; each floor account is judged on its own balance's
+    freshness; reset-fresh keeps linked_accounts, so a floor survives while the switch resets.
+  - **Follow-ons:** see Known Open Issues (T2.2 L4 follow-ons).
+  - **Where I left off:** L4 committed and pushed with docs; roadmap T2.2 is done. NEXT: the next
+    roadmap item (`/roadmap`), or `/reflect` to close cycle 7.
+- **Previous status:** **Roadmap T2.2 (low-balance and payday alerts) — L3 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-23, in PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-2-cash-alerts.md`. Block: `.cycle/blocks/7-roadmap-t2-2-l3-broad-implement.md`.
   - **Completed:** services/payday-alerts.js — runPaydayLanded (the third runPostSyncSteps step;

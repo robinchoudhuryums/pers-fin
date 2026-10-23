@@ -304,6 +304,11 @@
       </div>
     </div>
     <div class="setting-row">
+      <div class="setting-info"><div class="name">Account Floors</div><div class="desc">Also notify me when one account's current balance is below its own floor (once a day per account; needs Low Cash Alert on). Leave blank for none.</div></div>
+    </div>
+    <div id="cash-floor-list" class="desc" style="margin:-4px 0 10px;">Loading…</div>
+    <p class="desc" id="cash-alert-last" hidden></p>
+    <div class="setting-row">
       <div class="setting-info"><div class="name">Look Ahead</div><div class="desc">How far ahead the forecast is checked</div></div>
       <div class="setting-control">
         <select id="cash-alert-horizon" aria-label="Low cash alert look-ahead">
@@ -535,6 +540,60 @@
 <%- include('partials/foot') %>
   <script nonce="<%= nonce %>">
     function applyTheme(t) { document.documentElement.setAttribute('data-theme', t); localStorage.setItem('perfin-theme', t); }
+    // Roadmap T2.2 L4: what the cash alerts last did (cash_alert_state.last_check).
+    var CASH_SKIP_REASONS = {
+      stale_balances: 'skipped — balances are more than 36 hours old',
+      no_balances: 'skipped — no checking or savings balance on file',
+    };
+    function cashAlertLastText(s) {
+      var lc = s && s.cash_alert_state && s.cash_alert_state.last_check;
+      if (!lc || !lc.at) return s && s.cash_alert_enabled ? 'Not checked yet — it runs after the next bank sync.' : '';
+      var when = new Date(lc.at).toLocaleString();
+      var what = lc.outcome === 'skipped' ? (CASH_SKIP_REASONS[lc.reason] || 'skipped')
+        : lc.outcome === 'notified' ? 'alert sent — cash projected below your floor on ' + fmtDate(lc.breach_date)
+        : lc.outcome === 'held' ? 'still projected below your floor on ' + fmtDate(lc.breach_date) + ' (already alerted)'
+        : lc.outcome === 'clear' ? 'no dip below your floor in the look-ahead'
+        : lc.outcome;
+      var floors = lc.floors_below > 0 ? ' · ' + lc.floors_below + ' account(s) below their floor' : '';
+      return 'Last checked ' + when + ': ' + what + floors + '.';
+    }
+    function renderCashAlertLast(s) {
+      var el = document.getElementById('cash-alert-last');
+      if (!el) return;
+      var text = cashAlertLastText(s);
+      el.textContent = text;
+      el.hidden = !text;
+    }
+    // One floor input per spendable account (depository, not an investment type).
+    async function loadCashFloors() {
+      var el = document.getElementById('cash-floor-list');
+      if (!el) return;
+      try {
+        var res = await apiFetch('/api/accounts');
+        if (!(await writeOk(res, 'Accounts'))) { el.textContent = 'Unavailable'; return; }
+        var accounts = (await res.json()).filter(function(a) { return a.type === 'depository' && !a.is_investment; });
+        if (!accounts.length) { el.textContent = 'No checking or savings accounts yet.'; return; }
+        el.innerHTML = accounts.map(function(a) {
+          var label = esc(a.name) + (a.mask ? ' ··' + esc(a.mask) : '');
+          var value = a.low_balance_floor != null ? String(parseFloat(a.low_balance_floor)) : '';
+          return '<div style="display:flex;gap:6px;align-items:center;margin:4px 0;">' +
+            '<span style="flex:1;min-width:0;overflow-wrap:anywhere;">' + label + '</span>' +
+            '<input type="number" min="0" step="50" inputmode="decimal" style="width:100px;" value="' + esc(value) + '" ' +
+              'data-floor-input="' + a.id + '" aria-label="Low balance floor for ' + esc(a.name) + '">' +
+            '<button class="btn" data-floor-save="' + a.id + '">Save</button></div>';
+        }).join('');
+        el.querySelectorAll('[data-floor-save]').forEach(function(btn) {
+          btn.addEventListener('click', async function() {
+            var id = btn.getAttribute('data-floor-save');
+            var raw = el.querySelector('[data-floor-input="' + id + '"]').value;
+            var floor = raw.trim() === '' ? null : parseAmountInput(raw);
+            if (floor !== null && (!isFinite(floor) || floor < 0)) { showMsg('Enter a floor of $0 or more, or leave it blank', false); return; }
+            var r = await apiFetch('/api/accounts/' + id, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ low_balance_floor: floor }) });
+            if (await writeOk(r, 'Save floor')) showMsg(floor === null ? 'Floor removed.' : 'Floor saved.', true);
+          });
+        });
+      } catch (e) { el.textContent = 'Unavailable'; }
+    }
     async function loadSettings() {
       try {
         const res = await apiFetch('/api/settings'); if (!res.ok) return;
@@ -601,6 +660,7 @@
         horizonSel.value = String(s.cash_alert_horizon_days || 14);
         if (horizonSel.value !== String(s.cash_alert_horizon_days || 14)) horizonSel.value = '14';
         document.getElementById('payday-alert-toggle').checked = !!s.payday_alerts_enabled;
+        renderCashAlertLast(s);
         var critToggle = document.getElementById('critical-alert-toggle');
         if (critToggle) critToggle.checked = !!s.critical_alert_emails_enabled;
         var insightEmailToggle = document.getElementById('insight-email-toggle');
@@ -1746,6 +1806,6 @@
     })();
 
     checkPushStatus();
-    loadSettings(); loadInsights(); loadUsageHistory(); loadCatStatus(); loadCatAccuracy(); loadBiometricCredentials(); loadDataHealth(); loadOperatorChecks(false); loadRecentErrors();
+    loadSettings(); loadInsights(); loadUsageHistory(); loadCatStatus(); loadCatAccuracy(); loadBiometricCredentials(); loadDataHealth(); loadOperatorChecks(false); loadRecentErrors(); loadCashFloors();
   </script>
 </body></html>

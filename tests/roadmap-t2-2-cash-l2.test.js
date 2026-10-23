@@ -31,14 +31,16 @@ const NOW = new Date("2026-03-10T15:00:00Z");
 const TODAY = "2026-03-10";
 const hoursAgo = (h) => new Date(NOW.getTime() - h * 3600e3);
 
-// A fake pool: the settings/stamps row, and every UPDATE recorded.
-function fakePool(row) {
-  const calls = { selects: 0, updates: [] };
+// A fake pool: the settings/stamps row, the per-account floors (T2.2 L4 —
+// none unless given), and every UPDATE recorded (with whether it stamped).
+function fakePool(row, { floors = [] } = {}) {
+  const calls = { selects: 0, updates: [], stamps: [] };
   return {
     calls,
     query: async (sql, params) => {
-      if (/UPDATE user_settings SET cash_alert_state/.test(sql)) { calls.updates.push(JSON.parse(params[0])); return { rows: [] }; }
+      if (/UPDATE user_settings SET cash_alert_state/.test(sql)) { calls.updates.push(JSON.parse(params[0])); calls.stamps.push(params[2]); return { rows: [] }; }
       if (/FROM user_settings s/.test(sql)) { calls.selects++; return { rows: row ? [row] : [] }; }
+      if (/low_balance_floor IS NOT NULL/.test(sql)) return { rows: floors };
       throw new Error("unexpected query: " + sql.slice(0, 60));
     },
   };
@@ -63,6 +65,7 @@ function deps({ forecast = BREACH_FORECAST, logged = true, emailThrows = false }
     forecast: async (d) => { days.push(d); return forecast; },
     sendToAll: async (p) => { sent.push(p); return { sent: 0, failed: 0, logged }; },
     sendEmail: async (t, b) => { if (emailThrows) throw new Error("smtp down"); emails.push({ t, b }); return { sent: true }; },
+    sentRecently: async () => false,
   };
 }
 const run = (pool, d, opts = {}) => ca.runCashAlerts(pool, { now: NOW, today: TODAY, deps: d, ...opts });
@@ -106,7 +109,7 @@ describe("runCashAlerts — gates", () => {
     assert.deepEqual([r.status, r.reason], ["skipped", "stale_balances"]);
     assert.equal(d.days.length, 0);
     assert.equal(d.sent.length, 0);
-    assert.deepEqual(pool.calls.updates[0].last_check, { at: NOW.toISOString(), outcome: "skipped", reason: "stale_balances" });
+    assert.deepEqual(pool.calls.updates[0].last_check, { at: NOW.toISOString(), outcome: "skipped", reason: "stale_balances", floors_below: 0 });
     const r2 = await run(fakePool(row({ balances_at: null, data_at: hoursAgo(1) })), deps());
     assert.equal(r2.reason, "no_balances");
     assert.equal(ca.STALE_BALANCE_HOURS, 36);
@@ -133,7 +136,7 @@ describe("runCashAlerts — alert and dedup", () => {
     assert.deepEqual(d.emails, [{ t: "Low cash ahead", b: d.sent[0].body }]);
     assert.deepEqual(pool.calls.updates[0], {
       alert: { breach_date: "2026-03-12", low_date: "2026-03-14", low_balance: 100, notified_at: NOW.toISOString() },
-      last_check: { at: NOW.toISOString(), outcome: "notified", breach_date: "2026-03-12" },
+      last_check: { at: NOW.toISOString(), outcome: "notified", breach_date: "2026-03-12", floors_below: 0 },
     });
   });
 
@@ -166,7 +169,7 @@ describe("runCashAlerts — alert and dedup", () => {
     const pool = fakePool(row({ cash_alert_state: { alert: { breach_date: "2026-03-12", notified_at: hoursAgo(5).toISOString() } } }));
     assert.equal((await run(pool, d)).status, "clear");
     assert.equal(d.sent.length, 0);
-    assert.deepEqual(pool.calls.updates[0], { alert: null, last_check: { at: NOW.toISOString(), outcome: "clear" } });
+    assert.deepEqual(pool.calls.updates[0], { alert: null, last_check: { at: NOW.toISOString(), outcome: "clear", floors_below: 0 } });
   });
 
   it("a balance AT the floor is not below it", async () => {

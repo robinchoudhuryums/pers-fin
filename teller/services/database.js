@@ -266,6 +266,9 @@ async function runMigrationsOnce() {
     // (same pattern as the manual Discover credit limit). Drives the
     // dashboard's loan payoff projection (computeLoanPayoff).
     await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS monthly_payment NUMERIC(12,2)");
+    // Roadmap T2.2 L4: a per-account current-balance floor for the cash alerts
+    // (services/cash-alerts.js) — NULL = none; depository, non-investment only.
+    await client.query("ALTER TABLE linked_accounts ADD COLUMN IF NOT EXISTS low_balance_floor NUMERIC(12,2)");
     // keep-alive settings
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS keep_alive_enabled BOOLEAN NOT NULL DEFAULT false");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS keep_alive_start INT NOT NULL DEFAULT 6");
