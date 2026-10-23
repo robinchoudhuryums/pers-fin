@@ -1,7 +1,9 @@
 # Fly.io deployment config for pers-fin subscription tracker
 # Deploy: fly launch --name pers-fin-tracker && fly deploy
 #
-# Setup secrets:
+# Setup secrets (the unified shell — see CLAUDE.md → Fly.io):
+#   fly secrets set SHELL_PIN="..." SHELL_SECRET="$(openssl rand -hex 32)"
+#   fly secrets set PERSISTENT_DATABASE_URL="postgres://..."
 #   fly secrets set NEON_DATABASE_URL="postgres://..."
 #   fly secrets set TOKEN_ENCRYPTION_PASSPHRASE="..."
 #   fly secrets set TELLER_APPLICATION_ID="app_pplg2et45b7bl1scna000"

@@ -290,7 +290,8 @@ describe("AIN-13 — Ask search_transactions total uses the dashboard spending f
     const { TOOL_EXECUTORS } = require("../teller/routes/ask");
     const out = await TOOL_EXECUTORS.search_transactions({ merchant: "50%_off" });
     const totals = sqls.find(s => /match_count/.test(s));
-    assert.match(totals, /CASE WHEN t\.amount > 0 AND COALESCE\(t\.is_reimbursed, false\) = false AND \(/);
+    assert.match(totals, /CASE WHEN \(t\.amount > 0 AND COALESCE\(t\.is_reimbursed, false\) = false AND \(/);
+    assert.match(totals, /OR \(\s*t\.amount < 0 AND t\.pending = false/, "matching refunds net (F35)");
     assert.match(totals, /payment thank/, "NOT_TRANSFER applied to the total");
     assert.doesNotMatch(totals, /WHERE [^\n]*AND COALESCE\(t\.is_reimbursed/, "count is over the same rows as the list");
     assert.match(totals, /ILIKE \$1 ESCAPE '\\'/);

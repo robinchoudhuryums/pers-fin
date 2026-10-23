@@ -54,7 +54,7 @@ function budgetPool({ budgets = [], spending = [], snapshots = [], onSnapshot } 
         return { rows: snapshots };
       }
       if (/FROM budgets/.test(sql)) return { rows: budgets };
-      if (/month_start/.test(sql)) return { rows: spending };
+      if (/net_category_months/.test(sql)) return { rows: spending };
       return { rows: [] };
     },
   };
@@ -149,7 +149,7 @@ describe("FAN-7 — the prior-month snapshot is refreshed on days 1-5", () => {
         if (/SELECT 1 FROM budget_snapshots/.test(sql)) return { rows: existing ? [{ "?column?": 1 }] : [] };
         if (/INSERT INTO budget_snapshots/.test(sql)) { inserts.push({ sql, params }); return { rowCount: 1, rows: [] }; }
         if (/SELECT \* FROM budgets/.test(sql)) return { rows: [{ id: 1, category: "Dining", monthly_limit: "500", rollover_enabled: true }] };
-        if (/month_start/.test(sql)) return { rows: [{ category: "Dining", spent: "480" }] };
+        if (/net_category_months/.test(sql)) return { rows: [{ category: "Dining", spent: "480" }] };
         return { rows: [] };
       },
     };
@@ -335,7 +335,9 @@ describe("SXE-12 — Sheets windows / timestamps anchored on APP_TIMEZONE", () =
     assert.match(src, /WINDOW_THIS_MONTH = `t\.date >= \$\{sqlDate\(sheetsMonth\(0\) \+ "-01"\)\} AND t\.date < \$\{sqlDate\(sheetsMonth\(1\) \+ "-01"\)\}`/);
   });
   it("the monthly archive's 'current month' and the tax year come from the tz date", () => {
-    assert.match(src, /< \$\{sqlMonth\(sheetsMonth\(0\)\)\}/);
+    // F85: the month list moved into ARCHIVE_MONTHS_SQL, still bounded by the tz current month.
+    assert.match(src, /pool\.query\(ARCHIVE_MONTHS_SQL\(sqlMonth\(sheetsMonth\(0\)\)\)\)/);
+    assert.match(src, /AND TO_CHAR\(t\.date, 'YYYY-MM'\) < \$\{currentMonth\}/);
     assert.ok(!/new Date\(\)\.getFullYear\(\)/.test(src), "tax year no longer read from the server's Date");
   });
   it("Budget Status compares against the effective limit (SXE-4)", () => {
@@ -502,9 +504,12 @@ describe("Sheets Utilities — UNION wrapped before the expression ORDER BY", ()
     const sql = body.slice(body.indexOf("pool.query(`") + 12, body.indexOf("`);"));
     assert.match(sql, /^\s*SELECT \* FROM \(\s*SELECT/);
     assert.match(sql, /UNION ALL/);
+    // Cycle-7 F76: a manual bill's next_due is computed in JS
+    // (manualBillOccurrences), so the Active-first / next_due-nulls-last order
+    // is applied after it, in JS, instead of in the SQL.
     const tail = sql.slice(sql.lastIndexOf(") u"));
-    assert.match(tail, /^\) u\s+ORDER BY\s+CASE WHEN u\.status = 'Active' THEN 0 ELSE 1 END,\s+u\.next_due NULLS LAST\s*$/);
-    // No ORDER BY inside the UNION body itself.
-    assert.ok(!/ORDER BY/.test(sql.slice(0, sql.lastIndexOf(") u"))));
+    assert.match(tail, /^\) u\s*$/);
+    assert.ok(!/ORDER BY/.test(sql), "no ORDER BY directly on the UNION");
+    assert.match(body, /rows\.sort\(\(a, b\) => \(\(a\.status === "Active" \? 0 : 1\) - \(b\.status === "Active" \? 0 : 1\)\)/);
   });
 });

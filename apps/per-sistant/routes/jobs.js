@@ -370,28 +370,14 @@ async function runTrustPass(pool, ids) {
 }
 
 // ---------------------------------------------------------------------------
-// AI cap guard (D1) — check-then-charge mirroring Perfin's ask.js. Throws a
-// { code: 'CAP' } error when the monthly budget is exhausted (so the caller can
-// 429/stop); charges the usage row in a `finally` when tokens were consumed
-// (idempotent via `charged`) so a later-round failure can't let spend escape.
+// AI cap guard (D1) — Job Radar's name for ai.cappedAI (roadmap T2.3: one
+// check-then-charge for every Per-sistant feature). Throws { code: 'CAP' }
+// before the model call when the monthly budget is exhausted, CAP_CHECK_FAILED
+// when the spend can't be read; charges the usage row once in a `finally`.
 // `client` is injectable for tests.
 // ---------------------------------------------------------------------------
-async function cappedCall(pool, { entry_type, model, prompt, system, maxTokens = 400, client = null }) {
-  const budget = await ai.getAiBudgetCents();
-  const spent = await ai.monthlyAiSpendCents(pool);
-  if (spent >= budget) { const e = new Error("AI monthly budget cap reached"); e.code = "CAP"; throw e; }
-  let usage = null, charged = false;
-  try {
-    const r = await ai.callAIWithUsage(model, prompt, maxTokens, system, client);
-    usage = r.usage;
-    return r;
-  } finally {
-    if (usage && !charged) {
-      charged = true;
-      try { await ai.recordAiUsage(pool, { entry_type, model, usage }); }
-      catch (e) { console.error("job-radar usage charge error:", e.message); }
-    }
-  }
+function cappedCall(pool, { entry_type, model, prompt, system, maxTokens = 400, client = null }) {
+  return ai.cappedAI(pool, { entry_type, model, prompt, system, maxTokens, client });
 }
 
 // ---------------------------------------------------------------------------
@@ -462,7 +448,7 @@ async function runFitPass(pool, ids, opts = {}) {
       try {
         out = await cappedCall(pool, { entry_type: "job_fit", model, prompt, system, maxTokens: 200, client: opts.aiClient });
       } catch (e) {
-        if (e.code === "CAP") { capped = true; break; }
+        if (e.code === "CAP" || e.code === "CAP_CHECK_FAILED") { capped = true; break; }
         console.error("job-radar fit call:", e.message);
         continue;
       }
@@ -512,7 +498,7 @@ async function runLegitimacyPass(pool, ids, opts = {}) {
       try {
         out = await cappedCall(pool, { entry_type: "job_legitimacy", model, prompt, system, maxTokens: 200, client: opts.aiClient });
       } catch (e) {
-        if (e.code === "CAP") break;
+        if (e.code === "CAP" || e.code === "CAP_CHECK_FAILED") break;
         console.error("job-radar legitimacy call:", e.message);
         continue;
       }
@@ -593,7 +579,20 @@ function unionIds(a, b) {
   return Array.from(new Set([...(a || []), ...(b || [])]));
 }
 
-async function runRefresh(pool, opts = {}) {
+// F117: one refresh at a time. The weekly cron and the job-radar.yml backstop
+// (and a Refresh click) used to overlap and score the same listings twice —
+// paying for the Job Fit / legitimacy passes twice. A caller that arrives while
+// a refresh runs shares that run's result.
+let _refreshInFlight = null;
+function runRefresh(pool, opts = {}) {
+  if (_refreshInFlight) return _refreshInFlight;
+  _refreshInFlight = runRefreshOnce(pool, opts).finally(() => { _refreshInFlight = null; });
+  return _refreshInFlight;
+}
+// A scheduled (non-forced) refresh is skipped when one completed this recently.
+const REFRESH_MIN_GAP_HOURS = 6;
+
+async function runRefreshOnce(pool, opts = {}) {
   const normalized = await runIngest(pool, opts);
   const { newIds, seen } = await dedupPersist(pool, normalized);
   const liveIds = await liveListingIds(pool).catch((e) => { console.error("job-radar live ids:", e.message); return []; });
@@ -644,19 +643,27 @@ async function gatherJobRadarSummary(pool, limit = 20) {
       if (trust >= TRUST_MAIN && fitOk && r.legitimacy !== "suspect") main.push(r);
       else if (trust >= TRUST_VERIFY) verify.push(r);
     }
+    // F114: the "new roles" nudge counts only listings still status 'new' —
+    // a saved listing isn't new — and `newest_first_seen` lets the
+    // notification be keyed to the newest such listing, so it fires once per
+    // genuinely new lead instead of every 12 hours.
+    const mainNew = main.filter((r) => r.status === "new");
+    const newest = mainNew.reduce((m, r) => (r.first_seen && (!m || new Date(r.first_seen) > m) ? new Date(r.first_seen) : m), null);
     return {
       generated_at: new Date().toISOString(),
-      counts: { main: main.length, verify_first: verify.length, scanned: rows.length },
+      counts: { main: main.length, main_new: mainNew.length, verify_first: verify.length, scanned: rows.length },
       main: main.slice(0, limit),
       verify_first: verify.slice(0, limit),
       top_pick: main[0] || null,
+      top_new: mainNew[0] || null,
+      newest_first_seen: newest ? newest.toISOString() : null,
     };
   } catch (err) {
     console.error("gatherJobRadarSummary error:", err.message);
     return {
       generated_at: new Date().toISOString(),
-      counts: { main: 0, verify_first: 0, scanned: 0 },
-      main: [], verify_first: [], top_pick: null, error: true,
+      counts: { main: 0, main_new: 0, verify_first: 0, scanned: 0 },
+      main: [], verify_first: [], top_pick: null, top_new: null, newest_first_seen: null, error: true,
     };
   }
 }
@@ -687,6 +694,12 @@ module.exports = function ({ pool }) {
         if (!s.rows.length || !s.rows[0].job_radar_enabled) {
           return res.json({ ok: true, skipped: "disabled" });
         }
+        // F117: the Actions backstop after the in-process cron already ran
+        // (listings seen within the last few hours) is a no-op.
+        const recent = await pool.query(
+          "SELECT 1 FROM job_listings WHERE last_seen > now() - make_interval(hours => $1) LIMIT 1", [REFRESH_MIN_GAP_HOURS])
+          .catch(() => ({ rows: [] }));
+        if (recent.rows.length) return res.json({ ok: true, skipped: "recent" });
       }
       const result = await runRefresh(pool, {});
       res.json({ ok: true, ...result });

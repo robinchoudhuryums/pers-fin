@@ -95,7 +95,7 @@ describe("POST /api/ask cap enforcement + charging (S3 / INV-14)", () => {
     state = { budget: 5000, usageRows: [], inserts: [] };
     dbModule.pool.query = async (sql, params) => {
       if (sql.includes("ai_monthly_budget_cents")) return { rows: [{ ai_monthly_budget_cents: state.budget }] };
-      if (sql.includes("FROM financial_insights") && sql.includes("date_trunc('month'")) return { rows: state.usageRows };
+      if (sql.includes("FROM financial_insights WHERE created_at >=")) return { rows: state.usageRows };
       if (sql.includes("insights_model")) return { rows: [{ insights_model: "haiku" }] };
       if (sql.includes("INSERT INTO financial_insights")) { state.inserts.push({ sql, params }); return { rows: [] }; }
       return { rows: [] }; // tool executors (getNetWorth etc.) degrade gracefully
@@ -172,7 +172,7 @@ describe("runCategorize cap enforcement + charging (S3 / INV-13 / INV-14)", () =
       if (sql.includes("SELECT COUNT(*) AS uncategorized")) return { rows: [{ uncategorized: state.uncat }] };
       if (sql.includes("FROM categorization_rules WHERE is_active")) return { rows: [] };
       if (sql.includes("ai_monthly_budget_cents")) return { rows: [{ ai_monthly_budget_cents: 5000 }] };
-      if (sql.includes("FROM financial_insights") && sql.includes("date_trunc('month'")) return { rows: [] };
+      if (sql.includes("FROM financial_insights WHERE created_at >=")) return { rows: [] };
       if (sql.includes("AS merchant") && sql.includes("ORDER BY date DESC")) {
         return { rows: [{ transaction_id: "tx1", merchant: "Foo Store", amount: 10, date: "2026-06-01", category: null }] };
       }
@@ -206,7 +206,7 @@ describe("runCategorize cap enforcement + charging (S3 / INV-13 / INV-14)", () =
       if (sql.includes("UPDATE categorization_rules SET times_applied")) return { rows: [] };
       if (sql.includes("user_category_source = 'teller_map'")) return { rowCount: 0, rows: [] };
       if (sql.includes("ai_monthly_budget_cents")) return { rows: [{ ai_monthly_budget_cents: 1 }] }; // 1 cent cap
-      if (sql.includes("FROM financial_insights") && sql.includes("date_trunc('month'")) {
+      if (sql.includes("FROM financial_insights WHERE created_at >=")) {
         return { rows: [{ input_tokens: 1_000_000_000, output_tokens: 0, model_used: "claude-haiku-4-5", tokens_used: 1_000_000_000 }] };
       }
       return { rows: [], rowCount: 0 };

@@ -67,7 +67,7 @@
   <h1>Link Accounts</h1>
   <p>Connect a financial institution to start tracking recurring charges automatically.</p>
   <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
-    <button id="link-btn">Link via Teller</button>
+    <button id="link-btn" data-e2e-skip>Link via Teller</button>
     <button id="plaid-hosted-btn">Link via Plaid</button>
   </div>
   <div style="font-size:11px;color:var(--text-muted);margin-bottom:16px;">
@@ -107,6 +107,14 @@
       <div class="field">
         <label for="csv-file">CSV File</label>
         <input type="file" id="csv-file" accept=".csv">
+      </div>
+
+      <div class="field" id="csv-sign-field" hidden>
+        <label for="csv-sign">Positive amounts in this file are</label>
+        <select id="csv-sign">
+          <option value="charges">Charges (money out)</option>
+          <option value="deposits">Deposits (money in)</option>
+        </select>
       </div>
 
       <div id="csv-preview" style="display:none;font-size:12px;border:1px solid var(--border);border-radius:8px;padding:10px 12px;max-height:260px;overflow:auto;"></div>
@@ -210,14 +218,28 @@
         if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || 'HTTP ' + res.status); }
         const items = await res.json();
         if (!items.length) { itemsList.textContent = 'No institutions linked yet.'; return; }
-        itemsList.innerHTML = items.map(i =>
-          '<div class="item">' +
+        itemsList.innerHTML = items.map(function (i) {
+          // Plaid Link update mode (cycle-7 G3): a connected Plaid item is
+          // repaired / extended in place — "Re-authenticate" when the last sync
+          // recorded a re-auth code, "Add accounts" always. CSV imports aren't
+          // Plaid connections.
+          var plaidKind = i.provider === 'plaid_investment' ? 'investments'
+            : (i.provider === 'plaid' && i.status !== 'CSV') ? 'transactions' : null;
+          var upd = '';
+          if (plaidKind) {
+            var attrs = ' data-id="' + i.id + '" data-kind="' + plaidKind + '" data-name="' + esc(i.institution_name || '') + '"';
+            if (i.last_error_code) upd += '<button class="btn-unlink" style="border-color:var(--warm);color:var(--warm);" data-action="plaid-update" data-mode="reauth"' + attrs + '>Re-authenticate</button> ';
+            upd += '<button class="btn-unlink" style="border-color:var(--border);color:var(--teal);" data-action="plaid-update" data-mode="add"' + attrs + '>Add accounts</button> ';
+          }
+          return '<div class="item">' +
             '<div class="item-info"><strong>' + esc(i.institution_name) + '</strong>' +
-            ' (' + esc(i.provider || 'teller') + ') \u2014 ' +
-            i.accounts.length + ' account(s) \u2014 Status: ' + esc(i.status) + '</div>' +
-            '<div class="item-actions"><button class="btn-unlink" data-action="unlink" data-id="' + i.id + '" data-provider="' + esc(i.provider || 'teller') + '" data-name="' + esc(i.institution_name || '') + '">Unlink</button></div>' +
-          '</div>'
-        ).join('');
+            ' (' + esc(i.provider === 'plaid_investment' ? 'plaid, investments' : (i.provider || 'teller')) + ') \u2014 ' +
+            (i.provider === 'plaid_investment' ? 'investment accounts' : i.accounts.length + ' account(s)') +
+            ' \u2014 Status: ' + esc(i.status) +
+            (i.last_error_code ? ' \u2014 <span style="color:var(--red,#eb6b6b);">needs re-authentication</span>' : '') + '</div>' +
+            '<div class="item-actions">' + upd + '<button class="btn-unlink" data-action="unlink" data-id="' + i.id + '" data-provider="' + esc(i.provider || 'teller') + '" data-name="' + esc(i.institution_name || '') + '">Unlink</button></div>' +
+          '</div>';
+        }).join('');
       } catch (e) {
         itemsList.textContent = 'Could not load items: ' + e.message;
         showStatus('Failed to load linked accounts: ' + e.message, false);
@@ -230,7 +252,9 @@
       console.log('[unlink] confirm result', confirmed);
       if (!confirmed) return;
       try {
-        var endpoint = provider === 'plaid' ? '/api/items/' + id : '/api/enrollments/' + id;
+        var endpoint = provider === 'plaid' ? '/api/items/' + id
+          : provider === 'plaid_investment' ? '/api/plaid/investment-items/' + id
+          : '/api/enrollments/' + id;
         console.log('[unlink] DELETE', endpoint);
         var res = await apiFetch(endpoint, { method: 'DELETE' });
         console.log('[unlink] response status', res.status);
@@ -324,6 +348,12 @@
     // to commit straight away with "Chase" as the default institution.
     let csvStage = 'preview';
     const csvPreviewEl = document.getElementById('csv-preview');
+    // F26: a generic CSV's sign is unknown. The preview guesses it; the select
+    // (shown only for the generic format) is pre-set to the guess and sent with
+    // the preview and the import, so both read the file the same way.
+    const csvSignField = document.getElementById('csv-sign-field');
+    const csvSign = document.getElementById('csv-sign');
+    let csvSignChosen = false;
     function resetCsvPreview() {
       csvStage = 'preview';
       csvPreviewEl.style.display = 'none'; csvPreviewEl.innerHTML = '';
@@ -333,6 +363,12 @@
     ['csv-file', 'csv-account-label', 'csv-custom-institution', 'csv-institution'].forEach(function (id) {
       const el = document.getElementById(id);
       if (el) el.addEventListener('change', resetCsvPreview);
+    });
+    document.getElementById('csv-file').addEventListener('change', function () {
+      csvSignChosen = false; csvSignField.hidden = true;
+    });
+    csvSign.addEventListener('change', function () {
+      csvSignChosen = true; resetCsvPreview(); uploadCsv();
     });
     function csvFormData(file) {
       const institution = csvInstitution.value === 'Other'
@@ -344,6 +380,7 @@
       formData.append('file', file);
       if (institution) formData.append('institution', institution);
       if (accountLabel) formData.append('account_label', accountLabel);
+      if (csvSignChosen) formData.append('positive_means', csvSign.value);
       return formData;
     }
     async function uploadCsv() {
@@ -358,6 +395,13 @@
           const d = await resp.json().catch(() => ({}));
           btnLoading(btn, false, 'Preview');
           if (!resp.ok) { showCsvStatus('Preview failed: ' + (d.error || 'HTTP ' + resp.status), false); return; }
+          csvSignField.hidden = d.format_detected !== 'generic';
+          if (d.format_detected === 'generic' && !csvSignChosen) {
+            csvSignChosen = true;
+            csvSign.value = d.sign_guess || 'charges';
+            // The first preview read positives as charges; re-run it with the guess.
+            if (csvSign.value !== d.positive_means) return await uploadCsv();
+          }
           csvPreviewEl.innerHTML =
             '<div style="margin-bottom:6px;"><strong>' + esc(d.format_detected) + '</strong> &middot; ' + esc(d.account_label) + '</div>' +
             '<div><span style="color:var(--green);">' + d.rows_new + ' new</span> &middot; ' +
@@ -417,13 +461,15 @@
         list.innerHTML = manualAccts.map(function(a) {
           var bal = parseFloat(a.current_balance || 0);
           var balStr = '$' + Math.abs(bal).toLocaleString('en-US', {minimumFractionDigits: 2});
-          if (a.type === 'credit') balStr = '-' + balStr;
+          // F105: a loan is a debt like a card — negative and red, never a green "+".
+          var isDebt = a.type === 'credit' || a.type === 'loan';
+          if (isDebt) balStr = '-' + balStr + ' owed';
           var limitStr = a.credit_limit ? ' / Limit: $' + parseFloat(a.credit_limit).toLocaleString('en-US', {minimumFractionDigits: 2}) : '';
           return '<div class="item">' +
             '<div class="item-info"><strong>' + esc(a.name) + '</strong>' +
             ' (' + esc(a.institution_name || 'Manual') + ')' +
             ' \u2014 ' + esc(a.subtype || a.type) +
-            ' \u2014 <span style="color:' + (a.type === 'credit' ? 'var(--red)' : 'var(--green)') + ';font-weight:400;">' + balStr + '</span>' +
+            ' \u2014 <span style="color:' + (isDebt ? 'var(--red)' : 'var(--green)') + ';font-weight:400;">' + balStr + '</span>' +
             limitStr + '</div>' +
             '<div class="item-actions" style="display:flex;gap:6px;">' +
               '<button class="btn-unlink" style="border-color:var(--border);color:var(--warm);" data-action="update-manual" data-id="' + a.id + '">Update Balance</button>' +
@@ -463,15 +509,15 @@
     async function updateManualBalance(id) {
       var val = prompt('Enter current balance ($):');
       if (val === null) return;
-      var num = parseFloat(val);
-      if (isNaN(num)) { showStatus('Invalid number.', false); return; }
+      // F97: parseFloat("1,200") is 1 — parseAmountInput reads the whole number.
+      var num = parseAmountInput(val);
+      if (isNaN(num)) { showStatus('Enter an amount like 1,200 or -45.50', false); return; }
       try {
         var res = await apiFetch('/api/accounts/' + id + '/balance', {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ current_balance: num, available_balance: num }),
         });
-        if (res.ok) { showStatus('Balance updated.', true); loadManualAccounts(); }
-        else showStatus('Failed to update.', false);
+        if (await writeOk(res, 'Could not update the balance')) { showStatus('Balance updated.', true); loadManualAccounts(); }
       } catch (e) { showStatus(e.message, false); }
     }
 
@@ -576,19 +622,21 @@
         if (d.configured) document.getElementById('plaid-inv-btn').style.display = 'inline-block';
       } catch {}
     }
+    async function ensurePlaidSdk() {
+      if (window.Plaid) return;
+      await new Promise(function(resolve, reject) {
+        var s = document.createElement('script');
+        s.src = 'https://cdn.plaid.com/link/v2/stable/link-initialize.js';
+        s.onload = resolve; s.onerror = function () { reject(new Error('Could not load Plaid Link')); };
+        document.head.appendChild(s);
+      });
+    }
     async function linkPlaidInvestments() {
       try {
         var res = await apiFetch('/api/plaid/link-token', { method: 'POST' });
         var d = await res.json();
         if (!res.ok) { showStatus(d.error || 'Failed', false); return; }
-        if (!window.Plaid) {
-          await new Promise(function(resolve, reject) {
-            var s = document.createElement('script');
-            s.src = 'https://cdn.plaid.com/link/v2/stable/link-initialize.js';
-            s.onload = resolve; s.onerror = reject;
-            document.head.appendChild(s);
-          });
-        }
+        await ensurePlaidSdk();
         var handler = window.Plaid.create({
           token: d.link_token,
           onSuccess: async function(public_token, metadata) {
@@ -608,6 +656,43 @@
         });
         handler.open();
       } catch (e) { showStatus(e.message, false); }
+    }
+
+    // Plaid Link UPDATE MODE (cycle-7 G3) — Re-authenticate / Add accounts on
+    // an existing Plaid connection. The Item and its access token stay the
+    // same, so there is no token exchange: on success the server registers any
+    // new accounts, clears the re-auth flag and syncs that connection.
+    async function updatePlaidItem(id, kind, name) {
+      try {
+        var res = await apiFetch('/api/plaid/link-token-update', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ item_id: id, kind: kind }),
+        });
+        if (!(await writeOk(res, 'Could not open Plaid for ' + name))) return;
+        var d = await res.json();
+        await ensurePlaidSdk();
+        var handler = window.Plaid.create({
+          token: d.link_token,
+          onSuccess: async function () {
+            try {
+              showStatus('Refreshing ' + name + '...', true);
+              var r = await apiFetch('/api/plaid/update-complete', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ item_id: id, kind: kind }),
+              });
+              if (!(await writeOk(r, 'Could not refresh ' + name))) { loadItems(); return; }
+              var out = await r.json();
+              showStatus(name + ' updated: ' + out.accounts_added + ' new account(s), ' + out.transactions_added + ' new transaction(s).', true);
+              loadItems();
+              if (kind === 'investments') loadInvestments();
+            } catch (e) { showStatus('Could not refresh ' + name + ': ' + e.message, false); }
+          },
+          onExit: function (err) {
+            if (err) showStatus('Plaid: ' + (err.display_message || err.error_message || err.error_code || 'closed'), false);
+          },
+        });
+        handler.open();
+      } catch (e) { showStatus('Could not open Plaid for ' + name + ': ' + e.message, false); }
     }
 
     // --- Plaid transactions link (for Capital One, Discover, etc.) ---
@@ -776,6 +861,9 @@
     // Event delegation for dynamically generated unlink/investment buttons
     onDelegate('items-list', 'click', '[data-action="unlink"]', function() {
       unlinkAccount(parseInt(this.dataset.id), this.dataset.name, this.dataset.provider);
+    });
+    onDelegate('items-list', 'click', '[data-action="plaid-update"]', function() {
+      updatePlaidItem(parseInt(this.dataset.id), this.dataset.kind, this.dataset.name);
     });
     onDelegate('inv-list', 'click', '[data-action]', function() {
       var action = this.dataset.action;

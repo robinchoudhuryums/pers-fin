@@ -38,6 +38,7 @@ const morgan = require("morgan");
 const { pool, runMigrations } = require("./services/database");
 const { TELLER_APP_ID, TELLER_ENV } = require("./services/teller-api");
 const { startKeepAlive, getKeepAliveConfigCached } = require("./services/keep-alive");
+const hosting = require("./services/hosting");
 
 // --- Auth config ---
 const SESSION_PASSWORD = process.env.SESSION_PASSWORD;
@@ -59,8 +60,17 @@ app.locals.v = BUILD_VERSION;
 // Trust first proxy (Render/Fly.io load balancer) so secure cookies work behind TLS termination
 app.set("trust proxy", 1);
 app.use(morgan("short"));
-app.use(express.json());
+// The raw body is kept for the signed webhook receivers (roadmap T2.1). Under
+// the shell its own parser runs first and already sets req.rawBody; this hook
+// covers a standalone run.
+app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
 app.use(express.urlencoded({ extended: false }));
+
+// Bank webhooks (roadmap T2.1): each request authenticates itself with the
+// provider's signature, so the router is mounted BEFORE the session / auth /
+// CSRF / API-key middleware — and before the activity touch below, so a
+// webhook never keeps the Neon idle-gate open.
+app.use(require("./routes/webhooks"));
 
 // Sub-app mount awareness. When this app is mounted under the unified
 // shell (e.g. app.use("/perfin", subapp)), Express sets req.baseUrl to
@@ -142,8 +152,11 @@ function requireAuth(req, res, next) {
   if (!AUTH_SECRET) return next();
   if (["/login", "/api/login", "/api/webauthn/authenticate-options", "/api/webauthn/authenticate", "/manifest.json", "/sw.js", "/health", "/api/keep-alive-schedule", "/apple-touch-icon.svg", "/apple-touch-icon.png", "/logo.svg", "/api/sso/validate"].includes(req.path)) return next();
   if (req.path.endsWith(".css") || req.path.endsWith(".js")) return next();
-  // Allow API key authenticated requests through (validated later in API key middleware)
-  if (req.path.startsWith("/api/") && req.headers["x-api-key"]) return next();
+  // Allow API key authenticated requests through (validated later in API key
+  // middleware) — only when an API_KEY is configured: with none set, that
+  // middleware lets everything through, so the bare header was a full auth
+  // bypass on a standalone deployment with a PIN/password (F6).
+  if (req.path.startsWith("/api/") && req.headers["x-api-key"] && process.env.API_KEY) return next();
   if (req.session && req.session.authenticated) {
     const timeout = (req.session.timeoutMinutes || 15) * 60 * 1000;
     if (Date.now() - req.session.lastActivity < timeout) {
@@ -214,6 +227,11 @@ app.use(helmet({
   // scripts/iframes) unless the remote server sends specific headers, which most CDNs don't
   crossOriginEmbedderPolicy: false,
   crossOriginResourcePolicy: { policy: "cross-origin" },
+  // F9: helmet's default COOP is `same-origin`, which severs window.opener for
+  // the Plaid OAuth / Teller Connect popups this page opens. allow-popups keeps
+  // the page isolated from cross-origin openers while its own popups can still
+  // post back (INV-62 — the shell disables COOP for the same reason).
+  crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
 }));
 
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
@@ -283,9 +301,10 @@ app.use("/api", (req, res, next) => {
   if (req.path === "/login" || req.path === "/logout") return next();
   if (req.session && req.session.authenticated) return next();
   const provided = req.headers["x-api-key"];
-  const providedBuf = Buffer.from(provided || "");
-  const keyBuf = Buffer.from(API_KEY);
-  if (!provided || providedBuf.length !== keyBuf.length || !crypto.timingSafeEqual(providedBuf, keyBuf)) {
+  // Fixed-length SHA-256 digests (INV-104; seams audit #3): the length-checked
+  // raw-buffer compare leaked the key's length.
+  const digest = (v) => crypto.createHash("sha256").update(String(v)).digest();
+  if (!provided || !crypto.timingSafeEqual(digest(provided), digest(API_KEY))) {
     return res.status(401).json({ error: "Unauthorized: invalid or missing API key" });
   }
   next();
@@ -301,6 +320,7 @@ app.use(require("./routes/enrollments"));
 // "bulk-category") and 400 every bulk recategorize (DC-1).
 app.use(require("./routes/categorize"));
 app.use(require("./routes/subscriptions"));
+app.use(require("./routes/merchant-rename"));
 app.use(require("./routes/goals"));
 app.use(require("./routes/settings"));
 app.use(require("./routes/insights"));
@@ -361,7 +381,8 @@ app.get("/api/keep-alive-schedule", async (_req, res) => {
     // Cached (PSC-2) — the 14-minute probe must not query Neon each time.
     const config = await getKeepAliveConfigCached();
     res.json({
-      enabled: config.keep_alive_enabled,
+      // An always-on host needs no external ping either (services/hosting.js).
+      enabled: !hosting.alwaysOn() && !!config.keep_alive_enabled,
       start: config.keep_alive_start,
       end: config.keep_alive_end,
       timezone: config.keep_alive_timezone,
@@ -380,7 +401,7 @@ app.get("/api/keep-alive-schedule", async (_req, res) => {
 // the configured Express app without immediately binding a port. When
 // run directly (`node server.js`), we still bootstrap exactly as before.
 
-const { start } = require("./startup");
+const { start, stopBackgroundJobs } = require("./startup");
 
 if (require.main === module) {
   start(app).catch((err) => {
@@ -389,4 +410,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { app, start, pool };
+module.exports = { app, start, pool, stopBackgroundJobs };

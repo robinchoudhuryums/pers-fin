@@ -16,10 +16,24 @@
 -- ============================================================================
 
 -- Vector store — created only when pgvector is available (see SAFETY above).
+--
+-- Cycle-7 F10: "available" is not "creatable" — a role without CREATE
+-- privilege on the database (or a managed host that lists the extension but
+-- restricts it) makes CREATE EXTENSION raise, and inside the one migration
+-- transaction that was a fatal boot failure. The attempt runs in its own
+-- exception block (a subtransaction), and the vector objects are created only
+-- when the extension is actually INSTALLED (pg_extension).
 DO $vec$
 BEGIN
-  IF EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'vector') THEN
-    CREATE EXTENSION IF NOT EXISTS vector;
+  IF EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'vector')
+     AND NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector') THEN
+    BEGIN
+      CREATE EXTENSION IF NOT EXISTS vector;
+    EXCEPTION WHEN OTHERS THEN
+      RAISE NOTICE 'pgvector is available but could not be created (%) — Knowledge stays on keyword retrieval', SQLERRM;
+    END;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector') THEN
 
     -- Polymorphic chunks: a chunk belongs to either a `note` or a `document`
     -- (source_kind, source_id) — mirrors Perfin's polymorphic

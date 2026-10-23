@@ -9,7 +9,7 @@ const cors = require("cors");
 const rateLimit = require("express-rate-limit");
 
 const { pool } = require("./db");
-const { AUTH_SECRET, AUTH_MODE, SESSION_SECRET } = require("./config");
+const { AUTH_SECRET, AUTH_MODE, SESSION_SECRET, MERMAID_CDN_BASE } = require("./config");
 
 function setup(app) {
   // Session
@@ -49,8 +49,13 @@ function setup(app) {
   app.use((req, res, next) => {
     if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return next();
     if (req.path === "/api/login") return next();
-    const ct = (req.headers["content-type"] || "").toLowerCase();
-    if (req.headers["x-requested-with"] || ct.includes("application/json") || ct.includes("multipart/form-data")) return next();
+    // A cross-site page can send a plain <form> as multipart/form-data, and a
+    // no-cors fetch can send "text/plain; x=application/json" — so only an
+    // X-Requested-With header (which forces a CORS preflight) or a real JSON
+    // content type passes (F11). Uploads must send the header; the shared
+    // fetch wrapper adds it to every /api call.
+    const ct = (req.headers["content-type"] || "").toLowerCase().trim();
+    if (req.headers["x-requested-with"] || ct.startsWith("application/json")) return next();
     return res.status(403).json({ error: "Forbidden: missing CSRF header" });
   });
 
@@ -63,13 +68,14 @@ function setup(app) {
         // per-request nonce is generated in views.basePathMiddleware (which
         // server.js installs BEFORE this helmet middleware) and every inline
         // <script> emitted by pageHead/themeScript/pages/login carries
-        // nonceAttr(). cdn.jsdelivr.net stays allowlisted for Mermaid on the
-        // Knowledge page. No 'unsafe-inline' — an injected inline script
-        // without the nonce won't run.
+        // nonceAttr(). Only the pinned Mermaid path on cdn.jsdelivr.net is
+        // allowlisted (F125 — the bare host let any npm/GitHub file run).
+        // No 'unsafe-inline' — an injected inline script without the nonce
+        // won't run.
         scriptSrc: [
           "'self'",
           (_req, res) => `'nonce-${res.locals.cspNonce}'`,
-          "https://cdn.jsdelivr.net",
+          MERMAID_CDN_BASE,
         ],
         // Pin script-src-attr to 'none' explicitly (PWUI5) so inline event
         // handlers (onclick/onerror) are blocked regardless of helmet's
@@ -84,10 +90,16 @@ function setup(app) {
   app.use(cors({ origin: false, credentials: true }));
 
   // Rate limiters
+  // F123 (parity with Perfin's PSC-8): under the unified shell every request
+  // has already passed the shell's PIN / x-api-key gate, and the Knowledge
+  // page's status poll alone made ~15 calls a minute — 200 per 15 minutes
+  // 429'd normal use and pages then failed on the JSON error. Skipped when
+  // embedded; it still guards a standalone deployment.
   const generalLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 200,
     message: { error: "Too many requests, please try again later." },
+    skip: (req) => !!req.app.get("embedded"),
   });
   app.use("/api/", generalLimiter);
 
@@ -102,8 +114,14 @@ function setup(app) {
     windowMs: 60 * 1000,
     max: 20,
     message: { error: "Too many AI requests, please slow down." },
+    // The two read-only GETs under /api/ai/ make no model call (the Settings
+    // page loads both) — roadmap T2.3 C4. req.path is relative to the mount.
+    skip: (req) => req.method === "GET" && (req.path === "/models" || req.path === "/usage"),
   });
   app.use("/api/ai/", aiLimiter);
+  // F130: the Knowledge endpoints that call Claude (and Voyage) share the AI
+  // limiter — they used to have none.
+  app.use(["/api/rag/query", "/api/rag/diagram", "/api/rag/capture"], aiLimiter);
 }
 
 function requireAuth(req, res, next) {

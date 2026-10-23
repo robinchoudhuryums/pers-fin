@@ -20,7 +20,7 @@ ${navBar("/todos")}
   <div id="bulk-bar" class="section" style="display:none;padding:10px 14px;margin-bottom:14px;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;">
     <span id="bulk-count" class="mono-label">0 selected</span>
     <button class="btn" id="bulk-complete-btn">Complete</button>
-    <button class="btn danger" id="bulk-delete-btn">Delete</button>
+    <button class="btn danger" data-e2e-skip id="bulk-delete-btn">Delete</button>
     <select id="bulk-priority">
       <option value="">Set Priority...</option><option value="urgent">Urgent</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option>
     </select>
@@ -64,6 +64,7 @@ ${navBar("/todos")}
       <button id="modal-close-x" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;padding:4px 8px;line-height:1;font-family:inherit;" aria-label="Close">&times;</button>
     </div>
     <input type="hidden" id="edit-id">
+    <div id="f-linked" class="linked-note" hidden></div>
     <label>Title</label>
     <input type="text" id="f-title" placeholder="What needs to be done?">
     <label>Description</label>
@@ -141,7 +142,7 @@ ${navBar("/todos")}
       <button class="btn" id="cancel-modal-btn">Cancel</button>
       <button class="btn primary" id="save-todo-btn">Save</button>
       <button class="btn" id="save-template-btn" style="display:none;">Save as Template</button>
-      <button class="btn danger" id="delete-btn" style="display:none">Delete</button>
+      <button class="btn danger" data-e2e-skip id="delete-btn" style="display:none">Delete</button>
     </div>
   </div>
 </div>
@@ -167,7 +168,7 @@ ${navBar("/todos")}
     <label>What needs to be done?</label>
     <div style="display:flex;gap:8px;">
       <input type="text" id="qt-input" placeholder="Type or speak a task…" style="flex:1">
-      <button class="btn" id="qt-voice-btn" title="Voice input">&#127908;</button>
+      <button class="btn" data-e2e-skip id="qt-voice-btn" title="Voice input">&#127908;</button>
     </div>
     <div id="qt-preview" style="display:none;margin-top:14px;" class="section">
       <h2>Preview</h2>

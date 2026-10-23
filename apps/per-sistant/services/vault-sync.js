@@ -71,9 +71,25 @@ function stripYamlComment(val) {
   return val.replace(/\s+#.*$/, "").trim();
 }
 
+// F132: a privacy key that appears more than once keeps EVERY value (the most
+// restrictive then wins in resolveSensitivity) — the last one used to win, so
+// `sensitivity: secret` followed by `sensitivity: normal` was embedded.
+const PRIVACY_KEYS = new Set(["sensitivity", "embed", "private"]);
+function setMetaValue(meta, key, value) {
+  if (PRIVACY_KEYS.has(key) && Object.prototype.hasOwnProperty.call(meta, key) && meta[key] !== "") {
+    const prev = Array.isArray(meta[key]) ? meta[key] : [meta[key]];
+    meta[key] = value === "" ? prev : prev.concat(value);
+  } else {
+    meta[key] = value;
+  }
+}
+
 function parseFrontmatter(text) {
   const s = String(text || "");
-  const m = s.match(/^﻿?---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+  // Trailing spaces/tabs after either `---` are allowed (F132): an opener of
+  // "--- " used to leave the whole file unparsed, so its `sensitivity:` was
+  // ignored and the file was embedded as normal.
+  const m = s.match(/^﻿?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*\r?\n?/);
   if (!m) return { meta: {}, body: s };
   const meta = {};
   let listKey = null; // key whose empty value may be followed by `- item` lines
@@ -90,11 +106,11 @@ function parseFrontmatter(text) {
     if (!mm) continue;
     const key = mm[1].toLowerCase();
     const val = stripYamlComment(mm[2].trim());
-    if (val === "") { meta[key] = ""; listKey = key; continue; }
-    if (/^(true|false)$/i.test(val)) meta[key] = /^true$/i.test(val);
+    if (val === "") { setMetaValue(meta, key, ""); listKey = key; continue; }
+    if (/^(true|false)$/i.test(val)) setMetaValue(meta, key, /^true$/i.test(val));
     else if (/^\[.*\]$/.test(val)) {
-      meta[key] = val.slice(1, -1).split(",").map((x) => x.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
-    } else meta[key] = val.replace(/^["']|["']$/g, "");
+      setMetaValue(meta, key, val.slice(1, -1).split(",").map((x) => x.trim().replace(/^["']|["']$/g, "")).filter(Boolean));
+    } else setMetaValue(meta, key, val.replace(/^["']|["']$/g, ""));
   }
   return { meta, body: s.slice(m[0].length) };
 }
@@ -153,6 +169,14 @@ function resolveSensitivity(meta) {
 // bumping it invalidates every hash and forces a clean re-embed on the next
 // sync — the mechanism that makes future chunker changes safe to ship.
 const CHUNKING_VERSION = 2;
+
+// Bump VAULT_PARSE_VERSION whenever frontmatter parsing or sync semantics
+// change in a way that re-classifies existing files (KR-2, F132, …). A
+// successful FULL sync stamps it into user_settings.vault_parse_version, and
+// Perfin's operator checks (cycle-7 ST4) ask for one full reindex while the
+// stored value is older. 2 = the cycle-7 F132 rules ("--- " delimiters,
+// repeated privacy keys fail closed).
+const VAULT_PARSE_VERSION = 2;
 const DEFAULT_MAX_TOKENS = 480;   // comfortably inside voyage-3.5's window
 const DEFAULT_OVERLAP_TOKENS = 60;
 
@@ -267,18 +291,29 @@ function yamlScalar(v) {
 // secret) is the user's choice on the capture form.
 const CAPTURE_SENSITIVITIES = new Set(["normal", "private", "secret"]);
 
+// The fact-field lines a capture would write (reserved keys and blanks dropped).
+function captureFieldLines(fields) {
+  const lines = [];
+  for (const [k, v] of Object.entries(fields && typeof fields === "object" ? fields : {})) {
+    if (v == null || v === "") continue;
+    const key = String(k).toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
+    if (key && !RESERVED_FACT_KEYS.has(key)) lines.push(`${key}: ${yamlScalar(v)}`);
+  }
+  return lines;
+}
+
+// F135: a fact file is indexed from its fields only (its body is dropped), so a
+// "fact" capture with no usable fields is written as a NOTE — it used to be
+// committed as a fact with nothing to index and its text was lost.
 function buildCaptureMarkdown({ type, title, entity, fields, tags, body, sensitivity }) {
   const fm = [];
-  if (type === "fact") {
+  const fieldLines = captureFieldLines(fields);
+  if (type === "fact" && fieldLines.length) {
     fm.push("type: fact");
     if (entity) fm.push(`entity: ${yamlScalar(entity)}`);
-    for (const [k, v] of Object.entries(fields || {})) {
-      if (v == null || v === "") continue;
-      const key = String(k).toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
-      if (key && !RESERVED_FACT_KEYS.has(key)) fm.push(`${key}: ${yamlScalar(v)}`);
-    }
-  } else if (title) {
-    fm.push(`title: ${yamlScalar(title)}`);
+    fm.push(...fieldLines);
+  } else if (title || entity) {
+    fm.push(`title: ${yamlScalar(title || entity)}`);
   }
   if (sensitivity && sensitivity !== "normal" && CAPTURE_SENSITIVITIES.has(sensitivity)) {
     fm.push(`sensitivity: ${sensitivity}`);
@@ -517,9 +552,15 @@ async function clearFacts(pool, sourceRef) {
 // ---------------------------------------------------------------------------
 // GitHub client (injectable for tests)
 // ---------------------------------------------------------------------------
+// F129: every GitHub call has a deadline — a hung connection used to hold the
+// sync lock for the platform's ~5-minute socket timeout per attempt.
+const GH_TIMEOUT_MS = 20000;
+const GH_WRITE_TIMEOUT_MS = 30000;
+
 async function ghJson(pathUrl, ctx) {
   const f = (ctx && ctx.fetchImpl) || globalThis.fetch;
   const res = await f(GH_API + pathUrl, {
+    signal: AbortSignal.timeout(GH_TIMEOUT_MS),
     headers: {
       Authorization: `Bearer ${ctx.token}`,
       Accept: "application/vnd.github+json",
@@ -555,6 +596,16 @@ async function getFileText(repo, path, ref, ctx) {
   const encoded = path.split("/").map(encodeURIComponent).join("/");
   const j = await ghJson(`/repos/${repo}/contents/${encoded}?ref=${encodeURIComponent(ref)}`, ctx);
   if (j.encoding === "base64") return Buffer.from(j.content || "", "base64").toString("utf8");
+  // F128: the Contents API omits the body of a file over 1 MB (encoding
+  // "none", content ""). It used to be ingested as EMPTY — which also cleared
+  // a fact file's facts. Read it through the Git blobs API (up to 100 MB);
+  // if that can't produce it either, fail this file instead of emptying it.
+  if (j.encoding === "none" || (!j.content && Number(j.size) > 0)) {
+    if (!j.sha) throw new Error(`${path}: GitHub returned no content and no blob sha`);
+    const b = await ghJson(`/repos/${repo}/git/blobs/${j.sha}`, ctx);
+    if (b.encoding === "base64" && typeof b.content === "string") return Buffer.from(b.content, "base64").toString("utf8");
+    throw new Error(`${path}: file too large to fetch (${j.size} bytes)`);
+  }
   return j.content || "";
 }
 
@@ -566,6 +617,12 @@ const COMPARE_FILE_CAP = 300;
 async function listChangedFiles(repo, base, head, ctx) {
   const j = await ghJson(`/repos/${repo}/compare/${base}...${head}`, ctx);
   if ((j.files || []).length >= COMPARE_FILE_CAP) return { incomplete: true, changed: [], removed: [] };
+  // F133: after a force-push the old base still exists, so the compare answers
+  // 200 with status "diverged" (or "behind" after a reset) and lists only the
+  // merge-base → head diff — files that existed only in the dropped commits are
+  // never reported removed. Only an "ahead" / "identical" compare is trusted;
+  // anything else makes the caller do a full walk + sweep.
+  if (j.status && j.status !== "ahead" && j.status !== "identical") return { incomplete: true, changed: [], removed: [] };
   const changed = [];
   const removed = [];
   for (const f of j.files || []) {
@@ -586,6 +643,7 @@ async function commitVaultFile(repo, branch, path, content, message, ctx) {
   const encoded = path.split("/").map(encodeURIComponent).join("/");
   const res = await f(`${GH_API}/repos/${repo}/contents/${encoded}`, {
     method: "PUT",
+    signal: AbortSignal.timeout(GH_WRITE_TIMEOUT_MS),
     headers: {
       Authorization: `Bearer ${ctx.token}`,
       Accept: "application/vnd.github+json",
@@ -670,9 +728,11 @@ async function runVaultSync(pool, opts) {
       if (!cmp || cmp.incomplete) full = true;
       else { changed = cmp.changed; removed = cmp.removed; }
     }
+    let treeTruncated = false;
     if (full) {
       const tree = await listIndexableFiles(repo, head, ctx);
       changed = tree.paths;
+      treeTruncated = tree.truncated;
       // Mark-and-sweep (KR-1): a full walk only sees files that EXIST, so a
       // vault file deleted/renamed since the last sync (or everything from a
       // previously configured repo) was never removed — its facts kept being
@@ -725,13 +785,29 @@ async function runVaultSync(pool, opts) {
       failed.push(...backfill.failed);
     }
 
+    // F127: a truncated tree listing means some files were never seen (and
+    // removals were skipped). It used to report ok and advance vault_last_sha,
+    // so the missing files stayed missing. Now it is a failure: the error is
+    // recorded and the SHA holds, so every sync retries the full walk.
+    if (treeTruncated) {
+      failed.push({ path: "(file list)", error: "GitHub truncated the vault's file list (too many files for one listing) — files beyond it were not synced and deletions were not applied" });
+    }
+
     const summary = { changed: changed.length, removed: removed.length, embedded, skipped, facts: factFiles, head, embeddings: canEmbed };
     if (failed.length) return await finishWithFailures(pool, failed, summary);
     await pool.query(
       "UPDATE user_settings SET vault_last_sha = $1, vault_last_synced_at = now(), vault_last_error = NULL WHERE id = 1",
       [head]
     );
-    return { ok: true, ...summary };
+    // ST4: only a full walk re-files every existing row under the current
+    // rules, so only a full one records the parser version. Fail-soft — a
+    // pre-029 schema just keeps no version.
+    if (full) {
+      await pool
+        .query("UPDATE user_settings SET vault_parse_version = $1 WHERE id = 1", [VAULT_PARSE_VERSION])
+        .catch((e) => console.error("vault parse-version stamp failed:", e.message));
+    }
+    return { ok: true, ...summary, full };
   } catch (e) {
     // KR-11: a failed run records the error but NOT vault_last_synced_at (it
     // used to stamp it, so a sync failing for days still looked fresh).
@@ -821,6 +897,9 @@ async function finishWithFailures(pool, failed, summary) {
 
 // Embed existing notes into the same polymorphic chunk store, and prune chunks
 // for notes that were deleted. Cheap on re-run thanks to the content-hash skip.
+// Only 'normal' notes are embedded (cycle-7 F134 / ST5, INV-27): a note marked
+// private or secret is never sent to Voyage, and its chunks + embed_state are
+// pruned like a deleted note's.
 async function syncNotes(pool) {
   // K4: hold the same single-flight lock syncVault uses so the hourly cron and a
   // concurrent POST /api/rag/reindex can't run overlapping note-embeds. The cron
@@ -834,7 +913,7 @@ async function syncNotes(pool) {
     if (!embeddings.isConfigured() || !(await vectorReady(pool))) return { ok: false, reason: "not_ready" };
     let embedded = 0;
     let skipped = 0;
-    const notes = await pool.query("SELECT id, title, content FROM notes WHERE deleted_at IS NULL");
+    const notes = await pool.query("SELECT id, title, content FROM notes WHERE deleted_at IS NULL AND sensitivity = 'normal'");
     let failed = 0;
     let firstError = null;
     for (const n of notes.rows) {
@@ -850,8 +929,8 @@ async function syncNotes(pool) {
         if (!firstError) firstError = e.message;
       }
     }
-    await pool.query("DELETE FROM chunks WHERE source_kind = 'note' AND source_id NOT IN (SELECT id FROM notes WHERE deleted_at IS NULL)");
-    await pool.query("DELETE FROM embed_state WHERE source_kind = 'note' AND source_id NOT IN (SELECT id FROM notes WHERE deleted_at IS NULL)");
+    await pool.query("DELETE FROM chunks WHERE source_kind = 'note' AND source_id NOT IN (SELECT id FROM notes WHERE deleted_at IS NULL AND sensitivity = 'normal')");
+    await pool.query("DELETE FROM embed_state WHERE source_kind = 'note' AND source_id NOT IN (SELECT id FROM notes WHERE deleted_at IS NULL AND sensitivity = 'normal')");
     if (failed) return { ok: false, partial: true, failed, error: firstError, embedded, skipped, total: notes.rows.length };
     return { ok: true, embedded, skipped, total: notes.rows.length };
   } finally {
@@ -880,6 +959,7 @@ module.exports = {
   chunkMarkdown,
   estimateTokens,
   CHUNKING_VERSION,
+  VAULT_PARSE_VERSION,
   shouldIndex,
   sha256,
   titleFromPath,
@@ -888,6 +968,10 @@ module.exports = {
   normalizeDate,
   slugify,
   buildCaptureMarkdown,
+  captureFieldLines,
+  listChangedFiles,
+  getFileText,
+  listIndexableFiles,
   commitVaultFile,
   upsertVaultDocument,
   upsertFacts,

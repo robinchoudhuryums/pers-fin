@@ -171,8 +171,10 @@
           let meta = [];
           if (g.monthly_contribution > 0) meta.push(fmt(g.monthly_contribution) + '/mo');
           if (g.interest_rate > 0) meta.push(g.interest_rate + '% return');
-          if (g.estimated_date && pct < 100) meta.push('Est. ' + new Date(g.estimated_date).toLocaleDateString());
-          if (g.target_date) meta.push('Target: ' + new Date(g.target_date).toLocaleDateString());
+          // F98: DATE values are calendar days — parseCalDate reads them at local
+          // midnight (new Date('YYYY-MM-DD') is UTC midnight: a day early west of UTC).
+          if (g.estimated_date && pct < 100) meta.push('Est. ' + parseCalDate(g.estimated_date).toLocaleDateString());
+          if (g.target_date) meta.push('Target: ' + parseCalDate(g.target_date).toLocaleDateString());
           if (g.months_to_goal && pct < 100) {
             const yrs = Math.floor(g.months_to_goal / 12);
             const mos = g.months_to_goal % 12;
@@ -256,7 +258,7 @@
       picker.id = 'link-picker-' + id;
       picker.style.cssText = 'margin-top:10px;display:flex;gap:6px;align-items:center;';
       picker.innerHTML =
-        '<select style="flex:1;padding:8px 10px;font-size:13px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;">' +
+        '<select aria-label="Account to fund this goal" style="flex:1;padding:8px 10px;font-size:13px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;">' +
         all.map(function(o, i) { return '<option value="' + i + '">' + esc(o.label) + '</option>'; }).join('') +
         '</select>' +
         '<button class="btn-sm primary" id="link-confirm-' + id + '">Link</button>' +

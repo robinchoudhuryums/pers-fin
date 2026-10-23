@@ -82,13 +82,14 @@ describe("Teller transaction mapping (syncAllEnrollments)", () => {
     assert.equal(r.transactions_added, 3);
   });
 
-  it("merchant = counterparty name, falling back to the description; name = description; category as a text[] literal", async () => {
+  it("merchant = counterparty name, falling back to the description; name = description; category as a text[] parameter", async () => {
     await run();
     const byId = Object.fromEntries(inserts.map((p) => [p[1], p]));
     assert.equal(byId.t_debit[4], "Netflix");
     assert.equal(byId.t_nocp[4], "POS PURCHASE - LOCAL SHOP");
     assert.equal(byId.t_debit[5], "NETFLIX.COM");
-    assert.equal(byId.t_debit[6], "{entertainment}");
+    // A JS array → text[] parameter, not a "{…}" literal (cycle-7 F30).
+    assert.deepEqual(byId.t_debit[6], ["entertainment"]);
     assert.equal(byId.t_credit[6], null);
     assert.equal(byId.t_debit[3], "2026-06-10");
   });

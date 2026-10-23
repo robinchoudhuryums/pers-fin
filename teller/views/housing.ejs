@@ -140,6 +140,10 @@
       // label edit renames the stored rows instead of backfilling a new
       // placeholder for every past cycle (FAN-4).
       if (u.label) div.setAttribute('data-orig-label', u.label);
+      // F87: this assignment was lost in Batch 5, leaving the string an
+      // expression statement — the querySelector below then threw, so the
+      // whole page failed to load once any utility was configured.
+      div.innerHTML =
         '<input class="hz-in hz-u-label" aria-label="Utility name" placeholder="e.g. Electricity" value="'+esc(u.label)+'">' +
         '<select class="hz-in hz-u-cad" aria-label="How often this bill comes">' +
           '<option value="1"'+(u.cadence_months==1?' selected':'')+'>Monthly</option>' +
@@ -227,8 +231,10 @@
         if (cfg.enabled && !cfg.payee_name) { showMsg('Enter a payee name first.', false); btn.disabled = false; return; }
         var res = await apiFetch('/api/housing/config', { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify(cfg) });
         if (!res.ok) { var e = await res.json().catch(function(){return {};}); showMsg(e.error || 'Save failed', false); btn.disabled = false; return; }
-        await apiFetch('/api/housing/generate', { method:'POST' }).catch(function(){});
-        showMsg('Saved.', true);
+        // F99: the config saved; say if this month's rows couldn't be created
+        // (the 6-hourly job retries) instead of a silent catch.
+        var gen = await apiFetch('/api/housing/generate', { method:'POST' }).catch(function(){ return null; });
+        if (await writeOk(gen, 'Saved, but this month\'s items could not be created yet')) showMsg('Saved.', true);
         load();
       } catch (err) { showMsg('Save failed: ' + err.message, false); }
       finally { btn.disabled = false; }
@@ -249,6 +255,7 @@
               '<button class="btn-sm hz-scan" data-id="'+o.id+'" title="Upload a bill photo/PDF to fill the amount" style="border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--teal);cursor:pointer;padding:5px 10px;font-family:inherit;font-size:12px;">Scan</button>' +
               '<input class="hz-in hz-set-amt" aria-label="Bill amount" type="number" min="0" step="0.01" placeholder="amount" style="width:110px;padding:5px 8px;" data-id="'+o.id+'">' +
               '<button class="btn-sm hz-save-amt" data-id="'+o.id+'" style="border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;padding:5px 10px;font-family:inherit;font-size:12px;">Set</button>' +
+              '<button class="btn-sm hz-remove" data-id="'+o.id+'" data-what="'+esc(plabel(o.period))+' '+esc(o.label)+'" aria-label="Remove '+esc(plabel(o.period))+' '+esc(o.label)+' (no bill this cycle)" title="No bill this cycle — remove it" style="border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text-muted);cursor:pointer;padding:5px 9px;font-family:inherit;font-size:12px;">Remove</button>' +
             '</span></div>';
         } else if (o.status === 'unpaid') {
           unpaidExists = true;
@@ -270,6 +277,7 @@
       box.querySelectorAll('.hz-save-amt').forEach(function(b){ b.addEventListener('click', function(){ setAmount(this.dataset.id); }); });
       box.querySelectorAll('.hz-scan').forEach(function(b){ b.addEventListener('click', function(){ startScan(this.dataset.id); }); });
       box.querySelectorAll('.hz-camera').forEach(function(b){ b.addEventListener('click', function(){ startCamera(this.dataset.id); }); });
+      box.querySelectorAll('.hz-remove').forEach(function(b){ b.addEventListener('click', function(){ removeObligation(this.dataset.id, this.dataset.what); }); });
       updateRecordBtn();
       maybeFocusPending();
     }
@@ -331,6 +339,17 @@
         if (!(await writeOk(res, 'Could not save the amount'))) return;
         showMsg('Amount saved.', true); load();
       } catch (err) { showMsg('Could not save the amount: ' + err.message, false); }
+    }
+
+    // F33: a bill that won't come (a utility skipped this cycle) is removed, and
+    // the server remembers it so the next generation run doesn't re-add it.
+    async function removeObligation(id, what){
+      if (!confirm('Remove ' + what + '? It won\u2019t be generated again for that month.')) return;
+      try {
+        var res = await apiFetch('/api/housing/obligations/'+id, { method:'DELETE' });
+        if (!(await writeOk(res, 'Could not remove it'))) return;
+        showMsg('Removed.', true); load();
+      } catch (err) { showMsg('Could not remove it: ' + err.message, false); }
     }
 
     function renderPayments(payments){

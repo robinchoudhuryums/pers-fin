@@ -22,23 +22,31 @@ const { getPlaidClient } = require("../services/plaid-client");
 // day where only some accounts synced doesn't show as a phantom dip; an
 // account's first snapshot simply starts contributing from that day (no
 // backfill — before that day the value genuinely wasn't tracked).
+// A snapshot_date as 'YYYY-MM-DD'. node-pg parses a DATE column into a Date at
+// LOCAL midnight, so toISOString() named the previous day east of UTC (cycle-7
+// F30); the query below also selects the column ::text. A Date is read by its
+// local calendar components.
+function snapshotDay(v) {
+  if (v instanceof Date) {
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${v.getFullYear()}-${pad(v.getMonth() + 1)}-${pad(v.getDate())}`;
+  }
+  return String(v).slice(0, 10);
+}
+
 // Pure function — exported for tests.
 function buildPortfolioSeries(rows) {
   if (!rows || rows.length === 0) return [];
   const dates = [];
   const seen = new Set();
   for (const r of rows) {
-    const d = (r.snapshot_date instanceof Date)
-      ? r.snapshot_date.toISOString().slice(0, 10)
-      : String(r.snapshot_date).slice(0, 10);
+    const d = snapshotDay(r.snapshot_date);
     if (!seen.has(d)) { seen.add(d); dates.push(d); }
   }
   dates.sort();
   const byDate = {};
   for (const r of rows) {
-    const d = (r.snapshot_date instanceof Date)
-      ? r.snapshot_date.toISOString().slice(0, 10)
-      : String(r.snapshot_date).slice(0, 10);
+    const d = snapshotDay(r.snapshot_date);
     (byDate[d] = byDate[d] || []).push(r);
   }
   const lastKnown = {}; // "source:source_id" → balance
@@ -68,9 +76,7 @@ function accountEntryFlows(rows) {
   const firstBalance = {};
   let seriesStart = null;
   for (const r of rows || []) {
-    const d = (r.snapshot_date instanceof Date)
-      ? r.snapshot_date.toISOString().slice(0, 10)
-      : String(r.snapshot_date).slice(0, 10);
+    const d = snapshotDay(r.snapshot_date);
     const key = r.source + ":" + r.source_id;
     if (!(key in firstSeen) || d < firstSeen[key]) {
       firstSeen[key] = d;
@@ -138,7 +144,9 @@ function classifyPlaidFlow(txn) {
 const FLOW_BACKFILL_DAYS = 730;
 const FLOW_PAGE_SIZE = 500;
 const FLOW_MAX_PAGES = 30;
-async function syncAllPlaidInvestmentFlows() {
+// itemId (a Plaid item_id) limits the run to that one Item — a Plaid
+// INVESTMENTS_TRANSACTIONS webhook (roadmap T2.1 W4).
+async function syncAllPlaidInvestmentFlows({ itemId = null } = {}) {
   const client = getPlaidClient();
   if (!client) return { ok: false, error: "Plaid not configured" };
   try {
@@ -147,19 +155,20 @@ async function syncAllPlaidInvestmentFlows() {
     const items = await pool.query(
       `SELECT DISTINCT ON (item_id) item_id, institution_name, access_token FROM (
          SELECT item_id, institution_name,
-                pgp_sym_decrypt(access_token_enc, $1) AS access_token, 1 AS src
+                perfin_try_decrypt(access_token_enc, $1) AS access_token, 1 AS src
          FROM plaid_investment_items
          UNION ALL
          SELECT pi.item_id, pi.institution_name,
-                pgp_sym_decrypt(pi.access_token_enc, $1) AS access_token, 2 AS src
+                perfin_try_decrypt(pi.access_token_enc, $1) AS access_token, 2 AS src
          FROM plaid_items pi
          WHERE pi.status = 'GOOD' AND EXISTS (
            SELECT 1 FROM linked_accounts la
            WHERE la.plaid_item_id = pi.id AND ${INVESTMENT_ACCOUNT_TYPES}
          )
        ) u
+       WHERE ($2::text IS NULL OR item_id = $2::text)
        ORDER BY item_id, src`,
-      [ENCRYPTION_PASSPHRASE]
+      [ENCRYPTION_PASSPHRASE, itemId]
     );
     const acctRows = await pool.query(
       "SELECT id, plaid_account_id FROM investment_accounts WHERE plaid_account_id IS NOT NULL"
@@ -181,6 +190,7 @@ async function syncAllPlaidInvestmentFlows() {
           continue;
         }
         let offset = 0, total = Infinity, pages = 0;
+        const itemAccounts = new Set();
         while (offset < total && pages < FLOW_MAX_PAGES) {
           const resp = await client.investmentsTransactionsGet({
             access_token: item.access_token,
@@ -189,6 +199,7 @@ async function syncAllPlaidInvestmentFlows() {
             options: { count: FLOW_PAGE_SIZE, offset },
           });
           total = resp.data.total_investment_transactions ?? 0;
+          for (const a of resp.data.accounts || []) if (a.account_id) itemAccounts.add(a.account_id);
           const txns = resp.data.investment_transactions || [];
           for (const t of txns) {
             const localId = acctMap[t.account_id];
@@ -208,8 +219,22 @@ async function syncAllPlaidInvestmentFlows() {
           pages++;
           if (txns.length === 0) break; // defensive: empty page = done
         }
+        // Only a COMPLETE walk makes these accounts flow-covered (F24); a walk
+        // cut short by FLOW_MAX_PAGES leaves the coverage as it was.
+        if (offset >= total && itemAccounts.size) {
+          await pool.query(
+            "UPDATE investment_accounts SET flows_synced_at = now() WHERE plaid_account_id = ANY($1::text[])",
+            [[...itemAccounts]]
+          );
+        }
         itemsSynced++;
       } catch (err) {
+        // A transactions-only Item is in the UNION above only because it has
+        // an investment-TYPE linked account; without the Investments product
+        // investmentsTransactionsGet 400s. Expected — skip it like the holdings
+        // sync does (BS-8) instead of raising a plaid_flows error every run (F24).
+        const skipCode = err.response?.data?.error_code;
+        if (skipCode === "PRODUCTS_NOT_SUPPORTED" || skipCode === "PRODUCT_NOT_READY") continue;
         const code = err.response?.data?.error_code || err.message;
         console.error(`Investment flows sync error (${item.institution_name}):`, code);
         errors.push({ institution: item.institution_name, error: String(code) });
@@ -382,7 +407,7 @@ router.get("/api/investments/performance-history", async (req, res) => {
   const months = Math.min(60, Math.max(3, parseInt(req.query.months) || 12));
   try {
     const snaps = await pool.query(
-      `SELECT s.snapshot_date, s.source, s.source_id, s.balance
+      `SELECT s.snapshot_date::text AS snapshot_date, s.source, s.source_id, s.balance
        FROM account_balance_snapshots s
        WHERE s.snapshot_date >= CURRENT_DATE - make_interval(months => $1)
          AND (
@@ -447,7 +472,8 @@ router.get("/api/investments/performance-history", async (req, res) => {
     let twrPct = null, xirrPct = null, flowCoverage = null;
     try {
       const [plaidCovered, flowAccounts, flowsRes] = await Promise.all([
-        pool.query("SELECT id FROM investment_accounts WHERE plaid_account_id IS NOT NULL AND is_active = true"),
+        // Only Plaid accounts whose flows have actually synced (F24).
+        pool.query("SELECT id FROM investment_accounts WHERE plaid_account_id IS NOT NULL AND is_active = true AND flows_synced_at IS NOT NULL"),
         pool.query("SELECT DISTINCT source, source_id FROM investment_flows"),
         pool.query(
           `SELECT source, source_id, flow_date::text AS flow_date, amount
@@ -549,3 +575,4 @@ module.exports.classifyPlaidFlow = classifyPlaidFlow;
 module.exports.computeTWR = computeTWR;
 module.exports.computeXIRR = computeXIRR;
 module.exports.syncAllPlaidInvestmentFlows = syncAllPlaidInvestmentFlows;
+module.exports.snapshotDay = snapshotDay;

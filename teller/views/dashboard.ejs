@@ -31,6 +31,7 @@
                      letter-spacing: 1.5px; margin-bottom: 16px; }
     .chart-card canvas { width: 100% !important; display: block; }
     .chart-wrap { position: relative; width: 100%; height: 240px; }
+    .chart-empty { text-align: center; padding: 32px; color: var(--text-muted); font-size: 13px; }
     @media (max-width: 640px) {
       .charts-grid { grid-template-columns: 1fr; }
       .two-col { grid-template-columns: 1fr; }
@@ -784,6 +785,10 @@
         <input aria-label="Institution name" id="dash-csv-custom" placeholder="Institution name" style="display:none;padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
         <input aria-label="Account label (optional)" id="dash-csv-label" placeholder="Account label (e.g. Chase Checking)" style="padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;min-height:44px;">
         <input aria-label="CSV file" id="dash-csv-file" type="file" accept=".csv,text/csv,.CSV" style="padding:8px;font-size:13px;color:var(--text-muted);">
+        <select aria-label="Positive amounts in this file are" id="dash-csv-sign" hidden style="padding:12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface-solid);color:var(--text);font-family:inherit;min-height:44px;">
+          <option value="charges">Positive amounts are charges (money out)</option>
+          <option value="deposits">Positive amounts are deposits (money in)</option>
+        </select>
         <div id="dash-csv-preview" style="display:none;font-size:12px;border:1px solid var(--border);border-radius:8px;padding:10px 12px;max-height:240px;overflow:auto;"></div>
         <div id="dash-csv-status" style="font-size:12px;min-height:18px;"></div>
         <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:4px;">
@@ -1018,7 +1023,7 @@
             '<div class="acct-type">' + esc(a.subtype || a.type || '') + '</div>' +
             creditExtra +
             ((a.is_manual || a.provider === 'manual') ? '<button class="btn-sm" data-edit-balance="' + a.id + '" style="margin-top:4px;font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--warm);cursor:pointer;font-family:inherit;">Update Balance</button>' : '') +
-            (a.is_shared ? '<div style="margin-top:6px;font-size:10px;color:var(--teal);">Shared \u2022 Your split: ' + (a.spending_split_pct || 100) + '%</div>' : '') +
+            (a.is_shared ? '<div style="margin-top:6px;font-size:10px;color:var(--teal);">Shared \u2022 Your split: ' + (a.spending_split_pct == null ? 100 : a.spending_split_pct) + '%</div>' : '') +
             '<button data-shared-toggle="' + a.id + '" style="margin-top:4px;font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text-muted);cursor:pointer;font-family:inherit;">' + (a.is_shared ? 'Edit Split' : 'Mark Shared') + '</button>' +
           '</div>';
         }
@@ -1088,11 +1093,70 @@
     }
 
 
+    // One /api/spending-summary request feeds both the tables and the charts
+    // (F91 — the charts used to sum raw transactions: transfers and reimbursed
+    // rows included, no shared-card split, so they contradicted the tables).
+    // The tables always fetch fresh (they re-run after a sync); the charts
+    // reuse the latest request.
+    var spendingSummaryPromise = null;
+    function getSpendingSummary(fresh) {
+      if (fresh || !spendingSummaryPromise) {
+        spendingSummaryPromise = apiFetch('/api/spending-summary?months=6').then(function(res) {
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          return res.json();
+        });
+        spendingSummaryPromise.catch(function() { spendingSummaryPromise = null; });
+      }
+      return spendingSummaryPromise;
+    }
+
+    // The Spending-by-Category table. renderCategoryMonth('') shows the
+    // N-month aggregate from the latest spending summary; a month fetches it.
+    var latestCategoryData = null;
+    var categoryMonthSeq = 0;
+    function renderCategoryRows(rows) {
+      const catBody = document.getElementById('category-body');
+      if (!rows.length) {
+        catBody.innerHTML = '<tr><td colspan="3" class="empty-msg">No category data yet.</td></tr>';
+        return;
+      }
+      const maxCat = parseFloat(rows[0].total);
+      catBody.innerHTML = rows.map((c, i) => {
+        const pct = maxCat > 0 ? Math.round((parseFloat(c.total) / maxCat) * 100) : 0;
+        const color = barColors[i % barColors.length];
+        return '<tr><td class="cell-primary">' + esc(c.category) + '</td>' +
+          '<td class="amount warm" data-label="Total">' + fmt(c.total) + '</td>' +
+          '<td data-label="Share"><div class="bar-container"><div class="bar-fill" style="width:' + pct + '%;background:' + color + '"></div></div></td></tr>';
+      }).join('');
+    }
+    async function renderCategoryMonth(month) {
+      const seq = ++categoryMonthSeq; // a later pick or reload wins over a slow fetch
+      if (!month) { renderCategoryRows((latestCategoryData && latestCategoryData.by_category) || []); return; }
+      const catBody = document.getElementById('category-body');
+      catBody.innerHTML = '<tr><td colspan="3" class="empty-msg">Loading...</td></tr>';
+      try {
+        const r = await apiFetch('/api/spending-categories?month=' + encodeURIComponent(month));
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const dm = await r.json();
+        if (seq !== categoryMonthSeq) return;
+        renderCategoryRows((dm.categories || []).map(function(c) {
+          return { category: c.category, total: c.spent };
+        }));
+      } catch (e) {
+        if (seq === categoryMonthSeq) catBody.innerHTML = '<tr><td colspan="3" class="empty-msg">Could not load that month.</td></tr>';
+      }
+    }
+
+    // After a write that changes spending (a sync, a shared split, detection):
+    // reload the tables, then redraw both charts from the same fresh response.
+    function refreshSpending() {
+      loadSpendingSummary();
+      if (typeof Chart !== 'undefined') loadCharts();
+    }
+
     async function loadSpendingSummary() {
       try {
-        const res = await apiFetch('/api/spending-summary?months=6');
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const data = await res.json();
+        const data = await getSpendingSummary(true);
 
         const monthBody = document.getElementById('monthly-body');
         if (data.monthly_trend.length) {
@@ -1116,48 +1180,31 @@
           monthBody.innerHTML = '<tr><td colspan="4" class="empty-msg">No spending data yet.</td></tr>';
         }
 
-        const catBody = document.getElementById('category-body');
-        function renderCategoryRows(rows) {
-          if (!rows.length) {
-            catBody.innerHTML = '<tr><td colspan="3" class="empty-msg">No category data yet.</td></tr>';
-            return;
-          }
-          const maxCat = parseFloat(rows[0].total);
-          catBody.innerHTML = rows.map((c, i) => {
-            const pct = maxCat > 0 ? Math.round((parseFloat(c.total) / maxCat) * 100) : 0;
-            const color = barColors[i % barColors.length];
-            return '<tr><td class="cell-primary">' + esc(c.category) + '</td>' +
-              '<td class="amount warm" data-label="Total">' + fmt(c.total) + '</td>' +
-              '<td data-label="Share"><div class="bar-container"><div class="bar-fill" style="width:' + pct + '%;background:' + color + '"></div></div></td></tr>';
-          }).join('');
-        }
-        renderCategoryRows(data.by_category);
         // Per-month category breakdown: default option = the N-month aggregate
         // already in this response; picking a month fetches
         // /api/spending-categories (same splits/reimbursed/share-adjusted
-        // helper the budgets use, so the numbers match everywhere).
+        // helper the budgets use, so the numbers match everywhere). The handler
+        // reads the LATEST response and the options are rebuilt on every load,
+        // so after a sync the aggregate and the month list are current (it used
+        // to keep the first response's aggregate and months forever).
+        latestCategoryData = data;
         const catSel = document.getElementById('cat-month-select');
-        if (catSel && !catSel.dataset.wired) {
-          catSel.dataset.wired = '1';
+        if (catSel) {
+          const keep = catSel.value;
+          Array.prototype.slice.call(catSel.options, 1).forEach(function(o) { catSel.removeChild(o); });
           (data.monthly_trend || []).forEach(function(m) {
             const opt = document.createElement('option');
             opt.value = m.month; opt.textContent = m.month;
             catSel.appendChild(opt);
           });
-          catSel.addEventListener('change', async function() {
-            if (!catSel.value) { renderCategoryRows(data.by_category); return; }
-            catBody.innerHTML = '<tr><td colspan="3" class="empty-msg">Loading...</td></tr>';
-            try {
-              const r = await apiFetch('/api/spending-categories?month=' + encodeURIComponent(catSel.value));
-              if (!r.ok) throw new Error('HTTP ' + r.status);
-              const dm = await r.json();
-              renderCategoryRows((dm.categories || []).map(function(c) {
-                return { category: c.category, total: c.spent };
-              }));
-            } catch (e) {
-              catBody.innerHTML = '<tr><td colspan="3" class="empty-msg">Could not load that month.</td></tr>';
-            }
-          });
+          catSel.value = (data.monthly_trend || []).some(function(m) { return m.month === keep; }) ? keep : '';
+          if (!catSel.dataset.wired) {
+            catSel.dataset.wired = '1';
+            catSel.addEventListener('change', function() { renderCategoryMonth(catSel.value); });
+          }
+          renderCategoryMonth(catSel.value);
+        } else {
+          renderCategoryRows(data.by_category);
         }
 
         const merchBody = document.getElementById('merchant-body');
@@ -1190,6 +1237,11 @@
 
       } catch (e) {
         showMsg('Could not load spending data: ' + e.message, false);
+        // Replace the "Loading..." rows instead of leaving them forever (F108).
+        [['monthly-body', 4], ['category-body', 3], ['merchant-body', 3], ['upcoming-body', 3]].forEach(function(t) {
+          var body = document.getElementById(t[0]);
+          if (body) body.innerHTML = '<tr><td colspan="' + t[1] + '" class="empty-msg">Could not load spending data.</td></tr>';
+        });
       }
     }
 
@@ -1206,7 +1258,7 @@
           if (data.errors && data.errors.length) {
             showMsg('Sync issues: ' + data.errors.map(function (e) { return (e.institution || e.provider) + ': ' + e.error; }).join('; '), false);
           }
-          loadSpendingSummary();
+          refreshSpending();
         } else {
           showMsg('Sync error: ' + (data.error || 'HTTP ' + res.status), false);
         }
@@ -1249,7 +1301,7 @@
         const data = await res.json().catch(() => ({}));
         if (res.ok) {
           showMsg('Detection complete: ' + (data.detected_count || 0) + ' subscriptions found.', true);
-          loadSpendingSummary();
+          refreshSpending();
         } else {
           showMsg('Detection error: ' + (data.error || 'HTTP ' + res.status), false);
         }
@@ -1284,7 +1336,7 @@
         if (!res.ok) { var e1 = await res.json().catch(function() { return {}; }); showMsg('Could not update the split: ' + (e1.error || 'HTTP ' + res.status), false); return; }
         showMsg(num < 100 ? 'Shared at ' + num + '% yours' : 'Marked as fully yours', true);
         loadAccounts();
-        loadSpendingSummary();
+        refreshSpending();
       } catch (e) { showMsg('Could not update the split: ' + e.message, false); }
     }
 
@@ -1423,8 +1475,10 @@
           var ev = u.event;
           var cls = ev.is_income ? 'color:var(--green)' : 'color:var(--text-muted)';
           var prefix = ev.is_income ? '+' : '-';
-          var paid = ev.is_paid ? ' style="text-decoration:line-through;opacity:0.5;"' : '';
-          return '<div' + paid + ' style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border);font-size:12px;">' +
+          // F104: ONE style attribute — a second one is ignored, so paid rows lost
+          // their layout (the browser keeps the first).
+          var paid = ev.is_paid ? 'text-decoration:line-through;opacity:0.5;' : '';
+          return '<div style="' + paid + 'display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border);font-size:12px;">' +
             '<span>' + (ev.is_paid ? '\u2713 ' : '') + esc(ev.name) + ' <span style="color:var(--text-muted);font-size:11px;">(Day ' + u.day + ')</span></span>' +
             '<span style="' + cls + ';">' + prefix + '$' + Math.abs(ev.amount).toFixed(2) + '</span></div>';
         }).join('');
@@ -1537,7 +1591,10 @@
           if (!warnings.length) return; // healthy (or info-only) → stay hidden
           try { if (sessionStorage.getItem('perfin_synchealth_dismissed') === '1') return; } catch (e) {}
           var esc = (window.esc) || function (s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); };
-          list.innerHTML = warnings.slice(0, 3).map(function (i) { return esc(i.message); }).join('<br>') +
+          list.innerHTML = warnings.slice(0, 3).map(function (i) {
+            // An issue with a `link` (Plaid re-auth → /accounts, G3) opens it.
+            return i.link ? '<a href="' + esc(window.withBase ? window.withBase(i.link) : i.link) + '" style="color:inherit;">' + esc(i.message) + '</a>' : esc(i.message);
+          }).join('<br>') +
             (warnings.length > 3 ? '<br>+' + (warnings.length - 3) + ' more' : '');
           strip.style.display = 'block';
         } catch (e) { /* health probe is best-effort — never block the dashboard */ }
@@ -1561,6 +1618,10 @@
       var csvFile = document.getElementById('dash-csv-file');
       var csvStatus = document.getElementById('dash-csv-status');
       var csvPreview = document.getElementById('dash-csv-preview');
+      // F26: the sign choice for a GENERIC file — hidden for known formats,
+      // pre-set to the server's guess on the first preview, sent with both calls.
+      var csvSign = document.getElementById('dash-csv-sign');
+      var csvSignChosen = false;
       // Two-step flow: 'preview' → dry-run classify, 'confirm' → real import.
       var csvStage = 'preview';
       function closeCsvModal() { if (csvModal) csvModal.style.display = 'none'; }
@@ -1575,12 +1636,21 @@
         if (csvCustom) { csvCustom.value = ''; csvCustom.style.display = 'none'; }
         if (csvInstitution) csvInstitution.value = '';
         if (csvStatus) { csvStatus.textContent = ''; csvStatus.style.color = ''; }
+        csvSignChosen = false;
+        if (csvSign) csvSign.hidden = true;
         clearPreview();
       }
       // Any change to the inputs invalidates a shown preview (the dedup counts
       // were computed for the prior file/label) — drop back to the preview step.
       [csvFile, csvLabel, csvCustom, csvInstitution].forEach(function (el) {
         if (el) el.addEventListener('change', clearPreview);
+      });
+      if (csvFile) csvFile.addEventListener('change', function () {
+        csvSignChosen = false;
+        if (csvSign) csvSign.hidden = true;
+      });
+      if (csvSign) csvSign.addEventListener('change', function () {
+        csvSignChosen = true; clearPreview(); doPreview();
       });
       function csvEsc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
       // WD-7: "Auto-detect" (the default) sends no institution / label, so
@@ -1597,6 +1667,7 @@
         fd.append('file', csvFile.files[0]);
         if (institution) fd.append('institution', institution);
         if (label) fd.append('account_label', label);
+        if (csvSignChosen && csvSign) fd.append('positive_means', csvSign.value);
         return fd;
       }
       function renderPreview(d) {
@@ -1649,6 +1720,13 @@
           var res = await apiFetch('/api/import-csv/preview', { method: 'POST', body: csvFormData() });
           var data = await res.json().catch(function() { return {}; });
           if (res.ok) {
+            if (csvSign) csvSign.hidden = data.format_detected !== 'generic';
+            if (csvSign && data.format_detected === 'generic' && !csvSignChosen) {
+              csvSignChosen = true;
+              csvSign.value = data.sign_guess || 'charges';
+              // The first preview read positives as charges; re-run it with the guess.
+              if (csvSign.value !== data.positive_means) return await doPreview();
+            }
             csvStatus.textContent = '';
             renderPreview(data);
             csvStage = 'confirm';
@@ -1908,7 +1986,7 @@
               '<div style="margin-top:6px;display:flex;flex-direction:column;gap:2px;">' +
               data.scores.map(function(s) {
                 return '<div style="display:flex;justify-content:space-between;gap:12px;">' +
-                  '<span>' + new Date(s.checked_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + '</span>' +
+                  '<span>' + parseCalDate(s.checked_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + '</span>' +
                   '<span style="font-weight:500;color:' + scoreColor(s.score) + ';">' + s.score + '</span>' +
                   '<span style="color:var(--text-muted);">' + esc(s.source || s.score_type) + '</span>' +
                 '</div>';
@@ -2843,6 +2921,7 @@
         document.getElementById('cashflow-summary').innerHTML =
           'Starting balance: <strong style="color:var(--teal);">' + fmt(data.starting_balance) + '</strong>' +
           ' &bull; Projected end: <strong style="color:' + surplusColor + ';">' + fmt(data.ending_balance) + '</strong>' +
+          (data.lowest_balance_date ? ' &bull; Lowest projected: <strong style="color:' + (data.lowest_balance < 0 ? 'var(--red)' : 'var(--warm)') + ';">' + fmt(data.lowest_balance) + '</strong> on ' + fmtDate(data.lowest_balance_date) : '') +
           ' &bull; Daily discretionary: <strong style="color:var(--warm);">' + fmt(data.avg_daily_spend) + '</strong>' +
           (data.recurring_income.length > 0 ? ' &bull; Income sources: ' + data.recurring_income.map(function(i) { return esc(i.source); }).join(', ') : '');
         var html = '<div class="table-wrap"><table style="width:100%;font-size:12px;border-collapse:collapse;">';
@@ -2971,7 +3050,7 @@
           var removeBtn = a.source === 'teller'
             ? ''
             : '<button type="button" class="inv-remove" data-id="' + a.id + '" data-name="' + esc(a.name) + '" ' +
-              'title="Remove this investment account" ' +
+              'title="Remove this investment account" aria-label="Remove ' + esc(a.name) + '" ' +
               'style="position:absolute;top:6px;right:6px;border:none;background:transparent;color:var(--text-muted);cursor:pointer;font-size:14px;line-height:1;padding:2px 4px;">&times;</button>';
           return '<div class="acct-card" style="padding:10px;position:relative;">' +
             removeBtn +
@@ -3092,7 +3171,14 @@
             match_type: 'exact',
           }),
         });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
+        // F99: a failed Apply used to just re-enable the button with no message.
+        if (!(await writeOk(res, 'Could not apply the category'))) {
+          this.disabled = false;
+          this.textContent = 'Apply';
+          return;
+        }
+        var result = await res.json().catch(function() { return {}; });
+        if (createRule && result.rule_error) showMsg('Category applied, but not remembered: ' + result.rule_error, false);
         // Remove the row and re-fetch the queue if it's now empty.
         var rid = 'rev-' + txnId.replace(/[^a-zA-Z0-9]/g, '_');
         var row = document.getElementById(rid);
@@ -3100,6 +3186,7 @@
         var remaining = document.querySelectorAll('#review-queue-list > div').length;
         if (remaining === 0) loadReviewQueue();
       } catch (e) {
+        showMsg('Could not apply the category: ' + e.message, false);
         this.disabled = false;
         this.textContent = 'Apply';
       }
@@ -3467,30 +3554,8 @@
         var res = await apiFetch('/api/settings');
         if (!res.ok) return;
         var s = await res.json();
-        var w = s.dashboard_widgets || {};
-        // Map widget keys to section IDs
-        var map = {
-          pyramid: '.wellness-section',
-          accounts: '#accounts-section',
-          charts: '.charts-grid',
-          ask: '#ask-section',
-          forecast: '#forecast-section',
-          savingsRate: '#savings-rate-section',
-          cashFlow: '#cashflow-section',
-          yoy: '#yoy-section',
-          investments: '#investments-section',
-          reviewQueue: '#review-queue-section',
-          aiMemory: '#ai-memory-section',
-          settlement: '#settlement-section',
-          housing: '#housing-widget-section',
-        };
-        Object.entries(map).forEach(function(e) {
-          var key = e[0], selector = e[1];
-          if (w[key] === false) {
-            var el = document.querySelector(selector);
-            if (el) el.style.display = 'none';
-          }
-        });
+        // One key list shared with Settings (perfin-shared.js, F96).
+        applyDashboardWidgets(s.dashboard_widgets || {});
       } catch (e) { /* non-critical */ }
     }
     applyWidgetVisibility();
@@ -3525,26 +3590,25 @@
       Chart.defaults.color = textColor;
       Chart.defaults.borderColor = gridColor;
       try {
-        const txRes = await apiFetch('/api/transactions?months=6');
-        const txData = await txRes.json();
-        const monthlyMap = {};
-        (txData.transactions || []).forEach(t => {
-          if (t.amount > 0) {
-            const m = t.date.slice(0, 7);
-            monthlyMap[m] = (monthlyMap[m] || 0) + parseFloat(t.amount);
-          }
-        });
-        const months = Object.keys(monthlyMap).sort();
-        const amounts = months.map(m => monthlyMap[m]);
+        const data = await getSpendingSummary();
+        // monthly_trend is newest-first; the chart reads oldest → newest.
+        const trend = (data.monthly_trend || []).slice().reverse();
+        const months = trend.map(m => m.month);
+        const amounts = trend.map(m => parseFloat(m.total_spend) || 0);
         const trendCtx = document.getElementById('trend-chart');
-        if (trendCtx && months.length === 0) {
-          trendCtx.parentElement.innerHTML = '<div style="text-align:center;padding:32px;color:var(--text-muted);font-size:13px;">No spending data yet</div>';
+        if (trendCtx) {
+          // A redraw (after a sync) replaces the previous chart on the same
+          // canvas; the canvas is kept, so the empty state is a sibling note.
+          replaceChart('trend', null);
+          setChartEmpty(trendCtx, months.length ? '' : 'No spending data yet');
         }
         if (trendCtx && months.length > 0) {
-          new Chart(trendCtx, {
+          replaceChart('trend', new Chart(trendCtx, {
             type: 'line',
             data: {
-              labels: months.map(m => { const d = new Date(m + '-01'); return d.toLocaleString('default', { month: 'short', year: '2-digit' }); }),
+              // A local-midnight date for the month (new Date('YYYY-MM-01') is
+              // UTC midnight, which labels the PREVIOUS month west of UTC — F91).
+              labels: months.map(m => { const p = m.split('-'); return new Date(Number(p[0]), Number(p[1]) - 1, 1).toLocaleString('default', { month: 'short', year: '2-digit' }); }),
               datasets: [{
                 label: 'Spending',
                 data: amounts,
@@ -3562,23 +3626,17 @@
                 x: { grid: { display: false } }
               }
             }
-          });
+          }));
         }
-        const catMap = {};
-        (txData.transactions || []).forEach(t => {
-          if (t.amount > 0) {
-            const cat = (t.personal_finance_category && t.personal_finance_category.primary) || t.category || 'Other';
-            catMap[cat] = (catMap[cat] || 0) + parseFloat(t.amount);
-          }
-        });
-        const cats = Object.entries(catMap).sort((a, b) => b[1] - a[1]).slice(0, 8);
+        const cats = (data.by_category || []).slice(0, 8).map(c => [c.category, parseFloat(c.total) || 0]);
         const pieColors = ['#d4a574', '#5a8f8f', '#c8856c', '#6fcf97', '#7fb5e6', '#f0c36d', '#eb6b6b', '#b08ed6'];
         const catCtx = document.getElementById('category-chart');
-        if (catCtx && cats.length === 0) {
-          catCtx.parentElement.innerHTML = '<div style="text-align:center;padding:32px;color:var(--text-muted);font-size:13px;">No category data yet</div>';
+        if (catCtx) {
+          replaceChart('category', null);
+          setChartEmpty(catCtx, cats.length ? '' : 'No category data yet');
         }
         if (catCtx && cats.length > 0) {
-          new Chart(catCtx, {
+          replaceChart('category', new Chart(catCtx, {
             type: 'doughnut',
             data: {
               labels: cats.map(c => c[0]),
@@ -3591,9 +3649,31 @@
                 tooltip: { callbacks: { label: ctx => ctx.label + ': $' + parseFloat(ctx.raw).toLocaleString() } }
               }
             }
-          });
+          }));
         }
       } catch (e) { console.warn('Charts load error:', e); }
+    }
+
+    // The two dashboard charts, kept so a redraw destroys the old one first
+    // (Chart.js refuses a second chart on a canvas that still has one).
+    var dashboardCharts;
+    function replaceChart(key, chart) {
+      dashboardCharts = dashboardCharts || {};
+      const old = dashboardCharts[key];
+      if (old && old !== chart && typeof old.destroy === 'function') old.destroy();
+      dashboardCharts[key] = chart;
+    }
+    function setChartEmpty(canvas, text) {
+      const wrap = canvas.parentElement;
+      if (!wrap || typeof wrap.querySelector !== 'function') return;
+      let note = wrap.querySelector('.chart-empty');
+      if (text && !note) {
+        note = document.createElement('div');
+        note.className = 'chart-empty';
+        wrap.appendChild(note);
+      }
+      if (note) { note.textContent = text; note.hidden = !text; }
+      canvas.style.display = text ? 'none' : ''; // .chart-card canvas sets display:block, which beats [hidden]
     }
   </script>
 </body>

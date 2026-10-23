@@ -1,15 +1,17 @@
 <%- include('partials/head', { title: 'Bill Calendar', extraStyles: `
     .container { max-width: 960px; }
-    .month-nav { display: flex; align-items: center; gap: 16px; margin-bottom: 24px; }
+    .month-nav { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-bottom: 24px; }
     .month-nav h2 { font-size: 20px; font-weight: 300; min-width: 180px; text-align: center; }
     .month-nav button { padding: 8px 16px; }
     .cal-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
                    gap: 12px; margin-bottom: 24px; }
-    .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+    /* F95: minmax(0, 1fr), not 1fr (= minmax(auto, 1fr)) — a long nowrap event
+       name used to widen its column and push the page past the viewport. */
+    .cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 2px; }
     .cal-header { padding: 8px; font-size: 10px; font-weight: 500; color: var(--text-muted);
                   text-transform: uppercase; letter-spacing: 1px; text-align: center; }
     .cal-day { min-height: 90px; padding: 6px; background: var(--surface); border: 1px solid var(--border);
-               border-radius: 4px; font-size: 12px; transition: border-color 0.2s; }
+               border-radius: 4px; font-size: 12px; transition: border-color 0.2s; min-width: 0; }
     .cal-day:hover { border-color: var(--border-hover); }
     .cal-day.empty { background: transparent; border-color: transparent; }
     .cal-day.today { border-color: var(--teal); }
@@ -31,7 +33,9 @@
     .modal > .card { background: var(--surface-solid); } /* IF-5: opaque dialog */
     .day-total { font-size: 9px; color: var(--text-muted); margin-top: 4px; font-weight: 500; }
     @media (max-width: 640px) {
-      .cal-grid { grid-template-columns: repeat(7, 1fr); gap: 1px; }
+      .cal-grid { grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 1px; }
+      .month-nav { gap: 8px; }
+      .month-nav h2 { min-width: 0; font-size: 17px; }
       .cal-day { min-height: 60px; padding: 3px; }
       .cal-event { font-size: 8px; padding: 1px 2px; }
       .cal-day .day-num { font-size: 11px; }

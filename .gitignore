@@ -6,3 +6,7 @@ service-account-key.json
 .claude/worktrees/
 test-results/
 playwright-report/
+# VPS deployment (deploy/vps/): the server's real settings, dumps and key files
+deploy/vps/app.env
+deploy/vps/dumps/
+deploy/vps/secrets/

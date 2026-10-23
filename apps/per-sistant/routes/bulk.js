@@ -6,6 +6,7 @@ const express = require("express");
 
 const { serverError } = require("../errors");
 const { completeRecurringTodo } = require("./todos");
+const { announceTodoEvent } = require("../helpers");
 
 module.exports = function ({ pool, config }) {
   const router = express.Router();
@@ -30,10 +31,13 @@ module.exports = function ({ pool, config }) {
           // A row another request just completed returns { error } — skip it.
           await completeRecurringTodo(pool, id);
         }
-        await pool.query(
-          "UPDATE todos SET completed = true, completed_at = now() WHERE id = ANY($1) AND deleted_at IS NULL AND NOT (id = ANY($2::int[]))",
+        // Only rows this request actually completes (F124): each fires the
+        // todo_completed automations + webhooks, like the single Complete.
+        const done = await pool.query(
+          "UPDATE todos SET completed = true, completed_at = now() WHERE id = ANY($1) AND deleted_at IS NULL AND completed = false AND NOT (id = ANY($2::int[])) RETURNING *",
           [ids, recurringIds]
         );
+        (done.rows || []).forEach((t) => announceTodoEvent("todo_completed", t));
       } else if (action === "delete") {
         await pool.query("UPDATE todos SET deleted_at = now() WHERE id = ANY($1) AND deleted_at IS NULL", [ids]);
       } else if (action === "set_priority" && data?.priority && VALID_PRIORITIES.includes(data.priority)) {

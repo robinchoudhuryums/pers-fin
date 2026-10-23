@@ -25,6 +25,14 @@ function pushConfigured() {
   return !!(webpush && VAPID_PUBLIC && VAPID_PRIVATE);
 }
 
+// push_subscriptions.keys is JSONB, which node-pg already returns as an
+// OBJECT — JSON.parse(object) threw "[object Object] is not valid JSON" for
+// every subscriber, so no push was ever delivered and dead subscriptions were
+// never pruned (F74). Accept a string too (legacy TEXT column / tests).
+function subscriptionFromRow(row) {
+  return typeof row.keys === "string" ? JSON.parse(row.keys) : row.keys;
+}
+
 // GET /api/notifications/vapid — return public VAPID key for client subscription
 router.get("/api/notifications/vapid", (_req, res) => {
   if (!pushConfigured()) {
@@ -74,7 +82,7 @@ router.post("/api/notifications/test", async (_req, res) => {
     let sent = 0, failed = 0;
     for (const row of result.rows) {
       try {
-        const sub = JSON.parse(row.keys);
+        const sub = subscriptionFromRow(row);
         await webpush.sendNotification(sub, JSON.stringify({
           title: "Perfin",
           body: "Push notifications are working!",
@@ -91,7 +99,9 @@ router.post("/api/notifications/test", async (_req, res) => {
     }
     res.json({ sent, failed, total: result.rows.length });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    // Log the detail, answer generically (cycle-7 F16 — it echoed err.message).
+    console.error("Test notification error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
   }
 });
 
@@ -142,6 +152,25 @@ router.post("/api/notifications/read-all", async (_req, res) => {
 });
 
 // Utility: send notification to all subscribers (called internally)
+// notification_log retention (cycle-7 F86 — the table grew without bound):
+// READ notifications older than NOTIFICATION_RETENTION_DAYS are deleted, at
+// most once a day, on the next send. Unread ones stay until read. The longest
+// dedup window sentRecently() is asked for is days, far inside this.
+const NOTIFICATION_RETENTION_DAYS = 180;
+let lastNotificationPruneAt = 0;
+async function pruneNotificationLog(now = Date.now()) {
+  if (now - lastNotificationPruneAt < 24 * 60 * 60 * 1000) return;
+  lastNotificationPruneAt = now;
+  try {
+    await pool.query(
+      "DELETE FROM notification_log WHERE is_read = true AND created_at < now() - make_interval(days => $1)",
+      [NOTIFICATION_RETENTION_DAYS]
+    );
+  } catch (err) {
+    console.error("notification_log prune error:", err.message);
+  }
+}
+
 // Also logs to notification_log for in-app history.
 async function sendToAll(payload) {
   // Always log to notification_log, even if push isn't configured. This row is
@@ -159,6 +188,7 @@ async function sendToAll(payload) {
   } catch (err) {
     console.error("notification_log insert error:", err.message);
   }
+  await pruneNotificationLog();
 
   if (!pushConfigured()) return { sent: 0, failed: 0, logged };
   try {
@@ -166,12 +196,15 @@ async function sendToAll(payload) {
     let sent = 0, failed = 0;
     for (const row of result.rows) {
       try {
-        const sub = JSON.parse(row.keys);
+        const sub = subscriptionFromRow(row);
         await webpush.sendNotification(sub, JSON.stringify(payload));
         sent++;
       } catch (err) {
         if (err.statusCode === 410 || err.statusCode === 404) {
           await pool.query("DELETE FROM push_subscriptions WHERE endpoint = $1", [row.endpoint]);
+        } else {
+          // Anything else is a real delivery failure — say so (F74 hid here).
+          console.error("push delivery error:", err.statusCode || "", err.message);
         }
         failed++;
       }
@@ -204,3 +237,5 @@ async function sentRecently(tag, hours = 24) {
 module.exports = router;
 module.exports.sendToAll = sendToAll;
 module.exports.sentRecently = sentRecently;
+module.exports.pruneNotificationLog = pruneNotificationLog;
+module.exports.NOTIFICATION_RETENTION_DAYS = NOTIFICATION_RETENTION_DAYS;

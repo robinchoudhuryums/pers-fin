@@ -2,6 +2,7 @@ const express = require("express");
 
 const { VALID_PRIORITIES, VALID_HORIZONS, VALID_RECURRENCE_RULES } = require("../config");
 const { serverError } = require("../errors");
+const { announceTodoEvent } = require("../helpers");
 
 // PD-13: a template is validated like a todo (POST, and each PATCHed field),
 // because apply copies it straight into todos — an unknown recurrence_rule
@@ -115,6 +116,7 @@ module.exports = function ({ pool }) {
           await client.query("INSERT INTO subtasks (todo_id, title) VALUES ($1, $2)", [todo.id, typeof sub === "string" ? sub : sub.title]);
         }
         await client.query("COMMIT");
+        announceTodoEvent("todo_created", todo); // F124 parity
         res.json(todo);
       } catch (err) {
         await client.query("ROLLBACK").catch(() => {});

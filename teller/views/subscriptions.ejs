@@ -57,7 +57,7 @@
     <button class="primary" id="detect-btn">Run Detection</button>
     <button id="add-btn">+ Add Manual</button>
     <button id="sheets-btn">Sync to Sheets</button>
-    <select id="filter-select">
+    <select id="filter-select" aria-label="Show subscriptions">
       <option value="active">Active</option>
       <option value="dismissed">Dismissed</option>
       <option value="cancelled">Cancelled</option>
@@ -70,18 +70,18 @@
   <div class="manual-form" id="manual-form">
     <h3>Add Subscription Manually</h3>
     <div class="fields">
-      <div class="field"><label>Service Name</label><input name="name" placeholder="e.g. Netflix"></div>
-      <div class="field"><label>Amount ($)</label><input name="amount" type="number" step="0.01" placeholder="15.99"></div>
+      <div class="field"><label for="manual-sub-name">Service Name</label><input id="manual-sub-name" name="name" placeholder="e.g. Netflix"></div>
+      <div class="field"><label for="manual-sub-amount">Amount ($)</label><input id="manual-sub-amount" name="amount" type="number" step="0.01" placeholder="15.99"></div>
       <div class="field">
-        <label>Billing Cycle</label>
-        <select name="cadence">
+        <label for="manual-sub-cadence">Billing Cycle</label>
+        <select id="manual-sub-cadence" name="cadence">
           <option value="30">Monthly</option>
           <option value="90">Quarterly</option>
           <option value="365">Yearly</option>
           <option value="60">Every 2 months</option>
         </select>
       </div>
-      <div class="field"><label>Notes (optional)</label><input name="notes" placeholder="Family plan, etc."></div>
+      <div class="field"><label for="manual-sub-notes">Notes (optional)</label><input id="manual-sub-notes" name="notes" placeholder="Family plan, etc."></div>
       <div class="field"><label>&nbsp;</label><button class="primary" id="add-manual-btn">Add</button></div>
     </div>
   </div>
@@ -146,12 +146,17 @@
         tbody.innerHTML = data.subscriptions.map(s => {
           const badges = [];
           if (s.is_new) badges.push('<span class="badge badge-new">NEW</span>');
-          if (s.amount_changed) badges.push('<span class="badge badge-price">PRICE CHANGE</span>');
+          // F53: say how much a price RISE was; any other change keeps the generic badge.
+          const rise = s.amount_changed && Number(s.prior_amount) > 0 ? Number(s.amount) - Number(s.prior_amount) : 0;
+          if (rise > 0) badges.push('<span class="badge badge-price">PRICE UP ' + fmt(rise) + '</span>');
+          else if (s.amount_changed) badges.push('<span class="badge badge-price">PRICE CHANGE</span>');
           if (s.source === 'manual') badges.push('<span class="badge badge-manual">MANUAL</span>');
           if (s.category === 'utility') badges.push('<span class="badge badge-utility">UTILITY</span>');
           else if (s.display_category && s.display_category !== 'other') badges.push('<span class="badge badge-category">' + esc(s.display_category) + '</span>');
           if (s.is_dismissed) badges.push('<span class="badge badge-dismissed">DISMISSED</span>');
           if (s.cancelled_at) badges.push('<span class="badge badge-cancelled">CANCELLED</span>');
+          // F53: a cancelled subscription the merchant charged again after the cancellation.
+          if (s.cancelled_at && s.still_charging_at) badges.push('<span class="badge badge-cancelled" title="Charged ' + esc(fmt(s.still_charging_amount)) + ' on ' + esc(parseCalDate(s.still_charging_at).toLocaleDateString()) + ' after you cancelled it">STILL CHARGING</span>');
           const overdue = !s.cancelled_at && isOverdue(s.next_expected);
           const nextClass = overdue ? 'next-date overdue' : 'next-date';
           const nextLabel = s.cancelled_at ? 'Cancelled ' + new Date(s.cancelled_at).toLocaleDateString() : parseCalDate(s.next_expected).toLocaleDateString();
@@ -215,8 +220,9 @@
     }
 
     function toggleManualForm() {
+      // F100: hidden by CSS at first, so style.display is '' — use the computed value.
       const form = document.getElementById('manual-form');
-      form.style.display = form.style.display === 'none' ? 'block' : 'none';
+      form.style.display = getComputedStyle(form).display === 'none' ? 'block' : 'none';
     }
 
     async function addManual() {

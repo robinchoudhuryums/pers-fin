@@ -162,7 +162,10 @@ describe("bill-calendar .ics feed", () => {
   it("the shell route is token-gated, constant-time, and off when unconfigured", () => {
     const shell = read("shell", "index.js");
     assert.match(shell, /CALENDAR_FEED_TOKEN/);
-    assert.match(shell, /timingSafeEqual/);
+    // Constant-time via auth.safeEqual (SHA-256 digests + timingSafeEqual —
+    // the raw padded compare could throw before login, cycle-7 F1).
+    assert.match(shell, /auth\.safeEqual\(String\(req\.query\.token/);
+    assert.match(read("shell", "middleware", "auth.js"), /function safeEqual[\s\S]*?timingSafeEqual/);
     assert.match(shell, /if \(!expected\) return res\.status\(404\)\.end\(\);/, "unset env = feature off");
     // The documented API_KEY header-only rule stays intact — this is a
     // separate single-purpose token, the one sanctioned query credential.

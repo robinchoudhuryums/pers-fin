@@ -27,7 +27,16 @@ let citationsBehavior = "throw";
 let callAIReply = "{}";
 ai.getAIModelForFeature = async () => "sonnet";
 ai.isAIAvailable = () => true;
-ai.callAI = async (...args) => { aiCalls.push(args); return callAIReply; };
+// Roadmap T2.3 C3: routes/rag.js calls the model through ai.cappedAI /
+// cappedCitations, so stub the cap reads (under the budget) and the call
+// underneath cappedAI; aiCalls keeps callAI's argument order (meta at [4]).
+ai.getAiBudgetCents = async () => 100000;
+ai.monthlyAiSpendCents = async () => 0;
+ai.recordAiUsage = async () => 0;
+ai.callAIWithUsage = async (model, prompt, maxTokens, system, _client, opts = {}) => {
+  aiCalls.push([model, prompt, maxTokens, system, opts.meta]);
+  return { text: callAIReply, usage: { input_tokens: 1, output_tokens: 1 }, stop_reason: "end_turn" };
+};
 ai.answerWithCitations = async () => {
   if (citationsBehavior === "throw") throw new Error("citations unavailable");
   return { text: "ok", citedIndexes: [0] };

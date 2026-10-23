@@ -18,7 +18,7 @@
       padding: 20px; margin-bottom: 20px; display: none; }
     .add-form .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     .add-form label { font-size: 11px; color: var(--text-muted); display: block; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
-    .add-form input { width: 100%; padding: 8px 10px; font-size: 13px; border: 1px solid var(--border);
+    .add-form input, .add-form select { width: 100%; padding: 8px 10px; font-size: 13px; border: 1px solid var(--border);
       border-radius: 8px; background: transparent; color: var(--text); font-family: inherit; }
     .suggest-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
       padding: 20px; margin-bottom: 16px; }
@@ -32,12 +32,23 @@
       padding: 14px 18px; flex: 1; min-width: 120px; }
     .summary-stat .label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); margin-bottom: 4px; }
     .summary-stat .value { font-size: 20px; font-weight: 300; }
+    .month-nav { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+    .month-nav .month-label { font-size: 15px; min-width: 130px; text-align: center; }
+    .other-months { margin-top: 16px; font-size: 12px; color: var(--text-muted); display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .other-months[hidden] { display: none; }
     @media (max-width: 640px) { .add-form .fields { grid-template-columns: 1fr; } }
 ` }) %>
 <%- include('partials/nav', { activePage: 'budgets' }) %>
   <h1>Budgets</h1>
   <p class="subtitle">Track monthly spending by category with AI-suggested limits</p>
   <div id="status-msg" class="status-msg"></div>
+
+  <div class="month-nav">
+    <button class="btn-sm" id="month-prev" aria-label="Previous month">&lsaquo;</button>
+    <span class="month-label" id="month-label" aria-live="polite"></span>
+    <button class="btn-sm" id="month-next" aria-label="Next month">&rsaquo;</button>
+    <button class="btn-sm" id="month-today" hidden>This month</button>
+  </div>
 
   <div id="summary-bar" class="summary-bar"></div>
 
@@ -50,26 +61,79 @@
     <div class="fields">
       <div><label for="b-category">Category</label><input id="b-category" placeholder="e.g. Food & Drink"></div>
       <div><label for="b-limit">Monthly Limit ($)</label><input id="b-limit" type="number" step="1" placeholder="500"></div>
+      <div><label for="b-type">Type</label>
+        <select id="b-type">
+          <option value="recurring">Every month</option>
+          <option value="one_time">One month only</option>
+        </select>
+      </div>
+      <div id="b-month-wrap" style="display:none;"><label for="b-month">Month</label><input id="b-month" type="month"></div>
+      <div style="grid-column:1 / -1;"><label class="b-check" for="b-rollover" style="display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:0;font-size:13px;color:var(--text);">
+        <input id="b-rollover" type="checkbox" style="width:auto;"> Carry unused budget into next month</label></div>
     </div>
     <div style="margin-top:12px;"><button class="btn primary" id="save-budget-btn">Save Budget</button></div>
   </div>
 
   <div id="suggest-container" style="display:none;"></div>
   <div id="budgets-list"><div style="color:var(--text-muted);font-size:13px;">Loading...</div></div>
+  <div id="other-months" class="other-months" hidden></div>
 <%- include('partials/foot') %>
   <script nonce="<%= nonce %>">
     function toggleForm() {
+      // F100: the form starts hidden by its CSS class, so style.display is ''
+      // on the first click — read the computed value (it took two clicks).
       var f = document.getElementById('add-form');
-      f.style.display = f.style.display === 'none' ? 'block' : 'none';
+      f.style.display = getComputedStyle(f).display === 'none' ? 'block' : 'none';
+    }
+
+    // The month being viewed (YYYY-MM): ?month= when it's valid, else this
+    // month. GET /api/budgets?month= has always served any month; the page
+    // only ever asked for the current one.
+    var thisMonth = localTodayStr().slice(0, 7);
+    var viewMonth = (function() {
+      var q = new URLSearchParams(location.search).get('month');
+      return /^\d{4}-(0[1-9]|1[0-2])$/.test(q || '') ? q : thisMonth;
+    })();
+    function shiftMonth(ym, delta) {
+      var p = ym.split('-'), d = new Date(Number(p[0]), Number(p[1]) - 1 + delta, 1);
+      return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+    }
+    function monthName(ym) {
+      var p = ym.split('-');
+      return new Date(Number(p[0]), Number(p[1]) - 1, 1).toLocaleString('default', { month: 'long', year: 'numeric' });
+    }
+    function setViewMonth(ym) {
+      viewMonth = ym;
+      try { history.replaceState(null, '', location.pathname + (ym === thisMonth ? '' : '?month=' + ym)); } catch (e) { /* a sandboxed page can refuse it; the view still changes */ }
+      loadBudgets();
+    }
+
+    async function loadOtherMonths() {
+      var el = document.getElementById('other-months');
+      try {
+        var res = await apiFetch('/api/budgets/one-time');
+        if (!res.ok) { el.hidden = true; return; }
+        var others = ((await res.json()).budgets || []).filter(function(b) { return b.effective_month !== viewMonth; });
+        if (!others.length) { el.hidden = true; el.innerHTML = ''; return; }
+        el.innerHTML = '<span>One-month budgets in other months:</span>' + others.map(function(b) {
+          var p = b.effective_month.split('-');
+          var label = new Date(Number(p[0]), Number(p[1]) - 1, 1).toLocaleString('default', { month: 'short', year: 'numeric' });
+          return '<button class="btn-sm" data-month="' + esc(b.effective_month) + '">' + esc(label) + ' &middot; ' + esc(b.category) + '</button>';
+        }).join('');
+        el.hidden = false;
+      } catch (e) { el.hidden = true; }
     }
 
     async function loadBudgets() {
+      document.getElementById('month-label').textContent = monthName(viewMonth);
+      document.getElementById('month-today').hidden = viewMonth === thisMonth;
+      loadOtherMonths();
       try {
-        const res = await apiFetch('/api/budgets');
+        const res = await apiFetch('/api/budgets?month=' + encodeURIComponent(viewMonth));
         const el = document.getElementById('budgets-list');
         if (!res.ok) { el.innerHTML = '<div style="color:var(--red);font-size:13px;padding:20px 0;">Couldn\'t load budgets. Try again.</div>'; renderSummary([]); return; }
         const budgets = await res.json();
-        if (!budgets.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:20px 0;">No budgets set. Add one or use AI suggestions above.</div>'; renderSummary([]); return; }
+        if (!budgets.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:20px 0;">' + (viewMonth === thisMonth ? 'No budgets set. Add one or use AI suggestions above.' : 'No budgets in effect for ' + esc(monthName(viewMonth)) + '.') + '</div>'; renderSummary([]); return; }
         renderSummary(budgets);
         el.innerHTML = budgets.map(function(b) {
           var pct = b.percent_used;
@@ -83,7 +147,9 @@
           var remaining = limit - b.spent;
           return '<div class="budget-card">' +
             '<div class="budget-header"><span class="budget-category">' + esc(b.category) + '</span>' +
-            (b.is_ai_suggested ? '<span class="ai-badge">AI suggested</span>' : '') + '</div>' +
+            (b.is_ai_suggested ? '<span class="ai-badge">AI suggested</span>' : '') +
+            (b.budget_type === 'one_time' ? '<span class="ai-badge">' + esc(b.effective_month || '') + ' only</span>' : '') +
+            (b.rollover_enabled ? '<span class="ai-badge">Rolls over</span>' : '') + '</div>' +
             '<div class="budget-meta"><span>$' + b.spent.toFixed(2) + ' of $' + limit.toFixed(2) +
               (rollover > 0 ? ' <span style="color:var(--text-muted);font-size:11px;">($' + parseFloat(b.monthly_limit).toFixed(2) + ' + $' + rollover.toFixed(2) + ' rolled over)</span>' : '') + '</span>' +
             '<span style="color:' + color + ';font-weight:500;">' + pct + '%</span></div>' +
@@ -92,6 +158,9 @@
             (b.notes ? '<span>' + esc(b.notes) + '</span>' : '') + '</div>' +
             '<div class="budget-actions">' +
               '<button class="btn-sm" data-action="edit" data-id="' + b.id + '" data-limit="' + parseFloat(b.monthly_limit) + '">Edit</button>' +
+              // F39: rollover had no control — it could only be set through the API.
+              '<button class="btn-sm" data-action="rollover" data-id="' + b.id + '" data-on="' + (b.rollover_enabled ? '1' : '0') + '">' +
+                (b.rollover_enabled ? 'Stop rollover' : 'Roll over unused') + '</button>' +
               '<button class="btn-sm danger" data-action="delete" data-id="' + b.id + '">Delete</button>' +
             '</div></div>';
         }).join('');
@@ -106,7 +175,7 @@
       var pct = totalBudget > 0 ? Math.round((totalSpent / totalBudget) * 100) : 0;
       var color = pct >= 100 ? 'var(--red)' : pct >= 75 ? 'var(--warm)' : 'var(--green)';
       el.innerHTML = '<div class="summary-stat"><div class="label">Total Budget</div><div class="value">$' + totalBudget.toFixed(0) + '</div></div>' +
-        '<div class="summary-stat"><div class="label">Spent This Month</div><div class="value" style="color:' + color + ';">$' + totalSpent.toFixed(0) + '</div></div>' +
+        '<div class="summary-stat"><div class="label">Spent ' + (viewMonth === thisMonth ? 'This Month' : 'in ' + esc(monthName(viewMonth))) + '</div><div class="value" style="color:' + color + ';">$' + totalSpent.toFixed(0) + '</div></div>' +
         '<div class="summary-stat"><div class="label">Remaining</div><div class="value">' + (totalBudget - totalSpent >= 0 ? '$' + (totalBudget - totalSpent).toFixed(0) : '<span style="color:var(--red);">-$' + Math.abs(totalBudget - totalSpent).toFixed(0) + '</span>') + '</div></div>' +
         (overCount > 0 ? '<div class="summary-stat"><div class="label">Over Budget</div><div class="value" style="color:var(--red);">' + overCount + '</div></div>' : '');
     }
@@ -115,8 +184,11 @@
       var cat = document.getElementById('b-category').value.trim();
       var limit = parseFloat(document.getElementById('b-limit').value);
       if (!cat || !limit) { showMsg('Category and limit are required.', false); return; }
+      var type = document.getElementById('b-type').value;
+      var body = { category: cat, monthly_limit: limit, budget_type: type, rollover_enabled: document.getElementById('b-rollover').checked };
+      if (type === 'one_time') body.effective_month = document.getElementById('b-month').value || viewMonth;
       try {
-        var res = await apiFetch('/api/budgets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ category: cat, monthly_limit: limit }) });
+        var res = await apiFetch('/api/budgets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         if (res.ok) { showMsg('Budget added.', true); loadBudgets(); document.getElementById('add-form').style.display = 'none'; }
         else { var d = await res.json(); showMsg(d.error || 'Failed', false); }
       } catch (e) { showMsg(e.message, false); }
@@ -125,10 +197,22 @@
     async function editBudget(id, current) {
       var val = prompt('New monthly limit ($):', current);
       if (val === null) return;
+      // F97: parseFloat("1,200") is 1 — parseAmountInput reads the whole number.
+      var limit = parseAmountInput(val);
+      if (!Number.isFinite(limit) || limit < 0) { showMsg('Enter an amount like 1,200 or 450.50', false); return; }
       try {
-        var res = await apiFetch('/api/budgets/' + id, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ monthly_limit: parseFloat(val) }) });
-        if (res.ok) { showMsg('Budget updated.', true); loadBudgets(); }
-        else showMsg('Failed to update.', false);
+        var res = await apiFetch('/api/budgets/' + id, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ monthly_limit: limit }) });
+        if (await writeOk(res, 'Could not update the budget')) { showMsg('Budget updated.', true); loadBudgets(); }
+      } catch (e) { showMsg(e.message, false); }
+    }
+
+    async function toggleRollover(id, on) {
+      try {
+        var res = await apiFetch('/api/budgets/' + id, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rollover_enabled: !on }) });
+        if (await writeOk(res, 'Could not change rollover')) {
+          showMsg(on ? 'Rollover off — unused budget no longer carries over.' : 'Unused budget will carry into next month.', true);
+          loadBudgets();
+        }
       } catch (e) { showMsg(e.message, false); }
     }
 
@@ -189,13 +273,25 @@
       ['toggle-form-btn', 'click', toggleForm],
       ['suggest-btn', 'click', suggestBudgets],
       ['save-budget-btn', 'click', addBudget],
+      ['month-prev', 'click', function() { setViewMonth(shiftMonth(viewMonth, -1)); }],
+      ['month-next', 'click', function() { setViewMonth(shiftMonth(viewMonth, 1)); }],
+      ['month-today', 'click', function() { setViewMonth(thisMonth); }],
+      ['b-type', 'change', function() {
+        var one = document.getElementById('b-type').value === 'one_time';
+        document.getElementById('b-month-wrap').style.display = one ? '' : 'none';
+        // "One month only" defaults to the month being viewed.
+        if (one && !document.getElementById('b-month').value) document.getElementById('b-month').value = viewMonth;
+      }],
     ]);
     onDelegate('budgets-list', 'click', '[data-action]', function() {
       var action = this.dataset.action;
       var id = parseInt(this.dataset.id);
       if (action === 'edit') editBudget(id, parseFloat(this.dataset.limit));
+      else if (action === 'rollover') toggleRollover(id, this.dataset.on === '1');
       else if (action === 'delete') deleteBudget(id);
     });
+
+    onDelegate('other-months', 'click', '[data-month]', function() { setViewMonth(this.dataset.month); });
 
     loadBudgets();
   </script>

@@ -18,7 +18,7 @@ ${navBar("/emails")}
   </div>
   <div id="email-bulk-bar" style="display:none;padding:10px 16px;margin-bottom:12px;background:var(--paper-2);border:1px solid var(--line);border-radius:var(--radius);align-items:center;gap:8px;font-size:13px;">
     <span id="email-bulk-count">0 selected</span>
-    <button class="btn danger" id="email-bulk-del-btn">Delete</button>
+    <button class="btn danger" data-e2e-skip id="email-bulk-del-btn">Delete</button>
     <button class="btn" id="email-select-all-btn" style="margin-left:auto;">Select All</button>
   </div>
 
@@ -63,7 +63,7 @@ ${navBar("/emails")}
       <button class="btn primary" id="save-email-btn">Save Draft</button>
       <button class="btn" id="schedule-btn" style="color:var(--warn);border-color:var(--warn);">Schedule</button>
       <button class="btn" id="send-now-btn" style="color:var(--good);border-color:var(--good);">Send Now</button>
-      <button class="btn danger" id="e-delete-btn" style="display:none">Delete</button>
+      <button class="btn danger" data-e2e-skip id="e-delete-btn" style="display:none">Delete</button>
     </div>
   </div>
 </div>
@@ -108,7 +108,7 @@ function updateEmailBulkCount() { document.getElementById('email-bulk-count').te
 function emailSelectAll() { document.querySelectorAll('.email-bulk-check').forEach(el => { el.checked = true; toggleEmailBulkItem(parseInt(el.dataset.id,10), true); }); }
 async function emailBulkAction(action) {
   if (!emailSelectedIds.size) return;
-  await fetch('/api/bulk/emails', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:Array.from(emailSelectedIds),action:action})});
+  if (!(await writeOk(await tryFetch('/api/bulk/emails', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:Array.from(emailSelectedIds),action:action})}), 'Bulk action failed'))) return;
   emailSelectedIds.clear(); updateEmailBulkCount(); load();
 }
 
@@ -117,7 +117,7 @@ async function load() {
   var emails = await fetch('/api/emails'+q).then(r=>r.json());
   if (!emails.length) { document.getElementById('email-list').innerHTML = '<div class="empty-msg">No emails found</div>'; return; }
   document.getElementById('email-list').innerHTML = '<table><thead><tr><th style="width:30px;"></th><th>Status</th><th>To</th><th>Subject</th><th>Scheduled</th><th>Actions</th></tr></thead><tbody>' +
-    emails.map(e => '<tr><td><input type="checkbox" class="email-bulk-check" data-id="'+e.id+'" style="display:'+(emailSelectMode?'inline-block':'none')+';accent-color:var(--accent);cursor:pointer;"></td><td><span class="badge '+e.status+'">'+e.status+'</span></td><td>'+esc(e.recipient_name||e.recipient_email)+'</td><td>'+esc(e.subject)+'</td><td>'+(e.scheduled_at?new Date(e.scheduled_at).toLocaleString():'—')+'</td><td><div class="todo-actions"><button data-action="edit-email" data-id="'+e.id+'">&#9998;</button><button class="delete" data-action="delete-email" data-id="'+e.id+'">&#10005;</button></div></td></tr>'
+    emails.map(e => '<tr><td><input type="checkbox" class="email-bulk-check" data-id="'+e.id+'" style="display:'+(emailSelectMode?'inline-block':'none')+';accent-color:var(--accent);cursor:pointer;"></td><td><span class="badge '+e.status+'">'+e.status+'</span></td><td>'+esc(e.recipient_name||e.recipient_email)+'</td><td>'+esc(e.subject)+(e.status==='failed'?'<div class="email-error" style="color:var(--warn);font-size:12px;margin-top:4px;">Not sent: '+esc(e.error_message||'unknown error')+'</div>':'')+'</td><td>'+(e.scheduled_at?new Date(e.scheduled_at).toLocaleString():'—')+'</td><td><div class="todo-actions">'+(e.status==='failed'?'<button data-action="retry-email" data-id="'+e.id+'" data-e2e-skip aria-label="'+escAttr('Retry sending: '+(e.subject||''))+'">Retry</button>':'')+'<button data-action="edit-email" data-id="'+e.id+'">&#9998;</button><button class="delete" data-action="delete-email" data-id="'+e.id+'">&#10005;</button></div></td></tr>'
     ).join('') + '</tbody></table>';
 }
 
@@ -170,13 +170,15 @@ async function saveEmail() {
   data.status = 'draft';
   var id = document.getElementById('e-id').value;
   if (id) {
-    var pr = await fetch('/api/emails/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}).catch(function(){return null;});
-    if (!pr || !pr.ok) { alert('Could not save the email.'); return null; }
+    var pr = await tryFetch('/api/emails/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+    if (!(await writeOk(pr, 'Could not save the email'))) return null;
   } else {
     // Capture the created id so sendNow() targets THIS email instead of
     // re-fetching the list and grabbing emails[0] (which assumed newest-first
     // server ordering and could send the wrong email).
-    var r = await fetch('/api/emails', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}).then(function(x){return x.json();}).catch(function(){return {};});
+    var cr = await tryFetch('/api/emails', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+    if (!(await writeOk(cr, 'Could not save the email'))) return null;
+    var r = await cr.json().catch(function(){return {};});
     id = r && r.id;
     if (!id) { alert('Could not save the email.'); return null; }
   }
@@ -190,31 +192,51 @@ async function saveAndSchedule() {
   if (!data.scheduled_at) return alert('Set a schedule time first');
   data.status = 'scheduled';
   var id = document.getElementById('e-id').value;
-  if (id) await fetch('/api/emails/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
-  else await fetch('/api/emails', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...data,scheduled_at:data.scheduled_at})});
+  // F113: a rejected schedule (bad address, past time…) keeps the compose
+  // window open with what was typed — it used to close and lose it.
+  var res = id
+    ? await tryFetch('/api/emails/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)})
+    : await tryFetch('/api/emails', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...data,scheduled_at:data.scheduled_at})});
+  if (!(await writeOk(res, 'Could not schedule the email'))) return;
   closeCompose(); load();
 }
 
 async function sendNow() {
-  // ALWAYS persist the form first — for an existing email the old
-  // "only save when new" path sent the STALE stored body, silently dropping
-  // any edits made in the modal (PUI-2). saveEmail returns null on failure.
-  var id = await saveEmail();
-  if (!id) return;
-  var r = await fetch('/api/emails/'+id+'/send', {method:'POST'}).then(r=>r.json());
-  if (r.ok) { alert('Email sent!'); closeCompose(); load(); }
-  else alert('Failed: '+(r.error||'Unknown error'));
+  // F111: one Send at a time — a double-click saved (created) the new email
+  // twice and sent both.
+  return withPending(document.getElementById('send-now-btn'), 'send-now', async function() {
+    // ALWAYS persist the form first — for an existing email the old
+    // "only save when new" path sent the STALE stored body, silently dropping
+    // any edits made in the modal (PUI-2). saveEmail returns null on failure.
+    var id = await saveEmail();
+    if (!id) return;
+    var r = await fetch('/api/emails/'+id+'/send', {method:'POST'}).then(r=>r.json()).catch(function(){ return { error: 'no connection' }; });
+    if (r.ok) { alert('Email sent!'); closeCompose(); load(); }
+    else alert('Failed: '+(r.error||'Unknown error'));
+  });
+}
+
+// A failed email (roadmap T1.5) shows its error in the list and a Retry,
+// which sends it now through the same claim as Send Now (it allows a failed
+// row and refuses a sent one, so it can't double-send). Single-flight per email.
+async function retryEmail(id, btn) {
+  return withPending(btn, 'retry-email-'+id, async function() {
+    var ok = await writeOk(await tryFetch('/api/emails/'+id+'/send', {method:'POST'}), 'Could not send the email');
+    if (ok) showUndo('Email sent', 'email', id, 'info');
+    load();
+  });
 }
 
 async function deleteEmail() {
   var id = document.getElementById('e-id').value;
-  await fetch('/api/emails/'+id, {method:'DELETE'});
+  // F113: no Undo offer for a delete that didn't happen.
+  if (!(await writeOk(await tryFetch('/api/emails/'+id, {method:'DELETE'}), 'Could not delete the email'))) return;
   closeCompose(); load();
   showUndo('Email moved to trash','email',id);
 }
 
 async function deleteEmailDirect(id) {
-  await fetch('/api/emails/'+id, {method:'DELETE'});
+  if (!(await writeOk(await tryFetch('/api/emails/'+id, {method:'DELETE'}), 'Could not delete the email'))) return;
   load();
   showUndo('Email moved to trash','email',id);
 }
@@ -238,28 +260,27 @@ async function aiDraft() {
   var name = document.getElementById('e-name').value;
   var prompt = subject || document.getElementById('e-body').value;
   if (!prompt) { prompt = window.prompt('Describe the email you want to write:'); if (!prompt) return; }
-  var btn = document.getElementById('ai-draft-btn'); btn.textContent = 'Drafting...'; btn.disabled = true;
+  return withPending(document.getElementById('ai-draft-btn'), 'ai-draft', async function() {
   try {
     var r = await fetch('/api/ai/draft-email', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt, recipient_name: name})}).then(r=>r.json());
     if (r.error) { alert(r.error); return; }
     if (r.subject) document.getElementById('e-subject').value = r.subject;
     if (r.body) document.getElementById('e-body').value = r.body;
   } catch (err) { alert('AI draft failed: '+err.message); }
-  finally { btn.textContent = 'AI Draft'; btn.disabled = false; }
+  }, 'Drafting...');
 }
 
 // Tone adjustment
 async function adjustTone(tone) {
   var body = document.getElementById('e-body').value;
   if (!body) return alert('Write or draft an email first');
-  var btns = document.querySelectorAll('.tone-btn');
-  btns.forEach(b => { b.disabled = true; });
+  return withPending(document.querySelectorAll('.tone-btn'), 'adjust-tone', async function() {
   try {
     var r = await fetch('/api/ai/adjust-tone', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({body, tone})}).then(r=>r.json());
     if (r.error) { alert(r.error); return; }
     if (r.body) document.getElementById('e-body').value = r.body;
   } catch (err) { alert('Tone adjustment failed: '+err.message); }
-  finally { btns.forEach(b => { b.disabled = false; }); }
+  });
 }
 
 // Templates
@@ -289,14 +310,14 @@ async function saveAsTemplate() {
   var subject = document.getElementById('e-subject').value || 'Untitled';
   var body = document.getElementById('e-body').value || '';
   if (!name) return alert('Template name required');
-  await fetch('/api/email-templates', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,subject,body})});
+  if (!(await writeOk(await tryFetch('/api/email-templates', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,subject,body})}), 'Could not save the template'))) return;
   var tplModal = document.getElementById('tpl-modal');
   if (tplModal) tplModal.remove();
   openTemplates();
 }
 async function deleteTemplate(id) {
   if (!confirm('Delete template?')) return;
-  await fetch('/api/email-templates/'+id, {method:'DELETE'});
+  if (!(await writeOk(await tryFetch('/api/email-templates/'+id, {method:'DELETE'}), 'Could not delete the template'))) return;
   var tplModal = document.getElementById('tpl-modal');
   if (tplModal) tplModal.remove();
   openTemplates();
@@ -392,7 +413,7 @@ async function confirmQuick() {
     parsedQuick.recipient_email = em;
   }
   var status = parsedQuick.scheduled_at ? 'scheduled' : 'draft';
-  await fetch('/api/emails', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...parsedQuick, status})});
+  if (!(await writeOk(await tryFetch('/api/emails', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...parsedQuick, status})}), 'Could not save the email'))) return;
   closeQuick(); load();
 }
 
@@ -422,6 +443,7 @@ document.addEventListener('click',function(e){
   var id=parseInt(btn.dataset.id),act=btn.dataset.action;
   e.stopPropagation();
   if(act==='edit-email')openEditEmail(id);
+  else if(act==='retry-email')retryEmail(id, btn);
   else if(act==='delete-email')deleteEmailDirect(id);
   else if(act==='use-tpl')useTemplate(id);
   else if(act==='delete-tpl')deleteTemplate(id);

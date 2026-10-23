@@ -24,6 +24,9 @@ const VALID_PRIORITIES = ["low", "medium", "high", "urgent"];
 const VALID_HORIZONS = ["short", "medium", "long"];
 const VALID_RECURRENCE_RULES = ["daily", "weekly", "monthly", "yearly", "weekdays", "custom_days", "custom_weeks", "custom_months"];
 const VALID_NOTE_COLORS = ["default", "warm", "teal", "green", "blue"];
+// Notes privacy tier (cycle-7 F134 / ST5): only 'normal' notes are embedded,
+// retrieved or sent to the AI; a 'secret' note's text is masked in lists.
+const VALID_NOTE_SENSITIVITIES = ["normal", "private", "secret"];
 const VALID_EMAIL_STATUSES = ["draft", "scheduled", "sent", "failed"];
 // One address only (PD-9): list separators / display-name syntax are rejected
 // too — nodemailer reads "a@x.com,b.com" or "Name <a@x.com>" as a list/display
@@ -152,16 +155,24 @@ function validateWebhookHeaders(headers) {
   return { valid: true };
 }
 
+// Mermaid (Knowledge diagrams) — an EXACT version, and the CSP allows only
+// this path prefix: a floating "@11" took whatever release was newest, and a
+// host-wide cdn.jsdelivr.net allowlist let any npm/GitHub file run as script
+// on the page that serves secret lookups (F125). The ESM build's chunks are
+// relative imports under the same prefix.
+const MERMAID_CDN_BASE = "https://cdn.jsdelivr.net/npm/mermaid@11.4.1/";
+
 module.exports = {
   isPrivateAddress,
   resolveSafeWebhookTarget,
   SESSION_PASSWORD, SESSION_PIN, AUTH_SECRET, AUTH_MODE, SESSION_SECRET, PERFIN_URL,
   envContacts,
   VALID_PRIORITIES, VALID_HORIZONS, VALID_RECURRENCE_RULES,
-  VALID_NOTE_COLORS, VALID_EMAIL_STATUSES, EMAIL_REGEX,
+  VALID_NOTE_COLORS, VALID_NOTE_SENSITIVITIES, VALID_EMAIL_STATUSES, EMAIL_REGEX,
   VALID_AI_FEATURES, VALID_WEBHOOK_EVENTS,
   VALID_TRIGGERS, VALID_ACTIONS,
   MAX_TITLE_LENGTH, MAX_BODY_LENGTH, MAX_CONTENT_LENGTH,
   MAX_BULK_IDS, MAX_PAGINATION_LIMIT,
   isValidWebhookUrl, validateWebhookHeaders, BLOCKED_WEBHOOK_HEADERS,
+  MERMAID_CDN_BASE,
 };

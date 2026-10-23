@@ -137,13 +137,47 @@ async function sendWebhook(webhook, payload) {
   }
 }
 
+// One Slack line per event (F116: the Slack URL in Settings was saved and
+// validated, but nothing ever posted to it).
+function slackLineFor(eventType, data) {
+  const d = data || {};
+  switch (eventType) {
+    case "todo_created": return `New task: ${d.title || "(untitled)"}`;
+    case "todo_completed": return `Completed: ${d.title || "(untitled)"}`;
+    case "email_sent": return `Email sent: "${d.subject || ""}" to ${d.recipient_email || ""}`;
+    case "note_created": return `New note: ${d.title || "(untitled)"}`;
+    case "reminder_due": return `Reminder: ${d.title || "(untitled)"}`;
+    case "streak_milestone": return `Streak milestone: ${d.name || d.title || ""} — ${d.streak || d.current_streak || ""} days`;
+    default: return `${eventType}`;
+  }
+}
+
 async function fireWebhooks(eventType, data) {
   try {
     const webhooks = await pool.query("SELECT * FROM webhooks WHERE enabled = true AND $1 = ANY(events)", [eventType]);
     for (const wh of webhooks.rows) {
       sendWebhook(wh, { event: eventType, timestamp: new Date().toISOString(), data }).catch(() => {});
     }
-  } catch {}
+  } catch (err) { console.error("fireWebhooks error:", err.message); }
+  // Slack gets every event when a Slack URL is set (no-op otherwise).
+  await sendSlackNotification(slackLineFor(eventType, data));
+}
+
+// reminder_due (F116): fire once for each note reminder that has come due —
+// reminder_at passed within the last day (so the first run after deploy
+// doesn't replay every old reminder) and not fired since it was set. Claimed
+// in one UPDATE … RETURNING, so overlapping ticks can't double-fire.
+async function processDueReminders(db = pool) {
+  const r = await db.query(
+    `UPDATE notes SET reminder_fired_at = now()
+      WHERE deleted_at IS NULL AND reminder_at IS NOT NULL
+        AND reminder_at <= now() AND reminder_at > now() - interval '1 day'
+        AND (reminder_fired_at IS NULL OR reminder_fired_at < reminder_at)
+      RETURNING id, COALESCE(title, CASE WHEN sensitivity = 'normal' THEN LEFT(content, 50) ELSE 'Private note' END) AS title, reminder_at`);
+  for (const n of r.rows) {
+    await fireWebhooks("reminder_due", { id: n.id, title: n.title, reminder_at: n.reminder_at });
+  }
+  return r.rows.length;
 }
 
 async function sendSlackNotification(message) {
@@ -235,4 +269,15 @@ async function runAutomations(triggerType, entity, entityType) {
   }
 }
 
-module.exports = { advanceRecurrence, recurrenceAnchorDay, ymdLocal, nextDueAfter, rollMissedRecurring, sendWebhook, fireWebhooks, sendSlackNotification, runAutomations, validateAutomationRule };
+// F124 (automation / webhook parity): every path that creates or completes a
+// todo runs the same automations and webhooks as the To-Dos routes — bulk
+// complete, create-todo from a note or email, and template apply used to skip
+// both. Fire-and-forget; failures are logged.
+function announceTodoEvent(event, todo) {
+  if (!todo) return;
+  runAutomations(event, event === "todo_completed" ? { ...todo, completed: true } : todo, "todo")
+    .catch((err) => console.error(`${event} automations:`, err.message));
+  fireWebhooks(event, todo).catch((err) => console.error(`${event} webhooks:`, err.message));
+}
+
+module.exports = { announceTodoEvent, advanceRecurrence, recurrenceAnchorDay, ymdLocal, nextDueAfter, rollMissedRecurring, sendWebhook, fireWebhooks, sendSlackNotification, slackLineFor, processDueReminders, runAutomations, validateAutomationRule };

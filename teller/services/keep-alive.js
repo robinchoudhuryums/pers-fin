@@ -3,6 +3,7 @@
 // ============================================================================
 
 const { pool } = require("./database");
+const hosting = require("./hosting");
 
 let keepAliveInterval = null;
 
@@ -46,12 +47,14 @@ function isWithinActiveHours(startHour, endHour, timezone) {
   }
 }
 
-function startKeepAlive(port) {
-  if (keepAliveInterval) return;
-  // Render sets RENDER_EXTERNAL_URL automatically; fall back to localhost
-  const pingUrl = process.env.RENDER_EXTERNAL_URL
-    ? `${process.env.RENDER_EXTERNAL_URL}/health`
-    : `http://localhost:${port}/health`;
+// Returns true when the ping was started. An always-on host (ALWAYS_ON=true —
+// services/hosting.js) never sleeps, so there is nothing to keep awake.
+function startKeepAlive(port, env = process.env) {
+  if (keepAliveInterval) return true;
+  if (hosting.alwaysOn(env)) return false;
+  // PUBLIC_URL (or Render's RENDER_EXTERNAL_URL); fall back to localhost
+  const base = hosting.publicUrl(env);
+  const pingUrl = base ? `${base}/health` : `http://localhost:${port}/health`;
   const INTERVAL = 14 * 60 * 1000; // 14 minutes
   keepAliveInterval = setInterval(async () => {
     const config = await getKeepAliveConfigCached();
@@ -66,6 +69,7 @@ function startKeepAlive(port) {
     }
   }, INTERVAL);
   keepAliveInterval.unref(); // Don't prevent process exit
+  return true;
 }
 
 module.exports = { loadKeepAliveConfig, getKeepAliveConfigCached, invalidateKeepAliveCache, isWithinActiveHours, startKeepAlive };

@@ -34,8 +34,12 @@ COPY docker-entrypoint.sh ./
 
 RUN chmod +x docker-entrypoint.sh
 
-# Run as non-root user for security
-RUN addgroup -g 1001 -S appgroup && adduser -u 1001 -S appuser -G appgroup
+# Run as non-root user for security. The legacy Per-sistant uploads/ directory
+# (attachments now live in Postgres; boot migrates any old files and removes
+# them) must be writable by that user, or the removal fails (cycle-7 F13).
+RUN addgroup -g 1001 -S appgroup && adduser -u 1001 -S appuser -G appgroup \
+  && mkdir -p apps/per-sistant/uploads \
+  && chown -R appuser:appgroup apps/per-sistant/uploads
 USER appuser
 
 EXPOSE 3000

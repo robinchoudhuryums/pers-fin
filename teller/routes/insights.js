@@ -9,7 +9,10 @@ const { pool } = require("../services/database");
 // module keeps using and RE-EXPORTING them, so import paths are unchanged.
 const { renderInsightEmail, renderWeeklyDigestEmail, renderWeeklyDigestText,
         renderDailyDigestEmail, renderDailyDigestText, escapeHtml } = require("./insights-email");
-const { getMonthlySpending, getMonthlyIncomeAndSpending, NOT_TRANSFER, SPLIT_AMOUNT, currentMonth, todayStr, getTaxDeductionTransactions } = require("../services/financial-queries");
+const { getMonthlySpending, getMonthlyIncomeAndSpending, NOT_TRANSFER, SPLIT_AMOUNT, spendLinesCTE, NET_CATEGORY_MONTHS, currentMonth, todayStr, getTaxDeductionTransactions } = require("../services/financial-queries");
+// Dates go into prompts as 'YYYY-MM-DD' (cycle-7 F71 — a DATE column arrives as
+// a JS Date, and string concatenation wrote "Tue Dec 31 2026 00:00:00 GMT…").
+const { isoDate } = require("../services/csv-export");
 
 // t2/la2-aliased variant of the canonical split expression, for the anomaly
 // baseline subquery (same in-place derivation convention as the NOT_TRANSFER
@@ -342,9 +345,15 @@ async function getAiBudgetCents() {
 // rebuild, ask, scan, suggest), priced per row by its own model ID (AIN-9).
 // The ONE spend tally the cap is checked against (AIN-10 — it used to be
 // copy-pasted into six call sites). Throws on a DB error; callers decide.
+// The month is the APP_TIMEZONE month (cycle-7 F66 — it was UTC's, so west of
+// UTC the cap reset hours early on the last evening of the month).
 async function monthAiSpendCents(db = pool) {
+  const { APP_TIMEZONE } = require("../services/financial-queries");
+  let tz = "UTC";
+  try { new Intl.DateTimeFormat("en-US", { timeZone: APP_TIMEZONE }); tz = APP_TIMEZONE; } catch { /* invalid zone → UTC, as currentMonth() does */ }
   const r = await db.query(
-    "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights WHERE created_at >= date_trunc('month', CURRENT_DATE)"
+    "SELECT tokens_used, model_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens FROM financial_insights WHERE created_at >= ($1::date::timestamp AT TIME ZONE $2)",
+    [currentMonth() + "-01", tz]
   );
   let cents = 0;
   for (const row of r.rows) {
@@ -356,8 +365,25 @@ async function monthAiSpendCents(db = pool) {
   return cents;
 }
 
+// Roadmap T2.3 C4: Per-sistant's month AI spend + cap, shown beside Perfin's
+// (read-only, informational — the two apps keep separate caps). Only when the
+// shell wired persistentPool, so Per-sistant's ai.js is already loaded; it is
+// the one definition of that spend (APP_TIMEZONE month over ai_usage). Any
+// failure → null.
+async function persistentAiSpend(persistentPool) {
+  if (!persistentPool) return null;
+  try {
+    const psAi = require("../../apps/per-sistant/ai");
+    const [spent, budget] = await Promise.all([psAi.monthlyAiSpendCents(persistentPool), psAi.getAiBudgetCents(persistentPool)]);
+    return { spent_cents: Math.round(spent * 100) / 100, budget_cents: budget };
+  } catch (err) {
+    console.error("Per-sistant AI spend read error:", err.message);
+    return null;
+  }
+}
+
 // GET /api/insights/status
-router.get("/api/insights/status", async (_req, res) => {
+router.get("/api/insights/status", async (req, res) => {
   const configured = !!(Anthropic && process.env.ANTHROPIC_API_KEY);
   let estimatedCostCents = 0;
   let budgetCents = await getAiBudgetCents();
@@ -400,6 +426,7 @@ router.get("/api/insights/status", async (_req, res) => {
     audit_accuracy: accuracy,
     running_summary: runningSummaryJson,
     running_summary_counts: summaryCounts,
+    persistent_ai: await persistentAiSpend(req.app.get("persistentPool")),
   });
 });
 
@@ -507,9 +534,14 @@ async function generateInsights() {
       pool.query(
         "SELECT insight_text, created_at FROM financial_insights WHERE entry_type = 'insight' ORDER BY created_at DESC LIMIT 1"
       ).catch(() => ({ rows: [] })),
+      // No fallback (cycle-7 F73): a failed read used to substitute defaults —
+      // a NULL running summary and the "sonnet" model — so the run went ahead,
+      // charged the cap on the wrong model and then OVERWROTE the stored
+      // long-term memory with one built from nothing. Failing here costs
+      // nothing: the Claude call hasn't happened yet.
       pool.query(
-        "SELECT insights_running_summary, insights_running_summary_json, insights_model, insights_cadence_days, zip_code, insight_modules FROM user_settings WHERE id = 1"
-      ).catch(() => ({ rows: [{ insights_running_summary: null, insights_running_summary_json: null, insights_model: "sonnet", insights_cadence_days: 30, zip_code: null, insight_modules: {} }] })),
+        "SELECT insights_running_summary, insights_running_summary_json, insights_model, insights_cadence_days, zip_code, insight_modules, insight_emails_enabled FROM user_settings WHERE id = 1"
+      ),
       // S1: user feedback on the last 5 audited insights, fed back into the
       // prompt so Claude can adjust tone/focus when the user pushes back.
       pool.query(
@@ -741,7 +773,7 @@ async function generateInsights() {
             "Recent transactions significantly above their merchant's typical amount:\n" +
             anomalyData.rows.map(r =>
               sanitizeForPrompt(r.user_merchant_name || r.merchant_name || r.name) + ": $" + parseFloat(r.amount).toFixed(2) +
-              " on " + r.date + " (usual avg: $" + parseFloat(r.avg_amount).toFixed(2) +
+              " on " + isoDate(r.date) + " (usual avg: $" + parseFloat(r.avg_amount).toFixed(2) +
               " over " + r.txn_count + " transactions)"
             ).join("\n");
         } else {
@@ -757,21 +789,22 @@ async function generateInsights() {
         // shown to the AI match the "Monthly Spending (6mo)" block earlier in
         // the same prompt — the previous query was a raw SUM that included
         // credit-card payments, ACH transfers, and 100% of joint-account spend.
+        // F35: net of refunds, each month's categories floored at $0 — the
+        // same spend_lines as getMonthlySpending.
         const seasonalData = await pool.query(
-          `SELECT EXTRACT(MONTH FROM t.date)::int AS month_num,
-                  TO_CHAR(t.date, 'Mon') AS month_name,
-                  EXTRACT(YEAR FROM t.date)::int AS year,
-                  ROUND(SUM(${SPLIT_AMOUNT}), 2) AS total
-           FROM transactions t
-           LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-           WHERE t.amount > 0 AND t.pending = false
-             AND COALESCE(t.is_reimbursed, false) = false
-             AND ${NOT_TRANSFER}
-             AND t.date >= CURRENT_DATE - INTERVAL '24 months'
-             -- AIN-4: complete months only (the month-to-date total is not a
-             -- seasonal data point).
-             AND t.date < $1::date
-           GROUP BY EXTRACT(MONTH FROM t.date), TO_CHAR(t.date, 'Mon'), EXTRACT(YEAR FROM t.date)
+          `WITH ${spendLinesCTE(
+             // AIN-4: complete months only (the month-to-date total is not a
+             // seasonal data point) — and the OLDEST month whole too: a rolling
+             // CURRENT_DATE − 24 months bound left it a partial month, a false
+             // "seasonal jump" in the prompt (seams audit #3, the FA-4 class).
+             "t.date >= $1::date - INTERVAL '24 months' AND t.date < $1::date")},
+           ${NET_CATEGORY_MONTHS}
+           SELECT EXTRACT(MONTH FROM (month || '-01')::date)::int AS month_num,
+                  TO_CHAR((month || '-01')::date, 'Mon') AS month_name,
+                  EXTRACT(YEAR FROM (month || '-01')::date)::int AS year,
+                  ROUND(SUM(spent), 2) AS total
+           FROM net_category_months
+           GROUP BY month
            ORDER BY year, month_num`,
           [thisMonthKey + "-01"]
         );
@@ -827,7 +860,7 @@ async function generateInsights() {
                 : ", Limit unknown, Utilization unknown") +
               (c.apr ? ", APR " + c.apr + "%" : ", APR unknown");
             if (c.minimum_payment) line += ", Min Payment $" + parseFloat(c.minimum_payment).toFixed(2);
-            if (c.next_payment_due_date) line += ", Due " + c.next_payment_due_date;
+            if (c.next_payment_due_date) line += ", Due " + isoDate(c.next_payment_due_date);
             return line;
           }).join("\n");
           const totalDebt = cards.reduce((s, c) => s + parseFloat(c.current_balance || 0), 0);
@@ -948,16 +981,31 @@ async function generateInsights() {
     // --- Module: Goal tracking (dynamic data) ---
     if (modules.goal_tracking !== false) {
       try {
-        const goalsData = await pool.query("SELECT name, type, target_amount, current_amount, monthly_contribution, target_date, interest_rate FROM financial_goals WHERE is_active = true");
+        // A funding-linked goal's progress is balance − baseline, the same
+        // deriveGoalProgress the Goals page uses (cycle-7 F62 / INV-11 — the
+        // prompt read the stale stored current_amount).
+        const { deriveGoalProgress } = require("./goals");
+        const goalsData = await pool.query(
+          `SELECT g.name, g.type, g.target_amount, g.current_amount, g.monthly_contribution, g.target_date, g.interest_rate,
+                  g.funding_account_id, g.funding_investment_id, g.goal_baseline_amount,
+                  COALESCE(la.available_balance, la.current_balance) AS funding_account_balance,
+                  la.name AS funding_account_name,
+                  ia.balance AS funding_investment_balance,
+                  ia.name AS funding_investment_name
+           FROM financial_goals g
+           LEFT JOIN linked_accounts     la ON la.id = g.funding_account_id
+           LEFT JOIN investment_accounts ia ON ia.id = g.funding_investment_id
+           WHERE g.is_active = true`
+        );
         if (goalsData.rows.length > 0) {
           userMsg += "\n\n=== FINANCIAL GOALS ===\n" +
             goalsData.rows.map(g => {
               const target = parseFloat(g.target_amount);
-              const current = parseFloat(g.current_amount);
+              const current = deriveGoalProgress(g).current;
               const pct = target > 0 ? Math.round(current / target * 100) : 0;
               let line = sanitizeForPrompt(g.name) + " (" + g.type + "): $" + current.toFixed(2) + " / $" + target.toFixed(2) + " (" + pct + "%)";
               if (g.monthly_contribution > 0) line += ", contributing $" + parseFloat(g.monthly_contribution).toFixed(2) + "/mo";
-              if (g.target_date) line += ", target date: " + g.target_date;
+              if (g.target_date) line += ", target date: " + isoDate(g.target_date);
               if (g.interest_rate > 0) line += ", expected return: " + g.interest_rate + "%/yr";
               return line;
             }).join("\n");
@@ -1002,7 +1050,7 @@ async function generateInsights() {
         const latest = csResult.rows[0];
         const prior = csResult.rows[1];
         const oldest = csResult.rows[csResult.rows.length - 1];
-        let summary = "Latest: " + latest.score + " (" + (latest.score_type || "unknown") + ", " + latest.checked_at + ")";
+        let summary = "Latest: " + latest.score + " (" + (latest.score_type || "unknown") + ", " + isoDate(latest.checked_at) + ")";
         if (prior) summary += " | Prior: " + prior.score + " (delta " + (latest.score - prior.score > 0 ? "+" : "") + (latest.score - prior.score) + ")";
         if (csResult.rows.length >= 3) {
           summary += " | " + csResult.rows.length + "-entry range: " + oldest.score + " → " + latest.score +
@@ -1165,10 +1213,25 @@ async function generateInsights() {
         summary_status: summaryStatus === "updated" ? "preserved_no_tool_block" : summaryStatus,
       };
     }
-    const insightRow = await pool.query(
-      "INSERT INTO financial_insights (insight_text, period_start, period_end, model_used, tokens_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens) VALUES ($1, CURRENT_DATE - INTERVAL '6 months', CURRENT_DATE, $2, $3, $4, $5, $6, $7) RETURNING id",
-      [insightText, actualModel, tokensUsed, usage.input_tokens || 0, usage.output_tokens || 0, usage.cache_read_input_tokens || 0, usage.cache_creation_input_tokens || 0]
-    );
+    const usageParams = [actualModel, tokensUsed, usage.input_tokens || 0, usage.output_tokens || 0, usage.cache_read_input_tokens || 0, usage.cache_creation_input_tokens || 0];
+    let insightRow;
+    try {
+      insightRow = await pool.query(
+        "INSERT INTO financial_insights (insight_text, period_start, period_end, model_used, tokens_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens) VALUES ($1, CURRENT_DATE - INTERVAL '6 months', CURRENT_DATE, $2, $3, $4, $5, $6, $7) RETURNING id",
+        [insightText, ...usageParams]
+      );
+    } catch (insertErr) {
+      // The insight row IS the usage row, so a failed INSERT used to leave the
+      // call uncharged — and the next tick paid for it again (cycle-7 F63).
+      // Charge it on its own under a non-'insight' entry_type (never shown,
+      // audited or emailed), then report the failure.
+      console.error("Insight INSERT failed:", insertErr.message);
+      await pool.query(
+        "INSERT INTO financial_insights (insight_text, period_start, period_end, model_used, tokens_used, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, entry_type) VALUES ($1, CURRENT_DATE - INTERVAL '6 months', CURRENT_DATE, $2, $3, $4, $5, $6, $7, 'insight_unsaved')",
+        ["[Unsaved insight] the insight row could not be written", ...usageParams]
+      ).catch(err => console.error("unsaved-insight usage row failed — monthly AI cap may under-count:", err.message));
+      return { ok: false, status: 500, error: "The insight was generated but could not be saved." };
+    }
     const insightId = insightRow.rows[0]?.id || null;
     if (summaryStatus === "updated" && newSummaryJson) {
       await pool.query(
@@ -1199,7 +1262,7 @@ async function generateInsights() {
               data: { url: "/settings" },
             });
           }
-        } catch {}
+        } catch (e) { console.error("Audit alert notification failed:", e.message); }
       }
     } catch (auditErr) {
       console.error("AI audit error:", auditErr.message);
@@ -1211,8 +1274,10 @@ async function generateInsights() {
     const modulesFailed = [...failedModules];
     const modulesUsed = activeModules.filter(m => !failedModules.has(m));
 
-    // Send insight via webhook to Per-sistant for email delivery
-    try {
+    // Send insight via webhook to Per-sistant for email delivery — unless the
+    // user switched insight emails off (cycle-7 F81; only an explicit false
+    // skips it, so a settings row without the column keeps the old behaviour).
+    if (settings.insight_emails_enabled !== false) try {
       const { sendPerSistantWebhook } = require("./persistent");
       const auditNote = auditResult && auditResult.summary.critical > 0
         ? `\n\n⚠ Audit flagged ${auditResult.summary.critical} critical finding(s). Review accuracy before acting on this report.`
@@ -1220,7 +1285,7 @@ async function generateInsights() {
       await sendPerSistantWebhook("insights_generated", {
         subject: "Perfin AI Financial Analysis — " + new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }),
         plain_text: insightText + auditNote,
-        html_body: renderInsightEmail(insightText, modulesUsed, auditResult),
+        html_body: renderInsightEmail(insightText, modulesUsed, auditResult, require("./persistent").perfinDashboardUrl()),
         modules_used: modulesUsed,
         cost_usd: parseFloat(estimateCostGranular(usage, actualModel).toFixed(6)),
       });
@@ -1378,7 +1443,9 @@ router.post("/api/insights/rebuild", async (_req, res) => {
 
 // GET /api/tax-deductions — retrieve accumulated tax deductions for a year
 router.get("/api/tax-deductions", async (req, res) => {
-  const year = parseInt(req.query.year) || new Date().getFullYear();
+  // The APP_TIMEZONE year, like the insights writer and the tax export — the
+  // server's UTC year flipped on Dec 31 evening west of UTC (seams audit #3).
+  const year = parseInt(req.query.year) || parseInt(todayStr().slice(0, 4), 10);
   try {
     const result = await pool.query(
       "SELECT * FROM tax_deductions WHERE tax_year = $1 ORDER BY amount DESC",
@@ -1431,11 +1498,14 @@ router.patch("/api/insights/:id/feedback", async (req, res) => {
   }
   const note = typeof text === "string" ? text.slice(0, 2000) : null;
   try {
+    // $1::text in BOTH places (F60): the untyped `$1 IS NULL` made Postgres
+    // fail with "could not determine data type of parameter $1", so every
+    // thumbs-up / down / mixed returned 500 and no rating was ever stored.
     const result = await pool.query(
       `UPDATE financial_insights
-         SET user_feedback = $1,
+         SET user_feedback = $1::text,
              user_feedback_text = $2,
-             user_feedback_at = CASE WHEN $1 IS NULL THEN NULL ELSE now() END
+             user_feedback_at = CASE WHEN $1::text IS NULL THEN NULL ELSE now() END
        WHERE id = $3 AND entry_type = 'insight'
        RETURNING id, user_feedback, user_feedback_text, user_feedback_at`,
       [feedback, note, id]
@@ -1536,6 +1606,7 @@ router.get("/api/insights/audit", async (_req, res) => {
 module.exports = router;
 module.exports.getAiBudgetCents = getAiBudgetCents;
 module.exports.monthAiSpendCents = monthAiSpendCents;
+module.exports.persistentAiSpend = persistentAiSpend;
 module.exports.renderInsightEmail = renderInsightEmail;
 module.exports.renderWeeklyDigestEmail = renderWeeklyDigestEmail;
 module.exports.renderDailyDigestEmail = renderDailyDigestEmail;

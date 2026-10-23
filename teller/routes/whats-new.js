@@ -136,6 +136,9 @@ async function gatherWhatsNew(since) {
       return {
         account_name: r.account_name,
         source: r.source,
+        // The widget labels an unnamed account "Account #<id>" — it read
+        // source_id, which wasn't sent ("Account #undefined"; seams audit #3).
+        source_id: r.source_id,
         account_type: r.account_type || null,
         is_debt: isDebt,
         // Paying a card/loan down (balance owed ↓) is the GOOD direction (DD-6).

@@ -545,7 +545,8 @@ describe("Plaid: balance sync surfaces a genuine liabilities failure", () => {
     // account (Discover) — brokerage/depository-only items stay quiet.
     assert.match(inv, /const hasCreditAccount = \(balRes\.data\.accounts \|\| \[\]\)\.some\(a => a\.type === "credit"\)/);
     assert.match(inv, /lib\.skipped === "not_supported" && hasCreditAccount/);
-    assert.match(inv, /re-link this card to enable Plaid Liabilities/);
+    // Cycle-7 F18: a second link of the same bank is refused, so the hint says unlink + link.
+    assert.match(inv, /unlink it and link the bank again to enable them/);
   });
 });
 
@@ -953,9 +954,15 @@ describe("BS-5/6/7/8 — sync-helper correctness (source-pinned)", () => {
     assert.match(enroll, /plaidThrew \? \[\{ provider: "plaid", result: \{ errors:/);
   });
   it("BS-7: monthly income projection clamps the pay-day to the month length", () => {
-    // cash-flow moved to routes/spending-analytics.js in the route-file split
-    const analytics = fs.readFileSync(path.join(__dirname, "../teller/routes/spending-analytics.js"), "utf8");
-    assert.match(analytics, /const payDay = Math\.min\(inc\.typical_day, daysInMonth\)/);
+    // The cash-flow forecast lives in services/cash-flow.js (roadmap T2.2 L1;
+    // before that routes/spending-analytics.js); since cycle-7 F34 it projects
+    // the shared cadence.js income streams, whose monthly stepping clamps the
+    // day (Jan 31 → Feb 28/29).
+    const forecast = fs.readFileSync(path.join(__dirname, "../teller/services/cash-flow.js"), "utf8");
+    assert.match(forecast, /incomeEventsBetween\(stream, today, end\)/);
+    const { incomeEventsBetween } = require("../teller/services/cadence");
+    const s = { cadence: "monthly", anchor: "2026-01-31" };
+    assert.deepEqual(incomeEventsBetween(s, "2026-02-01", "2026-03-31"), ["2026-02-28", "2026-03-31"]);
   });
   it("BS-8: holdings sync skips items lacking the Investments product", () => {
     assert.match(inv, /PRODUCTS_NOT_SUPPORTED" \|\| code === "PRODUCT_NOT_READY"\) continue/);

@@ -111,8 +111,28 @@ router.get("/api/plaid/status", (_req, res) => {
   });
 });
 
+// Plaid webhooks (roadmap T2.1 W4). The URL Plaid should call for this app's
+// items: PUBLIC_URL (hosting.webhookBaseUrl — never the RENDER_EXTERNAL_URL
+// fallback: setting PUBLIC_URL is the opt-in) + the Perfin mount + the
+// receiver's path; null while PUBLIC_URL isn't set, and then no link token or
+// item gets a webhook (Plaid sends none).
+function plaidWebhookUrl(req) {
+  const base = require("../services/hosting").webhookBaseUrl();
+  if (!base) return null;
+  return base + (req && req.app && req.app.get("embedded") ? "/perfin" : "") + "/api/webhooks/plaid";
+}
+// Spread into a linkTokenCreate request: { webhook } only when a URL is known.
+const webhookParam = (req) => { const url = plaidWebhookUrl(req); return url ? { webhook: url } : {}; };
+// Remember the URL an Item was created / registered with (fail-soft — it only
+// feeds Sync Health, W6). table: 'plaid_items' | 'plaid_investment_items'.
+async function noteItemWebhook(table, plaidItemId, url) {
+  if (!url) return;
+  await pool.query(`UPDATE ${table === "plaid_investment_items" ? "plaid_investment_items" : "plaid_items"} SET webhook_url = $2 WHERE item_id = $1`, [plaidItemId, url])
+    .catch(e => console.error("plaid webhook_url update error:", e.message));
+}
+
 // POST /api/plaid/link-token — create a Plaid Link token for investments
-router.post("/api/plaid/link-token", async (_req, res) => {
+router.post("/api/plaid/link-token", async (req, res) => {
   const client = getPlaidClient();
   if (!client) return res.status(501).json({ error: "Plaid not configured. Set PLAID_CLIENT_ID and PLAID_SECRET." });
   try {
@@ -122,6 +142,7 @@ router.post("/api/plaid/link-token", async (_req, res) => {
       products: [Products.Investments],
       country_codes: [CountryCode.Us],
       language: "en",
+      ...webhookParam(req),
     });
     res.json({ link_token: response.data.link_token });
   } catch (err) {
@@ -137,6 +158,80 @@ router.post("/api/plaid/link-token", async (_req, res) => {
 // schema that was scaffolded at project inception. Transactions land in the
 // same `transactions` table as Teller-synced ones, so the entire dashboard,
 // budget, AI insights, and Sheets pipeline works without changes.
+
+// ---------------------------------------------------------------------------
+// Duplicate-Item guard (cycle-7 F18). Linking a bank that is already linked
+// creates a NEW Plaid Item — new item_id, new account_ids, new transaction_ids
+// — so the documented "re-link to fix a re-auth error" doubled every
+// transaction, used a second Trial-plan slot and left the old Item erroring.
+// Re-authentication and new accounts go through Link update mode on the
+// existing Item (G3, below), so the exchange routes refuse a
+// duplicate: they release the new Item at Plaid and store nothing. A
+// duplicate = another connected (status 'GOOD') Plaid item at the same
+// institution (institution_id when known, else the name) that already holds an
+// account with the same mask and type. A second login at the same bank with
+// different accounts still links.
+// ---------------------------------------------------------------------------
+async function findDuplicatePlaidItem({ itemId, institutionId, institutionName, accounts }) {
+  const masks = (accounts || []).filter(a => a.mask).map(a => `${a.mask}|${a.type || ""}`);
+  if (!masks.length) return null;
+  const { rows } = await pool.query(
+    `SELECT DISTINCT pi.id, pi.institution_name
+     FROM plaid_items pi
+     JOIN linked_accounts la ON la.plaid_item_id = pi.id
+     WHERE pi.status = 'GOOD' AND pi.item_id <> $1
+       AND (($2::text IS NOT NULL AND pi.institution_id = $2::text)
+            OR LOWER(pi.institution_name) = LOWER($3::text))
+       AND (la.mask || '|' || COALESCE(la.type, '')) = ANY($4::text[])
+     ORDER BY pi.id
+     LIMIT 1`,
+    [itemId, institutionId || null, institutionName || "", masks]
+  );
+  return rows[0] || null;
+}
+
+// The investments-only link (POST /api/plaid/exchange) stores its accounts in
+// investment_accounts, not linked_accounts, so findDuplicatePlaidItem can't see
+// an earlier investments-only Item. This also matches an ACTIVE Plaid
+// investment account at the same institution (by name) with the same mask and
+// type that isn't one of the new Item's own accounts. Rows synced before the
+// mask column existed carry none until the next holdings sync fills it.
+async function findDuplicateInvestmentItem({ itemId, institutionId, institutionName, accounts }) {
+  const viaItems = await findDuplicatePlaidItem({ itemId, institutionId, institutionName, accounts });
+  if (viaItems) return viaItems;
+  const inv = (accounts || []).filter(a => a.mask && a.type === "investment");
+  if (!inv.length || !institutionName) return null;
+  const { rows } = await pool.query(
+    `SELECT pii.id, ia.institution AS institution_name
+     FROM investment_accounts ia
+     LEFT JOIN plaid_investment_items pii
+       ON LOWER(pii.institution_name) = LOWER(ia.institution) AND pii.item_id <> $1
+     WHERE ia.is_active AND ia.plaid_account_id IS NOT NULL
+       AND NOT (ia.plaid_account_id = ANY($2::text[]))
+       AND LOWER(ia.institution) = LOWER($3::text)
+       AND (ia.mask || '|' || ia.account_type) = ANY($4::text[])
+     ORDER BY pii.id NULLS LAST
+     LIMIT 1`,
+    [itemId, inv.map(a => a.account_id), institutionName,
+     inv.map(a => `${a.mask}|${a.subtype || "brokerage"}`)]
+  );
+  return rows[0] || null;
+}
+
+// Release a just-exchanged Item that we're not going to keep (best-effort —
+// it frees the Trial slot; a failure only leaves an unused Item at Plaid).
+async function releasePlaidItem(client, accessToken) {
+  try { await client.itemRemove({ access_token: accessToken }); }
+  catch (e) { console.warn("Plaid itemRemove (duplicate Item) failed:", e.response?.data?.error_code || e.message); }
+}
+
+function duplicateItemResponse(dup) {
+  return {
+    error: `${dup.institution_name} is already linked. Linking it again creates a second connection and duplicates its transactions, so this link was cancelled. ` +
+      "To repair a connection that needs re-authentication, or to add accounts at this bank, use Re-authenticate / Add accounts on the existing connection on this page — it keeps the same connection and its transactions.",
+    duplicate_of: { id: dup.id, institution: dup.institution_name },
+  };
+}
 
 // POST /api/plaid/link-token-transactions — create a link token that
 // requests Transactions + Investments in one Plaid Link session. Banks
@@ -170,6 +265,7 @@ router.post("/api/plaid/link-token-transactions", async (req, res) => {
       country_codes: [CountryCode.Us],
       language: "en",
       transactions: { days_requested: 730 },
+      ...webhookParam(req),
     };
     if (req.body?.redirect_uri) {
       tokenRequest.redirect_uri = req.body.redirect_uri;
@@ -207,6 +303,7 @@ router.post("/api/plaid/hosted-link", async (req, res) => {
       language: "en",
       transactions: { days_requested: 730 },
       redirect_uri: req.body.redirect_uri,
+      ...webhookParam(req),
       hosted_link: {
         url_lifetime_seconds: 3600,
         completion_redirect_uri: req.body.redirect_uri,
@@ -253,6 +350,26 @@ router.post("/api/plaid/hosted-link-complete", async (req, res) => {
     const accessToken = exchangeRes.data.access_token;
     const itemId = exchangeRes.data.item_id;
 
+    // A failure from here until the Item is stored would leave it orphaned at
+    // Plaid (not in plaid_items, so it couldn't be unlinked) — release it.
+    let acctRes, dup;
+    try {
+      acctRes = await client.accountsGet({ access_token: accessToken });
+      dup = await findDuplicatePlaidItem({
+        itemId,
+        institutionId: session.results?.item_add_results?.[0]?.institution?.institution_id || session.institution?.institution_id || null,
+        institutionName,
+        accounts: acctRes.data.accounts,
+      });
+    } catch (preErr) {
+      await releasePlaidItem(client, accessToken);
+      throw preErr;
+    }
+    if (dup) {
+      await releasePlaidItem(client, accessToken);
+      return res.status(409).json(duplicateItemResponse(dup));
+    }
+
     const itemRow = await pool.query(
       `INSERT INTO plaid_items (item_id, institution_name, access_token_enc)
        VALUES ($1, $2, pgp_sym_encrypt($3, $4))
@@ -265,6 +382,7 @@ router.post("/api/plaid/hosted-link-complete", async (req, res) => {
       [itemId, institutionName, accessToken, ENCRYPTION_PASSPHRASE]
     );
     const plaidItemDbId = itemRow.rows[0].id;
+    await noteItemWebhook("plaid_items", itemId, plaidWebhookUrl(req));
 
     await pool.query(
       `INSERT INTO sync_cursors (plaid_item_id, cursor) VALUES ($1, '')
@@ -272,7 +390,6 @@ router.post("/api/plaid/hosted-link-complete", async (req, res) => {
       [plaidItemDbId]
     );
 
-    const acctRes = await client.accountsGet({ access_token: accessToken });
     let linked = 0;
     for (const acct of acctRes.data.accounts) {
       const cur = acct.balances?.current ?? null;
@@ -300,6 +417,7 @@ router.post("/api/plaid/hosted-link-complete", async (req, res) => {
     }
 
     const syncResult = await syncPlaidItemTransactions(client, plaidItemDbId, accessToken);
+    await renameNewRows(syncResult.added);
     const liabResult = await syncPlaidLiabilities(client, accessToken, plaidItemDbId);
 
     res.json({
@@ -330,6 +448,28 @@ router.post("/api/plaid/exchange-transactions", async (req, res) => {
     const accessToken = exchangeRes.data.access_token;
     const itemId = exchangeRes.data.item_id;
 
+    // Accounts first, so a duplicate of an already-linked bank is refused
+    // before anything is stored (F18).
+    // A failure from here until the Item is stored would leave it orphaned at
+    // Plaid (not in plaid_items, so it couldn't be unlinked) — release it.
+    let acctRes, dup;
+    try {
+      acctRes = await client.accountsGet({ access_token: accessToken });
+      dup = await findDuplicatePlaidItem({
+        itemId,
+        institutionId: institution?.institution_id || null,
+        institutionName: institution?.name || "",
+        accounts: acctRes.data.accounts,
+      });
+    } catch (preErr) {
+      await releasePlaidItem(client, accessToken);
+      throw preErr;
+    }
+    if (dup) {
+      await releasePlaidItem(client, accessToken);
+      return res.status(409).json(duplicateItemResponse(dup));
+    }
+
     // Store the Plaid item (reuses the existing plaid_items table)
     const itemRow = await pool.query(
       `INSERT INTO plaid_items (item_id, institution_id, institution_name, access_token_enc)
@@ -344,6 +484,7 @@ router.post("/api/plaid/exchange-transactions", async (req, res) => {
        accessToken, ENCRYPTION_PASSPHRASE]
     );
     const plaidItemDbId = itemRow.rows[0].id;
+    await noteItemWebhook("plaid_items", itemId, plaidWebhookUrl(req));
 
     // Initialize the sync cursor for cursor-based transactionsSync
     await pool.query(
@@ -353,8 +494,7 @@ router.post("/api/plaid/exchange-transactions", async (req, res) => {
       [plaidItemDbId]
     );
 
-    // Fetch accounts and store in linked_accounts
-    const acctRes = await client.accountsGet({ access_token: accessToken });
+    // Store the accounts (fetched above) in linked_accounts
     let linked = 0;
     for (const acct of acctRes.data.accounts) {
       const cur = acct.balances?.current ?? null;
@@ -383,6 +523,7 @@ router.post("/api/plaid/exchange-transactions", async (req, res) => {
 
     // Run initial transaction sync immediately
     const syncResult = await syncPlaidItemTransactions(client, plaidItemDbId, accessToken);
+    await renameNewRows(syncResult.added);
 
     // #1: Sync liabilities (APR, min payment, due dates) — runs for
     // credit cards, student loans, and mortgages. Fails gracefully when
@@ -407,6 +548,7 @@ router.post("/api/plaid/exchange-transactions", async (req, res) => {
              updated_at = now()`,
           [itemId, institution?.name || "Unknown", accessToken, ENCRYPTION_PASSPHRASE]
         );
+        await noteItemWebhook("plaid_investment_items", itemId, plaidWebhookUrl(req));
         const holdingsRes = await client.investmentsHoldingsGet({ access_token: accessToken });
         const holdings = holdingsRes.data.holdings || [];
         const securities = holdingsRes.data.securities || [];
@@ -420,12 +562,13 @@ router.post("/api/plaid/exchange-transactions", async (req, res) => {
           // must fall through to the holdings-sum, not persist as $0.
           const balance = acct.balances?.current || acctValue[acct.account_id] || 0;
           await pool.query(
-            `INSERT INTO investment_accounts (name, institution, account_type, balance, plaid_account_id)
-             VALUES ($1, $2, $3, $4, $5)
+            `INSERT INTO investment_accounts (name, institution, account_type, balance, plaid_account_id, mask)
+             VALUES ($1, $2, $3, $4, $5, $6)
              ON CONFLICT (plaid_account_id) DO UPDATE SET
-               balance = $4, name = $1, is_active = true, updated_at = now()`,
+               balance = $4, name = $1, mask = COALESCE($6, investment_accounts.mask),
+               is_active = true, updated_at = now()`,
             [acct.name, institution?.name || "Unknown", acct.subtype || "brokerage",
-             balance, acct.account_id]
+             balance, acct.account_id, acct.mask || null]
           );
           // Backfill the linked_accounts row too so the accounts grid (which
           // reads current_balance) shows the real value instead of $0.
@@ -456,6 +599,131 @@ router.post("/api/plaid/exchange-transactions", async (req, res) => {
   }
 });
 
+// =========================================================================
+// Plaid Link UPDATE MODE (cycle-7 G3) — re-authenticate an Item, or add
+// accounts at an already-linked login, WITHOUT a new Item. Update mode keeps
+// the Item and its access token, so its transactions (and the user's edits on
+// them) stay; linking again used to create a second Item (refused since F18).
+//   kind 'transactions' → item_id is plaid_items.id (Transactions links);
+//   kind 'investments'  → item_id is plaid_investment_items.id (investments-only).
+// Only a token that no longer decrypts still needs unlink + link.
+// =========================================================================
+const UPDATE_KINDS = new Set(["transactions", "investments"]);
+const DECRYPT_FAILED_UPDATE = "This connection's stored token can't be decrypted (TOKEN_ENCRYPTION_PASSPHRASE changed), " +
+  "so it can't be updated in place. Unlink it on this page, then link the bank again.";
+
+// Validate { item_id, kind } and load the item with its decrypted token.
+// Returns { error: [status, body] } or { kind, item }.
+async function loadUpdateItem(body) {
+  const kind = body && body.kind;
+  const id = Number(body && body.item_id);
+  if (!UPDATE_KINDS.has(kind) || !Number.isInteger(id) || id <= 0) {
+    return { error: [400, { error: "item_id (a positive integer) and kind ('transactions' or 'investments') are required" }] };
+  }
+  const { rows } = await pool.query(
+    kind === "transactions"
+      ? `SELECT id, item_id, institution_name, status,
+                perfin_try_decrypt(access_token_enc, $2) AS access_token
+         FROM plaid_items WHERE id = $1`
+      : `SELECT id, item_id, institution_name, 'GOOD' AS status,
+                perfin_try_decrypt(access_token_enc, $2) AS access_token
+         FROM plaid_investment_items WHERE id = $1`,
+    [id, ENCRYPTION_PASSPHRASE]
+  );
+  const item = rows[0];
+  if (!item) return { error: [404, { error: "Plaid connection not found" }] };
+  if (item.status === "CSV") return { error: [400, { error: "CSV imports aren't a Plaid connection" }] };
+  if (!item.access_token) return { error: [409, { error: DECRYPT_FAILED_UPDATE, reason: "decryption_failed" }] };
+  return { kind, item };
+}
+
+// POST /api/plaid/link-token-update — a Link token in update mode for one Item:
+// its access_token, NO products (update mode keeps the Item's products), and
+// account selection on so the user can add accounts at the same login.
+router.post("/api/plaid/link-token-update", async (req, res) => {
+  const client = getPlaidClient();
+  if (!client) return res.status(501).json({ error: "Plaid not configured." });
+  try {
+    const r = await loadUpdateItem(req.body);
+    if (r.error) return res.status(r.error[0]).json(r.error[1]);
+    const response = await client.linkTokenCreate({
+      user: { client_user_id: "perfin-user-1" },
+      client_name: "Perfin",
+      country_codes: [CountryCode.Us],
+      language: "en",
+      access_token: r.item.access_token,
+      update: { account_selection_enabled: true },
+      ...webhookParam(req),
+    });
+    res.json({ link_token: response.data.link_token, kind: r.kind, institution: r.item.institution_name });
+  } catch (err) {
+    console.error("Plaid link-token-update error:", err.response?.data?.error_code || err.message);
+    res.status(500).json({ error: err.response?.data?.error_message || "Failed to create the update link token" });
+  }
+});
+
+// POST /api/plaid/update-complete — called when update-mode Link succeeds.
+// There is no token exchange (the access token is unchanged). Transactions:
+// register any new accounts BEFORE the cursor walk (BSI-1), clear the re-auth
+// signal, then sync this Item only — under the Plaid transaction lock (F27).
+// Investments: the holdings sync for this Item (new accounts are created by
+// its investment_accounts upsert).
+router.post("/api/plaid/update-complete", async (req, res) => {
+  const client = getPlaidClient();
+  if (!client) return res.status(501).json({ error: "Plaid not configured." });
+  let item;
+  try {
+    const r = await loadUpdateItem(req.body);
+    if (r.error) return res.status(r.error[0]).json(r.error[1]);
+    item = r.item;
+    if (r.kind === "transactions") {
+      const out = await withPlaidTxnLock(async () => {
+        const acc = await client.accountsGet({ access_token: item.access_token });
+        const accountsAdded = await registerMissingPlaidAccounts(item.id, acc.data.accounts || []);
+        await setPlaidItemErrorCode(item.id, null);
+        const sync = await syncPlaidItemTransactions(client, item.id, item.access_token);
+        await renameNewRows(sync.added);
+        return { accountsAdded, sync };
+      });
+      return res.json({
+        ok: true,
+        kind: "transactions",
+        institution: item.institution_name,
+        accounts_added: out.accountsAdded,
+        transactions_added: out.sync.added,
+        incomplete: out.sync.incomplete && out.sync.incomplete_reason !== "max_pages" ? true : undefined,
+      });
+    }
+    // investments
+    const acc = await client.accountsGet({ access_token: item.access_token });
+    const invIds = (acc.data.accounts || []).filter(a => a.type === "investment").map(a => a.account_id);
+    const known = invIds.length
+      ? (await pool.query("SELECT plaid_account_id FROM investment_accounts WHERE plaid_account_id = ANY($1::text[])", [invIds])).rows.length
+      : 0;
+    const holdings = await syncAllPlaidHoldings({ itemId: item.item_id });
+    if (!holdings.ok) throw new Error(holdings.error || "holdings sync failed");
+    return res.json({
+      ok: true,
+      kind: "investments",
+      institution: item.institution_name,
+      accounts_added: invIds.length - known,
+      transactions_added: 0,
+      holdings_updated: holdings.holdings_updated,
+      errors: holdings.errors,
+    });
+  } catch (err) {
+    const code = err.response?.data?.error_code;
+    // Still not re-authenticated (Link closed early, the bank refused): keep
+    // the signal so Sync Health and the Accounts page still say so.
+    if (item && req.body.kind === "transactions" && isReauthErrorCode(code)) {
+      await setPlaidItemErrorCode(item.id, code);
+      return res.status(409).json({ error: `${item.institution_name} still needs re-authentication — open Re-authenticate again.`, reason: code });
+    }
+    console.error("Plaid update-complete error:", code || err.message);
+    res.status(500).json({ error: "The connection was updated at Plaid, but refreshing it failed: " + (err.response?.data?.error_message || err.message) });
+  }
+});
+
 // Core sync helper: cursor-based transactionsSync for one Plaid item.
 // Plaid's transactionsSync returns added/modified/removed transaction sets
 // and a new cursor. We loop until `has_more` is false, upserting into our
@@ -464,6 +732,16 @@ router.post("/api/plaid/exchange-transactions", async (req, res) => {
 // Plaid amount convention: positive = money leaving account (debit),
 // negative = money entering (credit). This matches our convention directly
 // (no sign flip needed, unlike Teller which is inverted).
+// Merchant rename rules for rows a single-Item sync inserted outside
+// syncAllTransactions (the link exchanges and update-complete — seams audit
+// #3): those rows kept their raw names until a later sync added a row, and
+// detection run in between split a renamed subscription (F55). Fail-soft.
+async function renameNewRows(added) {
+  if (!(added > 0)) return;
+  try { await require("./merchant-rename").applyRenameRules(); }
+  catch (e) { console.error("rename rules after Plaid item sync failed:", e.message); }
+}
+
 async function syncPlaidItemTransactions(client, plaidItemDbId, accessToken) {
   // Read the current cursor
   const cursorRow = await pool.query(
@@ -495,9 +773,13 @@ async function syncPlaidItemTransactions(client, plaidItemDbId, accessToken) {
   const upsertTxn = (txn) => {
     const logoUrl = txn.counterparties?.[0]?.logo_url || null;
     return pool.query(
+      // Never re-insert a transaction the user deleted (deleted_transactions,
+      // cycle-7 F20 — a Plaid reconcile re-walks the whole history). INSERT …
+      // SELECT needs explicit casts.
       `INSERT INTO transactions (account_id, transaction_id, amount, iso_currency_code, date,
                                  merchant_name, name, category, pending, personal_finance_category, logo_url)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, $9, $10)
+       SELECT $1::text, $2::text, $3::numeric, $4::text, $5::date, $6::text, $7::text, $8::text[], false, $9::jsonb, $10::text
+       WHERE NOT EXISTS (SELECT 1 FROM deleted_transactions dt WHERE dt.transaction_id = $2::text)
        ON CONFLICT (transaction_id)
        DO UPDATE SET
          amount = EXCLUDED.amount,
@@ -648,17 +930,40 @@ router.post("/api/plaid/sync-transactions", async (_req, res) => {
 
 // Helper: sync all Plaid items' transactions. Called by the endpoint above
 // and by the bank auto-sync scheduler.
-async function syncAllPlaidTransactions() {
+// Plaid transaction syncs and reconciles run ONE AT A TIME (cycle-7 F27): a
+// reconcile resets every cursor to '' and re-walks, but a normal sync already
+// mid-walk would persist its own cursor after the reset — turning the
+// reconcile into an ordinary incremental sync. Callers queue on this lock.
+// The wait is bounded (PLAID_LOCK_MAX_WAIT_MS): a Plaid call that never returns
+// must not block every later sync until a restart — after that long the queued
+// run goes ahead (overlap only in that already-broken case).
+const PLAID_LOCK_MAX_WAIT_MS = 10 * 60 * 1000;
+let _plaidTxnLock = Promise.resolve();
+function withPlaidTxnLock(fn) {
+  let timer;
+  const prev = Promise.race([
+    _plaidTxnLock,
+    new Promise((resolve) => { timer = setTimeout(resolve, PLAID_LOCK_MAX_WAIT_MS); if (timer.unref) timer.unref(); }),
+  ]).finally(() => clearTimeout(timer));
+  const run = prev.then(fn, fn);
+  _plaidTxnLock = run.catch(() => { /* the caller awaiting `run` gets the error; the chain only needs to settle */ });
+  return run;
+}
+function syncAllPlaidTransactions() {
+  return withPlaidTxnLock(() => syncAllPlaidTransactionsOnce());
+}
+// The GOOD Plaid items with their decrypted tokens (perfin_try_decrypt — NULL,
+// never a raised error, for a row the passphrase can't open; INV-22).
+const PLAID_ITEMS_SQL =
+  `SELECT pi.id, pi.item_id, pi.institution_name,
+            perfin_try_decrypt(pi.access_token_enc, $1) AS access_token
+     FROM plaid_items pi
+     WHERE pi.status = 'GOOD'`;
+async function syncAllPlaidTransactionsOnce() {
   const client = getPlaidClient();
   if (!client) return { ok: false, error: "Plaid not configured" };
 
-  const items = await pool.query(
-    `SELECT pi.id, pi.item_id, pi.institution_name,
-            pgp_sym_decrypt(pi.access_token_enc, $1) AS access_token
-     FROM plaid_items pi
-     WHERE pi.status = 'GOOD'`,
-    [ENCRYPTION_PASSPHRASE]
-  );
+  const items = await pool.query(PLAID_ITEMS_SQL, [ENCRYPTION_PASSPHRASE]);
 
   let totalAdded = 0;
   let totalModified = 0;
@@ -671,98 +976,13 @@ async function syncAllPlaidTransactions() {
   let itemsFailed = 0;
 
   for (const item of items.rows) {
-    if (!item.access_token) {
-      errors.push({ institution: item.institution_name, error: "decryption_failed" });
-      itemsFailed++;
-      continue;
-    }
-    try {
-      // Fetch the item's accounts BEFORE walking the cursor and register any
-      // that aren't in linked_accounts yet (BSI-1). Rows only used to be
-      // created at link time, so an account the item gained later (a new card
-      // at the same bank, accounts added in update mode) had its transactions
-      // hit the transactions.account_id FK, fail the page, and — since the
-      // cursor never advances past a failed page (INV-04) — stall the WHOLE
-      // item forever. The same response feeds the balance refresh below.
-      // Fail-soft: an accountsGet error doesn't block the transaction sync
-      // (a genuinely broken item fails there too and is reported).
-      let balAccounts = null;
-      try {
-        const balRes = await client.accountsGet({ access_token: item.access_token });
-        balAccounts = balRes.data.accounts || [];
-        accountsRegistered += await registerMissingPlaidAccounts(item.id, balAccounts);
-      } catch (acctErr) {
-        console.error("Plaid accountsGet error for", item.institution_name, ":", acctErr.response?.data?.error_message || acctErr.message);
-      }
-
-      const result = await syncPlaidItemTransactions(client, item.id, item.access_token);
-      totalAdded += result.added;
-      totalModified += result.modified;
-      totalRemoved += result.removed;
-      // A halted cursor walk means the item is stuck/behind — surface it
-      // instead of reporting a clean success (BSI-1). max_pages is a normal
-      // resumable long walk, not an error.
-      if (result.incomplete && result.incomplete_reason !== "max_pages") {
-        errors.push({ institution: item.institution_name, error: "partial_sync_incomplete" });
-      }
-      // The item authenticated and synced → clear any recorded re-auth need.
-      await setPlaidItemErrorCode(item.id, null);
-
-      // #1: sync liabilities (APR, min payment) on each auto-sync cycle
-      try { await syncPlaidLiabilities(client, item.access_token, item.id); }
-      catch (libErr) { console.error("Liabilities sync error for", item.institution_name, ":", libErr.message); }
-
-      // Update balance snapshots for linked accounts under this item
-      const accts = await pool.query(
-        "SELECT id, account_id FROM linked_accounts WHERE plaid_item_id = $1",
-        [item.id]
-      );
-      try {
-        if (!balAccounts) {
-          const balRes = await client.accountsGet({ access_token: item.access_token });
-          balAccounts = balRes.data.accounts || [];
-        }
-        for (const ba of balAccounts) {
-          const la = accts.rows.find(a => a.account_id === ba.account_id);
-          if (!la) continue;
-          const bal = ba.balances?.current ?? ba.balances?.available ?? null;
-          if (bal !== null) {
-            // Keep credit_limit fresh on the auto-sync path too (only the
-            // balance-only path did before), so utilization stays correct when
-            // Plaid reports `available: null` for a credit card (F-credit).
-            await pool.query(
-              `UPDATE linked_accounts SET
-                 current_balance = $1, available_balance = $2,
-                 credit_limit = COALESCE($3, credit_limit), balance_updated_at = now()
-               WHERE id = $4`,
-              [ba.balances.current, ba.balances.available, ba.balances?.limit ?? null, la.id]
-            );
-            await pool.query(
-              `INSERT INTO account_balance_snapshots (source, source_id, snapshot_date, balance, current_balance, available_balance)
-               VALUES ('linked', $1, CURRENT_DATE, $2, $3, $4)
-               ON CONFLICT (source, source_id, snapshot_date) DO UPDATE SET
-                 balance = EXCLUDED.balance, current_balance = EXCLUDED.current_balance,
-                 available_balance = EXCLUDED.available_balance`,
-              // current_balance mirrors the picked balance (current ?? available)
-              // so a card reporting current=null/available=N doesn't snapshot a
-              // null current_balance inconsistent with the `balance` column (F16).
-              [la.id, ba.balances.current ?? ba.balances.available, ba.balances.current ?? ba.balances.available, ba.balances.available]
-            ).catch(e => console.error("Plaid balance snapshot error:", e.message));
-          }
-        }
-      } catch (balErr) {
-        console.error("Plaid balance update error for", item.institution_name, ":", balErr.message);
-      }
-    } catch (err) {
-      console.error("Plaid sync error for", item.institution_name, ":", err.response?.data?.error_message || err.message);
-      errors.push({ institution: item.institution_name, error: err.response?.data?.error_message || err.message });
-      itemsFailed++;
-      // An ITEM_* error that needs the user to re-authenticate is recorded so
-      // Sync Health can say so (BSI-10) — nothing ever flagged it before.
-      if (isReauthErrorCode(err.response?.data?.error_code)) {
-        await setPlaidItemErrorCode(item.id, err.response.data.error_code);
-      }
-    }
+    const r = await syncOnePlaidItem(client, item);
+    totalAdded += r.added;
+    totalModified += r.modified;
+    totalRemoved += r.removed;
+    accountsRegistered += r.accounts_registered;
+    errors.push(...r.errors);
+    if (r.failed) itemsFailed++;
   }
 
   return {
@@ -774,6 +994,167 @@ async function syncAllPlaidTransactions() {
     accounts_registered: accountsRegistered || undefined,
     errors: errors.length > 0 ? errors : undefined,
   };
+}
+
+// syncOnePlaidItem — one item's whole sync: register new accounts, walk the
+// transaction cursor, clear a recorded re-auth need, refresh liabilities and
+// balances. `item` is a PLAID_ITEMS_SQL row. Never throws: the outcome is
+// { added, modified, removed, accounts_registered, errors[], failed } — failed
+// = the item did not sync at all (token / thrown error). Shared by the
+// all-items sync above and the per-item sync a Plaid webhook asks for
+// (syncPlaidItem, roadmap T2.1 W3). The caller holds withPlaidTxnLock. A walk
+// that reached the end of the cursor stamps plaid_items.last_synced_at.
+async function syncOnePlaidItem(client, item) {
+  const out = { added: 0, modified: 0, removed: 0, accounts_registered: 0, errors: [], failed: false };
+  if (!item.access_token) {
+    out.errors.push({ institution: item.institution_name, error: "decryption_failed" });
+    out.failed = true;
+    return out;
+  }
+  try {
+    // Fetch the item's accounts BEFORE walking the cursor and register any
+    // that aren't in linked_accounts yet (BSI-1). Rows only used to be
+    // created at link time, so an account the item gained later (a new card
+    // at the same bank, accounts added in update mode) had its transactions
+    // hit the transactions.account_id FK, fail the page, and — since the
+    // cursor never advances past a failed page (INV-04) — stall the WHOLE
+    // item forever. The same response feeds the balance refresh below.
+    // Fail-soft: an accountsGet error doesn't block the transaction sync
+    // (a genuinely broken item fails there too and is reported).
+    let balAccounts = null;
+    try {
+      const balRes = await client.accountsGet({ access_token: item.access_token });
+      balAccounts = balRes.data.accounts || [];
+      out.accounts_registered += await registerMissingPlaidAccounts(item.id, balAccounts);
+    } catch (acctErr) {
+      console.error("Plaid accountsGet error for", item.institution_name, ":", acctErr.response?.data?.error_message || acctErr.message);
+    }
+
+    const result = await syncPlaidItemTransactions(client, item.id, item.access_token);
+    out.added += result.added;
+    out.modified += result.modified;
+    out.removed += result.removed;
+    // A halted cursor walk means the item is stuck/behind — surface it
+    // instead of reporting a clean success (BSI-1). max_pages is a normal
+    // resumable long walk, not an error.
+    if (result.incomplete && result.incomplete_reason !== "max_pages") {
+      out.errors.push({ institution: item.institution_name, error: "partial_sync_incomplete" });
+    }
+    // The item authenticated and synced → clear any recorded re-auth need —
+    // but not a webhook's advance warning (it still syncs until it expires).
+    await setPlaidItemErrorCode(item.id, null, { keepWarnings: true });
+    // The item's own freshness (roadmap T2.1 W3): stamped only when the walk
+    // reached the end of the cursor, so a stuck or still-paging item doesn't
+    // read as current.
+    if (!result.incomplete) {
+      await pool.query("UPDATE plaid_items SET last_synced_at = now() WHERE id = $1", [item.id])
+        .catch(e => console.error("plaid item last_synced_at update error:", e.message));
+    }
+
+    // #1: sync liabilities (APR, min payment) on each auto-sync cycle
+    try { await syncPlaidLiabilities(client, item.access_token, item.id); }
+    catch (libErr) { console.error("Liabilities sync error for", item.institution_name, ":", libErr.message); }
+
+    // Update balance snapshots for linked accounts under this item
+    const accts = await pool.query(
+      "SELECT id, account_id FROM linked_accounts WHERE plaid_item_id = $1",
+      [item.id]
+    );
+    try {
+      if (!balAccounts) {
+        const balRes = await client.accountsGet({ access_token: item.access_token });
+        balAccounts = balRes.data.accounts || [];
+      }
+      for (const ba of balAccounts) {
+        const la = accts.rows.find(a => a.account_id === ba.account_id);
+        if (!la) continue;
+        const bal = ba.balances?.current ?? ba.balances?.available ?? null;
+        if (bal !== null) {
+          // Keep credit_limit fresh on the auto-sync path too (only the
+          // balance-only path did before), so utilization stays correct when
+          // Plaid reports `available: null` for a credit card (F-credit).
+          await pool.query(
+            `UPDATE linked_accounts SET
+               current_balance = $1, available_balance = $2,
+               credit_limit = COALESCE($3, credit_limit), balance_updated_at = now()
+             WHERE id = $4`,
+            [ba.balances.current, ba.balances.available, ba.balances?.limit ?? null, la.id]
+          );
+          await pool.query(
+            `INSERT INTO account_balance_snapshots (source, source_id, snapshot_date, balance, current_balance, available_balance)
+             VALUES ('linked', $1, CURRENT_DATE, $2, $3, $4)
+             ON CONFLICT (source, source_id, snapshot_date) DO UPDATE SET
+               balance = EXCLUDED.balance, current_balance = EXCLUDED.current_balance,
+               available_balance = EXCLUDED.available_balance`,
+            // current_balance mirrors the picked balance (current ?? available)
+            // so a card reporting current=null/available=N doesn't snapshot a
+            // null current_balance inconsistent with the `balance` column (F16).
+            [la.id, ba.balances.current ?? ba.balances.available, ba.balances.current ?? ba.balances.available, ba.balances.available]
+          ).catch(e => console.error("Plaid balance snapshot error:", e.message));
+        }
+      }
+    } catch (balErr) {
+      console.error("Plaid balance update error for", item.institution_name, ":", balErr.message);
+    }
+  } catch (err) {
+    console.error("Plaid sync error for", item.institution_name, ":", err.response?.data?.error_message || err.message);
+    out.errors.push({ institution: item.institution_name, error: err.response?.data?.error_message || err.message });
+    out.failed = true;
+    // An ITEM_* error that needs the user to re-authenticate is recorded so
+    // Sync Health can say so (BSI-10) — nothing ever flagged it before.
+    if (isReauthErrorCode(err.response?.data?.error_code)) {
+      await setPlaidItemErrorCode(item.id, err.response.data.error_code);
+    }
+  }
+  return out;
+}
+
+// syncPlaidItem — sync ONE Plaid item (plaid_items.id) now: what a Plaid
+// SYNC_UPDATES_AVAILABLE webhook asks for (roadmap T2.1 W3). Runs under
+// withPlaidTxnLock like every Plaid transaction walk (F27). COALESCED per item:
+// a request that arrives while that item's sync is queued or running doesn't
+// start a second one — it marks the running one to go round once more when it
+// finishes (Plaid may have more data than the run already fetched) and shares
+// its promise. Returns { ok: false, error: "Plaid not configured" | "not_found" }
+// (no GOOD item with that id), else { ok: true, runs, added, modified, removed,
+// accounts_registered (summed over the runs), errors, failed (the last run's) }.
+// It records nothing globally — no last_txn_sync_at, no last_sync_result (the
+// item's own last_synced_at only) — and runs no post-sync steps; the caller
+// runs enrollments.runPostSyncSteps(added).
+const _plaidItemSyncs = new Map(); // plaid_items.id → { again, promise }
+function syncPlaidItem(plaidItemDbId) {
+  const running = _plaidItemSyncs.get(plaidItemDbId);
+  if (running) { running.again = true; return running.promise; }
+  const state = { again: false, promise: null };
+  _plaidItemSyncs.set(plaidItemDbId, state);
+  state.promise = (async () => {
+    const total = { ok: true, runs: 0, added: 0, modified: 0, removed: 0, accounts_registered: 0, errors: [], failed: false };
+    try {
+      do {
+        state.again = false;
+        const r = await withPlaidTxnLock(() => syncPlaidItemOnce(plaidItemDbId));
+        if (!r.ok) return r;
+        total.runs++;
+        total.added += r.added;
+        total.modified += r.modified;
+        total.removed += r.removed;
+        total.accounts_registered += r.accounts_registered;
+        total.errors = r.errors;
+        total.failed = r.failed;
+      } while (state.again);
+      return total;
+    } finally {
+      _plaidItemSyncs.delete(plaidItemDbId);
+    }
+  })();
+  return state.promise;
+}
+async function syncPlaidItemOnce(plaidItemDbId) {
+  const client = getPlaidClient();
+  if (!client) return { ok: false, error: "Plaid not configured" };
+  const r = await pool.query(PLAID_ITEMS_SQL + " AND pi.id = $2", [ENCRYPTION_PASSPHRASE, plaidItemDbId]);
+  if (!r.rows.length) return { ok: false, error: "not_found" };
+  return { ok: true, ...(await syncOnePlaidItem(client, r.rows[0])) };
 }
 
 // registerMissingPlaidAccounts — insert linked_accounts rows for any account an
@@ -820,18 +1201,100 @@ const PLAID_REAUTH_CODES = new Set([
 function isReauthErrorCode(code) {
   return typeof code === "string" && PLAID_REAUTH_CODES.has(code);
 }
+// Advance warnings a Plaid ITEM webhook sets (roadmap T2.1 W4): the item still
+// syncs until its consent expires / it disconnects, so a clean sync must NOT
+// clear them — only a re-authentication does (update-complete, a re-link,
+// LOGIN_REPAIRED). Once it really breaks, the sync's own code replaces them.
+const PLAID_ADVANCE_WARNINGS = ["PENDING_EXPIRATION", "PENDING_DISCONNECT"];
 
-// Record (code) or clear (null) the item's re-auth signal. Fail-soft: a missing
-// column (pre-migration) or DB blip must never break a sync.
-async function setPlaidItemErrorCode(plaidItemDbId, code) {
-  await pool.query(
-    code === null
-      ? "UPDATE plaid_items SET last_error_code = NULL WHERE id = $1 AND last_error_code IS NOT NULL"
-      : "UPDATE plaid_items SET last_error_code = $2, updated_at = now() WHERE id = $1",
-    code === null ? [plaidItemDbId] : [plaidItemDbId, code]
-  ).catch(e => console.error("plaid item error-code update error:", e.message));
+// The notification an item NEWLY flagged with `code` sends.
+function reauthNotice(code, institution) {
+  const name = institution || "A Plaid connection";
+  if (PLAID_ADVANCE_WARNINGS.includes(code)) {
+    return { title: "Bank connection expires soon", body: `${name}'s connection will stop syncing soon. Open Accounts → Re-authenticate to keep it working.` };
+  }
+  if (code === "USER_PERMISSION_REVOKED") {
+    return { title: "Bank connection access revoked", body: `Access to ${name} was revoked at Plaid. Open Accounts → Re-authenticate (or unlink and link it again if that fails).` };
+  }
+  return { title: "Bank connection needs re-authentication", body: `${name} needs you to sign in again. Open Accounts → Re-authenticate.` };
 }
 
+// Record (code) or clear (null) the item's re-auth signal. Fail-soft: a missing
+// column (pre-migration) or DB blip must never break a sync. When an item NEWLY
+// needs re-authentication (no code before), one notification deep-links to the
+// Accounts page, where "Re-authenticate" opens Plaid Link in update mode
+// (cycle-7 G3). A code that stays set doesn't re-notify. keepWarnings (a clean
+// sync's clear): leave an advance warning (PLAID_ADVANCE_WARNINGS) in place.
+async function setPlaidItemErrorCode(plaidItemDbId, code, { keepWarnings = false } = {}) {
+  const r = await pool.query(
+    code === null
+      ? (keepWarnings
+        ? "UPDATE plaid_items SET last_error_code = NULL WHERE id = $1 AND last_error_code IS NOT NULL AND last_error_code <> ALL($2::text[])"
+        : "UPDATE plaid_items SET last_error_code = NULL WHERE id = $1 AND last_error_code IS NOT NULL")
+      : `WITH prev AS (SELECT last_error_code AS was FROM plaid_items WHERE id = $1)
+         UPDATE plaid_items SET last_error_code = $2, updated_at = now()
+         WHERE id = $1 AND last_error_code IS DISTINCT FROM $2
+         RETURNING institution_name, (SELECT was FROM prev) AS was`,
+    code === null ? (keepWarnings ? [plaidItemDbId, PLAID_ADVANCE_WARNINGS] : [plaidItemDbId]) : [plaidItemDbId, code]
+  ).catch(e => { console.error("plaid item error-code update error:", e.message); return null; });
+  if (code !== null && r && r.rows && r.rows.length && r.rows[0].was == null) {
+    try {
+      const { sendToAll } = require("./notifications");
+      await sendToAll({
+        ...reauthNotice(code, r.rows[0].institution_name),
+        tag: `plaid-reauth-${plaidItemDbId}`,
+        data: { url: "/accounts" },
+      });
+    } catch (e) { console.error("plaid re-auth notification failed:", e.message); }
+  }
+}
+
+
+// POST /api/plaid/webhooks/register — point every connected Plaid Item at this
+// app's webhook URL (roadmap T2.1 W4): item/webhook/update for each GOOD
+// plaid_items row and each investments-only Item, recording the URL on the
+// ones Plaid accepted. Items linked after PUBLIC_URL was set already carry it
+// (the link tokens do); this is for the ones linked before, and after the
+// address changes. 400 while PUBLIC_URL isn't set. A token that won't decrypt
+// is reported per item (decryption_failed), never sent.
+router.post("/api/plaid/webhooks/register", async (req, res) => {
+  const client = getPlaidClient();
+  if (!client) return res.status(501).json({ error: "Plaid not configured." });
+  const url = plaidWebhookUrl(req);
+  if (!url) return res.status(400).json({ error: "Set PUBLIC_URL to this app's public https address first — Plaid calls that address." });
+  try {
+    const items = await pool.query(
+      `SELECT 'plaid_items' AS tbl, item_id, institution_name,
+              perfin_try_decrypt(access_token_enc, $1) AS access_token
+         FROM plaid_items WHERE status = 'GOOD'
+       UNION ALL
+       SELECT 'plaid_investment_items', pii.item_id, pii.institution_name,
+              perfin_try_decrypt(pii.access_token_enc, $1)
+         FROM plaid_investment_items pii
+        WHERE NOT EXISTS (SELECT 1 FROM plaid_items pi WHERE pi.item_id = pii.item_id)`,
+      [ENCRYPTION_PASSPHRASE]
+    );
+    let registered = 0;
+    const errors = [];
+    for (const item of items.rows) {
+      if (!item.access_token) { errors.push({ institution: item.institution_name, error: "decryption_failed" }); continue; }
+      try {
+        await client.itemWebhookUpdate({ access_token: item.access_token, webhook: url });
+        await noteItemWebhook(item.tbl, item.item_id, url);
+        // A combined Item also has an investments registry row — same Item.
+        if (item.tbl === "plaid_items") await noteItemWebhook("plaid_investment_items", item.item_id, url);
+        registered++;
+      } catch (err) {
+        console.error("Plaid webhook register error for", item.institution_name, ":", err.response?.data?.error_code || err.message);
+        errors.push({ institution: item.institution_name, error: err.response?.data?.error_code || "request_failed" });
+      }
+    }
+    res.json({ ok: errors.length === 0, url, registered, failed: errors.length, errors: errors.length ? errors : undefined });
+  } catch (err) {
+    console.error("Plaid webhook register error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
 
 // reconcilePlaidTransactions — reset every Plaid item's transactionsSync cursor
 // to empty, then re-walk the full history. Plaid's cursor model is all-or-
@@ -842,9 +1305,12 @@ async function setPlaidItemErrorCode(plaidItemDbId, code) {
 async function reconcilePlaidTransactions() {
   const client = getPlaidClient();
   if (!client) return { ok: false, error: "Plaid not configured" };
-  await pool.query("UPDATE sync_cursors SET cursor = ''").catch(e => console.error("cursor reset error:", e.message));
-  const result = await syncAllPlaidTransactions();
-  return { ok: true, reconciled: true, ...result };
+  // Reset + re-walk under the same lock as a normal sync (F27).
+  return withPlaidTxnLock(async () => {
+    await pool.query("UPDATE sync_cursors SET cursor = ''").catch(e => console.error("cursor reset error:", e.message));
+    const result = await syncAllPlaidTransactionsOnce();
+    return { ok: true, reconciled: true, ...result };
+  });
 }
 
 // Balance-only refresh for every linked Plaid item. Used by
@@ -860,7 +1326,7 @@ async function syncAllPlaidBalances() {
     // surface as a recurring spurious error + wasted call (F3). Matches the
     // filter syncAllPlaidTransactions already applies.
     `SELECT id, institution_name,
-            pgp_sym_decrypt(access_token_enc, $1) AS access_token
+            perfin_try_decrypt(access_token_enc, $1) AS access_token
      FROM plaid_items
      WHERE status = 'GOOD'`,
     [ENCRYPTION_PASSPHRASE]
@@ -921,7 +1387,11 @@ async function syncAllPlaidBalances() {
       // Surface a genuine liabilities failure (NOT the expected "not_supported"
       // skip) so a card whose APR/limit won't load — e.g. an item that needs a
       // Liabilities re-auth — is visible instead of silently swallowed.
-      try {
+      // Only Items that carry a credit card or a loan have liabilities to
+      // fetch (F28: every checking/brokerage-only Item raised a false
+      // "liabilities:" error on each balance sync).
+      const hasLiabilityAccount = hasCreditAccount || (balRes.data.accounts || []).some(a => a.type === "loan");
+      if (hasLiabilityAccount) try {
         const lib = await syncPlaidLiabilities(client, item.access_token, item.id);
         if (lib && lib.error) {
           errors.push({ institution: item.institution_name, error: "liabilities: " + (lib.error_code || lib.error) });
@@ -932,7 +1402,7 @@ async function syncAllPlaidBalances() {
           // re-linking the card is the only way to load APR + credit limit.
           errors.push({
             institution: item.institution_name,
-            error: "APR/credit limit unavailable — re-link this card to enable Plaid Liabilities",
+            error: "APR/credit limit unavailable — this connection predates Plaid Liabilities; unlink it and link the bank again to enable them (or enter the APR and limit on the card)",
           });
         }
       } catch (libErr) {
@@ -982,10 +1452,12 @@ async function syncPlaidLiabilities(client, accessToken, plaidItemDbId) {
            balance_updated_at = now()
          WHERE account_id = $6 AND plaid_item_id = $7`,
         [
-          purchaseApr?.apr_percentage || null,
-          cc.minimum_payment_amount || null,
+          // `??`, not `||` (cycle-7 F28): a 0% promotional APR or a $0
+          // minimum payment is a real value, not "unknown".
+          purchaseApr?.apr_percentage ?? null,
+          cc.minimum_payment_amount ?? null,
           cc.next_payment_due_date || null,
-          cc.last_payment_amount || null,
+          cc.last_payment_amount ?? null,
           cc.last_payment_date || null,
           cc.account_id,
           plaidItemDbId,
@@ -1026,10 +1498,10 @@ async function syncPlaidLiabilities(client, accessToken, plaidItemDbId) {
            balance_updated_at = now()
          WHERE account_id = $6 AND plaid_item_id = $7`,
         [
-          loan.interest_rate_percentage || null,
-          loan.minimum_payment_amount || null,
+          loan.interest_rate_percentage ?? null,
+          loan.minimum_payment_amount ?? null,
           loan.next_payment_due_date || null,
-          loan.last_payment_amount || null,
+          loan.last_payment_amount ?? null,
           loan.last_payment_date || null,
           loan.account_id,
           plaidItemDbId,
@@ -1042,7 +1514,14 @@ async function syncPlaidLiabilities(client, accessToken, plaidItemDbId) {
   } catch (err) {
     // Liabilities may not be supported for all institutions — fail
     // gracefully so the rest of the sync continues.
-    if (err.response?.data?.error_code === "PRODUCTS_NOT_SUPPORTED") {
+    // F28: an Item with no liability accounts (a checking-only bank) is not an
+    // error, and a missing product / consent is the "not_supported" skip the
+    // balance path turns into an actionable hint only for credit cards.
+    const skipCode = err.response?.data?.error_code;
+    if (skipCode === "NO_LIABILITY_ACCOUNTS") {
+      return { credit: 0, student: 0, mortgage: 0, updated: 0, skipped: "no_liability_accounts" };
+    }
+    if (skipCode === "PRODUCTS_NOT_SUPPORTED" || skipCode === "ADDITIONAL_CONSENT_REQUIRED") {
       return { credit: 0, student: 0, mortgage: 0, updated: 0, skipped: "not_supported" };
     }
     // Surface the error_code so a missing/un-initialized Liabilities product
@@ -1072,7 +1551,7 @@ router.get("/api/plaid/recurring", async (_req, res) => {
   try {
     const items = await pool.query(
       `SELECT pi.id, pi.item_id, pi.institution_name,
-              pgp_sym_decrypt(pi.access_token_enc, $1) AS access_token
+              perfin_try_decrypt(pi.access_token_enc, $1) AS access_token
        FROM plaid_items pi WHERE pi.status = 'GOOD'`,
       [ENCRYPTION_PASSPHRASE]
     );
@@ -1146,6 +1625,28 @@ router.post("/api/plaid/exchange", async (req, res) => {
     const accessToken = exchangeRes.data.access_token;
     const itemId = exchangeRes.data.item_id;
 
+    // Refuse a duplicate of an already-linked brokerage before anything is
+    // stored (the F18 guard, cycle-7 G3 — this route had none): the new Item
+    // is released at Plaid. A failure before the Item is stored releases it
+    // too, so it can't be left orphaned at Plaid.
+    let dup;
+    try {
+      const acctRes = await client.accountsGet({ access_token: accessToken });
+      dup = await findDuplicateInvestmentItem({
+        itemId,
+        institutionId: institution?.institution_id || null,
+        institutionName: institution?.name || "",
+        accounts: acctRes.data.accounts,
+      });
+    } catch (preErr) {
+      await releasePlaidItem(client, accessToken);
+      throw preErr;
+    }
+    if (dup) {
+      await releasePlaidItem(client, accessToken);
+      return res.status(409).json(duplicateItemResponse(dup));
+    }
+
     // Store the Plaid item
     await pool.query(
       `INSERT INTO plaid_investment_items (item_id, institution_name, access_token_enc)
@@ -1156,6 +1657,7 @@ router.post("/api/plaid/exchange", async (req, res) => {
          updated_at = now()`,
       [itemId, institution?.name || "Unknown", accessToken, ENCRYPTION_PASSPHRASE]
     );
+    await noteItemWebhook("plaid_investment_items", itemId, plaidWebhookUrl(req));
 
     // Fetch initial holdings
     const holdingsRes = await client.investmentsHoldingsGet({ access_token: accessToken });
@@ -1174,10 +1676,11 @@ router.post("/api/plaid/exchange", async (req, res) => {
       // Upsert into investment_accounts
       const balance = acct.balances?.current || 0;
       await pool.query(
-        `INSERT INTO investment_accounts (name, institution, account_type, balance, notes, plaid_account_id)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO investment_accounts (name, institution, account_type, balance, notes, plaid_account_id, mask)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (plaid_account_id) DO UPDATE SET
-           balance = $4, name = $1, is_active = true, updated_at = now()`,
+           balance = $4, name = $1, mask = COALESCE($7, investment_accounts.mask),
+           is_active = true, updated_at = now()`,
         [
           acct.official_name || acct.name,
           institution?.name || "Unknown",
@@ -1185,6 +1688,7 @@ router.post("/api/plaid/exchange", async (req, res) => {
           balance,
           null,
           acct.account_id,
+          acct.mask || null,
         ]
       );
       stored++;
@@ -1210,7 +1714,9 @@ router.post("/api/plaid/exchange", async (req, res) => {
 // investments repopulate automatically. UPSERTs investment_accounts so the rows
 // are RE-CREATED if the table was cleared (e.g. after a fresh-start reset) —
 // the old code only UPDATEd existing rows, leaving investments empty after a wipe.
-async function syncAllPlaidHoldings() {
+// `itemId` (Plaid's item_id) limits the run to one Item — Link update mode
+// (POST /api/plaid/update-complete, cycle-7 G3).
+async function syncAllPlaidHoldings({ itemId = null } = {}) {
   const client = getPlaidClient();
   if (!client) return { ok: false, error: "Plaid not configured" };
   try {
@@ -1225,19 +1731,20 @@ async function syncAllPlaidHoldings() {
       // no holdings.
       `SELECT DISTINCT ON (item_id) item_id, institution_name, access_token FROM (
          SELECT item_id, institution_name,
-                pgp_sym_decrypt(access_token_enc, $1) AS access_token, 1 AS src
+                perfin_try_decrypt(access_token_enc, $1) AS access_token, 1 AS src
          FROM plaid_investment_items
          UNION ALL
          SELECT pi.item_id, pi.institution_name,
-                pgp_sym_decrypt(pi.access_token_enc, $1) AS access_token, 2 AS src
+                perfin_try_decrypt(pi.access_token_enc, $1) AS access_token, 2 AS src
          FROM plaid_items pi
          WHERE pi.status = 'GOOD' AND EXISTS (
            SELECT 1 FROM linked_accounts la
            WHERE la.plaid_item_id = pi.id AND ${INVESTMENT_ACCOUNT_TYPES}
          )
        ) u
+       WHERE ($2::text IS NULL OR item_id = $2::text)
        ORDER BY item_id, src`,
-      [ENCRYPTION_PASSPHRASE]
+      [ENCRYPTION_PASSPHRASE, itemId]
     );
 
     let totalAccounts = 0, totalHoldings = 0, totalPruned = 0;
@@ -1251,8 +1758,8 @@ async function syncAllPlaidHoldings() {
     const snapshotRows = [];
     for (const item of items.rows) {
       try {
-        // pgp_sym_decrypt returns NULL when the passphrase is wrong (or empty)
-        // instead of throwing — without this check the route used to call
+        // perfin_try_decrypt returns NULL when the passphrase is wrong (raw
+        // pgp_sym_decrypt THROWS, F17) — without this check the route used to call
         // Plaid with `access_token: null`, which Plaid 400s on, get caught
         // below, and ultimately return 200 with `accounts_updated: 0` and no
         // surface on the failure. Now we record a structured error per item.
@@ -1271,6 +1778,7 @@ async function syncAllPlaidHoldings() {
         // Holdings-sum fallback for accounts whose account-level current balance
         // is null (Schwab et al.), so they don't get persisted as $0.
         const acctValue = sumHoldingsByAccount(holdings, secMap);
+        const removedAccounts = new Set(); // user-removed accounts (F22)
 
         for (const acct of accounts) {
           if (acct.type !== "investment") continue;
@@ -1286,16 +1794,24 @@ async function syncAllPlaidHoldings() {
           // RETURNING the investment_accounts.id so the snapshot below can
           // attribute history to the right account (we key by plaid_account_id
           // here but the snapshot table uses the local SERIAL id).
+          // is_active is KEPT on conflict (cycle-7 F22): an account the user
+          // removed (DELETE /api/investment-accounts/:id) used to be revived by
+          // the next sync. A new account still inserts active.
           const updRes = await pool.query(
-            `INSERT INTO investment_accounts (name, institution, account_type, balance, plaid_account_id)
-             VALUES ($1, $2, $3, $4, $5)
+            `INSERT INTO investment_accounts (name, institution, account_type, balance, plaid_account_id, mask)
+             VALUES ($1, $2, $3, $4, $5, $6)
              ON CONFLICT (plaid_account_id) DO UPDATE SET
                balance = $4, name = $1, institution = $2, account_type = $3,
-               is_active = true, updated_at = now()
-             RETURNING id`,
+               mask = COALESCE($6, investment_accounts.mask),
+               updated_at = now()
+             RETURNING id, is_active`,
             [acct.name || "Investment", item.institution_name || "Unknown",
-             acct.subtype || "brokerage", balance, acct.account_id]
+             acct.subtype || "brokerage", balance, acct.account_id, acct.mask || null]
           );
+          if (updRes.rows[0] && updRes.rows[0].is_active === false) {
+            removedAccounts.add(acct.account_id);
+            continue; // no mirror balance, snapshot or holdings for a removed account
+          }
           // Keep the linked_accounts mirror in sync so the accounts grid agrees.
           // F4: when `balance` is only the holdings-sum FALLBACK (no real
           // account-level current), don't clobber an existing non-zero mirror
@@ -1315,8 +1831,14 @@ async function syncAllPlaidHoldings() {
           }
         }
 
-        // Upsert this item's holdings and drop sold positions (BSI-4/5).
-        const written = await writePlaidHoldings(pool, holdingsRes.data);
+        // Upsert this item's holdings and drop sold positions (BSI-4/5) — for
+        // accounts the user hasn't removed (F22).
+        const keep = (x) => !removedAccounts.has(x.account_id);
+        const written = await writePlaidHoldings(pool, {
+          ...holdingsRes.data,
+          accounts: (holdingsRes.data.accounts || []).filter(keep),
+          holdings: (holdingsRes.data.holdings || []).filter(keep),
+        });
         totalHoldings += written.upserted;
         totalPruned += written.pruned;
       } catch (err) {
@@ -1361,6 +1883,64 @@ async function syncAllPlaidHoldings() {
     return { ok: false, error: err.message };
   }
 }
+
+// DELETE /api/plaid/investment-items/:id — unlink an INVESTMENTS-ONLY Plaid
+// Item (one linked through POST /api/plaid/exchange, which has no plaid_items
+// row, so DELETE /api/items/:id couldn't reach it — its Trial slot and its
+// encrypted token were stuck, cycle-7 F22). Best-effort: learn the Item's
+// accounts and release it at Plaid, then deactivate those accounts, drop their
+// holdings and delete the registry row. A token that won't decrypt still
+// removes the registry row (the accounts can then be removed one by one).
+router.delete("/api/plaid/investment-items/:id", async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, item_id, institution_name,
+              perfin_try_decrypt(access_token_enc, $2) AS access_token
+       FROM plaid_investment_items WHERE id = $1`,
+      [req.params.id, ENCRYPTION_PASSPHRASE]
+    );
+    if (!rows.length) return res.status(404).json({ error: "Item not found" });
+    const item = rows[0];
+    const client = getPlaidClient();
+    const accountIds = new Set();
+    let plaidRemoved = false;
+    if (client && item.access_token) {
+      try {
+        const acc = await client.accountsGet({ access_token: item.access_token });
+        for (const a of acc.data.accounts || []) accountIds.add(a.account_id);
+      } catch (e) { console.warn("Investment unlink: accountsGet failed:", e.response?.data?.error_code || e.message); }
+      try {
+        await client.itemRemove({ access_token: item.access_token });
+        plaidRemoved = true;
+      } catch (e) { console.warn("Investment unlink: itemRemove failed:", e.response?.data?.error_code || e.message); }
+    }
+    const db = await pool.connect();
+    let deactivated = 0;
+    try {
+      await db.query("BEGIN");
+      if (accountIds.size) {
+        const ids = [...accountIds];
+        await db.query("DELETE FROM investment_holdings WHERE plaid_account_id = ANY($1::text[])", [ids]);
+        const r = await db.query(
+          "UPDATE investment_accounts SET is_active = false, updated_at = now() WHERE plaid_account_id = ANY($1::text[]) AND is_active",
+          [ids]
+        );
+        deactivated = r.rowCount;
+      }
+      await db.query("DELETE FROM plaid_investment_items WHERE id = $1", [item.id]);
+      await db.query("COMMIT");
+    } catch (e) {
+      await db.query("ROLLBACK").catch(() => {});
+      throw e;
+    } finally {
+      db.release();
+    }
+    res.json({ deleted: true, plaid_item_removed: plaidRemoved, accounts_deactivated: deactivated });
+  } catch (err) {
+    console.error("investment item unlink error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
 
 // POST /api/plaid/sync-holdings — refresh investment holdings (thin wrapper)
 router.post("/api/plaid/sync-holdings", async (_req, res) => {
@@ -1814,6 +2394,12 @@ router.post("/api/plaid/migrate-overrides", async (req, res) => {
 // declarations, so they're defined by the time this runs.
 module.exports = router;
 module.exports.syncAllPlaidTransactions = syncAllPlaidTransactions;
+module.exports.syncPlaidItem = syncPlaidItem; // roadmap T2.1 W3: the per-item sync a Plaid webhook triggers
+module.exports.syncOnePlaidItem = syncOnePlaidItem;
+module.exports.setPlaidItemErrorCode = setPlaidItemErrorCode; // roadmap T2.1 W4: the Plaid ITEM webhook events
+module.exports.isReauthErrorCode = isReauthErrorCode;
+module.exports.PLAID_ADVANCE_WARNINGS = PLAID_ADVANCE_WARNINGS;
+module.exports.plaidWebhookUrl = plaidWebhookUrl;
 module.exports.syncPlaidItemTransactions = syncPlaidItemTransactions; // exported for testing (sync idempotency — T1)
 module.exports.reconcilePlaidTransactions = reconcilePlaidTransactions;
 module.exports.syncAllPlaidBalances = syncAllPlaidBalances;
@@ -1827,3 +2413,6 @@ module.exports.syncAllPlaidInvestmentFlows = investmentPerformance.syncAllPlaidI
 module.exports.classifyPlaidFlow = investmentPerformance.classifyPlaidFlow;
 module.exports.computeTWR = investmentPerformance.computeTWR;
 module.exports.computeXIRR = investmentPerformance.computeXIRR;
+module.exports.findDuplicatePlaidItem = findDuplicatePlaidItem;
+module.exports.findDuplicateInvestmentItem = findDuplicateInvestmentItem;
+module.exports.syncPlaidLiabilities = syncPlaidLiabilities;

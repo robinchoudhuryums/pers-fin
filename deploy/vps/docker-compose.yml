@@ -1,0 +1,97 @@
+# ============================================================================
+# Single-VPS stack: the unified shell (both apps) + Postgres (pgvector) + Caddy.
+# ============================================================================
+# Lives at /opt/pers-fin on the server next to .env (compose settings — copy
+# .env.example) and app.env (the application's environment — app.env.example).
+# The deploy workflow (.github/workflows/deploy-vps.yml) sets APP_TAG and runs
+# `docker compose pull app && docker compose up -d app`; nothing here builds.
+# Runbook: deploy/vps/RUNBOOK.md.
+#
+# Postgres is NOT published on the host — only the app reaches it, over the
+# compose network, which is why the app runs with PGSSLMODE=disable.
+
+name: pers-fin
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  db:
+    image: pgvector/pgvector:pg${PG_MAJOR:-16}
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      APP_DB_USER: ${APP_DB_USER:-app}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Runs once, on the first start with an empty volume: creates the app
+      # role, both databases and their extensions.
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+      # Dump files for a restore (RUNBOOK.md step 5). backup.sh streams
+      # pg_dump over stdout instead, so this mount stays read-only.
+      - ./dumps:/dumps:ro
+    command:
+      - postgres
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - max_connections=50
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    shm_size: 256mb
+    logging: *logging
+
+  app:
+    image: ghcr.io/${GHCR_OWNER:-robinchoudhuryums}/pers-fin:${APP_TAG:-latest}
+    restart: unless-stopped
+    # app.env holds the application's settings; .env only feeds this file's
+    # ${...} substitutions, so the Postgres superuser password never reaches
+    # the app container.
+    env_file: app.env
+    environment:
+      PORT: "3000"
+      PGSSLMODE: disable
+      # Caps the V8 heap below the container limit so a heavy job (a 2-year
+      # Plaid pull, a full Sheets sync) fails one request rather than the box.
+      NODE_OPTIONS: --max-old-space-size=768
+    depends_on:
+      db:
+        condition: service_healthy
+    mem_limit: 1g
+    # Google Sheets sync reads a service-account key FILE. Uncomment once
+    # ./secrets/service-account-key.json exists (chmod 644 — the app runs as a
+    # non-root user).
+    # volumes:
+    #   - ./secrets/service-account-key.json:/app/service-account-key.json:ro
+    logging: *logging
+    # The image's own HEALTHCHECK (GET /health) applies.
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+    logging: *logging
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

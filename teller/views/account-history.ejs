@@ -1,11 +1,11 @@
-<!DOCTYPE html>
-<html lang="en" data-theme="dark">
-<head>
-<%- include('partials/head', { title: 'Account History' }) %>
-</head>
-<body>
-<%- include('partials/nav') %>
-<div class="container" style="max-width:980px;">
+<%#
+  F88: the nav partial reads `activePage`; included without it the page threw
+  "activePage is not defined" and every /accounts/:id/history request 500'd.
+  head.ejs already emits the document + <body> + .container, so this view no
+  longer wraps it in a second <html>/<head> or opens its own container.
+%>
+<%- include('partials/head', { title: 'Account History', extraStyles: '.container { max-width: 980px; }' }) %>
+<%- include('partials/nav', { activePage: 'dashboard' }) %>
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">
     <div>
       <h1 id="account-title" style="margin:0;">Account History</h1>

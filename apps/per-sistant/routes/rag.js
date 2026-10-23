@@ -10,14 +10,17 @@
 //   POST /api/rag/query {query}  retrieve, then a source-grounded Claude answer
 //
 // The query path answers ONLY from retrieved sources via the Citations feature
-// (ai.answerWithCitations); if that call fails it falls back to a prompt that
+// (ai.cappedCitations, charged to the monthly AI budget — T2.3 C3); if that call fails it falls back to a prompt that
 // asks for inline [n] markers, which are parsed back into cited sources. The
 // source list is returned alongside so the UI can show provenance. Gated by
 // getAIModelForFeature('rag') + isAIAvailable(); search works with no AI.
 // ============================================================================
 
 const express = require("express");
-const { callAI, answerWithCitations, getAIModelForFeature, isAIAvailable } = require("../ai");
+// Roadmap T2.3 C3: the answer, diagram and capture calls go through ai.js's
+// capped wrappers (read off the module object so tests can stub them).
+const ai = require("../ai");
+const { getAIModelForFeature, isAIAvailable, capMessage, capResponse, isCapError } = ai;
 const embeddings = require("../services/embeddings");
 const vaultSync = require("../services/vault-sync");
 const { serverError } = require("../errors");
@@ -26,6 +29,13 @@ const { todayStr } = require("./health");
 // Cap how much of each source we feed the model, and how many sources.
 const MAX_SOURCES = 8;
 const MAX_SNIPPET_CHARS = 1500;
+// F130: bounded inputs — a question / diagram request is sent to Voyage and
+// Claude, and a capture to Claude, so an unbounded body was an unbounded bill.
+const MAX_QUERY_CHARS = 1000;
+const MAX_CAPTURE_CHARS = 20000;
+function tooLong(s, max, what) {
+  return s.length > max ? `${what} is too long (max ${max} characters).` : null;
+}
 
 // Background reindex status (module-scoped so it survives across requests).
 // The real concurrency lock lives in vault-sync (isSyncing); this is UI state.
@@ -86,7 +96,7 @@ function buildRetrievalQuery(query, limit) {
   const sql = `
     WITH corpus AS (
       SELECT id::text AS id, title, content, 'note'::text AS kind, updated_at
-      FROM notes WHERE deleted_at IS NULL
+      FROM notes WHERE deleted_at IS NULL AND sensitivity = 'normal'
       UNION ALL
       SELECT id::text AS id, title, content, 'document'::text AS kind, updated_at
       FROM documents WHERE deleted_at IS NULL AND sensitivity = 'normal'
@@ -350,13 +360,18 @@ async function matchFacts(pool, query, limit) {
 // validity window ending (valid_to) or a date-valued attribute (renewal/
 // expiration/due/deadline). Returns rows { entity, kind, on_date, days_away }
 // within `days`. Used by the notification check. Schema-drift safe.
-async function upcomingFacts(pool, days = 30) {
+//
+// F131: only facts that are CURRENT on `today` (valid_from ≤ today ≤ valid_to,
+// NULL = open) count — a superseded fact's old renewal date used to be
+// announced — and "today" is the APP_TIMEZONE date, not UTC's CURRENT_DATE.
+async function upcomingFacts(pool, days = 30, today = todayStr()) {
   try {
     const r = await pool.query(
-      `SELECT entity, kind, on_date, (on_date - CURRENT_DATE) AS days_away FROM (
+      `SELECT entity, kind, on_date, (on_date - $2::date) AS days_away FROM (
          SELECT entity, 'expires'::text AS kind, valid_to AS on_date
          FROM facts
          WHERE deleted_at IS NULL AND sensitivity = 'normal' AND valid_to IS NOT NULL
+           AND (valid_from IS NULL OR valid_from <= $2::date)
          UNION ALL
          SELECT entity, attribute AS kind,
                 -- to_date (not value::date) so a date-SHAPED but out-of-range
@@ -367,16 +382,18 @@ async function upcomingFacts(pool, days = 30) {
                 CASE WHEN value ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN to_date(value, 'YYYY-MM-DD') END AS on_date
          FROM facts
          WHERE deleted_at IS NULL AND sensitivity = 'normal'
+           AND (valid_from IS NULL OR valid_from <= $2::date)
+           AND (valid_to IS NULL OR valid_to >= $2::date)
            -- Whole snake_case/space-separated segments only (KR-14, INV-10):
            -- the bare substrings also matched "friends", "residue", "vendor".
            AND attribute ~* '(^|[^a-z0-9])(renew[a-z]*|expir[a-z]*|due|deadline|valid[^a-z0-9]?until|ends?)([^a-z0-9]|$)'
        ) s
        WHERE on_date IS NOT NULL
-         AND on_date >= CURRENT_DATE
-         AND on_date <= CURRENT_DATE + ($1 || ' days')::interval
+         AND on_date >= $2::date
+         AND on_date <= $2::date + ($1 || ' days')::interval
        ORDER BY on_date
        LIMIT 50`,
-      [String(parseInt(days, 10) || 30)]
+      [String(parseInt(days, 10) || 30), today]
     );
     return r.rows;
   } catch {
@@ -484,14 +501,18 @@ async function perfinFinanceSnapshot(perfinPool) {
     if (subs.rows.length) {
       const monthly = subs.rows.reduce((sum, s) => sum + monthlyEquivalent(s.amount, s.cadence_days), 0);
       lines.push(`Active subscriptions: ${subs.rows.length} (~${money(monthly)}/mo)`);
-      const now = Date.now();
+      // By APP_TIMEZONE calendar date, a charge due TODAY included — the
+      // widget's rule (cycle-7 F80; seams audit #3: this copy measured from
+      // now, so today's charge dropped out once the day had begun, and its
+      // toISOString date shifted a day east of UTC).
+      const { ymdOf } = require("./perfin");
+      const today = todayStr();
+      const [ty, tm, td] = today.split("-").map(Number);
+      const until = new Date(Date.UTC(ty, tm - 1, td + 14)).toISOString().slice(0, 10);
       const upcoming = subs.rows
-        .filter((s) => {
-          if (!s.next_expected) return false;
-          const d = (new Date(s.next_expected).getTime() - now) / 86400000;
-          return d >= 0 && d <= 14;
-        })
-        .map((s) => `${s.display_name} ${money(s.amount)} on ${new Date(s.next_expected).toISOString().slice(0, 10)}`);
+        .map((s) => ({ s, next: ymdOf(s.next_expected) }))
+        .filter(({ next }) => next !== null && next >= today && next <= until)
+        .map(({ s, next }) => `${s.display_name} ${money(s.amount)} on ${next}`);
       if (upcoming.length) lines.push("Upcoming charges (next 14 days): " + upcoming.join("; "));
     }
     if (!lines.length) return null;
@@ -529,7 +550,7 @@ module.exports = function ({ pool }) {
 
   // Vector retrieval over the polymorphic chunk store, joining back to the
   // source row to get its title and honor deleted/sensitivity filters. Only
-  // 'normal' documents (and non-deleted notes) are retrievable. The
+  // 'normal' documents and 'normal' non-deleted notes (F134) are retrievable. The
   // `n.id IS NOT NULL` / `d.id IS NOT NULL` guards are load-bearing (KR-6):
   // with a LEFT JOIN, a chunk whose source row was HARD-deleted (trash
   // emptied) gets n.deleted_at = NULL, which `deleted_at IS NULL` accepted —
@@ -542,7 +563,7 @@ module.exports = function ({ pool }) {
     LEFT JOIN notes n ON c.source_kind = 'note' AND n.id = c.source_id
     LEFT JOIN documents d ON c.source_kind = 'document' AND d.id = c.source_id
     WHERE c.embedding IS NOT NULL
-      AND ( (c.source_kind = 'note' AND n.id IS NOT NULL AND n.deleted_at IS NULL)
+      AND ( (c.source_kind = 'note' AND n.id IS NOT NULL AND n.deleted_at IS NULL AND n.sensitivity = 'normal')
          OR (c.source_kind = 'document' AND d.id IS NOT NULL AND d.deleted_at IS NULL AND d.sensitivity = 'normal') )
     ORDER BY c.embedding <=> $1::vector
     LIMIT $2`;
@@ -592,6 +613,8 @@ module.exports = function ({ pool }) {
     try {
       const q = (req.query.q || "").toString().trim();
       if (!q) return res.status(400).json({ error: "Query is required." });
+      const longQ = tooLong(q, MAX_QUERY_CHARS, "Query");
+      if (longQ) return res.status(400).json({ error: longQ });
       const rows = await retrieve(q, MAX_SOURCES);
       res.json({
         results: rows.map((r) => ({
@@ -613,6 +636,8 @@ module.exports = function ({ pool }) {
     try {
       const query = (req.body && req.body.query || "").toString().trim();
       if (!query) return res.status(400).json({ error: "Query is required." });
+      const longQ = tooLong(query, MAX_QUERY_CHARS, "Query");
+      if (longQ) return res.status(400).json({ error: longQ });
 
       // One Voyage call serves both hybrid retrieval and the semantic cache.
       const qvec = await embedQuerySafe(query);
@@ -702,22 +727,45 @@ module.exports = function ({ pool }) {
       const SYSTEM =
         "You are a personal knowledge assistant. Answer the question using ONLY the information in the provided documents. A document titled \"Known facts (current)\" holds verified structured facts about the user — treat it as authoritative and prefer it for precise values (numbers, dates, IDs). If the documents do not contain the answer, say plainly that you don't have that information in your knowledge base — do not guess or use outside knowledge. Be concise.";
 
+      // Over the monthly AI budget (or with the spend unreadable) the answer
+      // degrades to the matching sources, like the AI-off path (T2.3 C3) —
+      // after the cache lookup, so a cached answer is still free.
+      const capped = (err) => res.json({
+        answer: null,
+        sources,
+        ...(err.code === "CAP" ? { ai_cap: true } : { ai_cap_check_failed: true }),
+        note: (err.code === "CAP" ? capMessage(err) : err.message) + " Showing matching sources.",
+      });
+
       // Real Citations: the model cites which document backed each claim. Fall
       // back to the prompt-cite path if the citations call fails for any reason.
+      // Each attempt is charged as its own rag_query row (decision 6).
       let answer;
       let citedIndexes = [];
+      let stopReason = null;
       try {
-        const out = await answerWithCitations({ model, system: SYSTEM, query, documents });
+        const out = await ai.cappedCitations(pool, { entry_type: "rag_query", model, system: SYSTEM, query, documents });
         answer = out.text;
         citedIndexes = out.citedIndexes;
+        stopReason = out.stop_reason || null;
       } catch (e) {
+        if (isCapError(e)) return capped(e);
+        const meta = {};
         const context = documents.map((d, i) => `[${i + 1}] ${d.title}\n${d.content}`).join("\n\n");
-        answer = await callAI(
-          model,
-          `Sources:\n${context}\n\nQuestion: "${query}"`,
-          1024,
-          `${SYSTEM} Cite the sources you use inline with their bracketed numbers, e.g. [1] or [2][3].`
-        );
+        try {
+          answer = (await ai.cappedAI(pool, {
+            entry_type: "rag_query",
+            model,
+            prompt: `Sources:\n${context}\n\nQuestion: "${query}"`,
+            maxTokens: 1024,
+            system: `${SYSTEM} Cite the sources you use inline with their bracketed numbers, e.g. [1] or [2][3].`,
+            meta,
+          })).text;
+        } catch (e2) {
+          if (isCapError(e2)) return capped(e2);
+          throw e2;
+        }
+        stopReason = meta.stop_reason || null;
         // KR-12: this path cites with inline [n] markers, not Citations blocks,
         // so citedIndexes stayed empty and every fallback answer was flagged
         // "ungrounded". Read the markers back.
@@ -730,8 +778,16 @@ module.exports = function ({ pool }) {
       // ungrounded answer (no citations) may have drawn on outside knowledge —
       // the UI flags it for the user to double-check.
       const grounded = finalSources.some((s) => s.cited);
-      if (useCache) await cacheSet(pool, qn, model, ver, answer, finalSources, qvec ? embeddings.toVectorLiteral(qvec) : null);
-      res.json({ answer, sources: finalSources, cached: false, grounded });
+      // F126: an empty answer (thinking used up the budget) or one cut off at
+      // max_tokens is returned once but never cached — it used to be served for
+      // the next 24 hours to the same (or a paraphrased) question.
+      const truncated = stopReason === "max_tokens";
+      if (!String(answer || "").trim()) {
+        return res.json({ answer: null, sources: finalSources, cached: false, grounded: false,
+          note: "The AI returned no answer this time. Try again, or ask a narrower question. Showing matching sources." });
+      }
+      if (useCache && !truncated) await cacheSet(pool, qn, model, ver, answer, finalSources, qvec ? embeddings.toVectorLiteral(qvec) : null);
+      res.json({ answer, sources: finalSources, cached: false, grounded, ...(truncated ? { truncated: true } : {}) });
     } catch (err) {
       serverError(res, err);
     }
@@ -744,6 +800,8 @@ module.exports = function ({ pool }) {
     try {
       const query = (req.body && req.body.query || "").toString().trim();
       if (!query) return res.status(400).json({ error: "Query is required." });
+      const longQ = tooLong(query, MAX_QUERY_CHARS, "Diagram request");
+      if (longQ) return res.status(400).json({ error: longQ });
 
       // One Voyage call serves both hybrid retrieval and the semantic cache.
       const qvec = await embedQuerySafe(query);
@@ -779,15 +837,17 @@ module.exports = function ({ pool }) {
       }
 
       const context = documents.map((d, i) => `[${i + 1}] ${d.title}\n${d.content}`).join("\n\n");
-      const raw = await callAI(
+      // Over the monthly AI budget → 429 { ai_cap } (T2.3 C3; ai.capResponse in the catch).
+      const { text: raw } = await ai.cappedAI(pool, {
+        entry_type: "rag_diagram",
         model,
-        `Data:\n${context}\n\nDiagram request: "${query}"`,
-        1500,
-        "You generate Mermaid diagrams from the user's personal data. Output ONLY valid Mermaid syntax — no prose, no explanation, no markdown code fences. Pick the most fitting diagram type (flowchart TD, mindmap, timeline, or erDiagram). Use ONLY information present in the provided data; never invent nodes or values. Keep node labels short and avoid characters that break Mermaid (quotes, parentheses) inside labels."
-      );
+        prompt: `Data:\n${context}\n\nDiagram request: "${query}"`,
+        maxTokens: 1500,
+        system: "You generate Mermaid diagrams from the user's personal data. Output ONLY valid Mermaid syntax — no prose, no explanation, no markdown code fences. Pick the most fitting diagram type (flowchart TD, mindmap, timeline, or erDiagram). Use ONLY information present in the provided data; never invent nodes or values. Keep node labels short and avoid characters that break Mermaid (quotes, parentheses) inside labels.",
+      });
       res.json({ mermaid: stripMermaidFences(raw), sources });
     } catch (err) {
-      serverError(res, err);
+      if (!capResponse(res, err)) serverError(res, err);
     }
   });
 
@@ -867,6 +927,8 @@ module.exports = function ({ pool }) {
     try {
       const text = (req.body && req.body.text || "").toString().trim();
       if (!text) return res.status(400).json({ error: "text is required." });
+      const longT = tooLong(text, MAX_CAPTURE_CHARS, "Captured text");
+      if (longT) return res.status(400).json({ error: longT });
       // KR-10: the user can mark a capture private or secret. Anything but
       // "normal" is never sent to the AI for structuring (same rule as
       // retrieval — INV-27); it is committed as a raw note/fact instead.
@@ -889,15 +951,19 @@ module.exports = function ({ pool }) {
       // Default: store the raw text as a note. If AI is on, let it structure the
       // capture (note vs fact, fields, tags) — falling back to the raw note.
       let entry = { type: req.body.kind === "fact" ? "fact" : "note", title: null, entity: null, fields: {}, tags: [], body: text };
+      // Over the monthly AI budget (or with the spend unreadable) the capture is
+      // still committed — as the raw note — and the response says why (T2.3 C3).
+      let capFlag = null;
       const model = await getAIModelForFeature("rag");
       if (sensitivity === "normal" && model !== "off" && isAIAvailable()) {
         try {
-          const raw = await callAI(
+          const { text: raw } = await ai.cappedAI(pool, {
+            entry_type: "rag_capture",
             model,
-            `Captured text:\n"""\n${text}\n"""`,
-            800,
-            'Convert the captured text into a personal-knowledge entry. Return ONLY a JSON object: {"type":"note"|"fact","title":string,"entity":string|null,"fields":{key:value},"tags":[string],"body":string}. Use "fact" when the text is mostly discrete attributes about one entity (account, policy, device, person): put those attributes in "fields" (short snake_case keys) and the name in "entity". Otherwise use "note" with the prose in "body". Do not invent information.'
-          );
+            prompt: `Captured text:\n"""\n${text}\n"""`,
+            maxTokens: 800,
+            system: 'Convert the captured text into a personal-knowledge entry. Return ONLY a JSON object: {"type":"note"|"fact","title":string,"entity":string|null,"fields":{key:value},"tags":[string],"body":string}. Use "fact" when the text is mostly discrete attributes about one entity (account, policy, device, person): put those attributes in "fields" (short snake_case keys) and the name in "entity". Otherwise use "note" with the prose in "body". Do not invent information.',
+          });
           const m = raw.match(/\{[\s\S]*\}/);
           if (m) {
             const p = JSON.parse(m[0]);
@@ -911,10 +977,14 @@ module.exports = function ({ pool }) {
             };
           }
         } catch (e) {
-          /* fall back to the raw note */
+          // Fall back to the raw note; over the cap, say so in the response.
+          if (isCapError(e)) capFlag = e;
         }
       }
 
+      // F135: a "fact" with no usable fields is saved as a note (buildCaptureMarkdown
+      // does the same) so the text isn't committed with nothing to index.
+      if (entry.type === "fact" && !vaultSync.captureFieldLines(entry.fields).length) entry.type = "note";
       const title = entry.title || entry.entity || text.slice(0, 40);
       const md = vaultSync.buildCaptureMarkdown({ ...entry, sensitivity });
       const date = new Date().toISOString().slice(0, 10);
@@ -930,7 +1000,12 @@ module.exports = function ({ pool }) {
       );
       // Index it soon (non-blocking; next cron would also pick it up).
       vaultSync.syncVault(pool).catch(() => {});
-      res.json({ ok: true, path, type: entry.type, sensitivity, html_url: (result.content && result.content.html_url) || null });
+      res.json({
+        ok: true, path, type: entry.type, sensitivity, html_url: (result.content && result.content.html_url) || null,
+        ...(capFlag ? (capFlag.code === "CAP"
+          ? { ai_cap: true, note: capMessage(capFlag) + " Saved as the raw text, without AI structuring." }
+          : { ai_cap_check_failed: true, note: capFlag.message + " Saved as the raw text, without AI structuring." }) : {}),
+      });
     } catch (err) {
       serverError(res, err);
     }

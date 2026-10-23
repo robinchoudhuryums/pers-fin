@@ -100,7 +100,7 @@ describe("AIN-10 — POST /api/budgets/suggest cap + charge", () => {
   function mount(state) {
     dbModule.pool.query = async (sql, params) => {
       if (sql.includes("ai_monthly_budget_cents")) return { rows: [{ ai_monthly_budget_cents: state.budget }] };
-      if (sql.includes("FROM financial_insights") && sql.includes("date_trunc('month'")) return { rows: state.usage };
+      if (sql.includes("FROM financial_insights WHERE created_at >=")) return { rows: state.usage };
       if (sql.includes("INSERT INTO financial_insights")) { state.inserts.push({ sql, params }); return { rows: [] }; }
       if (sql.includes("insights_model")) return { rows: [{ insights_model: "haiku" }] };
       if (sql.includes("FROM budgets")) return { rows: [] };
@@ -143,7 +143,7 @@ describe("AIN-10 — POST /api/budgets/suggest cap + charge", () => {
       assert.match(read("teller", "routes", f), /monthAiSpendCents\(/, f);
     }
     const insightsSrc = read("teller", "routes", "insights.js");
-    assert.equal((insightsSrc.match(/WHERE created_at >= date_trunc\('month', CURRENT_DATE\)/g) || []).length, 1,
+    assert.equal((insightsSrc.match(/FROM financial_insights WHERE created_at >= \(\$1::date::timestamp AT TIME ZONE \$2\)/g) || []).length, 1,
       "the month-spend query exists once, inside monthAiSpendCents");
   });
 
@@ -319,11 +319,11 @@ describe("generateInsights — prompt + memory + tax persistence", () => {
       st.sql.push({ sql, params });
       if (extra) { const r = extra(sql, params); if (r) return r; }
       if (sql.includes("ai_monthly_budget_cents")) return { rows: [{ ai_monthly_budget_cents: 5000 }] };
-      if (sql.includes("FROM financial_insights") && sql.includes("date_trunc('month'")) return { rows: [] };
+      if (sql.includes("FROM financial_insights WHERE created_at >=")) return { rows: [] };
       if (/total_spend/.test(sql)) return { rows: [
         { month: ppm, total_spend: "3000", txn_count: 50 }, { month: pm, total_spend: "3300", txn_count: 55 }, { month: cm, total_spend: "400", txn_count: 6 }] };
       if (/total_income/.test(sql)) return { rows: [{ month: pm, total_income: "5000" }, { month: cm, total_income: "5000" }] };
-      if (sql.includes("insight_modules FROM user_settings")) return { rows: [{ insights_model: "haiku", insight_modules: modules, insights_running_summary_json: prior, insights_running_summary: "x" }] };
+      if (/insight_modules(, insight_emails_enabled)? FROM user_settings/.test(sql)) return { rows: [{ insights_model: "haiku", insight_modules: modules, insights_running_summary_json: prior, insights_running_summary: "x" }] };
       if (sql.includes("INSERT INTO financial_insights")) { st.inserts.push({ sql, params }); return { rows: [{ id: 77 }] }; }
       if (/UPDATE user_settings SET insights_running_summary/.test(sql)) { st.updates.push({ sql, params }); return { rows: [] }; }
       if (/DELETE FROM tax_deductions/.test(sql)) { st.deletes.push({ sql, params }); return { rows: [] }; }

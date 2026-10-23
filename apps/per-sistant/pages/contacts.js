@@ -33,7 +33,7 @@ ${navBar("/contacts")}
     <div class="modal-actions">
       <button id="btn-cancel-contact">Cancel</button>
       <button class="primary" id="btn-save-contact">Save</button>
-      <button class="danger" id="c-delete-btn" style="display:none">Delete</button>
+      <button class="danger" data-e2e-skip id="c-delete-btn" style="display:none">Delete</button>
     </div>
   </div>
 </div>
@@ -74,25 +74,24 @@ async function saveContact() {
   var data = { name: document.getElementById('c-name').value, email: document.getElementById('c-email').value };
   if (!data.name || !data.email) return alert('Name and email are required');
   var id = document.getElementById('c-id').value;
-  if (id) await fetch('/api/contacts/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
-  else {
-    var r = await fetch('/api/contacts', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
-    var d = await r.json();
-    if (d.error) return alert(d.error);
-  }
+  // F113: a rejected save keeps the dialog open with what was typed.
+  var r = id
+    ? await tryFetch('/api/contacts/'+id, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)})
+    : await tryFetch('/api/contacts', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+  if (!(await writeOk(r, 'Could not save the contact'))) return;
   closeContact(); load();
 }
 
 async function deleteContact() {
   var id = document.getElementById('c-id').value;
   if (!confirm('Delete this contact?')) return;
-  await fetch('/api/contacts/'+id, {method:'DELETE'});
+  if (!(await writeOk(await tryFetch('/api/contacts/'+id, {method:'DELETE'}), 'Could not delete the contact'))) return;
   closeContact(); load();
 }
 
 async function deleteDirect(id) {
   if (!confirm('Delete this contact?')) return;
-  await fetch('/api/contacts/'+id, {method:'DELETE'});
+  if (!(await writeOk(await tryFetch('/api/contacts/'+id, {method:'DELETE'}), 'Could not delete the contact'))) return;
   load();
 }
 
@@ -111,7 +110,9 @@ function importCSV(input) {
       }
     }
     if (!contacts.length) { alert('No valid contacts found in CSV. Expected format: name,email'); return; }
-    var r = await fetch('/api/contacts/import', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contacts:contacts})}).then(r=>r.json());
+    var res = await tryFetch('/api/contacts/import', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contacts:contacts})});
+    if (!(await writeOk(res, 'Could not import the contacts'))) return;
+    var r = await res.json();
     var el = document.getElementById('import-status');
     el.className = 'status-msg success';
     el.textContent = 'Imported '+r.imported+' contacts'+(r.errors?' ('+r.errors+' errors)':'');

@@ -155,5 +155,106 @@
     applyBtn.addEventListener("click", function(e) { e.stopPropagation(); });
 
     loadRules();
+
+    // ------------------------------------------------------------------
+    // Merchant Rename Rules (cycle-7 F55 / ST2) — created from the Activity
+    // page's Edit modal ("Apply to all past and future"); listed here so they
+    // can be renamed, switched off / on or removed. Deleting one reverts the
+    // names it set.
+    // ------------------------------------------------------------------
+    var renamePanel = document.createElement("details");
+    renamePanel.className = "section";
+    renamePanel.open = true;
+    renamePanel.innerHTML =
+      '<summary style="cursor:pointer;list-style:none;display:flex;justify-content:space-between;align-items:center;padding:0;margin:0;">' +
+        '<span style="display:flex;align-items:center;gap:10px;font-size:14px;font-weight:400;color:var(--text);">' +
+          '<span class="rules-caret" aria-hidden="true" style="display:inline-block;width:10px;font-size:10px;color:var(--text-muted);transition:transform 0.15s;">&#9656;</span>' +
+          'Merchant Rename Rules' +
+        '</span>' +
+        '<span id="rename-rules-count" style="font-size:11px;font-weight:300;color:var(--text-muted);">--</span>' +
+      '</summary>' +
+      '<p style="font-size:12px;color:var(--text-muted);font-weight:300;margin:12px 0;">' +
+        'Saved via "Apply to all past and future" in the Activity page\'s Edit dialog. Each rule renames every ' +
+        'transaction from a merchant, including future syncs, so subscriptions and recurring transfers stay as one entry.' +
+      '</p>' +
+      '<div id="rename-rules-list"></div>';
+    panel.insertAdjacentElement("afterend", renamePanel);
+    var renameListEl = document.getElementById("rename-rules-list");
+    var renameCountEl = document.getElementById("rename-rules-count");
+
+    function renameRowHtml(r) {
+      var matchLabel = r.match_type === "exact" ? "is exactly"
+        : r.match_type === "starts_with" ? "starts with" : "contains";
+      return '<div class="rule-row" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;font-size:13px;font-weight:300;flex-wrap:wrap;' + (r.is_active ? '' : 'opacity:0.55;') + '">' +
+        '<div style="flex:1;min-width:0;">' +
+          '<div style="display:flex;gap:6px;align-items:baseline;flex-wrap:wrap;">' +
+            '<span style="color:var(--text-muted);font-size:11px;">if merchant ' + esc(matchLabel) + '</span>' +
+            '<strong style="font-weight:500;">' + esc(r.merchant_pattern) + '</strong>' +
+            '<span style="color:var(--text-muted);font-size:11px;">→ show as</span>' +
+            '<span style="color:var(--warm);">' + esc(r.rename_to) + '</span>' +
+          '</div>' +
+          '<div style="font-size:10px;color:var(--text-muted);margin-top:3px;">' + (r.is_active ? '' : 'off · ') + 'renamed ' + (r.times_applied || 0) + ' transaction' + (r.times_applied === 1 ? '' : 's') + '</div>' +
+        '</div>' +
+        '<button class="btn btn-sm" data-action="edit-rename-rule" data-id="' + r.id + '" data-name="' + esc(r.rename_to) + '" aria-label="Change the name for ' + esc(r.merchant_pattern) + '" style="flex-shrink:0;">Edit</button>' +
+        '<button class="btn btn-sm" data-action="toggle-rename-rule" data-id="' + r.id + '" data-on="' + (r.is_active ? '1' : '0') + '" aria-pressed="' + (r.is_active ? 'true' : 'false') + '" aria-label="' + (r.is_active ? 'Turn off' : 'Turn on') + ' the rename rule for ' + esc(r.merchant_pattern) + '" style="flex-shrink:0;">' + (r.is_active ? 'Turn off' : 'Turn on') + '</button>' +
+        '<button class="btn btn-sm" data-action="delete-rename-rule" data-id="' + r.id + '" aria-label="Delete rename rule for ' + esc(r.merchant_pattern) + '" style="flex-shrink:0;">Delete</button>' +
+      '</div>';
+    }
+
+    async function loadRenameRules() {
+      try {
+        var res = await apiFetch("/api/merchant-rename-rules");
+        if (!res.ok) { renameListEl.innerHTML = '<div style="font-size:12px;color:var(--text-muted);padding:8px 0;">Unable to load rename rules.</div>'; renameCountEl.textContent = "--"; return; }
+        var data = await res.json();
+        var rules = data.rules || [];
+        renameCountEl.textContent = rules.length + (rules.length === 1 ? " rule" : " rules");
+        renameListEl.innerHTML = rules.length ? rules.map(renameRowHtml).join("")
+          : '<div style="font-size:12px;color:var(--text-muted);padding:8px 0;">No rename rules yet.</div>';
+      } catch (e) {
+        renameListEl.innerHTML = '<div style="font-size:12px;color:var(--text-muted);padding:8px 0;">Error loading rename rules: ' + esc(e.message) + '</div>';
+      }
+    }
+
+    // Edit / Turn off / Turn on (roadmap T1.5): PATCH /api/merchant-rename-rules/:id.
+    // A new name renames the rows the rule renamed and its detected subscription
+    // or transfer (settings kept); off undoes its renames like Delete but keeps it.
+    renameListEl.addEventListener("click", async function(e) {
+      var btn = e.target.closest('[data-action="edit-rename-rule"], [data-action="toggle-rename-rule"]');
+      if (!btn || btn.disabled) return;
+      var body;
+      if (btn.dataset.action === "edit-rename-rule") {
+        var name = prompt("Show this merchant as:", btn.dataset.name || "");
+        if (name === null) return;
+        name = name.trim();
+        if (!name) { msg("Enter a name.", false); return; }
+        if (name === btn.dataset.name) return;
+        body = { rename_to: name };
+      } else {
+        var on = btn.dataset.on === "1";
+        if (on && !confirm("Turn off this rename rule? The transactions it renamed go back to their bank names until you turn it on again.")) return;
+        body = { is_active: !on };
+      }
+      btn.disabled = true;
+      try {
+        var res = await apiFetch("/api/merchant-rename-rules/" + encodeURIComponent(btn.dataset.id), {
+          method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+        }).catch(function() { return null; });
+        if (await writeOk(res, "Couldn't update the rename rule")) {
+          msg(body.rename_to ? "Rename rule updated." : body.is_active ? "Rename rule turned on." : "Rename rule turned off.", true);
+        }
+      } finally {
+        loadRenameRules(); // re-renders the row, so the button comes back enabled
+      }
+    });
+
+    renameListEl.addEventListener("click", async function(e) {
+      var btn = e.target.closest('[data-action="delete-rename-rule"]');
+      if (!btn) return;
+      if (!confirm("Delete this rename rule? The transactions it renamed go back to their bank names.")) return;
+      var res = await apiFetch("/api/merchant-rename-rules/" + encodeURIComponent(btn.dataset.id), { method: "DELETE" }).catch(function() { return null; });
+      if (await writeOk(res, "Couldn't delete the rename rule")) { msg("Rename rule deleted.", true); loadRenameRules(); }
+    });
+
+    loadRenameRules();
   });
 })();

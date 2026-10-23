@@ -25,7 +25,7 @@
     <div class="setting-row">
       <div class="setting-info"><div class="name">Theme</div><div class="desc">Switch between dark (night) and light (day) mode</div></div>
       <div class="setting-control">
-        <select id="theme-select">
+        <select id="theme-select" aria-label="Theme">
           <option value="dark">Night Mode</option><option value="light">Day Mode</option>
         </select>
       </div>
@@ -33,7 +33,7 @@
     <div class="setting-row">
       <div class="setting-info"><div class="name">Dashboard Range</div><div class="desc">Months of spending shown in charts</div></div>
       <div class="setting-control">
-        <select id="months-select">
+        <select id="months-select" aria-label="Dashboard months">
           <option value="3">3 months</option><option value="6">6 months</option>
           <option value="12">12 months</option><option value="24">24 months</option>
         </select>
@@ -45,7 +45,7 @@
     <div class="setting-row">
       <div class="setting-info"><div class="name">Data Source</div><div class="desc">What the pyramid tiers represent</div></div>
       <div class="setting-control">
-        <select id="pyramid-source-select">
+        <select id="pyramid-source-select" aria-label="Pyramid data source">
           <option value="wellness">Financial Wellness</option>
           <option value="debt_payoff">Debt Payoff</option>
           <option value="goal_progress">Goal Progress</option>
@@ -57,7 +57,7 @@
     <div class="setting-row">
       <div class="setting-info"><div class="name">Color Mode</div><div class="desc">Single amber-orange or multi-color per tier</div></div>
       <div class="setting-control">
-        <select id="pyramid-color-select">
+        <select id="pyramid-color-select" aria-label="Pyramid color mode">
           <option value="single">Single Color (Amber)</option>
           <option value="multi">Multi-Color</option>
         </select>
@@ -77,18 +77,22 @@
     <div class="setting-row">
       <div class="setting-info"><div class="name">Session Timeout</div><div class="desc">Minutes before requiring password again (1-1440)</div></div>
       <div class="setting-control">
-        <input type="number" id="timeout-input" min="1" max="1440" value="15">
+        <input type="number" id="timeout-input" aria-label="Session timeout (minutes)" min="1" max="1440" value="15">
       </div>
     </div>
     <div class="setting-row">
       <div class="setting-info"><div class="name">App Idle Timeout</div><div class="desc">Minutes of inactivity before the unified-shell PIN is required again. Refreshes on every request you make, so an active session never times out mid-use. (5-10080)</div></div>
       <div class="setting-control">
-        <input type="number" id="shell-idle-input" min="5" max="10080" value="60">
+        <input type="number" id="shell-idle-input" aria-label="App idle timeout (minutes)" min="5" max="10080" value="60">
       </div>
     </div>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Sign Out</div><div class="desc">End your current session</div></div>
-      <div class="setting-control"><button class="btn danger" id="logout-btn">Sign Out</button></div>
+      <div class="setting-control"><button class="btn danger" data-e2e-skip id="logout-btn">Sign Out</button></div>
+    </div>
+    <div class="setting-row" id="logout-all-row" style="display:none;">
+      <div class="setting-info"><div class="name">Sign Out Everywhere</div><div class="desc">End every signed-in session on every device, including this one</div></div>
+      <div class="setting-control"><button class="btn danger" data-e2e-skip id="logout-all-btn">Sign Out Everywhere</button></div>
     </div>
   </div>
 
@@ -125,7 +129,7 @@
     <div class="setting-row">
       <div class="setting-info"><div class="name">AI Model</div><div class="desc">Haiku (~$0.005/run), Sonnet (~$0.02/run), Opus (~$0.10/run). Always uses latest version.</div></div>
       <div class="setting-control">
-        <select id="model-select">
+        <select id="model-select" aria-label="AI model">
           <option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="opus">Opus</option>
         </select>
       </div>
@@ -133,7 +137,7 @@
     <div class="setting-row">
       <div class="setting-info"><div class="name">Analysis Cadence</div><div class="desc" id="cadence-desc">How often automated analysis runs. More frequent = finer trend tracking.</div></div>
       <div class="setting-control">
-        <select id="cadence-select">
+        <select id="cadence-select" aria-label="AI insights cadence">
           <option value="7">Weekly</option><option value="14">Every 2 weeks</option>
           <option value="30">Monthly</option><option value="60">Every 2 months</option>
           <option value="90">Quarterly</option>
@@ -145,7 +149,7 @@
         <div class="name">Weekly Digest Email</div>
         <div class="desc">Mail a digest of the running summary (trends, pending actions, alerts) once per week via Per-sistant.</div>
         <div id="weekly-digest-prereq" style="display:none;margin-top:6px;font-size:11px;padding:6px 10px;border-radius:6px;background:rgba(235,107,107,0.08);border:1px solid rgba(235,107,107,0.3);color:var(--red, #eb6b6b);">
-          Per-sistant webhook isn't configured — digest will silently no-op until you set the URL + secret in Per-sistant integration below.
+          Per-sistant webhook isn't configured — digests and insight emails do nothing until you set persistent_url, persistent_webhook_secret and persistent_webhook_enabled with PATCH /api/settings (this standalone setup has no form for them).
         </div>
       </div>
       <div class="setting-control">
@@ -155,12 +159,21 @@
     <div class="setting-row">
       <div class="setting-info"><div class="name">Digest Day</div><div class="desc">Day of week the digest fires (when enabled).</div></div>
       <div class="setting-control">
-        <select id="weekly-digest-day-select">
+        <select id="weekly-digest-day-select" aria-label="Weekly digest day">
           <option value="0">Sunday</option><option value="1">Monday</option>
           <option value="2">Tuesday</option><option value="3">Wednesday</option>
           <option value="4">Thursday</option><option value="5">Friday</option>
           <option value="6">Saturday</option>
         </select>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info">
+        <div class="name">Insight Emails</div>
+        <div class="desc">Email each AI insight report when it is generated (scheduled or manual).</div>
+      </div>
+      <div class="setting-control">
+        <label class="toggle"><input type="checkbox" id="insight-email-toggle" aria-label="Insight emails"><span class="slider"></span></label>
       </div>
     </div>
     <div class="setting-row">
@@ -184,13 +197,13 @@
     <div class="setting-row">
       <div class="setting-info"><div class="name">ZIP Code</div><div class="desc">For regional rate comparisons (utility costs vs your area's average)</div></div>
       <div class="setting-control">
-        <input type="text" id="zip-input" maxlength="5" placeholder="e.g. 10001" style="width:80px;padding:8px 12px;font-size:13px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;text-align:center;">
+        <input type="text" id="zip-input" aria-label="ZIP code" maxlength="5" placeholder="e.g. 10001" style="width:80px;padding:8px 12px;font-size:13px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;text-align:center;">
       </div>
     </div>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Partner Name</div><div class="desc">Used in the Shared Card Settlement widget — e.g. "Sarah owes you $X" instead of "Partner owes you $X"</div></div>
       <div class="setting-control">
-        <input type="text" id="partner-name-input" maxlength="50" placeholder="e.g. Sarah" style="width:140px;padding:8px 12px;font-size:13px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;">
+        <input type="text" id="partner-name-input" aria-label="Partner name" maxlength="50" placeholder="e.g. Sarah" style="width:140px;padding:8px 12px;font-size:13px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;">
       </div>
     </div>
     <div class="setting-row" style="flex-direction:column;align-items:stretch;">
@@ -198,7 +211,7 @@
       <div id="modules-container" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;"></div>
     </div>
     <div class="setting-row">
-      <div class="setting-info"><div class="name">Monthly Budget Cap</div><div class="desc" id="budget-desc">Limits AI API spend per month (insights + categorize + rebuild share one cap). The cap is checked before each AI call, so the final call of the month can finish slightly over it — that overshoot is expected and blocks all further calls until the month resets.</div></div>
+      <div class="setting-info"><div class="name">Monthly Budget Cap</div><div class="desc" id="budget-desc">Limits AI API spend per month (insights + categorize + rebuild share one cap). The cap is checked before each AI call, so the final call of the month can finish slightly over it — that overshoot is expected and blocks all further calls until the month resets.</div><div class="desc" id="persistent-ai-spend" hidden></div></div>
       <div class="setting-control" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
         <span id="budget-status" style="font-size:12px;color:var(--text-muted);">--</span>
         <span style="font-size:12px;color:var(--text-muted);">$</span>
@@ -223,7 +236,7 @@
     </div>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Reset AI Context</div><div class="desc">Clear long-term memory — next analysis starts fresh with no prior context</div></div>
-      <div class="setting-control"><button class="btn danger" id="reset-btn">Reset</button></div>
+      <div class="setting-control"><button class="btn danger" data-e2e-skip id="reset-btn">Reset</button></div>
     </div>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Rebuild AI Context</div><div class="desc">Regenerate long-term memory by re-reading all historical analyses</div></div>
@@ -270,7 +283,77 @@
     </div>
   </div>
 
-  <div class="section"><h2>Keep-Alive</h2>
+  <div class="section" id="cash-alerts-section"><h2>Cash Alerts</h2>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Low Cash Alert</div><div class="desc">Notify me when my checking and savings cash is projected to fall below a floor — the dashboard's cash-flow forecast (bills, paychecks and usual spending). Checked when new bank data arrives, at most once a day otherwise; never on balances more than 36 hours old. Also emails when Critical Alert Emails is on.</div></div>
+      <div class="setting-control">
+        <label class="toggle"><input type="checkbox" id="cash-alert-toggle" aria-label="Low cash alert"><span class="slider"></span></label>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Floor</div><div class="desc">Alert when the projected balance drops below this amount</div></div>
+      <div class="setting-control" style="display:flex;gap:6px;align-items:center;">
+        <input type="number" id="cash-alert-threshold" min="0" step="50" inputmode="decimal" aria-label="Low cash floor in dollars" style="width:110px;">
+        <button class="btn" id="cash-alert-threshold-save">Save</button>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Payday Alerts</div><div class="desc">Notify me when a paycheck lands (a deposit matching a pay pattern seen at least twice), and when an expected payday passes by 3 days without one — only after that bank connection has synced cleanly since. A missed payday also emails when Critical Alert Emails is on.</div></div>
+      <div class="setting-control">
+        <label class="toggle"><input type="checkbox" id="payday-alert-toggle" aria-label="Payday alerts"><span class="slider"></span></label>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Account Floors</div><div class="desc">Also notify me when one account's current balance is below its own floor (once a day per account; needs Low Cash Alert on). Leave blank for none.</div></div>
+    </div>
+    <div id="cash-floor-list" class="desc" style="margin:-4px 0 10px;">Loading…</div>
+    <p class="desc" id="cash-alert-last" hidden></p>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Look Ahead</div><div class="desc">How far ahead the forecast is checked</div></div>
+      <div class="setting-control">
+        <select id="cash-alert-horizon" aria-label="Low cash alert look-ahead">
+          <option value="7">7 days</option><option value="14">14 days</option><option value="21">21 days</option>
+          <option value="30">30 days</option><option value="45">45 days</option><option value="60">60 days</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="linked-tasks-section"><h2>Per-sistant Tasks</h2>
+    <p class="desc" id="linked-tasks-standalone" hidden>Available under the unified shell — Per-sistant has to run in the same app for Perfin to open tasks there.</p>
+    <div id="linked-tasks-controls">
+      <div class="setting-row">
+        <div class="setting-info"><div class="name">Create Tasks in Per-sistant</div><div class="desc">Open a To-Do in Per-sistant when something here needs doing, and close it once it's done here. A task you edit keeps your edits; one you complete or reopen by hand is left alone. Checked hourly and right after a payment is recorded.</div></div>
+        <div class="setting-control">
+          <label class="toggle"><input type="checkbox" id="linked-tasks-toggle" aria-label="Create tasks in Per-sistant"><span class="slider"></span></label>
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="setting-info"><div class="name">Sources</div><div class="desc">What opens a task</div></div>
+      </div>
+      <div id="linked-tasks-sources" style="margin:-4px 0 10px;">
+        <div style="margin:4px 0;"><input type="checkbox" id="linked-src-housing" data-source="housing"> <label for="linked-src-housing">Rent &amp; utilities due</label></div>
+        <div style="margin:4px 0;"><input type="checkbox" id="linked-src-utility_amount" data-source="utility_amount"> <label for="linked-src-utility_amount">Utility amounts to enter (the bill should have arrived)</label></div>
+        <div style="margin:4px 0;"><input type="checkbox" id="linked-src-still_charging" data-source="still_charging"> <label for="linked-src-still_charging">A subscription still charging after you cancelled</label></div>
+        <div style="margin:4px 0;"><input type="checkbox" id="linked-src-bills" data-source="bills"> <label for="linked-src-bills">Manual bills due — off by default: autopaid bills nobody marks paid stay open</label></div>
+      </div>
+      <div class="setting-row">
+        <div class="setting-info"><div class="name">Bill Lead Days</div><div class="desc">How many days before a manual bill's due date its task opens (0-14)</div></div>
+        <div class="setting-control" style="display:flex;gap:6px;align-items:center;">
+          <input type="number" id="linked-tasks-lead" min="0" max="14" step="1" inputmode="numeric" aria-label="Bill lead days" style="width:80px;">
+          <button class="btn" id="linked-tasks-lead-save">Save</button>
+        </div>
+      </div>
+      <p class="desc" id="linked-tasks-last" hidden></p>
+      <div class="setting-row">
+        <div class="setting-info"><div class="name">Run Now</div><div class="desc">Bring Per-sistant's tasks up to date now instead of waiting for the hourly run</div></div>
+        <div class="setting-control"><button class="btn" id="linked-tasks-run">Run now</button></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="keepalive-section"><h2>Keep-Alive</h2>
+    <p class="desc" id="keepalive-always-on" hidden>This server is always on (ALWAYS_ON), so it never sleeps and the keep-alive ping isn't needed.</p>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Keep Awake</div><div class="desc">External cron pings the app every 14 min during active hours to prevent Render sleep</div></div>
       <div class="setting-control">
@@ -280,17 +363,17 @@
     <div class="setting-row">
       <div class="setting-info"><div class="name">Active Hours</div><div class="desc" id="keepalive-hours-desc">Hours when keep-alive runs (saves Render free tier hours)</div></div>
       <div class="setting-control" style="display:flex;gap:6px;align-items:center;">
-        <select id="keepalive-start">
+        <select id="keepalive-start" aria-label="Active hours start">
         </select>
         <span style="color:var(--text-muted);font-size:12px;">to</span>
-        <select id="keepalive-end">
+        <select id="keepalive-end" aria-label="Active hours end">
         </select>
       </div>
     </div>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Timezone</div><div class="desc">Your local timezone for active hour scheduling</div></div>
       <div class="setting-control">
-        <select id="keepalive-tz">
+        <select id="keepalive-tz" aria-label="Keep-alive timezone">
           <option value="America/New_York">Eastern (ET)</option>
           <option value="America/Chicago">Central (CT)</option>
           <option value="America/Denver">Mountain (MT)</option>
@@ -320,7 +403,7 @@
     <div class="setting-row">
       <div class="setting-info"><div class="name">Reminder Interval</div><div class="desc">Days between reminders</div></div>
       <div class="setting-control">
-        <select id="csv-reminder-days">
+        <select id="csv-reminder-days" aria-label="CSV reminder after (days)">
           <option value="7">Every 7 days</option><option value="14">Every 14 days</option>
           <option value="21">Every 21 days</option><option value="30">Every 30 days</option>
         </select>
@@ -338,7 +421,7 @@
     <div class="setting-row">
       <div class="setting-info"><div class="name">Sync Interval</div><div class="desc">How often to fetch new transactions (process must be awake — enable Keep-Alive on free-tier Render)</div></div>
       <div class="setting-control">
-        <select id="auto-sync-interval-select">
+        <select id="auto-sync-interval-select" aria-label="Bank auto-sync interval">
           <option value="1">Every hour</option>
           <option value="3">Every 3 hours</option>
           <option value="6" selected>Every 6 hours</option>
@@ -365,6 +448,15 @@
       <div class="setting-info"><div class="name">Reconcile Now</div><div class="desc">Re-fetch the last 90 days from every linked bank to recover any missed transactions. Safe to run anytime — duplicates are ignored.</div></div>
       <div class="setting-control"><button class="btn" id="reconcile-btn">Reconcile</button></div>
     </div>
+    <div class="setting-row" style="margin-top:12px;">
+      <div class="setting-info"><div class="name">Operator Checks</div><div class="desc">Things only you can fix outside the app: GitHub backstop workflows, backups, workflow secrets, repository visibility, the Teller certificate, bank webhooks and the Knowledge index. GitHub results are cached for 6 hours.</div></div>
+      <div class="setting-control"><button class="btn" id="operator-checks-btn">Check now</button></div>
+    </div>
+    <div id="operator-checks-body" style="font-size:13px;color:var(--text-muted);">Loading…</div>
+    <div class="setting-row" id="recent-errors" style="margin-top:12px;">
+      <div class="setting-info"><div class="name">Recent errors</div><div class="desc">Server errors the app recorded, grouped by kind (both apps). Resolve one to hide it until it happens again. Kept for 90 days.</div></div>
+    </div>
+    <div id="recent-errors-body" style="font-size:13px;color:var(--text-muted);">Loading…</div>
   </div>
 
   <div class="section"><h2>Google Sheets Auto-Sync</h2>
@@ -377,7 +469,7 @@
     <div class="setting-row">
       <div class="setting-info"><div class="name">Sync Interval</div><div class="desc">How often to auto-push to Sheets</div></div>
       <div class="setting-control">
-        <select id="sheets-interval-select">
+        <select id="sheets-interval-select" aria-label="Sheets auto-sync interval">
           <option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option>
         </select>
       </div>
@@ -410,9 +502,9 @@
       </div>
       <div id="target-alloc-rows" style="display:flex;flex-direction:column;gap:8px;"></div>
       <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
-        <input id="target-alloc-new-class" placeholder="asset class (e.g. equity)"
+        <input id="target-alloc-new-class" aria-label="New asset class" placeholder="asset class (e.g. equity)"
                style="flex:1 1 160px;min-width:140px;padding:8px 10px;background:transparent;color:var(--text);border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:13px;">
-        <input id="target-alloc-new-pct" type="number" min="0" max="100" step="0.1" placeholder="%"
+        <input id="target-alloc-new-pct" aria-label="Target percent for the new asset class" type="number" min="0" max="100" step="0.1" placeholder="%"
                style="width:80px;padding:8px 10px;background:transparent;color:var(--text);border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:13px;text-align:center;">
         <button class="btn" id="target-alloc-add-btn" style="min-width:90px;">+ Add</button>
       </div>
@@ -438,12 +530,12 @@
       </div>
       <div id="watchlist-rows" style="display:flex;flex-direction:column;gap:6px;"></div>
       <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
-        <select id="watchlist-new-type" style="padding:8px 10px;background:transparent;color:var(--text);border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:13px;min-width:120px;">
+        <select id="watchlist-new-type" aria-label="Watchlist item type" style="padding:8px 10px;background:transparent;color:var(--text);border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:13px;min-width:120px;">
           <option value="merchant">Merchant</option>
           <option value="category">Category</option>
           <option value="keyword">Keyword</option>
         </select>
-        <input id="watchlist-new-value" placeholder="e.g. Amazon, Food and Drink, refund" style="flex:1 1 200px;min-width:140px;padding:8px 10px;background:transparent;color:var(--text);border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:13px;">
+        <input id="watchlist-new-value" aria-label="Watchlist item value" placeholder="e.g. Amazon, Food and Drink, refund" style="flex:1 1 200px;min-width:140px;padding:8px 10px;background:transparent;color:var(--text);border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:13px;">
         <button class="btn" id="watchlist-add-btn" style="min-width:90px;">+ Add</button>
       </div>
       <div id="watchlist-status" style="margin-top:6px;font-size:11px;color:var(--text-muted);"></div>
@@ -463,7 +555,7 @@
     <div class="setting-row">
       <div class="setting-info"><div class="name">Tax Report</div><div class="desc">Year-end deduction summary for tax prep</div></div>
       <div class="setting-control" style="display:flex;gap:6px;">
-        <select id="tax-year-select" style="padding:8px 12px;font-size:13px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;"></select>
+        <select id="tax-year-select" aria-label="Tax year" style="padding:8px 12px;font-size:13px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-family:inherit;"></select>
         <a id="tax-csv-link" href="#"><button class="btn">CSV</button></a>
         <a id="tax-json-link" href="#"><button class="btn">JSON</button></a>
         <a id="tax-pdf-link" href="#"><button class="btn">PDF</button></a>
@@ -481,6 +573,129 @@
 <%- include('partials/foot') %>
   <script nonce="<%= nonce %>">
     function applyTheme(t) { document.documentElement.setAttribute('data-theme', t); localStorage.setItem('perfin-theme', t); }
+    // Roadmap T2.2 L4: what the cash alerts last did (cash_alert_state.last_check).
+    var CASH_SKIP_REASONS = {
+      stale_balances: 'skipped — balances are more than 36 hours old',
+      no_balances: 'skipped — no checking or savings balance on file',
+    };
+    function cashAlertLastText(s) {
+      var lc = s && s.cash_alert_state && s.cash_alert_state.last_check;
+      if (!lc || !lc.at) return s && s.cash_alert_enabled ? 'Not checked yet — it runs after the next bank sync.' : '';
+      var when = new Date(lc.at).toLocaleString();
+      var what = lc.outcome === 'skipped' ? (CASH_SKIP_REASONS[lc.reason] || 'skipped')
+        : lc.outcome === 'notified' ? 'alert sent — cash projected below your floor on ' + fmtDate(lc.breach_date)
+        : lc.outcome === 'held' ? 'still projected below your floor on ' + fmtDate(lc.breach_date) + ' (already alerted)'
+        : lc.outcome === 'clear' ? 'no dip below your floor in the look-ahead'
+        : lc.outcome;
+      var floors = lc.floors_below > 0 ? ' · ' + lc.floors_below + ' account(s) below their floor' : '';
+      return 'Last checked ' + when + ': ' + what + floors + '.';
+    }
+    function renderCashAlertLast(s) {
+      var el = document.getElementById('cash-alert-last');
+      if (!el) return;
+      var text = cashAlertLastText(s);
+      el.textContent = text;
+      el.hidden = !text;
+    }
+    // Roadmap T2.4 X2c: Settings → Per-sistant Tasks (linked tasks).
+    var LINKED_SOURCES = ['housing', 'utility_amount', 'still_charging', 'bills'];
+    var LINKED_KIND_LABELS = { housing: 'Rent & utilities', 'utility-amount': 'Utility amounts', 'still-charging': 'Still charging', bill: 'Manual bills' };
+    function linkedTasksLastText(s) {
+      var st = s && s.linked_tasks_state;
+      if (!st || !st.at) return s && s.linked_tasks_enabled ? 'Not run yet — it runs hourly, or press Run now.' : '';
+      var text = 'Last run ' + new Date(st.at).toLocaleString() + ': ' + (st.desired || 0) + ' outstanding, ' + (st.closed || 0) + ' closed.';
+      var errs = Array.isArray(st.errors) ? st.errors : [];
+      if (errs.length) {
+        text += ' ' + errs.map(function(e) {
+          return (e && e.kind && LINKED_KIND_LABELS[e.kind] ? LINKED_KIND_LABELS[e.kind] + ': ' : '') + (e && e.error ? e.error : 'failed');
+        }).join(' ');
+      }
+      return text;
+    }
+    function renderLinkedTasksLast(s) {
+      var el = document.getElementById('linked-tasks-last');
+      if (!el) return;
+      var text = linkedTasksLastText(s);
+      el.textContent = text;
+      el.hidden = !text;
+    }
+    function renderLinkedTasks(s) {
+      var note = document.getElementById('linked-tasks-standalone');
+      var controls = document.getElementById('linked-tasks-controls');
+      if (!note || !controls) return;
+      // Standalone (no Per-sistant in this process): nothing to switch on.
+      note.hidden = !!s.embedded;
+      controls.hidden = !s.embedded;
+      if (!s.embedded) return;
+      document.getElementById('linked-tasks-toggle').checked = !!s.linked_tasks_enabled;
+      var src = s.linked_tasks_sources || {};
+      LINKED_SOURCES.forEach(function(k) {
+        var box = document.getElementById('linked-src-' + k);
+        if (box) box.checked = !!src[k];
+      });
+      document.getElementById('linked-tasks-lead').value = String(s.linked_tasks_bill_lead_days != null ? s.linked_tasks_bill_lead_days : 3);
+      renderLinkedTasksLast(s);
+    }
+    // One PATCH per change; writeOk reports a refusal (INV-89).
+    async function saveLinkedTasks(body) {
+      try {
+        var res = await apiFetch('/api/settings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (!(await writeOk(res, 'Per-sistant tasks'))) return false;
+        showMsg('Setting saved.', true);
+        return true;
+      } catch (e) { showMsg('Per-sistant tasks: ' + e.message, false); return false; }
+    }
+    async function onLinkedToggle(box, body) {
+      if (!(await saveLinkedTasks(body))) box.checked = !box.checked;
+    }
+    async function saveLinkedLead() {
+      var raw = String(document.getElementById('linked-tasks-lead').value).trim();
+      var n = /^[0-9]+$/.test(raw) ? parseInt(raw, 10) : NaN;
+      if (!(n >= 0 && n <= 14)) { showMsg('Enter a whole number of days from 0 to 14', false); return false; }
+      return saveLinkedTasks({ linked_tasks_bill_lead_days: n });
+    }
+    async function runLinkedTasksNow(btn) {
+      if (btn) btn.disabled = true;
+      try {
+        var res = await apiFetch('/api/linked-tasks/run', { method: 'POST' });
+        if (!(await writeOk(res, 'Run now'))) return false;
+        var r = await res.json();
+        renderLinkedTasksLast({ linked_tasks_enabled: true, linked_tasks_state: r });
+        showMsg('Per-sistant tasks updated: ' + (r.desired || 0) + ' outstanding, ' + (r.closed || 0) + ' closed.', !(r.errors && r.errors.length));
+        return true;
+      } catch (e) { showMsg('Run now: ' + e.message, false); return false; }
+      finally { if (btn) btn.disabled = false; }
+    }
+    // One floor input per spendable account (depository, not an investment type).
+    async function loadCashFloors() {
+      var el = document.getElementById('cash-floor-list');
+      if (!el) return;
+      try {
+        var res = await apiFetch('/api/accounts');
+        if (!(await writeOk(res, 'Accounts'))) { el.textContent = 'Unavailable'; return; }
+        var accounts = (await res.json()).filter(function(a) { return a.type === 'depository' && !a.is_investment; });
+        if (!accounts.length) { el.textContent = 'No checking or savings accounts yet.'; return; }
+        el.innerHTML = accounts.map(function(a) {
+          var label = esc(a.name) + (a.mask ? ' ··' + esc(a.mask) : '');
+          var value = a.low_balance_floor != null ? String(parseFloat(a.low_balance_floor)) : '';
+          return '<div style="display:flex;gap:6px;align-items:center;margin:4px 0;">' +
+            '<span style="flex:1;min-width:0;overflow-wrap:anywhere;">' + label + '</span>' +
+            '<input type="number" min="0" step="50" inputmode="decimal" style="width:100px;" value="' + esc(value) + '" ' +
+              'data-floor-input="' + a.id + '" aria-label="Low balance floor for ' + esc(a.name) + '">' +
+            '<button class="btn" data-floor-save="' + a.id + '">Save</button></div>';
+        }).join('');
+        el.querySelectorAll('[data-floor-save]').forEach(function(btn) {
+          btn.addEventListener('click', async function() {
+            var id = btn.getAttribute('data-floor-save');
+            var raw = el.querySelector('[data-floor-input="' + id + '"]').value;
+            var floor = raw.trim() === '' ? null : parseAmountInput(raw);
+            if (floor !== null && (!isFinite(floor) || floor < 0)) { showMsg('Enter a floor of $0 or more, or leave it blank', false); return; }
+            var r = await apiFetch('/api/accounts/' + id, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ low_balance_floor: floor }) });
+            if (await writeOk(r, 'Save floor')) showMsg(floor === null ? 'Floor removed.' : 'Floor saved.', true);
+          });
+        });
+      } catch (e) { el.textContent = 'Unavailable'; }
+    }
     async function loadSettings() {
       try {
         const res = await apiFetch('/api/settings'); if (!res.ok) return;
@@ -497,6 +712,11 @@
         document.getElementById('keepalive-end').value = s.keep_alive_end != null ? s.keep_alive_end : 0;
         document.getElementById('keepalive-tz').value = s.keep_alive_timezone || 'America/New_York';
         updateKeepAliveEstimate();
+        if (s.always_on) {
+          document.getElementById('keepalive-always-on').hidden = false;
+          // .setting-row sets display:flex, which would override the hidden attribute.
+          document.querySelectorAll('#keepalive-section .setting-row').forEach(function (row) { row.style.display = 'none'; });
+        }
         document.getElementById('zip-input').value = s.zip_code || '';
         var pn = document.getElementById('partner-name-input');
         if (pn) pn.value = s.partner_name || '';
@@ -535,8 +755,19 @@
           digestPrereq.style.display = (s.embedded || hasWebhook) ? 'none' : 'block';
         }
         // #19: daily digest control
+        // Roadmap T2.2 L2: low projected cash alert
+        document.getElementById('cash-alert-toggle').checked = !!s.cash_alert_enabled;
+        document.getElementById('cash-alert-threshold').value = s.cash_alert_threshold != null ? String(parseFloat(s.cash_alert_threshold)) : '500';
+        var horizonSel = document.getElementById('cash-alert-horizon');
+        horizonSel.value = String(s.cash_alert_horizon_days || 14);
+        if (horizonSel.value !== String(s.cash_alert_horizon_days || 14)) horizonSel.value = '14';
+        document.getElementById('payday-alert-toggle').checked = !!s.payday_alerts_enabled;
+        renderCashAlertLast(s);
+        renderLinkedTasks(s);
         var critToggle = document.getElementById('critical-alert-toggle');
         if (critToggle) critToggle.checked = !!s.critical_alert_emails_enabled;
+        var insightEmailToggle = document.getElementById('insight-email-toggle');
+        if (insightEmailToggle) insightEmailToggle.checked = s.insight_emails_enabled !== false;
         var dailyToggle = document.getElementById('daily-digest-toggle');
         if (dailyToggle) dailyToggle.checked = !!s.daily_digest_enabled;
         // Follow-on for #8: target allocation editor
@@ -603,6 +834,12 @@
           if (budgetEl) budgetEl.textContent = '$' + (st.estimated_cost_cents / 100).toFixed(3) + ' of $' + (st.budget_cents / 100).toFixed(2) + ' cap used this month';
           var capInput = document.getElementById('budget-cap-input');
           if (capInput && !capInput.value) capInput.value = (st.budget_cents / 100).toFixed(2);
+          // Roadmap T2.3 C4: Per-sistant's spend beside it (its own, separate cap).
+          var psEl = document.getElementById('persistent-ai-spend');
+          if (psEl && st.persistent_ai) {
+            psEl.textContent = 'Per-sistant (its own cap, set in Per-sistant \u2192 Settings): $' + (st.persistent_ai.spent_cents / 100).toFixed(2) + ' of $' + (st.persistent_ai.budget_cents / 100).toFixed(2) + ' this month.';
+            psEl.hidden = false;
+          }
         } else {
           badge.textContent = 'Not Set';
           badge.style.background = 'var(--yellow-bg)'; badge.style.color = 'var(--yellow)';
@@ -676,6 +913,15 @@
       try { await fetch(logoutUrl, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' } }); } catch (e) {}
       window.location.href = '/login';
     }
+    // F12: under the shell, revoke every session (the shell bumps its session epoch).
+    async function logoutEverywhere() {
+      if (!confirm('Sign out on every device, including this one?')) return;
+      var res = null;
+      try { res = await fetch('/logout?everywhere=1', { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' } }); } catch (e) {}
+      if (!res || !(res.ok || res.redirected)) { showMsg('Could not sign out other sessions.', false); return; }
+      window.location.href = '/login';
+    }
+    if (window.BASE_PATH) { var lar = document.getElementById('logout-all-row'); if (lar) lar.style.display = ''; }
     async function generateInsights() {
       const btn = document.getElementById('insights-btn');
       btn.classList.add('btn-loading'); btn.disabled = true;
@@ -686,6 +932,14 @@
           var modList = (data.modules_used || []).length > 0 ? ' Modules: ' + data.modules_used.join(', ') + '.' : '';
           showMsg('Insights generated (' + (data.tokens_used || 0) + ' tokens).' + modList, true);
           renderInsight(data.insight);
+          // F99: say when a module had no data or long-term memory didn't advance,
+          // instead of a clean success toast.
+          if ((data.modules_failed || []).length) {
+            showMsg('Some modules got no data and were skipped: ' + data.modules_failed.join(', '), false);
+          }
+          if (data.summary_status && data.summary_status !== 'updated') {
+            showMsg('Long-term AI memory was not updated this run (' + data.summary_status.replace(/_/g, ' ') + ').', false);
+          }
         }
         else showMsg(data.error || 'Failed', false);
       } catch (e) { showMsg(e.message, false); }
@@ -718,9 +972,11 @@
     }
     async function loadUsageHistory() {
       try {
-        const res = await apiFetch('/api/insights/usage');
-        const data = await res.json();
         const sumEl = document.getElementById('usage-summary');
+        const res = await apiFetch('/api/insights/usage');
+        // A failed load says so instead of staying on "Loading..." (F108).
+        if (!res.ok) { sumEl.textContent = 'Could not load AI usage (HTTP ' + res.status + ').'; return; }
+        const data = await res.json();
         const t = data.totals;
         sumEl.innerHTML = '<span style="color:var(--text)">' + t.total_runs + ' total runs</span> &middot; ' +
           Number(t.total_tokens).toLocaleString() + ' tokens &middot; <span style="color:var(--warm)">$' +
@@ -742,7 +998,10 @@
         });
         html += '</table></div>';
         histEl.innerHTML = html;
-      } catch {}
+      } catch (e) {
+        const sumEl = document.getElementById('usage-summary');
+        if (sumEl) sumEl.textContent = 'Could not load AI usage: ' + e.message;
+      }
     }
     async function resetContext() {
       if (!confirm('Clear all long-term AI memory? Next analysis will start fresh with no prior context.')) return;
@@ -882,7 +1141,7 @@
       try {
         var res = await apiFetch('/api/categorize/accuracy-sample?limit=8');
         var d = await res.json();
-        if (!res.ok) { panel.innerHTML = '<div style="font-size:12px;color:var(--red,#eb6b6b);">' + (d.error || 'Failed to load sample') + '</div>'; return; }
+        if (!res.ok) { panel.innerHTML = '<div style="font-size:12px;color:var(--red,#eb6b6b);">' + esc(d.error || 'Failed to load sample') + '</div>'; return; }
         if (!d.transactions || d.transactions.length === 0) {
           panel.innerHTML = '<div style="font-size:12px;color:var(--text-muted);">Nothing left to verify — all AI categorizations have been reviewed.</div>';
           return;
@@ -896,7 +1155,7 @@
               '<div style="font-size:11px;color:var(--text-muted);">$' + Math.abs(t.amount).toFixed(2) + ' · ' + escAttr(String(t.date).slice(0,10)) + ' · AI: <strong>' + escAttr(t.ai_category) + '</strong></div>' +
             '</div>' +
             '<button type="button" class="btn cat-correct" style="min-height:36px;">Correct</button>' +
-            '<select class="cat-fix-select" style="min-height:36px;">' + opts + '</select>' +
+            '<select class="cat-fix-select" aria-label="Correct category for ' + escAttr(t.merchant) + '" style="min-height:36px;">' + opts + '</select>' +
             '<button type="button" class="btn cat-wrong" style="min-height:36px;">Wrong → save</button>' +
           '</div>';
         }).join('');
@@ -909,7 +1168,7 @@
             submitAccuracyReview(id, false, corrected, row);
           });
         });
-      } catch (e) { panel.innerHTML = '<div style="font-size:12px;color:var(--red,#eb6b6b);">' + e.message + '</div>'; }
+      } catch (e) { panel.innerHTML = '<div style="font-size:12px;color:var(--red,#eb6b6b);">' + esc(e.message) + '</div>'; }
     }
     async function submitAccuracyReview(id, correct, corrected, row) {
       try {
@@ -950,16 +1209,20 @@
         var reg = await navigator.serviceWorker.ready;
         var sub = await reg.pushManager.getSubscription();
         if (sub) {
-          await apiFetch('/api/notifications/subscribe', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: sub.endpoint }) });
+          var delRes = await apiFetch('/api/notifications/subscribe', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: sub.endpoint }) });
           await sub.unsubscribe();
-          showMsg('Push notifications disabled.', true);
+          // F99: the browser side is off either way; say if the server still holds it.
+          if (await writeOk(delRes, 'Push turned off here, but the server could not remove it')) showMsg('Push notifications disabled.', true);
         } else {
           var vapidRes = await apiFetch('/api/notifications/vapid');
           if (!vapidRes.ok) { var d = await vapidRes.json(); showMsg(d.error || 'VAPID not configured', false); btnLoading(btn, false, 'Enable'); return; }
           var vapid = await vapidRes.json();
           var newSub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(vapid.publicKey) });
-          await apiFetch('/api/notifications/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subscription: newSub }) });
-          showMsg('Push notifications enabled!', true);
+          var subRes = await apiFetch('/api/notifications/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subscription: newSub }) });
+          // F99: a subscription the server didn't store never receives a push —
+          // undo the browser side and say so instead of "enabled!".
+          if (await writeOk(subRes, 'Could not enable push')) showMsg('Push notifications enabled!', true);
+          else await newSub.unsubscribe().catch(function() {});
         }
         checkPushStatus();
       } catch (e) { showMsg(e.message, false); }
@@ -1003,20 +1266,11 @@
     })();
 
     // --- Widget toggles ---
-    var WIDGET_LABELS = {
-      pyramid: 'Financial Pyramid', accounts: 'Account Balances', ask: 'Ask Perfin (AI Q&A)', 
-      monthlySpend: 'Monthly Spending', categories: 'Categories', merchants: 'Top Merchants',
-      upcoming: 'Upcoming Charges', forecast: '30-Day Forecast', charts: 'Charts',
-      calendar: 'Bill Calendar Link', cashFlow: 'Cash Flow', savingsRate: 'Savings Rate', yoy: 'Year-over-Year',
-      investments: 'Investments',
-      reviewQueue: 'Review Uncategorized',
-      aiMemory: 'AI Memory',
-      housing: 'Rent & Utilities'
-    };
     function renderWidgetToggles(widgets) {
       var container = document.getElementById('widget-toggles');
-      container.innerHTML = Object.entries(WIDGET_LABELS).map(function(e) {
-        var key = e[0], label = e[1];
+      // The shared list in perfin-shared.js — the same keys the dashboard reads (F96).
+      container.innerHTML = window.DASHBOARD_WIDGETS.map(function(d) {
+        var key = d.key, label = d.label;
         var checked = widgets[key] !== false ? 'checked' : '';
         return '<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;cursor:pointer;font-size:12px;">' +
           '<input type="checkbox" ' + checked + ' data-widget="' + key + '">' +
@@ -1044,10 +1298,10 @@
         return '<div style="display:flex;align-items:center;gap:8px;">' +
           '<span style="flex:1 1 auto;text-transform:capitalize;font-size:13px;color:var(--text);">' + esc(cls) + '</span>' +
           '<input type="number" min="0" max="100" step="0.1" value="' + Number(pct) +
-            '" data-target-class="' + esc(cls) + '" ' +
+            '" data-target-class="' + esc(cls) + '" aria-label="Target percent for ' + esc(cls) + '" ' +
             'style="width:80px;padding:6px 8px;background:transparent;color:var(--text);border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:12px;text-align:center;">' +
           '<span style="font-size:11px;color:var(--text-muted);">%</span>' +
-          '<button class="btn btn-sm" data-remove-class="' + esc(cls) + '" title="Remove" style="min-width:36px;">×</button>' +
+          '<button class="btn btn-sm" data-remove-class="' + esc(cls) + '" title="Remove" aria-label="Remove ' + esc(cls) + ' target" style="min-width:36px;">×</button>' +
         '</div>';
       }).join('');
       var total = entries.reduce(function(s, e) { return s + Number(e[1]); }, 0);
@@ -1333,6 +1587,7 @@
       ['timeout-input', 'change', function() { updateSetting('session_timeout_minutes', parseInt(this.value)); }],
       ['shell-idle-input', 'change', function() { updateSetting('shell_idle_timeout_minutes', parseInt(this.value)); }],
       ['logout-btn', 'click', logout],
+      ['logout-all-btn', 'click', logoutEverywhere],
       ['biometric-register-btn', 'click', registerBiometric],
       ['insights-toggle', 'change', function() { updateSetting('insights_enabled', this.checked); }],
       ['insights-btn', 'click', generateInsights],
@@ -1364,6 +1619,22 @@
       ['weekly-digest-day-select', 'change', function() { updateSetting('weekly_digest_day', parseInt(this.value)); }],
       ['daily-digest-toggle', 'change', function() { updateSetting('daily_digest_enabled', this.checked); }],
       ['critical-alert-toggle', 'change', function() { updateSetting('critical_alert_emails_enabled', this.checked); }],
+      ['cash-alert-toggle', 'change', function() { updateSetting('cash_alert_enabled', this.checked); }],
+      ['payday-alert-toggle', 'change', function() { updateSetting('payday_alerts_enabled', this.checked); }],
+      ['cash-alert-horizon', 'change', function() { updateSetting('cash_alert_horizon_days', parseInt(this.value, 10)); }],
+      ['cash-alert-threshold-save', 'click', function() {
+        var n = parseAmountInput(document.getElementById('cash-alert-threshold').value);
+        if (!isFinite(n) || n < 0) { showMsg('Enter a floor of $0 or more', false); return; }
+        updateSetting('cash_alert_threshold', n);
+      }],
+      ['linked-tasks-toggle', 'change', function() { onLinkedToggle(this, { linked_tasks_enabled: this.checked }); }],
+      ['linked-src-housing', 'change', function() { onLinkedToggle(this, { linked_tasks_sources: { housing: this.checked } }); }],
+      ['linked-src-utility_amount', 'change', function() { onLinkedToggle(this, { linked_tasks_sources: { utility_amount: this.checked } }); }],
+      ['linked-src-still_charging', 'change', function() { onLinkedToggle(this, { linked_tasks_sources: { still_charging: this.checked } }); }],
+      ['linked-src-bills', 'change', function() { onLinkedToggle(this, { linked_tasks_sources: { bills: this.checked } }); }],
+      ['linked-tasks-lead-save', 'click', function() { saveLinkedLead(); }],
+      ['linked-tasks-run', 'click', function() { runLinkedTasksNow(this); }],
+      ['insight-email-toggle', 'change', function() { updateSetting('insight_emails_enabled', this.checked); }],
       ['install-btn', 'click', async function() {
         const result = await perfinPromptInstall();
         if (result && result.outcome === 'accepted') showMsg('Installing Perfin…', true);
@@ -1450,10 +1721,16 @@
              + ' · Plaid: ' + (p.plaid.total || 0) + ' linked'
              + (p.plaid.not_good ? ', <span style="color:var(--red,#eb6b6b);">' + p.plaid.not_good + ' need re-auth</span>' : '')
              + '</div>';
-        if (h.issues && h.issues.length) {
-          out += '<ul style="margin:6px 0;padding-left:18px;">' + h.issues.map(function (i) {
+        out += renderWebhooks(h.webhooks);
+        out += renderConnections(h.connections);
+        // Operator-check issues are listed under Operator Checks below.
+        var dhIssues = (h.issues || []).filter(function (i) { return i.source !== 'operator'; });
+        if (dhIssues.length) {
+          out += '<ul style="margin:6px 0;padding-left:18px;">' + dhIssues.map(function (i) {
             var c = i.severity === 'info' ? 'var(--text-muted)' : 'var(--red,#eb6b6b)';
-            return '<li style="color:' + c + ';">' + esc(i.message) + '</li>';
+            // An issue with a `link` (e.g. Plaid re-auth → /accounts, G3) opens it.
+            var msg = i.link ? '<a href="' + esc(window.withBase ? window.withBase(i.link) : i.link) + '" style="color:inherit;">' + esc(i.message) + '</a>' : esc(i.message);
+            return '<li style="color:' + c + ';">' + msg + '</li>';
           }).join('') + '</ul>';
         }
         if (h.last_reconcile_at) {
@@ -1462,6 +1739,125 @@
         el.innerHTML = out;
       } catch (e) { el.textContent = 'Unavailable'; }
     }
+    // Bank webhooks + per-connection freshness (roadmap T2.1 W6) — both from
+    // GET /api/data-health (webhooks / connections).
+    function whLine(name, w, offText) {
+      if (!w) return '';
+      if (!w.configured) return '<div>' + name + ': <span style="color:var(--text-muted);">' + offText + '</span></div>';
+      var last = w.last_event_at ? dhAge(Math.round((Date.now() - new Date(w.last_event_at).getTime()) / 1000)) + (w.last_status ? ' (' + esc(w.last_status) + ')' : '') : 'none yet';
+      return '<div>' + name + ': last event ' + last + ' · ' + (w.events_24h || 0) + ' in 24h'
+        + (w.failed_24h ? ' · <span style="color:var(--red,#eb6b6b);">' + w.failed_24h + ' failed</span>' : '') + '</div>';
+    }
+    function renderWebhooks(wh) {
+      if (!wh) return '';
+      var pl = wh.plaid || {}, te = wh.teller || {};
+      var plaidOff = !pl.configured ? 'Plaid not configured' : 'off — set PUBLIC_URL';
+      var out = '<div style="margin:8px 0 6px;"><div style="font-weight:600;">Webhooks</div>';
+      out += whLine('Plaid', pl.configured && pl.opted_in ? pl : { configured: false }, plaidOff);
+      if (pl.configured && pl.opted_in && pl.items_total) {
+        out += '<div style="font-size:12px;">' + (pl.items_registered || 0) + ' of ' + pl.items_total + ' Plaid connection(s) registered at ' + esc(pl.base_url)
+          + ' <button class="btn" id="register-plaid-webhooks-btn" data-e2e-skip style="margin-left:8px;">Register Plaid webhooks</button></div>';
+      }
+      out += whLine('Teller', te, 'off — set TELLER_WEBHOOK_SECRET');
+      return out + '</div>';
+    }
+    function renderConnections(list) {
+      if (!list || !list.length) return '';
+      return '<details style="margin:6px 0;"><summary>Connections (' + list.length + ')</summary><ul style="margin:6px 0;padding-left:0;list-style:none;">'
+        + list.map(function (c) {
+          var ls = c.last_synced || {};
+          var state = c.status === 'GOOD' ? '' : ' · <span style="color:var(--red,#eb6b6b);">' + esc(c.status === 'NEEDS_REAUTH' ? 'needs re-auth' : c.status.toLowerCase()) + '</span>';
+          return '<li style="margin:3px 0;">' + dhDot(ls.level) + esc(c.provider === 'plaid' ? 'Plaid' : 'Teller') + ' — ' + esc(c.institution || 'Unknown')
+            + ': ' + (ls.timestamp ? 'synced ' + dhAge(ls.age_seconds) : 'no complete sync recorded yet') + state + '</li>';
+        }).join('') + '</ul></details>';
+    }
+    (function () {
+      var el = document.getElementById('data-health-body');
+      if (!el) return;
+      el.addEventListener('click', async function (ev) {
+        var btn = ev.target.closest('#register-plaid-webhooks-btn');
+        if (!btn) return;
+        btn.disabled = true;
+        try {
+          var res = await apiFetch('/api/plaid/webhooks/register', { method: 'POST' });
+          if (await writeOk(res, 'Register Plaid webhooks')) {
+            var r = await res.json();
+            showMsg('Registered ' + r.registered + ' Plaid connection(s)' + (r.failed ? ' — ' + r.failed + ' failed' : '') + '.', !r.failed);
+            loadDataHealth();
+          }
+        } finally { btn.disabled = false; }
+      });
+    })();
+    // Operator checks (cycle-7 G1 + ST4) — GET /api/operator-checks.
+    var OC_COLOR = { ok: 'var(--green,#4caf50)', info: 'var(--text-muted)', warn: 'var(--warm,#d4a574)', fail: 'var(--red,#eb6b6b)', unknown: 'var(--text-muted)' };
+    var OC_ORDER = { fail: 0, warn: 1, unknown: 2, info: 3, ok: 4 };
+    function renderOperatorChecks(r) {
+      var el = document.getElementById('operator-checks-body');
+      if (!el) return;
+      var g = r.github || {};
+      var head = '';
+      if (!g.configured) head = 'GitHub checks are off — set <code>GITHUB_OPS_TOKEN</code> (a read-only fine-grained token: Actions, Metadata, Secrets) and <code>GITHUB_OPS_REPO</code> (owner/repo) on the server.';
+      else if (!g.ok) head = 'GitHub checks failed: ' + esc(g.reason || 'unknown error');
+      else if (g.checked_at) head = 'GitHub checked ' + new Date(g.checked_at).toLocaleString() + '.';
+      var checks = (r.checks || []).slice().sort(function (a, b) { return (OC_ORDER[a.status] || 0) - (OC_ORDER[b.status] || 0); });
+      var out = head ? '<div style="margin:6px 0;">' + head + '</div>' : '';
+      out += '<ul style="margin:6px 0;padding-left:0;list-style:none;">' + checks.map(function (c) {
+        return '<li style="margin:4px 0;"><span style="color:' + (OC_COLOR[c.status] || 'inherit') + ';" aria-label="' + esc(c.status) + '">●</span> '
+          + '<strong>' + esc(c.label) + '</strong> — ' + esc(c.detail)
+          + (c.fix && c.status !== 'ok' ? '<div style="font-size:12px;margin-left:16px;">Fix: ' + esc(c.fix) + '</div>' : '')
+          + '</li>';
+      }).join('') + '</ul>';
+      el.innerHTML = out;
+    }
+    // Recent errors (roadmap T1.4): GET /api/errors, newest first, with Resolve.
+    async function loadRecentErrors() {
+      var el = document.getElementById('recent-errors-body');
+      if (!el) return;
+      try {
+        var res = await apiFetch('/api/errors?limit=20');
+        if (!(await writeOk(res, 'Recent errors'))) { el.textContent = 'Unavailable'; return; }
+        var list = (await res.json()).errors || [];
+        if (!list.length) { el.textContent = 'No unresolved server errors.'; return; }
+        el.innerHTML = '<ul style="margin:6px 0;padding-left:0;list-style:none;">' + list.map(function (e) {
+          return '<li style="margin:8px 0;">'
+            + '<span style="color:var(--red);" aria-hidden="true">●</span> '
+            + '<strong>' + esc(e.source) + '</strong> — ' + esc(e.message)
+            + '<div style="font-size:12px;margin-left:16px;">' + esc(String(e.count)) + '× · last ' + esc(new Date(e.last_seen).toLocaleString())
+            + ' · first ' + esc(new Date(e.first_seen).toLocaleString())
+            + ' <button class="btn" data-resolve-error="' + esc(e.fingerprint) + '" style="margin-left:8px;">Resolve</button></div>'
+            + (e.sample && e.sample !== e.message ? '<details style="margin-left:16px;font-size:12px;"><summary>Details</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere;">' + esc(e.sample) + '</pre></details>' : '')
+            + '</li>';
+        }).join('') + '</ul>';
+      } catch (e) { el.textContent = 'Unavailable'; }
+    }
+    (function () {
+      var el = document.getElementById('recent-errors-body');
+      if (!el) return;
+      el.addEventListener('click', async function (ev) {
+        var btn = ev.target.closest('[data-resolve-error]');
+        if (!btn) return;
+        btn.disabled = true;
+        var res = await apiFetch('/api/errors/' + encodeURIComponent(btn.getAttribute('data-resolve-error')) + '/resolve', { method: 'POST' });
+        if (await writeOk(res, 'Resolve error')) { showMsg('Resolved — it will reappear if it happens again.', true); loadRecentErrors(); }
+        else btn.disabled = false;
+      });
+    })();
+    async function loadOperatorChecks(refresh) {
+      var el = document.getElementById('operator-checks-body');
+      try {
+        var res = await apiFetch('/api/operator-checks' + (refresh ? '?refresh=1' : ''));
+        if (!(await writeOk(res, 'Operator checks'))) { if (el) el.textContent = 'Unavailable'; return; }
+        renderOperatorChecks(await res.json());
+      } catch (e) { if (el) el.textContent = 'Unavailable'; }
+    }
+    (function () {
+      var ob = document.getElementById('operator-checks-btn');
+      if (!ob) return;
+      ob.addEventListener('click', async function () {
+        ob.disabled = true; var prev = ob.textContent; ob.textContent = 'Checking…';
+        try { await loadOperatorChecks(true); } finally { ob.disabled = false; ob.textContent = prev; }
+      });
+    })();
     (function () {
       var rb = document.getElementById('reconcile-btn');
       if (!rb) return;
@@ -1526,6 +1922,6 @@
     })();
 
     checkPushStatus();
-    loadSettings(); loadInsights(); loadUsageHistory(); loadCatStatus(); loadCatAccuracy(); loadBiometricCredentials(); loadDataHealth();
+    loadSettings(); loadInsights(); loadUsageHistory(); loadCatStatus(); loadCatAccuracy(); loadBiometricCredentials(); loadDataHealth(); loadOperatorChecks(false); loadRecentErrors(); loadCashFloors();
   </script>
 </body></html>

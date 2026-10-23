@@ -8,6 +8,7 @@ try {
 }
 
 const { serverError } = require("../errors");
+const { loadEmailAttachments } = require("./attachments");
 
 module.exports = function createEmailRoutes({ pool, config, helpers }) {
   const router = express.Router();
@@ -80,6 +81,24 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
       if (recipient_email !== undefined && (typeof recipient_email !== "string" || !EMAIL_REGEX.test(recipient_email))) {
         return res.status(400).json({ error: "Invalid email address format." });
       }
+      // F120: 'sent' / 'failed' are send results, never set from a form; a sent
+      // email is final ("Save Draft" on one turned it back into a draft, so a
+      // later Send mailed it again); 'scheduled' needs a valid send time (a
+      // timeless 'scheduled' row sat in the list and never sent).
+      if (status !== undefined && !["draft", "scheduled"].includes(status)) {
+        return res.status(400).json({ error: "status can only be set to draft or scheduled." });
+      }
+      if (scheduled_at !== undefined && scheduled_at !== null && isNaN(Date.parse(scheduled_at))) {
+        return res.status(400).json({ error: "scheduled_at must be a date-time." });
+      }
+      const cur = await pool.query("SELECT status, scheduled_at FROM emails WHERE id = $1 AND deleted_at IS NULL", [req.params.id]);
+      if (!cur.rows.length) return res.status(404).json({ error: "Not found." });
+      if (cur.rows[0].status === "sent") return res.status(409).json({ error: "This email was already sent and can't be changed." });
+      const effectiveSchedule = scheduled_at !== undefined ? scheduled_at : cur.rows[0].scheduled_at;
+      const effectiveStatus = status !== undefined ? status : cur.rows[0].status;
+      if (effectiveStatus === "scheduled" && !effectiveSchedule) {
+        return res.status(400).json({ error: "Set a send time to schedule this email." });
+      }
       const fields = [];
       const params = [];
       let idx = 1;
@@ -92,7 +111,10 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
       if (status !== undefined) { fields.push(`status = $${idx++}`); params.push(status); }
       if (!fields.length) return res.status(400).json({ error: "No fields to update." });
       params.push(req.params.id);
-      const r = await pool.query(`UPDATE emails SET ${fields.join(", ")} WHERE id = $${idx} RETURNING *`, params);
+      // status <> 'sent' again here: a send that claimed the row since the
+      // check above wins (409 below).
+      const r = await pool.query(`UPDATE emails SET ${fields.join(", ")} WHERE id = $${idx} AND status <> 'sent' RETURNING *`, params);
+      if (!r.rows.length) return res.status(409).json({ error: "This email was already sent and can't be changed." });
       if (!r.rows.length) return res.status(404).json({ error: "Not found." });
       res.json(r.rows[0]);
     } catch (err) {
@@ -123,6 +145,16 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
       if (!EMAIL_REGEX.test(email.recipient_email)) {
         return res.status(400).json({ error: "Invalid recipient email address." });
       }
+      // The email's attachments, loaded BEFORE the claim (roadmap T1.5): a
+      // missing file or an oversized total is a 400 with the reason and the
+      // email stays unsent — never sent without its attachments.
+      let attachments;
+      try {
+        attachments = await loadEmailAttachments(pool, email.id);
+      } catch (err) {
+        if (err.code === "ATTACHMENT_MISSING" || err.code === "ATTACHMENT_TOO_LARGE") return res.status(400).json({ error: err.message });
+        throw err;
+      }
       // Atomically CLAIM the row before sending (PB-4): flip to 'sent' guarded by
       // `status <> 'sent'`, so a double-POST / retry / concurrent request can't
       // send the same email twice. A losing racer matches 0 rows → 409. Reverted
@@ -146,7 +178,14 @@ module.exports = function createEmailRoutes({ pool, config, helpers }) {
         text: email.body,
       };
       if (email.body_html) mail.html = email.body_html;
+      if (attachments.length) mail.attachments = attachments;
       await transporter.sendMail(mail);
+      // F116: the email_sent webhook (+ Slack) was selectable but never fired.
+      // Never allowed to fail the request: the mail has already gone.
+      if (typeof fireWebhooks === "function") {
+        fireWebhooks('email_sent', { id: email.id, subject: email.subject, recipient_email: email.recipient_email, sent_at: new Date().toISOString() })
+          .catch((e) => console.error("email_sent webhook:", e.message));
+      }
       res.json({ ok: true, message: "Email sent successfully." });
     } catch (err) {
       // Only revert if WE claimed it (don't stomp another request's state).

@@ -210,9 +210,14 @@ async function syncEnrollment(enrollment, opts = {}) {
 
       try {
         const result = await pool.query(
+          // A transaction the user deleted (deleted_transactions, cycle-7
+          // F20) is never re-inserted — the 7-day lookback and the weekly
+          // reconcile re-fetch it. INSERT … SELECT needs explicit casts (its
+          // parameters aren't typed from the target columns).
           `INSERT INTO transactions (account_id, transaction_id, amount, iso_currency_code, date,
                                      merchant_name, name, category, pending)
-           VALUES ($1, $2, $3, 'USD', $4, $5, $6, $7, false)
+           SELECT $1::text, $2::text, $3::numeric, 'USD', $4::date, $5::text, $6::text, $7::text[], false
+           WHERE NOT EXISTS (SELECT 1 FROM deleted_transactions dt WHERE dt.transaction_id = $2::text)
            ON CONFLICT (transaction_id)
            DO UPDATE SET
              amount = EXCLUDED.amount,
@@ -229,7 +234,9 @@ async function syncEnrollment(enrollment, opts = {}) {
             txn.date,
             txn.details?.counterparty?.name || txn.description || null,
             txn.description || "",
-            txn.details?.category ? `{${txn.details.category}}` : null,
+            // A text[] PARAMETER, never a concatenated `{…}` literal — a comma
+            // or quote in the category split it or failed the row (F30, DC-14 class).
+            txn.details?.category ? [String(txn.details.category)] : null,
           ]
         );
 
@@ -280,6 +287,112 @@ async function syncEnrollment(enrollment, opts = {}) {
   return { added, incomplete: fetchError || insertError };
 }
 
+// The non-suspended Teller enrollments with their decrypted tokens
+// (perfin_try_decrypt — NULL, never a raised error, for a row the passphrase
+// can't open; INV-22).
+const TELLER_ENROLLMENTS_SQL =
+  `SELECT te.id, te.enrollment_id, te.institution_name,
+            perfin_try_decrypt(te.access_token_enc, $1) AS access_token,
+            te.last_synced_txn_date, te.status
+     FROM teller_enrollments te
+     WHERE te.status != 'SUSPENDED'`;
+
+// syncOneTellerEnrollment — one enrollment's sync with its bookkeeping: the
+// decryption check, DISCONNECTED on a 401/403 on every account and the
+// self-heal back to GOOD, the partial-failure error, and (roadmap T2.1 W5)
+// teller_enrollments.last_synced_at when every account and row landed. Never
+// throws: { added, errors[], failed } — failed = it didn't sync at all. Shared
+// by syncAllEnrollments and syncTellerEnrollment (a Teller webhook). Runs no
+// anomaly check (the callers do).
+async function syncOneTellerEnrollment(enrollment, { backfillFrom = null } = {}) {
+  const out = { added: 0, errors: [], failed: false };
+  // A NULL decrypted token means the TOKEN_ENCRYPTION_PASSPHRASE no longer
+  // matches the ciphertext (e.g. after a passphrase rotation). Surface it as
+  // `decryption_failed` (parity with the Plaid sync paths) instead of letting
+  // a null token reach Teller, 401, and silently mark the enrollment
+  // DISCONNECTED — which would wrongly require re-linking on a key rotation (F7).
+  if (!enrollment.access_token) {
+    console.error(`Teller enrollment "${enrollment.institution_name}": token decryption failed (passphrase mismatch?) — skipping, not disconnecting.`);
+    out.errors.push({ institution: enrollment.institution_name, error: "decryption_failed" });
+    out.failed = true;
+    return out;
+  }
+  try {
+    const result = await syncEnrollment(enrollment, { backfillFrom });
+    out.added += result.added;
+    // The token authenticated again → self-heal a DISCONNECTED flag (BSI-9
+    // made DISCONNECTED reachable; syncAllBalances only runs GOOD
+    // enrollments, so a transient 401 must not stop balance syncs until a
+    // manual re-link).
+    if (enrollment.status === "DISCONNECTED") {
+      await pool.query(
+        "UPDATE teller_enrollments SET status = 'GOOD', updated_at = now() WHERE id = $1 AND status = 'DISCONNECTED'",
+        [enrollment.id]
+      ).catch(e => console.error("enrollment status restore error:", e.message));
+    }
+    if (result.incomplete) {
+      // Partial failure: some accounts synced, one fetch errored and the
+      // watermark was held back. Surface it (without marking the whole
+      // enrollment unsynced) so Sync Health / last_sync_result shows the
+      // enrollment needs a retry instead of looking clean (F15).
+      out.errors.push({ institution: enrollment.institution_name, error: "partial_sync_incomplete" });
+    } else {
+      // The enrollment's own freshness (roadmap T2.1 W5): every account
+      // fetched and every row landed.
+      await pool.query("UPDATE teller_enrollments SET last_synced_at = now() WHERE id = $1", [enrollment.id])
+        .catch(e => console.error("teller enrollment last_synced_at update error:", e.message));
+    }
+  } catch (err) {
+    console.error(`Sync error for ${enrollment.institution_name}:`, err.message);
+    if (err.status === 401 || err.status === 403) {
+      await pool.query(
+        `UPDATE teller_enrollments SET status = 'DISCONNECTED', updated_at = now()
+         WHERE id = $1`,
+        [enrollment.id]
+      ).catch(e => console.error("enrollment status update error:", e.message));
+    }
+    out.errors.push({ institution: enrollment.institution_name, error: err.message });
+    out.failed = true;
+  }
+  return out;
+}
+
+// syncTellerEnrollment — sync ONE Teller enrollment (teller_enrollments.id)
+// now, incrementally: what a Teller transactions.processed webhook asks for
+// (roadmap T2.1 W5). COALESCED per enrollment like the Plaid per-item sync: a
+// request while that enrollment's sync runs makes it go round once more and
+// shares its promise. Returns { ok: false, error: "not_found" } (no
+// non-suspended enrollment with that id) or { ok: true, runs, added (summed),
+// errors, failed (the last run's) }. Records nothing globally (no
+// last_txn_sync_at / last_sync_result — the enrollment's last_synced_at only)
+// and runs no post-sync steps; the caller runs runPostSyncSteps(added).
+const _tellerSyncs = new Map(); // teller_enrollments.id → { again, promise }
+function syncTellerEnrollment(enrollmentDbId) {
+  const running = _tellerSyncs.get(enrollmentDbId);
+  if (running) { running.again = true; return running.promise; }
+  const state = { again: false, promise: null };
+  _tellerSyncs.set(enrollmentDbId, state);
+  state.promise = (async () => {
+    const total = { ok: true, runs: 0, added: 0, errors: [], failed: false };
+    try {
+      do {
+        state.again = false;
+        const { rows } = await pool.query(TELLER_ENROLLMENTS_SQL + " AND te.id = $2", [ENCRYPTION_PASSPHRASE, enrollmentDbId]);
+        if (!rows.length) return { ok: false, error: "not_found" };
+        const r = await syncOneTellerEnrollment(rows[0]);
+        total.runs++;
+        total.added += r.added;
+        total.errors = r.errors;
+        total.failed = r.failed;
+      } while (state.again);
+      return total;
+    } finally {
+      _tellerSyncs.delete(enrollmentDbId);
+    }
+  })();
+  return state.promise;
+}
+
 // syncAllEnrollments — in-process sync of every non-suspended Teller enrollment.
 // Used by both POST /api/sync (HTTP handler) and the scheduled auto-sync task
 // in server.js. Returns { enrollments_synced, transactions_added, errors }.
@@ -297,15 +410,7 @@ async function syncAllEnrollments(opts = {}) {
     backfillFrom = d.toISOString().split("T")[0];
   }
 
-  const { rows: enrollments } = await pool.query(
-    `SELECT te.id, te.enrollment_id, te.institution_name,
-            pgp_sym_decrypt(te.access_token_enc, $1) AS access_token,
-            te.last_synced_txn_date, te.status
-     FROM teller_enrollments te
-     WHERE te.status != 'SUSPENDED'
-     ORDER BY te.id`,
-    [ENCRYPTION_PASSPHRASE]
-  );
+  const { rows: enrollments } = await pool.query(TELLER_ENROLLMENTS_SQL + " ORDER BY te.id", [ENCRYPTION_PASSPHRASE]);
 
   let totalAdded = 0;
   const errors = [];
@@ -316,49 +421,10 @@ async function syncAllEnrollments(opts = {}) {
   let hardFailures = 0;
 
   for (const enrollment of enrollments) {
-    // A NULL decrypted token means the TOKEN_ENCRYPTION_PASSPHRASE no longer
-    // matches the ciphertext (e.g. after a passphrase rotation). Surface it as
-    // `decryption_failed` (parity with the Plaid sync paths) instead of letting
-    // a null token reach Teller, 401, and silently mark the enrollment
-    // DISCONNECTED — which would wrongly require re-linking on a key rotation (F7).
-    if (!enrollment.access_token) {
-      console.error(`Teller enrollment "${enrollment.institution_name}": token decryption failed (passphrase mismatch?) — skipping, not disconnecting.`);
-      errors.push({ institution: enrollment.institution_name, error: "decryption_failed" });
-      hardFailures++;
-      continue;
-    }
-    try {
-      const result = await syncEnrollment(enrollment, { backfillFrom });
-      totalAdded += result.added;
-      // The token authenticated again → self-heal a DISCONNECTED flag (BSI-9
-      // made DISCONNECTED reachable; syncAllBalances only runs GOOD
-      // enrollments, so a transient 401 must not stop balance syncs until a
-      // manual re-link).
-      if (enrollment.status === "DISCONNECTED") {
-        await pool.query(
-          "UPDATE teller_enrollments SET status = 'GOOD', updated_at = now() WHERE id = $1 AND status = 'DISCONNECTED'",
-          [enrollment.id]
-        ).catch(e => console.error("enrollment status restore error:", e.message));
-      }
-      if (result.incomplete) {
-        // Partial failure: some accounts synced, one fetch errored and the
-        // watermark was held back. Surface it (without marking the whole
-        // enrollment unsynced) so Sync Health / last_sync_result shows the
-        // enrollment needs a retry instead of looking clean (F15).
-        errors.push({ institution: enrollment.institution_name, error: "partial_sync_incomplete" });
-      }
-    } catch (err) {
-      console.error(`Sync error for ${enrollment.institution_name}:`, err.message);
-      if (err.status === 401 || err.status === 403) {
-        await pool.query(
-          `UPDATE teller_enrollments SET status = 'DISCONNECTED', updated_at = now()
-           WHERE id = $1`,
-          [enrollment.id]
-        );
-      }
-      errors.push({ institution: enrollment.institution_name, error: err.message });
-      hardFailures++;
-    }
+    const r = await syncOneTellerEnrollment(enrollment, { backfillFrom });
+    totalAdded += r.added;
+    errors.push(...r.errors);
+    if (r.failed) hardFailures++;
   }
 
   // Anomaly check on NEW rows (DD-1). Skipped for reconcile/backfill (a
@@ -496,11 +562,43 @@ function flattenSyncErrors(provider, result) {
         error: e && e.error ? e.error : String(e),
       });
     }
+  } else if (result && (result.ok === false || result.failed === true)) {
+    // A WHOLESALE failure — the helper caught its own throw and returned
+    // { ok:false, error } with no errors[] (syncAllPlaidHoldings,
+    // syncAllPlaidInvestmentFlows). It used to flatten to [] and be recorded
+    // as a clean run (cycle-7 F23).
+    out.push({ provider, institution: null, error: String(result.error || "sync failed") });
   }
   return out;
 }
 
-async function recordSyncResult(parts) {
+// A Plaid helper's "feature off" answer is not a sync result: recording it
+// would either look like a failure or wipe that provider's last real outcome.
+function isNotConfigured(result) {
+  return !!result && result.ok === false && !Array.isArray(result.errors) && result.error === "Plaid not configured";
+}
+
+// The result to record for a step that THREW instead of returning (cycle-7
+// F23): a thrown step used to be recorded as nothing at all, leaving the
+// provider's previous — often clean — entry in place.
+function thrownSyncResult(err) {
+  return { errors: [{ institution: null, error: (err && err.message) || String(err) }] };
+}
+
+// Writes are serialized in-process (seams audit #3, INV-68): each one is a
+// read-merge-write of the per-provider map, so two recorders finishing
+// together (the auto-sync and a manual Sync Balances) could each read the old
+// map and the second write drop the first one's providers. One Node process
+// owns the row, so a promise chain is enough.
+let recordChain = Promise.resolve();
+function recordSyncResult(parts) {
+  const run = recordChain.then(() => recordSyncResultNow(parts));
+  // The chain moves on after a failure (the caller still gets the rejection).
+  recordChain = run.catch((e) => console.error("record sync result failed:", e.message));
+  return run;
+}
+
+async function recordSyncResultNow(parts) {
   const at = new Date().toISOString();
   let providers = {};
   try {
@@ -519,7 +617,7 @@ async function recordSyncResult(parts) {
     console.error("read last sync result error:", e.message);
   }
   for (const { provider, result } of parts) {
-    if (result === null || result === undefined) continue;
+    if (result === null || result === undefined || isNotConfigured(result)) continue;
     providers[provider] = { at, errors: flattenSyncErrors(provider, result) };
   }
   const errors = [];
@@ -576,7 +674,7 @@ async function syncAllTransactionsOnce() {
   }
   const tellerAdded = (teller && teller.transactions_added) || 0;
   const plaidAdded = (plaid && plaid.transactions_added) || 0;
-  if (tellerAdded + plaidAdded > 0) await runAnomalyCheck();
+  await runPostSyncSteps(tellerAdded + plaidAdded);
   const errors = [].concat(
     ((teller && teller.errors) || []).map(e => ({ provider: "teller", ...e })),
     ((plaid && plaid.errors) || []).map(e => ({ provider: "plaid", ...e }))
@@ -590,31 +688,147 @@ async function syncAllTransactionsOnce() {
   };
 }
 
-// POST /api/sync
-router.post("/api/sync", async (req, res) => {
-  try {
-    // Teller AND Plaid (BSI-2) — last_txn_sync_at now honestly covers both.
-    const result = await syncAllTransactions();
-    // Update data freshness timestamp
-    await pool.query(
-      "UPDATE user_settings SET last_txn_sync_at = now() WHERE id = 1"
-    ).catch(() => {});
-    await recordSyncResult([
-      { provider: "teller_txn", result: result.teller },
-      { provider: "plaid_txn", result: result.plaid },
-    ]);
-    // Nothing synced at all (the Teller run threw outright and Plaid didn't
-    // succeed either) → still a 500, as before the Plaid leg was added, so the
-    // daily-sync.yml backstop goes red instead of reporting a green no-op.
-    const plaidOk = result.plaid && result.plaid.ok !== false;
-    if (result.teller && result.teller.failed && !plaidOk) {
-      return res.status(500).json({ error: "An internal error occurred.", errors: result.errors });
+// runPostSyncSteps — what follows a transaction sync that added rows: the
+// merchant rename rules (F55) name the new rows BEFORE the anomaly check (and the
+// categorize / detection steps that follow every caller) group them, then ONE
+// anomaly check over everything the sync added (DD-1 / INV-67). Shared by
+// syncAllTransactions and the per-item sync a Plaid webhook triggers (roadmap
+// T2.1 W3). Serialized: two syncs finishing together (a webhook during the daily
+// sync) run it one after the other, so the second check reads the watermark the
+// first advanced and a charge is pushed once. Third: the "Paycheck landed" alert
+// (roadmap T2.2 L3 — services/payday-alerts.js; off by default), on the same
+// chain so its watermark is never read by two runs at once. Never rejects — a
+// rule or payday error never fails the sync, and runAnomalyCheck never throws.
+let _postSyncChain = Promise.resolve();
+function runPostSyncSteps(added) {
+  if (!(added > 0)) return Promise.resolve();
+  const run = _postSyncChain.then(async () => {
+    try { await require("./merchant-rename").applyRenameRules(); }
+    catch (e) { console.error("rename rules after sync failed:", e.message); }
+    await runAnomalyCheck();
+    try { await require("../services/payday-alerts").runPaydayLanded(pool); }
+    catch (e) { console.error("payday alert after sync failed:", e.message); }
+  });
+  _postSyncChain = run.catch(e => console.error("post-sync steps failed:", e.message));
+  return _postSyncChain;
+}
+
+// ---------------------------------------------------------------------------
+// Background jobs (cycle-7 ST1). The GitHub Actions backstops used to hold one
+// HTTP request open for the whole sync (curl --max-time 420), and a cold start
+// or a long Plaid walk outran it — the step failed while the sync was still
+// finishing on the server. POST /api/sync, /api/sync-balances and
+// /api/sync/reconcile accept `background: true`: they answer 202 at once, the
+// work runs detached, and GET /api/sync/status?kind= reports it. One slot per
+// kind, in memory (single-operator, single-process app); a restart loses the
+// slot, which a poller detects because the job `id` it was given is gone.
+// ---------------------------------------------------------------------------
+const BG_KINDS = ["sync", "sync-balances", "reconcile"];
+let bgSeq = 0;
+function idleJob(kind) {
+  return { kind, id: null, running: false, phase: null, started_at: null, finished_at: null, result: null, error: null };
+}
+const bgJobs = Object.fromEntries(BG_KINDS.map((k) => [k, idleJob(k)]));
+function startBgJob(kind, extra = {}) {
+  bgJobs[kind] = { ...idleJob(kind), ...extra, id: ++bgSeq, running: true, phase: "Starting", started_at: new Date().toISOString() };
+  return bgJobs[kind];
+}
+function finishBgJob(job, { result = null, error = null } = {}) {
+  job.running = false;
+  job.phase = null;
+  job.finished_at = new Date().toISOString();
+  job.result = result;
+  job.error = error;
+}
+
+// Route-level single-flight: a manual POST while a background run (or another
+// manual one) of the same kind is in progress shares that run's promise and
+// result instead of starting a second sync and recording it twice (PSC-12).
+const routeInFlight = {};
+function sharedRun(key, fn) {
+  if (routeInFlight[key]) return routeInFlight[key];
+  const p = (async () => fn())().finally(() => {
+    if (routeInFlight[key] === p) routeInFlight[key] = null;
+  });
+  routeInFlight[key] = p;
+  return p;
+}
+
+// Start `run` (→ { status, body, failure? }) detached under bgJobs[kind] and
+// answer 202, or 409 with the running job's id while one is in progress.
+// The status's `error` is a fixed, generic sentence — never an exception
+// message (a Teller error carries the response body) — because the backstop
+// workflows' logs are public while the repo is (INV-103).
+function startBackground(res, kind, run, extra) {
+  const cur = bgJobs[kind];
+  if (cur.running) {
+    return res.status(409).json({ running: true, kind, id: cur.id, started_at: cur.started_at, error: "A run of this kind is already in progress." });
+  }
+  const job = startBgJob(kind, extra);
+  job.phase = "Running";
+  (async () => {
+    try {
+      const r = await run();
+      finishBgJob(job, { result: r.body, error: r.status >= 400 ? (r.failure || "The run failed.") : null });
+    } catch (e) {
+      console.error(`Background ${kind} error:`, e.message);
+      finishBgJob(job, { error: "The run failed with an internal error — see the server log." });
     }
-    res.json(result);
+  })();
+  return res.status(202).json({ started: true, running: true, kind, id: job.id, started_at: job.started_at });
+}
+
+// The work behind POST /api/sync, shared by the synchronous and background
+// paths. Returns { status, body, failure? } (failure = the status's error).
+async function runTransactionSync() {
+  // Teller AND Plaid (BSI-2) — last_txn_sync_at now honestly covers both.
+  const result = await syncAllTransactions();
+  // Update data freshness timestamp
+  await pool.query(
+    "UPDATE user_settings SET last_txn_sync_at = now() WHERE id = 1"
+  ).catch(e => console.error("last_txn_sync_at update failed:", e.message));
+  await recordSyncResult([
+    { provider: "teller_txn", result: result.teller },
+    { provider: "plaid_txn", result: result.plaid },
+  ]);
+  // Nothing synced at all (the Teller run threw outright and Plaid didn't
+  // succeed either) → still a 500, as before the Plaid leg was added, so the
+  // daily-sync.yml backstop goes red instead of reporting a green no-op.
+  const plaidOk = result.plaid && result.plaid.ok !== false;
+  if (result.teller && result.teller.failed && !plaidOk) {
+    return {
+      status: 500,
+      body: { error: "An internal error occurred.", errors: result.errors },
+      failure: "Nothing synced: the Teller sync failed and Plaid did not succeed.",
+    };
+  }
+  return { status: 200, body: result };
+}
+
+// POST /api/sync — body { background?: true } (ST1): 202 + poll
+// GET /api/sync/status?kind=sync. Without it, unchanged: the result inline.
+router.post("/api/sync", async (req, res) => {
+  if (req.body && req.body.background === true) {
+    return startBackground(res, "sync", () => sharedRun("sync", runTransactionSync));
+  }
+  try {
+    const r = await sharedRun("sync", runTransactionSync);
+    res.status(r.status).json(r.body);
   } catch (err) {
     console.error("Sync error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
   }
+});
+
+// GET /api/sync/status?kind=sync|sync-balances|reconcile — the background job
+// slot (ST1): { kind, id, running, phase, started_at, finished_at, result,
+// error }. An idle slot has id null (never run since this process started).
+router.get("/api/sync/status", (req, res) => {
+  const kind = String(req.query.kind || "sync");
+  if (!BG_KINDS.includes(kind)) {
+    return res.status(400).json({ error: "kind must be one of " + BG_KINDS.join(", ") });
+  }
+  res.json(bgJobs[kind]);
 });
 
 // reconcileTeller — re-fetch the trailing N days from every Teller enrollment,
@@ -630,21 +844,39 @@ async function reconcileTeller(days = 90) {
 // background code paths. Teller re-fetches the trailing window; Plaid resets
 // each item's cursor and re-walks transactionsSync (idempotent upserts).
 // Stamps last_reconcile_at on completion.
-async function runReconcile(days, provider) {
+// One reconcile at a time (seams audit #3, INV-127): the synchronous route,
+// the background route and the weekly in-process heal all hold this guard, so
+// a second run is refused (409 / skipped) instead of repeating a 90-day
+// Teller re-fetch or a full Plaid re-walk next to the one already going.
+let reconcileActive = 0;
+function reconcileBusy() { return reconcileActive > 0 || bgJobs.reconcile.running; }
+async function withReconcileGuard(fn) {
+  reconcileActive++;
+  try { return await fn(); } finally { reconcileActive--; }
+}
+
+async function runReconcile(days, provider, job = null) {
+  return withReconcileGuard(() => runReconcileBody(days, provider, job));
+}
+
+async function runReconcileBody(days, provider, job) {
+  // The phase belongs to the background job only — a synchronous run used to
+  // write it onto the idle slot ("Finalizing" left behind).
+  const phase = (p) => { if (job) job.phase = p; };
   const out = { days, provider };
   if (provider === "teller" || provider === "all") {
-    reconcileJob.phase = "Re-fetching Teller transactions";
+    phase("Re-fetching Teller transactions");
     try { out.teller = await reconcileTeller(days); }
     catch (e) { out.teller = { error: e.message }; }
   }
   if (provider === "plaid" || provider === "all") {
-    reconcileJob.phase = "Re-walking Plaid history (this is the slow part)";
+    phase("Re-walking Plaid history (this is the slow part)");
     try {
       const { reconcilePlaidTransactions } = require("./investments");
       out.plaid = await reconcilePlaidTransactions();
     } catch (e) { out.plaid = { error: e.message }; }
   }
-  reconcileJob.phase = "Finalizing";
+  phase("Finalizing");
   // Record the reconcile outcome in last_sync_result (BSI-11) — it was never
   // recorded, so a failing reconcile was invisible. A leg that threw becomes a
   // single error entry.
@@ -661,15 +893,14 @@ async function runReconcile(days, provider) {
     legFailed
       ? "UPDATE user_settings SET last_reconcile_at = now() WHERE id = 1"
       : "UPDATE user_settings SET last_reconcile_at = now(), last_txn_sync_at = now() WHERE id = 1"
-  ).catch(() => {});
+  ).catch(e => console.error("reconcile timestamp update failed:", e.message));
   return out;
 }
 
-// In-memory background-reconcile tracker. The Plaid leg is a full cursor
-// re-walk (up to 2 years across every item) and can take a while, so the UI
-// runs it in the background and polls /status; on completion we push a
-// notification. Single-operator, single-process app → one job at a time.
-let reconcileJob = { running: false, phase: null, started_at: null, finished_at: null, provider: null, days: null, result: null, error: null };
+// Background reconcile: the Plaid leg is a full cursor re-walk (up to 2 years
+// across every item) and can take a while, so the UI runs it in the background
+// and polls /status; on completion we push a notification. It lives in the
+// shared tracker above (bgJobs.reconcile — ST1), one job at a time.
 
 // Flatten every per-item / per-leg error out of a reconcile result (WD-17).
 // A leg that threw carries { error }; a leg that ran but had failing items
@@ -709,38 +940,46 @@ router.post("/api/sync/reconcile", async (req, res) => {
   const days = Math.max(1, Math.min(365, parseInt(req.body.days, 10) || 90));
   const provider = ["teller", "plaid", "all"].includes(req.body.provider) ? req.body.provider : "all";
 
+  // Either path refuses while any reconcile runs (background, synchronous or
+  // the weekly heal) — a synchronous call can't join a run with other days /
+  // provider, so it gets the same 409 (id null when it isn't a background job).
+  if (reconcileBusy()) {
+    const cur = bgJobs.reconcile;
+    return res.status(409).json({ running: true, kind: "reconcile", id: cur.running ? cur.id : null, started_at: cur.running ? cur.started_at : null, error: "A reconcile is already running." });
+  }
   if (req.body.background === true) {
-    if (reconcileJob.running) {
-      return res.status(409).json({ running: true, started_at: reconcileJob.started_at, error: "A reconcile is already running." });
-    }
-    reconcileJob = { running: true, phase: "Starting", started_at: new Date().toISOString(), finished_at: null, provider, days, result: null, error: null };
+    const job = startBgJob("reconcile", { provider, days });
     // Fire-and-forget. Completion is reported via the status endpoint + a push.
     (async () => {
       let out;
-      try { out = await runReconcile(days, provider); }
+      try { out = await runReconcile(days, provider, job); }
       catch (e) { out = { days, provider, error: e.message }; }
-      reconcileJob.running = false;
-      reconcileJob.finished_at = new Date().toISOString();
-      reconcileJob.result = out;
       // WD-17: per-item errors inside a leg (out.teller.errors / out.plaid.errors)
       // used to be ignored, so a reconcile whose items all failed still read
       // "Reconcile complete" in Settings and in the push.
+      // The status's error is a FIXED sentence (INV-127, parity with the sync /
+      // sync-balances slots — seams audit #3): it used to carry exception text
+      // and Teller response bodies. The per-item detail is in last_sync_result
+      // (Settings → Sync Health); errors[] keeps only who failed.
       const errs = reconcileErrors(out);
-      reconcileJob.error = out.error || (errs.length
-        ? errs.length + " error(s): " + errs.slice(0, 3).map(e => (e.institution ? e.institution + ": " : (e.provider ? e.provider + ": " : "")) + e.error).join("; ")
-        : null);
-      reconcileJob.errors = errs;
+      finishBgJob(job, {
+        result: out,
+        error: out.error ? "The reconcile failed." : (errs.length
+          ? errs.length + " item(s) failed — see Settings → Sync Health."
+          : null),
+      });
+      job.errors = errs.map((e) => ({ provider: e.provider || null, institution: e.institution || null }));
       try {
         const { sendToAll } = require("./notifications");
         await sendToAll({
-          title: reconcileJob.error ? "Reconcile finished with errors" : "Reconcile complete",
+          title: job.error ? "Reconcile finished with errors" : "Reconcile complete",
           body: summarizeReconcile(out),
           tag: "reconcile",
           data: { url: "/settings" },
         });
-      } catch {}
+      } catch (e) { console.error("Reconcile notification failed:", e.message); }
     })();
-    return res.status(202).json({ started: true, running: true, provider, days });
+    return res.status(202).json({ started: true, running: true, kind: "reconcile", id: job.id, started_at: job.started_at, provider, days });
   }
 
   try {
@@ -754,7 +993,7 @@ router.post("/api/sync/reconcile", async (req, res) => {
 
 // GET /api/sync/reconcile/status — poll the background reconcile job state.
 router.get("/api/sync/reconcile/status", (_req, res) => {
-  res.json(reconcileJob);
+  res.json(bgJobs.reconcile);
 });
 
 // GET /api/items
@@ -768,6 +1007,7 @@ router.get("/api/items", async (_req, res) => {
          COALESCE(te.status, pi.status) AS status,
          COALESCE(te.created_at, pi.created_at) AS created_at,
          CASE WHEN te.id IS NOT NULL THEN 'teller' ELSE 'plaid' END AS provider,
+         pi.last_error_code,
          json_agg(json_build_object(
            'account_id', la.account_id,
            'name', la.name,
@@ -778,11 +1018,26 @@ router.get("/api/items", async (_req, res) => {
        FROM linked_accounts la
        LEFT JOIN teller_enrollments te ON te.id = la.teller_enrollment_id
        LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
+       -- Manual accounts (no enrollment, no item) are listed on their own; they
+       -- used to group into one null "plaid" item with Add accounts / Unlink
+       -- buttons that answered 400 / 500 (seams audit #3).
+       WHERE la.teller_enrollment_id IS NOT NULL OR la.plaid_item_id IS NOT NULL
        GROUP BY te.id, te.enrollment_id, te.institution_name, te.status, te.created_at,
-                pi.id, pi.item_id, pi.institution_name, pi.status, pi.created_at
+                pi.id, pi.item_id, pi.institution_name, pi.status, pi.created_at, pi.last_error_code
        ORDER BY COALESCE(te.created_at, pi.created_at)`
     );
-    res.json(result.rows);
+    // Investments-only Plaid Items (POST /api/plaid/exchange) live only in
+    // plaid_investment_items, so they were never listed and couldn't be
+    // unlinked (cycle-7 F22). Their accounts aren't in linked_accounts; the
+    // page unlinks them via DELETE /api/plaid/investment-items/:id.
+    const inv = await pool.query(
+      `SELECT pii.id, pii.item_id, pii.institution_name, 'GOOD' AS status, pii.created_at,
+              'plaid_investment' AS provider, NULL AS last_error_code, '[]'::json AS accounts
+       FROM plaid_investment_items pii
+       WHERE NOT EXISTS (SELECT 1 FROM plaid_items pi WHERE pi.item_id = pii.item_id)
+       ORDER BY pii.created_at`
+    ).catch(() => ({ rows: [] }));
+    res.json(result.rows.concat(inv.rows));
   } catch (err) {
     console.error("list items error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
@@ -792,15 +1047,19 @@ router.get("/api/items", async (_req, res) => {
 // DELETE /api/enrollments/:id
 router.delete("/api/enrollments/:id", async (req, res) => {
   try {
+    // Fail-soft decrypt (F17): unlinking is the recovery path for a token
+    // that no longer decrypts, so it must not fail on one.
     const { rows } = await pool.query(
       `SELECT enrollment_id,
-              pgp_sym_decrypt(access_token_enc, $1) AS access_token
+              perfin_try_decrypt(access_token_enc, $1) AS access_token
        FROM teller_enrollments WHERE id = $2`,
       [ENCRYPTION_PASSPHRASE, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: "Enrollment not found" });
 
-    try {
+    if (!rows[0].access_token) {
+      console.warn("Teller unlink: token won't decrypt — removing locally without revoking at Teller.");
+    } else try {
       const accounts = await tellerRequest("/accounts", rows[0].access_token);
       for (const acct of accounts) {
         // Per-account try (DD-10): one failed DELETE used to abort revocation
@@ -937,7 +1196,7 @@ router.get("/api/accounts", async (_req, res) => {
     const result = await pool.query(
       `SELECT la.id, la.account_id, la.name, la.official_name, la.type, la.subtype, la.mask,
               la.available_balance, la.current_balance, la.balance_currency, la.balance_updated_at, la.apr,
-              la.monthly_payment,
+              la.monthly_payment, la.low_balance_floor,
               COALESCE(te.institution_name, pi.institution_name, la.institution_name_manual) AS institution_name,
               CASE WHEN te.id IS NOT NULL THEN 'teller' WHEN la.is_manual THEN 'manual' ELSE 'plaid' END AS provider,
               la.is_manual, la.credit_limit, la.is_shared, la.spending_split_pct,
@@ -980,14 +1239,35 @@ router.post("/api/accounts/manual", async (req, res) => {
   }
 });
 
+// Parse a money field from a request body: a finite number (a "$1,234.50"
+// string is accepted), or null when `nullable`. Returns undefined when the
+// value is invalid. Cycle-7 F29: parseFloat let "abc" through as NaN, which
+// Postgres stores in NUMERIC and which then spread into net worth.
+function parseMoneyField(v, { nullable = false } = {}) {
+  if (v === null) return nullable ? null : undefined;
+  const n = typeof v === "number" ? v
+    : (typeof v === "string" && v.trim() !== "" ? Number(v.trim().replace(/[$,]/g, "")) : NaN);
+  return Number.isFinite(n) ? n : undefined;
+}
+
 // PATCH /api/accounts/:id/balance — Update balance on any account
 router.patch("/api/accounts/:id/balance", async (req, res) => {
   const { current_balance, available_balance, credit_limit } = req.body;
   try {
     const updates = []; const values = []; let idx = 1;
-    if (current_balance !== undefined) { updates.push("current_balance = $" + idx++); values.push(parseFloat(current_balance)); }
-    if (available_balance !== undefined) { updates.push("available_balance = $" + idx++); values.push(parseFloat(available_balance)); }
-    if (credit_limit !== undefined) { updates.push("credit_limit = $" + idx++); values.push(credit_limit === null ? null : parseFloat(credit_limit)); }
+    const fields = [
+      ["current_balance", current_balance, false],
+      ["available_balance", available_balance, true],
+      ["credit_limit", credit_limit, true],
+    ];
+    for (const [col, raw, nullable] of fields) {
+      if (raw === undefined) continue;
+      const v = parseMoneyField(raw, { nullable });
+      if (v === undefined || (col === "credit_limit" && v !== null && v < 0)) {
+        return res.status(400).json({ error: `${col} must be a number${nullable ? " or null" : ""}${col === "credit_limit" ? " ≥ 0" : ""}` });
+      }
+      updates.push(col + " = $" + idx++); values.push(v);
+    }
     if (!updates.length) return res.status(400).json({ error: "No fields to update" });
     updates.push("balance_updated_at = now()");
     values.push(parseInt(req.params.id));
@@ -1040,7 +1320,7 @@ router.delete("/api/accounts/manual/:id", async (req, res) => {
 
 // PATCH /api/accounts/:id
 router.patch("/api/accounts/:id", async (req, res) => {
-  const { apr, monthly_payment } = req.body;
+  const { apr, monthly_payment, low_balance_floor } = req.body;
   try {
     const updates = []; const values = []; let idx = 1;
     if (apr !== undefined) {
@@ -1059,13 +1339,35 @@ router.patch("/api/accounts/:id", async (req, res) => {
       }
       updates.push("monthly_payment = $" + idx++); values.push(val);
     }
+    // The cash alerts' per-account floor (roadmap T2.2 L4): a number 0-10,000,000
+    // or null (none). Only a spendable account — depository and not an
+    // investment type — can carry one; anything else is a 400.
+    let settingFloor = false;
+    if (low_balance_floor !== undefined) {
+      const v = low_balance_floor;
+      const val = v === null ? null
+        : (typeof v === "number" || (typeof v === "string" && v.trim() !== "")) ? Number(v) : NaN;
+      if (val !== null && (!Number.isFinite(val) || val < 0 || val > 1e7)) {
+        return res.status(400).json({ error: "low_balance_floor must be a number 0-10000000, or null" });
+      }
+      updates.push("low_balance_floor = $" + idx++); values.push(val === null ? null : Math.round(val * 100) / 100);
+      settingFloor = val !== null;
+    }
     if (!updates.length) return res.status(400).json({ error: "No valid fields" });
     values.push(req.params.id);
     const result = await pool.query(
-      "UPDATE linked_accounts SET " + updates.join(", ") + " WHERE id = $" + idx + " RETURNING *",
+      "UPDATE linked_accounts la SET " + updates.join(", ") + " WHERE la.id = $" + idx +
+        (settingFloor ? ` AND la.type = 'depository' AND NOT ${INVESTMENT_ACCOUNT_TYPES}` : "") + " RETURNING *",
       values
     );
-    if (!result.rows.length) return res.status(404).json({ error: "Account not found" });
+    if (!result.rows.length) {
+      if (settingFloor) {
+        const exists = await pool.query("SELECT 1 FROM linked_accounts WHERE id = $1", [req.params.id]);
+        if (exists.rows.length) return res.status(400).json({ error: "A low-balance floor needs a checking or savings account" });
+      }
+      return res.status(404).json({ error: "Account not found" });
+    }
+    if (low_balance_floor !== undefined) require("../services/cash-alerts").invalidate();
     res.json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: "An internal error occurred." });
@@ -1088,7 +1390,7 @@ function syncAllBalances() {
 async function syncAllBalancesOnce() {
   const enrollments = await pool.query(
     `SELECT id, enrollment_id, institution_name,
-            pgp_sym_decrypt(access_token_enc, $1) AS access_token
+            perfin_try_decrypt(access_token_enc, $1) AS access_token
      FROM teller_enrollments WHERE status = 'GOOD'`,
     [ENCRYPTION_PASSPHRASE]
   );
@@ -1227,59 +1529,80 @@ async function syncAllBalancesOnce() {
 }
 
 // POST /api/sync-balances
-router.post("/api/sync-balances", async (_req, res) => {
+// The work behind POST /api/sync-balances, shared by the synchronous and
+// background paths (ST1). Returns { status, body, failure? }.
+async function runBalanceSync() {
+  // A Teller throw is recorded and still answers 500 (daily-sync.yml goes
+  // red), but no longer skips the Plaid refresh or the record (cycle-7 F23).
+  let tellerResult = null;
+  let tellerThrew = null;
+  try { tellerResult = await syncAllBalances(); }
+  catch (e) { console.error("Teller balance sync error:", e.message); tellerThrew = e; }
+  // Also refresh Plaid balances so users with both providers get one-click
+  // freshness. Lazy-required to avoid a circular import via routes/investments.
+  let plaidResult = null;
+  let holdingsResult = null;
+  let flowsResult = null;
+  let plaidThrew = null;
   try {
-    const tellerResult = await syncAllBalances();
-    // Also refresh Plaid balances so users with both providers get one-click
-    // freshness. Lazy-required to avoid a circular import via routes/investments.
-    let plaidResult = null;
-    let holdingsResult = null;
-    let flowsResult = null;
-    let plaidThrew = null;
-    try {
-      const inv = require("./investments");
-      if (typeof inv.syncAllPlaidBalances === "function") {
-        plaidResult = await inv.syncAllPlaidBalances();
-      }
-      // Also refresh investment holdings so brokerage values + the
-      // investment_accounts rows repopulate from one "Sync Balances" click
-      // (notably right after a fresh-start reset, when those rows were wiped).
-      if (typeof inv.syncAllPlaidHoldings === "function") {
-        holdingsResult = await inv.syncAllPlaidHoldings();
-      }
-      // And external cash flows (TWR/XIRR) — idempotent full-window re-pull.
-      if (typeof inv.syncAllPlaidInvestmentFlows === "function") {
-        flowsResult = await inv.syncAllPlaidInvestmentFlows();
-      }
-    } catch (e) {
-      // A wholesale throw (vs. per-item errors collected inside the helpers)
-      // used to be only console.error'd, so a total Plaid balance/holdings
-      // failure left no trace in last_sync_result and was invisible on the
-      // Sync Health card (BS-6). Capture it so recordSyncResult surfaces it.
-      console.error("Plaid balance/holdings sync error:", e.message);
-      plaidThrew = e.message;
+    const inv = require("./investments");
+    if (typeof inv.syncAllPlaidBalances === "function") {
+      plaidResult = await inv.syncAllPlaidBalances();
     }
-    await pool.query(
-      "UPDATE user_settings SET last_balance_sync_at = now() WHERE id = 1"
-    ).catch(() => {});
-    await recordSyncResult([
-      { provider: "teller_balance", result: tellerResult },
-      { provider: "plaid_balance", result: plaidResult },
-      { provider: "plaid_holdings", result: holdingsResult },
-      // Investment-flow errors were never recorded (DD-10).
-      { provider: "plaid_flows", result: flowsResult && flowsResult.ok === false && !flowsResult.errors ? null : flowsResult },
-      ...(plaidThrew ? [{ provider: "plaid", result: { errors: [{ institution: null, error: plaidThrew }] } }] : []),
-    ]);
-    res.json({
-      ...tellerResult,
-      plaid_accounts_updated: plaidResult?.accounts_updated || 0,
-      plaid_errors: plaidResult?.errors?.length ? plaidResult.errors : undefined,
-      holdings_updated: holdingsResult?.holdings_updated || 0,
-      holdings_accounts_updated: holdingsResult?.accounts_updated || 0,
-      holdings_errors: holdingsResult?.errors?.length ? holdingsResult.errors : undefined,
-      flows_added: flowsResult?.flows_added || 0,
-      flows_errors: flowsResult?.errors?.length ? flowsResult.errors : undefined,
-    });
+    // Also refresh investment holdings so brokerage values + the
+    // investment_accounts rows repopulate from one "Sync Balances" click
+    // (notably right after a fresh-start reset, when those rows were wiped).
+    if (typeof inv.syncAllPlaidHoldings === "function") {
+      holdingsResult = await inv.syncAllPlaidHoldings();
+    }
+    // And external cash flows (TWR/XIRR) — idempotent full-window re-pull.
+    if (typeof inv.syncAllPlaidInvestmentFlows === "function") {
+      flowsResult = await inv.syncAllPlaidInvestmentFlows();
+    }
+  } catch (e) {
+    // A wholesale throw (vs. per-item errors collected inside the helpers)
+    // used to be only console.error'd, so a total Plaid balance/holdings
+    // failure left no trace in last_sync_result and was invisible on the
+    // Sync Health card (BS-6). Capture it so recordSyncResult surfaces it.
+    console.error("Plaid balance/holdings sync error:", e.message);
+    plaidThrew = e.message;
+  }
+  await pool.query(
+    "UPDATE user_settings SET last_balance_sync_at = now() WHERE id = 1"
+  ).catch(e => console.error("last_balance_sync_at update failed:", e.message));
+  await recordSyncResult([
+    { provider: "teller_balance", result: tellerThrew ? thrownSyncResult(tellerThrew) : tellerResult },
+    { provider: "plaid_balance", result: plaidResult },
+    { provider: "plaid_holdings", result: holdingsResult },
+    // Investment-flow errors were never recorded (DD-10); "Plaid not
+    // configured" is skipped inside recordSyncResult.
+    { provider: "plaid_flows", result: flowsResult },
+    ...(plaidThrew ? [{ provider: "plaid", result: { errors: [{ institution: null, error: plaidThrew }] } }] : []),
+  ]);
+  if (tellerThrew) {
+    return { status: 500, body: { error: "An internal error occurred." }, failure: "The Teller balance sync failed." };
+  }
+  return { status: 200, body: {
+    ...tellerResult,
+    plaid_accounts_updated: plaidResult?.accounts_updated || 0,
+    plaid_errors: plaidResult?.errors?.length ? plaidResult.errors : undefined,
+    holdings_updated: holdingsResult?.holdings_updated || 0,
+    holdings_accounts_updated: holdingsResult?.accounts_updated || 0,
+    holdings_errors: holdingsResult?.errors?.length ? holdingsResult.errors : undefined,
+    flows_added: flowsResult?.flows_added || 0,
+    flows_errors: flowsResult?.errors?.length ? flowsResult.errors : undefined,
+  } };
+}
+
+// POST /api/sync-balances — body { background?: true } (ST1): 202 + poll
+// GET /api/sync/status?kind=sync-balances. Without it, unchanged.
+router.post("/api/sync-balances", async (req, res) => {
+  if (req.body && req.body.background === true) {
+    return startBackground(res, "sync-balances", () => sharedRun("sync-balances", runBalanceSync));
+  }
+  try {
+    const r = await sharedRun("sync-balances", runBalanceSync);
+    res.status(r.status).json(r.body);
   } catch (err) {
     console.error("sync-balances error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
@@ -1385,11 +1708,20 @@ router.get("/api/accounts/:id/balance-history", async (req, res) => {
 
 module.exports = router;
 module.exports.syncAllEnrollments = syncAllEnrollments;
+module.exports.syncTellerEnrollment = syncTellerEnrollment; // roadmap T2.1 W5: the per-enrollment sync a Teller webhook triggers
+module.exports.syncOneTellerEnrollment = syncOneTellerEnrollment;
 module.exports.syncAllBalances = syncAllBalances;
 module.exports.reconcileTeller = reconcileTeller;
+module.exports.reconcileBusy = reconcileBusy;
+module.exports.withReconcileGuard = withReconcileGuard;
 module.exports.reconcileErrors = reconcileErrors;
 module.exports.summarizeReconcile = summarizeReconcile;
 module.exports.recordSyncResult = recordSyncResult;
+module.exports.thrownSyncResult = thrownSyncResult;
 module.exports.syncAllTransactions = syncAllTransactions;
 module.exports.runAnomalyCheck = runAnomalyCheck;
+module.exports.runPostSyncSteps = runPostSyncSteps;
+module.exports.runTransactionSync = runTransactionSync;
+module.exports.runBalanceSync = runBalanceSync;
+module.exports._bgJobs = bgJobs;
 module.exports.lookbackFloor = lookbackFloor; // exported for testing (BSI-8)

@@ -10,8 +10,9 @@
 
 DO $vec$
 BEGIN
-  IF EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'vector') THEN
-    CREATE EXTENSION IF NOT EXISTS vector;
+  -- Installed, not merely available (cycle-7 F10 — db/014 makes the one
+  -- creation attempt and tolerates a role that can't create it).
+  IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector') THEN
     EXECUTE 'ALTER TABLE rag_answer_cache ADD COLUMN IF NOT EXISTS query_embedding vector(1024)';
   END IF;
 END

@@ -105,6 +105,19 @@ ${navBar("/settings")}
         </div>
       </div>
     </div>
+    <div id="ai-usage-section" style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line);">
+      <div style="font-size:13px;margin-bottom:6px;">Monthly AI budget</div>
+      <p id="ai-usage-line" style="font-size:12px;color:var(--muted);margin-bottom:10px;">Loading this month&rsquo;s AI spend&hellip;</p>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <label for="ai-budget-input" style="margin:0;font-size:12px;white-space:nowrap;">Cap ($ per month)</label>
+        <input type="number" id="ai-budget-input" min="0.01" max="100" step="0.01" inputmode="decimal" style="width:100px;">
+        <button class="btn primary" id="save-ai-budget-btn">Save</button>
+        <button class="btn" id="reset-ai-budget-btn">Use default</button>
+      </div>
+      <p id="ai-budget-source" style="font-size:11px;color:var(--muted);margin-top:6px;"></p>
+      <div id="ai-usage-breakdown" style="margin-top:8px;font-size:12px;"></div>
+      <p id="perfin-ai-spend" style="font-size:11px;color:var(--muted);margin-top:8px;" hidden></p>
+    </div>
   </div>
 
   <div class="section">
@@ -168,7 +181,7 @@ ${navBar("/settings")}
     <div id="trash-list" style="margin-bottom:10px;"></div>
     <div class="actions" style="margin-bottom:0;">
       <button class="btn" id="view-trash-btn">View Trash</button>
-      <button class="btn danger" id="empty-trash-btn">Empty Trash</button>
+      <button class="btn danger" data-e2e-skip id="empty-trash-btn">Empty Trash</button>
     </div>
   </div>
 
@@ -238,7 +251,7 @@ ${navBar("/settings")}
     </div>
   </div>
 
-  ${(AUTH_SECRET || req.app.get("embedded")) ? '<div class="section"><h2>Session</h2><div class="actions" style="margin-bottom:0;"><button class="btn danger" id="logout-btn">Log Out</button></div></div>' : ''}
+  ${(AUTH_SECRET || req.app.get("embedded")) ? '<div class="section"><h2>Session</h2><div class="actions" style="margin-bottom:0;"><button class="btn danger" data-e2e-skip id="logout-btn">Log Out</button></div></div>' : ''}
 </div>
 
 <!-- Automation Modal -->
@@ -279,7 +292,7 @@ ${navBar("/settings")}
     <div class="modal-actions">
       <button class="btn" id="auto-cancel-btn">Cancel</button>
       <button class="btn primary" id="auto-save-btn">Save</button>
-      <button class="btn danger" id="auto-delete-btn" style="display:none">Delete</button>
+      <button class="btn danger" data-e2e-skip id="auto-delete-btn" style="display:none">Delete</button>
     </div>
   </div>
 </div>
@@ -304,7 +317,7 @@ ${navBar("/settings")}
     <div class="modal-actions">
       <button class="btn" id="wh-cancel-btn">Cancel</button>
       <button class="btn primary" id="wh-save-btn">Save</button>
-      <button class="btn danger" id="wh-delete-btn" style="display:none">Delete</button>
+      <button class="btn danger" data-e2e-skip id="wh-delete-btn" style="display:none">Delete</button>
     </div>
   </div>
 </div>

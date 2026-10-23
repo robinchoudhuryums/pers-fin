@@ -140,12 +140,18 @@ const CSV_FORMATS = {
   },
   generic: {
     detect: () => true,
-    parse: (row) => {
+    // A generic file's sign convention is unknown (cycle-7 F26): some exports
+    // write charges positive (our debit-positive convention), others write
+    // deposits positive and charges negative. `opts.positiveMeans` says which —
+    // 'charges' (the default, the old behaviour) or 'deposits' (negated). The
+    // import preview guesses it (guessGenericSign) and lets the user flip it.
+    parse: (row, _headers, opts = {}) => {
       const date = row["Date"] || row["Transaction Date"] || Object.values(row)[0];
       const merchant = row["Description"] || row["Merchant"] || row["Name"] || Object.values(row)[1];
       // Shared parseMoney (F6) — handles "(45.00)" parenthesized negatives,
       // "$", and thousands separators, where the old parseFloat returned NaN.
-      const amount = parseMoney(row["Amount"] || row["Debit"] || Object.values(row)[2] || "0");
+      const raw = parseMoney(row["Amount"] || row["Debit"] || Object.values(row)[2] || "0");
+      const amount = opts.positiveMeans === "deposits" && raw !== 0 ? -raw : raw;
       const category = row["Category"] || "";
       return { date, merchant_name: merchant, amount, category };
     },
@@ -166,6 +172,33 @@ const INSTITUTION_LABELS = {
   schwab: "Charles Schwab",
   generic: "CSV Import",
 };
+
+// What a positive amount means in a generic CSV (cycle-7 F26).
+const POSITIVE_MEANS = ["charges", "deposits"];
+
+// Words that mark money coming IN (a paycheck, a deposit, a refund, a card
+// payment received). Word-boundary matched (INV-10).
+const INFLOW_RE = /\b(payroll|direct dep(osit)?|dir dep|deposit|salary|refund|reversal|interest paid|payment received|payment - thank|payment thank you|thank you)\b/i;
+
+// Guess a generic file's sign from its rows: if the inflow-looking rows are
+// mostly positive, positive means deposits; if they're mostly negative, it
+// means charges. With no inflow-looking rows, most rows in a statement are
+// spending, so a negative majority means positive = deposits. Ties → charges.
+function guessGenericSign(records) {
+  const fmt = CSV_FORMATS.generic;
+  let inPos = 0, inNeg = 0, pos = 0, neg = 0;
+  for (const row of records || []) {
+    let p;
+    try { p = fmt.parse(row); } catch { continue; } // an unparseable row just doesn't vote
+    if (!p || isNaN(p.amount) || p.amount === 0) continue;
+    if (p.amount > 0) pos++; else neg++;
+    if (INFLOW_RE.test(String(p.merchant_name || ""))) {
+      if (p.amount > 0) inPos++; else inNeg++;
+    }
+  }
+  if (inPos !== inNeg) return inPos > inNeg ? "deposits" : "charges";
+  return neg > pos ? "deposits" : "charges";
+}
 
 function detectCsvFormat(headers) {
   for (const [name, fmt] of Object.entries(CSV_FORMATS)) {
@@ -248,6 +281,8 @@ module.exports = {
   CSV_FORMATS,
   INSTITUTION_LABELS,
   detectCsvFormat,
+  guessGenericSign,
+  POSITIVE_MEANS,
   parseDate,
   csvTransactionId,
   makeCsvTxnIdGenerator,

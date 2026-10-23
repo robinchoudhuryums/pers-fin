@@ -82,7 +82,7 @@ async function load() {
   document.getElementById('completion-chart').innerHTML = days.length
     ? days.map(d => {
         var h = Math.max((parseInt(d.count)/maxDay)*160, 4);
-        var label = new Date(d.day).toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'});
+        var label = parseCalDate(d.day).toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'});
         return '<div style="display:flex;flex-direction:column;align-items:center;flex:1;min-width:0;"><div style="background:var(--good);width:100%;max-width:40px;height:'+h+'px;border-radius:2px 2px 0 0;transition:height 0.3s;"></div><div style="font-family:var(--mono);font-size:9px;color:var(--muted);margin-top:4px;text-align:center;white-space:nowrap;letter-spacing:0.04em;">'+label+'</div><div style="font-family:var(--mono);font-size:11px;font-weight:500;margin-top:2px;font-variant-numeric:tabular-nums;">'+d.count+'</div></div>';
       }).join('')
     : '<div class="empty-msg">No data yet</div>';
