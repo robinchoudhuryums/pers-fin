@@ -77,10 +77,19 @@ function doSearch(q) {
   clearTimeout(searchTimeout);
   if (!q || q.length < 2) { document.getElementById('search-results').style.display='none'; return; }
   searchTimeout = setTimeout(async function() {
-    var results = await fetch('/api/search?q='+encodeURIComponent(q)).then(r=>r.json());
+    var results = await fetch('/api/search?q='+encodeURIComponent(q)).then(r=>r.json()).catch(function(){ return []; });
+    if (!Array.isArray(results)) results = [];
     if (!results.length) { document.getElementById('search-results').innerHTML='<div class="empty-msg">No results</div>'; }
     else {
       document.getElementById('search-results').innerHTML = results.map(r => {
+        // T2.4 X3a: Perfin results link into Perfin (its mount via linkedAppHref);
+        // no inline actions. Without a safe link the row is plain text.
+        if (r.group === 'finance') {
+          var link = linkedAppHref(r.app, r.url);
+          var body = '<div class="result-type">'+esc(r.type)+' · Perfin</div><div style="font-size:14px;">'+esc(r.title||'')+'</div>'+(r.description?'<div style="font-size:11px;color:var(--muted);margin-top:2px;">'+esc(r.description)+'</div>':'');
+          if (!link) return '<div class="result-item">'+body+'</div>';
+          return '<a href="'+escAttr(link.href)+'"'+(link.external?' target="_blank" rel="noopener"':'')+' class="result-item" style="display:block;text-decoration:none;color:inherit;">'+body+'</a>';
+        }
         var href = BP + (r.type==='todo'?'/todos':r.type==='email'?'/emails':r.type==='note'?'/notes':'/contacts');
         var actions = '';
         if (r.type === 'todo' && !r.completed) {

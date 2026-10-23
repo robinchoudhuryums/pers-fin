@@ -18,7 +18,19 @@ Updated: 2026-10-23
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T2.4 (cross-app automation) — X2c DONE** (2026-10-23, branch
+- **Status:** **Roadmap T2.4 (cross-app automation) — X3a DONE** (2026-10-23, branch
+  `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
+  `.cycle/plan-t2-4-crossapp-automation.md`. Block: `.cycle/blocks/7-roadmap-t2-4-x3a-broad-implement.md`.
+  - **Completed:** Per-sistant's GET /api/search finance group under the shell
+    (routes/finance-search.js — transactions at the user's share, subscriptions, manual bills,
+    goals, accounts; read-only via perfinPool, fail-soft, 10 each); q 2-200 characters;
+    linkedAppHref shared by the chip and the dashboard widget's finance links.
+    Decision: the response stays one flat array — finance rows carry group 'finance'.
+  - **Tests:** npm 2223/2223 (10 new), contract 231/231 (4 new), Playwright 58/58; 19/20
+    mutations red, one equivalent.
+  - **Where I left off:** X3a committed. NEXT: `/broad-implement X3b` (the /search page, nav
+    links, INV-144, T2.4 close-out).
+- **Previous status:** **Roadmap T2.4 (cross-app automation) — X2c DONE** (2026-10-23, branch
   `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-4-crossapp-automation.md`. Block: `.cycle/blocks/7-roadmap-t2-4-x2c-broad-implement.md`.
   - **Completed:** Perfin Settings → Per-sistant Tasks (switch, sources — bills marked off by
@@ -29,7 +41,7 @@ implement and reflect sessions only set Phase.)
   - **Tests:** npm 2213/2213 (13 new), contract 227/227 (1 new), Playwright 58/58; 16
     mutations red.
   - **Where I left off:** X2c committed; X2 complete. NEXT: `/broad-implement X3a`.
-- **Previous status:** **Roadmap T2.4 (cross-app automation) — X2b DONE** (2026-10-23, branch
+- **Earlier status:** **Roadmap T2.4 (cross-app automation) — X2b DONE** (2026-10-23, branch
   `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-4-crossapp-automation.md`. Block: `.cycle/blocks/7-roadmap-t2-4-x2b-broad-implement.md`.
   - **Completed:** runLinkedTasks (single-flight, off memo, ok_kinds only, state record),
@@ -39,7 +51,7 @@ implement and reflect sessions only set Phase.)
     mutations red.
   - **Where I left off:** X2b committed. NEXT: `/broad-implement X2c` (the Settings section,
     POST /api/linked-tasks/run, X2 docs).
-- **Earlier status:** **Roadmap T2.4 (cross-app automation) — X2a DONE** (2026-10-23, branch
+- **Earlier status (X2a):** **Roadmap T2.4 (cross-app automation) — X2a DONE** (2026-10-23, branch
   `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-4-crossapp-automation.md`. Block: `.cycle/blocks/7-roadmap-t2-4-x2a-broad-implement.md`.
   - **Completed:** user_settings.linked_tasks_* (switch, sources — bills off — lead 0–14,

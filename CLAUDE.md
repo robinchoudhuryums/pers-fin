@@ -913,9 +913,17 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2213 tests as of latest); use
+  Perfin and Per-sistant test files (2223 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2213 tests across 115 test files (incl.
+  Current count: 2223 tests across 116 test files (incl.
+  `apps/per-sistant/tests/roadmap-t2-4-x3a.test.js` — roadmap T2.4 X3a: GET /api/search over fake
+  pools (standalone no Perfin query; under the shell five read-only queries sharing the escaped
+  pattern, each capped at 10; the transaction query on the display merchant / notes / category at
+  Perfin's own SPLIT_AMOUNT, newest first; each result's type, detail and url; a failing query
+  dropping only its results and logging once; a throw while building SQL never rejecting; q over
+  200 characters a 400) and the dashboard widget's finance rows run in a vm from the emitted
+  bundles (linked through Perfin's mount, escaped, no actions, plain text without a safe link, a
+  non-array reply "No results") — the database-backed half is `tests/contract/finance-search`;
   `tests/roadmap-t2-4-x2c.test.js` — roadmap T2.4 X2c: POST /api/linked-tasks/run (501 standalone
   with nothing read, 409 while a run is going without starting another, 400 while off with
   the off-for-today memo cleared first, the record's shape without internal fields, a thrown
@@ -1509,7 +1517,12 @@ shell/
   payment and its undo; a utility amount entered and a manual bill marked paid closing
   theirs; a still-charging alert making one task across two watchdog runs that a sync
   never closes; the run's record stored; X2c: Run now a 400 while off, then the run's record
-  — desired equal to Perfin's computation — stored as linked_tasks_state). 227 tests, run
+  — desired equal to Perfin's computation — stored as linked_tasks_state), and
+  finance-search (roadmap T2.4 X3a, both apps' real databases wired as the shell wires them:
+  Per-sistant's search finding a 50%-shared-card transaction by merchant, note and category at
+  the user's share with its Activity link, an active subscription / bill / goal / account but
+  not a cancelled subscription or the Plaid brokerage phantom, "100%" matched literally, and
+  nothing from Perfin standalone). 231 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -3147,6 +3160,20 @@ shared session cookie. Cross-app surface area today:
   with Per-sistant's own `EMAIL_REGEX`; seams audit #3 — it stopped at the first SET
   value, so a display-form `SMTP_FROM` made every digest a draft). Only a standalone
   Perfin (and the `test` event) uses the HMAC-signed HTTP webhook.
+- **Unified search — finance results** (roadmap T2.4 X3a): Per-sistant's `GET
+  /api/search` (the dashboard search widget) also searches Perfin under the shell,
+  READ-ONLY through the wired `perfinPool` (`apps/per-sistant/routes/finance-search.js`,
+  never an HTTP self-fetch): transactions by display merchant / user notes / category
+  (the 10 newest, at the user's share via Perfin's own `SPLIT_AMOUNT`, reimbursed and
+  pending marked), active subscriptions, manual bills, goals and account names (the
+  Plaid brokerage phantom left out), 10 each. Results follow Per-sistant's in the same
+  array with `group: 'finance'`, `app: 'perfin'`, `type` (transaction / subscription /
+  bill / goal / account), `title`, `description` and `url` — a path inside Perfin (a
+  transaction: `/transactions?q=<merchant>&month=YYYY-MM`) that the widget joins with
+  Perfin's mount (`linkedAppHref`, views/js.js — the linked-task chip's rule); no
+  inline actions. Each query is fail-soft (a failing one drops its results and the
+  request logs once); `q` is matched literally (F124) and must be 2-200 characters (a
+  longer one is a 400). Standalone: no finance results, no Perfin query.
 - **Productivity context** (`GET /api/persistent/productivity-context`):
   task/review stats from Per-sistant (embedded fast-path queries Per-sistant's
   pool via `queryPersistentStats` / `queryPersistentReview`; HTTP fetch is the
@@ -3395,7 +3422,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2213 tests passing across 115 test files (Perfin 1579 + Per-sistant 634), plus the real-Postgres route contract suite (227 tests; CI `migrations` job, `npm run test:contract`) and 58 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2223 tests passing across 116 test files (Perfin 1579 + Per-sistant 644), plus the real-Postgres route contract suite (231 tests; CI `migrations` job, `npm run test:contract`) and 58 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -5861,7 +5888,13 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   a note instead). X2c follow-ons: the last-run line's "outstanding" counts what Perfin has
   due, including a task you completed by hand; the section doesn't list the tasks
   themselves (they're in Per-sistant's To-Dos); Run now shares a running hourly run only
-  through the 409 (press again once it ends). X2b
+  through the 409 (press again once it ends). X3a: Per-sistant's `GET /api/search` also
+  returns Perfin's transactions, subscriptions, manual bills, goals and accounts under the
+  shell (`group: 'finance'`, read-only through perfinPool, fail-soft), shown by the dashboard
+  search widget with links into Perfin. X3a follow-ons: the finance results are a flat 10 per
+  kind with no paging or ranking across kinds; a transaction is found by its display merchant,
+  notes or category only (not its raw bank description or amount); a recurring transfer or a
+  housing obligation isn't searched. X2b
   follow-ons: a kicked refresh runs the whole computation (a few queries), not just the
   item that changed; the runner is in memory, so two processes (a deploy overlap) can run
   at once — both reconcile idempotently through the unique key; transactions syncs don't

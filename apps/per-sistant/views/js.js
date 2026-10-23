@@ -87,19 +87,26 @@ function escAttr(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/<
 // (window.LINKED_APP_BASES — '/perfin' under the shell, PERFIN_URL standalone).
 // Only a same-app path on an http(s) or root-relative base becomes a link;
 // anything else renders as plain text. No regex with a backslash here (INV-97).
-function linkedTaskChip(t){
-  if(!t||!t.source_app)return '';
-  var label=t.source_app==='perfin'?'Perfin':String(t.source_app);
+// linkedAppHref(app, path) → { href, external } for a same-app path under the
+// app's base, or null (no base, a non-http(s) base, a path that isn't one).
+// Shared by the chip and the search results' finance links (X3a).
+function linkedAppHref(app,u){
   var bases=window.LINKED_APP_BASES||{};
-  var base=Object.prototype.hasOwnProperty.call(bases,t.source_app)?bases[t.source_app]:null;
-  var u=t.source_url;
+  var base=Object.prototype.hasOwnProperty.call(bases,app)?bases[app]:null;
   var safePath=typeof u==='string'&&u.length>1&&u.charAt(0)==='/'&&u.charAt(1)!=='/'&&u.indexOf(String.fromCharCode(92))<0;
   var rooted=typeof base==='string'&&base.charAt(0)==='/'&&base.charAt(1)!=='/';
   var external=typeof base==='string'&&/^https?:/i.test(base);
-  var title='Kept in step with '+label;
-  if(!safePath||!(rooted||external))return '<span class="linked-chip" title="'+escAttr(title)+'">'+esc(label)+'</span>';
+  if(!safePath||!(rooted||external))return null;
   if(base.charAt(base.length-1)==='/')base=base.slice(0,-1);
-  return '<a class="linked-chip" href="'+escAttr(base+u)+'"'+(external?' target="_blank" rel="noopener"':'')+' title="'+escAttr(title)+'" aria-label="'+escAttr('Open in '+label+': '+(t.title||''))+'">'+esc(label)+'</a>';
+  return {href:base+u,external:external};
+}
+function linkedTaskChip(t){
+  if(!t||!t.source_app)return '';
+  var label=t.source_app==='perfin'?'Perfin':String(t.source_app);
+  var link=linkedAppHref(t.source_app,t.source_url);
+  var title='Kept in step with '+label;
+  if(!link)return '<span class="linked-chip" title="'+escAttr(title)+'">'+esc(label)+'</span>';
+  return '<a class="linked-chip" href="'+escAttr(link.href)+'"'+(link.external?' target="_blank" rel="noopener"':'')+' title="'+escAttr(title)+'" aria-label="'+escAttr('Open in '+label+': '+(t.title||''))+'">'+esc(label)+'</a>';
 }
 function renderMd(s){
   if(!s)return'';

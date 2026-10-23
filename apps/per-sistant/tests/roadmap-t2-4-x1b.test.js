@@ -65,8 +65,8 @@ describe("X1b — edits win (source_snapshot)", () => {
 function loadChip(bases) {
   const JS = require("../views/js");
   const a = JS.indexOf("function escAttr(");
-  const b = JS.indexOf("function linkedTaskChip(");
-  const end = JS.indexOf("\n}\n", b) + 3;
+  const b = JS.indexOf("function linkedAppHref("); // the chip's link rule (X3a), then the chip
+  const end = JS.indexOf("\n}\n", JS.indexOf("function linkedTaskChip(")) + 3;
   assert.ok(a >= 0 && b > a && end > b);
   const ctx = { window: { LINKED_APP_BASES: bases } };
   vm.runInNewContext(

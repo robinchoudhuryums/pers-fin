@@ -39,7 +39,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   or a total over the cap, is never sent around: Send Now answers 400 with the reason
   BEFORE claiming (the email stays unsent), and the scheduler marks the claimed row
   `failed` with it.
-- **Tests**: `tests/` (node:test runner, `npm test`, 634 tests (api + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11/batch12/batch13/batch16/batch17/batch20 + roadmap-t1-batchc + roadmap-t2-3-cap-c1/c2/c3/c4 + roadmap-t2-4-x1a/x1b + seams-audit-3 + model-upgrade))
+- **Tests**: `tests/` (node:test runner, `npm test`, 644 tests (api + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11/batch12/batch13/batch16/batch17/batch20 + roadmap-t1-batchc + roadmap-t2-3-cap-c1/c2/c3/c4 + roadmap-t2-4-x1a/x1b + seams-audit-3 + model-upgrade))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of June 2026)
@@ -312,7 +312,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (634 tests)
+# Run tests (644 tests)
 npm test
 
 # Pages
@@ -485,7 +485,11 @@ POST   /api/contacts/import         # Batch import contacts (JSON array)
 
 GET    /api/health                  # Health check (no auth, returns uptime/db status)
 
-GET    /api/search                 # Global search (query: q, with quick action fields)
+GET    /api/search                 # Global search (query: q, 2-200 chars — longer is a 400; with quick action fields).
+                                   # Under the shell also Perfin's records (T2.4 X3a, routes/finance-search.js —
+                                   # read-only via perfinPool, fail-soft): transactions (the 10 newest, user's
+                                   # share), subscriptions, manual bills, goals, accounts — appended with
+                                   # group 'finance', app 'perfin', type, title, description, url (a Perfin path)
 GET    /api/calendar               # Calendar events (query: month, year)
 GET    /api/review                 # Weekly review stats
 GET    /api/perfin/stats           # Proxy to Perfin API
