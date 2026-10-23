@@ -319,6 +319,39 @@
     </div>
   </div>
 
+  <div class="section" id="linked-tasks-section"><h2>Per-sistant Tasks</h2>
+    <p class="desc" id="linked-tasks-standalone" hidden>Available under the unified shell — Per-sistant has to run in the same app for Perfin to open tasks there.</p>
+    <div id="linked-tasks-controls">
+      <div class="setting-row">
+        <div class="setting-info"><div class="name">Create Tasks in Per-sistant</div><div class="desc">Open a To-Do in Per-sistant when something here needs doing, and close it once it's done here. A task you edit keeps your edits; one you complete or reopen by hand is left alone. Checked hourly and right after a payment is recorded.</div></div>
+        <div class="setting-control">
+          <label class="toggle"><input type="checkbox" id="linked-tasks-toggle" aria-label="Create tasks in Per-sistant"><span class="slider"></span></label>
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="setting-info"><div class="name">Sources</div><div class="desc">What opens a task</div></div>
+      </div>
+      <div id="linked-tasks-sources" style="margin:-4px 0 10px;">
+        <div style="margin:4px 0;"><input type="checkbox" id="linked-src-housing" data-source="housing"> <label for="linked-src-housing">Rent &amp; utilities due</label></div>
+        <div style="margin:4px 0;"><input type="checkbox" id="linked-src-utility_amount" data-source="utility_amount"> <label for="linked-src-utility_amount">Utility amounts to enter (the bill should have arrived)</label></div>
+        <div style="margin:4px 0;"><input type="checkbox" id="linked-src-still_charging" data-source="still_charging"> <label for="linked-src-still_charging">A subscription still charging after you cancelled</label></div>
+        <div style="margin:4px 0;"><input type="checkbox" id="linked-src-bills" data-source="bills"> <label for="linked-src-bills">Manual bills due — off by default: autopaid bills nobody marks paid stay open</label></div>
+      </div>
+      <div class="setting-row">
+        <div class="setting-info"><div class="name">Bill Lead Days</div><div class="desc">How many days before a manual bill's due date its task opens (0-14)</div></div>
+        <div class="setting-control" style="display:flex;gap:6px;align-items:center;">
+          <input type="number" id="linked-tasks-lead" min="0" max="14" step="1" inputmode="numeric" aria-label="Bill lead days" style="width:80px;">
+          <button class="btn" id="linked-tasks-lead-save">Save</button>
+        </div>
+      </div>
+      <p class="desc" id="linked-tasks-last" hidden></p>
+      <div class="setting-row">
+        <div class="setting-info"><div class="name">Run Now</div><div class="desc">Bring Per-sistant's tasks up to date now instead of waiting for the hourly run</div></div>
+        <div class="setting-control"><button class="btn" id="linked-tasks-run">Run now</button></div>
+      </div>
+    </div>
+  </div>
+
   <div class="section" id="keepalive-section"><h2>Keep-Alive</h2>
     <p class="desc" id="keepalive-always-on" hidden>This server is always on (ALWAYS_ON), so it never sleeps and the keep-alive ping isn't needed.</p>
     <div class="setting-row">
@@ -564,6 +597,75 @@
       el.textContent = text;
       el.hidden = !text;
     }
+    // Roadmap T2.4 X2c: Settings → Per-sistant Tasks (linked tasks).
+    var LINKED_SOURCES = ['housing', 'utility_amount', 'still_charging', 'bills'];
+    var LINKED_KIND_LABELS = { housing: 'Rent & utilities', 'utility-amount': 'Utility amounts', 'still-charging': 'Still charging', bill: 'Manual bills' };
+    function linkedTasksLastText(s) {
+      var st = s && s.linked_tasks_state;
+      if (!st || !st.at) return s && s.linked_tasks_enabled ? 'Not run yet — it runs hourly, or press Run now.' : '';
+      var text = 'Last run ' + new Date(st.at).toLocaleString() + ': ' + (st.desired || 0) + ' outstanding, ' + (st.closed || 0) + ' closed.';
+      var errs = Array.isArray(st.errors) ? st.errors : [];
+      if (errs.length) {
+        text += ' ' + errs.map(function(e) {
+          return (e && e.kind && LINKED_KIND_LABELS[e.kind] ? LINKED_KIND_LABELS[e.kind] + ': ' : '') + (e && e.error ? e.error : 'failed');
+        }).join(' ');
+      }
+      return text;
+    }
+    function renderLinkedTasksLast(s) {
+      var el = document.getElementById('linked-tasks-last');
+      if (!el) return;
+      var text = linkedTasksLastText(s);
+      el.textContent = text;
+      el.hidden = !text;
+    }
+    function renderLinkedTasks(s) {
+      var note = document.getElementById('linked-tasks-standalone');
+      var controls = document.getElementById('linked-tasks-controls');
+      if (!note || !controls) return;
+      // Standalone (no Per-sistant in this process): nothing to switch on.
+      note.hidden = !!s.embedded;
+      controls.hidden = !s.embedded;
+      if (!s.embedded) return;
+      document.getElementById('linked-tasks-toggle').checked = !!s.linked_tasks_enabled;
+      var src = s.linked_tasks_sources || {};
+      LINKED_SOURCES.forEach(function(k) {
+        var box = document.getElementById('linked-src-' + k);
+        if (box) box.checked = !!src[k];
+      });
+      document.getElementById('linked-tasks-lead').value = String(s.linked_tasks_bill_lead_days != null ? s.linked_tasks_bill_lead_days : 3);
+      renderLinkedTasksLast(s);
+    }
+    // One PATCH per change; writeOk reports a refusal (INV-89).
+    async function saveLinkedTasks(body) {
+      try {
+        var res = await apiFetch('/api/settings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (!(await writeOk(res, 'Per-sistant tasks'))) return false;
+        showMsg('Setting saved.', true);
+        return true;
+      } catch (e) { showMsg('Per-sistant tasks: ' + e.message, false); return false; }
+    }
+    async function onLinkedToggle(box, body) {
+      if (!(await saveLinkedTasks(body))) box.checked = !box.checked;
+    }
+    async function saveLinkedLead() {
+      var raw = String(document.getElementById('linked-tasks-lead').value).trim();
+      var n = /^[0-9]+$/.test(raw) ? parseInt(raw, 10) : NaN;
+      if (!(n >= 0 && n <= 14)) { showMsg('Enter a whole number of days from 0 to 14', false); return false; }
+      return saveLinkedTasks({ linked_tasks_bill_lead_days: n });
+    }
+    async function runLinkedTasksNow(btn) {
+      if (btn) btn.disabled = true;
+      try {
+        var res = await apiFetch('/api/linked-tasks/run', { method: 'POST' });
+        if (!(await writeOk(res, 'Run now'))) return false;
+        var r = await res.json();
+        renderLinkedTasksLast({ linked_tasks_enabled: true, linked_tasks_state: r });
+        showMsg('Per-sistant tasks updated: ' + (r.desired || 0) + ' outstanding, ' + (r.closed || 0) + ' closed.', !(r.errors && r.errors.length));
+        return true;
+      } catch (e) { showMsg('Run now: ' + e.message, false); return false; }
+      finally { if (btn) btn.disabled = false; }
+    }
     // One floor input per spendable account (depository, not an investment type).
     async function loadCashFloors() {
       var el = document.getElementById('cash-floor-list');
@@ -661,6 +763,7 @@
         if (horizonSel.value !== String(s.cash_alert_horizon_days || 14)) horizonSel.value = '14';
         document.getElementById('payday-alert-toggle').checked = !!s.payday_alerts_enabled;
         renderCashAlertLast(s);
+        renderLinkedTasks(s);
         var critToggle = document.getElementById('critical-alert-toggle');
         if (critToggle) critToggle.checked = !!s.critical_alert_emails_enabled;
         var insightEmailToggle = document.getElementById('insight-email-toggle');
@@ -1524,6 +1627,13 @@
         if (!isFinite(n) || n < 0) { showMsg('Enter a floor of $0 or more', false); return; }
         updateSetting('cash_alert_threshold', n);
       }],
+      ['linked-tasks-toggle', 'change', function() { onLinkedToggle(this, { linked_tasks_enabled: this.checked }); }],
+      ['linked-src-housing', 'change', function() { onLinkedToggle(this, { linked_tasks_sources: { housing: this.checked } }); }],
+      ['linked-src-utility_amount', 'change', function() { onLinkedToggle(this, { linked_tasks_sources: { utility_amount: this.checked } }); }],
+      ['linked-src-still_charging', 'change', function() { onLinkedToggle(this, { linked_tasks_sources: { still_charging: this.checked } }); }],
+      ['linked-src-bills', 'change', function() { onLinkedToggle(this, { linked_tasks_sources: { bills: this.checked } }); }],
+      ['linked-tasks-lead-save', 'click', function() { saveLinkedLead(); }],
+      ['linked-tasks-run', 'click', function() { runLinkedTasksNow(this); }],
       ['insight-email-toggle', 'change', function() { updateSetting('insight_emails_enabled', this.checked); }],
       ['install-btn', 'click', async function() {
         const result = await perfinPromptInstall();

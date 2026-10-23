@@ -18,7 +18,18 @@ Updated: 2026-10-23
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T2.4 (cross-app automation) — X2b DONE** (2026-10-23, branch
+- **Status:** **Roadmap T2.4 (cross-app automation) — X2c DONE** (2026-10-23, branch
+  `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
+  `.cycle/plan-t2-4-crossapp-automation.md`. Block: `.cycle/blocks/7-roadmap-t2-4-x2c-broad-implement.md`.
+  - **Completed:** Perfin Settings → Per-sistant Tasks (switch, sources — bills marked off by
+    default — lead days, last-run line with named source errors, Run now; standalone note),
+    POST /api/linked-tasks/run (501 / 409 / 400 / record), isRunning(), the X2 docs.
+    Decision: the last-run line says "outstanding" (Perfin's due items, a hand-completed
+    task included), not "open".
+  - **Tests:** npm 2213/2213 (13 new), contract 227/227 (1 new), Playwright 58/58; 16
+    mutations red.
+  - **Where I left off:** X2c committed; X2 complete. NEXT: `/broad-implement X3a`.
+- **Previous status:** **Roadmap T2.4 (cross-app automation) — X2b DONE** (2026-10-23, branch
   `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-4-crossapp-automation.md`. Block: `.cycle/blocks/7-roadmap-t2-4-x2b-broad-implement.md`.
   - **Completed:** runLinkedTasks (single-flight, off memo, ok_kinds only, state record),
@@ -28,7 +39,7 @@ implement and reflect sessions only set Phase.)
     mutations red.
   - **Where I left off:** X2b committed. NEXT: `/broad-implement X2c` (the Settings section,
     POST /api/linked-tasks/run, X2 docs).
-- **Previous status:** **Roadmap T2.4 (cross-app automation) — X2a DONE** (2026-10-23, branch
+- **Earlier status:** **Roadmap T2.4 (cross-app automation) — X2a DONE** (2026-10-23, branch
   `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-4-crossapp-automation.md`. Block: `.cycle/blocks/7-roadmap-t2-4-x2a-broad-implement.md`.
   - **Completed:** user_settings.linked_tasks_* (switch, sources — bills off — lead 0–14,
@@ -41,7 +52,7 @@ implement and reflect sessions only set Phase.)
     14 mutations red.
   - **Where I left off:** X2a committed. NEXT: `/broad-implement X2b` (runLinkedTasks, the
     hourly linked-tasks away job, the route hooks, still-charging, cross-DB contract).
-- **Earlier status:** **Roadmap T2.4 (cross-app automation) — X1b DONE** (2026-10-23, branch
+- **Earlier status (X1b):** **Roadmap T2.4 (cross-app automation) — X1b DONE** (2026-10-23, branch
   `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-4-crossapp-automation.md`. Block: `.cycle/blocks/7-roadmap-t2-4-x1b-broad-implement.md`.
   - **Completed:** per-field snapshot refresh in syncLinkedTasks (`updated`; your edits win);

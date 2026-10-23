@@ -10,6 +10,8 @@
 //  - a manual bill marked paid (POST /api/bill-payments) closes its task
 //  - a still-charging alert creates one task across two watchdog runs
 //  - the run's record lands in user_settings.linked_tasks_state
+//  - Settings' Run now (POST /api/linked-tasks/run, X2c): 400 while off, then
+//    the run's record with the counts, stored as linked_tasks_state
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 const supertest = require("supertest");
@@ -53,6 +55,7 @@ describe("Linked tasks across both apps (T2.4 X2b) on real Postgres", { skip: SK
   it("switched off (the default), a run writes nothing", async () => {
     await pf("INSERT INTO payee_obligations (payee, period, category, label, amount, status, due_day) VALUES ('Sam Lee', $1, 'rent', 'Rent', 1800, 'unpaid', 1)", [month]);
     assert.equal((await run()).status, "disabled");
+    assert.equal((await supertest(pfApp).post("/api/linked-tasks/run").expect(400)).body.error, "Turn on Per-sistant tasks first.");
     assert.equal((await psPool.query("SELECT count(*)::int AS n FROM todos")).rows[0].n, 0);
     await supertest(pfApp).patch("/api/settings").send({ linked_tasks_enabled: true, linked_tasks_sources: { bills: true } }).expect(200);
   });
@@ -126,5 +129,16 @@ describe("Linked tasks across both apps (T2.4 X2b) on real Postgres", { skip: SK
     // a sync never closes it
     await run();
     assert.equal((await task(`perfin:still-charging:${sub}:nf1`)).completed, false);
+  });
+
+  it("Run now (POST /api/linked-tasks/run) returns the run's record and stores it", async () => {
+    const r = (await supertest(pfApp).post("/api/linked-tasks/run").expect(200)).body;
+    const expected = (await lt.computeLinkedTasks(pfPool, { sources: { housing: true, utility_amount: true, bills: true }, bill_lead_days: 3 })).desired.length;
+    assert.equal(r.status, "ok");
+    assert.ok(expected > 0);
+    assert.equal(r.desired, expected, "desired = what Perfin has outstanding (a task completed by hand included)");
+    assert.deepEqual(Object.keys(r).sort(), ["at", "closed", "created", "desired", "errors", "reopened", "skipped", "status", "updated"]);
+    const st = (await pf("SELECT linked_tasks_state FROM user_settings WHERE id = 1")).rows[0].linked_tasks_state;
+    assert.equal(st.at, r.at);
   });
 });

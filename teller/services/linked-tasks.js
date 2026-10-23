@@ -199,6 +199,7 @@ let _running = null;
 let _again = false;
 
 function invalidate() { _disabledDay = null; }
+function isRunning() { return !!_running; }
 
 function defaultPersistentPool() {
   try { return require("../routes/persistent").getEmbeddedPersistentPool(); }
@@ -292,6 +293,6 @@ async function ensureStillChargingTask(pool, sub, { persistentPool = defaultPers
 
 module.exports = {
   computeLinkedTasks, effectiveSources, SOURCES, SOURCE_KEYS, DEFAULT_SOURCES, APP,
-  runLinkedTasks, refreshSoon, kick, invalidate, ensureStillChargingTask, SYNC_ERROR,
+  runLinkedTasks, refreshSoon, kick, invalidate, isRunning, ensureStillChargingTask, SYNC_ERROR,
   _reset() { _disabledDay = null; _running = null; _again = false; },
 };

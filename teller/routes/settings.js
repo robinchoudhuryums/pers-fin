@@ -406,6 +406,28 @@ router.patch("/api/settings", async (req, res) => {
   }
 });
 
+// POST /api/linked-tasks/run — run the linked-task sync now (roadmap T2.4
+// X2c, Settings → Per-sistant tasks "Run now"). 501 standalone (no Per-sistant
+// pool), 409 while a run is going (the hourly job or a route's refresh),
+// 400 while the switch is off; else the run's record (the shape stored in
+// linked_tasks_state) with status ok | partial. Errors are fixed sentences.
+router.post("/api/linked-tasks/run", async (req, res) => {
+  const lt = require("../services/linked-tasks");
+  const persistentPool = req.app.get("persistentPool") || undefined;
+  if (lt.isRunning()) return res.status(409).json({ error: "A run is already going — try again in a moment." });
+  try {
+    lt.invalidate(); // a manual run always reads the switch
+    const r = await lt.runLinkedTasks(pool, persistentPool);
+    if (r.status === "no_persistent") return res.status(501).json({ error: "Per-sistant tasks are available under the unified shell only." });
+    if (r.status === "disabled") return res.status(400).json({ error: "Turn on Per-sistant tasks first." });
+    const { status, at, desired, created, updated, closed, reopened, skipped, errors } = r;
+    res.json({ status, at, desired, created, updated, closed, reopened, skipped, errors });
+  } catch (err) {
+    console.error("linked tasks run error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
 // GET /api/data-freshness — detailed sync timestamps for all data sources.
 // Returns per-source { timestamp, age_seconds, stale, level } where level is
 // 'fresh' (<6h), 'aging' (6-24h), or 'stale' (>24h or never synced). The nav

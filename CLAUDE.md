@@ -255,7 +255,8 @@ teller/
                            the housing + bill-payment routes call after a write; never
                            throws or rejects. ensureStillChargingTask(pool, sub): the
                            watchdog's one-off task perfin:still-charging:<sub>:<txn>
-                           (switch + source on), never closed by a sync
+                           (switch + source on), never closed by a sync. isRunning()
+                           (X2c) backs the run route's 409
     payday-alerts.js     — Payday alerts (roadmap T2.2 L3; off by default —
                            payday_alerts_enabled). runPaydayLanded (the third
                            runPostSyncSteps step — never a reconcile): settled
@@ -483,7 +484,8 @@ teller/
                            kick the linked-task refresh after they commit.
     settings.js          — GET/PATCH /api/settings, POST /api/sheets/sync,
                            POST /api/sheets/dashboard, GET /api/export,
-                           GET /api/data-freshness
+                           GET /api/data-freshness, POST /api/linked-tasks/run
+                           (Settings' "Run now" for the linked tasks — T2.4 X2c)
     insights.js          — GET/POST /api/insights, GET /api/insights/status,
                            GET /api/insights/usage, POST /api/insights/reset,
                            POST /api/insights/rebuild, GET /api/insights/audit,
@@ -911,9 +913,17 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2200 tests as of latest); use
+  Perfin and Per-sistant test files (2213 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2200 tests across 114 test files (incl.
+  Current count: 2213 tests across 115 test files (incl.
+  `tests/roadmap-t2-4-x2c.test.js` — roadmap T2.4 X2c: POST /api/linked-tasks/run (501 standalone
+  with nothing read, 409 while a run is going without starting another, 400 while off with
+  the off-for-today memo cleared first, the record's shape without internal fields, a thrown
+  run a fixed 500, the app's Per-sistant pool handed over, isRunning over a real run) and the
+  Settings → Per-sistant Tasks section run in a vm (the last-run line with a source error by
+  name, the standalone note hiding the controls, the embedded render, each field's PATCH, a
+  refused save shown and its box put back, lead days refused outside 0-14, Run now's POST +
+  line + message and a 409 shown; labels and wiring);
   `tests/roadmap-t2-4-x2b.test.js` — roadmap T2.4 X2b: runLinkedTasks over a fake pool with
   the computation and Per-sistant's sync injected (nothing without a Per-sistant pool; off →
   no further read that day until invalidate(), and the settings PATCH invalidates; the sync
@@ -1498,7 +1508,8 @@ shell/
   route's own refresh, undo reopening it, a task completed by hand staying done across a
   payment and its undo; a utility amount entered and a manual bill marked paid closing
   theirs; a still-charging alert making one task across two watchdog runs that a sync
-  never closes; the run's record stored). 226 tests, run
+  never closes; the run's record stored; X2c: Run now a 400 while off, then the run's record
+  — desired equal to Perfin's computation — stored as linked_tasks_state). 227 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -2449,6 +2460,17 @@ shell/
   payday is 3 days past with no deposit from that source, only once that account's
   bank connection has completed a clean sync since (CSV / manual accounts never alert).
   Switching them on doesn't announce deposits from before (`services/payday-alerts.js`).
+- **Per-sistant tasks** (roadmap T2.4 X2, opt-in — Settings → Notifications & Automation →
+  Per-sistant Tasks; unified shell only — standalone the section says so and hides its
+  controls): Perfin opens a Per-sistant To-Do for rent & utilities due, a utility amount to
+  enter, a subscription still charging after you cancelled and (off by default — an
+  autopaid bill nobody marks paid would stay open) a manual bill due within the lead days,
+  and closes it once the payment / amount / bill payment is recorded in Perfin. Your edits
+  to a task win, and a task you complete or reopen by hand is left alone. Runs hourly,
+  right after a housing or bill-payment write, and on "Run now" (`POST
+  /api/linked-tasks/run`); the section shows "Last run …: N outstanding, N closed" with any
+  source error (`services/linked-tasks.js` here, `apps/per-sistant/services/linked-tasks.js`
+  there).
 - **Savings rate**: Income vs spending analysis with configurable lookback (default 3 months)
 - **Year-over-year comparisons**: Month-by-month spending comparison vs prior year.
   For the CURRENT (in-progress) month every year is capped at today's day-of-month,
@@ -3373,7 +3395,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2200 tests passing across 114 test files (Perfin 1566 + Per-sistant 634), plus the real-Postgres route contract suite (226 tests; CI `migrations` job, `npm run test:contract`) and 58 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2213 tests passing across 115 test files (Perfin 1579 + Per-sistant 634), plus the real-Postgres route contract suite (227 tests; CI `migrations` job, `npm run test:contract`) and 58 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -3713,6 +3735,12 @@ PATCH /api/settings        # update user settings. Accepts: theme,
                            # housing / utility_amount / bills → booleans, merged over
                            # the stored map), linked_tasks_bill_lead_days (integer
                            # 0-14) — T2.4 X2a, etc.
+POST /api/linked-tasks/run # run the linked-task sync now (Settings → Per-sistant Tasks
+                           # "Run now", T2.4 X2c) → { status ok|partial, at, desired,
+                           # created, updated, closed, reopened, skipped, errors[{kind,
+                           # error}] } (also stored as linked_tasks_state). 501 standalone
+                           # (no Per-sistant pool), 409 while a run is going, 400 while
+                           # linked_tasks_enabled is off; errors are fixed sentences
 GET  /api/data-freshness   # per-source sync timestamps with staleness flags
 GET  /api/data-health      # operator health surface — per-source freshness,
                            # Teller/Plaid connection status, scheduled-job
@@ -4372,7 +4400,8 @@ standalone-mode fallback if either app is run on its own Render service.
   DEFAULT 3` and `linked_tasks_state JSONB` (roadmap T2.4 X2a — linked tasks: the switch,
   the sources (decision 5: manual bills off), how many days ahead a manual bill's task
   opens, and the last run's record, written by the X2b runner). Auto-migrated; reset by
-  `npm run reset:fresh`.
+  `npm run reset:fresh`. Edited in Settings → Per-sistant Tasks (X2c), which shows the
+  record as its last-run line.
 - `user_settings.last_backup_at TIMESTAMPTZ` (VPS move): stamped by `deploy/vps/backup.sh`
   after each verified nightly backup; read by Operator Checks' on-server backup check
   when `SERVER_BACKUPS=true`. Auto-migrated.
@@ -4920,8 +4949,9 @@ second one (which re-sent the same uncategorized rows to Claude).
   standalone Perfin (no Per-sistant pool) or while the switch is off (one settings read a
   local day); otherwise computes the tasks that should be open and reconciles Per-sistant's
   through its services/linked-tasks.js. The housing and bill-payment routes also kick it
-  right after a write. Records an outcome only when it ran (a source or the Per-sistant
-  write failing → a failed run).
+  right after a write, and Settings' "Run now" (`POST /api/linked-tasks/run`, X2c) runs
+  it on demand (409 while a run is going). Records an outcome only when it ran (a source
+  or the Per-sistant write failing → a failed run).
 - **CSV import reminders**: every 1 hour, NOT activity-gated, evaluated at most
   once per 24h via `user_settings.last_csv_reminder_at` (PSC-3 — the old 24h
   `setInterval` needed a full day of uptime AND activity at that exact tick, so
@@ -5826,7 +5856,12 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   (`runLinkedTasks`, the hourly `linked-tasks` away job, a refresh kicked by the housing and
   bill-payment routes after a write, the run recorded in `linked_tasks_state`) and the
   still-charging task from the subscription watchdog — the feature works once
-  `linked_tasks_enabled` is set (`PATCH /api/settings`; the Settings section is X2c). X2b
+  `linked_tasks_enabled` is set. X2c: Settings → Per-sistant Tasks (the switch, a box per
+  source, lead days, the last-run line, "Run now" — `POST /api/linked-tasks/run`; standalone
+  a note instead). X2c follow-ons: the last-run line's "outstanding" counts what Perfin has
+  due, including a task you completed by hand; the section doesn't list the tasks
+  themselves (they're in Per-sistant's To-Dos); Run now shares a running hourly run only
+  through the 409 (press again once it ends). X2b
   follow-ons: a kicked refresh runs the whole computation (a few queries), not just the
   item that changed; the runner is in memory, so two processes (a deploy overlap) can run
   at once — both reconcile idempotently through the unique key; transactions syncs don't
