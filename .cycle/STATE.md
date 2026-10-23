@@ -18,7 +18,20 @@ Updated: 2026-10-23
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T2.4 (cross-app automation) — X1b DONE** (2026-10-23, branch
+- **Status:** **Roadmap T2.4 (cross-app automation) — X2a DONE** (2026-10-23, branch
+  `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
+  `.cycle/plan-t2-4-crossapp-automation.md`. Block: `.cycle/blocks/7-roadmap-t2-4-x2a-broad-implement.md`.
+  - **Completed:** user_settings.linked_tasks_* (switch, sources — bills off — lead 0–14,
+    state) with GET defaults + strict PATCH; teller/services/linked-tasks.js
+    computeLinkedTasks (housing per unpaid period in the reminder's window, utility amounts,
+    manual bills; ok_kinds / errors per source); the housing reminder now shares
+    periodDueDate / rentReminderOpen / utilityAmountDue. Refinements: a utility-amount task is
+    due on its bill's date (not today); switched-off sources aren't read.
+  - **Tests:** npm 2187/2187 (16 new), contract 220/220 (3 new), migration test passed;
+    14 mutations red.
+  - **Where I left off:** X2a committed. NEXT: `/broad-implement X2b` (runLinkedTasks, the
+    hourly linked-tasks away job, the route hooks, still-charging, cross-DB contract).
+- **Previous status:** **Roadmap T2.4 (cross-app automation) — X1b DONE** (2026-10-23, branch
   `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-4-crossapp-automation.md`. Block: `.cycle/blocks/7-roadmap-t2-4-x1b-broad-implement.md`.
   - **Completed:** per-field snapshot refresh in syncLinkedTasks (`updated`; your edits win);
@@ -29,7 +42,7 @@ implement and reflect sessions only set Phase.)
     14 mutations red, one equivalent.
   - **Where I left off:** X1b committed; X1 complete. NEXT: `/broad-implement X2a` (Perfin
     settings + computeLinkedTasks).
-- **Previous status:** **Roadmap T2.4 (cross-app automation) — X1a DONE** (2026-10-23, branch
+- **Earlier status:** **Roadmap T2.4 (cross-app automation) — X1a DONE** (2026-10-23, branch
   `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-4-crossapp-automation.md` (decisions 1–8 accepted). Block:
   `.cycle/blocks/7-roadmap-t2-4-x1a-broad-implement.md`.

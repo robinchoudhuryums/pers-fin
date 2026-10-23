@@ -840,6 +840,14 @@ async function runMigrationsOnce() {
     // default; the "Paycheck landed" watermark over transactions.created_at.
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS payday_alerts_enabled BOOLEAN NOT NULL DEFAULT false");
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_income_alert_at TIMESTAMPTZ");
+    // Roadmap T2.4 X2a: linked tasks — Perfin items kept as Per-sistant tasks
+    // (services/linked-tasks.js). Off by default; which sources (decision 5 —
+    // manual bills off); how many days before a manual bill its task opens;
+    // the last run's record (written by the runner, X2b).
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS linked_tasks_enabled BOOLEAN NOT NULL DEFAULT false");
+    await client.query(`ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS linked_tasks_sources JSONB NOT NULL DEFAULT '{"still_charging": true, "housing": true, "utility_amount": true, "bills": false}'::jsonb`);
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS linked_tasks_bill_lead_days INT NOT NULL DEFAULT 3");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS linked_tasks_state JSONB");
     // FIRE / runway projection assumptions (Goals page card). NULLs fall back
     // to defaults in GET /api/fire-projection (return 5%, withdrawal 4%,
     // spending derived from trailing months).

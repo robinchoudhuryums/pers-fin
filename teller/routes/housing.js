@@ -102,11 +102,38 @@ function nextRentInLeadWindow(cfg, today) {
   const due = parseInt(cfg.rent_due_day, 10);
   if (!(due >= 1 && due <= 31) || !(lead > 0)) return null;
   const period = addMonths(today.slice(0, 7), 1);
-  const [y, m] = period.split("-").map(Number);
-  const day = Math.min(due, new Date(Date.UTC(y, m, 0)).getUTCDate());
-  const dueDate = `${period}-${String(day).padStart(2, "0")}`;
-  const until = Math.round((Date.parse(dueDate + "T00:00:00Z") - Date.parse(today + "T00:00:00Z")) / 86400000);
+  const dueDate = periodDueDate(period, due);
+  const until = daysBetween(today, dueDate);
   return until >= 0 && until <= lead ? { period, due_date: dueDate, days_until: until } : null;
+}
+
+// A period's due date: 'YYYY-MM' + a day of month clamped to that month's
+// real length (rent due the 31st is due Feb 28). Pure.
+function periodDueDate(period, dueDay) {
+  const [y, m] = period.split("-").map(Number);
+  const day = Math.min(Math.max(1, parseInt(dueDay, 10) || 1), new Date(Date.UTC(y, m, 0)).getUTCDate());
+  return `${period}-${String(day).padStart(2, "0")}`;
+}
+
+// Whole days from 'YYYY-MM-DD' a to b (negative when b is earlier). Pure.
+function daysBetween(a, b) {
+  return Math.round((Date.parse(b + "T00:00:00Z") - Date.parse(a + "T00:00:00Z")) / 86400000);
+}
+
+// The payment-due window for a period's rent (shared by the payment-due
+// reminder and the linked tasks, roadmap T2.4): open from reminder_lead_days
+// before the period's due date onward, overdue included. Pure.
+function rentReminderOpen(period, cfg, today) {
+  const lead = Number.isFinite(cfg.reminder_lead_days) ? cfg.reminder_lead_days : 0;
+  return daysBetween(today, periodDueDate(period, cfg.rent_due_day)) <= lead;
+}
+
+// A utility placeholder whose bill should have arrived — its period is past,
+// or this month's day has reached its due day. Shared by the missing-amount
+// reminder and the linked tasks (roadmap T2.4). Pure.
+function utilityAmountDue(o, today) {
+  if (monthsBetween(o.period, today.slice(0, 7)) > 0) return true;
+  return parseInt(today.slice(8, 10), 10) >= (parseInt(o.due_day, 10) || 1);
 }
 
 // The months generation should cover (FAN-3): the TRAILING `cap` months ending
@@ -326,9 +353,6 @@ async function runHousingReminders(pool_, today = todayStr()) {
   try { ({ sendToAll, sentRecently } = require("./notifications")); }
   catch { return { sent: 0 }; }
 
-  // Day-of-month in APP_TIMEZONE (FAN-13), matching thisMonth().
-  const dom = parseInt(today.slice(8, 10), 10);
-
   // (1) Payment due — unpaid balance owed, and we're within the lead window of
   // the rent due day (or past it). One reminder per ~3 days while it stands.
   try {
@@ -350,7 +374,7 @@ async function runHousingReminders(pool_, today = todayStr()) {
       );
       if (!(ex.rows[0] && ex.rows[0].has)) upcoming = cfg.rent_amount;
     }
-    const dueNow = balance > 0 && dom >= cfg.rent_due_day - cfg.reminder_lead_days;
+    const dueNow = balance > 0 && rentReminderOpen(today.slice(0, 7), cfg, today);
     if (dueNow || upcoming > 0) {
       const tag = "housing-due-" + (upcoming > 0 ? next.period : today.slice(0, 7));
       if (!(await sentRecently(tag, 72))) {
@@ -379,10 +403,8 @@ async function runHousingReminders(pool_, today = todayStr()) {
        ORDER BY period`,
       [cfg.payee_name]
     );
-    const tm = thisMonth();
     for (const o of pend.rows) {
-      const past = monthsBetween(o.period, tm) > 0;
-      if (!past && dom < o.due_day) continue; // bill not due yet this month
+      if (!utilityAmountDue(o, today)) continue; // bill not due yet this month
       const tag = "housing-util-" + o.id;
       if (await sentRecently(tag, 72)) continue;
       const r = await sendToAll({
@@ -950,6 +972,10 @@ module.exports.monthsBetween = monthsBetween;
 module.exports.monthRange = monthRange;
 module.exports.addMonths = addMonths;
 module.exports.nextRentInLeadWindow = nextRentInLeadWindow;
+module.exports.periodDueDate = periodDueDate;
+module.exports.rentReminderOpen = rentReminderOpen;
+module.exports.utilityAmountDue = utilityAmountDue;
+module.exports.getConfig = getConfig;
 module.exports.generationMonths = generationMonths;
 module.exports.planConfigUpdate = planConfigUpdate;
 module.exports.deriveMemo = deriveMemo;
