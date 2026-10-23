@@ -18,7 +18,24 @@ Updated: 2026-10-23
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T2.2 (low-balance and payday alerts) — L2 DONE** on branch
+- **Status:** **Roadmap T2.2 (low-balance and payday alerts) — L3 DONE** on branch
+  `claude/sweet-ritchie-f9d8ah` (2026-10-23, in PR robinchoudhuryums/pers-fin#133). Plan:
+  `.cycle/plan-t2-2-cash-alerts.md`. Block: `.cycle/blocks/7-roadmap-t2-2-l3-broad-implement.md`.
+  - **Completed:** services/payday-alerts.js — runPaydayLanded (the third runPostSyncSteps step;
+    stream-matched income deposits ≤ 5 days old created after a text watermark; held back on a
+    throwing send) and runPaydayMissed (overduePayday past a 3-day grace, any-amount arrival,
+    only after a clean connection sync, sentRecently dedup, memo, email after a logged push);
+    the cash-alerts tick runs both checks isolated; payday_alerts_enabled + last_income_alert_at;
+    PATCH strict boolean + the watermark CASE on switch-on; the Settings toggle. Docs folded in.
+  - **Verification:** npm 2066/2066 (21 new); contract 198/198 (3 new); migrations twice OK;
+    Playwright 57/57; four mutation checks red.
+  - **Decisions:** the missed check sits beside runCashAlerts in the same job (works with the cash
+    alert off); created_at round-trips as text (a JS Date drops microseconds and would re-announce);
+    streams on CSV / manual accounts never alert as missed.
+  - **Follow-ons:** see Known Open Issues (T2.2 L3 follow-ons).
+  - **Where I left off:** L3 committed and pushed with docs. NEXT: `/broad-implement L4` (account
+    floors, the last evaluation in Settings, reset-fresh check, INV-142, docs).
+- **Previous status:** **Roadmap T2.2 (low-balance and payday alerts) — L2 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-23, in PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-2-cash-alerts.md`. Block: `.cycle/blocks/7-roadmap-t2-2-l2-broad-implement.md`.
   - **Completed:** services/cash-alerts.js (runCashAlerts — off memo, data-stamp gate, 36 h balance

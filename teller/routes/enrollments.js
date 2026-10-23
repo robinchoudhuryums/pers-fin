@@ -695,8 +695,10 @@ async function syncAllTransactionsOnce() {
 // syncAllTransactions and the per-item sync a Plaid webhook triggers (roadmap
 // T2.1 W3). Serialized: two syncs finishing together (a webhook during the daily
 // sync) run it one after the other, so the second check reads the watermark the
-// first advanced and a charge is pushed once. Never rejects — a rule error never
-// fails the sync, and runAnomalyCheck never throws.
+// first advanced and a charge is pushed once. Third: the "Paycheck landed" alert
+// (roadmap T2.2 L3 — services/payday-alerts.js; off by default), on the same
+// chain so its watermark is never read by two runs at once. Never rejects — a
+// rule or payday error never fails the sync, and runAnomalyCheck never throws.
 let _postSyncChain = Promise.resolve();
 function runPostSyncSteps(added) {
   if (!(added > 0)) return Promise.resolve();
@@ -704,6 +706,8 @@ function runPostSyncSteps(added) {
     try { await require("./merchant-rename").applyRenameRules(); }
     catch (e) { console.error("rename rules after sync failed:", e.message); }
     await runAnomalyCheck();
+    try { await require("../services/payday-alerts").runPaydayLanded(pool); }
+    catch (e) { console.error("payday alert after sync failed:", e.message); }
   });
   _postSyncChain = run.catch(e => console.error("post-sync steps failed:", e.message));
   return _postSyncChain;

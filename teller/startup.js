@@ -241,16 +241,30 @@ async function runCsvReminderTick() {
 // bank data arrived since the last check or on a new local day, never on
 // balances older than 36 h, deduped through cash_alert_state. An outcome is
 // recorded only when it evaluated; "unchanged" / "disabled" record nothing.
+// The same job runs the "Payday missed?" check (roadmap T2.2 L3 —
+// services/payday-alerts.js), gated the same way; each check is isolated so one
+// failing doesn't skip the other.
 async function runCashAlertsTick() {
   jobHealth.tick("cash-alerts");
-  try {
-    const r = await require("./services/cash-alerts").runCashAlerts(pool);
-    if (r.status === "unlogged") jobHealth.result("cash-alerts", { ok: false, error: "notification not logged" });
-    else if (r.ran) jobHealth.result("cash-alerts", { ok: true });
-  } catch (err) {
-    console.error("Cash alert scheduler error:", err.message);
-    jobHealth.result("cash-alerts", { ok: false, error: err.message });
+  let ran = false;
+  const errors = [];
+  const checks = [
+    ["cash alert", () => require("./services/cash-alerts").runCashAlerts(pool)],
+    ["payday alert", () => require("./services/payday-alerts").runPaydayMissed(pool)],
+  ];
+  for (const [name, fn] of checks) {
+    try {
+      const r = await fn();
+      if (r.ran) ran = true;
+      if (r.status === "unlogged") errors.push(name + ": notification not logged");
+    } catch (err) {
+      console.error("Cash alert scheduler error (" + name + "):", err.message);
+      ran = true;
+      errors.push(name + ": " + err.message);
+    }
   }
+  if (errors.length) jobHealth.result("cash-alerts", { ok: false, error: errors.join("; ") });
+  else if (ran) jobHealth.result("cash-alerts", { ok: true });
 }
 
 // Rent & Utilities ledger (cycle-7 F15): generate the current/missing months'

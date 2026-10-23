@@ -298,6 +298,12 @@
       </div>
     </div>
     <div class="setting-row">
+      <div class="setting-info"><div class="name">Payday Alerts</div><div class="desc">Notify me when a paycheck lands (a deposit matching a pay pattern seen at least twice), and when an expected payday passes by 3 days without one — only after that bank connection has synced cleanly since. A missed payday also emails when Critical Alert Emails is on.</div></div>
+      <div class="setting-control">
+        <label class="toggle"><input type="checkbox" id="payday-alert-toggle" aria-label="Payday alerts"><span class="slider"></span></label>
+      </div>
+    </div>
+    <div class="setting-row">
       <div class="setting-info"><div class="name">Look Ahead</div><div class="desc">How far ahead the forecast is checked</div></div>
       <div class="setting-control">
         <select id="cash-alert-horizon" aria-label="Low cash alert look-ahead">
@@ -594,6 +600,7 @@
         var horizonSel = document.getElementById('cash-alert-horizon');
         horizonSel.value = String(s.cash_alert_horizon_days || 14);
         if (horizonSel.value !== String(s.cash_alert_horizon_days || 14)) horizonSel.value = '14';
+        document.getElementById('payday-alert-toggle').checked = !!s.payday_alerts_enabled;
         var critToggle = document.getElementById('critical-alert-toggle');
         if (critToggle) critToggle.checked = !!s.critical_alert_emails_enabled;
         var insightEmailToggle = document.getElementById('insight-email-toggle');
@@ -1444,6 +1451,7 @@
       ['daily-digest-toggle', 'change', function() { updateSetting('daily_digest_enabled', this.checked); }],
       ['critical-alert-toggle', 'change', function() { updateSetting('critical_alert_emails_enabled', this.checked); }],
       ['cash-alert-toggle', 'change', function() { updateSetting('cash_alert_enabled', this.checked); }],
+      ['payday-alert-toggle', 'change', function() { updateSetting('payday_alerts_enabled', this.checked); }],
       ['cash-alert-horizon', 'change', function() { updateSetting('cash_alert_horizon_days', parseInt(this.value, 10)); }],
       ['cash-alert-threshold-save', 'click', function() {
         var n = parseAmountInput(document.getElementById('cash-alert-threshold').value);

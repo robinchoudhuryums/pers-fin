@@ -196,7 +196,11 @@ describe("runCashAlerts — alert and dedup", () => {
 describe("the cash-alerts job", () => {
   const startup = require("../teller/startup");
   const real = ca.runCashAlerts;
-  afterEach(() => { ca.runCashAlerts = real; jobHealth._memoryResults.delete("cash-alerts"); });
+  // The same tick runs the payday check (T2.2 L3) — kept quiet here.
+  const payday = require("../teller/services/payday-alerts");
+  const realMissed = payday.runPaydayMissed;
+  beforeEach(() => { payday.runPaydayMissed = async () => ({ status: "disabled", ran: false }); });
+  afterEach(() => { ca.runCashAlerts = real; payday.runPaydayMissed = realMissed; jobHealth._memoryResults.delete("cash-alerts"); });
 
   it("ticks hourly, is watched, and isn't activity-gated", () => {
     assert.equal(jobHealth.JOB_INTERVALS_MS["cash-alerts"], 3600e3);
@@ -211,7 +215,7 @@ describe("the cash-alerts job", () => {
       [{ status: "unchanged", ran: false }, undefined],
       [{ status: "disabled", ran: false }, undefined],
       [{ status: "clear", ran: true }, { status: "ok", error: null }],
-      [{ status: "unlogged", ran: true }, { status: "error", error: "notification not logged" }],
+      [{ status: "unlogged", ran: true }, { status: "error", error: "cash alert: notification not logged" }],
     ]) {
       jobHealth._memoryResults.delete("cash-alerts");
       ca.runCashAlerts = async () => result;
@@ -220,7 +224,7 @@ describe("the cash-alerts job", () => {
     }
     ca.runCashAlerts = async () => { throw new Error("db down"); };
     await startup._awayJobs.runCashAlertsTick();
-    assert.deepEqual(jobHealth._memoryResults.get("cash-alerts"), { status: "error", error: "db down" });
+    assert.deepEqual(jobHealth._memoryResults.get("cash-alerts"), { status: "error", error: "cash alert: db down" });
   });
 });
 

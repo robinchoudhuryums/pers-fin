@@ -219,6 +219,25 @@ teller/
                            3+ days earlier or after 72 h; recovery silent. State in
                            user_settings.cash_alert_state, advanced only when the
                            notification was logged (else retried next tick)
+    payday-alerts.js     — Payday alerts (roadmap T2.2 L3; off by default —
+                           payday_alerts_enabled). runPaydayLanded (the third
+                           runPostSyncSteps step — never a reconcile): settled
+                           income deposits (INCOME_PREDICATE) created after
+                           last_income_alert_at and dated within 5 days that match a
+                           LIVE income stream (same source, ±10%) → "Paycheck landed"
+                           (tag payday-<hash>); the watermark (text, microseconds
+                           kept) advances to the newest processed, held just before a
+                           send that throws; no watermark yet → set to now, nothing
+                           older announced. runPaydayMissed (the hourly cash-alerts
+                           job): a live stream's latest expected payday after its
+                           last deposit whose 3-day grace has passed (≤ 14 days old,
+                           overduePayday) with NO deposit from that source (any
+                           amount) since expected − 3 days, on an account whose
+                           connection (GOOD Teller enrollment / Plaid item — never CSV
+                           or manual) last synced cleanly after the grace window →
+                           "Payday missed?" + the opt-in critical-alert email, once
+                           per (stream, expected date) via sentRecently; an in-memory
+                           (local day + sync stamp) memo, off → no DB read that day
     projections.js       — FIRE/runway/loan math (pure): computeFireProjection
                            (FIRE number = annual spend × 100/withdrawal-rate,
                            monthly geometric compounding, 40-yr series) +
@@ -291,7 +310,8 @@ teller/
                            hosts syncAllTransactions (the single Teller+Plaid
                            transaction-sync entry point) + runAnomalyCheck +
                            runPostSyncSteps(added) (rename rules then ONE anomaly
-                           check, serialized — shared with the Plaid webhook's
+                           check, then the "Paycheck landed" alert — T2.2 L3 —
+                           serialized — shared with the Plaid webhook's
                            per-item sync, roadmap T2.1 W3). Teller per-enrollment
                            sync (roadmap T2.1 W5): syncOneTellerEnrollment
                            (enrollment, { backfillFrom }) is one enrollment's whole
@@ -846,9 +866,20 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2045 tests as of latest); use
+  Perfin and Per-sistant test files (2066 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2045 tests across 103 test files (incl.
+  Current count: 2066 tests across 104 test files (incl.
+  `tests/roadmap-t2-2-cash-l3.test.js` — roadmap T2.2 L3: overduePayday (the grace, the
+  latest within 14 days, none right after a payday); runPaydayLanded over a fake pool (off,
+  the first switch-on initialising the watermark, a stream-matched deposit announced with
+  its exact text and a one-off not, the watermark moving to the newest processed as text,
+  a throwing send holding it back, the 5-day window, INCOME_PREDICATE) and its place as
+  the third post-sync step (after the anomaly check, a failure never rejecting);
+  runPaydayMissed (push + email, a deposit of any amount cancelling it, no connection /
+  no clean sync after the grace never alerting, dedup, the day + sync-stamp memo, an
+  unlogged push retried, off → no DB read until invalidate()); the shared tick running
+  both checks in isolation; PATCH 400s, the watermark CASE on switch-on, the memo reset,
+  GET default and the Settings toggle — the database-backed half is `tests/contract/payday-l3`;
   `tests/roadmap-t2-2-cash-l2.test.js` — roadmap T2.2 L2: runCashAlerts over a fake pool
   (off → no further DB read that day until invalidate(), nothing new → unchanged, a new
   day or new data → evaluates, stale / no balances → skipped, the horizon, a breach
@@ -1296,7 +1327,11 @@ shell/
   firstBelow), and cash-alerts-l2 (roadmap T2.2 L2: off by default, switched on through
   PATCH /api/settings with bad values refused, a projected dip notifying once into
   notification_log, unchanged without new data, held after new data, re-notified 72 h on,
-  clear after more cash, skipped on a 40-hour-old balance). 195 tests, run
+  clear after more cash, skipped on a 40-hour-old balance), and payday-l3 (roadmap T2.2
+  L3: the switch-on moving the watermark; a biweekly paycheck 4 days overdue on a freshly
+  synced Plaid connection notifying once and a stale connection's not; a matching deposit
+  through runPostSyncSteps announced once and a one-off direct deposit not; nothing missed
+  after the paycheck). 198 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -2234,6 +2269,13 @@ shell/
   opt-in critical-alert email. Checked hourly when new bank data arrived, else once a
   local day; never on balances more than 36 hours old. Once per breach, again when it
   moves 3+ days earlier or after 72 hours; recovery is silent (`services/cash-alerts.js`).
+- **Payday alerts** (roadmap T2.2 L3, opt-in — Settings → Cash Alerts → Payday Alerts):
+  "Paycheck landed" right after the sync that brings in a deposit matching a pay
+  pattern seen at least twice (a live income stream, ±10%) — with webhooks on, within
+  minutes — and "Payday missed?" (+ the opt-in critical-alert email) when an expected
+  payday is 3 days past with no deposit from that source, only once that account's
+  bank connection has completed a clean sync since (CSV / manual accounts never alert).
+  Switching them on doesn't announce deposits from before (`services/payday-alerts.js`).
 - **Savings rate**: Income vs spending analysis with configurable lookback (default 3 months)
 - **Year-over-year comparisons**: Month-by-month spending comparison vs prior year.
   For the CURRENT (in-progress) month every year is capped at today's day-of-month,
@@ -3158,7 +3200,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2045 tests passing across 103 test files (Perfin 1494 + Per-sistant 551), plus the real-Postgres route contract suite (195 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2066 tests passing across 104 test files (Perfin 1515 + Per-sistant 551), plus the real-Postgres route contract suite (198 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -3487,7 +3529,9 @@ PATCH /api/settings        # update user settings. Accepts: theme,
                            # (a strict boolean — F81), cash_alert_enabled
                            # (strict boolean), cash_alert_threshold (0-1e7,
                            # "" / null refused), cash_alert_horizon_days
-                           # (integer 7-60) — T2.2 L2, etc.
+                           # (integer 7-60) — T2.2 L2, payday_alerts_enabled
+                           # (strict boolean; switching on moves
+                           # last_income_alert_at to now) — T2.2 L3, etc.
 GET  /api/data-freshness   # per-source sync timestamps with staleness flags
 GET  /api/data-health      # operator health surface — per-source freshness,
                            # Teller/Plaid connection status, scheduled-job
@@ -4130,6 +4174,10 @@ standalone-mode fallback if either app is run on its own Render service.
   null, last_check: { at, outcome, reason?, breach_date? } }`) and `cash_alerts_checked_at
   TIMESTAMPTZ` (roadmap T2.2 L2 — the low cash alert's settings, dedup state and last
   evaluation; services/cash-alerts.js). Auto-migrated; reset by `npm run reset:fresh`.
+- `user_settings.payday_alerts_enabled BOOLEAN NOT NULL DEFAULT false` and
+  `last_income_alert_at TIMESTAMPTZ` (roadmap T2.2 L3): the payday alerts' switch and
+  the "Paycheck landed" watermark over `transactions.created_at` (set to now when the
+  switch goes on, so older deposits aren't announced). Auto-migrated.
 - `user_settings.last_backup_at TIMESTAMPTZ` (VPS move): stamped by `deploy/vps/backup.sh`
   after each verified nightly backup; read by Operator Checks' on-server backup check
   when `SERVER_BACKUPS=true`. Auto-migrated.
@@ -4604,7 +4652,7 @@ embedded mode).
 recent Perfin activity (`isUserActive()`, 15 min) so Neon can auto-suspend
 while the user is away. The channels whose whole point is to reach the user
 WHILE away — budget alerts (+ critical-alert email), the weekly digest, the
-daily digest, the CSV reminder, the Rent & Utilities reminders (F15) and the low cash alert (T2.2 L2) — are NOT activity-gated (before, they fired
+daily digest, the CSV reminder, the Rent & Utilities reminders (F15) and the low cash and missed-payday alerts (T2.2 L2 / L3) — are NOT activity-gated (before, they fired
 only if the user had touched Perfin in the last 15 min, so an email-only user
 got no digest; Per-sistant traffic never counted). They are driven by their
 own watermarks plus a per-local-day (APP_TIMEZONE) in-memory "settled" memo,
@@ -4668,7 +4716,9 @@ second one (which re-sent the same uncategorized rows to Claude).
   it reads the settings once a local day (a Settings change makes the next tick look
   again); while on, one settings + data-stamp read per tick, and the forecast only when
   new bank data arrived since the last check or on a new local day. Records an outcome
-  only when it evaluated (an unlogged notification is a failed run).
+  only when it evaluated (an unlogged notification is a failed run). The same tick runs
+  the "Payday missed?" check (`services/payday-alerts.runPaydayMissed`, T2.2 L3), each
+  check isolated so one failing doesn't skip the other.
 - **CSV import reminders**: every 1 hour, NOT activity-gated, evaluated at most
   once per 24h via `user_settings.last_csv_reminder_at` (PSC-3 — the old 24h
   `setInterval` needed a full day of uptime AND activity at that exact tick, so
@@ -5559,17 +5609,22 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   rather than offering to reschedule it.
 - Roadmap T2.2 (low-balance and payday alerts) is IN PROGRESS (`.cycle/plan-t2-2-cash-alerts.md`,
   L1–L4): L1 (the forecast as `services/cash-flow.js`, APP_TIMEZONE today, the lowest
-  projected day) and L2 (the low projected cash alert — `services/cash-alerts.js`, the
-  `cash-alerts` away job, Settings → Cash Alerts) are done; L3 (payday landed / missed)
-  and L4 (account floors, the last evaluation in Settings, the new invariant) are
-  planned. L1 follow-ons: the 60-day spending averages still use Postgres
+  projected day), L2 (the low projected cash alert — `services/cash-alerts.js`, the
+  `cash-alerts` away job, Settings → Cash Alerts) and L3 (payday landed after each sync /
+  missed in the hourly job — `services/payday-alerts.js`) are done; L4 (account floors,
+  the last evaluation in Settings, the new invariant) is planned. L1 follow-ons: the 60-day spending averages still use Postgres
   `CURRENT_DATE` (a documented rolling window); the projection is one total across
   depository accounts (per-account floors come in L4). L2 follow-ons: the alert compares
   the database's data stamps with the app's clock (a large clock skew between the two
   could delay a re-check to the next local day); with the alert on, the hourly settings
   read keeps a Neon database from suspending for long while the process is awake; the
   notification opens the dashboard, not the Cash Flow section (a hash link doesn't
-  scroll to a section that renders after load).
+  scroll to a section that renders after load). L3 follow-ons: the missed check runs in
+  the cash-alerts job rather than inside runCashAlerts (so it works with the cash alert
+  off); a paycheck that moves to a new source name reads as missed once (a merchant
+  rename rule folds it back); a stream on an account with no connection (CSV / manual)
+  never alerts as missed; "Paycheck landed" names the deposit's own amount and the
+  stream's cadence, not the account.
 - Roadmap T2.1 (bank webhooks) is DONE (`.cycle/plan-t2-1-webhooks.md`, W1–W6:
   receivers, event log, signature verification, Plaid transaction / item / holdings /
   investment-transaction events, webhook registration, Teller transactions.processed /
@@ -5742,6 +5797,7 @@ Detection & Categorization:
 Financial Analytics:
   teller/services/financial-queries.js, teller/routes/spending-analytics.js,
   teller/services/cash-flow.js, teller/services/cash-alerts.js,
+  teller/services/payday-alerts.js,
   teller/services/projections.js, teller/routes/budgets.js,
   teller/routes/goals.js, teller/routes/credit-scores.js,
   teller/routes/whats-new.js, teller/routes/watchlist.js,
@@ -5867,7 +5923,7 @@ INV-55 | /api/ask charges the shared AI cap even on a mid-tool-loop failure — 
 INV-56 | The dashboard's inlined loanPayoff() is NUMERICALLY identical to services/projections.computeLoanPayoff across scenarios (months / total_interest ±$0.01 / insufficient flag), not merely string-equal | Subsystem: Web UI ↔ Financial Analytics (seam) | Verify: tests/loan-support.test.js (extract-and-run parity test)
 INV-57 | The critical-audit notification is deduped to ≤1 per 24h via sentRecently('audit-alert', 24), fail-open — a steady-state critical finding doesn't re-push on every 6h auto-insight tick | Subsystem: AI Insights & Audit / Notification Correctness | Verify: code read routes/insights.js audit-alert gate
 INV-58 | A kind='quantity' habit always has a non-null target_value, enforced on POST AND on PATCH against the MERGED post-update state (so switching to quantity without a target, or nulling a quantity habit's target, 400s instead of silently degrading meetsTarget) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/health.test.js (F9 PATCH tests)
-INV-59 | Bounded settings (target_allocation_pct, shell_idle_timeout_minutes, fire_*, ai_monthly_budget_cents, and since PSC-15 keep_alive_start/end, keep_alive_timezone (Intl-validated), auto_sync_interval_hours, csv_reminder_days, weekly_digest_day — strict integer parse, null/""/"6abc" rejected; since cycle-7 F86 also theme, dashboard_months, insights_model, insights_cadence_days, insight_modules / dashboard_widgets, pyramid_*, debt_baseline_amount, sheets_auto_sync_interval, session_timeout_minutes; since cycle-7 F81 insight_emails_enabled as a strict boolean; since T2.2 L2 cash_alert_enabled (strict boolean), cash_alert_threshold and cash_alert_horizon_days) reject invalid input with 400 — never silent-drop + 200 | Subsystem: Settings, Notifications & Cross-app | Verify: tests/budget-cap-webauthn.test.js (PATCH /api/settings validation) + tests/scan-sept-batch9.test.js (PSC-15) + tests/scan-oct-batch9.test.js (F86)
+INV-59 | Bounded settings (target_allocation_pct, shell_idle_timeout_minutes, fire_*, ai_monthly_budget_cents, and since PSC-15 keep_alive_start/end, keep_alive_timezone (Intl-validated), auto_sync_interval_hours, csv_reminder_days, weekly_digest_day — strict integer parse, null/""/"6abc" rejected; since cycle-7 F86 also theme, dashboard_months, insights_model, insights_cadence_days, insight_modules / dashboard_widgets, pyramid_*, debt_baseline_amount, sheets_auto_sync_interval, session_timeout_minutes; since cycle-7 F81 insight_emails_enabled as a strict boolean; since T2.2 L2 cash_alert_enabled (strict boolean), cash_alert_threshold and cash_alert_horizon_days; since T2.2 L3 payday_alerts_enabled (strict boolean)) reject invalid input with 400 — never silent-drop + 200 | Subsystem: Settings, Notifications & Cross-app | Verify: tests/budget-cap-webauthn.test.js (PATCH /api/settings validation) + tests/scan-sept-batch9.test.js (PSC-15) + tests/scan-oct-batch9.test.js (F86)
 INV-60 | Perfin "Sign Out" clears the SHELL session via the root POST /logout under the unified shell (not a basePath'd /api/logout); redirect target is the root /login — both un-prefixed; standalone Perfin (no BASE_PATH) posts /api/logout instead (WD-16), and Per-sistant's embedded Log Out also posts the root /logout (PB-21) | Subsystem: Web UI ↔ Platform, Shell & Auth (seam) | Verify: code read teller/views/settings.ejs logout() + shell POST /logout (auth.handleLogout)
 INV-61 | apiFetch redirects once to /login (with return_to = the current path, F102) on a 401 or a followed 302→/login (session expiry), loop-guarded, while returning the Response unchanged to callers — idle timeout never leaves a blank/error UI | Subsystem: Web UI | Verify: code read teller/public/perfin-shared.js apiFetch
 INV-62 | The shell sets a nonce CSP + frame-ancestors 'none' + X-Frame-Options on its own routes (login/landing), with COOP/CORP/COEP DISABLED so the global middleware doesn't break sub-app Plaid/Teller Link popups, and Perfin's own helmet sends COOP same-origin-allow-popups, never same-origin (cycle-7 F9); helmet is a declared shell dependency | Subsystem: Platform, Shell & Auth | Verify: header assertion on GET /login (frame-ancestors none, COOP/CORP absent, login scripts nonced) + tests/contract/platform-batch13 (Perfin COOP)
@@ -5875,7 +5931,7 @@ INV-63 | Per-sistant's shared fetch wrapper (apps/per-sistant/views/js.js) redir
 INV-64 | Job Radar's AI passes (job_fit + legitimacy) are cap-charged: cappedCall reads getAiBudgetCents()+monthlyAiSpendCents() and throws { code:'CAP' } BEFORE calling the model when over budget; on a successful call it charges an ai_usage row via recordAiUsage in a `finally` (idempotent, only when tokens were consumed). The 10 pre-existing Per-sistant AI features still use the uncapped callAI (unchanged) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (cappedCall charge-on-success + throw-CAP-before-model-call)
 INV-65 | Job Radar ingest is content_hash-idempotent: dedupPersist upserts ON CONFLICT (content_hash) and counts genuine inserts via (xmax = 0), so a re-run over identical listings adds 0, no duplicate rows. Retention strips old new/dismissed descriptions but KEEPS the hash+status tombstone so a dismissed job re-ingested stays dismissed | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (dedup idempotency, retention)
 INV-66 | gatherJobRadarSummary is the SINGLE fail-soft aggregator feeding the /jobs page, the notification check, and the AI daily-briefing line (the gatherHealthSummary pattern) — a query error returns the safe empty shape, never 500s those surfaces; the notif-check + briefing call it gated on job_radar_enabled. Listing status changes ARCHIVE (saved/applied/dismissed), never hard-delete, and removing a target company deactivates it (active=false — the db/021 seed would re-insert a deleted row) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (aggregator fail-soft + archive-not-delete)
-INV-67 | Every transaction-sync trigger (POST /api/sync + daily-sync.yml, bank auto-sync, pre-insights chain) goes through syncAllTransactions — Teller then Plaid, each failure-isolated — and runAnomalyCheck runs ONCE over the combined added count; a Plaid webhook's per-item sync runs the same post-sync steps (runPostSyncSteps — rename rules, then one check; serialized, so two syncs finishing together check in turn); reconcile/backfill never runs it | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-sept-batch2.test.js (BSI-2 / DD-1 block) + tests/roadmap-t2-webhooks-w3.test.js
+INV-67 | Every transaction-sync trigger (POST /api/sync + daily-sync.yml, bank auto-sync, pre-insights chain) goes through syncAllTransactions — Teller then Plaid, each failure-isolated — and runAnomalyCheck runs ONCE over the combined added count; a Plaid webhook's per-item sync runs the same post-sync steps (runPostSyncSteps — rename rules, then one check, then the payday-landed alert since T2.2 L3; serialized, so two syncs finishing together check in turn); reconcile/backfill never runs it | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-sept-batch2.test.js (BSI-2 / DD-1 block) + tests/roadmap-t2-webhooks-w3.test.js
 INV-68 | last_sync_result is merged PER PROVIDER (a write replaces only the providers it ran; null result = untouched), never last-writer-wins; errors[] is the flat union | Subsystem: Bank Sync & Ingestion / Data Freshness | Verify: tests/scan-sept-batch2.test.js (BSI-11 block)
 INV-69 | incomePredicate(alias) qualifies EVERY outer column reference with the caller's alias, including inside the __t2 double-count guard (an unqualified ref inside a subquery resolves to the subquery's own table) | Subsystem: Financial Analytics | Verify: tests/scan-sept-batch3.test.js (FAN-2) + tests/ops-and-alerts.test.js
 INV-70 | Recurring projections (detection next_expected, /api/forecast, /api/bill-calendar, /calendar.ics, the /api/cash-flow bill schedule, POST /api/subscriptions) step month-scale cadences (30/60/90/365) by CALENDAR MONTH via services/cadence.js, anchored on the last real charge with next_expected as the lower bound — never a fixed N×86400000 step; manual bills use ONE placement rule (manualBillOccurrences) on both the calendar and the ICS feed | Subsystem: Detection & Categorization | Verify: tests/scan-sept-batch4.test.js (DC-9 / DC-15 blocks)
@@ -5884,7 +5940,7 @@ INV-72 | The Rent & Utilities ledger is single-payee: generation covers the trai
 INV-73 | Budget status has ONE definition — getBudgetStatus(pool, month) in financial-queries.js (spend via getCategorySpendingForMonth; effective_limit = monthly_limit + the PRIOR month's snapshot rollover when rollover_enabled; one-time budgets only in their effective_month). GET /api/budgets, /api/budgets/alerts, the insights prompt and the Ask budget tool call it; the Sheets Budget Status SQL mirrors it; no surface reads the bare monthly_limit as the limit | Subsystem: Financial Analytics | Verify: tests/scan-sept-batch6.test.js (AIN-6 block)
 INV-75 | The tax report (export + Sheets tab) is computed from transactions via getTaxDeductionTransactions (one shared keyword list); the tax_deductions table only annotates merchants and never supplies amounts | Subsystem: Financial Analytics / Sheets & External Export | Verify: tests/scan-sept-batch7.test.js (SXE-7)
 INV-76 | No model call uses a forced tool_choice (Opus/Sonnet 5.5 400 on it): structured calls go through createToolCall (auto + strict tool + one re-ask, usage summed for the cap); every call sets an explicit effort and reads content blocks by type | Subsystem: AI Insights & Audit (seam: categorize / budgets / housing / Per-sistant ai.js) | Verify: tests/model-upgrade.test.js + apps/per-sistant/tests/model-upgrade.test.js
-INV-77 | Away-from-app channels (budget alerts + critical-alert email, weekly digest, daily digest, CSV reminder, Rent & Utilities reminders — F15, the low cash alert — T2.2 L2) are never gated on isUserActive(); each is bounded by its own watermark (last_weekly_digest_at / last_daily_digest_at / last_csv_reminder_at / sentRecently / cash_alerts_checked_at + cash_alert_state) plus a per-local-day settled memo, so it neither misses an away user nor re-queries the DB all day | Subsystem: Platform, Shell & Auth / Notification Correctness | Verify: tests/scan-sept-batch8.test.js (PSC-3 block) + tests/roadmap-t2-2-cash-l2.test.js
+INV-77 | Away-from-app channels (budget alerts + critical-alert email, weekly digest, daily digest, CSV reminder, Rent & Utilities reminders — F15, the low cash and missed-payday alerts — T2.2 L2 / L3) are never gated on isUserActive(); each is bounded by its own watermark (last_weekly_digest_at / last_daily_digest_at / last_csv_reminder_at / sentRecently / cash_alerts_checked_at + cash_alert_state) plus a per-local-day settled memo, so it neither misses an away user nor re-queries the DB all day | Subsystem: Platform, Shell & Auth / Notification Correctness | Verify: tests/scan-sept-batch8.test.js (PSC-3 block) + tests/roadmap-t2-2-cash-l2.test.js
 INV-78 | The auto-sync "complete" notification fires only on genuinely new transactions or a balance that actually changed (accounts_changed), and never while sync_notifications_enabled is false | Subsystem: Bank Sync & Ingestion / Notification Correctness | Verify: tests/scan-sept-batch8.test.js (PSC-1 block)
 INV-79 | The shell PIN gate has a GLOBAL failure ceiling (30 failed PINs/hour across all IPs → PIN login locked 30 min, even for the correct PIN, with at most one sendToAll alert per 6h — makeLockoutNotifier); biometric + x-api-key paths are unaffected; the shell refuses to boot without SHELL_SECRET; no login input can crash the process (and so reset the in-memory counter) — see INV-104 | Subsystem: Platform, Shell & Auth | Verify: tests/scan-sept-batch9.test.js (PSC-14 / PSC-11 blocks) + tests/scan-oct-batch1.test.js (F1 / F7 blocks)
 INV-80 | Per-sistant outbound webhooks/Slack are SSRF-checked at send time by resolveSafeWebhookTarget — literal IPs in any spelling (IPv4-mapped/compatible IPv6 unwrapped) and EVERY DNS-resolved address must be outside the net.BlockList private ranges; DNS failure fails closed; fetch uses redirect:'manual' | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch9.test.js (PB-14 blocks)
