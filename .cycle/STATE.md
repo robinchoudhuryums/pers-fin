@@ -18,7 +18,16 @@ Updated: 2026-10-23
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T2.3 (AI cost cap for every Per-sistant feature) — C4 DONE; T2.3 COMPLETE** on branch
+- **Status:** **Roadmap T2.4 (cross-app automation) — PLANNED** (2026-10-23, branch
+  `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
+  `.cycle/plan-t2-4-crossapp-automation.md` — X1 Per-sistant linked-task store
+  (db/030, syncLinkedTasks / ensureLinkedTask, the Perfin chip), X2 Perfin sources +
+  hourly `linked-tasks` job + Settings (housing per period, utility amount, manual bills
+  opt-in, still-charging as an event), X3 unified search (`/api/search` finance group,
+  a `/search` page linked from both navs) + INV-144 + docs. Decisions 1–8 in the plan
+  are proposed; running `/broad-implement X1` accepts them.
+  - **Where I left off:** plan committed. NEXT: `/broad-implement X1`.
+- **Previous status:** **Roadmap T2.3 (AI cost cap for every Per-sistant feature) — C4 DONE; T2.3 COMPLETE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-23, in PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-3-persistent-ai-cap.md`. Block: `.cycle/blocks/7-roadmap-t2-3-c4-broad-implement.md`.
   - **Completed:** ai.js getAiBudgetInfo (settings / env / default; the budget read from the
