@@ -59,6 +59,8 @@ async function load() {
     document.getElementById('notif-btn').disabled = true;
   }
 
+  loadAiUsage();
+
   // Apply theme
   applyTheme(s.theme || 'dark');
 }
@@ -104,6 +106,55 @@ async function saveAIModels() {
   if (r.ok) { el.className = 'status-msg success'; el.textContent = 'AI model preferences saved.'; }
   else { el.className = 'status-msg error'; el.textContent = 'Could not save AI preferences — please retry.'; }
   setTimeout(()=>{ el.className = 'status-msg'; }, 3000);
+}
+
+// Roadmap T2.3 C4: this month's AI spend, the cap and its source, the
+// per-feature breakdown, and Perfin's spend beside it (its own cap).
+var AI_FEATURE_LABELS = {email_draft:'Email Drafting', task_breakdown:'Task Breakdown', quick_add:'Smart Quick Add', review_summary:'Weekly Review Summary', email_tone:'Email Tone', daily_briefing:'Daily Briefing', note_tagging:'Note Tagging', smart_suggestions:'Smart Suggestions', natural_language_query:'Ask', rag_query:'Knowledge Q&A', rag_diagram:'Knowledge diagrams', rag_capture:'Knowledge capture', job_fit:'Job Fit', job_legitimacy:'Job Radar legitimacy check'};
+function aiMoney(c) { return '$' + (Number(c) / 100 || 0).toFixed(2); }
+async function loadAiUsage() {
+  var line = document.getElementById('ai-usage-line');
+  if (!line) return;
+  var r = await tryFetch('/api/ai/usage');
+  if (!r || !r.ok) { line.textContent = "Couldn't load this month's AI spend."; return; }
+  var u = await r.json();
+  line.textContent = 'This month: ' + aiMoney(u.spent_cents) + ' of ' + aiMoney(u.budget_cents) +
+    (u.spent_cents >= u.budget_cents ? ' — budget reached, so AI features are paused until next month or a higher cap.' : '.');
+  var inp = document.getElementById('ai-budget-input');
+  if (inp && document.activeElement !== inp) inp.value = (u.budget_cents / 100).toFixed(2);
+  var src = document.getElementById('ai-budget-source');
+  if (src) src.textContent = u.budget_source === 'settings' ? 'Set here. "Use default" goes back to the server setting.'
+    : u.budget_source === 'env' ? 'From PERSISTENT_AI_BUDGET_CENTS on the server.' : 'The default ($1.00).';
+  var bd = document.getElementById('ai-usage-breakdown');
+  if (bd) bd.innerHTML = (u.by_feature || []).length ? u.by_feature.map(function(f) {
+    return '<div style="display:flex;justify-content:space-between;gap:12px;padding:4px 0;border-bottom:1px solid var(--line);"><span>' +
+      esc(AI_FEATURE_LABELS[f.entry_type] || f.entry_type) + '</span><span style="color:var(--muted);">' +
+      f.calls + (f.calls === 1 ? ' call' : ' calls') + ' · ' + aiMoney(f.cents) + '</span></div>';
+  }).join('') : '<div style="color:var(--muted);">No AI calls yet this month.</div>';
+  var pf = document.getElementById('perfin-ai-spend');
+  if (pf) {
+    if (u.perfin) {
+      pf.textContent = 'Perfin (its own cap, set in Perfin → Settings): ' + aiMoney(u.perfin.spent_cents) + ' of ' + aiMoney(u.perfin.budget_cents) + ' this month.';
+      pf.hidden = false;
+    } else pf.hidden = true;
+  }
+}
+async function saveAiBudget(useDefault) {
+  var body;
+  if (useDefault === true) body = { ai_monthly_budget_cents: null };
+  else {
+    var dollars = parseFloat(document.getElementById('ai-budget-input').value);
+    var cents = Math.round(dollars * 100);
+    if (!isFinite(dollars) || cents < 1 || cents > 10000) { showUndo('Enter a cap between $0.01 and $100.', '', '', 'info'); return; }
+    body = { ai_monthly_budget_cents: cents };
+  }
+  var btns = [document.getElementById('save-ai-budget-btn'), document.getElementById('reset-ai-budget-btn')].filter(Boolean);
+  await withPending(btns, 'ai-budget', async function() {
+    var ok = await writeOk(await tryFetch('/api/settings', {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}), 'Could not save the AI budget');
+    if (!ok) return;
+    showUndo(useDefault === true ? 'AI budget reset to the default.' : 'AI budget saved.', '', '', 'info');
+    await loadAiUsage();
+  });
 }
 
 async function enableNotifications() {
@@ -410,6 +461,8 @@ bindEvents([
   ['save-slack-btn','click',saveSlack],
   ['save-keepalive-btn','click',saveKeepAlive],
   ['save-vault-btn','click',saveVault],
+  ['save-ai-budget-btn','click',function(){ saveAiBudget(false); }],
+  ['reset-ai-budget-btn','click',function(){ saveAiBudget(true); }],
   ['vault-enabled','change',saveVault],
   ['logout-btn','click',logout],
   ['auto-action','change',updateActionFields],

@@ -875,9 +875,26 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2125 tests as of latest); use
+  Perfin and Per-sistant test files (2147 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2125 tests across 108 test files (incl.
+  Current count: 2147 tests across 110 test files (incl.
+  `apps/per-sistant/tests/roadmap-t2-3-cap-c4.test.js` — roadmap T2.3 C4: getAiBudgetInfo's
+  sources (settings → env → $1.00, read from the pool it is given; an unreadable setting
+  logged and falling back) and checkAiCap passing its pool; GET /api/ai/usage (the
+  APP_TIMEZONE month's ai_usage rows by feature, spent / budget / source, a ledger error a
+  500, Perfin's spend through a stubbed perfinPool and null when that read fails); the AI
+  limiter skipping only GET /api/ai/usage + /models; PATCH /api/settings
+  ai_monthly_budget_cents (1–10000 or null; 0, 1.5, "6abc", "", true, [100] a 400 with
+  nothing written); the Settings usage card run in a vm (spend, source, breakdown, the
+  Perfin line, "budget reached", a failed load, Save in whole cents / a local refusal /
+  Use default → null) and the pages showing the over-cap message (dashboard briefing +
+  suggestions, Today, the Review summary — never as the week's theme — and the Knowledge
+  capture note), each emitted script parsed;
+  `tests/roadmap-t2-3-cap-c4.test.js` — roadmap T2.3 C4, Perfin's side: persistentAiSpend
+  (null standalone, Per-sistant's own spend + cap read through the pool it is given, null
+  on a failure), GET /api/insights/status's persistent_ai embedded / standalone, and the
+  Settings AI card's Per-sistant line — the database-backed half is
+  `tests/contract/ai-usage-c4`;
   `apps/per-sistant/tests/roadmap-t2-3-cap-c3.test.js` — roadmap T2.3 C3: Knowledge on the
   capped wrappers (/api/rag/query charging one rag_query row, a refused Citations call
   charged and its prompt-cite fallback a second row, over the cap the matching sources with
@@ -1381,7 +1398,12 @@ shell/
   its entry_type through the real routers and cap reads, counted in the APP_TIMEZONE
   month with a row from just before the zone's month start left out; with the month's
   spend at the budget /api/rag/query sources-only with ai_cap and /api/ai/draft-email a
-  429, neither calling the model or adding a row). 203 tests, run
+  429, neither calling the model or adding a row), and ai-usage-c4 (roadmap T2.3 C4, both
+  apps' real databases wired as the shell wires them: GET /api/ai/usage's per-feature rows
+  and spent_cents equal to monthlyAiSpendCents with last month's row left out; PATCH
+  ai_monthly_budget_cents setting the cap the wrappers enforce — a 1.5 a 400 that changes
+  nothing, null back to the default; Perfin's spend in Per-sistant's usage and
+  Per-sistant's in Perfin's /api/insights/status). 206 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -2443,7 +2465,7 @@ shell/
   fails the run before the model call (F73) instead of running on "sonnet" with an
   empty memory and overwriting the stored summary. A manual `POST /api/insights`
   is never held back by the back-off.
-- **Cost tracking**: Granular token-level pricing — `input_tokens` from Anthropic's API (already excludes cache tokens) is multiplied by the input rate; `cache_read_input_tokens` and `cache_creation_input_tokens` are billed separately at their own rates (thinking tokens arrive inside `output_tokens`). Rates are keyed by MODEL ID (`MODEL_RATES_BY_ID` / `modelRates` in `data/reference-data.js`, AIN-9): Haiku 5.5 $0.10/$0.50 per MTok (cache read $0.01, write $0.125; a prompt over 100K tokens uses the $0.50/$2.50 card), Sonnet 5.5 $2/$10 (read $0.20), Opus 5.5 $4/$20 (read $0.20); the previous models (Haiku 4.5 $1/$5, Sonnet 4.6 $3/$15, Opus 4.6 $5/$25, older IDs) keep their own rates because usage rows are re-priced at READ time from their stored tokens + `model_used`. This restores accurate `INSIGHTS_MONTHLY_BUDGET_CENTS` enforcement when prompt caching is active. The monthly budget is shared between `/api/insights`, `/api/categorize`, `/api/insights/rebuild`, `/api/ask`, `/api/housing/scan-bill` and `/api/budgets/suggest` — all check the same cap before calling Claude, via ONE spend reader (`monthAiSpendCents()` in routes/insights.js, AIN-10 — it used to be copy-pasted in six places; it counts from the APP_TIMEZONE month start, cycle-7 F66 — it was UTC's), AND each writes a `financial_insights` usage row after its AI call (`entry_type='categorize'` / `'rebuild'` / `'ask'` / `'scan'` for the housing bill-OCR / `'suggest'` / `'insight_empty'` for an insight run that produced no text /
+- **Cost tracking**: Granular token-level pricing — `input_tokens` from Anthropic's API (already excludes cache tokens) is multiplied by the input rate; `cache_read_input_tokens` and `cache_creation_input_tokens` are billed separately at their own rates (thinking tokens arrive inside `output_tokens`). Rates are keyed by MODEL ID (`MODEL_RATES_BY_ID` / `modelRates` in `data/reference-data.js`, AIN-9): Haiku 5.5 $0.10/$0.50 per MTok (cache read $0.01, write $0.125; a prompt over 100K tokens uses the $0.50/$2.50 card), Sonnet 5.5 $2/$10 (read $0.20), Opus 5.5 $4/$20 (read $0.20); the previous models (Haiku 4.5 $1/$5, Sonnet 4.6 $3/$15, Opus 4.6 $5/$25, older IDs) keep their own rates because usage rows are re-priced at READ time from their stored tokens + `model_used`. This restores accurate `INSIGHTS_MONTHLY_BUDGET_CENTS` enforcement when prompt caching is active. Under the shell, Settings → AI Insights → Monthly Budget Cap also shows Per-sistant's month spend and its own, separate cap (one read-only line — roadmap T2.3 C4; the two apps never share a budget). The monthly budget is shared between `/api/insights`, `/api/categorize`, `/api/insights/rebuild`, `/api/ask`, `/api/housing/scan-bill` and `/api/budgets/suggest` — all check the same cap before calling Claude, via ONE spend reader (`monthAiSpendCents()` in routes/insights.js, AIN-10 — it used to be copy-pasted in six places; it counts from the APP_TIMEZONE month start, cycle-7 F66 — it was UTC's), AND each writes a `financial_insights` usage row after its AI call (`entry_type='categorize'` / `'rebuild'` / `'ask'` / `'scan'` for the housing bill-OCR / `'suggest'` / `'insight_empty'` for an insight run that produced no text /
 `'insight_unsaved'` for an insight whose own row failed to write — cycle-7 F63) so its spend counts toward the cap (not just the read side). `/api/insights/rebuild` records that usage row IMMEDIATELY after the Claude call — before its tool-block validation early-returns and the summary UPDATE — so a rebuild that truncated or failed validation (which 500s) still charges the cap for the spend it already incurred (AIA2); `/api/categorize` likewise stops its AI loop if a usage-row write fails rather than spending uncapped (M2). Display queries that surface "AI Insights" filter `entry_type='insight'` to keep categorize/rebuild tracking rows out of the user-facing feed. The cap is checked-then-charged; for the insight path the insight row IS the usage row (if that INSERT fails, an `'insight_unsaved'` usage row still charges the call and the run returns 500 — F63), and the only gap (two concurrent generate calls both passing the pre-check) is accepted for a single-operator app rather than guarded with a provisional reservation (AI-11). `/api/insights/status` rounds the accumulated cost once and derives `budget_remaining_cents` from it so estimated + remaining == budget (AI-10).
 - **Insight inputs are split-adjusted**: AI insights see the same `spending_split_pct`-adjusted monthly spend totals and the same keyword-filtered income that the dashboard and `/api/savings-rate` show, via `services/financial-queries.js`.
 - **Structured running summary**: AI long-term memory is structured JSON, not plain text. `POST /api/insights` uses Anthropic tool_use (the `generate_financial_insight` tool — `strict: true` with `additionalProperties: false` on every object, requested with `tool_choice` auto via `createToolCall`) to return BOTH the user-facing `insights_text` AND a typed `summary` object with four arrays: `trends`, `completed_goals`, `pending_actions`, `alerts`. The summary is saved to `user_settings.insights_running_summary_json` (JSONB); the legacy `insights_running_summary` TEXT column gets a human-readable rendering for backward-compat callers. `sanitizeStructuredSummary` (exported) enforces shape/length bounds (max items per array, string lengths, enum values) AND returns null unless all four keys are ARRAYS in the raw input, so a pathological, empty (`summary: {}`) or partial tool response can't wipe long-term memory (AIN-8). The response includes `summary_status` — `"updated"` (normal), `"preserved_due_to_truncation"` (`stop_reason` was `max_tokens` — with or without a tool block, since a cut-off tool input may be partially parsed), `"preserved_no_tool_block"` (no tool call even after the re-ask, or a refusal), or `"preserved_validation_failed"` (sanitizer rejected the shape) — so callers can surface when long-term memory didn't advance. A run with NO insight text is charged as an `'insight_empty'` usage row but not stored as an insight, audited or emailed; it returns 502. `/api/insights/rebuild` returns 500 without writing on a `max_tokens` stop (after charging the cap). `GET /api/insights/status` returns the full `running_summary` object plus a `running_summary_counts` block (`{trends, completed_goals, pending_actions, alerts}`) so dashboards can show "tracking 3 trends · 2 goals · 5 actions · 1 alert" without a second fetch.
@@ -3256,7 +3278,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2125 tests passing across 108 test files (Perfin 1532 + Per-sistant 593), plus the real-Postgres route contract suite (203 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2147 tests passing across 110 test files (Perfin 1537 + Per-sistant 610), plus the real-Postgres route contract suite (206 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -3654,6 +3676,9 @@ POST /api/insights         # generate new AI insights. Response includes
                            # stored, audited or emailed — AIN-8)
 GET  /api/insights/status  # AI API config + usage stats + audit_accuracy (90d clean-run %)
                            # + running_summary (structured JSON) + running_summary_counts
+                           # + persistent_ai { spent_cents, budget_cents } — Per-sistant's
+                           # month AI spend + its own cap via persistentPool, null
+                           # standalone or on a failure (roadmap T2.3 C4; read-only)
 GET  /api/insights/usage   # AI usage history
 POST /api/insights/reset   # clear long-term AI context
 POST /api/insights/rebuild # rebuild context from all history
@@ -5670,24 +5695,23 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   email's attachments or warn before Send that one's file is missing (the refusal
   arrives as the send's error toast); Retry sends a failed SCHEDULED email at once
   rather than offering to reschedule it.
-- Roadmap T2.3 (an AI cost cap for every Per-sistant feature) is IN PROGRESS
-  (`.cycle/plan-t2-3-persistent-ai-cap.md`, C1–C4): C1 (the capped wrappers in
-  `apps/per-sistant/ai.js`, the APP_TIMEZONE spend month, a spend read that refuses the
-  call when it fails; Job Radar on the wrapper) and C2 (the nine routes/ai.js features
-  on `cappedAI` — over the cap the action routes 429, Ask / Smart Suggestions keep their
-  200 shapes with `ai_cap`, an unreadable spend 503s) and C3 (Knowledge's answer /
-  diagram / capture on the wrappers — over the cap the answer is sources-only, the
-  diagram a 429, the capture the raw note, each with `ai_cap`; no routes/*.js file calls
-  the model directly) are done; C4 (usage endpoint, budget setting, Settings UI,
-  side-by-side spend, the new invariant) is planned. C1 follow-ons: `getAiBudgetCents` still falls back to the env /
-  default budget when its settings read fails (only the spend read fails closed). C2
-  follow-ons: the 429 says "raise it in Settings → AI", a control C4 adds; the page
-  buttons' handling of the 429 / 503 text is checked in C4; the daily briefing and
-  Smart Suggestions read the spend twice (their gate before the data queries, then the
-  wrapper's own check). C3 follow-ons: Knowledge's /query and /diagram still run
-  retrieval (and a Voyage query embedding, which the cap doesn't count) before the cap
-  refuses the model call; the Knowledge page's capture box doesn't show the response's
-  over-cap note yet (C4).
+- Roadmap T2.3 (an AI cost cap for every Per-sistant feature) is DONE
+  (`.cycle/plan-t2-3-persistent-ai-cap.md`, C1–C4): the capped wrappers in
+  `apps/per-sistant/ai.js` (APP_TIMEZONE spend month, a spend read that refuses the call
+  when it fails; Job Radar on them), the nine routes/ai.js features and Knowledge's
+  answer / diagram / capture on them (over the cap the action routes 429, Ask / Smart
+  Suggestions keep their 200 shapes with `ai_cap`, the Knowledge answer is sources-only,
+  the capture the raw note), and visibility (`GET /api/ai/usage`, the budget in Per-sistant
+  Settings → AI Features with the per-feature spend, each app showing the other's month
+  spend beside its own — INV-143). Follow-ons: `getAiBudgetInfo` falls back to the env /
+  default budget when its settings read fails (only the spend read fails closed); the
+  daily briefing and Smart Suggestions read the spend twice (their gate before the data
+  queries, then the wrapper's own check); Knowledge's /query and /diagram run retrieval
+  (and a Voyage query embedding, which the cap doesn't count) before the cap refuses the
+  model call; Quick Add's AI path falls back to the local parser over the cap without
+  saying why; the usage view covers the current month only (the ledger keeps the rows);
+  two calls at once can both pass the check, so the month's last call can go slightly over
+  (as in Perfin, AI-11).
 - Roadmap T2.2 (low-balance and payday alerts) is DONE (`.cycle/plan-t2-2-cash-alerts.md`,
   L1–L4): the forecast as `services/cash-flow.js` (APP_TIMEZONE today, the lowest
   projected day), the low projected cash alert (`services/cash-alerts.js`, the
@@ -6012,7 +6036,7 @@ INV-60 | Perfin "Sign Out" clears the SHELL session via the root POST /logout un
 INV-61 | apiFetch redirects once to /login (with return_to = the current path, F102) on a 401 or a followed 302→/login (session expiry), loop-guarded, while returning the Response unchanged to callers — idle timeout never leaves a blank/error UI | Subsystem: Web UI | Verify: code read teller/public/perfin-shared.js apiFetch
 INV-62 | The shell sets a nonce CSP + frame-ancestors 'none' + X-Frame-Options on its own routes (login/landing), with COOP/CORP/COEP DISABLED so the global middleware doesn't break sub-app Plaid/Teller Link popups, and Perfin's own helmet sends COOP same-origin-allow-popups, never same-origin (cycle-7 F9); helmet is a declared shell dependency | Subsystem: Platform, Shell & Auth | Verify: header assertion on GET /login (frame-ancestors none, COOP/CORP absent, login scripts nonced) + tests/contract/platform-batch13 (Perfin COOP)
 INV-63 | Per-sistant's shared fetch wrapper (apps/per-sistant/views/js.js) redirects once to the root /login on a 401 or a followed 302→/login (session expiry), loop-guarded, returning the Response unchanged to callers — parity with Perfin INV-61, so an idle-timeout never leaves a blank/error page. The check uses indexOf('/login'), NOT a regex, because the module is one backtick template literal that eats regex backslashes (see Per-sistant CLAUDE.md gotcha) | Subsystem: Per-sistant Web UI | Verify: code read views/js.js fetch wrapper
-INV-64 | Job Radar's AI passes (job_fit + legitimacy) are cap-charged: cappedCall (since roadmap T2.3 C1 an alias of ai.cappedAI) reads getAiBudgetCents()+monthlyAiSpendCents() (the APP_TIMEZONE month; a spend read error is CAP_CHECK_FAILED and stops the pass) and throws { code:'CAP' } BEFORE calling the model when over budget; on a call that returned tokens it charges an ai_usage row via recordAiUsage once in a `finally`. Every other Per-sistant AI feature is on the same wrappers since T2.3 C2 / C3 | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (cappedCall charge-on-success + throw-CAP-before-model-call)
+INV-64 | Job Radar's AI passes (job_fit + legitimacy) are cap-charged: cappedCall (since roadmap T2.3 C1 an alias of ai.cappedAI) reads getAiBudgetCents()+monthlyAiSpendCents() (the APP_TIMEZONE month; a spend read error is CAP_CHECK_FAILED and stops the pass) and throws { code:'CAP' } BEFORE calling the model when over budget; on a call that returned tokens it charges an ai_usage row via recordAiUsage once in a `finally`. Every other Per-sistant AI feature is on the same wrappers since T2.3 C2 / C3 — this is the Job Radar case of INV-143 | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (cappedCall charge-on-success + throw-CAP-before-model-call)
 INV-65 | Job Radar ingest is content_hash-idempotent: dedupPersist upserts ON CONFLICT (content_hash) and counts genuine inserts via (xmax = 0), so a re-run over identical listings adds 0, no duplicate rows. Retention strips old new/dismissed descriptions but KEEPS the hash+status tombstone so a dismissed job re-ingested stays dismissed | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (dedup idempotency, retention)
 INV-66 | gatherJobRadarSummary is the SINGLE fail-soft aggregator feeding the /jobs page, the notification check, and the AI daily-briefing line (the gatherHealthSummary pattern) — a query error returns the safe empty shape, never 500s those surfaces; the notif-check + briefing call it gated on job_radar_enabled. Listing status changes ARCHIVE (saved/applied/dismissed), never hard-delete, and removing a target company deactivates it (active=false — the db/021 seed would re-insert a deleted row) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (aggregator fail-soft + archive-not-delete)
 INV-67 | Every transaction-sync trigger (POST /api/sync + daily-sync.yml, bank auto-sync, pre-insights chain) goes through syncAllTransactions — Teller then Plaid, each failure-isolated — and runAnomalyCheck runs ONCE over the combined added count; a Plaid webhook's per-item sync runs the same post-sync steps (runPostSyncSteps — rename rules, then one check, then the payday-landed alert since T2.2 L3; serialized, so two syncs finishing together check in turn); reconcile/backfill never runs it | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-sept-batch2.test.js (BSI-2 / DD-1 block) + tests/roadmap-t2-webhooks-w3.test.js
@@ -6084,6 +6108,7 @@ INV-140 | A Teller webhook is a trigger, not data: transactions.processed syncs 
 INV-139 | Plaid webhooks are opt-in by PUBLIC_URL alone (hosting.webhookBaseUrl — never RENDER_EXTERNAL_URL): without it no link token carries a webhook and registration is a 400; a clean sync never clears a webhook's advance warning (PENDING_EXPIRATION / PENDING_DISCONNECT — setPlaidItemErrorCode keepWarnings), only a re-authentication does; an ITEM ERROR sets the signal only for a re-auth code | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-webhooks-w4.test.js + tests/contract/webhooks-w4.contract.test.js
 INV-138 | A Plaid webhook is a trigger, not data: SYNC_UPDATES_AVAILABLE syncs only the named GOOD item, through the same syncOnePlaidItem the scheduled sync loops, under withPlaidTxnLock and coalesced per item (a request during its run → one more round, never a parallel walk); it records nothing global (no last_txn_sync_at / last_sync_result — the item's last_synced_at only, stamped when the walk reached the end of the cursor) | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-webhooks-w3.test.js + tests/contract/webhooks-w3.contract.test.js
 INV-142 | Cash and payday alerts are away channels driven by the shared forecast (projectCashFlow / getCashFlowForecast — the same numbers as /api/cash-flow) and never fire on stale data: no projected-low or account-floor alert on a balance older than 36 h, no missed-payday alert without an error-free sync of that connection after the grace window; each is deduped (projected low: cash_alert_state; account floor: 24 h per account via sentRecently; payday: per expected date / per deposit) and advances its state only when the notification was logged; reconcile never triggers a landed-paycheck alert | Subsystem: Financial Analytics / Notification Correctness | Verify: tests/roadmap-t2-2-cash-l2.test.js + tests/roadmap-t2-2-cash-l3.test.js + tests/roadmap-t2-2-cash-l4.test.js + tests/contract/cash-alerts-l2 / payday-l3 / cash-floors-l4
+INV-143 | Every Per-sistant model call goes through ai.js's capped wrappers (cappedAI / cappedCitations): the monthly ai_usage spend (APP_TIMEZONE month; a read error refuses the call) is checked against getAiBudgetCents() (user_settings.ai_monthly_budget_cents → PERSISTENT_AI_BUDGET_CENTS → $1.00, read from the same pool) before the call, and a usage row is charged once in a `finally` whenever tokens came back (a refusal included); no routes/*.js file calls callAI / answerWithCitations directly; cache hits make no call and cost nothing; over the cap the action routes 429, Ask / Smart Suggestions keep their 200 shapes with ai_cap, Knowledge answers degrade to sources-only and capture falls back to the raw note — and the pages show that message; GET /api/ai/usage reports the same spend the cap reads; the two apps' caps are separate and each only DISPLAYS the other's spend | Subsystem: Per-sistant Backend / Knowledge / RAG | Verify: apps/per-sistant/tests/roadmap-t2-3-cap-c1 / c2 / c3 / c4 + the c2 source guard + tests/contract/persistent-ai-cap + ai-usage-c4
 INV-136 | WebAuthn credential ids are stored exactly as the authenticator reports them (registrationInfo.credential.id — already base64url in @simplewebauthn v11), never re-encoded; a double-encoded row from before seams audit #3 is rewritten (or, when its real id already exists, removed) by repairCredentialIds in the migration | Subsystem: Platform, Shell & Auth | Verify: tests/seams-audit-3.test.js + tests/contract/seams3.contract.test.js
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 

@@ -142,8 +142,9 @@ async function load() {
 
   // AI daily briefing — non-blocking
   fetch('/api/ai/daily-briefing').then(function(r){return r.json();}).then(function(d) {
-    if (d && d.briefing) {
-      document.getElementById('briefing-content').textContent = d.briefing;
+    var text = d && (d.briefing || ((d.ai_cap || d.ai_cap_check_failed) && d.error));
+    if (text) {
+      document.getElementById('briefing-content').textContent = text;
       document.getElementById('briefing-section').style.display = 'block';
     }
   }).catch(function(){});

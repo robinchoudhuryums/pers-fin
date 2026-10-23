@@ -365,8 +365,25 @@ async function monthAiSpendCents(db = pool) {
   return cents;
 }
 
+// Roadmap T2.3 C4: Per-sistant's month AI spend + cap, shown beside Perfin's
+// (read-only, informational — the two apps keep separate caps). Only when the
+// shell wired persistentPool, so Per-sistant's ai.js is already loaded; it is
+// the one definition of that spend (APP_TIMEZONE month over ai_usage). Any
+// failure → null.
+async function persistentAiSpend(persistentPool) {
+  if (!persistentPool) return null;
+  try {
+    const psAi = require("../../apps/per-sistant/ai");
+    const [spent, budget] = await Promise.all([psAi.monthlyAiSpendCents(persistentPool), psAi.getAiBudgetCents(persistentPool)]);
+    return { spent_cents: Math.round(spent * 100) / 100, budget_cents: budget };
+  } catch (err) {
+    console.error("Per-sistant AI spend read error:", err.message);
+    return null;
+  }
+}
+
 // GET /api/insights/status
-router.get("/api/insights/status", async (_req, res) => {
+router.get("/api/insights/status", async (req, res) => {
   const configured = !!(Anthropic && process.env.ANTHROPIC_API_KEY);
   let estimatedCostCents = 0;
   let budgetCents = await getAiBudgetCents();
@@ -409,6 +426,7 @@ router.get("/api/insights/status", async (_req, res) => {
     audit_accuracy: accuracy,
     running_summary: runningSummaryJson,
     running_summary_counts: summaryCounts,
+    persistent_ai: await persistentAiSpend(req.app.get("persistentPool")),
   });
 });
 
@@ -1588,6 +1606,7 @@ router.get("/api/insights/audit", async (_req, res) => {
 module.exports = router;
 module.exports.getAiBudgetCents = getAiBudgetCents;
 module.exports.monthAiSpendCents = monthAiSpendCents;
+module.exports.persistentAiSpend = persistentAiSpend;
 module.exports.renderInsightEmail = renderInsightEmail;
 module.exports.renderWeeklyDigestEmail = renderWeeklyDigestEmail;
 module.exports.renderDailyDigestEmail = renderDailyDigestEmail;

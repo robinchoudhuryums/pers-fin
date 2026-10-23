@@ -211,7 +211,7 @@
       <div id="modules-container" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;"></div>
     </div>
     <div class="setting-row">
-      <div class="setting-info"><div class="name">Monthly Budget Cap</div><div class="desc" id="budget-desc">Limits AI API spend per month (insights + categorize + rebuild share one cap). The cap is checked before each AI call, so the final call of the month can finish slightly over it — that overshoot is expected and blocks all further calls until the month resets.</div></div>
+      <div class="setting-info"><div class="name">Monthly Budget Cap</div><div class="desc" id="budget-desc">Limits AI API spend per month (insights + categorize + rebuild share one cap). The cap is checked before each AI call, so the final call of the month can finish slightly over it — that overshoot is expected and blocks all further calls until the month resets.</div><div class="desc" id="persistent-ai-spend" hidden></div></div>
       <div class="setting-control" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
         <span id="budget-status" style="font-size:12px;color:var(--text-muted);">--</span>
         <span style="font-size:12px;color:var(--text-muted);">$</span>
@@ -731,6 +731,12 @@
           if (budgetEl) budgetEl.textContent = '$' + (st.estimated_cost_cents / 100).toFixed(3) + ' of $' + (st.budget_cents / 100).toFixed(2) + ' cap used this month';
           var capInput = document.getElementById('budget-cap-input');
           if (capInput && !capInput.value) capInput.value = (st.budget_cents / 100).toFixed(2);
+          // Roadmap T2.3 C4: Per-sistant's spend beside it (its own, separate cap).
+          var psEl = document.getElementById('persistent-ai-spend');
+          if (psEl && st.persistent_ai) {
+            psEl.textContent = 'Per-sistant (its own cap, set in Per-sistant \u2192 Settings): $' + (st.persistent_ai.spent_cents / 100).toFixed(2) + ' of $' + (st.persistent_ai.budget_cents / 100).toFixed(2) + ' this month.';
+            psEl.hidden = false;
+          }
         } else {
           badge.textContent = 'Not Set';
           badge.style.background = 'var(--yellow-bg)'; badge.style.color = 'var(--yellow)';

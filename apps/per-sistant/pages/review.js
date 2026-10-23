@@ -83,8 +83,9 @@ async function load() {
     overdue: data.overdue_tasks.length,
     completed_titles: data.tasks_completed.map(t=>t.title).join(', ')
   }})}).then(r=>r.json()).then(d => {
-    if (d.summary) {
-      document.getElementById('review-summary').textContent = d.summary;
+    var text = d.summary || ((d.ai_cap || d.ai_cap_check_failed) && d.error);
+    if (text) {
+      document.getElementById('review-summary').textContent = text;
       document.getElementById('review-summary-section').style.display = 'block';
     }
   }).catch(function(){});
@@ -102,7 +103,8 @@ async function load() {
         query: 'In one short sentence (10 words or fewer, no quotes), what was the theme of the work I completed this week? Tasks: ' + titles,
       }),
     }).then(function(r){return r.json();}).then(function(d) {
-      if (d && d.answer) {
+      // Over the AI budget Ask answers with the budget message — not a theme.
+      if (d && d.answer && !d.ai_cap && !d.ai_cap_check_failed) {
         var theme = d.answer.trim().replace(/^["'"'']|["'"'']$/g, '');
         document.getElementById('theme-content').textContent = theme;
         document.getElementById('theme-section').style.display = 'block';

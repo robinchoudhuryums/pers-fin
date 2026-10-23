@@ -34,6 +34,42 @@ function normalizeParsedTodo(p, input) {
   };
 }
 
+// Roadmap T2.3 C4: this month's Per-sistant AI spend for Settings — the same
+// ai_usage rows and APP_TIMEZONE month start the cap reads, grouped by feature
+// (the entry_type is the feature name). Throws on a read error.
+const round2 = (n) => Math.round(n * 100) / 100;
+async function aiUsageSummary(pool) {
+  const { month_start, tz } = ai.aiMonthStart();
+  const budget = await ai.getAiBudgetInfo(pool);
+  const r = await pool.query(
+    "SELECT entry_type, COUNT(*)::int AS calls, COALESCE(SUM(cost_cents), 0) AS cents FROM ai_usage " +
+    "WHERE created_at >= ($1::date::timestamp AT TIME ZONE $2) GROUP BY entry_type ORDER BY cents DESC, entry_type",
+    [month_start, tz]);
+  let spent = 0;
+  const by_feature = r.rows.map((x) => {
+    const cents = parseFloat(x.cents) || 0;
+    spent += cents;
+    return { entry_type: x.entry_type, calls: x.calls, cents: round2(cents) };
+  });
+  return { month: month_start.slice(0, 7), spent_cents: round2(spent), budget_cents: budget.cents, budget_source: budget.source, by_feature };
+}
+
+// Perfin's month spend + cap, shown beside Per-sistant's (read-only,
+// informational — each app keeps its own cap). Only when the shell wired
+// perfinPool, so Perfin's modules are already loaded; required lazily like
+// rag.js's getNetWorth. Any failure → null.
+async function perfinAiSpend(perfinPool) {
+  if (!perfinPool) return null;
+  try {
+    const insights = require("../../../teller/routes/insights");
+    const [spent, budget] = await Promise.all([insights.monthAiSpendCents(perfinPool), insights.getAiBudgetCents()]);
+    return { spent_cents: round2(spent), budget_cents: budget };
+  } catch (err) {
+    console.error("Perfin AI spend read error:", err.message);
+    return null;
+  }
+}
+
 // Roadmap T1.5: a model-calling route answers 501 when no API key is set —
 // after its own 400s (feature off, missing input), before any model call. It used to reach callAI, which throws "AI not configured",
 // and answer 500 — logged as a server error on every Review page load.
@@ -392,6 +428,17 @@ module.exports = function ({ pool }) {
     } catch (err) { serverError(res, err); }
   });
 
+  // Roadmap T2.3 C4: this month's spend, the cap and where it came from, the
+  // per-feature breakdown, and Perfin's spend beside it (null standalone).
+  router.get("/api/ai/usage", async (req, res) => {
+    try {
+      const usage = await aiUsageSummary(pool);
+      usage.available = isAIAvailable();
+      usage.perfin = await perfinAiSpend(req.app.get("perfinPool"));
+      res.json(usage);
+    } catch (err) { serverError(res, err); }
+  });
+
   router.patch("/api/ai/models", async (req, res) => {
     try {
       const allowed = ["ai_model_email_draft", "ai_model_task_breakdown", "ai_model_quick_add", "ai_model_review_summary", "ai_model_email_tone", "ai_model_daily_briefing", "ai_model_note_tagging", "ai_model_rag", "ai_model_job_fit", "ai_model_natural_language_query", "ai_model_smart_suggestions"];
@@ -415,3 +462,5 @@ module.exports = function ({ pool }) {
 
 // Helpers attached AFTER module.exports = router factory (INV-19).
 module.exports.normalizeParsedTodo = normalizeParsedTodo;
+module.exports.aiUsageSummary = aiUsageSummary;
+module.exports.perfinAiSpend = perfinAiSpend;

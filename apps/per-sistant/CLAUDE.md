@@ -39,7 +39,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   or a total over the cap, is never sent around: Send Now answers 400 with the reason
   BEFORE claiming (the email stays unsent), and the scheduler marks the claimed row
   `failed` with it.
-- **Tests**: `tests/` (node:test runner, `npm test`, 593 tests (api + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11/batch12/batch13/batch16/batch17/batch20 + roadmap-t1-batchc + roadmap-t2-3-cap-c1/c2/c3 + seams-audit-3 + model-upgrade))
+- **Tests**: `tests/` (node:test runner, `npm test`, 610 tests (api + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11/batch12/batch13/batch16/batch17/batch20 + roadmap-t1-batchc + roadmap-t2-3-cap-c1/c2/c3/c4 + seams-audit-3 + model-upgrade))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of June 2026)
@@ -307,7 +307,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (593 tests)
+# Run tests (610 tests)
 npm test
 
 # Pages
@@ -372,7 +372,8 @@ DELETE /api/contacts/:id    # Delete contact
 GET    /api/contacts/lookup/:name  # Lookup by name
 
 GET    /api/settings        # Get settings
-PATCH  /api/settings        # Update settings (including dashboard_layout)
+PATCH  /api/settings        # Update settings (including dashboard_layout; ai_monthly_budget_cents
+                            #   integer 1–10000 or null → env / $1.00, 400 otherwise — T2.3 C4)
 GET    /api/stats           # Dashboard statistics
 
 # Automations API
@@ -498,6 +499,9 @@ GET    /api/ai/smart-suggestions   # AI productivity coaching suggestions
 POST   /api/ai/query               # Natural language query about your data
 GET    /api/ai/models              # Get per-feature model preferences
 PATCH  /api/ai/models              # Update per-feature model preferences
+GET    /api/ai/usage               # This month's AI spend: { month, spent_cents, budget_cents,
+                                   #   budget_source settings|env|default, by_feature[{entry_type,
+                                   #   calls, cents}], available, perfin } (roadmap T2.3 C4; not rate-limited)
 
 # Knowledge / RAG API (personal knowledge base Q&A)
 GET    /api/rag/search             # retrieval only (vector if configured, else keyword); zero LLM cost
@@ -571,8 +575,9 @@ GET    /sw.js               # Service worker
   aggregator ingest (free tier — register at developer.adzuna.com). Optional:
   without them Job Radar ingests ATS boards only (fail-soft per source).
 - `PERSISTENT_AI_BUDGET_CENTS` — monthly AI budget fallback (cents, default 100 =
-  $1.00) for the Job Fit + legitimacy passes. Overridden at runtime by
-  `user_settings.ai_monthly_budget_cents`. Caps the `ai_usage` ledger spend.
+  $1.00) for every Per-sistant AI feature (roadmap T2.3). Overridden at runtime by
+  `user_settings.ai_monthly_budget_cents`, set in Settings → AI Features → Monthly AI
+  budget ("Use default" clears it). Caps the `ai_usage` ledger spend.
 
 ## Database
 - Auto-migration runs on server startup — no manual SQL execution needed.
@@ -924,6 +929,24 @@ and signal handlers are owned by the shell when embedded.
   (`rag_capture`) still commits the raw note and adds `ai_cap` + a note. The over-cap
   helpers (`capMessage`, `capResponse`, `isCapError`) live in ai.js. Smart
   Suggestions' day / weekday / cache key are the APP_TIMEZONE date (C2).
+  **Visibility (C4):** `getAiBudgetInfo(pool)` returns `{ cents, source: settings | env |
+  default }` (`getAiBudgetCents(pool)` is its cents, read from the pool the wrapper was
+  given). `GET /api/ai/usage` → `{ month, spent_cents, budget_cents, budget_source,
+  by_feature: [{ entry_type, calls, cents }], available, perfin }` — the same ai_usage
+  rows and APP_TIMEZONE month start the cap reads (`aiUsageSummary` in routes/ai.js, a
+  read error a 500); `perfin` is Perfin's month spend + its own cap through the wired
+  `perfinPool` (Perfin's `monthAiSpendCents` / `getAiBudgetCents`, required lazily only
+  when the pool is wired), null standalone or on a failure. `PATCH /api/settings` takes
+  `ai_monthly_budget_cents` — an integer 1–10000 (a number or digit string) or null (back
+  to `PERSISTENT_AI_BUDGET_CENTS` / $1.00); anything else is a 400. The AI limiter skips
+  the two read-only GETs (`/api/ai/usage`, `/api/ai/models`). Settings → AI Features →
+  **Monthly AI budget** shows "This month: $X of $Y", the cap's source, a per-feature
+  breakdown and Perfin's line, with a cap input, Save and Use default (`withPending` +
+  `writeOk`; shown with or without an API key). Over the cap the dashboard briefing and
+  suggestions, Today's briefing and the Review summary show the budget message instead of
+  hiding (the Review's weekly theme skips it), and the Knowledge capture shows its note.
+  Perfin's `GET /api/insights/status` carries Per-sistant's figures as `persistent_ai`.
+  The two caps stay separate (INV-143).
   `estimateCostCents` prices the 5.5 models (`AI_PRICING`, cents per token):
   Haiku 5.5 $0.10 / $0.50 per MTok (a prompt over 100K tokens uses the
   $0.50 / $2.50 card), Sonnet 5.5 $2 / $10; cache reads are charged at 0.1x

@@ -105,6 +105,19 @@ ${navBar("/settings")}
         </div>
       </div>
     </div>
+    <div id="ai-usage-section" style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line);">
+      <div style="font-size:13px;margin-bottom:6px;">Monthly AI budget</div>
+      <p id="ai-usage-line" style="font-size:12px;color:var(--muted);margin-bottom:10px;">Loading this month&rsquo;s AI spend&hellip;</p>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <label for="ai-budget-input" style="margin:0;font-size:12px;white-space:nowrap;">Cap ($ per month)</label>
+        <input type="number" id="ai-budget-input" min="0.01" max="100" step="0.01" inputmode="decimal" style="width:100px;">
+        <button class="btn primary" id="save-ai-budget-btn">Save</button>
+        <button class="btn" id="reset-ai-budget-btn">Use default</button>
+      </div>
+      <p id="ai-budget-source" style="font-size:11px;color:var(--muted);margin-top:6px;"></p>
+      <div id="ai-usage-breakdown" style="margin-top:8px;font-size:12px;"></div>
+      <p id="perfin-ai-spend" style="font-size:11px;color:var(--muted);margin-top:8px;" hidden></p>
+    </div>
   </div>
 
   <div class="section">

@@ -18,7 +18,26 @@ Updated: 2026-10-23
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T2.3 (AI cost cap for every Per-sistant feature) — C3 DONE** on branch
+- **Status:** **Roadmap T2.3 (AI cost cap for every Per-sistant feature) — C4 DONE; T2.3 COMPLETE** on branch
+  `claude/sweet-ritchie-f9d8ah` (2026-10-23, in PR robinchoudhuryums/pers-fin#133). Plan:
+  `.cycle/plan-t2-3-persistent-ai-cap.md`. Block: `.cycle/blocks/7-roadmap-t2-3-c4-broad-implement.md`.
+  - **Completed:** ai.js getAiBudgetInfo (settings / env / default; the budget read from the
+    wrapper's pool); GET /api/ai/usage (spend by feature in the APP_TIMEZONE month, the cap
+    and its source, Perfin's spend via perfinPool); PATCH /api/settings ai_monthly_budget_cents
+    (1–10000 or null, 400 otherwise); the AI limiter skipping the two read-only GETs; Settings →
+    AI Features → Monthly AI budget (spend, source, breakdown, Perfin line, Save / Use default);
+    the dashboard / Today / Review cards showing the budget message, the Review theme ignoring
+    it, the Knowledge capture note; Perfin's /api/insights/status persistent_ai + its Settings
+    line. INV-143. Docs (both CLAUDE.md files, README, Known Open Issues → T2.3 DONE).
+  - **Verification:** npm 2147/2147 (22 new); contract 206/206 (3 new, both apps' real
+    databases); Playwright 57/57; ten mutation checks red (one survivor pinned with a forced zone).
+  - **Decisions:** each app only DISPLAYS the other's spend (separate caps, plan decision 2);
+    the Per-sistant figure in Perfin is read with Per-sistant's own functions (one definition),
+    only when the pool is wired, so a standalone Perfin never loads Per-sistant code; the usage
+    card shows without an API key; Quick Add keeps its silent local-parser fallback.
+  - **Where I left off:** C4 committed and pushed; roadmap T2.3 is complete. NEXT: the next
+    roadmap item (or `/reflect` to close cycle 7).
+- **Previous status:** **Roadmap T2.3 (AI cost cap for every Per-sistant feature) — C3 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-23, in PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-3-persistent-ai-cap.md`. Block: `.cycle/blocks/7-roadmap-t2-3-c3-broad-implement.md`.
   - **Completed:** apps/per-sistant/routes/rag.js — /query through cappedCitations + a

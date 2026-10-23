@@ -226,7 +226,8 @@ async function capture(){
   try {
     var r = await fetch('/api/rag/capture', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t, sensitivity:document.getElementById('k-capture-sensitivity').value})}).then(function(r){return r.json();});
     if(r.error){ st.textContent = r.error; return; }
-    st.innerHTML = 'Saved as <code>'+esc(r.path)+'</code> ('+esc(r.type)+'). Searchable after the next sync.';
+    st.innerHTML = 'Saved as <code>'+esc(r.path)+'</code> ('+esc(r.type)+'). Searchable after the next sync.' +
+      (r.note ? ' ' + esc(r.note) : '');
     document.getElementById('k-capture-text').value = '';
     loadKStatus();
   } catch(e){ st.textContent = 'Capture failed.'; }

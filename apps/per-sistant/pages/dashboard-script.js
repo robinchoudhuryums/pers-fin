@@ -271,9 +271,12 @@ async function load() {
     }
   }).catch(function(){});
 
+  // Roadmap T2.3 C4: over the monthly AI budget the briefing / suggestions
+  // say so (the response's error) instead of silently disappearing.
   fetch('/api/ai/daily-briefing').then(r=>r.json()).then(d => {
-    if (d.briefing) {
-      document.getElementById('briefing-content').textContent = d.briefing;
+    var text = d.briefing || ((d.ai_cap || d.ai_cap_check_failed) && d.error);
+    if (text) {
+      document.getElementById('briefing-content').textContent = text;
       document.getElementById('briefing-section').style.display = 'block';
     }
   }).catch(function(){});
@@ -284,6 +287,9 @@ async function load() {
         '<div style="padding:10px 0;border-bottom:1px solid var(--line);font-size:13px;line-height:1.55;color:var(--ink);">'+
         '<span style="color:var(--accent);margin-right:8px;">&#9733;</span>'+esc(s.suggestion)+'</div>'
       ).join('');
+      document.getElementById('suggestions-section').style.display = 'block';
+    } else if ((d.ai_cap || d.ai_cap_check_failed) && d.error) {
+      document.getElementById('suggestions-content').textContent = d.error;
       document.getElementById('suggestions-section').style.display = 'block';
     }
   }).catch(function(){});

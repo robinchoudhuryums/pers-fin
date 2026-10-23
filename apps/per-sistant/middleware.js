@@ -114,6 +114,9 @@ function setup(app) {
     windowMs: 60 * 1000,
     max: 20,
     message: { error: "Too many AI requests, please slow down." },
+    // The two read-only GETs under /api/ai/ make no model call (the Settings
+    // page loads both) — roadmap T2.3 C4. req.path is relative to the mount.
+    skip: (req) => req.method === "GET" && (req.path === "/models" || req.path === "/usage"),
   });
   app.use("/api/ai/", aiLimiter);
   // F130: the Knowledge endpoints that call Claude (and Voyage) share the AI

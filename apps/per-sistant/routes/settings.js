@@ -61,7 +61,7 @@ module.exports = function ({ pool, config }) {
 
   router.patch("/api/settings", async (req, res) => {
     try {
-      const { theme, session_timeout_minutes, default_horizon, perfin_url, perfin_webhook_recipient, palette, dashboard_layout, slack_webhook_url, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, vault_enabled, vault_repo, vault_branch, job_radar_enabled } = req.body;
+      const { theme, session_timeout_minutes, default_horizon, perfin_url, perfin_webhook_recipient, palette, dashboard_layout, slack_webhook_url, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, vault_enabled, vault_repo, vault_branch, job_radar_enabled, ai_monthly_budget_cents } = req.body;
       const fields = [];
       const params = [];
       let idx = 1;
@@ -104,6 +104,20 @@ module.exports = function ({ pool, config }) {
       // VAULT_GITHUB_TOKEN env var, never stored here).
       if (vault_enabled !== undefined) { fields.push(`vault_enabled = $${idx++}`); params.push(!!vault_enabled); }
       if (job_radar_enabled !== undefined) { fields.push(`job_radar_enabled = $${idx++}`); params.push(!!job_radar_enabled); }
+      // Roadmap T2.3 C4: the monthly AI budget in cents — an integer 1–10000
+      // ($0.01–$100), or null to fall back to PERSISTENT_AI_BUDGET_CENTS / $1.00.
+      // Number(), not parseInt(): "6abc" or 1.5 is refused, never truncated (INV-59).
+      if (ai_monthly_budget_cents !== undefined) {
+        if (ai_monthly_budget_cents === null) {
+          fields.push("ai_monthly_budget_cents = NULL");
+        } else {
+          const cents = typeof ai_monthly_budget_cents === "string" && ai_monthly_budget_cents.trim() === "" ? NaN : Number(ai_monthly_budget_cents);
+          if (!["number", "string"].includes(typeof ai_monthly_budget_cents) || !Number.isInteger(cents) || cents < 1 || cents > 10000) {
+            return res.status(400).json({ error: "ai_monthly_budget_cents must be an integer between 1 and 10000 (cents), or null to use the default." });
+          }
+          fields.push(`ai_monthly_budget_cents = $${idx++}`); params.push(cents);
+        }
+      }
       // Switching the vault repo or branch invalidates the last-indexed SHA:
       // an incremental diff from the OLD repo's commit is meaningless, and
       // the old repo's documents/facts would never be swept. NULLing it forces

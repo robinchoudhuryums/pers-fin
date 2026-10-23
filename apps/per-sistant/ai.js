@@ -109,13 +109,20 @@ function estimateCostCents(model, usage = {}) {
 }
 
 const DEFAULT_AI_BUDGET_CENTS = 100; // $1.00/month fallback
-async function getAiBudgetCents() {
+// The budget and where it came from (roadmap T2.3 C4 — Settings shows it):
+// user_settings.ai_monthly_budget_cents → env PERSISTENT_AI_BUDGET_CENTS → $1.00.
+async function getAiBudgetInfo(pool_) {
   try {
-    const r = await pool.query("SELECT ai_monthly_budget_cents FROM user_settings WHERE id = 1");
+    const r = await (pool_ || pool).query("SELECT ai_monthly_budget_cents FROM user_settings WHERE id = 1");
     const v = parseInt(r.rows[0] && r.rows[0].ai_monthly_budget_cents, 10);
-    if (Number.isFinite(v) && v > 0) return v;
-  } catch { /* fall through to env/default */ }
-  return parseInt(process.env.PERSISTENT_AI_BUDGET_CENTS, 10) || DEFAULT_AI_BUDGET_CENTS;
+    if (Number.isFinite(v) && v > 0) return { cents: v, source: "settings" };
+  } catch (err) { console.error("AI budget setting read error:", err.message); }
+  const env = parseInt(process.env.PERSISTENT_AI_BUDGET_CENTS, 10);
+  if (Number.isFinite(env) && env > 0) return { cents: env, source: "env" };
+  return { cents: DEFAULT_AI_BUDGET_CENTS, source: "default" };
+}
+async function getAiBudgetCents(pool_) {
+  return (await module.exports.getAiBudgetInfo(pool_)).cents;
 }
 // The spend since the start of the APP_TIMEZONE month (roadmap T2.3 — it was
 // the UTC month, so west of UTC the cap reset hours early; Perfin's F66).
@@ -245,7 +252,7 @@ function capResponse(res, err) {
 async function checkAiCap(pool_) {
   let budget, spent;
   try {
-    budget = await module.exports.getAiBudgetCents();
+    budget = await module.exports.getAiBudgetCents(pool_ || pool);
     spent = await module.exports.monthlyAiSpendCents(pool_ || pool);
   } catch (err) {
     console.error("AI cap check failed:", err.message);
@@ -314,7 +321,7 @@ module.exports = {
   callAI, callAIWithUsage, answerWithCitations, getAIModelForFeature, getCached, setCache,
   AI_MODELS, isAIAvailable, responseText, sizedParams,
   // AI cost cap (D1)
-  estimateCostCents, getAiBudgetCents, monthlyAiSpendCents, recordAiUsage, AI_PRICING,
+  estimateCostCents, getAiBudgetCents, getAiBudgetInfo, monthlyAiSpendCents, recordAiUsage, AI_PRICING,
   // Every feature on the cap (roadmap T2.3)
   checkAiCap, cappedAI, cappedCitations, aiMonthStart, capError, capMessage, capResponse, isCapError,
 };
