@@ -39,7 +39,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   or a total over the cap, is never sent around: Send Now answers 400 with the reason
   BEFORE claiming (the email stays unsent), and the scheduler marks the claimed row
   `failed` with it.
-- **Tests**: `tests/` (node:test runner, `npm test`, 581 tests (api + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11/batch12/batch13/batch16/batch17/batch20 + roadmap-t1-batchc + roadmap-t2-3-cap-c1/c2 + seams-audit-3 + model-upgrade))
+- **Tests**: `tests/` (node:test runner, `npm test`, 593 tests (api + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11/batch12/batch13/batch16/batch17/batch20 + roadmap-t1-batchc + roadmap-t2-3-cap-c1/c2/c3 + seams-audit-3 + model-upgrade))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of June 2026)
@@ -307,7 +307,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (581 tests)
+# Run tests (593 tests)
 npm test
 
 # Pages
@@ -721,7 +721,9 @@ hoisted version.
   - **Citations (Phase 2):** `POST /api/rag/query` answers via the Anthropic
     Citations feature (`ai.answerWithCitations` — each retrieved source is a
     plain-text document block with citations enabled; response flags each
-    source `cited:true/false`). Falls back to prompt-cite `callAI` if the
+    source `cited:true/false`; through `ai.cappedCitations` since roadmap T2.3 C3 — over the
+    monthly AI budget the answer degrades to the sources with `ai_cap`). Falls back to a
+    prompt-cite call (`ai.cappedAI`) if the
     citations call throws; that answer's inline `[n]` / `[2][3]` / `[1, 4]` markers
     are parsed back into cited sources (`parseInlineCitations`, KR-12), so a
     fallback answer that cites isn't flagged "ungrounded". Citations are incompatible with structured outputs
@@ -913,8 +915,14 @@ and signal handlers are owned by the shell when embedded.
   Suggestions keep their 200 shapes (`answer:` says the budget is reached / `suggestions:
   null`) with `ai_cap` (or `ai_cap_check_failed`), also gated before their queries. A
   cache hit makes no cap read and no call. `tests/roadmap-t2-3-cap-c2.test.js` fails on
-  any `routes/*.js` file naming `callAI` / `answerWithCitations` (KNOWN_GAPS: rag.js
-  until C3 — Knowledge's answer / diagram / capture still call them uncapped). Smart
+  any `routes/*.js` file naming `callAI` / `answerWithCitations` (KNOWN_GAPS empty since
+  C3). Knowledge (T2.3 C3): `/api/rag/query` answers through `cappedCitations` and its
+  prompt-cite fallback through `cappedAI` (each attempt its own `rag_query` row; a refused
+  Citations call is charged); over the budget it returns the matching sources with
+  `ai_cap` and a note (the fallback isn't tried), after the answer-cache lookup, so a
+  cached answer stays free; `/diagram` (`rag_diagram`) answers 429 / 503; `/capture`
+  (`rag_capture`) still commits the raw note and adds `ai_cap` + a note. The over-cap
+  helpers (`capMessage`, `capResponse`, `isCapError`) live in ai.js. Smart
   Suggestions' day / weekday / cache key are the APP_TIMEZONE date (C2).
   `estimateCostCents` prices the 5.5 models (`AI_PRICING`, cents per token):
   Haiku 5.5 $0.10 / $0.50 per MTok (a prompt over 100K tokens uses the

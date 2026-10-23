@@ -10,14 +10,17 @@
 //   POST /api/rag/query {query}  retrieve, then a source-grounded Claude answer
 //
 // The query path answers ONLY from retrieved sources via the Citations feature
-// (ai.answerWithCitations); if that call fails it falls back to a prompt that
+// (ai.cappedCitations, charged to the monthly AI budget — T2.3 C3); if that call fails it falls back to a prompt that
 // asks for inline [n] markers, which are parsed back into cited sources. The
 // source list is returned alongside so the UI can show provenance. Gated by
 // getAIModelForFeature('rag') + isAIAvailable(); search works with no AI.
 // ============================================================================
 
 const express = require("express");
-const { callAI, answerWithCitations, getAIModelForFeature, isAIAvailable } = require("../ai");
+// Roadmap T2.3 C3: the answer, diagram and capture calls go through ai.js's
+// capped wrappers (read off the module object so tests can stub them).
+const ai = require("../ai");
+const { getAIModelForFeature, isAIAvailable, capMessage, capResponse, isCapError } = ai;
 const embeddings = require("../services/embeddings");
 const vaultSync = require("../services/vault-sync");
 const { serverError } = require("../errors");
@@ -724,26 +727,44 @@ module.exports = function ({ pool }) {
       const SYSTEM =
         "You are a personal knowledge assistant. Answer the question using ONLY the information in the provided documents. A document titled \"Known facts (current)\" holds verified structured facts about the user — treat it as authoritative and prefer it for precise values (numbers, dates, IDs). If the documents do not contain the answer, say plainly that you don't have that information in your knowledge base — do not guess or use outside knowledge. Be concise.";
 
+      // Over the monthly AI budget (or with the spend unreadable) the answer
+      // degrades to the matching sources, like the AI-off path (T2.3 C3) —
+      // after the cache lookup, so a cached answer is still free.
+      const capped = (err) => res.json({
+        answer: null,
+        sources,
+        ...(err.code === "CAP" ? { ai_cap: true } : { ai_cap_check_failed: true }),
+        note: (err.code === "CAP" ? capMessage(err) : err.message) + " Showing matching sources.",
+      });
+
       // Real Citations: the model cites which document backed each claim. Fall
       // back to the prompt-cite path if the citations call fails for any reason.
+      // Each attempt is charged as its own rag_query row (decision 6).
       let answer;
       let citedIndexes = [];
       let stopReason = null;
       try {
-        const out = await answerWithCitations({ model, system: SYSTEM, query, documents });
+        const out = await ai.cappedCitations(pool, { entry_type: "rag_query", model, system: SYSTEM, query, documents });
         answer = out.text;
         citedIndexes = out.citedIndexes;
         stopReason = out.stop_reason || null;
       } catch (e) {
+        if (isCapError(e)) return capped(e);
         const meta = {};
         const context = documents.map((d, i) => `[${i + 1}] ${d.title}\n${d.content}`).join("\n\n");
-        answer = await callAI(
-          model,
-          `Sources:\n${context}\n\nQuestion: "${query}"`,
-          1024,
-          `${SYSTEM} Cite the sources you use inline with their bracketed numbers, e.g. [1] or [2][3].`,
-          meta
-        );
+        try {
+          answer = (await ai.cappedAI(pool, {
+            entry_type: "rag_query",
+            model,
+            prompt: `Sources:\n${context}\n\nQuestion: "${query}"`,
+            maxTokens: 1024,
+            system: `${SYSTEM} Cite the sources you use inline with their bracketed numbers, e.g. [1] or [2][3].`,
+            meta,
+          })).text;
+        } catch (e2) {
+          if (isCapError(e2)) return capped(e2);
+          throw e2;
+        }
         stopReason = meta.stop_reason || null;
         // KR-12: this path cites with inline [n] markers, not Citations blocks,
         // so citedIndexes stayed empty and every fallback answer was flagged
@@ -816,15 +837,17 @@ module.exports = function ({ pool }) {
       }
 
       const context = documents.map((d, i) => `[${i + 1}] ${d.title}\n${d.content}`).join("\n\n");
-      const raw = await callAI(
+      // Over the monthly AI budget → 429 { ai_cap } (T2.3 C3; ai.capResponse in the catch).
+      const { text: raw } = await ai.cappedAI(pool, {
+        entry_type: "rag_diagram",
         model,
-        `Data:\n${context}\n\nDiagram request: "${query}"`,
-        1500,
-        "You generate Mermaid diagrams from the user's personal data. Output ONLY valid Mermaid syntax — no prose, no explanation, no markdown code fences. Pick the most fitting diagram type (flowchart TD, mindmap, timeline, or erDiagram). Use ONLY information present in the provided data; never invent nodes or values. Keep node labels short and avoid characters that break Mermaid (quotes, parentheses) inside labels."
-      );
+        prompt: `Data:\n${context}\n\nDiagram request: "${query}"`,
+        maxTokens: 1500,
+        system: "You generate Mermaid diagrams from the user's personal data. Output ONLY valid Mermaid syntax — no prose, no explanation, no markdown code fences. Pick the most fitting diagram type (flowchart TD, mindmap, timeline, or erDiagram). Use ONLY information present in the provided data; never invent nodes or values. Keep node labels short and avoid characters that break Mermaid (quotes, parentheses) inside labels.",
+      });
       res.json({ mermaid: stripMermaidFences(raw), sources });
     } catch (err) {
-      serverError(res, err);
+      if (!capResponse(res, err)) serverError(res, err);
     }
   });
 
@@ -928,15 +951,19 @@ module.exports = function ({ pool }) {
       // Default: store the raw text as a note. If AI is on, let it structure the
       // capture (note vs fact, fields, tags) — falling back to the raw note.
       let entry = { type: req.body.kind === "fact" ? "fact" : "note", title: null, entity: null, fields: {}, tags: [], body: text };
+      // Over the monthly AI budget (or with the spend unreadable) the capture is
+      // still committed — as the raw note — and the response says why (T2.3 C3).
+      let capFlag = null;
       const model = await getAIModelForFeature("rag");
       if (sensitivity === "normal" && model !== "off" && isAIAvailable()) {
         try {
-          const raw = await callAI(
+          const { text: raw } = await ai.cappedAI(pool, {
+            entry_type: "rag_capture",
             model,
-            `Captured text:\n"""\n${text}\n"""`,
-            800,
-            'Convert the captured text into a personal-knowledge entry. Return ONLY a JSON object: {"type":"note"|"fact","title":string,"entity":string|null,"fields":{key:value},"tags":[string],"body":string}. Use "fact" when the text is mostly discrete attributes about one entity (account, policy, device, person): put those attributes in "fields" (short snake_case keys) and the name in "entity". Otherwise use "note" with the prose in "body". Do not invent information.'
-          );
+            prompt: `Captured text:\n"""\n${text}\n"""`,
+            maxTokens: 800,
+            system: 'Convert the captured text into a personal-knowledge entry. Return ONLY a JSON object: {"type":"note"|"fact","title":string,"entity":string|null,"fields":{key:value},"tags":[string],"body":string}. Use "fact" when the text is mostly discrete attributes about one entity (account, policy, device, person): put those attributes in "fields" (short snake_case keys) and the name in "entity". Otherwise use "note" with the prose in "body". Do not invent information.',
+          });
           const m = raw.match(/\{[\s\S]*\}/);
           if (m) {
             const p = JSON.parse(m[0]);
@@ -950,7 +977,8 @@ module.exports = function ({ pool }) {
             };
           }
         } catch (e) {
-          /* fall back to the raw note */
+          // Fall back to the raw note; over the cap, say so in the response.
+          if (isCapError(e)) capFlag = e;
         }
       }
 
@@ -972,7 +1000,12 @@ module.exports = function ({ pool }) {
       );
       // Index it soon (non-blocking; next cron would also pick it up).
       vaultSync.syncVault(pool).catch(() => {});
-      res.json({ ok: true, path, type: entry.type, sensitivity, html_url: (result.content && result.content.html_url) || null });
+      res.json({
+        ok: true, path, type: entry.type, sensitivity, html_url: (result.content && result.content.html_url) || null,
+        ...(capFlag ? (capFlag.code === "CAP"
+          ? { ai_cap: true, note: capMessage(capFlag) + " Saved as the raw text, without AI structuring." }
+          : { ai_cap_check_failed: true, note: capFlag.message + " Saved as the raw text, without AI structuring." }) : {}),
+      });
     } catch (err) {
       serverError(res, err);
     }

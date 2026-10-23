@@ -8,7 +8,7 @@
 // Suggestions keep their 200 shapes with ai_cap. Cache hits make no call, no
 // cap read and no charge. Smart Suggestions' day is the APP_TIMEZONE date. A
 // source guard: no routes/*.js file calls callAI / answerWithCitations
-// directly (KNOWN_GAPS shrinks — C3 empties it).
+// directly (KNOWN_GAPS emptied by C3).
 // ============================================================================
 const { describe, it, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
@@ -247,8 +247,8 @@ describe("Smart Suggestions uses the APP_TIMEZONE day", () => {
 
 describe("source guard: routes call the model only through the capped wrappers", () => {
   // Shrinking list: a new direct call fails, and so does a listed file whose
-  // count changed without an update here. C3 moves rag.js and empties it.
-  const KNOWN_GAPS = { "rag.js": 6 };
+  // count changed without an update here. Empty since T2.3 C3 moved rag.js onto the wrappers.
+  const KNOWN_GAPS = {};
   it("no routes/*.js file names callAI / answerWithCitations outside KNOWN_GAPS", () => {
     const dir = path.join(__dirname, "../routes");
     const found = {};

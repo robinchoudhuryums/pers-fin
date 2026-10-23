@@ -875,9 +875,17 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2113 tests as of latest); use
+  Perfin and Per-sistant test files (2125 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2113 tests across 107 test files (incl.
+  Current count: 2125 tests across 108 test files (incl.
+  `apps/per-sistant/tests/roadmap-t2-3-cap-c3.test.js` — roadmap T2.3 C3: Knowledge on the
+  capped wrappers (/api/rag/query charging one rag_query row, a refused Citations call
+  charged and its prompt-cite fallback a second row, over the cap the matching sources with
+  ai_cap and a note — no model call, no fallback attempt, nothing cached — an unreadable
+  spend the same with ai_cap_check_failed, a cached answer free even over the cap;
+  /diagram's rag_diagram row, 429 / 503 and its 400 first; /capture's rag_capture row, the
+  raw note committed with ai_cap over the cap, a secret capture never reading the cap) —
+  the database-backed half is `tests/contract/persistent-ai-cap`;
   `apps/per-sistant/tests/roadmap-t2-3-cap-c2.test.js` — roadmap T2.3 C2: the nine
   routes/ai.js features on ai.cappedAI (each charging its own entry_type under the cap; over
   it the seven action routes 429 with no data query and no model call — their 400s and the
@@ -885,7 +893,7 @@ shell/
   ai_cap; cached briefings / suggestions free even over the cap; a cap reached between the
   gate and the call still a 429; Smart Suggestions' date and weekday in APP_TIMEZONE, run in
   child processes) and the source guard that no routes/*.js file names callAI /
-  answerWithCitations (KNOWN_GAPS: rag.js until C3);
+  answerWithCitations (KNOWN_GAPS empty since C3);
   `apps/per-sistant/tests/roadmap-t2-3-cap-c1.test.js` — roadmap T2.3 C1: Per-sistant's
   capped AI wrappers (cappedAI / cappedCitations over a fake client — under the cap one
   call and one row with all four token counters, at / over it CAP with the figures and no
@@ -1368,7 +1376,12 @@ shell/
   a checking / savings account — a card or brokerage a 400, a missing account a 404 — and
   returned by GET /api/accounts; a balance below its floor alerting once into
   notification_log with last_check.floors_below, a 40-hour-old balance skipped, a second
-  evaluation within 24 h adding nothing; null clearing it). 201 tests, run
+  evaluation within 24 h adding nothing; null clearing it), and persistent-ai-cap (roadmap
+  T2.3 C2 / C3: a Knowledge answer and an email draft each charging one ai_usage row with
+  its entry_type through the real routers and cap reads, counted in the APP_TIMEZONE
+  month with a row from just before the zone's month start left out; with the month's
+  spend at the budget /api/rag/query sources-only with ai_cap and /api/ai/draft-email a
+  429, neither calling the model or adding a row). 203 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -3243,7 +3256,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2113 tests passing across 107 test files (Perfin 1532 + Per-sistant 581), plus the real-Postgres route contract suite (201 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2125 tests passing across 108 test files (Perfin 1532 + Per-sistant 593), plus the real-Postgres route contract suite (203 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -5578,8 +5591,7 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
 - Per-sistant: the palette / mode / collapsed-nav preference PATCHes still ignore
   failures (localStorage-first by design). Batch 11 follow-on (attachments on send
   and the failed-email error + Retry were fixed in roadmap T1.5 Batch C).
-- Knowledge: the RAG endpoints are rate-limited but not charged to Per-sistant's AI
-  cost cap (opt-in per call site — only Job Radar uses it); a vault fact FILE with no
+- Knowledge: a vault fact FILE with no
   non-reserved keys still drops its body at ingest; an unclosed frontmatter block is
   read as body text (its `sensitivity:` ignored); a vault too large for one recursive
   tree listing fails every sync with a full re-walk (F127 surfaces it — a subtree walk
@@ -5663,15 +5675,19 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   `apps/per-sistant/ai.js`, the APP_TIMEZONE spend month, a spend read that refuses the
   call when it fails; Job Radar on the wrapper) and C2 (the nine routes/ai.js features
   on `cappedAI` — over the cap the action routes 429, Ask / Smart Suggestions keep their
-  200 shapes with `ai_cap`, an unreadable spend 503s) are done; C3 (Knowledge) and C4
-  (usage endpoint, budget setting, Settings UI, side-by-side spend, the new invariant)
-  are planned — until C3 lands, Knowledge's answer / diagram / capture still call the
-  model uncapped. C1 follow-ons: `getAiBudgetCents` still falls back to the env /
+  200 shapes with `ai_cap`, an unreadable spend 503s) and C3 (Knowledge's answer /
+  diagram / capture on the wrappers — over the cap the answer is sources-only, the
+  diagram a 429, the capture the raw note, each with `ai_cap`; no routes/*.js file calls
+  the model directly) are done; C4 (usage endpoint, budget setting, Settings UI,
+  side-by-side spend, the new invariant) is planned. C1 follow-ons: `getAiBudgetCents` still falls back to the env /
   default budget when its settings read fails (only the spend read fails closed). C2
   follow-ons: the 429 says "raise it in Settings → AI", a control C4 adds; the page
   buttons' handling of the 429 / 503 text is checked in C4; the daily briefing and
   Smart Suggestions read the spend twice (their gate before the data queries, then the
-  wrapper's own check).
+  wrapper's own check). C3 follow-ons: Knowledge's /query and /diagram still run
+  retrieval (and a Voyage query embedding, which the cap doesn't count) before the cap
+  refuses the model call; the Knowledge page's capture box doesn't show the response's
+  over-cap note yet (C4).
 - Roadmap T2.2 (low-balance and payday alerts) is DONE (`.cycle/plan-t2-2-cash-alerts.md`,
   L1–L4): the forecast as `services/cash-flow.js` (APP_TIMEZONE today, the lowest
   projected day), the low projected cash alert (`services/cash-alerts.js`, the
@@ -5971,7 +5987,7 @@ INV-25 | Embedded sub-apps detect req.app.get("embedded") and skip their own aut
 INV-26 | Teller transaction pagination terminates on an empty page (count-explicit + from_id), never a hard-coded page-size compare | Subsystem: Bank Sync & Ingestion | Verify: tests/cycle-fixes.test.js (BS-1 block)
 INV-27 | Only sensitivity='normal' docs/facts are embedded AND retrieved; private/secret are never embedded or sent to AI. Frontmatter sensitivity resolution FAILS CLOSED: YAML comments stripped, block lists parsed, yes/no/on/off understood, the most restrictive of sensitivity/embed/private wins, and any unrecognized value → private (KR-2). Hard-deleted notes/documents are never vector-retrieved (the joined source row must exist, KR-6). Trailing whitespace on a `---` delimiter still parses, and a repeated sensitivity / embed / private key keeps every value so the most restrictive wins (cycle-7 F132). NOTES follow the same rule since cycle-7 F134 / ST5: only notes.sensitivity='normal' notes are embedded, keyword- or vector-retrieved, listed in Ask's context or AI-tagged; a note leaving 'normal' loses its chunks + embed_state, and outside webhooks never get a private / secret note's text | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js (buildRetrievalQuery), tests/knowledge-facts.test.js, apps/per-sistant/tests/scan-sept-fixes.test.js (KR-2/KR-6), apps/per-sistant/tests/scan-oct-batch16.test.js + tests/contract/batch16-persistent.contract.test.js (notes)
 INV-28 | pgvector objects are created defensively — the CREATE EXTENSION is attempted in an EXCEPTION block and vector objects are built only when the extension is INSTALLED (pg_extension), so an available-but-not-creatable extension degrades too (cycle-7 F10); the migration succeeds and Knowledge degrades to keyword retrieval rather than failing boot — and the vault sync still ingests documents + facts without Voyage/pgvector, embedding them later via the backfill (KR-3) | Subsystem: Knowledge / RAG | Verify: code read db/014_vault_vectors.sql + vault-sync.vectorReady
-INV-29 | Retrieval is HYBRID (vector + keyword legs fused via Reciprocal Rank Fusion, each leg ranked per distinct source — the vector leg over-fetched 4× and collapsed to the best chunk per source; keyword terms drop function-word stopwords; keyword hits carry the matching passage, KR-4) — either leg failing degrades to the other alone; /query & /diagram degrade to sources-only / null when AI is off or unavailable | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js, apps/per-sistant/tests/rag-v2.test.js
+INV-29 | Retrieval is HYBRID (vector + keyword legs fused via Reciprocal Rank Fusion, each leg ranked per distinct source — the vector leg over-fetched 4× and collapsed to the best chunk per source; keyword terms drop function-word stopwords; keyword hits carry the matching passage, KR-4) — either leg failing degrades to the other alone; /query & /diagram degrade to sources-only / null when AI is off or unavailable — and, since roadmap T2.3 C3, /query to sources-only (ai_cap) over the monthly AI budget | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js, apps/per-sistant/tests/rag-v2.test.js
 INV-30 | Embedding dimension (1024) matches chunks.embedding vector(1024); a provider/dimension change is a re-embed migration, not a config flip | Subsystem: Knowledge / RAG | Verify: code read services/embeddings.js EMBED_DIM
 INV-31 | embed_state content-hash skip prevents re-embedding unchanged sources | Subsystem: Knowledge / RAG | Verify: code read vault-sync.embedSource
 INV-32 | Answer cache keyed on query+model+corpus_version ("<APP_TIMEZONE date>|" + notes+documents+facts+fact_verifications max(updated_at)+count — F14 folds in fact_verifications so verify/unverify invalidates; the date prefix (KR-5) expires cached answers when a fact's valid_from/valid_to boundary passes, and vault re-syncs no longer bump updated_at on unchanged documents/facts), with a SEMANTIC fallback layer (query-embedding cosine >= 0.97, same model+corpus_version+TTL — RAG v2, db/019); a SEMANTIC hit returns sources_from_similar_query=true (the cached sources reflect the original query's retrieval and the answer's [n] links are tied to that ordering, so they're kept, not re-retrieved — the Knowledge page caveats it; F12); finance-grounded answers bypass both layers; only a COMPLETE answer is cached — an empty one or a `max_tokens` stop is returned once (truncated:true) and never stored (cycle-7 F126) | Subsystem: Knowledge / RAG | Verify: tests/knowledge-cache.test.js + apps/per-sistant/tests/rag-v2.test.js + routes/rag.js useCache gate
@@ -5996,7 +6012,7 @@ INV-60 | Perfin "Sign Out" clears the SHELL session via the root POST /logout un
 INV-61 | apiFetch redirects once to /login (with return_to = the current path, F102) on a 401 or a followed 302→/login (session expiry), loop-guarded, while returning the Response unchanged to callers — idle timeout never leaves a blank/error UI | Subsystem: Web UI | Verify: code read teller/public/perfin-shared.js apiFetch
 INV-62 | The shell sets a nonce CSP + frame-ancestors 'none' + X-Frame-Options on its own routes (login/landing), with COOP/CORP/COEP DISABLED so the global middleware doesn't break sub-app Plaid/Teller Link popups, and Perfin's own helmet sends COOP same-origin-allow-popups, never same-origin (cycle-7 F9); helmet is a declared shell dependency | Subsystem: Platform, Shell & Auth | Verify: header assertion on GET /login (frame-ancestors none, COOP/CORP absent, login scripts nonced) + tests/contract/platform-batch13 (Perfin COOP)
 INV-63 | Per-sistant's shared fetch wrapper (apps/per-sistant/views/js.js) redirects once to the root /login on a 401 or a followed 302→/login (session expiry), loop-guarded, returning the Response unchanged to callers — parity with Perfin INV-61, so an idle-timeout never leaves a blank/error page. The check uses indexOf('/login'), NOT a regex, because the module is one backtick template literal that eats regex backslashes (see Per-sistant CLAUDE.md gotcha) | Subsystem: Per-sistant Web UI | Verify: code read views/js.js fetch wrapper
-INV-64 | Job Radar's AI passes (job_fit + legitimacy) are cap-charged: cappedCall (since roadmap T2.3 C1 an alias of ai.cappedAI) reads getAiBudgetCents()+monthlyAiSpendCents() (the APP_TIMEZONE month; a spend read error is CAP_CHECK_FAILED and stops the pass) and throws { code:'CAP' } BEFORE calling the model when over budget; on a call that returned tokens it charges an ai_usage row via recordAiUsage once in a `finally`. The other Per-sistant AI features move onto the same wrappers in T2.3 C2 / C3 | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (cappedCall charge-on-success + throw-CAP-before-model-call)
+INV-64 | Job Radar's AI passes (job_fit + legitimacy) are cap-charged: cappedCall (since roadmap T2.3 C1 an alias of ai.cappedAI) reads getAiBudgetCents()+monthlyAiSpendCents() (the APP_TIMEZONE month; a spend read error is CAP_CHECK_FAILED and stops the pass) and throws { code:'CAP' } BEFORE calling the model when over budget; on a call that returned tokens it charges an ai_usage row via recordAiUsage once in a `finally`. Every other Per-sistant AI feature is on the same wrappers since T2.3 C2 / C3 | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (cappedCall charge-on-success + throw-CAP-before-model-call)
 INV-65 | Job Radar ingest is content_hash-idempotent: dedupPersist upserts ON CONFLICT (content_hash) and counts genuine inserts via (xmax = 0), so a re-run over identical listings adds 0, no duplicate rows. Retention strips old new/dismissed descriptions but KEEPS the hash+status tombstone so a dismissed job re-ingested stays dismissed | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (dedup idempotency, retention)
 INV-66 | gatherJobRadarSummary is the SINGLE fail-soft aggregator feeding the /jobs page, the notification check, and the AI daily-briefing line (the gatherHealthSummary pattern) — a query error returns the safe empty shape, never 500s those surfaces; the notif-check + briefing call it gated on job_radar_enabled. Listing status changes ARCHIVE (saved/applied/dismissed), never hard-delete, and removing a target company deactivates it (active=false — the db/021 seed would re-insert a deleted row) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (aggregator fail-soft + archive-not-delete)
 INV-67 | Every transaction-sync trigger (POST /api/sync + daily-sync.yml, bank auto-sync, pre-insights chain) goes through syncAllTransactions — Teller then Plaid, each failure-isolated — and runAnomalyCheck runs ONCE over the combined added count; a Plaid webhook's per-item sync runs the same post-sync steps (runPostSyncSteps — rename rules, then one check, then the payday-landed alert since T2.2 L3; serialized, so two syncs finishing together check in turn); reconcile/backfill never runs it | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-sept-batch2.test.js (BSI-2 / DD-1 block) + tests/roadmap-t2-webhooks-w3.test.js

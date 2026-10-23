@@ -46,16 +46,10 @@ function aiUnavailable(res) {
 
 // Roadmap T2.3 C2: over the monthly AI budget the action routes answer 429
 // (after their 400s and the 501, before any data query or model call); an
-// unreadable spend answers 503 — spend that can't be read can't be checked.
-// Ask and Smart Suggestions keep their 200 shapes and add ai_cap instead.
-const CAP_HINT = " — raise it in Settings → AI.";
-function capMessage(err) { return err.message + CAP_HINT; }
-function capResponse(res, err) {
-  if (!err) return false;
-  if (err.code === "CAP") { res.status(429).json({ error: capMessage(err), ai_cap: true }); return true; }
-  if (err.code === "CAP_CHECK_FAILED") { res.status(503).json({ error: err.message, ai_cap_check_failed: true }); return true; }
-  return false;
-}
+// unreadable spend answers 503 — spend that can't be read can't be checked
+// (ai.capResponse, shared with routes/rag.js). Ask and Smart Suggestions keep
+// their 200 shapes and add ai_cap instead.
+const { capMessage, capResponse } = ai;
 // The cap as a thrown-shape error (CAP / CAP_CHECK_FAILED) or null when under
 // it — for the routes that gate BEFORE their data queries.
 async function capBlock(pool) {

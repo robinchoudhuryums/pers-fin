@@ -18,7 +18,25 @@ Updated: 2026-10-23
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T2.3 (AI cost cap for every Per-sistant feature) — C2 DONE** on branch
+- **Status:** **Roadmap T2.3 (AI cost cap for every Per-sistant feature) — C3 DONE** on branch
+  `claude/sweet-ritchie-f9d8ah` (2026-10-23, in PR robinchoudhuryums/pers-fin#133). Plan:
+  `.cycle/plan-t2-3-persistent-ai-cap.md`. Block: `.cycle/blocks/7-roadmap-t2-3-c3-broad-implement.md`.
+  - **Completed:** apps/per-sistant/routes/rag.js — /query through cappedCitations + a
+    cappedAI prompt-cite fallback (each a rag_query row; over the cap / unreadable spend →
+    sources-only with ai_cap / ai_cap_check_failed + note, no fallback attempt, after the
+    cache lookup); /diagram through cappedAI (rag_diagram; 429 / 503 via capResponse);
+    /capture through cappedAI (rag_capture; over the cap the raw note is committed with
+    ai_cap + note). capMessage / capResponse / isCapError moved into ai.js (routes/ai.js
+    imports them). The no-direct-callAI guard's KNOWN_GAPS is empty. Two older test files'
+    stubs moved from callAI to the cap layer. New unit file + contract file. Docs.
+  - **Verification:** npm 2125/2125 (12 new); contract 203/203 (2 new); six mutation checks
+    red (one survivor pinned with a cap-read count).
+  - **Decisions:** an unreadable spend degrades /query to sources-only (not a 503) and
+    /capture to the raw note, matching their AI-off paths; /query and /diagram still run
+    retrieval before the cap refuses the model call.
+  - **Where I left off:** C3 committed and pushed. NEXT: `/broad-implement C4` (usage
+    endpoint, budget setting, Settings UI, side-by-side spend, INV-143, Playwright).
+- **Previous status:** **Roadmap T2.3 (AI cost cap for every Per-sistant feature) — C2 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-23, in PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-3-persistent-ai-cap.md`. Block: `.cycle/blocks/7-roadmap-t2-3-c2-broad-implement.md`.
   - **Completed:** apps/per-sistant/routes/ai.js — the nine features on ai.cappedAI with their

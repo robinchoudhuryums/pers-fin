@@ -227,6 +227,19 @@ function capError(spent, budget) {
   e.budget_cents = budget;
   return e;
 }
+// How a route answers a capped call that was refused (roadmap T2.3): over the
+// budget → 429 { ai_cap }, an unreadable spend → 503 { ai_cap_check_failed }.
+// Returns false for any other error so the caller handles it.
+const CAP_HINT = " — raise it in Settings → AI.";
+function capMessage(err) { return err.message + CAP_HINT; }
+function isCapError(err) { return !!err && (err.code === "CAP" || err.code === "CAP_CHECK_FAILED"); }
+function capResponse(res, err) {
+  if (!err) return false;
+  if (err.code === "CAP") { res.status(429).json({ error: capMessage(err), ai_cap: true }); return true; }
+  if (err.code === "CAP_CHECK_FAILED") { res.status(503).json({ error: err.message, ai_cap_check_failed: true }); return true; }
+  return false;
+}
+
 // { ok, spent, budget }. Throws a CAP_CHECK_FAILED error when the budget or the
 // month's spend can't be read — the caller refuses the call (fail closed).
 async function checkAiCap(pool_) {
@@ -303,5 +316,5 @@ module.exports = {
   // AI cost cap (D1)
   estimateCostCents, getAiBudgetCents, monthlyAiSpendCents, recordAiUsage, AI_PRICING,
   // Every feature on the cap (roadmap T2.3)
-  checkAiCap, cappedAI, cappedCitations, aiMonthStart, capError,
+  checkAiCap, cappedAI, cappedCitations, aiMonthStart, capError, capMessage, capResponse, isCapError,
 };

@@ -32,10 +32,16 @@ ai.answerWithCitations = async () => {
   if (citationsReply === "throw") throw new Error("citations unavailable");
   return citationsReply;
 };
-ai.callAI = async (...args) => {
-  aiCalls.push(args);
-  if (args[4] && typeof args[4] === "object") args[4].stop_reason = callAIStop;
-  return callAIReply;
+// Roadmap T2.3 C3: routes/rag.js calls the model through ai.cappedAI /
+// cappedCitations, so stub the cap reads (under the budget) and the call
+// underneath cappedAI; aiCalls keeps callAI's argument order (meta at [4]).
+ai.getAiBudgetCents = async () => 100000;
+ai.monthlyAiSpendCents = async () => 0;
+ai.recordAiUsage = async () => 0;
+ai.callAIWithUsage = async (model, prompt, maxTokens, system, _client, opts = {}) => {
+  aiCalls.push([model, prompt, maxTokens, system, opts.meta]);
+  if (opts.meta && typeof opts.meta === "object") opts.meta.stop_reason = callAIStop;
+  return { text: callAIReply, usage: { input_tokens: 1, output_tokens: 1 }, stop_reason: callAIStop };
 };
 
 const embeddings = require("../services/embeddings");
@@ -138,7 +144,7 @@ describe("F126 — truncated or empty answers are not cached", () => {
     assert.equal(cacheWrites(pool).length, 0);
   });
 
-  it("the prompt-cite fallback reads stop_reason through callAI's meta", async () => {
+  it("the prompt-cite fallback reads stop_reason through the capped call's meta", async () => {
     citationsReply = "throw";
     callAIReply = "It is [1]";
     callAIStop = "max_tokens";
@@ -147,7 +153,7 @@ describe("F126 — truncated or empty answers are not cached", () => {
       const res = await supertest(app).post("/api/rag/query").send({ query: "what colour is my bike" }).expect(200);
       assert.equal(res.body.truncated, true);
       assert.equal(cacheWrites(pool).length, 0);
-      assert.equal(typeof aiCalls[0][4], "object", "callAI was given a meta object");
+      assert.equal(typeof aiCalls[0][4], "object", "the fallback call was given a meta object");
     } finally { callAIReply = "{}"; citationsReply = { text: "ok", citedIndexes: [0], stop_reason: "end_turn" }; }
   });
 
