@@ -18,7 +18,13 @@ Updated: 2026-10-23
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T2.2 (low-balance and payday alerts) — L4 DONE; T2.2 COMPLETE** on branch
+- **Status:** **Roadmap T2.3 (AI cost cap for every Per-sistant feature) — PLANNED** (2026-10-23,
+  branch `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
+  `.cycle/plan-t2-3-persistent-ai-cap.md` — C1 shared capped wrapper + tz month + fail-closed spend
+  read, C2 the nine routes/ai.js features, C3 Knowledge query / diagram / capture, C4 usage
+  endpoint + budget setting + Settings UI + side-by-side spend + INV-143 + docs. Decisions 1–7
+  to accept with C1. **Where I left off:** plan written. NEXT: `/broad-implement C1`.
+- **Previous status:** **Roadmap T2.2 (low-balance and payday alerts) — L4 DONE; T2.2 COMPLETE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-23, in PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-2-cash-alerts.md`. Block: `.cycle/blocks/7-roadmap-t2-2-l4-broad-implement.md`.
   - **Completed:** linked_accounts.low_balance_floor (migration); PATCH /api/accounts/:id
