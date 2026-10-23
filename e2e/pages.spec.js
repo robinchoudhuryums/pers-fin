@@ -121,7 +121,7 @@ const PERFIN_PAGES = ["/perfin/dashboard", "/perfin/subscriptions", "/perfin/tra
   "/perfin/goals", "/perfin/budgets", "/perfin/housing", "/perfin/settings", "/perfin/accounts"];
 const PERSISTENT_PAGES = ["/per-sistant/", "/per-sistant/today", "/per-sistant/todos", "/per-sistant/emails",
   "/per-sistant/notes", "/per-sistant/knowledge", "/per-sistant/health", "/per-sistant/jobs",
-  "/per-sistant/contacts", "/per-sistant/calendar", "/per-sistant/review", "/per-sistant/analytics",
+  "/per-sistant/contacts", "/per-sistant/search", "/per-sistant/calendar", "/per-sistant/review", "/per-sistant/analytics",
   "/per-sistant/settings"];
 
 test.describe("every page loads cleanly", () => {
@@ -179,6 +179,25 @@ test.describe("every page loads cleanly", () => {
     const problems = watch(page);
     await page.goto("/perfin/housing");
     await expect(page.locator(".hz-util-row .hz-u-label").first()).toHaveValue("Electricity");
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
+  test("search finds a seeded Perfin transaction and Perfin's nav links to it (T2.4 X3b)", async ({ page }) => {
+    const problems = watch(page);
+    await page.goto("/perfin/dashboard");
+    const navLink = page.locator("#nav-search-link");
+    await expect(navLink).toHaveAttribute("href", "/per-sistant/search");
+    await navLink.click();
+    await expect(page).toHaveURL(/\/per-sistant\/search$/);
+    await expect(page.locator("#search-page-input")).toBeFocused();
+    await page.goto("/per-sistant/search?q=" + encodeURIComponent("Corner Cafe"));
+    await expect(page.locator("#search-page-input")).toHaveValue("Corner Cafe");
+    const hit = page.locator("#search-page-results a.result-item", { hasText: "Corner Cafe" });
+    await expect(hit).toHaveAttribute("href", /^\/perfin\/transactions\?q=Corner%20Cafe&month=\d{4}-\d{2}$/);
+    await expect(hit.locator(".result-type")).toHaveText("transaction · Perfin");
+    await hit.click();
+    await expect(page).toHaveURL(/\/perfin\/transactions\?q=Corner%20Cafe/);
+    await expect(page.locator("#search-input")).toHaveValue("Corner Cafe");
     expect(problems, problems.join("\n")).toEqual([]);
   });
 

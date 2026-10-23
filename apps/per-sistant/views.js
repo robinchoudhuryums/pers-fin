@@ -115,6 +115,7 @@ function pageHead(title) {
 const NAV = [
   { href: "/today",    label: "Today",     id: "today" },
   { href: "/",         label: "Dashboard", id: "dashboard" },
+  { href: "/search",   label: "Search",    id: "search" },
   { href: "/todos",    label: "To-Dos",    id: "todos" },
   { href: "/emails",   label: "Emails",    id: "emails" },
   { href: "/notes",    label: "Notes",     id: "notes" },
@@ -133,6 +134,7 @@ function navIcon(id) {
   switch (id) {
     case 'today': return `<svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.5" fill="none" stroke="${c}" stroke-width="${sw}"/><line x1="7" y1="7" x2="7" y2="4" stroke="${c}" stroke-width="${sw}" stroke-linecap="round"/><line x1="7" y1="7" x2="9.5" y2="7" stroke="${c}" stroke-width="${sw}" stroke-linecap="round"/></svg>`;
     case 'dashboard': return `<svg width="14" height="14" viewBox="0 0 14 14"><rect x="1" y="1" width="5" height="5" fill="none" stroke="${c}" stroke-width="${sw}"/><rect x="8" y="1" width="5" height="5" fill="none" stroke="${c}" stroke-width="${sw}"/><rect x="1" y="8" width="5" height="5" fill="none" stroke="${c}" stroke-width="${sw}"/><rect x="8" y="8" width="5" height="5" fill="none" stroke="${c}" stroke-width="${sw}"/></svg>`;
+    case 'search': return `<svg width="14" height="14" viewBox="0 0 14 14"><circle cx="6" cy="6" r="4" fill="none" stroke="${c}" stroke-width="${sw}"/><line x1="9" y1="9" x2="12.5" y2="12.5" stroke="${c}" stroke-width="1.6" stroke-linecap="round"/></svg>`;
     case 'todos': return `<svg width="14" height="14" viewBox="0 0 14 14"><rect x="1.5" y="1.5" width="11" height="11" fill="none" stroke="${c}" stroke-width="${sw}"/><path d="M4 7 L6 9 L10 5" fill="none" stroke="${c}" stroke-width="1.6" stroke-linecap="round"/></svg>`;
     case 'emails': return `<svg width="14" height="14" viewBox="0 0 14 14"><rect x="1.5" y="3" width="11" height="8" fill="none" stroke="${c}" stroke-width="${sw}"/><path d="M1.5 3.5 L7 8 L12.5 3.5" fill="none" stroke="${c}" stroke-width="${sw}"/></svg>`;
     case 'notes': return `<svg width="14" height="14" viewBox="0 0 14 14"><path d="M3 1.5 L11 1.5 L11 12.5 L3 12.5 Z" fill="none" stroke="${c}" stroke-width="${sw}"/><line x1="5" y1="5" x2="9" y2="5" stroke="${c}" stroke-width="1"/><line x1="5" y1="7.5" x2="9" y2="7.5" stroke="${c}" stroke-width="1"/><line x1="5" y1="10" x2="7.5" y2="10" stroke="${c}" stroke-width="1"/></svg>`;

@@ -108,6 +108,40 @@ function linkedTaskChip(t){
   if(!link)return '<span class="linked-chip" title="'+escAttr(title)+'">'+esc(label)+'</span>';
   return '<a class="linked-chip" href="'+escAttr(link.href)+'"'+(link.external?' target="_blank" rel="noopener"':'')+' title="'+escAttr(title)+'" aria-label="'+escAttr('Open in '+label+': '+(t.title||''))+'">'+esc(label)+'</a>';
 }
+// Search results (roadmap T2.4 X3b): ONE renderer for the dashboard search
+// widget and the /search page. A Per-sistant row links to its page through
+// BASE_PATH; a Perfin row (group 'finance') through linkedAppHref, plain text
+// without a safe link; a row of an unknown type is left out. opts.actions adds
+// the dashboard's inline Complete / Send Now / Pin buttons (its delegation
+// handles them); Perfin rows never get actions.
+var SEARCH_PAGES={todo:'/todos',email:'/emails',note:'/notes',contact:'/contacts'};
+function renderSearchResults(results,opts){
+  opts=opts||{};
+  if(!Array.isArray(results)||!results.length)return '<div class="empty-msg">No results</div>';
+  var bp=window.BASE_PATH||'';
+  var linkStyle=' class="result-item" style="display:block;text-decoration:none;color:inherit;"';
+  var html=results.map(function(r){
+    if(!r||typeof r!=='object')return '';
+    var detail=r.description?'<div style="font-size:11px;color:var(--muted);margin-top:2px;">'+esc(r.description)+'</div>':'';
+    if(r.group==='finance'){
+      var body='<div class="result-type">'+esc(r.type)+' · Perfin</div><div style="font-size:14px;">'+esc(r.title||'')+'</div>'+detail;
+      var link=linkedAppHref(r.app,r.url);
+      if(!link)return '<div class="result-item">'+body+'</div>';
+      return '<a href="'+escAttr(link.href)+'"'+(link.external?' target="_blank" rel="noopener"':'')+linkStyle+'>'+body+'</a>';
+    }
+    if(!Object.prototype.hasOwnProperty.call(SEARCH_PAGES,r.type))return '';
+    var id=parseInt(r.id,10);
+    var actions='';
+    if(opts.actions&&id>0){
+      if(r.type==='todo'&&!r.completed)actions='<button data-action="search-complete" data-id="'+id+'" data-recurring="'+!!r.recurring+'" class="btn">Complete</button>';
+      else if(r.type==='email'&&r.status==='scheduled')actions='<button data-action="search-send" data-id="'+id+'" class="btn primary">Send Now</button>';
+      else if(r.type==='note')actions='<button data-action="search-pin" data-id="'+id+'" data-pinned="'+!!r.pinned+'" class="btn">'+(r.pinned?'Unpin':'Pin')+'</button>';
+      if(actions)actions='<div style="display:flex;gap:6px;margin-top:6px;">'+actions+'</div>';
+    }
+    return '<a href="'+escAttr(bp+SEARCH_PAGES[r.type])+'"'+linkStyle+'><div class="result-type">'+esc(r.type)+(r.type==='todo'&&r.completed?' (done)':'')+'</div><div style="font-size:14px;">'+esc(r.title||'')+'</div>'+detail+actions+'</a>';
+  }).join('');
+  return html||'<div class="empty-msg">No results</div>';
+}
 function renderMd(s){
   if(!s)return'';
   return s

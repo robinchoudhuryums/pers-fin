@@ -148,21 +148,24 @@ describe("the dashboard widget's finance rows (emitted bundles in a vm)", () => 
     const a = JS.indexOf("function escAttr(");
     const h = JS.indexOf("function linkedAppHref(");
     const hEnd = JS.indexOf("\n}\n", h) + 3;
+    // X3b moved the row renderer into views/js.js (renderSearchResults).
+    const r = JS.indexOf("var SEARCH_PAGES=");
+    const rEnd = JS.indexOf("\n}\n", JS.indexOf("function renderSearchResults(")) + 3;
     const s = DASH.indexOf("function doSearch(q) {");
     const sEnd = DASH.indexOf("\n}\n", s) + 3;
-    assert.ok(a >= 0 && h > 0 && s > 0);
+    assert.ok(a >= 0 && h > 0 && r > 0 && s > 0);
     const el = { style: {}, innerHTML: "" };
     let pending = null;
     let reply = [];
     const ctx = {
-      window: { LINKED_APP_BASES: bases }, BP: "/per-sistant", searchTimeout: null, el,
+      window: { LINKED_APP_BASES: bases, BASE_PATH: "/per-sistant" }, BP: "/per-sistant", searchTimeout: null, el,
       document: { getElementById: () => el },
       clearTimeout() {}, setTimeout(fn) { pending = fn; },
       fetch: async () => ({ json: async () => reply }),
     };
     vm.runInNewContext(
       "function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}" +
-      JS.slice(a, JS.indexOf("\n", a) + 1) + JS.slice(h, hEnd) + DASH.slice(s, sEnd), ctx);
+      JS.slice(a, JS.indexOf("\n", a) + 1) + JS.slice(h, hEnd) + JS.slice(r, rEnd) + DASH.slice(s, sEnd), ctx);
     return {
       el,
       async search(q, results) { reply = results; ctx.doSearch(q); await pending(); return el.innerHTML; },

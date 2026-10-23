@@ -78,30 +78,8 @@ function doSearch(q) {
   if (!q || q.length < 2) { document.getElementById('search-results').style.display='none'; return; }
   searchTimeout = setTimeout(async function() {
     var results = await fetch('/api/search?q='+encodeURIComponent(q)).then(r=>r.json()).catch(function(){ return []; });
-    if (!Array.isArray(results)) results = [];
-    if (!results.length) { document.getElementById('search-results').innerHTML='<div class="empty-msg">No results</div>'; }
-    else {
-      document.getElementById('search-results').innerHTML = results.map(r => {
-        // T2.4 X3a: Perfin results link into Perfin (its mount via linkedAppHref);
-        // no inline actions. Without a safe link the row is plain text.
-        if (r.group === 'finance') {
-          var link = linkedAppHref(r.app, r.url);
-          var body = '<div class="result-type">'+esc(r.type)+' · Perfin</div><div style="font-size:14px;">'+esc(r.title||'')+'</div>'+(r.description?'<div style="font-size:11px;color:var(--muted);margin-top:2px;">'+esc(r.description)+'</div>':'');
-          if (!link) return '<div class="result-item">'+body+'</div>';
-          return '<a href="'+escAttr(link.href)+'"'+(link.external?' target="_blank" rel="noopener"':'')+' class="result-item" style="display:block;text-decoration:none;color:inherit;">'+body+'</a>';
-        }
-        var href = BP + (r.type==='todo'?'/todos':r.type==='email'?'/emails':r.type==='note'?'/notes':'/contacts');
-        var actions = '';
-        if (r.type === 'todo' && !r.completed) {
-          actions = '<div style="display:flex;gap:6px;margin-top:6px;"><button data-action="search-complete" data-id="'+r.id+'" data-recurring="'+!!r.recurring+'" class="btn">Complete</button></div>';
-        } else if (r.type === 'email' && r.status === 'scheduled') {
-          actions = '<div style="display:flex;gap:6px;margin-top:6px;"><button data-action="search-send" data-id="'+r.id+'" class="btn primary">Send Now</button></div>';
-        } else if (r.type === 'note') {
-          actions = '<div style="display:flex;gap:6px;margin-top:6px;"><button data-action="search-pin" data-id="'+r.id+'" data-pinned="'+!!r.pinned+'" class="btn">'+(r.pinned?'Unpin':'Pin')+'</button></div>';
-        }
-        return '<a href="'+href+'" class="result-item" style="display:block;text-decoration:none;color:inherit;"><div class="result-type">'+r.type+(r.type==='todo'&&r.completed?' (done)':'')+'</div><div style="font-size:14px;">'+esc(r.title||'')+'</div>'+(r.description?'<div style="font-size:11px;color:var(--muted);margin-top:2px;">'+esc(r.description)+'</div>':'')+actions+'</a>';
-      }).join('');
-    }
+    // T2.4 X3b: the shared renderer (views/js.js) — Perfin rows link into Perfin.
+    document.getElementById('search-results').innerHTML = renderSearchResults(results, { actions: true });
     document.getElementById('search-results').style.display='block';
   }, 300);
 }

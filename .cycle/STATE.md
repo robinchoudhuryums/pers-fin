@@ -18,7 +18,18 @@ Updated: 2026-10-23
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T2.4 (cross-app automation) — X3a DONE** (2026-10-23, branch
+- **Status:** **Roadmap T2.4 (cross-app automation) — X3b DONE; T2.4 COMPLETE** (2026-10-23,
+  branch `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
+  `.cycle/plan-t2-4-crossapp-automation.md` (all seven batches DONE). Block:
+  `.cycle/blocks/7-roadmap-t2-4-x3b-broad-implement.md`.
+  - **Completed:** renderSearchResults (views/js.js) shared by the dashboard widget and the new
+    Per-sistant /search page (?q=, focus, "/", URL follows the query); the Search sidebar entry
+    and Perfin's embedded-only nav link to /per-sistant/search; INV-144; T2.4 marked DONE in
+    Known Open Issues with its follow-ons.
+  - **Tests:** npm 2237/2237 (14 new), contract 231/231, Playwright 61/61 (3 new); 15 mutations red.
+  - **Where I left off:** X3b committed; roadmap T2.4 done. NEXT: `/reflect` to close cycle 7, or
+    the next roadmap item.
+- **Previous status:** **Roadmap T2.4 (cross-app automation) — X3a DONE** (2026-10-23, branch
   `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-4-crossapp-automation.md`. Block: `.cycle/blocks/7-roadmap-t2-4-x3a-broad-implement.md`.
   - **Completed:** Per-sistant's GET /api/search finance group under the shell
@@ -30,7 +41,7 @@ implement and reflect sessions only set Phase.)
     mutations red, one equivalent.
   - **Where I left off:** X3a committed. NEXT: `/broad-implement X3b` (the /search page, nav
     links, INV-144, T2.4 close-out).
-- **Previous status:** **Roadmap T2.4 (cross-app automation) — X2c DONE** (2026-10-23, branch
+- **Earlier status (X2c):** **Roadmap T2.4 (cross-app automation) — X2c DONE** (2026-10-23, branch
   `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-4-crossapp-automation.md`. Block: `.cycle/blocks/7-roadmap-t2-4-x2c-broad-implement.md`.
   - **Completed:** Perfin Settings → Per-sistant Tasks (switch, sources — bills marked off by
@@ -41,7 +52,7 @@ implement and reflect sessions only set Phase.)
   - **Tests:** npm 2213/2213 (13 new), contract 227/227 (1 new), Playwright 58/58; 16
     mutations red.
   - **Where I left off:** X2c committed; X2 complete. NEXT: `/broad-implement X3a`.
-- **Earlier status:** **Roadmap T2.4 (cross-app automation) — X2b DONE** (2026-10-23, branch
+- **Earlier status (X2b):** **Roadmap T2.4 (cross-app automation) — X2b DONE** (2026-10-23, branch
   `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-4-crossapp-automation.md`. Block: `.cycle/blocks/7-roadmap-t2-4-x2b-broad-implement.md`.
   - **Completed:** runLinkedTasks (single-flight, off memo, ok_kinds only, state record),

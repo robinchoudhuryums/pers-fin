@@ -92,6 +92,7 @@ app.get("/knowledge", require("./pages/knowledge")());
 app.get("/health", require("./pages/health")());
 app.get("/jobs", require("./pages/jobs")());
 app.get("/contacts", require("./pages/contacts")());
+app.get("/search", require("./pages/search")());
 app.get("/calendar", require("./pages/calendar")());
 app.get("/review", require("./pages/review")());
 app.get("/analytics", require("./pages/analytics")());
