@@ -18,7 +18,22 @@ Updated: 2026-10-23
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T2.3 (AI cost cap for every Per-sistant feature) — PLANNED** (2026-10-23,
+- **Status:** **Roadmap T2.3 (AI cost cap for every Per-sistant feature) — C1 DONE** on branch
+  `claude/sweet-ritchie-f9d8ah` (2026-10-23, in PR robinchoudhuryums/pers-fin#133). Plan:
+  `.cycle/plan-t2-3-persistent-ai-cap.md`. Block: `.cycle/blocks/7-roadmap-t2-3-c1-broad-implement.md`.
+  - **Completed:** apps/per-sistant/ai.js — checkAiCap (fails closed: CAP_CHECK_FAILED on an
+    unreadable spend), cappedAI / cappedCitations (CAP before the call, one charge in a finally
+    whenever tokens came back, a refusal included, a failed charge logged), callAIWithUsage
+    effort + meta.stop_reason, answerWithCitations usage (+ on its REFUSAL error),
+    monthlyAiSpendCents from the APP_TIMEZONE month start and throwing; Job Radar's cappedCall an
+    alias that stops on CAP or CAP_CHECK_FAILED; the timezone-lint KNOWN_GAPS entry removed. Docs.
+  - **Verification:** npm 2099/2099 (16 new); contract 201/201; the spend SQL checked on real
+    Postgres in three zones; six mutation checks red.
+  - **Decisions:** 1–7 accepted as planned; the cap reads go through module.exports so tests stub
+    them; getAiBudgetCents keeps its env / default fallback (only the spend read fails closed).
+  - **Where I left off:** C1 committed and pushed. NEXT: `/broad-implement C2` (the nine
+    routes/ai.js features on cappedAI, capResponse, the no-direct-callAI guard).
+- **Previous status:** **Roadmap T2.3 (AI cost cap for every Per-sistant feature) — PLANNED** (2026-10-23,
   branch `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-3-persistent-ai-cap.md` — C1 shared capped wrapper + tz month + fail-closed spend
   read, C2 the nine routes/ai.js features, C3 Knowledge query / diagram / capture, C4 usage

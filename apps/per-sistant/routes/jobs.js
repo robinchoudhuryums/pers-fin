@@ -370,28 +370,14 @@ async function runTrustPass(pool, ids) {
 }
 
 // ---------------------------------------------------------------------------
-// AI cap guard (D1) — check-then-charge mirroring Perfin's ask.js. Throws a
-// { code: 'CAP' } error when the monthly budget is exhausted (so the caller can
-// 429/stop); charges the usage row in a `finally` when tokens were consumed
-// (idempotent via `charged`) so a later-round failure can't let spend escape.
+// AI cap guard (D1) — Job Radar's name for ai.cappedAI (roadmap T2.3: one
+// check-then-charge for every Per-sistant feature). Throws { code: 'CAP' }
+// before the model call when the monthly budget is exhausted, CAP_CHECK_FAILED
+// when the spend can't be read; charges the usage row once in a `finally`.
 // `client` is injectable for tests.
 // ---------------------------------------------------------------------------
-async function cappedCall(pool, { entry_type, model, prompt, system, maxTokens = 400, client = null }) {
-  const budget = await ai.getAiBudgetCents();
-  const spent = await ai.monthlyAiSpendCents(pool);
-  if (spent >= budget) { const e = new Error("AI monthly budget cap reached"); e.code = "CAP"; throw e; }
-  let usage = null, charged = false;
-  try {
-    const r = await ai.callAIWithUsage(model, prompt, maxTokens, system, client);
-    usage = r.usage;
-    return r;
-  } finally {
-    if (usage && !charged) {
-      charged = true;
-      try { await ai.recordAiUsage(pool, { entry_type, model, usage }); }
-      catch (e) { console.error("job-radar usage charge error:", e.message); }
-    }
-  }
+function cappedCall(pool, { entry_type, model, prompt, system, maxTokens = 400, client = null }) {
+  return ai.cappedAI(pool, { entry_type, model, prompt, system, maxTokens, client });
 }
 
 // ---------------------------------------------------------------------------
@@ -462,7 +448,7 @@ async function runFitPass(pool, ids, opts = {}) {
       try {
         out = await cappedCall(pool, { entry_type: "job_fit", model, prompt, system, maxTokens: 200, client: opts.aiClient });
       } catch (e) {
-        if (e.code === "CAP") { capped = true; break; }
+        if (e.code === "CAP" || e.code === "CAP_CHECK_FAILED") { capped = true; break; }
         console.error("job-radar fit call:", e.message);
         continue;
       }
@@ -512,7 +498,7 @@ async function runLegitimacyPass(pool, ids, opts = {}) {
       try {
         out = await cappedCall(pool, { entry_type: "job_legitimacy", model, prompt, system, maxTokens: 200, client: opts.aiClient });
       } catch (e) {
-        if (e.code === "CAP") break;
+        if (e.code === "CAP" || e.code === "CAP_CHECK_FAILED") break;
         console.error("job-radar legitimacy call:", e.message);
         continue;
       }

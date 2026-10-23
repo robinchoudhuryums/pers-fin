@@ -875,9 +875,16 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2083 tests as of latest); use
+  Perfin and Per-sistant test files (2099 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2083 tests across 105 test files (incl.
+  Current count: 2099 tests across 106 test files (incl.
+  `apps/per-sistant/tests/roadmap-t2-3-cap-c1.test.js` — roadmap T2.3 C1: Per-sistant's
+  capped AI wrappers (cappedAI / cappedCitations over a fake client — under the cap one
+  call and one row with all four token counters, at / over it CAP with the figures and no
+  call, a refusal charged, a thrown call not, a failed charge keeping the answer, an
+  unreadable spend CAP_CHECK_FAILED with no call), monthlyAiSpendCents from the
+  APP_TIMEZONE month start (two zones whose dates differ from UTC's, an invalid zone → UTC)
+  throwing on a read error, and Job Radar's cappedCall delegating to cappedAI;
   `tests/roadmap-t2-2-cash-l4.test.js` — roadmap T2.2 L4: the per-account floor check
   through runCashAlerts (below → one push with the exact text and no email, at the floor
   not below, a recent alert deduped, a stale or unknown balance skipped, a negative
@@ -3228,7 +3235,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2083 tests passing across 105 test files (Perfin 1532 + Per-sistant 551), plus the real-Postgres route contract suite (201 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2099 tests passing across 106 test files (Perfin 1532 + Per-sistant 567), plus the real-Postgres route contract suite (201 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -5570,9 +5577,9 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   tree listing fails every sync with a full re-walk (F127 surfaces it — a subtree walk
   would index it). OPERATOR: run one full Knowledge reindex after deploying Batch 12 —
   F132 changed frontmatter parsing. Batch 12 follow-ons.
-- Per-sistant's AI cost-cap month (`ai.js` monthlyAiSpendCents), its Ask context's
-  "Today:" line and capture-to-vault file names use the UTC date (Perfin's F66
-  equivalent) — listed as FOLLOW-ON entries in the timezone lint's KNOWN_GAPS
+- Per-sistant's Ask context's "Today:" line and capture-to-vault file names use the
+  UTC date (Perfin's F66 equivalent; the AI cost-cap month was fixed in roadmap T2.3
+  C1) — listed as FOLLOW-ON entries in the timezone lint's KNOWN_GAPS
   (tests/scan-oct-batch13.test.js). `npm run reset:fresh` resets
   `shell_session_epoch` to 0, so a cookie minted before an earlier "Sign Out
   Everywhere" becomes valid again until it idles out. Per-sistant's standalone
@@ -5643,6 +5650,15 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   email's attachments or warn before Send that one's file is missing (the refusal
   arrives as the send's error toast); Retry sends a failed SCHEDULED email at once
   rather than offering to reschedule it.
+- Roadmap T2.3 (an AI cost cap for every Per-sistant feature) is IN PROGRESS
+  (`.cycle/plan-t2-3-persistent-ai-cap.md`, C1–C4): C1 (the capped wrappers in
+  `apps/per-sistant/ai.js`, the APP_TIMEZONE spend month, a spend read that refuses the
+  call when it fails; Job Radar on the wrapper) is done; C2 (the nine routes/ai.js
+  features), C3 (Knowledge) and C4 (usage endpoint, budget setting, Settings UI,
+  side-by-side spend, the new invariant) are planned — until C2 / C3 land, those
+  features still call the model uncapped. C1 follow-ons: `getAiBudgetCents` still
+  falls back to the env / default budget when its settings read fails (only the spend
+  read fails closed).
 - Roadmap T2.2 (low-balance and payday alerts) is DONE (`.cycle/plan-t2-2-cash-alerts.md`,
   L1–L4): the forecast as `services/cash-flow.js` (APP_TIMEZONE today, the lowest
   projected day), the low projected cash alert (`services/cash-alerts.js`, the
@@ -5967,7 +5983,7 @@ INV-60 | Perfin "Sign Out" clears the SHELL session via the root POST /logout un
 INV-61 | apiFetch redirects once to /login (with return_to = the current path, F102) on a 401 or a followed 302→/login (session expiry), loop-guarded, while returning the Response unchanged to callers — idle timeout never leaves a blank/error UI | Subsystem: Web UI | Verify: code read teller/public/perfin-shared.js apiFetch
 INV-62 | The shell sets a nonce CSP + frame-ancestors 'none' + X-Frame-Options on its own routes (login/landing), with COOP/CORP/COEP DISABLED so the global middleware doesn't break sub-app Plaid/Teller Link popups, and Perfin's own helmet sends COOP same-origin-allow-popups, never same-origin (cycle-7 F9); helmet is a declared shell dependency | Subsystem: Platform, Shell & Auth | Verify: header assertion on GET /login (frame-ancestors none, COOP/CORP absent, login scripts nonced) + tests/contract/platform-batch13 (Perfin COOP)
 INV-63 | Per-sistant's shared fetch wrapper (apps/per-sistant/views/js.js) redirects once to the root /login on a 401 or a followed 302→/login (session expiry), loop-guarded, returning the Response unchanged to callers — parity with Perfin INV-61, so an idle-timeout never leaves a blank/error page. The check uses indexOf('/login'), NOT a regex, because the module is one backtick template literal that eats regex backslashes (see Per-sistant CLAUDE.md gotcha) | Subsystem: Per-sistant Web UI | Verify: code read views/js.js fetch wrapper
-INV-64 | Job Radar's AI passes (job_fit + legitimacy) are cap-charged: cappedCall reads getAiBudgetCents()+monthlyAiSpendCents() and throws { code:'CAP' } BEFORE calling the model when over budget; on a successful call it charges an ai_usage row via recordAiUsage in a `finally` (idempotent, only when tokens were consumed). The 10 pre-existing Per-sistant AI features still use the uncapped callAI (unchanged) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (cappedCall charge-on-success + throw-CAP-before-model-call)
+INV-64 | Job Radar's AI passes (job_fit + legitimacy) are cap-charged: cappedCall (since roadmap T2.3 C1 an alias of ai.cappedAI) reads getAiBudgetCents()+monthlyAiSpendCents() (the APP_TIMEZONE month; a spend read error is CAP_CHECK_FAILED and stops the pass) and throws { code:'CAP' } BEFORE calling the model when over budget; on a call that returned tokens it charges an ai_usage row via recordAiUsage once in a `finally`. The other Per-sistant AI features move onto the same wrappers in T2.3 C2 / C3 | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (cappedCall charge-on-success + throw-CAP-before-model-call)
 INV-65 | Job Radar ingest is content_hash-idempotent: dedupPersist upserts ON CONFLICT (content_hash) and counts genuine inserts via (xmax = 0), so a re-run over identical listings adds 0, no duplicate rows. Retention strips old new/dismissed descriptions but KEEPS the hash+status tombstone so a dismissed job re-ingested stays dismissed | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (dedup idempotency, retention)
 INV-66 | gatherJobRadarSummary is the SINGLE fail-soft aggregator feeding the /jobs page, the notification check, and the AI daily-briefing line (the gatherHealthSummary pattern) — a query error returns the safe empty shape, never 500s those surfaces; the notif-check + briefing call it gated on job_radar_enabled. Listing status changes ARCHIVE (saved/applied/dismissed), never hard-delete, and removing a target company deactivates it (active=false — the db/021 seed would re-insert a deleted row) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/jobs.test.js (aggregator fail-soft + archive-not-delete)
 INV-67 | Every transaction-sync trigger (POST /api/sync + daily-sync.yml, bank auto-sync, pre-insights chain) goes through syncAllTransactions — Teller then Plaid, each failure-isolated — and runAnomalyCheck runs ONCE over the combined added count; a Plaid webhook's per-item sync runs the same post-sync steps (runPostSyncSteps — rename rules, then one check, then the payday-landed alert since T2.2 L3; serialized, so two syncs finishing together check in turn); reconcile/backfill never runs it | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-sept-batch2.test.js (BSI-2 / DD-1 block) + tests/roadmap-t2-webhooks-w3.test.js

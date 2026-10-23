@@ -39,7 +39,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   or a total over the cap, is never sent around: Send Now answers 400 with the reason
   BEFORE claiming (the email stays unsent), and the scheduler marks the claimed row
   `failed` with it.
-- **Tests**: `tests/` (node:test runner, `npm test`, 551 tests (api + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11/batch12/batch13/batch16/batch17/batch20 + roadmap-t1-batchc + seams-audit-3 + model-upgrade))
+- **Tests**: `tests/` (node:test runner, `npm test`, 567 tests (api + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11/batch12/batch13/batch16/batch17/batch20 + roadmap-t1-batchc + roadmap-t2-3-cap-c1 + seams-audit-3 + model-upgrade))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of June 2026)
@@ -307,7 +307,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (551 tests)
+# Run tests (567 tests)
 npm test
 
 # Pages
@@ -885,15 +885,25 @@ and signal handlers are owned by the shell when embedded.
 - Features: email drafting, task breakdown, smart quick add, weekly review summary, email tone adjustment, daily briefing, note auto-tagging, smart suggestions, natural language query, **Knowledge Q&A** (`ai_model_rag`, default sonnet — the RAG answer/diagram/capture model), **Job Fit** (`ai_model_job_fit`, default haiku — the Job Radar fit + legitimacy scoring model)
 - Configuration stored in `user_settings` table (ai_model_* columns)
 - Settings page provides per-feature dropdowns
-- **AI cost cap** (introduced by Job Radar, reusable by other features): the
-  Job Fit + legitimacy passes are checked-then-charged against a monthly budget.
-  `ai.js getAiBudgetCents()` resolves `user_settings.ai_monthly_budget_cents` →
-  env `PERSISTENT_AI_BUDGET_CENTS` → default ($1.00); `monthlyAiSpendCents()`
-  sums the `ai_usage` ledger for the current month; over-budget → the call
-  throws `{ code: "CAP" }` (the pass stops, 429-equivalent). `callAIWithUsage`
-  returns token usage so `recordAiUsage()` can charge a row in a `finally`
-  (idempotent) when tokens were consumed. The 10 pre-existing AI features still
-  use the uncapped `callAI` (unchanged) — the cap is opt-in per call site.
+- **AI cost cap** (introduced by Job Radar; roadmap T2.3 puts every feature on it —
+  `.cycle/plan-t2-3-persistent-ai-cap.md`): `ai.js getAiBudgetCents()` resolves
+  `user_settings.ai_monthly_budget_cents` → env `PERSISTENT_AI_BUDGET_CENTS` → default
+  ($1.00); `monthlyAiSpendCents()` sums the `ai_usage` ledger since the start of the
+  APP_TIMEZONE month (T2.3 C1 — it was the UTC month) and THROWS on a read error.
+  The capped wrappers (C1) are the one check-then-charge: `cappedAI(pool, { entry_type,
+  model, prompt, system, maxTokens, effort, meta, client })` and `cappedCitations(pool,
+  { entry_type, model, system, query, documents, maxTokens, client })` call
+  `checkAiCap(pool)` (`{ ok, spent, budget }`), throw `{ code: "CAP", spent_cents,
+  budget_cents }` at or over the budget BEFORE the model call, and throw
+  `CAP_CHECK_FAILED` when the spend can't be read (fail closed — spend that can't be
+  read can't be checked); otherwise they call `callAIWithUsage` / `answerWithCitations`
+  and charge one `recordAiUsage()` row in a `finally` whenever tokens came back — a
+  refusal included (`answerWithCitations` now returns `usage`, and its REFUSAL error
+  carries it); a failed charge is logged and never loses the answer. The cap reads go
+  through `module.exports`, so tests stub them. Job Radar's `cappedCall` is an alias of
+  `cappedAI` (its passes stop on CAP or CAP_CHECK_FAILED). Until T2.3 C2 / C3 land, the
+  nine `routes/ai.js` features and Knowledge's answer / diagram / capture still call
+  the uncapped `callAI` / `answerWithCitations`.
   `estimateCostCents` prices the 5.5 models (`AI_PRICING`, cents per token):
   Haiku 5.5 $0.10 / $0.50 per MTok (a prompt over 100K tokens uses the
   $0.50 / $2.50 card), Sonnet 5.5 $2 / $10; cache reads are charged at 0.1x
