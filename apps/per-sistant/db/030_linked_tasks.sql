@@ -6,7 +6,8 @@
 --   source_key       '<app>:<kind>:<id>' — one task per key, including a
 --                    trashed row (the unique index has no deleted_at filter),
 --                    so a task you deleted isn't recreated
---   source_url       the page that resolves the item (a same-app path)
+--   source_url       the page that resolves the item, as a path inside the
+--                    source app ('/housing' — the task chip adds '/perfin')
 --   source_snapshot  the fields the sync last wrote (X1b refreshes a field
 --                    only while it still equals this)
 --   auto_closed      the sync closed it because the item was resolved; only

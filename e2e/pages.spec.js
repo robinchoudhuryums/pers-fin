@@ -182,6 +182,22 @@ test.describe("every page loads cleanly", () => {
     expect(problems, problems.join("\n")).toEqual([]);
   });
 
+  test("a linked task shows its Perfin chip on the To-Dos page and in the edit modal (T2.4 X1b)", async ({ page }) => {
+    const problems = watch(page);
+    await page.goto("/per-sistant/todos");
+    const row = page.locator(".todo-item[data-id]", { hasText: "E2E pay rent" });
+    const chip = row.locator("a.linked-chip");
+    await expect(chip).toHaveAttribute("href", "/perfin/housing");
+    await expect(chip).toHaveAttribute("aria-label", "Open in Perfin: E2E pay rent");
+    await row.locator('[data-action="edit"]').click();
+    await expect(page.locator("#f-linked")).toBeVisible();
+    await expect(page.locator("#f-linked a.linked-chip")).toHaveAttribute("href", "/perfin/housing");
+    await page.locator("#modal-close-x").click();
+    await chip.click();
+    await expect(page).toHaveURL(/\/perfin\/housing$/);
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
   test("the nav loads the sync badge settings and the unread count (F90) and the logo (F93)", async ({ page }) => {
     const seen = { settings: false, notifications: false, logo: 0 };
     page.on("response", (res) => {

@@ -61,6 +61,14 @@ function nonceAttr() {
   return n ? ` nonce="${n}"` : "";
 }
 
+// Where each linked-task source app lives (roadmap T2.4 X1b) — the task chip
+// joins this with the task's source_url. '<' escaped so a configured URL can't
+// close the script tag.
+function linkedAppBases(isEmbedded) {
+  const bases = { perfin: isEmbedded ? "/perfin" : (PERFIN_URL || "") };
+  return JSON.stringify(bases).replace(/</g, "\\u003c");
+}
+
 function pageHead(title) {
   const bp = basePath();
   const isEmbedded = embedded();
@@ -96,7 +104,8 @@ function pageHead(title) {
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">${materializeAssets}
   <style>${SHARED_CSS}${NAV_CHROME_CSS}</style>
-  <script${nonceAttr()}>window.BASE_PATH = ${JSON.stringify(bp)};</script>
+  <script${nonceAttr()}>window.BASE_PATH = ${JSON.stringify(bp)};
+  window.LINKED_APP_BASES = ${linkedAppBases(isEmbedded)};</script>
   <script${nonceAttr()}>${SHARED_JS}</script>
   <script${nonceAttr()}>${PRIMITIVES_JS}</script>
   <script${nonceAttr()}>${SETTINGS_PATCH}</script>

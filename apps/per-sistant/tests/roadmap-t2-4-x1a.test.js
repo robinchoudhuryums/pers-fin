@@ -26,62 +26,24 @@ const savedAnnounce = helpers.announceTodoEvent;
 beforeEach(() => { announced = []; helpers.announceTodoEvent = (ev, row) => announced.push([ev, row.source_key]); });
 afterEach(() => { helpers.announceTodoEvent = savedAnnounce; });
 
-// A fake pool that understands exactly the statements linked-tasks.js sends.
-function fakePool() {
-  const rows = [];
-  let nextId = 1;
-  const queries = [];
-  return {
-    rows,
-    queries,
-    async query(sql, params) {
-      queries.push(sql);
-      if (/^INSERT INTO todos/.test(sql)) {
-        const [title, description, priority, due_date, source_app, source_key, source_url, snapshot] = params;
-        if (rows.some((r) => r.source_key === source_key)) return { rows: [], rowCount: 0 };
-        const row = { id: nextId++, title, description, priority, horizon: "short", category: "finance", due_date,
-          source_app, source_key, source_url, source_snapshot: JSON.parse(snapshot),
-          completed: false, completed_at: null, auto_closed: false, source_detached: false, deleted_at: null };
-        rows.push(row);
-        return { rows: [row], rowCount: 1 };
-      }
-      if (/^UPDATE todos SET completed = false/.test(sql)) {
-        const [app, keys] = params;
-        const hit = rows.filter((r) => r.source_app === app && keys.includes(r.source_key) && r.completed && r.auto_closed && !r.source_detached && !r.deleted_at);
-        for (const r of hit) { r.completed = false; r.completed_at = null; r.auto_closed = false; }
-        return { rows: hit.map((r) => ({ id: r.id })), rowCount: hit.length };
-      }
-      if (/^UPDATE todos SET completed = true/.test(sql)) {
-        const [app, keys, kinds] = params;
-        const hit = rows.filter((r) => r.source_app === app && kinds.includes(r.source_key.split(":")[1]) && !keys.includes(r.source_key) && !r.completed && !r.source_detached && !r.deleted_at);
-        for (const r of hit) { r.completed = true; r.completed_at = "now"; r.auto_closed = true; }
-        return { rows: hit, rowCount: hit.length };
-      }
-      if (/^SELECT id FROM todos WHERE source_key/.test(sql)) {
-        const r = rows.find((x) => x.source_key === params[0]);
-        return { rows: r ? [{ id: r.id }] : [], rowCount: r ? 1 : 0 };
-      }
-      throw new Error("unexpected SQL: " + sql);
-    },
-  };
-}
+const { fakePool } = require("./_linked-tasks-fake");
 
 const KINDS = ["housing", "bill"];
-const rent = (period, extra = {}) => ({ key: `perfin:housing:${period}`, title: `Pay rent for ${period}`, url: "/perfin/housing", due_date: `${period}-01`, priority: "high", ...extra });
-const bill = (id) => ({ key: `perfin:bill:${id}:2026-11-03`, title: `Pay bill ${id}`, url: "/perfin/calendar", due_date: "2026-11-03" });
+const rent = (period, extra = {}) => ({ key: `perfin:housing:${period}`, title: `Pay rent for ${period}`, url: "/housing", due_date: `${period}-01`, priority: "high", ...extra });
+const bill = (id) => ({ key: `perfin:bill:${id}:2026-11-03`, title: `Pay bill ${id}`, url: "/calendar", due_date: "2026-11-03" });
 const sync = (pool, desired, kinds = KINDS) => linked.syncLinkedTasks(pool, { app: "perfin", kinds, desired });
 
 describe("syncLinkedTasks", () => {
   it("creates a missing task once, with the finance shape and a snapshot, and announces it", async () => {
     const pool = fakePool();
     const r = await sync(pool, [rent("2026-11")]);
-    assert.deepEqual(r, { created: 1, closed: 0, reopened: 0, skipped: 0 });
+    assert.deepEqual(r, { created: 1, updated: 0, closed: 0, reopened: 0, skipped: 0 });
     const row = pool.rows[0];
     assert.equal(row.category, "finance");
     assert.equal(row.horizon, "short");
     assert.equal(row.priority, "high");
     assert.equal(row.source_app, "perfin");
-    assert.equal(row.source_url, "/perfin/housing");
+    assert.equal(row.source_url, "/housing");
     assert.deepEqual(row.source_snapshot, { title: "Pay rent for 2026-11", description: null, due_date: "2026-11-01", priority: "high" });
     assert.deepEqual(announced, [["todo_created", "perfin:housing:2026-11"]]);
   });
@@ -91,7 +53,7 @@ describe("syncLinkedTasks", () => {
     await sync(pool, [rent("2026-11"), bill(4)]);
     announced = [];
     const r = await sync(pool, [rent("2026-11"), bill(4)]);
-    assert.deepEqual(r, { created: 0, closed: 0, reopened: 0, skipped: 0 });
+    assert.deepEqual(r, { created: 0, updated: 0, closed: 0, reopened: 0, skipped: 0 });
     assert.equal(pool.rows.length, 2);
     assert.deepEqual(announced, []);
   });
@@ -106,7 +68,7 @@ describe("syncLinkedTasks", () => {
     assert.equal(pool.rows[0].auto_closed, true);
     assert.deepEqual(announced, [["todo_completed", "perfin:housing:2026-11"]]);
     r = await sync(pool, [rent("2026-11")]);
-    assert.deepEqual(r, { created: 0, closed: 0, reopened: 1, skipped: 0 });
+    assert.deepEqual(r, { created: 0, updated: 0, closed: 0, reopened: 1, skipped: 0 });
     assert.equal(pool.rows[0].completed, false);
     assert.equal(pool.rows[0].auto_closed, false);
   });
@@ -130,7 +92,7 @@ describe("syncLinkedTasks", () => {
     await sync(pool, [rent("2026-11")]);
     pool.rows[0].deleted_at = "yesterday";
     const r = await sync(pool, [rent("2026-11")]);
-    assert.deepEqual(r, { created: 0, closed: 0, reopened: 0, skipped: 0 });
+    assert.deepEqual(r, { created: 0, updated: 0, closed: 0, reopened: 0, skipped: 0 });
     assert.equal(pool.rows.length, 1);
   });
 
@@ -202,7 +164,7 @@ describe("syncLinkedTasks", () => {
 });
 
 describe("ensureLinkedTask", () => {
-  const sc = { key: "perfin:still-charging:7:txn_abc", title: "Netflix charged you after you cancelled", url: "/perfin/subscriptions", priority: "high" };
+  const sc = { key: "perfin:still-charging:7:txn_abc", title: "Netflix charged you after you cancelled", url: "/subscriptions", priority: "high" };
 
   it("creates once, then reports the existing id, and announces only the first", async () => {
     const pool = fakePool();

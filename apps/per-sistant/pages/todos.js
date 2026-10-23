@@ -64,6 +64,7 @@ ${navBar("/todos")}
       <button id="modal-close-x" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;padding:4px 8px;line-height:1;font-family:inherit;" aria-label="Close">&times;</button>
     </div>
     <input type="hidden" id="edit-id">
+    <div id="f-linked" class="linked-note" hidden></div>
     <label>Title</label>
     <input type="text" id="f-title" placeholder="What needs to be done?">
     <label>Description</label>

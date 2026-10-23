@@ -15,7 +15,7 @@ describe("Linked tasks (T2.4 X1a) on real Postgres", { skip: SKIP }, () => {
   const q = (s, p) => pool.query(s, p);
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const KINDS = ["housing", "bill"];
-  const rent = (p) => ({ key: `perfin:housing:${p}`, title: `Pay rent for ${p}`, url: "/perfin/housing", due_date: `${p}-01`, priority: "high" });
+  const rent = (p) => ({ key: `perfin:housing:${p}`, title: `Pay rent for ${p}`, url: "/housing", due_date: `${p}-01`, priority: "high" });
   const sync = (desired, kinds = KINDS) => linked.syncLinkedTasks(pool, { app: "perfin", kinds, desired });
   const byKey = async (k) => (await q("SELECT * FROM todos WHERE source_key = $1", [k])).rows[0];
 
@@ -45,7 +45,7 @@ describe("Linked tasks (T2.4 X1a) on real Postgres", { skip: SKIP }, () => {
     assert.equal(row.category, "finance");
     assert.equal(row.priority, "high");
     assert.equal(row.horizon, "medium", "the automation ran on the linked task");
-    assert.equal(row.source_url, "/perfin/housing");
+    assert.equal(row.source_url, "/housing");
     assert.equal(row.source_snapshot.title, "Pay rent for 2026-11");
     assert.equal(row.source_detached, false);
     const listed = (await supertest(app).get("/api/todos").expect(200)).body;
@@ -55,7 +55,7 @@ describe("Linked tasks (T2.4 X1a) on real Postgres", { skip: SKIP }, () => {
   });
 
   it("a re-run adds nothing; a resolved item closes; it reopens when it comes back — never detached by the sync", async () => {
-    assert.deepEqual(await sync([rent("2026-11")]), { created: 0, closed: 0, reopened: 0, skipped: 0 });
+    assert.deepEqual(await sync([rent("2026-11")]), { created: 0, updated: 0, closed: 0, reopened: 0, skipped: 0 });
     assert.equal((await sync([])).closed, 1);
     let row = await byKey("perfin:housing:2026-11");
     assert.equal(row.completed, true);
@@ -132,8 +132,35 @@ describe("Linked tasks (T2.4 X1a) on real Postgres", { skip: SKIP }, () => {
     assert.equal((await byKey("perfin:bill:5:2026-11-03")).completed, true);
   });
 
+  it("X1b: an edited title survives two syncs while the untouched due date and priority follow the source", async () => {
+    await sync([rent("2027-05")]);
+    const t = await byKey("perfin:housing:2027-05");
+    await supertest(app).patch(`/api/todos/${t.id}`).send({ title: "Rent — from joint" }).expect(200);
+    const changed = { ...rent("2027-05"), title: "Pay rent for 2027-05 (overdue)", due_date: "2027-05-03", priority: "urgent", url: "/housing#pending" };
+    assert.equal((await sync([changed])).updated, 1);
+    let row = await byKey("perfin:housing:2027-05");
+    assert.equal(row.title, "Rent — from joint");
+    assert.equal(row.priority, "urgent");
+    assert.equal((await q("SELECT due_date::text AS d FROM todos WHERE id = $1", [t.id])).rows[0].d, "2027-05-03");
+    assert.equal(row.source_url, "/housing#pending");
+    assert.equal(row.source_snapshot.title, "Pay rent for 2027-05 (overdue)");
+    assert.equal(row.source_snapshot.due_date, "2027-05-03");
+    assert.equal(row.source_detached, false, "editing a title doesn't detach");
+    assert.equal((await sync([{ ...changed, title: "Pay rent for 2027-05 (5 days late)" }])).updated, 1);
+    row = await byKey("perfin:housing:2027-05");
+    assert.equal(row.title, "Rent — from joint", "still yours after a second sync");
+    assert.equal((await sync([{ ...changed, title: "Pay rent for 2027-05 (5 days late)" }])).updated, 0, "nothing new → nothing written");
+    // a task you reopened by hand after an auto-close (detached) is never refreshed
+    await sync([rent("2027-06")]);
+    await sync([], ["housing"]);
+    const h = await byKey("perfin:housing:2027-06");
+    await supertest(app).patch(`/api/todos/${h.id}`).send({ completed: false }).expect(200);
+    assert.equal((await sync([{ ...rent("2027-06"), title: "Changed 06" }])).updated, 0);
+    assert.equal((await byKey("perfin:housing:2027-06")).title, "Pay rent for 2027-06", "detached: not refreshed");
+  });
+
   it("ensureLinkedTask creates once and a sync without its kind leaves it open", async () => {
-    const task = { key: "perfin:still-charging:7:txn_abc", title: "Netflix charged you after you cancelled", url: "/perfin/subscriptions", priority: "high" };
+    const task = { key: "perfin:still-charging:7:txn_abc", title: "Netflix charged you after you cancelled", url: "/subscriptions", priority: "high" };
     const a = await linked.ensureLinkedTask(pool, { app: "perfin", task });
     assert.equal(a.created, true);
     const b = await linked.ensureLinkedTask(pool, { app: "perfin", task });

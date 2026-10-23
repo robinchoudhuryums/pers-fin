@@ -82,6 +82,25 @@ function toLocalDatetimeInput(iso){
 // quotes. esc() alone is only safe in element-text context. Use escAttr() for
 // any attr="'+VALUE+'" interpolation. (& escaped first to avoid double-encoding.)
 function escAttr(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+// Linked tasks (roadmap T2.4): a task another app keeps in step carries a chip
+// naming that app, linking its source_url through the app's own mount
+// (window.LINKED_APP_BASES — '/perfin' under the shell, PERFIN_URL standalone).
+// Only a same-app path on an http(s) or root-relative base becomes a link;
+// anything else renders as plain text. No regex with a backslash here (INV-97).
+function linkedTaskChip(t){
+  if(!t||!t.source_app)return '';
+  var label=t.source_app==='perfin'?'Perfin':String(t.source_app);
+  var bases=window.LINKED_APP_BASES||{};
+  var base=Object.prototype.hasOwnProperty.call(bases,t.source_app)?bases[t.source_app]:null;
+  var u=t.source_url;
+  var safePath=typeof u==='string'&&u.length>1&&u.charAt(0)==='/'&&u.charAt(1)!=='/'&&u.indexOf(String.fromCharCode(92))<0;
+  var rooted=typeof base==='string'&&base.charAt(0)==='/'&&base.charAt(1)!=='/';
+  var external=typeof base==='string'&&/^https?:/i.test(base);
+  var title='Kept in step with '+label;
+  if(!safePath||!(rooted||external))return '<span class="linked-chip" title="'+escAttr(title)+'">'+esc(label)+'</span>';
+  if(base.charAt(base.length-1)==='/')base=base.slice(0,-1);
+  return '<a class="linked-chip" href="'+escAttr(base+u)+'"'+(external?' target="_blank" rel="noopener"':'')+' title="'+escAttr(title)+'" aria-label="'+escAttr('Open in '+label+': '+(t.title||''))+'">'+esc(label)+'</a>';
+}
 function renderMd(s){
   if(!s)return'';
   return s

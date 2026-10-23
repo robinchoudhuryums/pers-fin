@@ -18,7 +18,18 @@ Updated: 2026-10-23
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T2.4 (cross-app automation) — X1a DONE** (2026-10-23, branch
+- **Status:** **Roadmap T2.4 (cross-app automation) — X1b DONE** (2026-10-23, branch
+  `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
+  `.cycle/plan-t2-4-crossapp-automation.md`. Block: `.cycle/blocks/7-roadmap-t2-4-x1b-broad-implement.md`.
+  - **Completed:** per-field snapshot refresh in syncLinkedTasks (`updated`; your edits win);
+    the "Perfin" chip (views/js.js linkedTaskChip + window.LINKED_APP_BASES) on the To-Dos
+    list, both dashboard task lists and the edit modal; a seeded linked task + a browser test.
+    Decision: source_url is a path inside the source app, joined with its mount by the chip.
+  - **Tests:** npm 2171/2171 (8 new), contract 217/217 (1 new), Playwright 58/58 (1 new);
+    14 mutations red, one equivalent.
+  - **Where I left off:** X1b committed; X1 complete. NEXT: `/broad-implement X2a` (Perfin
+    settings + computeLinkedTasks).
+- **Previous status:** **Roadmap T2.4 (cross-app automation) — X1a DONE** (2026-10-23, branch
   `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-4-crossapp-automation.md` (decisions 1–8 accepted). Block:
   `.cycle/blocks/7-roadmap-t2-4-x1a-broad-implement.md`.
@@ -31,7 +42,7 @@ implement and reflect sessions only set Phase.)
     11 mutations all red.
   - **Where I left off:** X1a committed. NEXT: `/broad-implement X1b` (edits win via
     source_snapshot + the "Perfin" chip + the e2e seed).
-- **Previous status:** **Roadmap T2.4 (cross-app automation) — PLANNED, split into 7 batches** (2026-10-23,
+- **Earlier status:** **Roadmap T2.4 (cross-app automation) — PLANNED, split into 7 batches** (2026-10-23,
   branch `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-4-crossapp-automation.md`. X1a Per-sistant schema + sync core (db/030,
   syncLinkedTasks / ensureLinkedTask, hand completion final); X1b edits win + the "Perfin"

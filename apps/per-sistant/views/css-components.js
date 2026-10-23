@@ -96,6 +96,15 @@ td {
 tr:hover td { background: var(--paper-2); }
 
 /* ----- Badges ----- */
+.linked-chip {
+  display: inline-block; padding: 2px 8px; border-radius: 2px;
+  font-family: var(--mono); font-size: 9px; font-weight: 500;
+  text-transform: uppercase; letter-spacing: 0.1em; text-decoration: none;
+  border: 1px solid var(--accent); color: var(--accent); background: transparent;
+}
+a.linked-chip:hover { background: color-mix(in oklch, var(--accent) 10%, transparent); }
+.linked-note { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0 0; font-size: 12px; color: var(--muted); }
+.linked-note[hidden] { display: none; }
 .badge {
   display: inline-block; padding: 2px 8px; border-radius: 2px;
   font-family: var(--mono); font-size: 9px; font-weight: 500;

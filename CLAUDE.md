@@ -875,9 +875,19 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2163 tests as of latest); use
+  Perfin and Per-sistant test files (2171 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2163 tests across 111 test files (incl.
+  Current count: 2171 tests across 112 test files (incl.
+  `apps/per-sistant/tests/roadmap-t2-4-x1b.test.js` — roadmap T2.4 X1b: the sync's per-field
+  refresh over the shared fake pool (`tests/_linked-tasks-fake.js` — an edited title kept
+  across two syncs while the untouched due date / priority / url follow the source, the
+  snapshot advanced, a re-run writing nothing, a detached task left alone);
+  linkedTaskChip run in a vm from the emitted bundle (the mount base joined, the title and
+  href attribute-escaped, an http(s) base opened in a new tab with its trailing slash
+  trimmed, a javascript: / protocol-relative / backslash / relative url, an empty or
+  protocol-relative base and an unknown app all plain text, no chip on an ordinary task);
+  pageHead's LINKED_APP_BASES embedded vs standalone; the chip wired into the To-Dos list,
+  the edit modal and both dashboard task lists; the bundles parse;
   `apps/per-sistant/tests/roadmap-t2-4-x1a.test.js` — roadmap T2.4 X1a: syncLinkedTasks over a
   fake pool (a desired key created once with the finance shape + snapshot and announced, a
   re-run changing nothing, a key that left the set closed as auto_closed and reopened when it
@@ -1417,7 +1427,9 @@ shell/
   sync; a hand completion through PATCH or bulk complete, and an auto-closed task reopened
   and completed by hand, never reopened; a hand reopen never re-closed; a trashed task —
   auto-closed or open — not reopened or recreated; only the listed kinds closed;
-  ensureLinkedTask once; an ordinary task untouched). 216 tests, run
+  ensureLinkedTask once; an ordinary task untouched; X1b: a title edited through PATCH kept
+  across two syncs while the due date, priority and url follow, nothing written on a no-op
+  run, a hand-reopened task not refreshed). 217 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -1575,7 +1587,7 @@ shell/
   fake @anthropic-ai/sdk: /api/ask + runCategorize charge their usage rows,
   429 once the cap is hit, ask charges accumulated tokens AND still charges
   on a mid-loop failure — F1).
-- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink — empty since roadmap T1.5 Batch C fixed the Review page's review-summary 500), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). Since cycle-7 Batch 20 (G2) the run is SEEDED (`e2e/seed.js`, in the spec's beforeAll — through the apps' own routes: housing config + generated obligations, a manual account + manual expense, a generic CSV with a refund row and a split, a rollover budget, a goal, a subscription, a credit score; Per-sistant notes in each privacy tier, a habit with logs, a todo with subtasks; one Job Radar listing inserted directly, since no route creates one), a `console.error` fails a page (the browser's "Failed to load resource" line is left to the response check), and a CLICK SWEEP per page presses every visible, enabled `button / [role=button|checkbox|tab] / summary` counted on load (≤80) that isn't `data-e2e-skip` or labelled destructive (delete / remove / unlink / send / empty / sign out / log out / reset / purge / disconnect / archive / trash / revoke / cancel subscription / mark settled), dismissing dialogs and returning to the page between presses; a failure names the control pressed, and `SWEEP_KNOWN_GAPS` must only shrink. Mark a new destructive, off-app (an external SDK) or device-permission control (microphone) `data-e2e-skip`. 57 tests (22 of them sweeps, ~220 controls pressed). The `migrations` job ALSO runs the route contract suite (`npm run test:contract`, step "Route contract tests against real Postgres", `CONTRACT_DATABASE_URL` = the same service container; the Postgres user must be able to CREATE/DROP DATABASE).
+- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink — empty since roadmap T1.5 Batch C fixed the Review page's review-summary 500), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). Since cycle-7 Batch 20 (G2) the run is SEEDED (`e2e/seed.js`, in the spec's beforeAll — through the apps' own routes: housing config + generated obligations, a manual account + manual expense, a generic CSV with a refund row and a split, a rollover budget, a goal, a subscription, a credit score; Per-sistant notes in each privacy tier, a habit with logs, a todo with subtasks; one Job Radar listing and one linked task inserted directly, since no route creates either), a `console.error` fails a page (the browser's "Failed to load resource" line is left to the response check), and a CLICK SWEEP per page presses every visible, enabled `button / [role=button|checkbox|tab] / summary` counted on load (≤80) that isn't `data-e2e-skip` or labelled destructive (delete / remove / unlink / send / empty / sign out / log out / reset / purge / disconnect / archive / trash / revoke / cancel subscription / mark settled), dismissing dialogs and returning to the page between presses; a failure names the control pressed, and `SWEEP_KNOWN_GAPS` must only shrink. Mark a new destructive, off-app (an external SDK) or device-permission control (microphone) `data-e2e-skip`. 58 tests (22 of them sweeps, ~220 controls pressed — plus the linked-task chip on the To-Dos page and in its edit modal, T2.4 X1b). The `migrations` job ALSO runs the route contract suite (`npm run test:contract`, step "Route contract tests against real Postgres", `CONTRACT_DATABASE_URL` = the same service container; the Postgres user must be able to CREATE/DROP DATABASE).
 - `.claude/commands/` — Project slash-command prompts, generated from the
   claude-workflow-tools templates (synced to v1.43.0 via `/sync-commands`):
   the cycle commands (`/broad-scan`, `/broad-implement`, `/targeted-audit`,
@@ -3292,7 +3304,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2163 tests passing across 111 test files (Perfin 1537 + Per-sistant 626), plus the real-Postgres route contract suite (216 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2171 tests passing across 112 test files (Perfin 1537 + Per-sistant 634), plus the real-Postgres route contract suite (217 tests; CI `migrations` job, `npm run test:contract`) and 58 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -5714,9 +5726,15 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   `source_url` / `source_snapshot` / `auto_closed` / `source_detached`, a unique source_key
   that covers trashed rows, and a trigger that detaches a linked task whenever its completed
   state changes without the sync changing auto_closed) and `apps/per-sistant/services/
-  linked-tasks.js` (syncLinkedTasks / ensureLinkedTask). Nothing calls it yet (X2a–X2c wire
-  Perfin), there is no task chip (X1b), and the sync doesn't yet refresh an open task's
-  title / due date (X1b). X1a follow-ons: a task you reopen by hand after an auto-close is
+  linked-tasks.js` (syncLinkedTasks / ensureLinkedTask). X1b: an open task's title,
+  description, due date and priority follow the source only while each still equals
+  `source_snapshot` (your edit wins per field), and a linked task shows a "Perfin" chip
+  (views/js.js `linkedTaskChip` — source_url is a path inside Perfin, joined with
+  `window.LINKED_APP_BASES`: /perfin under the shell, PERFIN_URL standalone, plain text
+  without one) on the To-Dos list, the dashboard task lists and the edit modal. Nothing
+  calls the module yet (X2a–X2c wire Perfin). X1b follow-ons: the Today page and the
+  weekly review don't show the chip; a standalone Per-sistant's chip opens PERFIN_URL in a
+  new tab only when PERFIN_URL is http(s). X1a follow-ons: a task you reopen by hand after an auto-close is
   detached for good (the sync never closes it again); a trashed task's key frees up only at
   the 30-day purge.
 - Roadmap T2.3 (an AI cost cap for every Per-sistant feature) is DONE

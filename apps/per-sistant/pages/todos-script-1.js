@@ -99,7 +99,7 @@ async function load() {
       recurInfo = '<span class="badge recurring">'+ruleLabel+'</span>';
     }
     var skipSnoozeButtons = t.recurring && !t.completed ? '<button data-action="skip" data-id="'+t.id+'" title="Skip this occurrence" style="font-size:10px;padding:2px 6px;">Skip</button><button data-action="snooze" data-id="'+t.id+'" title="Snooze" style="font-size:10px;padding:2px 6px;">&#128164;</button>' : '';
-    return '<div class="todo-item'+(isBlocked?' todo-blocked':'')+'" draggable="true" data-id="'+t.id+'"><input type="checkbox" class="bulk-check" data-id="'+t.id+'" style="display:'+(selectMode?'inline-block':'none')+';accent-color:var(--accent);margin-right:4px;cursor:pointer;"><span class="drag-handle">&#9776;</span><div class="todo-check'+(t.completed?' done':'')+'" role="checkbox" tabindex="0" aria-checked="'+!!t.completed+'" aria-label="'+escAttr('Complete: '+t.title)+'" data-action="toggle" data-id="'+t.id+'" data-completed="'+(!t.completed)+'" data-recurring="'+!!t.recurring+'"></div><div class="todo-content"><div class="todo-title'+(t.completed?' done':'')+'">'+esc(t.title)+'</div><div class="todo-meta"><span class="badge '+t.priority+'">'+t.priority+'</span><span class="badge '+t.horizon+'">'+t.horizon+'</span>'+recurInfo+depBadges+(t.category?'<span>'+esc(t.category)+'</span>':'')+(dueTxt?'<span'+overdue+'>'+dueTxt+'</span>':'')+(subs.length?'<span>'+subDone+'/'+subs.length+' subtasks</span>':'')+'</div>'+(t.description?'<div style="font-size:12px;color:var(--muted);margin-top:4px;font-weight:300">'+esc(t.description)+'</div>':'')+subHtml+'</div><div class="todo-actions">'+skipSnoozeButtons+'<button data-action="edit" data-id="'+t.id+'">&#9998;</button></div></div>';
+    return '<div class="todo-item'+(isBlocked?' todo-blocked':'')+'" draggable="true" data-id="'+t.id+'"><input type="checkbox" class="bulk-check" data-id="'+t.id+'" style="display:'+(selectMode?'inline-block':'none')+';accent-color:var(--accent);margin-right:4px;cursor:pointer;"><span class="drag-handle">&#9776;</span><div class="todo-check'+(t.completed?' done':'')+'" role="checkbox" tabindex="0" aria-checked="'+!!t.completed+'" aria-label="'+escAttr('Complete: '+t.title)+'" data-action="toggle" data-id="'+t.id+'" data-completed="'+(!t.completed)+'" data-recurring="'+!!t.recurring+'"></div><div class="todo-content"><div class="todo-title'+(t.completed?' done':'')+'">'+esc(t.title)+'</div><div class="todo-meta">'+linkedTaskChip(t)+'<span class="badge '+t.priority+'">'+t.priority+'</span><span class="badge '+t.horizon+'">'+t.horizon+'</span>'+recurInfo+depBadges+(t.category?'<span>'+esc(t.category)+'</span>':'')+(dueTxt?'<span'+overdue+'>'+dueTxt+'</span>':'')+(subs.length?'<span>'+subDone+'/'+subs.length+' subtasks</span>':'')+'</div>'+(t.description?'<div style="font-size:12px;color:var(--muted);margin-top:4px;font-weight:300">'+esc(t.description)+'</div>':'')+subHtml+'</div><div class="todo-actions">'+skipSnoozeButtons+'<button data-action="edit" data-id="'+t.id+'">&#9998;</button></div></div>';
   }).join('');
 }
 
@@ -206,6 +206,7 @@ function inlineEditNewSubtask(span, idx) {
 function openAdd() {
   document.getElementById('modal-title').textContent = 'New Task';
   document.getElementById('edit-id').value = '';
+  showLinkedNote(null);
   document.getElementById('f-title').value = '';
   document.getElementById('f-desc').value = '';
   document.getElementById('f-priority').value = 'medium';
@@ -232,12 +233,24 @@ function openAdd() {
   document.getElementById('modal').classList.add('active');
 }
 
+// A linked task (roadmap T2.4) says which app keeps it in step and that edits
+// stay — completing it here never changes that app.
+function showLinkedNote(t) {
+  var el = document.getElementById('f-linked');
+  if (!el) return;
+  if (!t || !t.source_app) { el.hidden = true; el.innerHTML = ''; return; }
+  var label = t.source_app === 'perfin' ? 'Perfin' : String(t.source_app);
+  el.innerHTML = linkedTaskChip(t) + '<span>' + esc('Kept in step with ' + label + '. Your edits stay; completing it here does not change ' + label + '.') + '</span>';
+  el.hidden = false;
+}
+
 async function openEdit(id) {
   var todos = await fetch('/api/todos').then(r=>r.json());
   var t = todos.find(x=>x.id===id);
   if (!t) return;
   document.getElementById('modal-title').textContent = 'Edit Task';
   document.getElementById('edit-id').value = id;
+  showLinkedNote(t);
   document.getElementById('f-title').value = t.title;
   document.getElementById('f-desc').value = t.description||'';
   document.getElementById('f-priority').value = t.priority;

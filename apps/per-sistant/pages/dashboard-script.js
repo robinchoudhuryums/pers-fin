@@ -147,7 +147,7 @@ function renderDashTodo(t) {
     var subPct = Math.round(subDone/subTotal*100);
     subBar = '<div class="subtask-progress-row" style="margin-top:6px;"><div class="subtask-progress"><div class="subtask-progress-fill" style="width:'+subPct+'%"></div></div><span class="subtask-progress-label">'+subDone+'/'+subTotal+'</span></div>';
   }
-  return '<div class="todo-item" style="display:flex;align-items:center;gap:10px;">'+completeBtn+'<div class="todo-content" style="flex:1;"><div class="todo-title">'+esc(t.title)+'</div><div class="todo-meta"><span class="badge '+t.priority+'">'+t.priority+'</span>'+(t.category?'<span>'+esc(t.category)+'</span>':'')+(t.due_date?'<span'+overdue+'>Due: '+fmtCalDate(t.due_date)+'</span>':'')+(t.recurring?'<span class="badge recurring">recurring</span>':'')+streakBadge+'</div>'+subBar+'</div></div>';
+  return '<div class="todo-item" style="display:flex;align-items:center;gap:10px;">'+completeBtn+'<div class="todo-content" style="flex:1;"><div class="todo-title">'+esc(t.title)+'</div><div class="todo-meta">'+linkedTaskChip(t)+'<span class="badge '+t.priority+'">'+t.priority+'</span>'+(t.category?'<span>'+esc(t.category)+'</span>':'')+(t.due_date?'<span'+overdue+'>Due: '+fmtCalDate(t.due_date)+'</span>':'')+(t.recurring?'<span class="badge recurring">recurring</span>':'')+streakBadge+'</div>'+subBar+'</div></div>';
 }
 
 async function dashComplete(id) {
@@ -218,7 +218,7 @@ async function load() {
 
   const upcoming = allTodos.filter(t=>t.due_date).sort((a,b)=>parseCalDate(a.due_date)-parseCalDate(b.due_date)).slice(0,5);
   document.getElementById('upcoming-tasks').innerHTML = upcoming.length
-    ? upcoming.map(t => '<div class="todo-item"><div class="todo-content"><div class="todo-title">'+esc(t.title)+'</div><div class="todo-meta"><span class="badge '+t.priority+'">'+t.priority+'</span>'+(t.recurring?'<span class="badge recurring">recurring</span>':'')+'<span>Due: '+fmtCalDate(t.due_date)+'</span></div></div></div>').join('')
+    ? upcoming.map(t => '<div class="todo-item"><div class="todo-content"><div class="todo-title">'+esc(t.title)+'</div><div class="todo-meta">'+linkedTaskChip(t)+'<span class="badge '+t.priority+'">'+t.priority+'</span>'+(t.recurring?'<span class="badge recurring">recurring</span>':'')+'<span>Due: '+fmtCalDate(t.due_date)+'</span></div></div></div>').join('')
     : '<div class="empty-msg">No upcoming tasks with due dates</div>';
 
   const emails = await fetch('/api/emails?status=scheduled').then(r=>r.json());

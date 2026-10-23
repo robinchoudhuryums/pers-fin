@@ -100,6 +100,14 @@ async function seedPersistent(req) {
                'Remote', true, 'https://jobs.example.com/1', 'example.com', 'A seeded listing.', 82, 'Matches the profile.', 80, 'real')
        ON CONFLICT (content_hash) DO NOTHING`
     );
+    // Linked tasks (roadmap T2.4): written by services/linked-tasks.js, never
+    // by a route — one rent task kept in step with Perfin's Rent page.
+    await db.query(
+      `INSERT INTO todos (title, priority, horizon, category, due_date, source_app, source_key, source_url, source_snapshot)
+       VALUES ('E2E pay rent', 'high', 'short', 'finance', $1::date, 'perfin', 'perfin:housing:e2e', '/housing',
+               jsonb_build_object('title', 'E2E pay rent', 'description', NULL, 'due_date', $1::text, 'priority', 'high'))
+       ON CONFLICT (source_key) WHERE source_key IS NOT NULL DO NOTHING`, [ymd(2)]
+    );
   } finally { await db.end(); }
 }
 
