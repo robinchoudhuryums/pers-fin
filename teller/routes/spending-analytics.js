@@ -11,8 +11,8 @@
 const express = require("express");
 const router = express.Router();
 const { pool } = require("../services/database");
-const { seriesOccurrences, incomeEventsBetween } = require("../services/cadence");
-const { INCOME_AMOUNT, incomePredicate, NOT_TRANSFER, SPLIT_AMOUNT, spendLinesCTE, NET_CATEGORY_MONTHS, INVESTMENT_ACCOUNT_TYPES, getLiveIncomeStreams, getMonthlySpending, getMonthlyIncome, getCategorySpendingForMonth, currentMonth, todayStr } = require("../services/financial-queries");
+const { getCashFlowForecast } = require("../services/cash-flow");
+const { INCOME_AMOUNT, incomePredicate, spendLinesCTE, NET_CATEGORY_MONTHS, getMonthlySpending, getMonthlyIncome, getCategorySpendingForMonth, currentMonth, todayStr } = require("../services/financial-queries");
 
 // The one query here that JOINs linked_accounts must qualify its column refs
 // (`name` exists on both tables — the unqualified form 500'd /api/income-summary
@@ -161,202 +161,18 @@ router.get("/api/spending-summary", async (req, res) => {
   }
 });
 
-// GET /api/cash-flow — Rolling 60/90-day cash flow projection
+// GET /api/cash-flow — Rolling 30–180-day cash flow projection. The projection
+// lives in services/cash-flow.js (roadmap T2.2 L1) so the cash alerts read the
+// same numbers; this route returns its fields (not the daily series) plus the
+// lowest projected day.
 router.get("/api/cash-flow", async (req, res) => {
   const days = Math.min(Math.max(parseInt(req.query.days) || 90, 30), 180);
   try {
-    // Recurring income = the SAME live streams the bill calendar projects
-    // (getLiveIncomeStreams → services/cadence.js, F34): per-source amount
-    // clusters, weekly / biweekly / semimonthly / monthly cadence, stale
-    // streams dropped, renames honored. The old inline classifier grouped by
-    // amount only, had no semimonthly cadence and kept a quit job paying.
-    const incomeStreams = await getLiveIncomeStreams(pool);
-    const CADENCE_DAYS = { weekly: 7, biweekly: 14, semimonthly: 15, monthly: 30 };
-    const recurringIncome = incomeStreams.map((s) => ({
-      source: s.source,
-      amount: s.amount,
-      cadence: s.cadence,
-      cadence_days: CADENCE_DAYS[s.cadence] || null,
-      last_date: s.last,
-      ...(s.days ? { days_of_month: s.days } : {}),
-    }));
-
-    // Get upcoming bills from subscriptions + recurring transfers
-    const [subsResult, transfersResult] = await Promise.all([
-      pool.query(`
-        SELECT display_name, amount, cadence_days, next_expected, last_charged AS last_date
-        FROM detected_subscriptions
-        WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL
-          AND next_expected IS NOT NULL
-      `),
-      pool.query(`
-        SELECT display_name, amount, cadence_days, next_expected, last_transferred AS last_date, transfer_type, direction
-        FROM recurring_transfers
-        WHERE is_active = true AND is_dismissed = false
-          AND next_expected IS NOT NULL AND direction = 'outgoing'
-      `),
-    ]);
-
-    // Combine subscriptions and outgoing recurring transfers into bill schedule.
-    // DD-4: card AUTOPAYS (bill_payment transfers that aren't a loan/mortgage)
-    // are skipped — the card purchases they pay off are already in the daily
-    // spending average below, so billing the autopay too double-counted card
-    // spending ($2k of card purchases + a $2k autopay projected $4k/month).
-    // Loan / mortgage payments stay: their outflow isn't in the average
-    // (NOT_TRANSFER excludes it).
-    const isCardAutopay = (tr) => tr.transfer_type === "bill_payment"
-      && !/\b(loan|mortgage)\b/i.test(tr.display_name || "");
-    const allBills = [...subsResult.rows, ...transfersResult.rows.filter(tr => !isCardAutopay(tr))];
-
-    // Pre-compute next occurrence for each bill (once, not per-day)
-    // Occurrences step by CALENDAR MONTH for month-scale cadences (DC-9) — a
-    // fixed 30-day step drifted and could double-bill a month.
-    const now = new Date();
-    const todayUtc = now.toISOString().slice(0, 10);
-    const endUtc = new Date(now.getTime() + (days + 1) * 86400000).toISOString().slice(0, 10);
-    const billSchedule = allBills.map(sub => {
-      const occurrences = seriesOccurrences(sub.last_date, sub.next_expected, sub.cadence_days, todayUtc, endUtc);
-      return { name: sub.display_name, amount: parseFloat(sub.amount), dates: new Set(occurrences) };
-    });
-    // Income events over the same window, keyed by date.
-    const incomeByDate = new Map();
-    for (const stream of incomeStreams) {
-      for (const date of incomeEventsBetween(stream, todayUtc, endUtc)) {
-        incomeByDate.set(date, (incomeByDate.get(date) || 0) + stream.amount);
-      }
-    }
-
-    // Get current balances
-    // Spendable cash = DEPOSITORY accounts only (FAN-5). `type != 'credit'`
-    // counted loans (+$18k for an $18k auto loan) and Teller-linked brokerage /
-    // IRA balances as cash, inflating every projected balance.
-    const balResult = await pool.query(`
-      SELECT SUM(CASE WHEN la.type = 'depository' AND NOT ${INVESTMENT_ACCOUNT_TYPES}
-                      THEN COALESCE(la.available_balance, la.current_balance, 0) ELSE 0 END) AS cash,
-             SUM(CASE WHEN la.type = 'credit' THEN COALESCE(la.current_balance, 0) ELSE 0 END) AS debt
-      FROM linked_accounts la
-      WHERE la.available_balance IS NOT NULL OR la.current_balance IS NOT NULL
-    `);
-    let runningBalance = parseFloat(balResult.rows[0]?.cash || 0);
-
-    // Detected subscriptions are projected as scheduled bills above, so their
-    // charges must NOT also sit in the daily average (DD-4 — the comment below
-    // always claimed this; the queries never did it). Same key expression and
-    // same filter as detection's merchant_key / the bill-schedule query.
-    const NOT_SUBSCRIPTION = `NOT EXISTS (
-          SELECT 1 FROM detected_subscriptions ds
-          WHERE ds.is_active = true AND ds.is_dismissed = false AND ds.cancelled_at IS NULL
-            AND ds.next_expected IS NOT NULL
-            AND ds.merchant_key = COALESCE(t.user_merchant_name, t.merchant_name, LOWER(REGEXP_REPLACE(t.name, '[^a-zA-Z0-9 ]', '', 'g')))
-        )`;
-
-    // Get average daily discretionary spending (last 60 days, excluding subscription bills)
-    // Also apply spending split for shared accounts
-    const avgSpendResult = await pool.query(`
-      SELECT COALESCE(AVG(daily_total), 0) AS avg_daily
-      FROM (
-        SELECT t.date, ROUND(SUM(${SPLIT_AMOUNT}), 2) AS daily_total
-        FROM transactions t
-        LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-        WHERE t.amount > 0 AND t.pending = false
-          AND COALESCE(t.is_reimbursed, false) = false
-          AND ${NOT_TRANSFER}
-          AND ${NOT_SUBSCRIPTION}
-          AND t.date >= CURRENT_DATE - INTERVAL '60 days'
-        GROUP BY t.date
-      ) daily
-    `);
-    const avgDailySpend = parseFloat(avgSpendResult.rows[0]?.avg_daily || 0);
-
-    // Get per-day-of-week spending averages for more realistic variation.
-    // Generate every date in the 60-day window so that days with zero spending
-    // are still included in each DOW's average — otherwise days with no debits
-    // would skew the per-DOW means upward.
-    const dowSpendResult = await pool.query(`
-      WITH date_series AS (
-        SELECT d::date AS date
-        FROM generate_series(CURRENT_DATE - INTERVAL '60 days', CURRENT_DATE, '1 day'::interval) d
-      ),
-      daily_totals AS (
-        SELECT t.date,
-               SUM(${SPLIT_AMOUNT}) AS daily_total
-        FROM transactions t
-        LEFT JOIN linked_accounts la ON la.account_id = t.account_id
-        WHERE t.amount > 0 AND t.pending = false
-          AND COALESCE(t.is_reimbursed, false) = false
-          AND ${NOT_TRANSFER}
-          AND ${NOT_SUBSCRIPTION}
-          AND t.date >= CURRENT_DATE - INTERVAL '60 days'
-        GROUP BY t.date
-      )
-      SELECT EXTRACT(DOW FROM ds.date) AS dow,
-             COALESCE(AVG(COALESCE(dt.daily_total, 0)), 0) AS avg_daily
-      FROM date_series ds
-      LEFT JOIN daily_totals dt USING (date)
-      GROUP BY EXTRACT(DOW FROM ds.date)
-    `);
-    const dowSpend = {};
-    for (const r of dowSpendResult.rows) dowSpend[parseInt(r.dow)] = parseFloat(r.avg_daily);
-
-    let totalIncome = 0;
-    let totalBills = 0;
-    let totalDiscretionary = 0;
-    const projection = [];
-
-    for (let d = 0; d < days; d++) {
-      const date = new Date(now.getTime() + (d + 1) * 86400000);
-      const dateStr = date.toISOString().split("T")[0];
-      const dow = date.getDay();
-      const dayIncome = incomeByDate.get(dateStr) || 0;
-      let dayBills = 0;
-
-      // Check for bills (using pre-computed schedule)
-      for (const bill of billSchedule) {
-        if (bill.dates.has(dateStr)) dayBills += bill.amount;
-      }
-
-      // Use day-of-week spending average if available, else overall average
-      const daySpend = dowSpend[dow] !== undefined ? dowSpend[dow] : avgDailySpend;
-
-      runningBalance += dayIncome - dayBills - daySpend;
-      totalIncome += dayIncome;
-      totalBills += dayBills;
-      totalDiscretionary += daySpend;
-
-      projection.push({
-        date: dateStr,
-        income: Math.round(dayIncome * 100) / 100,
-        bills: Math.round(dayBills * 100) / 100,
-        discretionary: Math.round(daySpend * 100) / 100,
-        balance: Math.round(runningBalance * 100) / 100,
-      });
-    }
-
-    // Weekly summary
-    const byWeek = [];
-    for (let w = 0; w < Math.ceil(days / 7); w++) {
-      const weekSlice = projection.slice(w * 7, (w + 1) * 7);
-      byWeek.push({
-        week: w + 1,
-        start_date: weekSlice[0]?.date,
-        income: Math.round(weekSlice.reduce((s, d) => s + d.income, 0) * 100) / 100,
-        bills: Math.round(weekSlice.reduce((s, d) => s + d.bills, 0) * 100) / 100,
-        discretionary: Math.round(weekSlice.reduce((s, d) => s + d.discretionary, 0) * 100) / 100,
-        end_balance: weekSlice[weekSlice.length - 1]?.balance || 0,
-      });
-    }
-
+    const { projection, lowest, ...forecast } = await getCashFlowForecast(pool, { days });
     res.json({
-      forecast_days: days,
-      starting_balance: parseFloat(balResult.rows[0]?.cash || 0),
-      avg_daily_spend: Math.round(avgDailySpend * 100) / 100,
-      total_projected_income: Math.round(totalIncome * 100) / 100,
-      total_projected_bills: Math.round(totalBills * 100) / 100,
-      total_projected_discretionary: Math.round(totalDiscretionary * 100) / 100,
-      ending_balance: projection[projection.length - 1]?.balance || 0,
-      surplus_shortfall: Math.round((totalIncome - totalBills - totalDiscretionary) * 100) / 100,
-      recurring_income: recurringIncome,
-      by_week: byWeek,
+      ...forecast,
+      lowest_balance: lowest ? lowest.balance : null,
+      lowest_balance_date: lowest ? lowest.date : null,
     });
   } catch (err) {
     console.error("cash-flow error:", err.message);

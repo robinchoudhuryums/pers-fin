@@ -12,13 +12,29 @@ to the "none in progress" state.
 Cycle: 7
 Phase: implement
 Scope: broad (Oct 2026 broad scan — all non-frozen subsystems + cycle-6 policy responses)
-Updated: 2026-10-22
+Updated: 2026-10-23
 
 (Machine-read fields for the v1.43.0 commands: the next /broad-scan,
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T2.1 (bank webhooks) — W6 DONE; T2.1 COMPLETE** on branch
+- **Status:** **Roadmap T2.2 (low-balance and payday alerts) — L1 DONE** on branch
+  `claude/sweet-ritchie-f9d8ah` (2026-10-23, in PR robinchoudhuryums/pers-fin#133). Plan:
+  `.cycle/plan-t2-2-cash-alerts.md` (decisions accepted). Block:
+  `.cycle/blocks/7-roadmap-t2-2-l1-broad-implement.md`.
+  - **Completed:** services/cash-flow.js — getCashFlowInputs (the forecast's reads, moved),
+    the pure projectCashFlow (calendar-date days from the APP_TIMEZONE today, the daily
+    projection + the lowest day), firstBelow, getCashFlowForecast; GET /api/cash-flow a thin
+    wrapper adding lowest_balance / lowest_balance_date; the dashboard "Lowest projected" figure.
+    Docs folded in.
+  - **Verification:** npm 2026/2026 (18 new); contract 191/191 (2 new); Playwright 57/57; no
+    schema change; three mutation checks red.
+  - **Decisions:** the route returns the old fields + the lowest day, never the daily series; the
+    60-day spending averages keep their CURRENT_DATE window (documented rolling window).
+  - **Follow-ons:** see Known Open Issues (T2.2 L1 follow-ons).
+  - **Where I left off:** L1 committed and pushed with docs. NEXT: `/broad-implement L2` (low
+    projected cash alert — settings, runCashAlerts, the cash-alerts away job, Settings form).
+- **Previous status:** **Roadmap T2.1 (bank webhooks) — W6 DONE; T2.1 COMPLETE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-22, in PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-1-webhooks.md`. Block: `.cycle/blocks/7-roadmap-t2-1-w6-broad-implement.md`.
   - **Completed:** services/webhook-status.js (getWebhookStatus — per-provider last event / 24h

@@ -88,6 +88,8 @@ describe("F35: every spending surface reads spend_lines", () => {
   it("the cash-flow forecast stays charge-level on purpose", () => {
     const cf = routeBody(sa, "/api/cash-flow");
     assert.doesNotMatch(cf, /spendLinesCTE|REFUND_PREDICATE/);
+    // The projection itself lives in services/cash-flow.js (roadmap T2.2 L1).
+    assert.doesNotMatch(read("teller/services/cash-flow.js"), /spendLinesCTE|REFUND_PREDICATE/);
   });
 
   it("the Sheets Dashboard reads net_cat_months for totals, categories, merchants, KPIs and budgets", () => {

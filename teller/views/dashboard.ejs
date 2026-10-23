@@ -2921,6 +2921,7 @@
         document.getElementById('cashflow-summary').innerHTML =
           'Starting balance: <strong style="color:var(--teal);">' + fmt(data.starting_balance) + '</strong>' +
           ' &bull; Projected end: <strong style="color:' + surplusColor + ';">' + fmt(data.ending_balance) + '</strong>' +
+          (data.lowest_balance_date ? ' &bull; Lowest projected: <strong style="color:' + (data.lowest_balance < 0 ? 'var(--red)' : 'var(--warm)') + ';">' + fmt(data.lowest_balance) + '</strong> on ' + fmtDate(data.lowest_balance_date) : '') +
           ' &bull; Daily discretionary: <strong style="color:var(--warm);">' + fmt(data.avg_daily_spend) + '</strong>' +
           (data.recurring_income.length > 0 ? ' &bull; Income sources: ' + data.recurring_income.map(function(i) { return esc(i.source); }).join(', ') : '');
         var html = '<div class="table-wrap"><table style="width:100%;font-size:12px;border-collapse:collapse;">';

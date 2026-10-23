@@ -189,6 +189,19 @@ teller/
                            a refund takes the merchant's latest earlier charge category)
                            and NET_CATEGORY_MONTHS (per month + category floored at $0)
                            are the ONE spending-line source every spending surface reads
+    cash-flow.js         — The cash-flow forecast (roadmap T2.2 L1), moved out of
+                           GET /api/cash-flow so the cash alerts read the same
+                           numbers: getCashFlowInputs(pool, { today }) (live income
+                           streams, active subscriptions + outgoing recurring
+                           transfers minus card autopays — DD-4 — spendable cash
+                           — FAN-5 — and the 60-day weekday / overall spending
+                           averages without subscription merchants), the PURE
+                           projectCashFlow(inputs, { days }) (today+1 … today+days
+                           on calendar dates; the route's fields + the daily
+                           `projection` + `lowest` { date, balance }), firstBelow
+                           (projection, threshold) and getCashFlowForecast. "Today"
+                           is todayStr() (APP_TIMEZONE — the route used the UTC
+                           date). Charge-level (no refund netting, F35)
     projections.js       — FIRE/runway/loan math (pure): computeFireProjection
                            (FIRE number = annual spend × 100/withdrawal-rate,
                            monthly geometric compounding, 40-yr series) +
@@ -816,9 +829,18 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2008 tests as of latest); use
+  Perfin and Per-sistant test files (2026 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2008 tests across 101 test files (incl.
+  Current count: 2026 tests across 102 test files (incl.
+  `tests/roadmap-t2-2-cash-l1.test.js` — roadmap T2.2 L1: projectCashFlow over canned
+  inputs (calendar dates across a month end, a monthly bill and pay, the exact running
+  balance, the lowest day the weekly end balances hide, firstBelow, weekday vs overall
+  averages, a semimonthly stream), getCashFlowInputs over a mock pool (card autopay
+  skipped, `today` threaded into the streams' liveness, the FAN-5 / DD-4 query rules),
+  GET /api/cash-flow as a thin wrapper (old fields + lowest_balance / lowest_balance_date,
+  no daily series, 30–180 clamp) starting the day after the APP_TIMEZONE date (the file
+  forces a zone whose date differs from UTC's), and the dashboard's "Lowest projected"
+  line run from dashboard.ejs — the database-backed half is `tests/contract/cash-flow-l1`;
   `tests/roadmap-t2-webhooks-w6.test.js` — roadmap T2.1 W6: getWebhookStatus (per-provider
   events, the PUBLIC_URL-prefix registration SQL, the Teller count, RENDER_EXTERNAL_URL
   never counting, fail-soft parts), every webhookChecks branch, getOperatorChecks reusing a
@@ -1240,7 +1262,11 @@ shell/
   status, 24h count / failures with an older row not counted — the failed-event issue,
   per-connection freshness without CSV items or suspended enrollments and with the
   re-auth state; the not-registered warning for an Item registered at another address,
-  gone after Register; Teller without a secret as info). 189 tests, run
+  gone after Register; Teller without a secret as info), and cash-flow-l1 (roadmap T2.2
+  L1: GET /api/cash-flow and getCashFlowForecast agreeing on real rows — brokerage, card and
+  loan not spendable, the card autopay not billed, a biweekly payroll stream, a
+  subscription and a loan payment on their days — the lowest projected day and
+  firstBelow). 191 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -2166,6 +2192,11 @@ shell/
   in the name) are NOT billed — the card purchases they pay off are already in
   the average. Loan/mortgage payments are still billed. Bill dates step by
   calendar month from each bill's last real charge (`seriesOccurrences`, DC-9).
+  The projection lives in `services/cash-flow.js` (roadmap T2.2 L1 — shared with the
+  cash alerts), starts the day after the APP_TIMEZONE date (it used the UTC date, so
+  west of UTC an evening forecast started a day late) and reports the lowest projected
+  day (`lowest_balance` / `lowest_balance_date`), which the weekly table hides; the
+  dashboard Cash Flow line shows "Lowest projected: $X on <date>" (red below $0).
 - **Savings rate**: Income vs spending analysis with configurable lookback (default 3 months)
 - **Year-over-year comparisons**: Month-by-month spending comparison vs prior year.
   For the CURRENT (in-progress) month every year is capped at today's day-of-month,
@@ -3090,7 +3121,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2008 tests passing across 101 test files (Perfin 1457 + Per-sistant 551), plus the real-Postgres route contract suite (189 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2026 tests passing across 102 test files (Perfin 1475 + Per-sistant 551), plus the real-Postgres route contract suite (191 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -3353,9 +3384,11 @@ GET  /api/spending-summary # monthly trends, categories, top merchants (split-ad
                            # F41 — they were a rolling UTC `CURRENT_DATE − N months`).
 GET  /api/spending-categories # per-month category breakdown (query: month=YYYY-MM;
                            # splits/reimbursed/share-adjusted via getCategorySpendingForMonth)
-GET  /api/cash-flow        # rolling cash flow projection (query: days, default 90);
+GET  /api/cash-flow        # rolling cash flow projection (query: days 30-180, default 90);
                            # income from getLiveIncomeStreams (the bill calendar's
-                           # streams — F34)
+                           # streams — F34). services/cash-flow.js (T2.2 L1); starts
+                           # the day after the APP_TIMEZONE date; adds lowest_balance /
+                           # lowest_balance_date (the lowest projected day)
 GET  /api/savings-rate     # income vs spending analysis (query: months, default 3)
 GET  /api/income-summary   # income trend + top sources + by_account (query: months, default 6).
                            # Window anchored on the APP_TIMEZONE month; avg_monthly_income
@@ -5472,6 +5505,12 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   email's attachments or warn before Send that one's file is missing (the refusal
   arrives as the send's error toast); Retry sends a failed SCHEDULED email at once
   rather than offering to reschedule it.
+- Roadmap T2.2 (low-balance and payday alerts) is IN PROGRESS (`.cycle/plan-t2-2-cash-alerts.md`,
+  L1–L4): L1 (the forecast as `services/cash-flow.js`, APP_TIMEZONE today, the lowest
+  projected day) is done; L2 (low projected cash alert), L3 (payday landed / missed) and L4
+  (account floors, visibility, the new invariant) are planned. L1 follow-ons: the 60-day
+  spending averages still use Postgres `CURRENT_DATE` (a documented rolling window); the
+  projection is one total across depository accounts (per-account floors come in L4).
 - Roadmap T2.1 (bank webhooks) is DONE (`.cycle/plan-t2-1-webhooks.md`, W1–W6:
   receivers, event log, signature verification, Plaid transaction / item / holdings /
   investment-transaction events, webhook registration, Teller transactions.processed /
@@ -5643,6 +5682,7 @@ Detection & Categorization:
   scripts/detect-subscriptions.js, scripts/detect-transfers.js
 Financial Analytics:
   teller/services/financial-queries.js, teller/routes/spending-analytics.js,
+  teller/services/cash-flow.js,
   teller/services/projections.js, teller/routes/budgets.js,
   teller/routes/goals.js, teller/routes/credit-scores.js,
   teller/routes/whats-new.js, teller/routes/watchlist.js,

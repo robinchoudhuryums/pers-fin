@@ -210,9 +210,10 @@ describe("DC-9 — month-scale cadences step by calendar month", () => {
     const subs = read("teller", "routes", "subscriptions.js");
     assert.match(subs, /nextExpected = nextOccurrence\(today, parsedCadence\)/);
     assert.doesNotMatch(subs, /cadence(_days)? \* 86400000/);
-    const sa = read("teller", "routes", "spending-analytics.js");
-    assert.match(sa, /seriesOccurrences\(sub\.last_date, sub\.next_expected, sub\.cadence_days, todayUtc, endUtc\)/);
-    assert.doesNotMatch(sa, /cadence \* 86400000/);
+    // The forecast moved to services/cash-flow.js (roadmap T2.2 L1).
+    const cf = read("teller", "services", "cash-flow.js");
+    assert.match(cf, /seriesOccurrences\(b\.last_date, b\.next_expected, b\.cadence_days, today, end\)/);
+    assert.doesNotMatch(cf, /cadence(_days)? \* 86400000/);
   });
 });
 
