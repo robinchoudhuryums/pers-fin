@@ -185,6 +185,11 @@ async function runMigrationsOnce() {
       transaction_id TEXT PRIMARY KEY,
       deleted_at     TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
+    // Roadmap T2.5 U1: the deleted row (and its splits) as it was —
+    // { row, splits } — so Restore can put it back, and the connection it came
+    // from (teller / plaid / csv / manual). NULL on a tombstone written before.
+    await client.query("ALTER TABLE deleted_transactions ADD COLUMN IF NOT EXISTS snapshot JSONB");
+    await client.query("ALTER TABLE deleted_transactions ADD COLUMN IF NOT EXISTS source TEXT");
     await client.query(`CREATE TABLE IF NOT EXISTS detected_subscriptions (
       id             SERIAL PRIMARY KEY,
       merchant_key   TEXT NOT NULL,

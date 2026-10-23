@@ -913,9 +913,16 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2237 tests as of latest); use
+  Perfin and Per-sistant test files (2252 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2237 tests across 117 test files (incl.
+  Current count: 2252 tests across 118 test files (incl.
+  `tests/roadmap-t2-5-u1.test.js` — roadmap T2.5 U1: the DELETE snapshotting the row + splits and
+  its source under FOR UPDATE before the tombstone (404 writes nothing), restoreDeleted over a fake
+  client (only current non-id columns, the splits, the tombstone lifted, an already-present row not
+  duplicated, a gone account a 409 with nothing written, a pre-U1 tombstone lifted with returns_on and
+  a pre-U1 manual entry a 409), the route's COMMIT / ROLLBACK / fixed 500, the list's 400s, mapping and
+  keyset cursor, and the CSV preview / import / CLI skipping a tombstoned id — the database-backed half
+  is `tests/contract/undelete-t2-5`;
   `apps/per-sistant/tests/roadmap-t2-4-x3b.test.js` — roadmap T2.4 X3b: renderSearchResults run in a
   vm from the emitted bundle (each Per-sistant type through BASE_PATH, the done label, the inline
   actions only when asked and never on a Perfin row, Perfin rows through linkedAppHref — a
@@ -1531,7 +1538,12 @@ shell/
   Per-sistant's search finding a 50%-shared-card transaction by merchant, note and category at
   the user's share with its Activity link, an active subscription / bill / goal / account but
   not a cancelled subscription or the Plaid brokerage phantom, "100%" matched literally, and
-  nothing from Perfin standalone). 231 tests, run
+  nothing from Perfin standalone), and undelete-t2-5 (roadmap T2.5 U1: a Teller row with a rename,
+  notes, a category and two splits deleted — snapshot + source kept — skipped by a reconcile, then
+  restored with all of them and updated, not duplicated, by the next reconcile; a Plaid row skipped by
+  a re-delivery and restored with its text[] category; a re-imported CSV file skipping the deleted row
+  until it's restored; a restore after the account was removed a 409 that changes nothing; the list
+  paged newest first by its cursor and a pre-U1 tombstone lifted with returns_on). 236 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -1856,9 +1868,17 @@ shell/
   the id in `deleted_transactions` (same transaction as the delete), and the Teller and Plaid
   upserts are `INSERT … SELECT … WHERE NOT EXISTS (deleted_transactions)` — the 7-day lookback,
   the weekly reconcile and a Plaid reconcile used to re-insert a row the duplicate cleanup had
-  removed. A skipped row is neither inserted nor counted and isn't a failed page. CSV imports
-  don't check the tombstone (re-importing the same file brings a hand-deleted CSV row back);
-  there is no undelete. **CSV-overlap (F21)** pairs a CSV row with a synced row one-to-one, only
+  removed. A skipped row is neither inserted nor counted and isn't a failed page. **Undelete
+  (roadmap T2.5 U1):** the DELETE also keeps the row and its splits as they were
+  (`deleted_transactions.snapshot`) and the connection it came from (`source`: teller / plaid /
+  csv / manual); `POST /api/deleted-transactions/:id/restore` puts the snapshot back (category,
+  notes, rename, splits — only the columns `transactions` still has, a new id) and lifts the
+  tombstone in one transaction, never duplicating a row already there, and refuses (409,
+  nothing changed) once the account is gone. A tombstone written before U1 has no snapshot:
+  Restore lifts it and says how the row returns (`returns_on`: reconcile / csv_reimport), and
+  a manual entry deleted before U1 can't be restored. CSV imports honour the tombstone too
+  (preview, import and CLI — `rows_deleted`), so re-importing a file no longer brings back a
+  row you deleted. **CSV-overlap (F21)** pairs a CSV row with a synced row one-to-one, only
   when the merchants look alike (a shared word of 3+ letters, or a ≥4-letter prefix, noise words
   ignored; the synced row's raw description is tried too), closest date first — amount + date
   alone matched two different $4.50 coffees and let one synced row claim every same-amount CSV
@@ -3437,7 +3457,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2237 tests passing across 117 test files (Perfin 1579 + Per-sistant 658), plus the real-Postgres route contract suite (231 tests; CI `migrations` job, `npm run test:contract`) and 61 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2252 tests passing across 118 test files (Perfin 1594 + Per-sistant 658), plus the real-Postgres route contract suite (236 tests; CI `migrations` job, `npm run test:contract`) and 61 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -3602,7 +3622,18 @@ POST /api/transactions/manual # add a one-off manual EXPENSE (e.g. cash spending
                             # transaction_id (never touched by re-sync), notes→user_notes.
 DELETE /api/transactions/:id # delete a single transaction (deduplication tool); the id is
                             # recorded in deleted_transactions so a Teller/Plaid re-fetch
-                            # can't re-insert it (F20)
+                            # or CSV re-import can't re-insert it (F20), with the row + its
+                            # splits as a snapshot and its source (T2.5 U1)
+GET  /api/deleted-transactions # deleted transactions, newest first (query: limit 1-200
+                            # default 50, before = the previous page's `next`) →
+                            # { items: [{ transaction_id, deleted_at, source, legacy,
+                            # restorable, date, merchant, amount, account_name,
+                            # splits_count }], next } (roadmap T2.5 U1)
+POST /api/deleted-transactions/:id/restore # put it back from its snapshot and lift the
+                            # tombstone, one transaction → { restored: true,
+                            # already_present, splits }; 404 unknown; 409 when its account
+                            # is gone; a pre-U1 tombstone → { restored: false, cleared,
+                            # returns_on: reconcile | csv_reimport } (a manual one 409s)
 GET  /api/transactions/:id/splits # list splits for a transaction (Phase B3)
 POST /api/transactions/:id/splits # replace splits, validates sum matches parent ±$0.01
 DELETE /api/transactions/:id/splits # clear all splits, revert to parent-row aggregation
@@ -3897,12 +3928,15 @@ POST /api/import-csv/preview # dry-run a CSV import: detect format + classify ea
                            # row new/duplicate/skipped vs existing transaction_ids,
                            # WITHOUT writing. Returns { format_detected, account_label,
                            # rows_total, rows_parseable, rows_skipped, rows_new,
-                           # rows_duplicate, positive_means, sign_guess, sample[] }.
+                           # rows_duplicate, rows_deleted (ids you deleted — skipped,
+                           # T2.5 U1; sample status "deleted"), positive_means,
+                           # sign_guess, sample[] }.
                            # Backs the two-step upload modal. body positive_means
                            # (charges|deposits — generic files only; 400 otherwise;
                            # null in the response for a known format — F26).
 POST /api/import-csv       # import bank CSV file (with deduplication). Returns
-                           # { rows_imported, rows_skipped, rows_duplicate, format_detected }
+                           # { rows_imported, rows_skipped, rows_duplicate, rows_deleted,
+                           # format_detected } (a deleted id is never re-imported — T2.5 U1)
                            # (rows_skipped = unparseable only, matching the preview).
                            # A name-matched manual account's balance is rolled
                            # forward by the new post-balance rows (DC-6). Takes the
@@ -4343,7 +4377,10 @@ standalone-mode fallback if either app is run on its own Render service.
   reach it. Auto-migrated.
 - `deleted_transactions` (cycle-7 F20): `transaction_id TEXT PRIMARY KEY` +
   `deleted_at` — ids the user deleted via `DELETE /api/transactions/:id`; the
-  Teller and Plaid upserts skip them. In reset-fresh's WIPE_TABLES.
+  Teller and Plaid upserts and the CSV import / CLI skip them. Roadmap T2.5 U1 adds
+  `snapshot JSONB` (`{ row: to_jsonb(transaction), splits: [...] }`, written by the
+  DELETE; NULL on an older tombstone) and `source TEXT` (teller / plaid / csv / manual).
+  Restore deletes the row. In reset-fresh's WIPE_TABLES.
 - `transaction_splits` (Phase B3): subdivides a single Teller transaction into
   multiple `(amount, category, merchant_name, notes)` rows that REPLACE the
   parent in per-category aggregations. `parent_transaction_id` references
@@ -5780,9 +5817,14 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   the Rent page has no "+ add item" UI, so a removed placeholder comes back only
   via `POST /api/housing/obligations`; `apps-script/Code.gs` keeps the pre-F32
   NOT_TRANSFER keyword list. Batch 5 follow-ons / later batches.
-- A deleted transaction has no undelete (its `deleted_transactions` row would
-  need clearing), and a CSV re-import doesn't honor the tombstone. Batch 6
-  follow-ons.
+- Roadmap T2.5 (transaction undelete + iOS re-authenticate) is IN PROGRESS
+  (`.cycle/plan-t2-5-undelete-ios-reauth.md`, U1 / U2 / H1). U1 shipped the server side of
+  undelete — the delete's snapshot, `GET /api/deleted-transactions`, `POST
+  /api/deleted-transactions/:id/restore` — and CSV imports that skip a deleted row (the Batch 6
+  follow-ons). There is no page for it until U2 (Settings list + the Activity page's Undo).
+  U1 follow-ons: a tombstone written before U1 shows only its id; Restore never starts a
+  reconcile itself (a pre-U1 Teller / Plaid row needs Reconcile Now); snapshots are kept until
+  a reset (no "delete forever").
 - The dashboard Review widget doesn't show `rule_error` (a too-short "Remember"
   rule is silently not created); `ai_skipped_at` can't be cleared early (e.g.
   after switching the AI model); the rules list doesn't flag a stored rule
@@ -6306,7 +6348,7 @@ INV-107 | A Plaid link (exchange-transactions / hosted-link-complete / the inves
 INV-108 | The CSV workflow deletes only files the CLI imported (CSV_IMPORTED_LIST); the CLI exits non-zero on any failed file | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-oct-batch4.test.js (F19 block)
 INV-109 | NOT_TRANSFER matches bank/processor BRAND words on the cleaned merchant only (payment/transfer phrases may read the raw description), and excludes a row categorized Transfer or Investment (user category, or the provider category for a non-Plaid row) | Subsystem: Financial Analytics | Verify: tests/contract/money-classification.contract.test.js (F32/F51) + SX3
 INV-110 | Income aggregates count a deposit at its account's share (INCOME_AMOUNT = −SPLIT_AMOUNT); the cash-flow forecast and bill calendar project the same live income streams (getLiveIncomeStreams) | Subsystem: Financial Analytics | Verify: tests/contract/money-classification.contract.test.js (F37/F34)
-INV-111 | A transaction the user deleted is never re-inserted by a provider sync or reconcile: the Teller and Plaid upserts skip ids in deleted_transactions (written in the same transaction as the DELETE) | Subsystem: Bank Sync & Ingestion | Verify: tests/contract/delete-feeds.contract.test.js (F20) + tests/scan-oct-batch6.test.js
+INV-111 | A transaction the user deleted is never re-inserted by a provider sync, reconcile or CSV import (route or CLI — T2.5 U1): the Teller and Plaid upserts and the CSV inserts skip ids in deleted_transactions (written, with the row's snapshot, in the same transaction as the DELETE); only POST /api/deleted-transactions/:id/restore brings one back | Subsystem: Bank Sync & Ingestion | Verify: tests/contract/delete-feeds.contract.test.js (F20) + tests/scan-oct-batch6.test.js + tests/roadmap-t2-5-u1.test.js + tests/contract/undelete-t2-5.contract.test.js
 INV-112 | Categorization rules apply most-specific first (RULE_ORDER_SQL, never by times_applied); saving a rule deactivates the merchant's active rules for other categories; a blank or <3-character contains/starts_with pattern is never stored or applied; the AI write only fills a still-uncategorized row; a row the AI left unanswered is not re-sent for 30 days (ai_skipped_at) | Subsystem: Detection & Categorization | Verify: tests/contract/categorize-rules.contract.test.js + tests/scan-oct-batch7.test.js
 INV-113 | The tier-1 audit judges a dollar claim by its own sentence/clause (claimPeriodWindow) and never compares a claim about another named month (claimNamesOtherMonth) or another period with this month's actuals; tier-2 captures bounded Capitalized names, split on and/or/vs | Subsystem: AI Insights & Audit | Verify: tests/scan-oct-batch8.test.js + tests/contract/ai-trust.contract.test.js
 INV-114 | The Sheets export places manual bills and recurring transfers with the app's own cadence rules (cadence.manualBillOccurrences / seriesOccurrences, APP_TIMEZONE today) — never a SQL re-derivation (LEAST(due_day, 28), last + cadence_days); Sheets runs are single-flight (singleFlight: same kind shares, different kind waits) | Subsystem: Sheets & External Export | Verify: tests/contract/sheets-crossapp.contract.test.js + tests/scan-oct-batch9.test.js (F78)

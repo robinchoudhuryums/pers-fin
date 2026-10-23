@@ -18,7 +18,20 @@ Updated: 2026-10-23
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T2.5 (transaction undelete + iOS re-authenticate) — PLANNED, split into 3
+- **Status:** **Roadmap T2.5 (transaction undelete + iOS re-authenticate) — U1 DONE** (2026-10-23,
+  branch `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
+  `.cycle/plan-t2-5-undelete-ios-reauth.md`. Block: `.cycle/blocks/7-roadmap-t2-5-u1-broad-implement.md`.
+  - **Completed:** the delete keeps the row + splits (snapshot) and its source; GET
+    /api/deleted-transactions; POST /api/deleted-transactions/:id/restore (one transaction, current
+    columns only, no duplicate, 409 when the account is gone; a pre-U1 tombstone lifted with
+    returns_on); the CSV preview / import / CLI skip a deleted row (rows_deleted).
+  - **Decisions:** a pre-U1 manual tombstone is a 409; a pre-U1 Teller / Plaid one says "reconcile"
+    (no date to judge the 7-day lookback); a restored row gets a new serial id.
+  - **Tests:** npm 2252/2252 (15 new), contract 236/236 (5 new), migrations x2, Playwright 61/61;
+    13 mutations red.
+  - **Where I left off:** U1 committed. NEXT: `/broad-implement U2` (Settings list + Activity Undo),
+    then H1.
+- **Previous status (T2.5 plan):** **Roadmap T2.5 (transaction undelete + iOS re-authenticate) — PLANNED, split into 3
   batches** (2026-10-23, branch `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133).
   Plan: `.cycle/plan-t2-5-undelete-ios-reauth.md`.
   - **Batches:**
@@ -32,7 +45,7 @@ implement and reflect sessions only set Phase.)
     - CSV re-import skips deleted rows.
     - Hosted update mode is checked through `linkTokenGet` before update-complete runs.
   - **Where I left off:** plan written. NEXT: `/broad-implement U1` (or H1 — independent).
-- **Previous status (X3b):** **Roadmap T2.4 (cross-app automation) — X3b DONE; T2.4 COMPLETE** (2026-10-23,
+- **Earlier status (X3b):** **Roadmap T2.4 (cross-app automation) — X3b DONE; T2.4 COMPLETE** (2026-10-23,
   branch `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-4-crossapp-automation.md` (all seven batches DONE). Block:
   `.cycle/blocks/7-roadmap-t2-4-x3b-broad-implement.md`.

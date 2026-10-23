@@ -135,6 +135,7 @@ async function importCsvFile(filePath, opts = {}) {
 
     let imported = 0;
     let skipped = 0;
+    let deletedCount = 0;
     // One occurrence-tracking generator per import (mirrors the route) so the
     // CLI and /api/import-csv produce IDENTICAL dedup IDs for the same file,
     // including for genuinely-distinct same-day/same-amount/same-merchant rows (F1).
@@ -173,17 +174,26 @@ async function importCsvFile(filePath, opts = {}) {
       // the workflow then deleted the CSV.
       await client.query("SAVEPOINT csv_row");
       try {
+        // A transaction the user deleted is never imported again (roadmap T2.5
+        // U1 — the same rule as /api/import-csv); Restore brings it back.
         const ins = await client.query(
           `INSERT INTO transactions (account_id, transaction_id, amount, date, merchant_name, name, category, pending)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, false)
-           ON CONFLICT (transaction_id) DO NOTHING`,
+           SELECT $1::text, $2::text, $3::numeric, $4::date, $5::text, $6::text, $7::text[], false
+           WHERE NOT EXISTS (SELECT 1 FROM deleted_transactions dt WHERE dt.transaction_id = $2::text)
+           ON CONFLICT (transaction_id) DO NOTHING
+           RETURNING transaction_id`,
           [virtualAccountId, transactionId, parsed.amount, date, parsed.merchant_name, parsed.merchant_name, parsed.category ? [parsed.category] : null]
         );
+        let wasDeleted = false;
+        if (!ins.rowCount) {
+          const d = await client.query("SELECT 1 FROM deleted_transactions WHERE transaction_id = $1", [transactionId]);
+          wasDeleted = d.rows.length > 0;
+        }
         await client.query("RELEASE SAVEPOINT csv_row");
-        // ON CONFLICT DO NOTHING → rowCount 1 on a real insert, 0 on a dup.
-        // Count dups as skipped, not imported (F30).
+        // rowCount 1 on a real insert, 0 on a dup or a deleted row. Neither is
+        // imported; both count as skipped (F30), deleted ones also on their own.
         if (ins.rowCount > 0) imported++;
-        else skipped++;
+        else { skipped++; if (wasDeleted) deletedCount++; }
       } catch (rowErr) {
         await client.query("ROLLBACK TO SAVEPOINT csv_row");
         console.error(`  row ${i + 1}: ${rowErr.message}`);
@@ -198,8 +208,9 @@ async function importCsvFile(filePath, opts = {}) {
     );
 
     await client.query("COMMIT");
-    console.log(`  ✓ ${filename} → ${format} format | ${imported} imported, ${skipped} skipped`);
-    return { filename, format, institution, imported, skipped };
+    console.log(`  ✓ ${filename} → ${format} format | ${imported} imported, ${skipped} skipped` +
+      (deletedCount ? ` (${deletedCount} you deleted earlier, not imported again)` : ""));
+    return { filename, format, institution, imported, skipped, deleted: deletedCount };
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
     console.error(`  ✗ ${filename}: ${err.message}`);

@@ -325,6 +325,18 @@ router.post("/api/detect", async (_req, res) => {
   }
 });
 
+// The ids among `ids` that the user deleted (deleted_transactions). The CSV
+// preview, the import and the CLI skip them (roadmap T2.5 U1) — a re-imported
+// file used to bring a deleted row back.
+async function deletedIdSet(db, ids) {
+  if (!ids.length) return new Set();
+  const r = await db.query(
+    "SELECT transaction_id FROM deleted_transactions WHERE transaction_id = ANY($1::text[])",
+    [ids]
+  );
+  return new Set(r.rows.map(x => x.transaction_id));
+}
+
 // parseCsvUpload — shared parse + format-detect + label-derivation for the CSV
 // import + preview endpoints. Keeping it in ONE place guarantees the preview's
 // dedup-ID classification matches what the real import will actually do (same
@@ -394,21 +406,28 @@ router.post("/api/import-csv/preview", upload.single("file"), async (req, res) =
     }
 
     let existing = new Set();
+    let deleted = new Set();
     if (rows.length) {
+      const ids = rows.map(x => x.txnId);
       const r = await pool.query(
         "SELECT transaction_id FROM transactions WHERE transaction_id = ANY($1)",
-        [rows.map(x => x.txnId)]
+        [ids]
       );
       existing = new Set(r.rows.map(x => x.transaction_id));
+      deleted = await deletedIdSet(pool, ids);
     }
 
-    let newCount = 0, dupCount = 0;
+    // A row you deleted isn't imported again (roadmap T2.5 U1) —
+    // POST /api/deleted-transactions/:id/restore brings it back.
+    let newCount = 0, dupCount = 0, deletedCount = 0;
     const sample = [];
     for (const row of rows) {
-      const isDup = existing.has(row.txnId);
-      if (isDup) dupCount++; else newCount++;
+      const status = existing.has(row.txnId) ? "duplicate" : deleted.has(row.txnId) ? "deleted" : "new";
+      if (status === "duplicate") dupCount++;
+      else if (status === "deleted") deletedCount++;
+      else newCount++;
       if (sample.length < 12) {
-        sample.push({ date: row.date, amount: row.amount, merchant: row.merchant, category: row.category, status: isDup ? "duplicate" : "new" });
+        sample.push({ date: row.date, amount: row.amount, merchant: row.merchant, category: row.category, status });
       }
     }
 
@@ -421,6 +440,7 @@ router.post("/api/import-csv/preview", upload.single("file"), async (req, res) =
       rows_skipped: skipped,
       rows_new: newCount,
       rows_duplicate: dupCount,
+      rows_deleted: deletedCount,
       positive_means: positiveMeans,
       sign_guess: signGuess,
       sample,
@@ -467,12 +487,15 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
       let imported = 0;
       let skipped = 0;
       let duplicates = 0;
+      let deletedCount = 0;
       const insertedRows = []; // { date, amount } of genuinely new rows (DC-6)
       // One occurrence-tracking generator per import so two genuinely-distinct
       // rows sharing (label,date,amount,merchant) get distinct IDs instead of
       // the second silently deduping against the first (F1). Mirrors the CLI.
       const nextTxnId = makeCsvTxnIdGenerator();
 
+      // Parse every row first, so the deleted ones are known before inserting.
+      const parsedRows = [];
       for (let i = 0; i < records.length; i++) {
         const row = records[i];
         let parsed;
@@ -484,11 +507,17 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
         const date = parseDate(parsed.date);
         if (!date || isNaN(parsed.amount) || parsed.amount === 0) { skipped++; continue; }
 
-        const txnId = nextTxnId(accountLabel, date, parsed.amount, parsed.merchant_name);
+        parsedRows.push({ parsed, date, txnId: nextTxnId(accountLabel, date, parsed.amount, parsed.merchant_name) });
+      }
+      const deleted = await deletedIdSet(client, parsedRows.map(r => r.txnId));
 
+      for (const { parsed, date, txnId } of parsedRows) {
+        if (deleted.has(txnId)) { deletedCount++; continue; }
+        // NOT EXISTS too, for a delete that lands while the import runs (T2.5 U1).
         const result = await client.query(
           `INSERT INTO transactions (account_id, transaction_id, amount, date, merchant_name, name, category, pending)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, false)
+           SELECT $1::text, $2::text, $3::numeric, $4::date, $5::text, $6::text, $7::text[], false
+           WHERE NOT EXISTS (SELECT 1 FROM deleted_transactions dt WHERE dt.transaction_id = $2::text)
            ON CONFLICT (transaction_id) DO NOTHING`,
           [
             virtualAccountId, txnId, parsed.amount, date,
@@ -513,7 +542,7 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
          VALUES ($1, $2, $3, $4, $5)`,
         // csv_imports.rows_skipped keeps its historical "not imported" meaning
         // (unparseable + already-present), same as scripts/import-csv-cli.js.
-        [req.file.originalname, institution, accountLabel, imported, skipped + duplicates]
+        [req.file.originalname, institution, accountLabel, imported, skipped + duplicates + deletedCount]
       );
 
       // Auto-update manual account balance if institution matches. Runs under
@@ -600,6 +629,7 @@ router.post("/api/import-csv", upload.single("file"), async (req, res) => {
         rows_imported: imported,
         rows_skipped: skipped,
         rows_duplicate: duplicates,
+        rows_deleted: deletedCount,
         account_label: accountLabel,
         positive_means: positiveMeans,
       });

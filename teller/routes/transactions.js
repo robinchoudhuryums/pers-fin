@@ -14,6 +14,15 @@ const router = express.Router();
 const { pool } = require("../services/database");
 const { isValidYmd } = require("../services/cadence");
 
+// The connection a transaction came from, read through its account (roadmap
+// T2.5 U1). Needs `la` (linked_accounts) and `pi` (plaid_items) joined.
+const SOURCE_SQL = `(CASE
+    WHEN la.teller_enrollment_id IS NOT NULL THEN 'teller'
+    WHEN pi.status = 'CSV' THEN 'csv'
+    WHEN la.plaid_item_id IS NOT NULL THEN 'plaid'
+    WHEN la.is_manual THEN 'manual'
+  END)`;
+
 // GET /api/transactions/search — Full-text search with filters
 router.get("/api/transactions/search", async (req, res) => {
   const { q, category, account_id, min_amount, max_amount, start_date, end_date, limit: rawLimit, offset: rawOffset } = req.query;
@@ -590,22 +599,39 @@ router.delete("/api/transactions/:id/splits", async (req, res) => {
 // The id is remembered in deleted_transactions so a Teller / Plaid re-fetch
 // (the 7-day lookback, the weekly reconcile, a Plaid reconcile) doesn't bring
 // it back (cycle-7 F20 — the duplicate-cleanup's work was undone and the
-// row's splits were lost the second time).
+// row's splits were lost the second time). Since roadmap T2.5 U1 the tombstone
+// also keeps the row and its splits as they were (snapshot) and the connection
+// it came from (source), so POST /api/deleted-transactions/:id/restore can put
+// it back — read under FOR UPDATE in the same transaction as the delete.
 router.delete("/api/transactions/:id", async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const result = await client.query(
-      "DELETE FROM transactions WHERE transaction_id = $1 RETURNING transaction_id",
+    const found = await client.query(
+      `SELECT jsonb_build_object(
+                'row', to_jsonb(t),
+                'splits', COALESCE((SELECT jsonb_agg(to_jsonb(s) ORDER BY s.id)
+                                    FROM transaction_splits s
+                                    WHERE s.parent_transaction_id = t.transaction_id), '[]'::jsonb)
+              ) AS snapshot,
+              ${SOURCE_SQL} AS source
+       FROM transactions t
+       LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+       LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
+       WHERE t.transaction_id = $1
+       FOR UPDATE OF t`,
       [req.params.id]
     );
-    if (!result.rows.length) {
+    if (!found.rows.length) {
       await client.query("ROLLBACK");
       return res.status(404).json({ error: "Transaction not found" });
     }
+    await client.query("DELETE FROM transactions WHERE transaction_id = $1", [req.params.id]);
     await client.query(
-      "INSERT INTO deleted_transactions (transaction_id) VALUES ($1) ON CONFLICT DO NOTHING",
-      [req.params.id]
+      `INSERT INTO deleted_transactions (transaction_id, snapshot, source) VALUES ($1, $2::jsonb, $3)
+       ON CONFLICT (transaction_id) DO UPDATE
+         SET snapshot = EXCLUDED.snapshot, source = EXCLUDED.source, deleted_at = now()`,
+      [req.params.id, JSON.stringify(found.rows[0].snapshot), found.rows[0].source]
     );
     await client.query("COMMIT");
     res.json({ deleted: true, transaction_id: req.params.id });
@@ -616,8 +642,164 @@ router.delete("/api/transactions/:id", async (req, res) => {
   } finally { client.release(); }
 });
 
+// ── Deleted transactions: list + restore (roadmap T2.5 U1) ──────────────────
+// A tombstone written before U1 has no snapshot ("legacy"): its connection is
+// read from the id's shape, and Restore can only lift the tombstone and say
+// how the row will come back.
+function legacySource(id) {
+  if (/^csv_/.test(id)) return "csv";
+  if (/^manual_/.test(id)) return "manual";
+  if (/^txn_/.test(id)) return "teller";
+  return null;
+}
+const LEGACY_RETURNS_ON = { csv: "csv_reimport", manual: "never" }; // else "reconcile"
+const DELETED_PAGE_MAX = 200;
+const CURSOR_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z)\|(.+)$/;
+
+// GET /api/deleted-transactions?limit=&before= — newest first. `before` is the
+// `next` cursor of the previous page.
+router.get("/api/deleted-transactions", async (req, res) => {
+  const limit = req.query.limit === undefined ? 50 : Number(req.query.limit);
+  if (!Number.isInteger(limit) || limit < 1 || limit > DELETED_PAGE_MAX) {
+    return res.status(400).json({ error: `limit must be an integer from 1 to ${DELETED_PAGE_MAX}` });
+  }
+  let beforeAt = null, beforeId = null;
+  if (req.query.before !== undefined) {
+    const m = CURSOR_RE.exec(String(req.query.before));
+    if (!m) return res.status(400).json({ error: "before must be the next cursor of a previous page" });
+    [, beforeAt, beforeId] = m;
+  }
+  try {
+    const r = await pool.query(
+      `SELECT d.transaction_id, d.deleted_at, d.source, (d.snapshot IS NOT NULL) AS has_snapshot,
+              to_char(d.deleted_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_at,
+              d.snapshot->'row'->>'date' AS date,
+              COALESCE(d.snapshot->'row'->>'user_merchant_name', d.snapshot->'row'->>'merchant_name',
+                       d.snapshot->'row'->>'name') AS merchant,
+              d.snapshot->'row'->>'amount' AS amount,
+              la.name AS account_name,
+              COALESCE(jsonb_array_length(d.snapshot->'splits'), 0) AS splits_count
+       FROM deleted_transactions d
+       LEFT JOIN linked_accounts la ON la.account_id = d.snapshot->'row'->>'account_id'
+       WHERE $1::timestamptz IS NULL OR (d.deleted_at, d.transaction_id) < ($1::timestamptz, $2::text)
+       ORDER BY d.deleted_at DESC, d.transaction_id DESC
+       LIMIT $3`,
+      [beforeAt, beforeId, limit + 1]
+    );
+    const page = r.rows.slice(0, limit);
+    const items = page.map((x) => {
+      const source = x.has_snapshot ? x.source : legacySource(x.transaction_id);
+      return {
+        transaction_id: x.transaction_id,
+        deleted_at: x.deleted_at,
+        source,
+        legacy: !x.has_snapshot,
+        // A legacy manual entry exists nowhere else, so nothing can bring it back.
+        restorable: x.has_snapshot || source !== "manual",
+        date: x.date || null,
+        merchant: x.merchant || null,
+        amount: x.amount === null || x.amount === undefined ? null : Number(x.amount),
+        account_name: x.account_name || null,
+        splits_count: Number(x.splits_count) || 0,
+      };
+    });
+    const last = page[page.length - 1];
+    res.json({ items, next: r.rows.length > limit && last ? `${last.cursor_at}|${last.transaction_id}` : null });
+  } catch (err) {
+    console.error("deleted transactions list error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  }
+});
+
+// The columns a restore may write: the table's current, non-generated columns
+// minus its serial id — read from the catalog, so a snapshot key that is no
+// longer a column is dropped and a column added since takes its default.
+async function insertableColumns(client, table) {
+  const r = await client.query(
+    `SELECT column_name FROM information_schema.columns
+     WHERE table_schema = current_schema() AND table_name = $1
+       AND is_generated = 'NEVER' AND is_identity = 'NO' AND column_name <> 'id'`,
+    [table]
+  );
+  return new Set(r.rows.map((x) => x.column_name));
+}
+
+// Restore one tombstone inside the caller's transaction. Returns
+// { status, body }; nothing is written unless status is 200.
+async function restoreDeleted(client, id) {
+  const t = await client.query(
+    "SELECT snapshot, source FROM deleted_transactions WHERE transaction_id = $1 FOR UPDATE",
+    [id]
+  );
+  if (!t.rows.length) return { status: 404, body: { error: "No deleted transaction with that id" } };
+  const { snapshot } = t.rows[0];
+
+  if (!snapshot || !snapshot.row) {
+    const source = legacySource(id);
+    const returnsOn = LEGACY_RETURNS_ON[source] || "reconcile";
+    if (returnsOn === "never") {
+      return { status: 409, body: { error: "This entry was deleted before undelete existed and can't be restored.", returns_on: "never" } };
+    }
+    await client.query("DELETE FROM deleted_transactions WHERE transaction_id = $1", [id]);
+    return { status: 200, body: { restored: false, cleared: true, transaction_id: id, source, returns_on: returnsOn } };
+  }
+
+  const row = snapshot.row;
+  const acct = await client.query("SELECT 1 FROM linked_accounts WHERE account_id = $1", [row.account_id]);
+  if (!acct.rows.length) {
+    return { status: 409, body: { error: "The account this transaction belonged to is no longer connected, so it can't be restored." } };
+  }
+
+  const txnCols = await insertableColumns(client, "transactions");
+  const cols = Object.keys(row).filter((k) => txnCols.has(k)).map((k) => `"${k}"`).join(", ");
+  const ins = await client.query(
+    `INSERT INTO transactions (${cols})
+     SELECT ${cols} FROM jsonb_populate_record(NULL::transactions, $1::jsonb)
+     ON CONFLICT (transaction_id) DO NOTHING
+     RETURNING transaction_id`,
+    [JSON.stringify(row)]
+  );
+  const inserted = ins.rows.length > 0;
+
+  let splits = 0;
+  const splitRows = Array.isArray(snapshot.splits) ? snapshot.splits : [];
+  if (inserted && splitRows.length) {
+    const splitCols = await insertableColumns(client, "transaction_splits");
+    const sc = Object.keys(splitRows[0]).filter((k) => splitCols.has(k)).map((k) => `"${k}"`).join(", ");
+    const s = await client.query(
+      `INSERT INTO transaction_splits (${sc})
+       SELECT ${sc} FROM jsonb_populate_recordset(NULL::transaction_splits, $1::jsonb)`,
+      [JSON.stringify(splitRows)]
+    );
+    splits = s.rowCount;
+  }
+
+  await client.query("DELETE FROM deleted_transactions WHERE transaction_id = $1", [id]);
+  return { status: 200, body: { restored: true, transaction_id: id, already_present: !inserted, splits } };
+}
+
+// POST /api/deleted-transactions/:id/restore — put a deleted transaction back
+// (with its category, notes, rename and splits) and lift its tombstone, in one
+// transaction. A row that is somehow already there is not duplicated.
+router.post("/api/deleted-transactions/:id/restore", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const out = await restoreDeleted(client, req.params.id);
+    await client.query(out.status === 200 ? "COMMIT" : "ROLLBACK");
+    res.status(out.status).json(out.body);
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("restore transaction error:", err.message);
+    res.status(500).json({ error: "An internal error occurred." });
+  } finally { client.release(); }
+});
 
 module.exports = router;
 // Test seams (cycle-7 F21) — attached after the router assignment (INV-19).
 module.exports.pairOverlaps = pairOverlaps;
 module.exports.merchantsSimilar = merchantsSimilar;
+// Roadmap T2.5 U1 test seams.
+module.exports.restoreDeleted = restoreDeleted;
+module.exports.legacySource = legacySource;
+module.exports.SOURCE_SQL = SOURCE_SQL;

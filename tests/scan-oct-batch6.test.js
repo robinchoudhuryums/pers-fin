@@ -37,7 +37,7 @@ describe("F20 — deleted transactions stay deleted", () => {
         /INSERT INTO transactions[\s\S]{0,300}SELECT \$1::text, \$2::text, \$3::numeric[\s\S]{0,200}WHERE NOT EXISTS \(SELECT 1 FROM deleted_transactions dt WHERE dt\.transaction_id = \$2::text\)\s+ON CONFLICT \(transaction_id\)/, f);
     }
     assert.match(read("teller", "routes", "transactions.js"),
-      /DELETE FROM transactions WHERE transaction_id = \$1 RETURNING transaction_id[\s\S]{0,400}INSERT INTO deleted_transactions \(transaction_id\) VALUES \(\$1\) ON CONFLICT DO NOTHING/);
+      /DELETE FROM transactions WHERE transaction_id = \$1"[\s\S]{0,200}INSERT INTO deleted_transactions \(transaction_id, snapshot, source\) VALUES \(\$1, \$2::jsonb, \$3\)\s+ON CONFLICT \(transaction_id\) DO UPDATE/);
     assert.match(read("teller", "services", "database.js"), /CREATE TABLE IF NOT EXISTS deleted_transactions \(\s+transaction_id TEXT PRIMARY KEY/);
     assert.ok(require("../scripts/reset-fresh").WIPE_TABLES.includes("deleted_transactions"));
   });
