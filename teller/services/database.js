@@ -826,6 +826,13 @@ async function runMigrationsOnce() {
     // VPS move: deploy/vps/backup.sh stamps each verified nightly backup here;
     // with SERVER_BACKUPS=true Operator Checks reads it (services/hosting.js).
     await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_backup_at TIMESTAMPTZ");
+    // Roadmap T2.2 L2: the low projected cash alert (services/cash-alerts.js) —
+    // off by default; the alert's dedup state and the last evaluation time.
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS cash_alert_enabled BOOLEAN NOT NULL DEFAULT false");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS cash_alert_threshold NUMERIC(12,2) NOT NULL DEFAULT 500");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS cash_alert_horizon_days INT NOT NULL DEFAULT 14");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS cash_alert_state JSONB");
+    await client.query("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS cash_alerts_checked_at TIMESTAMPTZ");
     // FIRE / runway projection assumptions (Goals page card). NULLs fall back
     // to defaults in GET /api/fire-projection (return 5%, withdrawal 4%,
     // spending derived from trailing months).

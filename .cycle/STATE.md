@@ -18,7 +18,22 @@ Updated: 2026-10-23
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T2.2 (low-balance and payday alerts) — L1 DONE** on branch
+- **Status:** **Roadmap T2.2 (low-balance and payday alerts) — L2 DONE** on branch
+  `claude/sweet-ritchie-f9d8ah` (2026-10-23, in PR robinchoudhuryums/pers-fin#133). Plan:
+  `.cycle/plan-t2-2-cash-alerts.md`. Block: `.cycle/blocks/7-roadmap-t2-2-l2-broad-implement.md`.
+  - **Completed:** services/cash-alerts.js (runCashAlerts — off memo, data-stamp gate, 36 h balance
+    gate, forecast + firstBelow, once-per-breach dedup with 3-days-earlier / 72 h re-notify, email
+    and state only after a logged push); the hourly "cash-alerts" away job + JOB_INTERVALS_MS;
+    five user_settings columns; PATCH validation + memo reset; Settings → Cash Alerts. Docs folded in.
+  - **Verification:** npm 2045/2045 (19 new); contract 195/195 (4 new); migrations twice OK;
+    Playwright 57/57; four mutation checks red.
+  - **Decisions:** the notification opens /dashboard (no hash — the section renders after load);
+    an unlogged push leaves the check unstamped so the next tick retries; "unchanged" / "disabled"
+    record no job outcome.
+  - **Follow-ons:** see Known Open Issues (T2.2 L2 follow-ons).
+  - **Where I left off:** L2 committed and pushed with docs. NEXT: `/broad-implement L3` (payday
+    landed via runPostSyncSteps + missed payday inside runCashAlerts).
+- **Previous status:** **Roadmap T2.2 (low-balance and payday alerts) — L1 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-23, in PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-2-cash-alerts.md` (decisions accepted). Block:
   `.cycle/blocks/7-roadmap-t2-2-l1-broad-implement.md`.

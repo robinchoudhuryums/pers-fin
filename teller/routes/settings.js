@@ -24,8 +24,8 @@ router.get("/api/settings", async (req, res) => {
   // suppresses the "configure the webhook" prereq warning.
   const embedded = req.app.get("embedded") === true;
   try {
-    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary, insights_running_summary_json, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules, pyramid_data_source, pyramid_color_mode, debt_baseline_amount, sheets_auto_sync_enabled, sheets_auto_sync_interval, sheets_last_auto_sync, last_sheets_sync_result, csv_reminder_days, csv_reminder_enabled, dashboard_widgets, persistent_url, persistent_webhook_enabled, auto_sync_enabled, auto_sync_interval_hours, last_auto_sync_at, last_balance_sync_at, last_txn_sync_at, sync_notifications_enabled, shell_idle_timeout_minutes, weekly_digest_enabled, weekly_digest_day, last_weekly_digest_at, daily_digest_enabled, last_daily_digest_at, target_allocation_pct, partner_name, ai_monthly_budget_cents, critical_alert_emails_enabled, insight_emails_enabled, fire_expected_return_pct, fire_withdrawal_rate_pct, fire_monthly_spending_override FROM user_settings WHERE id = 1");
-    const defaults = { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true, anomaly_detection: true, seasonal_forecast: true, debt_optimizer: true, bill_negotiation: true, income_savings: true, tax_deductions: true, goal_tracking: true, recurring_transfers: true }, pyramid_data_source: "wellness", pyramid_color_mode: "single", debt_baseline_amount: null, sheets_auto_sync_enabled: false, sheets_auto_sync_interval: 'weekly', sheets_last_auto_sync: null, csv_reminder_days: 14, csv_reminder_enabled: true, dashboard_widgets: {pyramid:true,accounts:true,monthlySpend:true,categories:true,merchants:true,upcoming:true,forecast:true,charts:true,calendar:true,cashFlow:true,savingsRate:true,yoy:true}, auto_sync_enabled: false, auto_sync_interval_hours: 6, last_auto_sync_at: null, last_balance_sync_at: null, last_txn_sync_at: null, sync_notifications_enabled: true, ai_monthly_budget_cents: null, critical_alert_emails_enabled: false, insight_emails_enabled: true };
+    const result = await pool.query("SELECT session_timeout_minutes, theme, dashboard_months, insights_enabled, insights_last_run, insights_running_summary, insights_running_summary_json, insights_model, insights_cadence_days, keep_alive_enabled, keep_alive_start, keep_alive_end, keep_alive_timezone, zip_code, insight_modules, pyramid_data_source, pyramid_color_mode, debt_baseline_amount, sheets_auto_sync_enabled, sheets_auto_sync_interval, sheets_last_auto_sync, last_sheets_sync_result, csv_reminder_days, csv_reminder_enabled, dashboard_widgets, persistent_url, persistent_webhook_enabled, auto_sync_enabled, auto_sync_interval_hours, last_auto_sync_at, last_balance_sync_at, last_txn_sync_at, sync_notifications_enabled, shell_idle_timeout_minutes, weekly_digest_enabled, weekly_digest_day, last_weekly_digest_at, daily_digest_enabled, last_daily_digest_at, target_allocation_pct, partner_name, ai_monthly_budget_cents, critical_alert_emails_enabled, insight_emails_enabled, fire_expected_return_pct, fire_withdrawal_rate_pct, fire_monthly_spending_override, cash_alert_enabled, cash_alert_threshold, cash_alert_horizon_days, cash_alert_state, cash_alerts_checked_at FROM user_settings WHERE id = 1");
+    const defaults = { session_timeout_minutes: 15, theme: "dark", dashboard_months: 6, insights_enabled: false, insights_last_run: null, insights_running_summary: null, insights_model: "sonnet", insights_cadence_days: 30, keep_alive_enabled: false, keep_alive_start: 6, keep_alive_end: 0, keep_alive_timezone: "America/New_York", zip_code: null, insight_modules: { utility_comparison: true, spending_benchmarks: true, savings_suggestions: true, subscription_audit: true, anomaly_detection: true, seasonal_forecast: true, debt_optimizer: true, bill_negotiation: true, income_savings: true, tax_deductions: true, goal_tracking: true, recurring_transfers: true }, pyramid_data_source: "wellness", pyramid_color_mode: "single", debt_baseline_amount: null, sheets_auto_sync_enabled: false, sheets_auto_sync_interval: 'weekly', sheets_last_auto_sync: null, csv_reminder_days: 14, csv_reminder_enabled: true, dashboard_widgets: {pyramid:true,accounts:true,monthlySpend:true,categories:true,merchants:true,upcoming:true,forecast:true,charts:true,calendar:true,cashFlow:true,savingsRate:true,yoy:true}, auto_sync_enabled: false, auto_sync_interval_hours: 6, last_auto_sync_at: null, last_balance_sync_at: null, last_txn_sync_at: null, sync_notifications_enabled: true, ai_monthly_budget_cents: null, critical_alert_emails_enabled: false, insight_emails_enabled: true, cash_alert_enabled: false, cash_alert_threshold: 500, cash_alert_horizon_days: 14, cash_alert_state: null, cash_alerts_checked_at: null };
     const row = result.rows[0] || defaults;
     if (typeof row.insight_modules === "string") row.insight_modules = JSON.parse(row.insight_modules);
     // always_on (services/hosting.js): the host never sleeps, so Settings
@@ -237,6 +237,24 @@ router.patch("/api/settings", async (req, res) => {
     if (req.body.critical_alert_emails_enabled !== undefined) {
       updates.push("critical_alert_emails_enabled = $" + idx++); values.push(!!req.body.critical_alert_emails_enabled);
     }
+    // Low projected cash alert (roadmap T2.2 L2 — services/cash-alerts.js).
+    // Strict: a non-boolean switch, a threshold that isn't a number 0-10,000,000
+    // ("" and null included) or a horizon outside 7-60 days is a 400 (INV-59).
+    if (req.body.cash_alert_enabled !== undefined) {
+      if (typeof req.body.cash_alert_enabled !== "boolean") return res.status(400).json({ error: "cash_alert_enabled must be true or false" });
+      updates.push("cash_alert_enabled = $" + idx++); values.push(req.body.cash_alert_enabled);
+    }
+    if (req.body.cash_alert_threshold !== undefined) {
+      const v = req.body.cash_alert_threshold;
+      const n = (typeof v === "number" || (typeof v === "string" && v.trim() !== "")) ? Number(v) : NaN;
+      if (!Number.isFinite(n) || n < 0 || n > 1e7) return res.status(400).json({ error: "cash_alert_threshold must be a number 0-10000000" });
+      updates.push("cash_alert_threshold = $" + idx++); values.push(Math.round(n * 100) / 100);
+    }
+    if (req.body.cash_alert_horizon_days !== undefined) {
+      const d = toInt(req.body.cash_alert_horizon_days);
+      if (!Number.isInteger(d) || d < 7 || d > 60) return res.status(400).json({ error: "cash_alert_horizon_days must be an integer 7-60" });
+      updates.push("cash_alert_horizon_days = $" + idx++); values.push(d);
+    }
     // FIRE projection assumptions (null clears back to defaults)
     if (req.body.fire_expected_return_pct !== undefined) {
       const v = req.body.fire_expected_return_pct;
@@ -334,6 +352,11 @@ router.patch("/api/settings", async (req, res) => {
     // keep_alive_* field changed so the next probe sees the new schedule.
     if (Object.keys(req.body || {}).some(k => k.startsWith("keep_alive_"))) {
       try { require("../services/keep-alive").invalidateKeepAliveCache(); } catch {}
+    }
+    // The cash alert skips its DB read for the day once it found itself off;
+    // a change to its settings makes the next hourly tick look again.
+    if (Object.keys(req.body || {}).some(k => k.startsWith("cash_alert_"))) {
+      require("../services/cash-alerts").invalidate();
     }
     // Never echo ciphertext columns (persistent_webhook_secret_enc) to the
     // client — RETURNING * included them (F82).

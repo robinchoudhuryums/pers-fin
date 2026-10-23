@@ -235,6 +235,24 @@ async function runCsvReminderTick() {
   }
 }
 
+// Low projected cash alert (roadmap T2.2 L2). NOT activity-gated (INV-77): it
+// exists for when the user is away. runCashAlerts gates itself — off by default
+// (and then no DB read for the rest of the local day), evaluated only when new
+// bank data arrived since the last check or on a new local day, never on
+// balances older than 36 h, deduped through cash_alert_state. An outcome is
+// recorded only when it evaluated; "unchanged" / "disabled" record nothing.
+async function runCashAlertsTick() {
+  jobHealth.tick("cash-alerts");
+  try {
+    const r = await require("./services/cash-alerts").runCashAlerts(pool);
+    if (r.status === "unlogged") jobHealth.result("cash-alerts", { ok: false, error: "notification not logged" });
+    else if (r.ran) jobHealth.result("cash-alerts", { ok: true });
+  } catch (err) {
+    console.error("Cash alert scheduler error:", err.message);
+    jobHealth.result("cash-alerts", { ok: false, error: err.message });
+  }
+}
+
 // Rent & Utilities ledger (cycle-7 F15): generate the current/missing months'
 // obligations from housing_config (idempotent), then fire the two reminders —
 // payment-due and missing-utility-amount — each deduped via sentRecently inside
@@ -685,6 +703,10 @@ function startBackgroundJobs() {
   // (surviving restarts); the in-memory day memo keeps it to ~one DB read a day.
   intervalHandles.push(setInterval(() => runCsvReminderTick(), 60 * 60 * 1000));
 
+  // Low projected cash alert (roadmap T2.2 L2). Hourly, NOT activity-gated;
+  // see runCashAlertsTick — no DB read while it's off.
+  intervalHandles.push(setInterval(() => runCashAlertsTick(), 60 * 60 * 1000));
+
   // Missed-job watchdog (F4). Flushes the in-memory job heartbeats to the
   // job_runs table and alerts (once per outage, signature-deduped) when any
   // scheduled job hasn't ticked for 36h+ — i.e. the process was asleep or
@@ -774,6 +796,6 @@ module.exports = { start, startBackgroundJobs, stopBackgroundJobs, touchActivity
 // Exposed for tests (PSC-3): the "away" job ticks and the per-day memo reset.
 module.exports._awayJobs = {
   runBudgetAlertTick, runWeeklyDigestTick, runDailyDigestTick, runCsvReminderTick,
-  runHousingLedgerTick, runInsightsAutoTriggerTick,
+  runHousingLedgerTick, runInsightsAutoTriggerTick, runCashAlertsTick,
   reset() { for (const k of Object.keys(_awaySettled)) delete _awaySettled[k]; },
 };
