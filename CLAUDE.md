@@ -875,9 +875,17 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2099 tests as of latest); use
+  Perfin and Per-sistant test files (2113 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2099 tests across 106 test files (incl.
+  Current count: 2113 tests across 107 test files (incl.
+  `apps/per-sistant/tests/roadmap-t2-3-cap-c2.test.js` — roadmap T2.3 C2: the nine
+  routes/ai.js features on ai.cappedAI (each charging its own entry_type under the cap; over
+  it the seven action routes 429 with no data query and no model call — their 400s and the
+  501 first — an unreadable spend 503, Ask / Smart Suggestions keeping their 200 shapes with
+  ai_cap; cached briefings / suggestions free even over the cap; a cap reached between the
+  gate and the call still a 429; Smart Suggestions' date and weekday in APP_TIMEZONE, run in
+  child processes) and the source guard that no routes/*.js file names callAI /
+  answerWithCitations (KNOWN_GAPS: rag.js until C3);
   `apps/per-sistant/tests/roadmap-t2-3-cap-c1.test.js` — roadmap T2.3 C1: Per-sistant's
   capped AI wrappers (cappedAI / cappedCitations over a fake client — under the cap one
   call and one row with all four token counters, at / over it CAP with the figures and no
@@ -3235,7 +3243,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2099 tests passing across 106 test files (Perfin 1532 + Per-sistant 567), plus the real-Postgres route contract suite (201 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2113 tests passing across 107 test files (Perfin 1532 + Per-sistant 581), plus the real-Postgres route contract suite (201 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -5577,9 +5585,9 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   tree listing fails every sync with a full re-walk (F127 surfaces it — a subtree walk
   would index it). OPERATOR: run one full Knowledge reindex after deploying Batch 12 —
   F132 changed frontmatter parsing. Batch 12 follow-ons.
-- Per-sistant's Ask context's "Today:" line and capture-to-vault file names use the
-  UTC date (Perfin's F66 equivalent; the AI cost-cap month was fixed in roadmap T2.3
-  C1) — listed as FOLLOW-ON entries in the timezone lint's KNOWN_GAPS
+- Per-sistant's capture-to-vault file names use the UTC date (Perfin's F66
+  equivalent; the AI cost-cap month was fixed in roadmap T2.3 C1 and Smart Suggestions'
+  day in C2) — listed as a FOLLOW-ON entry in the timezone lint's KNOWN_GAPS
   (tests/scan-oct-batch13.test.js). `npm run reset:fresh` resets
   `shell_session_epoch` to 0, so a cookie minted before an earlier "Sign Out
   Everywhere" becomes valid again until it idles out. Per-sistant's standalone
@@ -5653,12 +5661,17 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
 - Roadmap T2.3 (an AI cost cap for every Per-sistant feature) is IN PROGRESS
   (`.cycle/plan-t2-3-persistent-ai-cap.md`, C1–C4): C1 (the capped wrappers in
   `apps/per-sistant/ai.js`, the APP_TIMEZONE spend month, a spend read that refuses the
-  call when it fails; Job Radar on the wrapper) is done; C2 (the nine routes/ai.js
-  features), C3 (Knowledge) and C4 (usage endpoint, budget setting, Settings UI,
-  side-by-side spend, the new invariant) are planned — until C2 / C3 land, those
-  features still call the model uncapped. C1 follow-ons: `getAiBudgetCents` still
-  falls back to the env / default budget when its settings read fails (only the spend
-  read fails closed).
+  call when it fails; Job Radar on the wrapper) and C2 (the nine routes/ai.js features
+  on `cappedAI` — over the cap the action routes 429, Ask / Smart Suggestions keep their
+  200 shapes with `ai_cap`, an unreadable spend 503s) are done; C3 (Knowledge) and C4
+  (usage endpoint, budget setting, Settings UI, side-by-side spend, the new invariant)
+  are planned — until C3 lands, Knowledge's answer / diagram / capture still call the
+  model uncapped. C1 follow-ons: `getAiBudgetCents` still falls back to the env /
+  default budget when its settings read fails (only the spend read fails closed). C2
+  follow-ons: the 429 says "raise it in Settings → AI", a control C4 adds; the page
+  buttons' handling of the 429 / 503 text is checked in C4; the daily briefing and
+  Smart Suggestions read the spend twice (their gate before the data queries, then the
+  wrapper's own check).
 - Roadmap T2.2 (low-balance and payday alerts) is DONE (`.cycle/plan-t2-2-cash-alerts.md`,
   L1–L4): the forecast as `services/cash-flow.js` (APP_TIMEZONE today, the lowest
   projected day), the low projected cash alert (`services/cash-alerts.js`, the

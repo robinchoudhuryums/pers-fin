@@ -39,7 +39,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   or a total over the cap, is never sent around: Send Now answers 400 with the reason
   BEFORE claiming (the email stays unsent), and the scheduler marks the claimed row
   `failed` with it.
-- **Tests**: `tests/` (node:test runner, `npm test`, 567 tests (api + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11/batch12/batch13/batch16/batch17/batch20 + roadmap-t1-batchc + roadmap-t2-3-cap-c1 + seams-audit-3 + model-upgrade))
+- **Tests**: `tests/` (node:test runner, `npm test`, 581 tests (api + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11/batch12/batch13/batch16/batch17/batch20 + roadmap-t1-batchc + roadmap-t2-3-cap-c1/c2 + seams-audit-3 + model-upgrade))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of June 2026)
@@ -307,7 +307,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (567 tests)
+# Run tests (581 tests)
 npm test
 
 # Pages
@@ -881,7 +881,7 @@ and signal handlers are owned by the shell when embedded.
 - Models: `claude-haiku-5-5`, `claude-sonnet-5-5` (`AI_MODELS` in ai.js — the current model of each line, no date suffix)
 - Both models think by default (adaptive thinking; thinking tokens are billed as output and count against `max_tokens`). Every call goes through `sizedParams(maxTokens, effort)`: an explicit `output_config.effort` (`low` for the short assistant features; `medium` for Knowledge Q&A in `answerWithCitations`) and `max_tokens = maxTokens + 2048` thinking headroom (capped 16000; `maxTokens` sizes the REPLY). Text is read by block TYPE (`responseText` — `content[0]` can be a thinking block). A safety decline (`stop_reason: "refusal"`) makes `callAI` / `answerWithCitations` throw a `REFUSAL` error (callers' catch paths report AI unavailable); `callAIWithUsage` returns empty text instead so the spend is still charged.
 - Never send `temperature` / `top_p` / `top_k`, an assistant prefill, or a forced `tool_choice` — the 5.5 models reject them (400).
-- Without `ANTHROPIC_API_KEY` the model-calling routes (draft-email, task-breakdown, parse-todo, review-summary, adjust-tone, daily-briefing, suggest-tags) answer **501** `{ error, ai_unavailable: true }` via `aiUnavailable(res)` in `routes/ai.js` — after their own 400s (feature off, missing input, a private note), before any query or model call (roadmap T1.5; they used to reach callAI's throw and answer 500). Ask and Smart Suggestions keep their 200 "not configured" answers.
+- Without `ANTHROPIC_API_KEY` the model-calling routes (draft-email, task-breakdown, parse-todo, review-summary, adjust-tone, daily-briefing, suggest-tags) answer **501** `{ error, ai_unavailable: true }` via `aiUnavailable(res)` in `routes/ai.js` — after their own 400s (feature off, missing input, a private note), before any query or model call (roadmap T1.5; they used to reach callAI's throw and answer 500). Ask and Smart Suggestions keep their 200 "not configured" answers. Over the monthly AI budget the same routes answer 429 (roadmap T2.3 C2 — see the AI cost cap below).
 - Features: email drafting, task breakdown, smart quick add, weekly review summary, email tone adjustment, daily briefing, note auto-tagging, smart suggestions, natural language query, **Knowledge Q&A** (`ai_model_rag`, default sonnet — the RAG answer/diagram/capture model), **Job Fit** (`ai_model_job_fit`, default haiku — the Job Radar fit + legitimacy scoring model)
 - Configuration stored in `user_settings` table (ai_model_* columns)
 - Settings page provides per-feature dropdowns
@@ -901,9 +901,21 @@ and signal handlers are owned by the shell when embedded.
   refusal included (`answerWithCitations` now returns `usage`, and its REFUSAL error
   carries it); a failed charge is logged and never loses the answer. The cap reads go
   through `module.exports`, so tests stub them. Job Radar's `cappedCall` is an alias of
-  `cappedAI` (its passes stop on CAP or CAP_CHECK_FAILED). Until T2.3 C2 / C3 land, the
-  nine `routes/ai.js` features and Knowledge's answer / diagram / capture still call
-  the uncapped `callAI` / `answerWithCitations`.
+  `cappedAI` (its passes stop on CAP or CAP_CHECK_FAILED). Since T2.3 C2 the nine
+  `routes/ai.js` features call `ai.cappedAI` too, each with its feature name as the
+  entry_type (`email_draft`, `task_breakdown`, `quick_add`, `review_summary`,
+  `email_tone`, `daily_briefing`, `note_tagging`, `smart_suggestions`,
+  `natural_language_query`). Over the budget the seven action routes answer **429**
+  `{ error: "Monthly AI budget reached ($X of $Y) — raise it in Settings → AI.", ai_cap:
+  true }` and an unreadable spend **503** `{ error, ai_cap_check_failed: true }`
+  (`capResponse`) — after their 400s and the 501; the daily briefing gates
+  (`capBlock`) BEFORE its data queries, after its 10-minute cache. Ask and Smart
+  Suggestions keep their 200 shapes (`answer:` says the budget is reached / `suggestions:
+  null`) with `ai_cap` (or `ai_cap_check_failed`), also gated before their queries. A
+  cache hit makes no cap read and no call. `tests/roadmap-t2-3-cap-c2.test.js` fails on
+  any `routes/*.js` file naming `callAI` / `answerWithCitations` (KNOWN_GAPS: rag.js
+  until C3 — Knowledge's answer / diagram / capture still call them uncapped). Smart
+  Suggestions' day / weekday / cache key are the APP_TIMEZONE date (C2).
   `estimateCostCents` prices the 5.5 models (`AI_PRICING`, cents per token):
   Haiku 5.5 $0.10 / $0.50 per MTok (a prompt over 100K tokens uses the
   $0.50 / $2.50 card), Sonnet 5.5 $2 / $10; cache reads are charged at 0.1x

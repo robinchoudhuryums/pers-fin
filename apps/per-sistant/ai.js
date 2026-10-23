@@ -303,5 +303,5 @@ module.exports = {
   // AI cost cap (D1)
   estimateCostCents, getAiBudgetCents, monthlyAiSpendCents, recordAiUsage, AI_PRICING,
   // Every feature on the cap (roadmap T2.3)
-  checkAiCap, cappedAI, cappedCitations, aiMonthStart,
+  checkAiCap, cappedAI, cappedCitations, aiMonthStart, capError,
 };

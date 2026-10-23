@@ -100,17 +100,17 @@ describe("F134 — the notes privacy tier", () => {
     assert.match(read("routes", "ai.js"),
       /FROM notes WHERE deleted_at IS NULL AND sensitivity = 'normal' ORDER BY updated_at DESC LIMIT 20/);
     const ai = require("../ai");
-    const orig = { model: ai.getAIModelForFeature, call: ai.callAI };
+    const orig = { model: ai.getAIModelForFeature, call: ai.cappedAI };
     let called = false;
     ai.getAIModelForFeature = async () => "haiku";
-    ai.callAI = async () => { called = true; return "[\"x\"]"; };
+    ai.cappedAI = async () => { called = true; return { text: "[\"x\"]" }; };
     try {
       const router = require("../routes/ai")({ pool: { query: async () => ({ rows: [] }) }, config, helpers: {} });
       const app = appWith(router);
       const r = await supertest(app).post("/api/ai/suggest-tags").send({ content: "acct 1234", sensitivity: "secret" });
       assert.equal(r.status, 400);
       assert.equal(called, false, "the private text never reached the model");
-    } finally { ai.getAIModelForFeature = orig.model; ai.callAI = orig.call; }
+    } finally { ai.getAIModelForFeature = orig.model; ai.cappedAI = orig.call; }
     assert.match(read("pages", "notes.js"), /if \(sensitivity !== 'normal'\) return alert\('AI tagging is off for private and secret notes\.'\);/);
   });
 

@@ -203,7 +203,6 @@ describe("Policy: timezone lint — no new UTC 'today' / 'this month' anchors in
     "teller/services/projections.js": { count: 1, reason: "computeLoanPayoff's default `today` arg; every server caller passes todayStr()" },
     "scripts/sheets-sync.js": { count: 1, reason: "sheetsTodayStr()'s invalid-zone fallback to UTC" },
     "apps/per-sistant/routes/health.js": { count: 1, reason: "the habits todayStr()'s invalid-zone fallback to UTC" },
-    "apps/per-sistant/routes/ai.js": { count: 1, reason: "FOLLOW-ON: the Ask context's 'Today:' line is the UTC date" },
     "apps/per-sistant/routes/rag.js": { count: 1, reason: "FOLLOW-ON: capture-to-vault file names use the UTC date" },
     "apps/per-sistant/routes/calendar.js": { count: 1, reason: "FOLLOW-ON: GET /api/calendar's default year (and month) is the server's clock — seams audit #3 added new Date().getFullYear() to the lint" },
   };

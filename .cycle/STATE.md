@@ -18,7 +18,22 @@ Updated: 2026-10-23
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T2.3 (AI cost cap for every Per-sistant feature) — C1 DONE** on branch
+- **Status:** **Roadmap T2.3 (AI cost cap for every Per-sistant feature) — C2 DONE** on branch
+  `claude/sweet-ritchie-f9d8ah` (2026-10-23, in PR robinchoudhuryums/pers-fin#133). Plan:
+  `.cycle/plan-t2-3-persistent-ai-cap.md`. Block: `.cycle/blocks/7-roadmap-t2-3-c2-broad-implement.md`.
+  - **Completed:** apps/per-sistant/routes/ai.js — the nine features on ai.cappedAI with their
+    feature-name entry_types; capResponse (CAP → 429 { ai_cap }, CAP_CHECK_FAILED → 503) after the
+    400s / 501; capBlock gates the briefing (after its cache, before its queries), Ask and Smart
+    Suggestions (200 shapes + ai_cap / ai_cap_check_failed); Smart Suggestions' date / weekday /
+    cache key in APP_TIMEZONE (timezone-lint KNOWN_GAPS entry removed); ai.js exports capError.
+    New test file with the no-direct-callAI source guard (KNOWN_GAPS rag.js: 6). Docs.
+  - **Verification:** npm 2113/2113 (14 new); contract 201/201; eight mutation checks red.
+  - **Decisions:** Ask / Suggestions answer an unreadable spend with their 200 shape +
+    ai_cap_check_failed (not a 503), matching their never-error posture; the routes without data
+    queries rely on the wrapper's own check (no separate gate).
+  - **Where I left off:** C2 committed and pushed. NEXT: `/broad-implement C3` (Knowledge query /
+    diagram / capture on the wrappers; the guard's KNOWN_GAPS emptied; contract file).
+- **Previous status:** **Roadmap T2.3 (AI cost cap for every Per-sistant feature) — C1 DONE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-23, in PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-3-persistent-ai-cap.md`. Block: `.cycle/blocks/7-roadmap-t2-3-c1-broad-implement.md`.
   - **Completed:** apps/per-sistant/ai.js — checkAiCap (fails closed: CAP_CHECK_FAILED on an

@@ -320,7 +320,7 @@ describe("F124 — grouped fixes", () => {
       { title: "Call", priority: "medium", horizon: "long", category: null, due_date: null });
     assert.equal(normalizeParsedTodo({ due_date: "2026-03-01" }, "in").due_date, "2026-03-01");
     assert.equal(normalizeParsedTodo(null, "Pay rent").title, "Pay rent");
-    assert.match(read("routes/ai.js"), /const today = todayStr\(\);\n      const text = await callAI/);
+    assert.match(read("routes/ai.js"), /const today = todayStr\(\);\n      const text = await capped\("quick_add", model,/);
     assert.match(read("pages/todos-script-2.js"), /esc\(String\(r\.priority\)\)[\s\S]*esc\(r\.due_date\|\|'None'\)/);
   });
   it("search matches % and _ literally", async () => {
