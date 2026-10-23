@@ -18,7 +18,20 @@ Updated: 2026-10-23
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T2.4 (cross-app automation) — PLANNED, split into 7 batches** (2026-10-23,
+- **Status:** **Roadmap T2.4 (cross-app automation) — X1a DONE** (2026-10-23, branch
+  `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
+  `.cycle/plan-t2-4-crossapp-automation.md` (decisions 1–8 accepted). Block:
+  `.cycle/blocks/7-roadmap-t2-4-x1a-broad-implement.md`.
+  - **Completed:** db/030 (todos.source_app / source_key / source_url / source_snapshot /
+    auto_closed / source_detached; unique source_key covering trashed rows; the detach
+    trigger) and services/linked-tasks.js (syncLinkedTasks / ensureLinkedTask). Refinement:
+    hand completion is final through a trigger-set `source_detached` (every completion path,
+    and a hand reopen is respected) rather than clearing auto_closed in each route.
+  - **Tests:** npm 2163/2163 (16 new), contract 216/216 (10 new), migration test passed;
+    11 mutations all red.
+  - **Where I left off:** X1a committed. NEXT: `/broad-implement X1b` (edits win via
+    source_snapshot + the "Perfin" chip + the e2e seed).
+- **Previous status:** **Roadmap T2.4 (cross-app automation) — PLANNED, split into 7 batches** (2026-10-23,
   branch `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-4-crossapp-automation.md`. X1a Per-sistant schema + sync core (db/030,
   syncLinkedTasks / ensureLinkedTask, hand completion final); X1b edits win + the "Perfin"
@@ -28,7 +41,7 @@ implement and reflect sessions only set Phase.)
   Per-sistant's /api/search; X3b the `/search` page, nav links, INV-144, close-out.
   Decisions 1–8 are proposed; `/broad-implement X1a` accepts them.
   - **Where I left off:** plan split and committed. NEXT: `/broad-implement X1a`.
-- **Previous status:** **Roadmap T2.3 (AI cost cap for every Per-sistant feature) — C4 DONE; T2.3 COMPLETE** on branch
+- **Earlier status:** **Roadmap T2.3 (AI cost cap for every Per-sistant feature) — C4 DONE; T2.3 COMPLETE** on branch
   `claude/sweet-ritchie-f9d8ah` (2026-10-23, in PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-3-persistent-ai-cap.md`. Block: `.cycle/blocks/7-roadmap-t2-3-c4-broad-implement.md`.
   - **Completed:** ai.js getAiBudgetInfo (settings / env / default; the budget read from the

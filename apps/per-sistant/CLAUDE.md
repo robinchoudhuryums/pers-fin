@@ -39,7 +39,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   or a total over the cap, is never sent around: Send Now answers 400 with the reason
   BEFORE claiming (the email stays unsent), and the scheduler marks the claimed row
   `failed` with it.
-- **Tests**: `tests/` (node:test runner, `npm test`, 610 tests (api + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11/batch12/batch13/batch16/batch17/batch20 + roadmap-t1-batchc + roadmap-t2-3-cap-c1/c2/c3/c4 + seams-audit-3 + model-upgrade))
+- **Tests**: `tests/` (node:test runner, `npm test`, 626 tests (api + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11/batch12/batch13/batch16/batch17/batch20 + roadmap-t1-batchc + roadmap-t2-3-cap-c1/c2/c3/c4 + roadmap-t2-4-x1a + seams-audit-3 + model-upgrade))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of June 2026)
@@ -271,6 +271,9 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `db/027_streak_before_completion.sql` — `todos.streak_before_completion` (F124: Undo restores the streak)
 - `db/028_note_sensitivity.sql` — `notes.sensitivity` normal / private / secret + `chk_notes_sensitivity` (cycle-7 F134 / ST5: the notes privacy tier)
 - `db/029_vault_parse_version.sql` — `user_settings.vault_parse_version` (cycle-7 ST4): the `VAULT_PARSE_VERSION` (services/vault-sync.js) a successful FULL vault sync last ran under. **Bump `VAULT_PARSE_VERSION` whenever frontmatter parsing or sync semantics change** — Perfin's Settings → Sync Health → Operator Checks then asks for one full reindex (read-only through the wired pool) until a full sync stamps the new value
+- `db/030_linked_tasks.sql` — linked tasks (roadmap T2.4 X1a): `todos.source_app`, `source_key` ('<app>:<kind>:<id>', UNIQUE where not null — trashed rows included, so a deleted linked task isn't recreated until the 30-day purge), `source_url` (a same-app path), `source_snapshot` (what the sync last wrote), `auto_closed` (closed by the sync — only such a task reopens) and `source_detached`, set by the `trg_todos_detach_linked` trigger whenever a linked task's `completed` changes WITHOUT `auto_closed` changing in the same UPDATE — i.e. by hand, through any route — after which the sync never touches it
+- `services/linked-tasks.js` — the ONE writer of linked tasks (roadmap T2.4): `syncLinkedTasks(pool, { app, kinds, desired })` reconciles an app's open tasks of the listed kinds to the desired set — creates a missing key (category finance, short horizon, `announceTodoEvent('todo_created')`), closes an open task whose key left the set (`auto_closed`, announced `todo_completed`), reopens an auto-closed one whose key came back — never a detached or trashed task, and only kinds the caller lists (list only sources read successfully this run). `ensureLinkedTask(pool, { app, task })` creates a one-off event task once. Keys, titles (≤300), descriptions (≤2000), urls (same-app path), due dates and priorities are checked; a bad item is skipped but its well-formed key still counts as desired. Nothing calls it yet (Perfin wires it in X2)
+- `tests/roadmap-t2-4-x1a.test.js` — roadmap T2.4 X1a pins (16): the sync over a fake pool (create once + announce, re-run no-op, close / reopen, detached and trashed rows left alone, only listed kinds closed, bad keys / fields refused without closing), ensureLinkedTask, db/030 idempotent. The database-backed half is the root `tests/contract/linked-tasks.contract.test.js`
 - `tests/roadmap-t1-batchc.test.js` — roadmap T1.5 Batch C pins (11): loadEmailAttachments (order + shape, a legacy disk file, a missing file, the 20MB cap, none), both senders' wiring, Send Now's 400 without a claim, the Emails page's error line + Retry, the AI routes' 501 (a 400 still first), the Review page's AI gate. The database-backed half is the root `tests/contract/persistent-batchc.contract.test.js`
 - `tests/seams-audit-3.test.js` — Seams & Invariants audit #3 pins (6): the Knowledge finance snapshot listing a charge due today and today+14 by APP_TIMEZONE calendar date (a DATE value printed as its own day), the service worker's `!r.redirected` guard + `per-sistant-v9`, `knowledge-reindex.yml`'s 409 skip + count-only failure line, the standalone `/api/login` digest compare. The Perfin side is the root `tests/seams-audit-3.test.js`
 - `tests/scan-oct-batch20.test.js` — cycle-7 Batch 20 pins (7, ST3): `withPending` run in a vm from the emitted bundle (busy + restore, single-flight, restore on a throw, lists / null / an already-disabled button), the hand-rolled-toggle guard (shrinking KNOWN_GAPS, empty) and each migrated action's key. Destructive static buttons and the microphone buttons carry `data-e2e-skip`, which the root `e2e/pages.spec.js` click sweep honors — mark any new destructive, off-app or device-permission control the same way
@@ -307,7 +310,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (610 tests)
+# Run tests (626 tests)
 npm test
 
 # Pages

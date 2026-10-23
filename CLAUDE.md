@@ -875,9 +875,17 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2147 tests as of latest); use
+  Perfin and Per-sistant test files (2163 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2147 tests across 110 test files (incl.
+  Current count: 2163 tests across 111 test files (incl.
+  `apps/per-sistant/tests/roadmap-t2-4-x1a.test.js` — roadmap T2.4 X1a: syncLinkedTasks over a
+  fake pool (a desired key created once with the finance shape + snapshot and announced, a
+  re-run changing nothing, a key that left the set closed as auto_closed and reopened when it
+  comes back, a detached task never reopened or closed, a trashed row not recreated, only the
+  listed kinds closed — none listed sends no UPDATE — a malformed key / another app's key / an
+  unlisted kind refused, a bad title / description / url / due date / priority skipped with its
+  key still desired), ensureLinkedTask once and never closed, db/030 idempotent — the
+  database-backed half is `tests/contract/linked-tasks`;
   `apps/per-sistant/tests/roadmap-t2-3-cap-c4.test.js` — roadmap T2.3 C4: getAiBudgetInfo's
   sources (settings → env → $1.00, read from the pool it is given; an unreadable setting
   logged and falling back) and checkAiCap passing its pool; GET /api/ai/usage (the
@@ -1403,7 +1411,13 @@ shell/
   and spent_cents equal to monthlyAiSpendCents with last month's row left out; PATCH
   ai_monthly_budget_cents setting the cap the wrappers enforce — a 1.5 a 400 that changes
   nothing, null back to the default; Perfin's spend in Per-sistant's usage and
-  Per-sistant's in Perfin's /api/insights/status). 206 tests, run
+  Per-sistant's in Perfin's /api/insights/status), and linked-tasks (roadmap T2.4 X1a: db/030
+  re-run cleanly with its columns, unique source_key and detach trigger; a linked create
+  running a todo_created automation; close → reopen with source_detached untouched by the
+  sync; a hand completion through PATCH or bulk complete, and an auto-closed task reopened
+  and completed by hand, never reopened; a hand reopen never re-closed; a trashed task —
+  auto-closed or open — not reopened or recreated; only the listed kinds closed;
+  ensureLinkedTask once; an ordinary task untouched). 216 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -3278,7 +3292,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2147 tests passing across 110 test files (Perfin 1537 + Per-sistant 610), plus the real-Postgres route contract suite (206 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2163 tests passing across 111 test files (Perfin 1537 + Per-sistant 626), plus the real-Postgres route contract suite (216 tests; CI `migrations` job, `npm run test:contract`) and 57 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -5695,6 +5709,16 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   email's attachments or warn before Send that one's file is missing (the refusal
   arrives as the send's error toast); Retry sends a failed SCHEDULED email at once
   rather than offering to reschedule it.
+- Roadmap T2.4 (cross-app automation) is IN PROGRESS (`.cycle/plan-t2-4-crossapp-automation.md`,
+  X1a–X3b): X1a shipped the linked-task store — db/030 (`todos.source_app` / `source_key` /
+  `source_url` / `source_snapshot` / `auto_closed` / `source_detached`, a unique source_key
+  that covers trashed rows, and a trigger that detaches a linked task whenever its completed
+  state changes without the sync changing auto_closed) and `apps/per-sistant/services/
+  linked-tasks.js` (syncLinkedTasks / ensureLinkedTask). Nothing calls it yet (X2a–X2c wire
+  Perfin), there is no task chip (X1b), and the sync doesn't yet refresh an open task's
+  title / due date (X1b). X1a follow-ons: a task you reopen by hand after an auto-close is
+  detached for good (the sync never closes it again); a trashed task's key frees up only at
+  the 30-day purge.
 - Roadmap T2.3 (an AI cost cap for every Per-sistant feature) is DONE
   (`.cycle/plan-t2-3-persistent-ai-cap.md`, C1–C4): the capped wrappers in
   `apps/per-sistant/ai.js` (APP_TIMEZONE spend month, a spend read that refuses the call
@@ -5948,7 +5972,8 @@ Per-sistant Backend:
   apps/per-sistant/server.js, apps/per-sistant/ai.js, apps/per-sistant/config.js,
   apps/per-sistant/db.js, apps/per-sistant/errors.js, apps/per-sistant/helpers.js,
   apps/per-sistant/middleware.js, apps/per-sistant/routes/*.js,
-  apps/per-sistant/services/keep-alive.js, apps/per-sistant/db/*.sql
+  apps/per-sistant/services/keep-alive.js, apps/per-sistant/services/linked-tasks.js,
+  apps/per-sistant/db/*.sql
   (Subtree-merged companion app, governed by THIS config to keep the two apps
    in lockstep — not a separate cycle. routes/perfin.js + routes/webhooks.js
    are the cross-app synergy seam shared with Perfin's Settings/Notifications/
