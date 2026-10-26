@@ -133,6 +133,37 @@ function classifyPlaidFlow(txn) {
   return null;
 }
 
+// Roadmap T3.3 K1: upsert one Plaid investment transaction into
+// investment_transactions (Plaid can correct a row, so DO UPDATE). `sec` is the
+// response's securities entry for its security_id (ticker / name / type).
+// Returns 1 for a new row, 0 for an update.
+async function storeInvestmentTransaction(localAccountId, t, sec) {
+  const num = (v) => (v == null || v === "" || !Number.isFinite(Number(v)) ? null : Number(v));
+  const r = await pool.query(
+    `INSERT INTO investment_transactions
+       (plaid_investment_transaction_id, investment_account_id, txn_date, type, subtype, security_id,
+        ticker, security_name, security_type, quantity, price, amount, fees, name, cancel_transaction_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+     ON CONFLICT (plaid_investment_transaction_id) DO UPDATE SET
+       investment_account_id = EXCLUDED.investment_account_id, txn_date = EXCLUDED.txn_date,
+       type = EXCLUDED.type, subtype = EXCLUDED.subtype, security_id = EXCLUDED.security_id,
+       ticker = EXCLUDED.ticker, security_name = EXCLUDED.security_name,
+       security_type = EXCLUDED.security_type, quantity = EXCLUDED.quantity, price = EXCLUDED.price,
+       amount = EXCLUDED.amount, fees = EXCLUDED.fees, name = EXCLUDED.name,
+       cancel_transaction_id = EXCLUDED.cancel_transaction_id, updated_at = now()
+     RETURNING (xmax = 0) AS inserted`,
+    [
+      t.investment_transaction_id, localAccountId, t.date,
+      String(t.type || "").toLowerCase() || "unknown", t.subtype ? String(t.subtype).toLowerCase() : null,
+      t.security_id || null,
+      (sec && sec.ticker_symbol) || null, (sec && sec.name) || null, (sec && sec.type) || null,
+      num(t.quantity), num(t.price), num(t.amount), num(t.fees), t.name || null,
+      t.cancel_transaction_id || null,
+    ]
+  );
+  return r && r.rows && r.rows[0] && r.rows[0].inserted ? 1 : 0;
+}
+
 // Sync external cash flows for every Plaid investment item via
 // investmentsTransactionsGet. Deliberately fetches the FULL trailing window
 // (Plaid serves up to ~24 months) on every run instead of keeping a
@@ -181,9 +212,10 @@ async function syncAllPlaidInvestmentFlows({ itemId = null } = {}) {
     const startStr = start.toISOString().slice(0, 10);
     const endStr = end.toISOString().slice(0, 10);
 
-    let flowsAdded = 0, itemsSynced = 0;
+    let flowsAdded = 0, itemsSynced = 0, txnsStored = 0, storeFailed = 0;
     const errors = [];
     for (const item of items.rows) {
+      const failedBefore = storeFailed;
       try {
         if (!item.access_token) {
           errors.push({ institution: item.institution_name, error: "decryption_failed" });
@@ -201,9 +233,20 @@ async function syncAllPlaidInvestmentFlows({ itemId = null } = {}) {
           total = resp.data.total_investment_transactions ?? 0;
           for (const a of resp.data.accounts || []) if (a.account_id) itemAccounts.add(a.account_id);
           const txns = resp.data.investment_transactions || [];
+          const securities = new Map();
+          for (const sec of resp.data.securities || []) if (sec && sec.security_id) securities.set(sec.security_id, sec);
           for (const t of txns) {
             const localId = acctMap[t.account_id];
             if (!localId) continue; // account not tracked in investment_accounts
+            // Roadmap T3.3 K1: keep every transaction (the tax package's lots and
+            // investment income). Isolated per row so a store failure never
+            // costs the flows below; counted and reported once per item.
+            try {
+              txnsStored += await storeInvestmentTransaction(localId, t, securities.get(t.security_id));
+            } catch (storeErr) {
+              storeFailed++;
+              if (storeFailed === 1) console.error("Investment transaction store error:", storeErr.message);
+            }
             const flow = classifyPlaidFlow(t);
             if (!flow) continue;
             const ins = await pool.query(
@@ -227,6 +270,9 @@ async function syncAllPlaidInvestmentFlows({ itemId = null } = {}) {
             [[...itemAccounts]]
           );
         }
+        if (storeFailed > failedBefore) {
+          errors.push({ institution: item.institution_name, error: "investment_transactions_not_stored" });
+        }
         itemsSynced++;
       } catch (err) {
         // A transactions-only Item is in the UNION above only because it has
@@ -240,7 +286,10 @@ async function syncAllPlaidInvestmentFlows({ itemId = null } = {}) {
         errors.push({ institution: item.institution_name, error: String(code) });
       }
     }
-    return { ok: true, flows_added: flowsAdded, items_synced: itemsSynced, ...(errors.length ? { errors } : {}) };
+    return {
+      ok: true, flows_added: flowsAdded, items_synced: itemsSynced, transactions_stored: txnsStored,
+      ...(errors.length ? { errors } : {}),
+    };
   } catch (err) {
     console.error("syncAllPlaidInvestmentFlows error:", err.message);
     return { ok: false, error: "An internal error occurred." };
@@ -576,3 +625,4 @@ module.exports.computeTWR = computeTWR;
 module.exports.computeXIRR = computeXIRR;
 module.exports.syncAllPlaidInvestmentFlows = syncAllPlaidInvestmentFlows;
 module.exports.snapshotDay = snapshotDay;
+module.exports.storeInvestmentTransaction = storeInvestmentTransaction; // roadmap T3.3 K1

@@ -18,7 +18,23 @@ Updated: 2026-10-26
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T3.3 (year-end tax package) — PLANNED, split into 4 batches** (2026-10-26,
+- **Status:** **Roadmap T3.3 (year-end tax package) — K1 DONE** (2026-10-26, branch
+  `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Block:
+  `.cycle/blocks/7-roadmap-t3-3-k1-broad-implement.md`. The plan's decisions were accepted as written.
+  - **Shipped:** the `investment_transactions` table (migration, reset-fresh WIPE); the Plaid flow
+    sync storing every investment transaction of a tracked account with its security
+    (`storeInvestmentTransaction`, `transactions_stored`, one `investment_transactions_not_stored`
+    error per Item that never holds the flows back); `teller/services/tax-investments.js` —
+    FIFO `realizedGains` (NULL basis beyond known lots, short / long / mixed, cancels dropped,
+    corporate actions flagged with the lots untouched, shorts not modelled), `investmentIncome`,
+    `retirementDistributions`, `getInvestmentTaxData(pool, year)`; tax-advantaged accounts kept out
+    of gains and income.
+  - **Verified:** npm test 2306/2306 (16 new); contract 241/241 (3 new, `tax-investments`);
+    migration test twice; mutation checks 15/15 caught (the `xmax` one by the contract test).
+    Playwright not re-run — no page changed.
+  - **Where I left off:** K1 committed and pushed. Next: `/broad-implement K2` (the tax documents
+    checklist + the `tax_documents` linked-task source).
+- **Previous status (T3.3 plan):** **Roadmap T3.3 (year-end tax package) — PLANNED, split into 4 batches** (2026-10-26,
   branch `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t3-3-tax-package.md`.
   - **Batches:** K1 investment transactions + FIFO realized gains + investment income (server);
@@ -29,7 +45,7 @@ implement and reflect sessions only set Phase.)
     tax-advantaged accounts kept apart; the checklist in Perfin, not Knowledge facts;
     charitable receipts wait for 3.2; nothing stored, no AI; a dependency-free store-only ZIP.
   - **Where I left off:** plan committed. NEXT: `/broad-implement K1`.
-- **Previous status (T2.5 H1):** **Roadmap T2.5 (transaction undelete + iOS re-authenticate) — H1 DONE; T2.5 COMPLETE**
+- **Earlier status (T2.5 H1):** **Roadmap T2.5 (transaction undelete + iOS re-authenticate) — H1 DONE; T2.5 COMPLETE**
   (2026-10-26, branch `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-5-undelete-ios-reauth.md`. Block: `.cycle/blocks/7-roadmap-t2-5-h1-broad-implement.md`.
   - **Completed:** Re-authenticate / Add accounts through Plaid's hosted page on iOS / iPadOS, the

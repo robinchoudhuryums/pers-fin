@@ -276,6 +276,26 @@ teller/
                            "Payday missed?" + the opt-in critical-alert email, once
                            per (stream, expected date) via sentRecently; an in-memory
                            (local day + sync stamp) memo, off → no DB read that day
+    tax-investments.js   — Investment tax figures (roadmap T3.3 K1), from
+                           investment_transactions: realizedGains (FIFO lots per
+                           account + security; cost = the buy's |amount|, fees in;
+                           a sale beyond known lots or from a transfer-in lot has a
+                           NULL basis, never $0 — basis_coverage full / partial /
+                           none; short / long by "held more than a year", a sale
+                           across both is "mixed" and split pro rata in the totals;
+                           cancels dropped; split / merger / spin-off / stock
+                           distribution flag the security (corporate_action) and
+                           leave its lots alone; "sell short" not modelled),
+                           investmentIncome (dividends — qualified separately —
+                           interest, capital-gain distributions, tax withheld, per
+                           taxable account), retirementDistributions (cash
+                           withdrawals / distributions from TAX_ADVANTAGED accounts:
+                           IRA / Roth / 401k / 403b / 457b / 529 / HSA / pension …),
+                           getInvestmentTaxData(pool, year) (calendar year, an
+                           integer 2000-9999 — throws otherwise; every row before the
+                           year's end so earlier buys are the lots). Tax-advantaged
+                           accounts never reach gains or income. Pure apart from the
+                           one read; nothing stored, nothing sent to AI
     projections.js       — FIRE/runway/loan math (pure): computeFireProjection
                            (FIRE number = annual spend × 100/withdrawal-rate,
                            monthly geometric compounding, 40-yr series) +
@@ -572,7 +592,13 @@ teller/
                            CRUD + Plaid flow sync (classifyPlaidFlow,
                            syncAllPlaidInvestmentFlows({ itemId }) — one Item for a
                            webhook, T2.1 W4), TWR/XIRR math, and
-                           GET /api/investments/performance-history
+                           GET /api/investments/performance-history. The flow sync
+                           also stores EVERY Plaid investment transaction of a
+                           tracked account (storeInvestmentTransaction → the
+                           investment_transactions table, roadmap T3.3 K1; returns
+                           transactions_stored; a failed store is one
+                           investment_transactions_not_stored error per Item and
+                           never holds the flows back)
     insights-email.js    — split from insights.js: the pure email renderers
                            (renderInsightEmail, weekly/daily digest HTML+text,
                            escapeHtml); insights.js imports + re-exports them
@@ -889,7 +915,8 @@ shell/
   row counts); only mutates with `--yes` / `CONFIRM_RESET=YES`; runs in one
   transaction. Three exported lists: `WIPE_TABLES` (incl. `investment_flows`,
   `payee_obligations`, `payee_payments`, `settlements`, `payee_obligation_skips`,
-  `deleted_transactions`, `merchant_rename_rules` — PSC-6: missing them left
+  `deleted_transactions`, `merchant_rename_rules`, `investment_transactions` (re-synced
+  from Plaid like transactions, roadmap T3.3 K1) — PSC-6: missing them left
   flows pointing at re-used `investment_accounts` ids after `RESTART IDENTITY`),
   `KEEP_TABLES`, and `UNTOUCHED_TABLES` (`schema_migrations`, `job_runs`,
   `benchmark_prices`, `app_errors`, `webhook_events`). `tests/scan-sept-batch9.test.js` asserts every table the
@@ -913,9 +940,20 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2290 tests as of latest); use
+  Perfin and Per-sistant test files (2306 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2290 tests across 120 test files (incl.
+  Current count: 2306 tests across 121 test files (incl.
+  `tests/roadmap-t3-3-k1.test.js` — roadmap T3.3 K1: realizedGains over canned rows (FIFO across
+  lots with a mixed short / long sale, a partly used lot, the "more than a year" edges incl. Feb 29,
+  a dividend-reinvestment lot, a sale beyond known lots → NULL basis + partial / none coverage, an
+  in-kind transfer in (unknown cost) and out, a cancel pair dropped, a split / reverse split flagged
+  with the lots untouched, a short sale left out, same-day buy-before-sell, lots per account +
+  security, the year filter), investmentIncome / retirementDistributions (a 401(k) left out of income,
+  its withdrawal listed), the tax-advantaged list, getInvestmentTaxData over a fake pool (the
+  year-end parameter, an invalid year rejected) and the flow sync storing each row once with its
+  security (exact parameters, lowercased subtype, transactions_stored, a store failure keeping the
+  flows with one error per Item), the migration and reset-fresh — the database-backed half is
+  `tests/contract/tax-investments`;
   `tests/roadmap-t2-5-h1.test.js` — roadmap T2.5 H1: link-token-update's hosted request (hosted_link
   + redirect_uri on top of the update-mode body, a strict `hosted: true`, a missing redirect_uri a 400
   before anything is read), updateSessionState over session shapes, update-complete's link_token
@@ -1562,9 +1600,13 @@ shell/
   restored with all of them and updated, not duplicated, by the next reconcile; a Plaid row skipped by
   a re-delivery and restored with its text[] category; a re-imported CSV file skipping the deleted row
   until it's restored; a restore after the account was removed a 409 that changes nothing; the list
-  paged newest first by its cursor and a pre-U1 tombstone lifted with returns_on). Since roadmap
-  T2.5 H1 plaid-update also sends the hosted token request and a hosted update whose Link session
-  exited (flag, cursor and accounts unchanged) before the finished one. 238 tests, run
+  paged newest first by its cursor and a pre-U1 tombstone lifted with returns_on), and
+  tax-investments (roadmap T3.3 K1: the flow sync over a stubbed Plaid client storing a brokerage's and
+  a 401(k)'s investment transactions once — a re-sync adding none, the flows unchanged — and
+  getInvestmentTaxData on those rows: one mixed-term FIFO sale, the 401(k) sale and dividend left out,
+  qualified dividends and interest, the 401(k) withdrawal under retirement, an earlier year empty).
+  Since roadmap T2.5 H1 plaid-update also sends the hosted token request and a hosted update whose
+  Link session exited (flag, cursor and accounts unchanged) before the finished one. 241 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -3501,7 +3543,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2290 tests passing across 120 test files (Perfin 1632 + Per-sistant 658), plus the real-Postgres route contract suite (238 tests; CI `migrations` job, `npm run test:contract`) and 63 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2306 tests passing across 121 test files (Perfin 1648 + Per-sistant 658), plus the real-Postgres route contract suite (241 tests; CI `migrations` job, `npm run test:contract`) and 63 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -4091,7 +4133,9 @@ POST /api/plaid/sync-flows # sync external cash flows (deposits/withdrawals/in-k
                            # via UNIQUE plaid_investment_transaction_id (no watermark —
                            # a newly linked item can't silently lose history). Dividends,
                            # interest, capital gains, buys/sells/fees are RETURN
-                           # components, never flows (classifyPlaidFlow).
+                           # components, never flows (classifyPlaidFlow). Every row of a
+                           # tracked account is also stored in investment_transactions
+                           # (T3.3 K1) → transactions_stored in the response.
 GET  /api/investment-flows # list flows (query: months default 24) with account names
 POST /api/investment-flows # log a manual flow for accounts Plaid can't see
                            # (body: source 'investment'|'linked', source_id, flow_date,
@@ -4384,7 +4428,14 @@ standalone-mode fallback if either app is run on its own Render service.
   missed-job signature), `investment_flows` (external cash flows for
   TWR/XIRR — polymorphic (source, source_id) like account_balance_snapshots,
   signed amount (positive = into the portfolio), provenance 'plaid' (UNIQUE
-  plaid_investment_transaction_id) or 'manual'), `benchmark_prices` (S&P 500 daily closes cached from
+  plaid_investment_transaction_id) or 'manual'), `investment_transactions` (roadmap T3.3
+  K1 — every Plaid investment transaction of a tracked account, written by the flow sync:
+  `plaid_investment_transaction_id` UNIQUE, `investment_account_id` (no FK, like
+  investment_flows), `txn_date`, `type` / `subtype` (lowercased), the security
+  (`security_id`, `ticker`, `security_name`, `security_type`), `quantity` / `price`
+  NUMERIC(24,8), `amount` / `fees` NUMERIC(18,4) in Plaid's sign (positive = cash out),
+  `name`, `cancel_transaction_id`; read by services/tax-investments.js; in reset-fresh's
+  WIPE_TABLES), `benchmark_prices` (S&P 500 daily closes cached from
   Stooq by `services/benchmarks.js` — PK (symbol, price_date); read by
   `GET /api/investments/performance-history`)
 - `user_settings`: single-row pattern (CHECK id = 1) for app preferences
@@ -5872,6 +5923,16 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   the Rent page has no "+ add item" UI, so a removed placeholder comes back only
   via `POST /api/housing/obligations`; `apps-script/Code.gs` keeps the pre-F32
   NOT_TRANSFER keyword list. Batch 5 follow-ons / later batches.
+- Roadmap T3.3 (the year-end tax package) is IN PROGRESS (`.cycle/plan-t3-3-tax-package.md`,
+  K1–K4). K1 shipped the investment side on the server: every Plaid investment transaction
+  stored (investment_transactions, by the flow sync) and `services/tax-investments.js` —
+  FIFO realized gains, investment income and retirement distributions for a calendar year.
+  Nothing shows them yet (K3's package, K4's /tax page). K1 follow-ons: lots are rebuilt
+  from Plaid's ~24-month window, so a sale of shares bought before it has a NULL basis
+  (reported as unknown, never $0) — the broker's 1099-B is the authority; wash sales,
+  specific-lot / average-cost elections and corporate actions are not modelled (a split
+  flags the security); manual and Teller-linked investment accounts have no transactions;
+  a removed (inactive) account's rows still count for its years.
 - Roadmap T2.5 (transaction undelete + iOS re-authenticate) is DONE
   (`.cycle/plan-t2-5-undelete-ios-reauth.md`, U1 / U2 / H1 — INV-145). U1 shipped the server side of
   undelete — the delete's snapshot, `GET /api/deleted-transactions`, `POST
@@ -6242,7 +6303,7 @@ Detection & Categorization:
 Financial Analytics:
   teller/services/financial-queries.js, teller/routes/spending-analytics.js,
   teller/services/cash-flow.js, teller/services/cash-alerts.js,
-  teller/services/payday-alerts.js,
+  teller/services/payday-alerts.js, teller/services/tax-investments.js,
   teller/services/projections.js, teller/routes/budgets.js,
   teller/routes/goals.js, teller/routes/credit-scores.js,
   teller/routes/whats-new.js, teller/routes/watchlist.js,

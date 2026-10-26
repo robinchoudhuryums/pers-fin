@@ -57,6 +57,8 @@ const WIPE_TABLES = [
   "investment_flows", "payee_obligations", "payee_payments", "settlements",
   "payee_obligation_skips", "deleted_transactions",
   "merchant_rename_rules",
+  // Roadmap T3.3 K1: re-synced from Plaid (24 months) like transactions.
+  "investment_transactions",
 ];
 
 // Preserved so the dry-run can show what's kept.

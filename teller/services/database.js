@@ -1040,6 +1040,34 @@ async function runMigrationsOnce() {
     // the holdings sync + both exchange paths, so the investments-only link
     // can refuse a duplicate of an earlier investments-only Item (F18 guard).
     await client.query("ALTER TABLE investment_accounts ADD COLUMN IF NOT EXISTS mask TEXT");
+    // Roadmap T3.3 K1: every Plaid investment transaction (buys, sells,
+    // dividends, interest, fees, corporate actions — investment_flows keeps only
+    // the external cash flows), written by the same investmentsTransactionsGet
+    // pages the flow sync reads. Kept beyond Plaid's 24-month window, so the
+    // lot history behind realized gains grows from here on. No FK to
+    // investment_accounts (like investment_flows): reset-fresh truncates both.
+    await client.query(`CREATE TABLE IF NOT EXISTS investment_transactions (
+      id SERIAL PRIMARY KEY,
+      plaid_investment_transaction_id TEXT NOT NULL UNIQUE,
+      investment_account_id INT NOT NULL,
+      txn_date DATE NOT NULL,
+      type TEXT NOT NULL,
+      subtype TEXT,
+      security_id TEXT,
+      ticker TEXT,
+      security_name TEXT,
+      security_type TEXT,
+      quantity NUMERIC(24,8),
+      price NUMERIC(24,8),
+      amount NUMERIC(18,4),
+      fees NUMERIC(18,4),
+      name TEXT,
+      cancel_transaction_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_inv_txn_account_date
+      ON investment_transactions (investment_account_id, txn_date)`);
 
     // Scheduled-job heartbeat table (F4 — missed-job detection). One row per
     // background job in teller/startup.js, UPSERTed by services/job-health.js
