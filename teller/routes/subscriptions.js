@@ -863,42 +863,84 @@ router.post("/api/cleanup", async (_req, res) => {
   }
 });
 
+// The projected charges of active detected subscriptions from `today` through
+// `endStr` (design D3 — shared by GET /api/forecast and the dashboard summary's
+// bills-due item, so the two can't disagree). Month-scale cadences step by
+// CALENDAR MONTH from the last real charge (DC-9); a cadence_days <= 0 / NaN
+// can't be projected and is skipped (F8). Rows: { name, amount, date, days_away,
+// category, bill_source: 'subscription', bill_id }, date order.
+async function forecastCharges(db, today, endStr) {
+  const result = await db.query(
+    `SELECT id, display_name, amount, cadence_days, next_expected, last_charged, category
+     FROM detected_subscriptions
+     WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL
+       AND next_expected IS NOT NULL
+     ORDER BY next_expected ASC`
+  );
+  const out = [];
+  for (const sub of result.rows) {
+    const amount = parseFloat(sub.amount);
+    const cadence = parseInt(sub.cadence_days);
+    if (!(cadence > 0)) continue;
+    for (const date of seriesOccurrences(sub.last_charged, sub.next_expected, cadence, today, endStr)) {
+      out.push({
+        name: sub.display_name,
+        amount,
+        date,
+        days_away: Math.round((Date.parse(date + "T00:00:00Z") - Date.parse(today + "T00:00:00Z")) / 86400000),
+        category: sub.category,
+        bill_source: "subscription",
+        bill_id: sub.id,
+      });
+    }
+  }
+  out.sort((a, b) => a.date.localeCompare(b.date));
+  return out;
+}
+
+// Bills due from `today` through today + `days` (design D3, the dashboard
+// summary's "bills due" item): the forecast's subscription charges plus every
+// manual-bill occurrence by the calendar's own rule (manualBillOccurrences,
+// DC-15), less any occurrence already marked paid in bill_payments (the
+// calendar's paid-state key). Rows as forecastCharges', date order.
+async function getBillsDue(db, { today = todayStr(), days = 7 } = {}) {
+  const endStr = addDaysStr(today, days);
+  const [subs, manual, payments] = await Promise.all([
+    forecastCharges(db, today, endStr),
+    db.query("SELECT * FROM manual_bills WHERE is_active = true"),
+    db.query("SELECT bill_source, bill_id, paid_date FROM bill_payments WHERE paid_date >= $1 AND paid_date <= $2", [today, endStr]),
+  ]);
+  const bills = subs.slice();
+  for (const bill of manual.rows) {
+    for (const date of manualBillOccurrences(bill, today, endStr)) {
+      bills.push({
+        name: bill.name,
+        amount: parseFloat(bill.amount),
+        date,
+        days_away: Math.round((Date.parse(date + "T00:00:00Z") - Date.parse(today + "T00:00:00Z")) / 86400000),
+        category: bill.category,
+        bill_source: "manual",
+        bill_id: bill.id,
+      });
+    }
+  }
+  const paid = new Set(payments.rows.map((p) => paidKey(p.bill_source, p.bill_id, p.paid_date)));
+  return bills
+    .filter((b) => !paid.has(paidKey(b.bill_source, b.bill_id, b.date)))
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+
 // GET /api/forecast — predict recurring charges for the next 30 days
 router.get("/api/forecast", async (req, res) => {
   const days = Math.min(Math.max(parseInt(req.query.days) || 30, 7), 90);
   try {
-    const result = await pool.query(
-      `SELECT display_name, amount, cadence_days, next_expected, last_charged, category
-       FROM detected_subscriptions
-       WHERE is_active = true AND is_dismissed = false AND cancelled_at IS NULL
-         AND next_expected IS NOT NULL
-       ORDER BY next_expected ASC`
-    );
-
     const today = todayStr();
     const endStr = addDaysStr(today, days);
-    const forecast = [];
+    const forecast = (await forecastCharges(pool, today, endStr)).map(
+      ({ name, amount, date, days_away, category }) => ({ name, amount, date, days_away, category })
+    );
     let totalExpected = 0;
-
-    for (const sub of result.rows) {
-      const amount = parseFloat(sub.amount);
-      const cadence = parseInt(sub.cadence_days);
-      // cadence_days <= 0 / NaN can't be projected (F8) — occurrencesBetween
-      // also returns [] for it, so no loop can hang.
-      if (!(cadence > 0)) continue;
-      // Month-scale cadences step by CALENDAR MONTH from next_expected (DC-9);
-      // a fixed 30-day step drifted ~5 days/yr and could double a month.
-      for (const date of seriesOccurrences(sub.last_charged, sub.next_expected, cadence, today, endStr)) {
-        forecast.push({
-          name: sub.display_name,
-          amount,
-          date,
-          days_away: Math.round((Date.parse(date + "T00:00:00Z") - Date.parse(today + "T00:00:00Z")) / 86400000),
-          category: sub.category,
-        });
-        totalExpected += amount;
-      }
-    }
+    for (const f of forecast) totalExpected += f.amount;
 
     // Sort by date
     forecast.sort((a, b) => a.date.localeCompare(b.date));
@@ -1524,3 +1566,5 @@ module.exports.runSubscriptionWatchdog = runSubscriptionWatchdog;
 module.exports.buildBillCalendarIcs = buildBillCalendarIcs;
 module.exports.icsFold = icsFold; // test seam (cycle-7 F59)
 module.exports.paidKey = paidKey;
+module.exports.forecastCharges = forecastCharges;
+module.exports.getBillsDue = getBillsDue;

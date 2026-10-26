@@ -34,23 +34,31 @@ const {
 // one of our 21 standard categories — that includes Teller-provided
 // buckets like 'general'/'dining'/'transport'. The categorize flow can
 // handle these via Teller-map (no AI cost), user rules, or AI fallback.
+// The uncategorized count (design D3 — shared by GET /api/categorize/status and
+// the dashboard summary's "to review" item): settled debits with no
+// user_category whose provider category is missing or outside our scheme, or
+// any Plaid row (its legacy category is never taken as ours — F50).
+async function countUncategorized(db = pool) {
+  const result = await db.query(
+    `SELECT COUNT(*) AS uncategorized
+     FROM transactions
+     WHERE (
+       user_category IS NULL
+       AND (personal_finance_category IS NOT NULL
+            OR category IS NULL
+            OR category = '{}'
+            OR NOT (category[1] = ANY($1::text[])))
+     )
+       AND pending = false AND amount > 0`,
+    [OUR_CATEGORIES_PG]
+  );
+  return parseInt(result.rows[0].uncategorized);
+}
+
 router.get("/api/categorize/status", async (_req, res) => {
   try {
-    const result = await pool.query(
-      `SELECT COUNT(*) AS uncategorized
-       FROM transactions
-       WHERE (
-         user_category IS NULL
-         AND (personal_finance_category IS NOT NULL
-              OR category IS NULL
-              OR category = '{}'
-              OR NOT (category[1] = ANY($1::text[])))
-       )
-         AND pending = false AND amount > 0`,
-      [OUR_CATEGORIES_PG]
-    );
     res.json({
-      uncategorized: parseInt(result.rows[0].uncategorized),
+      uncategorized: await countUncategorized(pool),
       ai_available: !!(Anthropic && process.env.ANTHROPIC_API_KEY),
     });
   } catch (err) {
@@ -918,3 +926,4 @@ router.post("/api/categorization-rules/from-transaction", async (req, res) => {
 
 module.exports = router;
 module.exports.runCategorize = runCategorize;
+module.exports.countUncategorized = countUncategorized;

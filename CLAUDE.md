@@ -575,10 +575,32 @@ teller/
                            realized_gains|retirement|rent_paid|documents> — that
                            section's CSV, the file the ZIP holds (an unknown section a
                            400 before any read)
+    dashboard-summary.js — GET /api/dashboard/summary (design D3, decision 5): the
+                           top of the dashboard in one request — net_worth (the
+                           latest net_worth_snapshots row + its change since the
+                           month's first), spending (getBudgetStatus summed: spent vs
+                           the effective limits, percent, over_count), cash (the
+                           lowest projected day of getCashFlowForecast over 30 days)
+                           and attention.items [{ kind, text, href, amount?, count }]
+                           — rent owed (getHousingOwed, only when configured and > 0,
+                           /housing), bills due in 7 days (getBillsDue, /calendar),
+                           transactions to categorize (countUncategorized,
+                           /dashboard#review-queue-section) and Sync Health warnings
+                           (gatherDataHealth's severity 'warning' issues,
+                           /settings#sync-health). Unrated insights are not an item.
+                           Each part is fail-soft — a failing read is { ok: false,
+                           error: <fixed sentence> } (an attention source one entry in
+                           attention.errors) and logged once; only the net-worth reads
+                           are SQL here (INV-147). gatherDashboardSummary(pool, { deps,
+                           today, persistentPool }) is the shared entry point (design D7
+                           reuses it for the landing page)
     settings.js          — GET/PATCH /api/settings, POST /api/sheets/sync,
                            POST /api/sheets/dashboard, GET /api/export,
                            GET /api/data-freshness, POST /api/linked-tasks/run
-                           (Settings' "Run now" for the linked tasks — T2.4 X2c)
+                           (Settings' "Run now" for the linked tasks — T2.4 X2c).
+                           GET /api/data-health's body is gatherDataHealth(db,
+                           { persistentPool }) (design D3 — the dashboard summary
+                           counts its warnings)
     insights.js          — GET/POST /api/insights, GET /api/insights/status,
                            GET /api/insights/usage, POST /api/insights/reset,
                            POST /api/insights/rebuild, GET /api/insights/audit,
@@ -1044,9 +1066,21 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2413 tests as of latest); use
+  Perfin and Per-sistant test files (2436 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2413 tests across 127 test files (incl.
+  Current count: 2436 tests across 128 test files (incl.
+  `tests/design-d3.test.js` — design pass D3: gatherDashboardSummary over a fake pool with every
+  reader injected as a spy (every field, each helper called with the pool and the summary's own
+  day / month, each failing reader isolated with its fixed sentence and logged once — never the
+  error text — a synchronous throw contained, the net-worth none / same-day / change cases, the
+  attention rules and hrefs), a source scan that the module's only SQL reads net_worth_snapshots,
+  the route answering 200 with every part failed when the database is down, the shared helpers
+  (getBillsDue — forecast + manual bills, a paid one left out; /api/forecast's shape through
+  forecastCharges; ledgerTotals / getHousingOwed payee-scoped and unread while off;
+  countUncategorized and gatherDataHealth behind their routes) and the Summary card / Needs
+  attention renderers run in a vm from dashboard.ejs (figures, the red over-budget bar capped at
+  100%, the not-yet and failed states escaped, same-app links through withBase only, the quiet
+  tick, a failed source never "Nothing needs attention", the one-line load failure);
   `tests/design-d2.test.js` — design pass D2: `emptyState` run in a vm (escaping, an href through
   `withBase`, only a same-app path linked, no control without an action, the click action pressing the
   page's existing button), each listed empty state's action and the `#ai-insights` anchor, no uppercase
@@ -1777,7 +1811,10 @@ shell/
   its CSV; income equals getIncomeForYear; the sale, dividend and document come through; an empty year
   renders every section).
   Since roadmap T2.5 H1 plaid-update also sends the hosted token request and a hosted update whose
-  Link session exited (flag, cursor and accounts unchanged) before the finished one. 249 tests, run
+  Link session exited (flag, cursor and accounts unchanged) before the finished one. Since design D3,
+  dashboard-summary (the summary on real rows equal to GET /api/budgets, /api/cash-flow's lowest day,
+  the latest net-worth snapshot, /api/forecast + the calendar's unpaid manual bills, the ledger balance,
+  /api/categorize/status and /api/data-health's warnings). 253 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -1935,7 +1972,7 @@ shell/
   fake @anthropic-ai/sdk: /api/ask + runCategorize charge their usage rows,
   429 once the cap is hit, ask charges accumulated tokens AND still charges
   on a mid-loop failure — F1).
-- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink — empty since roadmap T1.5 Batch C fixed the Review page's review-summary 500), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). Since cycle-7 Batch 20 (G2) the run is SEEDED (`e2e/seed.js`, in the spec's beforeAll — through the apps' own routes: housing config + generated obligations, a manual account + manual expense, a generic CSV with a refund row and a split, a rollover budget, a goal, a subscription, a credit score, one transaction deleted through the route, a Plaid-free tax year — a paycheck and a pharmacy charge on a CSV account and a 1099-NEC on the checklist, T3.3 K4; Per-sistant notes in each privacy tier, a habit with logs, a todo with subtasks; one Job Radar listing and one linked task inserted directly, since no route creates either), a `console.error` fails a page (the browser's "Failed to load resource" line is left to the response check), and a CLICK SWEEP per page presses every visible, enabled `button / [role=button|checkbox|tab] / summary` counted on load (≤80) that isn't `data-e2e-skip` or labelled destructive (delete / remove / unlink / send / empty / sign out / log out / reset / purge / disconnect / archive / trash / revoke / cancel subscription / mark settled), dismissing dialogs and returning to the page between presses; a failure names the control pressed, and `SWEEP_KNOWN_GAPS` must only shrink. Mark a new destructive, off-app (an external SDK) or device-permission control (microphone) `data-e2e-skip`. 68 tests (24 of them sweeps, ~230 controls pressed — plus the linked-task chip on the To-Dos page and in its edit modal, T2.4 X1b, the unified search: Perfin's nav link to /per-sistant/search, a seeded Perfin transaction found there and its link opening Activity filtered, T2.4 X3b, and undelete: the seeded deletion listed in Settings → Sync Health → Deleted transactions and brought back by Restore, and a toast's Undo button, T2.5 U2, the top nav one row at the same size on five Perfin pages and no attachments-migration error after a fresh boot, design D1, and the Tax page: its sections for the seeded Plaid-free year,
+- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink — empty since roadmap T1.5 Batch C fixed the Review page's review-summary 500), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). Since cycle-7 Batch 20 (G2) the run is SEEDED (`e2e/seed.js`, in the spec's beforeAll — through the apps' own routes: housing config + generated obligations, a manual account + manual expense, a generic CSV with a refund row and a split, a rollover budget, a goal, a subscription, a credit score, one transaction deleted through the route, a Plaid-free tax year — a paycheck and a pharmacy charge on a CSV account and a 1099-NEC on the checklist, T3.3 K4; Per-sistant notes in each privacy tier, a habit with logs, a todo with subtasks; one Job Radar listing and one linked task inserted directly, since no route creates either), a `console.error` fails a page (the browser's "Failed to load resource" line is left to the response check), and a CLICK SWEEP per page presses every visible, enabled `button / [role=button|checkbox|tab] / summary` counted on load (≤80) that isn't `data-e2e-skip` or labelled destructive (delete / remove / unlink / send / empty / sign out / log out / reset / purge / disconnect / archive / trash / revoke / cancel subscription / mark settled), dismissing dialogs and returning to the page between presses; a failure names the control pressed, and `SWEEP_KNOWN_GAPS` must only shrink. Mark a new destructive, off-app (an external SDK) or device-permission control (microphone) `data-e2e-skip`. 69 tests (24 of them sweeps, ~230 controls pressed — plus the linked-task chip on the To-Dos page and in its edit modal, T2.4 X1b, the unified search: Perfin's nav link to /per-sistant/search, a seeded Perfin transaction found there and its link opening Activity filtered, T2.4 X3b, and undelete: the seeded deletion listed in Settings → Sync Health → Deleted transactions and brought back by Restore, and a toast's Undo button, T2.5 U2, the top nav one row at the same size on five Perfin pages and no attachments-migration error after a fresh boot, design D1, and the Tax page: its sections for the seeded Plaid-free year,
 a form added through the page and marked received, and the ZIP download, T3.3 K4). The `migrations` job ALSO runs the route contract suite (`npm run test:contract`, step "Route contract tests against real Postgres", `CONTRACT_DATABASE_URL` = the same service container; the Postgres user must be able to CREATE/DROP DATABASE).
 - `.claude/commands/` — Project slash-command prompts, generated from the
   claude-workflow-tools templates (synced to v1.43.0 via `/sync-commands`):
@@ -2493,6 +2530,15 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
 ### Dashboard & Views
 - **Dashboard**: Monthly spending trend (line chart), category breakdown (doughnut), account balances,
   3D financial wellness pyramid, savings rate widget, cash flow forecast widget, Per-sistant productivity widget.
+  **Summary + Needs attention (design D3):** the top of the page answers "am I OK this
+  month?" from `GET /api/dashboard/summary` — a Summary card (net worth and its change
+  since the month's first snapshot, spent vs the effective budget total with a bar — red
+  when over — and the lowest projected cash day in the next 30 days) and a Needs-attention
+  list (rent owed, bills due in 7 days, transactions to categorize, Sync Health warnings —
+  each a link through `withBase`, or "✓ Nothing needs attention"). Skeletons while it
+  loads; a failed load is one line ("The summary couldn't be loaded — the rest of the
+  dashboard is below.") and the rest of the page loads as before; a part that failed
+  shows its own sentence. Not a Settings widget toggle (D4 reorders the widgets).
   The two charts draw `GET /api/spending-summary` (`monthly_trend` / `by_category`) —
   the same request as the tables beside them (`getSpendingSummary`; the tables
   fetch fresh, the charts reuse the latest) — so transfers, reimbursed rows and
@@ -3779,7 +3825,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2413 tests passing across 127 test files (Perfin 1748 + Per-sistant 665), plus the real-Postgres route contract suite (249 tests; CI `migrations` job, `npm run test:contract`) and 68 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2436 tests passing across 128 test files (Perfin 1771 + Per-sistant 665), plus the real-Postgres route contract suite (253 tests; CI `migrations` job, `npm run test:contract`) and 69 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -4171,6 +4217,15 @@ GET  /api/tax/package      # the year-end tax package (T3.3 K3; query: year — 
                            # format=csv&section=<deductions|income|investment_income|
                            # realized_gains|retirement|rent_paid|documents> → that CSV
                            # (perfin_tax_<section>_<year>.csv; 400 on another section — K4)
+GET  /api/dashboard/summary # the dashboard's Summary card + Needs attention (design D3):
+                           # { today, month, net_worth { ok, value, as_of, change,
+                           # change_since }, spending { ok, month, budget_count, spent,
+                           # budget, percent, over_count }, cash { ok, days: 30,
+                           # starting_balance, lowest_balance, lowest_date }, attention
+                           # { items[{ kind rent|bills|uncategorized|sync_health, text,
+                           # href, amount?, count }], errors[{ source, error }] } } — a
+                           # failed part { ok: false, error: <fixed sentence> }; each
+                           # figure from its own screen's helper (INV-147)
 GET  /api/data-freshness   # per-source sync timestamps with staleness flags
 GET  /api/data-health      # operator health surface — per-source freshness,
                            # Teller/Plaid connection status, scheduled-job
@@ -6606,6 +6661,7 @@ Financial Analytics:
   teller/services/tax-documents.js, teller/services/tax-package.js,
   teller/routes/tax.js, teller/services/projections.js, teller/routes/budgets.js,
   teller/routes/goals.js, teller/routes/credit-scores.js,
+  teller/routes/dashboard-summary.js,
   teller/routes/whats-new.js, teller/routes/watchlist.js,
   teller/routes/housing.js
   (housing.js = the Rent & Utilities single-payee ledger: obligations/payments,
@@ -6812,6 +6868,7 @@ INV-143 | Every Per-sistant model call goes through ai.js's capped wrappers (cap
 INV-144 | The unified search has ONE renderer — renderSearchResults (views/js.js) draws the dashboard widget and the /search page; a Perfin row (group 'finance') becomes a link only through linkedAppHref (a same-app path under Perfin's http(s) or root-relative base — never a javascript: / protocol-relative url), never carries an inline action, and a row of an unknown type is dropped; the finance rows come only from GET /api/search's read-only perfinPool queries (routes/finance-search.js — the escaped pattern, the user's share via Perfin's imported SPLIT_AMOUNT, each query fail-soft) and are absent standalone | Subsystem: Per-sistant Web UI / Settings, Notifications & Cross-app (seam) | Verify: apps/per-sistant/tests/roadmap-t2-4-x3a + x3b + tests/contract/finance-search + e2e/pages.spec.js
 INV-145 | Deleting a transaction is reversible and nothing brings it back unasked: the tombstone and the row's snapshot (with its splits) are written in the delete's own transaction; no provider sync, reconcile or CSV import (route or CLI) inserts a tombstoned id; restore removes the tombstone and reinserts the snapshot in one transaction — never a duplicate (ON CONFLICT DO NOTHING), and nothing changes when the account is gone; Plaid update mode — in-page or hosted — clears an item's re-auth flag only after Link reports the session finished (in-page: onSuccess; hosted: a link_sessions entry finished without an exit, read through linkTokenGet before anything is written) | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-5-u1.test.js + tests/roadmap-t2-5-u2.test.js + tests/roadmap-t2-5-h1.test.js + tests/contract/undelete-t2-5 + plaid-update
 INV-146 | The year-end tax package is computed on request from the ledger and never stored, and nothing in it is sent to an AI model: each figure has one definition shared with the screen or export that already shows it — deductions = getTaxDeductionReport (also behind /api/export/tax-report, whose CSV is taxReportCsv), income = getIncomeForYear on INCOME_PREDICATE / INCOME_AMOUNT, rent paid = getHousingPayments (also behind the landlord export, housingPaymentsCsv), investments = investment_transactions through getInvestmentTaxData; realized gains are FIFO over stored lots and labelled approximate — a sale not fully covered by known-cost lots has a NULL basis and gain, never 0; tax-advantaged accounts are kept out of gains and investment income; a suggested document the user received or dismissed is never changed or re-suggested (ON CONFLICT DO NOTHING); every section is fail-soft with a fixed sentence; every CSV text cell is formula-guarded; the Tax page's writes go through writeOk | Subsystem: Financial Analytics / Sheets & External Export / Web UI | Verify: tests/roadmap-t3-3-k1 / k2 / k3 / k4 + tests/contract/tax-investments / tax-documents / tax-package + e2e/pages.spec.js
+INV-147 | The dashboard summary has one definition per figure, each the helper its own screen uses — net worth = the latest net_worth_snapshots row (written only through getNetWorth); spending = getBudgetStatus (GET /api/budgets); lowest cash = getCashFlowForecast (GET /api/cash-flow); bills due = getBillsDue (the /api/forecast charges via forecastCharges + the bill calendar's manualBillOccurrences, less bill_payments); rent owed = getHousingOwed (the ledger's ledgerTotals, payee-scoped); uncategorized = countUncategorized (/api/categorize/status); Sync Health = gatherDataHealth (/api/data-health) — no figure is re-derived in routes/dashboard-summary.js; every part is fail-soft with a fixed sentence and the page still loads when the whole request fails; attention links are same-app paths joined with withBase | Subsystem: Financial Analytics / Web UI | Verify: tests/design-d3.test.js + tests/contract/dashboard-summary.contract.test.js + e2e/pages.spec.js
 INV-136 | WebAuthn credential ids are stored exactly as the authenticator reports them (registrationInfo.credential.id — already base64url in @simplewebauthn v11), never re-encoded; a double-encoded row from before seams audit #3 is rewritten (or, when its real id already exists, removed) by repairCredentialIds in the migration | Subsystem: Platform, Shell & Auth | Verify: tests/seams-audit-3.test.js + tests/contract/seams3.contract.test.js
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 

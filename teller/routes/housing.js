@@ -498,6 +498,33 @@ router.patch("/api/housing/config", async (req, res) => {
 });
 
 // GET /api/housing/ledger — balance, obligations, payments.
+// The balance owed and the awaiting-bill count of a set of obligations (design
+// D3 — one definition for the ledger and the dashboard summary's rent item):
+// balance = the sum of `unpaid` amounts (rounded to cents), awaiting = the
+// `pending_amount` rows, unpaid_count = the unpaid rows.
+function ledgerTotals(rows) {
+  let balance = 0, awaiting = 0, unpaid = 0;
+  for (const o of rows) {
+    if (o.status === "unpaid") { balance += parseFloat(o.amount || 0); unpaid++; }
+    else if (o.status === "pending_amount") awaiting++;
+  }
+  return { balance: Math.round(balance * 100) / 100, awaiting_count: awaiting, unpaid_count: unpaid };
+}
+
+// What's owed to the configured payee (design D3, the dashboard summary): the
+// ledger's own totals over the same payee-scoped rows (FAN-4). { configured:
+// false } while the ledger isn't set up (disabled or no payee) — the dashboard
+// widget hides then too.
+async function getHousingOwed(db = pool) {
+  const cfg = await getConfig(db);
+  if (!cfg.enabled || !cfg.payee_name) return { configured: false };
+  const r = await db.query(
+    "SELECT status, amount FROM payee_obligations WHERE payee = $1 AND status IN ('unpaid', 'pending_amount')",
+    [cfg.payee_name]
+  );
+  return { configured: true, payee: cfg.payee_name, ...ledgerTotals(r.rows) };
+}
+
 router.get("/api/housing/ledger", async (_req, res) => {
   try {
     const cfg = await getConfig();
@@ -524,15 +551,11 @@ router.get("/api/housing/ledger", async (_req, res) => {
         [payee]
       ),
     ]);
-    let balance = 0, awaiting = 0;
-    for (const o of obl.rows) {
-      if (o.status === "unpaid") balance += parseFloat(o.amount || 0);
-      else if (o.status === "pending_amount") awaiting++;
-    }
+    const totals = ledgerTotals(obl.rows);
     res.json({
       config: cfg,
-      balance: Math.round(balance * 100) / 100,
-      awaiting_count: awaiting,
+      balance: totals.balance,
+      awaiting_count: totals.awaiting_count,
       obligations: obl.rows,
       payments: pay.rows,
     });
@@ -1020,4 +1043,6 @@ module.exports.housingPaymentsCsv = housingPaymentsCsv;
 module.exports.normalizeConfig = normalizeConfig;
 module.exports.periodLabel = periodLabel;
 module.exports.computeSplit = computeSplit;
+module.exports.ledgerTotals = ledgerTotals;
+module.exports.getHousingOwed = getHousingOwed;
 module.exports.buildDoubleCountPattern = buildDoubleCountPattern;

@@ -473,7 +473,10 @@ router.get("/api/data-freshness", async (_req, res) => {
 // in logs. Note: we intentionally do NOT live-decrypt tokens to detect a
 // passphrase mismatch — pgp_sym_decrypt throws (not NULL) on a wrong key, which
 // would error the whole query; that condition surfaces via sync errors instead.
-router.get("/api/data-health", async (req, res) => {
+// The data-health payload (design D3 — the route below and the dashboard
+// summary's Sync Health item read this one function). Throws only when the
+// settings read itself fails; every other part is fail-soft as before.
+async function gatherDataHealth(db = pool, { persistentPool = null } = {}) {
   const FRESH_SEC = 6 * 60 * 60;
   const STALE_SEC = 24 * 60 * 60;
   const now = Date.now();
@@ -483,171 +486,175 @@ router.get("/api/data-health", async (req, res) => {
     const level = age < FRESH_SEC ? "fresh" : age < STALE_SEC ? "aging" : "stale";
     return { timestamp: ts, age_seconds: age, level };
   }
+  const [settingsRow, teller, plaid, events] = await Promise.all([
+    db.query("SELECT last_txn_sync_at, last_balance_sync_at, last_auto_sync_at, insights_last_run, last_reconcile_at, last_sync_result, last_sheets_sync_result FROM user_settings WHERE id = 1"),
+    db.query("SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE status = 'DISCONNECTED')::int AS disconnected FROM teller_enrollments").catch(() => ({ rows: [{ total: 0, disconnected: 0 }] })),
+    // CSV virtual items (status='CSV') are not Plaid links — exclude them from
+    // both counts; they used to raise a permanent "need re-authentication"
+    // warning after any CSV import (BSI-10). A real re-auth need is the
+    // last_error_code the sync paths record on an ITEM_* error.
+    db.query("SELECT COUNT(*) FILTER (WHERE status <> 'CSV')::int AS total, COUNT(*) FILTER (WHERE status <> 'CSV' AND (status <> 'GOOD' OR last_error_code IS NOT NULL))::int AS not_good FROM plaid_items").catch(() => ({ rows: [{ total: 0, not_good: 0 }] })),
+    db.query("SELECT type, title, body, created_at FROM notification_log WHERE type IN ('auto-sync','csv-reminder') OR title ILIKE '%sync%' ORDER BY created_at DESC LIMIT 8").catch(() => ({ rows: [] })),
+  ]);
+  const s = settingsRow.rows[0] || {};
+  const t = teller.rows[0] || { total: 0, disconnected: 0 };
+  const p = plaid.rows[0] || { total: 0, not_good: 0 };
+
+  const freshness = {
+    transactions: ageInfo(s.last_txn_sync_at),
+    balances: ageInfo(s.last_balance_sync_at),
+    auto_sync: ageInfo(s.last_auto_sync_at),
+    insights: ageInfo(s.insights_last_run),
+  };
+
+  const issues = [];
+  if (t.disconnected > 0) issues.push({ severity: "warning", message: `${t.disconnected} Teller enrollment(s) disconnected — re-link in Accounts.` });
+  // Fixed in place on the Accounts page (Link update mode, cycle-7 G3).
+  if (p.not_good > 0) issues.push({ severity: "warning", message: `${p.not_good} Plaid item(s) need re-authentication — open Accounts → Re-authenticate.`, link: "/accounts" });
+  if (!s.last_txn_sync_at && !s.last_auto_sync_at) {
+    issues.push({ severity: "info", message: "No transaction sync has run yet." });
+  } else if (freshness.transactions.level === "stale") {
+    issues.push({ severity: "warning", message: "Transactions haven't synced in over 24h." });
+  }
+  if (s.last_balance_sync_at && freshness.balances.level === "stale") {
+    issues.push({ severity: "warning", message: "Balances haven't refreshed in over 24h." });
+  }
+  // Per-item errors from the most recent sync run (addition D) — these are the
+  // silent ones: a `decryption_failed` does NOT mark an enrollment
+  // DISCONNECTED (INV-22), so it wouldn't show above. Surface each explicitly.
+  const syncErrors = (s.last_sync_result && Array.isArray(s.last_sync_result.errors)) ? s.last_sync_result.errors : [];
+  for (const e of syncErrors) {
+    const who = e.institution || e.provider || "a sync source";
+    const hint = e.error === "decryption_failed"
+      ? " — TOKEN_ENCRYPTION_PASSPHRASE mismatch; restore the passphrase, or unlink and link the account again"
+      : "";
+    issues.push({ severity: "warning", message: `Last sync error — ${who}: ${e.error}${hint}` });
+  }
+
+  // Google Sheets export (SXE-1): the last sync's failed tabs.
+  const sheetsResult = s.last_sheets_sync_result;
+  if (sheetsResult && Array.isArray(sheetsResult.errors) && sheetsResult.errors.length) {
+    const steps = sheetsResult.errors.map(e => e.step).join(", ");
+    issues.push({ severity: "warning", message: `Google Sheets sync: ${sheetsResult.errors.length} tab(s) failed last run (${steps}) — ${sheetsResult.errors[0].error}` });
+  }
+
+  // Scheduled-job heartbeats (F4 surface): job_runs rows + per-job staleness
+  // so the Sync Health card shows scheduler liveness, not just data
+  // freshness. Defensive — a pre-migration DB just omits the block.
+  let jobs = [];
   try {
-    const [settingsRow, teller, plaid, events] = await Promise.all([
-      pool.query("SELECT last_txn_sync_at, last_balance_sync_at, last_auto_sync_at, insights_last_run, last_reconcile_at, last_sync_result, last_sheets_sync_result FROM user_settings WHERE id = 1"),
-      pool.query("SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE status = 'DISCONNECTED')::int AS disconnected FROM teller_enrollments").catch(() => ({ rows: [{ total: 0, disconnected: 0 }] })),
-      // CSV virtual items (status='CSV') are not Plaid links — exclude them from
-      // both counts; they used to raise a permanent "need re-authentication"
-      // warning after any CSV import (BSI-10). A real re-auth need is the
-      // last_error_code the sync paths record on an ITEM_* error.
-      pool.query("SELECT COUNT(*) FILTER (WHERE status <> 'CSV')::int AS total, COUNT(*) FILTER (WHERE status <> 'CSV' AND (status <> 'GOOD' OR last_error_code IS NOT NULL))::int AS not_good FROM plaid_items").catch(() => ({ rows: [{ total: 0, not_good: 0 }] })),
-      pool.query("SELECT type, title, body, created_at FROM notification_log WHERE type IN ('auto-sync','csv-reminder') OR title ILIKE '%sync%' ORDER BY created_at DESC LIMIT 8").catch(() => ({ rows: [] })),
-    ]);
-    const s = settingsRow.rows[0] || {};
-    const t = teller.rows[0] || { total: 0, disconnected: 0 };
-    const p = plaid.rows[0] || { total: 0, not_good: 0 };
-
-    const freshness = {
-      transactions: ageInfo(s.last_txn_sync_at),
-      balances: ageInfo(s.last_balance_sync_at),
-      auto_sync: ageInfo(s.last_auto_sync_at),
-      insights: ageInfo(s.insights_last_run),
-    };
-
-    const issues = [];
-    if (t.disconnected > 0) issues.push({ severity: "warning", message: `${t.disconnected} Teller enrollment(s) disconnected — re-link in Accounts.` });
-    // Fixed in place on the Accounts page (Link update mode, cycle-7 G3).
-    if (p.not_good > 0) issues.push({ severity: "warning", message: `${p.not_good} Plaid item(s) need re-authentication — open Accounts → Re-authenticate.`, link: "/accounts" });
-    if (!s.last_txn_sync_at && !s.last_auto_sync_at) {
-      issues.push({ severity: "info", message: "No transaction sync has run yet." });
-    } else if (freshness.transactions.level === "stale") {
-      issues.push({ severity: "warning", message: "Transactions haven't synced in over 24h." });
+    const jobHealth = require("../services/job-health");
+    // Persist this process's in-memory heartbeats + outcomes first (cycle-7
+    // F8): ticks are only flushed by the activity-gated watchdog, so after
+    // time away every job read as "stale" here although it had been ticking.
+    await jobHealth.flush(db);
+    const jr = await db.query(
+      "SELECT job_name, last_run_at, last_status, last_error FROM job_runs WHERE job_name != '_watchdog' ORDER BY job_name"
+    );
+    const nowMs = Date.now();
+    jobs = jr.rows.map(j => ({
+      job: j.job_name,
+      last_run_at: j.last_run_at,
+      last_status: j.last_status || null,
+      last_error: j.last_status === "error" ? (j.last_error || null) : null,
+      stale: j.last_run_at ? (nowMs - new Date(j.last_run_at).getTime()) > jobHealth.thresholdMs(j.job_name) : false,
+    }));
+    const staleJobs = jobs.filter(j => j.stale).map(j => j.job);
+    if (staleJobs.length) {
+      issues.push({ severity: "warning", message: `Scheduled job(s) haven't run recently: ${staleJobs.join(", ")} — server likely asleep (check keep-alive).` });
     }
-    if (s.last_balance_sync_at && freshness.balances.level === "stale") {
-      issues.push({ severity: "warning", message: "Balances haven't refreshed in over 24h." });
+    // A job that ran but FAILED (its outcome, not just its heartbeat — F8).
+    for (const j of jobs.filter(j => j.last_status === "error")) {
+      issues.push({ severity: "warning", message: `Scheduled job ${j.job} failed its last run: ${j.last_error || "unknown error"}` });
     }
-    // Per-item errors from the most recent sync run (addition D) — these are the
-    // silent ones: a `decryption_failed` does NOT mark an enrollment
-    // DISCONNECTED (INV-22), so it wouldn't show above. Surface each explicitly.
-    const syncErrors = (s.last_sync_result && Array.isArray(s.last_sync_result.errors)) ? s.last_sync_result.errors : [];
-    for (const e of syncErrors) {
-      const who = e.institution || e.provider || "a sync source";
-      const hint = e.error === "decryption_failed"
-        ? " — TOKEN_ENCRYPTION_PASSPHRASE mismatch; restore the passphrase, or unlink and link the account again"
-        : "";
-      issues.push({ severity: "warning", message: `Last sync error — ${who}: ${e.error}${hint}` });
-    }
+  } catch (e) { /* job_runs not migrated yet — omit */ }
 
-    // Google Sheets export (SXE-1): the last sync's failed tabs.
-    const sheetsResult = s.last_sheets_sync_result;
-    if (sheetsResult && Array.isArray(sheetsResult.errors) && sheetsResult.errors.length) {
-      const steps = sheetsResult.errors.map(e => e.step).join(", ");
-      issues.push({ severity: "warning", message: `Google Sheets sync: ${sheetsResult.errors.length} tab(s) failed last run (${steps}) — ${sheetsResult.errors[0].error}` });
-    }
+  // Server errors (roadmap T1.4): unresolved errors from the last 24h in the
+  // in-app error log. The shell flushes it every minute; flush first so a
+  // just-logged error counts.
+  try {
+    await errorLog.flush();
+    const n = await errorLog.recentUnresolvedCount(db, 24);
+    if (n > 0) issues.push({ severity: "warning", message: `${n} server error(s) in the last 24 hours — see Settings → Sync Health → Recent errors.`, link: "/settings#recent-errors" });
+  } catch (e) { console.error("data-health error-log read failed:", e.message); }
 
-    // Scheduled-job heartbeats (F4 surface): job_runs rows + per-job staleness
-    // so the Sync Health card shows scheduler liveness, not just data
-    // freshness. Defensive — a pre-migration DB just omits the block.
-    let jobs = [];
-    try {
-      const jobHealth = require("../services/job-health");
-      // Persist this process's in-memory heartbeats + outcomes first (cycle-7
-      // F8): ticks are only flushed by the activity-gated watchdog, so after
-      // time away every job read as "stale" here although it had been ticking.
-      await jobHealth.flush(pool);
-      const jr = await pool.query(
-        "SELECT job_name, last_run_at, last_status, last_error FROM job_runs WHERE job_name != '_watchdog' ORDER BY job_name"
-      );
-      const nowMs = Date.now();
-      jobs = jr.rows.map(j => ({
-        job: j.job_name,
-        last_run_at: j.last_run_at,
-        last_status: j.last_status || null,
-        last_error: j.last_status === "error" ? (j.last_error || null) : null,
-        stale: j.last_run_at ? (nowMs - new Date(j.last_run_at).getTime()) > jobHealth.thresholdMs(j.job_name) : false,
-      }));
-      const staleJobs = jobs.filter(j => j.stale).map(j => j.job);
-      if (staleJobs.length) {
-        issues.push({ severity: "warning", message: `Scheduled job(s) haven't run recently: ${staleJobs.join(", ")} — server likely asleep (check keep-alive).` });
-      }
-      // A job that ran but FAILED (its outcome, not just its heartbeat — F8).
-      for (const j of jobs.filter(j => j.last_status === "error")) {
-        issues.push({ severity: "warning", message: `Scheduled job ${j.job} failed its last run: ${j.last_error || "unknown error"}` });
-      }
-    } catch (e) { /* job_runs not migrated yet — omit */ }
-
-    // Server errors (roadmap T1.4): unresolved errors from the last 24h in the
-    // in-app error log. The shell flushes it every minute; flush first so a
-    // just-logged error counts.
-    try {
-      await errorLog.flush();
-      const n = await errorLog.recentUnresolvedCount(pool, 24);
-      if (n > 0) issues.push({ severity: "warning", message: `${n} server error(s) in the last 24 hours — see Settings → Sync Health → Recent errors.`, link: "/settings#recent-errors" });
-    } catch (e) { console.error("data-health error-log read failed:", e.message); }
-
-    // Operator state (cycle-7 F14 → G1 / ST4): the operator checks — the
-    // compromised Teller cert (F14 used to raise it here directly), disabled or
-    // failing backstop workflows, no recent backup, missing workflow secrets, a
-    // public repo, a stale Knowledge index. Cached GitHub results only: this
-    // route never waits on GitHub (a stale cache refreshes in the background).
-    // Bank webhooks (roadmap T2.1 W6): per provider the last event, the last
-    // 24 hours' count + failures and the Plaid registration — read once and
-    // shared with the operator checks below.
-    let webhooks = null;
-    try {
-      webhooks = await require("../services/webhook-status").getWebhookStatus(pool);
-    } catch (e) { console.error("data-health webhook status failed:", e.message); }
-    if (webhooks) {
-      for (const [provider, w] of [["Plaid", webhooks.plaid], ["Teller", webhooks.teller]]) {
-        if (w.failed_24h > 0) {
-          issues.push({ severity: "warning", message: `${w.failed_24h} ${provider} webhook event(s) failed in the last 24 hours — the scheduled sync is the backstop; see the server log.` });
-        }
+  // Operator state (cycle-7 F14 → G1 / ST4): the operator checks — the
+  // compromised Teller cert (F14 used to raise it here directly), disabled or
+  // failing backstop workflows, no recent backup, missing workflow secrets, a
+  // public repo, a stale Knowledge index. Cached GitHub results only: this
+  // route never waits on GitHub (a stale cache refreshes in the background).
+  // Bank webhooks (roadmap T2.1 W6): per provider the last event, the last
+  // 24 hours' count + failures and the Plaid registration — read once and
+  // shared with the operator checks below.
+  let webhooks = null;
+  try {
+    webhooks = await require("../services/webhook-status").getWebhookStatus(db);
+  } catch (e) { console.error("data-health webhook status failed:", e.message); }
+  if (webhooks) {
+    for (const [provider, w] of [["Plaid", webhooks.plaid], ["Teller", webhooks.teller]]) {
+      if (w.failed_24h > 0) {
+        issues.push({ severity: "warning", message: `${w.failed_24h} ${provider} webhook event(s) failed in the last 24 hours — the scheduled sync is the backstop; see the server log.` });
       }
     }
+  }
 
-    // Per-connection freshness (roadmap T2.1 W6): when each Teller enrollment /
-    // Plaid item last synced completely (its own last_synced_at — W3 / W5).
-    let connections = [];
-    try {
-      const cr = await pool.query(
-        `SELECT 'teller' AS provider, id, institution_name, status, last_synced_at
-           FROM teller_enrollments WHERE status <> 'SUSPENDED'
-         UNION ALL
-         SELECT 'plaid', id, institution_name,
-                CASE WHEN last_error_code IS NOT NULL THEN 'NEEDS_REAUTH' ELSE status END,
-                last_synced_at
-           FROM plaid_items WHERE status <> 'CSV'
-         ORDER BY 1, 3`
-      );
-      connections = cr.rows.map(c => ({
-        provider: c.provider,
-        id: c.id,
-        institution: c.institution_name,
-        status: c.status,
-        last_synced: ageInfo(c.last_synced_at),
-      }));
-    } catch (e) { console.error("data-health connections read failed:", e.message); }
+  // Per-connection freshness (roadmap T2.1 W6): when each Teller enrollment /
+  // Plaid item last synced completely (its own last_synced_at — W3 / W5).
+  let connections = [];
+  try {
+    const cr = await db.query(
+      `SELECT 'teller' AS provider, id, institution_name, status, last_synced_at
+         FROM teller_enrollments WHERE status <> 'SUSPENDED'
+       UNION ALL
+       SELECT 'plaid', id, institution_name,
+              CASE WHEN last_error_code IS NOT NULL THEN 'NEEDS_REAUTH' ELSE status END,
+              last_synced_at
+         FROM plaid_items WHERE status <> 'CSV'
+       ORDER BY 1, 3`
+    );
+    connections = cr.rows.map(c => ({
+      provider: c.provider,
+      id: c.id,
+      institution: c.institution_name,
+      status: c.status,
+      last_synced: ageInfo(c.last_synced_at),
+    }));
+  } catch (e) { console.error("data-health connections read failed:", e.message); }
 
-    let operatorChecks = null;
-    try {
-      operatorChecks = await operatorChecksService.getOperatorChecks({
-        cachedOnly: true,
-        pool,
-        persistentPool: req.app.get("persistentPool") || null,
-        webhookStatus: webhooks || undefined,
-      });
-      issues.push(...operatorChecksService.toIssues(operatorChecks));
-    } catch (e) { console.error("data-health operator checks failed:", e.message); }
-
-    res.json({
-      thresholds: { fresh_seconds: FRESH_SEC, stale_seconds: STALE_SEC },
-      ok: issues.filter(i => i.severity !== "info").length === 0,
-      jobs,
-      freshness,
-      providers: {
-        teller: { total: t.total, disconnected: t.disconnected },
-        plaid: { total: p.total, not_good: p.not_good },
-      },
-      last_reconcile_at: s.last_reconcile_at || null,
-      last_sync_result: s.last_sync_result || null,
-      last_sheets_sync_result: s.last_sheets_sync_result || null,
-      operator_checks: operatorChecks,
-      webhooks,
-      connections,
-      issues,
-      recent_events: events.rows,
+  let operatorChecks = null;
+  try {
+    operatorChecks = await operatorChecksService.getOperatorChecks({
+      cachedOnly: true,
+      pool: db,
+      persistentPool,
+      webhookStatus: webhooks || undefined,
     });
+    issues.push(...operatorChecksService.toIssues(operatorChecks));
+  } catch (e) { console.error("data-health operator checks failed:", e.message); }
+
+  return {
+    thresholds: { fresh_seconds: FRESH_SEC, stale_seconds: STALE_SEC },
+    ok: issues.filter(i => i.severity !== "info").length === 0,
+    jobs,
+    freshness,
+    providers: {
+      teller: { total: t.total, disconnected: t.disconnected },
+      plaid: { total: p.total, not_good: p.not_good },
+    },
+    last_reconcile_at: s.last_reconcile_at || null,
+    last_sync_result: s.last_sync_result || null,
+    last_sheets_sync_result: s.last_sheets_sync_result || null,
+    operator_checks: operatorChecks,
+    webhooks,
+    connections,
+    issues,
+    recent_events: events.rows,
+  };
+}
+
+router.get("/api/data-health", async (req, res) => {
+  try {
+    res.json(await gatherDataHealth(pool, { persistentPool: req.app.get("persistentPool") || null }));
   } catch (err) {
     console.error("data-health error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
@@ -946,3 +953,4 @@ module.exports = router;
 module.exports.sanitizeBoolMap = sanitizeBoolMap;
 module.exports.recordSheetsSyncResult = recordSheetsSyncResult;
 module.exports.normalizePersistentUrl = normalizePersistentUrl;
+module.exports.gatherDataHealth = gatherDataHealth;

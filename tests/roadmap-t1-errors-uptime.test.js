@@ -263,7 +263,7 @@ describe("T1.4 wiring", () => {
     const settings = read("teller", "routes", "settings.js");
     assert.match(settings, /router\.get\("\/api\/errors"/);
     assert.match(settings, /router\.post\("\/api\/errors\/:fingerprint\/resolve"/);
-    assert.match(settings, /recentUnresolvedCount\(pool, 24\)[\s\S]*?link: "\/settings#recent-errors"/);
+    assert.match(settings, /recentUnresolvedCount\((?:pool|db), 24\)[\s\S]*?link: "\/settings#recent-errors"/);
     const view = read("teller", "views", "settings.ejs");
     assert.match(view, /id="recent-errors"/);
     assert.match(view, /apiFetch\('\/api\/errors\?limit=20'\)/);

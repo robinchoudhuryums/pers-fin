@@ -18,7 +18,21 @@ Updated: 2026-10-26
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Design & UX pass — D2 DONE** (2026-10-26, branch `claude/sweet-ritchie-f9d8ah`,
+- **Status:** **Design & UX pass — D3 DONE** (2026-10-26, branch `claude/sweet-ritchie-f9d8ah`,
+  PR robinchoudhuryums/pers-fin#133). Plan: `.cycle/plan-design-ux.md`. Block:
+  `.cycle/blocks/7-design-d3-broad-implement.md`.
+  - **Shipped:**
+    - `GET /api/dashboard/summary` (routes/dashboard-summary.js, `gatherDashboardSummary` — D7 reuses it): net worth + change since the month's first snapshot, spending vs the effective budget (getBudgetStatus), the lowest projected cash day (30 days), and attention items (rent owed, bills due in 7 days, transactions to categorize, Sync Health warnings), each part fail-soft with a fixed sentence;
+    - route bodies moved into shared helpers so nothing is re-derived (INV-147): forecastCharges / getBillsDue, countUncategorized, ledgerTotals / getHousingOwed, gatherDataHealth;
+    - the Summary card + Needs attention at the top of the dashboard (skeletons, one-line failure, links through withBase).
+  - **Verified:**
+    - npm test 2436/2436 (23 new);
+    - contract 253/253 (4 new);
+    - Playwright 69/69;
+    - mutation checks 17/17;
+    - screenshots.
+  - **Where I left off:** D3 committed and pushed. Next: `/broad-implement D4`.
+- **Previous status (D2):** **Design & UX pass — D2 DONE** (2026-10-26, branch `claude/sweet-ritchie-f9d8ah`,
   PR robinchoudhuryums/pers-fin#133). Plan: `.cycle/plan-design-ux.md`. Block:
   `.cycle/blocks/7-design-d2-broad-implement.md`.
   - **Shipped:**
@@ -30,7 +44,7 @@ implement and reflect sessions only set Phase.)
     - Playwright 68/68 (+ the dashboard tests re-run after the last CSS / text edits);
     - mutation checks 18/18;
     - before / after screenshots.
-  - **Where I left off:** D2 committed and pushed. Next: `/broad-implement D3`.
+  - **Where I left off:** D2 committed and pushed.
 - **Previous status (D1):** **Design & UX pass — D1 DONE** (2026-10-26, branch `claude/sweet-ritchie-f9d8ah`,
   PR robinchoudhuryums/pers-fin#133). Plan: `.cycle/plan-design-ux.md`. Block:
   `.cycle/blocks/7-design-d1-broad-implement.md`.

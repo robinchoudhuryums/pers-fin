@@ -149,7 +149,7 @@ describe("Operator Checks on a self-hosted server", () => {
 
   it("every caller passes Perfin's pool", () => {
     const settings = read("teller", "routes", "settings.js");
-    assert.equal((settings.match(/getOperatorChecks\(\{[^}]*\n\s+pool,/g) || []).length, 2);
+    assert.equal((settings.match(/getOperatorChecks\(\{[^}]*\n\s+pool(?:: db)?,/g) || []).length, 2);
     assert.match(read("teller", "startup.js"), /getOperatorChecks\(\{\s*\n\s+pool,/);
   });
 

@@ -178,6 +178,25 @@ test.describe("every page loads cleanly", () => {
     expect(problems, problems.join("\n")).toEqual([]);
   });
 
+  test("the dashboard opens on the Summary card and Needs attention (design D3)", async ({ page }) => {
+    const problems = watch(page);
+    await page.goto("/perfin/dashboard");
+    const cards = page.locator("#dash-summary-cards");
+    await expect(cards).not.toHaveAttribute("aria-busy", "true");
+    await expect(cards.locator(".dash-summary-card")).toHaveCount(3);
+    await expect(cards.locator(".skel")).toHaveCount(0);
+    await expect(cards).toContainText("Net worth");
+    await expect(cards).toContainText("Spent vs budget");
+    await expect(cards).toContainText("Lowest cash, next 30 days");
+    await expect(page.locator("#dash-summary-error")).toBeHidden();
+    // The seeded ledger owes rent: its item links to the Rent page through the mount.
+    const rent = page.locator("#dash-attention-body a", { hasText: /^Owed to / });
+    await expect(rent).toHaveAttribute("href", "/perfin/housing");
+    await rent.click();
+    await expect(page).toHaveURL(/\/perfin\/housing$/);
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
   test("the Rent page shows the configured utility row (F87)", async ({ page }) => {
     const problems = watch(page);
     await page.goto("/perfin/housing");
