@@ -317,6 +317,8 @@
   <!-- Sync-degradation strip: surfaces /api/data-health issues[] up front so a
        disconnected link / stale sync / decryption_failed is visible without
        digging into Settings → Sync Health. Hidden when everything's healthy. -->
+  <!-- Roadmap T3.3 K4: January to April only (taxSeason) — a link to last year's tax package. -->
+  <a id="tax-season-link" href="<%= basePath %>/tax" style="display:none;margin:0 0 16px;padding:10px 14px;border:1px solid var(--border);border-radius:8px;color:var(--teal);font-size:13px;text-decoration:none;">Tax season: your tax package is ready to review &rarr;</a>
   <div id="sync-health-strip" role="status" style="display:none;margin:0 0 16px;border:1px solid var(--yellow,#d9b25f);border-left-width:4px;border-radius:8px;padding:10px 14px;background:color-mix(in srgb, var(--yellow,#d9b25f) 8%, transparent);font-size:13px;">
     <div style="display:flex;align-items:flex-start;gap:10px;">
       <span aria-hidden="true" style="font-size:15px;line-height:1.2;">&#9888;</span>
@@ -1573,6 +1575,17 @@
     // issues at the top of the dashboard. Dismissible per-session (sessionStorage),
     // so it re-appears on the next visit if the issue persists (i.e. the operator
     // can't permanently silence a real degradation).
+    // Roadmap T3.3 K4: from January to April the dashboard links to last year's
+    // tax package (taxSeason — the same rule as the Tax page's default year).
+    (function wireTaxSeasonLink() {
+      var link = document.getElementById('tax-season-link');
+      var ts = window.taxSeason ? window.taxSeason(localTodayStr()) : null;
+      if (!link || !ts || !ts.season) return;
+      link.href = link.getAttribute('href') + '?year=' + ts.year;
+      link.textContent = 'Tax season: your ' + ts.year + ' tax package is ready to review \u2192';
+      link.style.display = 'block';
+    })();
+
     (function wireSyncHealthStrip() {
       var strip = document.getElementById('sync-health-strip');
       if (!strip) return;

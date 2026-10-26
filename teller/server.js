@@ -362,6 +362,7 @@ app.use(require("./pages/accounts")(pageConfig));
 app.use(require("./pages/goals")(pageConfig));
 app.use(require("./pages/budgets")(pageConfig));
 app.use(require("./pages/housing")(pageConfig));
+app.use(require("./pages/tax")(pageConfig)); // roadmap T3.3 K4: the Tax page
 app.use(require("./pages/login")(authConfig));
 app.use(require("./pages/settings")(pageConfig));
 app.use(require("./pages/transactions")(pageConfig));

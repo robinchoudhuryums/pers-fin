@@ -499,9 +499,14 @@ describe("GET /api/tax/package", () => {
       assert.match(r.body.error, /whole year from 2000/);
     }
     await supertest(app()).get("/api/tax/package").expect(400);
-    for (const f of ["csv", "xlsx", ""]) {
+    for (const f of ["xlsx", "", "txt"]) {
       const r = await supertest(app()).get(`/api/tax/package?year=${thisYear - 1}&format=${f}`).expect(400);
-      assert.equal(r.body.error, "format must be json, pdf or zip");
+      assert.equal(r.body.error, "format must be json, pdf, zip or csv");
+    }
+    // K4: a section CSV needs a known section.
+    for (const q of ["", "&section=", "&section=overview", "&section=notes", "&section=../x"]) {
+      const r = await supertest(app()).get(`/api/tax/package?year=${thisYear - 1}&format=csv${q}`).expect(400);
+      assert.match(r.body.error, /^section must be one of deductions, income, investment_income/);
     }
     assert.equal(gathered, 0);
   });

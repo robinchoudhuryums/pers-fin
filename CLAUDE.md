@@ -570,7 +570,11 @@ teller/
                            refresh. K3's GET /api/tax/package?year=&format=json|pdf|zip
                            (json default; pdf / zip as attachments
                            perfin_tax_package_<year>.<ext>, Cache-Control no-store; a
-                           bad year or format a 400 before any read; a fixed 500)
+                           bad year or format a 400 before any read; a fixed 500); K4's
+                           format=csv&section=<deductions|income|investment_income|
+                           realized_gains|retirement|rent_paid|documents> — that
+                           section's CSV, the file the ZIP holds (an unknown section a
+                           400 before any read)
     settings.js          — GET/PATCH /api/settings, POST /api/sheets/sync,
                            POST /api/sheets/dashboard, GET /api/export,
                            GET /api/data-freshness, POST /api/linked-tasks/run
@@ -729,6 +733,8 @@ teller/
     budgets.js           — Budget tracking page with AI suggestions and alerts
     housing.js           — Rent & Utilities ledger page (balance owed, obligations,
                            record-payment modal, payment history, config)
+    tax.js               — The Tax page, /tax (roadmap T3.3 K4) — renders views/tax.ejs;
+                           public/tax-page.js does the rest
     transactions.js      — Transaction search/filter page with full-text search
     calendar.js          — Bill calendar page with subscription charges, manual bills,
                            and click-to-mark-paid functionality
@@ -749,6 +755,18 @@ teller/
                            Retry + logo-error live in offline.js; assets are relative
                            (`logo.svg`), so they resolve under the /perfin mount (F92)
     offline.js           — The offline page's Retry (location.reload) + hide-logo-on-error
+    tax-page.js          — The Tax page's script (roadmap T3.3 K4), loaded after
+                           perfin-shared.js: the year (?year= when 2000..this year, else
+                           taxSeason — last year January–April), GET /api/tax/package for
+                           a card per section with its totals and a CSV link
+                           (format=csv&section=, through withBase; a failed section shows
+                           its sentence, no CSV link) + an overview card, GET
+                           /api/tax/documents for the checklist (Mark received / Not
+                           received, Dismiss / Restore, notes + Save notes, Delete only
+                           on a manual row — data-e2e-skip — each control aria-labelled
+                           with its form), Add form and "Suggest from my data"; every write
+                           through writeOk and reloading only on success; a load for an
+                           older year never overwrites a newer one. window.TaxPage for tests
     sw.js                — Service worker (cache `perfin-v7`, network-first with offline
                            fallback. Precaches CSS/JS/SVG/offline.html/offline.js on
                            install. Entries are keyed by origin + path, query dropped
@@ -781,6 +799,9 @@ teller/
                            day early west of UTC); localTodayStr(offsetDays) /
                            localDateStr(d) give browser-local 'YYYY-MM-DD' for date-input
                            defaults and "is today" checks (never toISOString()).
+                           taxSeason(today) (roadmap T3.3 K4) → { year, season }: last
+                           year from January to April, else this year — the Tax page's
+                           default year and the dashboard's January–April Tax link.
                            Write + dialog conventions (Batch 13): writeOk(res, what)
                            — true on 2xx, else toasts "<what>: <server error>" — is how
                            every page reports a write's outcome (WUI-6: writes used to
@@ -813,6 +834,11 @@ teller/
     budgets.ejs          — Budget tracking template with progress bars and alerts
     housing.ejs          — Rent & Utilities ledger template (balance, obligations,
                            record-payment modal, config form, payment history)
+    tax.ejs              — The Tax page (roadmap T3.3 K4): the year select, PDF / ZIP
+                           download links, the section cards' container and the
+                           documents checklist (`<section id="documents">` — the linked
+                           task's /tax#documents; Suggest, a labelled Form + Issuer add
+                           form). Loads public/tax-page.js through the mount base
     goals.ejs            — Financial goals template with progress and projections
     settings.ejs         — Settings template (theme, AI, keep-alive, sync, exports)
     subscriptions.ejs    — Subscription/utility management template
@@ -1009,9 +1035,20 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2353 tests as of latest); use
+  Perfin and Per-sistant test files (2370 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2353 tests across 123 test files (incl.
+  Current count: 2370 tests across 124 test files (incl.
+  `tests/roadmap-t3-3-k4.test.js` — roadmap T3.3 K4: taxSeason run in a vm (January–April → last
+  year, in season; May–December → this year); public/tax-page.js run in a vm over a fake DOM — the
+  default year by month, ?year= (2000..this year, an older one still listed), the downloads and URL
+  following the select, a card per section with a CSV link through the mount base and none for a
+  failed section (its sentence, the overview's "Not available"), escaping, the checklist's labelled
+  controls and Delete only on a manual row (data-e2e-skip), every write through writeOk (received /
+  dismissed / notes / add / suggest / delete after a confirm) reloading only on success, the list's
+  click delegation, both halves' failed loads, a slower older-year load never overwriting a newer one;
+  the dashboard's January–April link run in a vm, the Settings link, the view (script after
+  perfin-shared.js, the #documents anchor) and the mounted page route; GET /api/tax/package's section
+  CSV equal to the ZIP's file — tax.ejs also joins the IF-3 label scan;
   `tests/roadmap-t3-3-k3.test.js` — roadmap T3.3 K3: crc32 against the standard check values and a
   bitwise second implementation, createZip read back by a parser in the test (local headers against the
   central directory, the end record, each file's CRC, names, bytes, the DOS date / time) and its name
@@ -1873,7 +1910,8 @@ shell/
   fake @anthropic-ai/sdk: /api/ask + runCategorize charge their usage rows,
   429 once the cap is hit, ask charges accumulated tokens AND still charges
   on a mid-loop failure — F1).
-- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink — empty since roadmap T1.5 Batch C fixed the Review page's review-summary 500), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). Since cycle-7 Batch 20 (G2) the run is SEEDED (`e2e/seed.js`, in the spec's beforeAll — through the apps' own routes: housing config + generated obligations, a manual account + manual expense, a generic CSV with a refund row and a split, a rollover budget, a goal, a subscription, a credit score, one transaction deleted through the route; Per-sistant notes in each privacy tier, a habit with logs, a todo with subtasks; one Job Radar listing and one linked task inserted directly, since no route creates either), a `console.error` fails a page (the browser's "Failed to load resource" line is left to the response check), and a CLICK SWEEP per page presses every visible, enabled `button / [role=button|checkbox|tab] / summary` counted on load (≤80) that isn't `data-e2e-skip` or labelled destructive (delete / remove / unlink / send / empty / sign out / log out / reset / purge / disconnect / archive / trash / revoke / cancel subscription / mark settled), dismissing dialogs and returning to the page between presses; a failure names the control pressed, and `SWEEP_KNOWN_GAPS` must only shrink. Mark a new destructive, off-app (an external SDK) or device-permission control (microphone) `data-e2e-skip`. 63 tests (23 of them sweeps, ~225 controls pressed — plus the linked-task chip on the To-Dos page and in its edit modal, T2.4 X1b, the unified search: Perfin's nav link to /per-sistant/search, a seeded Perfin transaction found there and its link opening Activity filtered, T2.4 X3b, and undelete: the seeded deletion listed in Settings → Sync Health → Deleted transactions and brought back by Restore, and a toast's Undo button, T2.5 U2). The `migrations` job ALSO runs the route contract suite (`npm run test:contract`, step "Route contract tests against real Postgres", `CONTRACT_DATABASE_URL` = the same service container; the Postgres user must be able to CREATE/DROP DATABASE).
+- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink — empty since roadmap T1.5 Batch C fixed the Review page's review-summary 500), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). Since cycle-7 Batch 20 (G2) the run is SEEDED (`e2e/seed.js`, in the spec's beforeAll — through the apps' own routes: housing config + generated obligations, a manual account + manual expense, a generic CSV with a refund row and a split, a rollover budget, a goal, a subscription, a credit score, one transaction deleted through the route; Per-sistant notes in each privacy tier, a habit with logs, a todo with subtasks; one Job Radar listing and one linked task inserted directly, since no route creates either), a `console.error` fails a page (the browser's "Failed to load resource" line is left to the response check), and a CLICK SWEEP per page presses every visible, enabled `button / [role=button|checkbox|tab] / summary` counted on load (≤80) that isn't `data-e2e-skip` or labelled destructive (delete / remove / unlink / send / empty / sign out / log out / reset / purge / disconnect / archive / trash / revoke / cancel subscription / mark settled), dismissing dialogs and returning to the page between presses; a failure names the control pressed, and `SWEEP_KNOWN_GAPS` must only shrink. Mark a new destructive, off-app (an external SDK) or device-permission control (microphone) `data-e2e-skip`. 63 tests (23 of them sweeps, ~225 controls pressed — plus the linked-task chip on the To-Dos page and in its edit modal, T2.4 X1b, the unified search: Perfin's nav link to /per-sistant/search, a seeded Perfin transaction found there and its link opening Activity filtered, T2.4 X3b, and undelete: the seeded deletion listed in Settings → Sync Health → Deleted transactions and brought back by Restore, and a toast's Undo button, T2.5 U2, and the Tax page: its sections for the seeded Plaid-free year,
+a form added through the page and marked received, and the ZIP download, T3.3 K4). The `migrations` job ALSO runs the route contract suite (`npm run test:contract`, step "Route contract tests against real Postgres", `CONTRACT_DATABASE_URL` = the same service container; the Postgres user must be able to CREATE/DROP DATABASE).
 - `.claude/commands/` — Project slash-command prompts, generated from the
   claude-workflow-tools templates (synced to v1.43.0 via `/sync-commands`):
   the cycle commands (`/broad-scan`, `/broad-implement`, `/targeted-audit`,
@@ -2252,7 +2290,7 @@ shell/
   double-counted, Date column blank.) The annotated rows are
   `getTaxDeductionReport(pool, year)` (roadmap T3.3 K3), which the year-end tax
   package reads too.
-- **Tax documents checklist** (roadmap T3.3 K2; shown on the /tax page from K4): per
+- **Tax documents checklist** (roadmap T3.3 K2; on the Tax page since K4): per
   calendar year, the forms you're waiting for — W-2, 1099-INT / DIV / B / R / NEC / MISC / K /
   G, 1098 / 1098-E / 1098-T, 1095, other — each with its issuer, the usual "arrives by" date
   (Jan 31; Feb 15 for a 1099-B), received / dismissed and notes. "Suggest from my data"
@@ -2262,8 +2300,8 @@ shell/
   1098-T) and never touches a row you received, dismissed or added; a suggested row is
   dismissed, not deleted, so it isn't suggested again. A form still missing after its date
   opens a Per-sistant task when linked tasks are on (source `tax_documents`, default on).
-- **Year-end tax package** (roadmap T3.3 K3; the /tax page is K4): `GET
-  /api/tax/package?year=&format=json|pdf|zip` gathers, for one calendar year, income (by source,
+- **Year-end tax package** (roadmap T3.3 K3 + K4): `GET
+  /api/tax/package?year=&format=json|pdf|zip|csv` gathers, for one calendar year, income (by source,
   kind and month, at your share), investment income per taxable account, realized gains (FIFO over
   stored lots, an estimate — the broker's 1099-B is the authority; a sale without a known basis has
   no gain), retirement distributions, the deduction report, rent and utilities paid, and the
@@ -2271,7 +2309,14 @@ shell/
   same one its existing export shows (deductions = the tax report, rent = the landlord export). A
   section whose read fails says so and the rest still render. The PDF is one summary document (a
   bookmark per section, "for informational purposes only" on the first and last page); the ZIP holds
-  that PDF, a CSV per section (formula-guarded) and `package.json`, uncompressed.
+  that PDF, a CSV per section (formula-guarded) and `package.json`, uncompressed;
+  `format=csv&section=<name>` serves one section's CSV. **The Tax page** (`/tax`, K4): a year select
+  (last year from January to April, else this year; `?year=`), Download PDF / ZIP, an overview card
+  and a card per section with its totals and a CSV link, and the documents checklist (`#documents` —
+  Mark received, Dismiss, notes, Delete for a hand-added row, an Add form and "Suggest from my
+  data"). Linked from Settings → Data & Exports ("Open the Tax page") and, from January to April
+  only, from the top of the dashboard ("Tax season: your <year> tax package is ready to review");
+  the top nav has no link.
 - **Manual bills**: User-created expected charges for the bill calendar (name, amount,
   due_day 1-31, cadence monthly/quarterly/yearly, category). CRUD via
   `/api/manual-bills`. Integrated into `/api/bill-calendar` alongside detected
@@ -3676,7 +3721,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2353 tests passing across 123 test files (Perfin 1695 + Per-sistant 658), plus the real-Postgres route contract suite (249 tests; CI `migrations` job, `npm run test:contract`) and 63 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2370 tests passing across 124 test files (Perfin 1712 + Per-sistant 658), plus the real-Postgres route contract suite (249 tests; CI `migrations` job, `npm run test:contract`) and 63 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -4064,7 +4109,10 @@ GET  /api/tax/package      # the year-end tax package (T3.3 K3; query: year — 
                            # attachments (perfin_tax_package_<year>.pdf|.zip — the ZIP:
                            # summary.pdf, deductions.csv, income.csv,
                            # investment_income.csv, realized_gains.csv, retirement.csv,
-                           # rent_paid.csv, documents.csv, package.json); a fixed 500
+                           # rent_paid.csv, documents.csv, package.json); a fixed 500.
+                           # format=csv&section=<deductions|income|investment_income|
+                           # realized_gains|retirement|rent_paid|documents> → that CSV
+                           # (perfin_tax_<section>_<year>.csv; 400 on another section — K4)
 GET  /api/data-freshness   # per-source sync timestamps with staleness flags
 GET  /api/data-health      # operator health surface — per-source freshness,
                            # Teller/Plaid connection status, scheduled-job
@@ -4366,6 +4414,7 @@ GET  /calendar                  # bill calendar page
 GET  /goals                     # financial goals page
 GET  /budgets                   # budget tracking page
 GET  /housing                   # Rent & Utilities ledger page
+GET  /tax                       # the Tax page (roadmap T3.3 K4; ?year=)
 GET  /settings                  # settings page
 GET  /accounts/:id/history      # per-account balance chart (query: source=linked|investment, months)
 GET  /login                     # login page (if auth enabled)
@@ -6095,8 +6144,8 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   the Rent page has no "+ add item" UI, so a removed placeholder comes back only
   via `POST /api/housing/obligations`; `apps-script/Code.gs` keeps the pre-F32
   NOT_TRANSFER keyword list. Batch 5 follow-ons / later batches.
-- Roadmap T3.3 (the year-end tax package) is IN PROGRESS (`.cycle/plan-t3-3-tax-package.md`,
-  K1–K4). K1 shipped the investment side on the server: every Plaid investment transaction
+- Roadmap T3.3 (the year-end tax package) is DONE (`.cycle/plan-t3-3-tax-package.md`,
+  K1–K4 — INV-146). K1 shipped the investment side on the server: every Plaid investment transaction
   stored (investment_transactions, by the flow sync) and `services/tax-investments.js` —
   FIFO realized gains, investment income and retirement distributions for a calendar year.
   Nothing shows them yet (K3's package, K4's /tax page). K1 follow-ons: lots are rebuilt
@@ -6119,7 +6168,13 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   package yet (K4's /tax page); the PDF lists at most 200 rows per section (the CSVs have them all);
   the package's PDF and ZIP are built in memory on each request (a few hundred KB); the ZIP's
   timestamp is the request time in UTC; package.json carries the whole package, merchant names
-  included (the download is behind the shell gate like every export).
+  included (the download is behind the shell gate like every export). K4 shipped the Tax page
+  (`/tax`: the cards, downloads and checklist; the Settings and January–April dashboard links) and
+  the section CSV. K4 follow-ons: the year default follows the browser's date, not APP_TIMEZONE
+  (like the Budgets page); each checklist write reloads the whole package (a few queries); the
+  page has no expected-by date editor (the API takes one) and no list of individual sales, sources or
+  payments beyond the first eight (the CSVs have them all); the e2e click sweep counts controls on
+  load, so the checklist rows it sees are the seeded ones.
 - Roadmap T2.5 (transaction undelete + iOS re-authenticate) is DONE
   (`.cycle/plan-t2-5-undelete-ios-reauth.md`, U1 / U2 / H1 — INV-145). U1 shipped the server side of
   undelete — the delete's snapshot, `GET /api/deleted-transactions`, `POST
@@ -6699,6 +6754,7 @@ INV-142 | Cash and payday alerts are away channels driven by the shared forecast
 INV-143 | Every Per-sistant model call goes through ai.js's capped wrappers (cappedAI / cappedCitations): the monthly ai_usage spend (APP_TIMEZONE month; a read error refuses the call) is checked against getAiBudgetCents() (user_settings.ai_monthly_budget_cents → PERSISTENT_AI_BUDGET_CENTS → $1.00, read from the same pool) before the call, and a usage row is charged once in a `finally` whenever tokens came back (a refusal included); no routes/*.js file calls callAI / answerWithCitations directly; cache hits make no call and cost nothing; over the cap the action routes 429, Ask / Smart Suggestions keep their 200 shapes with ai_cap, Knowledge answers degrade to sources-only and capture falls back to the raw note — and the pages show that message; GET /api/ai/usage reports the same spend the cap reads; the two apps' caps are separate and each only DISPLAYS the other's spend | Subsystem: Per-sistant Backend / Knowledge / RAG | Verify: apps/per-sistant/tests/roadmap-t2-3-cap-c1 / c2 / c3 / c4 + the c2 source guard + tests/contract/persistent-ai-cap + ai-usage-c4
 INV-144 | The unified search has ONE renderer — renderSearchResults (views/js.js) draws the dashboard widget and the /search page; a Perfin row (group 'finance') becomes a link only through linkedAppHref (a same-app path under Perfin's http(s) or root-relative base — never a javascript: / protocol-relative url), never carries an inline action, and a row of an unknown type is dropped; the finance rows come only from GET /api/search's read-only perfinPool queries (routes/finance-search.js — the escaped pattern, the user's share via Perfin's imported SPLIT_AMOUNT, each query fail-soft) and are absent standalone | Subsystem: Per-sistant Web UI / Settings, Notifications & Cross-app (seam) | Verify: apps/per-sistant/tests/roadmap-t2-4-x3a + x3b + tests/contract/finance-search + e2e/pages.spec.js
 INV-145 | Deleting a transaction is reversible and nothing brings it back unasked: the tombstone and the row's snapshot (with its splits) are written in the delete's own transaction; no provider sync, reconcile or CSV import (route or CLI) inserts a tombstoned id; restore removes the tombstone and reinserts the snapshot in one transaction — never a duplicate (ON CONFLICT DO NOTHING), and nothing changes when the account is gone; Plaid update mode — in-page or hosted — clears an item's re-auth flag only after Link reports the session finished (in-page: onSuccess; hosted: a link_sessions entry finished without an exit, read through linkTokenGet before anything is written) | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-5-u1.test.js + tests/roadmap-t2-5-u2.test.js + tests/roadmap-t2-5-h1.test.js + tests/contract/undelete-t2-5 + plaid-update
+INV-146 | The year-end tax package is computed on request from the ledger and never stored, and nothing in it is sent to an AI model: each figure has one definition shared with the screen or export that already shows it — deductions = getTaxDeductionReport (also behind /api/export/tax-report, whose CSV is taxReportCsv), income = getIncomeForYear on INCOME_PREDICATE / INCOME_AMOUNT, rent paid = getHousingPayments (also behind the landlord export, housingPaymentsCsv), investments = investment_transactions through getInvestmentTaxData; realized gains are FIFO over stored lots and labelled approximate — a sale not fully covered by known-cost lots has a NULL basis and gain, never 0; tax-advantaged accounts are kept out of gains and investment income; a suggested document the user received or dismissed is never changed or re-suggested (ON CONFLICT DO NOTHING); every section is fail-soft with a fixed sentence; every CSV text cell is formula-guarded; the Tax page's writes go through writeOk | Subsystem: Financial Analytics / Sheets & External Export / Web UI | Verify: tests/roadmap-t3-3-k1 / k2 / k3 / k4 + tests/contract/tax-investments / tax-documents / tax-package + e2e/pages.spec.js
 INV-136 | WebAuthn credential ids are stored exactly as the authenticator reports them (registrationInfo.credential.id — already base64url in @simplewebauthn v11), never re-encoded; a double-encoded row from before seams audit #3 is rewritten (or, when its real id already exists, removed) by repairCredentialIds in the migration | Subsystem: Platform, Shell & Auth | Verify: tests/seams-audit-3.test.js + tests/contract/seams3.contract.test.js
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 

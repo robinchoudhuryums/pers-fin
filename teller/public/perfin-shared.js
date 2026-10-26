@@ -218,6 +218,15 @@
     if (offsetDays) d.setDate(d.getDate() + offsetDays);
     return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
   }
+  // Roadmap T3.3 K4: the tax year to open on — LAST year from January to April
+  // (filing season), else this year — and whether it is filing season (the
+  // dashboard's Tax page link shows only then). One rule for both.
+  function taxSeason(today) {
+    var t = String(today || localTodayStr());
+    var y = parseInt(t.slice(0, 4), 10), m = parseInt(t.slice(5, 7), 10);
+    var season = m >= 1 && m <= 4;
+    return { year: season ? y - 1 : y, season: season };
+  }
   function localDateStr(d) {
     return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
   }
@@ -470,6 +479,7 @@
   win.parseCalDate = parseCalDate;
   win.localTodayStr = localTodayStr;
   win.localDateStr = localDateStr;
+  win.taxSeason = taxSeason;
   win.fmtMonth = fmtMonth;
   win.asyncAction = asyncAction;
   win.registerSW = registerSW;

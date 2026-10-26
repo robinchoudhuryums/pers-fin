@@ -1,0 +1,66 @@
+<%- include('partials/head', { title: 'Tax', extraStyles: `
+    .container { max-width: 820px; }
+    h1 { font-size: 36px; }
+    .subtitle { margin-bottom: 12px; }
+    .tax-disclaimer { font-size: 12px; color: var(--text-muted); margin-bottom: 20px; }
+    .tax-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; }
+    .tax-toolbar select, .doc-add select, .doc-add input, .doc-notes { padding: 8px 10px; font-size: 13px;
+      border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text); font-family: inherit; }
+    .tax-toolbar label { font-size: 12px; color: var(--text-muted); }
+    .tax-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; margin-bottom: 28px; }
+    .tax-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; }
+    .tax-card.wide { grid-column: 1 / -1; }
+    .tax-card h2 { font-size: 15px; font-weight: 400; margin: 0 0 8px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .tax-card .big { font-size: 22px; font-weight: 300; margin-bottom: 6px; }
+    .tax-card ul { list-style: none; padding: 0; margin: 6px 0 0; font-size: 13px; }
+    .tax-card li { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; border-bottom: 1px solid rgba(128,128,128,0.08); }
+    .tax-card li:last-child { border-bottom: none; }
+    .tax-note { font-size: 11px; color: var(--text-muted); margin-top: 8px; }
+    .tax-error { font-size: 13px; color: var(--red); }
+    .doc-add { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; margin: 12px 0; }
+    .doc-add label { font-size: 11px; color: var(--text-muted); display: block; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .doc-list { list-style: none; padding: 0; margin: 0; }
+    .doc-row { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 8px; }
+    .doc-head { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; align-items: baseline; }
+    .doc-title { font-size: 14px; }
+    .doc-state { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--border); }
+    .doc-state.overdue { color: var(--red); border-color: var(--red); }
+    .doc-state.received { color: var(--green); border-color: var(--green); }
+    .doc-state.dismissed { color: var(--text-muted); }
+    .doc-meta { font-size: 12px; color: var(--text-muted); margin: 4px 0 8px; }
+    .doc-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .doc-notes { flex: 1; min-width: 160px; }
+    @media (max-width: 640px) { .doc-add { flex-direction: column; align-items: stretch; } }
+` }) %>
+<%- include('partials/nav', { activePage: 'tax' }) %>
+  <div id="tax-page">
+  <h1>Tax</h1>
+  <p class="subtitle">Everything your return needs from Perfin, for one calendar year.</p>
+  <p class="tax-disclaimer">For informational purposes only — not tax advice. Consult a tax professional before filing. Figures are estimates built from the data Perfin has; your W-2s and 1099s are the authority.</p>
+  <div id="status-msg" class="status-msg"></div>
+
+  <div class="tax-toolbar">
+    <label for="tax-year">Tax year</label>
+    <select id="tax-year"></select>
+    <a class="btn" id="tax-pdf-link" href="#" download>Download PDF</a>
+    <a class="btn primary" id="tax-zip-link" href="#" download>Download ZIP</a>
+  </div>
+
+  <div id="tax-sections" class="tax-grid" aria-live="polite"><div style="color:var(--text-muted);font-size:13px;">Loading...</div></div>
+
+  <section id="documents">
+    <h2 style="font-size:20px;font-weight:300;margin-bottom:4px;">Tax documents</h2>
+    <p class="tax-note" style="margin-top:0;">The forms to expect for the year and whether they have arrived. Dates are the usual deadlines, not guarantees.</p>
+    <div class="doc-add">
+      <button class="btn" id="tax-suggest" type="button">Suggest from my data</button>
+      <div><label for="doc-form">Form</label><select id="doc-form"></select></div>
+      <div><label for="doc-issuer">Issuer</label><input id="doc-issuer" maxlength="200" placeholder="e.g. Acme Corp"></div>
+      <button class="btn primary" id="doc-add" type="button">Add form</button>
+    </div>
+    <ul id="documents-list" class="doc-list"><li style="color:var(--text-muted);font-size:13px;">Loading...</li></ul>
+  </section>
+  </div>
+<%- include('partials/foot') %>
+<% var __taxBase = typeof basePath !== 'undefined' ? basePath : ''; %>
+  <script src="<%= __taxBase %>/tax-page.js?v=<%= v %>"></script>
+</body></html>

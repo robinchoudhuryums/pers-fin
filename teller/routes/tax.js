@@ -14,6 +14,8 @@
 //          json (default) — the package object; pdf — one summary document;
 //          zip — summary.pdf + a CSV per section + package.json. A section
 //          whose read fails carries { ok: false, error } and the rest render.
+//          K4: csv&section=<name> — one section's CSV (the file the ZIP holds
+//          under <name>.csv; the Tax page's per-card link).
 // The year is an integer 2000..this APP_TIMEZONE year, else 400 (decision 1).
 // Every write kicks the linked-task refresh (a received or dismissed form closes
 // its Per-sistant task) after it commits; that never fails the response.
@@ -57,16 +59,28 @@ function dateFrom(v) {
   return { value: v };
 }
 
-const PACKAGE_FORMATS = ["json", "pdf", "zip"];
+const PACKAGE_FORMATS = ["json", "pdf", "zip", "csv"];
+const CSV_SECTIONS = taxPackage.ZIP_FILES.filter((f) => f.endsWith(".csv")).map((f) => f.slice(0, -4));
 
 router.get("/api/tax/package", async (req, res) => {
   const year = yearFrom(req.query.year, res);
   if (year == null) return;
   const format = String(req.query.format == null ? "json" : req.query.format).toLowerCase();
-  if (!PACKAGE_FORMATS.includes(format)) return res.status(400).json({ error: "format must be json, pdf or zip" });
+  if (!PACKAGE_FORMATS.includes(format)) return res.status(400).json({ error: "format must be json, pdf, zip or csv" });
+  const section = req.query.section == null ? null : String(req.query.section);
+  if (format === "csv" && !CSV_SECTIONS.includes(section)) {
+    return res.status(400).json({ error: "section must be one of " + CSV_SECTIONS.join(", ") });
+  }
   try {
     const pkg = await taxPackage.gatherTaxPackage(pool, year);
     if (format === "json") return res.json(pkg);
+    if (format === "csv") {
+      const csv = taxPackage.packageCsvFiles(pkg)[section + ".csv"];
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader("Content-Disposition", `attachment; filename=perfin_tax_${section}_${year}.csv`);
+      res.setHeader("Cache-Control", "no-store");
+      return res.send(csv);
+    }
     const buf = format === "pdf" ? await taxPackage.renderPackagePdf(pkg) : await taxPackage.buildPackageZip(pkg);
     res.setHeader("Content-Type", format === "pdf" ? "application/pdf" : "application/zip");
     res.setHeader("Content-Disposition", `attachment; filename=perfin_tax_package_${year}.${format}`);

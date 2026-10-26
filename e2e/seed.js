@@ -79,6 +79,22 @@ async function seedPerfin(req) {
   if (!deleted) throw new Error("seed: the CSV row to delete was not imported");
   await call(req, "delete", `/perfin/api/transactions/${encodeURIComponent(deleted.transaction_id || deleted.id)}`, {});
 
+  // A Plaid-free tax year (roadmap T3.3 K4): a paycheck and a pharmacy charge on
+  // their own CSV account, and a hand-added form on the year's checklist.
+  const taxYear = Number(ymd(-3).slice(0, 4));
+  const taxCsv = "Date,Description,Amount\n" +
+    `${ymd(-3)},ACME PAYROLL DIRECT DEP,-2000.00\n` +
+    `${ymd(-3)},CITY PHARMACY,42.10\n`;
+  await call(req, "post", "/perfin/api/import-csv", {
+    multipart: {
+      file: { name: "e2e-tax.csv", mimeType: "text/csv", buffer: Buffer.from(taxCsv) },
+      account_label: "E2E Checking",
+      positive_means: "charges",
+    },
+  });
+  await call(req, "post", "/perfin/api/tax/documents", { data: { year: taxYear, form: "1099-NEC", issuer: "E2E Client" } });
+  out.taxYear = taxYear;
+
   await call(req, "post", "/perfin/api/budgets", { data: { category: "Groceries", monthly_limit: 300, rollover_enabled: true } });
   await call(req, "post", "/perfin/api/goals", { data: { name: "Emergency fund", type: "savings", target_amount: 5000, current_amount: 750, monthly_contribution: 200 } });
   await call(req, "post", "/perfin/api/subscriptions", { data: { name: "Streamflix", amount: 15.49, cadence_days: 30 } });

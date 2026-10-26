@@ -118,7 +118,7 @@ async function clickSweep(page, pagePath, setCurrent) {
 }
 
 const PERFIN_PAGES = ["/perfin/dashboard", "/perfin/subscriptions", "/perfin/transactions", "/perfin/calendar",
-  "/perfin/goals", "/perfin/budgets", "/perfin/housing", "/perfin/settings", "/perfin/accounts"];
+  "/perfin/goals", "/perfin/budgets", "/perfin/housing", "/perfin/settings", "/perfin/accounts", "/perfin/tax"];
 const PERSISTENT_PAGES = ["/per-sistant/", "/per-sistant/today", "/per-sistant/todos", "/per-sistant/emails",
   "/per-sistant/notes", "/per-sistant/knowledge", "/per-sistant/health", "/per-sistant/jobs",
   "/per-sistant/contacts", "/per-sistant/search", "/per-sistant/calendar", "/per-sistant/review", "/per-sistant/analytics",
@@ -126,6 +126,7 @@ const PERSISTENT_PAGES = ["/per-sistant/", "/per-sistant/today", "/per-sistant/t
 
 test.describe("every page loads cleanly", () => {
   let manualAccountId = null;
+  let taxYear = null;
 
   test.beforeAll(async ({ browser }) => {
     // Seed through the apps' own routes (e2e/seed.js) — incl. a configured
@@ -135,7 +136,9 @@ test.describe("every page loads cleanly", () => {
     const page = await context.newPage();
     await loginWithPin(page, PIN);
     sessionCookies = await context.cookies();
-    manualAccountId = (await seedPerfin(page.request)).manualAccountId;
+    const seeded = await seedPerfin(page.request);
+    manualAccountId = seeded.manualAccountId;
+    taxYear = seeded.taxYear;
     await seedPersistent(page.request);
     await context.close();
   });
@@ -230,6 +233,36 @@ test.describe("every page loads cleanly", () => {
     await expect(row).toHaveCount(0);
     await page.goto("/perfin/transactions?q=" + encodeURIComponent("E2E DELETED SHOP"));
     await expect(page.locator("#txn-body")).toContainText("E2E DELETED SHOP");
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
+  test("the Tax page shows the year's package, takes a form and downloads the ZIP (T3.3 K4)", async ({ page }) => {
+    const problems = watch(page);
+    await page.goto("/perfin/tax?year=" + taxYear);
+    await expect(page.locator("#tax-year")).toHaveValue(String(taxYear));
+    const sections = page.locator("#tax-sections");
+    for (const key of ["overview", "income", "investment_income", "realized_gains", "retirement", "deductions", "rent_paid"]) {
+      await expect(sections.locator(`[data-section="${key}"]`)).toBeVisible();
+    }
+    await expect(sections.locator('[data-section="income"]')).toContainText("$2,000.00");
+    await expect(sections.locator('[data-section="deductions"]')).toContainText("medical");
+    await expect(page.locator("#documents-list")).toContainText("1099-NEC from E2E Client");
+
+    // Add a form through the page, then mark it received.
+    const issuer = "E2E Tax " + Date.now();
+    await page.locator("#doc-form").selectOption("1099-MISC");
+    await page.locator("#doc-issuer").fill(issuer);
+    await page.locator("#doc-add").click();
+    const row = page.locator("#documents-list li", { hasText: "1099-MISC from " + issuer });
+    await expect(row.locator(".doc-state")).toHaveText(/Waiting|Overdue/);
+    await row.getByRole("button", { name: "Mark the 1099-MISC from " + issuer + " received" }).click();
+    await expect(row.locator(".doc-state")).toHaveText("Received");
+
+    await expect(page.locator("#tax-zip-link")).toHaveAttribute("href", `/perfin/api/tax/package?year=${taxYear}&format=zip`);
+    const zip = await page.request.get(`/perfin/api/tax/package?year=${taxYear}&format=zip`);
+    expect(zip.status()).toBe(200);
+    expect(zip.headers()["content-type"]).toBe("application/zip");
+    expect((await zip.body()).slice(0, 2).toString()).toBe("PK");
     expect(problems, problems.join("\n")).toEqual([]);
   });
 
