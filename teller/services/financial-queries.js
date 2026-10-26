@@ -590,6 +590,45 @@ async function getTaxDeductionTransactions(pool, year) {
 }
 
 /**
+ * The deduction report for calendar `year` (roadmap T3.3 K3 — moved out of
+ * GET /api/export/tax-report so the export and the year-end package share one
+ * definition). One row per getTaxDeductionTransactions row, annotated by the
+ * tax_deductions merchant notes (confirm flag / notes / a user category; the
+ * annotation read failing leaves the rows unannotated, as the export always
+ * did), sorted by category then date:
+ *   { tax_year, txn_date, transaction_id, merchant, amount (2-dp string),
+ *     category, deduction_type: "keyword_match", notes, is_confirmed }
+ */
+async function getTaxDeductionReport(pool, year) {
+  const [txns, notes] = await Promise.all([
+    getTaxDeductionTransactions(pool, year),
+    pool.query(
+      `SELECT merchant, category, is_confirmed, notes
+       FROM tax_deductions WHERE tax_year = $1 AND transaction_id IS NULL`,
+      [year]
+    ).catch(() => ({ rows: [] })),
+  ]);
+  const noteByMerchant = new Map();
+  for (const n of notes.rows) if (n.merchant) noteByMerchant.set(String(n.merchant).toLowerCase(), n);
+  return txns.map(t => {
+    const n = noteByMerchant.get(String(t.merchant || "").toLowerCase());
+    const userCat = n && n.category && !["flagged", "uncategorized"].includes(n.category) ? n.category : null;
+    const d = t.date ? String(t.date).slice(0, 10) : ""; // 'YYYY-MM-DD' text from SQL
+    return {
+      tax_year: year,
+      txn_date: d,
+      transaction_id: t.transaction_id,
+      merchant: t.merchant,
+      amount: parseFloat(t.amount).toFixed(2),
+      category: userCat || t.category,
+      deduction_type: "keyword_match",
+      notes: n ? n.notes : null,
+      is_confirmed: !!(n && n.is_confirmed),
+    };
+  }).sort((a, b) => (a.category < b.category ? -1 : a.category > b.category ? 1 : (a.txn_date < b.txn_date ? -1 : a.txn_date > b.txn_date ? 1 : 0)));
+}
+
+/**
  * Income for calendar `year` (roadmap T3.3 K2) — the same rows as every other
  * income figure (incomePredicate, settled deposits, INCOME_AMOUNT: a deposit on
  * a shared account at the user's share), by source and month, each row with a
@@ -711,5 +750,6 @@ module.exports = {
   TAX_REGEX,
   taxCategoryFor,
   getTaxDeductionTransactions,
+  getTaxDeductionReport,
   getIncomeForYear,
 };

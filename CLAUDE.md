@@ -183,7 +183,11 @@ teller/
                            incomePredicate + INCOME_AMOUNT by source / kind (wages /
                            interest / dividends / other — Plaid's detailed PFC, else
                            the description) / institution / month (roadmap T3.3 K2),
-                           keyword-filtered income, current-month per-category spending
+                           getTaxDeductionReport(pool, year) — the deduction report's
+                           rows (getTaxDeductionTransactions annotated by the
+                           tax_deductions merchant notes, sorted by category then
+                           date; behind /api/export/tax-report AND the tax package,
+                           T3.3 K3), keyword-filtered income, current-month per-category spending
                            that honors transaction_splits) — single source of truth used
                            by AI insights and budgets so the numbers match the dashboard.
                            Refunds (cycle-7 F35): REFUND_PREDICATE (settled, non-
@@ -322,6 +326,31 @@ teller/
                            hand-added row is never changed) and listTaxDocuments (form
                            order, each row's state received / dismissed / overdue /
                            waiting). No AI
+    tax-package.js       — The year-end tax package (roadmap T3.3 K3), computed on
+                           request, never stored: gatherTaxPackage(pool, year, deps)
+                           → { year, generated_on, disclaimer, overview, income,
+                           investment_income, realized_gains, retirement, deductions,
+                           rent_paid, documents, notes } from the shared definitions
+                           (getIncomeForYear, getInvestmentTaxData — read once for
+                           three sections — getTaxDeductionReport, getHousingPayments,
+                           listTaxDocuments). Each section is fail-soft ({ ok: false,
+                           error: SECTION_ERRORS[…] }, a fixed sentence; the others
+                           render; overview.sections_failed names them). A CSV per
+                           section (taxReportCsv IS /api/export/tax-report's CSV,
+                           rent_paid.csv the landlord export's; an unknown basis a
+                           blank cell, never 0.00; text through csvText, dates through
+                           csvDate), renderPackagePdf (pdfkit → Buffer: a bookmark per
+                           section, the disclaimer on the first and last page) and
+                           buildPackageZip (ZIP_FILES: summary.pdf, deductions /
+                           income / investment_income / realized_gains / retirement /
+                           rent_paid / documents .csv, package.json). No AI
+    zip-store.js         — A STORE-only ZIP writer (roadmap T3.3 K3): crc32 (table-
+                           driven, not zlib.crc32), createZip([{ name, data }], { date })
+                           — local headers, central directory, end record; DOS time
+                           from the date's UTC fields; printable-ASCII relative names
+                           only (no "..", no leading "/", no backslash), no duplicates,
+                           no ZIP64 (a file / archive past 4 GB or 65535 entries
+                           throws). No dependency
     projections.js       — FIRE/runway/loan math (pure): computeFireProjection
                            (FIRE number = annual spend × 100/withdrawal-rate,
                            monthly geometric compounding, 40-yr series) +
@@ -527,14 +556,21 @@ teller/
                            (roadmap T2.4 X2a — the payment-due window is now date-based,
                            so rent due the 31st opens lead days before Feb 28). Since
                            X2b, generate, the obligation writes and the payment writes
-                           kick the linked-task refresh after they commit.
+                           kick the linked-task refresh after they commit. Since
+                           roadmap T3.3 K3, getHousingPayments(year, db) (a year's
+                           payments with what each covered + the payee and total) and
+                           housingPaymentsCsv — the landlord export and the tax
+                           package share both.
     tax.js               — The year-end tax package routes (roadmap T3.3): K2's
                            documents checklist — GET / POST /api/tax/documents,
                            PATCH / DELETE /api/tax/documents/:id, POST
                            /api/tax/documents/suggest. The year rule (a 400), strict
                            booleans, a duplicate a 409, a suggested row's DELETE a 409
                            (dismiss it instead); every write kicks the linked-task
-                           refresh
+                           refresh. K3's GET /api/tax/package?year=&format=json|pdf|zip
+                           (json default; pdf / zip as attachments
+                           perfin_tax_package_<year>.<ext>, Cache-Control no-store; a
+                           bad year or format a 400 before any read; a fixed 500)
     settings.js          — GET/PATCH /api/settings, POST /api/sheets/sync,
                            POST /api/sheets/dashboard, GET /api/export,
                            GET /api/data-freshness, POST /api/linked-tasks/run
@@ -973,9 +1009,23 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2330 tests as of latest); use
+  Perfin and Per-sistant test files (2353 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2330 tests across 122 test files (incl.
+  Current count: 2353 tests across 123 test files (incl.
+  `tests/roadmap-t3-3-k3.test.js` — roadmap T3.3 K3: crc32 against the standard check values and a
+  bitwise second implementation, createZip read back by a parser in the test (local headers against the
+  central directory, the end record, each file's CRC, names, bytes, the DOS date / time) and its name
+  refusals, the DOS time from UTC under a forced west-of-UTC zone; /api/export/tax-report and
+  /api/housing/export CSV + JSON byte-identical to snapshots taken before the refactor, each route reading
+  through the shared definition, getTaxDeductionReport unannotated when the annotation read fails and
+  getHousingPayments naming the configured payee over a payment's; gatherTaxPackage over injected
+  readers (every section, the investment read shared by three, each failing reader marking only its
+  section(s) with its fixed sentence — never the error text — a synchronous throw contained, the year
+  rule) and with the REAL readers over a SQL-routed fake pool; every section's CSV (the formula guard
+  on a `=HYPERLINK(…)` merchant / source / security / issuer / memo, an unknown basis blank, deductions.csv
+  = taxReportCsv, rent_paid.csv = housingPaymentsCsv, a failed section's sentence); the PDF (%PDF, a
+  bookmark per section, the disclaimer on the first and last page, a failed section's sentence); the ZIP's
+  nine files; GET /api/tax/package's 400s before any read, json / pdf / zip types and names, a fixed 500;
   `tests/roadmap-t3-3-k2.test.js` — roadmap T3.3 K2: parseTaxYear / expectedBy, computeSuggestions with
   each source injected (a W-2 per payroll source and one per issuer in any case, a 1099-INT at $10 —
   the larger of bank and brokerage interest, never their sum — a 1099-DIV at $10 of dividends +
@@ -1657,9 +1707,15 @@ shell/
   union's $2, a 1099-B and a 1099-R from K1 rows and a 1098-T from tuition; a received W-2 and a
   dismissed 1099-INT unchanged by a second Suggest; a manual duplicate in another case a 409 and a
   suggested row's DELETE a 409; a task per open form past its date, closed by marking it received or
-  dismissed through Perfin's route).
+  dismissed through Perfin's route), and tax-package (roadmap T3.3 K3: on real rows — four deductions
+  with a reimbursed and an earlier-year one left out and a merchant annotation, two rent payments, two
+  paychecks and a joint deposit, a FIFO sale and a qualified dividend, a W-2 on the checklist —
+  gatherTaxPackage's deductions equal /api/export/tax-report?format=json to the cent and the ZIP's
+  deductions.csv is that export's CSV; rent paid equals /api/housing/export?format=json and rent_paid.csv
+  its CSV; income equals getIncomeForYear; the sale, dividend and document come through; an empty year
+  renders every section).
   Since roadmap T2.5 H1 plaid-update also sends the hosted token request and a hosted update whose
-  Link session exited (flag, cursor and accounts unchanged) before the finished one. 245 tests, run
+  Link session exited (flag, cursor and accounts unchanged) before the finished one. 249 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -2193,7 +2249,9 @@ shell/
   `PATCH /api/tax-deductions/:id`) apply to that merchant's rows; it never
   supplies amounts. (The export used to list those per-merchant rows directly —
   frozen at the last insights run, top 15 merchants only, renamed merchants
-  double-counted, Date column blank.)
+  double-counted, Date column blank.) The annotated rows are
+  `getTaxDeductionReport(pool, year)` (roadmap T3.3 K3), which the year-end tax
+  package reads too.
 - **Tax documents checklist** (roadmap T3.3 K2; shown on the /tax page from K4): per
   calendar year, the forms you're waiting for — W-2, 1099-INT / DIV / B / R / NEC / MISC / K /
   G, 1098 / 1098-E / 1098-T, 1095, other — each with its issuer, the usual "arrives by" date
@@ -2204,6 +2262,16 @@ shell/
   1098-T) and never touches a row you received, dismissed or added; a suggested row is
   dismissed, not deleted, so it isn't suggested again. A form still missing after its date
   opens a Per-sistant task when linked tasks are on (source `tax_documents`, default on).
+- **Year-end tax package** (roadmap T3.3 K3; the /tax page is K4): `GET
+  /api/tax/package?year=&format=json|pdf|zip` gathers, for one calendar year, income (by source,
+  kind and month, at your share), investment income per taxable account, realized gains (FIFO over
+  stored lots, an estimate — the broker's 1099-B is the authority; a sale without a known basis has
+  no gain), retirement distributions, the deduction report, rent and utilities paid, and the
+  documents checklist, plus the caveats. Computed on request, never stored, no AI; each figure is the
+  same one its existing export shows (deductions = the tax report, rent = the landlord export). A
+  section whose read fails says so and the rest still render. The PDF is one summary document (a
+  bookmark per section, "for informational purposes only" on the first and last page); the ZIP holds
+  that PDF, a CSV per section (formula-guarded) and `package.json`, uncompressed.
 - **Manual bills**: User-created expected charges for the bill calendar (name, amount,
   due_day 1-31, cadence monthly/quarterly/yearly, category). CRUD via
   `/api/manual-bills`. Integrated into `/api/bill-calendar` alongside detected
@@ -3608,7 +3676,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2330 tests passing across 122 test files (Perfin 1672 + Per-sistant 658), plus the real-Postgres route contract suite (245 tests; CI `migrations` job, `npm run test:contract`) and 63 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2353 tests passing across 123 test files (Perfin 1695 + Per-sistant 658), plus the real-Postgres route contract suite (249 tests; CI `migrations` job, `npm run test:contract`) and 63 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -3986,6 +4054,17 @@ POST /api/tax/documents/suggest # add the forms the year's data points to (query
                            # expected_by, reason }], errors[{ source, error }],
                            # documents } — ON CONFLICT DO NOTHING, never changing an
                            # existing row; no AI
+GET  /api/tax/package      # the year-end tax package (T3.3 K3; query: year — the same
+                           # rule, 400 otherwise; format json (default) | pdf | zip,
+                           # 400 otherwise) → json: { year, generated_on, disclaimer,
+                           # overview { …totals, sections_failed[] }, income,
+                           # investment_income, realized_gains, retirement, deductions,
+                           # rent_paid, documents (each { ok: true, … } or { ok: false,
+                           # error: <fixed sentence> }), notes[] }; pdf / zip as
+                           # attachments (perfin_tax_package_<year>.pdf|.zip — the ZIP:
+                           # summary.pdf, deductions.csv, income.csv,
+                           # investment_income.csv, realized_gains.csv, retirement.csv,
+                           # rent_paid.csv, documents.csv, package.json); a fixed 500
 GET  /api/data-freshness   # per-source sync timestamps with staleness flags
 GET  /api/data-health      # operator health surface — per-source freshness,
                            # Teller/Plaid connection status, scheduled-job
@@ -4246,7 +4325,9 @@ GET  /api/export/tax-report # year-end deduction summary (query: year — defaul
                             # merchant annotations (confirm/notes/category) from
                             # tax_deductions; Type "keyword_match". JSON groups by
                             # category; PDF renders via pdfkit with per-category
-                            # breakdown and grand-total summary
+                            # breakdown and grand-total summary. Rows from
+                            # getTaxDeductionReport, CSV from tax-package.taxReportCsv
+                            # (shared with the tax package — T3.3 K3)
 
 # WebAuthn / biometric login — Perfin sub-app endpoints (registration always
 # happens here; standalone deployments also use these for the auth flow).
@@ -6031,7 +6112,14 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   suggested per payroll SOURCE name, so an employer whose deposits carry two names gets
   two; a 1099-INT from a bank can't be told apart from a brokerage cash sweep at the same
   institution (the larger of the two counts); suggestion reasons aren't stored; 1099-NEC /
-  MISC / K / G and 1095 are manual only.
+  MISC / K / G and 1095 are manual only. K3 shipped the package on the server
+  (`services/tax-package.js`, `services/zip-store.js`, `GET /api/tax/package` json / pdf / zip) and
+  moved the deduction rows into `getTaxDeductionReport` and the landlord export's payments into
+  `getHousingPayments` (both exports unchanged byte for byte). K3 follow-ons: nothing links to the
+  package yet (K4's /tax page); the PDF lists at most 200 rows per section (the CSVs have them all);
+  the package's PDF and ZIP are built in memory on each request (a few hundred KB); the ZIP's
+  timestamp is the request time in UTC; package.json carries the whole package, merchant names
+  included (the download is behind the shell gate like every export).
 - Roadmap T2.5 (transaction undelete + iOS re-authenticate) is DONE
   (`.cycle/plan-t2-5-undelete-ios-reauth.md`, U1 / U2 / H1 — INV-145). U1 shipped the server side of
   undelete — the delete's snapshot, `GET /api/deleted-transactions`, `POST
@@ -6403,8 +6491,8 @@ Financial Analytics:
   teller/services/financial-queries.js, teller/routes/spending-analytics.js,
   teller/services/cash-flow.js, teller/services/cash-alerts.js,
   teller/services/payday-alerts.js, teller/services/tax-investments.js,
-  teller/services/tax-documents.js, teller/routes/tax.js,
-  teller/services/projections.js, teller/routes/budgets.js,
+  teller/services/tax-documents.js, teller/services/tax-package.js,
+  teller/routes/tax.js, teller/services/projections.js, teller/routes/budgets.js,
   teller/routes/goals.js, teller/routes/credit-scores.js,
   teller/routes/whats-new.js, teller/routes/watchlist.js,
   teller/routes/housing.js
@@ -6438,10 +6526,11 @@ Web UI (Perfin):
   shell/views/*.ejs, shell/public/*
 Sheets & External Export:
   scripts/sheets-sync.js, scripts/retention-cleanup.sql, apps-script/Code.gs,
-  teller/services/csv-export.js
+  teller/services/csv-export.js, teller/services/zip-store.js
   (csv-export.js = the shared CSV cell helpers behind /api/export, the tax-report
-   CSV and the housing landlord export; the routes themselves stay in their own
-   subsystems.)
+   CSV, the housing landlord export and the tax package; zip-store.js = the
+   STORE-only ZIP writer behind the tax package's download (T3.3 K3); the routes
+   themselves stay in their own subsystems.)
 Per-sistant Backend:
   apps/per-sistant/server.js, apps/per-sistant/ai.js, apps/per-sistant/config.js,
   apps/per-sistant/db.js, apps/per-sistant/errors.js, apps/per-sistant/helpers.js,

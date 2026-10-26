@@ -9,6 +9,11 @@
 //                                            dismissed instead — 409 — so it isn't
 //                                            suggested again)
 //   POST   /api/tax/documents/suggest?year=  add the forms the year's data points to
+// K3 — the package (services/tax-package.js), computed on request, never stored:
+//   GET    /api/tax/package?year=&format=json|pdf|zip
+//          json (default) — the package object; pdf — one summary document;
+//          zip — summary.pdf + a CSV per section + package.json. A section
+//          whose read fails carries { ok: false, error } and the rest render.
 // The year is an integer 2000..this APP_TIMEZONE year, else 400 (decision 1).
 // Every write kicks the linked-task refresh (a received or dismissed form closes
 // its Per-sistant task) after it commits; that never fails the response.
@@ -19,6 +24,7 @@ const { pool } = require("../services/database");
 const { todayStr } = require("../services/financial-queries");
 const { isValidYmd } = require("../services/cadence");
 const docs = require("../services/tax-documents");
+const taxPackage = require("../services/tax-package");
 const linkedTasks = require("../services/linked-tasks");
 
 const YEAR_ERROR = "year must be a whole year from 2000 to this year";
@@ -50,6 +56,27 @@ function dateFrom(v) {
   if (typeof v !== "string" || !isValidYmd(v)) return { error: "expected_by must be a YYYY-MM-DD date or null" };
   return { value: v };
 }
+
+const PACKAGE_FORMATS = ["json", "pdf", "zip"];
+
+router.get("/api/tax/package", async (req, res) => {
+  const year = yearFrom(req.query.year, res);
+  if (year == null) return;
+  const format = String(req.query.format == null ? "json" : req.query.format).toLowerCase();
+  if (!PACKAGE_FORMATS.includes(format)) return res.status(400).json({ error: "format must be json, pdf or zip" });
+  try {
+    const pkg = await taxPackage.gatherTaxPackage(pool, year);
+    if (format === "json") return res.json(pkg);
+    const buf = format === "pdf" ? await taxPackage.renderPackagePdf(pkg) : await taxPackage.buildPackageZip(pkg);
+    res.setHeader("Content-Type", format === "pdf" ? "application/pdf" : "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename=perfin_tax_package_${year}.${format}`);
+    res.setHeader("Cache-Control", "no-store");
+    res.send(buf);
+  } catch (e) {
+    console.error("GET /api/tax/package error:", e.message);
+    res.status(500).json({ error: "Could not build the tax package." });
+  }
+});
 
 router.get("/api/tax/documents", async (req, res) => {
   const year = yearFrom(req.query.year, res);

@@ -18,7 +18,22 @@ Updated: 2026-10-26
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T3.3 (year-end tax package) — K2 DONE** (2026-10-26, branch
+- **Status:** **Roadmap T3.3 (year-end tax package) — K3 DONE** (2026-10-26, branch
+  `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Block:
+  `.cycle/blocks/7-roadmap-t3-3-k3-broad-implement.md`.
+  - **Shipped:**
+    - `getTaxDeductionReport` (financial-queries) and `getHousingPayments` / `housingPaymentsCsv` (housing.js) — the tax-report and landlord exports read them, their CSV / JSON byte-identical;
+    - `teller/services/zip-store.js` — a STORE-only ZIP writer (table CRC-32, ASCII names, no ZIP64);
+    - `teller/services/tax-package.js` — `gatherTaxPackage` (fail-soft sections with fixed sentences), a CSV per section (`taxReportCsv` is the export's), the summary PDF (bookmarks, the disclaimer first and last), `buildPackageZip`;
+    - `GET /api/tax/package?year=&format=json|pdf|zip` in routes/tax.js.
+  - **Decision taken in-batch:** the export CSV builders live with their data (`taxReportCsv` in tax-package.js, `housingPaymentsCsv` in housing.js — tax-package requires housing lazily, so no cycle); a failed section still gets its CSV file, holding its sentence, so the ZIP's file set never changes.
+  - **Verified:**
+    - npm test 2353/2353 (23 new);
+    - contract 249/249 (4 new, `tax-package`);
+    - mutation checks 28/28 (3 first-run survivors caught after adding tests);
+    - no migration or page change, so no migration test or Playwright run.
+  - **Where I left off:** K3 committed and pushed. Next: `/broad-implement K4` (the /tax page, Settings + January–April dashboard links, the Playwright check, INV-146, T3.3 close-out docs).
+- **Previous status (T3.3 K2):** **Roadmap T3.3 (year-end tax package) — K2 DONE** (2026-10-26, branch
   `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Block:
   `.cycle/blocks/7-roadmap-t3-3-k2-broad-implement.md`.
   - **Shipped:**
@@ -35,7 +50,7 @@ implement and reflect sessions only set Phase.)
     - Playwright 63/63;
     - mutation checks 19/19.
   - **Where I left off:** K2 committed and pushed. Next: `/broad-implement K3` (the package: getTaxDeductionReport / getHousingPayments refactors, gatherTaxPackage, zip-store, `GET /api/tax/package`).
-- **Previous status (T3.3 K1):** **Roadmap T3.3 (year-end tax package) — K1 DONE** (2026-10-26, branch
+- **Earlier status (T3.3 K1):** **Roadmap T3.3 (year-end tax package) — K1 DONE** (2026-10-26, branch
   `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Block:
   `.cycle/blocks/7-roadmap-t3-3-k1-broad-implement.md`. The plan's decisions were accepted as written.
   - **Shipped:** the `investment_transactions` table (migration, reset-fresh WIPE); the Plaid flow

@@ -545,6 +545,51 @@ router.post("/api/housing/generate", async (_req, res) => {
   catch (err) { console.error("housing generate error:", err.message); res.status(500).json({ error: "An internal error occurred." }); }
 });
 
+// A year's payments to the payee, each with the obligations it settled
+// (roadmap T3.3 K3 — moved out of GET /api/housing/export so the landlord export
+// and the year-end tax package share one definition):
+//   { year, payee, total (the raw sum), payments: [{ id, payee, paid_date, amount,
+//     memo, covers: [{ label, period }] }] }
+// payee = the configured payee name, else the first payment's, else "Payee" (a
+// config read failing falls back the same way, as the export always did).
+async function getHousingPayments(year, db = pool) {
+  const cfg = await getConfig(db).catch(() => ({ payee_name: "" }));
+  const pays = await db.query(
+    `SELECT pp.id, pp.payee, pp.paid_date::text AS paid_date, pp.amount, pp.memo,
+            COALESCE(json_agg(json_build_object('label', o.label, 'period', o.period)
+                     ORDER BY o.period) FILTER (WHERE o.id IS NOT NULL), '[]') AS covers
+     FROM payee_payments pp
+     LEFT JOIN payee_obligations o ON o.paid_payment_id = pp.id
+     WHERE EXTRACT(YEAR FROM pp.paid_date) = $1
+     GROUP BY pp.id
+     ORDER BY pp.paid_date`,
+    [year]
+  );
+  const rows = pays.rows;
+  return {
+    year,
+    payee: cfg.payee_name || (rows[0] && rows[0].payee) || "Payee",
+    total: rows.reduce((s, p) => s + parseFloat(p.amount || 0), 0),
+    payments: rows,
+  };
+}
+
+function housingCoversText(p) {
+  return (p.covers || []).map((c) => periodLabel(c.period) + " " + c.label).join("; ");
+}
+
+// The landlord export's CSV (also the tax package's rent_paid.csv).
+// SXE-13: formula-guarded text fields; ISO date whatever the driver returns.
+function housingPaymentsCsv({ year, total, payments }) {
+  const { csvText: q, csvDate } = require("../services/csv-export");
+  let csv = "Date,Amount,Memo,Covers,Payee\n";
+  for (const p of payments) {
+    csv += [csvDate(p.paid_date), parseFloat(p.amount).toFixed(2), q(p.memo || ""), q(housingCoversText(p)), q(p.payee)].join(",") + "\n";
+  }
+  csv += `,${total.toFixed(2)},${q("Total " + year)},,\n`;
+  return csv;
+}
+
 // GET /api/housing/export?year=YYYY&format=csv|pdf|json — a landlord-ready record
 // of payments to the payee for a year, with memos + covered months. Mirrors the
 // tax-report exporter (pdfkit for PDF).
@@ -552,22 +597,11 @@ router.get("/api/housing/export", async (req, res) => {
   const year = parseInt(req.query.year, 10) || parseInt(todayStr().slice(0, 4), 10);
   const format = String(req.query.format || "csv").toLowerCase();
   try {
-    const cfg = await getConfig().catch(() => ({ payee_name: "" }));
-    const pays = await pool.query(
-      `SELECT pp.id, pp.payee, pp.paid_date::text AS paid_date, pp.amount, pp.memo,
-              COALESCE(json_agg(json_build_object('label', o.label, 'period', o.period)
-                       ORDER BY o.period) FILTER (WHERE o.id IS NOT NULL), '[]') AS covers
-       FROM payee_payments pp
-       LEFT JOIN payee_obligations o ON o.paid_payment_id = pp.id
-       WHERE EXTRACT(YEAR FROM pp.paid_date) = $1
-       GROUP BY pp.id
-       ORDER BY pp.paid_date`,
-      [year]
-    );
-    const rows = pays.rows;
-    const total = rows.reduce((s, p) => s + parseFloat(p.amount || 0), 0);
-    const payeeName = cfg.payee_name || (rows[0] && rows[0].payee) || "Payee";
-    const coversText = (p) => (p.covers || []).map((c) => periodLabel(c.period) + " " + c.label).join("; ");
+    const data = await getHousingPayments(year);
+    const rows = data.payments;
+    const total = data.total;
+    const payeeName = data.payee;
+    const coversText = housingCoversText;
 
     if (format === "json") {
       return res.json({ year, payee: payeeName, total: Math.round(total * 100) / 100, payments: rows });
@@ -602,13 +636,7 @@ router.get("/api/housing/export", async (req, res) => {
       }
     }
     // CSV (default)
-    // SXE-13: formula-guarded text fields; ISO date whatever the driver returns.
-    const { csvText: q, csvDate } = require("../services/csv-export");
-    let csv = "Date,Amount,Memo,Covers,Payee\n";
-    for (const p of rows) {
-      csv += [csvDate(p.paid_date), parseFloat(p.amount).toFixed(2), q(p.memo || ""), q(coversText(p)), q(p.payee)].join(",") + "\n";
-    }
-    csv += `,${total.toFixed(2)},${q("Total " + year)},,\n`;
+    const csv = housingPaymentsCsv(data);
     res.setHeader("Content-Type", "text/csv");
     res.setHeader("Content-Disposition", `attachment; filename=rent_utilities_${year}.csv`);
     res.send(csv);
@@ -987,6 +1015,8 @@ module.exports.getConfig = getConfig;
 module.exports.generationMonths = generationMonths;
 module.exports.planConfigUpdate = planConfigUpdate;
 module.exports.deriveMemo = deriveMemo;
+module.exports.getHousingPayments = getHousingPayments;
+module.exports.housingPaymentsCsv = housingPaymentsCsv;
 module.exports.normalizeConfig = normalizeConfig;
 module.exports.periodLabel = periodLabel;
 module.exports.computeSplit = computeSplit;

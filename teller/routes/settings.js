@@ -848,45 +848,16 @@ router.get("/api/export", async (req, res) => {
 
 // GET /api/export/tax-report — Year-end tax deduction summary
 router.get("/api/export/tax-report", async (req, res) => {
-  const { todayStr, getTaxDeductionTransactions } = require("../services/financial-queries");
+  const { todayStr, getTaxDeductionReport } = require("../services/financial-queries");
   const year = parseInt(req.query.year) || parseInt(todayStr().slice(0, 4), 10);
   const format = req.query.format || "csv";
   try {
     // SXE-7: computed at EXPORT time from the transactions ledger — one row
     // per matching transaction (with its date), no LIMIT, the whole calendar
-    // year. The tax_deductions table (written by insights runs) is only the
-    // ANNOTATION layer here: a merchant's confirm flag / notes / category
-    // apply to that merchant's rows. (The export used to list those per-
-    // merchant snapshot rows directly: frozen at the last insights run, top
-    // 15 merchants only, double-counted renames, blank Date column.)
-    const [txns, notes] = await Promise.all([
-      getTaxDeductionTransactions(pool, year),
-      pool.query(
-        `SELECT merchant, category, is_confirmed, notes
-         FROM tax_deductions WHERE tax_year = $1 AND transaction_id IS NULL`,
-        [year]
-      ).catch(() => ({ rows: [] })),
-    ]);
-    const noteByMerchant = new Map();
-    for (const n of notes.rows) if (n.merchant) noteByMerchant.set(String(n.merchant).toLowerCase(), n);
-    const deductions = {
-      rows: txns.map(t => {
-        const n = noteByMerchant.get(String(t.merchant || "").toLowerCase());
-        const userCat = n && n.category && !["flagged", "uncategorized"].includes(n.category) ? n.category : null;
-        const d = t.date ? String(t.date).slice(0, 10) : ""; // 'YYYY-MM-DD' text from SQL
-        return {
-          tax_year: year,
-          txn_date: d,
-          transaction_id: t.transaction_id,
-          merchant: t.merchant,
-          amount: parseFloat(t.amount).toFixed(2),
-          category: userCat || t.category,
-          deduction_type: "keyword_match",
-          notes: n ? n.notes : null,
-          is_confirmed: !!(n && n.is_confirmed),
-        };
-      }).sort((a, b) => (a.category < b.category ? -1 : a.category > b.category ? 1 : (a.txn_date < b.txn_date ? -1 : a.txn_date > b.txn_date ? 1 : 0))),
-    };
+    // year, annotated by the tax_deductions merchant notes. One definition,
+    // getTaxDeductionReport, shared with the year-end tax package (roadmap
+    // T3.3 K3).
+    const deductions = { rows: await getTaxDeductionReport(pool, year) };
 
     if (format === "json") {
       // Group by category
@@ -958,29 +929,11 @@ router.get("/api/export/tax-report", async (req, res) => {
       }
     }
 
-    // CSV format
-    const header = "Tax Year,Date,Merchant,Amount,Category,Type,Notes,Confirmed\n";
-    const rows = deductions.rows.map(d =>
-      `${d.tax_year},${csvDate(d.txn_date)},` +
-      `${csvText(d.merchant)},` +
-      `${d.amount},${csvText(d.category)},${csvText(d.deduction_type)},` +
-      `${csvText(d.notes)},${d.is_confirmed}`
-    ).join("\n");
-
-    // Add summary section
-    const byCategory = {};
-    for (const d of deductions.rows) {
-      if (!byCategory[d.category]) byCategory[d.category] = 0;
-      byCategory[d.category] += parseFloat(d.amount);
-    }
-    const grandTotal = deductions.rows.reduce((s, d) => s + parseFloat(d.amount), 0);
-    const summary = "\n\nSUMMARY BY CATEGORY\nCategory,Total\n" +
-      Object.entries(byCategory).map(([cat, total]) => `${csvText(cat)},${total.toFixed(2)}`).join("\n") +
-      `\n\nGRAND TOTAL,${grandTotal.toFixed(2)}`;
-
+    // CSV format — the same builder the tax package's deductions.csv uses.
+    const { taxReportCsv } = require("../services/tax-package");
     res.setHeader("Content-Type", "text/csv");
     res.setHeader("Content-Disposition", `attachment; filename=tax_deductions_${year}.csv`);
-    res.send(header + rows + summary);
+    res.send(taxReportCsv(deductions.rows));
   } catch (err) {
     console.error("tax report error:", err.message);
     res.status(500).json({ error: "An internal error occurred." });
