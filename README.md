@@ -70,9 +70,12 @@ Under the unified shell the cross-app integration endpoints (Per-sistant's Perfi
 | `teller/routes/investments.js` | Plaid investment accounts (holdings, sync) |
 | `teller/routes/housing.js` | Rent & Utilities ledger (obligations, payments, OCR, landlord export, partner split) |
 | `teller/routes/notifications.js` | Web Push notifications (VAPID) |
+| `teller/routes/tax.js` | Year-end tax package: documents checklist + package download (JSON / PDF / ZIP / section CSV) |
+| `teller/services/tax-*.js`, `zip-store.js` | Tax figures (FIFO gains, investment income), forms checklist, the package + its PDF / ZIP |
 | `teller/pages/*.js` | HTML page generators (dashboard, subscriptions, etc.) |
 | `teller/public/transactions.js` | Transactions page client (Edit modal w/ "remember merchant") |
 | `teller/public/settings-rules.js` | Categorization rules panel (collapsible) on Settings |
+| `teller/public/tax-page.js` | The Tax page client (section cards, downloads, forms checklist) |
 | `teller/public/perfin-shared.js` | Shared client utilities (esc, apiFetch, withBase, ...) |
 | `teller/public/perfin-shared.css` | Shared styles (variables, nav, cards, animations) |
 | `teller/public/sw.js` | Perfin Service Worker (network-first, offline fallback served with a `<base>` for the mount) |
