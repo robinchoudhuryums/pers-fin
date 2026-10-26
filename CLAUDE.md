@@ -3217,8 +3217,8 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   one line and the next step as a button: Upcoming Bills ("+ Add bill" — the Quick
   Add button), AI Insights ("Generate in Settings" → `/settings#ai-insights`),
   Goals / Budgets ("+ Add goal" / "+ Add budget" — the form toggle), Subscriptions
-  ("Run detection"); the Monthly Spend / Avg Daily cards say "After 1 month" until a
-  whole month is synced.
+  ("Run detection"); the Monthly Spend / Avg Daily cards read "Not yet" ("after your
+  first full month") until a whole month is synced.
 - **Page width (design pass D1)**: `.container` — which holds the top nav — is one
   width on every page (1060px); a page narrows its CONTENT with `#main-content {
   max-width: … }` in its `extraStyles` (default 960px; Accounts 640, Budgets / Goals

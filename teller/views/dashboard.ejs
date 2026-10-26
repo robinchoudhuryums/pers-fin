@@ -43,7 +43,7 @@
     .pyramid-switcher button {
       background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
       color: var(--text-muted); font-size: 10px; padding: 8px 12px; cursor: pointer;
-      text-transform: uppercase; letter-spacing: 0.8px; font-weight: 500;
+      letter-spacing: 0.3px; font-weight: 500;
       transition: all 0.2s; white-space: nowrap; text-align: left;
     }
     .pyramid-switcher button:hover { border-color: var(--border-hover); color: var(--text); }
@@ -1178,9 +1178,9 @@
             animateCurrency(document.getElementById('avg-daily'), data.avg_daily_spend || 0);
           } else {
             // Design D2: say what's missing instead of a bare "--".
-            document.getElementById('avg-monthly').textContent = 'After 1 month';
-            document.getElementById('avg-monthly-sub').textContent = 'shown once a whole month is synced';
-            document.getElementById('avg-daily').textContent = 'After 1 month';
+            document.getElementById('avg-monthly').textContent = 'Not yet';
+            document.getElementById('avg-monthly-sub').textContent = 'after your first full month';
+            document.getElementById('avg-daily').textContent = 'Not yet';
           }
         } else {
           monthBody.innerHTML = '<tr><td colspan="4" class="empty-msg">No spending data yet.</td></tr>';

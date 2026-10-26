@@ -100,10 +100,11 @@ describe("each listed empty state offers its next step", () => {
     assert.doesNotMatch(dash, /generate from Settings\.'/);
     assert.match(read("teller", "views", "settings.ejs"), /<div class="section" id="ai-insights"><h2>AI Insights<\/h2>/);
   });
-  it("Monthly Spend says when it appears instead of a bare --", () => {
+  it("Monthly Spend / Avg Daily say when they appear instead of a bare --", () => {
     const branch = slice(dash, "if (data.avg_months > 0) {", "} else {\n          monthBody");
-    assert.match(branch, /getElementById\('avg-monthly'\)\.textContent = 'After 1 month';/);
-    assert.match(branch, /getElementById\('avg-daily'\)\.textContent = 'After 1 month';/);
+    assert.match(branch, /getElementById\('avg-monthly'\)\.textContent = 'Not yet';/);
+    assert.match(branch, /getElementById\('avg-monthly-sub'\)\.textContent = 'after your first full month';/);
+    assert.match(branch, /getElementById\('avg-daily'\)\.textContent = 'Not yet';/);
     assert.doesNotMatch(branch, /no complete month yet/);
   });
   it("Goals, Budgets and Subscriptions press their existing add / detect buttons", () => {
@@ -132,6 +133,8 @@ describe("buttons: sentence case, filled primary", () => {
     }
     const acc = read("teller", "views", "accounts.ejs");
     assert.doesNotMatch(slice(acc, "    button { padding", "button:hover"), /uppercase/);
+    const dash = read("teller", "views", "dashboard.ejs");
+    assert.doesNotMatch(slice(dash, ".pyramid-switcher button {", "}"), /uppercase/, "the pyramid mode buttons");
     assert.doesNotMatch(slice(acc, ".btn-unlink {", ".btn-unlink:hover"), /uppercase/);
   });
   it("a primary button is filled gold with dark ink, in both themes", () => {

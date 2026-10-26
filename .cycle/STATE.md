@@ -18,7 +18,20 @@ Updated: 2026-10-26
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Design & UX pass — D1 DONE** (2026-10-26, branch `claude/sweet-ritchie-f9d8ah`,
+- **Status:** **Design & UX pass — D2 DONE** (2026-10-26, branch `claude/sweet-ritchie-f9d8ah`,
+  PR robinchoudhuryums/pers-fin#133). Plan: `.cycle/plan-design-ux.md`. Block:
+  `.cycle/blocks/7-design-d2-broad-implement.md`.
+  - **Shipped:**
+    - Perfin buttons in sentence case (no uppercase transform, Title Case labels rewritten); `.primary` filled gold with `--on-warm` ink;
+    - money colours: charges / balances / debts plain, money in `.amt-in` green, `.amt-bad` red only when something's wrong (overdue rent item, projected < $0, overdrawn cash, negative net); Activity credits "+$X"; neutral Calendar bill chips;
+    - `emptyState()` on Upcoming Bills, AI Insights, Goals, Budgets and Subscriptions (actions click the page's existing buttons); Monthly Spend / Avg Daily read "Not yet".
+  - **Verified:**
+    - npm test 2413/2413 (20 new);
+    - Playwright 68/68 (+ the dashboard tests re-run after the last CSS / text edits);
+    - mutation checks 18/18;
+    - before / after screenshots.
+  - **Where I left off:** D2 committed and pushed. Next: `/broad-implement D3`.
+- **Previous status (D1):** **Design & UX pass — D1 DONE** (2026-10-26, branch `claude/sweet-ritchie-f9d8ah`,
   PR robinchoudhuryums/pers-fin#133). Plan: `.cycle/plan-design-ux.md`. Block:
   `.cycle/blocks/7-design-d1-broad-implement.md`.
   - **Shipped:**
@@ -32,7 +45,7 @@ implement and reflect sessions only set Phase.)
     - contract 249/249;
     - Playwright 68/68 (2 new);
     - mutation checks 19/19 + 1 e2e.
-  - **Where I left off:** D1 committed and pushed. Next: `/broad-implement D2` (Perfin buttons, money colours, empty states).
+  - **Where I left off:** D1 committed and pushed.
 - **Previous status (T3.3 K4):** **Roadmap T3.3 (year-end tax package) — K4 DONE; T3.3 COMPLETE** (2026-10-26, branch
   `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Block:
   `.cycle/blocks/7-roadmap-t3-3-k4-broad-implement.md`.
