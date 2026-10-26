@@ -18,7 +18,23 @@ Updated: 2026-10-26
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T3.3 (year-end tax package) — K3 DONE** (2026-10-26, branch
+- **Status:** **Roadmap T3.3 (year-end tax package) — K4 DONE; T3.3 COMPLETE** (2026-10-26, branch
+  `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Block:
+  `.cycle/blocks/7-roadmap-t3-3-k4-broad-implement.md`.
+  - **Shipped:**
+    - the Tax page `/tax` (pages/tax.js, views/tax.ejs, public/tax-page.js) — the overview card and a card per section with its totals and a CSV link, the PDF / ZIP downloads, and the documents checklist (`#documents`: received / dismiss / notes / add / suggest; Delete only on a hand-added row, data-e2e-skip);
+    - `taxSeason` in perfin-shared.js (last year January–April, else this year) for the page default and the dashboard's January–April link;
+    - the Settings → Data & Exports link;
+    - `GET /api/tax/package?format=csv&section=` (one section's CSV, the ZIP's file);
+    - INV-146 and the T3.3 close-out docs.
+  - **Decision taken in-batch:** the page script is an external file (public/tax-page.js, the settings-rules.js precedent) so a vm test runs it whole. The per-card CSV link needed the csv&section format on the package route. Notes are edited inline (no dialog).
+  - **Verified:**
+    - npm test 2370/2370 (17 new);
+    - contract 249/249;
+    - Playwright 66/66 (3 new);
+    - mutation checks 15/15.
+  - **Where I left off:** K4 committed and pushed. Roadmap T3.3 is complete. Next: whatever the roadmap names next (`/roadmap`), or `/reflect`.
+- **Previous status (T3.3 K3):** **Roadmap T3.3 (year-end tax package) — K3 DONE** (2026-10-26, branch
   `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Block:
   `.cycle/blocks/7-roadmap-t3-3-k3-broad-implement.md`.
   - **Shipped:**
@@ -33,7 +49,7 @@ implement and reflect sessions only set Phase.)
     - mutation checks 28/28 (3 first-run survivors caught after adding tests);
     - no migration or page change, so no migration test or Playwright run.
   - **Where I left off:** K3 committed and pushed. Next: `/broad-implement K4` (the /tax page, Settings + January–April dashboard links, the Playwright check, INV-146, T3.3 close-out docs).
-- **Previous status (T3.3 K2):** **Roadmap T3.3 (year-end tax package) — K2 DONE** (2026-10-26, branch
+- **Earlier status (T3.3 K2):** **Roadmap T3.3 (year-end tax package) — K2 DONE** (2026-10-26, branch
   `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Block:
   `.cycle/blocks/7-roadmap-t3-3-k2-broad-implement.md`.
   - **Shipped:**
