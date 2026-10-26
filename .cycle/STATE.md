@@ -12,13 +12,28 @@ to the "none in progress" state.
 Cycle: 7
 Phase: implement
 Scope: broad (Oct 2026 broad scan — all non-frozen subsystems + cycle-6 policy responses)
-Updated: 2026-10-23
+Updated: 2026-10-26
 
 (Machine-read fields for the v1.43.0 commands: the next /broad-scan,
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T2.5 (transaction undelete + iOS re-authenticate) — U1 DONE** (2026-10-23,
+- **Status:** **Roadmap T2.5 (transaction undelete + iOS re-authenticate) — U2 DONE** (2026-10-26,
+  branch `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
+  `.cycle/plan-t2-5-undelete-ios-reauth.md`. Block: `.cycle/blocks/7-roadmap-t2-5-u2-broad-implement.md`.
+  - **Completed:** Settings → Sync Health → Deleted transactions (collapsible, 50 a page, Show more,
+    labelled Restore; a pre-U1 row by id, a pre-U1 manual entry not restorable); Undo on the Activity
+    page's delete toast (showMsg's new optional action button); restoreTransaction /
+    restoreMessage shared in perfin-shared.js; the e2e seed deletes one row through the route.
+  - **Also fixed (test-only):** the e2e seed's merchant lookup (`merchant`, not `merchant_name` — the
+    GROCER split had never run); cash-flow-l1's fixture assumed a 30-day step and failed on today's
+    date (bills step by calendar month, DC-9) — now stable over 8 simulated years.
+  - **Decisions:** Undo toasts last 10 s and never merge; Undo reloads the lists only after a
+    successful restore; the Activity delete buttons stay data-e2e-skip.
+  - **Tests:** npm 2271/2271 (19 new), contract 236/236, Playwright 63/63 (2 new); 12 mutations red.
+  - **Where I left off:** U2 committed. NEXT: `/broad-implement H1` (hosted Plaid update mode for
+    iOS / standalone / Capacitor + INV-145 + the T2.5 close-out).
+- **Previous status (T2.5 U1):** **Roadmap T2.5 (transaction undelete + iOS re-authenticate) — U1 DONE** (2026-10-23,
   branch `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-5-undelete-ios-reauth.md`. Block: `.cycle/blocks/7-roadmap-t2-5-u1-broad-implement.md`.
   - **Completed:** the delete keeps the row + splits (snapshot) and its source; GET
@@ -31,7 +46,7 @@ implement and reflect sessions only set Phase.)
     13 mutations red.
   - **Where I left off:** U1 committed. NEXT: `/broad-implement U2` (Settings list + Activity Undo),
     then H1.
-- **Previous status (T2.5 plan):** **Roadmap T2.5 (transaction undelete + iOS re-authenticate) — PLANNED, split into 3
+- **Earlier status (T2.5 plan):** **Roadmap T2.5 (transaction undelete + iOS re-authenticate) — PLANNED, split into 3
   batches** (2026-10-23, branch `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133).
   Plan: `.cycle/plan-t2-5-undelete-ios-reauth.md`.
   - **Batches:**

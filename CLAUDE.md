@@ -913,9 +913,18 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2252 tests as of latest); use
+  Perfin and Per-sistant test files (2271 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2252 tests across 118 test files (incl.
+  Current count: 2271 tests across 119 test files (incl.
+  `tests/roadmap-t2-5-u2.test.js` — roadmap T2.5 U2: restoreTransaction / restoreMessage run in a vm
+  from perfin-shared.js (the POST, each outcome's message, a refusal through writeOk, a network
+  failure), showMsg's action button over a small fake DOM (labelled, 10 s, closes the toast and runs
+  once without the toast's own click, never merged; plain toasts unchanged), the Settings → Sync Health
+  → Deleted transactions section in a vm (snapshot / legacy / unrestorable rows, escaping and labels, a
+  credit as -$X, Show more's cursor, Restore dropping the row and a refusal keeping it, a failed load
+  and a failed Show more) and the Activity delete's Undo (restore then reload only on success, a
+  refused delete without Undo, the delete buttons data-e2e-skip) — the browser half is
+  `e2e/pages.spec.js` (a seeded deletion restored from Settings, the toast's Undo);
   `tests/roadmap-t2-5-u1.test.js` — roadmap T2.5 U1: the DELETE snapshotting the row + splits and
   its source under FOR UPDATE before the tombstone (404 writes nothing), restoreDeleted over a fake
   client (only current non-id columns, the splits, the tombstone lifted, an already-present row not
@@ -1701,7 +1710,7 @@ shell/
   fake @anthropic-ai/sdk: /api/ask + runCategorize charge their usage rows,
   429 once the cap is hit, ask charges accumulated tokens AND still charges
   on a mid-loop failure — F1).
-- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink — empty since roadmap T1.5 Batch C fixed the Review page's review-summary 500), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). Since cycle-7 Batch 20 (G2) the run is SEEDED (`e2e/seed.js`, in the spec's beforeAll — through the apps' own routes: housing config + generated obligations, a manual account + manual expense, a generic CSV with a refund row and a split, a rollover budget, a goal, a subscription, a credit score; Per-sistant notes in each privacy tier, a habit with logs, a todo with subtasks; one Job Radar listing and one linked task inserted directly, since no route creates either), a `console.error` fails a page (the browser's "Failed to load resource" line is left to the response check), and a CLICK SWEEP per page presses every visible, enabled `button / [role=button|checkbox|tab] / summary` counted on load (≤80) that isn't `data-e2e-skip` or labelled destructive (delete / remove / unlink / send / empty / sign out / log out / reset / purge / disconnect / archive / trash / revoke / cancel subscription / mark settled), dismissing dialogs and returning to the page between presses; a failure names the control pressed, and `SWEEP_KNOWN_GAPS` must only shrink. Mark a new destructive, off-app (an external SDK) or device-permission control (microphone) `data-e2e-skip`. 61 tests (23 of them sweeps, ~225 controls pressed — plus the linked-task chip on the To-Dos page and in its edit modal, T2.4 X1b, and the unified search: Perfin's nav link to /per-sistant/search, a seeded Perfin transaction found there and its link opening Activity filtered, T2.4 X3b). The `migrations` job ALSO runs the route contract suite (`npm run test:contract`, step "Route contract tests against real Postgres", `CONTRACT_DATABASE_URL` = the same service container; the Postgres user must be able to CREATE/DROP DATABASE).
+- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink — empty since roadmap T1.5 Batch C fixed the Review page's review-summary 500), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). Since cycle-7 Batch 20 (G2) the run is SEEDED (`e2e/seed.js`, in the spec's beforeAll — through the apps' own routes: housing config + generated obligations, a manual account + manual expense, a generic CSV with a refund row and a split, a rollover budget, a goal, a subscription, a credit score, one transaction deleted through the route; Per-sistant notes in each privacy tier, a habit with logs, a todo with subtasks; one Job Radar listing and one linked task inserted directly, since no route creates either), a `console.error` fails a page (the browser's "Failed to load resource" line is left to the response check), and a CLICK SWEEP per page presses every visible, enabled `button / [role=button|checkbox|tab] / summary` counted on load (≤80) that isn't `data-e2e-skip` or labelled destructive (delete / remove / unlink / send / empty / sign out / log out / reset / purge / disconnect / archive / trash / revoke / cancel subscription / mark settled), dismissing dialogs and returning to the page between presses; a failure names the control pressed, and `SWEEP_KNOWN_GAPS` must only shrink. Mark a new destructive, off-app (an external SDK) or device-permission control (microphone) `data-e2e-skip`. 63 tests (23 of them sweeps, ~225 controls pressed — plus the linked-task chip on the To-Dos page and in its edit modal, T2.4 X1b, the unified search: Perfin's nav link to /per-sistant/search, a seeded Perfin transaction found there and its link opening Activity filtered, T2.4 X3b, and undelete: the seeded deletion listed in Settings → Sync Health → Deleted transactions and brought back by Restore, and a toast's Undo button, T2.5 U2). The `migrations` job ALSO runs the route contract suite (`npm run test:contract`, step "Route contract tests against real Postgres", `CONTRACT_DATABASE_URL` = the same service container; the Postgres user must be able to CREATE/DROP DATABASE).
 - `.claude/commands/` — Project slash-command prompts, generated from the
   claude-workflow-tools templates (synced to v1.43.0 via `/sync-commands`):
   the cycle commands (`/broad-scan`, `/broad-implement`, `/targeted-audit`,
@@ -1878,7 +1887,13 @@ shell/
   Restore lifts it and says how the row returns (`returns_on`: reconcile / csv_reimport), and
   a manual entry deleted before U1 can't be restored. CSV imports honour the tombstone too
   (preview, import and CLI — `rows_deleted`), so re-importing a file no longer brings back a
-  row you deleted. **CSV-overlap (F21)** pairs a CSV row with a synced row one-to-one, only
+  row you deleted. **The undelete UI (T2.5 U2):** Settings → Sync Health → **Deleted
+  transactions** (collapsible, `#deleted-transactions`) lists them newest first, 50 at a time
+  with Show more — date, merchant, amount, account and split count from the snapshot, or the id
+  alone for a row deleted before U1 — each with a labelled Restore button (none for a pre-U1
+  manual entry); the Activity page's delete toast offers **Undo**. Both go through
+  `restoreTransaction` (perfin-shared.js), which toasts the outcome — for a pre-U1 row, how it
+  returns ("Reconcile Now" / "import its CSV file again"). **CSV-overlap (F21)** pairs a CSV row with a synced row one-to-one, only
   when the merchants look alike (a shared word of 3+ letters, or a ≥4-letter prefix, noise words
   ignored; the synced row's raw description is tried too), closest date first — amount + date
   alone matched two different $4.50 coffees and let one synced row claim every same-amount CSV
@@ -2835,7 +2850,10 @@ shell/
 - **Status messages (toast stack)**: `showMsg(text, ok)` pushes onto a
   `#toast-stack` container (auto-created on first call) instead of
   overwriting a single per-page element. Stack caps at 5 visible toasts;
-  identical consecutive messages dedupe (timer bump, no pile-up). The cap
+  identical consecutive messages dedupe (timer bump, no pile-up). An optional
+  third argument `{ action: { label, run } }` adds a button (`.toast-action` —
+  the Activity page's "Undo", T2.5 U2): pressing it closes the toast and calls
+  `run`; such a toast stays 10 s and is never merged with an earlier one. The cap
   counts only toasts that aren't already leaving and removes the excess
   immediately (F89 — counting leaving toasts made the sixth message loop
   forever and freeze the tab). Each
@@ -3457,7 +3475,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2252 tests passing across 118 test files (Perfin 1594 + Per-sistant 658), plus the real-Postgres route contract suite (236 tests; CI `migrations` job, `npm run test:contract`) and 61 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2271 tests passing across 119 test files (Perfin 1613 + Per-sistant 658), plus the real-Postgres route contract suite (236 tests; CI `migrations` job, `npm run test:contract`) and 63 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -3628,12 +3646,14 @@ GET  /api/deleted-transactions # deleted transactions, newest first (query: limi
                             # default 50, before = the previous page's `next`) →
                             # { items: [{ transaction_id, deleted_at, source, legacy,
                             # restorable, date, merchant, amount, account_name,
-                            # splits_count }], next } (roadmap T2.5 U1)
+                            # splits_count }], next } (roadmap T2.5 U1; Settings →
+                            # Sync Health → Deleted transactions, U2)
 POST /api/deleted-transactions/:id/restore # put it back from its snapshot and lift the
                             # tombstone, one transaction → { restored: true,
                             # already_present, splits }; 404 unknown; 409 when its account
                             # is gone; a pre-U1 tombstone → { restored: false, cleared,
-                            # returns_on: reconcile | csv_reimport } (a manual one 409s)
+                            # returns_on: reconcile | csv_reimport } (a manual one 409s);
+                            # the Settings Restore button and the Activity toast's Undo (U2)
 GET  /api/transactions/:id/splits # list splits for a transaction (Phase B3)
 POST /api/transactions/:id/splits # replace splits, validates sum matches parent ±$0.01
 DELETE /api/transactions/:id/splits # clear all splits, revert to parent-row aggregation
@@ -5593,7 +5613,8 @@ SX3-pinned — the Sheets Income tab.
   on first call) rather than overwriting one shared `#status-msg` div.
   Stack caps at 5 visible toasts; identical consecutive messages dedupe
   (timer bump, no pile-up). Tap to dismiss; auto-dismiss after 5 s
-  success / 10 s error. Desktop anchors top-right; mobile (≤640px)
+  success / 10 s error (10 s for a toast with an action button — the
+  optional `{ action: { label, run } }`, e.g. Undo, T2.5 U2). Desktop anchors top-right; mobile (≤640px)
   flips to bottom-right with `column-reverse` + slide-up so toasts are
   thumb-reachable and don't fight the iOS Dynamic Island. Per-page
   `.status-msg` divs are now `display: none !important` — kept in
@@ -5821,8 +5842,11 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   (`.cycle/plan-t2-5-undelete-ios-reauth.md`, U1 / U2 / H1). U1 shipped the server side of
   undelete — the delete's snapshot, `GET /api/deleted-transactions`, `POST
   /api/deleted-transactions/:id/restore` — and CSV imports that skip a deleted row (the Batch 6
-  follow-ons). There is no page for it until U2 (Settings list + the Activity page's Undo).
-  U1 follow-ons: a tombstone written before U1 shows only its id; Restore never starts a
+  follow-ons); U2 the UI (Settings → Sync Health → Deleted transactions with Restore, and Undo
+  on the Activity page's delete toast). H1 (hosted Plaid update mode) is next. U2 follow-ons:
+  the only delete in the UI is the Activity page's duplicate finder, so Undo lives there; the
+  deleted list has no search or filter (newest first, 50 a page); an Undo toast lasts 10 s and
+  a missed one leaves the Settings list as the way back. U1 follow-ons: a tombstone written before U1 shows only its id; Restore never starts a
   reconcile itself (a pre-U1 Teller / Plaid row needs Reconcile Now); snapshots are kept until
   a reset (no "delete forever").
 - The dashboard Review widget doesn't show `rule_error` (a too-short "Remember"

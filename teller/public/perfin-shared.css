@@ -273,6 +273,11 @@ select option { background: var(--surface-solid); color: var(--text); }
 .toast.success { background-image: linear-gradient(var(--green-bg), var(--green-bg)); border: 1px solid rgba(111,207,151,0.45); color: var(--green); }
 .toast.error   { background-image: linear-gradient(var(--red-bg), var(--red-bg));   border: 1px solid rgba(235,107,107,0.45); color: var(--red); }
 .toast-leaving { animation: toastOut 0.2s ease both; }
+/* A toast with an action (Undo — roadmap T2.5 U2): text, then the button. */
+.toast-action { margin-left: 12px; padding: 4px 12px;
+                border-radius: 6px; border: 1px solid currentColor;
+                background: transparent; color: inherit; font: inherit;
+                font-weight: 600; cursor: pointer; }
 @keyframes toastIn  { from { transform: translateY(var(--tdir)); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 @keyframes toastOut { to { transform: translateY(var(--tdir)); opacity: 0; } }
 

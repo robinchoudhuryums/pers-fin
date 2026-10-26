@@ -51,7 +51,8 @@ async function seedPerfin(req) {
     `${ymd(-20)},GROCER MARKET,84.20\n` +
     `${ymd(-12)},HARDWARE STORE,46.00\n` +
     `${ymd(-10)},HARDWARE STORE RETURN,-16.00\n` +
-    `${ymd(-5)},STREAMFLIX,15.49\n`;
+    `${ymd(-5)},STREAMFLIX,15.49\n` +
+    `${ymd(-4)},E2E DELETED SHOP,9.99\n`;
   await call(req, "post", "/perfin/api/import-csv", {
     multipart: {
       file: { name: "e2e.csv", mimeType: "text/csv", buffer: Buffer.from(csv) },
@@ -61,15 +62,22 @@ async function seedPerfin(req) {
   });
   const txns = await call(req, "get", "/perfin/api/transactions?months=3&limit=50", {});
   const list = Array.isArray(txns) ? txns : txns.transactions || [];
-  const grocer = list.find((t) => /GROCER/i.test(t.merchant_name || t.name || ""));
-  if (grocer) {
-    await call(req, "post", `/perfin/api/transactions/${encodeURIComponent(grocer.transaction_id || grocer.id)}/splits`, {
-      data: { splits: [
-        { amount: 60.2, category: "Groceries", notes: "food" },
-        { amount: 24, category: "Home", notes: "cleaning" },
-      ] },
-    });
-  }
+  // GET /api/transactions names the display merchant `merchant`.
+  const merchantOf = (t) => t.merchant || t.merchant_name || t.name || "";
+  const grocer = list.find((t) => /GROCER/i.test(merchantOf(t)));
+  if (!grocer) throw new Error("seed: the GROCER row to split was not imported");
+  await call(req, "post", `/perfin/api/transactions/${encodeURIComponent(grocer.transaction_id || grocer.id)}/splits`, {
+    data: { splits: [
+      { amount: 60.2, category: "Groceries", notes: "food" },
+      { amount: 24, category: "Home", notes: "cleaning" },
+    ] },
+  });
+
+  // One deleted transaction (roadmap T2.5): Settings → Sync Health lists it
+  // under "Deleted transactions" with a Restore button.
+  const deleted = list.find((t) => /E2E DELETED SHOP/i.test(merchantOf(t)));
+  if (!deleted) throw new Error("seed: the CSV row to delete was not imported");
+  await call(req, "delete", `/perfin/api/transactions/${encodeURIComponent(deleted.transaction_id || deleted.id)}`, {});
 
   await call(req, "post", "/perfin/api/budgets", { data: { category: "Groceries", monthly_limit: 300, rollover_enabled: true } });
   await call(req, "post", "/perfin/api/goals", { data: { name: "Emergency fund", type: "savings", target_amount: 5000, current_amount: 750, monthly_contribution: 200 } });

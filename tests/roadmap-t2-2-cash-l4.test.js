@@ -207,7 +207,7 @@ describe("Settings UI — floors + last evaluation", () => {
   it("the section has the floor list and the last-check line", () => {
     assert.match(src, /<div id="cash-floor-list" class="desc"[^>]*>Loading…<\/div>/);
     assert.match(src, /<p class="desc" id="cash-alert-last" hidden><\/p>/);
-    assert.match(src, /loadRecentErrors\(\); loadCashFloors\(\);/);
+    assert.match(src, /loadRecentErrors\(\);[^\n]*loadCashFloors\(\);/);
     assert.match(src, /renderCashAlertLast\(s\)/);
   });
 

@@ -217,6 +217,34 @@ test.describe("every page loads cleanly", () => {
     expect(problems, problems.join("\n")).toEqual([]);
   });
 
+  test("a deleted transaction is listed in Settings and Restore brings it back (T2.5 U2)", async ({ page }) => {
+    const problems = watch(page);
+    await page.goto("/perfin/settings");
+    const section = page.locator("#deleted-transactions");
+    await expect(section.locator("#deleted-transactions-count")).toHaveText(/^\(\d+\+?\)$/);
+    await section.locator("summary").click();
+    const row = section.locator("li", { hasText: "E2E DELETED SHOP" });
+    await expect(row).toContainText("$9.99");
+    await row.getByRole("button", { name: /^Restore E2E DELETED SHOP/ }).click();
+    await expect(page.locator("#toast-stack .toast", { hasText: "Transaction restored." })).toBeVisible();
+    await expect(row).toHaveCount(0);
+    await page.goto("/perfin/transactions?q=" + encodeURIComponent("E2E DELETED SHOP"));
+    await expect(page.locator("#txn-body")).toContainText("E2E DELETED SHOP");
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
+  test("a toast's Undo button closes it and runs its action (T2.5 U2)", async ({ page }) => {
+    await page.goto("/perfin/transactions");
+    await page.evaluate(() => {
+      window.__undone = 0;
+      window.showMsg("Transaction deleted.", true, { action: { label: "Undo", run: () => { window.__undone++; } } });
+    });
+    const toast = page.locator("#toast-stack .toast", { hasText: "Transaction deleted." });
+    await toast.getByRole("button", { name: "Undo" }).click();
+    expect(await page.evaluate(() => window.__undone)).toBe(1);
+    await expect(toast).toHaveCount(0);
+  });
+
   test("the nav loads the sync badge settings and the unread count (F90) and the logo (F93)", async ({ page }) => {
     const seen = { settings: false, notifications: false, logo: 0 };
     page.on("response", (res) => {

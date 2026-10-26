@@ -457,6 +457,11 @@
       <div class="setting-info"><div class="name">Recent errors</div><div class="desc">Server errors the app recorded, grouped by kind (both apps). Resolve one to hide it until it happens again. Kept for 90 days.</div></div>
     </div>
     <div id="recent-errors-body" style="font-size:13px;color:var(--text-muted);">Loading…</div>
+    <details id="deleted-transactions" style="margin-top:12px;">
+      <summary class="name">Deleted transactions <span id="deleted-transactions-count"></span></summary>
+      <div class="desc" style="margin:6px 0;">Transactions you deleted stay deleted — a sync, reconcile or CSV re-import never brings them back. Restore one to put it back with its category, notes, rename and splits.</div>
+      <div id="deleted-transactions-body" style="font-size:13px;color:var(--text-muted);">Loading…</div>
+    </details>
   </div>
 
   <div class="section"><h2>Google Sheets Auto-Sync</h2>
@@ -1842,6 +1847,73 @@
         else btn.disabled = false;
       });
     })();
+    // Deleted transactions (roadmap T2.5 U2): GET /api/deleted-transactions,
+    // newest first, 50 at a time ("Show more" follows `next`). Restore goes
+    // through restoreTransaction (perfin-shared.js) — a row deleted before
+    // undelete existed only has its id, and its message says how it returns.
+    var deletedItems = [];
+    var deletedNext = null;
+    function deletedRowHtml(d) {
+      var id = d.transaction_id;
+      var what, label;
+      if (d.legacy) {
+        what = '<span style="font-family:monospace;overflow-wrap:anywhere;">' + esc(id) + '</span> — id only, deleted before undelete existed';
+        label = id;
+      } else {
+        var merchant = d.merchant || 'Unknown merchant';
+        what = (d.date ? esc(fmtDate(d.date)) + ' · ' : '') + '<strong>' + esc(merchant) + '</strong>'
+          + (d.amount != null && isFinite(Number(d.amount)) ? ' · ' + esc(Number(d.amount) < 0 ? '-' + fmt(-Number(d.amount)) : fmt(Number(d.amount))) : '')
+          + (d.account_name ? ' · ' + esc(d.account_name) : '')
+          + (d.splits_count ? ' · ' + esc(String(d.splits_count)) + ' split' + (d.splits_count === 1 ? '' : 's') : '');
+        label = merchant + (d.date ? ' on ' + fmtDate(d.date) : '');
+      }
+      var action = d.restorable === false
+        ? '<span style="margin-left:8px;">A manual entry deleted before undelete existed — it can\'t be restored.</span>'
+        : '<button class="btn" data-restore-deleted="' + esc(id) + '" aria-label="Restore ' + esc(label) + '" style="margin-left:8px;">Restore</button>';
+      return '<li style="margin:8px 0;">' + what
+        + '<div style="font-size:12px;margin-left:16px;">Deleted ' + esc(d.deleted_at ? new Date(d.deleted_at).toLocaleString() : '') + action + '</div></li>';
+    }
+    function renderDeletedTransactions() {
+      var el = document.getElementById('deleted-transactions-body');
+      var count = document.getElementById('deleted-transactions-count');
+      if (count) count.textContent = deletedItems.length ? '(' + deletedItems.length + (deletedNext ? '+' : '') + ')' : '';
+      if (!el) return;
+      if (!deletedItems.length) { el.textContent = 'No deleted transactions.'; return; }
+      el.innerHTML = '<ul style="margin:6px 0;padding-left:0;list-style:none;">' + deletedItems.map(deletedRowHtml).join('') + '</ul>'
+        + (deletedNext ? '<button class="btn" data-deleted-more>Show more</button>' : '');
+    }
+    async function loadDeletedTransactions(more) {
+      var el = document.getElementById('deleted-transactions-body');
+      if (!el) return;
+      var url = '/api/deleted-transactions?limit=50' + (more && deletedNext ? '&before=' + encodeURIComponent(deletedNext) : '');
+      try {
+        var res = await apiFetch(url);
+        if (!(await writeOk(res, 'Deleted transactions'))) { if (!more) el.textContent = 'Unavailable'; return; }
+        var body = await res.json();
+        deletedItems = (more ? deletedItems : []).concat(body.items || []);
+        deletedNext = body.next || null;
+        renderDeletedTransactions();
+      } catch (e) {
+        if (more) showMsg("Couldn't load more deleted transactions — check your connection.", false);
+        else el.textContent = 'Unavailable';
+      }
+    }
+    (function () {
+      var el = document.getElementById('deleted-transactions-body');
+      if (!el) return;
+      el.addEventListener('click', async function (ev) {
+        var more = ev.target.closest('[data-deleted-more]');
+        if (more) { more.disabled = true; await loadDeletedTransactions(true); return; }
+        var btn = ev.target.closest('[data-restore-deleted]');
+        if (!btn) return;
+        var id = btn.getAttribute('data-restore-deleted');
+        btn.disabled = true;
+        if (await restoreTransaction(id)) {
+          deletedItems = deletedItems.filter(function (d) { return d.transaction_id !== id; });
+          renderDeletedTransactions();
+        } else btn.disabled = false;
+      });
+    })();
     async function loadOperatorChecks(refresh) {
       var el = document.getElementById('operator-checks-body');
       try {
@@ -1922,6 +1994,6 @@
     })();
 
     checkPushStatus();
-    loadSettings(); loadInsights(); loadUsageHistory(); loadCatStatus(); loadCatAccuracy(); loadBiometricCredentials(); loadDataHealth(); loadOperatorChecks(false); loadRecentErrors(); loadCashFloors();
+    loadSettings(); loadInsights(); loadUsageHistory(); loadCatStatus(); loadCatAccuracy(); loadBiometricCredentials(); loadDataHealth(); loadOperatorChecks(false); loadRecentErrors(); loadDeletedTransactions(false); loadCashFloors();
   </script>
 </body></html>

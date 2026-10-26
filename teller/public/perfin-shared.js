@@ -87,8 +87,12 @@
     el.classList.add('toast-leaving');
     setTimeout(function() { if (el.parentNode) el.parentNode.removeChild(el); }, 220);
   }
-  function showMsg(text, ok) {
+  // opts.action = { label, run } adds a button to the toast (e.g. "Undo" —
+  // roadmap T2.5 U2): pressing it closes the toast and calls run(). A toast
+  // with an action stays 10 s and is never merged with an earlier one.
+  function showMsg(text, ok, opts) {
     if (!text) return;
+    var action = opts && opts.action && typeof opts.action.run === 'function' ? opts.action : null;
     var stack = document.getElementById('toast-stack');
     if (!stack) {
       stack = document.createElement('div');
@@ -100,7 +104,7 @@
     }
     // Dedupe: most recent toast with same text gets its timer bumped.
     var last = stack.lastElementChild;
-    if (last && last.textContent === text) {
+    if (!action && last && !last._action && (last._text != null ? last._text : last.textContent) === text) {
       if (last._timer) clearTimeout(last._timer);
       last._timer = setTimeout(function() { removeToast(last); }, ok ? 5000 : 10000);
       return;
@@ -108,10 +112,29 @@
     var toast = document.createElement('div');
     toast.className = 'toast ' + (ok ? 'success' : 'error');
     toast.setAttribute('role', ok ? 'status' : 'alert');
-    toast.textContent = text;
+    toast._text = text;
+    toast._action = !!action;
+    if (action) {
+      var span = document.createElement('span');
+      span.textContent = text;
+      toast.appendChild(span);
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'toast-action';
+      btn.textContent = action.label || 'Undo';
+      btn.addEventListener('click', function(ev) {
+        ev.stopPropagation();
+        if (toast._timer) clearTimeout(toast._timer);
+        removeToast(toast);
+        action.run();
+      });
+      toast.appendChild(btn);
+    } else {
+      toast.textContent = text;
+    }
     toast.addEventListener('click', function() { removeToast(toast); });
     stack.appendChild(toast);
-    toast._timer = setTimeout(function() { removeToast(toast); }, ok ? 5000 : 10000);
+    toast._timer = setTimeout(function() { removeToast(toast); }, ok && !action ? 5000 : 10000);
     // Cap at 5 visible toasts — anything older gets dropped so the stack
     // doesn't grow unbounded during a rapid background-task burst. Count only
     // toasts that aren't already animating out, and drop the excess
@@ -275,6 +298,37 @@
     showMsg((what || 'Save failed') + ': ' + detail, false);
     return false;
   }
+  // Undelete (roadmap T2.5 U2): POST /api/deleted-transactions/:id/restore,
+  // shared by Settings → Deleted transactions and the Activity page's Undo.
+  // The outcome is toasted (writeOk on a refusal); resolves to the reply on
+  // success, else null.
+  var RESTORE_RETURNS_ON = {
+    reconcile: 'It comes back with the next sync of its bank — Settings → Sync Health → Reconcile Now fetches it right away.',
+    csv_reimport: 'Import its CSV file again to bring it back.',
+  };
+  function restoreMessage(r) {
+    r = r || {};
+    if (r.restored) {
+      if (r.already_present) return 'That transaction is already in your list.';
+      return 'Transaction restored' + (r.splits ? ' with its ' + r.splits + ' split' + (r.splits === 1 ? '' : 's') + '.' : '.');
+    }
+    return 'Undeleted. ' + (RESTORE_RETURNS_ON[r.returns_on] || 'It comes back the next time its source is read.');
+  }
+  async function restoreTransaction(id) {
+    var res;
+    try {
+      res = await apiFetch('/api/deleted-transactions/' + encodeURIComponent(id) + '/restore', { method: 'POST' });
+    } catch (e) {
+      showMsg("Couldn't restore the transaction — check your connection.", false);
+      return null;
+    }
+    if (!(await writeOk(res, 'Restore'))) return null;
+    var r = {};
+    try { r = await res.json(); } catch (e) { /* a 2xx without a body still restored */ }
+    showMsg(restoreMessage(r), true);
+    return r;
+  }
+
   // Parse a money/number entered in a prompt() ("$1,234.50" → 1234.5). NaN
   // when it isn't a number — callers stop instead of sending null (WD-12).
   function parseAmountInput(raw) {
@@ -404,6 +458,8 @@
   win.watchDialog = watchDialog;
   win.writeOk = writeOk;
   win.parseAmountInput = parseAmountInput;
+  win.restoreTransaction = restoreTransaction;
+  win.restoreMessage = restoreMessage;
   win.esc = esc;
   win.apiFetch = apiFetch;
   win.withBase = withBase;

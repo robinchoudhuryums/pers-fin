@@ -147,21 +147,29 @@
               '</div>' +
             '</div>' +
             '<div style="display:flex;gap:6px;">' +
-              '<button class="btn btn-sm" data-action="delete-dup" data-id="' + esc(d.id1) + '" title="Keep second, delete first">Delete #1</button>' +
-              '<button class="btn btn-sm" data-action="delete-dup" data-id="' + esc(d.id2) + '" title="Keep first, delete second">Delete #2</button>' +
+              '<button class="btn btn-sm" data-action="delete-dup" data-e2e-skip data-id="' + esc(d.id1) + '" title="Keep second, delete first">Delete #1</button>' +
+              '<button class="btn btn-sm" data-action="delete-dup" data-e2e-skip data-id="' + esc(d.id2) + '" title="Keep first, delete second">Delete #2</button>' +
             '</div>' +
           '</div>';
         }).join('');
       } catch (e) { /* non-critical */ }
     }
 
+    // The delete keeps a snapshot (roadmap T2.5 U1), so its toast offers Undo:
+    // restoreTransaction (perfin-shared.js) POSTs the restore and toasts the
+    // outcome; the lists reload only once it succeeded (U2).
+    function reloadAfterDelete() { loadDuplicates(); searchTransactions(currentOffset); }
+    async function undoDelete(txnId) {
+      if (await restoreTransaction(txnId)) reloadAfterDelete();
+    }
     async function deleteDuplicate(txnId) {
       if (!confirm('Delete this duplicate transaction?')) return;
       try {
         var res = await apiFetch('/api/transactions/' + encodeURIComponent(txnId), { method: 'DELETE' });
-        if (res.ok) { showMsg('Transaction deleted.', true); loadDuplicates(); searchTransactions(currentOffset); }
-        else showMsg('Failed to delete.', false);
-      } catch (e) { showMsg(e.message, false); }
+        if (!(await writeOk(res, 'Delete'))) return;
+        showMsg('Transaction deleted.', true, { action: { label: 'Undo', run: function() { undoDelete(txnId); } } });
+        reloadAfterDelete();
+      } catch (e) { showMsg("Couldn't delete the transaction — check your connection.", false); }
     }
 
     // Event bindings
