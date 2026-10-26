@@ -214,7 +214,7 @@ describe("money colours (decision 11)", () => {
   it("cash flow: red only for a balance below $0", () => {
     const dash = read("teller", "views", "dashboard.ejs");
     const ctx = {};
-    vm.runInNewContext("this.badIf = " + slice(dash, "var badIf = ", ";\n").slice("var badIf = ".length) + ";", ctx);
+    vm.runInNewContext(slice(dash, "function badIf(n)", "\n") + "\nthis.badIf = badIf;", ctx);
     assert.equal(ctx.badIf(-0.01), ' class="amt-bad"');
     assert.equal(ctx.badIf("-5"), ' class="amt-bad"');
     assert.equal(ctx.badIf(0), "");

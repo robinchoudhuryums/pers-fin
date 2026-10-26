@@ -64,11 +64,11 @@ describe("F91 — the dashboard charts", () => {
 
   it("draws the spending summary's (filtered, split-adjusted) totals, oldest first", async () => {
     const charts = await runCharts({
-      monthly_trend: [{ month: "2026-10", total_spend: "120.50" }, { month: "2026-09", total_spend: "900" }],
+      monthly_trend: [{ month: "2026-10", total_spend: "120.50" }, { month: "2026-09", total_spend: "900" }, { month: "2026-08", total_spend: "40" }],
       by_category: [{ category: "Dining", total: "300" }, { category: "Groceries", total: "250.5" }],
     });
     const trend = charts.find((c) => c.id === "trend-chart");
-    assert.deepEqual(trend.cfg.data.datasets[0].data, [900, 120.5]);
+    assert.deepEqual(trend.cfg.data.datasets[0].data, [40, 900, 120.5]);
     const cat = charts.find((c) => c.id === "category-chart");
     assert.deepEqual(cat.cfg.data.labels, ["Dining", "Groceries"]);
     assert.doesNotMatch(dash, /\/api\/transactions\?months=6/);
@@ -78,7 +78,7 @@ describe("F91 — the dashboard charts", () => {
     const prev = process.env.TZ;
     process.env.TZ = "America/Los_Angeles";
     try {
-      const charts = await runCharts({ monthly_trend: [{ month: "2026-09", total_spend: "1" }], by_category: [] });
+      const charts = await runCharts({ monthly_trend: [{ month: "2026-11", total_spend: "3" }, { month: "2026-10", total_spend: "2" }, { month: "2026-09", total_spend: "1" }], by_category: [] });
       const label = charts.find((c) => c.id === "trend-chart").cfg.data.labels[0];
       assert.match(label, /Sep/, label);
     } finally {
@@ -121,7 +121,7 @@ describe("F96 — one dashboard widget list", () => {
       const sel = w.selector;
       let found;
       if (sel.startsWith("#")) found = dash.includes(`id="${sel.slice(1)}"`);
-      else if (sel.startsWith(".")) found = dash.includes(`class="${sel.slice(1)}"`);
+      else if (sel.startsWith(".")) found = new RegExp(`class="(?:[^"]* )?${sel.slice(1)}(?: [^"]*)?"`).test(dash);
       else found = dash.includes(sel.replace(/^\[|\]$/g, ""));
       assert.ok(found, `${w.key}: ${sel}`);
     }

@@ -851,7 +851,9 @@ teller/
                            which toggles `.widget-off` (display:none !important, so a
                            loader showing its section can't undo it) on each switched-
                            off key's element (cycle-7 F96 — the two pages kept separate
-                           lists and five toggles hid nothing). Add a new widget there.
+                           lists and five toggles hid nothing). Add a new widget there,
+                           in PAGE ORDER (design D4 — Settings lists the toggles as
+                           they appear; tests/design-d4.test.js pins the order)
   views/
     dashboard.ejs        — Dashboard template with 3D financial wellness pyramid
     transactions.ejs     — Transaction search/filter template, per-row Split modal
@@ -1066,9 +1068,20 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2436 tests as of latest); use
+  Perfin and Per-sistant test files (2454 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2436 tests across 128 test files (incl.
+  Current count: 2454 tests across 129 test files (incl.
+  `tests/design-d4.test.js` — design pass D4: the decision-6 section order on the page and
+  `DASHBOARD_WIDGETS` in that same DOM order (every selector found, 20 keys, the summary not a
+  toggle), `applyDashboardWidgets` hiding exactly the switched-off key; the pyramid's
+  collapsible markup, `collapsedFromStore` (a stored choice wins, phone-collapsed only for a
+  phone-default section) and opening storing '0'; the tabs' no-wrap scroll row and
+  `scrollActiveTab` run in a vm (centred, a row that fits untouched, no row); Cash Flow's
+  4 weeks + "Show all 13 weeks", "—" for a $0 income / bills cell, the lowest day first and
+  Show all / Show fewer; Savings Rate's latest month + "Show all 3 months" run through the real
+  loader; the real `loadCharts` with 1 / 2 / 3 / 0 months; and dashboard.ejs rendered through
+  EJS standalone and under /perfin (a CSS escape inside the extraStyles template literal is an
+  octal escape that 500s the page);
   `tests/design-d3.test.js` — design pass D3: gatherDashboardSummary over a fake pool with every
   reader injected as a spy (every field, each helper called with the pool and the summary's own
   day / month, each failing reader isolated with its fixed sentence and logged once — never the
@@ -1972,7 +1985,7 @@ shell/
   fake @anthropic-ai/sdk: /api/ask + runCategorize charge their usage rows,
   429 once the cap is hit, ask charges accumulated tokens AND still charges
   on a mid-loop failure — F1).
-- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink — empty since roadmap T1.5 Batch C fixed the Review page's review-summary 500), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). Since cycle-7 Batch 20 (G2) the run is SEEDED (`e2e/seed.js`, in the spec's beforeAll — through the apps' own routes: housing config + generated obligations, a manual account + manual expense, a generic CSV with a refund row and a split, a rollover budget, a goal, a subscription, a credit score, one transaction deleted through the route, a Plaid-free tax year — a paycheck and a pharmacy charge on a CSV account and a 1099-NEC on the checklist, T3.3 K4; Per-sistant notes in each privacy tier, a habit with logs, a todo with subtasks; one Job Radar listing and one linked task inserted directly, since no route creates either), a `console.error` fails a page (the browser's "Failed to load resource" line is left to the response check), and a CLICK SWEEP per page presses every visible, enabled `button / [role=button|checkbox|tab] / summary` counted on load (≤80) that isn't `data-e2e-skip` or labelled destructive (delete / remove / unlink / send / empty / sign out / log out / reset / purge / disconnect / archive / trash / revoke / cancel subscription / mark settled), dismissing dialogs and returning to the page between presses; a failure names the control pressed, and `SWEEP_KNOWN_GAPS` must only shrink. Mark a new destructive, off-app (an external SDK) or device-permission control (microphone) `data-e2e-skip`. 69 tests (24 of them sweeps, ~230 controls pressed — plus the linked-task chip on the To-Dos page and in its edit modal, T2.4 X1b, the unified search: Perfin's nav link to /per-sistant/search, a seeded Perfin transaction found there and its link opening Activity filtered, T2.4 X3b, and undelete: the seeded deletion listed in Settings → Sync Health → Deleted transactions and brought back by Restore, and a toast's Undo button, T2.5 U2, the top nav one row at the same size on five Perfin pages and no attachments-migration error after a fresh boot, design D1, and the Tax page: its sections for the seeded Plaid-free year,
+- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink — empty since roadmap T1.5 Batch C fixed the Review page's review-summary 500), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). Since cycle-7 Batch 20 (G2) the run is SEEDED (`e2e/seed.js`, in the spec's beforeAll — through the apps' own routes: housing config + generated obligations, a manual account + manual expense, a generic CSV with a refund row and a split, a rollover budget, a goal, a subscription, a credit score, one transaction deleted through the route, a Plaid-free tax year — a paycheck and a pharmacy charge on a CSV account and a 1099-NEC on the checklist, T3.3 K4; Per-sistant notes in each privacy tier, a habit with logs, a todo with subtasks; one Job Radar listing and one linked task inserted directly, since no route creates either), a `console.error` fails a page (the browser's "Failed to load resource" line is left to the response check), and a CLICK SWEEP per page presses every visible, enabled `button / [role=button|checkbox|tab] / summary` counted on load (≤80) that isn't `data-e2e-skip` or labelled destructive (delete / remove / unlink / send / empty / sign out / log out / reset / purge / disconnect / archive / trash / revoke / cancel subscription / mark settled), dismissing dialogs and returning to the page between presses; a failure names the control pressed, and `SWEEP_KNOWN_GAPS` must only shrink. Mark a new destructive, off-app (an external SDK) or device-permission control (microphone) `data-e2e-skip`. 70 tests (24 of them sweeps, ~230 controls pressed — plus the linked-task chip on the To-Dos page and in its edit modal, T2.4 X1b, the unified search: Perfin's nav link to /per-sistant/search, a seeded Perfin transaction found there and its link opening Activity filtered, T2.4 X3b, and undelete: the seeded deletion listed in Settings → Sync Health → Deleted transactions and brought back by Restore, and a toast's Undo button, T2.5 U2, the top nav one row at the same size on five Perfin pages and no attachments-migration error after a fresh boot, design D1, and the dashboard (design D3 / D4): the Summary card and Needs attention with the rent item opening the Rent page, and on a phone the summary on the first screen with the pyramid collapsed until opened (then kept open, its tabs a no-wrap scroll row), and the Tax page: its sections for the seeded Plaid-free year,
 a form added through the page and marked received, and the ZIP download, T3.3 K4). The `migrations` job ALSO runs the route contract suite (`npm run test:contract`, step "Route contract tests against real Postgres", `CONTRACT_DATABASE_URL` = the same service container; the Postgres user must be able to CREATE/DROP DATABASE).
 - `.claude/commands/` — Project slash-command prompts, generated from the
   claude-workflow-tools templates (synced to v1.43.0 via `/sync-commands`):
@@ -2538,7 +2551,21 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   each a link through `withBase`, or "✓ Nothing needs attention"). Skeletons while it
   loads; a failed load is one line ("The summary couldn't be loaded — the rest of the
   dashboard is below.") and the rest of the page loads as before; a part that failed
-  shows its own sentence. Not a Settings widget toggle (D4 reorders the widgets).
+  shows its own sentence. Not a Settings widget toggle.
+  **Order and density (design D4, decisions 6 / 7 / 15):** top to bottom — the summary,
+  the sync strip (and the CSV-reminder / budget-alert banners), Since you last looked,
+  Review Uncategorized, the two charts, Accounts (the sync buttons and stat cards with
+  them), Cash Flow + Upcoming Bills + the 30-day forecast, the spending tables, Settle
+  Up / Rent & Utilities / Investments / Savings Rate / YoY, the pyramid, then Ask Perfin /
+  AI Insights / AI Memory / Credit Score. Cash Flow leads with the lowest projected day,
+  shows the first 4 weeks ("Show all 13 weeks" for the rest) and writes a $0.00 income or
+  bills cell as "—"; Savings Rate shows the latest month ("Show all N months"); the trend
+  chart is a sentence ("Spending trends appear after 3 months of history — N so far")
+  until there are 3 months (0 months keeps "No spending data yet"). The pyramid is still
+  on by default but sits below the charts and is collapsible (`perfin_collapse_pyramid`);
+  on a phone (≤640px) it starts collapsed until it's opened once (opening stores '0', so
+  it stays open), and its mode tabs are one horizontally scrollable row with the active
+  tab scrolled into view (within the row, never the page).
   The two charts draw `GET /api/spending-summary` (`monthly_trend` / `by_category`) —
   the same request as the tables beside them (`getSpendingSummary`; the tables
   fetch fresh, the charts reuse the latest) — so transfers, reimbursed rows and
@@ -3229,7 +3256,8 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   responsive-card, with the filter bar collapsed behind a "Filters" toggle on
   mobile so the recent-transactions list sits at the top of the page (the
   dashboard's Recent Transactions section was removed in favor of it). The
-  four dashboard mini-table sections are collapsible (h2 toggles, chevron,
+  four dashboard mini-table sections (and, since design D4, the pyramid — its h3 toggles
+  it) are collapsible (h2 toggles, chevron,
   state persisted per-section in localStorage `perfin_collapse_<key>`), and
   Spending by Category has a month selector ("Recent months" aggregate
   default, or any month from the trend — backed by GET
@@ -3825,7 +3853,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2436 tests passing across 128 test files (Perfin 1771 + Per-sistant 665), plus the real-Postgres route contract suite (253 tests; CI `migrations` job, `npm run test:contract`) and 69 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2454 tests passing across 129 test files (Perfin 1789 + Per-sistant 665), plus the real-Postgres route contract suite (253 tests; CI `migrations` job, `npm run test:contract`) and 70 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands

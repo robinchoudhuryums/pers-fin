@@ -236,7 +236,8 @@ describe("GET /api/cash-flow — a thin wrapper over the service", () => {
 
 describe("dashboard Cash Flow line", () => {
   const dash = fs.readFileSync(path.join(__dirname, "../teller/views/dashboard.ejs"), "utf8");
-  const start = dash.indexOf("    async function loadCashFlow() {");
+  // The section's helpers (design D4) and loadCashFlow.
+  const start = dash.indexOf("    // --- Cash Flow Projection ---");
   const end = dash.indexOf("    // --- Year-over-Year Comparison ---");
 
   // The REAL fmt from perfin-shared.js (a stub of the old "$-50.00" shape

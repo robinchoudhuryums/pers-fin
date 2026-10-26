@@ -18,7 +18,21 @@ Updated: 2026-10-26
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Design & UX pass — D3 DONE** (2026-10-26, branch `claude/sweet-ritchie-f9d8ah`,
+- **Status:** **Design & UX pass — D4 DONE** (2026-10-26, branch `claude/sweet-ritchie-f9d8ah`,
+  PR robinchoudhuryums/pers-fin#133). Plan: `.cycle/plan-design-ux.md`. Block:
+  `.cycle/blocks/7-design-d4-broad-implement.md`.
+  - **Shipped:**
+    - the dashboard in the decision-6 order (summary → alerts → Since you last looked → Review → charts → accounts → cash flow / bills → tables → Settle Up … YoY → pyramid → Ask / AI / Credit), with `DASHBOARD_WIDGETS` in page order;
+    - the pyramid collapsible, collapsed on a phone until opened once, its mode tabs a no-wrap scroll row;
+    - Cash Flow summarised (the lowest day first, 4 weeks + Show all, "—" for $0 cells), Savings Rate summarised (the latest month + Show all);
+    - the trend chart a sentence until 3 months of history.
+  - **Verified:**
+    - npm test 2454/2454 (18 new, incl. an EJS render of dashboard.ejs after a template-literal octal escape 500'd it in e2e);
+    - Playwright 70/70;
+    - mutation checks 15/15;
+    - screenshots.
+  - **Where I left off:** D4 committed and pushed. Next: `/broad-implement D5`.
+- **Previous status (D3):** **Design & UX pass — D3 DONE** (2026-10-26, branch `claude/sweet-ritchie-f9d8ah`,
   PR robinchoudhuryums/pers-fin#133). Plan: `.cycle/plan-design-ux.md`. Block:
   `.cycle/blocks/7-design-d3-broad-implement.md`.
   - **Shipped:**
@@ -31,7 +45,7 @@ implement and reflect sessions only set Phase.)
     - Playwright 69/69;
     - mutation checks 17/17;
     - screenshots.
-  - **Where I left off:** D3 committed and pushed. Next: `/broad-implement D4`.
+  - **Where I left off:** D3 committed and pushed.
 - **Previous status (D2):** **Design & UX pass — D2 DONE** (2026-10-26, branch `claude/sweet-ritchie-f9d8ah`,
   PR robinchoudhuryums/pers-fin#133). Plan: `.cycle/plan-design-ux.md`. Block:
   `.cycle/blocks/7-design-d2-broad-implement.md`.

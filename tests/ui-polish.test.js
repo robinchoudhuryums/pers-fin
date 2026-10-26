@@ -87,7 +87,8 @@ describe("dashboard collapsibles + category month selector", () => {
     for (const key of ["monthlySpend", "categories", "merchants", "upcoming"]) {
       assert.ok(dash.includes('data-collapse-key="' + key + '"'), key + " collapsible");
     }
-    assert.match(dash, /localStorage\.getItem\(key\) === '1'/, "state persisted");
+    assert.match(dash, /stored = localStorage\.getItem\(key\)/, "state persisted");
+    assert.match(dash, /if \(stored === '1'\) return true;/);
     assert.match(dash, /e\.target\.closest\('select, button, input, a'\)/,
       "controls inside the h2 (month select) must not toggle collapse");
   });

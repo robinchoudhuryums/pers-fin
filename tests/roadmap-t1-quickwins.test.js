@@ -63,14 +63,16 @@ describe("B1 — dashboard charts redraw", () => {
 
   it("a second load destroys the old charts and draws the fresh figures", async () => {
     const h = harness();
-    await h.load({ monthly_trend: [{ month: "2026-09", total_spend: "100" }], by_category: [{ category: "Dining", total: "100" }] });
-    await h.load({ monthly_trend: [{ month: "2026-10", total_spend: "250" }, { month: "2026-09", total_spend: "100" }],
+    // Three months each — fewer is a sentence, not a chart (design D4).
+    await h.load({ monthly_trend: [{ month: "2026-09", total_spend: "100" }, { month: "2026-08", total_spend: "90" }, { month: "2026-07", total_spend: "80" }],
+      by_category: [{ category: "Dining", total: "100" }] });
+    await h.load({ monthly_trend: [{ month: "2026-10", total_spend: "250" }, { month: "2026-09", total_spend: "100" }, { month: "2026-08", total_spend: "90" }],
       by_category: [{ category: "Dining", total: "180" }, { category: "Travel", total: "70" }] });
     assert.equal(h.live.length, 4);
     assert.deepEqual(h.live.slice(0, 2).map((c) => c.destroyed), [true, true], "the first charts are destroyed");
     assert.deepEqual(h.live.slice(2).map((c) => c.destroyed), [false, false]);
     const trend = h.live.find((c) => c.id === "trend-chart" && !c.destroyed);
-    assert.deepEqual(trend.cfg.data.datasets[0].data, [100, 250]);
+    assert.deepEqual(trend.cfg.data.datasets[0].data, [90, 100, 250]);
     const cat = h.live.find((c) => c.id === "category-chart" && !c.destroyed);
     assert.deepEqual(cat.cfg.data.labels, ["Dining", "Travel"]);
   });
@@ -83,7 +85,8 @@ describe("B1 — dashboard charts redraw", () => {
     const note = c.parentElement.querySelector(".chart-empty");
     assert.equal(note.textContent, "No spending data yet");
     assert.equal(note.hidden, false);
-    await h.load({ monthly_trend: [{ month: "2026-10", total_spend: "5" }], by_category: [{ category: "Fees", total: "5" }] });
+    await h.load({ monthly_trend: [{ month: "2026-10", total_spend: "5" }, { month: "2026-09", total_spend: "4" }, { month: "2026-08", total_spend: "3" }],
+      by_category: [{ category: "Fees", total: "5" }] });
     assert.equal(c.style.display, "");
     assert.equal(note.hidden, true);
     assert.equal(h.live.filter((x) => !x.destroyed).length, 2);

@@ -197,6 +197,31 @@ test.describe("every page loads cleanly", () => {
     expect(problems, problems.join("\n")).toEqual([]);
   });
 
+  test("on a phone the first screen is the summary; the pyramid starts collapsed and opens (design D4)", async ({ page }) => {
+    const problems = watch(page);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/perfin/dashboard");
+    await page.evaluate(() => { try { localStorage.removeItem("perfin_collapse_pyramid"); } catch (_) {} });
+    await page.reload();
+    const cards = page.locator("#dash-summary-cards .dash-summary-card");
+    await expect(cards.first()).toBeVisible();
+    const top = await cards.first().boundingBox();
+    expect(top.y).toBeLessThan(844);
+    const pyramid = page.locator(".wellness-section");
+    await expect(pyramid).toHaveClass(/collapsed/);
+    await expect(page.locator("#pyramid-switcher")).toBeHidden();
+    const pyrBox = await pyramid.boundingBox();
+    expect(pyrBox.y).toBeGreaterThan(844);
+    // Opening it once keeps it open on the next load.
+    await page.locator("#pyramid-title").click();
+    await expect(page.locator("#pyramid-switcher")).toBeVisible();
+    const sw = await page.locator("#pyramid-switcher").evaluate((el) => ({ wrap: getComputedStyle(el).flexWrap, overflow: getComputedStyle(el).overflowX }));
+    expect(sw).toEqual({ wrap: "nowrap", overflow: "auto" });
+    await page.reload();
+    await expect(page.locator(".wellness-section")).not.toHaveClass(/collapsed/);
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
   test("the Rent page shows the configured utility row (F87)", async ({ page }) => {
     const problems = watch(page);
     await page.goto("/perfin/housing");
