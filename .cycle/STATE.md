@@ -18,7 +18,23 @@ Updated: 2026-10-26
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T2.5 (transaction undelete + iOS re-authenticate) — U2 DONE** (2026-10-26,
+- **Status:** **Roadmap T2.5 (transaction undelete + iOS re-authenticate) — H1 DONE; T2.5 COMPLETE**
+  (2026-10-26, branch `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
+  `.cycle/plan-t2-5-undelete-ios-reauth.md`. Block: `.cycle/blocks/7-roadmap-t2-5-h1-broad-implement.md`.
+  - **Completed:** Re-authenticate / Add accounts through Plaid's hosted page on iOS / iPadOS, the
+    home-screen app and the Capacitor wrapper (`prefersHostedPlaidLink`); link-token-update's
+    `hosted` + `redirect_uri`; update-complete's `link_token` session check (linkTokenGet first —
+    exited / unfinished / none a 400, a Plaid error a 502, nothing written); the return handler
+    (state removed and URL cleaned before the call); INV-145; T2.5 docs closed.
+  - **Decisions:** "finished" = a Link session with finished_at and no exit (update mode has no
+    public_token); a strict `hosted: true`; the buttons are data-e2e-skip (they leave the app).
+    Hosted Link's update-mode support was read from the Plaid SDK's types and Plaid's glossary
+    (plaid.com blocked from the build environment) — stated in the docs; operator: try it once on
+    an iPhone.
+  - **Tests:** npm 2290/2290 (19 new), contract 238/238 (2 new), Playwright 63/63; 13 mutations red.
+  - **Where I left off:** T2.5 committed and complete. NEXT: pick the next roadmap item
+    (`/roadmap`), or `/reflect` to close cycle 7.
+- **Previous status (T2.5 U2):** **Roadmap T2.5 (transaction undelete + iOS re-authenticate) — U2 DONE** (2026-10-26,
   branch `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-5-undelete-ios-reauth.md`. Block: `.cycle/blocks/7-roadmap-t2-5-u2-broad-implement.md`.
   - **Completed:** Settings → Sync Health → Deleted transactions (collapsible, 50 a page, Show more,
@@ -33,7 +49,7 @@ implement and reflect sessions only set Phase.)
   - **Tests:** npm 2271/2271 (19 new), contract 236/236, Playwright 63/63 (2 new); 12 mutations red.
   - **Where I left off:** U2 committed. NEXT: `/broad-implement H1` (hosted Plaid update mode for
     iOS / standalone / Capacitor + INV-145 + the T2.5 close-out).
-- **Previous status (T2.5 U1):** **Roadmap T2.5 (transaction undelete + iOS re-authenticate) — U1 DONE** (2026-10-23,
+- **Earlier status (T2.5 U1):** **Roadmap T2.5 (transaction undelete + iOS re-authenticate) — U1 DONE** (2026-10-23,
   branch `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-5-undelete-ios-reauth.md`. Block: `.cycle/blocks/7-roadmap-t2-5-u1-broad-implement.md`.
   - **Completed:** the delete keeps the row + splits (snapshot) and its source; GET

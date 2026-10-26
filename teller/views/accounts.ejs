@@ -228,8 +228,8 @@
           var upd = '';
           if (plaidKind) {
             var attrs = ' data-id="' + i.id + '" data-kind="' + plaidKind + '" data-name="' + esc(i.institution_name || '') + '"';
-            if (i.last_error_code) upd += '<button class="btn-unlink" style="border-color:var(--warm);color:var(--warm);" data-action="plaid-update" data-mode="reauth"' + attrs + '>Re-authenticate</button> ';
-            upd += '<button class="btn-unlink" style="border-color:var(--border);color:var(--teal);" data-action="plaid-update" data-mode="add"' + attrs + '>Add accounts</button> ';
+            if (i.last_error_code) upd += '<button class="btn-unlink" style="border-color:var(--warm);color:var(--warm);" data-action="plaid-update" data-mode="reauth" data-e2e-skip' + attrs + '>Re-authenticate</button> ';
+            upd += '<button class="btn-unlink" style="border-color:var(--border);color:var(--teal);" data-action="plaid-update" data-mode="add" data-e2e-skip' + attrs + '>Add accounts</button> ';
           }
           return '<div class="item">' +
             '<div class="item-info"><strong>' + esc(i.institution_name) + '</strong>' +
@@ -662,37 +662,84 @@
     // an existing Plaid connection. The Item and its access token stay the
     // same, so there is no token exchange: on success the server registers any
     // new accounts, clears the re-auth flag and syncs that connection.
-    async function updatePlaidItem(id, kind, name) {
+    //
+    // On iOS / iPadOS, in the home-screen app and in the Capacitor wrapper the
+    // in-page Link's popup OAuth doesn't come back, so there update mode goes
+    // through Plaid's hosted page (roadmap T2.5 H1): the page keeps
+    // { item_id, kind, name, link_token } in sessionStorage, redirects, and on
+    // return (handlePlaidUpdateReturn) sends the link_token to update-complete,
+    // which checks that the Link session finished before changing anything.
+    var PLAID_UPDATE_KEY = 'perfin_plaid_update';
+    function prefersHostedPlaidLink(w) {
+      var nav = (w && w.navigator) || {};
+      var ua = nav.userAgent || '';
+      var ios = /iPad|iPhone|iPod/.test(ua) || (/Macintosh/.test(ua) && (nav.maxTouchPoints || 0) > 1);
+      var standalone = nav.standalone === true ||
+        !!(w && w.matchMedia && w.matchMedia('(display-mode: standalone)').matches);
+      return ios || standalone || !!(w && w.Capacitor);
+    }
+    async function completePlaidUpdate(id, kind, name, linkToken) {
       try {
+        showStatus('Refreshing ' + name + '...', true);
+        var body = { item_id: id, kind: kind };
+        if (linkToken) body.link_token = linkToken;
+        var r = await apiFetch('/api/plaid/update-complete', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!(await writeOk(r, 'Could not refresh ' + name))) { loadItems(); return; }
+        var out = await r.json();
+        showStatus(name + ' updated: ' + out.accounts_added + ' new account(s), ' + out.transactions_added + ' new transaction(s).', true);
+        loadItems();
+        if (kind === 'investments') loadInvestments();
+      } catch (e) { showStatus('Could not refresh ' + name + ': ' + e.message, false); }
+    }
+    async function updatePlaidItem(id, kind, name) {
+      var hosted = prefersHostedPlaidLink(window);
+      try {
+        var body = { item_id: id, kind: kind };
+        if (hosted) {
+          body.hosted = true;
+          body.redirect_uri = (window.location.origin + window.location.pathname).replace(/\/+$/, '');
+        }
         var res = await apiFetch('/api/plaid/link-token-update', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ item_id: id, kind: kind }),
+          body: JSON.stringify(body),
         });
         if (!(await writeOk(res, 'Could not open Plaid for ' + name))) return;
         var d = await res.json();
+        if (hosted) {
+          if (!d.hosted_link_url) { showStatus('Could not open Plaid for ' + name + ': Plaid returned no hosted page.', false); return; }
+          sessionStorage.setItem(PLAID_UPDATE_KEY, JSON.stringify({ item_id: id, kind: kind, name: name, link_token: d.link_token }));
+          window.location.href = d.hosted_link_url;
+          return;
+        }
         await ensurePlaidSdk();
         var handler = window.Plaid.create({
           token: d.link_token,
-          onSuccess: async function () {
-            try {
-              showStatus('Refreshing ' + name + '...', true);
-              var r = await apiFetch('/api/plaid/update-complete', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ item_id: id, kind: kind }),
-              });
-              if (!(await writeOk(r, 'Could not refresh ' + name))) { loadItems(); return; }
-              var out = await r.json();
-              showStatus(name + ' updated: ' + out.accounts_added + ' new account(s), ' + out.transactions_added + ' new transaction(s).', true);
-              loadItems();
-              if (kind === 'investments') loadInvestments();
-            } catch (e) { showStatus('Could not refresh ' + name + ': ' + e.message, false); }
-          },
+          onSuccess: function () { return completePlaidUpdate(id, kind, name); },
           onExit: function (err) {
             if (err) showStatus('Plaid: ' + (err.display_message || err.error_message || err.error_code || 'closed'), false);
           },
         });
         handler.open();
       } catch (e) { showStatus('Could not open Plaid for ' + name + ': ' + e.message, false); }
+    }
+    // Back from the hosted update page. The saved state is removed and the URL
+    // cleaned BEFORE the call, so a reload can't run it twice (and the OAuth
+    // return handler below never sees this return).
+    async function handlePlaidUpdateReturn() {
+      var raw = sessionStorage.getItem(PLAID_UPDATE_KEY);
+      if (!raw) return;
+      sessionStorage.removeItem(PLAID_UPDATE_KEY);
+      window.history.replaceState({}, '', window.location.origin + window.location.pathname);
+      var p = null;
+      try { p = JSON.parse(raw); } catch (e) { p = null; }
+      if (!p || !p.link_token || !p.item_id || !p.kind) {
+        showStatus('Could not finish the Plaid update — press Re-authenticate again.', false);
+        return;
+      }
+      await completePlaidUpdate(p.item_id, p.kind, p.name || 'The connection', p.link_token);
     }
 
     // --- Plaid transactions link (for Capital One, Discover, etc.) ---
@@ -824,9 +871,11 @@
       }
     }
     setTimeout(handlePlaidHostedReturn, 100);
+    setTimeout(handlePlaidUpdateReturn, 100);
 
     // Auto-detect OAuth return on page load.
     function handlePlaidOAuthReturn() {
+      if (sessionStorage.getItem(PLAID_UPDATE_KEY)) return; // a hosted update return (handlePlaidUpdateReturn)
       var params = new URLSearchParams(window.location.search);
       if (!params.has('oauth_state_id')) return;
       var linkToken = sessionStorage.getItem(PLAID_LINK_TOKEN_KEY);

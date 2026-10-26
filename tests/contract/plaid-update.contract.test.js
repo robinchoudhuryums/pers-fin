@@ -2,7 +2,8 @@
 // mode): a Plaid item flagged for re-authentication, with transactions the
 // user edited, goes through POST /api/plaid/update-complete — the flag clears,
 // a new account at the same login is registered, the existing rows keep their
-// edits and aren't duplicated. Also: GET /api/items carries last_error_code,
+// edits and aren't duplicated — through the hosted flow's Link-session check
+// (roadmap T2.5 H1; an exited session first, which changes nothing). Also: GET /api/items carries last_error_code,
 // the investments-only exchange refuses a duplicate of an earlier
 // investments-only Item (mask column), and the holdings sync runs for one Item.
 // Only the Plaid client object is stubbed.
@@ -48,8 +49,37 @@ describe("Plaid Link update mode on real Postgres", { skip: SKIP }, () => {
     assert.equal(calls[0].products, undefined);
   });
 
-  it("update-complete clears the flag, registers the new account and keeps every edit", async () => {
+  it("the hosted update token (roadmap T2.5 H1) carries the hosted_link object", async () => {
+    plaid = { linkTokenCreate: async (req) => { calls.push(req); return { data: { link_token: "link-h", hosted_link_url: "https://hosted.plaid.com/h" } }; } };
+    const res = await supertest(app).post("/api/plaid/link-token-update")
+      .send({ item_id: itemId, kind: "transactions", hosted: true, redirect_uri: "https://app.example/perfin/accounts" }).expect(200);
+    assert.equal(res.body.hosted_link_url, "https://hosted.plaid.com/h");
+    const req = calls[calls.length - 1];
+    assert.equal(req.access_token, "tok_up");
+    assert.deepEqual(req.hosted_link, { url_lifetime_seconds: 3600, completion_redirect_uri: "https://app.example/perfin/accounts" });
+  });
+
+  it("a hosted update whose Link session exited changes nothing (T2.5 H1)", async () => {
+    let asked = false;
     plaid = {
+      linkTokenGet: async () => ({ data: { link_sessions: [{ link_session_id: "s0", finished_at: "2026-10-26T10:00:00Z", exit: { error: null } }] } }),
+      accountsGet: async () => { asked = true; return { data: { accounts: [] } }; },
+    };
+    const res = await supertest(app).post("/api/plaid/update-complete").send({ item_id: itemId, kind: "transactions", link_token: "link-h" }).expect(400);
+    assert.equal(res.body.reason, "exited");
+    assert.equal(asked, false);
+    const item = (await q("SELECT last_error_code FROM plaid_items WHERE id=$1", [itemId])).rows[0];
+    assert.equal(item.last_error_code, "ITEM_LOGIN_REQUIRED", "the flag stays");
+    assert.equal((await q("SELECT cursor FROM sync_cursors WHERE plaid_item_id=$1", [itemId])).rows[0].cursor, "cur_old");
+    assert.equal((await q("SELECT COUNT(*)::int AS n FROM linked_accounts WHERE account_id='up_card'")).rows[0].n, 0);
+  });
+
+  it("update-complete (a hosted session that finished — T2.5 H1) clears the flag, registers the new account and keeps every edit", async () => {
+    plaid = {
+      linkTokenGet: async ({ link_token }) => {
+        assert.equal(link_token, "link-h");
+        return { data: { link_sessions: [{ link_session_id: "s1", finished_at: "2026-10-26T10:05:00Z", exit: null }] } };
+      },
       accountsGet: async () => ({ data: { accounts: [
         { account_id: "up_chk", name: "Checking", type: "depository", subtype: "checking", mask: "1111", balances: { current: 500 } },
         { account_id: "up_card", name: "New Card", type: "credit", subtype: "credit card", mask: "2222", balances: { current: 30 } },
@@ -65,7 +95,7 @@ describe("Plaid Link update mode on real Postgres", { skip: SKIP }, () => {
       },
     };
     const before = (await q("SELECT COUNT(*)::int AS n FROM transactions WHERE account_id='up_chk'")).rows[0].n;
-    const res = await supertest(app).post("/api/plaid/update-complete").send({ item_id: itemId, kind: "transactions" }).expect(200);
+    const res = await supertest(app).post("/api/plaid/update-complete").send({ item_id: itemId, kind: "transactions", link_token: "link-h" }).expect(200);
     assert.equal(res.body.accounts_added, 1);
     assert.equal(res.body.transactions_added, 1);
 

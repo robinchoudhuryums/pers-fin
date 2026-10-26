@@ -913,9 +913,19 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2271 tests as of latest); use
+  Perfin and Per-sistant test files (2290 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2271 tests across 119 test files (incl.
+  Current count: 2290 tests across 120 test files (incl.
+  `tests/roadmap-t2-5-h1.test.js` — roadmap T2.5 H1: link-token-update's hosted request (hosted_link
+  + redirect_uri on top of the update-mode body, a strict `hosted: true`, a missing redirect_uri a 400
+  before anything is read), updateSessionState over session shapes, update-complete's link_token
+  check (the session read first; exited / unfinished / none a 400 and a Plaid error a fixed 502 with
+  nothing written and no accountsGet; a non-string token a 400; no token → no session read) and the
+  Accounts page in a vm — prefersHostedPlaidLink over iPhone / iPad / touch-Mac / Mac / Windows /
+  Android / standalone / Capacitor, updatePlaidItem's hosted (state saved, redirect) and in-page paths,
+  handlePlaidUpdateReturn (state removed and URL cleaned before the call, the link_token sent, a
+  refusal toasted, bad state reported), the OAuth return handler leaving an update return alone and
+  the buttons data-e2e-skip;
   `tests/roadmap-t2-5-u2.test.js` — roadmap T2.5 U2: restoreTransaction / restoreMessage run in a vm
   from perfin-shared.js (the POST, each outcome's message, a refusal through writeOk, a network
   failure), showMsg's action button over a small fake DOM (labelled, 10 s, closes the toast and runs
@@ -1552,7 +1562,9 @@ shell/
   restored with all of them and updated, not duplicated, by the next reconcile; a Plaid row skipped by
   a re-delivery and restored with its text[] category; a re-imported CSV file skipping the deleted row
   until it's restored; a restore after the account was removed a 409 that changes nothing; the list
-  paged newest first by its cursor and a pre-U1 tombstone lifted with returns_on). 236 tests, run
+  paged newest first by its cursor and a pre-U1 tombstone lifted with returns_on). Since roadmap
+  T2.5 H1 plaid-update also sends the hosted token request and a hosted update whose Link session
+  exited (flag, cursor and accounts unchanged) before the finished one. 238 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -1812,7 +1824,17 @@ shell/
     syncs that one Item. The Item, its transactions and the edits on them stay
     (it used to take unlink + link). An item that NEWLY gets a re-auth code sends
     one "Bank connection needs re-authentication" notification (tag
-    `plaid-reauth-<id>`, deep link `/accounts`).
+    `plaid-reauth-<id>`, deep link `/accounts`). On iOS / iPadOS, in the
+    home-screen app and in the Capacitor wrapper (`prefersHostedPlaidLink()` —
+    an iPhone / iPad UA or a Mac UA with touch points, `display-mode: standalone`
+    / `navigator.standalone`, `window.Capacitor`) the buttons go through Plaid's
+    HOSTED page instead of the in-page Link, whose popup OAuth doesn't come back
+    there (roadmap T2.5 H1): the token request carries `hosted: true` +
+    `redirect_uri`, the page keeps `{ item_id, kind, name, link_token }` in
+    sessionStorage (`perfin_plaid_update`) and redirects; back on the Accounts
+    page `handlePlaidUpdateReturn` removes that state and cleans the URL, then
+    sends the `link_token` to update-complete, which reads the Link session
+    (`linkTokenGet`) first and changes nothing unless one finished without an exit.
     Endpoints: `/api/plaid/{status,link-token,exchange,sync-holdings,holdings}`.
     Holdings sync (`syncAllPlaidHoldings`) UPSERTs `investment_accounts` so the
     rows survive a reset/wipe, and uses the sum of an account's holdings as the
@@ -3418,7 +3440,11 @@ transactions and edits kept); **Add accounts** does the same for a new card at a
 connected login. Only an item whose token no longer decrypts (a changed
 TOKEN_ENCRYPTION_PASSPHRASE — 409 `decryption_failed`) still needs unlink + link.
 CSV imports never count toward that warning. Update mode opens the in-page Link
-(popup OAuth); there is no hosted-Link variant for iOS Safari yet.
+on a desktop browser and Plaid's hosted page on iOS / iPadOS, the home-screen app
+and the Capacitor wrapper (roadmap T2.5 H1). Hosted Link's update-mode support was
+read from the Plaid SDK's types and Plaid's glossary — plaid.com's docs weren't
+reachable from the build environment — so try Re-authenticate once on an iPhone
+before relying on it.
 
 **Gotcha — Plaid Liabilities never covers auto loans (any issuer).** The
 product supports only credit cards, student loans, and mortgages, so an auto
@@ -3475,7 +3501,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2271 tests passing across 119 test files (Perfin 1613 + Per-sistant 658), plus the real-Postgres route contract suite (236 tests; CI `migrations` job, `npm run test:contract`) and 63 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2290 tests passing across 120 test files (Perfin 1632 + Per-sistant 658), plus the real-Postgres route contract suite (238 tests; CI `migrations` job, `npm run test:contract`) and 63 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -3991,13 +4017,21 @@ POST /api/plaid/link-token-update # Plaid Link UPDATE MODE token (body: item_id,
                            # plaid_investment_items.id): the item's own access_token
                            # (perfin_try_decrypt), no products, update.account_selection_
                            # enabled. 400 bad kind/id or a CSV item, 404, 409 { reason:
-                           # "decryption_failed" } (the one case needing unlink + link) — G3
+                           # "decryption_failed" } (the one case needing unlink + link) — G3.
+                           # hosted: true + redirect_uri (a non-empty string, else 400 before
+                           # anything is read) adds hosted_link { url_lifetime_seconds: 3600,
+                           # completion_redirect_uri } + redirect_uri and returns
+                           # hosted_link_url (roadmap T2.5 H1 — iOS / standalone / Capacitor)
 POST /api/plaid/update-complete # after update-mode Link succeeds (same body; no token
                            # exchange). transactions: under the Plaid lock, accountsGet →
                            # registerMissingPlaidAccounts → clear last_error_code → sync that
                            # item only; investments: syncAllPlaidHoldings({ itemId }) for that
                            # Item. → { accounts_added, transactions_added, incomplete?,
-                           # holdings_updated? }; a re-auth code again → flag kept, 409
+                           # holdings_updated? }; a re-auth code again → flag kept, 409.
+                           # link_token? (the hosted flow, T2.5 H1 — a non-empty string, else
+                           # 400): its Link session is read (linkTokenGet) BEFORE anything else;
+                           # none finished without an exit → 400 { reason: exited | unfinished
+                           # | none }, a Plaid error → fixed 502 — nothing written either way
 POST /api/plaid/sync-holdings # sync investment holdings (thin wrapper around the
                               # exported syncAllPlaidHoldings helper; UPSERTs
                               # investment_accounts so wiped rows are re-created)
@@ -5838,12 +5872,19 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   the Rent page has no "+ add item" UI, so a removed placeholder comes back only
   via `POST /api/housing/obligations`; `apps-script/Code.gs` keeps the pre-F32
   NOT_TRANSFER keyword list. Batch 5 follow-ons / later batches.
-- Roadmap T2.5 (transaction undelete + iOS re-authenticate) is IN PROGRESS
-  (`.cycle/plan-t2-5-undelete-ios-reauth.md`, U1 / U2 / H1). U1 shipped the server side of
+- Roadmap T2.5 (transaction undelete + iOS re-authenticate) is DONE
+  (`.cycle/plan-t2-5-undelete-ios-reauth.md`, U1 / U2 / H1 — INV-145). U1 shipped the server side of
   undelete — the delete's snapshot, `GET /api/deleted-transactions`, `POST
   /api/deleted-transactions/:id/restore` — and CSV imports that skip a deleted row (the Batch 6
   follow-ons); U2 the UI (Settings → Sync Health → Deleted transactions with Restore, and Undo
-  on the Activity page's delete toast). H1 (hosted Plaid update mode) is next. U2 follow-ons:
+  on the Activity page's delete toast); H1 Re-authenticate / Add accounts through Plaid's hosted
+  page on iOS / iPadOS, the home-screen app and the Capacitor wrapper (the Batch 19 follow-on).
+  H1 follow-ons: Hosted Link's update-mode support was read from the Plaid SDK's types and
+  Plaid's glossary, not live-tested — try it once on an iPhone; the flow is chosen by device, so
+  a desktop browser that blocks popups still gets the in-page Link; update-complete doesn't check
+  that the link_token was issued for the same item (the token comes from the page's own
+  sessionStorage); Plaid keeps a session for six hours, so a return later than that reads as
+  "none"; the investments-only Link still has no hosted variant for a NEW link. U2 follow-ons:
   the only delete in the UI is the Activity page's duplicate finder, so Undo lives there; the
   deleted list has no search or filter (newest first, 50 a page); an Undo toast lasts 10 s and
   a missed one leaves the Settings list as the way back. U1 follow-ons: a tombstone written before U1 shows only its id; Restore never starts a
@@ -5921,9 +5962,8 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   reads as "lost" (the step fails though the next run recovers); a deploy must reach
   the server before the next daily-sync — an old server answers 200 to
   `background: true`, which run_background reports as a failure.
-- Batch 19 follow-ons: Plaid update mode opens the in-page Link (popup OAuth) — the
-  hosted / redirect flow the Accounts page uses for iOS Safari has no update-mode
-  variant, so Re-authenticate may not open there; update-complete doesn't refresh a new
+- Batch 19 follow-ons (the in-page-only update mode on iOS was closed by roadmap T2.5 H1):
+  update-complete doesn't refresh a new
   account's balance / liabilities (the next balance sync does) or write
   last_sync_result (an old plaid_txn error stays in Sync Health until the next full
   sync); investments-only Items never record a re-auth code (they show only "Add
@@ -6408,6 +6448,7 @@ INV-138 | A Plaid webhook is a trigger, not data: SYNC_UPDATES_AVAILABLE syncs o
 INV-142 | Cash and payday alerts are away channels driven by the shared forecast (projectCashFlow / getCashFlowForecast — the same numbers as /api/cash-flow) and never fire on stale data: no projected-low or account-floor alert on a balance older than 36 h, no missed-payday alert without an error-free sync of that connection after the grace window; each is deduped (projected low: cash_alert_state; account floor: 24 h per account via sentRecently; payday: per expected date / per deposit) and advances its state only when the notification was logged; reconcile never triggers a landed-paycheck alert | Subsystem: Financial Analytics / Notification Correctness | Verify: tests/roadmap-t2-2-cash-l2.test.js + tests/roadmap-t2-2-cash-l3.test.js + tests/roadmap-t2-2-cash-l4.test.js + tests/contract/cash-alerts-l2 / payday-l3 / cash-floors-l4
 INV-143 | Every Per-sistant model call goes through ai.js's capped wrappers (cappedAI / cappedCitations): the monthly ai_usage spend (APP_TIMEZONE month; a read error refuses the call) is checked against getAiBudgetCents() (user_settings.ai_monthly_budget_cents → PERSISTENT_AI_BUDGET_CENTS → $1.00, read from the same pool) before the call, and a usage row is charged once in a `finally` whenever tokens came back (a refusal included); no routes/*.js file calls callAI / answerWithCitations directly; cache hits make no call and cost nothing; over the cap the action routes 429, Ask / Smart Suggestions keep their 200 shapes with ai_cap, Knowledge answers degrade to sources-only and capture falls back to the raw note — and the pages show that message; GET /api/ai/usage reports the same spend the cap reads; the two apps' caps are separate and each only DISPLAYS the other's spend | Subsystem: Per-sistant Backend / Knowledge / RAG | Verify: apps/per-sistant/tests/roadmap-t2-3-cap-c1 / c2 / c3 / c4 + the c2 source guard + tests/contract/persistent-ai-cap + ai-usage-c4
 INV-144 | The unified search has ONE renderer — renderSearchResults (views/js.js) draws the dashboard widget and the /search page; a Perfin row (group 'finance') becomes a link only through linkedAppHref (a same-app path under Perfin's http(s) or root-relative base — never a javascript: / protocol-relative url), never carries an inline action, and a row of an unknown type is dropped; the finance rows come only from GET /api/search's read-only perfinPool queries (routes/finance-search.js — the escaped pattern, the user's share via Perfin's imported SPLIT_AMOUNT, each query fail-soft) and are absent standalone | Subsystem: Per-sistant Web UI / Settings, Notifications & Cross-app (seam) | Verify: apps/per-sistant/tests/roadmap-t2-4-x3a + x3b + tests/contract/finance-search + e2e/pages.spec.js
+INV-145 | Deleting a transaction is reversible and nothing brings it back unasked: the tombstone and the row's snapshot (with its splits) are written in the delete's own transaction; no provider sync, reconcile or CSV import (route or CLI) inserts a tombstoned id; restore removes the tombstone and reinserts the snapshot in one transaction — never a duplicate (ON CONFLICT DO NOTHING), and nothing changes when the account is gone; Plaid update mode — in-page or hosted — clears an item's re-auth flag only after Link reports the session finished (in-page: onSuccess; hosted: a link_sessions entry finished without an exit, read through linkTokenGet before anything is written) | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-5-u1.test.js + tests/roadmap-t2-5-u2.test.js + tests/roadmap-t2-5-h1.test.js + tests/contract/undelete-t2-5 + plaid-update
 INV-136 | WebAuthn credential ids are stored exactly as the authenticator reports them (registrationInfo.credential.id — already base64url in @simplewebauthn v11), never re-encoded; a double-encoded row from before seams audit #3 is rewritten (or, when its real id already exists, removed) by repairCredentialIds in the migration | Subsystem: Platform, Shell & Auth | Verify: tests/seams-audit-3.test.js + tests/contract/seams3.contract.test.js
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 

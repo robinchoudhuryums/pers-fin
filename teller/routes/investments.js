@@ -640,9 +640,18 @@ async function loadUpdateItem(body) {
 // POST /api/plaid/link-token-update — a Link token in update mode for one Item:
 // its access_token, NO products (update mode keeps the Item's products), and
 // account selection on so the user can add accounts at the same login.
+// With { hosted: true, redirect_uri } (roadmap T2.5 H1 — iOS, the home-screen
+// app and the Capacitor wrapper, where the in-page Link's popup OAuth fails)
+// the token also carries a hosted_link object, the same values as
+// /api/plaid/hosted-link, and the reply its hosted_link_url.
 router.post("/api/plaid/link-token-update", async (req, res) => {
   const client = getPlaidClient();
   if (!client) return res.status(501).json({ error: "Plaid not configured." });
+  const hosted = req.body?.hosted === true;
+  const redirectUri = req.body?.redirect_uri;
+  if (hosted && (typeof redirectUri !== "string" || !redirectUri)) {
+    return res.status(400).json({ error: "redirect_uri required for hosted link" });
+  }
   try {
     const r = await loadUpdateItem(req.body);
     if (r.error) return res.status(r.error[0]).json(r.error[1]);
@@ -654,27 +663,62 @@ router.post("/api/plaid/link-token-update", async (req, res) => {
       access_token: r.item.access_token,
       update: { account_selection_enabled: true },
       ...webhookParam(req),
+      ...(hosted ? {
+        redirect_uri: redirectUri,
+        hosted_link: { url_lifetime_seconds: 3600, completion_redirect_uri: redirectUri },
+      } : {}),
     });
-    res.json({ link_token: response.data.link_token, kind: r.kind, institution: r.item.institution_name });
+    const out = { link_token: response.data.link_token, kind: r.kind, institution: r.item.institution_name };
+    if (hosted) out.hosted_link_url = response.data.hosted_link_url || null;
+    res.json(out);
   } catch (err) {
     console.error("Plaid link-token-update error:", err.response?.data?.error_code || err.message);
     res.status(500).json({ error: err.response?.data?.error_message || "Failed to create the update link token" });
   }
 });
 
+// The hosted update flow's Link session (roadmap T2.5 H1), from linkTokenGet's
+// link_sessions: 'finished' when one finished without an exit (update mode has
+// no public_token to look for), else 'exited' / 'unfinished' / 'none'.
+function updateSessionState(sessions) {
+  const list = Array.isArray(sessions) ? sessions : [];
+  if (!list.length) return "none";
+  if (list.some((s) => s && s.finished_at && !s.exit && !s.on_exit)) return "finished";
+  if (list.some((s) => s && (s.exit || s.on_exit))) return "exited";
+  return "unfinished";
+}
+const UPDATE_NOT_FINISHED = "Plaid re-authentication wasn't finished, so nothing was changed. Press Re-authenticate to try again.";
+
 // POST /api/plaid/update-complete — called when update-mode Link succeeds.
 // There is no token exchange (the access token is unchanged). Transactions:
 // register any new accounts BEFORE the cursor walk (BSI-1), clear the re-auth
 // signal, then sync this Item only — under the Plaid transaction lock (F27).
 // Investments: the holdings sync for this Item (new accounts are created by
-// its investment_accounts upsert).
+// its investment_accounts upsert). The hosted flow has no onSuccess, so it
+// sends its link_token and the Link session is checked first (T2.5 H1): an
+// exited or unfinished session is a 400 and nothing is written.
 router.post("/api/plaid/update-complete", async (req, res) => {
   const client = getPlaidClient();
   if (!client) return res.status(501).json({ error: "Plaid not configured." });
+  const linkToken = req.body?.link_token;
+  if (linkToken !== undefined && (typeof linkToken !== "string" || !linkToken)) {
+    return res.status(400).json({ error: "link_token must be a non-empty string" });
+  }
   let item;
   try {
     const r = await loadUpdateItem(req.body);
     if (r.error) return res.status(r.error[0]).json(r.error[1]);
+    if (linkToken) {
+      let sessions;
+      try {
+        sessions = (await client.linkTokenGet({ link_token: linkToken })).data.link_sessions;
+      } catch (e) {
+        console.error("Plaid update-complete linkTokenGet error:", e.response?.data?.error_code || e.message);
+        return res.status(502).json({ error: "Couldn't read the Plaid session, so nothing was changed. Press Re-authenticate to try again." });
+      }
+      const state = updateSessionState(sessions);
+      if (state !== "finished") return res.status(400).json({ error: UPDATE_NOT_FINISHED, reason: state });
+    }
     item = r.item;
     if (r.kind === "transactions") {
       const out = await withPlaidTxnLock(async () => {
@@ -2416,3 +2460,4 @@ module.exports.computeXIRR = investmentPerformance.computeXIRR;
 module.exports.findDuplicatePlaidItem = findDuplicatePlaidItem;
 module.exports.findDuplicateInvestmentItem = findDuplicateInvestmentItem;
 module.exports.syncPlaidLiabilities = syncPlaidLiabilities;
+module.exports.updateSessionState = updateSessionState; // roadmap T2.5 H1: the hosted update session check

@@ -349,8 +349,8 @@ describe("G3 — Accounts page buttons (the real loadItems, run in a vm)", () =>
       { id: 3, provider: "plaid_investment", status: "GOOD", last_error_code: null, institution_name: "Broker", accounts: [] },
     ]);
     const rows = html.split('<div class="item">').slice(1);
-    assert.match(rows[0], /data-mode="reauth" data-id="7" data-kind="transactions"[^>]*>Re-authenticate</);
-    assert.match(rows[0], /data-mode="add" data-id="7" data-kind="transactions"[^>]*>Add accounts</);
+    assert.match(rows[0], /data-mode="reauth" data-e2e-skip data-id="7" data-kind="transactions"[^>]*>Re-authenticate</);
+    assert.match(rows[0], /data-mode="add" data-e2e-skip data-id="7" data-kind="transactions"[^>]*>Add accounts</);
     assert.match(rows[0], /needs re-authentication/);
     assert.doesNotMatch(rows[1], /Re-authenticate/);
     assert.match(rows[1], /data-id="8" data-kind="transactions"[^>]*>Add accounts</);
@@ -361,9 +361,9 @@ describe("G3 — Accounts page buttons (the real loadItems, run in a vm)", () =>
   });
 
   it("the buttons open update-mode Link and finish through update-complete via writeOk — never a token exchange", () => {
-    const fn = page.slice(page.indexOf("async function updatePlaidItem("), page.indexOf("// --- Plaid transactions link"));
+    const fn = page.slice(page.indexOf("async function completePlaidUpdate("), page.indexOf("// --- Plaid transactions link"));
     assert.match(fn, /apiFetch\('\/api\/plaid\/link-token-update'/);
-    assert.match(fn, /body: JSON\.stringify\(\{ item_id: id, kind: kind \}\)/);
+    assert.match(fn, /var body = \{ item_id: id, kind: kind \};/);
     assert.match(fn, /writeOk\(res, 'Could not open Plaid for '/);
     assert.match(fn, /apiFetch\('\/api\/plaid\/update-complete'/);
     assert.match(fn, /writeOk\(r, 'Could not refresh '/);
