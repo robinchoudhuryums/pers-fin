@@ -873,7 +873,19 @@ teller/
                            task's /tax#documents; Suggest, a labelled Form + Issuer add
                            form). Loads public/tax-page.js through the mount base
     goals.ejs            — Financial goals template with progress and projections
-    settings.ejs         — Settings template (theme, AI, keep-alive, sync, exports)
+    settings.ejs         — Settings template (theme, AI, keep-alive, sync, exports).
+                           Design D5 (decision 8): the sections sit in seven
+                           `<section class="settings-group">` groups — Appearance &
+                           Dashboard, Security, AI, Alerts & Notifications, Sync &
+                           Connections (Sync Health), Planning (Target Allocation,
+                           Watchlist), Data & Exports; every section keeps its id.
+                           buildSettingsIndex fills the sticky index (≥961px, a left
+                           column) and the "Jump to" select (narrower) from the group
+                           headings; revealHashTarget lands a deep link
+                           (#sync-health, #deleted-transactions, #recent-errors, …)
+                           on its section, opening a closed <details> first, and
+                           again once the page has settled unless you've scrolled
+                           since; tests/design-d5.test.js pins the groups and anchors
     subscriptions.ejs    — Subscription/utility management template
     accounts.ejs         — Teller Connect enrollment + CSV import template
     login.ejs            — Login template with helmet materialize animation on success
@@ -1068,9 +1080,16 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2454 tests as of latest); use
+  Perfin and Per-sistant test files (2466 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2454 tests across 129 test files (incl.
+  Current count: 2466 tests across 130 test files (incl.
+  `tests/design-d5.test.js` — design pass D5: the seven Settings groups in order with each
+  section in its group, every pre-D5 id still on the page once, every `/settings#…` anchor the
+  code links to present, buildSettingsIndex run in a vm (every titled group in the index and the
+  Jump to select, escaped, an untitled one left out), revealHashTarget (a closed <details>
+  opened, scrolled to, its group marked; an unknown / empty / malformed hash ignored), the
+  labelled select (IF-3), the CSS (sticky index and hidden select only at ≥961px, the anchors'
+  scroll margin, D1's 860px) and settings.ejs rendered through EJS standalone and under /perfin;
   `tests/design-d4.test.js` — design pass D4: the decision-6 section order on the page and
   `DASHBOARD_WIDGETS` in that same DOM order (every selector found, 20 keys, the summary not a
   toggle), `applyDashboardWidgets` hiding exactly the switched-off key; the pyramid's
@@ -1985,7 +2004,7 @@ shell/
   fake @anthropic-ai/sdk: /api/ask + runCategorize charge their usage rows,
   429 once the cap is hit, ask charges accumulated tokens AND still charges
   on a mid-loop failure — F1).
-- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink — empty since roadmap T1.5 Batch C fixed the Review page's review-summary 500), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). Since cycle-7 Batch 20 (G2) the run is SEEDED (`e2e/seed.js`, in the spec's beforeAll — through the apps' own routes: housing config + generated obligations, a manual account + manual expense, a generic CSV with a refund row and a split, a rollover budget, a goal, a subscription, a credit score, one transaction deleted through the route, a Plaid-free tax year — a paycheck and a pharmacy charge on a CSV account and a 1099-NEC on the checklist, T3.3 K4; Per-sistant notes in each privacy tier, a habit with logs, a todo with subtasks; one Job Radar listing and one linked task inserted directly, since no route creates either), a `console.error` fails a page (the browser's "Failed to load resource" line is left to the response check), and a CLICK SWEEP per page presses every visible, enabled `button / [role=button|checkbox|tab] / summary` counted on load (≤80) that isn't `data-e2e-skip` or labelled destructive (delete / remove / unlink / send / empty / sign out / log out / reset / purge / disconnect / archive / trash / revoke / cancel subscription / mark settled), dismissing dialogs and returning to the page between presses; a failure names the control pressed, and `SWEEP_KNOWN_GAPS` must only shrink. Mark a new destructive, off-app (an external SDK) or device-permission control (microphone) `data-e2e-skip`. 70 tests (24 of them sweeps, ~230 controls pressed — plus the linked-task chip on the To-Dos page and in its edit modal, T2.4 X1b, the unified search: Perfin's nav link to /per-sistant/search, a seeded Perfin transaction found there and its link opening Activity filtered, T2.4 X3b, and undelete: the seeded deletion listed in Settings → Sync Health → Deleted transactions and brought back by Restore, and a toast's Undo button, T2.5 U2, the top nav one row at the same size on five Perfin pages and no attachments-migration error after a fresh boot, design D1, and the dashboard (design D3 / D4): the Summary card and Needs attention with the rent item opening the Rent page, and on a phone the summary on the first screen with the pyramid collapsed until opened (then kept open, its tabs a no-wrap scroll row), and the Tax page: its sections for the seeded Plaid-free year,
+- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink — empty since roadmap T1.5 Batch C fixed the Review page's review-summary 500), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). Since cycle-7 Batch 20 (G2) the run is SEEDED (`e2e/seed.js`, in the spec's beforeAll — through the apps' own routes: housing config + generated obligations, a manual account + manual expense, a generic CSV with a refund row and a split, a rollover budget, a goal, a subscription, a credit score, one transaction deleted through the route, a Plaid-free tax year — a paycheck and a pharmacy charge on a CSV account and a 1099-NEC on the checklist, T3.3 K4; Per-sistant notes in each privacy tier, a habit with logs, a todo with subtasks; one Job Radar listing and one linked task inserted directly, since no route creates either), a `console.error` fails a page (the browser's "Failed to load resource" line is left to the response check), and a CLICK SWEEP per page presses every visible, enabled `button / [role=button|checkbox|tab] / summary` counted on load (≤80) that isn't `data-e2e-skip` or labelled destructive (delete / remove / unlink / send / empty / sign out / log out / reset / purge / disconnect / archive / trash / revoke / cancel subscription / mark settled), dismissing dialogs and returning to the page between presses; a failure names the control pressed, and `SWEEP_KNOWN_GAPS` must only shrink. Mark a new destructive, off-app (an external SDK) or device-permission control (microphone) `data-e2e-skip`. 71 tests (24 of them sweeps, ~230 controls pressed — plus the linked-task chip on the To-Dos page and in its edit modal, T2.4 X1b, the unified search: Perfin's nav link to /per-sistant/search, a seeded Perfin transaction found there and its link opening Activity filtered, T2.4 X3b, and undelete: the seeded deletion listed in Settings → Sync Health → Deleted transactions and brought back by Restore, and a toast's Undo button, T2.5 U2, the top nav one row at the same size on five Perfin pages and no attachments-migration error after a fresh boot, design D1, and the dashboard (design D3 / D4): the Summary card and Needs attention with the rent item opening the Rent page, and on a phone the summary on the first screen with the pyramid collapsed until opened (then kept open, its tabs a no-wrap scroll row), Settings (design D5): /settings#sync-health, #deleted-transactions (opened) and #recent-errors landing on their sections with Sync & Connections marked in the sticky index, and on a phone the Jump to select, and the Tax page: its sections for the seeded Plaid-free year,
 a form added through the page and marked received, and the ZIP download, T3.3 K4). The `migrations` job ALSO runs the route contract suite (`npm run test:contract`, step "Route contract tests against real Postgres", `CONTRACT_DATABASE_URL` = the same service container; the Postgres user must be able to CREATE/DROP DATABASE).
 - `.claude/commands/` — Project slash-command prompts, generated from the
   claude-workflow-tools templates (synced to v1.43.0 via `/sync-commands`):
@@ -2861,7 +2880,7 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   payday is 3 days past with no deposit from that source, only once that account's
   bank connection has completed a clean sync since (CSV / manual accounts never alert).
   Switching them on doesn't announce deposits from before (`services/payday-alerts.js`).
-- **Per-sistant tasks** (roadmap T2.4 X2, opt-in — Settings → Notifications & Automation →
+- **Per-sistant tasks** (roadmap T2.4 X2, opt-in — Settings → Alerts & Notifications →
   Per-sistant Tasks; unified shell only — standalone the section says so and hides its
   controls): Perfin opens a Per-sistant To-Do for rent & utilities due, a utility amount to
   enter, a subscription still charging after you cancelled, a tax form that hasn't arrived
@@ -3296,9 +3315,18 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
 - **Page width (design pass D1)**: `.container` — which holds the top nav — is one
   width on every page (1060px); a page narrows its CONTENT with `#main-content {
   max-width: … }` in its `extraStyles` (default 960px; Accounts 640, Budgets / Goals
-  720, Tax 820, Settings 860). A per-page `.container` width used to squeeze the nav:
+  720, Tax 820, Settings 860 — 1080 at ≥961px, where its group index takes a left
+  column, design D5). A per-page `.container` width used to squeeze the nav:
   on Budgets it wrapped into three rows at a desktop width. Don't set a page's
   `.container` width — `tests/design-d1.test.js` fails on it.
+- **Settings layout (design pass D5, decision 8)**: one page, seven groups — Appearance &
+  Dashboard; Security; AI; Alerts & Notifications (push, Cash Alerts, Per-sistant Tasks, CSV
+  reminders); Sync & Connections (Sync Health, auto-sync, Sheets, keep-alive); Planning (Target
+  Allocation, Watchlist); Data & Exports. At ≥961px a sticky index of the groups sits in a left
+  column; narrower, a "Jump to" select. Both are built from the group headings, so a new group
+  lists itself — add a `<section class="settings-group" id="group-…">` with an `h3.settings-group-title`
+  and keep each section's id (deep links: `#sync-health`, `#deleted-transactions`,
+  `#recent-errors`, `#cash-alerts-section`, `#linked-tasks-section`, `#ai-insights`).
 - **"Last synced" nav badge** (Phase D): top nav shows "Synced 47m ago" with color-coded
   staleness: green (<6h), yellow (6-24h), red (>24h). Tooltip shows per-source
   freshness (transactions, balances, auto-sync). Populated from the most recent of
@@ -3853,7 +3881,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2454 tests passing across 129 test files (Perfin 1789 + Per-sistant 665), plus the real-Postgres route contract suite (253 tests; CI `migrations` job, `npm run test:contract`) and 70 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2466 tests passing across 130 test files (Perfin 1801 + Per-sistant 665), plus the real-Postgres route contract suite (253 tests; CI `migrations` job, `npm run test:contract`) and 71 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands

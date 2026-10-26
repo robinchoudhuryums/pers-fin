@@ -14,13 +14,49 @@
     select option { background: var(--bg); }
     input[type="number"] { width: 80px; text-align: center; }
     #modules-container label:hover { border-color: var(--border-hover) !important; }
+    /* Design D5 (decision 8): seven groups, an index beside them on a wide screen
+       and a "Jump to" select on a narrow one — both filled by buildSettingsIndex. */
+    .settings-group-title { font-size: 12px; text-transform: uppercase; letter-spacing: 1.5px;
+      color: var(--warm); margin: 24px 0 12px; font-weight: 500; }
+    .settings-group { scroll-margin-top: 16px; }
+    .settings-group .section[id], #recent-errors, #deleted-transactions { scroll-margin-top: 16px; }
+    .settings-index { display: none; }
+    .settings-index ol { list-style: none; margin: 0; padding: 0; }
+    .settings-index a { display: block; padding: 8px 10px; border-left: 2px solid transparent;
+      color: var(--text-muted); font-size: 13px; text-decoration: none; }
+    .settings-index a:hover { color: var(--text); }
+    .settings-index a[aria-current="true"] { color: var(--text); border-left-color: var(--warm); }
+    .settings-jump { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; }
+    .settings-jump label { font-size: 12px; color: var(--text-muted); }
+    .settings-jump select { flex: 1; min-width: 0; }
+    @media (min-width: 961px) {
+      #main-content.settings-wide { max-width: 1080px; }
+      .settings-layout { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 28px; align-items: start; }
+      .settings-index { display: block; position: sticky; top: 16px; }
+      .settings-jump { display: none; }
+    }
 ` }) %>
 <%- include('partials/nav', { activePage: 'settings' }) %>
   <h1>Settings</h1>
   <p class="subtitle">Preferences and configuration</p>
   <div id="status-msg" class="status-msg"></div>
 
-  <h3 class="settings-group-title" style="font-size:12px;text-transform:uppercase;letter-spacing:1.5px;color:var(--warm, #d4a574);margin:24px 0 12px;font-weight:500;">Appearance &amp; Display</h3>
+  <!-- Design D5 (decision 8): Settings stays one page, its sections under seven
+       groups. The index (sticky, ≥961px) and the "Jump to…" select (narrower) are
+       built from these group headings at load (buildSettingsIndex), so they can't
+       drift; every section keeps its id, so deep links keep working. -->
+  <div class="settings-layout">
+    <nav class="settings-index" id="settings-index" aria-label="Settings groups">
+      <ol id="settings-index-list"></ol>
+    </nav>
+    <div class="settings-body">
+      <div class="settings-jump">
+        <label for="settings-jump">Jump to</label>
+        <select id="settings-jump"><option value="">Choose a group…</option></select>
+      </div>
+
+      <section class="settings-group" id="group-appearance" aria-labelledby="group-appearance-title">
+      <h3 class="settings-group-title" id="group-appearance-title">Appearance &amp; Dashboard</h3>
   <div class="section"><h2>Appearance</h2>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Theme</div><div class="desc">Switch between dark (night) and light (day) mode</div></div>
@@ -65,14 +101,23 @@
     </div>
   </div>
 
+  <div class="section"><h2>Dashboard Widgets</h2>
+    <div class="setting-row" style="flex-direction:column;align-items:stretch;">
+      <div class="setting-info" style="margin-bottom:12px;"><div class="name">Visible Sections</div><div class="desc">Choose which dashboard sections to show</div></div>
+      <div id="widget-toggles" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;"></div>
+    </div>
+  </div>
+
   <div class="section" id="install-section" style="display:none;"><h2>Install App</h2>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Add to Home Screen</div><div class="desc" id="install-desc">Install Perfin as a standalone app for faster access and offline fallback</div></div>
       <div class="setting-control"><button class="btn primary" id="install-btn">Install</button></div>
     </div>
   </div>
+      </section>
 
-  <h3 class="settings-group-title" style="font-size:12px;text-transform:uppercase;letter-spacing:1.5px;color:var(--warm, #d4a574);margin:24px 0 12px;font-weight:500;">Security</h3>
+      <section class="settings-group" id="group-security" aria-labelledby="group-security-title">
+      <h3 class="settings-group-title" id="group-security-title">Security</h3>
   <div class="section"><h2>Security</h2>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Session Timeout</div><div class="desc">Minutes before requiring password again (1-1440)</div></div>
@@ -109,8 +154,10 @@
       <div id="biometric-status" style="margin-top:8px;font-size:12px;"></div>
     </div>
   </div>
+      </section>
 
-  <h3 class="settings-group-title" style="font-size:12px;text-transform:uppercase;letter-spacing:1.5px;color:var(--warm, #d4a574);margin:24px 0 12px;font-weight:500;">AI &amp; Intelligence</h3>
+      <section class="settings-group" id="group-ai" aria-labelledby="group-ai-title">
+      <h3 class="settings-group-title" id="group-ai-title">AI</h3>
   <div class="section" id="ai-insights"><h2>AI Insights</h2>
     <div class="setting-row">
       <div class="setting-info"><div class="name">API Status</div><div class="desc" id="api-status-desc">Checking...</div></div>
@@ -270,8 +317,10 @@
     <div id="usage-summary" style="padding:10px 0;font-size:13px;color:var(--text-muted);font-weight:300;">Loading...</div>
     <div id="usage-history" style="max-height:260px;overflow-y:auto;"></div>
   </div>
+      </section>
 
-  <h3 class="settings-group-title" style="font-size:12px;text-transform:uppercase;letter-spacing:1.5px;color:var(--warm, #d4a574);margin:24px 0 12px;font-weight:500;">Notifications &amp; Automation</h3>
+      <section class="settings-group" id="group-alerts" aria-labelledby="group-alerts-title">
+      <h3 class="settings-group-title" id="group-alerts-title">Alerts &amp; Notifications</h3>
   <div class="section"><h2>Push Notifications</h2>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Enable Notifications</div><div class="desc" id="push-desc">Get alerts for anomalies, upcoming charges, and goal milestones</div></div>
@@ -353,6 +402,101 @@
     </div>
   </div>
 
+  <div class="section"><h2>CSV Import Reminders</h2>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Import Reminders</div><div class="desc">Show dashboard banner when manual accounts haven't had a CSV import recently</div></div>
+      <div class="setting-control">
+        <label class="toggle"><input type="checkbox" id="csv-reminder-toggle"><span class="slider"></span></label>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Reminder Interval</div><div class="desc">Days between reminders</div></div>
+      <div class="setting-control">
+        <select id="csv-reminder-days" aria-label="CSV reminder after (days)">
+          <option value="7">Every 7 days</option><option value="14">Every 14 days</option>
+          <option value="21">Every 21 days</option><option value="30">Every 30 days</option>
+        </select>
+      </div>
+    </div>
+  </div>
+      </section>
+
+      <section class="settings-group" id="group-sync" aria-labelledby="group-sync-title">
+      <h3 class="settings-group-title" id="group-sync-title">Sync &amp; Connections</h3>
+  <div class="section" id="sync-health"><h2>Sync Health</h2>
+    <div id="data-health-body" style="font-size:13px;color:var(--text-muted);">Loading…</div>
+    <div class="setting-row" style="margin-top:12px;">
+      <div class="setting-info"><div class="name">Reconcile Now</div><div class="desc">Re-fetch the last 90 days from every linked bank to recover any missed transactions. Safe to run anytime — duplicates are ignored.</div></div>
+      <div class="setting-control"><button class="btn" id="reconcile-btn">Reconcile</button></div>
+    </div>
+    <div class="setting-row" style="margin-top:12px;">
+      <div class="setting-info"><div class="name">Operator Checks</div><div class="desc">Things only you can fix outside the app: GitHub backstop workflows, backups, workflow secrets, repository visibility, the Teller certificate, bank webhooks and the Knowledge index. GitHub results are cached for 6 hours.</div></div>
+      <div class="setting-control"><button class="btn" id="operator-checks-btn">Check now</button></div>
+    </div>
+    <div id="operator-checks-body" style="font-size:13px;color:var(--text-muted);">Loading…</div>
+    <div class="setting-row" id="recent-errors" style="margin-top:12px;">
+      <div class="setting-info"><div class="name">Recent errors</div><div class="desc">Server errors the app recorded, grouped by kind (both apps). Resolve one to hide it until it happens again. Kept for 90 days.</div></div>
+    </div>
+    <div id="recent-errors-body" style="font-size:13px;color:var(--text-muted);">Loading…</div>
+    <details id="deleted-transactions" style="margin-top:12px;">
+      <summary class="name">Deleted transactions <span id="deleted-transactions-count"></span></summary>
+      <div class="desc" style="margin:6px 0;">Transactions you deleted stay deleted — a sync, reconcile or CSV re-import never brings them back. Restore one to put it back with its category, notes, rename and splits.</div>
+      <div id="deleted-transactions-body" style="font-size:13px;color:var(--text-muted);">Loading…</div>
+    </details>
+  </div>
+
+  <div class="section"><h2>Bank Auto-Sync</h2>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Automatic Transaction Sync</div><div class="desc">Pull new transactions and account balances on a schedule without clicking Sync</div></div>
+      <div class="setting-control">
+        <label class="toggle"><input type="checkbox" id="auto-sync-toggle"><span class="slider"></span></label>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Sync Interval</div><div class="desc">How often to fetch new transactions (process must be awake — enable Keep-Alive on free-tier Render)</div></div>
+      <div class="setting-control">
+        <select id="auto-sync-interval-select" aria-label="Bank auto-sync interval">
+          <option value="1">Every hour</option>
+          <option value="3">Every 3 hours</option>
+          <option value="6" selected>Every 6 hours</option>
+          <option value="12">Every 12 hours</option>
+          <option value="24">Daily</option>
+        </select>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Last Auto-Sync</div><div class="desc">Most recent scheduled sync run</div></div>
+      <div class="setting-control"><span id="auto-sync-last" style="font-size:12px;color:var(--text-muted);">Never</span></div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Sync Notifications</div><div class="desc">Show a notification after each auto-sync completes</div></div>
+      <div class="setting-control">
+        <label class="toggle"><input type="checkbox" id="sync-notif-toggle" checked><span class="slider"></span></label>
+      </div>
+    </div>
+  </div>
+
+  <div class="section"><h2>Google Sheets Auto-Sync</h2>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Auto-Sync</div><div class="desc">Automatically sync data to Google Sheets on a schedule</div></div>
+      <div class="setting-control">
+        <label class="toggle"><input type="checkbox" id="sheets-auto-toggle"><span class="slider"></span></label>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Sync Interval</div><div class="desc">How often to auto-push to Sheets</div></div>
+      <div class="setting-control">
+        <select id="sheets-interval-select" aria-label="Sheets auto-sync interval">
+          <option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option>
+        </select>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info"><div class="name">Last Auto-Sync</div><div class="desc" id="sheets-last-sync-desc">--</div></div>
+      <div class="setting-control"><span id="sheets-last-sync" style="font-size:12px;color:var(--text-muted);">Never</span></div>
+    </div>
+  </div>
+
   <div class="section" id="keepalive-section"><h2>Keep-Alive</h2>
     <p class="desc" id="keepalive-always-on" hidden>This server is always on (ALWAYS_ON), so it never sleeps and the keep-alive ping isn't needed.</p>
     <div class="setting-row">
@@ -393,106 +537,10 @@
       <div class="setting-control"><span id="keepalive-estimate" style="font-size:12px;color:var(--text-muted);">--</span></div>
     </div>
   </div>
+      </section>
 
-  <div class="section"><h2>CSV Import Reminders</h2>
-    <div class="setting-row">
-      <div class="setting-info"><div class="name">Import Reminders</div><div class="desc">Show dashboard banner when manual accounts haven't had a CSV import recently</div></div>
-      <div class="setting-control">
-        <label class="toggle"><input type="checkbox" id="csv-reminder-toggle"><span class="slider"></span></label>
-      </div>
-    </div>
-    <div class="setting-row">
-      <div class="setting-info"><div class="name">Reminder Interval</div><div class="desc">Days between reminders</div></div>
-      <div class="setting-control">
-        <select id="csv-reminder-days" aria-label="CSV reminder after (days)">
-          <option value="7">Every 7 days</option><option value="14">Every 14 days</option>
-          <option value="21">Every 21 days</option><option value="30">Every 30 days</option>
-        </select>
-      </div>
-    </div>
-  </div>
-
-  <div class="section"><h2>Bank Auto-Sync</h2>
-    <div class="setting-row">
-      <div class="setting-info"><div class="name">Automatic Transaction Sync</div><div class="desc">Pull new transactions and account balances on a schedule without clicking Sync</div></div>
-      <div class="setting-control">
-        <label class="toggle"><input type="checkbox" id="auto-sync-toggle"><span class="slider"></span></label>
-      </div>
-    </div>
-    <div class="setting-row">
-      <div class="setting-info"><div class="name">Sync Interval</div><div class="desc">How often to fetch new transactions (process must be awake — enable Keep-Alive on free-tier Render)</div></div>
-      <div class="setting-control">
-        <select id="auto-sync-interval-select" aria-label="Bank auto-sync interval">
-          <option value="1">Every hour</option>
-          <option value="3">Every 3 hours</option>
-          <option value="6" selected>Every 6 hours</option>
-          <option value="12">Every 12 hours</option>
-          <option value="24">Daily</option>
-        </select>
-      </div>
-    </div>
-    <div class="setting-row">
-      <div class="setting-info"><div class="name">Last Auto-Sync</div><div class="desc">Most recent scheduled sync run</div></div>
-      <div class="setting-control"><span id="auto-sync-last" style="font-size:12px;color:var(--text-muted);">Never</span></div>
-    </div>
-    <div class="setting-row">
-      <div class="setting-info"><div class="name">Sync Notifications</div><div class="desc">Show a notification after each auto-sync completes</div></div>
-      <div class="setting-control">
-        <label class="toggle"><input type="checkbox" id="sync-notif-toggle" checked><span class="slider"></span></label>
-      </div>
-    </div>
-  </div>
-
-  <div class="section" id="sync-health"><h2>Sync Health</h2>
-    <div id="data-health-body" style="font-size:13px;color:var(--text-muted);">Loading…</div>
-    <div class="setting-row" style="margin-top:12px;">
-      <div class="setting-info"><div class="name">Reconcile Now</div><div class="desc">Re-fetch the last 90 days from every linked bank to recover any missed transactions. Safe to run anytime — duplicates are ignored.</div></div>
-      <div class="setting-control"><button class="btn" id="reconcile-btn">Reconcile</button></div>
-    </div>
-    <div class="setting-row" style="margin-top:12px;">
-      <div class="setting-info"><div class="name">Operator Checks</div><div class="desc">Things only you can fix outside the app: GitHub backstop workflows, backups, workflow secrets, repository visibility, the Teller certificate, bank webhooks and the Knowledge index. GitHub results are cached for 6 hours.</div></div>
-      <div class="setting-control"><button class="btn" id="operator-checks-btn">Check now</button></div>
-    </div>
-    <div id="operator-checks-body" style="font-size:13px;color:var(--text-muted);">Loading…</div>
-    <div class="setting-row" id="recent-errors" style="margin-top:12px;">
-      <div class="setting-info"><div class="name">Recent errors</div><div class="desc">Server errors the app recorded, grouped by kind (both apps). Resolve one to hide it until it happens again. Kept for 90 days.</div></div>
-    </div>
-    <div id="recent-errors-body" style="font-size:13px;color:var(--text-muted);">Loading…</div>
-    <details id="deleted-transactions" style="margin-top:12px;">
-      <summary class="name">Deleted transactions <span id="deleted-transactions-count"></span></summary>
-      <div class="desc" style="margin:6px 0;">Transactions you deleted stay deleted — a sync, reconcile or CSV re-import never brings them back. Restore one to put it back with its category, notes, rename and splits.</div>
-      <div id="deleted-transactions-body" style="font-size:13px;color:var(--text-muted);">Loading…</div>
-    </details>
-  </div>
-
-  <div class="section"><h2>Google Sheets Auto-Sync</h2>
-    <div class="setting-row">
-      <div class="setting-info"><div class="name">Auto-Sync</div><div class="desc">Automatically sync data to Google Sheets on a schedule</div></div>
-      <div class="setting-control">
-        <label class="toggle"><input type="checkbox" id="sheets-auto-toggle"><span class="slider"></span></label>
-      </div>
-    </div>
-    <div class="setting-row">
-      <div class="setting-info"><div class="name">Sync Interval</div><div class="desc">How often to auto-push to Sheets</div></div>
-      <div class="setting-control">
-        <select id="sheets-interval-select" aria-label="Sheets auto-sync interval">
-          <option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option>
-        </select>
-      </div>
-    </div>
-    <div class="setting-row">
-      <div class="setting-info"><div class="name">Last Auto-Sync</div><div class="desc" id="sheets-last-sync-desc">--</div></div>
-      <div class="setting-control"><span id="sheets-last-sync" style="font-size:12px;color:var(--text-muted);">Never</span></div>
-    </div>
-  </div>
-
-  <div class="section"><h2>Dashboard Widgets</h2>
-    <div class="setting-row" style="flex-direction:column;align-items:stretch;">
-      <div class="setting-info" style="margin-bottom:12px;"><div class="name">Visible Sections</div><div class="desc">Choose which dashboard sections to show</div></div>
-      <div id="widget-toggles" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;"></div>
-    </div>
-  </div>
-
+      <section class="settings-group" id="group-planning" aria-labelledby="group-planning-title">
+      <h3 class="settings-group-title" id="group-planning-title">Planning</h3>
   <!-- Target allocation (Follow-on for #8). API-only until now; this form
        lets the user enter target percentages per security_type (etf, equity,
        bond, etc.) so /api/investments/performance can compute drift. -->
@@ -547,8 +595,10 @@
       <div id="watchlist-status" style="margin-top:6px;font-size:11px;color:var(--text-muted);"></div>
     </div>
   </div>
+      </section>
 
-  <h3 class="settings-group-title" style="font-size:12px;text-transform:uppercase;letter-spacing:1.5px;color:var(--warm, #d4a574);margin:24px 0 12px;font-weight:500;">Data &amp; Export</h3>
+      <section class="settings-group" id="group-data" aria-labelledby="group-data-title">
+      <h3 class="settings-group-title" id="group-data-title">Data &amp; Exports</h3>
   <div class="section"><h2>Data</h2>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Export Transactions</div><div class="desc">Download as CSV</div></div>
@@ -581,6 +631,10 @@
     </div>
   </div>
 <%- include('partials/foot') %>
+      </section>
+    </div>
+  </div>
+
   <script nonce="<%= nonce %>">
     function applyTheme(t) { document.documentElement.setAttribute('data-theme', t); localStorage.setItem('perfin-theme', t); }
     // Roadmap T2.2 L4: what the cash alerts last did (cash_alert_state.last_check).
@@ -2001,5 +2055,67 @@
 
     checkPushStatus();
     loadSettings(); loadInsights(); loadUsageHistory(); loadCatStatus(); loadCatAccuracy(); loadBiometricCredentials(); loadDataHealth(); loadOperatorChecks(false); loadRecentErrors(); loadDeletedTransactions(false); loadCashFloors();
+
+    // Design D5 (decision 8): the index and the "Jump to" select are built from the
+    // group headings, so a group added to the page lists itself.
+    function buildSettingsIndex(doc) {
+      var items = Array.prototype.slice.call(doc.querySelectorAll('.settings-group')).map(function(g) {
+        var t = g.querySelector('.settings-group-title');
+        return { id: g.id, title: t ? String(t.textContent).trim() : '' };
+      }).filter(function(i) { return i.id && i.title; });
+      var list = doc.getElementById('settings-index-list');
+      if (list) list.innerHTML = items.map(function(i) {
+        return '<li><a href="#' + esc(i.id) + '" data-group="' + esc(i.id) + '">' + esc(i.title) + '</a></li>';
+      }).join('');
+      var sel = doc.getElementById('settings-jump');
+      if (sel) sel.innerHTML = '<option value="">Choose a group…</option>' + items.map(function(i) {
+        return '<option value="' + esc(i.id) + '">' + esc(i.title) + '</option>';
+      }).join('');
+      return items;
+    }
+    // Marks the index entry of the group holding `el`.
+    function markCurrentGroup(doc, el) {
+      var group = el && el.closest ? el.closest('.settings-group') : null;
+      doc.querySelectorAll('#settings-index-list a').forEach(function(a) {
+        if (group && a.getAttribute('data-group') === group.id) a.setAttribute('aria-current', 'true');
+        else a.removeAttribute('aria-current');
+      });
+    }
+    // A deep link (#sync-health, #deleted-transactions, #recent-errors, a group…)
+    // lands on its section: a closed <details> target is opened first.
+    function revealHashTarget(doc, hash) {
+      var id = String(hash || '').replace(/^#/, '');
+      try { id = decodeURIComponent(id); } catch (_) { return null; }
+      if (!id) return null;
+      var el = doc.getElementById(id);
+      if (!el) return null;
+      if (el.tagName === 'DETAILS') el.open = true;
+      if (typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'start' });
+      markCurrentGroup(doc, el);
+      return el;
+    }
+    (function initSettingsIndex() {
+      var main = document.getElementById('main-content');
+      if (main) main.classList.add('settings-wide');
+      buildSettingsIndex(document);
+      var sel = document.getElementById('settings-jump');
+      if (sel) sel.addEventListener('change', function() {
+        if (!sel.value) return;
+        if (location.hash === '#' + sel.value) revealHashTarget(document, location.hash);
+        else location.hash = sel.value;
+      });
+      window.addEventListener('hashchange', function() { revealHashTarget(document, location.hash); });
+      if (!location.hash) return;
+      // The sections above fill in as their loads answer, which moves the target;
+      // land on it again once the page settles unless the user has scrolled since.
+      var userMoved = false;
+      ['wheel', 'touchstart', 'keydown'].forEach(function(ev) {
+        window.addEventListener(ev, function() { userMoved = true; }, { once: true, passive: true });
+      });
+      revealHashTarget(document, location.hash);
+      window.addEventListener('load', function() {
+        setTimeout(function() { if (!userMoved) revealHashTarget(document, location.hash); }, 600);
+      });
+    })();
   </script>
 </body></html>

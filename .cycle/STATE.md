@@ -18,7 +18,20 @@ Updated: 2026-10-26
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Design & UX pass — D4 DONE** (2026-10-26, branch `claude/sweet-ritchie-f9d8ah`,
+- **Status:** **Design & UX pass — D5 DONE** (2026-10-26, branch `claude/sweet-ritchie-f9d8ah`,
+  PR robinchoudhuryums/pers-fin#133). Plan: `.cycle/plan-design-ux.md`. Block:
+  `.cycle/blocks/7-design-d5-broad-implement.md`.
+  - **Shipped:**
+    - Settings in the decision-8 groups (Appearance & Dashboard, Security, AI, Alerts & Notifications, Sync & Connections, Planning, Data & Exports) — markup moves only, every id kept;
+    - a sticky group index at ≥961px and a "Jump to" select narrower, both built from the group headings;
+    - deep links (#sync-health, #deleted-transactions — opened — #recent-errors, …) land on their sections.
+  - **Verified:**
+    - npm test 2466/2466 (12 new);
+    - Playwright 71/71;
+    - mutation checks 13/13;
+    - screenshots.
+  - **Where I left off:** D5 committed and pushed. Next: `/broad-implement D6`.
+- **Previous status (D4):** **Design & UX pass — D4 DONE** (2026-10-26, branch `claude/sweet-ritchie-f9d8ah`,
   PR robinchoudhuryums/pers-fin#133). Plan: `.cycle/plan-design-ux.md`. Block:
   `.cycle/blocks/7-design-d4-broad-implement.md`.
   - **Shipped:**

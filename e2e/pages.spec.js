@@ -264,6 +264,46 @@ test.describe("every page loads cleanly", () => {
     expect(problems, problems.join("\n")).toEqual([]);
   });
 
+  test("Settings deep links land on their sections; the index on a desktop, Jump to on a phone (design D5)", async ({ page }) => {
+    const problems = watch(page);
+    await page.setViewportSize({ width: 1280, height: 900 });
+    for (const id of ["sync-health", "deleted-transactions", "recent-errors"]) {
+      await page.goto("/perfin/settings#" + id);
+      const target = page.locator("#" + id);
+      // It lands near the top of the screen once the page settles (the sections
+      // above fill in as their loads answer; the page lands on it again).
+      await expect.poll(async () => {
+        const box = await target.boundingBox();
+        return box && box.y >= -2 && box.y < 200;
+      }, { timeout: 5000 }).toBe(true);
+      if (id === "deleted-transactions") await expect(target).toHaveAttribute("open", "");
+      await expect(page.locator('#settings-index-list a[data-group="group-sync"]')).toHaveAttribute("aria-current", "true");
+    }
+    const index = page.locator("#settings-index");
+    await expect(index).toBeVisible();
+    await expect(index.locator("a")).toHaveText(["Appearance & Dashboard", "Security", "AI", "Alerts & Notifications",
+      "Sync & Connections", "Planning", "Data & Exports"]);
+    await expect(page.locator("#settings-jump")).toBeHidden();
+    // The index stays on screen while the page scrolls.
+    await page.locator("#group-data").scrollIntoViewIfNeeded();
+    const idxBox = await index.boundingBox();
+    expect(idxBox.y).toBeGreaterThanOrEqual(0);
+    expect(idxBox.y).toBeLessThan(100);
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/perfin/settings");
+    await expect(index).toBeHidden();
+    const jump = page.getByLabel("Jump to");
+    await expect(jump).toBeVisible();
+    await jump.selectOption({ label: "Planning" });
+    await expect(page).toHaveURL(/#group-planning$/);
+    await expect.poll(async () => {
+      const box = await page.locator("#group-planning").boundingBox();
+      return box && box.y >= -2 && box.y < 200;
+    }, { timeout: 5000 }).toBe(true);
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
   test("a deleted transaction is listed in Settings and Restore brings it back (T2.5 U2)", async ({ page }) => {
     const problems = watch(page);
     await page.goto("/perfin/settings");
