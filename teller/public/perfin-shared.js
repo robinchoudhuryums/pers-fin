@@ -191,9 +191,15 @@
 
   // --- Formatters ---
   // Thousands separators so large amounts read clearly and don't visually
-  // overflow narrow mobile stat cards ($22,199.52 vs $22199.52). Negatives keep
-  // the prior "$-12.34" shape (toLocaleString renders the minus before digits).
-  function fmt(n) { return '$' + parseFloat(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  // overflow narrow mobile stat cards ($22,199.52 vs $22199.52). A negative is
+  // "-$12.34" (design pass D1 — it used to read "$-12.34"); a value that rounds
+  // to zero is "$0.00", never "-$0.00".
+  function fmt(n) {
+    var x = parseFloat(n || 0);
+    var rounded = Math.round(x * 100) / 100;
+    var s = '$' + Math.abs(rounded).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return rounded < 0 ? '-' + s : s;
+  }
   // Calendar dates (DATE columns) arrive as 'YYYY-MM-DD' or as node-pg's UTC
   // midnight 'YYYY-MM-DDT00:00:00.000Z'. Parsing either with `new Date()` and
   // formatting in the browser's zone showed every date ONE DAY EARLY west of

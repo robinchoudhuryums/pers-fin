@@ -1035,9 +1035,19 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2370 tests as of latest); use
+  Perfin and Per-sistant test files (2392 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2370 tests across 124 test files (incl.
+  Current count: 2392 tests across 126 test files (incl.
+  `tests/design-d1.test.js` — design pass D1 (`.cycle/plan-design-ux.md`): the real `fmt` in a vm
+  (-$X, thousands separators, never -$0.00), the investment return and the Goals FIRE formatter's
+  sign, the dashboard Review widget's `renderReviewQueue` in a vm (a calendar date under a west-of-UTC
+  TZ, "Choose a category" + Apply disabled + Remember unticked without a suggestion, the suggestion
+  selected + Remember ticked with one, an unlisted suggestion offered, the change handler enabling
+  Apply, Apply's empty-category guard) and the page width (one `.container` width, no page view with
+  the nav setting its own, the narrow pages on `#main-content`) — with
+  `apps/per-sistant/tests/design-d1.test.js` (every sidebar entry has an icon, the dashboard stat
+  tiles coloured by value in a vm, two tiles per row on a phone, the legacy attachment copy after
+  `runMigrations` and never at router construction);
   `tests/roadmap-t3-3-k4.test.js` — roadmap T3.3 K4: taxSeason run in a vm (January–April → last
   year, in season; May–December → this year); public/tax-page.js run in a vm over a fake DOM — the
   default year by month, ?year= (2000..this year, an older one still listed), the downloads and URL
@@ -1910,7 +1920,7 @@ shell/
   fake @anthropic-ai/sdk: /api/ask + runCategorize charge their usage rows,
   429 once the cap is hit, ask charges accumulated tokens AND still charges
   on a mid-loop failure — F1).
-- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink — empty since roadmap T1.5 Batch C fixed the Review page's review-summary 500), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). Since cycle-7 Batch 20 (G2) the run is SEEDED (`e2e/seed.js`, in the spec's beforeAll — through the apps' own routes: housing config + generated obligations, a manual account + manual expense, a generic CSV with a refund row and a split, a rollover budget, a goal, a subscription, a credit score, one transaction deleted through the route, a Plaid-free tax year — a paycheck and a pharmacy charge on a CSV account and a 1099-NEC on the checklist, T3.3 K4; Per-sistant notes in each privacy tier, a habit with logs, a todo with subtasks; one Job Radar listing and one linked task inserted directly, since no route creates either), a `console.error` fails a page (the browser's "Failed to load resource" line is left to the response check), and a CLICK SWEEP per page presses every visible, enabled `button / [role=button|checkbox|tab] / summary` counted on load (≤80) that isn't `data-e2e-skip` or labelled destructive (delete / remove / unlink / send / empty / sign out / log out / reset / purge / disconnect / archive / trash / revoke / cancel subscription / mark settled), dismissing dialogs and returning to the page between presses; a failure names the control pressed, and `SWEEP_KNOWN_GAPS` must only shrink. Mark a new destructive, off-app (an external SDK) or device-permission control (microphone) `data-e2e-skip`. 66 tests (24 of them sweeps, ~230 controls pressed — plus the linked-task chip on the To-Dos page and in its edit modal, T2.4 X1b, the unified search: Perfin's nav link to /per-sistant/search, a seeded Perfin transaction found there and its link opening Activity filtered, T2.4 X3b, and undelete: the seeded deletion listed in Settings → Sync Health → Deleted transactions and brought back by Restore, and a toast's Undo button, T2.5 U2, and the Tax page: its sections for the seeded Plaid-free year,
+- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink — empty since roadmap T1.5 Batch C fixed the Review page's review-summary 500), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). Since cycle-7 Batch 20 (G2) the run is SEEDED (`e2e/seed.js`, in the spec's beforeAll — through the apps' own routes: housing config + generated obligations, a manual account + manual expense, a generic CSV with a refund row and a split, a rollover budget, a goal, a subscription, a credit score, one transaction deleted through the route, a Plaid-free tax year — a paycheck and a pharmacy charge on a CSV account and a 1099-NEC on the checklist, T3.3 K4; Per-sistant notes in each privacy tier, a habit with logs, a todo with subtasks; one Job Radar listing and one linked task inserted directly, since no route creates either), a `console.error` fails a page (the browser's "Failed to load resource" line is left to the response check), and a CLICK SWEEP per page presses every visible, enabled `button / [role=button|checkbox|tab] / summary` counted on load (≤80) that isn't `data-e2e-skip` or labelled destructive (delete / remove / unlink / send / empty / sign out / log out / reset / purge / disconnect / archive / trash / revoke / cancel subscription / mark settled), dismissing dialogs and returning to the page between presses; a failure names the control pressed, and `SWEEP_KNOWN_GAPS` must only shrink. Mark a new destructive, off-app (an external SDK) or device-permission control (microphone) `data-e2e-skip`. 68 tests (24 of them sweeps, ~230 controls pressed — plus the linked-task chip on the To-Dos page and in its edit modal, T2.4 X1b, the unified search: Perfin's nav link to /per-sistant/search, a seeded Perfin transaction found there and its link opening Activity filtered, T2.4 X3b, and undelete: the seeded deletion listed in Settings → Sync Health → Deleted transactions and brought back by Restore, and a toast's Undo button, T2.5 U2, the top nav one row at the same size on five Perfin pages and no attachments-migration error after a fresh boot, design D1, and the Tax page: its sections for the seeded Plaid-free year,
 a form added through the page and marked received, and the ZIP download, T3.3 K4). The `migrations` job ALSO runs the route contract suite (`npm run test:contract`, step "Route contract tests against real Postgres", `CONTRACT_DATABASE_URL` = the same service container; the Postgres user must be able to CREATE/DROP DATABASE).
 - `.claude/commands/` — Project slash-command prompts, generated from the
   claude-workflow-tools templates (synced to v1.43.0 via `/sync-commands`):
@@ -2628,7 +2638,12 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   Teller-map or Plaid-PFC suggestion when available, `mapCategoryFor`) + "Remember" checkbox (exact-match rule, DC-13) + Apply
   button. Apply sets `user_category` and (when "Remember" is checked)
   inserts a `categorization_rules` row. Auto-hides when the queue is empty.
-  Toggleable (key: `reviewQueue`).
+  Toggleable (key: `reviewQueue`). Since design pass D1 a row WITHOUT a
+  suggestion starts on a disabled "Choose a category" option with Apply
+  disabled until one is picked, and "Remember" starts ticked only for a row
+  WITH a suggestion (one Apply used to file a pharmacy under the first
+  category, "Food & Drink", as a permanent rule); the date is a calendar day
+  (`fmtDate`), not the raw ISO timestamp.
 - **Per-account history chart page** (`/accounts/:id/history`): Chart.js line
   chart with range selector (3 / 6 / 12 / 24 / 60 months) + 5 summary cards
   (current, range start, change $, change %, snapshot count). Reads from
@@ -3165,8 +3180,17 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   `class="responsive-cards"` + `data-label`s rather than relying on horizontal
   scroll.
 - **Money formatting**: the shared global `fmt()` (`perfin-shared.js`) renders
-  thousands separators (`$22,199.52`); stat-card `.value` font uses `clamp()` +
-  `overflow-wrap` so large amounts never overflow narrow 2-up mobile cards.
+  thousands separators (`$22,199.52`) and a negative as `-$24.29` (design pass D1 —
+  it printed `$-24.29`; a value that rounds to zero is `$0.00`); the investment
+  return line and the Goals page's FIRE card follow the same sign rule. Stat-card
+  `.value` font uses `clamp()` + `overflow-wrap` so large amounts never overflow
+  narrow 2-up mobile cards.
+- **Page width (design pass D1)**: `.container` — which holds the top nav — is one
+  width on every page (1060px); a page narrows its CONTENT with `#main-content {
+  max-width: … }` in its `extraStyles` (default 960px; Accounts 640, Budgets / Goals
+  720, Tax 820, Settings 860). A per-page `.container` width used to squeeze the nav:
+  on Budgets it wrapped into three rows at a desktop width. Don't set a page's
+  `.container` width — `tests/design-d1.test.js` fails on it.
 - **"Last synced" nav badge** (Phase D): top nav shows "Synced 47m ago" with color-coded
   staleness: green (<6h), yellow (6-24h), red (>24h). Tooltip shows per-source
   freshness (transactions, balances, auto-sync). Populated from the most recent of
@@ -3721,7 +3745,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2370 tests passing across 124 test files (Perfin 1712 + Per-sistant 658), plus the real-Postgres route contract suite (249 tests; CI `migrations` job, `npm run test:contract`) and 66 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2392 tests passing across 126 test files (Perfin 1727 + Per-sistant 665), plus the real-Postgres route contract suite (249 tests; CI `migrations` job, `npm run test:contract`) and 68 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands

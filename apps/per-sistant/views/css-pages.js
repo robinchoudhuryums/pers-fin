@@ -185,7 +185,11 @@ module.exports = `
 }
 @media (max-width: 480px) {
   h1 { font-size: 20px; }
-  .top-cards { grid-template-columns: 1fr; }
+  /* Design pass D1: two columns on a phone — one tile per row put ~1000px of
+     stat tiles above the first task. */
+  .top-cards { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .top-cards .card { padding: 14px; }
+  .top-cards .card .value { font-size: 26px; }
   .modal {
     width: 100%; max-width: 100%; max-height: 100vh; height: 100vh;
     border-radius: 0; padding: 18px; padding-bottom: 80px;

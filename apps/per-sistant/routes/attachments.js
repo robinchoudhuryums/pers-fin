@@ -43,8 +43,10 @@ module.exports = function ({ pool }) {
     limits: { fileSize: MAX_ATTACHMENT_BYTES },
   }) : null;
 
-  // Copy any legacy files that are still on this disk (fail-soft, async).
-  migrateDiskAttachments(pool).then((n) => { if (n) console.log(`Moved ${n} attachment(s) from disk into Postgres`); });
+  // The legacy disk copy (migrateDiskAttachments) runs from server.js's start()
+  // AFTER runMigrations — called here, at router construction, it ran before the
+  // attachments table existed on a fresh database and logged a server error at
+  // every first boot (design pass D1).
 
   // Declared BEFORE the generic /:entityType/:entityId route (F121): that one
   // matched /download/7 first (entityType "download" → 400), so no attachment

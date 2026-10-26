@@ -98,7 +98,11 @@ body::after {
 }
 
 /* Container & links */
-.container { max-width: 960px; margin: 0 auto; padding: 24px 20px; position: relative; z-index: 1; }
+.container { max-width: 1060px; margin: 0 auto; padding: 24px 20px; position: relative; z-index: 1; }
+/* Design pass D1: the container (and so the top nav inside it) is the same width on every
+   page; a page narrows its CONTENT through #main-content. A per-page .container width used
+   to squeeze the nav — on Budgets (720px) it wrapped into three rows on a desktop. */
+#main-content { display: block; max-width: 960px; margin: 0 auto; }
 a { color: var(--warm); text-decoration: none; transition: color 0.2s; }
 a:hover { color: var(--text); }
 

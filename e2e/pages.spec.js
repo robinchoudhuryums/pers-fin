@@ -266,6 +266,27 @@ test.describe("every page loads cleanly", () => {
     expect(problems, problems.join("\n")).toEqual([]);
   });
 
+  test("the top nav is the same single row on every Perfin page at desktop width (design D1)", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const boxes = {};
+    for (const p of ["/perfin/dashboard", "/perfin/budgets", "/perfin/accounts", "/perfin/settings", "/perfin/tax"]) {
+      await page.goto(p);
+      const box = await page.locator("nav.topnav").boundingBox();
+      boxes[p] = { x: Math.round(box.x), width: Math.round(box.width), height: Math.round(box.height) };
+    }
+    const first = boxes["/perfin/dashboard"];
+    expect(first.height, "one row").toBeLessThan(80);
+    for (const [p, b] of Object.entries(boxes)) expect(b, p).toEqual(first);
+  });
+
+  test("a fresh boot logs no attachments-migration error (design D1)", async ({ page }) => {
+    const res = await page.request.get("/perfin/api/errors?all=1&limit=100");
+    expect(res.status()).toBe(200);
+    const { errors } = await res.json();
+    const hits = errors.filter((e) => /attachment migrate/i.test(e.message || ""));
+    expect(hits, JSON.stringify(hits)).toEqual([]);
+  });
+
   test("a toast's Undo button closes it and runs its action (T2.5 U2)", async ({ page }) => {
     await page.goto("/perfin/transactions");
     await page.evaluate(() => {

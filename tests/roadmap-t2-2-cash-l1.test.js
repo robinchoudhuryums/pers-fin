@@ -239,13 +239,18 @@ describe("dashboard Cash Flow line", () => {
   const start = dash.indexOf("    async function loadCashFlow() {");
   const end = dash.indexOf("    // --- Year-over-Year Comparison ---");
 
+  // The REAL fmt from perfin-shared.js (a stub of the old "$-50.00" shape
+  // pinned the bug — design pass D1).
+  const shared = fs.readFileSync(path.join(__dirname, "..", "teller", "public", "perfin-shared.js"), "utf8");
+  const fmtSrc = shared.slice(shared.indexOf("function fmt(n) {"), shared.indexOf("// Calendar dates (DATE columns)"));
+  const realFmt = new Function(fmtSrc + "\nreturn fmt;")();
   async function render(data) {
     const els = {};
     const document = { getElementById: (id) => (els[id] = els[id] || { style: {}, innerHTML: "" }) };
     const fn = new Function("apiFetch", "document", "fmt", "fmtDate", "esc",
       dash.slice(start, end) + "\nreturn loadCashFlow;")(
       async () => ({ ok: true, json: async () => data }), document,
-      (n) => "$" + Number(n).toFixed(2), (d) => "D(" + d + ")", (s) => String(s));
+      realFmt, (d) => "D(" + d + ")", (s) => String(s));
     await fn();
     return els["cashflow-summary"].innerHTML;
   }
@@ -253,7 +258,7 @@ describe("dashboard Cash Flow line", () => {
 
   it("shows the lowest projected balance and its date (red when negative)", async () => {
     const html = await render({ ...base, lowest_balance: -50, lowest_balance_date: "2026-02-14" });
-    assert.match(html, /Lowest projected: <strong style="color:var\(--red\);">\$-50\.00<\/strong> on D\(2026-02-14\)/);
+    assert.match(html, /Lowest projected: <strong style="color:var\(--red\);">-\$50\.00<\/strong> on D\(2026-02-14\)/);
     const pos = await render({ ...base, lowest_balance: 120, lowest_balance_date: "2026-02-03" });
     assert.match(pos, /color:var\(--warm\);">\$120\.00<\/strong> on D\(2026-02-03\)/);
   });

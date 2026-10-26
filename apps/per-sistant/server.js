@@ -16,7 +16,7 @@ const config = require("./config");
 const { pool, runMigrations } = require("./db");
 const { advanceRecurrence, rollMissedRecurring, fireWebhooks, processDueReminders } = require("./helpers");
 const { todayStr } = require("./routes/health");
-const { loadEmailAttachments } = require("./routes/attachments");
+const { loadEmailAttachments, migrateDiskAttachments } = require("./routes/attachments");
 const middleware = require("./middleware");
 const views = require("./views");
 const { startKeepAlive } = require("./services/keep-alive");
@@ -215,6 +215,11 @@ async function start(opts = {}) {
   // just PERSISTENT_DATABASE_URL set would silently skip migrations.
   if (process.env.PERSISTENT_DATABASE_URL || process.env.NEON_DATABASE_URL) {
     await runMigrations();
+    // Copy any legacy attachment files still on this disk into Postgres —
+    // after the migrations, which create the attachments table (design pass D1:
+    // run at router construction it failed on every fresh database). Fail-soft
+    // and not awaited.
+    migrateDiskAttachments(pool).then((n) => { if (n) console.log(`Moved ${n} attachment(s) from disk into Postgres`); });
   } else {
     console.log("No database URL set (PERSISTENT_DATABASE_URL / NEON_DATABASE_URL) — running without database (API calls will fail)");
   }

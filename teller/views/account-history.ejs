@@ -4,7 +4,7 @@
   head.ejs already emits the document + <body> + .container, so this view no
   longer wraps it in a second <html>/<head> or opens its own container.
 %>
-<%- include('partials/head', { title: 'Account History', extraStyles: '.container { max-width: 980px; }' }) %>
+<%- include('partials/head', { title: 'Account History', extraStyles: '#main-content { max-width: 980px; }' }) %>
 <%- include('partials/nav', { activePage: 'dashboard' }) %>
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">
     <div>

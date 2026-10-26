@@ -803,7 +803,11 @@ describe("Mobile UX: number formatting", () => {
   const sharedJs = fs.readFileSync(path.join(__dirname, "../teller/public/perfin-shared.js"), "utf8");
   const sharedCss = fs.readFileSync(path.join(__dirname, "../teller/public/perfin-shared.css"), "utf8");
   it("fmt() uses thousands separators (toLocaleString), not bare toFixed", () => {
-    assert.match(sharedJs, /function fmt\(n\) \{ return '\$' \+ parseFloat\(n \|\| 0\)\.toLocaleString\('en-US'/);
+    // Design pass D1 put the sign before the "$" (-$12.34); the separators stay
+    // (behaviour pinned in tests/design-d1.test.js).
+    const body = sharedJs.slice(sharedJs.indexOf("function fmt(n) {"), sharedJs.indexOf("// Calendar dates (DATE columns)"));
+    assert.match(body, /\.toLocaleString\('en-US', \{ minimumFractionDigits: 2, maximumFractionDigits: 2 \}\)/);
+    assert.doesNotMatch(body, /toFixed/);
   });
   it("stat-card .value font is responsive (clamp + overflow-wrap)", () => {
     assert.match(sharedCss, /\.card \.value \{ font-size: clamp\([^)]*\);[\s\S]*overflow-wrap: anywhere/);

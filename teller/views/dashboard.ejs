@@ -1,5 +1,5 @@
 <%- include('partials/head', { title: 'Dashboard', extraStyles: `
-    .container { max-width: 1060px; }
+    #main-content { max-width: 1060px; }
     .top-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
                  gap: 16px; margin-bottom: 36px; }
     .accounts-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
@@ -2069,7 +2069,7 @@
         var cov = data.cost_basis_coverage || null;
         var partial = cov && cov.holdings_total > 0 && cov.holdings_with_basis < cov.holdings_total;
         var basisValue = partial ? cov.value_with_basis : data.total_value;
-        retEl.textContent = '$' + sign + data.total_return.toFixed(2) + pctTxt +
+        retEl.textContent = sign + fmt(data.total_return) + pctTxt +
           '  ·  $' + basisValue.toFixed(2) + ' / $' + data.total_cost_basis.toFixed(2) + ' cost' +
           (partial ? '  ·  cost known for ' + cov.holdings_with_basis + ' of ' + cov.holdings_total + ' holdings' : '');
         var allocEl = document.getElementById('invperf-allocation');
@@ -3139,35 +3139,49 @@
         renderReviewQueue(data.transactions);
       } catch (e) { /* non-critical */ }
     }
+    // Design pass D1: a row without a suggestion starts on "Choose a category"
+    // with Apply disabled, and "Remember" is ticked only when there IS a
+    // suggestion — the old first-option default + always-ticked Remember made
+    // one Apply file a pharmacy under Food & Drink for good. The date is a
+    // calendar day (fmtDate), not the raw ISO timestamp.
     function renderReviewQueue(txns) {
       var listEl = document.getElementById('review-queue-list');
-      var optHtml = REVIEW_CATEGORIES.map(function(c) {
-        return '<option value="' + esc(c) + '">' + esc(c) + '</option>';
-      }).join('');
       listEl.innerHTML = txns.map(function(t) {
         var rid = 'rev-' + t.transaction_id.replace(/[^a-zA-Z0-9]/g, '_');
-        var defaultCat = t.suggested_category || REVIEW_CATEGORIES[0];
+        var suggested = t.suggested_category ? String(t.suggested_category) : '';
+        var cats = REVIEW_CATEGORIES.slice();
+        if (suggested && cats.indexOf(suggested) === -1) cats.unshift(suggested);
+        var optHtml = (suggested ? '' : '<option value="" selected disabled>Choose a category</option>') +
+          cats.map(function(c) {
+            return '<option value="' + esc(c) + '"' + (c === suggested ? ' selected' : '') + '>' + esc(c) + '</option>';
+          }).join('');
         var hint = t.hint ? ' <span style="font-size:10px;color:var(--text-muted);">[' + esc(t.hint) + ']</span>' : '';
         return '<div id="' + rid + '" style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);font-size:12px;">' +
           '<div style="flex:1;min-width:0;">' +
             '<div style="font-weight:500;color:var(--text);">' + esc(t.merchant || '(no merchant)') + hint + '</div>' +
-            '<div style="font-size:11px;color:var(--text-muted);">' + esc(t.date) + ' &middot; ' + fmt(t.amount) + '</div>' +
+            '<div style="font-size:11px;color:var(--text-muted);">' + esc(fmtDate(t.date)) + ' &middot; ' + fmt(t.amount) + '</div>' +
           '</div>' +
           '<select aria-label="Category for ' + esc(t.merchant || 'this transaction') + '" data-cat-select="' + esc(t.transaction_id) + '" style="padding:4px 6px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);font-family:inherit;">' +
-            optHtml.replace('value="' + esc(defaultCat) + '"', 'value="' + esc(defaultCat) + '" selected') +
+            optHtml +
           '</select>' +
           '<label style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--text-muted);cursor:pointer;">' +
-            '<input type="checkbox" data-cat-rule="' + esc(t.transaction_id) + '" checked> Remember' +
+            '<input type="checkbox" data-cat-rule="' + esc(t.transaction_id) + '"' + (suggested ? ' checked' : '') + '> Remember' +
           '</label>' +
-          '<button data-cat-apply="' + esc(t.transaction_id) + '" style="padding:4px 10px;font-size:11px;border:1px solid var(--green);border-radius:4px;background:transparent;color:var(--green);cursor:pointer;font-family:inherit;">Apply</button>' +
+          '<button data-cat-apply="' + esc(t.transaction_id) + '"' + (suggested ? '' : ' disabled') + ' style="padding:4px 10px;font-size:11px;border:1px solid var(--green);border-radius:4px;background:transparent;color:var(--green);cursor:pointer;font-family:inherit;">Apply</button>' +
         '</div>';
       }).join('');
     }
+    // Picking a category enables that row's Apply.
+    onDelegate('review-queue-list', 'change', '[data-cat-select]', function() {
+      var txnId = this.getAttribute('data-cat-select');
+      var btn = document.querySelector('[data-cat-apply="' + txnId.replace(/"/g, '\\"') + '"]');
+      if (btn) btn.disabled = !this.value;
+    });
     onDelegate('review-queue-list', 'click', '[data-cat-apply]', async function() {
       var txnId = this.getAttribute('data-cat-apply');
       var sel = document.querySelector('[data-cat-select="' + txnId.replace(/"/g, '\\"') + '"]');
       var ruleCb = document.querySelector('[data-cat-rule="' + txnId.replace(/"/g, '\\"') + '"]');
-      if (!sel) return;
+      if (!sel || !sel.value) return;
       var category = sel.value;
       var createRule = ruleCb ? ruleCb.checked : false;
       this.disabled = true;

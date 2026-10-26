@@ -185,18 +185,36 @@ async function searchTogglePin(id, pinned) {
   load();
 }
 
+// Design pass D1: a tile's colour says something about its VALUE — red only for
+// urgent / overdue work that exists, green only for work done; every other
+// tile, and every zero, is plain text. (Colour used to be fixed per tile, so
+// "Urgent 0" was red and "Overdue 0" green side by side.)
+function statTileClass(kind, value) {
+  var n = Number(value) || 0;
+  if (n <= 0) return '';
+  if (kind === 'urgent' || kind === 'overdue') return 'red';
+  if (kind === 'completed') return 'green';
+  return '';
+}
+function statTiles(stats) {
+  return [
+    {kind:'pending',label:'Pending Tasks',value:stats.todos.pending},
+    {kind:'urgent',label:'Urgent',value:stats.todos.urgent},
+    {kind:'overdue',label:'Overdue',value:stats.todos.overdue},
+    {kind:'completed',label:'Completed',value:stats.todos.done},
+    {kind:'drafts',label:'Email Drafts',value:stats.emails.drafts},
+    {kind:'scheduled',label:'Scheduled',value:stats.emails.scheduled},
+    {kind:'sent',label:'Emails Sent',value:stats.emails.sent},
+    {kind:'notes',label:'Notes',value:stats.notes.total},
+  ].map(function(c) {
+    var cls = statTileClass(c.kind, c.value);
+    return '<div class="card"><div class="label">'+c.label+'</div><div class="value'+(cls ? ' '+cls : '')+'">'+(Number(c.value) || 0)+'</div></div>';
+  }).join('');
+}
+
 async function load() {
   const stats = await fetch('/api/stats').then(r=>r.json());
-  document.getElementById('cards').innerHTML = [
-    {label:'Pending Tasks',value:stats.todos.pending,cls:'warm'},
-    {label:'Urgent',value:stats.todos.urgent,cls:'red'},
-    {label:'Overdue',value:stats.todos.overdue,cls:stats.todos.overdue > 0 ? 'red' : 'green'},
-    {label:'Completed',value:stats.todos.done,cls:'green'},
-    {label:'Email Drafts',value:stats.emails.drafts,cls:'teal'},
-    {label:'Scheduled',value:stats.emails.scheduled,cls:'warm'},
-    {label:'Emails Sent',value:stats.emails.sent,cls:'green'},
-    {label:'Notes',value:stats.notes.total,cls:'teal'},
-  ].map(c => '<div class="card"><div class="label">'+c.label+'</div><div class="value '+c.cls+'">'+c.value+'</div></div>').join('');
+  document.getElementById('cards').innerHTML = statTiles(stats);
 
   renderMiniCal();
 
