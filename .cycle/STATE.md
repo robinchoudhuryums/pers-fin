@@ -33,7 +33,11 @@ implement and reflect sessions only set Phase.)
     - contract 249/249;
     - Playwright 66/66 (3 new);
     - mutation checks 15/15.
-  - **Where I left off:** K4 committed and pushed. Roadmap T3.3 is complete. Next: whatever the roadmap names next (`/roadmap`), or `/reflect`.
+  - **Where I left off:** K4 committed and pushed. Roadmap T3.3 is complete. **Next:** the design & UX pass,
+    `.cycle/plan-design-ux.md`. It has 7 batches, D1–D7, starting with `/broad-implement D1` (the bugs on
+    screen: the review-widget timestamps and defaults, `fmt()` negatives, the nav width on narrow pages,
+    Per-sistant's stat tiles and Job Radar icon, and the attachments migration running before the
+    migrations). It came from a screenshot review of both apps the operator agreed with in full.
 - **Previous status (T3.3 K3):** **Roadmap T3.3 (year-end tax package) — K3 DONE** (2026-10-26, branch
   `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Block:
   `.cycle/blocks/7-roadmap-t3-3-k3-broad-implement.md`.
