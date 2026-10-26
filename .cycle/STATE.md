@@ -18,7 +18,24 @@ Updated: 2026-10-26
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T3.3 (year-end tax package) — K1 DONE** (2026-10-26, branch
+- **Status:** **Roadmap T3.3 (year-end tax package) — K2 DONE** (2026-10-26, branch
+  `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Block:
+  `.cycle/blocks/7-roadmap-t3-3-k2-broad-implement.md`.
+  - **Shipped:**
+    - the `tax_documents` table (migration, reset-fresh WIPE);
+    - `getIncomeForYear` in financial-queries;
+    - `teller/services/tax-documents.js` — suggestions from the year's data, ON CONFLICT DO NOTHING, so a received / dismissed / hand-added row is never changed;
+    - `teller/routes/tax.js` — GET / POST / PATCH / DELETE `/api/tax/documents` + `/suggest`, the year rule, a suggested row's DELETE a 409;
+    - the `tax_documents` linked-task source (default on; Settings checkbox; GET /api/settings now returns the sources over the defaults).
+  - **Decision taken in-batch:** the 1098 rules read the existing `getTaxDeductionTransactions`. The annotated `getTaxDeductionReport` refactor stays in K3, where the route switches to it.
+  - **Verified:**
+    - npm test 2330/2330 (24 new);
+    - contract 245/245 (4 new, `tax-documents`);
+    - migration test twice;
+    - Playwright 63/63;
+    - mutation checks 19/19.
+  - **Where I left off:** K2 committed and pushed. Next: `/broad-implement K3` (the package: getTaxDeductionReport / getHousingPayments refactors, gatherTaxPackage, zip-store, `GET /api/tax/package`).
+- **Previous status (T3.3 K1):** **Roadmap T3.3 (year-end tax package) — K1 DONE** (2026-10-26, branch
   `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Block:
   `.cycle/blocks/7-roadmap-t3-3-k1-broad-implement.md`. The plan's decisions were accepted as written.
   - **Shipped:** the `investment_transactions` table (migration, reset-fresh WIPE); the Plaid flow
@@ -34,7 +51,7 @@ implement and reflect sessions only set Phase.)
     Playwright not re-run — no page changed.
   - **Where I left off:** K1 committed and pushed. Next: `/broad-implement K2` (the tax documents
     checklist + the `tax_documents` linked-task source).
-- **Previous status (T3.3 plan):** **Roadmap T3.3 (year-end tax package) — PLANNED, split into 4 batches** (2026-10-26,
+- **Earlier status (T3.3 plan):** **Roadmap T3.3 (year-end tax package) — PLANNED, split into 4 batches** (2026-10-26,
   branch `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t3-3-tax-package.md`.
   - **Batches:** K1 investment transactions + FIFO realized gains + investment income (server);

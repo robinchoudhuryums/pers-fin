@@ -1069,6 +1069,29 @@ async function runMigrationsOnce() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_inv_txn_account_date
       ON investment_transactions (investment_account_id, txn_date)`);
 
+    // Roadmap T3.3 K2: the year-end tax documents checklist (decision 5). One
+    // row per (tax year, form, issuer — case-insensitive). 'suggested' rows are
+    // derived from the year's data (services/tax-documents.js) and inserted ON
+    // CONFLICT DO NOTHING, so a row the user marked received or dismissed is
+    // never re-suggested; 'manual' rows are added by hand. The form list is
+    // services/tax-documents.FORMS (a test pins the two equal).
+    await client.query(`CREATE TABLE IF NOT EXISTS tax_documents (
+      id SERIAL PRIMARY KEY,
+      tax_year INT NOT NULL CHECK (tax_year BETWEEN 2000 AND 9999),
+      form TEXT NOT NULL CHECK (form IN ('W-2', '1099-INT', '1099-DIV', '1099-B', '1099-R',
+        '1099-NEC', '1099-MISC', '1099-K', '1099-G', '1098', '1098-E', '1098-T', '1095', 'other')),
+      issuer TEXT NOT NULL DEFAULT '',
+      expected_by DATE,
+      received_at DATE,
+      dismissed_at TIMESTAMPTZ,
+      origin TEXT NOT NULL DEFAULT 'manual' CHECK (origin IN ('suggested', 'manual')),
+      notes TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_tax_documents_year_form_issuer
+      ON tax_documents (tax_year, form, (LOWER(issuer)))`);
+
     // Scheduled-job heartbeat table (F4 — missed-job detection). One row per
     // background job in teller/startup.js, UPSERTed by services/job-health.js
     // when ticks are flushed. The `_watchdog` row stores the last-notified

@@ -590,6 +590,77 @@ async function getTaxDeductionTransactions(pool, year) {
 }
 
 /**
+ * Income for calendar `year` (roadmap T3.3 K2) — the same rows as every other
+ * income figure (incomePredicate, settled deposits, INCOME_AMOUNT: a deposit on
+ * a shared account at the user's share), by source and month, each row with a
+ * kind (wages / interest / dividends / other) and the account's institution.
+ * The kind is Plaid's personal_finance_category.detailed when it says so, else
+ * the description: "interest", "dividend", then the payroll words (the broad
+ * "deposit" / "ach credit" stay "other"). DATE bounds — no timezone shift.
+ * Returns { year, total, by_kind, by_source: [{ source, kind, institution,
+ * total, count, first_date, last_date }], by_month: [{ month, total }] }.
+ */
+async function getIncomeForYear(pool, year) {
+  const txt = incomeText("t");
+  const r = await pool.query(
+    `SELECT COALESCE(t.user_merchant_name, t.merchant_name, t.name) AS source,
+            TO_CHAR(t.date, 'YYYY-MM') AS month,
+            CASE
+              WHEN t.personal_finance_category->>'detailed' = 'INCOME_WAGES' THEN 'wages'
+              WHEN t.personal_finance_category->>'detailed' = 'INCOME_INTEREST_EARNED' THEN 'interest'
+              WHEN t.personal_finance_category->>'detailed' = 'INCOME_DIVIDENDS' THEN 'dividends'
+              WHEN ${txt} ~* '\\yinterest\\y' THEN 'interest'
+              WHEN ${txt} ~* '\\ydividends?\\y' THEN 'dividends'
+              WHEN ${txt} ~* '\\y(payroll|direct dep|direct deposit|dir dep|salary)\\y' THEN 'wages'
+              ELSE 'other'
+            END AS kind,
+            COALESCE(te.institution_name, pi.institution_name, la.institution_name_manual, la.name) AS institution,
+            ROUND(SUM(${INCOME_AMOUNT}), 2) AS total,
+            COUNT(*)::int AS count,
+            MIN(t.date)::text AS first_date, MAX(t.date)::text AS last_date
+     FROM transactions t
+     LEFT JOIN linked_accounts la ON la.account_id = t.account_id
+     LEFT JOIN teller_enrollments te ON te.id = la.teller_enrollment_id
+     LEFT JOIN plaid_items pi ON pi.id = la.plaid_item_id
+     WHERE t.amount < 0 AND t.pending = false
+       AND t.date >= make_date($1, 1, 1) AND t.date < make_date($1 + 1, 1, 1)
+       AND ${incomePredicate("t")}
+     GROUP BY 1, 2, 3, 4
+     ORDER BY 1, 2`,
+    [year]
+  );
+  const round2 = (n) => Math.round(n * 100) / 100;
+  const sources = new Map();
+  const months = new Map();
+  const byKind = { wages: 0, interest: 0, dividends: 0, other: 0 };
+  let total = 0;
+  for (const row of r.rows) {
+    const amt = Number(row.total) || 0;
+    total += amt;
+    byKind[row.kind] = (byKind[row.kind] || 0) + amt;
+    months.set(row.month, (months.get(row.month) || 0) + amt);
+    const key = [row.source, row.kind, row.institution].join("\u0000");
+    const s = sources.get(key);
+    if (!s) {
+      sources.set(key, { source: row.source, kind: row.kind, institution: row.institution, total: amt, count: row.count, first_date: row.first_date, last_date: row.last_date });
+    } else {
+      s.total += amt;
+      s.count += row.count;
+      if (row.first_date < s.first_date) s.first_date = row.first_date;
+      if (row.last_date > s.last_date) s.last_date = row.last_date;
+    }
+  }
+  for (const k of Object.keys(byKind)) byKind[k] = round2(byKind[k]);
+  return {
+    year,
+    total: round2(total),
+    by_kind: byKind,
+    by_source: [...sources.values()].map((s) => ({ ...s, total: round2(s.total) })).sort((a, b) => b.total - a.total),
+    by_month: [...months.entries()].sort().map(([month, t]) => ({ month, total: round2(t) })),
+  };
+}
+
+/**
  * The live recurring-income streams (F34) — the last 4 months of income
  * deposits (INCOME_PREDICATE, source = the display merchant so a rename
  * groups) clustered per source by amount and classified weekly / biweekly /
@@ -640,4 +711,5 @@ module.exports = {
   TAX_REGEX,
   taxCategoryFor,
   getTaxDeductionTransactions,
+  getIncomeForYear,
 };

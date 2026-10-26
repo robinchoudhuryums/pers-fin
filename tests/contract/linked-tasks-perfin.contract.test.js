@@ -18,7 +18,8 @@ const { SKIP, perfinDb, perfinApp } = require("./_setup");
 describe("Linked tasks — Perfin's computation (T2.4 X2a) on real Postgres", { skip: SKIP }, () => {
   let pool, app, lt;
   const q = (s, p) => pool.query(s, p);
-  const ALL = { sources: { housing: true, utility_amount: true, bills: true }, bill_lead_days: 3 };
+  // The tax_documents source (T3.3 K2) is judged in tests/contract/tax-documents.
+  const ALL = { sources: { housing: true, utility_amount: true, bills: true, tax_documents: false }, bill_lead_days: 3 };
   const keys = (r) => r.desired.map((d) => d.key).sort();
   const ob = async (payee, period, category, label, amount, status, due_day = 1, auto = false) => (await q(
     `INSERT INTO payee_obligations (payee, period, category, label, amount, status, due_day, auto_generated)

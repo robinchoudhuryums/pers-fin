@@ -179,6 +179,10 @@ teller/
                            checks (roadmap T2.1 W6 — webhook-status.js, when a
                            pool or a precomputed webhookStatus is passed)
     financial-queries.js — Shared income/spending SQL helpers (split-adjusted spending,
+                           getIncomeForYear(pool, year) — a calendar year's income on
+                           incomePredicate + INCOME_AMOUNT by source / kind (wages /
+                           interest / dividends / other — Plaid's detailed PFC, else
+                           the description) / institution / month (roadmap T3.3 K2),
                            keyword-filtered income, current-month per-category spending
                            that honors transaction_splits) — single source of truth used
                            by AI insights and budgets so the numbers match the dashboard.
@@ -238,7 +242,10 @@ teller/
                            exists, unless removed), a utility amount whose bill should
                            have arrived (housing.utilityAmountDue), manual-bill
                            occurrences 30 days back to the lead with no bill_payments
-                           row (manualBillOccurrences). Each source isolated; only the
+                           row (manualBillOccurrences), and (roadmap T3.3 K2,
+                           taxDocumentTasks) each open tax_documents row past its
+                           expected_by — "Find your <year> <form> from <issuer>",
+                           perfin:tax-doc:<id>, /tax#documents. Each source isolated; only the
                            kinds read (ok_kinds) may close tasks; a source switched off
                            isn't read; today = todayStr(). SOURCES / DEFAULT_SOURCES
                            (manual bills off). X2b: runLinkedTasks(pool, persistentPool
@@ -296,6 +303,25 @@ teller/
                            year's end so earlier buys are the lots). Tax-advantaged
                            accounts never reach gains or income. Pure apart from the
                            one read; nothing stored, nothing sent to AI
+    tax-documents.js     — The tax documents checklist (roadmap T3.3 K2): FORMS
+                           (the tax_documents CHECK list), parseTaxYear (an integer
+                           2000..this APP_TIMEZONE year, else null), expectedBy (Jan 31
+                           of the next year, Feb 15 for a 1099-B), computeSuggestions
+                           (pool, year, deps) — a W-2 per payroll source, a 1099-INT
+                           per institution at ≥ $10 (the larger of bank interest from
+                           getIncomeForYear and brokerage interest — never their sum),
+                           a 1099-DIV at ≥ $10 of dividends + capital-gain
+                           distributions, a 1099-B per brokerage with a sale, a 1099-R
+                           per retirement distribution, a 1098 / 1098-E / 1098-T from
+                           the deduction rows (mortgage interest / student loan
+                           interest / tuition); one per form + issuer
+                           case-insensitively; each source isolated (a fixed-sentence
+                           error), reasons returned, not stored —
+                           suggestTaxDocuments (INSERT … ON CONFLICT (tax_year, form,
+                           (LOWER(issuer))) DO NOTHING, so a received / dismissed /
+                           hand-added row is never changed) and listTaxDocuments (form
+                           order, each row's state received / dismissed / overdue /
+                           waiting). No AI
     projections.js       — FIRE/runway/loan math (pure): computeFireProjection
                            (FIRE number = annual spend × 100/withdrawal-rate,
                            monthly geometric compounding, 40-yr series) +
@@ -502,6 +528,13 @@ teller/
                            so rent due the 31st opens lead days before Feb 28). Since
                            X2b, generate, the obligation writes and the payment writes
                            kick the linked-task refresh after they commit.
+    tax.js               — The year-end tax package routes (roadmap T3.3): K2's
+                           documents checklist — GET / POST /api/tax/documents,
+                           PATCH / DELETE /api/tax/documents/:id, POST
+                           /api/tax/documents/suggest. The year rule (a 400), strict
+                           booleans, a duplicate a 409, a suggested row's DELETE a 409
+                           (dismiss it instead); every write kicks the linked-task
+                           refresh
     settings.js          — GET/PATCH /api/settings, POST /api/sheets/sync,
                            POST /api/sheets/dashboard, GET /api/export,
                            GET /api/data-freshness, POST /api/linked-tasks/run
@@ -916,7 +949,7 @@ shell/
   transaction. Three exported lists: `WIPE_TABLES` (incl. `investment_flows`,
   `payee_obligations`, `payee_payments`, `settlements`, `payee_obligation_skips`,
   `deleted_transactions`, `merchant_rename_rules`, `investment_transactions` (re-synced
-  from Plaid like transactions, roadmap T3.3 K1) — PSC-6: missing them left
+  from Plaid like transactions, roadmap T3.3 K1), `tax_documents` (T3.3 K2) — PSC-6: missing them left
   flows pointing at re-used `investment_accounts` ids after `RESTART IDENTITY`),
   `KEEP_TABLES`, and `UNTOUCHED_TABLES` (`schema_migrations`, `job_runs`,
   `benchmark_prices`, `app_errors`, `webhook_events`). `tests/scan-sept-batch9.test.js` asserts every table the
@@ -940,9 +973,22 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2306 tests as of latest); use
+  Perfin and Per-sistant test files (2330 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2306 tests across 121 test files (incl.
+  Current count: 2330 tests across 122 test files (incl.
+  `tests/roadmap-t3-3-k2.test.js` — roadmap T3.3 K2: parseTaxYear / expectedBy, computeSuggestions with
+  each source injected (a W-2 per payroll source and one per issuer in any case, a 1099-INT at $10 —
+  the larger of bank and brokerage interest, never their sum — a 1099-DIV at $10 of dividends +
+  distributions, a 1099-B per brokerage with its sales, a 1099-R, the 1098 family, a failing source a
+  fixed sentence while the others suggest), suggestTaxDocuments' ON CONFLICT DO NOTHING (never DO
+  UPDATE) counting only new rows, listTaxDocuments' order and states (a form due today still
+  waiting), getIncomeForYear's SQL (the year's DATE bounds, INCOME_AMOUNT, the canonical predicate) and
+  aggregation, the routes (the year 400s before any read, form / issuer / date / notes 400s, a
+  manual row with the usual deadline, a duplicate 409, strict booleans, received stamping today, 404s,
+  a suggested row's DELETE a 409, the refresh kicked only on a change, a fixed 500), the tax_documents
+  linked tasks (past expected_by only, Per-sistant's checks, on by default, isolated, unread when off),
+  GET /api/settings showing the new source on, the Settings checkbox, the migration's form list and
+  reset-fresh — the database-backed half is `tests/contract/tax-documents`;
   `tests/roadmap-t3-3-k1.test.js` — roadmap T3.3 K1: realizedGains over canned rows (FIFO across
   lots with a mixed short / long sale, a partly used lot, the "more than a year" edges incl. Feb 29,
   a dividend-reinvestment lot, a sale beyond known lots → NULL basis + partial / none coverage, an
@@ -1604,9 +1650,16 @@ shell/
   tax-investments (roadmap T3.3 K1: the flow sync over a stubbed Plaid client storing a brokerage's and
   a 401(k)'s investment transactions once — a re-sync adding none, the flows unchanged — and
   getInvestmentTaxData on those rows: one mixed-term FIFO sale, the 401(k) sale and dividend left out,
-  qualified dividends and interest, the 401(k) withdrawal under retirement, an earlier year empty).
+  qualified dividends and interest, the 401(k) withdrawal under retirement, an earlier year empty), and
+  tax-documents (roadmap T3.3 K2, both apps' real databases wired as the shell wires them:
+  getIncomeForYear on last year's rows — by kind, a joint account at 50%, the year before left out;
+  Suggest adding a W-2 per employer, a 1099-INT for a bank's $12.50 of interest but not a credit
+  union's $2, a 1099-B and a 1099-R from K1 rows and a 1098-T from tuition; a received W-2 and a
+  dismissed 1099-INT unchanged by a second Suggest; a manual duplicate in another case a 409 and a
+  suggested row's DELETE a 409; a task per open form past its date, closed by marking it received or
+  dismissed through Perfin's route).
   Since roadmap T2.5 H1 plaid-update also sends the hosted token request and a hosted update whose
-  Link session exited (flag, cursor and accounts unchanged) before the finished one. 241 tests, run
+  Link session exited (flag, cursor and accounts unchanged) before the finished one. 245 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -2141,6 +2194,16 @@ shell/
   supplies amounts. (The export used to list those per-merchant rows directly —
   frozen at the last insights run, top 15 merchants only, renamed merchants
   double-counted, Date column blank.)
+- **Tax documents checklist** (roadmap T3.3 K2; shown on the /tax page from K4): per
+  calendar year, the forms you're waiting for — W-2, 1099-INT / DIV / B / R / NEC / MISC / K /
+  G, 1098 / 1098-E / 1098-T, 1095, other — each with its issuer, the usual "arrives by" date
+  (Jan 31; Feb 15 for a 1099-B), received / dismissed and notes. "Suggest from my data"
+  (`POST /api/tax/documents/suggest`) adds what the year's data points to (payroll → W-2,
+  ≥ $10 of interest → 1099-INT, ≥ $10 of dividends → 1099-DIV, a sale → 1099-B, a retirement
+  withdrawal → 1099-R, mortgage interest / student loan interest / tuition → 1098 / 1098-E /
+  1098-T) and never touches a row you received, dismissed or added; a suggested row is
+  dismissed, not deleted, so it isn't suggested again. A form still missing after its date
+  opens a Per-sistant task when linked tasks are on (source `tax_documents`, default on).
 - **Manual bills**: User-created expected charges for the bill calendar (name, amount,
   due_day 1-31, cadence monthly/quarterly/yearly, category). CRUD via
   `/api/manual-bills`. Integrated into `/api/bill-calendar` alongside detected
@@ -2584,9 +2647,11 @@ shell/
 - **Per-sistant tasks** (roadmap T2.4 X2, opt-in — Settings → Notifications & Automation →
   Per-sistant Tasks; unified shell only — standalone the section says so and hides its
   controls): Perfin opens a Per-sistant To-Do for rent & utilities due, a utility amount to
-  enter, a subscription still charging after you cancelled and (off by default — an
-  autopaid bill nobody marks paid would stay open) a manual bill due within the lead days,
-  and closes it once the payment / amount / bill payment is recorded in Perfin. Your edits
+  enter, a subscription still charging after you cancelled, a tax form that hasn't arrived
+  by its usual date (roadmap T3.3 K2) and (off by default — an autopaid bill nobody marks
+  paid would stay open) a manual bill due within the lead days, and closes it once the
+  payment / amount / bill payment is recorded in Perfin (the form marked received or
+  dismissed). Your edits
   to a task win, and a task you complete or reopen by hand is left alone. Runs hourly,
   right after a housing or bill-payment write, and on "Run now" (`POST
   /api/linked-tasks/run`); the section shows "Last run …: N outstanding, N closed" with any
@@ -3543,7 +3608,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2306 tests passing across 121 test files (Perfin 1648 + Per-sistant 658), plus the real-Postgres route contract suite (241 tests; CI `migrations` job, `npm run test:contract`) and 63 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2330 tests passing across 122 test files (Perfin 1672 + Per-sistant 658), plus the real-Postgres route contract suite (245 tests; CI `migrations` job, `npm run test:contract`) and 63 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -3893,8 +3958,9 @@ PATCH /api/settings        # update user settings. Accepts: theme,
                            # last_income_alert_at to now) — T2.2 L3,
                            # linked_tasks_enabled (strict boolean),
                            # linked_tasks_sources (an object of still_charging /
-                           # housing / utility_amount / bills → booleans, merged over
-                           # the stored map), linked_tasks_bill_lead_days (integer
+                           # housing / utility_amount / bills / tax_documents →
+                           # booleans, merged over the stored map; GET shows the
+                           # stored map over the defaults), linked_tasks_bill_lead_days (integer
                            # 0-14) — T2.4 X2a, etc.
 POST /api/linked-tasks/run # run the linked-task sync now (Settings → Per-sistant Tasks
                            # "Run now", T2.4 X2c) → { status ok|partial, at, desired,
@@ -3902,6 +3968,24 @@ POST /api/linked-tasks/run # run the linked-task sync now (Settings → Per-sist
                            # error}] } (also stored as linked_tasks_state). 501 standalone
                            # (no Per-sistant pool), 409 while a run is going, 400 while
                            # linked_tasks_enabled is off; errors are fixed sentences
+GET  /api/tax/documents    # the tax documents checklist for a year (query: year — an
+                           # integer 2000..this year, else 400) → { year, forms,
+                           # documents: [{ id, tax_year, form, issuer, expected_by,
+                           # received_at, dismissed_at, origin suggested|manual, notes,
+                           # state received|dismissed|overdue|waiting }] } (T3.3 K2)
+POST /api/tax/documents    # add a form by hand (body: year, form, issuer?, expected_by?
+                           # — default the usual deadline, notes?) → 201; 409 when that
+                           # form + issuer (any case) is already listed
+PATCH /api/tax/documents/:id # received / dismissed (strict booleans — received stamps
+                           # today's APP_TIMEZONE date), notes (≤1000 or null),
+                           # expected_by (a date or null); 400 / 404
+DELETE /api/tax/documents/:id # a manual row only; a suggested one is a 409 { reason:
+                           # "suggested" } — dismiss it so it isn't suggested again
+POST /api/tax/documents/suggest # add the forms the year's data points to (query or body
+                           # year) → { year, added, suggestions[{ form, issuer,
+                           # expected_by, reason }], errors[{ source, error }],
+                           # documents } — ON CONFLICT DO NOTHING, never changing an
+                           # existing row; no AI
 GET  /api/data-freshness   # per-source sync timestamps with staleness flags
 GET  /api/data-health      # operator health surface — per-source freshness,
                            # Teller/Plaid connection status, scheduled-job
@@ -4585,7 +4669,14 @@ standalone-mode fallback if either app is run on its own Render service.
   the sources (decision 5: manual bills off), how many days ahead a manual bill's task
   opens, and the last run's record, written by the X2b runner). Auto-migrated; reset by
   `npm run reset:fresh`. Edited in Settings → Per-sistant Tasks (X2c), which shows the
-  record as its last-run line.
+  record as its last-run line. A source added later (T3.3 K2's `tax_documents`, default
+  on) isn't in the stored default — `effectiveSources` fills it in, and GET
+  /api/settings returns that merged map.
+- `tax_documents` (roadmap T3.3 K2): the tax documents checklist — `tax_year` (CHECK
+  2000-9999), `form` (CHECK the services/tax-documents FORMS list), `issuer` (default ''),
+  `expected_by` DATE, `received_at` DATE, `dismissed_at`, `origin` (CHECK suggested /
+  manual), `notes`, timestamps; UNIQUE INDEX (tax_year, form, LOWER(issuer)) — the
+  suggestions' ON CONFLICT target. In reset-fresh's WIPE_TABLES.
 - `user_settings.last_backup_at TIMESTAMPTZ` (VPS move): stamped by `deploy/vps/backup.sh`
   after each verified nightly backup; read by Operator Checks' on-server backup check
   when `SERVER_BACKUPS=true`. Auto-migrated.
@@ -5932,7 +6023,15 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   (reported as unknown, never $0) — the broker's 1099-B is the authority; wash sales,
   specific-lot / average-cost elections and corporate actions are not modelled (a split
   flags the security); manual and Teller-linked investment accounts have no transactions;
-  a removed (inactive) account's rows still count for its years.
+  a removed (inactive) account's rows still count for its years. K2 shipped the documents
+  checklist on the server (`tax_documents`, `services/tax-documents.js`, the
+  `/api/tax/documents` routes in routes/tax.js, `getIncomeForYear`) and the `tax_documents`
+  linked-task source (default on; its Settings box). K2 follow-ons: the task links to
+  `/tax#documents`, which K4 builds; Suggest runs only when asked (no schedule); a W-2 is
+  suggested per payroll SOURCE name, so an employer whose deposits carry two names gets
+  two; a 1099-INT from a bank can't be told apart from a brokerage cash sweep at the same
+  institution (the larger of the two counts); suggestion reasons aren't stored; 1099-NEC /
+  MISC / K / G and 1095 are manual only.
 - Roadmap T2.5 (transaction undelete + iOS re-authenticate) is DONE
   (`.cycle/plan-t2-5-undelete-ios-reauth.md`, U1 / U2 / H1 — INV-145). U1 shipped the server side of
   undelete — the delete's snapshot, `GET /api/deleted-transactions`, `POST
@@ -6304,6 +6403,7 @@ Financial Analytics:
   teller/services/financial-queries.js, teller/routes/spending-analytics.js,
   teller/services/cash-flow.js, teller/services/cash-alerts.js,
   teller/services/payday-alerts.js, teller/services/tax-investments.js,
+  teller/services/tax-documents.js, teller/routes/tax.js,
   teller/services/projections.js, teller/routes/budgets.js,
   teller/routes/goals.js, teller/routes/credit-scores.js,
   teller/routes/whats-new.js, teller/routes/watchlist.js,

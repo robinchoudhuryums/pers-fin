@@ -336,6 +336,7 @@
         <div style="margin:4px 0;"><input type="checkbox" id="linked-src-utility_amount" data-source="utility_amount"> <label for="linked-src-utility_amount">Utility amounts to enter (the bill should have arrived)</label></div>
         <div style="margin:4px 0;"><input type="checkbox" id="linked-src-still_charging" data-source="still_charging"> <label for="linked-src-still_charging">A subscription still charging after you cancelled</label></div>
         <div style="margin:4px 0;"><input type="checkbox" id="linked-src-bills" data-source="bills"> <label for="linked-src-bills">Manual bills due — off by default: autopaid bills nobody marks paid stay open</label></div>
+        <div style="margin:4px 0;"><input type="checkbox" id="linked-src-tax_documents" data-source="tax_documents"> <label for="linked-src-tax_documents">Tax forms that haven't arrived by their usual date (the Tax page's checklist)</label></div>
       </div>
       <div class="setting-row">
         <div class="setting-info"><div class="name">Bill Lead Days</div><div class="desc">How many days before a manual bill's due date its task opens (0-14)</div></div>
@@ -603,8 +604,8 @@
       el.hidden = !text;
     }
     // Roadmap T2.4 X2c: Settings → Per-sistant Tasks (linked tasks).
-    var LINKED_SOURCES = ['housing', 'utility_amount', 'still_charging', 'bills'];
-    var LINKED_KIND_LABELS = { housing: 'Rent & utilities', 'utility-amount': 'Utility amounts', 'still-charging': 'Still charging', bill: 'Manual bills' };
+    var LINKED_SOURCES = ['housing', 'utility_amount', 'still_charging', 'bills', 'tax_documents'];
+    var LINKED_KIND_LABELS = { housing: 'Rent & utilities', 'utility-amount': 'Utility amounts', 'still-charging': 'Still charging', bill: 'Manual bills', 'tax-doc': 'Tax forms' };
     function linkedTasksLastText(s) {
       var st = s && s.linked_tasks_state;
       if (!st || !st.at) return s && s.linked_tasks_enabled ? 'Not run yet — it runs hourly, or press Run now.' : '';
@@ -1637,6 +1638,7 @@
       ['linked-src-utility_amount', 'change', function() { onLinkedToggle(this, { linked_tasks_sources: { utility_amount: this.checked } }); }],
       ['linked-src-still_charging', 'change', function() { onLinkedToggle(this, { linked_tasks_sources: { still_charging: this.checked } }); }],
       ['linked-src-bills', 'change', function() { onLinkedToggle(this, { linked_tasks_sources: { bills: this.checked } }); }],
+      ['linked-src-tax_documents', 'change', function() { onLinkedToggle(this, { linked_tasks_sources: { tax_documents: this.checked } }); }],
       ['linked-tasks-lead-save', 'click', function() { saveLinkedLead(); }],
       ['linked-tasks-run', 'click', function() { runLinkedTasksNow(this); }],
       ['insight-email-toggle', 'change', function() { updateSetting('insight_emails_enabled', this.checked); }],

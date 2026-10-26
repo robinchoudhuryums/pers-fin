@@ -24,11 +24,14 @@ const SOURCES = {
   housing: "housing",
   utility_amount: "utility-amount",
   bills: "bill",
+  tax_documents: "tax-doc", // roadmap T3.3 K2
 };
 const SOURCE_KEYS = Object.keys(SOURCES);
 // Decision 5: manual bills are off by default — an autopaid bill nobody marks
 // paid would leave its task open.
-const DEFAULT_SOURCES = { still_charging: true, housing: true, utility_amount: true, bills: false };
+// Roadmap T3.3 K2 (decision 6): missing tax forms are on by default — the
+// whole feature still waits for linked_tasks_enabled.
+const DEFAULT_SOURCES = { still_charging: true, housing: true, utility_amount: true, bills: false, tax_documents: true };
 const BILL_OVERDUE_DAYS = 30;
 
 const money = (n) => "$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -146,6 +149,31 @@ async function billTasks(pool, leadDays, today) {
   return out;
 }
 
+// Tax forms that haven't arrived (roadmap T3.3 K2, decision 6): an open
+// checklist row (not received, not dismissed) whose expected_by has passed.
+// Marking it received or dismissed — or deleting a manual one — drops it from
+// the set, which closes the task.
+async function taxDocumentTasks(pool, today) {
+  const r = await pool.query(
+    `SELECT id, tax_year, form, issuer, expected_by::text AS expected_by FROM tax_documents
+      WHERE received_at IS NULL AND dismissed_at IS NULL
+        AND expected_by IS NOT NULL AND expected_by < $1::date
+      ORDER BY expected_by, id`,
+    [today]
+  );
+  return r.rows.map((d) => {
+    const form = d.form === "other" ? "tax form" : d.form;
+    return {
+      key: `${APP}:tax-doc:${d.id}`,
+      title: clip(`Find your ${d.tax_year} ${form}${d.issuer ? " from " + d.issuer : ""}`, 300),
+      description: `It usually arrives by ${d.expected_by}. Mark it received (or dismiss it) on Perfin's Tax page.`,
+      url: "/tax#documents",
+      due_date: d.expected_by,
+      priority: "medium",
+    };
+  });
+}
+
 async function computeLinkedTasks(pool, cfg = {}, today = todayStr()) {
   const sources = effectiveSources(cfg.sources);
   const lead = Number.isInteger(cfg.bill_lead_days) && cfg.bill_lead_days >= 0 && cfg.bill_lead_days <= 14 ? cfg.bill_lead_days : 3;
@@ -180,6 +208,7 @@ async function computeLinkedTasks(pool, cfg = {}, today = todayStr()) {
     await run("utility_amount", () => (ledgerOn ? utilityAmountTasks(pool, hcfg, today) : []));
   }
   await run("bills", () => billTasks(pool, lead, today));
+  await run("tax_documents", () => taxDocumentTasks(pool, today));
   return result;
 }
 
@@ -292,7 +321,7 @@ async function ensureStillChargingTask(pool, sub, { persistentPool = defaultPers
 }
 
 module.exports = {
-  computeLinkedTasks, effectiveSources, SOURCES, SOURCE_KEYS, DEFAULT_SOURCES, APP,
+  computeLinkedTasks, taxDocumentTasks, effectiveSources, SOURCES, SOURCE_KEYS, DEFAULT_SOURCES, APP,
   runLinkedTasks, refreshSoon, kick, invalidate, isRunning, ensureStillChargingTask, SYNC_ERROR,
   _reset() { _disabledDay = null; _running = null; _again = false; },
 };

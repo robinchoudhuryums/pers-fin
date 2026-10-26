@@ -75,7 +75,7 @@ describe("runLinkedTasks", () => {
       sync: async (p, args) => { syncPool = p; syncArgs = args; return { created: 1, updated: 0, closed: 2, reopened: 0, skipped: 0 }; },
     };
     const r = await lt.runLinkedTasks(pool, PS_POOL, { today: TODAY, deps });
-    assert.deepEqual(computeArgs.cfg.sources, { still_charging: true, housing: true, utility_amount: true, bills: true });
+    assert.deepEqual(computeArgs.cfg.sources, { still_charging: true, housing: true, utility_amount: true, bills: true, tax_documents: true });
     assert.equal(computeArgs.cfg.bill_lead_days, 5);
     assert.equal(computeArgs.today, TODAY);
     assert.equal(syncPool, PS_POOL);

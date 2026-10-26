@@ -59,6 +59,8 @@ const WIPE_TABLES = [
   "merchant_rename_rules",
   // Roadmap T3.3 K1: re-synced from Plaid (24 months) like transactions.
   "investment_transactions",
+  // Roadmap T3.3 K2: the tax documents checklist (user data, like budgets).
+  "tax_documents",
 ];
 
 // Preserved so the dry-run can show what's kept.

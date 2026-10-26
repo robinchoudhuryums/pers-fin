@@ -37,7 +37,7 @@ const fq = require("../teller/services/financial-queries");
 const HOUSING = { enabled: true, payee_name: "Sam Lee", rent_amount: 1800, rent_due_day: 1, reminder_lead_days: 5, utilities: [] };
 
 // Canned rows per statement. `fail` names a statement that throws.
-function fakePool({ cfg = HOUSING, unpaid = [], pending = [], nextHas = false, bills = [], paid = [], fail = null } = {}) {
+function fakePool({ cfg = HOUSING, unpaid = [], pending = [], nextHas = false, bills = [], paid = [], taxdocs = [], fail = null } = {}) {
   const seen = [];
   return {
     seen,
@@ -48,7 +48,8 @@ function fakePool({ cfg = HOUSING, unpaid = [], pending = [], nextHas = false, b
         /status = 'pending_amount'/.test(sql) ? "pending" :
         /payee_obligation_skips/.test(sql) ? "next" :
         /FROM manual_bills/.test(sql) ? "bills" :
-        /FROM bill_payments/.test(sql) ? "paid" : null;
+        /FROM bill_payments/.test(sql) ? "paid" :
+        /FROM tax_documents/.test(sql) ? "taxdocs" : null;
       if (!which) throw new Error("unexpected SQL: " + sql);
       seen.push({ which, params });
       if (fail === which) throw new Error("boom " + which);
@@ -57,11 +58,12 @@ function fakePool({ cfg = HOUSING, unpaid = [], pending = [], nextHas = false, b
       if (which === "pending") return { rows: pending };
       if (which === "next") return { rows: [{ has: nextHas }] };
       if (which === "bills") return { rows: bills };
+      if (which === "taxdocs") return { rows: taxdocs };
       return { rows: paid };
     },
   };
 }
-const ALL = { sources: { housing: true, utility_amount: true, bills: true }, bill_lead_days: 3 };
+const ALL = { sources: { housing: true, utility_amount: true, bills: true, tax_documents: false }, bill_lead_days: 3 };
 const byKey = (r) => Object.fromEntries(r.desired.map((d) => [d.key, d]));
 
 describe("housing helpers shared with the payment-due reminder", () => {
@@ -160,14 +162,14 @@ describe("computeLinkedTasks", () => {
 
   it("a source switched off is never read; manual bills are off by default", async () => {
     const pool = fakePool({ nextHas: true });
-    const r = await lt.computeLinkedTasks(pool, { sources: { housing: false, utility_amount: false } }, "2026-11-02");
+    const r = await lt.computeLinkedTasks(pool, { sources: { housing: false, utility_amount: false, tax_documents: false } }, "2026-11-02");
     assert.deepEqual(r.ok_kinds, []);
     assert.equal(pool.seen.length, 0);
     const p2 = fakePool({ nextHas: true });
     const r2 = await lt.computeLinkedTasks(p2, {}, "2026-11-02");
-    assert.deepEqual(r2.ok_kinds.sort(), ["housing", "utility-amount"]);
+    assert.deepEqual(r2.ok_kinds.sort(), ["housing", "tax-doc", "utility-amount"]);
     assert.ok(!p2.seen.some((s) => s.which === "bills"));
-    assert.deepEqual(lt.DEFAULT_SOURCES, { still_charging: true, housing: true, utility_amount: true, bills: false });
+    assert.deepEqual(lt.DEFAULT_SOURCES, { still_charging: true, housing: true, utility_amount: true, bills: false, tax_documents: true });
   });
 
   it("a ledger that isn't set up has nothing due (read, so its tasks may close)", async () => {
@@ -231,7 +233,7 @@ describe("settings", () => {
     dbModule.pool.query = async () => ({ rows: [{ theme: "dark" }] });
     const s = (await supertest(app()).get("/api/settings").expect(200)).body;
     assert.deepEqual([s.linked_tasks_enabled, s.linked_tasks_sources, s.linked_tasks_bill_lead_days, s.linked_tasks_state],
-      [false, { still_charging: true, housing: true, utility_amount: true, bills: false }, 3, null]);
+      [false, { still_charging: true, housing: true, utility_amount: true, bills: false, tax_documents: true }, 3, null]);
   });
 
   it("the migration adds the four columns with the decision-5 defaults; reset-fresh resets user_settings to a default row", () => {
