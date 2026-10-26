@@ -18,7 +18,18 @@ Updated: 2026-10-26
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T2.5 (transaction undelete + iOS re-authenticate) — H1 DONE; T2.5 COMPLETE**
+- **Status:** **Roadmap T3.3 (year-end tax package) — PLANNED, split into 4 batches** (2026-10-26,
+  branch `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
+  `.cycle/plan-t3-3-tax-package.md`.
+  - **Batches:** K1 investment transactions + FIFO realized gains + investment income (server);
+    K2 the tax documents checklist + a linked-task source; K3 the package (one definition per
+    figure, JSON / PDF / ZIP downloads); K4 the /tax page + INV-146 + close-out.
+  - **Decisions to accept with K1:** calendar year, validated; store every Plaid investment
+    transaction; FIFO gains labelled approximate with NULL (never 0) basis beyond known lots;
+    tax-advantaged accounts kept apart; the checklist in Perfin, not Knowledge facts;
+    charitable receipts wait for 3.2; nothing stored, no AI; a dependency-free store-only ZIP.
+  - **Where I left off:** plan committed. NEXT: `/broad-implement K1`.
+- **Previous status (T2.5 H1):** **Roadmap T2.5 (transaction undelete + iOS re-authenticate) — H1 DONE; T2.5 COMPLETE**
   (2026-10-26, branch `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-5-undelete-ios-reauth.md`. Block: `.cycle/blocks/7-roadmap-t2-5-h1-broad-implement.md`.
   - **Completed:** Re-authenticate / Add accounts through Plaid's hosted page on iOS / iPadOS, the
@@ -34,7 +45,7 @@ implement and reflect sessions only set Phase.)
   - **Tests:** npm 2290/2290 (19 new), contract 238/238 (2 new), Playwright 63/63; 13 mutations red.
   - **Where I left off:** T2.5 committed and complete. NEXT: pick the next roadmap item
     (`/roadmap`), or `/reflect` to close cycle 7.
-- **Previous status (T2.5 U2):** **Roadmap T2.5 (transaction undelete + iOS re-authenticate) — U2 DONE** (2026-10-26,
+- **Earlier status (T2.5 U2):** **Roadmap T2.5 (transaction undelete + iOS re-authenticate) — U2 DONE** (2026-10-26,
   branch `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Plan:
   `.cycle/plan-t2-5-undelete-ios-reauth.md`. Block: `.cycle/blocks/7-roadmap-t2-5-u2-broad-implement.md`.
   - **Completed:** Settings → Sync Health → Deleted transactions (collapsible, 50 a page, Show more,
