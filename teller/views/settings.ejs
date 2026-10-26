@@ -88,11 +88,11 @@
     </div>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Sign Out</div><div class="desc">End your current session</div></div>
-      <div class="setting-control"><button class="btn danger" data-e2e-skip id="logout-btn">Sign Out</button></div>
+      <div class="setting-control"><button class="btn danger" data-e2e-skip id="logout-btn">Sign out</button></div>
     </div>
     <div class="setting-row" id="logout-all-row" style="display:none;">
       <div class="setting-info"><div class="name">Sign Out Everywhere</div><div class="desc">End every signed-in session on every device, including this one</div></div>
-      <div class="setting-control"><button class="btn danger" data-e2e-skip id="logout-all-btn">Sign Out Everywhere</button></div>
+      <div class="setting-control"><button class="btn danger" data-e2e-skip id="logout-all-btn">Sign out everywhere</button></div>
     </div>
   </div>
 
@@ -104,14 +104,14 @@
       </div>
       <div id="biometric-list" style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">Loading…</div>
       <div style="display:flex;gap:10px;">
-        <button class="btn primary" id="biometric-register-btn">Register This Device</button>
+        <button class="btn primary" id="biometric-register-btn">Register this device</button>
       </div>
       <div id="biometric-status" style="margin-top:8px;font-size:12px;"></div>
     </div>
   </div>
 
   <h3 class="settings-group-title" style="font-size:12px;text-transform:uppercase;letter-spacing:1.5px;color:var(--warm, #d4a574);margin:24px 0 12px;font-weight:500;">AI &amp; Intelligence</h3>
-  <div class="section"><h2>AI Insights</h2>
+  <div class="section" id="ai-insights"><h2>AI Insights</h2>
     <div class="setting-row">
       <div class="setting-info"><div class="name">API Status</div><div class="desc" id="api-status-desc">Checking...</div></div>
       <div class="setting-control"><span id="api-status-badge" style="font-size:11px;font-weight:600;padding:3px 10px;border-radius:6px;letter-spacing:0.5px;text-transform:uppercase;">--</span></div>
@@ -573,7 +573,7 @@
     </div>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Export for Claude Chat</div><div class="desc">Download a structured data summary to paste into a Claude conversation for deep-dive analysis</div></div>
-      <div class="setting-control"><a href="<%= basePath %>/api/context-export" download><button class="btn primary">Export Context</button></a></div>
+      <div class="setting-control"><a href="<%= basePath %>/api/context-export" download><button class="btn primary">Export context</button></a></div>
     </div>
     <div class="setting-row">
       <div class="setting-info"><div class="name">Save Net Worth Snapshot</div><div class="desc">Record today's net worth from current account balances</div></div>

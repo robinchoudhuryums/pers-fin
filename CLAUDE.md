@@ -789,7 +789,11 @@ teller/
                            --on-teal is the text colour on a solid --teal button (#000
                            dark, #fff light — black on the light teal was ~3.1:1, IF-5).
                            `select option` lists and modal boxes use the opaque
-                           --surface-solid.
+                           --surface-solid. Design D2: --on-warm (#1a1206, both themes) is
+                           the ink on a FILLED primary button (.btn.primary / .btn-sm.primary /
+                           .actions button.primary — gold background); buttons are sentence
+                           case (no uppercase transform); .amt-in / .amt-bad are the ONE pair
+                           of money colours; .empty-state* style emptyState().
     perfin-shared.js     — Shared JavaScript (apiFetch, theme, nav helpers, asyncAction,
                            btnLoading, beforeinstallprompt capture + perfinPromptInstall /
                            perfinIsInstalled exports). Calendar-date helpers (WUI-2):
@@ -799,6 +803,11 @@ teller/
                            day early west of UTC); localTodayStr(offsetDays) /
                            localDateStr(d) give browser-local 'YYYY-MM-DD' for date-input
                            defaults and "is today" checks (never toISOString()).
+                           emptyState({ title, text, action }) (design D2) — the one
+                           empty-state block: escaped, action { label, href } (a same-app
+                           path only, through withBase) or { label, click: <button id> }
+                           (a delegated handler clicks the page's existing button — no new
+                           write path).
                            taxSeason(today) (roadmap T3.3 K4) → { year, season }: last
                            year from January to April, else this year — the Tax page's
                            default year and the dashboard's January–April Tax link.
@@ -1035,9 +1044,15 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2393 tests as of latest); use
+  Perfin and Per-sistant test files (2413 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2393 tests across 126 test files (incl.
+  Current count: 2413 tests across 127 test files (incl.
+  `tests/design-d2.test.js` — design pass D2: `emptyState` run in a vm (escaping, an href through
+  `withBase`, only a same-app path linked, no control without an action, the click action pressing the
+  page's existing button), each listed empty state's action and the `#ai-insights` anchor, no uppercase
+  transform on any Perfin button rule, the filled primary + `--on-warm` in both themes, a scan for Title
+  Case button labels, the Activity row renderer run in a vm (a charge plain, a credit `+$X` green), the
+  dashboard / Accounts / Calendar / cash-flow money classes and the Rent page's `isOverdue` in a vm;
   `tests/design-d1.test.js` — design pass D1 (`.cycle/plan-design-ux.md`): the real `fmt` in a vm
   (-$X, thousands separators, never -$0.00), the investment return and the Goals FIRE formatter's
   sign, the dashboard Review widget's `renderReviewQueue` in a vm (a calendar date under a west-of-UTC
@@ -2505,9 +2520,10 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   combined flow — credit-union auto loans arrive from accountsGet — or created
   via `POST /api/accounts/manual` with `type:"loan"`, subtype defaults `auto` — the
   Accounts page's manual-account form offers a Loan type, WD-11)
-  are first-class DEBT: the dashboard renders the balance negative/red under a
+  are first-class DEBT: the dashboard renders the balance as "-$X owed" under a
   Loans group header (an $18k loan never shows as +$18k; the Accounts page's
-  manual list shows it as "-$X owed" in red since cycle-7 F105), the grid net total
+  manual list shows it as "-$X owed" since cycle-7 F105 — neither is red since
+  design D2: a debt isn't "wrong"), the grid net total
   subtracts it, and `getNetWorth` counts it as a liability (F1). Plaid's
   Liabilities product does NOT cover auto loans (any issuer — only
   credit/student/mortgage), so **APR and monthly payment are manual fields on
@@ -3185,6 +3201,24 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   return line and the Goals page's FIRE card follow the same sign rule. Stat-card
   `.value` font uses `clamp()` + `overflow-wrap` so large amounts never overflow
   narrow 2-up mobile cards.
+- **Money colours (design pass D2)**: a charge, a balance and a debt are the
+  default text colour; money coming in is green (`.amt-in` — an Activity credit
+  also reads "+$X"); red (`.amt-bad`) only for something wrong — an overdue Rent
+  item, a balance projected below $0, an overdrawn cash account, a negative net;
+  gold is the brand (logo, active nav, primary buttons, focus), never money. Use the
+  two classes in `perfin-shared.css`, not inline colours. The Calendar shows a bill
+  as a neutral chip.
+- **Buttons (design pass D2)**: sentence case everywhere (no `text-transform:
+  uppercase` on `.btn` / `.btn-sm` / `.actions button`; labels written "Sync
+  transactions", not "Sync Transactions" — `tests/design-d2.test.js` scans for
+  Title Case); `.primary` is FILLED gold with `--on-warm` ink, other buttons are
+  outlined; a disabled button is dimmed.
+- **Empty states (design pass D2)**: `emptyState()` (perfin-shared.js) — a title,
+  one line and the next step as a button: Upcoming Bills ("+ Add bill" — the Quick
+  Add button), AI Insights ("Generate in Settings" → `/settings#ai-insights`),
+  Goals / Budgets ("+ Add goal" / "+ Add budget" — the form toggle), Subscriptions
+  ("Run detection"); the Monthly Spend / Avg Daily cards say "After 1 month" until a
+  whole month is synced.
 - **Page width (design pass D1)**: `.container` — which holds the top nav — is one
   width on every page (1060px); a page narrows its CONTENT with `#main-content {
   max-width: … }` in its `extraStyles` (default 960px; Accounts 640, Budgets / Goals
@@ -3745,7 +3779,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2393 tests passing across 126 test files (Perfin 1728 + Per-sistant 665), plus the real-Postgres route contract suite (249 tests; CI `migrations` job, `npm run test:contract`) and 68 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2413 tests passing across 127 test files (Perfin 1748 + Per-sistant 665), plus the real-Postgres route contract suite (249 tests; CI `migrations` job, `npm run test:contract`) and 68 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands

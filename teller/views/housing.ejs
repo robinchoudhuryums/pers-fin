@@ -126,6 +126,14 @@
     var MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
     function money(n){ return (typeof fmt === 'function') ? fmt(n) : ('$' + Number(n||0).toFixed(2)); }
+    // Design D2: an unpaid item past its due day is the one red amount on the
+    // page (browser-local date, like the page's other defaults).
+    function isOverdue(o, today){
+      var ym = today.slice(0, 7);
+      if (o.period < ym) return true;
+      if (o.period > ym) return false;
+      return parseInt(today.slice(8, 10), 10) > (parseInt(o.due_day, 10) || 1);
+    }
     function plabel(p){ if(!/^\d{4}-\d{2}$/.test(p||'')) return p||''; var a=p.split('-'); return MONTHS[(+a[1])-1] + ' ' + a[0]; }
     function todayStr(){ var d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 
@@ -263,7 +271,7 @@
             '<input type="checkbox" class="hz-pick" aria-label="Include '+esc(plabel(o.period))+' '+esc(o.label)+' in the payment" data-id="'+o.id+'" data-amt="'+o.amount+'" data-label="'+esc(o.label)+'" data-period="'+o.period+'">' +
             '<span class="hz-period">'+esc(plabel(o.period))+'</span>' +
             '<span>'+esc(o.label)+'</span>' +
-            '<span class="hz-amt">'+money(o.amount)+'</span></div>';
+            '<span class="hz-amt'+(isOverdue(o, localTodayStr()) ? ' amt-bad' : '')+'">'+money(o.amount)+'</span></div>';
         } else { // paid
           html += '<div class="hz-row paid" data-id="'+o.id+'">' +
             '<span class="hz-period">'+esc(plabel(o.period))+'</span>' +
@@ -473,8 +481,7 @@
         var delta = '';
         if (cmp && cmp.v > 0) {
           var pct = Math.round(((latest.amount - cmp.v) / cmp.v) * 100);
-          var col = pct > 0 ? 'var(--warm)' : 'var(--green)';
-          delta = '<span style="color:'+col+';font-size:11px;">'+(pct>0?'+':'')+pct+'% '+cmp.label+'</span>';
+          delta = '<span style="color:var(--text-muted);font-size:11px;">'+(pct>0?'+':'')+pct+'% '+cmp.label+'</span>';
         }
         return '<div style="display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--border);">' +
           '<span style="min-width:110px;font-size:13px;">'+esc(label)+'</span>' +

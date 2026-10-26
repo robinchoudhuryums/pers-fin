@@ -56,7 +56,7 @@
   </div>
 
   <div style="margin-bottom:16px;">
-    <button class="btn primary" id="toggle-form-btn" aria-expanded="false" aria-controls="add-form">+ Add Goal</button>
+    <button class="btn primary" id="toggle-form-btn" aria-expanded="false" aria-controls="add-form">+ Add goal</button>
   </div>
 
   <div class="add-form" id="add-form">
@@ -75,7 +75,7 @@
       <div><label for="g-date">Target Date</label><input id="g-date" type="date"></div>
       <div><label for="g-notes">Notes</label><input id="g-notes" placeholder="20% down payment"></div>
     </div>
-    <div style="margin-top:12px;"><button class="btn primary" id="save-goal-btn">Save Goal</button></div>
+    <div style="margin-top:12px;"><button class="btn primary" id="save-goal-btn">Save goal</button></div>
   </div>
 
   <div id="goals-list"><div style="color:var(--text-muted);font-size:13px;">Loading...</div></div>
@@ -165,7 +165,12 @@
         const el = document.getElementById('goals-list');
         if (!res.ok) { el.innerHTML = '<div style="color:var(--red);font-size:13px;padding:20px 0;">Couldn\'t load goals. Try again.</div>'; return; }
         const goals = await res.json();
-        if (!goals.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:20px 0;">No goals yet. Add one above.</div>'; return; }
+        if (!goals.length) {
+          el.innerHTML = emptyState({ title: 'No goals yet',
+            text: 'Save toward something — link a savings account and it tracks itself.',
+            action: { label: '+ Add goal', click: 'toggle-form-btn' } });
+          return;
+        }
         el.innerHTML = goals.map(g => {
           const pct = g.percent_complete;
           const color = pct >= 100 ? 'var(--green)' : pct >= 50 ? 'var(--teal)' : pct >= 25 ? 'var(--warm)' : 'var(--red)';
@@ -197,9 +202,9 @@
             (g.notes ? '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;">' + esc(g.notes) + '</div>' : '') +
             '<div class="goal-actions">' +
               (g.funding_source
-                ? '<button class="btn-sm" data-action="unlink" data-id="' + g.id + '">Unlink Account</button>'
-                : '<button class="btn-sm" data-action="update" data-id="' + g.id + '">Update Amount</button>' +
-                  '<button class="btn-sm" data-action="link" data-id="' + g.id + '">Link Account</button>') +
+                ? '<button class="btn-sm" data-action="unlink" data-id="' + g.id + '">Unlink account</button>'
+                : '<button class="btn-sm" data-action="update" data-id="' + g.id + '">Update amount</button>' +
+                  '<button class="btn-sm" data-action="link" data-id="' + g.id + '">Link account</button>') +
               '<button class="btn-sm danger" data-action="delete" data-id="' + g.id + '">Delete</button>' +
             '</div></div>';
         }).join('');

@@ -40,8 +40,8 @@
     input:focus { outline: none; border-color: var(--warm); }
     button[type="submit"] { width: 100%; margin-top: 14px; padding: 12px; font-size: 13px; font-weight: 500;
       border: 1px solid var(--warm); border-radius: 8px; cursor: pointer;
-      background: transparent; color: var(--warm); text-transform: uppercase;
-      letter-spacing: 1px; font-family: inherit; transition: all 0.2s; }
+      background: transparent; color: var(--warm);
+      letter-spacing: 0.3px; font-family: inherit; transition: all 0.2s; }
     button[type="submit"]:hover { background: rgba(212,165,116,0.1); color: var(--text); }
     .error-msg { margin-top: 14px; padding: 10px; border-radius: 6px;
       background: var(--red-bg); color: var(--red); font-size: 13px; display: none; }
@@ -73,8 +73,8 @@
       letter-spacing: 1px; font-weight: 400; }
     .faceid-btn { width: 100%; padding: 14px; font-size: 13px; font-weight: 500;
       border: 1px solid #a0dad0; border-radius: 8px; cursor: pointer;
-      background: transparent; color: #a0dad0; text-transform: uppercase;
-      letter-spacing: 1px; font-family: inherit; transition: all 0.2s;
+      background: transparent; color: #a0dad0;
+      letter-spacing: 0.3px; font-family: inherit; transition: all 0.2s;
       display: flex; align-items: center; justify-content: center; gap: 10px;
       animation: fadeInUp 0.4s ease both; animation-delay: 0.4s; }
     .faceid-btn:hover { background: rgba(160,218,208,0.08); }
@@ -341,7 +341,7 @@
     <p>Enter your password to continue</p>
     <form id="login-form">
       <input type="password" id="password" placeholder="Password" autofocus required>
-      <button type="submit">Sign In</button>
+      <button type="submit">Sign in</button>
     </form>
     <div id="error" class="error-msg"></div>
     <% } %>

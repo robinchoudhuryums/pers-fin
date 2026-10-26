@@ -53,8 +53,8 @@
   <div id="summary-bar" class="summary-bar"></div>
 
   <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;">
-    <button class="btn primary" id="toggle-form-btn">+ Add Budget</button>
-    <button class="btn" id="suggest-btn">AI Suggest Budgets</button>
+    <button class="btn primary" id="toggle-form-btn">+ Add budget</button>
+    <button class="btn" id="suggest-btn">AI suggest budgets</button>
   </div>
 
   <div class="add-form" id="add-form">
@@ -71,7 +71,7 @@
       <div style="grid-column:1 / -1;"><label class="b-check" for="b-rollover" style="display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:0;font-size:13px;color:var(--text);">
         <input id="b-rollover" type="checkbox" style="width:auto;"> Carry unused budget into next month</label></div>
     </div>
-    <div style="margin-top:12px;"><button class="btn primary" id="save-budget-btn">Save Budget</button></div>
+    <div style="margin-top:12px;"><button class="btn primary" id="save-budget-btn">Save budget</button></div>
   </div>
 
   <div id="suggest-container" style="display:none;"></div>
@@ -133,7 +133,15 @@
         const el = document.getElementById('budgets-list');
         if (!res.ok) { el.innerHTML = '<div style="color:var(--red);font-size:13px;padding:20px 0;">Couldn\'t load budgets. Try again.</div>'; renderSummary([]); return; }
         const budgets = await res.json();
-        if (!budgets.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:20px 0;">' + (viewMonth === thisMonth ? 'No budgets set. Add one or use AI suggestions above.' : 'No budgets in effect for ' + esc(monthName(viewMonth)) + '.') + '</div>'; renderSummary([]); return; }
+        if (!budgets.length) {
+          el.innerHTML = viewMonth === thisMonth
+            ? emptyState({ title: 'No budgets set',
+                text: 'Set a monthly limit for a category, or let AI suggest some from your last three months.',
+                action: { label: '+ Add budget', click: 'toggle-form-btn' } })
+            : emptyState({ title: 'No budgets in effect for ' + monthName(viewMonth) });
+          renderSummary([]);
+          return;
+        }
         renderSummary(budgets);
         el.innerHTML = budgets.map(function(b) {
           var pct = b.percent_used;
@@ -240,7 +248,7 @@
               (s.notes ? '<br><span style="font-size:11px;color:var(--text-muted);">' + esc(s.notes) + '</span>' : '') +
               '</div><input type="number" id="sug-' + i + '" aria-label="Monthly limit for ' + esc(s.category) + '" value="' + s.monthly_limit + '"></div>';
           }).join('') +
-          '<div style="margin-top:12px;display:flex;gap:8px;"><button class="btn primary" id="accept-sug-btn">Accept All</button><button class="btn" id="dismiss-sug-btn">Dismiss</button></div></div>';
+          '<div style="margin-top:12px;display:flex;gap:8px;"><button class="btn primary" id="accept-sug-btn">Accept all</button><button class="btn" id="dismiss-sug-btn">Dismiss</button></div></div>';
         window._suggestions = data.suggestions;
         // Bind the dynamically created buttons
         document.getElementById('accept-sug-btn').addEventListener('click', acceptSuggestions);

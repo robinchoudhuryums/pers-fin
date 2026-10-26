@@ -248,7 +248,7 @@ describe("F101–F108 — per-item fixes", () => {
     assert.match(dash, /'<div style="' \+ paid \+ 'display:flex;/);
   });
 
-  it("F105: a manual loan is shown as owed, in red", () => {
+  it("F105: a manual loan is shown as owed (not red since design D2)", () => {
     assert.match(read("teller", "views", "accounts.ejs"), /var isDebt = a\.type === 'credit' \|\| a\.type === 'loan';/);
   });
 

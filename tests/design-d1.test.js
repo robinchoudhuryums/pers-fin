@@ -114,7 +114,7 @@ describe("dashboard Review Uncategorized widget", () => {
     assert.match(html, /<option value="" selected disabled>Choose a category<\/option>/);
     assert.doesNotMatch(html, /value="Food &amp; Drink" selected/);
     assert.match(html, /<input type="checkbox" data-cat-rule="t1">/, "Remember unticked");
-    assert.match(html, /<button data-cat-apply="t1" disabled /);
+    assert.match(html, /<button data-cat-apply="t1" disabled class="btn-sm primary">/);
   });
 
   it("a row with a suggestion selects it, ticks Remember and enables Apply", () => {
@@ -124,7 +124,7 @@ describe("dashboard Review Uncategorized widget", () => {
     assert.match(html, /<option value="Groceries" selected>Groceries<\/option>/);
     assert.doesNotMatch(html, /Choose a category/);
     assert.match(html, /<input type="checkbox" data-cat-rule="t2" checked>/);
-    assert.match(html, /<button data-cat-apply="t2" style=/);
+    assert.match(html, /<button data-cat-apply="t2" class="btn-sm primary">/);
   });
 
   it("a suggestion outside the list is offered rather than dropped", () => {
@@ -148,8 +148,9 @@ describe("dashboard Review Uncategorized widget", () => {
     assert.equal(buttons.t1.disabled, true);
   });
 
-  it("a disabled Apply looks disabled", () => {
-    assert.match(dash, /#review-queue-list button\[data-cat-apply\]:disabled \{ opacity: 0\.4; cursor: not-allowed; \}/);
+  it("a disabled Apply looks disabled (the shared button class, design D2)", () => {
+    const css = read("teller", "public", "perfin-shared.css");
+    assert.match(css, /\.btn:disabled, \.btn-sm:disabled, \.actions button:disabled \{ opacity: 0\.45; cursor: not-allowed; \}/);
   });
 
   it("Apply does nothing without a chosen category", () => {

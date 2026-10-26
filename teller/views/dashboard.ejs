@@ -1,8 +1,5 @@
 <%- include('partials/head', { title: 'Dashboard', extraStyles: `
     #main-content { max-width: 1060px; }
-    /* Design pass D1: a Review row's Apply is disabled until a category is chosen —
-       it has to look it (the button's own style is inline). */
-    #review-queue-list button[data-cat-apply]:disabled { opacity: 0.4; cursor: not-allowed; }
     .top-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
                  gap: 16px; margin-bottom: 36px; }
     .accounts-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
@@ -16,9 +13,7 @@
     .acct-card .acct-mask { color: var(--text-muted); font-weight: 300; }
     .acct-card .acct-balance { font-size: 22px; font-weight: 300; margin-top: 10px;
                                font-variant-numeric: tabular-nums; }
-    .acct-card .acct-balance.positive { color: var(--green); }
-    .acct-card .acct-balance.negative { color: var(--red); }
-    .acct-card .acct-balance.neutral { color: var(--warm-glow); }
+    .acct-card .acct-owed { font-size: 12px; color: var(--text-muted); }
     .acct-card .acct-type { font-size: 10px; color: var(--text-muted); margin-top: 4px;
                             text-transform: uppercase; letter-spacing: 0.5px; font-weight: 400; }
     .bar-container { width: 100%; height: 6px; background: rgba(255,255,255,0.06);
@@ -343,7 +338,7 @@
       <button data-mode="debt_payoff" title="Card and loan debt payoff progress">Debt</button>
       <button data-mode="goal_progress" title="Individual goal progress">Goals</button>
       <button data-mode="spending_categories" title="Spending category balance">Spending</button>
-      <button data-mode="net_worth" title="Net worth breakdown">Net Worth</button>
+      <button data-mode="net_worth" title="Net worth breakdown">Net worth</button>
       <div class="pyramid-debt-baseline" id="debt-baseline-ctrl" style="display:none;">
         <span>Baseline $</span>
         <input aria-label="Starting debt" type="number" id="debt-baseline-input" placeholder="0" min="0" step="100">
@@ -386,20 +381,20 @@
   </div>
 
   <div class="actions">
-    <button class="primary" id="sync-btn">Sync Transactions</button>
-    <button id="balance-btn">Refresh Balances</button>
-    <button id="detect-btn">Run Detection</button>
+    <button class="primary" id="sync-btn">Sync transactions</button>
+    <button id="balance-btn">Refresh balances</button>
+    <button id="detect-btn">Run detection</button>
   </div>
 
   <div id="status-msg" class="status-msg"></div>
 
   <!-- Summary cards -->
   <div class="top-cards" id="summary-cards">
-    <div class="card"><div class="label">Net Balance</div><div class="value warm" id="net-balance">--</div></div>
-    <div class="card"><div class="label">Monthly Spend</div><div class="value warm" id="avg-monthly">--</div><div class="sub" id="avg-monthly-sub"></div></div>
-    <div class="card"><div class="label">Subscriptions /mo</div><div class="value teal" id="subs-monthly">--</div></div>
+    <div class="card"><div class="label">Net Balance</div><div class="value" id="net-balance">--</div></div>
+    <div class="card"><div class="label">Monthly Spend</div><div class="value" id="avg-monthly">--</div><div class="sub" id="avg-monthly-sub"></div></div>
+    <div class="card"><div class="label">Subscriptions /mo</div><div class="value" id="subs-monthly">--</div></div>
     <div class="card"><div class="label">Active Subs</div><div class="value teal" id="active-subs">--</div></div>
-    <div class="card"><div class="label">Avg Daily Spend</div><div class="value warm" id="avg-daily">--</div></div>
+    <div class="card"><div class="label">Avg Daily Spend</div><div class="value" id="avg-daily">--</div></div>
     <div class="card"><div class="label">Linked Accounts</div><div class="value teal" id="acct-count">--</div></div>
   </div>
 
@@ -650,7 +645,7 @@
             <option value="other">Other</option>
           </select>
           <input aria-label="Score source" id="cs-source-input" placeholder="Source (e.g. Chase)" style="width:120px;padding:8px 10px;font-size:13px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);font-family:inherit;min-height:40px;">
-          <button class="btn" id="cs-log-btn" style="min-height:40px;cursor:pointer;font-family:inherit;">Log Score</button>
+          <button class="btn" id="cs-log-btn" style="min-height:40px;cursor:pointer;font-family:inherit;">Log score</button>
           <span id="cs-status" style="font-size:11px;color:var(--text-muted);"></span>
         </div>
       </div>
@@ -662,7 +657,7 @@
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
       <h2 style="margin:0;">Upcoming Bills</h2>
       <div style="display:flex;align-items:center;gap:12px;">
-        <button class="btn-sm" id="quick-add-bill-btn" style="font-size:12px;padding:6px 12px;border:1px solid var(--teal);border-radius:6px;background:transparent;color:var(--teal);cursor:pointer;font-family:inherit;min-height:36px;">+ Add Bill</button>
+        <button class="btn-sm" id="quick-add-bill-btn" style="font-size:12px;padding:6px 12px;border:1px solid var(--teal);border-radius:6px;background:transparent;color:var(--teal);cursor:pointer;font-family:inherit;min-height:36px;">+ Add bill</button>
         <a href="<%= basePath %>/calendar" style="color:var(--teal);font-size:12px;text-decoration:none;">Full Calendar &rarr;</a>
       </div>
     </div>
@@ -698,7 +693,7 @@
         <div id="qab-status" style="font-size:12px;min-height:18px;"></div>
         <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:4px;">
           <button class="btn-sm" id="qab-cancel" style="font-size:13px;padding:10px 16px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-family:inherit;min-height:40px;">Cancel</button>
-          <button class="btn-sm" id="qab-save" style="font-size:13px;padding:10px 16px;border:1px solid var(--teal);border-radius:6px;background:var(--teal);color:var(--on-teal);cursor:pointer;font-family:inherit;font-weight:500;min-height:40px;">Save Bill</button>
+          <button class="btn-sm" id="qab-save" style="font-size:13px;padding:10px 16px;border:1px solid var(--teal);border-radius:6px;background:var(--teal);color:var(--on-teal);cursor:pointer;font-family:inherit;font-weight:500;min-height:40px;">Save bill</button>
         </div>
       </div>
     </div>
@@ -971,8 +966,12 @@
           const displayBal = isDebt ? -bal : bal;
           netBalance += displayBal;
 
-          const balClass = !hasBalances ? 'neutral' : displayBal > 0 ? 'positive' : displayBal < 0 ? 'negative' : 'neutral';
-          const balDisplay = hasBalances ? (displayBal < 0 ? '-' + fmt(Math.abs(displayBal)) : fmt(displayBal)) : '\u2014';
+          // Design D2: a balance is the default colour and a debt reads
+          // "-$X owed" without red; red only for an overdrawn cash account.
+          const balClass = hasBalances && !isDebt && displayBal < 0 ? 'amt-bad' : '';
+          const balDisplay = hasBalances
+            ? fmt(displayBal) + (isDebt && displayBal < 0 ? ' <span class="acct-owed">owed</span>' : '')
+            : '\u2014';
 
           let creditExtra = '';
           if (isCredit && hasBalances) {
@@ -1027,9 +1026,9 @@
             '<div class="acct-balance ' + balClass + '">' + balDisplay + '</div>' +
             '<div class="acct-type">' + esc(a.subtype || a.type || '') + '</div>' +
             creditExtra +
-            ((a.is_manual || a.provider === 'manual') ? '<button class="btn-sm" data-edit-balance="' + a.id + '" style="margin-top:4px;font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--warm);cursor:pointer;font-family:inherit;">Update Balance</button>' : '') +
+            ((a.is_manual || a.provider === 'manual') ? '<button class="btn-sm" data-edit-balance="' + a.id + '" style="margin-top:4px;font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--warm);cursor:pointer;font-family:inherit;">Update balance</button>' : '') +
             (a.is_shared ? '<div style="margin-top:6px;font-size:10px;color:var(--teal);">Shared \u2022 Your split: ' + (a.spending_split_pct == null ? 100 : a.spending_split_pct) + '%</div>' : '') +
-            '<button data-shared-toggle="' + a.id + '" style="margin-top:4px;font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text-muted);cursor:pointer;font-family:inherit;">' + (a.is_shared ? 'Edit Split' : 'Mark Shared') + '</button>' +
+            '<button data-shared-toggle="' + a.id + '" style="margin-top:4px;font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text-muted);cursor:pointer;font-family:inherit;">' + (a.is_shared ? 'Edit split' : 'Mark shared') + '</button>' +
           '</div>';
         }
 
@@ -1068,11 +1067,10 @@
           html += investments.map(inv => {
             const bal = parseFloat(inv.balance);
             netBalance += bal;
-            const balClass = bal > 0 ? 'positive' : bal < 0 ? 'negative' : 'neutral';
             return '<div class="acct-card">' +
               '<div class="acct-inst">' + esc(inv.institution || 'Investment') + '</div>' +
               '<div class="acct-name">' + esc(inv.name) + '</div>' +
-              '<div class="acct-balance ' + balClass + '">' + fmt(bal) + '</div>' +
+              '<div class="acct-balance">' + fmt(bal) + '</div>' +
               '<div class="acct-type">' + esc(inv.account_type) + '</div>' +
             '</div>';
           }).join('');
@@ -1090,7 +1088,7 @@
           document.getElementById('net-balance').textContent = '\u2014';
         }
         if (hasBalances) {
-          document.getElementById('net-balance').className = 'value ' + (netBalance >= 0 ? 'green' : 'red');
+          document.getElementById('net-balance').className = 'value' + (netBalance < 0 ? ' amt-bad' : '');
         }
       } catch (e) {
         document.getElementById('accounts-grid').innerHTML = '<div class="empty-msg">Could not load accounts: ' + esc(e.message) + '</div>';
@@ -1130,7 +1128,7 @@
         const pct = maxCat > 0 ? Math.round((parseFloat(c.total) / maxCat) * 100) : 0;
         const color = barColors[i % barColors.length];
         return '<tr><td class="cell-primary">' + esc(c.category) + '</td>' +
-          '<td class="amount warm" data-label="Total">' + fmt(c.total) + '</td>' +
+          '<td class="amount" data-label="Total">' + fmt(c.total) + '</td>' +
           '<td data-label="Share"><div class="bar-container"><div class="bar-fill" style="width:' + pct + '%;background:' + color + '"></div></div></td></tr>';
       }).join('');
     }
@@ -1167,7 +1165,7 @@
         if (data.monthly_trend.length) {
           monthBody.innerHTML = data.monthly_trend.map(m =>
             '<tr><td class="cell-primary">' + fmtMonth(m.month) + '</td>' +
-            '<td class="amount warm" data-label="Total">' + fmt(m.total_spend) + '</td>' +
+            '<td class="amount" data-label="Total">' + fmt(m.total_spend) + '</td>' +
             '<td data-label="Txns">' + m.txn_count + '</td>' +
             '<td class="amount" data-label="Avg">' + fmt(m.avg_transaction) + '</td></tr>'
           ).join('');
@@ -1179,7 +1177,10 @@
             document.getElementById('avg-monthly-sub').textContent = data.avg_months + '-month avg';
             animateCurrency(document.getElementById('avg-daily'), data.avg_daily_spend || 0);
           } else {
-            document.getElementById('avg-monthly-sub').textContent = 'no complete month yet';
+            // Design D2: say what's missing instead of a bare "--".
+            document.getElementById('avg-monthly').textContent = 'After 1 month';
+            document.getElementById('avg-monthly-sub').textContent = 'shown once a whole month is synced';
+            document.getElementById('avg-daily').textContent = 'After 1 month';
           }
         } else {
           monthBody.innerHTML = '<tr><td colspan="4" class="empty-msg">No spending data yet.</td></tr>';
@@ -1216,7 +1217,7 @@
         if (data.top_merchants.length) {
           merchBody.innerHTML = data.top_merchants.map(m =>
             '<tr><td class="cell-primary">' + esc(m.merchant) + '</td>' +
-            '<td class="amount warm" data-label="Total">' + fmt(m.total_spent) + '</td>' +
+            '<td class="amount" data-label="Total">' + fmt(m.total_spent) + '</td>' +
             '<td data-label="Txns">' + m.txn_count + '</td></tr>'
           ).join('');
         } else {
@@ -1227,7 +1228,7 @@
         if (data.upcoming_subscriptions.length) {
           upBody.innerHTML = data.upcoming_subscriptions.map(s =>
             '<tr><td class="cell-primary">' + esc(s.display_name) + '</td>' +
-            '<td class="amount teal" data-label="Amount">' + fmt(s.amount) + '</td>' +
+            '<td class="amount" data-label="Amount">' + fmt(s.amount) + '</td>' +
             '<td data-label="Next">' + fmtDate(s.next_expected) + '</td></tr>'
           ).join('');
 
@@ -1268,7 +1269,7 @@
           showMsg('Sync error: ' + (data.error || 'HTTP ' + res.status), false);
         }
       } catch (e) { showMsg('Sync failed: ' + e.message, false); }
-      btnLoading(btn, false, 'Sync Transactions');
+      btnLoading(btn, false, 'Sync transactions');
     }
 
     async function syncBalances() {
@@ -1295,7 +1296,7 @@
           showMsg('Balance sync error: ' + (data.error || 'HTTP ' + res.status), false);
         }
       } catch (e) { showMsg('Balance sync failed: ' + e.message, false); }
-      btnLoading(btn, false, 'Refresh Balances');
+      btnLoading(btn, false, 'Refresh balances');
     }
 
     async function runDetection() {
@@ -1311,7 +1312,7 @@
           showMsg('Detection error: ' + (data.error || 'HTTP ' + res.status), false);
         }
       } catch (e) { showMsg('Detection failed: ' + e.message, false); }
-      btnLoading(btn, false, 'Run Detection');
+      btnLoading(btn, false, 'Run detection');
     }
 
     // WUI-6: every write below checks the response and reports the outcome —
@@ -1410,7 +1411,7 @@
         if (data.charge_count === 0) return;
         document.getElementById('forecast-section').style.display = 'block';
         document.getElementById('forecast-summary').innerHTML =
-          '<strong>' + data.charge_count + ' charges</strong> totaling <strong style="color:var(--warm);">$' + data.total_expected.toFixed(2) +
+          '<strong>' + data.charge_count + ' charges</strong> totaling <strong>' + fmt(data.total_expected) +
           '</strong> expected in the next ' + data.forecast_days + ' days';
         var html = '<div class="table-wrap"><table style="width:100%;font-size:12px;border-collapse:collapse;">' +
           '<thead><tr><th style="text-align:left;padding:6px 0;border-bottom:1px solid var(--border);">Service</th>' +
@@ -1419,7 +1420,7 @@
           '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">In</th></tr></thead><tbody>';
         data.charges.forEach(function(c) {
           html += '<tr><td style="padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);">' + esc(c.name) + '</td>' +
-            '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--warm);">$' + c.amount.toFixed(2) + '</td>' +
+            '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);">' + fmt(c.amount) + '</td>' +
             '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);">' + c.date + '</td>' +
             '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--text-muted);">' + c.days_away + 'd</td></tr>';
         });
@@ -1475,17 +1476,23 @@
           }
           if (upcoming.length >= 6) break;
         }
-        if (upcoming.length === 0) { body.textContent = 'No upcoming bills this month.'; return; }
+        if (upcoming.length === 0) {
+          body.innerHTML = emptyState({ title: 'No upcoming bills this month',
+            text: 'Subscriptions Perfin detects and bills you add show up here.',
+            action: { label: '+ Add bill', click: 'quick-add-bill-btn' } });
+          return;
+        }
         body.innerHTML = upcoming.map(function(u) {
           var ev = u.event;
-          var cls = ev.is_income ? 'color:var(--green)' : 'color:var(--text-muted)';
+          // Design D2: income green, a bill the default colour.
+          var cls = ev.is_income ? ' class="amt-in"' : '';
           var prefix = ev.is_income ? '+' : '-';
           // F104: ONE style attribute — a second one is ignored, so paid rows lost
           // their layout (the browser keeps the first).
           var paid = ev.is_paid ? 'text-decoration:line-through;opacity:0.5;' : '';
           return '<div style="' + paid + 'display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border);font-size:12px;">' +
             '<span>' + (ev.is_paid ? '\u2713 ' : '') + esc(ev.name) + ' <span style="color:var(--text-muted);font-size:11px;">(Day ' + u.day + ')</span></span>' +
-            '<span style="' + cls + ';">' + prefix + '$' + Math.abs(ev.amount).toFixed(2) + '</span></div>';
+            '<span' + cls + '>' + prefix + fmt(Math.abs(ev.amount)) + '</span></div>';
         }).join('');
       } catch (e) { body.textContent = 'Unable to load.'; }
     })();
@@ -1569,7 +1576,7 @@
           showStatus('Failed: ' + (e.message || e), false);
         } finally {
           saveBtn.disabled = false;
-          saveBtn.textContent = 'Save Bill';
+          saveBtn.textContent = 'Save bill';
         }
       });
     })();
@@ -1846,9 +1853,14 @@
       if (!body) return;
       try {
         var res = await apiFetch('/api/insights');
-        if (!res.ok) { body.textContent = 'No insights yet \u2014 generate from Settings.'; return; }
+        var noInsights = function() {
+          body.innerHTML = emptyState({ title: 'No insights yet',
+            text: 'Perfin reviews your spending, subscriptions and goals with AI once you run it.',
+            action: { label: 'Generate in Settings', href: '/settings#ai-insights' } });
+        };
+        if (!res.ok) { noInsights(); return; }
         var data = await res.json();
-        if (!data.length) { body.textContent = 'No insights yet \u2014 generate from Settings.'; return; }
+        if (!data.length) { noInsights(); return; }
         var latest = data[0];
         var text = esc(latest.insight_text || '');
         text = text
@@ -2899,9 +2911,9 @@
         var avg = data.averages;
         var rateColor = avg.savings_rate >= 20 ? 'var(--green)' : avg.savings_rate >= 10 ? 'var(--yellow)' : avg.savings_rate > 0 ? 'var(--warm)' : 'var(--red)';
         var html = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:12px;">';
-        html += '<div class="card" style="min-width:0;overflow:hidden;"><div class="label">Avg Income</div><div class="value green" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + fmt(avg.income) + '</div></div>';
-        html += '<div class="card" style="min-width:0;overflow:hidden;"><div class="label">Avg Spending</div><div class="value warm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + fmt(avg.spending) + '</div></div>';
-        html += '<div class="card" style="min-width:0;overflow:hidden;"><div class="label">Avg Saved</div><div class="value" style="color:' + (avg.saved >= 0 ? 'var(--green)' : 'var(--red)') + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + fmt(avg.saved) + '</div></div>';
+        html += '<div class="card" style="min-width:0;overflow:hidden;"><div class="label">Avg Income</div><div class="value amt-in" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + fmt(avg.income) + '</div></div>';
+        html += '<div class="card" style="min-width:0;overflow:hidden;"><div class="label">Avg Spending</div><div class="value" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + fmt(avg.spending) + '</div></div>';
+        html += '<div class="card" style="min-width:0;overflow:hidden;"><div class="label">Avg Saved</div><div class="value ' + (avg.saved < 0 ? 'amt-bad' : 'amt-in') + '" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + fmt(avg.saved) + '</div></div>';
         html += '<div class="card" style="min-width:0;overflow:hidden;"><div class="label">Savings Rate</div><div class="value" style="color:' + rateColor + ';">' + avg.savings_rate + '%</div></div>';
         html += '</div>';
         html += '<div style="font-size:12px;color:var(--text-muted);font-weight:300;margin-bottom:12px;">' + esc(data.recommendation) + '</div>';
@@ -2914,9 +2926,9 @@
         data.months.forEach(function(m) {
           var rc = m.savings_rate >= 20 ? 'var(--green)' : m.savings_rate >= 10 ? 'var(--yellow)' : m.savings_rate > 0 ? 'var(--warm)' : 'var(--red)';
           html += '<tr><td style="padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);">' + fmtMonth(m.month) + '</td>';
-          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--green);">' + fmt(m.income) + '</td>';
-          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--warm);">' + fmt(m.spending) + '</td>';
-          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:' + (m.saved >= 0 ? 'var(--green)' : 'var(--red)') + ';">' + fmt(m.saved) + '</td>';
+          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);" class="amt-in">' + fmt(m.income) + '</td>';
+          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);">' + fmt(m.spending) + '</td>';
+          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);" class="' + (m.saved < 0 ? 'amt-bad' : 'amt-in') + '">' + fmt(m.saved) + '</td>';
           html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:' + rc + ';">' + m.savings_rate + '%</td></tr>';
         });
         html += '</tbody></table></div>';
@@ -2933,12 +2945,13 @@
         if (!data.by_week || data.by_week.length === 0) return;
         var section = document.getElementById('cashflow-section');
         section.style.display = 'block';
-        var surplusColor = data.surplus_shortfall >= 0 ? 'var(--green)' : 'var(--red)';
+        // Design D2: red only for a balance projected below $0.
+        var badIf = function(n) { return parseFloat(n) < 0 ? ' class="amt-bad"' : ''; };
         document.getElementById('cashflow-summary').innerHTML =
-          'Starting balance: <strong style="color:var(--teal);">' + fmt(data.starting_balance) + '</strong>' +
-          ' &bull; Projected end: <strong style="color:' + surplusColor + ';">' + fmt(data.ending_balance) + '</strong>' +
-          (data.lowest_balance_date ? ' &bull; Lowest projected: <strong style="color:' + (data.lowest_balance < 0 ? 'var(--red)' : 'var(--warm)') + ';">' + fmt(data.lowest_balance) + '</strong> on ' + fmtDate(data.lowest_balance_date) : '') +
-          ' &bull; Daily discretionary: <strong style="color:var(--warm);">' + fmt(data.avg_daily_spend) + '</strong>' +
+          'Starting balance: <strong' + badIf(data.starting_balance) + '>' + fmt(data.starting_balance) + '</strong>' +
+          ' &bull; Projected end: <strong' + badIf(data.ending_balance) + '>' + fmt(data.ending_balance) + '</strong>' +
+          (data.lowest_balance_date ? ' &bull; Lowest projected: <strong' + badIf(data.lowest_balance) + '>' + fmt(data.lowest_balance) + '</strong> on ' + fmtDate(data.lowest_balance_date) : '') +
+          ' &bull; Daily discretionary: <strong>' + fmt(data.avg_daily_spend) + '</strong>' +
           (data.recurring_income.length > 0 ? ' &bull; Income sources: ' + data.recurring_income.map(function(i) { return esc(i.source); }).join(', ') : '');
         var html = '<div class="table-wrap"><table style="width:100%;font-size:12px;border-collapse:collapse;">';
         html += '<thead><tr><th style="text-align:left;padding:6px 0;border-bottom:1px solid var(--border);">Week</th>';
@@ -2947,12 +2960,11 @@
         html += '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Spending</th>';
         html += '<th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Balance</th></tr></thead><tbody>';
         data.by_week.forEach(function(w) {
-          var balColor = w.end_balance >= 0 ? 'var(--green)' : 'var(--red)';
           html += '<tr><td style="padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);">Wk ' + w.week + (w.start_date ? ' (' + fmtDate(w.start_date) + ')' : '') + '</td>';
-          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--green);">' + fmt(w.income) + '</td>';
-          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--red);">' + fmt(w.bills) + '</td>';
-          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:var(--warm);">' + fmt(w.discretionary) + '</td>';
-          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);color:' + balColor + ';">' + fmt(w.end_balance) + '</td></tr>';
+          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);" class="amt-in">' + fmt(w.income) + '</td>';
+          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);">' + fmt(w.bills) + '</td>';
+          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);">' + fmt(w.discretionary) + '</td>';
+          html += '<td style="text-align:right;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.06);"' + badIf(w.end_balance) + '>' + fmt(w.end_balance) + '</td></tr>';
         });
         html += '</tbody></table></div>';
         document.getElementById('cashflow-list').innerHTML = html;
@@ -2978,8 +2990,8 @@
           (comp.change_percent !== null ? Math.abs(comp.change_percent) + '%' : 'N/A') +
           ' (' + (comp.change_amount > 0 ? '+' : '') + fmt(comp.change_amount) + ')</strong></div>';
         html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">';
-        html += '<div class="card"><div class="label">' + data.month_name + ' ' + comp.current_year + '</div><div class="value warm">' + fmt(comp.current_total) + '</div></div>';
-        html += '<div class="card"><div class="label">' + data.month_name + ' ' + comp.previous_year + '</div><div class="value teal">' + fmt(comp.previous_total) + '</div></div>';
+        html += '<div class="card"><div class="label">' + data.month_name + ' ' + comp.current_year + '</div><div class="value">' + fmt(comp.current_total) + '</div></div>';
+        html += '<div class="card"><div class="label">' + data.month_name + ' ' + comp.previous_year + '</div><div class="value">' + fmt(comp.previous_total) + '</div></div>';
         html += '</div>';
         if (comp.category_changes.length > 0) {
           html += '<div class="table-wrap"><table style="width:100%;font-size:12px;border-collapse:collapse;">';
@@ -3072,7 +3084,7 @@
             removeBtn +
             '<div class="acct-inst" style="font-size:10px;">' + esc(a.institution || a.source) + holdingsBadge + '</div>' +
             '<div class="acct-name" style="font-size:13px;">' + esc(a.name) + '</div>' +
-            '<div class="acct-balance positive" style="font-size:18px;">' + fmt(a.balance) + '</div>' +
+            '<div class="acct-balance" style="font-size:18px;">' + fmt(a.balance) + '</div>' +
             '<div class="acct-type" style="font-size:10px;">' + esc(a.account_type || '') + '</div>' +
             '<div id="' + sparkId + '" style="height:20px;"></div>' +
             '<a href="' + histHref + '" style="display:block;margin-top:6px;font-size:10px;color:var(--teal);text-decoration:none;">View history &rarr;</a>' +
@@ -3170,7 +3182,7 @@
           '<label style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--text-muted);cursor:pointer;">' +
             '<input type="checkbox" data-cat-rule="' + esc(t.transaction_id) + '"' + (suggested ? ' checked' : '') + '> Remember' +
           '</label>' +
-          '<button data-cat-apply="' + esc(t.transaction_id) + '"' + (suggested ? '' : ' disabled') + ' style="padding:4px 10px;font-size:11px;border:1px solid var(--green);border-radius:4px;background:transparent;color:var(--green);cursor:pointer;font-family:inherit;">Apply</button>' +
+          '<button data-cat-apply="' + esc(t.transaction_id) + '"' + (suggested ? '' : ' disabled') + ' class="btn-sm primary">Apply</button>' +
         '</div>';
       }).join('');
     }

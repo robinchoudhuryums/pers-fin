@@ -46,16 +46,16 @@
   <p class="subtitle">Detected recurring charges and manually tracked subscriptions</p>
 
   <div class="summary">
-    <div class="card"><div class="label">Subscriptions/mo</div><div class="value cost" id="subs-cost">--</div><div class="sub" id="subs-count"></div></div>
-    <div class="card"><div class="label">Utilities/mo</div><div class="value cost" id="utils-cost">--</div><div class="sub" id="utils-count"></div></div>
-    <div class="card"><div class="label">Total Monthly</div><div class="value cost" id="monthly-cost">--</div></div>
+    <div class="card"><div class="label">Subscriptions/mo</div><div class="value" id="subs-cost">--</div><div class="sub" id="subs-count"></div></div>
+    <div class="card"><div class="label">Utilities/mo</div><div class="value" id="utils-cost">--</div><div class="sub" id="utils-count"></div></div>
+    <div class="card"><div class="label">Total Monthly</div><div class="value" id="monthly-cost">--</div></div>
     <div class="card"><div class="label">Total Yearly</div><div class="value count" id="yearly-cost">--</div></div>
   </div>
 
   <div class="actions">
-    <button class="primary" id="sync-btn">Sync Transactions</button>
-    <button class="primary" id="detect-btn">Run Detection</button>
-    <button id="add-btn">+ Add Manual</button>
+    <button class="primary" id="sync-btn">Sync transactions</button>
+    <button class="primary" id="detect-btn">Run detection</button>
+    <button id="add-btn">+ Add manual</button>
     <button id="sheets-btn">Sync to Sheets</button>
     <select id="filter-select" aria-label="Show subscriptions">
       <option value="active">Active</option>
@@ -140,7 +140,9 @@
         document.getElementById('monthly-cost').textContent = fmt(data.summary.monthly_cost);
         document.getElementById('yearly-cost').textContent = fmt(data.summary.yearly_cost);
         if (!data.subscriptions.length) {
-          tbody.innerHTML = '<tr><td colspan="6" class="empty">No subscriptions found. Import transactions or add manually.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="6" class="empty">' + emptyState({ title: 'No subscriptions found',
+            text: 'Run detection over your transactions, or add one by hand with + Add manual.',
+            action: { label: 'Run detection', click: 'detect-btn' } }) + '</td></tr>';
           return;
         }
         tbody.innerHTML = data.subscriptions.map(s => {
@@ -204,7 +206,7 @@
         }
         else showMsg('Sync failed: ' + (data.error || 'Unknown error (HTTP ' + res.status + ')'), false);
       } catch (e) { showMsg('Sync failed: Could not reach server. ' + e.message, false); }
-      btnLoading(btn, false, 'Sync Transactions');
+      btnLoading(btn, false, 'Sync transactions');
     }
 
     async function runDetection() {
@@ -216,7 +218,7 @@
         if (res.ok) { showMsg('Detection complete: ' + data.detected_count + ' subscriptions found.', true); loadSubscriptions(); }
         else showMsg('Detection failed: ' + (data.error || 'Unknown error (HTTP ' + res.status + ')'), false);
       } catch (e) { showMsg('Detection failed: Could not reach server. ' + e.message, false); }
-      btnLoading(btn, false, 'Run Detection');
+      btnLoading(btn, false, 'Run detection');
     }
 
     function toggleManualForm() {

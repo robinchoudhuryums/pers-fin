@@ -144,6 +144,9 @@ function rootRelativeOffenders(files, pages) {
       const t = line.trim();
       if (t.startsWith("//") || t.startsWith("*") || t.startsWith("/*")) return;
       if (/navBar\(/.test(line)) return; // server-side helper — adds the base itself
+      // An emptyState() action ({ label, href }) — the helper joins withBase
+      // itself and links only a same-app path (tests/design-d2.test.js).
+      if (/action: \{ label: [^}]*href: '\//.test(line)) return;
       for (const m of line.matchAll(/(['"])\/([a-z][\w-]*)(?=[/'"?#])/g)) {
         const seg = m[2];
         if (ROOT_OWNED.has(seg) || !pages.has(seg)) continue;

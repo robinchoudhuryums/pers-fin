@@ -19,7 +19,8 @@
     .cal-day .day-num.today { color: var(--teal); }
     .cal-event { padding: 2px 4px; margin-top: 2px; border-radius: 3px; font-size: 10px;
                  font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .cal-event.bill { background: rgba(235,107,107,0.15); color: var(--red); }
+    /* Design D2: a bill is a neutral chip (red is for something wrong); income green. */
+    .cal-event.bill { background: var(--surface-2); color: var(--text); }
     .cal-event.income { background: rgba(111,207,151,0.15); color: var(--green); }
     .cal-event.utility { background: rgba(127,181,230,0.15); color: var(--blue); }
     .cal-event.paid { opacity: 0.5; text-decoration: line-through; }
@@ -51,7 +52,7 @@
     <button class="btn btn-sm" id="prev-month">&larr; Prev</button>
     <h2 id="month-title">Loading...</h2>
     <button class="btn btn-sm" id="next-month">Next &rarr;</button>
-    <button class="btn btn-sm" id="add-bill-btn" style="margin-left:auto;">+ Add Bill</button>
+    <button class="btn btn-sm" id="add-bill-btn" style="margin-left:auto;">+ Add bill</button>
   </div>
 
   <!-- Add Bill Modal -->
@@ -74,8 +75,8 @@
   </div>
 
   <div class="cal-summary">
-    <div class="card"><div class="label">Expected Bills</div><div class="value cost" id="total-bills">--</div></div>
-    <div class="card"><div class="label">Expected Income</div><div class="value green" id="total-income">--</div></div>
+    <div class="card"><div class="label">Expected Bills</div><div class="value" id="total-bills">--</div></div>
+    <div class="card"><div class="label">Expected Income</div><div class="value amt-in" id="total-income">--</div></div>
     <div class="card"><div class="label">Net Cash Flow</div><div class="value" id="net-flow">--</div></div>
   </div>
 
@@ -106,7 +107,7 @@
         document.getElementById('total-income').textContent = fmt(data.total_income);
         var netEl = document.getElementById('net-flow');
         netEl.textContent = (data.net >= 0 ? '+' : '') + fmt(data.net);
-        netEl.className = 'value ' + (data.net >= 0 ? 'green' : 'red');
+        netEl.className = 'value ' + (data.net >= 0 ? 'amt-in' : 'amt-bad');
 
         renderGrid(data);
       } catch (e) {
@@ -160,8 +161,8 @@
           }
           if (day.total_bills > 0 || day.total_income > 0) {
             html += '<div class="day-total">';
-            if (day.total_bills > 0) html += '<span style="color:var(--red);">-$' + day.total_bills.toFixed(0) + '</span> ';
-            if (day.total_income > 0) html += '<span style="color:var(--green);">+$' + day.total_income.toFixed(0) + '</span>';
+            if (day.total_bills > 0) html += '<span>-$' + day.total_bills.toFixed(0) + '</span> ';
+            if (day.total_income > 0) html += '<span class="amt-in">+$' + day.total_income.toFixed(0) + '</span>';
             html += '</div>';
           }
           html += '</div>';

@@ -258,9 +258,10 @@ describe("dashboard Cash Flow line", () => {
 
   it("shows the lowest projected balance and its date (red when negative)", async () => {
     const html = await render({ ...base, lowest_balance: -50, lowest_balance_date: "2026-02-14" });
-    assert.match(html, /Lowest projected: <strong style="color:var\(--red\);">-\$50\.00<\/strong> on D\(2026-02-14\)/);
+    assert.match(html, /Lowest projected: <strong class="amt-bad">-\$50\.00<\/strong> on D\(2026-02-14\)/);
+    // Design D2: a non-negative figure is the default colour (no gold).
     const pos = await render({ ...base, lowest_balance: 120, lowest_balance_date: "2026-02-03" });
-    assert.match(pos, /color:var\(--warm\);">\$120\.00<\/strong> on D\(2026-02-03\)/);
+    assert.match(pos, /Lowest projected: <strong>\$120\.00<\/strong> on D\(2026-02-03\)/);
   });
 
   it("leaves the line out when the response has no lowest day", async () => {

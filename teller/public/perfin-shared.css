@@ -29,6 +29,10 @@
   /* IF-5: text on a solid --teal button. Black reads on the dark-theme teal
      (~5.8:1); the darker light-theme teal needs white (black was ~3.1:1). */
   --on-teal: #000;
+  /* Design D2: text on a solid --warm (gold) primary button — dark ink on both
+     themes (~9:1 on the dark-theme gold, ~5:1 on the darker light-theme gold;
+     white on the light gold was ~3.7:1). */
+  --on-warm: #1a1206;
 }
 [data-theme="light"] {
   --bg: #f5f2ed; --surface: rgba(0,0,0,0.03); --surface-2: rgba(0,0,0,0.06);
@@ -44,6 +48,7 @@
   --blue: #4a8abf; --blue-bg: rgba(74,138,191,0.1);
   --surface-solid: #fdfbf6;
   --on-teal: #fff;
+  --on-warm: #1a1206;
 }
 /* Skip-to-content link for keyboard users */
 .skip-link {
@@ -242,11 +247,13 @@ h1 { font-size: 42px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 8
   padding: 9px 18px; font-size: 12px; font-weight: 500; letter-spacing: 0.5px;
   border: 1px solid var(--border); border-radius: 8px; cursor: pointer;
   background: transparent; color: var(--text-muted); transition: all 0.2s;
-  text-transform: uppercase; font-family: inherit;
+  font-family: inherit;
 }
 .actions button:hover:not(:disabled) { border-color: var(--warm); color: var(--text); }
-.actions button.primary { border-color: var(--warm); color: var(--warm); }
-.actions button.primary:hover:not(:disabled) { background: rgba(212,165,116,0.1); color: var(--text); }
+/* Design D2 (decision 10): buttons are sentence case; a primary button is
+   FILLED gold, the others outlined. */
+.actions button.primary { border-color: var(--warm); background: var(--warm); color: var(--on-warm); }
+.actions button.primary:hover:not(:disabled) { color: var(--on-warm); filter: brightness(1.08); }
 .actions button:disabled { opacity: 0.4; cursor: not-allowed; }
 .actions select { appearance: none; padding-right: 30px;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23d4a574' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
@@ -319,6 +326,13 @@ tr:hover { background: var(--surface); }
 .amount { font-weight: 400; font-variant-numeric: tabular-nums; letter-spacing: -0.3px; }
 .amount.warm { color: var(--warm-glow); }
 .amount.teal { color: var(--teal); }
+/* Design D2 (decision 11) — money colours. A charge, a balance and a debt are
+   the default text colour; money coming in is green; red is kept for
+   something wrong (overdue, over budget, a balance projected below $0, an
+   overdrawn account, a debt that rose). Gold is brand only. Use these two
+   classes rather than inline colours. */
+.amt-in { color: var(--green); }
+.amt-bad { color: var(--red); }
 
 /* Loading spinner for buttons */
 .btn-loading { position: relative; color: transparent !important; pointer-events: none; }
@@ -331,17 +345,20 @@ tr:hover { background: var(--surface); }
 /* Buttons */
 .btn { padding: 8px 16px; font-size: 12px; font-weight: 500; letter-spacing: 0.5px;
   border: 1px solid var(--border); border-radius: 8px; cursor: pointer; background: transparent;
-  color: var(--text-muted); transition: all 0.2s; text-transform: uppercase; font-family: inherit; }
+  color: var(--text-muted); transition: all 0.2s; font-family: inherit; }
 .btn:hover:not(:disabled) { border-color: var(--warm); color: var(--text); }
-.btn.primary { border-color: var(--warm); color: var(--warm); }
-.btn.primary:hover:not(:disabled) { background: rgba(212,165,116,0.1); color: var(--text); }
+.btn.primary { border-color: var(--warm); background: var(--warm); color: var(--on-warm); }
+.btn.primary:hover:not(:disabled) { color: var(--on-warm); filter: brightness(1.08); }
+.btn:disabled, .btn-sm:disabled, .actions button:disabled { opacity: 0.45; cursor: not-allowed; }
 .btn.danger { border-color: rgba(235,107,107,0.25); color: var(--red); }
 .btn.danger:hover { background: var(--red-bg); }
 .btn-sm { padding: 5px 12px; font-size: 10px; font-weight: 500; letter-spacing: 0.5px;
           border: 1px solid var(--border); border-radius: 6px; cursor: pointer;
           background: transparent; color: var(--text-muted); margin-right: 4px;
-          transition: all 0.2s; text-transform: uppercase; }
+          transition: all 0.2s; font-family: inherit; }
 .btn-sm:hover { border-color: var(--border-hover); color: var(--text); }
+.btn-sm.primary { border-color: var(--warm); background: var(--warm); color: var(--on-warm); }
+.btn-sm.primary:hover:not(:disabled) { color: var(--on-warm); filter: brightness(1.08); }
 .btn-sm.cancel { border-color: rgba(235,107,107,0.25); color: var(--red); }
 .btn-sm.cancel:hover { background: var(--red-bg); }
 .btn-sm.restore { border-color: rgba(111,207,151,0.25); color: var(--green); }
@@ -349,6 +366,12 @@ tr:hover { background: var(--surface); }
 
 /* Empty state */
 .empty-msg { text-align: center; padding: 40px; color: var(--text-muted); font-weight: 300; font-size: 14px; }
+/* Design D2 (decision 12): emptyState() — a title, a line and one action. */
+.empty-state { text-align: center; padding: 28px 16px; color: var(--text-muted); }
+.empty-state-title { font-size: 15px; font-weight: 500; color: var(--text); margin-bottom: 4px; }
+.empty-state-text { font-size: 13px; font-weight: 300; line-height: 1.5; }
+.empty-state-action { display: inline-block; margin-top: 12px; text-decoration: none; }
+td .empty-state, td.empty .empty-state { padding: 20px 8px; }
 
 /* Toggles */
 .toggle { position: relative; width: 44px; height: 24px; cursor: pointer; display: inline-block; }

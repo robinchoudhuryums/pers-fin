@@ -7,7 +7,7 @@
     p { color: var(--text-muted); font-size: 15px; line-height: 1.6; margin-bottom: 24px; font-weight: 300; }
     button { padding: 12px 28px; font-size: 12px; font-weight: 500; cursor: pointer;
              border: 1px solid var(--warm); background: transparent; color: var(--warm);
-             border-radius: 8px; transition: all 0.2s; text-transform: uppercase; letter-spacing: 1px;
+             border-radius: 8px; transition: all 0.2s; letter-spacing: 0.3px;
              font-family: inherit; }
     button:hover { background: rgba(212,165,116,0.1); color: var(--text); }
     button:disabled { opacity: 0.4; cursor: not-allowed; }
@@ -40,7 +40,7 @@
                         font-size: 13px; font-weight: 300; backdrop-filter: blur(12px); }
     .btn-unlink { padding: 5px 12px; font-size: 10px; font-weight: 500; letter-spacing: 0.5px;
                   border: 1px solid rgba(235,107,107,0.25); border-radius: 6px; cursor: pointer;
-                  background: transparent; color: var(--red); text-transform: uppercase;
+                  background: transparent; color: var(--red);
                   transition: all 0.2s; font-family: inherit; }
     .btn-unlink:hover { background: var(--red-bg); }
 ` }) %>
@@ -157,7 +157,7 @@
         <label for="manual-limit">Credit Limit (optional)</label>
         <input type="number" id="manual-limit" step="0.01" placeholder="e.g. 5000">
       </div>
-      <button id="add-manual-acct-btn">Add Account</button>
+      <button id="add-manual-acct-btn">Add account</button>
     </div>
     <div id="manual-accounts-list" style="margin-top:16px;color:var(--text-muted);font-size:14px;font-weight:300;">Loading...</div>
   </div>
@@ -168,7 +168,7 @@
     <h2>Investment Accounts</h2>
     <p>Track brokerage, retirement, and other investment accounts. Link via Plaid or add manually.</p>
     <div style="margin-bottom:16px;">
-      <button id="plaid-inv-btn" style="display:none;">Link Investment Account via Plaid</button>
+      <button id="plaid-inv-btn" style="display:none;">Link investment account via Plaid</button>
     </div>
     <div class="csv-form" id="inv-form">
       <div class="field">
@@ -197,7 +197,7 @@
         <label for="inv-balance">Current Balance ($)</label>
         <input type="number" id="inv-balance" step="0.01" placeholder="50000">
       </div>
-      <button id="add-inv-btn">Add Account</button>
+      <button id="add-inv-btn">Add account</button>
     </div>
     <div id="inv-list" style="margin-top:16px;color:var(--text-muted);font-size:14px;font-weight:300;">Loading...</div>
   </div>
@@ -461,7 +461,9 @@
         list.innerHTML = manualAccts.map(function(a) {
           var bal = parseFloat(a.current_balance || 0);
           var balStr = '$' + Math.abs(bal).toLocaleString('en-US', {minimumFractionDigits: 2});
-          // F105: a loan is a debt like a card — negative and red, never a green "+".
+          // F105: a loan is a debt like a card — "-$X owed", never a green "+".
+          // Design D2: the default colour (a debt isn't red for being a debt);
+          // red only for an overdrawn cash account.
           var isDebt = a.type === 'credit' || a.type === 'loan';
           if (isDebt) balStr = '-' + balStr + ' owed';
           var limitStr = a.credit_limit ? ' / Limit: $' + parseFloat(a.credit_limit).toLocaleString('en-US', {minimumFractionDigits: 2}) : '';
@@ -469,10 +471,10 @@
             '<div class="item-info"><strong>' + esc(a.name) + '</strong>' +
             ' (' + esc(a.institution_name || 'Manual') + ')' +
             ' \u2014 ' + esc(a.subtype || a.type) +
-            ' \u2014 <span style="color:' + (isDebt ? 'var(--red)' : 'var(--green)') + ';font-weight:400;">' + balStr + '</span>' +
+            ' \u2014 <span' + (!isDebt && bal < 0 ? ' class="amt-bad"' : '') + ' style="font-weight:400;">' + (!isDebt && bal < 0 ? '-' : '') + balStr + '</span>' +
             limitStr + '</div>' +
             '<div class="item-actions" style="display:flex;gap:6px;">' +
-              '<button class="btn-unlink" style="border-color:var(--border);color:var(--warm);" data-action="update-manual" data-id="' + a.id + '">Update Balance</button>' +
+              '<button class="btn-unlink" style="border-color:var(--border);color:var(--warm);" data-action="update-manual" data-id="' + a.id + '">Update balance</button>' +
               '<button class="btn-unlink" data-action="delete-manual" data-id="' + a.id + '" data-name="' + esc(a.name) + '">Remove</button>' +
             '</div></div>';
         }).join('');

@@ -48,6 +48,41 @@
     return base + url;
   }
 
+  // --- Empty states (design D2, decision 12) ---
+  // One block for every "nothing here yet" message: a title, a line of text and
+  // an optional action — { label, href } (a same-app path, joined with
+  // withBase) or { label, click } (the id of a button the page already wires:
+  // the empty state's button just clicks it, so no new write path exists).
+  // Every value is escaped.
+  function emptyState(opts) {
+    opts = opts || {};
+    var html = '<div class="empty-state">';
+    if (opts.title) html += '<div class="empty-state-title">' + esc(opts.title) + '</div>';
+    if (opts.text) html += '<div class="empty-state-text">' + esc(opts.text) + '</div>';
+    var a = opts.action;
+    if (a && a.label) {
+      // Only a same-app path ("/x", never "//host" or "javascript:") becomes a link.
+      if (a.href && a.href.charAt(0) === '/' && a.href.charAt(1) !== '/') {
+        html += '<a class="btn btn-sm primary empty-state-action" href="' + esc(withBase(a.href)) + '">' + esc(a.label) + '</a>';
+      } else if (a.click) {
+        html += '<button type="button" class="btn btn-sm primary empty-state-action" data-empty-click="' + esc(a.click) + '">' + esc(a.label) + '</button>';
+      }
+    }
+    return html + '</div>';
+  }
+  // The delegated handler for { click } actions (installed once below).
+  function emptyStateClick(e) {
+    var t = e && e.target && e.target.closest ? e.target.closest('[data-empty-click]') : null;
+    if (!t) return false;
+    var target = document.getElementById(t.getAttribute('data-empty-click'));
+    if (!target) return false;
+    target.click();
+    return true;
+  }
+  if (typeof document !== 'undefined' && document.addEventListener) {
+    document.addEventListener('click', emptyStateClick);
+  }
+
   // --- API fetch with headers ---
   // W3: a single in-flight guard so concurrent expired calls trigger one nav.
   var _authRedirecting = false;
@@ -478,6 +513,7 @@
   win.esc = esc;
   win.apiFetch = apiFetch;
   win.withBase = withBase;
+  win.emptyState = emptyState;
   win.showMsg = showMsg;
   win.btnLoading = btnLoading;
   win.fmt = fmt;
