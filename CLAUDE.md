@@ -1035,15 +1035,15 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2392 tests as of latest); use
+  Perfin and Per-sistant test files (2393 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2392 tests across 126 test files (incl.
+  Current count: 2393 tests across 126 test files (incl.
   `tests/design-d1.test.js` — design pass D1 (`.cycle/plan-design-ux.md`): the real `fmt` in a vm
   (-$X, thousands separators, never -$0.00), the investment return and the Goals FIRE formatter's
   sign, the dashboard Review widget's `renderReviewQueue` in a vm (a calendar date under a west-of-UTC
   TZ, "Choose a category" + Apply disabled + Remember unticked without a suggestion, the suggestion
   selected + Remember ticked with one, an unlisted suggestion offered, the change handler enabling
-  Apply, Apply's empty-category guard) and the page width (one `.container` width, no page view with
+  Apply, a disabled Apply styled as disabled, Apply's empty-category guard) and the page width (one `.container` width, no page view with
   the nav setting its own, the narrow pages on `#main-content`) — with
   `apps/per-sistant/tests/design-d1.test.js` (every sidebar entry has an icon, the dashboard stat
   tiles coloured by value in a vm, two tiles per row on a phone, the legacy attachment copy after
@@ -3745,7 +3745,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2392 tests passing across 126 test files (Perfin 1727 + Per-sistant 665), plus the real-Postgres route contract suite (249 tests; CI `migrations` job, `npm run test:contract`) and 68 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2393 tests passing across 126 test files (Perfin 1728 + Per-sistant 665), plus the real-Postgres route contract suite (249 tests; CI `migrations` job, `npm run test:contract`) and 68 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands

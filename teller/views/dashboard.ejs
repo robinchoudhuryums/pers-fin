@@ -1,5 +1,8 @@
 <%- include('partials/head', { title: 'Dashboard', extraStyles: `
     #main-content { max-width: 1060px; }
+    /* Design pass D1: a Review row's Apply is disabled until a category is chosen —
+       it has to look it (the button's own style is inline). */
+    #review-queue-list button[data-cat-apply]:disabled { opacity: 0.4; cursor: not-allowed; }
     .top-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
                  gap: 16px; margin-bottom: 36px; }
     .accounts-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));

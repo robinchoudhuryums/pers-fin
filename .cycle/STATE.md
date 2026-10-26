@@ -18,7 +18,22 @@ Updated: 2026-10-26
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Roadmap T3.3 (year-end tax package) — K4 DONE; T3.3 COMPLETE** (2026-10-26, branch
+- **Status:** **Design & UX pass — D1 DONE** (2026-10-26, branch `claude/sweet-ritchie-f9d8ah`,
+  PR robinchoudhuryums/pers-fin#133). Plan: `.cycle/plan-design-ux.md`. Block:
+  `.cycle/blocks/7-design-d1-broad-implement.md`.
+  - **Shipped:**
+    - the dashboard Review widget: calendar dates, "Choose a category" + Apply disabled without a suggestion, Remember ticked only for a suggestion;
+    - `fmt()` negatives as -$X, also the investment return and the FIRE card;
+    - one `.container` width on every Perfin page, each page narrowing `#main-content`, so the nav never wraps on narrow pages;
+    - Per-sistant: a Job Radar icon, stat tiles coloured by value and two to a row on a phone, and the legacy attachment copy moved after `runMigrations`.
+  - **Decision taken in-batch:** the nav fix keeps the nav inside `.container` and moves page widths to `#main-content`, rather than the plan's separate nav shell — same result, no partial restructuring.
+  - **Verified:**
+    - npm test 2393/2393 (23 new);
+    - contract 249/249;
+    - Playwright 68/68 (2 new);
+    - mutation checks 19/19 + 1 e2e.
+  - **Where I left off:** D1 committed and pushed. Next: `/broad-implement D2` (Perfin buttons, money colours, empty states).
+- **Previous status (T3.3 K4):** **Roadmap T3.3 (year-end tax package) — K4 DONE; T3.3 COMPLETE** (2026-10-26, branch
   `claude/sweet-ritchie-f9d8ah`, PR robinchoudhuryums/pers-fin#133). Block:
   `.cycle/blocks/7-roadmap-t3-3-k4-broad-implement.md`.
   - **Shipped:**

@@ -148,6 +148,10 @@ describe("dashboard Review Uncategorized widget", () => {
     assert.equal(buttons.t1.disabled, true);
   });
 
+  it("a disabled Apply looks disabled", () => {
+    assert.match(dash, /#review-queue-list button\[data-cat-apply\]:disabled \{ opacity: 0\.4; cursor: not-allowed; \}/);
+  });
+
   it("Apply does nothing without a chosen category", () => {
     const apply = slice(dash, "onDelegate('review-queue-list', 'click'", "// AI Memory widget");
     assert.match(apply, /if \(!sel \|\| !sel\.value\) return;/);

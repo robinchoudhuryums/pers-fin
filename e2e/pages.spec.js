@@ -272,10 +272,14 @@ test.describe("every page loads cleanly", () => {
     for (const p of ["/perfin/dashboard", "/perfin/budgets", "/perfin/accounts", "/perfin/settings", "/perfin/tax"]) {
       await page.goto(p);
       const box = await page.locator("nav.topnav").boundingBox();
+      const logo = await page.locator("nav.topnav .logo").boundingBox();
+      const bell = await page.locator("#nav-notif-bell").boundingBox();
+      // One row: the logo and the bell share a line (a wrapped nav put them rows apart).
+      expect(Math.abs((logo.y + logo.height / 2) - (bell.y + bell.height / 2)), p + " logo and bell on one line").toBeLessThan(12);
       boxes[p] = { x: Math.round(box.x), width: Math.round(box.width), height: Math.round(box.height) };
     }
     const first = boxes["/perfin/dashboard"];
-    expect(first.height, "one row").toBeLessThan(80);
+    expect(first.height, "one row (20px padding around a ~40px row)").toBeLessThanOrEqual(90);
     for (const [p, b] of Object.entries(boxes)) expect(b, p).toEqual(first);
   });
 
