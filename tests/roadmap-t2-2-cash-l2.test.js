@@ -136,6 +136,7 @@ describe("runCashAlerts — alert and dedup", () => {
     assert.deepEqual(d.emails, [{ t: "Low cash ahead", b: d.sent[0].body }]);
     assert.deepEqual(pool.calls.updates[0], {
       alert: { breach_date: "2026-03-12", low_date: "2026-03-14", low_balance: 100, notified_at: NOW.toISOString() },
+      last_notified: { breach_date: "2026-03-12", notified_at: NOW.toISOString() },
       last_check: { at: NOW.toISOString(), outcome: "notified", breach_date: "2026-03-12", floors_below: 0 },
     });
   });
@@ -164,12 +165,17 @@ describe("runCashAlerts — alert and dedup", () => {
     assert.equal(notYet.sent.length, 0);
   });
 
-  it("no breach → clear: a recorded alert is dropped silently", async () => {
+  it("no breach → clear: a recorded alert is dropped silently, its notification remembered (F11)", async () => {
     const d = deps({ forecast: { projection: [{ date: "2026-03-11", balance: 900 }], lowest: { date: "2026-03-11", balance: 900 } } });
-    const pool = fakePool(row({ cash_alert_state: { alert: { breach_date: "2026-03-12", notified_at: hoursAgo(5).toISOString() } } }));
+    const notifiedAt = hoursAgo(5).toISOString();
+    const pool = fakePool(row({ cash_alert_state: { alert: { breach_date: "2026-03-12", notified_at: notifiedAt } } }));
     assert.equal((await run(pool, d)).status, "clear");
     assert.equal(d.sent.length, 0);
-    assert.deepEqual(pool.calls.updates[0], { alert: null, last_check: { at: NOW.toISOString(), outcome: "clear", floors_below: 0 } });
+    assert.deepEqual(pool.calls.updates[0], {
+      alert: null,
+      last_notified: { breach_date: "2026-03-12", notified_at: notifiedAt },
+      last_check: { at: NOW.toISOString(), outcome: "clear", floors_below: 0 },
+    });
   });
 
   it("a balance AT the floor is not below it", async () => {

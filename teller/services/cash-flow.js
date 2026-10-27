@@ -28,13 +28,53 @@ const { NOT_TRANSFER, SPLIT_AMOUNT, INVESTMENT_ACCOUNT_TYPES, getLiveIncomeStrea
 
 const CADENCE_DAYS = { weekly: 7, biweekly: 14, semimonthly: 15, monthly: 30 };
 
-// DD-4: card AUTOPAYS (bill_payment transfers that aren't a loan/mortgage) are
-// skipped — the card purchases they pay off are already in the daily spending
-// average, so billing the autopay too double-counted card spending ($2k of card
-// purchases + a $2k autopay projected $4k/month). Loan / mortgage payments stay:
-// their outflow isn't in the average (NOT_TRANSFER excludes it).
+// DD-4: CARD autopays are skipped — the card purchases they pay off are already
+// in the daily spending average, so billing the autopay too double-counted card
+// spending ($2k of card purchases + a $2k autopay projected $4k/month). Loan /
+// mortgage payments stay: their outflow isn't in the average (NOT_TRANSFER
+// excludes it). Cycle-8 F8: EVERY non-loan bill_payment used to be skipped, so a
+// utility or insurance "AUTOPAY" from checking — kept out of the average by
+// NOT_TRANSFER and out of subscription detection by its exclusion list — was
+// projected nowhere. A bill_payment is a card autopay when its latest debit was
+// paid into a linked credit card (paid_linked_card) or its name says it is a
+// card payment / names a card issuer.
+const CARD_PAYMENT_RE = /\b(credit\s*card|card\s*(?:payment|pmt|autopay|auto\s*pay|epay|services)|cardmember|crd\s*(?:pmt|epay|autopay)|amex|american\s+express|discover|capital\s*one|citi(?:\s*card)?|chase|barclays|synchrony|apple\s+card)\b/i;
 function isCardAutopay(tr) {
-  return tr.transfer_type === "bill_payment" && !/\b(loan|mortgage)\b/i.test(tr.display_name || "");
+  if (tr.transfer_type !== "bill_payment") return false;
+  const name = tr.display_name || "";
+  if (/\b(loan|mortgage)\b/i.test(name)) return false;
+  return !!tr.paid_linked_card || CARD_PAYMENT_RE.test(name);
+}
+
+// Cycle-8 F7: a transfer between two of your own spendable accounts (checking →
+// a linked savings account) moves money inside the starting balance, which
+// already sums every depository account, so billing it understated the
+// projection by the transfer every cycle — and could raise a false "Low cash
+// ahead". Such a transfer is recognised by its latest debit having a credit of
+// the same amount, within 5 days, on ANOTHER spendable (depository,
+// non-investment) account (moved_between_cash_accounts). A savings transfer to
+// an account you haven't linked, a brokerage contribution or a rent "transfer
+// to" someone else has no such credit and is still billed.
+function isInternalMove(tr) {
+  return !!tr.moved_between_cash_accounts;
+}
+
+// Whether a recurring transfer's latest debit (from a spendable account) has a
+// credit of the same amount within 5 days on another linked account matching
+// `destination` (an SQL condition on la2). The transfer's rows are found by
+// the transfer detector's own merchant key.
+function mirroredCredit(destination) {
+  return `EXISTS (
+        SELECT 1 FROM transactions t
+        JOIN linked_accounts la ON la.account_id = t.account_id
+        JOIN transactions t2 ON t2.account_id <> t.account_id AND t2.pending = false
+          AND t2.amount = -t.amount AND t2.date BETWEEN t.date - 5 AND t.date + 5
+        JOIN linked_accounts la2 ON la2.account_id = t2.account_id
+        WHERE COALESCE(t.user_merchant_name, t.merchant_name, LOWER(REGEXP_REPLACE(t.name, '[^a-zA-Z0-9 ]', '', 'g'))) = rt.merchant_key
+          AND t.amount > 0 AND t.pending = false AND t.date = rt.last_transferred
+          AND la.type = 'depository' AND NOT ${INVESTMENT_ACCOUNT_TYPES}
+          AND ${destination}
+      )`;
 }
 
 async function getCashFlowInputs(pool, { today = todayStr() } = {}) {
@@ -48,13 +88,16 @@ async function getCashFlowInputs(pool, { today = todayStr() } = {}) {
         AND next_expected IS NOT NULL
     `),
     pool.query(`
-      SELECT display_name, amount, cadence_days, next_expected, last_transferred AS last_date, transfer_type, direction
-      FROM recurring_transfers
-      WHERE is_active = true AND is_dismissed = false
-        AND next_expected IS NOT NULL AND direction = 'outgoing'
+      SELECT rt.display_name, rt.amount, rt.cadence_days, rt.next_expected, rt.last_transferred AS last_date,
+             rt.transfer_type, rt.direction,
+             ${mirroredCredit("la2.type = 'depository' AND NOT " + INVESTMENT_ACCOUNT_TYPES.replace(/\bla\./g, "la2."))} AS moved_between_cash_accounts,
+             ${mirroredCredit("la2.type = 'credit'")} AS paid_linked_card
+      FROM recurring_transfers rt
+      WHERE rt.is_active = true AND rt.is_dismissed = false
+        AND rt.next_expected IS NOT NULL AND rt.direction = 'outgoing'
     `),
   ]);
-  const bills = [...subsResult.rows, ...transfersResult.rows.filter(tr => !isCardAutopay(tr))];
+  const bills = [...subsResult.rows, ...transfersResult.rows.filter(tr => !isCardAutopay(tr) && !isInternalMove(tr))];
 
   // Spendable cash = DEPOSITORY accounts only (FAN-5). `type != 'credit'`
   // counted loans (+$18k for an $18k auto loan) and Teller-linked brokerage /
@@ -236,4 +279,4 @@ async function getCashFlowForecast(pool, { days, today = todayStr() } = {}) {
   return projectCashFlow(await getCashFlowInputs(pool, { today }), { days });
 }
 
-module.exports = { getCashFlowInputs, projectCashFlow, firstBelow, getCashFlowForecast, isCardAutopay, CADENCE_DAYS };
+module.exports = { getCashFlowInputs, projectCashFlow, firstBelow, getCashFlowForecast, isCardAutopay, isInternalMove, CARD_PAYMENT_RE, CADENCE_DAYS };

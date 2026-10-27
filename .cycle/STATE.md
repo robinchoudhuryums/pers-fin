@@ -18,8 +18,18 @@ Updated: 2026-10-27
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Cycle 8 broad scan — Batch 1 DONE** (2026-10-27, branch `claude/optimistic-edison-vzuc0o`).
-  Block: `.cycle/blocks/8-batch1-broad-implement.md`.
+- **Status:** **Cycle 8 broad scan — Batch 2 DONE** (2026-10-27, branch `claude/optimistic-edison-vzuc0o`).
+  Block: `.cycle/blocks/8-batch2-broad-implement.md`.
+  - **Shipped (Batch 2 — money accuracy):** F7 internal transfers between spendable accounts not billed
+    (mirror credit ±5 days); F8 only card autopays skipped (linked-card credit / card phrase / issuer);
+    F9 fee rows not netted against investment income; F10 unlogged "Paycheck landed" holds the watermark;
+    F11 cash alert remembers its last notification across a clear; F12 a setting / floor change forces
+    an evaluation; F13 documents.csv dismissed day in APP_TIMEZONE; F14 int4 id bound; F15 buy to cover
+    isn't a lot.
+  - **Verified:** npm test 2598/2598 (15 new); contract 254/254 (1 new); Playwright 72/72; mutation 10/10.
+  - **Docs not yet synced** for Batch 2 — the block's DOCUMENTATION UPDATES list is for /sync-docs.
+  - **Where I left off:** Batch 2 committed and pushed. Next: `/sync-docs`, then `/broad-implement Batch 3`.
+- **Batch 1 (DONE):** block `.cycle/blocks/8-batch1-broad-implement.md`.
   - **Shipped (Batch 1 — scheduler + auth safety):** F27 boot run for every scheduled job; F29 not-due /
     off memos for bank auto-sync, the reconcile and the insights trigger (PATCH /api/settings invalidates);
     F25 safeReturnTo refuses control characters (biometric open redirect); F26 shell refuses a missing or
@@ -34,7 +44,6 @@ implement and reflect sessions only set Phase.)
     Known Open Issues section), README, apps/per-sistant/CLAUDE.md. F45 (the two stale Known Open Issues
     bullets) was closed by that sync.
   - **Remaining scan batches** (the scan report is in the session transcript; IDs for a fresh session):
-    - Batch 2 money accuracy: F7 F8 F9 F10 F11 F12 F13 F14 F15
     - Batch 3 detection / rename / restore: F41 F46 F5 F43 F4 F6 F47 F54
     - Batch 4 watermarks + webhook hardening: F1 F51 F3
     - Batch 5 linked tasks: F16 F17 F18 F20 F22 F19 F23 F21
@@ -42,7 +51,6 @@ implement and reflect sessions only set Phase.)
     - Batch 7 web UI + a11y: F34 F35 F55 F36 F37 F38 F39 F40 F56 F57 F48
     - Batch 8 platform hygiene: F31 F32 F33 F52 (F45 done in /sync-docs)
     - Expansion: E1 (G1, G5), E2 (ST1, ST3), E3 (G2, ST2), E4 (ST5, G3), E5 (ST4); G4 → /roadmap
-  - **Where I left off:** Batch 1 committed and pushed. Next: `/broad-implement Batch 2`.
 - **Previous status (D7):** **Design & UX pass — D7 DONE; the pass is complete (D1–D7)** (2026-10-27, branch `claude/sweet-ritchie-f9d8ah`,
   PR robinchoudhuryums/pers-fin#133). Plan: `.cycle/plan-design-ux.md`. Block:
   `.cycle/blocks/7-design-d7-broad-implement.md`.

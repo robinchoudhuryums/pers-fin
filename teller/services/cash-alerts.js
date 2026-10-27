@@ -45,9 +45,14 @@ const FLOOR_TAG = "balance-floor-";
 const FLOOR_RENOTIFY_HOURS = 24;
 
 // A disabled feature costs no DB read for the rest of the local day; a Settings
-// change to any cash_alert_* field clears this (routes/settings.js).
+// change to any cash_alert_* field — or an account floor — clears this
+// (routes/settings.js, PATCH /api/accounts/:id). It also forces the next tick
+// to evaluate (cycle-8 F12): the "nothing new since the last check" gate used
+// to hold a raised threshold, a longer horizon or a new floor until the next
+// bank sync or local day.
 let _disabledDay = null;
-function invalidate() { _disabledDay = null; }
+let _forceNext = false;
+function invalidate() { _disabledDay = null; _forceNext = true; }
 
 function money(n) {
   const abs = Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -62,7 +67,13 @@ function localDayOf(ts) {
   catch { return new Date(ts).toISOString().slice(0, 10); }
 }
 
-// Pure: does this breach warrant a (new) notification?
+// Pure: does this breach warrant a (new) notification? `alert` is the current
+// breach's record, or — after a "clear" — the last one notified (cycle-8 F11:
+// a projection hovering around the floor, $498 → $503 → $497, used to wipe the
+// record on the clear and announce the next dip at once, several times a day).
+// So a dip that comes back within RENOTIFY_HOURS of the last notification is
+// held unless it is EARLIER_DAYS earlier, exactly like a breach that never
+// cleared.
 function shouldNotify(breach, alert, now) {
   if (!alert || !alert.breach_date) return true;
   if (breach.date <= addDaysStr(alert.breach_date, -EARLIER_DAYS)) return true;
@@ -96,11 +107,12 @@ async function runCashAlerts(pool, { now = new Date(), today = todayStr(), deps 
                   WHERE la.type = 'depository' AND NOT ${INVESTMENT_ACCOUNT_TYPES}) b
      WHERE s.id = 1`);
   const s = rows[0];
-  if (!s || !s.cash_alert_enabled) { _disabledDay = today; return { status: "disabled", ran: false }; }
+  // Off: nothing to force (switching it on invalidates again).
+  if (!s || !s.cash_alert_enabled) { _disabledDay = today; _forceNext = false; return { status: "disabled", ran: false }; }
 
   const checkedAt = s.cash_alerts_checked_at ? new Date(s.cash_alerts_checked_at) : null;
   const dataAt = s.data_at ? new Date(s.data_at) : null;
-  if (checkedAt && localDayOf(checkedAt) === today && !(dataAt && dataAt > checkedAt)) {
+  if (!_forceNext && checkedAt && localDayOf(checkedAt) === today && !(dataAt && dataAt > checkedAt)) {
     return { status: "unchanged", ran: false };
   }
 
@@ -123,6 +135,8 @@ async function runCashAlerts(pool, { now = new Date(), today = todayStr(), deps 
         WHERE id = 1`,
       [JSON.stringify(next), at, stamp]);
   }
+  // Evaluated (a throw above leaves the force in place for the next tick).
+  _forceNext = false;
   const { next, unlogged, ...result } = proj;
   return { ...result, status: stamp ? result.status : "unlogged", ran: true, floors };
 }
@@ -133,7 +147,7 @@ async function checkProjection(s, state, { now, at, forecast, sendToAll, sendEma
   const balancesAt = s.balances_at ? new Date(s.balances_at) : null;
   if (!balancesAt || now.getTime() - balancesAt.getTime() > STALE_BALANCE_HOURS * 3600e3) {
     const reason = balancesAt ? "stale_balances" : "no_balances";
-    return { status: "skipped", reason, next: { alert: state.alert || null, last_check: { at, outcome: "skipped", reason } } };
+    return { status: "skipped", reason, next: { alert: state.alert || null, last_notified: state.last_notified || null, last_check: { at, outcome: "skipped", reason } } };
   }
 
   const threshold = parseFloat(s.cash_alert_threshold);
@@ -141,11 +155,16 @@ async function checkProjection(s, state, { now, at, forecast, sendToAll, sendEma
   const f = await forecast(days);
   const { firstBelow } = require("./cash-flow");
   const breach = firstBelow(f.projection, threshold);
-  if (!breach) return { status: "clear", next: { alert: null, last_check: { at, outcome: "clear" } } };
+  // Clear: the alert is dropped, but the last notification is remembered
+  // (last_notified) so a dip right after it doesn't notify again (F11).
+  const lastNotified = state.alert && state.alert.notified_at
+    ? { breach_date: state.alert.breach_date, notified_at: state.alert.notified_at }
+    : (state.last_notified || null);
+  if (!breach) return { status: "clear", next: { alert: null, last_notified: lastNotified, last_check: { at, outcome: "clear" } } };
 
-  const prev = state.alert || null;
+  const prev = state.alert || lastNotified;
   if (!shouldNotify(breach, prev, now)) {
-    return { status: "held", breach, next: { alert: prev, last_check: { at, outcome: "held", breach_date: breach.date } } };
+    return { status: "held", breach, next: { alert: state.alert || null, last_notified: lastNotified, last_check: { at, outcome: "held", breach_date: breach.date } } };
   }
 
   const body = alertText(threshold, breach, f.lowest);
@@ -161,6 +180,7 @@ async function checkProjection(s, state, { now, at, forecast, sendToAll, sendEma
     next: {
       alert: { breach_date: breach.date, low_date: f.lowest ? f.lowest.date : breach.date,
                low_balance: f.lowest ? f.lowest.balance : breach.balance, notified_at: at },
+      last_notified: { breach_date: breach.date, notified_at: at },
       last_check: { at, outcome: "notified", breach_date: breach.date },
     },
   };

@@ -92,19 +92,29 @@ async function runPaydayLanded(pool, { today = todayStr(), deps = {} } = {}) {
     const amount = parseFloat(r.amount);
     const stream = matchStream(streams, r.source, amount);
     if (stream) {
+      // sendToAll doesn't throw — it reports { logged: false } when the
+      // notification_log row (the in-app record and the dedup marker) didn't
+      // land (cycle-8 F10: only a throw held the watermark back, so a failed
+      // log write lost the alert for good). Either way the watermark stays
+      // before this deposit and the next sync retries it — the F24 rule the
+      // cash and missed-payday alerts already follow.
+      let sent;
       try {
-        await sendToAll({
+        sent = await sendToAll({
           title: "Paycheck landed",
           body: `${money(amount)} from ${r.source} (${stream.cadence}) on ${dayLabel(r.date)}.`,
           tag: "payday-" + hash(r.transaction_id),
           data: { url: "/dashboard" },
         });
-        notified++;
       } catch (e) {
-        console.error("Payday alert send failed — will retry after the next sync:", e.message);
+        sent = { logged: false, error: e.message };
+      }
+      if (!sent || !sent.logged) {
+        console.error("Payday alert not logged — will retry after the next sync:", (sent && sent.error) || "notification_log write failed");
         held = true;
         break;
       }
+      notified++;
     }
     watermark = r.created_at;
   }

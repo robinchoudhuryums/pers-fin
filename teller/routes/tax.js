@@ -39,7 +39,9 @@ function yearFrom(raw, res) {
 
 function idFrom(raw, res) {
   const s = String(raw);
-  if (!/^[1-9]\d{0,9}$/.test(s)) { res.status(400).json({ error: "Invalid document id" }); return null; }
+  // tax_documents.id is a SERIAL (int4): a larger id used to reach Postgres and
+  // answer 500 ("out of range") instead of 400 (cycle-8 F14).
+  if (!/^[1-9]\d{0,9}$/.test(s) || Number(s) > 2147483647) { res.status(400).json({ error: "Invalid document id" }); return null; }
   return Number(s);
 }
 
