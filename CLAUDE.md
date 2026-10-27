@@ -6915,6 +6915,11 @@ perfin_url) and its contract-coverage gap were fixed by the follow-on batch
 1. **Mobile app (operator step)** — the Capacitor iOS wrapper is scaffolded in
    `mobile/` (remote-URL mode, coexists with the PWA); what remains is the
    free-signing Xcode build on the operator's Mac per `mobile/README.md`.
+2. **Roadmap T4.1 — "Where should my extra money go?"** (queued after the cycle-8 batches;
+   plan `.cycle/plan-t4-1-advisory.md`): a code-computed plan — minimums, a starter cash buffer,
+   high-APR card debt first with a per-card avalanche split, a 3-month emergency fund, then
+   "invest $X more per paycheck" from a sustained surplus — on the dashboard, in AI insights and
+   in Ask, with one opt-in "tell me when my plan changes" checkbox.
 
 Shipped (June 2026): **Job Radar (Per-sistant)** — a personal job-listing radar
 built INTO Per-sistant (the Health & Habits module recipe: `db/021_jobs.sql` +
