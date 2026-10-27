@@ -151,6 +151,9 @@ const DRAFT_ONLY_REASONS = ["no_recipient_configured", "invalid_recipient"];
 async function runWeeklyDigestTick() {
   jobHealth.tick("weekly-digest");
   if (awaySettledToday("weekly-digest")) return;
+  // Not before 07:00 local, like the daily digest (cycle-8 F53 — the first
+  // hourly tick of the day sent it at about midnight). No DB read before then.
+  if (localHourNow() < require("./routes/insights").DAILY_DIGEST_HOUR) return;
   try {
     const settings = await pool.query(
       "SELECT weekly_digest_enabled, weekly_digest_day FROM user_settings WHERE id = 1"

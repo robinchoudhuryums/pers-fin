@@ -86,6 +86,13 @@ function aiUnavailable(res) {
 // (ai.capResponse, shared with routes/rag.js). Ask and Smart Suggestions keep
 // their 200 shapes and add ai_cap instead.
 const { capMessage, capResponse } = ai;
+
+// A model refusal (cycle-8 F24): 422 with a plain message, never an empty 200.
+function refusalResponse(res, err) {
+  if (!err || err.code !== "REFUSAL") return false;
+  res.status(422).json({ error: "The AI declined this request — try rephrasing it.", ai_refusal: true });
+  return true;
+}
 // The cap as a thrown-shape error (CAP / CAP_CHECK_FAILED) or null when under
 // it — for the routes that gate BEFORE their data queries.
 async function capBlock(pool) {
@@ -106,8 +113,18 @@ function askCapAnswer(err) {
 
 module.exports = function ({ pool }) {
   const router = express.Router();
+  // A refusal is charged by cappedAI's finally, then thrown here (cycle-8 F24 —
+  // its empty text used to come back as a 200: an empty summary, an empty
+  // email body that overwrote the draft, an empty Ask answer).
   const capped = (entry_type, model, prompt, maxTokens, system) =>
-    ai.cappedAI(pool, { entry_type, model, prompt, maxTokens, system }).then((r) => r.text);
+    ai.cappedAI(pool, { entry_type, model, prompt, maxTokens, system }).then((r) => {
+      if (r.stop_reason === "refusal") {
+        const err = new Error("The AI declined this request.");
+        err.code = "REFUSAL";
+        throw err;
+      }
+      return r.text;
+    });
 
   // ============================================================================
   // API — AI Email Drafting
@@ -128,7 +145,7 @@ module.exports = function ({ pool }) {
       try { const draft = JSON.parse(jsonMatch[0]); res.json(draft); }
       catch { return res.status(500).json({ error: "Invalid AI response format." }); }
     } catch (err) {
-      if (!capResponse(res, err)) serverError(res, err);
+      if (!capResponse(res, err) && !refusalResponse(res, err)) serverError(res, err);
     }
   });
 
@@ -151,7 +168,7 @@ module.exports = function ({ pool }) {
       try { const subtasks = JSON.parse(jsonMatch[0]); res.json({ subtasks }); }
       catch { return res.status(500).json({ error: "Invalid AI response format." }); }
     } catch (err) {
-      if (!capResponse(res, err)) serverError(res, err);
+      if (!capResponse(res, err) && !refusalResponse(res, err)) serverError(res, err);
     }
   });
 
@@ -179,7 +196,7 @@ module.exports = function ({ pool }) {
       catch { return res.status(500).json({ error: "Invalid AI response format." }); }
       res.json(normalizeParsedTodo(parsed, input));
     } catch (err) {
-      if (!capResponse(res, err)) serverError(res, err);
+      if (!capResponse(res, err) && !refusalResponse(res, err)) serverError(res, err);
     }
   });
 
@@ -199,7 +216,7 @@ module.exports = function ({ pool }) {
         `You are a productivity coach. Write a brief, encouraging weekly review summary (2-4 sentences) based on the user's stats. Be conversational and motivating. Highlight accomplishments. If there are overdue tasks, gently remind. Don't use emojis.`);
       res.json({ summary: text });
     } catch (err) {
-      if (!capResponse(res, err)) serverError(res, err);
+      if (!capResponse(res, err) && !refusalResponse(res, err)) serverError(res, err);
     }
   });
 
@@ -219,7 +236,7 @@ module.exports = function ({ pool }) {
         `You are an email tone adjustment assistant. Rewrite the given email body with the requested tone. Keep the same meaning and content but adjust the language.\n\nReturn ONLY the rewritten email body text (plain text, no JSON wrapping, no quotes).\nValid tones: more formal, more casual, shorter, friendlier, more direct.`);
       res.json({ body: text });
     } catch (err) {
-      if (!capResponse(res, err)) serverError(res, err);
+      if (!capResponse(res, err) && !refusalResponse(res, err)) serverError(res, err);
     }
   });
 
@@ -292,7 +309,7 @@ module.exports = function ({ pool }) {
       setCache(cacheKey, text);
       res.json({ briefing: text });
     } catch (err) {
-      if (!capResponse(res, err)) serverError(res, err);
+      if (!capResponse(res, err) && !refusalResponse(res, err)) serverError(res, err);
     }
   });
 
@@ -317,7 +334,7 @@ module.exports = function ({ pool }) {
       try { const tags = JSON.parse(jsonMatch[0]); res.json({ tags }); }
       catch { return res.status(500).json({ error: "Invalid AI response format." }); }
     } catch (err) {
-      if (!capResponse(res, err)) serverError(res, err);
+      if (!capResponse(res, err) && !refusalResponse(res, err)) serverError(res, err);
     }
   });
 

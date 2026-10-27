@@ -18,8 +18,20 @@ Updated: 2026-10-27
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Cycle 8 broad scan — Batch 5 DONE** (2026-10-27, branch `claude/optimistic-edison-vzuc0o`).
-  Block: `.cycle/blocks/8-batch5-broad-implement.md`.
+- **Status:** **Cycle 8 broad scan — Batch 6 DONE** (2026-10-27, branch `claude/optimistic-edison-vzuc0o`).
+  Block: `.cycle/blocks/8-batch6-broad-implement.md`.
+  - **Shipped (Batch 6 — AI trust + Knowledge privacy):** F42 the audit treats year / week / quarter
+    periods and a prior-year month ("last November", "November 2025", "In 2025") as cross-period; F49 a
+    quoted frontmatter key is read and an unreadable privacy-key line fails closed (VAULT_PARSE_VERSION 3);
+    F44 Ask returns a finished answer when its charge write fails (the finally retries); F24 a refusal on a
+    routes/ai.js feature is charged then answered 422 { ai_refusal }; F50 the prompt's credit-score deltas
+    compare the same score type (creditScoreSummary); F53 the weekly digest waits for 07:00 local.
+  - **Verified:** npm test 2666/2666 (16 new); contract 270/270 (1 new); mutation 7/7; Playwright not re-run
+    (no page / mount change).
+  - **Operator:** one full Knowledge reindex after deploy (parse version 3).
+  - **Where I left off:** Batch 6 committed and pushed. Next: `/sync-docs` (doc list in the block), then
+    `/broad-implement Batch 7`.
+- **Batch 5 (DONE):** block `.cycle/blocks/8-batch5-broad-implement.md`.
   - **Shipped (Batch 5 — linked tasks semantics):** F16 tombstones for a task deleted for good (db/031);
     F17 aged unpaid manual-bill tasks retained, not closed; F18 an auto-close announces nothing and is left
     out of analytics / review / Ask / stats; F19 linked tasks' webhook / Slack payload is a kind label only;
@@ -32,7 +44,6 @@ implement and reflect sessions only set Phase.)
     INV-77 / INV-103, new INV-149, test counts, Known Open Issues + Batch 5 follow-ons, the stale
     "30-day purge" X1a note), apps/per-sistant/CLAUDE.md (linked tasks, services/linked-tasks.js,
     db/031, housing-due.js, Trash, counts) and README.
-  - **Where I left off:** Batch 5 committed, pushed and documented. Next: `/broad-implement Batch 6`.
 - **Batch 4 (DONE):** block `.cycle/blocks/8-batch4-broad-implement.md`.
   - **Shipped (Batch 4 — sync watermarks + webhook hardening):** F1 the anomaly watermark is the newest
     created_at visible before the candidate read, kept below any open writer's start, never backwards;
@@ -82,7 +93,7 @@ implement and reflect sessions only set Phase.)
     - ~~Batch 3 detection / rename / restore: F41 F46 F5 F43 F4 F6 F47 F54~~ (done)
     - ~~Batch 4 watermarks + webhook hardening: F1 F51 F3~~ (done)
     - ~~Batch 5 linked tasks: F16 F17 F18 F20 F22 F19 F23 F21~~ (done)
-    - Batch 6 AI trust + Knowledge privacy: F42 F49 F44 F24 F50 F53
+    - ~~Batch 6 AI trust + Knowledge privacy: F42 F49 F44 F24 F50 F53~~ (done)
     - Batch 7 web UI + a11y: F34 F35 F55 F36 F37 F38 F39 F40 F56 F57 F48
     - Batch 8 platform hygiene: F31 F32 F33 F52 (F45 done in /sync-docs)
     - Expansion: E1 (G1, G5), E2 (ST1, ST3), E3 (G2, ST2), E4 (ST5, G3), E5 (ST4); G4 → /roadmap

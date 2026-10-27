@@ -329,8 +329,10 @@ router.post("/api/ask", async (req, res) => {
       messages.push({ role: "user", content: results });
     }
 
-    // Charge the cap for the completed run.
-    await chargeAsk();
+    // Charge the cap for the completed run. A failed write is logged and the
+    // answer still returned (cycle-8 F44 — it used to 500 a finished answer);
+    // `charged` stays false, so the finally retries the charge once.
+    try { await chargeAsk(); } catch (e) { console.error("ask cap-charge error:", e.message); }
 
     res.json({
       answer: answer || "I couldn't produce an answer — try rephrasing.",

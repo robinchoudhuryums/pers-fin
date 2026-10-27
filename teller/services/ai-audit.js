@@ -31,7 +31,9 @@ const { getMonthlySpending, getMonthlyIncomeAndSpending, getCategorySpendingThis
 // genuine this-month hallucinations, inflating audit_accuracy as a false
 // negative). Deliberately NOT added: bare/unqualified or "per month" claims —
 // AIA1 intentionally checks those against this-month (pinned in tests).
-const CROSS_PERIOD_RE = /\b(per year|\/?yr\b|\/year|annual|annually|a year|yearly|year[- ]?to[- ]?date|ytd|this year|last month|previous month|prior month|months? ago|year[- ]?over[- ]?year|yoy|trailing|estimated?|over the (?:past|last)|(?:last|past|over)\s+\d+\s+months?|\d+\s+months?|running[- ]?average|rolling[- ]?average|monthly average|average monthly|average per month|\d+[- ]?month average|avg[ ./]*mo|averaging|projected|projection|annualized|run[- ]?rate|on track)\b/;
+// cycle-8 F42: the year / week / quarter periods too ("last year", "last
+// week", "this quarter", "$90 a week") — they were compared with this month.
+const CROSS_PERIOD_RE = /\b(per year|\/?yr\b|\/year|annual|annually|a year|yearly|year[- ]?to[- ]?date|ytd|this year|last month|previous month|prior month|months? ago|year[- ]?over[- ]?year|yoy|trailing|estimated?|over the (?:past|last)|(?:last|past|over)\s+\d+\s+months?|\d+\s+months?|running[- ]?average|rolling[- ]?average|monthly average|average monthly|average per month|\d+[- ]?month average|avg[ ./]*mo|averaging|projected|projection|annualized|run[- ]?rate|on track|last year|previous year|prior year|years? ago|same (?:month|time|period) last year|last (?:spring|summer|fall|autumn|winter|holiday season)|last week|past week|previous week|prior week|this week|per week|\/wk\b|\/week|weekly|a week|last quarter|previous quarter|prior quarter|this quarter|per quarter|quarterly)\b/;
 
 // An explicit this-month qualifier OVERRIDES a cross-period match: the model
 // was given this-month actuals, so a claim it tags "this month" is checkable
@@ -48,9 +50,19 @@ const MONTH_NAME_RE = /\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|J
 const MONTH_INDEX = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
 function namesOtherMonth(window, thisMonth) {
   const tm = Number(thisMonth.slice(5, 7));
+  const ty = thisMonth.slice(0, 4);
   for (const m of window.matchAll(MONTH_NAME_RE)) {
     if (m[2]) { if (`${m[2]}-${m[3]}` !== thisMonth) return true; continue; }
     if (MONTH_INDEX[m[1].slice(0, 3).toLowerCase()] !== tm) return true;
+    // cycle-8 F42: this month's NAME can still mean another year — "last
+    // November", "November 2025" — the prior-year same-month comparison.
+    if (/\b(?:last|previous|prior)\s+$/i.test(window.slice(0, m.index))) return true;
+    const year = window.slice(m.index + m[0].length).match(/^,?\s+((?:19|20)\d{2})\b/);
+    if (year && year[1] !== ty) return true;
+  }
+  // A bare year that isn't this one ("In 2025, Shopping hit $800").
+  for (const y of window.matchAll(/(?<![$\d.,-])\b((?:19|20)\d{2})\b(?!-\d)/g)) {
+    if (y[1] !== ty) return true;
   }
   return false;
 }
@@ -79,7 +91,7 @@ function claimPeriodWindow(text, claim) {
 // with September's $300").
 function claimNamesOtherMonth(text, claim, thisMonth) {
   const { lead, trail } = claimPeriodParts(text, claim);
-  const attached = (trail.match(/^\s*(?:in|for|during|of)\s+(?:\d{4}-\d{2}|[A-Z][a-z]+)/) || [""])[0];
+  const attached = (trail.match(/^\s*(?:(?:in|for|during|of)\s+(?:(?:last|previous|prior)\s+)?(?:\d{4}-\d{2}|[A-Z][a-z]+(?:,?\s+\d{4})?|\d{4})|(?:last|previous|prior)\s+[A-Z][a-z]+)/) || [""])[0];
   return namesOtherMonth(lead, thisMonth) || namesOtherMonth(attached, thisMonth);
 }
 

@@ -486,6 +486,33 @@ router.get("/api/insights", async (_req, res) => {
 //   { ok: false, status, error }                 — early bail / failure
 //   { ok: true, insight, modules_used, ... }     — same body the HTTP handler
 //                                                  used to JSON-encode
+// The insights prompt's credit-score line (rows newest first). Deltas compare
+// entries of the SAME score type (cycle-8 F50 — a FICO entry was diffed
+// against an interleaved VantageScore one, like the route and Sheets before
+// cycle-7 F86); the other types are listed with their latest score.
+function creditScoreSummary(rows) {
+  if (!rows || !rows.length) return "";
+  const type = (r) => r.score_type || "unknown";
+  const latest = rows[0];
+  const same = rows.filter((r) => type(r) === type(latest));
+  const sign = (n) => (n > 0 ? "+" : "") + n;
+  let summary = "Latest: " + latest.score + " (" + type(latest) + ", " + isoDate(latest.checked_at) + ")";
+  const prior = same[1];
+  if (prior) summary += " | Prior " + type(latest) + ": " + prior.score + " (delta " + sign(latest.score - prior.score) + ")";
+  if (same.length >= 3) {
+    const oldest = same[same.length - 1];
+    summary += " | " + same.length + "-entry " + type(latest) + " range: " + oldest.score + " → " + latest.score +
+      " (" + sign(latest.score - oldest.score) + " over " +
+      Math.round((new Date(latest.checked_at) - new Date(oldest.checked_at)) / 86400000) + " days)";
+  }
+  const others = [];
+  for (const r of rows) {
+    if (type(r) !== type(latest) && !others.some((o) => type(o) === type(r))) others.push(r);
+  }
+  for (const o of others) summary += " | Latest " + type(o) + ": " + o.score + " (" + isoDate(o.checked_at) + ")";
+  return summary;
+}
+
 async function generateInsights() {
   if (!Anthropic || !process.env.ANTHROPIC_API_KEY) {
     return { ok: false, status: 501, error: "Set ANTHROPIC_API_KEY in .env to enable AI insights." };
@@ -1046,19 +1073,8 @@ async function generateInsights() {
       const csResult = await pool.query(
         "SELECT score, score_type, source, checked_at FROM credit_scores ORDER BY checked_at DESC LIMIT 6"
       );
-      if (csResult.rows.length > 0) {
-        const latest = csResult.rows[0];
-        const prior = csResult.rows[1];
-        const oldest = csResult.rows[csResult.rows.length - 1];
-        let summary = "Latest: " + latest.score + " (" + (latest.score_type || "unknown") + ", " + isoDate(latest.checked_at) + ")";
-        if (prior) summary += " | Prior: " + prior.score + " (delta " + (latest.score - prior.score > 0 ? "+" : "") + (latest.score - prior.score) + ")";
-        if (csResult.rows.length >= 3) {
-          summary += " | " + csResult.rows.length + "-entry range: " + oldest.score + " → " + latest.score +
-            " (" + (latest.score - oldest.score > 0 ? "+" : "") + (latest.score - oldest.score) + " over " +
-            Math.round((new Date(latest.checked_at) - new Date(oldest.checked_at)) / 86400000) + " days)";
-        }
-        userMsg += "\n\n=== CREDIT SCORE ===\n" + summary;
-      }
+      const summary = creditScoreSummary(csResult.rows);
+      if (summary) userMsg += "\n\n=== CREDIT SCORE ===\n" + summary;
     } catch (err) { console.error("Credit score enrichment error:", err.message); }
 
     // --- Enrichment: Month-over-month spending trends with deltas ---
@@ -1617,3 +1633,4 @@ module.exports.DAILY_DIGEST_HOUR = DAILY_DIGEST_HOUR; // startup.js skips pre-se
 module.exports.sanitizeForPrompt = sanitizeForPrompt; // exported for testing (T2)
 module.exports.sanitizeStructuredSummary = sanitizeStructuredSummary; // exported for testing (AIN-8)
 module.exports.INSIGHT_TOOL = INSIGHT_TOOL;
+module.exports.creditScoreSummary = creditScoreSummary; // cycle-8 F50

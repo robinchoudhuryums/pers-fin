@@ -172,7 +172,8 @@ describe("F64 / F65 / F66 — Ask", () => {
     queue = [{ model: "claude-haiku-5-5", usage: { input_tokens: 40, output_tokens: 10 }, stop_reason: "end_turn", content: [{ type: "text", text: "ok" }] }];
     const state = { inserts: [], attempts: 0, failInserts: 1 };
     const res = await supertest(mount(state)).post("/api/ask").send({ question: "hi" });
-    assert.equal(res.status, 500, "the failed charge still surfaces");
+    assert.equal(res.status, 200, "the finished answer is still returned (cycle-8 F44 — it was a 500)");
+    assert.equal(res.body.answer, "ok");
     assert.equal(state.attempts, 2, "the finally block tried again");
     assert.equal(state.inserts.length, 1, "the tokens were charged");
     assert.equal(state.inserts[0].params[3], 40);
