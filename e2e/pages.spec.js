@@ -198,10 +198,15 @@ test.describe("every page loads cleanly", () => {
   });
 
   test("the landing tiles carry their status lines (design D7)", async ({ page }) => {
+    test.setTimeout(75000);
     const problems = watch(page);
-    await page.goto("/");
     // The seeded ledger owes rent; the line comes from the dashboard summary.
-    await expect(page.locator('a.tile[href="/perfin"] .tile-status')).toContainText(/\$[\d,]+\.\d\d owed to /);
+    // A line is kept 30 s (cycle-8 F33), so a visit from another spec before the
+    // seed finished can show the old one — reload until the cache has turned over.
+    await expect(async () => {
+      await page.goto("/");
+      await expect(page.locator('a.tile[href="/perfin"] .tile-status')).toContainText(/\$[\d,]+\.\d\d owed to /, { timeout: 2000 });
+    }).toPass({ timeout: 60000, intervals: [2000, 5000, 10000] });
     await expect(page.locator('a.tile[href="/per-sistant"] .tile-status')).toBeVisible();
     expect(problems, problems.join("\n")).toEqual([]);
   });

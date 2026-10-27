@@ -7,6 +7,7 @@ const express = require("express");
 // monthly Per-sistant AI budget, call, charge one ai_usage row) — read off the
 // module object so tests can stub it. No route calls callAI directly.
 const ai = require("../ai");
+const { ymdOf } = require("../helpers"); // a DATE value's own day (cycle-8 F52)
 const { getAIModelForFeature, getCached, setCache, isAIAvailable } = ai;
 const { VALID_AI_FEATURES } = require("../config");
 
@@ -362,7 +363,7 @@ module.exports = function ({ pool }) {
       const todos = await pool.query("SELECT id, title, priority, horizon, category, due_date, recurring, recurrence_rule, streak_count FROM todos WHERE deleted_at IS NULL AND completed = false ORDER BY CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, due_date NULLS LAST LIMIT 30");
       if (!todos.rows.length) return res.json({ suggestions: null });
       const dayName = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][new Date(today + "T00:00:00Z").getUTCDay()];
-      const taskList = todos.rows.map(t => `- "${t.title}" [${t.priority}/${t.horizon}]${t.category ? ' ('+t.category+')' : ''}${t.due_date ? ' due:'+t.due_date.toISOString().split("T")[0] : ''}${t.recurring ? ' recurring:'+t.recurrence_rule : ''}${t.streak_count > 0 ? ' streak:'+t.streak_count : ''}`).join("\n");
+      const taskList = todos.rows.map(t => `- "${t.title}" [${t.priority}/${t.horizon}]${t.category ? ' ('+t.category+')' : ''}${t.due_date ? ' due:'+ymdOf(t.due_date) : ''}${t.recurring ? ' recurring:'+t.recurrence_rule : ''}${t.streak_count > 0 ? ' streak:'+t.streak_count : ''}`).join("\n");
       const result = await capped("smart_suggestions", model,
         `Today is ${dayName}, ${today}. Here are the user's pending tasks:\n${taskList}`,
         512,
@@ -422,7 +423,7 @@ module.exports = function ({ pool }) {
       const totalsLine = t
         ? `Totals over ALL data (use these for counts): tasks ${t.todos_total} (open ${t.todos_open}, overdue ${t.todos_overdue}, due today ${t.todos_due_today}, done ${t.todos_done}); emails ${t.emails_total} (sent ${t.emails_sent}, scheduled ${t.emails_scheduled}); notes ${t.notes_total}.\n`
         : "";
-      const context = `Today: ${today}\n${totalsLine}\nMost recent tasks (up to 50 shown of ${t ? t.todos_total : "?"} — a sample, not everything) (${todos.rows.length}):\n${todos.rows.map(t => `- [${t.auto_closed?'closed by Perfin':t.completed?'done':'pending'}] "${t.title}" priority:${t.priority} horizon:${t.horizon}${t.category?' cat:'+t.category:''}${t.due_date?' due:'+t.due_date.toISOString().split("T")[0]:''}${t.completed_at?' completed:'+t.completed_at.toISOString().split("T")[0]:''}${t.recurring?' recurring:'+t.recurrence_rule:''}`).join("\n")}\n\nEmails (${emails.rows.length}):\n${emails.rows.map(e => `- [${e.status}] "${e.subject}" to:${e.recipient_name||e.recipient_email}${e.sent_at?' sent:'+e.sent_at.toISOString().split("T")[0]:''}`).join("\n")}\n\nNotes (${notes.rows.length}):\n${notes.rows.map(n => `- "${n.title||n.content.substring(0,40)}"${n.tags?' tags:'+n.tags.join(','):''}${n.pinned?' pinned':''}`).join("\n")}`;
+      const context = `Today: ${today}\n${totalsLine}\nMost recent tasks (up to 50 shown of ${t ? t.todos_total : "?"} — a sample, not everything) (${todos.rows.length}):\n${todos.rows.map(t => `- [${t.auto_closed?'closed by Perfin':t.completed?'done':'pending'}] "${t.title}" priority:${t.priority} horizon:${t.horizon}${t.category?' cat:'+t.category:''}${t.due_date?' due:'+ymdOf(t.due_date):''}${t.completed_at?' completed:'+t.completed_at.toISOString().split("T")[0]:''}${t.recurring?' recurring:'+t.recurrence_rule:''}`).join("\n")}\n\nEmails (${emails.rows.length}):\n${emails.rows.map(e => `- [${e.status}] "${e.subject}" to:${e.recipient_name||e.recipient_email}${e.sent_at?' sent:'+e.sent_at.toISOString().split("T")[0]:''}`).join("\n")}\n\nNotes (${notes.rows.length}):\n${notes.rows.map(n => `- "${n.title||n.content.substring(0,40)}"${n.tags?' tags:'+n.tags.join(','):''}${n.pinned?' pinned':''}`).join("\n")}`;
       const answer = await capped("natural_language_query", model,
         `Data:\n${context}\n\nUser question: "${query}"`,
         1024,

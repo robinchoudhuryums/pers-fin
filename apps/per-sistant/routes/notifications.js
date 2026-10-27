@@ -5,6 +5,7 @@
 const express = require("express");
 
 const { serverError } = require("../errors");
+const { ymdOf } = require("../helpers");
 const { upcomingFacts } = require("./rag");
 const { gatherHealthSummary, todayStr } = require("./health");
 const APP_TIMEZONE = process.env.APP_TIMEZONE || "UTC";
@@ -93,7 +94,7 @@ module.exports = function ({ pool }) {
       streaksAtRisk.rows.forEach(t => notifications.push({ type: "streak_at_risk", title: `${t.title} (${t.streak_count} streak)`, id: t.id, entity: "todo" }));
       reminders.rows.forEach(n => notifications.push({ type: "reminder", title: n.title, id: n.id, entity: "note" }));
       facts.forEach(f => {
-        const on = f.on_date ? new Date(f.on_date).toISOString().slice(0, 10) : "";
+        const on = f.on_date ? ymdOf(f.on_date) || "" : ""; // a DATE value's own day (cycle-8 F52)
         const label = f.kind === "expires" ? "expires" : String(f.kind).replace(/_/g, " ");
         const days = Number(f.days_away);
         notifications.push({

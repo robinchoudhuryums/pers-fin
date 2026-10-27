@@ -18,24 +18,19 @@ Updated: 2026-10-27
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Cycle 8 broad scan — Batch 7 DONE** (2026-10-27, branch `claude/optimistic-edison-vzuc0o`).
-  Block: `.cycle/blocks/8-batch7-broad-implement.md`.
-  - **Shipped (Batch 7 — UI correctness + accessibility):** F34 search Pin / Unpin sends the opposite state;
-    F36 the search widget / page draw only the newest reply and the widget shows errors; F40 Per-sistant's
-    session-expiry redirect carries return_to; F48 heatmap days are calendar days west of UTC; F35 a Tax
-    checklist reload keeps unsaved notes + focus; F39 Tax reloads sequenced, writes single-flight, one Plaid
-    update open at a time; F37 Show more re-enabled after a failure; F38 refused Settings switches revert +
-    the floor Save handles failures; F55 keys inside a collapsible heading's select don't collapse it; F56
-    the Undo toast pauses on hover / focus, closes only by its buttons, can take focus; F57 the Accounts row
-    buttons name their institution.
-  - **Verified:** npm test 2697/2697 (31 new); contract 270/270; mutation 13/13; Playwright not re-run (the
-    container's Playwright build isn't installed — Batch 1 follow-on).
-  - **Docs synced** (/sync-docs, 2026-10-27): CLAUDE.md (the toast paragraph F56, the Tax page notes
-    F35 / F39, the Settings switches F38, INV-63 return_to F40, test counts 2697 / 143, Known Open
-    Issues + Batch 7 follow-ons), apps/per-sistant/CLAUDE.md (search widget F34 / F36, the fetch
-    wrapper's return_to, heatmap day keys F48, counts + the new test file) and README.
-  - **Where I left off:** Batch 7 committed, pushed and documented. Next: `/broad-implement Batch 8`
-    (F31 frozen CHECK lists, F32 error-log pruning, F33 landing-status queries, F52 Per-sistant DATE parsing).
+- **Status:** **Cycle 8 broad scan — Batch 8 DONE — every fix batch is done** (2026-10-27, branch
+  `claude/optimistic-edison-vzuc0o`). Block: `.cycle/blocks/8-batch8-broad-implement.md`.
+  - **Shipped (Batch 8 — platform hygiene):** F31 IN-list CHECKs kept in step with the code on an existing
+    table (CHECK_LISTS + syncInListChecks, NOT VALID); F32 the error log prunes in a quiet minute; F33 the
+    landing status reads single-flight + 30 s cache per pool; F52 Per-sistant returns DATE as 'YYYY-MM-DD'
+    (pool-scoped parser) with calDate / ymdOf for server code; F45 already done by the Batch 1 docs sync.
+  - **Verified:** npm test 2712/2712 (15 new); contract 272/272 (2 new); ci-migration-test passes;
+    mutation 7/7; Playwright not run (browser build missing in the container).
+  - **Where I left off:** Batch 8 committed and pushed. Next: `/sync-docs`, then the expansion batches
+    (E1–E5) or `/reflect` to close cycle 8; roadmap T4.1 (`.cycle/plan-t4-1-advisory.md`) is queued after.
+- **Batch 7 (DONE):** block `.cycle/blocks/8-batch7-broad-implement.md`.
+  - **Shipped (Batch 7 — UI correctness + accessibility):** F34 F36 F40 F48 F35 F39 F37 F38 F55 F56 F57.
+    npm 2697/2697, contract 270/270, mutation 13/13. Docs synced.
 - **Batch 6 (DONE):** block `.cycle/blocks/8-batch6-broad-implement.md`.
   - **Shipped (Batch 6 — AI trust + Knowledge privacy):** F42 F49 F44 F24 F50 F53. npm 2666/2666, contract
     270/270, mutation 7/7. Operator: one full Knowledge reindex after deploy (parse version 3). Docs synced.

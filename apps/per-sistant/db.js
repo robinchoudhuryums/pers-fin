@@ -10,9 +10,24 @@
 // Both apps coexisting in one process need distinct env vars; standalone
 // deploys keep working with NEON_DATABASE_URL alone.
 
-const { Pool } = require("pg");
+const { Pool, types: pgTypes } = require("pg");
 const fs = require("fs");
 const path = require("path");
+
+// Cycle-8 F52: a DATE column arrives as its 'YYYY-MM-DD' text. node-pg's default
+// builds a LOCAL-midnight Date, which JSON-serializes in UTC — on a server east of
+// UTC every due date went out a day early (and the todo modal's split('T')[0] /
+// ai.js's toISOString() saved or quoted it shifted). Pool-scoped, so Perfin's pool
+// in the same process keeps its own parsing. Server code turns a value into a
+// local Date with helpers.calDate and back with helpers.ymdOf (both accept either
+// shape — test doubles still hand in Date objects).
+const DATE_OID = 1082;
+const DATE_AS_STRING = {
+  getTypeParser(oid, format) {
+    if (oid === DATE_OID && format !== "binary") return (v) => v;
+    return pgTypes.getTypeParser(oid, format);
+  },
+};
 
 const CONNECTION_STRING =
   process.env.PERSISTENT_DATABASE_URL || process.env.NEON_DATABASE_URL;
@@ -31,6 +46,7 @@ const pool = new Pool({
   max: 3,
   idleTimeoutMillis: 20000,
   connectionTimeoutMillis: 5000,
+  types: DATE_AS_STRING,
 });
 
 // Migration locking (cycle-7 F10) — same rules as Perfin's runner: an
@@ -91,4 +107,4 @@ async function runMigrationsOnce(db) {
   }
 }
 
-module.exports = { pool, runMigrations, MIGRATION_LOCK_KEY };
+module.exports = { pool, runMigrations, MIGRATION_LOCK_KEY, DATE_AS_STRING };

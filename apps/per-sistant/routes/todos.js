@@ -3,7 +3,7 @@
 // ============================================================================
 
 const express = require("express");
-const { recurrenceAnchorDay, ymdLocal, nextDueAfter, fireWebhooks, sendSlackNotification, runAutomations } = require("../helpers");
+const { recurrenceAnchorDay, ymdLocal, ymdOf, nextDueAfter, fireWebhooks, sendSlackNotification, runAutomations } = require("../helpers");
 const { todayStr } = require("./health");
 
 const { serverError } = require("../errors");
@@ -397,7 +397,7 @@ async function completeRecurringTodo(pool, id) {
     // completion on the due date count as the NEXT day and reset the streak.
     // due_date read with local getters (node-pg DATE = local midnight).
     const today = todayStr();
-    const isOnTime = !todo.due_date || today <= ymdLocal(new Date(todo.due_date));
+    const isOnTime = !todo.due_date || today <= ymdOf(todo.due_date);
     const newStreak = isOnTime ? (todo.streak_count || 0) + 1 : 1;
     const newBest = Math.max(newStreak, todo.best_streak || 0);
     // streak_before_completion lets Undo restore the real streak (F124).

@@ -65,6 +65,59 @@ const SCHEMA_VERSION = 3;
 // A lock timeout (SQLSTATE 55P03) rolls back and is retried with backoff;
 // any other failure, or running out of attempts, is still fatal (INV-17).
 const MIGRATION_LOCK_KEY = 727274001; // Per-sistant uses 727274002
+
+// Cycle-8 F31: the value lists of the IN-list CHECKs a CREATE TABLE IF NOT
+// EXISTS declares. That statement does nothing on an existing table, so a value
+// added to the list later reached only fresh databases (the tests and CI) while
+// production kept the old CHECK and 500'd on the new value. syncInListChecks
+// compares each stored CHECK (Postgres' default name <table>_<column>_check)
+// with its list and replaces it when they differ. The CREATE TABLEs interpolate
+// these lists, so there is one copy; tax_documents.form is
+// services/tax-documents.FORMS (a test pins the two equal).
+const CHECK_LISTS = {
+  tax_documents: {
+    form: ["W-2", "1099-INT", "1099-DIV", "1099-B", "1099-R", "1099-NEC", "1099-MISC", "1099-K", "1099-G",
+      "1098", "1098-E", "1098-T", "1095", "other"],
+    origin: ["suggested", "manual"],
+  },
+  webhook_events: {
+    provider: ["plaid", "teller"],
+    status: ["received", "processing", "done", "failed", "ignored"],
+  },
+};
+const sqlLiteral = (v) => "'" + String(v).replace(/'/g, "''") + "'";
+const inList = (values) => values.map(sqlLiteral).join(", ");
+
+// The values a stored CHECK names ('a'::text … from pg_get_constraintdef), in order.
+function checkValues(def) {
+  return [...String(def || "").matchAll(/'((?:[^']|'')*)'/g)].map((m) => m[1].replace(/''/g, "'"));
+}
+function sameValues(a, b) {
+  if (a.length !== b.length) return false;
+  const want = new Set(b);
+  return a.every((v) => want.has(v));
+}
+// Replace a CHECK only when its values differ — no lock or table scan on an
+// unchanged boot. The replacement is NOT VALID: new and updated rows are
+// checked, existing rows aren't re-read (a removed value's old rows can't fail
+// the boot — INV-17's fatal path stays for real errors).
+async function syncInListChecks(client, lists = CHECK_LISTS) {
+  const changed = [];
+  for (const [table, cols] of Object.entries(lists)) {
+    for (const [column, values] of Object.entries(cols)) {
+      const name = `${table}_${column}_check`;
+      const r = await client.query(
+        "SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conrelid = $1::regclass AND conname = $2",
+        [table, name]
+      );
+      if (r.rows[0] && sameValues(checkValues(r.rows[0].def), values)) continue;
+      await client.query(`ALTER TABLE ${table} DROP CONSTRAINT IF EXISTS ${name}`);
+      await client.query(`ALTER TABLE ${table} ADD CONSTRAINT ${name} CHECK (${column} IN (${inList(values)})) NOT VALID`);
+      changed.push(name);
+    }
+  }
+  return changed;
+}
 const MIGRATION_LOCK_TIMEOUT = "5s";
 const MIGRATION_ATTEMPTS = 5;
 
@@ -1084,13 +1137,12 @@ async function runMigrationsOnce() {
     await client.query(`CREATE TABLE IF NOT EXISTS tax_documents (
       id SERIAL PRIMARY KEY,
       tax_year INT NOT NULL CHECK (tax_year BETWEEN 2000 AND 9999),
-      form TEXT NOT NULL CHECK (form IN ('W-2', '1099-INT', '1099-DIV', '1099-B', '1099-R',
-        '1099-NEC', '1099-MISC', '1099-K', '1099-G', '1098', '1098-E', '1098-T', '1095', 'other')),
+      form TEXT NOT NULL CHECK (form IN (${inList(CHECK_LISTS.tax_documents.form)})),
       issuer TEXT NOT NULL DEFAULT '',
       expected_by DATE,
       received_at DATE,
       dismissed_at TIMESTAMPTZ,
-      origin TEXT NOT NULL DEFAULT 'manual' CHECK (origin IN ('suggested', 'manual')),
+      origin TEXT NOT NULL DEFAULT 'manual' CHECK (origin IN (${inList(CHECK_LISTS.tax_documents.origin)})),
       notes TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -1136,19 +1188,23 @@ async function runMigrationsOnce() {
     // days.
     await client.query(`CREATE TABLE IF NOT EXISTS webhook_events (
       id           BIGSERIAL PRIMARY KEY,
-      provider     TEXT NOT NULL CHECK (provider IN ('plaid', 'teller')),
+      provider     TEXT NOT NULL CHECK (provider IN (${inList(CHECK_LISTS.webhook_events.provider)})),
       event_type   TEXT,
       event_code   TEXT,
       subject      TEXT,
       dedupe_key   TEXT NOT NULL,
       status       TEXT NOT NULL DEFAULT 'received'
-                   CHECK (status IN ('received', 'processing', 'done', 'failed', 'ignored')),
+                   CHECK (status IN (${inList(CHECK_LISTS.webhook_events.status)})),
       error        TEXT,
       received_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
       processed_at TIMESTAMPTZ,
       UNIQUE (provider, dedupe_key)
     )`);
     await client.query("CREATE INDEX IF NOT EXISTS idx_webhook_events_received ON webhook_events (received_at DESC)");
+
+    // Cycle-8 F31: bring the IN-list CHECKs above up to date on an existing table.
+    const checksChanged = await syncInListChecks(client);
+    if (checksChanged.length) console.log("[migrations] CHECK constraints updated:", checksChanged.join(", "));
 
     // One-shot cleanup: detection-key migration orphans (PSA1 — now genuinely
     // one-shot, gated on the schema version so it doesn't re-run every boot).
@@ -1204,4 +1260,4 @@ async function runMigrationsOnce() {
   }
 }
 
-module.exports = { pool, ENCRYPTION_PASSPHRASE, runMigrations, MIGRATION_LOCK_KEY };
+module.exports = { pool, ENCRYPTION_PASSPHRASE, runMigrations, MIGRATION_LOCK_KEY, CHECK_LISTS, syncInListChecks, checkValues };
