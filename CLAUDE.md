@@ -162,7 +162,8 @@ teller/
                            minute, reopens a resolved row on a later occurrence,
                            announces new / reopened errors (≤5 notified in 24h,
                            tag app-error-<fp>) and prunes (resolved >30d, any
-                           >90d); listErrors / recentUnresolvedCount / resolveError
+                           >90d — at most daily, in a quiet minute too: cycle-8
+                           F32); listErrors / recentUnresolvedCount / resolveError
     uptime.js            — Uptime (roadmap T1.4): deepHealthHandler for GET
                            /health/deep (SELECT 1 per database, 3s, single-flight
                            60s cache, 200 / 503 with yes/no fields only) and the
@@ -1004,7 +1005,11 @@ shell/
                                  gatherDashboardSummary (parts rent / bills /
                                  uncategorized), Per-sistant's from taskDueCounts,
                                  in-process, each with a 1.5s budget (null when it
-                                 fails or runs over); never throws
+                                 fails or runs over); never throws. Each read is
+                                 single-flight and kept 30 s per pool (sharedRead,
+                                 CACHE_MS — cycle-8 F33: a read past its budget
+                                 isn't started again by the next visit, which gets
+                                 its line once it finishes; a failure is kept too)
   boot-checks.js               — Boot-time config checks (cycle-8 F26):
                                  sharedDatabaseProblem(env) — a reason to refuse
                                  to start when PERSISTENT_DATABASE_URL is unset or
@@ -1146,9 +1151,17 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2697 tests as of latest); use
+  Perfin and Per-sistant test files (2712 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2697 tests across 143 test files (incl.
+  Current count: 2712 tests across 145 test files (incl.
+  `tests/broad-scan-c8-batch8.test.js` — cycle-8 broad scan Batch 8, Perfin's side: `checkValues` over
+  stored definitions, `syncInListChecks` over a fake client (an unchanged CHECK untouched in any order, a
+  new value replaced NOT VALID, a missing one added, a quote escaped) and the CREATE TABLEs interpolating
+  `CHECK_LISTS`; the error log's prune on an empty buffer (once a day, no other query); `sharedRead`
+  (single-flight, the 30 s cache, a failure kept, per pool) and a landing read past its budget shared by
+  the next visit — with `apps/per-sistant/tests/broad-scan-c8-batch8.test.js` (the pool's DATE parser,
+  `calDate` / `ymdOf`, the calendar's ICS day and a month-end projection under Asia/Tokyo and
+  America/Los_Angeles in child processes);
   `tests/broad-scan-c8-batch7.test.js` — cycle-8 broad scan Batch 7, Perfin's side: the Tax page script
   in a vm over a list that parses its markup (notes typed in another row and the focused control carried
   across a reload, a vanished button handing focus to its row's notes box, an older reply for the same
@@ -2016,7 +2029,10 @@ shell/
   aged unpaid bill's task open until it is paid and a switched-off bill's task closed by the route's
   own refresh). Since cycle-8 Batch 6, c8-batch6 (the audit on real spending: a prior-year
   same-month claim, "last year", "last week" and "last quarter" skipped while the same claim about
-  this month is still flagged CRITICAL). 270 tests, run
+  this month is still flagged CRITICAL). Since cycle-8 Batch 8, c8-batch8 (a stale tax_documents form
+  CHECK refusing 1099-K until the next migration run replaces it, an unchanged run replacing nothing;
+  Per-sistant's DATE read as 'YYYY-MM-DD' and served so by GET /api/todos while Perfin's pool keeps its
+  Date). 272 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -3434,7 +3450,9 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   (or "Nothing due today") from its `taskDueCounts`. In-process over the wired
   pools (INV-25), read-only, behind the PIN gate; each line has a 1.5s budget,
   and a failed or slow one leaves the tile with its description. It reads both
-  databases on every visit (an idle Neon wakes, as opening either app does).
+  databases at most once per 30 s (an idle Neon wakes, as opening either app does);
+  visits in between share the running read or its result, so a line can be up to
+  30 s old (cycle-8 F33).
 - **Tile-click + cross-app transition animations (unified shell)**: the
   same Iron Man materialize plays when entering Perfin from the landing
   tile or from Per-sistant's nav cross-app icon; a parallel cosmic mask-
@@ -4143,7 +4161,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2697 tests passing across 143 test files (Perfin 1981 + Per-sistant 716), plus the real-Postgres route contract suite (270 tests; CI `migrations` job, `npm run test:contract`) and 72 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2712 tests passing across 145 test files (Perfin 1991 + Per-sistant 721), plus the real-Postgres route contract suite (272 tests; CI `migrations` job, `npm run test:contract`) and 72 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -5023,6 +5041,14 @@ standalone-mode fallback if either app is run on its own Render service.
   froze the live app. A lock timeout (SQLSTATE 55P03) rolls back and is retried
   (`runMigrations({ attempts = 5, sleep })`, 2s × attempt backoff); any other error, or
   running out of attempts (~45s of contention), is still fatal.
+  **IN-list CHECKs (cycle-8 F31):** a CHECK written inside `CREATE TABLE IF NOT EXISTS`
+  never changes once the table exists. The value lists of `tax_documents.form` / `origin`
+  and `webhook_events.provider` / `status` live in `CHECK_LISTS` (services/database.js —
+  the CREATE TABLEs interpolate them); `syncInListChecks(client)` reads each
+  `<table>_<column>_check` (`pg_get_constraintdef`) and, only when its values differ,
+  drops it and re-adds it `NOT VALID` inside the migration transaction. Add a new value to
+  `CHECK_LISTS`, never to the CREATE TABLE text; a new IN-list CHECK that will grow should
+  go into `CHECK_LISTS` too.
 - `plaid_items.last_error_code TEXT` (BSI-10): the Plaid ITEM_* re-auth code from the
   last failed sync (NULL = healthy). Set by `syncAllPlaidTransactions` /
   `syncAllPlaidBalances` (only when the code CHANGES — a newly flagged item sends
@@ -6600,9 +6626,8 @@ low-cash alert's memory and forced re-check F11 / F12, F13–F15) and Batch 3 (d
 rename / restore — F41 F46 F47 F5 F43 F4 F6 F54) and Batch 4 (sync watermarks + webhook
 hardening — F1 F51 F3) and Batch 5 (linked tasks — F16 F17 F18 F19 F20 F21 F22 F23) and
 Batch 6 (AI trust + Knowledge privacy — F42 F49 F44 F24 F50 F53) and Batch 7 (UI correctness
-+ accessibility — F34 F35 F55 F36 F37 F38 F39 F40 F56 F57 F48) are done. Still open:
-- Batch 8 — frozen CHECK lists (F31), error-log pruning (F32), landing-status queries
-  (F33), Per-sistant's DATE parsing (F52).
++ accessibility — F34 F35 F55 F36 F37 F38 F39 F40 F56 F57 F48) and Batch 8 (platform hygiene —
+F31 F32 F33 F52 F45) are done — every cycle-8 fix batch is done.
 Batch 1 follow-ons: the weekly / daily digest, CSV reminder and housing ledger settle for
 the day once they find themselves off and a Settings change doesn't drop that memo
 (switching one on takes effect the next local day); the watchdog's boot timeout isn't
@@ -6648,6 +6673,12 @@ V2); a switch whose save reached the server but whose reply was lost shows the o
 reload; a Tax-page note the server normalized on save shows what was typed until the next reload;
 Per-sistant's standalone login ignores return_to; the heatmap day keys assume DATE columns arrive as
 UTC midnight (a server not on UTC shifts them, as before).
+Batch 8 follow-ons: only the four IN-list CHECKs in `CHECK_LISTS` (tax_documents form / origin,
+webhook_events provider / status) are kept in step — the rest of the schema's IN-list CHECKs are
+still frozen at first creation; a replaced CHECK is added NOT VALID, so rows written before it
+aren't re-checked; Per-sistant's calendar projection starts its window at UTC midnight (a day early
+east of UTC — cosmetic); DATE values Per-sistant reads through perfinPool (finance search, the
+Perfin widget, housingDue) are still Perfin's Dates; a landing line can be up to 30 s stale.
 
 **Cycle 7 (Oct 2026 broad scan) — open until their batches run** (plan in
 `.cycle/STATE.md`; Batches 1–8 — exposure / pre-auth safety, broken pages and
@@ -7213,7 +7244,7 @@ INV-13 | Categorization rules applied before AI; only unmatched rows sent to Cla
 INV-14 | INSIGHTS_MONTHLY_BUDGET_CENTS enforced across insight+categorize+rebuild+ask+scan+suggest, every check reading the ONE monthAiSpendCents() (APP_TIMEZONE month, F66) | Subsystem: AI Insights & Audit | Verify: tests/ai-cap-charge.test.js + tests/scan-sept-batch7.test.js (AIN-10)
 INV-15 | Insight cost uses granular token pricing (input + cache_read + cache_creation), keyed by MODEL ID (modelRates — previous models keep their own rates; Haiku 5.5 long-prompt card) | Subsystem: AI Insights & Audit | Verify: tests/model-upgrade.test.js
 INV-16 | sanitizeStructuredSummary bounds the summary and requires all four arrays; failure, a max_tokens stop, or no tool call preserves the prior summary | Subsystem: AI Insights & Audit | Verify: tests/scan-sept-batch7.test.js (AIN-8)
-INV-17 | Migrations run in one transaction; failure is fatal — except a lock timeout (55P03), which rolls back and is retried a bounded number of times; each run holds a per-app advisory lock and a SET LOCAL lock_timeout (cycle-7 F10) | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch13.test.js + tests/contract/platform-batch13.contract.test.js
+INV-17 | Migrations run in one transaction; failure is fatal — except a lock timeout (55P03), which rolls back and is retried a bounded number of times; each run holds a per-app advisory lock and a SET LOCAL lock_timeout (cycle-7 F10); the IN-list CHECKs in CHECK_LISTS are brought in step inside that transaction (replaced NOT VALID only when their values differ, cycle-8 F31) | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch13.test.js + tests/contract/platform-batch13.contract.test.js + tests/broad-scan-c8-batch8.test.js + tests/contract/c8-batch8
 INV-18 | Scheduler invokes route logic via in-process helpers, never HTTP self-fetch | Subsystem: Platform, Shell & Auth
 INV-19 | Named helper exports attached AFTER module.exports = router | Subsystem: Platform, Shell & Auth
 INV-20 | Shell requireAuth honors x-api-key; embedded sub-apps skip own check | Subsystem: Platform, Shell & Auth | Verify: tests/audit-regressions.test.js

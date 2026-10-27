@@ -39,7 +39,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   or a total over the cap, is never sent around: Send Now answers 400 with the reason
   BEFORE claiming (the email stays unsent), and the scheduler marks the claimed row
   `failed` with it.
-- **Tests**: `tests/` (node:test runner, `npm test`, 716 tests (api + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11/batch12/batch13/batch16/batch17/batch20 + roadmap-t1-batchc + roadmap-t2-3-cap-c1/c2/c3/c4 + roadmap-t2-4-x1a/x1b/x3a/x3b + seams-audit-3 + design-d1 + design-d6 + broad-scan-c8-batch5/batch6/batch7 + model-upgrade))
+- **Tests**: `tests/` (node:test runner, `npm test`, 721 tests (api + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11/batch12/batch13/batch16/batch17/batch20 + roadmap-t1-batchc + roadmap-t2-3-cap-c1/c2/c3/c4 + roadmap-t2-4-x1a/x1b/x3a/x3b + seams-audit-3 + design-d1 + design-d6 + broad-scan-c8-batch5/batch6/batch7/batch8 + model-upgrade))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of June 2026)
@@ -228,7 +228,13 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `.env.example` — template with setup instructions
 - `server.js` — entry point (~180 lines: wires modules, starts server, cron jobs)
 - `config.js` — constants, validation arrays, env var parsing
-- `db.js` — database pool and migration runner
+- `db.js` — database pool and migration runner. The pool returns a DATE column as its
+  `'YYYY-MM-DD'` text (`types: DATE_AS_STRING` — oid 1082 only, pool-scoped; Perfin's pool
+  keeps node-pg's Date). Cycle-8 F52: the default built a local-midnight Date that
+  JSON-serialized in UTC, so on a server east of UTC every due date went out a day early.
+  Server code turns a DATE into a local Date with `helpers.calDate(v)` and back with
+  `helpers.ymdOf(v)` (both accept either shape) — never `new Date(row.due_date)` or
+  `.toISOString()` on one
 - `ai.js` — Anthropic client, callAI, answerWithCitations, model helpers, response caching
 - `middleware.js` — session, auth, CSRF, helmet, rate limiting
 - `helpers.js` — advanceRecurrence (anchor-day aware), recurrenceAnchorDay, ymdLocal, rollMissedRecurring (the midnight missed-instance roll), webhooks, Slack, automations
@@ -275,6 +281,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `db/028_note_sensitivity.sql` — `notes.sensitivity` normal / private / secret + `chk_notes_sensitivity` (cycle-7 F134 / ST5: the notes privacy tier)
 - `db/029_vault_parse_version.sql` — `user_settings.vault_parse_version` (cycle-7 ST4): the `VAULT_PARSE_VERSION` (services/vault-sync.js) a successful FULL vault sync last ran under. **Bump `VAULT_PARSE_VERSION` whenever frontmatter parsing or sync semantics change** — Perfin's Settings → Sync Health → Operator Checks then asks for one full reindex (read-only through the wired pool) until a full sync stamps the new value Current value 3 (cycle-8 F49).
 - `db/031_linked_task_tombstones.sql` — `linked_task_tombstones (source_key PK, deleted_at)` + the `trg_todos_tombstone_linked` BEFORE DELETE trigger that keeps a linked task's key on every hard-delete path (permanent delete, Empty Trash, the 30-day purge — cycle-8 F16); keys are kept for good
+- `tests/broad-scan-c8-batch8.test.js` — cycle-8 broad scan Batch 8 pins (5): the pool's DATE parser (other types unchanged), `calDate` / `ymdOf`, the calendar's ICS day and a month-end recurring projection, each under Asia/Tokyo and America/Los_Angeles in a child process, and a scan that no server file formats a DATE with `toISOString` / `new Date(…)`. The database-backed half is the root `tests/contract/c8-batch8.contract.test.js`
 - `tests/broad-scan-c8-batch7.test.js` — cycle-8 broad scan Batch 7 pins (12): search Pin / Unpin sending the opposite state; the dashboard widget and the /search page dropping a stale reply (before and after reading its body), the widget's error line for a refused query or a network failure and a cleared box dropping a search on its way; the fetch wrapper's `return_to` (once, never from a login page); the Health and Analytics heatmaps keyed by calendar day under America/Los_Angeles in a child process (F48). The Perfin half is the root `tests/broad-scan-c8-batch7.test.js`
 - `tests/broad-scan-c8-batch6.test.js` — cycle-8 broad scan Batch 6 pins (7): quoted frontmatter keys read, an unreadable line starting with a privacy key private (indented, no colon, nested, an unbalanced quote) while ordinary lines that mention the words stay normal, `VAULT_PARSE_VERSION` 3; a refusal on adjust-tone / review-summary / the daily briefing charged and answered 422 `{ ai_refusal }` (the briefing not cached), Ask's "couldn't process". The Perfin half is the root `tests/broad-scan-c8-batch6.test.js`
 - `tests/broad-scan-c8-batch5.test.js` — cycle-8 broad scan Batch 5 pins (14): the tombstone skip + db/031's trigger, `retain` (keeps a task open, never creates, an unlisted kind ignored), a quiet auto-close and the completion counts without auto-closed tasks, the reduced webhook / Slack payload, the transaction + advisory lock with creations announced after COMMIT and a failure rolled back, `housingDueUnlessTask` (open / closed / fail-soft, both callers). The database-backed half is the root `tests/contract/c8-batch5.contract.test.js`
@@ -320,7 +327,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (716 tests)
+# Run tests (721 tests)
 npm test
 
 # Pages

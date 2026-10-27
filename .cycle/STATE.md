@@ -28,6 +28,10 @@ implement and reflect sessions only set Phase.)
     mutation 7/7; Playwright not run (browser build missing in the container).
   - **Where I left off:** Batch 8 committed and pushed. Next: `/sync-docs`, then the expansion batches
     (E1–E5) or `/reflect` to close cycle 8; roadmap T4.1 (`.cycle/plan-t4-1-advisory.md`) is queued after.
+  - **Docs synced** (/sync-docs, 2026-10-27): CLAUDE.md (Known Open Issues — Batch 8 done + follow-ons,
+    the IN-list CHECK migration note, error-log / landing-status entries, INV-17, counts 2712 / 145 /
+    contract 272), apps/per-sistant/CLAUDE.md (db.js DATE text + calDate / ymdOf, 721, the new test
+    file), README (count + a Batch 8 clause).
 - **Batch 7 (DONE):** block `.cycle/blocks/8-batch7-broad-implement.md`.
   - **Shipped (Batch 7 — UI correctness + accessibility):** F34 F36 F40 F48 F35 F39 F37 F38 F55 F56 F57.
     npm 2697/2697, contract 270/270, mutation 13/13. Docs synced.
