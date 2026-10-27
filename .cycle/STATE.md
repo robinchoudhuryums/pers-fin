@@ -23,7 +23,7 @@ implement and reflect sessions only set Phase.)
     `advice`, between Review Uncategorized and the charts; steps, per-debt table, tips, disclaimer,
     emptyState), Ask's `get_cash_plan` (8th tool) + the prompt line. The A1 choices stand unchanged.
   - **Verified:** npm test 2767/2767 (17 new); contract 275/275 (1 new); mutation 2/2.
-  - **Where I left off:** A2 committed and pushed. Next: `/sync-docs`, then `/broad-implement A3`.
+  - **Where I left off:** A2 committed and pushed; docs synced (CLAUDE.md: routes/advice.js, GET /api/advice, the dashboard order, ask.js's 8 tools, Known Open Issues + Priority Next Features, the subsystem list, counts 2767 / 147 / contract 275; README count + clause). Next: `/broad-implement A3`.
 - **Roadmap T4.1 A1 (DONE, 2026-10-27):** block `.cycle/blocks/8-t4-1-a1-broad-implement.md`.
   - **Shipped:** `teller/services/advice.js` — getAdviceInputs (seven fail-soft reads), the pure buildAdvicePlan
     (steps, carried-balance detection, avalanche + snowball line, surplus gate, cash-floor cap, per paycheck) and

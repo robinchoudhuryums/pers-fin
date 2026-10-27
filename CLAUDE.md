@@ -322,7 +322,8 @@ teller/
                            per (stream, expected date) via sentRecently; an in-memory
                            (local day + sync stamp) memo, off → no DB read that day
     advice.js            — "Where should my extra money go?" (roadmap T4.1 A1,
-                           .cycle/plan-t4-1-advisory.md — no caller until A2):
+                           .cycle/plan-t4-1-advisory.md; read by routes/advice.js and
+                           Ask's get_cash_plan since A2):
                            getAdviceInputs(pool, { today, deps }) reads seven sources
                            once each, fail-soft (a fixed sentence per source in
                            errors[]): getMonthlyIncomeAndSpending, getLiveIncomeStreams,
@@ -644,6 +645,10 @@ teller/
                            realized_gains|retirement|rent_paid|documents> — that
                            section's CSV, the file the ZIP holds (an unknown section a
                            400 before any read)
+    advice.js            — GET /api/advice (roadmap T4.1 A2): services/advice.
+                           getAdvicePlan(pool) as JSON — a plan that can't be worked
+                           out is still 200 { ok: false, error, disclaimer }; a throw a
+                           fixed 500. Behind the dashboard's "Your plan" card
     dashboard-summary.js — GET /api/dashboard/summary (design D3, decision 5): the
                            top of the dashboard in one request — net_worth (the
                            latest net_worth_snapshots row + its change since the
@@ -780,7 +785,7 @@ teller/
                            GET /api/persistent/status, GET /api/persistent/productivity-context,
                            POST /api/sso/generate, POST /api/sso/validate
     ask.js               — POST /api/ask: NL finance Q&A via Claude tool use.
-                           7 READ-ONLY tools bound to the shared helpers
+                           8 READ-ONLY tools bound to the shared helpers
                            (monthly overview, category spending, transaction
                            search w/ adjusted totals — the total applies
                            the dashboard spending filters: shared-card split,
@@ -788,7 +793,10 @@ teller/
                            refunds netted and floored at $0 (F35); match_count
                            counts the listed rows; LIKE metacharacters escaped
                            (AIN-13) — net worth,
-                           subscriptions, budget status, FIRE projection) so
+                           subscriptions, budget status, FIRE projection, and
+                           since roadmap T4.1 A2 get_cash_plan — the advice plan,
+                           trimmed; the prompt sends extra-money questions to it,
+                           says it is educational and names no security or fund) so
                            cited numbers match the dashboard by construction —
                            the model never writes SQL. Bounded tool loop
                            (MAX_TOOL_ROUNDS=6); shares the monthly AI cap
@@ -1179,9 +1187,16 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2750 tests as of latest); use
+  Perfin and Per-sistant test files (2767 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2750 tests across 146 test files (incl.
+  Current count: 2767 tests across 147 test files (incl.
+  `tests/roadmap-t4-1-a2.test.js` — roadmap T4.1 A2: GET /api/advice (the plan, ok:false still 200, a fixed
+  500, mounted after dashboard-summary), the "Your plan" card run in a vm over a real buildAdvicePlan (the
+  headline, the current step aria-current, the per-debt table per paycheck / per month, an assumed APR, "—"
+  for a debt on its minimum, red only for a minimum that never pays off, the tips, notes and disclaimer, the
+  empty state, the ok:false line), its loader (success, refusal, network failure), the markup between Review
+  Uncategorized and the charts with its widget key, and Ask's get_cash_plan (executor, trimmed debts, ok:false,
+  the prompt line);
   `tests/roadmap-t4-1-a1.test.js` — roadmap T4.1 A1: services/advice.js over canned inputs — each step as
   the headline (invest, the starter buffer ahead of a 24% card and uncapped by the floor, high-interest
   debt, the emergency fund, medium debt 50/50, minimums not covered), the avalanche (APR order and its
@@ -1296,7 +1311,7 @@ shell/
   labelled select (IF-3), the CSS (sticky index and hidden select only at ≥961px, the anchors'
   scroll margin, D1's 860px) and settings.ejs rendered through EJS standalone and under /perfin;
   `tests/design-d4.test.js` — design pass D4: the decision-6 section order on the page and
-  `DASHBOARD_WIDGETS` in that same DOM order (every selector found, 20 keys, the summary not a
+  `DASHBOARD_WIDGETS` in that same DOM order (every selector found, 21 keys since T4.1 A2, the summary not a
   toggle), `applyDashboardWidgets` hiding exactly the switched-off key; the pyramid's
   collapsible markup, `collapsedFromStore` (a stored choice wins, phone-collapsed only for a
   phone-default section) and opening storing '0'; the tabs' no-wrap scroll row and
@@ -2074,7 +2089,8 @@ shell/
   Date). Since roadmap T4.1 A1, advice-a1 (every advice source read on the real schema — spendable =
   checking only, interest found by statement wording and by Plaid's PFC — and the plan on real rows: 3
   completed months over the bar, the savings transfer and minimums off, $1,000 a paycheck to the 24.99%
-  card, a paid-in-full card not debt, a PFC-only card at an assumed 22%). 274 tests, run
+  card, a paid-in-full card not debt, a PFC-only card at an assumed 22%; since A2 GET /api/advice through the
+  production mount order answering the same plan). 275 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -2824,7 +2840,7 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   shows its own sentence. Not a Settings widget toggle.
   **Order and density (design D4, decisions 6 / 7 / 15):** top to bottom — the summary,
   the sync strip (and the CSV-reminder / budget-alert banners), Since you last looked,
-  Review Uncategorized, the two charts, Accounts (the sync buttons and stat cards with
+  Review Uncategorized, Your plan (roadmap T4.1 A2), the two charts, Accounts (the sync buttons and stat cards with
   them), Cash Flow + Upcoming Bills + the 30-day forecast, the spending tables, Settle
   Up / Rent & Utilities / Investments / Savings Rate / YoY, the pyramid, then Ask Perfin /
   AI Insights / AI Memory / Credit Score. Cash Flow leads with the lowest projected day,
@@ -4203,7 +4219,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2750 tests passing across 146 test files (Perfin 2029 + Per-sistant 721), plus the real-Postgres route contract suite (274 tests; CI `migrations` job, `npm run test:contract`) and 72 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2767 tests passing across 147 test files (Perfin 2046 + Per-sistant 721), plus the real-Postgres route contract suite (275 tests; CI `migrations` job, `npm run test:contract`) and 72 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -4601,6 +4617,13 @@ GET  /api/tax/package      # the year-end tax package (T3.3 K3; query: year — 
                            # format=csv&section=<deductions|income|investment_income|
                            # realized_gains|retirement|rent_paid|documents> → that CSV
                            # (perfin_tax_<section>_<year>.csv; 400 on another section — K4)
+GET  /api/advice           # the "Where should my extra money go?" plan (roadmap T4.1 A2):
+                           # services/advice.getAdvicePlan → { ok, generated_on,
+                           # disclaimer, errors, period, headline { step, text,
+                           # amount_monthly, amount_per_period }, why, steps[], surplus,
+                           # cash, debts[], allocation { debts[], snowball, … }, notes }
+                           # or { ok: false, error, disclaimer } (still 200); a fixed
+                           # 500 on a throw. Educational, computed in code, no AI
 GET  /api/dashboard/summary # the dashboard's Summary card + Needs attention (design D3):
                            # { today, month, net_worth { ok, value, as_of, change,
                            # change_since }, spending { ok, month, budget_count, spent,
@@ -6722,8 +6745,9 @@ aren't re-checked; Per-sistant's calendar projection starts its window at UTC mi
 east of UTC — cosmetic); DATE values Per-sistant reads through perfinPool (finance search, the
 Perfin widget, housingDue) are still Perfin's Dates; a landing line can be up to 30 s stale.
 
-**Roadmap T4.1 (in progress — A1 done):** `services/advice.js` computes the plan but nothing calls it
-until A2 (GET /api/advice, the "Your plan" card, Ask's get_cash_plan). A1 choices to confirm at A2:
+**Roadmap T4.1 (in progress — A1 and A2 done):** `services/advice.js` computes the plan; since A2 it is
+served by GET /api/advice, shown in the dashboard's "Your plan" card (widget key `advice`, on by default)
+and read by Ask's get_cash_plan. The A1 choices stand (A2 changed none of them):
 a last payment within 10% of the minimum stands in for "paid less than the statement" (the statement
 balance is stored from A8); a loan at APR ≥ 8% joins the high-interest step and a loan with no APR gets
 minimums only (not an assumed 22%); the cash-floor cap limits only money leaving cash (debt, investing),
@@ -6731,7 +6755,10 @@ not the buffer / emergency-fund steps; carried cards' and loans' minimums come o
 the 60% (conservative — part of a carried card's minimum pays purchases already counted as spending);
 the medium step's 50/50 halves aren't rounded to $25. A1 follow-ons: the emergency fund is all
 spendable cash, not a named account or goal (A5); the avalanche assumes no new card purchases and a
-fixed minimum, so payoff months are estimates.
+fixed minimum, so payoff months are estimates. A2 follow-ons: the plan isn't in AI insights yet (A3) and
+has no "tell me when my plan changes" option (A4); the card fetches its own request, whose 60-day cash
+forecast can differ from the Summary card's 30-day lowest day; the Settings toggle reads "Your Plan" (Title
+Case, like the other widget labels).
 
 **Cycle 7 (Oct 2026 broad scan) — open until their batches run** (plan in
 `.cycle/STATE.md`; Batches 1–8 — exposure / pre-auth safety, broken pages and
@@ -7108,7 +7135,7 @@ perfin_url) and its contract-coverage gap were fixed by the follow-on batch
    `mobile/` (remote-URL mode, coexists with the PWA); what remains is the
    free-signing Xcode build on the operator's Mac per `mobile/README.md`.
 2. **Roadmap T4.1 — "Where should my extra money go?"** (in progress — A1, the engine
-   `services/advice.js`, is done; A2 next; plan `.cycle/plan-t4-1-advisory.md`): a code-computed plan — minimums, a starter cash buffer,
+   `services/advice.js`, and A2, GET /api/advice + the dashboard card + Ask's get_cash_plan, are done; A3 next; plan `.cycle/plan-t4-1-advisory.md`): a code-computed plan — minimums, a starter cash buffer,
    high-APR card debt first with a per-card avalanche split, a 3-month emergency fund, then
    "invest $X more per paycheck" from a sustained surplus — on the dashboard, in AI insights and
    in Ask, with one opt-in "tell me when my plan changes" checkbox; then (A5–A10) emergency-fund
@@ -7201,7 +7228,7 @@ Financial Analytics:
   teller/services/tax-documents.js, teller/services/tax-package.js,
   teller/routes/tax.js, teller/services/projections.js, teller/routes/budgets.js,
   teller/routes/goals.js, teller/routes/credit-scores.js,
-  teller/routes/dashboard-summary.js,
+  teller/routes/dashboard-summary.js, teller/routes/advice.js,
   teller/routes/whats-new.js, teller/routes/watchlist.js,
   teller/routes/housing.js
   (housing.js = the Rent & Utilities single-payee ledger: obligations/payments,
