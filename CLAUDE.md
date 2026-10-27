@@ -201,8 +201,14 @@ teller/
                            GET /api/cash-flow so the cash alerts read the same
                            numbers: getCashFlowInputs(pool, { today }) (live income
                            streams, active subscriptions + outgoing recurring
-                           transfers minus card autopays — DD-4 — spendable cash
-                           — FAN-5 — and the 60-day weekday / overall spending
+                           transfers minus card autopays — DD-4, isCardAutopay: a
+                           bill_payment into a linked card (paid_linked_card) or with
+                           a card phrase / issuer name, never a utility autopay
+                           (cycle-8 F8) — and minus transfers between your own
+                           spendable accounts (moved_between_cash_accounts: the
+                           latest debit's same-amount credit within 5 days on
+                           another depository, non-investment account — F7),
+                           spendable cash — FAN-5 — and the 60-day weekday / overall spending
                            averages without subscription merchants), the PURE
                            projectCashFlow(inputs, { days }) (today+1 … today+days
                            on calendar dates; the route's fields + the daily
@@ -224,9 +230,14 @@ teller/
                            and notifies on the first day below cash_alert_threshold
                            ("Low cash ahead", tag cash-low, /dashboard) + the opt-in
                            critical-alert email — once, again when the breach moves
-                           3+ days earlier or after 72 h; recovery silent. State in
+                           3+ days earlier or after 72 h; recovery silent, but the
+                           last notification is remembered across it (last_notified,
+                           cycle-8 F11 — a forecast hovering at the floor used to
+                           re-notify on every clear → dip). State in
                            user_settings.cash_alert_state, advanced only when the
                            notification was logged (else retried next tick).
+                           invalidate() also forces the next tick to evaluate (F12 —
+                           a raised threshold or a new floor waited for new data).
                            Account floors (T2.2 L4, checkFloors — same switch and
                            gate, checked first): a spendable account with
                            linked_accounts.low_balance_floor whose balance
@@ -276,7 +287,8 @@ teller/
                            LIVE income stream (same source, ±10%) → "Paycheck landed"
                            (tag payday-<hash>); the watermark (text, microseconds
                            kept) advances to the newest processed, held just before a
-                           send that throws; no watermark yet → set to now, nothing
+                           send that isn't logged (sendToAll's { logged: false }, or a
+                           throw — cycle-8 F10); no watermark yet → set to now, nothing
                            older announced. runPaydayMissed (the hourly cash-alerts
                            job): a live stream's latest expected payday after its
                            last deposit whose 3-day grace has passed (≤ 14 days old,
@@ -296,10 +308,12 @@ teller/
                            across both is "mixed" and split pro rata in the totals;
                            cancels dropped; split / merger / spin-off / stock
                            distribution flag the security (corporate_action) and
-                           leave its lots alone; "sell short" not modelled),
-                           investmentIncome (dividends — qualified separately —
-                           interest, capital-gain distributions, tax withheld, per
-                           taxable account), retirementDistributions (cash
+                           leave its lots alone; "sell short" and its "buy to cover"
+                           not modelled — cycle-8 F15), investmentIncome (dividends —
+                           qualified separately — interest, capital-gain
+                           distributions, tax withheld, per taxable account; a `fee`
+                           row is never income — margin interest charged, a dividend
+                           paid on a short — F9), retirementDistributions (cash
                            withdrawals / distributions from TAX_ADVANTAGED accounts:
                            IRA / Roth / 401k / 403b / 457b / 529 / HSA / pension …),
                            getInvestmentTaxData(pool, year) (calendar year, an
@@ -339,7 +353,8 @@ teller/
                            section (taxReportCsv IS /api/export/tax-report's CSV,
                            rent_paid.csv the landlord export's; an unknown basis a
                            blank cell, never 0.00; text through csvText, dates through
-                           csvDate), renderPackagePdf (pdfkit → Buffer: a bookmark per
+                           csvDate — documents.csv's dismissed day in APP_TIMEZONE,
+                           cycle-8 F13), renderPackagePdf (pdfkit → Buffer: a bookmark per
                            section, the disclaimer on the first and last page) and
                            buildPackageZip (ZIP_FILES: summary.pdf, deductions /
                            income / investment_income / realized_gains / retirement /
@@ -564,7 +579,8 @@ teller/
     tax.js               — The year-end tax package routes (roadmap T3.3): K2's
                            documents checklist — GET / POST /api/tax/documents,
                            PATCH / DELETE /api/tax/documents/:id, POST
-                           /api/tax/documents/suggest. The year rule (a 400), strict
+                           /api/tax/documents/suggest. The year rule (a 400), an id
+                           above int4 a 400 (cycle-8 F14), strict
                            booleans, a duplicate a 409, a suggested row's DELETE a 409
                            (dismiss it instead); every write kicks the linked-task
                            refresh. K3's GET /api/tax/package?year=&format=json|pdf|zip
@@ -1101,9 +1117,17 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2583 tests as of latest); use
+  Perfin and Per-sistant test files (2598 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2583 tests across 134 test files (incl.
+  Current count: 2598 tests across 135 test files (incl.
+  `tests/broad-scan-c8-batch2.test.js` — cycle-8 broad scan Batch 2: the forecast's two transfer
+  flags through getCashFlowInputs (internal moves and linked-card payments left out, a transfer to
+  someone else, a brokerage contribution and a utility autopay billed) and the card / utility
+  names, fee rows not netted against income and a dividend reversal still netted, a buy to cover
+  not a lot, an unlogged "Paycheck landed" holding the watermark, the low-cash alert's notify →
+  clear → held / 72 h / 3-days-earlier memory, the forced evaluation after invalidate() (kept
+  after a throw), documents.csv's dismissed day under America/Los_Angeles and the int4 id 400
+  before any query — the SQL half is `tests/contract/c8-batch2`;
   `tests/broad-scan-c8-batch1.test.js` — cycle-8 broad scan Batch 1: every job in
   `job-health.JOB_INTERVALS_MS` run once after boot under node:test mock timers (none before
   the first boot delay, all once the stagger has passed, none after stopBackgroundJobs), the
@@ -1895,7 +1919,10 @@ shell/
   Link session exited (flag, cursor and accounts unchanged) before the finished one. Since design D3,
   dashboard-summary (the summary on real rows equal to GET /api/budgets, /api/cash-flow's lowest day,
   the latest net-worth snapshot, /api/forecast + the calendar's unpaid manual bills, the ledger balance,
-  /api/categorize/status and /api/data-health's warnings). 253 tests, run
+  /api/categorize/status and /api/data-health's warnings). Since cycle-8 Batch 2, c8-batch2 (the
+  forecast's bills on real rows: checking → a linked savings account and a payment into the linked
+  card left out; a brokerage contribution, a transfer to someone else, a utility autopay and a
+  same-amount credit 9 days later billed). 254 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -2901,9 +2928,16 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   Teller brokerage/IRA balances used to count as spendable). Nothing is counted
   twice (DD-4): active detected-subscription merchants are excluded from the
   60-day daily/DOW spending averages (they're projected as scheduled bills), and
-  card **autopays** (`bill_payment` recurring transfers without "loan"/"mortgage"
-  in the name) are NOT billed — the card purchases they pay off are already in
-  the average. Loan/mortgage payments are still billed. Bill dates step by
+  card **autopays** are NOT billed — the card purchases they pay off are already in
+  the average. Since cycle-8 F8 that means a `bill_payment` whose latest debit was paid
+  into a linked credit card, or whose name says card payment or names a card issuer — a
+  utility or insurance AUTOPAY from checking (kept out of the average by NOT_TRANSFER and
+  out of subscription detection) is billed; it used to be projected nowhere. Loan/mortgage
+  payments are always billed. A transfer between two of your own spendable accounts
+  (its latest debit has a same-amount credit within 5 days on another depository,
+  non-investment account — checking → a linked savings account) isn't billed either
+  (F7): the starting balance already holds both accounts. A transfer to an account you
+  haven't linked, to a brokerage or to someone else still is. Bill dates step by
   calendar month from each bill's last real charge (`seriesOccurrences`, DC-9).
   The projection lives in `services/cash-flow.js` (roadmap T2.2 L1 — shared with the
   cash alerts), starts the day after the APP_TIMEZONE date (it used the UTC date, so
@@ -2916,7 +2950,10 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   $500) within a look-ahead (`cash_alert_horizon_days`, 7–60, default 14), plus the
   opt-in critical-alert email. Checked hourly when new bank data arrived, else once a
   local day; never on balances more than 36 hours old. Once per breach, again when it
-  moves 3+ days earlier or after 72 hours; recovery is silent (`services/cash-alerts.js`).
+  moves 3+ days earlier or after 72 hours; recovery is silent, and a dip that returns
+  within 72 h of the last alert is held too unless it is 3+ days earlier (cycle-8 F11).
+  Changing a Cash Alerts setting or an account floor makes the next hourly check run
+  (F12) (`services/cash-alerts.js`).
   **Account floors** (T2.2 L4, Settings → Cash Alerts → Account Floors, needs the Low
   Cash Alert switch): a floor per checking / savings account; while its current balance
   (available, else current — not a projection) is below it, "Low balance: <name>" is
@@ -3957,7 +3994,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2583 tests passing across 134 test files (Perfin 1900 + Per-sistant 683), plus the real-Postgres route contract suite (253 tests; CI `migrations` job, `npm run test:contract`) and 72 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2598 tests passing across 135 test files (Perfin 1915 + Per-sistant 683), plus the real-Postgres route contract suite (254 tests; CI `migrations` job, `npm run test:contract`) and 72 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -5031,7 +5068,8 @@ standalone-mode fallback if either app is run on its own Render service.
 - `user_settings.cash_alert_enabled BOOLEAN NOT NULL DEFAULT false`, `cash_alert_threshold
   NUMERIC(12,2) NOT NULL DEFAULT 500`, `cash_alert_horizon_days INT NOT NULL DEFAULT 14`,
   `cash_alert_state JSONB` (`{ alert: { breach_date, low_date, low_balance, notified_at } |
-  null, last_check: { at, outcome, reason?, breach_date?, floors_below } }`) and `cash_alerts_checked_at
+  null, last_notified: { breach_date, notified_at } | null (kept across a clear — cycle-8
+  F11), last_check: { at, outcome, reason?, breach_date?, floors_below } }`) and `cash_alerts_checked_at
   TIMESTAMPTZ` (roadmap T2.2 L2 — the low cash alert's settings, dedup state and last
   evaluation; services/cash-alerts.js). Auto-migrated; reset by `npm run reset:fresh`.
 - `user_settings.payday_alerts_enabled BOOLEAN NOT NULL DEFAULT false` and
@@ -6390,11 +6428,9 @@ SX3-pinned — the Sheets Income tab.
 batch plan is in `.cycle/STATE.md`; 57 findings, F1–F57). Batch 1 (scheduler + auth
 safety — boot runs F27, not-due memos F29, the biometric open redirect F25, the shared-
 database refusal F26, the Teller self-heal F2, the biometric probe limiter F28, the
-x-api-key limiter F30) is done. Still open, by batch:
-- Batch 2 — the cash forecast bills savings / internal transfers as outflows and drops
-  non-card autopays (F7 / F8), investment income nets fee rows (F9), "Paycheck landed"
-  can be lost and the low-cash alert re-notifies around its threshold (F10 / F11), and
-  smaller tax-package items (F12–F15).
+x-api-key limiter F30) and Batch 2 (money accuracy — the forecast's internal transfers F7
+and utility autopays F8, fee rows in investment income F9, the payday-landed retry F10, the
+low-cash alert's memory and forced re-check F11 / F12, F13–F15) are done. Still open, by batch:
 - Batch 3 — a new rename rule over rows another rule renamed resurrects a cancelled
   subscription (F41); price-rise alerts can't retry and the PRICE UP badge lasts one run
   (F46); restore / reconcile / CSV-overlap Resolve gaps (F4–F6, F43, F47, F54).
@@ -6413,6 +6449,12 @@ the day once they find themselves off and a Settings change doesn't drop that me
 (switching one on takes effect the next local day); the watchdog's boot timeout isn't
 cleared by stopBackgroundJobs; e2e can't run in the cloud container as configured (the
 project's Playwright pins a browser build that isn't preinstalled).
+Batch 2 follow-ons: a linked card paid by an autopay whose name has no card phrase and whose
+credit posts more than 5 days later is billed on top of the card spending (F8); a debit that
+happens to match an unrelated same-amount credit on another spendable account within 5 days
+is treated as internal (F7); an unlinked card's autopay with a card name is still skipped; the
+user can't mark a transfer internal or a bill themselves (the scan's G1); an unlogged cash /
+floor alert's retry still waits for new data when a check was stamped earlier that day.
 
 **Cycle 7 (Oct 2026 broad scan) — open until their batches run** (plan in
 `.cycle/STATE.md`; Batches 1–8 — exposure / pre-auth safety, broken pages and

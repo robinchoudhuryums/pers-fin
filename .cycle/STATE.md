@@ -27,8 +27,10 @@ implement and reflect sessions only set Phase.)
     an evaluation; F13 documents.csv dismissed day in APP_TIMEZONE; F14 int4 id bound; F15 buy to cover
     isn't a lot.
   - **Verified:** npm test 2598/2598 (15 new); contract 254/254 (1 new); Playwright 72/72; mutation 10/10.
-  - **Docs not yet synced** for Batch 2 — the block's DOCUMENTATION UPDATES list is for /sync-docs.
-  - **Where I left off:** Batch 2 committed and pushed. Next: `/sync-docs`, then `/broad-implement Batch 3`.
+  - **Docs synced** (/sync-docs, 2026-10-27): CLAUDE.md (cash-flow / cash-alerts / payday / tax entries,
+    the forecast and low cash alert features, cash_alert_state, test counts, Known Open Issues + Batch 2
+    follow-ons) and README.
+  - **Where I left off:** Batch 2 committed, pushed and documented. Next: `/broad-implement Batch 3`.
 - **Batch 1 (DONE):** block `.cycle/blocks/8-batch1-broad-implement.md`.
   - **Shipped (Batch 1 — scheduler + auth safety):** F27 boot run for every scheduled job; F29 not-due /
     off memos for bank auto-sync, the reconcile and the insights trigger (PATCH /api/settings invalidates);
