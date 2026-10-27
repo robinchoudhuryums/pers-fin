@@ -1,6 +1,7 @@
 // Real-Postgres contract test for roadmap T4.1 A1 — the advice engine on real
 // rows, the app's own migrations (and, since A2, GET /api/advice through the
-// production mount order answering the same plan):
+// production mount order answering the same plan; since A3 the insight
+// prompt's CASH PLAN block and the audit's plan figures):
 //  - getAdviceInputs reads every source with no error (the income / spending
 //    months, the pay stream, the cash forecast, the floor, the cards and
 //    loans, card activity and the savings transfers)
@@ -93,5 +94,15 @@ describe("Advice engine (T4.1 A1) on real Postgres", { skip: SKIP }, () => {
     const plan = await advice.getAdvicePlan(pool);
     assert.deepEqual(res.body, JSON.parse(JSON.stringify(plan)));
     assert.equal(res.body.headline.text, "Pay down Visa first: $1,000.00 per paycheck on top of its minimum.");
+  });
+
+  it("A3: the insight prompt's CASH PLAN block and the audit's plan figures from the same rows", async () => {
+    const plan = await advice.getAdvicePlan(pool);
+    const block = require("../../teller/routes/insights").cashPlanPromptBlock(plan);
+    assert.match(block, /\nHeadline: Pay down Visa first: \$1,000\.00 per paycheck on top of its minimum\.\n/);
+    assert.match(block, /\n- Visa: APR 24\.99%, balance \$3,000\.00, pay \$1,090\.00 per paycheck/);
+    const f = require("../../teller/services/ai-audit").planFigures(plan);
+    assert.ok(f.perPeriod.includes(1000));
+    assert.deepEqual(f.debts.visa.per_period, [1090, 1000]);
   });
 });

@@ -414,7 +414,9 @@ describe("generateInsights — prompt + memory + tax persistence", () => {
   });
 
   it("AIN-11: recurring_transfers=false skips the module", async () => {
-    const off = await run({ modules: { recurring_transfers: false } });
+    // cash_plan off too: the plan engine (T4.1 A3) reads the savings /
+    // investment transfers itself.
+    const off = await run({ modules: { recurring_transfers: false, cash_plan: false } });
     assert.ok(!off.st.sql.some(q => /FROM recurring_transfers/.test(q.sql)));
     assert.ok(!off.result.modules_used.includes("recurring_transfers"));
     const on = await run({ extra: (sql) => /FROM recurring_transfers/.test(sql)

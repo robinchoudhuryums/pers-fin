@@ -18,6 +18,13 @@ Updated: 2026-10-27
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
+- **Roadmap T4.1 A3 (DONE, 2026-10-27):** block `.cycle/blocks/8-t4-1-a3-broad-implement.md`.
+  - **Shipped:** the `cash_plan` insight module (13 modules): the engine's plan in the prompt (cashPlanPromptBlock),
+    the debt optimizer pointed at the plan's order, the plan's current step kept as one "Plan (...)" pending action
+    (seedPlanActions), and the audit's tier-1 plan check (per-paycheck / a named debt's monthly figures against the
+    plan; hypotheticals exempt; module "cash_plan").
+  - **Verified:** npm test 2784/2784 (17 new); contract 276/276 (1 new); mutation 3/3.
+  - **Where I left off:** A3 committed and pushed. Next: `/sync-docs`, then `/broad-implement A4`.
 - **Roadmap T4.1 A2 (DONE, 2026-10-27):** block `.cycle/blocks/8-t4-1-a2-broad-implement.md`.
   - **Shipped:** `teller/routes/advice.js` (GET /api/advice), the dashboard "Your plan" card (widget key
     `advice`, between Review Uncategorized and the charts; steps, per-debt table, tips, disclaimer,

@@ -9,6 +9,7 @@ const { pool } = require("../services/database");
 // module keeps using and RE-EXPORTING them, so import paths are unchanged.
 const { renderInsightEmail, renderWeeklyDigestEmail, renderWeeklyDigestText,
         renderDailyDigestEmail, renderDailyDigestText, escapeHtml } = require("./insights-email");
+const advice = require("../services/advice"); // T4.1 A3 — called through the module so tests can stub it
 const { getMonthlySpending, getMonthlyIncomeAndSpending, NOT_TRANSFER, SPLIT_AMOUNT, spendLinesCTE, NET_CATEGORY_MONTHS, currentMonth, todayStr, getTaxDeductionTransactions } = require("../services/financial-queries");
 // Dates go into prompts as 'YYYY-MM-DD' (cycle-7 F71 — a DATE column arrives as
 // a JS Date, and string concatenation wrote "Tue Dec 31 2026 00:00:00 GMT…").
@@ -31,6 +32,85 @@ function sanitizeForPrompt(s) {
   return String(s).replace(/---+RUNNING_SUMMARY---+/gi, "[redacted]").replace(/---+/g, "--");
 }
 const { auditInsight, getAuditStats, getAuditAccuracy } = require("../services/ai-audit");
+// Roadmap T4.1 A3: the cash plan in the insight prompt. Every figure comes
+// from services/advice.js (decision 1) — the model words the plan, it never
+// recomputes it, and the audit checks its figures against the same plan.
+const PLAN_STEP_LABELS = {
+  minimums: "minimums", starter_buffer: "cash buffer", high_interest_debt: "high-interest debt",
+  emergency_fund: "emergency fund", medium_interest_debt: "medium-interest debt", invest: "invest",
+};
+const PLAN_STEP_URGENCY = {
+  minimums: "high", starter_buffer: "high", high_interest_debt: "high",
+  emergency_fund: "medium", medium_interest_debt: "medium", invest: "low",
+};
+const PLAN_ACTION_RE = /^Plan \(([^)]*)\): /;
+const usd = (n) => "$" + Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+function cashPlanPromptBlock(plan) {
+  let out = "\n\n=== CASH PLAN (computed in code — use these figures exactly as given; do not compute your own) ===\n";
+  if (!plan || !plan.ok) {
+    return out + "No plan this time: " + sanitizeForPrompt((plan && plan.error) || "not enough data") + "\n" +
+      "Disclaimer: " + ((plan && plan.disclaimer) || "");
+  }
+  const unit = plan.period && plan.period.unit === "paycheck" ? "paycheck" : "month";
+  out += "Headline: " + sanitizeForPrompt(plan.headline.text) + "\n";
+  if (plan.why) out += "Why: " + sanitizeForPrompt(plan.why) + "\n";
+  out += "Amounts are per " + unit + (unit === "paycheck" && plan.period.cadence ? " (" + plan.period.cadence + ", " + plan.period.paychecks_per_year + " a year)" : "") + ".\n";
+  out += "Steps (in order):\n" + plan.steps.map((st) => {
+    let line = "- [" + (st.status === "current" ? "now" : st.status === "done" ? "done" : "later") + "] " + st.title;
+    if (st.status === "current" && st.target != null) line += " — target " + usd(st.target);
+    if (st.status === "current" && st.remaining != null) line += ", " + usd(st.remaining) + " to go";
+    if (st.status === "current" && st.months_to_finish) line += ", about " + st.months_to_finish + " months at this pace";
+    return line;
+  }).join("\n") + "\n";
+  const s = plan.surplus || {};
+  if (s.sustained) {
+    out += "Surplus: median " + usd(s.median_net) + " a month over the last 3 completed months; after " + usd(s.existing_transfers_monthly) +
+      " already moved to savings / investing and " + usd(s.required_minimums_monthly) + " of minimums, " + usd(s.after_commitments_monthly) +
+      "; the plan uses " + usd(s.recommended_monthly) + " a month (" + usd(s.recommended_per_period) + " per " + unit + ") and keeps " + usd(s.slack_monthly) + " as slack.\n";
+  } else {
+    out += "Surplus: none sustained — nothing extra is recommended this time.\n";
+  }
+  const a = plan.allocation || {};
+  if (a.debts && a.debts.length) {
+    out += "Debts (pay each per " + unit + "):\n" + a.debts.map((d) => {
+      let line = "- " + sanitizeForPrompt(d.name) + ": APR " + d.apr + "%" + (d.apr_assumed ? " (assumed — APR unknown)" : "") +
+        ", balance " + usd(d.balance) + ", pay " + usd(d.per_period) + " per " + unit +
+        " (" + usd(d.payment_monthly) + " a month: " + usd(d.minimum_monthly) + " minimum + " + usd(d.extra_monthly) + " extra)";
+      if (d.minimum_never_pays_off) line += ", the minimum alone never pays it off";
+      else if (d.payoff_month) line += ", paid off " + d.payoff_month;
+      if (d.extra_monthly > 0 && d.interest_saved != null) line += ", saves " + usd(d.interest_saved) + " in interest vs minimums only";
+      return line;
+    }).join("\n") + "\n";
+  }
+  for (const [key, label] of [["buffer_per_period", "Toward the cash buffer"], ["emergency_per_period", "Toward the emergency fund"], ["invest_per_period", "To investing"]]) {
+    if (a[key] > 0) out += label + ": " + usd(a[key]) + " per " + unit + ".\n";
+  }
+  if (a.snowball && a.snowball.text) out += "Snowball comparison: " + a.snowball.text + "\n";
+  const tips = (plan.debts || []).filter((d) => d.utilization_tip && d.utilization_tip.text).map((d) => sanitizeForPrompt(d.utilization_tip.text));
+  if (tips.length) out += "Utilization tips:\n" + tips.map((t) => "- " + t).join("\n") + "\n";
+  if (plan.notes && plan.notes.length) out += "Notes:\n" + plan.notes.map((n) => "- " + sanitizeForPrompt(n)).join("\n") + "\n";
+  return out + "Disclaimer: " + plan.disclaimer;
+}
+
+// The plan's current step is kept as ONE pending action, "Plan (<step>): <headline>",
+// replacing any earlier plan entry (and any copy the model wrote); its
+// first_recommended carries over while the step is the same.
+function seedPlanActions(summary, plan, today) {
+  if (!summary || !Array.isArray(summary.pending_actions) || !plan || !plan.ok || !plan.headline || !plan.headline.text) return summary;
+  const step = plan.headline.step;
+  const label = PLAN_STEP_LABELS[step] || "plan";
+  const prior = summary.pending_actions.find((x) => PLAN_ACTION_RE.test(x.description || ""));
+  const priorLabel = prior ? PLAN_ACTION_RE.exec(prior.description)[1] : null;
+  const action = {
+    description: ("Plan (" + label + "): " + plan.headline.text).slice(0, 240),
+    urgency: PLAN_STEP_URGENCY[step] || "medium",
+    first_recommended: prior && priorLabel === label && prior.first_recommended ? prior.first_recommended : today,
+  };
+  const others = summary.pending_actions.filter((x) => !PLAN_ACTION_RE.test(x.description || ""));
+  return { ...summary, pending_actions: [action, ...others].slice(0, 10) };
+}
+
 const { createToolCall, effortParams } = require("../services/claude");
 const {
   MODEL_COST_PER_M, modelFamily, estimateCostUsd, estimateCostGranular,
@@ -653,6 +733,16 @@ async function generateInsights() {
         "back-to-school, annual renewals). Predict the likely spend for the next 1-2 months based on these patterns. " +
         "If certain months are consistently high, warn the user in advance and suggest preparing a buffer.";
     }
+    const cashPlanOn = modules.cash_plan !== false;
+    if (cashPlanOn) {
+      activeModules.push("cash_plan");
+      systemText += "\n\n=== CASH PLAN INSTRUCTIONS ===\n" +
+        "When a CASH PLAN block is provided, include ONE bullet that states its headline and the amount per paycheck (or per month) for each debt or goal it funds, " +
+        "using the block's figures exactly — never compute, round differently or invent another amount, payoff order or date. " +
+        "Explain the 'why' in plain words. Say it is educational, based on the user's data, not financial advice, and never name a specific security or fund. " +
+        "If the block says there is no plan, say briefly why and don't give your own allocation. " +
+        "The plan's current step is kept in pending_actions automatically as 'Plan (...): ...' — don't add your own copy of it.";
+    }
     if (modules.debt_optimizer !== false) {
       activeModules.push("debt_optimizer");
       systemText += "\n\n=== DEBT PAYOFF OPTIMIZER INSTRUCTIONS ===\n" +
@@ -660,11 +750,15 @@ async function generateInsights() {
         "1. CREDIT SCORE IMPACT: Explain current utilization impact on credit score (FICO uses 30% weight for utilization). " +
         "Project how the score would improve at key thresholds: <50%, <30%, <10%, and 0% utilization. " +
         "Be specific: 'Paying down $X would drop utilization from Y% to Z%, which typically improves scores by N points.'\n" +
-        "2. PAYOFF STRATEGY: If APRs are known, compare avalanche (highest APR first) vs snowball (smallest balance first) approaches. " +
-        "Calculate interest saved with the optimal strategy over 6-12 months.\n" +
+        (cashPlanOn
+          ? "2. PAYOFF ORDER: the CASH PLAN block gives the payoff order, the amount for each card and loan and the interest saved — use those figures; do not compute your own avalanche or snowball comparison.\n"
+          : "2. PAYOFF STRATEGY: If APRs are known, compare avalanche (highest APR first) vs snowball (smallest balance first) approaches. " +
+            "Calculate interest saved with the optimal strategy over 6-12 months.\n") +
         "3. QUICK WINS: Identify any cards near a utilization threshold (e.g. just over 30%) where a small payment would have outsized credit score impact.\n" +
-        "4. LOANS: When installment loan data is provided (auto loans etc.), include them in the avalanche/snowball comparison by APR, " +
-        "and comment on whether extra principal payments beat other uses of the money given the loan's rate. " +
+        (cashPlanOn
+          ? "4. LOANS: installment loans (auto loans etc.) are in the CASH PLAN's order by APR; don't recompute extra-payment figures for them. "
+          : "4. LOANS: When installment loan data is provided (auto loans etc.), include them in the avalanche/snowball comparison by APR, " +
+            "and comment on whether extra principal payments beat other uses of the money given the loan's rate. ") +
         "Installment utilization barely affects credit scores — do not apply revolving-utilization advice to loans.\n" +
         "5. If APR is unknown for any card or loan, note that the user should add it on the Dashboard account card for more accurate projections.";
     }
@@ -929,6 +1023,15 @@ async function generateInsights() {
           }
         }
       } catch (err) { console.error("Debt optimizer query error:", err.message); failedModules.add("debt_optimizer"); }
+    }
+
+    // --- Module: Cash plan (roadmap T4.1 A3 — the engine's figures, worded by the model) ---
+    let cashPlan = null;
+    if (cashPlanOn) {
+      try {
+        cashPlan = await advice.getAdvicePlan(pool);
+        userMsg += cashPlanPromptBlock(cashPlan);
+      } catch (err) { console.error("Cash plan query error:", err.message); failedModules.add("cash_plan"); cashPlan = null; }
     }
 
     // --- Module: Income & savings rate (dynamic data) ---
@@ -1203,6 +1306,10 @@ async function generateInsights() {
         console.warn("Insights: no tool_use block in response; long-term memory not advanced.");
       }
     }
+    // T4.1 A3: the plan's current step is kept as one pending action.
+    if (summaryStatus === "updated" && newSummaryJson && cashPlan) {
+      newSummaryJson = seedPlanActions(newSummaryJson, cashPlan, todayStr());
+    }
     // Backward-compat: render the structured summary to text for the legacy
     // `insights_running_summary` column so any consumer not yet updated to
     // read JSON still sees a meaningful long-term memory string.
@@ -1262,7 +1369,7 @@ async function generateInsights() {
     // Run audit against the insight
     let auditResult = null;
     try {
-      auditResult = await auditInsight(insightText, insightId);
+      auditResult = await auditInsight(insightText, insightId, { plan: cashPlan && cashPlan.ok ? cashPlan : null });
       if (auditResult.summary.critical > 0) {
         try {
           const { sendToAll, sentRecently } = require("./notifications");
@@ -1624,6 +1731,8 @@ module.exports.getAiBudgetCents = getAiBudgetCents;
 module.exports.monthAiSpendCents = monthAiSpendCents;
 module.exports.persistentAiSpend = persistentAiSpend;
 module.exports.renderInsightEmail = renderInsightEmail;
+module.exports.cashPlanPromptBlock = cashPlanPromptBlock;
+module.exports.seedPlanActions = seedPlanActions;
 module.exports.renderWeeklyDigestEmail = renderWeeklyDigestEmail;
 module.exports.renderDailyDigestEmail = renderDailyDigestEmail;
 module.exports.generateInsights = generateInsights;

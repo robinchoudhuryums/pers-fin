@@ -304,6 +304,59 @@ function attributeCategory(lead, trail, categories) {
 // AIN-1: a subscription figure is the TOTAL only when phrased as one.
 const SUB_TOTAL_RE = /\b(total\w*|all|combined|altogether|overall)\b|\b\d+\s+(?:active\s+|recurring\s+)?subscriptions\b/;
 
+// Roadmap T4.1 A3: the cash plan's figures — the amounts the prompt gave the
+// model. A dollar figure stated "per paycheck", or "per month" next to one of
+// the plan's debts, must be one of them (the nearest, within 5%).
+const PER_PAYCHECK_RE = /\b(?:per|a|each|every)\s+paycheck\b/;
+const PER_MONTH_RE = /\b(?:per|a|each|every)\s+month\b|\/mo(?:nth)?\b|\bmonthly\b/;
+// A hypothetical ("cancelling Hulu would free $8 per paycheck") isn't the plan.
+const PLAN_HYPOTHETICAL_RE = /\b(?:cancel\w*|switch\w*|downgrad\w*|instead|alternative|could|would|if you|by cutting)\b/;
+function planFigures(plan) {
+  if (!plan || !plan.ok) return null;
+  const ppy = (plan.period && plan.period.paychecks_per_year) || 12;
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const debts = {};
+  for (const d of (plan.allocation && plan.allocation.debts) || []) {
+    if (!d || !d.name) continue;
+    debts[String(d.name).toLowerCase()] = {
+      per_period: [d.per_period, r2((d.extra_monthly * 12) / ppy)].filter((v) => v > 0),
+      monthly: [d.payment_monthly, d.extra_monthly, d.minimum_monthly].filter((v) => v > 0),
+    };
+  }
+  const a = plan.allocation || {};
+  const perPeriod = [plan.headline && plan.headline.amount_per_period, plan.surplus && plan.surplus.recommended_per_period,
+    a.buffer_per_period, a.emergency_per_period, a.invest_per_period, a.debt_extra_per_period,
+    ...Object.values(debts).flatMap((d) => d.per_period)].filter((v) => v > 0);
+  return { unit: plan.period && plan.period.unit, perPeriod, debts };
+}
+// The finding for one plan claim, or null when it matches (or isn't a plan claim).
+function planClaimFinding(claim, lead, trail, figures) {
+  if (!figures) return { matched: false, finding: null };
+  const clause = lead + " " + trail;
+  if (PLAN_HYPOTHETICAL_RE.test(clause)) return { matched: false, finding: null };
+  const debt = attributeCategory(lead, trail, Object.keys(figures.debts));
+  let set = null, label = null;
+  if (figures.unit === "paycheck" && PER_PAYCHECK_RE.test(clause)) {
+    set = debt ? figures.debts[debt].per_period : figures.perPeriod;
+    label = "per paycheck" + (debt ? " for " + debt : "");
+  } else if (debt && PER_MONTH_RE.test(clause)) {
+    set = figures.debts[debt].monthly;
+    label = "a month for " + debt;
+  }
+  if (!set) return { matched: false, finding: null };
+  if (!set.length) return { matched: true, finding: null };
+  let nearest = set[0];
+  for (const v of set) if (Math.abs(claim.value - v) < Math.abs(claim.value - nearest)) nearest = v;
+  const pctOff = Math.abs(claim.value - nearest) / nearest;
+  if (pctOff <= 0.05) return { matched: true, finding: null };
+  return {
+    matched: true,
+    finding: { severity: pctOff > 0.20 ? "critical" : "warning", tier: 1, check: "cash_plan",
+      claim: `$${claim.value.toFixed(2)} ${label}`, expected: `$${nearest.toFixed(2)}`,
+      pct_off: Math.round(pctOff * 100), context: claim.context },
+  };
+}
+
 // AIN-3: savings rate over a set of {income, spending} months (sum-based).
 function savingsRateOf(rows) {
   const inc = rows.reduce((a, r) => a + (r.income || 0), 0);
@@ -315,7 +368,7 @@ function savingsRateOf(rows) {
  * Run all audit tiers against an insight text.
  * Returns { findings: [...], summary: { critical, warning, info } }
  */
-async function auditInsight(insightText, insightId) {
+async function auditInsight(insightText, insightId, { plan = null } = {}) {
   const findings = [];
   // AI-5: track tiers that threw so a swallowed DB error in a tier isn't later
   // mistaken for "audited and clean". Any incomplete tier marks the whole run
@@ -357,8 +410,17 @@ async function auditInsight(insightText, insightId) {
     // Check dollar claims against actuals
     const dollarClaims = extractDollarClaims(insightText);
     const categoryNames = Object.keys(actualCategories);
+    const figures = planFigures(plan);
     for (let i = 0; i < dollarClaims.length; i++) {
       const claim = dollarClaims[i];
+      // T4.1 A3: a plan figure is judged against the plan, before the
+      // this-month spending checks (which would skip or mis-read it).
+      if (figures) {
+        const seg = claimSegments(insightText, dollarClaims, i);
+        const pc = planClaimFinding(claim, seg.lead, seg.trail, figures);
+        if (pc.finding) findings.push(pc.finding);
+        if (pc.matched) continue;
+      }
       // Skip claims scoped to a non-current-month period (annual/multi-month/YTD/
       // projected/average, or a named other month — F61) — the per-category +
       // subscription actuals below are this-month figures, so comparing a
@@ -700,4 +762,4 @@ async function getAuditAccuracy(days = 90) {
   }
 }
 
-module.exports = { auditInsight, getAuditStats, getAuditAccuracy, extractDollarClaims, extractPercentClaims, extractMerchantNames, extractTrendClaims, findContradictions, wordMatch, entityKnown, isGenericName, claimSegments, attributeCategory, CROSS_PERIOD_RE, namesOtherMonth, claimPeriodWindow, claimNamesOtherMonth };
+module.exports = { planFigures, planClaimFinding, auditInsight, getAuditStats, getAuditAccuracy, extractDollarClaims, extractPercentClaims, extractMerchantNames, extractTrendClaims, findContradictions, wordMatch, entityKnown, isGenericName, claimSegments, attributeCategory, CROSS_PERIOD_RE, namesOtherMonth, claimPeriodWindow, claimNamesOtherMonth };
