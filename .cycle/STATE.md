@@ -27,8 +27,12 @@ implement and reflect sessions only set Phase.)
     housing config, manual-bill writes and generated obligations; F23 housing_due / briefing rent line step
     aside while a housing task is open; F21 the hourly tick acts once a local day after a clean run.
   - **Verified:** npm test 2650/2650 (24 new); contract 269/269 (5 new); Playwright 72/72; mutation 10/10.
-  - **Where I left off:** Batch 5 committed and pushed. Next: `/sync-docs` for Batch 5, then
-    `/broad-implement Batch 6`.
+  - **Docs synced** (/sync-docs, 2026-10-27): CLAUDE.md (services/linked-tasks.js, housing.js and
+    subscriptions.js entries, the Per-sistant Tasks feature, the Linked tasks scheduled-task bullet,
+    INV-77 / INV-103, new INV-149, test counts, Known Open Issues + Batch 5 follow-ons, the stale
+    "30-day purge" X1a note), apps/per-sistant/CLAUDE.md (linked tasks, services/linked-tasks.js,
+    db/031, housing-due.js, Trash, counts) and README.
+  - **Where I left off:** Batch 5 committed, pushed and documented. Next: `/broad-implement Batch 6`.
 - **Batch 4 (DONE):** block `.cycle/blocks/8-batch4-broad-implement.md`.
   - **Shipped (Batch 4 — sync watermarks + webhook hardening):** F1 the anomaly watermark is the newest
     created_at visible before the candidate read, kept below any open writer's start, never backwards;

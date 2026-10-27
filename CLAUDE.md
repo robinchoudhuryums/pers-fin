@@ -257,7 +257,7 @@ teller/
                            floor push leaves cash_alerts_checked_at unstamped
     linked-tasks.js      — Linked tasks, Perfin's side (roadmap T2.4 X2a):
                            computeLinkedTasks(pool, { sources, bill_lead_days }, today)
-                           → { ok_kinds, desired, errors } — the Per-sistant tasks that
+                           → { ok_kinds, desired, retain, errors } — the Per-sistant tasks that
                            should be open now, keyed perfin:<kind>:<id>: rent & utilities
                            per unpaid period of the configured payee inside the
                            payment-due window or overdue (housing.rentReminderOpen —
@@ -265,7 +265,10 @@ teller/
                            exists, unless removed), a utility amount whose bill should
                            have arrived (housing.utilityAmountDue), manual-bill
                            occurrences 30 days back to the lead with no bill_payments
-                           row (manualBillOccurrences), and (roadmap T3.3 K2,
+                           row (manualBillOccurrences) — an unpaid occurrence older than
+                           that window goes in `retain` (from the bill's creation month):
+                           its open task stays open, nothing is created (cycle-8 F17;
+                           it used to close as completed on day 31) — and (roadmap T3.3 K2,
                            taxDocumentTasks) each open tax_documents row past its
                            expected_by — "Find your <year> <form> from <issuer>",
                            perfin:tax-doc:<id>, /tax#documents. Each source isolated; only the
@@ -281,9 +284,15 @@ teller/
                            errors } in user_settings.linked_tasks_state (fixed
                            sentences, never exception text). One run at a time — a call
                            during a run shares its promise and makes it go round once
-                           more. kick(reason) / refreshSoon: the fire-and-forget refresh
-                           the housing + bill-payment routes call after a write; never
-                           throws or rejects. ensureStillChargingTask(pool, sub): the
+                           more. The hourly tick passes scheduled: true and acts once a
+                           local day: after a clean run (status ok) it returns "fresh"
+                           with no read of either database until the next local day, a
+                           kick, Run now or invalidate() (cycle-8 F21; a partial run is
+                           retried the next hour). kick(reason) / refreshSoon: the
+                           fire-and-forget refresh the housing (incl. the config PATCH),
+                           bill-payment, manual-bill and tax-document routes call after a
+                           write, and the housing ledger tick when it generated
+                           obligations (F22); never throws or rejects. ensureStillChargingTask(pool, sub): the
                            watchdog's one-off task perfin:still-charging:<sub>:<txn>
                            (switch + source on), never closed by a sync. isRunning()
                            (X2c) backs the run route's 409
@@ -490,7 +499,9 @@ teller/
                            still-charging-after-cancel + price-rise alerts, run
                            after every detection; cycle-7 F53 / G5 — a logged
                            still-charging alert also creates its linked task, T2.4 X2b;
-                           POST / DELETE /api/bill-payments kick the linked-task refresh).
+                           POST / DELETE /api/bill-payments and the manual-bill POST /
+                           PATCH / DELETE kick the linked-task refresh — the latter since
+                           cycle-8 F22).
     transactions.js      — split from subscriptions.js: per-transaction
                            endpoints — GET /api/transactions (+/search,
                            /duplicates, /csv-overlap +resolve),
@@ -583,7 +594,8 @@ teller/
                            (roadmap T2.4 X2a — the payment-due window is now date-based,
                            so rent due the 31st opens lead days before Feb 28). Since
                            X2b, generate, the obligation writes and the payment writes
-                           kick the linked-task refresh after they commit. Since
+                           kick the linked-task refresh after they commit (the config
+                           PATCH too since cycle-8 F22). Since
                            roadmap T3.3 K3, getHousingPayments(year, db) (a year's
                            payments with what each covered + the payee and total) and
                            housingPaymentsCsv — the landlord export and the tax
@@ -1132,9 +1144,20 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2626 tests as of latest); use
+  Perfin and Per-sistant test files (2650 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2626 tests across 137 test files (incl.
+  Current count: 2650 tests across 139 test files (incl.
+  `tests/broad-scan-c8-batch5.test.js` — cycle-8 broad scan Batch 5, Perfin's side of the linked
+  tasks: computeLinkedTasks' manual-bill `retain` (every unpaid occurrence from the bill's creation
+  month up to the 30-day window, a paid one left out, payments read from the earliest creation
+  month) and the runner handing it to Per-sistant, the hourly tick's once-a-day gate (fresh with no
+  read after a clean run, the next day / a kick / Run now / invalidate() running, a partial run
+  retried) and the kick pins (housing config, manual bills, generated obligations) — with
+  `apps/per-sistant/tests/broad-scan-c8-batch5.test.js` (a tombstoned key never inserted + db/031's
+  trigger, retain keeping a task open and never creating, a quiet auto-close, the completion counts
+  without auto-closed tasks, the linked-task webhook / Slack payload, BEGIN → lock → COMMIT with
+  creations announced after COMMIT and a failure rolled back, housingDueUnlessTask) — the
+  database-backed half is `tests/contract/c8-batch5`;
   `tests/broad-scan-c8-batch4.test.js` — cycle-8 broad scan Batch 4: runAnomalyCheck over a fake
   pool (the text watermark, the high-water mark read before the candidates with its writer bound,
   the candidates bounded by it, the never-backwards text update, no read or update with nothing
@@ -1962,7 +1985,12 @@ shell/
   taking its rule's current name; a bank-removed Plaid id refused and a changed one restored stale;
   a renamed payroll source as one income-summary row). Since cycle-8 Batch 4, c8-batch4 (an
   open transaction committing an anomaly charge and a paycheck after a check has run — each
-  caught by the next run, once). 264 tests, run
+  caught by the next run, once). Since cycle-8 Batch 5, c8-batch5 (both apps' real databases:
+  a linked task deleted for good — permanently and by Empty Trash — not recreated with its
+  tombstone row; a sync blocked behind another holder of the linked-tasks lock; stats / analytics /
+  the review counting only a hand completion; housing_due hidden while a housing task is open; an
+  aged unpaid bill's task open until it is paid and a switched-off bill's task closed by the route's
+  own refresh). 269 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -3035,8 +3063,15 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   paid would stay open) a manual bill due within the lead days, and closes it once the
   payment / amount / bill payment is recorded in Perfin (the form marked received or
   dismissed). Your edits
-  to a task win, and a task you complete or reopen by hand is left alone. Runs hourly,
-  right after a housing or bill-payment write, and on "Run now" (`POST
+  to a task win, and a task you complete or reopen by hand is left alone. A task you
+  delete for good stays deleted (its key is kept — cycle-8 F16); a manual bill's task stays
+  open until the bill is marked paid, however old (F17); a task the sync closes is not your
+  completion — no todo_completed automation / webhook / Slack post, and Per-sistant's
+  analytics, weekly review, Ask and stats leave it out (F18); webhooks and Slack get only a
+  kind label for a linked task, never its amounts or payee (F19); while a rent task is open,
+  Per-sistant's housing_due notification and briefing rent line stay quiet (F23). Checked
+  hourly but run once a local day unless something changed (F21), right after a housing,
+  housing-config, bill-payment, manual-bill or tax-document write, and on "Run now" (`POST
   /api/linked-tasks/run`); the section shows "Last run …: N outstanding, N closed" with any
   source error (`services/linked-tasks.js` here, `apps/per-sistant/services/linked-tasks.js`
   there).
@@ -4058,7 +4093,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2626 tests passing across 137 test files (Perfin 1943 + Per-sistant 683), plus the real-Postgres route contract suite (264 tests; CI `migrations` job, `npm run test:contract`) and 72 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2650 tests passing across 139 test files (Perfin 1953 + Per-sistant 697), plus the real-Postgres route contract suite (269 tests; CI `migrations` job, `npm run test:contract`) and 72 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -5738,10 +5773,14 @@ second one (which re-sent the same uncategorized rows to Claude).
   (`runLinkedTasksTick` → `services/linked-tasks.runLinkedTasks`). Does nothing in a
   standalone Perfin (no Per-sistant pool) or while the switch is off (one settings read a
   local day); otherwise computes the tasks that should be open and reconciles Per-sistant's
-  through its services/linked-tasks.js. The housing and bill-payment routes also kick it
-  right after a write, and Settings' "Run now" (`POST /api/linked-tasks/run`, X2c) runs
-  it on demand (409 while a run is going). Records an outcome only when it ran (a source
-  or the Per-sistant write failing → a failed run).
+  through its services/linked-tasks.js (one transaction under an advisory lock, so two
+  processes never interleave — cycle-8 F20). After a clean run the tick does nothing — no
+  read of either database — until the next local day (F21), because every write that can
+  change a task kicks a refresh: the housing routes (incl. the config PATCH), bill payments,
+  manual bills, tax documents and the ledger tick when it generated obligations (F22).
+  Settings' "Run now" (`POST /api/linked-tasks/run`, X2c) runs it on demand (409 while a
+  run is going). Records an outcome only when it ran (a source or the Per-sistant write
+  failing → a failed run).
 - **CSV import reminders**: every 1 hour, NOT activity-gated, evaluated at most
   once per 24h via `user_settings.last_csv_reminder_at` (PSC-3 — the old 24h
   `setInterval` needed a full day of uptime AND activity at that exact tick, so
@@ -6508,9 +6547,8 @@ x-api-key limiter F30) and Batch 2 (money accuracy — the forecast's internal t
 and utility autopays F8, fee rows in investment income F9, the payday-landed retry F10, the
 low-cash alert's memory and forced re-check F11 / F12, F13–F15) and Batch 3 (detection /
 rename / restore — F41 F46 F47 F5 F43 F4 F6 F54) and Batch 4 (sync watermarks + webhook
-hardening — F1 F51 F3) are done. Still open, by batch:
-- Batch 5 — linked tasks: a permanently deleted task comes back, an unpaid manual bill's
-  task closes as completed after 30 days, auto-closes count as completions (F16–F23).
+hardening — F1 F51 F3) and Batch 5 (linked tasks — F16 F17 F18 F19 F20 F21 F22 F23) are
+done. Still open, by batch:
 - Batch 6 — the audit's "last year" / prior-year month claims (F42), a quoted frontmatter
   key bypassing the privacy tier (F49), and F24 / F44 / F50 / F53.
 - Batch 7 — search Pin / Unpin does nothing (F34), the Tax checklist losing unsaved notes
@@ -6541,6 +6579,14 @@ the Plaid verifier's miss cache and lookup cap are per process — a flood of fo
 spend the cap, so after a restart a real webhook whose kid isn't cached fails until the hour
 rolls (two instances each get their own); a deposit up to 24 h old that only now matches a pay
 pattern is announced late; "Since you last looked" still advances its watermark to now().
+Batch 5 follow-ons: a linked task deleted for good can't be brought back (no way to clear its
+tombstone short of the database); a manual bill autopaid and never marked paid keeps its tasks
+open indefinitely; a failing statement rolls back the whole linked-task run, and a run waits
+without a timeout while another holds the lock; a change that reaches the sources without a
+kicking route waits for the next local day's tick; an automation or webhook relying on
+todo_completed for a Perfin-closed task no longer fires; any open housing task hides the
+housing_due line, and Perfin's own payment-due push still fires beside the task (the scan's G2
+— one reminder per real-world item, quiet hours — is the follow-on).
 
 **Cycle 7 (Oct 2026 broad scan) — open until their batches run** (plan in
 `.cycle/STATE.md`; Batches 1–8 — exposure / pre-auth safety, broken pages and
@@ -6778,15 +6824,16 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   the goals / subscriptions / calendar page) rather than the record itself. X2b
   follow-ons: a kicked refresh runs the whole computation (a few queries), not just the
   item that changed; the runner is in memory, so two processes (a deploy overlap) can run
-  at once — both reconcile idempotently through the unique key; transactions syncs don't
+  at once — both reconcile through the unique key and, since cycle-8 F20, one at a time under
+  an advisory lock; transactions syncs don't
   kick it (the hourly run catches a deposit-driven change). X2a follow-ons: a ledger switched off reads as "nothing due", so its open tasks
   will close; a rent task groups the period's utilities under the RENT due date (the
   ledger is paid as one transfer); manual-bill occurrences follow the calendar's rule,
   which also projects months before the bill was created. X1b follow-ons: the Today page and the
   weekly review don't show the chip; a standalone Per-sistant's chip opens PERFIN_URL in a
   new tab only when PERFIN_URL is http(s). X1a follow-ons: a task you reopen by hand after an auto-close is
-  detached for good (the sync never closes it again); a trashed task's key frees up only at
-  the 30-day purge.
+  detached for good (the sync never closes it again). (A trashed task's key freeing up at
+  the 30-day purge was closed by cycle-8 F16 — the key is kept for good.)
 - Roadmap T2.3 (an AI cost cap for every Per-sistant feature) is DONE
   (`.cycle/plan-t2-3-persistent-ai-cap.md`, C1–C4): the capped wrappers in
   `apps/per-sistant/ai.js` (APP_TIMEZONE spend month, a spend read that refuses the call
@@ -7154,7 +7201,7 @@ INV-72 | The Rent & Utilities ledger is single-payee: generation covers the trai
 INV-73 | Budget status has ONE definition — getBudgetStatus(pool, month) in financial-queries.js (spend via getCategorySpendingForMonth; effective_limit = monthly_limit + the PRIOR month's snapshot rollover when rollover_enabled; one-time budgets only in their effective_month). GET /api/budgets, /api/budgets/alerts, the insights prompt and the Ask budget tool call it; the Sheets Budget Status SQL mirrors it; no surface reads the bare monthly_limit as the limit | Subsystem: Financial Analytics | Verify: tests/scan-sept-batch6.test.js (AIN-6 block)
 INV-75 | The tax report (export + Sheets tab) is computed from transactions via getTaxDeductionTransactions (one shared keyword list); the tax_deductions table only annotates merchants and never supplies amounts | Subsystem: Financial Analytics / Sheets & External Export | Verify: tests/scan-sept-batch7.test.js (SXE-7)
 INV-76 | No model call uses a forced tool_choice (Opus/Sonnet 5.5 400 on it): structured calls go through createToolCall (auto + strict tool + one re-ask, usage summed for the cap); every call sets an explicit effort and reads content blocks by type | Subsystem: AI Insights & Audit (seam: categorize / budgets / housing / Per-sistant ai.js) | Verify: tests/model-upgrade.test.js + apps/per-sistant/tests/model-upgrade.test.js
-INV-77 | Away-from-app channels (budget alerts + critical-alert email, weekly digest, daily digest, CSV reminder, Rent & Utilities reminders — F15, the low cash and missed-payday alerts — T2.2 L2 / L3, the linked tasks — T2.4 X2b) are never gated on isUserActive(); each is bounded by its own watermark (last_weekly_digest_at / last_daily_digest_at / last_csv_reminder_at / sentRecently / cash_alerts_checked_at + cash_alert_state) plus a per-local-day settled memo, so it neither misses an away user nor re-queries the DB all day; every scheduled job also runs once shortly after boot (scheduleBootRuns, cycle-8 F27), so a host that sleeps between requests still reaches them | Subsystem: Platform, Shell & Auth / Notification Correctness | Verify: tests/scan-sept-batch8.test.js (PSC-3 block) + tests/roadmap-t2-2-cash-l2.test.js
+INV-77 | Away-from-app channels (budget alerts + critical-alert email, weekly digest, daily digest, CSV reminder, Rent & Utilities reminders — F15, the low cash and missed-payday alerts — T2.2 L2 / L3, the linked tasks — T2.4 X2b) are never gated on isUserActive(); each is bounded by its own watermark (last_weekly_digest_at / last_daily_digest_at / last_csv_reminder_at / sentRecently / cash_alerts_checked_at + cash_alert_state; the linked tasks: a clean run's local day, with every write that can change a task kicking its own refresh — cycle-8 F21) plus a per-local-day settled memo, so it neither misses an away user nor re-queries the DB all day; every scheduled job also runs once shortly after boot (scheduleBootRuns, cycle-8 F27), so a host that sleeps between requests still reaches them | Subsystem: Platform, Shell & Auth / Notification Correctness | Verify: tests/scan-sept-batch8.test.js (PSC-3 block) + tests/roadmap-t2-2-cash-l2.test.js
 INV-78 | The auto-sync "complete" notification fires only on genuinely new transactions or a balance that actually changed (accounts_changed), and never while sync_notifications_enabled is false | Subsystem: Bank Sync & Ingestion / Notification Correctness | Verify: tests/scan-sept-batch8.test.js (PSC-1 block)
 INV-79 | The shell PIN gate has a GLOBAL failure ceiling (30 failed PINs/hour across all IPs → PIN login locked 30 min, even for the correct PIN, with at most one sendToAll alert per 6h — makeLockoutNotifier); biometric + x-api-key paths are unaffected; the shell refuses to boot without SHELL_SECRET; no login input can crash the process (and so reset the in-memory counter) — see INV-104 | Subsystem: Platform, Shell & Auth | Verify: tests/scan-sept-batch9.test.js (PSC-14 / PSC-11 blocks) + tests/scan-oct-batch1.test.js (F1 / F7 blocks)
 INV-80 | Per-sistant outbound webhooks/Slack are SSRF-checked at send time by resolveSafeWebhookTarget — literal IPs in any spelling (IPv4-mapped/compatible IPv6 unwrapped) and EVERY DNS-resolved address must be outside the net.BlockList private ranges; DNS failure fails closed; fetch uses redirect:'manual' | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch9.test.js (PB-14 blocks)
@@ -7174,7 +7221,7 @@ INV-93 | Every stored automation is validated by helpers.validateAutomationRule 
 INV-94 | A change to route SQL or router mounting keeps the real-Postgres contract suite green: tests/contract/ runs both apps' own migrations and mounts every router in the order parsed from teller/server.js and apps/per-sistant/server.js with the real deps object — if either server.js's mount spelling changes, the parser regexes (pinned by scan-sept-batch15) must be updated, never bypassed | Subsystem: Test Coverage Quality (all route subsystems) | Verify: CI migrations job (npm run test:contract) + tests/scan-sept-batch15.test.js (contract wiring)
 INV-95 | Source guards (un-nonced style, root-relative navigation, undefined CSS vars) carry a KNOWN_GAPS list that only shrinks: a new offender fails, and so does a listed entry that no longer occurs; a test never re-implements production logic inline (TQ-1) | Subsystem: Test Coverage Quality | Verify: tests/scan-sept-batch15.test.js
 INV-96 | Every Per-sistant routes/*.js factory destructures only keys present in server.js's `const deps = { pool, config, helpers, views }` — a helper is read off `helpers`, never expected as its own dep (calendar.js read `advanceRecurrence` off deps, got undefined, and 500'd) | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/batch15-followons.test.js (FO-1 guard) + tests/contract (persistentApp builds routers with the real deps)
-INV-103 | No GitHub Actions workflow prints an HTTP response body (the repo's logs are public while it is): steps print only allowlisted counts via the job's SUMMARY_JS snippet (numbers/booleans, array counts, ":str" strings), never the net-worth breakdown or merchant/account names; csv-import refuses to run while the repo is public | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch1.test.js (F2 block)
+INV-103 | No GitHub Actions workflow prints an HTTP response body (the repo's logs are public while it is): steps print only allowlisted counts via the job's SUMMARY_JS snippet (numbers/booleans, array counts, ":str" strings), never the net-worth breakdown or merchant/account names; csv-import refuses to run while the repo is public. Likewise Per-sistant's outbound webhooks and Slack never carry a linked task's title, description or snapshot (Perfin's amounts, payees, merchants) — only a kind label, dates and state (helpers.linkedTaskWebhookData, cycle-8 F19) | Subsystem: Platform, Shell & Auth / Per-sistant Backend | Verify: tests/scan-oct-batch1.test.js (F2 block) + apps/per-sistant/tests/broad-scan-c8-batch5.test.js
 INV-105 | Every scheduled job in teller/startup.js that ran its body records its outcome via jobHealth.result({ok, error}) (job_runs.last_status / last_error); GET /api/data-health flushes in-memory ticks + outcomes before reading and raises a failed job as an issue; every ticked job is in JOB_INTERVALS_MS | Subsystem: Platform, Shell & Auth | Verify: tests/scan-oct-batch3.test.js (F8 block)
 INV-107 | A Plaid link (exchange-transactions / hosted-link-complete / the investments-only exchange — G3) that duplicates a connected Item is refused before anything is stored: the new Item is released at Plaid and the route answers 409 — a second Item never doubles transactions or holdings | Subsystem: Bank Sync & Ingestion | Verify: tests/contract/bank-durability.contract.test.js (F18) + tests/contract/plaid-update.contract.test.js
 INV-108 | The CSV workflow deletes only files the CLI imported (CSV_IMPORTED_LIST); the CLI exits non-zero on any failed file | Subsystem: Bank Sync & Ingestion | Verify: tests/scan-oct-batch4.test.js (F19 block)
@@ -7220,6 +7267,7 @@ INV-145 | Deleting a transaction is reversible and nothing brings it back unaske
 INV-146 | The year-end tax package is computed on request from the ledger and never stored, and nothing in it is sent to an AI model: each figure has one definition shared with the screen or export that already shows it — deductions = getTaxDeductionReport (also behind /api/export/tax-report, whose CSV is taxReportCsv), income = getIncomeForYear on INCOME_PREDICATE / INCOME_AMOUNT, rent paid = getHousingPayments (also behind the landlord export, housingPaymentsCsv), investments = investment_transactions through getInvestmentTaxData; realized gains are FIFO over stored lots and labelled approximate — a sale not fully covered by known-cost lots has a NULL basis and gain, never 0; tax-advantaged accounts are kept out of gains and investment income; a suggested document the user received or dismissed is never changed or re-suggested (ON CONFLICT DO NOTHING); every section is fail-soft with a fixed sentence; every CSV text cell is formula-guarded; the Tax page's writes go through writeOk | Subsystem: Financial Analytics / Sheets & External Export / Web UI | Verify: tests/roadmap-t3-3-k1 / k2 / k3 / k4 + tests/contract/tax-investments / tax-documents / tax-package + e2e/pages.spec.js
 INV-147 | The dashboard summary has one definition per figure, each the helper its own screen uses — net worth = the latest net_worth_snapshots row (written only through getNetWorth); spending = getBudgetStatus (GET /api/budgets); lowest cash = getCashFlowForecast (GET /api/cash-flow); bills due = getBillsDue (the /api/forecast charges via forecastCharges + the bill calendar's manualBillOccurrences, less bill_payments); rent owed = getHousingOwed (the ledger's ledgerTotals, payee-scoped); uncategorized = countUncategorized (/api/categorize/status); Sync Health = gatherDataHealth (/api/data-health) — no figure is re-derived in routes/dashboard-summary.js; every part is fail-soft with a fixed sentence and the page still loads when the whole request fails; attention links are same-app paths joined with withBase; the shell landing page's Perfin line reads the same gatherDashboardSummary in-process (its parts option — rent / bills / uncategorized only), never an HTTP self-fetch | Subsystem: Financial Analytics / Web UI | Verify: tests/design-d3.test.js + tests/design-d7.test.js + tests/contract/dashboard-summary.contract.test.js + e2e/pages.spec.js
 INV-148 | Shared design values have one spec, design/tokens.json (status colours per theme, type scale, spacing, radius, button heights): both apps declare every shared value with the spec's value under their own names (Perfin perfin-shared.css, Per-sistant views/css.js), app-specific values (accent, surfaces, fonts) are never compared, and the parity test fails on drift. Every Perfin amount goes through fmt (a negative is -$X, never $-X) and colour carries meaning: money in green (.amt-in), red (.amt-bad) only for something wrong (overdue, over budget, below $0, a debt that rose), a charge or a debt the default text colour, gold the brand accent only. Buttons are sentence case in both apps, .primary filled; an empty state offers its next step through the app's emptyState (a same-app path or the page's existing button — no new write path) | Subsystem: Web UI / Per-sistant Web UI | Verify: tests/design-tokens.test.js + tests/design-d1.test.js + tests/design-d2.test.js + apps/per-sistant/tests/design-d6.test.js
+INV-149 | A linked task follows its source without ever overriding the user: one sync at a time (a transaction under pg_advisory_xact_lock(727274010), creations announced only after COMMIT); a key deleted for good is never inserted again (linked_task_tombstones, db/031's BEFORE DELETE trigger on every delete path); a task is closed only when its source says the item is resolved — a still-open item past the creation window is retained, not closed; an auto-close is not a completion (no todo_completed event, and analytics / the weekly review / Ask / stats leave it out); a task completed, reopened, edited or trashed by hand is never touched (source_detached, per-field snapshot) | Subsystem: Per-sistant Backend / Settings, Notifications & Cross-app (seam) | Verify: apps/per-sistant/tests/roadmap-t2-4-x1a + x1b + broad-scan-c8-batch5 + tests/broad-scan-c8-batch5 + tests/contract/linked-tasks / linked-tasks-crossapp / c8-batch5
 INV-136 | WebAuthn credential ids are stored exactly as the authenticator reports them (registrationInfo.credential.id — already base64url in @simplewebauthn v11), never re-encoded; a double-encoded row from before seams audit #3 is rewritten (or, when its real id already exists, removed) by repairCredentialIds in the migration | Subsystem: Platform, Shell & Auth | Verify: tests/seams-audit-3.test.js + tests/contract/seams3.contract.test.js
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 
