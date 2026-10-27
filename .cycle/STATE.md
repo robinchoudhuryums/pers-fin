@@ -25,8 +25,10 @@ implement and reflect sessions only set Phase.)
     F51 "Paycheck landed" re-reads 24 h behind its watermark with a notification_log tag dedupe; F3 the
     Plaid verifier's miss cache, lookup cap, one lookup per kid, kid format and cheap checks first.
   - **Verified:** npm test 2626/2626 (13 new); contract 264/264 (2 new); Playwright 72/72; mutation 10/10.
-  - **Docs NOT yet synced** — the block's DOCUMENTATION UPDATES NEEDED list is pending `/sync-docs`.
-  - **Where I left off:** Batch 4 committed and pushed. Next: `/sync-docs`, then `/broad-implement Batch 5`.
+  - **Docs synced** (/sync-docs, 2026-10-27): CLAUDE.md (webhook-verify.js + payday-alerts.js entries,
+    the anomaly watermark and Payday alerts notes, last_anomaly_check_at, INV-137 / 142, test counts,
+    Known Open Issues + Batch 4 follow-ons) and README.
+  - **Where I left off:** Batch 4 committed, pushed and documented. Next: `/broad-implement Batch 5`.
 - **Batch 3 (DONE):** block `.cycle/blocks/8-batch3-broad-implement.md`.
   - **Shipped (Batch 3 — detection / rename / restore):** F41 a new rename rule takes rows other rules
     renamed and re-keys only fully vacated keys; F46 prior_amount / amount_changed kept until a later
