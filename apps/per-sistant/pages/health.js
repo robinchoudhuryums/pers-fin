@@ -14,7 +14,7 @@ ${navBar("/health")}
   <p class="subtitle">Daily habits, streaks, and measurements.</p>
 
   <div class="actions">
-    <button class="primary" id="btn-add-habit">+ Add Habit</button>
+    <button class="primary" id="btn-add-habit">+ Add habit</button>
   </div>
 
   <div class="top-cards" id="health-cards"></div>

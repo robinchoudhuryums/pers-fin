@@ -11,8 +11,8 @@ ${navBar("/analytics")}
   <p class="subtitle">Productivity insights and trends.</p>
 
   <div class="filters" id="period-filters">
-    <button data-period="week" class="active">This Week</button>
-    <button data-period="month">This Month</button>
+    <button data-period="week" class="active">This week</button>
+    <button data-period="month">This month</button>
     <button data-period="quarter">Quarter</button>
     <button data-period="year">Year</button>
   </div>

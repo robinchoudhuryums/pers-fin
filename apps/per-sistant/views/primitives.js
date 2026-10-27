@@ -79,6 +79,43 @@ module.exports = `
     '</div>';
   }
 
+  // Design D6 (decision 12): the one empty-state block — a title, one line and
+  // the next step as a button (Perfin's emptyState, same options):
+  //   emptyState({ title, text, action: { label, href } | { label, click }, compact })
+  // Everything is escaped. An href is a same-app path only ("/x", never "//host"
+  // or "javascript:"), joined with BASE_PATH; { click: <button id> } presses the
+  // page's existing button, so an empty state never adds a new write path.
+  function escHtml(v) {
+    return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+  function emptyState(opts) {
+    opts = opts || {};
+    var html = '<div class="empty-state' + (opts.compact ? ' compact' : '') + '">';
+    if (opts.title) html += '<div class="empty-state-title">' + escHtml(opts.title) + '</div>';
+    if (opts.text) html += '<div class="empty-state-text">' + escHtml(opts.text) + '</div>';
+    var a = opts.action;
+    if (a && a.label) {
+      var href = typeof a.href === 'string' ? a.href : '';
+      if (href.charAt(0) === '/' && href.charAt(1) !== '/' && href.indexOf(String.fromCharCode(92)) < 0) {
+        var base = (typeof window !== 'undefined' && window.BASE_PATH) || '';
+        html += '<div class="empty-state-action"><a class="btn primary" href="' + escHtml(base + href) + '">' + escHtml(a.label) + '</a></div>';
+      } else if (a.click) {
+        html += '<div class="empty-state-action"><button type="button" class="btn primary" data-empty-click="' + escHtml(a.click) + '">' + escHtml(a.label) + '</button></div>';
+      }
+    }
+    return html + '</div>';
+  }
+  // The delegated handler for { click } actions.
+  function emptyStateClick(e) {
+    var t = e && e.target && e.target.closest ? e.target.closest('[data-empty-click]') : null;
+    if (!t) return false;
+    var target = document.getElementById(t.getAttribute('data-empty-click'));
+    if (!target) return false;
+    target.click();
+    return true;
+  }
+
   // Auto-upgrade: any .card[data-spark] gets a sparkline appended after .value.
   // Format: data-spark="1,3,2,5,4" — comma-separated numbers (nulls allowed).
   // Optional data-spark-color="var(--good)" for non-default tint.
@@ -100,12 +137,16 @@ module.exports = `
   }
 
   document.addEventListener('DOMContentLoaded', upgradeCards);
+  document.addEventListener('click', emptyStateClick);
 
   window.PsPrimitives = {
     sparkline: sparkline,
     scoreDial: scoreDial,
     rubricBar: rubricBar,
     upgradeCards: upgradeCards,
+    emptyState: emptyState,
+    emptyStateClick: emptyStateClick,
   };
+  window.emptyState = emptyState;
 })();
 `;

@@ -18,7 +18,14 @@
      page background, but anything that floats OVER content needs full
      opacity or the content bleeds through and the text is unreadable. */
   --surface-solid: #151a26;
-  --radius: 12px;
+  /* Design D6 (decision 9): the values both apps share, from design/tokens.json —
+     tests/design-tokens.test.js fails when one drifts from the spec. The status
+     colours are --green / --yellow / --red / --blue above (and in the light theme). */
+  --fs-xs: 12px; --fs-sm: 13px; --fs-base: 14px; --fs-md: 16px; --fs-lg: 20px; --fs-xl: 28px;
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 24px; --space-6: 32px;
+  --radius-card: 12px; --radius-control: 8px; --radius-pill: 999px;
+  --btn-h-sm: 32px; --btn-h: 40px; --btn-h-touch: 44px;
+  --radius: var(--radius-card);
   /* IF-4: tokens the views use that were never defined (no fallback, so the
      Settle Up cards lost their background/border and the feedback textarea
      was invisible). Aliases of the base palette. */
@@ -208,9 +215,9 @@ a:hover { color: var(--text); }
 @keyframes panelSlideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
 
 /* Ensure interactive controls hit the 44x44 CSS-px touch target on mobile */
-button, .btn, .btn-sm, select, input[type="checkbox"].toggle, .toggle, a.btn, input[type="submit"] { min-height: 40px; }
+button, .btn, .btn-sm, select, input[type="checkbox"].toggle, .toggle, a.btn, input[type="submit"] { min-height: var(--btn-h); }
 @media (max-width: 640px) {
-  button, .btn, select, input[type="submit"] { min-height: 44px; }
+  button, .btn, select, input[type="submit"] { min-height: var(--btn-h-touch); }
 }
 
 /* Headings */
@@ -344,7 +351,7 @@ tr:hover { background: var(--surface); }
 
 /* Buttons */
 .btn { padding: 8px 16px; font-size: 12px; font-weight: 500; letter-spacing: 0.5px;
-  border: 1px solid var(--border); border-radius: 8px; cursor: pointer; background: transparent;
+  border: 1px solid var(--border); border-radius: var(--radius-control); cursor: pointer; background: transparent;
   color: var(--text-muted); transition: all 0.2s; font-family: inherit; }
 .btn:hover:not(:disabled) { border-color: var(--warm); color: var(--text); }
 .btn.primary { border-color: var(--warm); background: var(--warm); color: var(--on-warm); }

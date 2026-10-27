@@ -11,13 +11,13 @@ ${navBar("/notes")}
   <p class="subtitle">Quick notes and reminders.</p>
 
   <div class="actions">
-    <button class="btn primary" id="new-note-btn">+ New Note</button>
+    <button class="btn primary" id="new-note-btn">+ New note</button>
     <button class="btn" id="note-select-toggle">Select</button>
   </div>
   <div id="note-bulk-bar" style="display:none;padding:10px 16px;margin-bottom:12px;background:var(--paper-2);border:1px solid var(--line);border-radius:var(--radius);align-items:center;gap:8px;font-size:13px;">
     <span id="note-bulk-count">0 selected</span>
     <button class="btn danger" data-e2e-skip id="note-bulk-del-btn">Delete</button>
-    <button class="btn" id="note-select-all-btn" style="margin-left:auto;">Select All</button>
+    <button class="btn" id="note-select-all-btn" style="margin-left:auto;">Select all</button>
   </div>
 
   <div class="notes-grid" id="notes-grid"></div>
@@ -63,7 +63,7 @@ ${navBar("/notes")}
       </label>
     </div>
     <div style="margin-top:12px;">
-      <label>Tags <button class="btn" id="suggest-tags-btn" style="float:right;">AI Suggest</button></label>
+      <label>Tags <button class="btn" id="suggest-tags-btn" style="float:right;">AI suggest</button></label>
       <div id="n-tags-list" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;"></div>
       <div style="display:flex;gap:8px;">
         <input type="text" id="n-tag-input" placeholder="Add tag..." style="flex:1">
@@ -131,7 +131,7 @@ async function suggestTags() {
 
 async function load() {
   var notes = await fetch('/api/notes').then(r=>r.json());
-  if (!notes.length) { document.getElementById('notes-grid').innerHTML = '<div class="empty-msg" style="grid-column:1/-1">No notes yet. Create your first note!</div>'; return; }
+  if (!notes.length) { document.getElementById('notes-grid').innerHTML = '<div style="grid-column:1/-1">' + emptyState({ title: 'No notes yet', text: 'Notes can be pinned, tagged, written in Markdown and kept private.', action: { label: '+ New note', click: 'new-note-btn' } }) + '</div>'; return; }
   document.getElementById('notes-grid').innerHTML = notes.map(n => {
     var borderStyle = n.pinned ? 'border-left-color:'+(colorMap[n.color]||'var(--accent)') : (n.color!=='default'?'border-left:2px solid '+colorMap[n.color]:'');
     // F134: a secret note's text stays hidden in the list until it's opened.

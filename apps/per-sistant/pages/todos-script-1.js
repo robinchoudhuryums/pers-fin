@@ -58,7 +58,12 @@ async function load() {
   if (curPriority) q.push('priority='+curPriority);
   if (curCategory) q.push('category='+curCategory);
   var todos = await fetch('/api/todos'+(q.length?'?'+q.join('&'):'')).then(r=>r.json());
-  if (!todos.length) { document.getElementById('todo-list').innerHTML = '<div class="empty-msg">No tasks found</div>'; return; }
+  if (!todos.length) {
+    document.getElementById('todo-list').innerHTML = emptyState(q.length
+      ? { title: 'No tasks match these filters', text: 'Change a filter above, or add a task.', action: { label: '+ New task', click: 'add-task-btn' } }
+      : { title: 'No tasks yet', text: 'Add one here, or type it in Quick add.', action: { label: '+ New task', click: 'add-task-btn' } });
+    return;
+  }
 
   // Fetch subtasks and dependencies for all todos
   var subtaskMap = {}, depMap = {};

@@ -55,7 +55,7 @@ async function load() {
     loadVaultStatus();
   }
   if ('Notification' in window && Notification.permission === 'granted') {
-    document.getElementById('notif-btn').textContent = 'Notifications Enabled';
+    document.getElementById('notif-btn').textContent = 'Notifications enabled';
     document.getElementById('notif-btn').disabled = true;
   }
 
@@ -161,7 +161,7 @@ async function enableNotifications() {
   if (!('Notification' in window)) return alert('Browser does not support notifications');
   var perm = await Notification.requestPermission();
   if (perm === 'granted') {
-    document.getElementById('notif-btn').textContent = 'Notifications Enabled';
+    document.getElementById('notif-btn').textContent = 'Notifications enabled';
     document.getElementById('notif-btn').disabled = true;
     new Notification('Per-sistant', { body: 'Notifications enabled! You will be notified about reminders and overdue tasks.' });
   }

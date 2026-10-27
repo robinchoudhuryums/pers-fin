@@ -12,9 +12,9 @@ ${navBar("/todos")}
   <p class="subtitle">Short, medium, and long-term task management.</p>
 
   <div class="actions">
-    <button class="btn primary" id="add-task-btn">+ New Task</button>
-    <button class="btn" id="quick-add-btn">Quick Add</button>
-    <button class="btn" id="template-btn">From Template</button>
+    <button class="btn primary" id="add-task-btn">+ New task</button>
+    <button class="btn" id="quick-add-btn">Quick add</button>
+    <button class="btn" id="template-btn">From template</button>
     <button class="btn" id="select-toggle">Select</button>
   </div>
   <div id="bulk-bar" class="section" style="display:none;padding:10px 14px;margin-bottom:14px;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;">
@@ -24,7 +24,7 @@ ${navBar("/todos")}
     <select id="bulk-priority">
       <option value="">Set Priority...</option><option value="urgent">Urgent</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option>
     </select>
-    <button class="btn" id="select-all-btn" style="margin-left:auto;">Select All</button>
+    <button class="btn" id="select-all-btn" style="margin-left:auto;">Select all</button>
   </div>
 
   <div class="filter-bar" style="display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap;align-items:center;">
@@ -108,7 +108,7 @@ ${navBar("/todos")}
       </div>
     </div>
     <div id="subtasks-section" style="display:none;margin-top:14px;">
-      <label>Subtasks <button class="btn" id="ai-breakdown-btn" style="float:right;">AI Breakdown</button></label>
+      <label>Subtasks <button class="btn" id="ai-breakdown-btn" style="float:right;">AI breakdown</button></label>
       <div id="subtask-list-edit"></div>
       <div style="display:flex;gap:8px;margin-top:8px;">
         <input type="text" id="new-subtask" placeholder="Add subtask…" style="flex:1">
@@ -141,7 +141,7 @@ ${navBar("/todos")}
     <div class="modal-actions">
       <button class="btn" id="cancel-modal-btn">Cancel</button>
       <button class="btn primary" id="save-todo-btn">Save</button>
-      <button class="btn" id="save-template-btn" style="display:none;">Save as Template</button>
+      <button class="btn" id="save-template-btn" style="display:none;">Save as template</button>
       <button class="btn danger" data-e2e-skip id="delete-btn" style="display:none">Delete</button>
     </div>
   </div>

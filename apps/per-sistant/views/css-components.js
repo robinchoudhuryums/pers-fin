@@ -41,10 +41,13 @@ module.exports = `
 }
 
 /* ----- Buttons ----- */
+/* Design D6 (decision 10): buttons are sentence case in the UI font — the
+   monospace caps stay on labels (.section h2, card labels), not actions.
+   .primary is filled with the accent, .danger outlined red, the rest outlined. */
 .btn, .actions button, .actions .btn {
-  padding: 7px 14px; font-family: var(--mono); font-size: 10px;
-  font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase;
-  border: 1px solid var(--line); border-radius: 2px; cursor: pointer;
+  padding: 6px 14px; font-family: var(--ui); font-size: var(--fs-sm);
+  font-weight: 500; line-height: 1.2; min-height: var(--btn-h-sm);
+  border: 1px solid var(--line); border-radius: var(--radius-control); cursor: pointer;
   background: transparent; color: var(--ink);
   transition: background 0.15s, border-color 0.15s;
   text-decoration: none; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
@@ -63,6 +66,9 @@ module.exports = `
 .btn:disabled, .actions button:disabled { opacity: 0.35; cursor: not-allowed; }
 
 .actions { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
+@media (max-width: 640px) {
+  .btn, .actions button, .actions .btn { min-height: var(--btn-h-touch); }
+}
 
 /* ----- Forms ----- */
 input[type="text"], input[type="url"], input[type="email"], input[type="number"],
@@ -70,8 +76,8 @@ input[type="password"], input[type="search"], input[type="tel"],
 input[type="date"], input[type="datetime-local"], input[type="time"],
 select, textarea {
   background: var(--paper-card); border: 1px solid var(--line);
-  padding: 7px 10px; border-radius: 2px;
-  font-family: var(--ui); font-size: 13px; color: var(--ink);
+  padding: 7px 10px; border-radius: var(--radius-control);
+  font-family: var(--ui); font-size: var(--fs-sm); color: var(--ink);
   outline: none; transition: border-color 0.15s;
 }
 input:focus, select:focus, textarea:focus {
@@ -176,13 +182,13 @@ a.linked-chip:hover { background: color-mix(in oklch, var(--accent) 10%, transpa
 .filters {
   display: flex; gap: 4px; margin-bottom: 18px; flex-wrap: wrap;
   background: var(--paper-card); border: 1px solid var(--line);
-  border-radius: 2px; padding: 3px; width: fit-content;
+  border-radius: var(--radius-control); padding: 3px; width: fit-content;
 }
 .filters button {
-  padding: 5px 12px; font-family: var(--mono); font-size: 10px;
-  font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 5px 12px; font-family: var(--ui); font-size: var(--fs-xs);
+  font-weight: 500;
   border: none; background: transparent; color: var(--muted);
-  cursor: pointer; border-radius: 2px;
+  cursor: pointer; border-radius: calc(var(--radius-control) - 2px);
 }
 .filters button:hover { color: var(--ink); }
 .filters button.active { background: var(--ink); color: var(--paper); }
@@ -231,6 +237,14 @@ a.linked-chip:hover { background: color-mix(in oklch, var(--accent) 10%, transpa
   text-align: center; padding: 40px; color: var(--muted);
   font-size: 13px; font-style: italic;
 }
+/* Design D6 (decision 12): PsPrimitives.emptyState — a title, one line, and the
+   next step as a button. */
+.empty-state { text-align: center; padding: var(--space-5) var(--space-4); }
+.empty-state-title { font-family: var(--display); font-size: var(--fs-base); font-weight: 500; color: var(--ink); }
+.empty-state-text { font-size: var(--fs-sm); color: var(--muted); margin-top: var(--space-1); }
+.empty-state-action { margin-top: var(--space-3); }
+.empty-state.compact { padding: var(--space-2) 0; text-align: left; }
+.empty-state.compact .empty-state-action { margin-top: var(--space-2); }
 
 /* Pull-to-refresh indicator (standalone PWA only — see views/js.js) */
 #ptr-indicator { position: fixed; top: calc(10px + env(safe-area-inset-top));

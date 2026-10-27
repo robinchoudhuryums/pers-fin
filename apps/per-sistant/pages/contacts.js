@@ -11,7 +11,7 @@ ${navBar("/contacts")}
   <p class="subtitle">Manage your email contacts for quick lookup.</p>
 
   <div class="actions">
-    <button class="primary" id="btn-add-contact">+ Add Contact</button>
+    <button class="primary" id="btn-add-contact">+ Add contact</button>
     <button id="btn-import-csv">Import CSV</button>
     <input type="file" id="csv-file" accept=".csv" style="display:none">
   </div>
@@ -41,7 +41,7 @@ ${navBar("/contacts")}
 <script${nonceAttr()}>
 async function load() {
   var contacts = await fetch('/api/contacts').then(r=>r.json());
-  if (!contacts.length) { document.getElementById('contact-list').innerHTML = '<div class="empty-msg">No contacts yet. Add contacts to use quick email addressing.</div>'; return; }
+  if (!contacts.length) { document.getElementById('contact-list').innerHTML = emptyState({ title: 'No contacts yet', text: 'Add one to address an email by name.', action: { label: '+ Add contact', click: 'btn-add-contact' } }); return; }
   document.getElementById('contact-list').innerHTML = '<table><thead><tr><th>Name</th><th>Email</th><th>Actions</th></tr></thead><tbody>' +
     contacts.map(c => '<tr><td>'+esc(c.name)+'</td><td>'+esc(c.email)+'</td><td><div class="todo-actions"><button data-action="editContact" data-id="'+c.id+'">&#9998;</button><button class="delete" data-action="deleteContact" data-id="'+c.id+'">&#10005;</button></div></td></tr>').join('') +
     '</tbody></table>';

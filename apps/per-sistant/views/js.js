@@ -134,7 +134,7 @@ function renderSearchResults(results,opts){
     var actions='';
     if(opts.actions&&id>0){
       if(r.type==='todo'&&!r.completed)actions='<button data-action="search-complete" data-id="'+id+'" data-recurring="'+!!r.recurring+'" class="btn">Complete</button>';
-      else if(r.type==='email'&&r.status==='scheduled')actions='<button data-action="search-send" data-id="'+id+'" class="btn primary">Send Now</button>';
+      else if(r.type==='email'&&r.status==='scheduled')actions='<button data-action="search-send" data-id="'+id+'" class="btn primary">Send now</button>';
       else if(r.type==='note')actions='<button data-action="search-pin" data-id="'+id+'" data-pinned="'+!!r.pinned+'" class="btn">'+(r.pinned?'Unpin':'Pin')+'</button>';
       if(actions)actions='<div style="display:flex;gap:6px;margin-top:6px;">'+actions+'</div>';
     }

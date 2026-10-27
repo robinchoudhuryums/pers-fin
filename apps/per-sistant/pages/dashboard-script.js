@@ -229,7 +229,7 @@ async function load() {
   const emails = await fetch('/api/emails?status=scheduled').then(r=>r.json());
   document.getElementById('scheduled-emails').innerHTML = emails.length
     ? emails.slice(0,5).map(e => '<div class="todo-item" style="display:flex;align-items:center;gap:10px;"><button data-action="dash-send-email" data-id="'+e.id+'" title="Send now" class="btn primary">Send</button><div class="todo-content" style="flex:1;"><div class="todo-title">'+esc(e.subject)+'</div><div class="todo-meta"><span>To: '+esc(e.recipient_name||e.recipient_email)+'</span><span>'+new Date(e.scheduled_at).toLocaleString()+'</span></div></div></div>').join('')
-    : '<div class="empty-msg">No scheduled emails</div>';
+    : emptyState({ title: 'No scheduled emails', text: 'Write one and choose when it goes out.', action: { label: '+ Compose', href: '/emails' } });
 
   try {
     var perfin = await fetch('/api/perfin/stats').then(r=>r.json());
@@ -498,7 +498,7 @@ function showMiniCalEvents(day) {
   }
 
   if (!dayEvents.length) {
-    eventsEl.innerHTML = '<div style="font-size:11px;color:var(--muted);padding:4px 0;font-style:italic;">No events on this day</div>';
+    eventsEl.innerHTML = emptyState({ compact: true, title: 'Nothing on this day', text: 'Tasks due, emails scheduled and note reminders show here.', action: { label: '+ New task', href: '/todos' } });
     return;
   }
   eventsEl.innerHTML = dayEvents.slice(0, 5).map(function(ev) {

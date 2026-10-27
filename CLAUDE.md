@@ -996,6 +996,8 @@ shell/
 ```
 
 **Other key files:**
+- `design/tokens.json` — the shared design values both apps declare (design pass D6, decision 9 —
+  see Shared design tokens under UI & UX; `tests/design-tokens.test.js` checks both stylesheets)
 - `plaid/server.js` — Legacy Plaid server (still functional)
 - `scripts/detect-subscriptions.js` — Recurring subscription detection (30/60/90/365-day cadences)
 - `scripts/detect-transfers.js` — Recurring transfer detection (7/14/30/60/90/365-day cadences,
@@ -1080,9 +1082,19 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2466 tests as of latest); use
+  Perfin and Per-sistant test files (2545 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2466 tests across 130 test files (incl.
+  Current count: 2545 tests across 132 test files (incl.
+  `tests/design-tokens.test.js` — design pass D6 (decision 9): `design/tokens.json` against both
+  apps' CSS — every shared value (status colours per theme, type scale, spacing, radius, button
+  heights) declared with the spec's value under each app's own name and in the right scope
+  (Perfin :root / [data-theme="light"], Per-sistant :root / body[data-mode="dark"] + the legacy
+  html[data-theme="dark"] body), the app-specific names present but never compared, no palette
+  setting its own status colour, both apps' card radius the shared one and the buttons on the
+  height / radius tokens — with `apps/per-sistant/tests/design-d6.test.js` (Per-sistant's
+  `emptyState` run in a vm from the emitted primitives bundle — escaping, BASE_PATH, a same-app
+  path only, the delegated click — each listed empty state's next step and its button on the
+  page, no uppercase / monospace button rule, the filled primary, and a Title Case label scan);
   `tests/design-d5.test.js` — design pass D5: the seven Settings groups in order with each
   section in its group, every pre-D5 id still on the page once, every `/settings#…` anchor the
   code links to present, buildSettingsIndex run in a vm (every titled group in the index and the
@@ -3301,6 +3313,17 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   gold is the brand (logo, active nav, primary buttons, focus), never money. Use the
   two classes in `perfin-shared.css`, not inline colours. The Calendar shows a bill
   as a neutral chip.
+- **Shared design tokens (design pass D6, decision 9)**: `design/tokens.json` is the spec for
+  what both apps share — the status colours (ok / warn / danger / info, dark and light), the type
+  scale (12 / 13 / 14 / 16 / 20 / 28), spacing (4 / 8 / 12 / 16 / 24 / 32), radius (card 12,
+  control 8, pill 999) and button heights (32 / 40 desktop, 44 on a phone). Each app declares them
+  in its own CSS under its own names (Perfin `perfin-shared.css`: `--green` / `--yellow` / `--red`
+  / `--blue`, `--fs-*`, `--space-*`, `--radius-card|control|pill`, `--btn-h-sm|-h|-touch`;
+  Per-sistant `views/css.js`: `--status-ok|warn|danger|info` and the same other names) and
+  `tests/design-tokens.test.js` fails on drift. Accent, surfaces and fonts are `app_specific` —
+  Perfin keeps teal / gold glass, Per-sistant its palettes and paper. Change a shared value in the
+  spec AND both apps. Per-sistant's status colours are now the same in every palette (`--good` /
+  `--warn` resolve on `body` from them) and its cards are 12px-rounded like Perfin's.
 - **Buttons (design pass D2)**: sentence case everywhere (no `text-transform:
   uppercase` on `.btn` / `.btn-sm` / `.actions button`; labels written "Sync
   transactions", not "Sync Transactions" — `tests/design-d2.test.js` scans for
@@ -3881,7 +3904,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2466 tests passing across 130 test files (Perfin 1801 + Per-sistant 665), plus the real-Postgres route contract suite (253 tests; CI `migrations` job, `npm run test:contract`) and 71 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2545 tests passing across 132 test files (Perfin 1862 + Per-sistant 683), plus the real-Postgres route contract suite (253 tests; CI `migrations` job, `npm run test:contract`) and 71 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -6747,7 +6770,9 @@ Platform, Shell & Auth:
 Web UI (Perfin):
   teller/pages/*.js, teller/views/*.ejs, teller/views/partials/*.ejs,
   teller/public/*.js, teller/public/*.css, teller/public/sw.js,
-  shell/views/*.ejs, shell/public/*
+  shell/views/*.ejs, shell/public/*, design/tokens.json
+  (design/tokens.json = the shared design values, also declared by Per-sistant's
+   views/css.js — a seam with Per-sistant Web UI, checked by tests/design-tokens.test.js)
 Sheets & External Export:
   scripts/sheets-sync.js, scripts/retention-cleanup.sql, apps-script/Code.gs,
   teller/services/csv-export.js, teller/services/zip-store.js

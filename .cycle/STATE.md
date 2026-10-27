@@ -12,13 +12,26 @@ to the "none in progress" state.
 Cycle: 7
 Phase: implement
 Scope: broad (Oct 2026 broad scan — all non-frozen subsystems + cycle-6 policy responses)
-Updated: 2026-10-26
+Updated: 2026-10-27
 
 (Machine-read fields for the v1.43.0 commands: the next /broad-scan,
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Design & UX pass — D5 DONE** (2026-10-26, branch `claude/sweet-ritchie-f9d8ah`,
+- **Status:** **Design & UX pass — D6 DONE** (2026-10-27, branch `claude/sweet-ritchie-f9d8ah`,
+  PR robinchoudhuryums/pers-fin#133). Plan: `.cycle/plan-design-ux.md`. Block:
+  `.cycle/blocks/7-design-d6-broad-implement.md`.
+  - **Shipped:**
+    - `design/tokens.json` (status colours, type scale, spacing, radius, button heights) declared by both apps — Per-sistant's status colours unified across palettes, its cards 12px-rounded;
+    - Per-sistant buttons in sentence case and the UI font (36 labels rewritten), primary filled, danger outlined;
+    - Per-sistant `emptyState` (views/primitives.js) on the dashboard Scheduled Emails + calendar day and the To-Dos / Notes / Contacts / Job Radar lists.
+  - **Verified:**
+    - npm test 2545/2545 (79 new: tests/design-tokens + Per-sistant design-d6);
+    - Playwright 71/71;
+    - mutation checks 16/16;
+    - screenshots of both apps.
+  - **Where I left off:** D6 committed and pushed. Next: `/broad-implement D7` (the last design batch — landing status lines, Tax drawer link, docs incl. INV-148).
+- **Previous status (D5):** **Design & UX pass — D5 DONE** (2026-10-26, branch `claude/sweet-ritchie-f9d8ah`,
   PR robinchoudhuryums/pers-fin#133). Plan: `.cycle/plan-design-ux.md`. Block:
   `.cycle/blocks/7-design-d5-broad-implement.md`.
   - **Shipped:**

@@ -89,9 +89,9 @@ ${navBar("/")}
         </div>
         <div class="filters" id="dash-task-filters">
           <button class="active" data-view="all">All</button>
-          <button data-view="category">By Category</button>
-          <button data-view="urgency">By Urgency</button>
-          <button data-view="due">Due Soon</button>
+          <button data-view="category">By category</button>
+          <button data-view="urgency">By urgency</button>
+          <button data-view="due">Due soon</button>
         </div>
         <div id="dash-tasks" style="margin-top:12px;"></div>
       </div>

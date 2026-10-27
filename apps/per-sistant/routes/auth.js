@@ -267,7 +267,7 @@ ${themeScript()}
     <p>Enter your password to continue</p>
     <form id="login-form">
       <input type="password" id="pw" placeholder="Password" autofocus required>
-      <button type="submit">Sign In</button>
+      <button type="submit">Sign in</button>
     </form>
     <div id="error" class="error-msg"></div>
     `}

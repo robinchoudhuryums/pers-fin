@@ -157,9 +157,8 @@ const NAV_CHROME_CSS = `
 .appbar .ui-controls { display: flex; align-items: center; gap: 10px; }
 .mode-toggle {
   background: transparent; border: 1px solid var(--line); cursor: pointer;
-  padding: 5px 10px; border-radius: 2px; color: var(--muted);
-  font-family: var(--mono); font-size: 10px; font-weight: 500;
-  letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 5px 10px; border-radius: var(--radius-control); color: var(--muted);
+  font-family: var(--ui); font-size: var(--fs-xs); font-weight: 500;
 }
 .mode-toggle:hover { background: var(--paper-2); color: var(--ink); }
 
@@ -170,10 +169,9 @@ const NAV_CHROME_CSS = `
 /* Cross-app link in the appbar — mirror the mode toggle's chrome */
 .appbar .cross-app-link {
   display: inline-flex; align-items: center; gap: 6px;
-  padding: 5px 10px; border: 1px solid var(--line); border-radius: 2px;
+  padding: 5px 10px; border: 1px solid var(--line); border-radius: var(--radius-control);
   color: var(--muted); text-decoration: none;
-  font-family: var(--mono); font-size: 10px; font-weight: 500;
-  letter-spacing: 0.1em; text-transform: uppercase;
+  font-family: var(--ui); font-size: var(--fs-xs); font-weight: 500;
 }
 .appbar .cross-app-link:hover { background: var(--paper-2); color: var(--ink); }
 .appbar .cross-app-link .icon { display: inline-flex; }
@@ -186,10 +184,9 @@ const NAV_CHROME_CSS = `
    shared #ask-ps-popover wired in views/js.js (available on every page). */
 .appbar .ask-ps-btn {
   display: inline-flex; align-items: center; gap: 6px;
-  padding: 5px 10px; border: 1px solid var(--line); border-radius: 2px;
+  padding: 5px 10px; border: 1px solid var(--line); border-radius: var(--radius-control);
   background: transparent; color: var(--muted); cursor: pointer;
-  font-family: var(--mono); font-size: 10px; font-weight: 500;
-  letter-spacing: 0.1em; text-transform: uppercase;
+  font-family: var(--ui); font-size: var(--fs-xs); font-weight: 500;
 }
 .appbar .ask-ps-btn:hover { background: var(--paper-2); color: var(--ink); }
 .appbar .ask-ps-btn .icon { display: inline-flex; }

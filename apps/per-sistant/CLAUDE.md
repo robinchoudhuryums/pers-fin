@@ -39,7 +39,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
   or a total over the cap, is never sent around: Send Now answers 400 with the reason
   BEFORE claiming (the email stays unsent), and the scheduler marks the claimed row
   `failed` with it.
-- **Tests**: `tests/` (node:test runner, `npm test`, 665 tests (api + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11/batch12/batch13/batch16/batch17/batch20 + roadmap-t1-batchc + roadmap-t2-3-cap-c1/c2/c3/c4 + roadmap-t2-4-x1a/x1b/x3a/x3b + seams-audit-3 + design-d1 + model-upgrade))
+- **Tests**: `tests/` (node:test runner, `npm test`, 683 tests (api + cycle-fixes + knowledge + health + jobs + scan-sept-fixes/batch5/batch6/batch8/batch9/batch11/batch14 + batch15-followons + scan-oct-batch11/batch12/batch13/batch16/batch17/batch20 + roadmap-t1-batchc + roadmap-t2-3-cap-c1/c2/c3/c4 + roadmap-t2-4-x1a/x1b/x3a/x3b + seams-audit-3 + design-d1 + design-d6 + model-upgrade))
 - **Deployment**: `Dockerfile`, `fly.toml` (Fly.io), `render.yaml` (Render)
 
 ## Current State (as of June 2026)
@@ -274,6 +274,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 - `db/029_vault_parse_version.sql` — `user_settings.vault_parse_version` (cycle-7 ST4): the `VAULT_PARSE_VERSION` (services/vault-sync.js) a successful FULL vault sync last ran under. **Bump `VAULT_PARSE_VERSION` whenever frontmatter parsing or sync semantics change** — Perfin's Settings → Sync Health → Operator Checks then asks for one full reindex (read-only through the wired pool) until a full sync stamps the new value
 - `db/030_linked_tasks.sql` — linked tasks (roadmap T2.4 X1a): `todos.source_app`, `source_key` ('<app>:<kind>:<id>', UNIQUE where not null — trashed rows included, so a deleted linked task isn't recreated until the 30-day purge), `source_url` (a same-app path), `source_snapshot` (what the sync last wrote), `auto_closed` (closed by the sync — only such a task reopens) and `source_detached`, set by the `trg_todos_detach_linked` trigger whenever a linked task's `completed` changes WITHOUT `auto_closed` changing in the same UPDATE — i.e. by hand, through any route — after which the sync never touches it
 - `services/linked-tasks.js` — the ONE writer of linked tasks (roadmap T2.4): `syncLinkedTasks(pool, { app, kinds, desired })` reconciles an app's open tasks of the listed kinds to the desired set — creates a missing key (category finance, short horizon, `announceTodoEvent('todo_created')`), closes an open task whose key left the set (`auto_closed`, announced `todo_completed`), reopens an auto-closed one whose key came back — never a detached or trashed task, and only kinds the caller lists (list only sources read successfully this run). X1b: an open, attached task's title / description / due date / priority are refreshed only while each still equals `source_snapshot` (edits win per field); the snapshot and `source_url` always follow the source, and an unchanged task isn't written (`updated` counts the rest). `ensureLinkedTask(pool, { app, task })` creates a one-off event task once. Keys, titles (≤300), descriptions (≤2000), urls (same-app path), due dates and priorities are checked; a bad item is skipped but its well-formed key still counts as desired. Nothing calls it yet (Perfin wires it in X2)
+- `tests/design-d6.test.js` — design pass D6 pins (18, `.cycle/plan-design-ux.md` decisions 10 / 12): `emptyState` run in a vm from the emitted primitives bundle (escaping, BASE_PATH, a same-app path only, the delegated click, compact), each listed empty state's next step and its button on the page, no uppercase / monospace button rule, the filled primary and outlined danger, and the Title Case label scan. The shared token values are the root `tests/design-tokens.test.js`
 - `tests/design-d1.test.js` — design pass D1 pins (7, `.cycle/plan-design-ux.md`): every sidebar entry has an icon (Job Radar had none), the stat tiles coloured by value (run in a vm), two tiles per row at ≤480px, the legacy attachment copy only after `runMigrations` (the router factory makes no query)
 - `tests/roadmap-t2-4-x1b.test.js` — roadmap T2.4 X1b pins (8): the per-field refresh over the shared fake pool (`tests/_linked-tasks-fake.js`), `linkedTaskChip` run in a vm from the emitted bundle (base joined, escaping, unsafe urls / bases as text, new tab for an http(s) base), pageHead's `LINKED_APP_BASES`, the chip wiring and bundles parsing
 - `tests/roadmap-t2-4-x1a.test.js` — roadmap T2.4 X1a pins (16): the sync over a fake pool (create once + announce, re-run no-op, close / reopen, detached and trashed rows left alone, only listed kinds closed, bad keys / fields refused without closing), ensureLinkedTask, db/030 idempotent. The database-backed half is the root `tests/contract/linked-tasks.contract.test.js`
@@ -313,7 +314,7 @@ Companion app to **Perfin** (personal finance tracker) — same design system, c
 # Install & run locally
 npm install && node server.js
 
-# Run tests (665 tests)
+# Run tests (683 tests)
 npm test
 
 # Pages
@@ -966,12 +967,28 @@ and signal handlers are owned by the shell when embedded.
   price they were charged at.
 
 ## Design System (shared with Perfin)
-- Font: Inter (300/400/500/600/700)
-- Dark theme: `#080b12` bg, `#f0ebe3` text, warm palette (`#d4a574`, `#c8856c`)
-- Light theme: `#f5f2ed` bg, `#1a1a2e` text
-- Accent colors: warm, teal, green, red, yellow, blue
-- Glassmorphism cards with backdrop-filter blur
-- Radial gradient ambient lighting effects
+- Warm paper (`views/css.js`): six palettes (`body[data-palette]` copper / indigo / forest /
+  slate / plum / mono) and a dark mode (`body[data-mode="dark"]`); fonts Inter Tight (display),
+  Inter (UI) and IBM Plex Mono (numbers and small labels only). These are Per-sistant's own
+  (`app_specific` in the root `design/tokens.json`).
+- **Shared values** (design pass D6, decision 9) come from the root `design/tokens.json` and are
+  declared in `views/css.js`: `--status-ok|warn|danger|info` (light on `:root`, dark on
+  `body[data-mode="dark"]` and the legacy `html[data-theme="dark"] body`), `--fs-xs … --fs-xl`
+  (12–28px), `--space-1 … --space-6` (4–32px), `--radius-card|control|pill` (12 / 8 / 999) and
+  `--btn-h-sm|-h|-touch` (32 / 40 / 44). `--good` / `--warn` (danger) resolve on `body` from the
+  status colours, so they are the same in every palette; `--radius` is the card radius. The root
+  `tests/design-tokens.test.js` compares them with Perfin's `perfin-shared.css` and fails on drift —
+  change a shared value in the spec and both apps.
+- **Buttons** (decision 10): sentence case in the UI font (labels written "Send now", not "Send
+  Now" — `tests/design-d6.test.js` scans for Title Case); `.btn` / `.actions button` are outlined,
+  32px high (44 at ≤640px), `.primary` filled with the accent, `.danger` outlined red; the filter
+  tabs and the sidebar / appbar chrome buttons follow. The monospace caps stay on labels
+  (`.section h2`, card labels, table headers, badges).
+- **Empty states** (decision 12): `emptyState({ title, text, action: { label, href } | { label,
+  click }, compact })` — `views/primitives.js`, global and on `PsPrimitives` — escaped, an href a
+  same-app path joined with `BASE_PATH`, a `click` the id of the page's existing button (one
+  delegated handler presses it, so no new write path). Used by the dashboard Scheduled Emails and
+  calendar day, the To-Dos, Notes and Contacts lists and Job Radar's top matches / status lists.
 
 ## Companion App
 - **Perfin**: Personal finance tracker (separate repo: `pers-fin`)

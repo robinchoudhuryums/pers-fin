@@ -148,7 +148,7 @@ ${navBar("/settings")}
     <h2>Browser Notifications</h2>
     <p style="font-size:12px;color:var(--muted);margin-bottom:12px;">Get notified about reminders and overdue tasks.</p>
     <div class="actions" style="margin-bottom:0;">
-      <button class="btn" id="notif-btn">Enable Notifications</button>
+      <button class="btn" id="notif-btn">Enable notifications</button>
     </div>
   </div>
 
@@ -168,10 +168,10 @@ ${navBar("/settings")}
   <div class="section">
     <h2>Data Export</h2>
     <div class="actions" style="margin-bottom:0;">
-      <button class="btn" data-export="todos">Export Todos</button>
-      <button class="btn" data-export="emails">Export Emails</button>
-      <button class="btn" data-export="notes">Export Notes</button>
-      <button class="btn" data-export="contacts">Export Contacts</button>
+      <button class="btn" data-export="todos">Export todos</button>
+      <button class="btn" data-export="emails">Export emails</button>
+      <button class="btn" data-export="notes">Export notes</button>
+      <button class="btn" data-export="contacts">Export contacts</button>
     </div>
   </div>
 
@@ -180,8 +180,8 @@ ${navBar("/settings")}
     <p style="font-size:12px;color:var(--muted);margin-bottom:8px;">Deleted items are kept for 30 days before permanent removal.</p>
     <div id="trash-list" style="margin-bottom:10px;"></div>
     <div class="actions" style="margin-bottom:0;">
-      <button class="btn" id="view-trash-btn">View Trash</button>
-      <button class="btn danger" data-e2e-skip id="empty-trash-btn">Empty Trash</button>
+      <button class="btn" id="view-trash-btn">View trash</button>
+      <button class="btn danger" data-e2e-skip id="empty-trash-btn">Empty trash</button>
     </div>
   </div>
 
@@ -189,14 +189,14 @@ ${navBar("/settings")}
     <h2>Automations</h2>
     <p style="font-size:12px;color:var(--muted);margin-bottom:12px;">Create rules that trigger actions automatically when events occur.</p>
     <div id="automations-list" style="margin-bottom:12px;"></div>
-    <button class="btn primary" id="new-auto-btn">+ New Rule</button>
+    <button class="btn primary" id="new-auto-btn">+ New rule</button>
   </div>
 
   <div class="section">
     <h2>Webhooks</h2>
     <p style="font-size:12px;color:var(--muted);margin-bottom:12px;">Configure external webhook endpoints to receive event notifications.</p>
     <div id="webhooks-list" style="margin-bottom:12px;"></div>
-    <button class="btn primary" id="new-webhook-btn">+ New Webhook</button>
+    <button class="btn primary" id="new-webhook-btn">+ New webhook</button>
   </div>
 
   <div class="section">
@@ -251,7 +251,7 @@ ${navBar("/settings")}
     </div>
   </div>
 
-  ${(AUTH_SECRET || req.app.get("embedded")) ? '<div class="section"><h2>Session</h2><div class="actions" style="margin-bottom:0;"><button class="btn danger" data-e2e-skip id="logout-btn">Log Out</button></div></div>' : ''}
+  ${(AUTH_SECRET || req.app.get("embedded")) ? '<div class="section"><h2>Session</h2><div class="actions" style="margin-bottom:0;"><button class="btn danger" data-e2e-skip id="logout-btn">Log out</button></div></div>' : ''}
 </div>
 
 <!-- Automation Modal -->

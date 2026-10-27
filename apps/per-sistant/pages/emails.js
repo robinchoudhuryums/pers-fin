@@ -12,14 +12,14 @@ ${navBar("/emails")}
 
   <div class="actions">
     <button class="btn primary" id="compose-btn">+ Compose</button>
-    <button class="btn" id="quick-send-btn">Quick Send</button>
+    <button class="btn" id="quick-send-btn">Quick send</button>
     <button class="btn" id="templates-btn">Templates</button>
     <button class="btn" id="email-select-toggle">Select</button>
   </div>
   <div id="email-bulk-bar" style="display:none;padding:10px 16px;margin-bottom:12px;background:var(--paper-2);border:1px solid var(--line);border-radius:var(--radius);align-items:center;gap:8px;font-size:13px;">
     <span id="email-bulk-count">0 selected</span>
     <button class="btn danger" data-e2e-skip id="email-bulk-del-btn">Delete</button>
-    <button class="btn" id="email-select-all-btn" style="margin-left:auto;">Select All</button>
+    <button class="btn" id="email-select-all-btn" style="margin-left:auto;">Select all</button>
   </div>
 
   <div class="filters" id="email-filters">
@@ -46,7 +46,7 @@ ${navBar("/emails")}
     <input type="email" id="e-email" placeholder="email@example.com">
     <label>Subject</label>
     <input type="text" id="e-subject" placeholder="Subject line">
-    <label>Body <button class="btn" id="ai-draft-btn" style="float:right;">AI Draft</button></label>
+    <label>Body <button class="btn" id="ai-draft-btn" style="float:right;">AI draft</button></label>
     <textarea id="e-body" style="min-height:160px" placeholder="Write your email..."></textarea>
     <div id="tone-buttons" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center;">
       <span class="mono-label" style="padding:5px 0;">Adjust tone</span>
@@ -60,9 +60,9 @@ ${navBar("/emails")}
     <input type="datetime-local" id="e-schedule">
     <div class="modal-actions">
       <button class="btn" id="close-compose-btn">Cancel</button>
-      <button class="btn primary" id="save-email-btn">Save Draft</button>
+      <button class="btn primary" id="save-email-btn">Save draft</button>
       <button class="btn" id="schedule-btn" style="color:var(--warn);border-color:var(--warn);">Schedule</button>
-      <button class="btn" id="send-now-btn" style="color:var(--good);border-color:var(--good);">Send Now</button>
+      <button class="btn" id="send-now-btn" style="color:var(--good);border-color:var(--good);">Send now</button>
       <button class="btn danger" data-e2e-skip id="e-delete-btn" style="display:none">Delete</button>
     </div>
   </div>
@@ -85,8 +85,8 @@ ${navBar("/emails")}
     </div>
     <div class="modal-actions">
       <button class="btn" id="close-quick-btn">Cancel</button>
-      <button class="btn primary" id="parse-quick-btn">Parse & Preview</button>
-      <button class="btn primary" id="q-confirm" style="display:none">Confirm & Schedule</button>
+      <button class="btn primary" id="parse-quick-btn">Parse & preview</button>
+      <button class="btn primary" id="q-confirm" style="display:none">Confirm & schedule</button>
     </div>
   </div>
 </div>
@@ -290,7 +290,7 @@ async function openTemplates() {
   if (templates.length) {
     html += templates.map(t => '<div class="todo-item" style="cursor:pointer" role="button" tabindex="0" aria-label="'+escAttr('Use template: '+t.name)+'" data-action="use-tpl" data-id="'+t.id+'"><div class="todo-content"><div class="todo-title">'+esc(t.name)+'</div><div class="todo-meta"><span>'+esc(t.subject)+'</span></div></div><div class="todo-actions"><button data-action="delete-tpl" data-id="'+t.id+'" aria-label="'+escAttr('Delete template: '+t.name)+'">&#10005;</button></div></div>').join('');
   } else { html += '<div class="empty-msg">No templates yet</div>'; }
-  html += '<div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--line);"><h2>Save Current as Template</h2><input type="text" id="tpl-name" placeholder="Template name" style="width:100%;margin-bottom:8px;"><button class="btn primary" data-action="save-tpl">Save Template</button></div>';
+  html += '<div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--line);"><h2>Save Current as Template</h2><input type="text" id="tpl-name" placeholder="Template name" style="width:100%;margin-bottom:8px;"><button class="btn primary" data-action="save-tpl">Save template</button></div>';
   var overlay = document.createElement('div'); overlay.className = 'modal-overlay active'; overlay.id = 'tpl-modal';
   overlay.innerHTML = '<div class="modal">'+html+'<div class="modal-actions"><button class="btn" data-action="close-tpl">Close</button></div></div>';
   document.body.appendChild(overlay);

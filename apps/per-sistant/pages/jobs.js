@@ -22,7 +22,7 @@ ${navBar("/jobs")}
   </div>
 
   <div id="jr-views" role="group" aria-label="Which listings to show" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:14px;">
-    <button data-view="radar" aria-pressed="true">Radar</button>
+    <button data-view="radar" id="jr-view-radar" aria-pressed="true">Radar</button>
     <button data-view="saved" aria-pressed="false">Saved</button>
     <button data-view="applied" aria-pressed="false">Applied</button>
     <button data-view="dismissed" aria-pressed="false">Dismissed</button>
@@ -172,8 +172,8 @@ async function loadRadar(){
     {label:'Scanned', value: counts.scanned||0, cls:'teal'}
   ].map(function(c){return '<div class="card"><div class="label">'+c.label+'</div><div class="value '+c.cls+'">'+c.value+'</div></div>';}).join('');
   var main = data.main||[], verify = data.verify_first||[];
-  document.getElementById('jr-main').innerHTML = main.length ? main.map(card).join('') : '<p class="subtitle">No top matches yet. Set your profile and Refresh.</p>';
-  document.getElementById('jr-verify').innerHTML = verify.length ? verify.map(card).join('') : '<p class="subtitle">Nothing to verify.</p>';
+  document.getElementById('jr-main').innerHTML = main.length ? main.map(card).join('') : emptyState({ title: 'No top matches yet', text: 'Set your profile, then refresh to score new listings.', action: { label: 'Edit profile', click: 'btn-profile' } });
+  document.getElementById('jr-verify').innerHTML = verify.length ? verify.map(card).join('') : emptyState({ compact: true, title: 'Nothing to verify' });
 }
 
 var VIEW_TITLES = { saved: 'Saved', applied: 'Applied', dismissed: 'Dismissed' };
@@ -184,7 +184,7 @@ async function loadList(status){
   if(!r.ok){ showError('Could not load '+(VIEW_TITLES[status]||status).toLowerCase()+' listings'+(data.error?(': '+data.error):'.')); document.getElementById('jr-list').innerHTML=''; return; }
   showError('');
   var rows = data.listings || [];
-  document.getElementById('jr-list').innerHTML = rows.length ? rows.map(card).join('') : '<p class="subtitle">Nothing here.</p>';
+  document.getElementById('jr-list').innerHTML = rows.length ? rows.map(card).join('') : emptyState({ title: 'No ' + (VIEW_TITLES[status] || status).toLowerCase() + ' listings', text: 'Listings you mark on the radar appear here.', action: { label: 'Back to the radar', click: 'jr-view-radar' } });
 }
 
 async function load(){
