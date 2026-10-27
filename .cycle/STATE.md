@@ -18,7 +18,22 @@ Updated: 2026-10-27
 /targeted-audit or /audit increments Cycle to 7 in its CYCLE OPEN step;
 implement and reflect sessions only set Phase.)
 
-- **Status:** **Design & UX pass — D6 DONE** (2026-10-27, branch `claude/sweet-ritchie-f9d8ah`,
+- **Status:** **Design & UX pass — D7 DONE; the pass is complete (D1–D7)** (2026-10-27, branch `claude/sweet-ritchie-f9d8ah`,
+  PR robinchoudhuryums/pers-fin#133). Plan: `.cycle/plan-design-ux.md`. Block:
+  `.cycle/blocks/7-design-d7-broad-implement.md`.
+  - **Shipped:**
+    - the landing page's status lines (`shell/landing-status.js`): Perfin's from its own `gatherDashboardSummary` (a new `parts` option — rent / bills / uncategorized only), Per-sistant's from a new `taskDueCounts`; in-process, 1.5s per line, a failed or slow line left out;
+    - the phone drawer's Tax link, January to April (never on the desktop nav);
+    - the Activity page's Filters toggle in one row with "+ Add cash transaction" at the touch height;
+    - docs: the landing / drawer / Filters notes, INV-148 (tokens parity + the money / `fmt` rule), INV-147's landing clause, the pass's follow-ons in Known Open Issues.
+  - **Verified:**
+    - npm test 2561/2561 (16 new: tests/design-d7);
+    - contract 253/253;
+    - Playwright 72/72 (1 new: the landing lines on the seeded run);
+    - mutation checks 9/9;
+    - the final screenshot set, both apps, desktop + phone.
+  - **Where I left off:** D7 committed and pushed — the design & UX plan is complete. No next batch is planned; the follow-ons are in CLAUDE.md → Known Open Issues.
+- **Previous status (D6):** **Design & UX pass — D6 DONE** (2026-10-27, branch `claude/sweet-ritchie-f9d8ah`,
   PR robinchoudhuryums/pers-fin#133). Plan: `.cycle/plan-design-ux.md`. Block:
   `.cycle/blocks/7-design-d6-broad-implement.md`.
   - **Shipped:**
@@ -30,7 +45,7 @@ implement and reflect sessions only set Phase.)
     - Playwright 71/71;
     - mutation checks 16/16;
     - screenshots of both apps.
-  - **Where I left off:** D6 committed and pushed. Next: `/broad-implement D7` (the last design batch — landing status lines, Tax drawer link, docs incl. INV-148).
+  - **Where I left off:** D6 committed and pushed. Next: `/broad-implement D7`.
 - **Previous status (D5):** **Design & UX pass — D5 DONE** (2026-10-26, branch `claude/sweet-ritchie-f9d8ah`,
   PR robinchoudhuryums/pers-fin#133). Plan: `.cycle/plan-design-ux.md`. Block:
   `.cycle/blocks/7-design-d5-broad-implement.md`.

@@ -197,6 +197,15 @@ test.describe("every page loads cleanly", () => {
     expect(problems, problems.join("\n")).toEqual([]);
   });
 
+  test("the landing tiles carry their status lines (design D7)", async ({ page }) => {
+    const problems = watch(page);
+    await page.goto("/");
+    // The seeded ledger owes rent; the line comes from the dashboard summary.
+    await expect(page.locator('a.tile[href="/perfin"] .tile-status')).toContainText(/\$[\d,]+\.\d\d owed to /);
+    await expect(page.locator('a.tile[href="/per-sistant"] .tile-status')).toBeVisible();
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
   test("on a phone the first screen is the summary; the pyramid starts collapsed and opens (design D4)", async ({ page }) => {
     const problems = watch(page);
     await page.setViewportSize({ width: 390, height: 844 });

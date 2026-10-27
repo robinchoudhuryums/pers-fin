@@ -17,6 +17,8 @@
       <a href="<%= __basePath %>/goals"<%= activePage === 'goals' ? ' class="active"' : '' %>>Goals</a>
       <a href="<%= __basePath %>/budgets"<%= activePage === 'budgets' ? ' class="active"' : '' %>>Budgets</a>
       <a href="<%= __basePath %>/housing"<%= activePage === 'housing' ? ' class="active"' : '' %>>Rent</a>
+      <%# Design D7 (decision 14): January to April only (taxSeason, shown by the script below), and only in the phone drawer — the desktop top nav has no Tax link. %>
+      <a href="<%= __basePath %>/tax" id="nav-tax-link" class="nav-tax-link<%= activePage === 'tax' ? ' active' : '' %>" hidden>Tax</a>
       <a href="<%= __basePath %>/accounts"<%= activePage === 'accounts' ? ' class="active"' : '' %>>Accounts</a>
       <a href="<%= __basePath %>/settings"<%= activePage === 'settings' ? ' class="active"' : '' %>>Settings</a>
     </div>
@@ -119,6 +121,14 @@
       if (typeof window.apiFetch === 'function') return fn();
       document.addEventListener('DOMContentLoaded', fn, { once: true });
     }
+
+    // Design D7: the drawer's Tax link, January to April (taxSeason — the rule the
+    // dashboard's tax-season link and the Tax page's default year use).
+    whenShared(function() {
+      var link = document.getElementById('nav-tax-link');
+      var ts = link && window.taxSeason && window.localTodayStr ? window.taxSeason(window.localTodayStr()) : null;
+      if (ts && ts.season) link.hidden = false;
+    });
 
     // Populate the "Last synced Xm ago" badge from /api/settings.last_auto_sync_at.
     // Purely informational — no action; graceful no-op if the API call fails.

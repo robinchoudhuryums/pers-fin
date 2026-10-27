@@ -103,25 +103,36 @@ function spendingFrom(rows, month) {
   };
 }
 
+// opts.parts (design D7 — the landing page's status line) limits the gather to
+// the named parts (net_worth, spending, cash, bills, rent, uncategorized,
+// sync_health): the others aren't read and their fields are left out. Without
+// it every part is read, as the dashboard needs.
+const PARTS = ["net_worth", "spending", "cash", "bills", "rent", "uncategorized", "sync_health"];
+
 async function gatherDashboardSummary(db = pool, opts = {}) {
   const deps = Object.assign(defaultDeps(), opts.deps || {});
   const today = opts.today || deps.todayStr();
   const month = today.slice(0, 7);
+  const want = (k) => !opts.parts || opts.parts.includes(k);
+  const SKIPPED = { ok: false, skipped: true };
+  const read = (k, fn) => (want(k) ? attempt(k, fn) : Promise.resolve(SKIPPED));
 
   const [nw, spend, cash, bills, rent, uncat, health] = await Promise.all([
-    attempt("net_worth", () => readNetWorth(db, month + "-01")),
-    attempt("spending", () => deps.getBudgetStatus(db, month)),
-    attempt("cash", () => deps.getCashFlowForecast(db, { days: CASH_DAYS, today })),
-    attempt("bills", () => deps.getBillsDue(db, { today, days: BILLS_DAYS })),
-    attempt("rent", () => deps.getHousingOwed(db)),
-    attempt("uncategorized", () => deps.countUncategorized(db)),
-    attempt("sync_health", () => deps.gatherDataHealth(db, { persistentPool: opts.persistentPool || null })),
+    read("net_worth", () => readNetWorth(db, month + "-01")),
+    read("spending", () => deps.getBudgetStatus(db, month)),
+    read("cash", () => deps.getCashFlowForecast(db, { days: CASH_DAYS, today })),
+    read("bills", () => deps.getBillsDue(db, { today, days: BILLS_DAYS })),
+    read("rent", () => deps.getHousingOwed(db)),
+    read("uncategorized", () => deps.countUncategorized(db)),
+    read("sync_health", () => deps.gatherDataHealth(db, { persistentPool: opts.persistentPool || null })),
   ]);
 
   const out = { today, month };
-  out.net_worth = nw.ok ? Object.assign({ ok: true }, nw.value) : { ok: false, error: ERRORS.net_worth };
-  out.spending = spend.ok ? Object.assign({ ok: true }, spendingFrom(spend.value || [], month)) : { ok: false, error: ERRORS.spending };
-  if (cash.ok) {
+  if (!nw.skipped) out.net_worth = nw.ok ? Object.assign({ ok: true }, nw.value) : { ok: false, error: ERRORS.net_worth };
+  if (!spend.skipped) out.spending = spend.ok ? Object.assign({ ok: true }, spendingFrom(spend.value || [], month)) : { ok: false, error: ERRORS.spending };
+  if (cash.skipped) {
+    // not asked for
+  } else if (cash.ok) {
     const f = cash.value || {};
     out.cash = {
       ok: true,
@@ -137,20 +148,28 @@ async function gatherDashboardSummary(db = pool, opts = {}) {
   // Needs attention, in the order the card lists them.
   const items = [];
   const errors = [];
-  if (!rent.ok) errors.push({ source: "rent", error: ERRORS.rent });
+  if (rent.skipped) {
+    // not asked for
+  } else if (!rent.ok) errors.push({ source: "rent", error: ERRORS.rent });
   else if (rent.value && rent.value.configured && rent.value.balance > 0) {
     items.push({ kind: "rent", text: "Owed to " + rent.value.payee, amount: rent.value.balance, count: rent.value.unpaid_count, href: "/housing" });
   }
-  if (!bills.ok) errors.push({ source: "bills", error: ERRORS.bills });
+  if (bills.skipped) {
+    // not asked for
+  } else if (!bills.ok) errors.push({ source: "bills", error: ERRORS.bills });
   else if (bills.value && bills.value.length) {
     const total = cents(bills.value.reduce((s, b) => s + (Number(b.amount) || 0), 0));
     items.push({ kind: "bills", text: plural(bills.value.length, "bill", "bills") + " due in the next " + BILLS_DAYS + " days", amount: total, count: bills.value.length, href: "/calendar" });
   }
-  if (!uncat.ok) errors.push({ source: "uncategorized", error: ERRORS.uncategorized });
+  if (uncat.skipped) {
+    // not asked for
+  } else if (!uncat.ok) errors.push({ source: "uncategorized", error: ERRORS.uncategorized });
   else if (uncat.value > 0) {
     items.push({ kind: "uncategorized", text: plural(uncat.value, "transaction", "transactions") + " to categorize", count: uncat.value, href: "/dashboard#review-queue-section" });
   }
-  if (!health.ok) errors.push({ source: "sync_health", error: ERRORS.sync_health });
+  if (health.skipped) {
+    // not asked for
+  } else if (!health.ok) errors.push({ source: "sync_health", error: ERRORS.sync_health });
   else {
     const warnings = ((health.value && health.value.issues) || []).filter((i) => i.severity === "warning");
     if (warnings.length) {
@@ -178,3 +197,4 @@ module.exports.spendingFrom = spendingFrom;
 module.exports.ERRORS = ERRORS;
 module.exports.BILLS_DAYS = BILLS_DAYS;
 module.exports.CASH_DAYS = CASH_DAYS;
+module.exports.PARTS = PARTS;

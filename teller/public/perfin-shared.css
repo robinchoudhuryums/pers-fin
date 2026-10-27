@@ -151,6 +151,8 @@ a:hover { color: var(--text); }
 .topnav .nav-links a { color: var(--text-muted); }
 .topnav .nav-links a:hover { color: var(--text); }
 .topnav .nav-links a.active { color: var(--warm); }
+/* Design D7: the in-season Tax link lives in the phone drawer only. */
+@media (min-width: 641px) { .topnav .nav-links .nav-tax-link { display: none; } }
 .topnav .nav-sync-badge { font-size: 11px; color: var(--text-muted); opacity: 0.75;
   padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; white-space: nowrap; }
 .topnav .nav-sync-badge:empty { display: none; }

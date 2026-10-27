@@ -383,6 +383,9 @@ GET    /api/settings        # Get settings
 PATCH  /api/settings        # Update settings (including dashboard_layout; ai_monthly_budget_cents
                             #   integer 1–10000 or null → env / $1.00, 400 otherwise — T2.3 C4)
 GET    /api/stats           # Dashboard statistics
+                            # (routes/settings.js also exports taskDueCounts(pool, today) → { due_today,
+                            #   overdue } — open tasks due today vs before today; the shell landing page's
+                            #   Per-sistant line, design D7)
 
 # Automations API
 GET    /api/automations            # List automation rules

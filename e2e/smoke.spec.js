@@ -58,6 +58,9 @@ test.describe("authenticated", () => {
   test("landing tile picker is still reachable at /", async ({ page }) => {
     await page.goto("/");
     await expect(page.locator('a.tile[href="/per-sistant"]')).toBeVisible();
+    // Design D7: each tile carries a status line read when the page is served.
+    await expect(page.locator('a.tile[href="/perfin"] .tile-status')).toBeVisible();
+    await expect(page.locator('a.tile[href="/per-sistant"] .tile-status')).toBeVisible();
   });
 
   test("Per-sistant todos page renders", async ({ page }) => {

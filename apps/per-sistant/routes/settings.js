@@ -173,3 +173,19 @@ module.exports = function ({ pool, config }) {
 
   return router;
 };
+
+// Open tasks due today and overdue (due before today), as of `today` — an
+// APP_TIMEZONE 'YYYY-MM-DD' (design D7: the shell landing page's Per-sistant
+// line). Trashed tasks are left out, like /api/stats. Note /api/stats' own
+// "overdue" counts a task due today too; this splits the two.
+async function taskDueCounts(pool, today = todayStr()) {
+  const r = await pool.query(
+    "SELECT count(*) FILTER (WHERE due_date = $1::date)::int AS due_today, " +
+    "count(*) FILTER (WHERE due_date < $1::date)::int AS overdue " +
+    "FROM todos WHERE deleted_at IS NULL AND NOT completed",
+    [today],
+  );
+  const row = r.rows[0] || {};
+  return { due_today: Number(row.due_today) || 0, overdue: Number(row.overdue) || 0 };
+}
+module.exports.taskDueCounts = taskDueCounts;

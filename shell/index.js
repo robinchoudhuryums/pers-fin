@@ -30,6 +30,7 @@ const path = require("path");
 const auth = require("./middleware/auth");
 const webauthn = require("./middleware/webauthn");
 const errorHandler = require("./middleware/error-handler");
+const { landingStatus } = require("./landing-status");
 const { startKeepAlive } = require("../teller/services/keep-alive");
 const errorLog = require("../teller/services/error-log");
 const uptime = require("../teller/services/uptime");
@@ -254,7 +255,16 @@ app.use(apiKeyLimiter);
 app.use(auth.requireAuth);
 
 // --- Landing tile picker ----------------------------------------------------
-app.get("/", (_req, res) => res.render("landing"));
+// Each tile carries one status line (design D7) read in-process from the wired
+// pools — landingStatus never throws, and a slow or failed line is left out.
+app.get("/", async (_req, res, next) => {
+  try {
+    const status = await landingStatus({ perfinPool: perfin.pool, persistentPool: persistent.pool });
+    res.render("landing", { status });
+  } catch (err) {
+    next(err);
+  }
+});
 
 // --- Sub-app mounts ---------------------------------------------------------
 // We then call start({ standalone: false }) so migrations and cron jobs

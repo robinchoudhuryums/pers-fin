@@ -950,9 +950,17 @@ shell/
     error-handler.js           — Last middleware (PSC-4): status + short
                                  message, 5xx logged, never a stack trace
                                  (malformed pre-auth JSON → 400 JSON)
+  landing-status.js            — The landing tiles' status lines (design D7):
+                                 landingStatus({ perfinPool, persistentPool })
+                                 → { perfin, persistent } — Perfin's line from
+                                 gatherDashboardSummary (parts rent / bills /
+                                 uncategorized), Per-sistant's from taskDueCounts,
+                                 in-process, each with a 1.5s budget (null when it
+                                 fails or runs over); never throws
   views/
     login.ejs                  — PIN form + biometric button (feature-detected)
-    landing.ejs                — Post-login tile picker
+    landing.ejs                — Tile picker (the home-screen app's start page), one
+                                 status line per tile (design D7)
   public/
     landing.css                — Shell-only styles
     manifest.json              — Unified PWA manifest (mask-crop PNG icons,
@@ -1082,9 +1090,18 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2545 tests as of latest); use
+  Perfin and Per-sistant test files (2561 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2545 tests across 132 test files (incl.
+  Current count: 2561 tests across 133 test files (incl.
+  `tests/design-d7.test.js` — design pass D7 (decisions 13 / 14): `landingStatus` over injected
+  readers (both lines, each fail-soft on a sync or async throw, a slow read cut off at its budget
+  while the other line shows, nothing when both fail, no read without a pool; the Perfin line from
+  gatherDashboardSummary with parts rent / bills / uncategorized only), the summary's `parts` option
+  (only the named readers called, the rest left out; every part without it), Per-sistant's
+  `taskDueCounts` SQL, landing.ejs rendered with and without lines (escaped) and the shell route
+  behind the gate, the drawer's Tax link run in a vm with the real `taxSeason` (January–April only,
+  never on the desktop nav), the Activity Filters toggle's row and touch height, transactions.ejs
+  rendered through EJS;
   `tests/design-tokens.test.js` — design pass D6 (decision 9): `design/tokens.json` against both
   apps' CSS — every shared value (status colours per theme, type scale, spacing, radius, button
   heights) declared with the spec's value under each app's own name and in the right scope
@@ -2016,8 +2033,8 @@ shell/
   fake @anthropic-ai/sdk: /api/ask + runCategorize charge their usage rows,
   429 once the cap is hit, ask charges accumulated tokens AND still charges
   on a mid-loop failure — F1).
-- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink — empty since roadmap T1.5 Batch C fixed the Review page's review-summary 500), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). Since cycle-7 Batch 20 (G2) the run is SEEDED (`e2e/seed.js`, in the spec's beforeAll — through the apps' own routes: housing config + generated obligations, a manual account + manual expense, a generic CSV with a refund row and a split, a rollover budget, a goal, a subscription, a credit score, one transaction deleted through the route, a Plaid-free tax year — a paycheck and a pharmacy charge on a CSV account and a 1099-NEC on the checklist, T3.3 K4; Per-sistant notes in each privacy tier, a habit with logs, a todo with subtasks; one Job Radar listing and one linked task inserted directly, since no route creates either), a `console.error` fails a page (the browser's "Failed to load resource" line is left to the response check), and a CLICK SWEEP per page presses every visible, enabled `button / [role=button|checkbox|tab] / summary` counted on load (≤80) that isn't `data-e2e-skip` or labelled destructive (delete / remove / unlink / send / empty / sign out / log out / reset / purge / disconnect / archive / trash / revoke / cancel subscription / mark settled), dismissing dialogs and returning to the page between presses; a failure names the control pressed, and `SWEEP_KNOWN_GAPS` must only shrink. Mark a new destructive, off-app (an external SDK) or device-permission control (microphone) `data-e2e-skip`. 71 tests (24 of them sweeps, ~230 controls pressed — plus the linked-task chip on the To-Dos page and in its edit modal, T2.4 X1b, the unified search: Perfin's nav link to /per-sistant/search, a seeded Perfin transaction found there and its link opening Activity filtered, T2.4 X3b, and undelete: the seeded deletion listed in Settings → Sync Health → Deleted transactions and brought back by Restore, and a toast's Undo button, T2.5 U2, the top nav one row at the same size on five Perfin pages and no attachments-migration error after a fresh boot, design D1, and the dashboard (design D3 / D4): the Summary card and Needs attention with the rent item opening the Rent page, and on a phone the summary on the first screen with the pyramid collapsed until opened (then kept open, its tabs a no-wrap scroll row), Settings (design D5): /settings#sync-health, #deleted-transactions (opened) and #recent-errors landing on their sections with Sync & Connections marked in the sticky index, and on a phone the Jump to select, and the Tax page: its sections for the seeded Plaid-free year,
-a form added through the page and marked received, and the ZIP download, T3.3 K4). The `migrations` job ALSO runs the route contract suite (`npm run test:contract`, step "Route contract tests against real Postgres", `CONTRACT_DATABASE_URL` = the same service container; the Postgres user must be able to CREATE/DROP DATABASE).
+- `.github/workflows/ci.yml` — CI pipeline: `npm ci` + `npm test`, PLUS a `migrations` job that runs both apps' auto-migrations twice against a real empty Postgres (pgvector/pgvector:pg16 service container, `scripts/ci-migration-test.js`) — catches non-idempotent/fresh-DB migration failures before deploy. Both pools honor `PGSSLMODE=disable` solely for this plaintext container. PLUS an `e2e` job: Playwright browser smokes (`npm run test:e2e`, e2e/) — real Chromium login flow (wrong+right PIN, post-login default), both apps' core pages, and the calendar-feed gate, against a scratch DB booted by `e2e/boot-server.js` — plus `e2e/pages.spec.js` (cycle-7 F137): every Perfin and Per-sistant page loaded in a real browser, failing on an uncaught page error or a non-501 5xx (logs in once and reuses the cookie so Per-sistant's limiter isn't tripped; a `KNOWN_GAPS` map tolerates filed gaps and must only shrink — empty since roadmap T1.5 Batch C fixed the Review page's review-summary 500), with targeted checks for the Rent page utility row (F87), account history (F88), the toast cap (F89), the nav badge + bell + logo (F90/F93) and the offline page (F92). Since cycle-7 Batch 20 (G2) the run is SEEDED (`e2e/seed.js`, in the spec's beforeAll — through the apps' own routes: housing config + generated obligations, a manual account + manual expense, a generic CSV with a refund row and a split, a rollover budget, a goal, a subscription, a credit score, one transaction deleted through the route, a Plaid-free tax year — a paycheck and a pharmacy charge on a CSV account and a 1099-NEC on the checklist, T3.3 K4; Per-sistant notes in each privacy tier, a habit with logs, a todo with subtasks; one Job Radar listing and one linked task inserted directly, since no route creates either), a `console.error` fails a page (the browser's "Failed to load resource" line is left to the response check), and a CLICK SWEEP per page presses every visible, enabled `button / [role=button|checkbox|tab] / summary` counted on load (≤80) that isn't `data-e2e-skip` or labelled destructive (delete / remove / unlink / send / empty / sign out / log out / reset / purge / disconnect / archive / trash / revoke / cancel subscription / mark settled), dismissing dialogs and returning to the page between presses; a failure names the control pressed, and `SWEEP_KNOWN_GAPS` must only shrink. Mark a new destructive, off-app (an external SDK) or device-permission control (microphone) `data-e2e-skip`. 72 tests (24 of them sweeps, ~230 controls pressed — plus the linked-task chip on the To-Dos page and in its edit modal, T2.4 X1b, the unified search: Perfin's nav link to /per-sistant/search, a seeded Perfin transaction found there and its link opening Activity filtered, T2.4 X3b, and undelete: the seeded deletion listed in Settings → Sync Health → Deleted transactions and brought back by Restore, and a toast's Undo button, T2.5 U2, the top nav one row at the same size on five Perfin pages and no attachments-migration error after a fresh boot, design D1, and the dashboard (design D3 / D4): the Summary card and Needs attention with the rent item opening the Rent page, and on a phone the summary on the first screen with the pyramid collapsed until opened (then kept open, its tabs a no-wrap scroll row), Settings (design D5): /settings#sync-health, #deleted-transactions (opened) and #recent-errors landing on their sections with Sync & Connections marked in the sticky index, and on a phone the Jump to select, and the Tax page: its sections for the seeded Plaid-free year,
+a form added through the page and marked received, and the ZIP download, T3.3 K4, and the landing page (design D7): each tile's status line, the Perfin one naming the seeded rent). The `migrations` job ALSO runs the route contract suite (`npm run test:contract`, step "Route contract tests against real Postgres", `CONTRACT_DATABASE_URL` = the same service container; the Postgres user must be able to CREATE/DROP DATABASE).
 - `.claude/commands/` — Project slash-command prompts, generated from the
   claude-workflow-tools templates (synced to v1.43.0 via `/sync-commands`):
   the cycle commands (`/broad-scan`, `/broad-implement`, `/targeted-audit`,
@@ -2422,7 +2439,8 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   Mark received, Dismiss, notes, Delete for a hand-added row, an Add form and "Suggest from my
   data"). Linked from Settings → Data & Exports ("Open the Tax page") and, from January to April
   only, from the top of the dashboard ("Tax season: your <year> tax package is ready to review");
-  the top nav has no link.
+  the top nav has no link — on a phone the hamburger drawer lists "Tax" after "Rent" from January
+  to April (design D7).
 - **Manual bills**: User-created expected charges for the bill calendar (name, amount,
   due_day 1-31, cadence monthly/quarterly/yearly, category). CRUD via
   `/api/manual-bills`. Integrated into `/api/bill-calendar` alongside detected
@@ -3210,6 +3228,17 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
 - **Login animation (standalone Perfin)**: Iron Man helmet materialize on
   successful login (gold-amber stroke-draw → fill → particle burst → HUD
   scan → redirect). Lives inline in `teller/views/login.ejs`.
+- **Landing page (unified shell, design pass D7, decision 13)**: `/` — the tile
+  picker the home-screen app opens on (the manifest's `start_url`; a PIN login
+  still lands in Per-sistant) — gives each tile one status line, read when the
+  page is served (`shell/landing-status.js`): Perfin "$X owed to <payee> · N
+  bills due this week · N to review" (or "Nothing needs attention") from
+  Perfin's own `gatherDashboardSummary` with just its rent / bills /
+  uncategorized parts (INV-147), Per-sistant "N tasks due today · N overdue"
+  (or "Nothing due today") from its `taskDueCounts`. In-process over the wired
+  pools (INV-25), read-only, behind the PIN gate; each line has a 1.5s budget,
+  and a failed or slow one leaves the tile with its description. It reads both
+  databases on every visit (an idle Neon wakes, as opening either app does).
 - **Tile-click + cross-app transition animations (unified shell)**: the
   same Iron Man materialize plays when entering Perfin from the landing
   tile or from Per-sistant's nav cross-app icon; a parallel cosmic mask-
@@ -3267,7 +3296,10 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
 - **Mobile navigation**: at ≤640px the 7-link top nav collapses behind a
   **hamburger** (drawer drops under a single-row bar; closes on link tap /
   outside click / Esc) and a fixed **bottom tab bar** surfaces the 5 primary
-  destinations (Home/Activity/Subs/Budgets/Settings) thumb-reachable. Both are
+  destinations (Home/Activity/Subs/Budgets/Settings) thumb-reachable. From
+  January to April (`taxSeason`) the drawer also lists **Tax** after Rent
+  (`#nav-tax-link`, shown by the nav script; never in the desktop top nav, and
+  the tab bar keeps five items — design D7, decision 14). Both are
   in `partials/nav.ejs` + `perfin-shared.css`; desktop is unchanged (both
   hidden). Body gets bottom padding and the toast stack lifts above the bar.
   Between 641 and 960px the top bar wraps and the links take their own
@@ -3285,7 +3317,8 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   `txn-compact` (perfin-shared.css): a two-line CSS-grid row (merchant +
   amount / date · category · actions, account hidden) at ~⅓ the height of a
   responsive-card, with the filter bar collapsed behind a "Filters" toggle on
-  mobile so the recent-transactions list sits at the top of the page (the
+  mobile — in one row with "+ Add cash transaction" at the same touch height
+  (`.txn-actions`, design D7) — so the recent-transactions list sits at the top of the page (the
   dashboard's Recent Transactions section was removed in favor of it). The
   four dashboard mini-table sections (and, since design D4, the pyramid — its h3 toggles
   it) are collapsible (h2 toggles, chevron,
@@ -3904,7 +3937,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2545 tests passing across 132 test files (Perfin 1862 + Per-sistant 683), plus the real-Postgres route contract suite (253 tests; CI `migrations` job, `npm run test:contract`) and 71 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2561 tests passing across 133 test files (Perfin 1878 + Per-sistant 683), plus the real-Postgres route contract suite (253 tests; CI `migrations` job, `npm run test:contract`) and 72 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -6336,6 +6369,30 @@ ST3), are done — cycle 7's planned work is complete; `/reflect` closes it):
   the Rent page has no "+ add item" UI, so a removed placeholder comes back only
   via `POST /api/housing/obligations`; `apps-script/Code.gs` keeps the pre-F32
   NOT_TRANSFER keyword list. Batch 5 follow-ons / later batches.
+- The design & UX pass is DONE (`.cycle/plan-design-ux.md`, D1–D7 — INV-147, INV-148). Its
+  follow-ons:
+  - inline-styled buttons that keep their own colours (the Rent page's "Record payment" / Scan /
+    Set, the dashboard's "+ Add bill" / "Save bill", the account cards' "Update balance" / "Mark
+    shared", the Accounts page's own `button` rule), so they don't follow the filled-primary /
+    outlined split; JS-built button labels aren't covered by the Title Case scans;
+  - colours still to decide: Settle Up's amounts teal / gold by party, the YoY card's green / red
+    arrows, the savings-rate gold level, the Rent & Utilities widget's gold / green balance (which
+    also repeats the summary's rent item);
+  - the sync strip repeats the summary's Sync Health warning; the stat-card row by Accounts
+    overlaps the Summary card; the net-worth card reads "Not yet" until the first snapshot;
+    getBillsDue counts a subscription marked paid early (as /api/forecast does);
+  - the Review widget gives no suggestion for a CSV row's Teller-style "food & dining" (a
+    mapCategoryFor gap);
+  - no test renders every Perfin view through EJS (the extraStyles octal trap is pinned per page);
+    the Settings index marks the deep-linked group only (no scroll-spy);
+  - Per-sistant: the filled primary's text on a light accent is ~3:1 (a per-palette `--on-accent`
+    would fix it); select options and modal titles stay in Title Case; empty states outside D6's
+    list (Review, Today, Analytics, Health, Knowledge facts, templates) keep their plain line;
+  - most font sizes and paddings in both apps are still literals on the token scale;
+  - the landing reads both databases on every visit, and a slow line is dropped rather than
+    filled in later; Per-sistant's `/api/stats` "overdue" still counts a task due today (the
+    landing's `taskDueCounts` splits them); the drawer's Tax link and the dashboard's tax-season
+    link follow the browser's date, not APP_TIMEZONE.
 - Roadmap T3.3 (the year-end tax package) is DONE (`.cycle/plan-t3-3-tax-package.md`,
   K1–K4 — INV-146). K1 shipped the investment side on the server: every Plaid investment transaction
   stored (investment_transactions, by the flow sync) and `services/tax-investments.js` —
@@ -6759,7 +6816,7 @@ Settings, Notifications & Cross-app:
    apps/per-sistant/routes/perfin.js + routes/webhooks.js — are audited
    together with this subsystem from both sides.)
 Platform, Shell & Auth:
-  shell/index.js, shell/middleware/auth.js, shell/middleware/webauthn.js,
+  shell/index.js, shell/landing-status.js, shell/middleware/auth.js, shell/middleware/webauthn.js,
   shell/middleware/error-handler.js,
   teller/server.js, teller/startup.js, teller/services/database.js,
   teller/services/keep-alive.js, teller/services/job-health.js,
@@ -6949,7 +7006,8 @@ INV-143 | Every Per-sistant model call goes through ai.js's capped wrappers (cap
 INV-144 | The unified search has ONE renderer — renderSearchResults (views/js.js) draws the dashboard widget and the /search page; a Perfin row (group 'finance') becomes a link only through linkedAppHref (a same-app path under Perfin's http(s) or root-relative base — never a javascript: / protocol-relative url), never carries an inline action, and a row of an unknown type is dropped; the finance rows come only from GET /api/search's read-only perfinPool queries (routes/finance-search.js — the escaped pattern, the user's share via Perfin's imported SPLIT_AMOUNT, each query fail-soft) and are absent standalone | Subsystem: Per-sistant Web UI / Settings, Notifications & Cross-app (seam) | Verify: apps/per-sistant/tests/roadmap-t2-4-x3a + x3b + tests/contract/finance-search + e2e/pages.spec.js
 INV-145 | Deleting a transaction is reversible and nothing brings it back unasked: the tombstone and the row's snapshot (with its splits) are written in the delete's own transaction; no provider sync, reconcile or CSV import (route or CLI) inserts a tombstoned id; restore removes the tombstone and reinserts the snapshot in one transaction — never a duplicate (ON CONFLICT DO NOTHING), and nothing changes when the account is gone; Plaid update mode — in-page or hosted — clears an item's re-auth flag only after Link reports the session finished (in-page: onSuccess; hosted: a link_sessions entry finished without an exit, read through linkTokenGet before anything is written) | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-5-u1.test.js + tests/roadmap-t2-5-u2.test.js + tests/roadmap-t2-5-h1.test.js + tests/contract/undelete-t2-5 + plaid-update
 INV-146 | The year-end tax package is computed on request from the ledger and never stored, and nothing in it is sent to an AI model: each figure has one definition shared with the screen or export that already shows it — deductions = getTaxDeductionReport (also behind /api/export/tax-report, whose CSV is taxReportCsv), income = getIncomeForYear on INCOME_PREDICATE / INCOME_AMOUNT, rent paid = getHousingPayments (also behind the landlord export, housingPaymentsCsv), investments = investment_transactions through getInvestmentTaxData; realized gains are FIFO over stored lots and labelled approximate — a sale not fully covered by known-cost lots has a NULL basis and gain, never 0; tax-advantaged accounts are kept out of gains and investment income; a suggested document the user received or dismissed is never changed or re-suggested (ON CONFLICT DO NOTHING); every section is fail-soft with a fixed sentence; every CSV text cell is formula-guarded; the Tax page's writes go through writeOk | Subsystem: Financial Analytics / Sheets & External Export / Web UI | Verify: tests/roadmap-t3-3-k1 / k2 / k3 / k4 + tests/contract/tax-investments / tax-documents / tax-package + e2e/pages.spec.js
-INV-147 | The dashboard summary has one definition per figure, each the helper its own screen uses — net worth = the latest net_worth_snapshots row (written only through getNetWorth); spending = getBudgetStatus (GET /api/budgets); lowest cash = getCashFlowForecast (GET /api/cash-flow); bills due = getBillsDue (the /api/forecast charges via forecastCharges + the bill calendar's manualBillOccurrences, less bill_payments); rent owed = getHousingOwed (the ledger's ledgerTotals, payee-scoped); uncategorized = countUncategorized (/api/categorize/status); Sync Health = gatherDataHealth (/api/data-health) — no figure is re-derived in routes/dashboard-summary.js; every part is fail-soft with a fixed sentence and the page still loads when the whole request fails; attention links are same-app paths joined with withBase | Subsystem: Financial Analytics / Web UI | Verify: tests/design-d3.test.js + tests/contract/dashboard-summary.contract.test.js + e2e/pages.spec.js
+INV-147 | The dashboard summary has one definition per figure, each the helper its own screen uses — net worth = the latest net_worth_snapshots row (written only through getNetWorth); spending = getBudgetStatus (GET /api/budgets); lowest cash = getCashFlowForecast (GET /api/cash-flow); bills due = getBillsDue (the /api/forecast charges via forecastCharges + the bill calendar's manualBillOccurrences, less bill_payments); rent owed = getHousingOwed (the ledger's ledgerTotals, payee-scoped); uncategorized = countUncategorized (/api/categorize/status); Sync Health = gatherDataHealth (/api/data-health) — no figure is re-derived in routes/dashboard-summary.js; every part is fail-soft with a fixed sentence and the page still loads when the whole request fails; attention links are same-app paths joined with withBase; the shell landing page's Perfin line reads the same gatherDashboardSummary in-process (its parts option — rent / bills / uncategorized only), never an HTTP self-fetch | Subsystem: Financial Analytics / Web UI | Verify: tests/design-d3.test.js + tests/design-d7.test.js + tests/contract/dashboard-summary.contract.test.js + e2e/pages.spec.js
+INV-148 | Shared design values have one spec, design/tokens.json (status colours per theme, type scale, spacing, radius, button heights): both apps declare every shared value with the spec's value under their own names (Perfin perfin-shared.css, Per-sistant views/css.js), app-specific values (accent, surfaces, fonts) are never compared, and the parity test fails on drift. Every Perfin amount goes through fmt (a negative is -$X, never $-X) and colour carries meaning: money in green (.amt-in), red (.amt-bad) only for something wrong (overdue, over budget, below $0, a debt that rose), a charge or a debt the default text colour, gold the brand accent only. Buttons are sentence case in both apps, .primary filled; an empty state offers its next step through the app's emptyState (a same-app path or the page's existing button — no new write path) | Subsystem: Web UI / Per-sistant Web UI | Verify: tests/design-tokens.test.js + tests/design-d1.test.js + tests/design-d2.test.js + apps/per-sistant/tests/design-d6.test.js
 INV-136 | WebAuthn credential ids are stored exactly as the authenticator reports them (registrationInfo.credential.id — already base64url in @simplewebauthn v11), never re-encoded; a double-encoded row from before seams audit #3 is rewritten (or, when its real id already exists, removed) by repairCredentialIds in the migration | Subsystem: Platform, Shell & Auth | Verify: tests/seams-audit-3.test.js + tests/contract/seams3.contract.test.js
 INV-74 | Per-sistant recurring todos keep their chain's anchor day (recurrence_anchor_day; monthly/yearly step on the month index with the day clamped — Jan 31 → Feb 28 → Mar 31); the midnight roll (rollMissedRecurring, APP_TIMEZONE cron) marks a missed instance missed=true with completed_at NULL — never counted as done by analytics or /api/stats | Subsystem: Per-sistant Backend | Verify: apps/per-sistant/tests/scan-sept-batch6.test.js (PD-2 / PB-10 blocks)
 

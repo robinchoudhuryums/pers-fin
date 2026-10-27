@@ -33,11 +33,17 @@
         <div class="tile-icon">$</div>
         <h2>Perfin</h2>
         <p>Personal finance, transactions, and AI insights.</p>
+<% if (typeof status !== 'undefined' && status && status.perfin) { %>
+        <p class="tile-status"><%= status.perfin %></p>
+<% } %>
       </a>
       <a href="/per-sistant" class="tile" data-atrans="cosmic">
         <div class="tile-icon">&#10003;</div>
         <h2>Per-sistant</h2>
         <p>Tasks, notes, scheduled emails.</p>
+<% if (typeof status !== 'undefined' && status && status.persistent) { %>
+        <p class="tile-status"><%= status.persistent %></p>
+<% } %>
       </a>
     </div>
   </main>
