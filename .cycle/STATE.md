@@ -27,6 +27,9 @@ implement and reflect sessions only set Phase.)
     loans ≥ 8% join the high step; the cash cap only on money leaving cash; minimums off the surplus first.
   - **Where I left off:** A1 committed and pushed. Next: `/sync-docs`, then `/broad-implement A2`
     (GET /api/advice, the "Your plan" card, Ask's get_cash_plan).
+  - **Docs synced** (/sync-docs, 2026-10-27): CLAUDE.md (the advice.js entry, the Financial Analytics
+    subsystem list, Known Open Issues — T4.1 A1 choices + follow-ons, Priority Next Features, counts
+    2750 / 146 / contract 274 with the new test files), README (count + a T4.1 A1 clause).
 - **Status:** **Cycle 8 broad scan — Batch 8 DONE — every fix batch is done** (2026-10-27, branch
   `claude/optimistic-edison-vzuc0o`). Block: `.cycle/blocks/8-batch8-broad-implement.md`.
   - **Shipped (Batch 8 — platform hygiene):** F31 IN-list CHECKs kept in step with the code on an existing

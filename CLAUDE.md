@@ -321,6 +321,34 @@ teller/
                            "Payday missed?" + the opt-in critical-alert email, once
                            per (stream, expected date) via sentRecently; an in-memory
                            (local day + sync stamp) memo, off → no DB read that day
+    advice.js            — "Where should my extra money go?" (roadmap T4.1 A1,
+                           .cycle/plan-t4-1-advisory.md — no caller until A2):
+                           getAdviceInputs(pool, { today, deps }) reads seven sources
+                           once each, fail-soft (a fixed sentence per source in
+                           errors[]): getMonthlyIncomeAndSpending, getLiveIncomeStreams,
+                           getCashFlowForecast (60 days), the cash floor
+                           (cash_alert_threshold), credit + loan accounts with a
+                           balance, 60 days of card activity with an interest test
+                           (Plaid PFC BANK_FEES_INTEREST_CHARGE or "interest charge /
+                           finance charge" wording) and the outgoing savings /
+                           investment recurring transfers. buildAdvicePlan(inputs) is
+                           PURE and computes every figure: no plan (ok: false) while a
+                           critical source (months, cash, debts, activity, transfers)
+                           is missing; the steps minimums → starter buffer (floor + 1
+                           month of spending) → debt at APR ≥ 8% (cards and loans) →
+                           emergency fund (3 months) → debt at 4–8% (50/50 with
+                           investing) → invest, the first not done the headline; a card
+                           is carried when charged interest in 60 days or its last
+                           payment was within 10% of its minimum, else paid in full (not
+                           debt); an unknown card APR is 22%; the surplus counts only
+                           after 3 completed months each over max($200, 10% of income),
+                           its median less savings transfers and minimums, capped (money
+                           leaving cash only) so the 60-day low stays ≥ the floor, × 60%,
+                           rounded down to $25 per paycheck of the largest pay stream; an
+                           avalanche simulation (overflow, rollover) gives each debt's
+                           payment, payoff month and interest saved, plus a snowball
+                           line; a 30%-utilization tip; every threshold a named constant;
+                           the disclaimer on every plan; no security or fund named
     tax-investments.js   — Investment tax figures (roadmap T3.3 K1), from
                            investment_transactions: realizedGains (FIFO lots per
                            account + security; cost = the buy's |amount|, fees in;
@@ -1151,9 +1179,20 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2712 tests as of latest); use
+  Perfin and Per-sistant test files (2750 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2712 tests across 145 test files (incl.
+  Current count: 2750 tests across 146 test files (incl.
+  `tests/roadmap-t4-1-a1.test.js` — roadmap T4.1 A1: services/advice.js over canned inputs — each step as
+  the headline (invest, the starter buffer ahead of a 24% card and uncapped by the floor, high-interest
+  debt, the emergency fund, medium debt 50/50, minimums not covered), the avalanche (APR order and its
+  tie, overflow, rollover, the snowball line, a minimum that never pays off), APRs / minimums / carried
+  balances (an assumed 22%, an estimated minimum, a 0% card, every carry case, a paid-in-full card's
+  utilization tip, a card with no activity, a loan with no APR / payment, a ≥ 8% loan), the surplus (the
+  bar over completed months only, a month under it, a short history, savings transfers taken off,
+  nothing left, the cash cap and its months, the default floor), per paycheck (the largest stream,
+  rounding down, biweekly, per month without a stream) and the fail-soft reads (one read per source, a
+  non-critical failure still a plan with no error text, each critical source → no plan, the readers'
+  SQL) — the database-backed half is `tests/contract/advice-a1`;
   `tests/broad-scan-c8-batch8.test.js` — cycle-8 broad scan Batch 8, Perfin's side: `checkValues` over
   stored definitions, `syncInListChecks` over a fake client (an unchanged CHECK untouched in any order, a
   new value replaced NOT VALID, a missing one added, a quote escaped) and the CREATE TABLEs interpolating
@@ -2032,7 +2071,10 @@ shell/
   this month is still flagged CRITICAL). Since cycle-8 Batch 8, c8-batch8 (a stale tax_documents form
   CHECK refusing 1099-K until the next migration run replaces it, an unchanged run replacing nothing;
   Per-sistant's DATE read as 'YYYY-MM-DD' and served so by GET /api/todos while Perfin's pool keeps its
-  Date). 272 tests, run
+  Date). Since roadmap T4.1 A1, advice-a1 (every advice source read on the real schema — spendable =
+  checking only, interest found by statement wording and by Plaid's PFC — and the plan on real rows: 3
+  completed months over the bar, the savings transfer and minimums off, $1,000 a paycheck to the 24.99%
+  card, a paid-in-full card not debt, a PFC-only card at an assumed 22%). 274 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -4161,7 +4203,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2712 tests passing across 145 test files (Perfin 1991 + Per-sistant 721), plus the real-Postgres route contract suite (272 tests; CI `migrations` job, `npm run test:contract`) and 72 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2750 tests passing across 146 test files (Perfin 2029 + Per-sistant 721), plus the real-Postgres route contract suite (274 tests; CI `migrations` job, `npm run test:contract`) and 72 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -6680,6 +6722,17 @@ aren't re-checked; Per-sistant's calendar projection starts its window at UTC mi
 east of UTC — cosmetic); DATE values Per-sistant reads through perfinPool (finance search, the
 Perfin widget, housingDue) are still Perfin's Dates; a landing line can be up to 30 s stale.
 
+**Roadmap T4.1 (in progress — A1 done):** `services/advice.js` computes the plan but nothing calls it
+until A2 (GET /api/advice, the "Your plan" card, Ask's get_cash_plan). A1 choices to confirm at A2:
+a last payment within 10% of the minimum stands in for "paid less than the statement" (the statement
+balance is stored from A8); a loan at APR ≥ 8% joins the high-interest step and a loan with no APR gets
+minimums only (not an assumed 22%); the cash-floor cap limits only money leaving cash (debt, investing),
+not the buffer / emergency-fund steps; carried cards' and loans' minimums come off the surplus before
+the 60% (conservative — part of a carried card's minimum pays purchases already counted as spending);
+the medium step's 50/50 halves aren't rounded to $25. A1 follow-ons: the emergency fund is all
+spendable cash, not a named account or goal (A5); the avalanche assumes no new card purchases and a
+fixed minimum, so payoff months are estimates.
+
 **Cycle 7 (Oct 2026 broad scan) — open until their batches run** (plan in
 `.cycle/STATE.md`; Batches 1–8 — exposure / pre-auth safety, broken pages and
 dead channels, backstops / outcomes / operator state, bank-sync durability, money
@@ -7054,8 +7107,8 @@ perfin_url) and its contract-coverage gap were fixed by the follow-on batch
 1. **Mobile app (operator step)** — the Capacitor iOS wrapper is scaffolded in
    `mobile/` (remote-URL mode, coexists with the PWA); what remains is the
    free-signing Xcode build on the operator's Mac per `mobile/README.md`.
-2. **Roadmap T4.1 — "Where should my extra money go?"** (queued after the cycle-8 batches;
-   plan `.cycle/plan-t4-1-advisory.md`): a code-computed plan — minimums, a starter cash buffer,
+2. **Roadmap T4.1 — "Where should my extra money go?"** (in progress — A1, the engine
+   `services/advice.js`, is done; A2 next; plan `.cycle/plan-t4-1-advisory.md`): a code-computed plan — minimums, a starter cash buffer,
    high-APR card debt first with a per-card avalanche split, a 3-month emergency fund, then
    "invest $X more per paycheck" from a sustained surplus — on the dashboard, in AI insights and
    in Ask, with one opt-in "tell me when my plan changes" checkbox; then (A5–A10) emergency-fund
@@ -7144,7 +7197,7 @@ Detection & Categorization:
 Financial Analytics:
   teller/services/financial-queries.js, teller/routes/spending-analytics.js,
   teller/services/cash-flow.js, teller/services/cash-alerts.js,
-  teller/services/payday-alerts.js, teller/services/tax-investments.js,
+  teller/services/payday-alerts.js, teller/services/advice.js, teller/services/tax-investments.js,
   teller/services/tax-documents.js, teller/services/tax-package.js,
   teller/routes/tax.js, teller/services/projections.js, teller/routes/budgets.js,
   teller/routes/goals.js, teller/routes/credit-scores.js,
