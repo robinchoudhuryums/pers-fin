@@ -771,7 +771,9 @@ teller/
                            the cap — parity with rebuild (AIA2) / categorize
                            (M2) (F1); `charged` is set only after the row is
                            written, so a failed write is retried there
-                           (cycle-7 F64). The last round is sent
+                           (cycle-7 F64); a failed write on the success path is
+                           logged and the finished answer still returned —
+                           the finally retries the charge (cycle-8 F44). The last round is sent
                            tool_choice "none" so it answers in text (F65);
                            the system prompt's "today" is the APP_TIMEZONE
                            date and the usage row records the model that
@@ -1144,9 +1146,19 @@ shell/
   performance, and trust-overview endpoints end-to-end. Run `npm install`
   at the repo root before `npm test` (root `package.json` declares the
   test-time deps separately from `teller/`). `npm test` now runs both
-  Perfin and Per-sistant test files (2650 tests as of latest); use
+  Perfin and Per-sistant test files (2666 tests as of latest); use
   `npm run test:perfin` or `npm run test:persistent` for scoped runs.
-  Current count: 2650 tests across 139 test files (incl.
+  Current count: 2666 tests across 141 test files (incl.
+  `tests/broad-scan-c8-batch6.test.js` — cycle-8 broad scan Batch 6, Perfin's side: the audit's
+  CROSS_PERIOD_RE over year / week / quarter phrasings (and the this-month and unqualified claims
+  it leaves checked, "a quarter of your spending" among them), namesOtherMonth / claimNamesOtherMonth
+  for this month's name in another year ("last November", "November 2025", a bare "In 2025" — never
+  an amount like "$2025"), creditScoreSummary's same-type delta and range with the other types
+  listed, and the weekly digest tick's 07:00 gate (no DB read before it, the day not settled) — with
+  `apps/per-sistant/tests/broad-scan-c8-batch6.test.js` (quoted frontmatter keys, an unreadable
+  privacy-key line private, VAULT_PARSE_VERSION 3, a refusal a charged 422 on adjust-tone /
+  review-summary / the briefing and never cached, Ask's "couldn't process") and Ask's charge failure
+  in `tests/ai-cap-charge.test.js` — the database-backed half is `tests/contract/c8-batch6`;
   `tests/broad-scan-c8-batch5.test.js` — cycle-8 broad scan Batch 5, Perfin's side of the linked
   tasks: computeLinkedTasks' manual-bill `retain` (every unpaid occurrence from the bill's creation
   month up to the 30-day window, a paid one left out, payments read from the earliest creation
@@ -1990,7 +2002,9 @@ shell/
   tombstone row; a sync blocked behind another holder of the linked-tasks lock; stats / analytics /
   the review counting only a hand completion; housing_due hidden while a housing task is open; an
   aged unpaid bill's task open until it is paid and a switched-off bill's task closed by the route's
-  own refresh). 269 tests, run
+  own refresh). Since cycle-8 Batch 6, c8-batch6 (the audit on real spending: a prior-year
+  same-month claim, "last year", "last week" and "last quarter" skipped while the same claim about
+  this month is still flagged CRITICAL). 270 tests, run
   with and without pgvector; mutation checks (dropping the FAN-1 `::numeric`
   cast, swapping the DC-1 mount order, raw export dates, Plaid counting every
   upsert as an insert, dropping the sensitivity filter from keyword retrieval)
@@ -2530,7 +2544,10 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   column (vs the previous entry of the SAME score type — cycle-7 F86: a FICO
   row used to be compared with an interleaved VantageScore). The last 6 score entries + trajectory are injected into the
   AI insights prompt so Claude can correlate score changes with spending
-  behavior (e.g. reduced utilization → score improvement).
+  behavior (e.g. reduced utilization → score improvement) — through
+  `creditScoreSummary(rows)` (routes/insights.js): the delta and range compare entries of the
+  latest entry's score type, and each other type is listed with its latest score (cycle-8 F50 —
+  the prompt still diffed across types).
 - **Tax deduction report**: computed at EXPORT time from the transactions ledger
   (SXE-7) by `getTaxDeductionTransactions(pool, year)` in
   `services/financial-queries.js` — one row per matching transaction with its
@@ -3228,6 +3245,15 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   August") — is cross-period and skipped (`claimNamesOtherMonth`; case-sensitive names, so the
   verb "may" doesn't count); a month named later in the clause belongs to another figure.
   Trade-off: "September was quiet while Dining hit $450" without "this month" is skipped.
+  **Other years, weeks and quarters (cycle-8 F42)**: `CROSS_PERIOD_RE` also covers last / previous /
+  prior year, "years ago", "same month last year", "last <season>", last / past / previous / this
+  week, per week, "/week", weekly, "a week", last / previous / this quarter, per quarter and
+  quarterly ("a quarter of your spending" is not a period); and this month's NAME is another
+  month when "last" / "previous" / "prior" precedes it or another year follows it ("Last
+  November Shopping hit $800", "$800 in November 2025"), as is a bare other year ("In 2025, …"
+  — never an amount like "$2025"). They were compared with this month's actuals — a false
+  CRITICAL on every seasonal comparison. Trade-off: a sentence that says "weekly" or names another
+  year is skipped unless it also says "this month".
   **Savings rate (AIN-3)**: checked against COMPLETE months — the closer of the last complete month
   and the complete-month average; only an explicit "this month" claim uses the month to date.
   (2) entity existence — merchant/goal/subscription names verified against DB via
@@ -3295,8 +3321,9 @@ a form added through the page and marked received, and the ZIP download, T3.3 K4
   actions (urgency-colored), active alerts (severity-colored), and
   recently completed goals. Opt-in: Settings → AI Insights → "Weekly
   Digest Email" toggle (default off); day-of-week configurable
-  (`weekly_digest_day`, default Monday). The scheduler ticks hourly but
-  `runWeeklyDigest` itself gates with a 6-day window from
+  (`weekly_digest_day`, default Monday), not before 07:00 APP_TIMEZONE
+  (`DAILY_DIGEST_HOUR`, cycle-8 F53 — it went out with the first hourly tick, at about midnight).
+  The scheduler ticks hourly but `runWeeklyDigest` itself gates with a 6-day window from
   `last_weekly_digest_at` so the daily-aligned check is idempotent, and
   skips (`empty_summary`) when all four summary arrays are empty (AIN-16).
   Alerts are coloured by their own critical/warning/info map (AIN-14). The
@@ -3947,7 +3974,9 @@ on the operator's machine (or fed via env vars) before the app boots:
      parser, KR-2) keep their old classification until a full walk re-files
      them and sweeps deleted-file orphans (KR-1). Cycle-7 Batch 12 is such a deploy
      (F132: "--- " delimiters and repeated sensitivity / embed / private keys now
-     resolve fail-closed).
+     resolve fail-closed), and so is cycle-8 Batch 6 (F49: a quoted key is read, and a
+     line the parser can't read that starts with a privacy key resolves private —
+     VAULT_PARSE_VERSION 3).
 4. **`db-backup.yml` GitHub Action secrets** — `NEON_DATABASE_URL`,
    `PERSISTENT_DATABASE_URL` (optional), and `BACKUP_ENCRYPTION_PASSPHRASE`
    repo secrets for the nightly encrypted backup workflow (pg_dump of both
@@ -4093,7 +4122,7 @@ npm run start:persistent   # node apps/per-sistant/server.js
   `SHELL_SECRET`, `PERSISTENT_DATABASE_URL`
 - Teller mTLS cert provided via base64 env vars (`TELLER_CERT` / `TELLER_KEY`)
 - Teller Application ID: `app_pplg2et45b7bl1scna000`
-- 2650 tests passing across 139 test files (Perfin 1953 + Per-sistant 697), plus the real-Postgres route contract suite (269 tests; CI `migrations` job, `npm run test:contract`) and 72 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
+- 2666 tests passing across 141 test files (Perfin 1962 + Per-sistant 704), plus the real-Postgres route contract suite (270 tests; CI `migrations` job, `npm run test:contract`) and 72 Playwright browser tests (CI `e2e` job — smoke.spec.js + the seeded every-page pages.spec.js with its click sweep); neither of the last two is in `npm test`
 - AI runs on the Claude 5.5 models (Perfin haiku/sonnet/opus tiers → `claude-haiku-5-5` / `claude-sonnet-5-5` / `claude-opus-5-5`; Per-sistant haiku/sonnet → `claude-haiku-5-5` / `claude-sonnet-5-5`)
 
 ## Commands
@@ -5804,7 +5833,8 @@ second one (which re-sent the same uncategorized rows to Claude).
   stays a manual `POST /api/sync/reconcile` action. Not gated on user
   activity — a weekly background heal should run even while the user is away.
   Records its outcome as `teller_reconcile` in `last_sync_result` (BSI-11).
-- **Weekly digest**: every 1 hour, NOT activity-gated, checks
+- **Weekly digest**: every 1 hour, NOT activity-gated (no DB call before
+  `DAILY_DIGEST_HOUR` local — cycle-8 F53), checks
   `weekly_digest_enabled` and that the APP_TIMEZONE weekday matches
   `weekly_digest_day` (0=Sun..6=Sat). When both match,
   invokes `runWeeklyDigest()` in `routes/insights.js`, which itself gates
@@ -6547,10 +6577,9 @@ x-api-key limiter F30) and Batch 2 (money accuracy — the forecast's internal t
 and utility autopays F8, fee rows in investment income F9, the payday-landed retry F10, the
 low-cash alert's memory and forced re-check F11 / F12, F13–F15) and Batch 3 (detection /
 rename / restore — F41 F46 F47 F5 F43 F4 F6 F54) and Batch 4 (sync watermarks + webhook
-hardening — F1 F51 F3) and Batch 5 (linked tasks — F16 F17 F18 F19 F20 F21 F22 F23) are
-done. Still open, by batch:
-- Batch 6 — the audit's "last year" / prior-year month claims (F42), a quoted frontmatter
-  key bypassing the privacy tier (F49), and F24 / F44 / F50 / F53.
+hardening — F1 F51 F3) and Batch 5 (linked tasks — F16 F17 F18 F19 F20 F21 F22 F23) and
+Batch 6 (AI trust + Knowledge privacy — F42 F49 F44 F24 F50 F53) are done. Still open, by
+batch:
 - Batch 7 — search Pin / Unpin does nothing (F34), the Tax checklist losing unsaved notes
   (F35), keyboard access to the Spending by Category select (F55) and F36–F40, F48, F56, F57.
 - Batch 8 — frozen CHECK lists (F31), error-log pruning (F32), landing-status queries
@@ -6587,6 +6616,14 @@ kicking route waits for the next local day's tick; an automation or webhook rely
 todo_completed for a Perfin-closed task no longer fires; any open housing task hides the
 housing_due line, and Perfin's own payment-due push still fires beside the task (the scan's G2
 — one reminder per real-world item, quiet hours — is the follow-on).
+Batch 6 follow-ons: the audit's period words are English-phrase lists, so "back in the fall" or
+"over the holidays" isn't read as another period; a bare other year anywhere before a claim in its
+sentence skips it unless the sentence says "this month"; an unreadable frontmatter line that starts
+with "private" / "embed" / "sensitivity" makes the file private even when it was prose (errs
+restrictive); Knowledge's /diagram still returns an empty diagram on a refusal (rag.js reads
+cappedAI's empty text); the credit-score prompt reads 6 entries across all types, so a rarely-logged
+type may have no prior entry in range. OPERATOR: run one full Knowledge reindex after deploying
+Batch 6 (VAULT_PARSE_VERSION 3).
 
 **Cycle 7 (Oct 2026 broad scan) — open until their batches run** (plan in
 `.cycle/STATE.md`; Batches 1–8 — exposure / pre-auth safety, broken pages and
@@ -7162,7 +7199,7 @@ INV-23 | Service worker never caches /api/* | Subsystem: Web UI
 INV-24 | sheets-sync.syncAll isolates each tab (per-tab try/catch + errors[]) AND every syncAll caller records the outcome via recordSheetsSyncResult (last_sheets_sync_result; one notification per change in the failing-tab set) — errors[] is never ignored | Subsystem: Sheets & External Export | Verify: tests/scan-sept-batch10.test.js (SXE-1 block)
 INV-25 | Embedded sub-apps detect req.app.get("embedded") and skip their own auth; cross-app calls use the wired pool (perfinPool/persistentPool), never HTTP self-fetch | Subsystem: Per-sistant Backend / Platform, Shell & Auth
 INV-26 | Teller transaction pagination terminates on an empty page (count-explicit + from_id), never a hard-coded page-size compare | Subsystem: Bank Sync & Ingestion | Verify: tests/cycle-fixes.test.js (BS-1 block)
-INV-27 | Only sensitivity='normal' docs/facts are embedded AND retrieved; private/secret are never embedded or sent to AI. Frontmatter sensitivity resolution FAILS CLOSED: YAML comments stripped, block lists parsed, yes/no/on/off understood, the most restrictive of sensitivity/embed/private wins, and any unrecognized value → private (KR-2). Hard-deleted notes/documents are never vector-retrieved (the joined source row must exist, KR-6). Trailing whitespace on a `---` delimiter still parses, and a repeated sensitivity / embed / private key keeps every value so the most restrictive wins (cycle-7 F132). NOTES follow the same rule since cycle-7 F134 / ST5: only notes.sensitivity='normal' notes are embedded, keyword- or vector-retrieved, listed in Ask's context or AI-tagged; a note leaving 'normal' loses its chunks + embed_state, and outside webhooks never get a private / secret note's text | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js (buildRetrievalQuery), tests/knowledge-facts.test.js, apps/per-sistant/tests/scan-sept-fixes.test.js (KR-2/KR-6), apps/per-sistant/tests/scan-oct-batch16.test.js + tests/contract/batch16-persistent.contract.test.js (notes)
+INV-27 | Only sensitivity='normal' docs/facts are embedded AND retrieved; private/secret are never embedded or sent to AI. Frontmatter sensitivity resolution FAILS CLOSED: YAML comments stripped, block lists parsed, yes/no/on/off understood, the most restrictive of sensitivity/embed/private wins, and any unrecognized value → private (KR-2). Hard-deleted notes/documents are never vector-retrieved (the joined source row must exist, KR-6). Trailing whitespace on a `---` delimiter still parses, and a repeated sensitivity / embed / private key keeps every value so the most restrictive wins (cycle-7 F132). A quoted key is read, and a frontmatter line the parser can't read that starts with a privacy key resolves private (cycle-8 F49). NOTES follow the same rule since cycle-7 F134 / ST5: only notes.sensitivity='normal' notes are embedded, keyword- or vector-retrieved, listed in Ask's context or AI-tagged; a note leaving 'normal' loses its chunks + embed_state, and outside webhooks never get a private / secret note's text | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js (buildRetrievalQuery), tests/knowledge-facts.test.js, apps/per-sistant/tests/scan-sept-fixes.test.js (KR-2/KR-6), apps/per-sistant/tests/scan-oct-batch16.test.js + tests/contract/batch16-persistent.contract.test.js (notes), apps/per-sistant/tests/broad-scan-c8-batch6.test.js (F49)
 INV-28 | pgvector objects are created defensively — the CREATE EXTENSION is attempted in an EXCEPTION block and vector objects are built only when the extension is INSTALLED (pg_extension), so an available-but-not-creatable extension degrades too (cycle-7 F10); the migration succeeds and Knowledge degrades to keyword retrieval rather than failing boot — and the vault sync still ingests documents + facts without Voyage/pgvector, embedding them later via the backfill (KR-3) | Subsystem: Knowledge / RAG | Verify: code read db/014_vault_vectors.sql + vault-sync.vectorReady
 INV-29 | Retrieval is HYBRID (vector + keyword legs fused via Reciprocal Rank Fusion, each leg ranked per distinct source — the vector leg over-fetched 4× and collapsed to the best chunk per source; keyword terms drop function-word stopwords; keyword hits carry the matching passage, KR-4) — either leg failing degrades to the other alone; /query & /diagram degrade to sources-only / null when AI is off or unavailable — and, since roadmap T2.3 C3, /query to sources-only (ai_cap) over the monthly AI budget | Subsystem: Knowledge / RAG | Verify: tests/knowledge.test.js, apps/per-sistant/tests/rag-v2.test.js
 INV-30 | Embedding dimension (1024) matches chunks.embedding vector(1024); a provider/dimension change is a re-embed migration, not a config flip | Subsystem: Knowledge / RAG | Verify: code read services/embeddings.js EMBED_DIM
@@ -7229,7 +7266,7 @@ INV-109 | NOT_TRANSFER matches bank/processor BRAND words on the cleaned merchan
 INV-110 | Income aggregates count a deposit at its account's share (INCOME_AMOUNT = −SPLIT_AMOUNT); the cash-flow forecast and bill calendar project the same live income streams (getLiveIncomeStreams) | Subsystem: Financial Analytics | Verify: tests/contract/money-classification.contract.test.js (F37/F34)
 INV-111 | A transaction the user deleted is never re-inserted by a provider sync, reconcile or CSV import (route or CLI — T2.5 U1): the Teller and Plaid upserts and the CSV inserts skip ids in deleted_transactions (written, with the row's snapshot, in the same transaction as the DELETE); only POST /api/deleted-transactions/:id/restore brings one back | Subsystem: Bank Sync & Ingestion | Verify: tests/contract/delete-feeds.contract.test.js (F20) + tests/scan-oct-batch6.test.js + tests/roadmap-t2-5-u1.test.js + tests/contract/undelete-t2-5.contract.test.js
 INV-112 | Categorization rules apply most-specific first (RULE_ORDER_SQL, never by times_applied); saving a rule deactivates the merchant's active rules for other categories; a blank or <3-character contains/starts_with pattern is never stored or applied; the AI write only fills a still-uncategorized row; a row the AI left unanswered is not re-sent for 30 days (ai_skipped_at) | Subsystem: Detection & Categorization | Verify: tests/contract/categorize-rules.contract.test.js + tests/scan-oct-batch7.test.js
-INV-113 | The tier-1 audit judges a dollar claim by its own sentence/clause (claimPeriodWindow) and never compares a claim about another named month (claimNamesOtherMonth) or another period with this month's actuals; tier-2 captures bounded Capitalized names, split on and/or/vs | Subsystem: AI Insights & Audit | Verify: tests/scan-oct-batch8.test.js + tests/contract/ai-trust.contract.test.js
+INV-113 | The tier-1 audit judges a dollar claim by its own sentence/clause (claimPeriodWindow) and never compares a claim about another named month (claimNamesOtherMonth — this month's name in another year included, cycle-8 F42) or another period (year / week / quarter too) with this month's actuals; tier-2 captures bounded Capitalized names, split on and/or/vs | Subsystem: AI Insights & Audit | Verify: tests/scan-oct-batch8.test.js + tests/broad-scan-c8-batch6.test.js + tests/contract/ai-trust.contract.test.js + tests/contract/c8-batch6
 INV-114 | The Sheets export places manual bills and recurring transfers with the app's own cadence rules (cadence.manualBillOccurrences / seriesOccurrences, APP_TIMEZONE today) — never a SQL re-derivation (LEAST(due_day, 28), last + cadence_days); Sheets runs are single-flight (singleFlight: same kind shares, different kind waits) | Subsystem: Sheets & External Export | Verify: tests/contract/sheets-crossapp.contract.test.js + tests/scan-oct-batch9.test.js (F78)
 INV-115 | An in-process digest/insight email is reported sent only when it was queued to a valid address; a draft-only delivery returns sent:false with stored:"draft" and a reason, and the digest ticks settle for the day on it while recording a failed job | Subsystem: Settings, Notifications & Cross-app | Verify: tests/contract/sheets-crossapp.contract.test.js (F79) + tests/scan-oct-batch9.test.js
 INV-117 | Every Per-sistant page write reports its outcome: it goes through writeOk(await tryFetch(...)) (views/js.js — a non-2xx or network failure toasts the server's error and returns false) — a few older pages (notes, health, jobs, today, the dashboard script) check r.ok / d.error and alert instead, which reports HTTP failures but not a rejected fetch (seams audit #3 — follow-on to move them onto writeOk) — a modal stays open on a failed save, and Undo is offered only after a write succeeded; DATE columns are rendered via parseCalDate / fmtCalDate (never `new Date('YYYY-MM-DD')`, which is a day early west of UTC) | Subsystem: Per-sistant Web UI | Verify: apps/per-sistant/tests/scan-oct-batch11.test.js (F109 / F113 blocks)
@@ -7261,7 +7298,7 @@ INV-140 | A Teller webhook is a trigger, not data: transactions.processed syncs 
 INV-139 | Plaid webhooks are opt-in by PUBLIC_URL alone (hosting.webhookBaseUrl — never RENDER_EXTERNAL_URL): without it no link token carries a webhook and registration is a 400; a clean sync never clears a webhook's advance warning (PENDING_EXPIRATION / PENDING_DISCONNECT — setPlaidItemErrorCode keepWarnings), only a re-authentication does; an ITEM ERROR sets the signal only for a re-auth code | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-webhooks-w4.test.js + tests/contract/webhooks-w4.contract.test.js
 INV-138 | A Plaid webhook is a trigger, not data: SYNC_UPDATES_AVAILABLE syncs only the named GOOD item, through the same syncOnePlaidItem the scheduled sync loops, under withPlaidTxnLock and coalesced per item (a request during its run → one more round, never a parallel walk); it records nothing global (no last_txn_sync_at / last_sync_result — the item's last_synced_at only, stamped when the walk reached the end of the cursor) | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-webhooks-w3.test.js + tests/contract/webhooks-w3.contract.test.js
 INV-142 | Cash and payday alerts are away channels driven by the shared forecast (projectCashFlow / getCashFlowForecast — the same numbers as /api/cash-flow) and never fire on stale data: no projected-low or account-floor alert on a balance older than 36 h, no missed-payday alert without an error-free sync of that connection after the grace window; each is deduped (projected low: cash_alert_state; account floor: 24 h per account via sentRecently; payday: per expected date / per deposit — the landed check's tag looked up in notification_log across its 24 h overlap, cycle-8 F51) and advances its state only when the notification was logged; reconcile never triggers a landed-paycheck alert | Subsystem: Financial Analytics / Notification Correctness | Verify: tests/roadmap-t2-2-cash-l2.test.js + tests/roadmap-t2-2-cash-l3.test.js + tests/roadmap-t2-2-cash-l4.test.js + tests/contract/cash-alerts-l2 / payday-l3 / cash-floors-l4 + tests/contract/c8-batch4
-INV-143 | Every Per-sistant model call goes through ai.js's capped wrappers (cappedAI / cappedCitations): the monthly ai_usage spend (APP_TIMEZONE month; a read error refuses the call) is checked against getAiBudgetCents() (user_settings.ai_monthly_budget_cents → PERSISTENT_AI_BUDGET_CENTS → $1.00, read from the same pool) before the call, and a usage row is charged once in a `finally` whenever tokens came back (a refusal included); no routes/*.js file calls callAI / answerWithCitations directly; cache hits make no call and cost nothing; over the cap the action routes 429, Ask / Smart Suggestions keep their 200 shapes with ai_cap, Knowledge answers degrade to sources-only and capture falls back to the raw note — and the pages show that message; GET /api/ai/usage reports the same spend the cap reads; the two apps' caps are separate and each only DISPLAYS the other's spend | Subsystem: Per-sistant Backend / Knowledge / RAG | Verify: apps/per-sistant/tests/roadmap-t2-3-cap-c1 / c2 / c3 / c4 + the c2 source guard + tests/contract/persistent-ai-cap + ai-usage-c4
+INV-143 | Every Per-sistant model call goes through ai.js's capped wrappers (cappedAI / cappedCitations): the monthly ai_usage spend (APP_TIMEZONE month; a read error refuses the call) is checked against getAiBudgetCents() (user_settings.ai_monthly_budget_cents → PERSISTENT_AI_BUDGET_CENTS → $1.00, read from the same pool) before the call, and a usage row is charged once in a `finally` whenever tokens came back (a refusal included — and a routes/ai.js feature then answers 422 { ai_refusal }, never an empty 200, cycle-8 F24); no routes/*.js file calls callAI / answerWithCitations directly; cache hits make no call and cost nothing; over the cap the action routes 429, Ask / Smart Suggestions keep their 200 shapes with ai_cap, Knowledge answers degrade to sources-only and capture falls back to the raw note — and the pages show that message; GET /api/ai/usage reports the same spend the cap reads; the two apps' caps are separate and each only DISPLAYS the other's spend | Subsystem: Per-sistant Backend / Knowledge / RAG | Verify: apps/per-sistant/tests/roadmap-t2-3-cap-c1 / c2 / c3 / c4 + the c2 source guard + tests/contract/persistent-ai-cap + ai-usage-c4 + apps/per-sistant/tests/broad-scan-c8-batch6 (F24)
 INV-144 | The unified search has ONE renderer — renderSearchResults (views/js.js) draws the dashboard widget and the /search page; a Perfin row (group 'finance') becomes a link only through linkedAppHref (a same-app path under Perfin's http(s) or root-relative base — never a javascript: / protocol-relative url), never carries an inline action, and a row of an unknown type is dropped; the finance rows come only from GET /api/search's read-only perfinPool queries (routes/finance-search.js — the escaped pattern, the user's share via Perfin's imported SPLIT_AMOUNT, each query fail-soft) and are absent standalone | Subsystem: Per-sistant Web UI / Settings, Notifications & Cross-app (seam) | Verify: apps/per-sistant/tests/roadmap-t2-4-x3a + x3b + tests/contract/finance-search + e2e/pages.spec.js
 INV-145 | Deleting a transaction is reversible and nothing brings it back unasked: the tombstone and the row's snapshot (with its splits) are written in the delete's own transaction; no provider sync, reconcile or CSV import (route or CLI) inserts a tombstoned id; restore removes the tombstone and reinserts the snapshot in one transaction — never a duplicate (ON CONFLICT DO NOTHING), and nothing changes when the account is gone or (Plaid) the bank removed the row since (cycle-8 F6); CSV-overlap Resolve tombstones what it deletes (F4); Plaid update mode — in-page or hosted — clears an item's re-auth flag only after Link reports the session finished (in-page: onSuccess; hosted: a link_sessions entry finished without an exit, read through linkTokenGet before anything is written) | Subsystem: Bank Sync & Ingestion | Verify: tests/roadmap-t2-5-u1.test.js + tests/roadmap-t2-5-u2.test.js + tests/roadmap-t2-5-h1.test.js + tests/contract/undelete-t2-5 + plaid-update + tests/contract/c8-batch3
 INV-146 | The year-end tax package is computed on request from the ledger and never stored, and nothing in it is sent to an AI model: each figure has one definition shared with the screen or export that already shows it — deductions = getTaxDeductionReport (also behind /api/export/tax-report, whose CSV is taxReportCsv), income = getIncomeForYear on INCOME_PREDICATE / INCOME_AMOUNT, rent paid = getHousingPayments (also behind the landlord export, housingPaymentsCsv), investments = investment_transactions through getInvestmentTaxData; realized gains are FIFO over stored lots and labelled approximate — a sale not fully covered by known-cost lots has a NULL basis and gain, never 0; tax-advantaged accounts are kept out of gains and investment income; a suggested document the user received or dismissed is never changed or re-suggested (ON CONFLICT DO NOTHING); every section is fail-soft with a fixed sentence; every CSV text cell is formula-guarded; the Tax page's writes go through writeOk | Subsystem: Financial Analytics / Sheets & External Export / Web UI | Verify: tests/roadmap-t3-3-k1 / k2 / k3 / k4 + tests/contract/tax-investments / tax-documents / tax-package + e2e/pages.spec.js

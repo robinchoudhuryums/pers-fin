@@ -29,8 +29,12 @@ implement and reflect sessions only set Phase.)
   - **Verified:** npm test 2666/2666 (16 new); contract 270/270 (1 new); mutation 7/7; Playwright not re-run
     (no page / mount change).
   - **Operator:** one full Knowledge reindex after deploy (parse version 3).
-  - **Where I left off:** Batch 6 committed and pushed. Next: `/sync-docs` (doc list in the block), then
-    `/broad-implement Batch 7`.
+  - **Docs synced** (/sync-docs, 2026-10-27): CLAUDE.md (ask.js entry F44, credit-score prompt F50, the
+    audit's other years / weeks / quarters F42, weekly digest + its scheduled-task bullet F53, the
+    Knowledge reindex operator note, INV-27 / INV-113 / INV-143, test counts 2666 / 141 + contract 270,
+    Known Open Issues + Batch 6 follow-ons), apps/per-sistant/CLAUDE.md (frontmatter parsing F49, the
+    refusal 422 F24, db/029's current value, counts + the new test file) and README.
+  - **Where I left off:** Batch 6 committed, pushed and documented. Next: `/broad-implement Batch 7`.
 - **Batch 5 (DONE):** block `.cycle/blocks/8-batch5-broad-implement.md`.
   - **Shipped (Batch 5 — linked tasks semantics):** F16 tombstones for a task deleted for good (db/031);
     F17 aged unpaid manual-bill tasks retained, not closed; F18 an auto-close announces nothing and is left
